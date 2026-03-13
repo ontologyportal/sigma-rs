@@ -152,7 +152,7 @@ impl SemanticError {
 
     pub fn handle(&self, store: &KifStore) -> Result<(), Self> {
         if self.is_warn() {
-            log::warn!("Semantic Warning:");
+            log::warn!("Semantic Warning:\n");
             self.pretty_print(store, log::Level::Warn);
             Ok(())
         } else {
@@ -227,7 +227,8 @@ impl SemanticError {
             | SemanticError::Other { .. } => {
                 log::log!(
                     target: "clean",
-                    level, "{}{}{color_reset}",
+                    level,
+                    "{}\t{}{color_reset}",
                     self.level_color(level),
                     self);
             },
@@ -241,9 +242,9 @@ impl SemanticError {
                 log::log!(
                     target: "clean", 
                     level, 
-                    "{}\n\n{}{}{color_reset}", 
-                    self.level_color(level),
+                    "{}\n\n{}\t{}{color_reset}", 
                     dis,
+                    self.level_color(level),
                     self);
             },
             | SemanticError::NonLogicalArg { sid, arg, .. }
@@ -257,9 +258,9 @@ impl SemanticError {
                 log::log!(
                     target: "clean", 
                     level,
-                    "{}\n\n{}{}{color_reset}",
-                    self.level_color(level),
+                    "{}\n\n{}\t{}{color_reset}",
                     dis,
+                    self.level_color(level),
                     self);
             },
             SemanticError::ArityMismatch { sid, .. } => {
@@ -271,9 +272,9 @@ impl SemanticError {
                 log::log!(
                     target: "clean",
                     level,
-                    "{}\n\n{}{}{color_reset}",
-                    self.level_color(level),
+                    "{}\n\n{}\t{}{color_reset}",
                     dis,
+                    self.level_color(level),
                     self);
             },
             SemanticError::DisjointInstance { sid, .. }
@@ -293,7 +294,7 @@ impl SemanticError {
                 log::log!(
                     target: "clean",
                     level,
-                    "\n{}{}{color_reset}",
+                    "\n{}\t{}{color_reset}",
                     self.level_color(level),
                     self);
             }

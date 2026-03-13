@@ -726,7 +726,7 @@ impl KifStore {
             } else if tok.starts_with("_") && tok[1..].parse::<usize>().is_ok() {
                 // _N: variadic — skip up to N remaining tokens
                 // Just consume the rest
-                t_idx += 1;
+                // t_idx += 1;
                 return true;
             } else {
                 // Literal match

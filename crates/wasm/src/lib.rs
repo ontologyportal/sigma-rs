@@ -28,7 +28,7 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let errors = self.inner.load_kif(kif_text, file_tag);
-        let msgs: Vec<String> = errors.iter().map(|(span, e)| e.to_string()).collect();
+        let msgs: Vec<String> = errors.iter().map(|(.., e)| e.to_string()).collect();
         serde_wasm_bindgen::to_value(&msgs).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -119,7 +119,7 @@ impl WasmKnowledgeBase {
         let mut tmp_store = KifStore::default();
         let errs = load_kif(&mut tmp_store, query_kif, "__query__");
         if !errs.is_empty() {
-            let msgs: Vec<String> = errs.iter().map(|(span, e)| e.to_string()).collect();
+            let msgs: Vec<String> = errs.iter().map(|(.., e)| e.to_string()).collect();
             return Err(serde_wasm_bindgen::to_value(&msgs)
                 .unwrap_or_else(|_| JsValue::from_str("parse error")));
         }

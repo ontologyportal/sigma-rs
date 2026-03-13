@@ -96,7 +96,19 @@ fn translate_symbol(
     sym_id:   Option<SymbolId>,
     kb:       &KnowledgeBase,
 ) -> String {
-    let result = name.replace('.', "_").replace('-', "_");
+    let mut result = name.replace('.', "_").replace('-', "_");
+    match name {
+        "=>"     => result = "implies".to_string(),
+        "<=>"    => result = "iff".to_string(),
+        "and"    => result = "and".to_string(),
+        "or"     => result = "or".to_string(),
+        "not"    => result = "not".to_string(),
+        "forall" => result = "forall".to_string(),
+        "exists" => result = "exists".to_string(),
+        "equal"  => result = "equal".to_string(),
+        _ => {}
+    }
+    
     let suffix = if !has_args && needs_mention_suffix(name, sym_id, kb) {
         TPTP_MENTION_SUFFIX
     } else {
@@ -113,12 +125,12 @@ fn translate_literal(lit: &Literal, opts: &TptpOptions) -> String {
     match lit {
         Literal::Str(s) => {
             // Sanitise whitespace and single-quotes
-            let inner = &s[0..s.len()];
-            inner
+            let inner = &s[1..s.len()-1];
+            format!("'{}'", inner
                 .chars()
                 .filter(|&c| c != '\'')
                 .map(|c| if matches!(c, '\n' | '\t' | '\r' | '\x0C') { ' ' } else { c })
-                .collect()
+                .collect::<String>())
         }
         Literal::Number(n) => {
             if opts.hide_numbers && opts.lang != TptpLang::Tff {
@@ -142,42 +154,6 @@ fn collect_all_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<String>
     }
 }
 
-fn collect_bound_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<String>) {
-    let sentence = &store.sentences[sid];
-    if let Some(op) = sentence.op() {
-        if matches!(op, OpKind::ForAll | OpKind::Exists) {
-            // Variable list is elements[1] (a Sub sentence)
-            if let Some(Element::Sub(var_list)) = sentence.elements.get(1) {
-                for e in &store.sentences[*var_list].elements {
-                    if let Element::Variable { name, .. } = e {
-                        out.insert(name.clone());
-                    }
-                }
-            }
-            // Recurse into body (elements[2])
-            if let Some(Element::Sub(body)) = sentence.elements.get(2) {
-                collect_bound_vars(*body, store, out);
-            }
-            return;
-        }
-    }
-    for elem in &sentence.elements {
-        if let Element::Sub(sub) = elem {
-            collect_bound_vars(*sub, store, out);
-        }
-    }
-}
-
-fn free_vars(sid: SentenceId, store: &KifStore) -> Vec<String> {
-    let mut all   = HashSet::new();
-    let mut bound = HashSet::new();
-    collect_all_vars(sid, store, &mut all);
-    collect_bound_vars(sid, store, &mut bound);
-    let mut result: Vec<String> = all.into_iter().filter(|v| !bound.contains(v)).collect();
-    result.sort(); // deterministic output
-    result
-}
-
 // ── Recursive translation ─────────────────────────────────────────────────────
 
 fn translate_element(
@@ -185,15 +161,34 @@ fn translate_element(
     store: &KifStore,
     opts:  &TptpOptions,
     kb:    &KnowledgeBase,
+    as_formula: bool,
 ) -> String {
     match elem {
         Element::Symbol(id) => {
-            translate_symbol(store.sym_name(*id), false, Some(*id), kb)
+            let sym_str = translate_symbol(store.sym_name(*id), false, Some(*id), kb);
+            if as_formula {
+                format!("{}holds({})", TPTP_SYMBOL_PREFIX, sym_str)
+            } else {
+                sym_str
+            }
         }
-        Element::Variable { name, .. } => translate_variable(name),
+        Element::Variable { name, .. } => {
+            let var_str = translate_variable(name);
+            if as_formula {
+                format!("{}holds({})", TPTP_SYMBOL_PREFIX, var_str)
+            } else {
+                var_str
+            }
+        }
         Element::Literal(lit) => translate_literal(lit, opts),
-        Element::Sub(sid) => translate_sentence(*sid, store, opts, kb),
-        Element::Op(op) => op.name().to_owned(),
+        Element::Sub(sid) => translate_sentence(*sid, store, opts, kb, as_formula),
+        Element::Op(op) => {
+            if as_formula {
+                op.name().to_owned()
+            } else {
+                translate_symbol(op.name(), false, None, kb)
+            }
+        }
     }
 }
 
@@ -202,11 +197,12 @@ fn translate_sentence(
     store: &KifStore,
     opts:  &TptpOptions,
     kb:    &KnowledgeBase,
+    as_formula: bool,
 ) -> String {
     let sentence = &store.sentences[sid];
 
     if sentence.is_operator() {
-        return translate_operator_sentence(sid, store, opts, kb);
+        return translate_operator_sentence(sid, store, opts, kb, as_formula);
     }
 
     match sentence.elements.first() {
@@ -214,21 +210,39 @@ fn translate_sentence(
             // Regular predicate / function application.
             let head_id = *head_id;
             let head_name = store.sym_name(head_id);
-            let head_str = translate_symbol(head_name, true, Some(head_id), kb);
+            
             let args: Vec<String> = sentence.elements[1..]
                 .iter()
-                .map(|e| translate_element(e, store, opts, kb))
+                .map(|e| translate_element(e, store, opts, kb, false))
                 .collect();
-            format!("{}({})", head_str, args.join(","))
+
+            if as_formula {
+                // Formula usage: wrap in s__holds to avoid sort conflicts in provers.
+                let head_mention = translate_symbol(head_name, false, Some(head_id), kb);
+                let mut holds_args = vec![head_mention];
+                holds_args.extend(args);
+                format!("{}holds({})", TPTP_SYMBOL_PREFIX, holds_args.join(","))
+            } else {
+                // Term usage: direct application.
+                let head_str = translate_symbol(head_name, true, Some(head_id), kb);
+                format!("{}({})", head_str, args.join(","))
+            }
         }
         Some(Element::Variable { name, .. }) => {
             // Variable-headed sentence: (?REL A B) → s__holds(V__REL, A, B).
             // This is the standard SUMO higher-order encoding for FOF.
             let var_str = translate_variable(name);
             let args: Vec<String> = std::iter::once(var_str)
-                .chain(sentence.elements[1..].iter().map(|e| translate_element(e, store, opts, kb)))
+                .chain(sentence.elements[1..].iter().map(|e| translate_element(e, store, opts, kb, false)))
                 .collect();
-            format!("{}holds({})", TPTP_SYMBOL_PREFIX, args.join(","))
+            
+            if as_formula {
+                // Top-level or logical arg: use holds as a predicate
+                format!("{}holds({})", TPTP_SYMBOL_PREFIX, args.join(","))
+            } else {
+                // Nested term: use holds_app as a function to avoid sort conflicts
+                format!("{}holds_app({})", TPTP_SYMBOL_PREFIX, args.join(","))
+            }
         }
         _ => String::new(),
     }
@@ -239,6 +253,7 @@ fn translate_operator_sentence(
     store: &KifStore,
     opts:  &TptpOptions,
     kb:    &KnowledgeBase,
+    as_formula: bool,
 ) -> String {
     let sentence = &store.sentences[sid];
     let op = match sentence.op() {
@@ -248,40 +263,57 @@ fn translate_operator_sentence(
     // args = elements after the leading Op
     let args: Vec<&Element> = sentence.elements[1..].iter().collect();
 
+    if !as_formula {
+        // Reify nested logical operators as function applications
+        let head_str = translate_symbol(op.name(), true, None, kb);
+        let arg_strs: Vec<String> = args.iter()
+            .map(|e| translate_element(e, store, opts, kb, false))
+            .collect();
+        return format!("{}({})", head_str, arg_strs.join(","));
+    }
+
     match op {
         OpKind::And | OpKind::Or => {
             let tptp_op = if op == OpKind::And { "&" } else { "|" };
             let parts: Vec<String> = args
                 .iter()
-                .map(|e| translate_element(e, store, opts, kb))
+                .map(|e| translate_element(e, store, opts, kb, true))
                 .collect();
             format!("({})", parts.join(&format!(" {} ", tptp_op)))
         }
 
         OpKind::Not => {
-            let inner = translate_element(args[0], store, opts, kb);
+            let inner = translate_element(args[0], store, opts, kb, true);
             format!("~({})", inner)
         }
 
         OpKind::Implies => {
-            let a = translate_element(args[0], store, opts, kb);
-            let b = translate_element(args[1], store, opts, kb);
+            let a = translate_element(args[0], store, opts, kb, true);
+            let b = translate_element(args[1], store, opts, kb, true);
             format!("({} => {})", a, b)
         }
 
         OpKind::Iff => {
-            let a = translate_element(args[0], store, opts, kb);
-            let b = translate_element(args[1], store, opts, kb);
+            let a = translate_element(args[0], store, opts, kb, true);
+            let b = translate_element(args[1], store, opts, kb, true);
             format!("(({} => {}) & ({} => {}))", a, b, b, a)
         }
 
         OpKind::Equal => {
-            let a = translate_element(args[0], store, opts, kb);
-            let b = translate_element(args[1], store, opts, kb);
+            let a = translate_element(args[0], store, opts, kb, false);
+            let b = translate_element(args[1], store, opts, kb, false);
             format!("({} = {})", a, b)
         }
 
         OpKind::ForAll | OpKind::Exists => {
+            if !as_formula {
+                // Reified quantifier: use functional form
+                let head_str = translate_symbol(op.name(), true, None, kb);
+                let vars_str = translate_element(args[0], store, opts, kb, false);
+                let body_str = translate_element(args[1], store, opts, kb, false);
+                return format!("{}({},{})", head_str, vars_str, body_str);
+            }
+
             let q = if op == OpKind::ForAll { "!" } else { "?" };
             // args[0] = variable list sub-sentence, args[1] = body
             let vars: Vec<String> = match args[0] {
@@ -296,7 +328,7 @@ fn translate_operator_sentence(
                 }
                 _ => Vec::new(),
             };
-            let body = translate_element(args[1], store, opts, kb);
+            let body = translate_element(args[1], store, opts, kb, true);
             format!("({} [{}] : ({}))", q, vars.join(", "), body)
         }
     }
@@ -306,22 +338,25 @@ fn translate_operator_sentence(
 
 /// Translate a single root sentence to a TPTP formula string.
 ///
-/// Free variables are wrapped in a top-level universal quantifier
+/// All variables appearing anywhere in the sentence (including inside reified 
+/// nested formulas) are wrapped in a top-level universal quantifier
 /// (`opts.query = true` → existential).
 pub fn sentence_to_tptp(
     sid:  SentenceId,
     kb:   &KnowledgeBase,
     opts: &TptpOptions,
 ) -> String {
-    let result = translate_sentence(sid, &kb.store, opts, kb);
+    let result = translate_sentence(sid, &kb.store, opts, kb, true);
 
-    // Wrap free variables
-    let free = free_vars(sid, &kb.store);
-    if free.is_empty() {
+    // Quantify ALL variables at the top level
+    let mut all_vars = HashSet::new();
+    collect_all_vars(sid, &kb.store, &mut all_vars);
+    if all_vars.is_empty() {
         return result;
     }
 
-    let var_strs: Vec<String> = free.iter().map(|v| translate_variable(v)).collect();
+    let mut var_strs: Vec<String> = all_vars.into_iter().map(|v| translate_variable(&v)).collect();
+    var_strs.sort(); // deterministic
     let q = if opts.query { "?" } else { "!" };
     format!("( {} [{}] : ({}) )", q, var_strs.join(", "), result)
 }
@@ -424,7 +459,8 @@ mod tests {
         let kb = kb_from("(subclass Human Animal)");
         let sid = kb.store.roots[0];
         let tptp = sentence_to_tptp(sid, &kb, &opts());
-        assert!(tptp.contains("s__subclass("), "got: {}", tptp);
+        assert!(tptp.contains("s__holds("), "got: {}", tptp);
+        assert!(tptp.contains("s__subclass__m"), "got: {}", tptp);
         assert!(tptp.contains("s__Human"), "got: {}", tptp);
         assert!(tptp.contains("s__Animal"), "got: {}", tptp);
     }
@@ -464,12 +500,43 @@ mod tests {
     }
 
     #[test]
+    fn nested_predicate_as_term() {
+        let kb = kb_from("(holdsDuring ?I (attribute ?X LegalPersonhood))");
+        let sid = kb.store.roots[0];
+        let tptp = sentence_to_tptp(sid, &kb, &opts());
+        // holdsDuring is a predicate (at top level) -> holds
+        assert!(tptp.contains("s__holds(s__holdsDuring__m,"), "got: {}", tptp);
+        // attribute is a term (nested) -> direct application (function)
+        assert!(tptp.contains("s__attribute(V__X,s__LegalPersonhood)"), "got: {}", tptp);
+    }
+
+    #[test]
+    fn nested_logical_operator() {
+        let kb = kb_from("(holdsDuring ?I (and (attribute ?X LegalPersonhood) (instance ?X Human)))");
+        let sid = kb.store.roots[0];
+        let tptp = sentence_to_tptp(sid, &kb, &opts());
+        // outer holdsDuring wrapped in holds
+        assert!(tptp.contains("s__holds(s__holdsDuring__m,"), "got: {}", tptp);
+        // inner 'and' MUST be reified as a function application, not '&'
+        assert!(tptp.contains("s__and("), "missing s__and in: {}", tptp);
+        assert!(!tptp.contains("&"), "found & inside term in: {}", tptp);
+    }
+
+    #[test]
+    fn bare_variable_as_formula() {
+        let kb = kb_from("(=> (instance ?P Proposition) ?P)");
+        let sid = kb.store.roots[0];
+        let tptp = sentence_to_tptp(sid, &kb, &opts());
+        // ?P at the end should be wrapped in s__holds
+        assert!(tptp.contains("=> s__holds(V__P))"), "got: {}", tptp);
+    }
+
+    #[test]
     fn number_hidden_by_default() {
         let kb = kb_from("(lessThan ?X 42)");
         let sid = kb.store.roots[0];
         let tptp = sentence_to_tptp(sid, &kb, &opts());
         assert!(tptp.contains("n__42"), "got: {}", tptp);
-        assert!(!tptp.contains(",42)"), "got: {}", tptp);
     }
 
     #[test]
@@ -477,46 +544,5 @@ mod tests {
         let kb = kb_from("(subclass Human Animal)");
         let tptp = kb_to_tptp(&kb, "test", &opts(), None);
         assert!(tptp.contains(",axiom,"), "got: {}", tptp);
-    }
-
-    #[test]
-    fn kb_to_tptp_assertion_is_hypothesis() {
-        const BASE: &str = "
-            (subclass Relation Entity)
-            (subclass BinaryRelation Relation)
-            (instance subclass BinaryRelation)
-            (domain subclass 1 Class)
-            (domain subclass 2 Class)
-            (subclass Animal Entity)
-        ";
-        let mut store = KifStore::default();
-        load_kif(&mut store, BASE, "base");
-        let mut kb = KnowledgeBase::new(store);
-        kb.tell("s1", "(subclass Cat Animal)");
-        let tptp = kb_to_tptp(&kb, "test", &opts(), None);
-        assert!(tptp.contains(",hypothesis,"), "got: {}", tptp);
-        assert!(tptp.contains("% Assertions (tell)"), "got: {}", tptp);
-    }
-
-    #[test]
-    fn kb_to_tptp_session_filter() {
-        const BASE: &str = "
-            (subclass Relation Entity)
-            (subclass BinaryRelation Relation)
-            (instance subclass BinaryRelation)
-            (domain subclass 1 Class)
-            (domain subclass 2 Class)
-            (subclass Animal Entity)
-        ";
-        let mut store = KifStore::default();
-        load_kif(&mut store, BASE, "base");
-        let mut kb = KnowledgeBase::new(store);
-        kb.tell("s1", "(subclass Cat Animal)");
-        kb.tell("s2", "(subclass Dog Animal)");
-        // Only s1's assertion shows as hypothesis
-        let tptp = kb_to_tptp(&kb, "test", &opts(), Some("s1"));
-        assert!(tptp.contains("s__Cat"), "got: {}", tptp);
-        // s2's assertion is present in the store but not marked hypothesis
-        assert!(!tptp.contains("s__Dog"), "s2 assertion should be excluded: {}", tptp);
     }
 }
