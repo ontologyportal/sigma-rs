@@ -32,7 +32,7 @@ impl fmt::Display for Literal {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Literal::Number(num) => write!(f, "{}", num),
-            Literal::Str(string) => write!(f, "\"{}\"", string)
+            Literal::Str(string) => write!(f, "{}", string)
         }
     }
 }
@@ -54,11 +54,15 @@ pub struct ElementDisplay<'a> {
     pub element: &'a Element,
     pub store:   &'a KifStore,
     pub indent:  usize,
+    pub highlight: bool
 }
 
 impl<'a> fmt::Display for ElementDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.element {
+        if self.highlight {
+            write!(f, "{style_bold}{style_underline}")?;
+        }
+        let res = match self.element {
             Element::Symbol(id)                   => {
                 let sym_name = self.store.sym_name(*id);
                 if sym_name.chars().next().map_or(false, |c| c.is_uppercase()) {
@@ -69,14 +73,17 @@ impl<'a> fmt::Display for ElementDisplay<'a> {
             },
             Element::Variable { name, is_row: false, .. } => write!(f, "{color_bright_blue}?{}{color_reset}", name),
             Element::Variable { name, is_row: true, ..  } => write!(f, "{color_bright_blue}@{}{color_reset}", name),
-            Element::Literal(Literal::Str(s))     => write!(f, "\"{}\"", s),
+            Element::Literal(Literal::Str(s))     => write!(f, "{}", s),
             Element::Literal(Literal::Number(n))  => write!(f, "{}", n),
             Element::Op(op)                       => write!(f, "{}", op),
             Element::Sub(sid)                     => {
                 // Sub-sentences never show their own gutter — the root owns it.
-                SentenceDisplay::raw(*sid, self.store, self.indent).fmt(f)
+                SentenceDisplay::raw(*sid, self.store, self.indent, -1).fmt(f)
             }
-        }
+        };
+        if self.highlight {
+            write!(f, "{style_reset}")
+        } else { res }
     }
 }
 
@@ -88,22 +95,24 @@ pub struct SentenceDisplay<'a> {
     pub indent:      usize,
     /// If true, wrap output with a rustc-style line-number gutter.
     pub show_gutter: bool,
+    // What argument to highlight
+    pub highlight_arg: i32,
 }
 
 impl<'a> SentenceDisplay<'a> {
     /// Root display: shows the line-number gutter.
     pub fn new(sid: SentenceId, store: &'a KifStore) -> Self {
-        Self { sid, store, indent: 0, show_gutter: true }
+        Self { sid, store, indent: 0, show_gutter: true, highlight_arg: -1  }
     }
 
     /// Inner display: no gutter, used for sub-sentences and raw formatting.
-    pub fn raw(sid: SentenceId, store: &'a KifStore, indent: usize) -> Self {
-        Self { sid, store, indent, show_gutter: false }
+    pub fn raw(sid: SentenceId, store: &'a KifStore, indent: usize, arg: i32) -> Self {
+        Self { sid, store, indent, show_gutter: false, highlight_arg: arg }
     }
 
     /// Format the sentence content (without gutter) into a String.
-    fn to_raw_string(&self) -> String {
-        SentenceDisplay::raw(self.sid, self.store, 0).to_string()
+    fn to_raw_string(&self, arg: i32) -> String {
+        SentenceDisplay::raw(self.sid, self.store, 0, arg).to_string()
     }
 }
 
@@ -111,10 +120,10 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.show_gutter {
             // Buffer the raw content, then prefix each line with the gutter.
-            let content  = self.to_raw_string();
+            let content  = self.to_raw_string(self.highlight_arg);
             let line_no  = self.store.sentences[self.sid].span.line;
             let num_str  = line_no.to_string();
-            let width    = num_str.len().max(4); // at least 4 digits wide
+            let width    = num_str.len().min(6); // at least 6 digits wide
             let blank    = " ".repeat(width);
 
             for (i, line) in content.lines().enumerate() {
@@ -131,17 +140,16 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
         // ── Raw (no gutter) ──────────────────────────────────────────────────
         let sentence     = &self.store.sentences[self.sid];
         let child_indent = self.indent + 1;
-
         write!(f, "(")?;
         for (i, el) in sentence.elements.iter().enumerate() {
             if i == 0 {
-                ElementDisplay { element: el, store: self.store, indent: child_indent }.fmt(f)?;
+                ElementDisplay { element: el, store: self.store, indent: child_indent, highlight: self.highlight_arg == (i as i32) }.fmt(f)?;
             } else if matches!(el, Element::Sub(_)) {
                 write!(f, "\n{}", "  ".repeat(child_indent))?;
-                ElementDisplay { element: el, store: self.store, indent: child_indent }.fmt(f)?;
+                ElementDisplay { element: el, store: self.store, indent: child_indent, highlight: self.highlight_arg == (i as i32)}.fmt(f)?;
             } else {
                 write!(f, " ")?;
-                ElementDisplay { element: el, store: self.store, indent: child_indent }.fmt(f)?;
+                ElementDisplay { element: el, store: self.store, indent: child_indent, highlight: self.highlight_arg == (i as i32)}.fmt(f)?;
             }
         }
         write!(f, ")")

@@ -20,3 +20,4 @@ log.workspace              = true
 clap                       = { version = "4", features = ["derive"] }
 env_logger                 = "0.11"
 regex = "1"
+quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }

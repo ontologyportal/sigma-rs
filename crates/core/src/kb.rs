@@ -243,7 +243,8 @@ impl KnowledgeBase {
         } else if range_subclass.is_none() {
             Ok(Some(range.unwrap()))
         } else {
-            Err(SemanticError::DoubleRange { sym: self.store.sym_name(rel).to_string() })
+            SemanticError::DoubleRange { sym: self.store.sym_name(rel).to_string() }.handle(&self.store)?;
+            Ok(Some(range.unwrap()))
         }
     }
 
@@ -301,14 +302,16 @@ impl KnowledgeBase {
         };
         // Check if the symbol has Entity as its ancestor
         if !self.has_ancestor_by_name(id, "Entity") {
-            return Err(SemanticError::NoEntityAncestor { sym: self.store.sym_name(id).to_string() })
+            SemanticError::NoEntityAncestor { sym: self.store.sym_name(id).to_string() }.handle(&self.store)?
         }
         if self.is_relation(id) {
             // Check arity
+            let entity = self.store.symbols.get("Entity").unwrap();
             let domain = self.domain(id);
             let domain: Vec<usize> = domain.iter().enumerate().map(|(idx, id)| {
                 if matches!(id, RelationDomain::Domain(usize::MAX)) {
-                    Err(SemanticError::MissingDomain { sym: self.store.sym_name(id.id()).to_string(), idx })
+                    SemanticError::MissingDomain { sym: self.store.sym_name(id.id()).to_string(), idx }.handle(&self.store)?;
+                    Ok(*entity)
                 } else {
                     Ok(id.id())
                 }
@@ -316,10 +319,13 @@ impl KnowledgeBase {
 
             let arity = match self.arity(id) {
                 Some(a) => a,
-                None => return Err(SemanticError::MissingArity { sym: self.store.sym_name(id).to_string() })
+                None => {
+                    SemanticError::MissingArity { sym: self.store.sym_name(id).to_string() }.handle(&self.store)?;
+                    -1
+                },
             };
             if arity > 0 && arity < domain.len().try_into().unwrap() {
-                return Err(SemanticError::ArityMismatch { rel: self.store.sym_name(id).to_string(), expected: arity.try_into().unwrap(), got: domain.len() });
+                SemanticError::ArityMismatch { sid: id, rel: self.store.sym_name(id).to_string(), expected: arity.try_into().unwrap(), got: domain.len() }.handle(&self.store)?;
             }
 
             // Functions must declare a range
@@ -327,19 +333,20 @@ impl KnowledgeBase {
                 let range = self.range(id);
                 match range {
                     Err(e) => return Err(e),
-                    Ok(None) => return Err(SemanticError::MissingRange { sym: self.store.sym_name(id).to_string() }),
+                    Ok(None) => { SemanticError::MissingRange { sym: self.store.sym_name(id).to_string() }.handle(&self.store)? },
                     Ok(Some(..)) => {}
                 };
                 let fun_name = self.store.sym_name(id);
                 // Functions should start with an uppercase
                 if !fun_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    return Err(SemanticError::FunctionCase { sym: fun_name.to_string() });
+                    SemanticError::FunctionCase { sym: fun_name.to_string() }.handle(&self.store)?;
                 }
             } else if self.is_predicate(id) {
                 let rel_name = self.store.sym_name(id);
                 // Functions should start with an uppercase
                 if rel_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    return Err(SemanticError::PredicateCase { sym: rel_name.to_string() });
+                    SemanticError::PredicateCase { sym: rel_name.to_string() }.handle(&self.store)?;
+
                 }
             }
         }
@@ -360,26 +367,28 @@ impl KnowledgeBase {
         let head_id = match sentence.elements.first() {
             Some(Element::Symbol(id)) => *id,
             Some(Element::Variable { id, is_row: false, ..}) => *id,
-            _ => return Err(SemanticError::HeadInvalid),
+            _ => unreachable!("The parser should have already validated that sentences start with a valid term"), // This should never get hit
         };
         // Validate the head
         self.validate_element(sentence.elements.first().unwrap())?;
         // Validate the relation element
         if !self.is_relation(head_id) {
-            return Err(SemanticError::HeadNotRelation {
+            SemanticError::HeadNotRelation {
+                sid,
                 sym: self.store.sym_name(head_id).to_owned(),
-            });
+            }.handle(&self.store)?;
         }
 
         // Rule 3: arity check
         let arg_count = sentence.elements.len().saturating_sub(1);
         if let Some(ar) = self.arity(head_id) {
             if ar > 0 && ar as usize != arg_count {
-                return Err(SemanticError::ArityMismatch {
+                SemanticError::ArityMismatch {
+                    sid, 
                     rel:      self.store.sym_name(head_id).to_owned(),
                     expected: ar as usize,
                     got:      arg_count,
-                });
+                }.handle(&self.store)?;
             }
         }
 
@@ -390,11 +399,12 @@ impl KnowledgeBase {
             for (i, (arg, dom)) in args.iter().zip(domain.iter()).enumerate() {
                 if !self.arg_satisfies_domain(arg, dom) {
                     let dom_id = dom.id();
-                    return Err(SemanticError::DomainMismatch {
+                    SemanticError::DomainMismatch {
+                        sid,
                         rel:    self.store.sym_name(head_id).to_owned(),
                         arg:    i + 1,
                         domain: self.store.sym_name(dom_id).to_owned(),
-                    });
+                    }.handle(&self.store)?;
                 }
             }
         }
@@ -424,68 +434,13 @@ impl KnowledgeBase {
             .filter_map(|e| if let Element::Sub(id) = e { Some(*id) } else { None })
             .collect();
 
-        for sub_id in sub_ids {
-            if !self.is_logical_sentence(sub_id) {
-                return Err(SemanticError::NonLogicalArg);
+        for (idx, sub_id) in sub_ids.iter().enumerate() {
+            if !self.is_logical_sentence(*sub_id) {
+                SemanticError::NonLogicalArg { sid, arg: idx }.handle(&self.store)?;
             }
         }
         Ok(())
     }
-
-    /// Report an error if any symbol or variable in `sid`'s sub-tree violates
-    /// the two disjointness rules:
-    ///  - instance and subclass are disjoint
-    ///  - function and predicate are disjoint
-    /// `scope` is used to resolve scoped variable SymbolIds.
-    // fn check_type_conflicts(&self, sid: SentenceId, scope: SentenceId) -> Result<(), SemanticError> {
-    //     let mut subjects: HashSet<SymbolId> = HashSet::new();
-    //     self.collect_typed_subjects(sid, scope, &mut subjects);
-
-    //     for sym_id in subjects {
-    //         let name = self.store.sym_name(sym_id).to_owned();
-
-    //         // Rule 1: instance ∩ subclass = ∅
-    //         if let Some(edges) = self.store.tax_incoming.get(&sym_id) {
-    //             let has_instance = edges.iter()
-    //                 .any(|&ei| self.store.tax_edges[ei].rel == TaxRelation::Instance);
-    //             let has_subclass = edges.iter()
-    //                 .any(|&ei| self.store.tax_edges[ei].rel == TaxRelation::Subclass);
-    //             if has_instance && has_subclass {
-    //                 return Err(SemanticError::InstanceSubclassConflict { sym: name });
-    //             }
-    //         }
-
-    //         // Rule 2: function ∩ predicate = ∅
-    //         if self.is_function(sym_id) && self.is_predicate(sym_id) {
-    //             return Err(SemanticError::FunctionPredicateConflict { sym: name });
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    /// Recursively collect SymbolIds of all subjects (symbols and scoped variables)
-    /// that appear as arg1 of `instance` or `subclass` in `sid`'s sub-tree.
-    // fn collect_typed_subjects(&self, sid: SentenceId, scope: SentenceId, out: &mut HashSet<SymbolId>) {
-    //     let sentence = &self.store.sentences[sid];
-    //     if let Some(Element::Symbol(head_id)) = sentence.elements.first() {
-    //         if matches!(self.store.sym_name(*head_id), "instance" | "subclass") {
-    //             match sentence.elements.get(1) {
-    //                 Some(Element::Symbol(id)) => { out.insert(*id); }
-    //                 Some(Element::Variable { name, .. }) => {
-    //                     if let Some(id) = self.store.var_sym_id(name, scope) {
-    //                         out.insert(id);
-    //                     }
-    //                 }
-    //                 _ => {}
-    //             }
-    //         }
-    //     }
-    //     for el in &sentence.elements {
-    //         if let Element::Sub(sub_id) = el {
-    //             self.collect_typed_subjects(*sub_id, scope, out);
-    //         }
-    //     }
-    // }
 
     /// Returns true if `sid` is a truth-valued sentence (operator, or headed by
     /// a relation that is not a function).  `scope` is the root operator sentence

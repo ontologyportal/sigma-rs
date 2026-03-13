@@ -1,6 +1,5 @@
 /// Helpers for parsing Vampire output
 use regex::Regex;
-use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct ProofStep {

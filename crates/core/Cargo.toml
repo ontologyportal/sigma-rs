@@ -9,5 +9,6 @@ serde_json.workspace = true
 thiserror.workspace  = true
 inline_colorization.workspace = true
 log.workspace = true
+once_cell = "1.21.4"
 
 [dev-dependencies]
