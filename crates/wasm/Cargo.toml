@@ -1,0 +1,19 @@
+[package]
+name    = "sumo-parser-wasm"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sumo-parser-core.workspace = true
+serde.workspace            = true
+serde_json.workspace       = true
+wasm-bindgen               = "0.2"
+serde-wasm-bindgen         = "0.6"
+js-sys                     = "0.3"
+
+[profile.release]
+opt-level = "z"   # minimise WASM binary size
+lto       = true

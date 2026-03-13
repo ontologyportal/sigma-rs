@@ -1,0 +1,22 @@
+[package]
+name    = "sumo-native"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sumo"
+path = "src/main.rs"
+
+[lib]
+name = "sumo_native"
+path = "src/lib.rs"
+
+[dependencies]
+sumo-parser-core.workspace = true
+serde.workspace            = true
+serde_json.workspace       = true
+inline_colorization.workspace = true
+log.workspace              = true
+clap                       = { version = "4", features = ["derive"] }
+env_logger                 = "0.11"
+regex = "1"
