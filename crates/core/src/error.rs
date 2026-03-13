@@ -12,6 +12,8 @@ use crate::{KifStore, SentenceDisplay, store::SentenceId};
 /// If true, all ignorable errors are treated as fatal (mimics -Wall)
 static ALL_ERRORS: AtomicBool = AtomicBool::new(false);
 
+static NO_WARNINGS: AtomicBool = AtomicBool::new(false);
+
 /// Specific codes promoted to Errors (mimics -Werror=code)
 static PROMOTED_TO_ERROR: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| {
     RwLock::new(HashSet::new())
@@ -25,6 +27,10 @@ pub fn promote_to_error(code_or_name: &str) {
     if let Ok(mut set) = PROMOTED_TO_ERROR.write() {
         set.insert(code_or_name.to_string());
     }
+}
+
+pub fn supress_warnings(whether: bool) {
+   NO_WARNINGS.store(whether, Ordering::SeqCst);
 }
 
 /// Location in source text (1-based line and column).
@@ -152,8 +158,10 @@ impl SemanticError {
 
     pub fn handle(&self, store: &KifStore) -> Result<(), Self> {
         if self.is_warn() {
-            log::warn!("Semantic Warning:\n");
-            self.pretty_print(store, log::Level::Warn);
+            if !(NO_WARNINGS.load(Ordering::SeqCst)) {
+                log::warn!("Semantic Warning:\n");
+                self.pretty_print(store, log::Level::Warn);
+            }
             Ok(())
         } else {
             Err(self.clone())

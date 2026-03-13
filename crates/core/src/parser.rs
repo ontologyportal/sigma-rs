@@ -51,6 +51,40 @@ impl AstNode {
             AstNode::Operator { span, .. }    => span,
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            AstNode::List { elements, .. } => {
+                let mut o : String = String::from("( ");
+                for el in elements {
+                    o.push_str(&el.to_string());
+                    o.push(' ');
+                }
+                
+                o.push_str(")");
+                o
+            },
+            AstNode::Symbol { name, .. } => {
+                name.clone()
+            },
+            AstNode::Variable { name, .. } => {
+                let mut o = String::from("?");
+                o.push_str(name.as_str());
+                o
+            },
+            AstNode::RowVariable { name, .. } => {
+                let mut o : String = String::from("@");
+                o.push_str(name.as_str());
+                o
+            },
+            AstNode::Str { value, ..} | AstNode::Number { value, .. } => {
+                value.clone()
+            },
+            AstNode::Operator { op, ..} => {
+                op.name().to_string()
+            }
+        }
+    }
 }
 
 impl core::fmt::Display for AstNode {
@@ -127,21 +161,7 @@ impl Parser {
                 let start_span = tok.span.clone();
                 self.advance(); // consume `(`
                 let mut elements = Vec::new();
-                // Check the first element (the head of the sentence)
-                if let Some(first_tok) = self.peek() {
-                    if matches!(first_tok.kind, TokenKind::RParen) {
-                        self.advance();
-                        // Empty list () - usually invalid in KIF sentences
-                        return Err((start_span.clone(), ParseError::EmptySentence { span: start_span.clone() }));
-                    }
-                    
-                    // Validate that the head is a Symbol or Variable
-                    if !matches!(first_tok.kind, TokenKind::Symbol(_) | TokenKind::Variable(_) | TokenKind::RowVariable(_) | TokenKind::Operator(_)) {
-                        let span = first_tok.span.clone();
-                        self.advance();
-                        return Err((span.clone(), ParseError::FirstTerm { span: span }));
-                    }
-                }
+                
                 loop {
                     match self.peek() {
                         None => {

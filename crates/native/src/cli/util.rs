@@ -69,6 +69,8 @@ pub fn build_store(args: &KbArgs) -> Result<KifStore, ()> {
             return Err(());
         }
     }
+
+    log::debug!("Successfully loaded {} axioms from {} consituents", store.sentences.len(), all_files.len());
     Ok(store)
 }
 

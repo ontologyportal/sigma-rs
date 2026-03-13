@@ -12,7 +12,7 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
 
-    /// Suppress all warnings (overrids verbosity setting)
+    /// Suppress all warnings
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
 
@@ -89,6 +89,10 @@ pub enum Cmd {
 
         #[command(flatten)]
         kb: KbArgs,
+
+        /// Do not delete generated TPTP file
+        #[arg(short = 'k', long)]
+        keep: bool,
     },
 
     /// Translate KIF formula(s) or a full KB to TPTP.
@@ -110,5 +114,19 @@ pub enum Cmd {
 
         #[command(flatten)]
         kb: KbArgs,
+    },
+
+    /// Run one or more KIF test files (*.kif.tq).
+    Test {
+        /// Path to a .kif.tq file or a directory containing them.
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+
+        #[command(flatten)]
+        kb: KbArgs,
+
+        /// Do not delete generated TPTP file
+        #[arg(short = 'k', long)]
+        keep: bool,
     },
 }

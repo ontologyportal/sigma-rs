@@ -19,7 +19,7 @@ use log;
 pub type SymbolId  = usize;
 pub type SentenceId = usize;
 
-// ── Sentence elements ─────────────────────────────────────────────────────────
+// ── Element ─────────────────────────────────────────────────────────
 
 /// A literal value inside a sentence.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -329,7 +329,7 @@ impl KifStore {
             match node {
                 AstNode::List { .. } => {
                     let ctx = ScopeCtx { default: self.next_scope(), overrides: HashMap::new() };
-                    match self.build_sentence(&ctx, node, file, &mut errors) {
+                    match self.build_sentence(&ctx, node, file, &mut errors, true) {
                         Some(sent_id) => {
                             log::trace!("Registered root sentence {}: {}", sent_id, node);
                             self.roots.push(sent_id);
@@ -364,6 +364,7 @@ impl KifStore {
         node: &AstNode,
         file: &str,
         errors: &mut Vec<(Span, ParseError)>,
+        top_level: bool,
     ) -> Option<SentenceId> {
         // Destructure the list node
         let (elements_ast, span) = match node {
@@ -371,10 +372,27 @@ impl KifStore {
             _ => return None, // If the node is not a sentence node, skip this
         };
         
-        // If the sentence is empty, its meaningless
+        // If the sentence is empty, its meaningless as a top-level axiom or head
         if elements_ast.is_empty() {
-            return None;
+            if top_level {
+                errors.push((span.clone(), ParseError::EmptySentence { span: span.clone() }));
+                return None;
+            } else {
+                // Nested empty list is fine (e.g. empty quantifier var list)
+                let sid = self.alloc_sentence(Sentence { elements: Vec::new(), file: file.to_owned(), span });
+                return Some(sid);
+            }
         }
+        
+        // Also check if the head is valid (Symbol, Variable, or Operator)
+        if top_level {
+            let first = &elements_ast[0];
+            if !matches!(first, AstNode::Symbol { .. } | AstNode::Variable { .. } | AstNode::RowVariable { .. } | AstNode::Operator { .. }) {
+                errors.push((first.span().clone(), ParseError::FirstTerm { span: first.span().clone() }));
+                return None;
+            }
+        }
+
         log::trace!("Building sentence: {}", node);
 
         // Check for operator in non-head position
@@ -484,7 +502,7 @@ impl KifStore {
             AstNode::Operator { op, .. } => Some(Element::Op(op.clone())),
             AstNode::List { .. } => {
                 // Nested sub-sentence — build it and store as Sub
-                match self.build_sentence(ctx, node, file, errors) {
+                match self.build_sentence(ctx, node, file, errors, false) {
                     Some(sub_id) => {
                         self.sub_sentences.push(sub_id);
                         Some(Element::Sub(sub_id))

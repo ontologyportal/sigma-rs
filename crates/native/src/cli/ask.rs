@@ -11,6 +11,7 @@ pub fn run_ask(
     timeout: u32,
     session: String,
     kb_args: KbArgs,
+    keep: bool
 ) -> bool {
     log::trace!(
         "run_ask(
@@ -71,7 +72,7 @@ pub fn run_ask(
         AskOptions {
             vampire_path: kb_args.vampire,
             timeout_secs: Some(timeout),
-            keep_tmp_file: false,
+            keep_tmp_file: keep,
             session: Some(session),
             ..AskOptions::default()
         },

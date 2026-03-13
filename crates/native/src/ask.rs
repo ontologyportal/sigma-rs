@@ -167,6 +167,7 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
         Some(tmp_path.clone())
     } else {
         let _ = fs::remove_file(&tmp_path);
+        log::debug!("Removed temporary TPTP");
         None
     };
 

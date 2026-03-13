@@ -329,7 +329,11 @@ fn translate_operator_sentence(
                 _ => Vec::new(),
             };
             let body = translate_element(args[1], store, opts, kb, true);
-            format!("({} [{}] : ({}))", q, vars.join(", "), body)
+            if vars.is_empty() {
+                body
+            } else {
+                format!("({} [{}] : ({}))", q, vars.join(", "), body)
+            }
         }
     }
 }
@@ -480,6 +484,19 @@ mod tests {
         let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
         let tptp = sentence_to_tptp(sid, &kb, &q_opts);
         assert!(tptp.contains("? [V__X]"), "got: {}", tptp);
+    }
+
+    #[test]
+    fn empty_quantifier() {
+        // Quantifier with empty var list should be simplified to just the body
+        // NOTE: (exists () (subclass Human Animal)) is now valid because 
+        // the head is 'exists' (an operator), and the second element is '()' (empty list)
+        let kb = kb_from("(exists () (subclass Human Animal))");
+        assert!(!kb.store.roots.is_empty(), "KB should have one root");
+        let sid = kb.store.roots[0];
+        let tptp = sentence_to_tptp(sid, &kb, &opts());
+        assert!(!tptp.contains("? []"), "should not contain empty quantifier: {}", tptp);
+        assert!(tptp.contains("s__holds("), "should contain body: {}", tptp);
     }
 
     #[test]

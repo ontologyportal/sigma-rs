@@ -5,10 +5,10 @@ use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sumo_native::cli::{Cli, Cmd, run_validate, run_ask, run_translate};
+use sumo_native::cli::{Cli, Cmd, run_validate, run_ask, run_translate, run_test};
 use sumo_native::config::{resolve_config_path, parse_config_xml};
 
-use sumo_parser_core::error::{set_all_errors, promote_to_error};
+use sumo_parser_core::error::{promote_to_error, set_all_errors, supress_warnings};
 
 fn main() {
     log::trace!("main()");
@@ -28,9 +28,9 @@ fn main() {
         None
     };
 
-    let level = if cli.quiet {
-        log::LevelFilter::Error
-    } else if cli.verbose > 0 {
+    supress_warnings(cli.quiet);
+
+    let level = if cli.verbose > 0 {
         match cli.verbose {
             1 => log::LevelFilter::Info,
             2 => log::LevelFilter::Debug,
@@ -79,6 +79,7 @@ fn main() {
             Cmd::Validate { kb, .. } => Some(kb),
             Cmd::Ask { kb, .. } => Some(kb),
             Cmd::Translate { kb, .. } => Some(kb),
+            Cmd::Test { kb, .. } => Some(kb),
         };
 
         if let Some(kb_args) = kb_args {
@@ -112,7 +113,8 @@ fn main() {
             timeout,
             session,
             kb,
-        } => run_ask(formula, tell, timeout, session, kb),
+            keep
+        } => run_ask(formula, tell, timeout, session, kb, keep),
         Cmd::Translate {
             formula,
             lang,
@@ -126,6 +128,7 @@ fn main() {
             session.as_deref(),
             kb,
         ),
+        Cmd::Test { path, kb, keep } => run_test(path, kb, keep),
     };
     process::exit(if ok { 0 } else { 1 });
 }
