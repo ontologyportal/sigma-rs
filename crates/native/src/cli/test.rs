@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
-use crate::cli::util::{build_store, maybe_save_cache};
+use crate::cli::util::build_store_from_files;
 use crate::ask::{ask as native_ask, AskOptions};
+use crate::prover::Binding;
 use crate::{parse_error};
 use sumo_parser_core::{KnowledgeBase};
 use sumo_parser_core::tokenizer::{tokenize};
@@ -14,7 +15,8 @@ struct TestCase {
     note: String,
     timeout: u32,
     query: Option<String>,
-    expected_answer: Option<bool>, // true = yes, false = no
+    expected_proof: Option<bool>, // true = yes, false = no
+    expected_answer: Option<Vec<String>>, // List of expect symbol resolutions
     axioms: Vec<String>,
 }
 
@@ -52,11 +54,10 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
 
     // 1. Build the base KB once
     log::debug!("Building base KB");
-    let base_store = match build_store(&kb_args) {
+    let base_store = match build_store_from_files(&kb_args) {
         Ok(s) => s,
         Err(..) => return false,
     };
-    maybe_save_cache(&base_store, kb_args.cache.as_deref());
 
     let mut all_passed = true;
     let total_tests = test_files.len();
@@ -128,8 +129,27 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
             continue;
         }
 
-        let expected = test_case.expected_answer.unwrap_or(true);
+        let expected = test_case.expected_proof.unwrap_or(true);
+        log::debug!("Vampire output: {}", result.raw_output);
+        log::debug!("Vampire result: {}", result.proved);
+        log::debug!("Vampire inferences: {}", result.inference.iter().map(| i | format!("{}", i)).collect::<Vec<String>>().join(", "));
         if result.proved == expected {
+            if !test_case.expected_answer.is_none() {
+                let expected_answers = test_case.expected_answer.unwrap();
+                let found_answers: &Vec<Binding> = result.inference.as_ref();
+                let paired_answers: Vec<(&String, bool)> = expected_answers.iter().map(| e | {
+                    return (e, found_answers.iter().any(|f| *e == f.value))
+                }).collect();
+
+                if !paired_answers.iter().all(|p| p.1) {
+                    println!("  {color_bright_yellow}INCOMPLETE{color_reset}");
+                    println!("    the query was proven but only some answers could be inferred");
+                    println!("    inferred answers: {}", paired_answers.iter().filter_map(| p | if p.1 {Some(p.0.clone())} else {None}).collect::<Vec<String>>().join(", "));
+                    println!("    missing answers: {}", paired_answers.iter().filter_map(| p | if !p.1 {Some(p.0.clone())} else {None}).collect::<Vec<String>>().join(", "));
+                    all_passed = false;
+                    continue
+                }
+            }
             println!("  {color_bright_green}PASSED{color_reset}");
             passed_count += 1;
         } else {
@@ -138,7 +158,6 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
                 if expected { "yes" } else { "no" },
                 if result.proved { "yes" } else { "no" }
             );
-            log::debug!("Vampire output: {}", result.output);
             all_passed = false;
         }
     }
@@ -178,6 +197,7 @@ fn parse_test_file(path: &Path) -> Result<TestCase, String> {
         timeout: 30,
         query: None,
         expected_answer: None,
+        expected_proof: None,
         axioms: Vec::new(),
     };
     // Look for the special relations
@@ -223,18 +243,34 @@ fn parse_test_file(path: &Path) -> Result<TestCase, String> {
                     if elements.len() > 1 {
                         if let AstNode::Symbol { name, .. } = &elements[1] {
                             if name.to_lowercase() == "yes" {
-                                tc.expected_answer = Some(true);
+                                tc.expected_proof = Some(true);
+                                continue;
                             } else if name.to_lowercase() == "no" {
-                                tc.expected_answer = Some(false);
-                            } else {
-                                return Err("the answer must be either yes or no".to_string())
+                                tc.expected_proof = Some(false);
+                                continue;
+                            } 
+                            
+                            let mut expected_answers: Vec<String> = Vec::new();
+                            tc.expected_proof = Some(true);
+                            expected_answers.push(name.to_string());
+                            for el in 2..elements.len() {
+                                if let AstNode::Symbol { name, .. } = &elements[el] {
+                                    expected_answers.push(name.to_string());
+                                } else {
+                                    return Err("answer predicates can only contain symbols".to_string());
+                                }
                             }
+                            tc.expected_answer = Some(expected_answers);
+                        } else {
+                            return Err("answer predicates can only contain symbols".to_string());
                         }
+                    } else {
+                        return Err("answer predicate either yes/no or includes symbol(s) to infer".to_string());
                     }
                 }
                 "query" => { // The conjecture to present to the prover
                     if elements.len() > 1 {
-                        tc.query = Some(format!("{}", elements[1]));
+                        tc.query = Some(elements[1].to_string());
                     }
                 }
                 _ => { // everything else is an assertion

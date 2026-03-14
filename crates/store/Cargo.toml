@@ -1,0 +1,12 @@
+[package]
+name    = "sumo-store"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sumo-parser-core.workspace = true
+serde.workspace            = true
+thiserror.workspace        = true
+log.workspace              = true
+heed    = { version = "0.20", features = ["serde-bincode"] }
+bincode = "1"

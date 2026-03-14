@@ -1,11 +1,9 @@
 pub mod config;
 pub mod prover;
 pub mod ask;
-pub mod cache;
 pub mod cli;
 
 pub use ask::{ask, AskOptions, AskResult};
-pub use cache::{load_cache, save_cache};
 
 pub use sumo_parser_core::{
     KifError, KifStore as Store, KnowledgeBase as Kb, ParseError, SemanticError, TellResult,
@@ -124,21 +122,5 @@ mod tests {
             );
             std::fs::remove_file(p).ok();
         }
-    }
-
-    #[test]
-    fn cache_round_trip() {
-        let mut store = KifStore::default();
-        load_kif(&mut store, "(subclass Human Animal)", "test");
-
-        let tmp = std::env::temp_dir().join("sumo_cache_test.json");
-        save_cache(&store, &tmp).expect("save_cache");
-
-        let restored = load_cache(&tmp).expect("load_cache");
-        std::fs::remove_file(&tmp).ok();
-
-        assert_eq!(restored.roots.len(), store.roots.len());
-        assert!(restored.symbols.contains_key("Human"));
-        assert!(restored.symbols.contains_key("Animal"));
     }
 }

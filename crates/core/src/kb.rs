@@ -217,7 +217,7 @@ impl KnowledgeBase {
         let process= |head: &str, make_variant: fn(SymbolId) -> RelationDomain| -> Option<RelationDomain> {
             let sids = self.store.by_head(head).to_vec();
             for sid in sids {
-                let sentence = &self.store.sentences[sid];
+                let sentence = &self.store.sentences[sid as usize];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
                     Some(Element::Symbol(id)) if *id == rel
@@ -261,7 +261,7 @@ impl KnowledgeBase {
         let mut process = |head: &str, make_variant: fn(SymbolId) -> RelationDomain| {
             let sids = self.store.by_head(head).to_vec();
             for sid in sids {
-                let sentence = &self.store.sentences[sid];
+                let sentence = &self.store.sentences[sid as usize];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
                     Some(Element::Symbol(id)) if *id == rel
@@ -285,7 +285,7 @@ impl KnowledgeBase {
         process("domainSubclass", RelationDomain::DomainSubclass);
         entries.sort_by_key(|&(p, _)| p);
         let max = entries.iter().map(|&(p, _)| p).max().map(|p| p + 1).unwrap_or(0);
-        let mut result = vec![RelationDomain::Domain(usize::MAX); max];
+        let mut result = vec![RelationDomain::Domain(u64::MAX); max];
         for (pos, id) in entries {
             if pos < max { result[pos] = id; }
         }
@@ -308,14 +308,14 @@ impl KnowledgeBase {
             // Check arity
             let entity = self.store.symbols.get("Entity").unwrap();
             let domain = self.domain(id);
-            let domain: Vec<usize> = domain.iter().enumerate().map(|(idx, id)| {
-                if matches!(id, RelationDomain::Domain(usize::MAX)) {
+            let domain: Vec<u64> = domain.iter().enumerate().map(|(idx, id)| {
+                if matches!(id, RelationDomain::Domain(u64::MAX)) {
                     SemanticError::MissingDomain { sym: self.store.sym_name(id.id()).to_string(), idx }.handle(&self.store)?;
                     Ok(*entity)
                 } else {
                     Ok(id.id())
                 }
-            }).collect::<Result<Vec<usize>, SemanticError>>()?;
+            }).collect::<Result<Vec<u64>, SemanticError>>()?;
 
             let arity = match self.arity(id) {
                 Some(a) => a,
@@ -355,7 +355,7 @@ impl KnowledgeBase {
 
     // Formula validation
     pub fn validate_sentence(&self, sid: SentenceId) -> Result<(), SemanticError> {
-        let sentence = &self.store.sentences[sid];
+        let sentence = &self.store.sentences[sid as usize];
 
         if sentence.is_operator() {
             return self.validate_operator_sentence(sid);
@@ -413,7 +413,7 @@ impl KnowledgeBase {
     }
 
     fn validate_operator_sentence(&self, sid: SentenceId) -> Result<(), SemanticError> {
-        let op = match self.store.sentences[sid].op().cloned() {
+        let op = match self.store.sentences[sid as usize].op().cloned() {
             Some(op) => op,
             None     => return Ok(()),
         };
@@ -428,7 +428,7 @@ impl KnowledgeBase {
         // `sid` is the root operator, so it doubles as the variable scope key.
         // self.check_type_conflicts(sid, sid)?;
 
-        let sub_ids: Vec<SentenceId> = self.store.sentences[sid]
+        let sub_ids: Vec<SentenceId> = self.store.sentences[sid as usize]
             .elements[args_start..]
             .iter()
             .filter_map(|e| if let Element::Sub(id) = e { Some(*id) } else { None })
@@ -446,7 +446,7 @@ impl KnowledgeBase {
     /// a relation that is not a function).  `scope` is the root operator sentence
     /// ID used to resolve scoped variable names (`?VAR@{scope}`).
     pub fn is_logical_sentence(&self, sid: SentenceId) -> bool {
-        let sentence = &self.store.sentences[sid];
+        let sentence = &self.store.sentences[sid as usize];
         if sentence.is_operator() { return true; }
         let head_id = match sentence.elements.first() {
             Some(Element::Symbol(id)) => *id,

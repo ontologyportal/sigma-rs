@@ -145,7 +145,7 @@ fn translate_literal(lit: &Literal, opts: &TptpOptions) -> String {
 // ── Free-variable collection ──────────────────────────────────────────────────
 
 fn collect_all_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<String>) {
-    for elem in &store.sentences[sid].elements {
+    for elem in &store.sentences[sid as usize].elements {
         match elem {
             Element::Variable { name, .. } => { out.insert(name.clone()); }
             Element::Sub(sub) => collect_all_vars(*sub, store, out),
@@ -199,7 +199,7 @@ fn translate_sentence(
     kb:    &KnowledgeBase,
     as_formula: bool,
 ) -> String {
-    let sentence = &store.sentences[sid];
+    let sentence = &store.sentences[sid as usize];
 
     if sentence.is_operator() {
         return translate_operator_sentence(sid, store, opts, kb, as_formula);
@@ -255,7 +255,7 @@ fn translate_operator_sentence(
     kb:    &KnowledgeBase,
     as_formula: bool,
 ) -> String {
-    let sentence = &store.sentences[sid];
+    let sentence = &store.sentences[sid as usize];
     let op = match sentence.op() {
         Some(op) => op.clone(),
         None     => return String::new(),
@@ -318,7 +318,7 @@ fn translate_operator_sentence(
             // args[0] = variable list sub-sentence, args[1] = body
             let vars: Vec<String> = match args[0] {
                 Element::Sub(var_sid) => {
-                    store.sentences[*var_sid].elements.iter().filter_map(|e| {
+                    store.sentences[*var_sid as usize].elements.iter().filter_map(|e| {
                         if let Element::Variable { name, .. } = e {
                             Some(translate_variable(name))
                         } else {
@@ -412,7 +412,7 @@ pub fn kb_to_tptp(
         if excluded_ids.contains(&sid) { continue; }
 
         // Skip excluded predicates
-        let head_name = kb.store.sentences[sid]
+        let head_name = kb.store.sentences[sid as usize]
             .head_symbol()
             .map(|id| kb.store.sym_name(id).to_owned());
         if let Some(ref name) = head_name {

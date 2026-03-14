@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sumo-parser-core.workspace = true
+sumo-store.workspace       = true
 serde.workspace            = true
 serde_json.workspace       = true
 inline_colorization.workspace = true
@@ -21,3 +22,4 @@ clap                       = { version = "4", features = ["derive"] }
 env_logger                 = "0.11"
 regex = "1"
 quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }
+vampire-prover = "0.5.1"

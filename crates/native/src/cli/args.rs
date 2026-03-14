@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, value_name = "NAME", global = true)]
     pub kb: Option<String>,
 
-    /// Warning control (mimics GCC). 
+    /// Warning control (mimics GCC).
     /// By default, semantic errors are warnings.
     /// Use '-W all' to treat all as errors.
     /// Use '-W <CODE>' (e.g., -W E005) to treat a specific one as an error.
@@ -35,6 +35,10 @@ pub struct Cli {
     pub command: Cmd,
 }
 
+/// Shared arguments for database and KIF-source selection.
+///
+/// KIF files are the initialisation source (like SQL migration scripts).
+/// Once loaded, the LMDB database at `--db` is the canonical store.
 #[derive(clap::Args, Clone, Debug)]
 pub struct KbArgs {
     /// KIF file to load into the knowledge base (repeatable).
@@ -45,14 +49,15 @@ pub struct KbArgs {
     #[arg(short = 'd', long = "dir", value_name = "DIR")]
     pub dirs: Vec<PathBuf>,
 
-    /// Save the parsed knowledge base to a JSON cache file.
-    #[arg(short = 'c', long = "cache", value_name = "FILE")]
-    pub cache: Option<PathBuf>,
+    /// Path to the LMDB database directory.
+    /// Defaults to `./sumo.lmdb` in the current working directory.
+    #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb")]
+    pub db: PathBuf,
 
-    /// Restore the knowledge base from a previously saved JSON cache
-    /// (skips loading -f / -d files).
-    #[arg(short = 'r', long = "restore", value_name = "FILE")]
-    pub restore: Option<PathBuf>,
+    /// Hard upper bound on CNF clauses per formula.
+    /// Overrides the SUMO_MAX_CLAUSES environment variable.
+    #[arg(long, value_name = "N", default_value_t = 10_000)]
+    pub max_clauses: usize,
 
     /// Path to the Vampire executable (default: 'vampire' on PATH).
     #[arg(long, value_name = "PATH")]
@@ -61,9 +66,14 @@ pub struct KbArgs {
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Validate KIF formula(s) against the knowledge base.
+    /// Parse KIF file(s) into the LMDB database and validate all formulas.
+    ///
+    /// KIF files are treated as initialisation scripts (like SQL migrations).
+    /// After a successful run the database at --db is the canonical store.
+    /// Subsequent `ask` and `translate` commands read from the database.
     Validate {
-        /// Formula to validate.  May also be supplied via stdin.
+        /// Formula to validate against the database.  If omitted, validates
+        /// every formula already in the database.
         formula: Option<String>,
 
         #[command(flatten)]
@@ -96,11 +106,17 @@ pub enum Cmd {
     },
 
     /// Translate KIF formula(s) or a full KB to TPTP.
+    ///
+    /// Without --db (or with --db pointing to a non-existent path) and with
+    /// -f / -d files supplied: parses in-memory and emits TPTP FOF (legacy mode).
+    ///
+    /// With an existing --db: reads CNF from the database and emits TPTP CNF.
+    /// Any -f / -d / inline formula is treated as a session assertion.
     Translate {
         /// Formula to translate.  May also be supplied via stdin.
         formula: Option<String>,
 
-        /// TPTP language variant to emit.
+        /// TPTP language variant to emit (legacy in-memory mode only).
         #[arg(long, value_name = "LANG", default_value = "fof")]
         lang: String,
 

@@ -156,7 +156,7 @@ impl WasmKnowledgeBase {
 
 fn sentence_to_string(sid: sumo_parser_core::store::SentenceId, store: &KifStore) -> String {
     use sumo_parser_core::store::Element;
-    let sentence = &store.sentences[sid];
+    let sentence = &store.sentences[sid as usize];
     let parts: Vec<String> = sentence.elements.iter().map(|e| match e {
         Element::Symbol(id)            => store.sym_name(*id).to_owned(),
         Element::Variable { name, .. } => name.clone(),

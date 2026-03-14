@@ -16,8 +16,11 @@ use log;
 
 // ── Id types ──────────────────────────────────────────────────────────────────
 
-pub type SymbolId  = usize;
-pub type SentenceId = usize;
+/// Persistent symbol identifier — a 64-bit integer that is stable across
+/// process restarts once interned into the LMDB-backed store.
+pub type SymbolId  = u64;
+/// Persistent sentence / formula identifier.
+pub type SentenceId = u64;
 
 // ── Element ─────────────────────────────────────────────────────────
 
@@ -121,7 +124,7 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
         if self.show_gutter {
             // Buffer the raw content, then prefix each line with the gutter.
             let content  = self.to_raw_string(self.highlight_arg);
-            let line_no  = self.store.sentences[self.sid].span.line;
+            let line_no  = self.store.sentences[self.sid as usize].span.line;
             let num_str  = line_no.to_string();
             let width    = num_str.len().min(6); // at least 6 digits wide
             let blank    = " ".repeat(width);
@@ -138,7 +141,7 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
         }
 
         // ── Raw (no gutter) ──────────────────────────────────────────────────
-        let sentence     = &self.store.sentences[self.sid];
+        let sentence     = &self.store.sentences[self.sid as usize];
         let child_indent = self.indent + 1;
         write!(f, "(")?;
         for (i, el) in sentence.elements.iter().enumerate() {
@@ -200,6 +203,12 @@ pub struct Symbol {
     pub all_sentences:  Vec<SentenceId>,
 }
 
+impl Default for Symbol {
+    fn default() -> Self {
+        Self { name: String::new(), head_sentences: Vec::new(), all_sentences: Vec::new() }
+    }
+}
+
 // ── Taxonomy relations ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,15 +240,15 @@ pub struct TaxEdge {
     pub rel:  TaxRelation,
 }
 
-/// Maps variable names to the SentenceId of the quantifier that binds them.
+/// Maps variable names to the scope id of the quantifier that binds them.
 /// Variables not in `overrides` fall back to `default` (the root sentence scope).
 struct ScopeCtx {
-    default:   usize,
-    overrides: HashMap<String, usize>,
+    default:   u64,
+    overrides: HashMap<String, u64>,
 }
 
 impl ScopeCtx {
-    fn scope_for(&self, var_name: &str) -> SentenceId {
+    fn scope_for(&self, var_name: &str) -> u64 {
         self.overrides.get(var_name).copied().unwrap_or(self.default)
     }
 }
@@ -250,6 +259,8 @@ impl ScopeCtx {
 /// The raw parsed store — all sentences, symbols, and taxonomy edges.
 ///
 /// Populated incrementally by [`crate::store::KifStore::load`].
+/// Symbol and sentence IDs are `u64` — once committed to the LMDB-backed
+/// persistent store, these IDs are stable across process restarts.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct KifStore {
     pub sentences:   Vec<Sentence>,
@@ -273,7 +284,7 @@ pub struct KifStore {
     /// incoming[sym_id] = list of edges where edge.to == sym_id
     pub tax_incoming:  HashMap<SymbolId, Vec<usize>>, // indices into tax_edges
 
-    scope_counter: usize,
+    scope_counter: u64,
 }
 
 impl KifStore {
@@ -282,7 +293,7 @@ impl KifStore {
         if let Some(&id) = self.symbols.get(name) {
             return id;
         }
-        let id = self.symbol_data.len();
+        let id = self.symbol_data.len() as u64;
         self.symbol_data.push(Symbol {
             name:          name.to_owned(),
             head_sentences: Vec::new(),
@@ -292,7 +303,7 @@ impl KifStore {
         id
     }
 
-    fn next_scope(&mut self) -> usize {
+    fn next_scope(&mut self) -> u64 {
         let id = self.scope_counter;
         self.scope_counter += 1;
         id
@@ -300,7 +311,7 @@ impl KifStore {
 
 
     pub fn sym_name(&self, id: SymbolId) -> &str {
-        &self.symbol_data[id].name
+        &self.symbol_data[id as usize].name
     }
 
     pub fn sym_id(&self, name: &str) -> Option<SymbolId> {
@@ -310,7 +321,7 @@ impl KifStore {
     // ── Sentence allocation ───────────────────────────────────────────────────
 
     fn alloc_sentence(&mut self, sentence: Sentence) -> SentenceId {
-        let id = self.sentences.len();
+        let id = self.sentences.len() as u64;
         self.sentences.push(sentence);
         id
     }
@@ -338,13 +349,13 @@ impl KifStore {
                                 .or_default()
                                 .push(sent_id);
                             // Index by head predicate
-                            if let Some(head_id) = self.sentences[sent_id].head_symbol() {
+                            if let Some(head_id) = self.sentences[sent_id as usize].head_symbol() {
                                 let head_name = self.sym_name(head_id).to_owned();
                                 self.head_index
                                     .entry(head_name)
                                     .or_default()
                                     .push(sent_id);
-                                self.symbol_data[head_id].head_sentences.push(sent_id);
+                                self.symbol_data[head_id as usize].head_sentences.push(sent_id);
                             }
                         }
                         None => {}
@@ -371,7 +382,7 @@ impl KifStore {
             AstNode::List { elements, span } => (elements, span.clone()),
             _ => return None, // If the node is not a sentence node, skip this
         };
-        
+
         // If the sentence is empty, its meaningless as a top-level axiom or head
         if elements_ast.is_empty() {
             if top_level {
@@ -383,7 +394,7 @@ impl KifStore {
                 return Some(sid);
             }
         }
-        
+
         // Also check if the head is valid (Symbol, Variable, or Operator)
         if top_level {
             let first = &elements_ast[0];
@@ -411,7 +422,7 @@ impl KifStore {
         // Prebuild the element vector
         let mut elements = Vec::with_capacity(elements_ast.len());
         // Pre allocate the sentence because we want to get the SID for potential variable scoping
-        
+
         // If this is a quantifier, build a child context for its body.
         let child_ctx;
         let body_ctx = if matches!(elements_ast.get(0), Some(AstNode::Operator { op: OpKind::Exists | OpKind::ForAll, .. })) {
@@ -455,7 +466,7 @@ impl KifStore {
             let elem = self.build_element(body_ctx, el, file, errors)?;
             elements.push(elem);
         }
-        
+
         let sid = self.alloc_sentence(Sentence { elements, file: file.to_owned(), span });
         log::trace!("Allocated sentence: {}", sid);
         // Record taxonomy edges for symbol-headed sentences.
@@ -514,7 +525,7 @@ impl KifStore {
     }
     // Check whether the sentence can create a valid taxonomy edge
     fn extract_tax_edge(&mut self, sent_id: SentenceId) {
-        let sentence = &self.sentences[sent_id];
+        let sentence = &self.sentences[sent_id as usize];
         let head_sym = match sentence.head_symbol() {
             Some(id) => id,
             None     => return,
@@ -539,7 +550,7 @@ impl KifStore {
         let arg2 = match sentence.elements.get(2) {
             Some(Element::Symbol(id)) => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
-            _ => return // TODO: Handle this as an error 
+            _ => return // TODO: Handle this as an error
         };
 
         // Edge: from=arg2 (parent), to=arg1 (child)
@@ -551,7 +562,7 @@ impl KifStore {
 
     /// Return the SymbolId for a variable `name` scoped to `scope`, if it has
     /// been interned (i.e. appeared in a type declaration in that scope).
-    pub fn var_sym_id(&self, name: &str, scope: SentenceId) -> Option<SymbolId> {
+    pub fn var_sym_id(&self, name: &str, scope: u64) -> Option<SymbolId> {
         self.sym_id(&format!("{}@{}", name, scope))
     }
 
@@ -599,8 +610,8 @@ impl KifStore {
 
         // Mark removed sentences as tombstones by clearing their elements.
         for &sid in &ids_to_remove {
-            if sid < self.sentences.len() {
-                self.sentences[sid].elements.clear();
+            if (sid as usize) < self.sentences.len() {
+                self.sentences[sid as usize].elements.clear();
             }
         }
 
@@ -614,7 +625,7 @@ impl KifStore {
     fn rebuild_taxonomy(&mut self) {
         self.tax_edges.clear();
         self.tax_incoming.clear();
-        for sent_id in 0..self.sentences.len() {
+        for sent_id in 0..(self.sentences.len() as u64) {
             self.extract_tax_edge(sent_id);
         }
     }
@@ -638,15 +649,15 @@ impl KifStore {
         for name in to_remove {
             if let Some(id) = self.symbols.remove(&name) {
                 // Tombstone the symbol_data entry (keep index valid)
-                self.symbol_data[id].head_sentences.clear();
-                self.symbol_data[id].all_sentences.clear();
+                self.symbol_data[id as usize].head_sentences.clear();
+                self.symbol_data[id as usize].all_sentences.clear();
             }
         }
         let _ = removed_ids;
     }
 
     fn collect_symbols(&self, sent_id: SentenceId, out: &mut std::collections::HashSet<SymbolId>) {
-        let sentence = &self.sentences[sent_id];
+        let sentence = &self.sentences[sent_id as usize];
         for el in &sentence.elements {
             match el {
                 Element::Symbol(id) => { out.insert(*id); }
@@ -674,7 +685,7 @@ impl KifStore {
             .copied()
             .filter(|&sid| {
                 matches!(
-                    self.sentences[sid].elements.get(1),
+                    self.sentences[sid as usize].elements.get(1),
                     Some(Element::Symbol(id)) if *id == arg1_id
                 )
             })
@@ -688,7 +699,7 @@ impl KifStore {
             .into_iter()
             .filter(|&sid| {
                 matches!(
-                    self.sentences[sid].elements.get(2),
+                    self.sentences[sid as usize].elements.get(2),
                     Some(Element::Literal(Literal::Number(n))) if n == arg2_lit
                 )
             })
@@ -726,7 +737,7 @@ impl KifStore {
     }
 
     fn matches_pattern(&self, sid: SentenceId, tokens: &[&str]) -> bool {
-        let sentence = &self.sentences[sid];
+        let sentence = &self.sentences[sid as usize];
         // elements[0] is head (op or symbol), then args follow
         let elems = &sentence.elements;
 
