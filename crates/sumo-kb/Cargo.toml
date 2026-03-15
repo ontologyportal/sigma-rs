@@ -1,0 +1,34 @@
+[package]
+name    = "sumo-kb"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+# LMDB-backed persistence. Pulls in heed + bincode.
+persist = ["dep:heed", "dep:bincode"]
+# Theorem proving via subprocess spawning (e.g. Vampire).
+# NOT available on wasm32 — enforced by compile_error! in lib.rs.
+ask     = ["dep:regex"]
+# CNF clausification. Can be used independently of ask or persist.
+cnf     = []
+
+[dependencies]
+# Always present
+serde.workspace             = true
+serde_json.workspace        = true
+thiserror.workspace         = true
+log.workspace               = true
+inline_colorization.workspace = true
+xxhash-rust.workspace       = true
+once_cell                   = "1.21.4"
+
+# persist feature
+heed    = { version = "0.20", features = ["serde-bincode"], optional = true }
+bincode = { version = "1",                                  optional = true }
+
+# ask feature
+regex   = { version = "1", optional = true }
+
+[dev-dependencies]
+env_logger = "0.11"
