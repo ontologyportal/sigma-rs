@@ -97,7 +97,12 @@ impl ProverRunner for VampireRunner {
             .arg(&tmp_path)
             .output();
 
-        let _ = fs::remove_file(&tmp_path);
+        // Keep the file if SUMO_KEEP_TPTP is set (for debugging).
+        if std::env::var("SUMO_KEEP_TPTP").is_err() {
+            let _ = fs::remove_file(&tmp_path);
+        } else {
+            log::info!(target: "sumo_kb::prover", "SUMO_KEEP_TPTP: kept {}", tmp_path.display());
+        }
 
         match output {
             Err(e) => ProverResult {
@@ -131,7 +136,10 @@ impl ProverRunner for VampireRunner {
 fn determine_status(output: &str, mode: &ProverMode) -> ProverStatus {
     match mode {
         ProverMode::Prove => {
-            if output.contains("SZS status Theorem") {
+            if output.contains("SZS status Theorem")
+                || output.contains("SZS status ContradictoryAxioms")
+                || output.contains("SZS status Unsatisfiable")
+            {
                 ProverStatus::Proved
             } else if output.contains("SZS status CounterSatisfiable") {
                 ProverStatus::Disproved
@@ -148,6 +156,7 @@ fn determine_status(output: &str, mode: &ProverMode) -> ProverStatus {
                 ProverStatus::Consistent
             } else if output.contains("SZS status Unsatisfiable")
                 || output.contains("SZS status Theorem")
+                || output.contains("SZS status ContradictoryAxioms")
             {
                 ProverStatus::Inconsistent
             } else if output.contains("SZS status Timeout") {

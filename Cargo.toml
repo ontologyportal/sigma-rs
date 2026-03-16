@@ -1,5 +1,5 @@
 [workspace]
-members  = ["crates/core", "crates/wasm", "crates/native", "crates/store"]
+members  = ["crates/sumo-kb", "crates/wasm", "crates/native"]
 resolver = "2"
 
 [workspace.package]
@@ -9,11 +9,10 @@ authors     = ["sumo-parser contributors"]
 license     = "GPL-2.0"
 
 [workspace.dependencies]
-sumo-parser-core = { path = "crates/core" }
-sumo-store        = { path = "crates/store" }
+sumo-kb           = { path = "crates/sumo-kb" }
 sumo-native       = { path = "crates/native" }
-serde            = { version = "1", features = ["derive"] }
-serde_json       = "1"
-thiserror        = "2"
+serde             = { version = "1", features = ["derive"] }
+serde_json        = "1"
+thiserror         = "2"
 inline_colorization        = "0.1.6"
 log                        = "0.4"

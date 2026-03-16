@@ -7,7 +7,7 @@ edition.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-sumo-parser-core.workspace = true
+sumo-kb.workspace = true
 serde.workspace            = true
 serde_json.workspace       = true
 wasm-bindgen               = "0.2"

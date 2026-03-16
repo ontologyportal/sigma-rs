@@ -5,8 +5,8 @@ pub mod cli;
 
 pub use ask::{ask, AskOptions, AskResult};
 
-pub use sumo_parser_core::{
-    KifError, KifStore as Store, KnowledgeBase as Kb, ParseError, SemanticError, TellResult,
+pub use sumo_kb::{
+    KnowledgeBase as Kb, ParseError, SemanticError, TellResult,
 };
 
 // Error reporting macros
@@ -49,19 +49,16 @@ macro_rules! parse_error {
     };
 }
 
+/// Print a semantic error using the KB's built-in pretty-printer.
+///
+/// Usage: `semantic_error!(e, kb)` where `e: &SemanticError` and
+/// `kb: KnowledgeBase`.
 #[macro_export]
 macro_rules! semantic_error {
-    ($span:expr, $e:expr, $sid:expr, $kb:expr) => {
+    ($e:expr, $kb:expr) => {
         {
-            use inline_colorization::*;
-            log::error!(
-                "{}{}{}\n",
-                color_magenta,
-                $span.file,
-                color_reset,
-            );
-            $e.pretty_print(&$kb.store, log::Level::Error);
-            eprintln!()
+            $kb.pretty_print_error($e, log::Level::Error);
+            eprintln!();
         }
     };
 }
@@ -69,7 +66,7 @@ macro_rules! semantic_error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sumo_parser_core::{KifStore, KnowledgeBase, load_kif};
+    use sumo_kb::KnowledgeBase;
 
     const BASE: &str = "
         (subclass Relation Entity)
@@ -89,9 +86,9 @@ mod tests {
     ";
 
     fn base_kb() -> KnowledgeBase {
-        let mut store = KifStore::default();
-        load_kif(&mut store, BASE, "base");
-        KnowledgeBase::new(store)
+        let mut kb = KnowledgeBase::new();
+        kb.load_kif(BASE, "base", None);
+        kb
     }
 
     #[test]
@@ -100,27 +97,5 @@ mod tests {
         let r = ask(&mut kb, "(subclass Cat", AskOptions::default());
         assert!(!r.proved);
         assert!(!r.errors.is_empty());
-    }
-
-    #[test]
-    fn ask_generates_tptp_conjecture() {
-        let mut kb = base_kb();
-        let r = ask(
-            &mut kb,
-            "(subclass Human Animal)",
-            AskOptions {
-                keep_tmp_file: true,
-                ..AskOptions::default()
-            },
-        );
-        if let Some(ref p) = r.tmp_file {
-            let content = std::fs::read_to_string(p).unwrap();
-            assert!(
-                content.contains("conjecture"),
-                "missing conjecture in: {}",
-                content
-            );
-            std::fs::remove_file(p).ok();
-        }
     }
 }

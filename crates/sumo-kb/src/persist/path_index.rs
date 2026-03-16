@@ -3,6 +3,8 @@
 // 18-byte path-index key encode/decode.
 // Ported verbatim from sumo-store/src/path_index.rs.
 
+
+#[cfg(feature = "cnf")]
 /// Encode a `(pred_id, arg_pos, sym_id)` triple into an 18-byte path-index key.
 pub(crate) fn encode_key(pred_id: u64, arg_pos: u16, sym_id: u64) -> [u8; 18] {
     let mut key = [0u8; 18];
@@ -21,6 +23,7 @@ pub(crate) fn decode_key(key: &[u8; 18]) -> (u64, u16, u64) {
     (pred_id, arg_pos, sym_id)
 }
 
+#[cfg(feature = "cnf")]
 #[cfg(test)]
 mod tests {
     use super::*;

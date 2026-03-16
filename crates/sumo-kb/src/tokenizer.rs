@@ -4,7 +4,6 @@
 
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use inline_colorization::*;
 use crate::error::{ParseError, Span};
 
 // ── OpKind ────────────────────────────────────────────────────────────────────
@@ -39,7 +38,7 @@ impl OpKind {
 
 impl fmt::Display for OpKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{color_cyan}{}{color_reset}", self.name())
+        write!(f, "{}", self.name())
     }
 }
 
@@ -180,7 +179,16 @@ impl<'src> Tokenizer<'src> {
             }
             _    => {
                 let word = self.read_word(ch);
-                Ok(Some(Token { kind: Self::classify_word(word), span }))
+                let kind = Self::classify_word(word);
+                // Symbols must start with a letter.  Numbers are handled by
+                // classify_word already; operators like `=>` and `<=>` start
+                // with punctuation but are matched explicitly above.  Any other
+                // word that classifies as a Symbol but begins with a non-letter
+                // (e.g. `_test`) is a tokenizer error.
+                if matches!(&kind, TokenKind::Symbol(_)) && !ch.is_alphabetic() {
+                    return Err((span.clone(), ParseError::UnexpectedChar { ch, span }));
+                }
+                Ok(Some(Token { kind, span }))
             }
         }
     }
@@ -274,5 +282,13 @@ mod tests {
     fn comment_skipped() {
         let kinds = toks("; this is a comment\n(foo)");
         assert_eq!(kinds.len(), 3);
+    }
+
+    #[test]
+    fn invalid_symbol_start() {
+        // Symbols must begin with a letter; `_test` should produce an error.
+        let (_, errors) = tokenize("_test", "test");
+        assert!(!errors.is_empty(), "expected tokenizer error for '_test'");
+        assert!(matches!(&errors[0].1, ParseError::UnexpectedChar { ch: '_', .. }));
     }
 }

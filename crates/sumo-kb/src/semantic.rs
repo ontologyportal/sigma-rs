@@ -460,6 +460,12 @@ impl SemanticLayer {
                     RelationDomain::DomainSubclass(dom_id) => {
                         let dom_name = self.store.sym_name(*dom_id);
                         if dom_name == "Entity" { return true; }
+                        // `domainSubclass R N Class` means "the argument must be a
+                        // class".  Any symbol that IS a class satisfies this, even
+                        // if it is not itself a subclass of `Class` in the hierarchy
+                        // (e.g. SetOrClass is a superclass of Class, not a subclass,
+                        // yet it is a class and is a valid range for rangeSubclass).
+                        if dom_name == "Class"  { return self.is_class(sym_id); }
                         self.is_class(sym_id) && self.has_ancestor(sym_id, *dom_id)
                     }
                 }
@@ -476,6 +482,7 @@ impl SemanticLayer {
                     RelationDomain::DomainSubclass(dom_id) => {
                         let dom_name = self.store.sym_name(*dom_id);
                         if dom_name == "Entity" { return true; }
+                        if dom_name == "Class"  { return self.is_class(var_id); }
                         self.is_class(var_id) || !self.is_instance(var_id)
                     }
                 }
@@ -502,7 +509,7 @@ impl SemanticLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kif_store::{load_kif, KifStore};
+    use crate::kif_store::{KifStore, load_kif};
 
     const BASE: &str = "
         (subclass Relation Entity)
@@ -524,6 +531,12 @@ mod tests {
     fn base_layer() -> SemanticLayer {
         let mut store = KifStore::default();
         load_kif(&mut store, BASE, "base");
+        SemanticLayer::new(store)
+    }
+
+    fn kif(kif_str: &str) -> SemanticLayer {
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif_str, "base");
         SemanticLayer::new(store)
     }
 
@@ -576,5 +589,19 @@ mod tests {
         // Base ontology may have warnings but no fatal errors.
         // Just check it doesn't panic.
         let _ = errors;
+    }
+
+    #[test]
+    fn is_logical_sentence() {
+        let layer = kif("
+            (and (relation A B) (relation D C))
+            (instance relation Relation)
+            (relation A B)
+            (NotARelation A B)
+        ");
+        let store = &layer.store;
+        assert!(layer.is_logical_sentence(store.roots[0]));
+        assert!(layer.is_logical_sentence(store.roots[2]));
+        assert!(!layer.is_logical_sentence(store.roots[3]));
     }
 }

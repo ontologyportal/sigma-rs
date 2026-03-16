@@ -128,18 +128,30 @@ impl KnowledgeBase {
     // ── Ingestion ─────────────────────────────────────────────────────────────
 
     /// Assert a single KIF string into a named session.
+    ///
+    /// Each sentence is semantically validated before acceptance; warnings are
+    /// returned in [`TellResult::warnings`] and errors in [`TellResult::errors`].
     pub fn tell(&mut self, session: &str, kif: &str) -> TellResult {
-        self.ingest(kif, session, session)
+        self.ingest(kif, session, session, true)
     }
 
-    /// Load a KIF file into the KB.  If `session` is None, the `file` name is used as session key.
+    /// Load a KIF file into the KB.  If `session` is `None`, the `file` name
+    /// is used as the session key.
+    ///
+    /// Per-sentence validation is deliberately skipped to avoid false positives
+    /// from forward-references within a file or across files.  Call
+    /// [`validate_all`] explicitly after loading all files to get the full set
+    /// of warnings with complete KB context.
     pub fn load_kif(&mut self, text: &str, file: &str, session: Option<&str>) -> TellResult {
         let session_key = session.unwrap_or(file);
-        self.ingest(text, file, session_key)
+        self.ingest(text, file, session_key, false)
     }
 
     /// Core ingestion: parse `text` with file tag `file_tag`, add accepted sentences to `session`.
-    fn ingest(&mut self, text: &str, file_tag: &str, session: &str) -> TellResult {
+    ///
+    /// `validate`: if `true`, run per-sentence semantic validation (used by `tell`).
+    ///             if `false`, skip validation (used by `load_kif` for bulk loading).
+    fn ingest(&mut self, text: &str, file_tag: &str, session: &str, validate: bool) -> TellResult {
         let mut result = TellResult { ok: true, errors: vec![], warnings: vec![] };
 
         // Snapshot root count before loading so we only process truly new roots.
@@ -169,9 +181,11 @@ impl KnowledgeBase {
         let mut accepted: Vec<SentenceId> = Vec::new();
 
         for sid in new_roots {
-            // Semantic validation (non-fatal → warning).
-            if let Err(e) = self.layer.validate_sentence(sid) {
-                result.warnings.push(TellWarning::Semantic(e));
+            // Semantic validation — only for interactive tell(), not bulk load_kif().
+            if validate {
+                if let Err(e) = self.layer.validate_sentence(sid) {
+                    result.warnings.push(TellWarning::Semantic(e));
+                }
             }
 
             // Fingerprint check for deduplication.
@@ -217,6 +231,25 @@ impl KnowledgeBase {
         log::info!(target: "sumo_kb::kb",
             "tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len());
         result
+    }
+
+    /// Mark all assertions in `session` as permanent axioms without semantic
+    /// validation or LMDB writes.
+    ///
+    /// After this call the sentences appear in [`ask`]'s axiom set (TPTP role
+    /// `axiom`).  This is the right operation for in-memory KBs where the full
+    /// KB content should be available to the prover without a prior
+    /// `promote_assertions_unchecked` round-trip through LMDB.
+    pub fn make_session_axiomatic(&mut self, session: &str) {
+        let sids = self.sessions.remove(session).unwrap_or_default();
+        let count = sids.len();
+        for &sid in &sids {
+            let fp = fingerprint(&self.layer.store, sid);
+            self.fingerprints.insert(fp, (sid, None));
+        }
+        log::info!(target: "sumo_kb::kb",
+            "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",
+            count, session);
     }
 
     // ── Session management ────────────────────────────────────────────────────
@@ -473,6 +506,17 @@ impl KnowledgeBase {
         self.layer.validate_all()
     }
 
+    /// Validate only the sentences belonging to `session`.
+    ///
+    /// Use this after [`load_kif`] to perform end-of-load validation without
+    /// re-validating the entire base KB.
+    pub fn validate_session(&self, session: &str) -> Vec<(SentenceId, SemanticError)> {
+        let sids = self.sessions.get(session).cloned().unwrap_or_default();
+        sids.iter()
+            .filter_map(|&sid| self.layer.validate_sentence(sid).err().map(|e| (sid, e)))
+            .collect()
+    }
+
     // ── TPTP output ───────────────────────────────────────────────────────────
 
     /// Generate TPTP for the KB.
@@ -596,24 +640,36 @@ impl KnowledgeBase {
     ) -> ProverResult {
         log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
 
-        // Parse query into a temp session.
+        // Parse the query directly into the store, bypassing fingerprint
+        // deduplication.  The query is a conjecture — it must be translated
+        // even if the same formula already exists as an axiom in the KB.
         let query_tag = "__query__";
-        let tell_result = self.tell(query_tag, query_kif);
-        if !tell_result.ok {
+        let prev_count = self.layer.store.file_roots
+            .get(query_tag).map(|v| v.len()).unwrap_or(0);
+
+        self.layer.invalidate_cache();
+        let parse_errors = load_kif(&mut self.layer.store, query_kif, query_tag);
+        if !parse_errors.is_empty() {
+            self.layer.store.remove_file(query_tag);
+            self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
-                raw_output: tell_result.errors.join("\n"),
+                raw_output: parse_errors.iter()
+                    .map(|(_, e)| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
                 bindings:   Vec::new(),
             };
         }
 
-        let query_sids: Vec<SentenceId> = self.sessions
+        let query_sids: Vec<SentenceId> = self.layer.store.file_roots
             .get(query_tag)
-            .cloned()
+            .map(|v| v[prev_count..].to_vec())
             .unwrap_or_default();
 
         if query_sids.is_empty() {
-            self.flush_session(query_tag);
+            self.layer.store.remove_file(query_tag);
+            self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
@@ -639,7 +695,11 @@ impl KnowledgeBase {
         }
 
         log::debug!(target: "sumo_kb::kb", "ask: TPTP size={} bytes", tptp.len());
-        self.flush_session(query_tag);
+
+        // Remove query sentences from the store (they were added directly,
+        // not via a session, so flush_session would not clean them up).
+        self.layer.store.remove_file(query_tag);
+        self.layer.invalidate_cache();
 
         let prover_opts = ProverOpts { timeout_secs: 30, mode: ProverMode::Prove };
         runner.prove(&tptp, &prover_opts)

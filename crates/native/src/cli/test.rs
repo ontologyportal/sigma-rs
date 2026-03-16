@@ -2,13 +2,10 @@ use std::path::{Path, PathBuf};
 use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
-use crate::cli::util::build_store_from_files;
-use crate::ask::{ask as native_ask, AskOptions};
-use crate::prover::Binding;
+use crate::cli::util::open_or_build_kb;
+use crate::ask::{ask as native_ask, AskOptions, Binding};
 use crate::{parse_error};
-use sumo_parser_core::{KnowledgeBase};
-use sumo_parser_core::tokenizer::{tokenize};
-use sumo_parser_core::parser::{parse, AstNode};
+use sumo_kb::{tokenize, parse, AstNode, Pretty};
 
 struct TestCase {
     file: PathBuf,
@@ -18,6 +15,9 @@ struct TestCase {
     expected_proof: Option<bool>, // true = yes, false = no
     expected_answer: Option<Vec<String>>, // List of expect symbol resolutions
     axioms: Vec<String>,
+    /// KIF files referenced by `(file F)` directives (informational; the
+    /// caller is responsible for ensuring these are loaded in the base KB).
+    extra_files: Vec<String>,
 }
 
 pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
@@ -54,17 +54,14 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
 
     // 1. Build the base KB once
     log::debug!("Building base KB");
-    let base_store = match build_store_from_files(&kb_args) {
-        Ok(s) => s,
-        Err(..) => return false,
-    };
-
     let mut all_passed = true;
     let total_tests = test_files.len();
     let mut passed_count = 0;
-    
-    // Create a fresh KB 
-    let mut kb = KnowledgeBase::new(base_store);
+
+    let mut kb = match open_or_build_kb(&kb_args) {
+        Ok(k)   => k,
+        Err(()) => return false,
+    };
 
     for (idx, test_file) in test_files.iter().enumerate() {
         let test_case = match parse_test_file(&test_file) {
@@ -78,22 +75,38 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
         log::debug!("Running test from file: {}", test_case.file.to_str().unwrap());
         println!("Running test: {} ({})", test_case.note, test_file.display());
 
-        let mut tell_ok = true;
-        for axiom in &test_case.axioms {
-            // Load all the axioms
-            let r = kb.tell(format!("test-{}", idx).as_str(), axiom);
-            log::debug!("Loaded axiom: {}", axiom);
-            if !r.ok {
-                log::error!("failed to add axiom to KB: {}", axiom);
-                for err in r.errors {
-                    log::error!("  error: {}", err);
-                }
-                tell_ok = false;
-                break;
-            }
+        // Each test gets its own session so axioms don't leak between tests.
+        let session = format!("test-{}", idx);
+
+        if !test_case.extra_files.is_empty() {
+            log::debug!(
+                "test {} references extra files (should be in base KB): {}",
+                test_case.note,
+                test_case.extra_files.join(", ")
+            );
         }
 
-        if !tell_ok {
+        // Bulk-load all test axioms without per-sentence validation, then
+        // validate together at the end (mirrors how whole KIF files are
+        // processed, avoiding false positives from forward references).
+        let axiom_text = test_case.axioms.join("\n");
+        let load_tag = format!("test-src-{}", idx);
+        let load_result = kb.load_kif(&axiom_text, &load_tag, Some(&session));
+        if !load_result.ok {
+            for e in &load_result.errors {
+                log::error!("parse error in test axioms: {}", e);
+            }
+            kb.flush_session(&session);
+            all_passed = false;
+            continue;
+        }
+
+        let semantic_errors = kb.validate_session(&session);
+        if !semantic_errors.is_empty() {
+            for (_, e) in &semantic_errors {
+                log::error!("semantic error in test axioms: {}", e);
+            }
+            kb.flush_session(&session);
             all_passed = false;
             continue;
         }
@@ -102,6 +115,7 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
             Some(q) => q,
             None => {
                 log::error!("no query found in test file");
+                kb.flush_session(&session);
                 all_passed = false;
                 continue;
             }
@@ -116,9 +130,12 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
                 vampire_path: kb_args.vampire.clone(),
                 timeout_secs: Some(test_case.timeout),
                 keep_tmp_file: keep,
+                session: Some(session.clone()),
                 ..AskOptions::default()
             },
         );
+
+        kb.flush_session(&session);
 
         if !result.errors.is_empty() {
             log::error!("prover error(s) for test {}:", test_case.note);
@@ -199,9 +216,11 @@ fn parse_test_file(path: &Path) -> Result<TestCase, String> {
         expected_answer: None,
         expected_proof: None,
         axioms: Vec::new(),
+        extra_files: Vec::new(),
     };
     // Look for the special relations
     for node in nodes {
+        log::debug!("testing: {}", Pretty(&node));
         let node_str = node.to_string();
         if let AstNode::List { elements, .. } = node {
             if elements.is_empty() { continue; } // Skip empty sentences (should have been caught by tokenizer)
@@ -271,6 +290,16 @@ fn parse_test_file(path: &Path) -> Result<TestCase, String> {
                 "query" => { // The conjecture to present to the prover
                     if elements.len() > 1 {
                         tc.query = Some(elements[1].to_string());
+                    }
+                }
+                "file" => { // (file F) — KB file dependency; must be loaded via -f
+                    if elements.len() > 1 {
+                        let fname = match &elements[1] {
+                            AstNode::Symbol { name, .. } => name.clone(),
+                            AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+                            _ => elements[1].to_string(),
+                        };
+                        tc.extra_files.push(fname);
                     }
                 }
                 _ => { // everything else is an assertion

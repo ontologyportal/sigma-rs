@@ -36,6 +36,7 @@ pub use error::{
     KbError, ParseError, SemanticError, Span,
     TellResult, TellWarning,
     PromoteError, PromoteReport, DuplicateInfo, DuplicateSource,
+
 };
 pub use types::{
     SymbolId, SentenceId,
@@ -46,7 +47,7 @@ pub use types::{
 pub use tptp::{TptpOptions, TptpLang};
 pub use kb::KnowledgeBase;
 pub use tokenizer::{tokenize, Token, TokenKind};
-pub use parser::{parse, AstNode};
+pub use parser::{parse, AstNode, Pretty};
 
 #[cfg(feature = "cnf")]
 pub use kb::{ClausifyOptions, ClausifyReport};

@@ -148,15 +148,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
-name = "cmake"
-version = "0.1.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -725,6 +716,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "sumo-kb"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "env_logger",
+ "heed",
+ "inline_colorization",
+ "log",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "sumo-native"
 version = "0.1.0"
 dependencies = [
@@ -733,24 +741,9 @@ dependencies = [
  "inline_colorization",
  "log",
  "quick-xml",
- "regex",
  "serde",
  "serde_json",
- "sumo-parser-core",
- "sumo-store",
- "vampire-prover",
-]
-
-[[package]]
-name = "sumo-parser-core"
-version = "0.1.0"
-dependencies = [
- "inline_colorization",
- "log",
- "once_cell",
- "serde",
- "serde_json",
- "thiserror",
+ "sumo-kb",
 ]
 
 [[package]]
@@ -761,20 +754,8 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "sumo-parser-core",
+ "sumo-kb",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "sumo-store"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "heed",
- "log",
- "serde",
- "sumo-parser-core",
- "thiserror",
 ]
 
 [[package]]
@@ -869,24 +850,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
-name = "vampire-prover"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4da8d433d6a112162f99478f0608f1b6b178d4151f9bcac8ba1cdcf03c591d8"
-dependencies = [
- "vampire-sys",
-]
-
-[[package]]
-name = "vampire-sys"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4dc75571b6017e456bea15573c284faf5be99ba86126a8f4b821dfa42992ee0"
-dependencies = [
- "cmake",
-]
-
-[[package]]
 name = "wasm-bindgen"
 version = "0.2.114"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -973,6 +936,12 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "xxhash-rust"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
 
 [[package]]
 name = "yoke"

@@ -170,7 +170,7 @@ impl SemanticError {
     pub(crate) fn handle(&self, store: &crate::kif_store::KifStore) -> Result<(), Self> {
         if self.is_warn() {
             if !NO_WARNINGS.load(Ordering::SeqCst) {
-                log::warn!(target: "sumo_kb::semantic", "semantic warning: {}", self);
+                log::warn!(target: "sumo_kb::semantic", "semantic warning ({}) {}", self.code(), self);
                 self.pretty_print(store, log::Level::Warn);
             }
             Ok(())

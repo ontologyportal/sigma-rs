@@ -1,121 +1,170 @@
-use std::collections::HashSet;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use sumo_parser_core::{
-    load_kif, KifStore, KnowledgeBase, ParseError, SemanticError, Span, TptpLang,
-};
-use sumo_store::{CommitOptions, LmdbEnv, StoreError, commit_kifstore, load_kifstore_from_db};
+use sumo_kb::{KnowledgeBase, ParseError, Span, TptpLang};
 
 use crate::cli::args::KbArgs;
 use crate::parse_error;
 
-// ── Warning-set helpers ───────────────────────────────────────────────────────
+// ── LMDB / KB helpers ────────────────────────────────────────────────────────
 
-/// Build a lookup set from a list of codes / names supplied via -W / --warning.
-pub fn build_suppress_set(entries: &[String]) -> HashSet<String> {
-    entries.iter().cloned().collect()
-}
-
-/// Returns true when `err` should be silently ignored.
-pub fn is_suppressed(err: &SemanticError, suppress: &HashSet<String>) -> bool {
-    suppress.contains(err.code()) || suppress.contains(err.name())
-}
-
-// ── LMDB helpers ──────────────────────────────────────────────────────────────
-
-/// Open the LMDB environment at `args.db`.  The directory is created if it
-/// does not exist.
-pub fn open_db(args: &KbArgs) -> Result<LmdbEnv, StoreError> {
-    log::info!("Opening database at {}", args.db.display());
-    LmdbEnv::open(&args.db)
-}
-
-/// Open the LMDB environment only if it already exists on disk, returning
-/// `StoreError::DatabaseNotFound` otherwise.
-pub fn open_existing_db(args: &KbArgs) -> Result<LmdbEnv, StoreError> {
+/// Open an existing LMDB-backed `KnowledgeBase`.
+/// Fails with a log error if the database directory does not exist.
+pub fn open_existing_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     if !args.db.exists() {
-        return Err(StoreError::DatabaseNotFound { path: args.db.display().to_string() });
+        log::error!(
+            "Database not found at '{}': run 'sumo load' first to initialise it",
+            args.db.display()
+        );
+        return Err(());
     }
-    open_db(args)
+    KnowledgeBase::open(&args.db).map_err(|e| {
+        log::error!("Failed to open database at '{}': {}", args.db.display(), e);
+    })
+}
+
+/// Build a `KnowledgeBase` for read-only commands (`validate`, `ask`, `translate`, `test`).
+///
+/// - If `--db` exists, opens it.  Otherwise starts with an empty in-memory KB.
+/// - If `-f`/`-d` files are given, bulk-loads them on top as in-memory axioms
+///   (never commits to the database).
+/// - If neither DB nor files are present, returns an empty KB with a warning.
+pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
+    let has_files = !args.files.is_empty() || !args.dirs.is_empty();
+
+    let mut kb = if args.db.exists() {
+        KnowledgeBase::open(&args.db).map_err(|e| {
+            log::error!("Failed to open database at '{}': {}", args.db.display(), e);
+        })?
+    } else {
+        if !has_files {
+            log::warn!(
+                "No database found at '{}' and no -f files specified — using empty KB",
+                args.db.display()
+            );
+        }
+        KnowledgeBase::new()
+    };
+
+    if has_files {
+        let all_files = collect_kif_files(args)?;
+        const BASE: &str = "__files__";
+        for path in &all_files {
+            let text = read_kif_file(path)?;
+            let tag = path.display().to_string();
+            let result = kb.load_kif(&text, &tag, Some(BASE));
+            if !result.ok {
+                for e in &result.errors {
+                    log::error!("{}: {}", path.display(), e);
+                }
+                return Err(());
+            }
+        }
+        kb.make_session_axiomatic(BASE);
+        log::info!("open_or_build_kb: loaded {} file(s) as in-memory axioms", all_files.len());
+    }
+
+    Ok(kb)
 }
 
 // ── KIF file loading ──────────────────────────────────────────────────────────
 
-/// Parse all KIF files referenced by `args` into an in-memory `KifStore`.
-/// Returns `Err(())` and logs parse errors if any file fails.
-pub fn build_store_from_files(args: &KbArgs) -> Result<KifStore, ()> {
-    let mut all_files: Vec<PathBuf> = args.files.clone();
-    for dir in &args.dirs {
-        match kif_files_in_dir(dir) {
-            Ok(f)          => all_files.extend(f),
-            Err((span, e)) => { parse_error!(span, e); return Err(()); }
-        }
-    }
-    log::debug!("build_store_from_files: found {} KIF file(s)", all_files.len());
-
-    let mut store = KifStore::default();
+/// Parse all KIF files referenced by `args` into an in-memory `KnowledgeBase`
+/// (no LMDB).  Returns `Err(())` and logs errors on failure.
+///
+/// All loaded sentences are immediately promoted to axioms so that a
+/// subsequent [`KnowledgeBase::ask`] call includes them in the TPTP problem.
+pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
+    let all_files = collect_kif_files(args)?;
+    let mut kb = KnowledgeBase::new();
+    const BASE: &str = "__base__";
     for path in &all_files {
-        let text = std::fs::read_to_string(path).map_err(|e| {
-            let fake_span = Span { file: format!("{}", path.display()), col: 0, line: 0, offset: 0 };
-            let err = ParseError::Other { msg: format!("cannot read {}: {}", path.display(), e) };
-            parse_error!(fake_span, err);
-        })?;
-        let tag    = path.display().to_string();
-        let errors = load_kif(&mut store, &text, &tag);
-        if !errors.is_empty() {
-            for (span, e) in errors { parse_error!(span, e, text); }
+        let text = read_kif_file(path)?;
+        let tag = path.display().to_string();
+        let result = kb.load_kif(&text, &tag, Some(BASE));
+        if !result.ok {
+            for e in &result.errors {
+                log::error!("{}: {}", path.display(), e);
+            }
             return Err(());
         }
     }
+    kb.make_session_axiomatic(BASE);
     log::info!(
-        "build_store_from_files: loaded {} sentence(s) from {} file(s)",
-        store.sentences.len(), all_files.len()
+        "build_kb_from_files: loaded {} file(s) as axioms",
+        all_files.len()
     );
-    Ok(store)
+    Ok(kb)
 }
 
-/// Parse KIF files → validate → commit to LMDB.
+/// Parse KIF files → open/create LMDB → clausify → commit to database.
 ///
-/// Returns the opened `LmdbEnv` so the caller can run further operations
-/// (e.g. additional validation or translation) within the same session.
-pub fn load_and_commit_files(args: &KbArgs) -> Result<LmdbEnv, ()> {
-    let store = build_store_from_files(args)?;
-    let env   = open_db(args).map_err(|e| {
-        log::error!("Database error: {}", e);
+/// Returns the `KnowledgeBase` (still open against the LMDB) so the caller
+/// can run further operations (validation, translation) in the same session.
+pub fn load_and_commit_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
+    let all_files = collect_kif_files(args)?;
+
+    let mut kb = KnowledgeBase::open(&args.db).map_err(|e| {
+        log::error!("Failed to open database at '{}': {}", args.db.display(), e);
     })?;
 
-    let opts = CommitOptions {
-        max_clauses: args.max_clauses,
-        session:     None,
-    };
+    // kb.enable_cnf(ClausifyOptions { max_clauses_per_formula: args.max_clauses });
 
-    commit_kifstore(&env, &store, &opts).map_err(|e| {
+    const SESSION: &str = "__load__";
+    for path in &all_files {
+        let text = read_kif_file(path)?;
+        let tag = path.display().to_string();
+        let result = kb.load_kif(&text, &tag, Some(SESSION));
+        if !result.ok {
+            for e in &result.errors {
+                log::error!("{}: {}", path.display(), e);
+            }
+            return Err(());
+        }
+    }
+
+    log::info!(
+        "load_and_commit_files: promoting {} file(s) to LMDB at '{}'",
+        all_files.len(),
+        args.db.display()
+    );
+    kb.promote_assertions_unchecked(SESSION).map_err(|e| {
         log::error!("Failed to commit KB to database: {}", e);
     })?;
 
-    log::info!(
-        "load_and_commit_files: committed {} root sentence(s) to {}",
-        store.roots.len(), args.db.display()
-    );
-    Ok(env)
+    Ok(kb)
 }
 
-/// Load a `KnowledgeBase` from the database for semantic validation.
-pub fn load_kb_from_db(env: &LmdbEnv) -> Result<KnowledgeBase, ()> {
-    let store = load_kifstore_from_db(env).map_err(|e| {
-        log::error!("Failed to reconstruct KifStore from database: {}", e);
-    })?;
-    Ok(KnowledgeBase::new(store))
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+pub(crate) fn collect_kif_files(args: &KbArgs) -> Result<Vec<PathBuf>, ()> {
+    let mut all_files: Vec<PathBuf> = args.files.clone();
+    for dir in &args.dirs {
+        match kif_files_in_dir(dir) {
+            Ok(f) => all_files.extend(f),
+            Err((span, e)) => {
+                parse_error!(span, e);
+                return Err(());
+            }
+        }
+    }
+    log::debug!("collect_kif_files: {} file(s)", all_files.len());
+    Ok(all_files)
+}
+
+pub(crate) fn read_kif_file(path: &Path) -> Result<String, ()> {
+    std::fs::read_to_string(path).map_err(|e| {
+        log::error!("cannot read '{}': {}", path.display(), e);
+    })
 }
 
 // ── Directory helpers ─────────────────────────────────────────────────────────
 
-/// Collect all *.kif files in a directory, sorted for deterministic ordering.
+/// Collect all `*.kif` files in a directory, sorted for deterministic ordering.
 pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, ParseError)> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
         let span = Span { file: format!("{}", dir.display()), line: 0, col: 0, offset: 0 };
-        (span, ParseError::Other { msg: format!("cannot read directory {}: {}", dir.display(), e) })
+        (span, ParseError::Other { msg: format!("cannot read directory '{}': {}", dir.display(), e) })
     })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -128,8 +177,7 @@ pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, ParseError)> 
 
 // ── stdin / source tag ────────────────────────────────────────────────────────
 
-/// Read stdin if it is piped (not a TTY); return None if stdin is a terminal
-/// or if the input is empty.
+/// Read stdin if it is piped (not a TTY); return `None` if empty or a TTY.
 pub fn read_stdin() -> Option<String> {
     if io::stdin().is_terminal() {
         return None;

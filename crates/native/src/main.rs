@@ -5,17 +5,19 @@ use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sumo_native::cli::{Cli, Cmd, run_validate, run_ask, run_translate, run_test};
+use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_ask, run_translate, run_test};
 use sumo_native::config::{resolve_config_path, parse_config_xml};
 
-use sumo_parser_core::error::{promote_to_error, set_all_errors, supress_warnings};
+use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
 
 fn main() {
     log::trace!("main()");
     // Parse the CLI Options
     let mut cli = Cli::parse();
 
-    let config_xml = if let Some(config_path) = resolve_config_path(cli.config.as_deref()) {
+    let config_xml = if !cli.enable_config {
+        None
+    } else if let Some(config_path) = resolve_config_path(cli.config.as_deref()) {
         // println!("Found config file: {}", &config_path.to_str().unwrap());
         match parse_config_xml(&config_path) {
             Ok(cfg) => Some(cfg),
@@ -28,7 +30,7 @@ fn main() {
         None
     };
 
-    supress_warnings(cli.quiet);
+    suppress_warnings(cli.quiet);
 
     let level = if cli.verbose > 0 {
         match cli.verbose {
@@ -76,6 +78,7 @@ fn main() {
         let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
         
         let kb_args = match &mut cli.command {
+            Cmd::Load { kb } => Some(kb),
             Cmd::Validate { kb, .. } => Some(kb),
             Cmd::Ask { kb, .. } => Some(kb),
             Cmd::Translate { kb, .. } => Some(kb),
@@ -106,6 +109,7 @@ fn main() {
     }
 
     let ok = match cli.command {
+        Cmd::Load { kb } => run_load(kb),
         Cmd::Validate { formula, kb } => run_validate(formula, kb),
         Cmd::Ask {
             formula,

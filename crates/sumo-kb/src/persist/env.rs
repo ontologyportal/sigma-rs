@@ -60,6 +60,7 @@ pub(crate) struct StoredFormula {
 const DB_SYMBOLS_FWD: &str = "symbols_fwd";  // name → id (8-byte BE)
 const DB_SYMBOLS_REV: &str = "symbols_rev";  // id BE → StoredSymbol
 const DB_FORMULAS:    &str = "formulas";     // id BE → StoredFormula
+#[cfg(feature = "cnf")]
 const DB_PATH_INDEX:  &str = "path_index";   // 18-byte key → Vec<SentenceId>
 const DB_HEAD_INDEX:  &str = "head_index";   // pred_id (8-byte BE) → Vec<SentenceId>
 const DB_SESSIONS:    &str = "sessions";     // session name → Vec<SentenceId>
@@ -75,6 +76,7 @@ pub(crate) struct LmdbEnv {
     pub symbols_fwd: Database<Str, Bytes>,
     pub symbols_rev: Database<Bytes, SerdeBincode<StoredSymbol>>,
     pub formulas:    Database<Bytes, SerdeBincode<StoredFormula>>,
+    #[cfg(feature = "cnf")]
     pub path_index:  Database<Bytes, SerdeBincode<Vec<u64>>>,
     pub head_index:  Database<Bytes, SerdeBincode<Vec<u64>>>,
     pub sessions:    Database<Str, SerdeBincode<Vec<u64>>>,
@@ -99,6 +101,7 @@ impl LmdbEnv {
         let symbols_fwd = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_SYMBOLS_FWD))?;
         let symbols_rev = env.create_database::<Bytes, SerdeBincode<StoredSymbol>>(&mut wtxn, Some(DB_SYMBOLS_REV))?;
         let formulas    = env.create_database::<Bytes, SerdeBincode<StoredFormula>>(&mut wtxn, Some(DB_FORMULAS))?;
+        #[cfg(feature = "cnf")]
         let path_index  = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_PATH_INDEX))?;
         let head_index  = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_HEAD_INDEX))?;
         let sessions    = env.create_database::<Str, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_SESSIONS))?;
@@ -106,7 +109,10 @@ impl LmdbEnv {
         wtxn.commit()?;
         log::debug!(target: "sumo_kb::persist", "LMDB opened; {} databases initialised", MAX_DBS);
 
-        Ok(Self { env, symbols_fwd, symbols_rev, formulas, path_index, head_index, sessions })
+        Ok(Self { env, symbols_fwd, symbols_rev, formulas, 
+            #[cfg(feature = "cnf")]    
+            path_index, 
+            head_index, sessions })
     }
 
     pub(crate) fn read_txn(&self) -> Result<RoTxn<'_>, KbError> {
@@ -178,6 +184,7 @@ impl LmdbEnv {
         Ok(())
     }
 
+    #[cfg(feature = "cnf")]
     /// Append to the path index for `(pred_id, arg_pos, sym_id)`.
     pub(crate) fn index_path(
         &self,

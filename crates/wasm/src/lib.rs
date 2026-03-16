@@ -1,10 +1,10 @@
-/// WASM bindings for sumo-parser-core.
+/// WASM bindings for sumo-kb.
 ///
 /// Exposes the KnowledgeBase API to JavaScript/Node.js via wasm-bindgen.
 /// The `ask()` functionality is handled by a JS callback hook since WASM
 /// cannot spawn native processes.
 use wasm_bindgen::prelude::*;
-use sumo_parser_core::{KifStore, KnowledgeBase, TptpOptions, TptpLang, load_kif, kb_to_tptp};
+use sumo_kb::{KnowledgeBase, TptpOptions, TptpLang};
 
 // ── WasmKnowledgeBase ─────────────────────────────────────────────────────────
 
@@ -19,17 +19,17 @@ impl WasmKnowledgeBase {
     /// Create an empty knowledge base.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: KnowledgeBase::new(KifStore::default()) }
+        Self { inner: KnowledgeBase::new() }
     }
 
-    /// Load KIF text (from a string) into the KB.
+    /// Load KIF text into the KB under `file_tag`.
     ///
-    /// Returns a JSON array of parse error strings, or an empty array on success.
+    /// Returns a JSON array of error strings, or an empty array on success.
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
-        let errors = self.inner.load_kif(kif_text, file_tag);
-        let msgs: Vec<String> = errors.iter().map(|(.., e)| e.to_string()).collect();
-        serde_wasm_bindgen::to_value(&msgs).map_err(|e| JsValue::from_str(&e.to_string()))
+        let result = self.inner.load_kif(kif_text, file_tag, None);
+        serde_wasm_bindgen::to_value(&result.errors)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Assert a single KIF formula into the KB under the given session key.
@@ -43,8 +43,7 @@ impl WasmKnowledgeBase {
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let errs: Vec<String> = result.errors;
-        let errs_js = serde_wasm_bindgen::to_value(&errs)
+        let errs_js = serde_wasm_bindgen::to_value(&result.errors)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         js_sys::Reflect::set(&obj, &"errors".into(), &errs_js)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
@@ -54,7 +53,7 @@ impl WasmKnowledgeBase {
     /// Remove all `tell()` assertions from every session.
     #[wasm_bindgen]
     pub fn flush(&mut self) {
-        self.inner.flush();
+        self.inner.flush_assertions();
     }
 
     /// Remove assertions for a specific session only.
@@ -63,12 +62,12 @@ impl WasmKnowledgeBase {
         self.inner.flush_session(session);
     }
 
-    /// Render the KB (and any assertions) as a TPTP string.
+    /// Render the KB (and any session assertions) as a TPTP string.
     ///
     /// `lang` should be `"fof"` (default) or `"tff"`.
     /// `hide_numbers` replaces numeric literals with `n__N` tokens.
     /// `session` filters which session's assertions are included as hypotheses
-    /// (omit or pass `undefined` for all sessions).
+    /// (omit or pass `undefined` to include all sessions).
     #[wasm_bindgen(js_name = toTptp)]
     pub fn to_tptp(
         &self,
@@ -81,11 +80,11 @@ impl WasmKnowledgeBase {
             _           => TptpLang::Fof,
         };
         let opts = TptpOptions {
-            lang: tptp_lang,
+            lang:         tptp_lang,
             hide_numbers: hide_numbers.unwrap_or(true),
             ..TptpOptions::default()
         };
-        kb_to_tptp(&self.inner, "kb", &opts, session.as_deref())
+        self.inner.to_tptp(&opts, session.as_deref())
     }
 
     /// Pattern-based lookup.  Returns a JSON array of matched sentence strings.
@@ -94,12 +93,13 @@ impl WasmKnowledgeBase {
     /// Example: `"instance _ Entity"`
     #[wasm_bindgen]
     pub fn lookup(&self, pattern: &str) -> Result<JsValue, JsValue> {
-        let sids = self.inner.store.lookup(pattern);
+        let sids = self.inner.lookup(pattern);
         let results: Vec<String> = sids
             .iter()
-            .map(|&sid| sentence_to_string(sid, &self.inner.store))
+            .map(|&sid| self.inner.sentence_to_string(sid))
             .collect();
-        serde_wasm_bindgen::to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&results)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Invoke the theorem prover via a JS callback.
@@ -111,59 +111,41 @@ impl WasmKnowledgeBase {
     /// function askHook(tptpString) { /* run vampire or other prover */ return outputString; }
     /// ```
     ///
-    /// The query KIF is converted to TPTP with the `conjecture` role appended,
-    /// then passed to `ask_hook`.  Returns the raw string output from the hook.
+    /// The query KIF is parsed, converted to TPTP with the `conjecture` role,
+    /// appended to the KB axioms, and the combined TPTP is passed to `ask_hook`.
+    /// Returns the raw string output from the hook.
     #[wasm_bindgen]
-    pub fn ask(&self, query_kif: &str, ask_hook: &js_sys::Function) -> Result<JsValue, JsValue> {
-        // Parse query into a throw-away store and convert to TPTP conjecture
-        let mut tmp_store = KifStore::default();
-        let errs = load_kif(&mut tmp_store, query_kif, "__query__");
-        if !errs.is_empty() {
-            let msgs: Vec<String> = errs.iter().map(|(.., e)| e.to_string()).collect();
-            return Err(serde_wasm_bindgen::to_value(&msgs)
+    pub fn ask(&mut self, query_kif: &str, ask_hook: &js_sys::Function) -> Result<JsValue, JsValue> {
+        // Parse the query into a temporary session.
+        let query_tag = "__query__";
+        let tell_result = self.inner.tell(query_tag, query_kif);
+        if !tell_result.ok {
+            return Err(serde_wasm_bindgen::to_value(&tell_result.errors)
                 .unwrap_or_else(|_| JsValue::from_str("parse error")));
         }
 
-        let sid = match tmp_store.roots.first().copied() {
-            Some(id) => id,
-            None => return Err(JsValue::from_str("No query sentence parsed")),
-        };
+        let query_sids = self.inner.session_sids(query_tag);
+        if query_sids.is_empty() {
+            self.inner.flush_session(query_tag);
+            return Err(JsValue::from_str("No query sentence parsed"));
+        }
 
-        let query_opts = TptpOptions {
-            query: true,
-            hide_numbers: true,
-            ..TptpOptions::default()
-        };
-        let tmp_kb = KnowledgeBase::new(tmp_store);
-        let conjecture_formula = sumo_parser_core::sentence_to_tptp(sid, &tmp_kb, &query_opts);
-        let conjecture = format!("fof(query_0,conjecture,({})).\n", conjecture_formula);
+        // Build KB axioms as TPTP.
+        let kb_opts  = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
+        let mut tptp = self.inner.to_tptp(&kb_opts, None);
 
-        // Build KB TPTP + conjecture
-        let kb_opts = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
-        let kb_tptp = kb_to_tptp(&self.inner, "kb", &kb_opts, None);
-        let full_tptp = format!("{}\n{}", kb_tptp, conjecture);
+        // Append the conjecture(s).
+        let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
+        for (i, &sid) in query_sids.iter().enumerate() {
+            let conj = self.inner.format_sentence_tptp(sid, &q_opts);
+            tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
+        }
 
-        // Call the JS hook
-        let tptp_js = JsValue::from_str(&full_tptp);
-        let result = ask_hook.call1(&JsValue::NULL, &tptp_js)
-            .map_err(|e| JsValue::from_str(&format!("ask_hook threw: {:?}", e)))?;
+        self.inner.flush_session(query_tag);
 
-        Ok(result)
+        // Delegate to the JS hook.
+        let tptp_js = JsValue::from_str(&tptp);
+        ask_hook.call1(&JsValue::NULL, &tptp_js)
+            .map_err(|e| JsValue::from_str(&format!("ask_hook threw: {:?}", e)))
     }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn sentence_to_string(sid: sumo_parser_core::store::SentenceId, store: &KifStore) -> String {
-    use sumo_parser_core::store::Element;
-    let sentence = &store.sentences[sid as usize];
-    let parts: Vec<String> = sentence.elements.iter().map(|e| match e {
-        Element::Symbol(id)            => store.sym_name(*id).to_owned(),
-        Element::Variable { name, .. } => name.clone(),
-        Element::Literal(sumo_parser_core::store::Literal::Str(s))    => s.clone(),
-        Element::Literal(sumo_parser_core::store::Literal::Number(n)) => n.clone(),
-        Element::Op(op)                => op.name().to_owned(),
-        Element::Sub(sub_id)           => format!("({})", sentence_to_string(*sub_id, store)),
-    }).collect();
-    format!("({})", parts.join(" "))
 }

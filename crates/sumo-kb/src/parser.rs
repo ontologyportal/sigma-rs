@@ -3,6 +3,7 @@
 // Only change: import paths updated to crate-local modules.
 
 use core::fmt;
+use inline_colorization::*;
 use crate::error::{ParseError, Span};
 use crate::tokenizer::{OpKind, Token, TokenKind};
 
@@ -34,6 +35,8 @@ impl AstNode {
     }
 }
 
+/// Plain KIF display — output is always re-parseable (no ANSI codes).
+/// Use [`Pretty`] for colourised terminal/log output.
 impl fmt::Display for AstNode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -47,7 +50,29 @@ impl fmt::Display for AstNode {
             AstNode::RowVariable { name, .. }   => write!(f, "@{}", name),
             AstNode::Str { value, .. }
             | AstNode::Number { value, .. }     => write!(f, "{}", value),
-            AstNode::Operator { op, .. }        => write!(f, "{}", op),
+            AstNode::Operator { op, .. }        => write!(f, "{}", op.name()),
+        }
+    }
+}
+
+/// Colourised display wrapper for [`AstNode`].
+///
+/// Use this for terminal output and log messages where ANSI colour is
+/// desirable.  Operators are rendered in cyan.  For output that must be
+/// fed back into the parser or KB, use plain [`Display`] / [`to_string`].
+pub struct Pretty<'a>(pub &'a AstNode);
+
+impl fmt::Display for Pretty<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            AstNode::List { elements, .. } => {
+                write!(f, "( ")?;
+                for el in elements { write!(f, "{} ", Pretty(el))?; }
+                write!(f, ")")
+            }
+            AstNode::Operator { op, .. } =>
+                write!(f, "{color_cyan}{}{color_reset}", op.name()),
+            other => write!(f, "{}", other),
         }
     }
 }

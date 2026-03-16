@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "sumo",
     about = "Parse, validate, translate, and query SUMO KIF knowledge bases",
+    after_help = "Reference:\n  Niles, I., and Pease, A.  2001.  Towards a Standard Upper Ontology.  In\n  Proceedings of the 2nd International Conference on Formal Ontology in\n  Information Systems (FOIS-2001), Chris Welty and Barry Smith, eds,\n  Ogunquit, Maine, October 17-19, 2001.  Also see http://www.ontologyportal.org",
     version
 )]
 pub struct Cli {
@@ -19,6 +20,10 @@ pub struct Cli {
     /// Path to SigmaKEE config.xml or the directory containing it.
     #[arg(long, value_name = "PATH", global = true)]
     pub config: Option<PathBuf>,
+
+    /// Whether to use the system's sigma config.xml to configure the runtime 
+    #[arg(short = 'c', global = true)]
+    pub enable_config: bool,
 
     /// Knowledge base name from config.xml to load.
     #[arg(long, value_name = "NAME", global = true)]
@@ -144,5 +149,16 @@ pub enum Cmd {
         /// Do not delete generated TPTP file
         #[arg(short = 'k', long)]
         keep: bool,
+    },
+
+    /// Parse KIF file(s) and commit them to the LMDB database.
+    ///
+    /// This is the only command that writes to the database.
+    /// Validates all loaded formulas before committing — parse errors or
+    /// promoted warnings (-W) abort the commit and leave the database unchanged.
+    /// If no files are given, the database is created/opened but left empty.
+    Load {
+        #[command(flatten)]
+        kb: KbArgs,
     },
 }

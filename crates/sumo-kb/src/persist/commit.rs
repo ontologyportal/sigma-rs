@@ -5,7 +5,7 @@
 // Key difference from old store/src/commit.rs:
 // IDs are already stable — NO remapping needed.  We write symbols and formulas
 // with the IDs they already hold in `KifStore`.
-
+#[cfg(feature = "cnf")]
 use std::collections::HashMap;
 
 use crate::error::KbError;
