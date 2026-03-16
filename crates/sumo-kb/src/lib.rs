@@ -28,6 +28,9 @@ pub mod prover;
 #[cfg(feature = "persist")]
 pub(crate) mod persist;
 
+#[cfg(feature = "integrated-prover")]
+pub mod embedded_prover;
+
 pub(crate) mod kb;
 
 // ── Public re-exports ────────────────────────────────────────────────────────
@@ -57,3 +60,6 @@ pub use prover::{
     ProverRunner, ProverOpts, ProverMode, ProverResult,
     ProverStatus, Binding, VampireRunner,
 };
+
+#[cfg(feature = "integrated-prover")]
+pub use embedded_prover::EmbeddedProverRunner;

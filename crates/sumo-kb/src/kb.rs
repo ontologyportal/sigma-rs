@@ -24,6 +24,9 @@ use crate::persist::{load_from_db, write_axioms, LmdbEnv};
 #[cfg(feature = "ask")]
 use crate::prover::{ProverMode, ProverOpts, ProverResult, ProverStatus, ProverRunner};
 
+#[cfg(feature = "integrated-prover")]
+use crate::embedded_prover::EmbeddedProverRunner;
+
 // ── Feature-gated KB config types ────────────────────────────────────────────
 
 #[cfg(feature = "cnf")]
@@ -703,6 +706,77 @@ impl KnowledgeBase {
 
         let prover_opts = ProverOpts { timeout_secs: 30, mode: ProverMode::Prove };
         runner.prove(&tptp, &prover_opts)
+    }
+
+    // ── Embedded theorem proving ──────────────────────────────────────────────
+
+    /// Ask the embedded Vampire prover whether `query_kif` is entailed by the KB.
+    ///
+    /// Unlike [`ask`], this bypasses TPTP generation and calls Vampire in-process
+    /// via the programmatic API.  Binding extraction is not yet supported.
+    ///
+    /// `session` = optional in-memory session whose assertions are included as hypotheses.
+    #[cfg(feature = "integrated-prover")]
+    pub fn ask_embedded(
+        &mut self,
+        query_kif: &str,
+        session:   Option<&str>,
+        timeout_secs: u32,
+    ) -> ProverResult {
+        let query_tag = "__query_embedded__";
+        let prev_count = self.layer.store.file_roots
+            .get(query_tag).map(|v| v.len()).unwrap_or(0);
+
+        self.layer.invalidate_cache();
+        let parse_errors = load_kif(&mut self.layer.store, query_kif, query_tag);
+        if !parse_errors.is_empty() {
+            self.layer.store.remove_file(query_tag);
+            self.layer.invalidate_cache();
+            return ProverResult {
+                status:     ProverStatus::Unknown,
+                raw_output: parse_errors.iter()
+                    .map(|(_, e)| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                bindings:   Vec::new(),
+            };
+        }
+
+        let query_sids: Vec<SentenceId> = self.layer.store.file_roots
+            .get(query_tag)
+            .map(|v| v[prev_count..].to_vec())
+            .unwrap_or_default();
+
+        if query_sids.is_empty() {
+            self.layer.store.remove_file(query_tag);
+            self.layer.invalidate_cache();
+            return ProverResult {
+                status:     ProverStatus::Unknown,
+                raw_output: "No query sentence parsed".into(),
+                bindings:   Vec::new(),
+            };
+        }
+
+        let axiom_sids: Vec<SentenceId> = self.axiom_ids_set().into_iter().collect();
+        let assertion_sids: Vec<SentenceId> = session
+            .and_then(|s| self.sessions.get(s))
+            .map(|v| v.clone())
+            .unwrap_or_default();
+
+        let runner = EmbeddedProverRunner;
+        let prover_opts = ProverOpts { timeout_secs, mode: ProverMode::Prove };
+        let result = runner.run(
+            &self.layer.store,
+            &axiom_sids,
+            &assertion_sids,
+            &query_sids,
+            &prover_opts,
+        );
+
+        self.layer.store.remove_file(query_tag);
+        self.layer.invalidate_cache();
+
+        result
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────

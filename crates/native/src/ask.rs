@@ -19,6 +19,8 @@ pub struct AskOptions {
     pub keep_tmp_file: bool,
     /// Session whose assertions are included as TPTP hypotheses.
     pub session: Option<String>,
+    /// Prover backend: "subprocess" (default) or "embedded".
+    pub backend: String,
 }
 
 /// Result from `ask()`.
@@ -40,11 +42,19 @@ pub struct AskResult {
 pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResult {
     log::debug!("ask: {}", query_kif);
 
-    let vampire_path = opts.vampire_path.unwrap_or_else(|| PathBuf::from("vampire"));
     let timeout_secs = opts.timeout_secs.unwrap_or(30);
-    let runner = VampireRunner { vampire_path, timeout_secs };
 
-    let result = kb.ask(query_kif, opts.session.as_deref(), &runner);
+    let result = match opts.backend.as_str() {
+        #[cfg(feature = "integrated-prover")]
+        "embedded" => {
+            kb.ask_embedded(query_kif, opts.session.as_deref(), timeout_secs)
+        }
+        _ => {
+            let vampire_path = opts.vampire_path.unwrap_or_else(|| PathBuf::from("vampire"));
+            let runner = VampireRunner { vampire_path, timeout_secs };
+            kb.ask(query_kif, opts.session.as_deref(), &runner)
+        }
+    };
 
     let proved = matches!(result.status, ProverStatus::Proved);
 

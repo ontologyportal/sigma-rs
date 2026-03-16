@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "sumo_native"
 path = "src/lib.rs"
 
+[features]
+default = []
+integrated-prover = ["sumo-kb/integrated-prover"]
+
 [dependencies]
 sumo-kb = { workspace = true, features = ["persist", "ask"] }
 serde.workspace            = true

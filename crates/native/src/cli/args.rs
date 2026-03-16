@@ -102,6 +102,11 @@ pub enum Cmd {
         #[arg(long, value_name = "KEY", default_value = "default")]
         session: String,
 
+        /// Prover backend: 'subprocess' (default, requires vampire on PATH) or
+        /// 'embedded' (in-process, requires the integrated-prover feature).
+        #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
+        backend: String,
+
         #[command(flatten)]
         kb: KbArgs,
 
@@ -149,6 +154,10 @@ pub enum Cmd {
         /// Do not delete generated TPTP file
         #[arg(short = 'k', long)]
         keep: bool,
+
+        /// Prover backend: 'subprocess' (default) or 'embedded'.
+        #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
+        backend: String,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.

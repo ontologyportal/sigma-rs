@@ -88,7 +88,7 @@ impl<'src> Tokenizer<'src> {
     }
 
     fn span(&self) -> Span {
-        Span { file: self.file.clone(), line: self.line, col: self.col, offset: self.chars.offset() - 1 }
+        Span { file: self.file.clone(), line: self.line, col: self.col, offset: self.chars.offset().saturating_sub(1) }
     }
 
     fn advance(&mut self) -> Option<char> {

@@ -2,22 +2,23 @@ use std::path::PathBuf;
 
 use log;
 use inline_colorization::*;
-use sumo_kb::{VampireRunner, ProverStatus};
+use sumo_kb::ProverStatus;
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb, read_stdin};
 
 pub fn run_ask(
-    formula: Option<String>,
-    tell:    Vec<String>,
-    timeout: u32,
-    session: String,
-    kb_args: KbArgs,
-    keep:    bool,
+    formula:  Option<String>,
+    tell:     Vec<String>,
+    timeout:  u32,
+    session:  String,
+    backend:  String,
+    kb_args:  KbArgs,
+    keep:     bool,
 ) -> bool {
     log::debug!(
-        "run_ask: formula={:?}, tell={}, timeout={}, session={:?}",
-        formula.is_some(), tell.len(), timeout, session
+        "run_ask: formula={:?}, tell={}, timeout={}, session={:?}, backend={:?}",
+        formula.is_some(), tell.len(), timeout, session, backend
     );
 
     if keep {
@@ -47,10 +48,23 @@ pub fn run_ask(
         }
     }
 
-    let vampire_path = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
-    let runner = VampireRunner { vampire_path, timeout_secs: timeout };
-
-    let result = kb.ask(&conjecture, Some(&session), &runner);
+    let result = match backend.as_str() {
+        #[cfg(feature = "integrated-prover")]
+        "embedded" => {
+            log::info!("ask: using embedded Vampire backend");
+            kb.ask_embedded(&conjecture, Some(&session), timeout)
+        }
+        "subprocess" | "" => {
+            use sumo_kb::VampireRunner;
+            let vampire_path = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
+            let runner = VampireRunner { vampire_path, timeout_secs: timeout };
+            kb.ask(&conjecture, Some(&session), &runner)
+        }
+        other => {
+            log::error!("ask: unknown backend '{}' (supported: subprocess, embedded)", other);
+            return false;
+        }
+    };
 
     if !result.bindings.is_empty() {
         for b in &result.bindings {

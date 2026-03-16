@@ -20,7 +20,7 @@ struct TestCase {
     extra_files: Vec<String>,
 }
 
-pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
+pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool, backend: String) -> bool {
     log::trace!("run_test(path={:?}, kb_args={:#?})", path, kb_args);
     log::debug!("Test subcommand selected");
 
@@ -131,6 +131,7 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool) -> bool {
                 timeout_secs: Some(test_case.timeout),
                 keep_tmp_file: keep,
                 session: Some(session.clone()),
+                backend: backend.clone(),
                 ..AskOptions::default()
             },
         );
