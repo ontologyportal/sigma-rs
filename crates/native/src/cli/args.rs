@@ -107,12 +107,21 @@ pub enum Cmd {
         #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
         backend: String,
 
+        /// TPTP language variant: 'fof' (default) or 'tff'.
+        /// Note: 'tff' is not yet supported with the embedded backend.
+        #[arg(long, value_name = "LANG", default_value = "fof")]
+        lang: String,
+
         #[command(flatten)]
         kb: KbArgs,
 
         /// Do not delete generated TPTP file
         #[arg(short = 'k', long)]
         keep: bool,
+
+        /// Print the proof steps translated to SUO-KIF after a successful proof.
+        #[arg(long)]
+        proof: bool,
     },
 
     /// Translate KIF formula(s) or a full KB to TPTP.
@@ -158,6 +167,11 @@ pub enum Cmd {
         /// Prover backend: 'subprocess' (default) or 'embedded'.
         #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
         backend: String,
+
+        /// TPTP language variant: 'fof' (default) or 'tff'.
+        /// Note: 'tff' is not yet supported with the embedded backend.
+        #[arg(long, value_name = "LANG", default_value = "fof")]
+        lang: String,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.

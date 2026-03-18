@@ -1,9 +1,9 @@
-// crates/sumo-kb/src/embedded_prover.rs
+// crates/sumo-kb/src/prover/embedded.rs
 //
-// Embedded Vampire prover: converts KifStore sentences directly to the
+// EmbeddedProverRunner — converts KifStore sentences directly to the
 // vampire-prover programmatic API, bypassing TPTP string generation.
 //
-// Feature-gated: only compiled when `integrated-prover` is active.
+// Gated: requires both `ask` (via parent module) and `integrated-prover`.
 
 #[cfg(all(feature = "integrated-prover", target_arch = "wasm32"))]
 compile_error!(
@@ -18,11 +18,11 @@ use vampire_prover::{Formula, Function, Predicate, Problem, Proof as VampireProo
                      ProofRes, ProofRule as VampireProofRule, Term, Options};
 
 use crate::kif_store::KifStore;
-use crate::prover::{Binding, ProverMode, ProverOpts, ProverResult, ProverStatus};
-use crate::tokenizer::OpKind;
+use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverStatus};
+use crate::parse::kif::OpKind;
 use crate::types::{Element, Literal, SentenceId};
 
-// ── Symbol name helpers (mirror TPTP conventions) ─────────────────────────────
+// Symbol name helpers (mirror TPTP conventions)
 
 const S: &str = "s__";
 const M: &str = "__m";
@@ -45,18 +45,31 @@ fn sym_mention(name: &str) -> Term {
     Function::constant(&format!("{}{}{}", S, clean, M))
 }
 
-// ── Variable collection ───────────────────────────────────────────────────────
+// Variable collection
 
-/// Collect all distinct variable names from a sentence tree (in-order).
-fn collect_all_vars(sid: SentenceId, store: &KifStore, out: &mut Vec<String>) {
-    for elem in &store.sentences[store.sent_idx(sid)].elements {
-        match elem {
-            Element::Variable { name, .. } => {
-                if !out.contains(name) {
-                    out.push(name.clone());
+fn collect_free_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<u64>, bound: &mut HashSet<u64>) {
+    let sent_idx = store.sent_idx(sid);
+    // If the current sentence is an existential operation, the variables are bound,
+    // so add to a list of bound variables.
+    if matches!(&store.sentences[sent_idx].elements.first(),
+                Some(Element::Op(OpKind::ForAll)) | Some(Element::Op(OpKind::Exists))) {
+        // The first sentence contains all the variables which are bound
+        if let Some(Element::Sub(sub_sid)) = &store.sentences[sent_idx].elements.iter().next() {
+            for bound_var in &store.sentences[store.sent_idx(*sub_sid)].elements {
+                match bound_var {
+                    Element::Variable { id, .. } => { bound.insert(*id); },
+                    _ => {}
                 }
             }
-            Element::Sub(sub) => collect_all_vars(*sub, store, out),
+        };
+    }
+    // For each individual element in the sentence
+    for elem in &store.sentences[store.sent_idx(sid)].elements {
+        match elem {
+            // if its a variable, collect it
+            Element::Variable { id, .. } if !bound.contains(id) => { out.insert(*id); }
+            // If its a sub-sentence, recurse into it
+            Element::Sub(sub) => collect_free_vars(*sub, store, out, bound),
             _ => {}
         }
     }
@@ -354,12 +367,14 @@ fn alloc_vars(
     store: &KifStore,
     base: u32,
 ) -> (HashMap<String, u32>, u32) {
-    let mut all_vars: Vec<String> = Vec::new();
-    collect_all_vars(sid, store, &mut all_vars);
+    let mut free_vars: HashSet<u64> = HashSet::new();
+    let mut bound_vars: HashSet<u64> = HashSet::new();
+    collect_free_vars(sid, store, &mut free_vars, &mut bound_vars);
     let mut next = base;
-    let vars: HashMap<String, u32> = all_vars
+    let vars: HashMap<String, u32> = free_vars
         .into_iter()
-        .map(|name| {
+        .map(|id| {
+            let name = store.sym_name(id);
             let idx = next;
             next += 1;
             (name, idx)
@@ -460,6 +475,7 @@ impl EmbeddedProverRunner {
         query_sids: &[SentenceId],
         opts: &ProverOpts,
     ) -> ProverResult {
+        // Create a new Vampire prover
         let mut problem = {
             let mut vp_opts = Options::new();
             if let ProverMode::Prove = opts.mode {
@@ -530,6 +546,7 @@ impl EmbeddedProverRunner {
             status,
             raw_output: format!("{:?}", res),
             bindings,
+            proof_kif: Vec::new(),
         }
     }
 }

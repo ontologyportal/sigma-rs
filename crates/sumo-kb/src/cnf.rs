@@ -19,7 +19,7 @@ use crate::types::{
     Element, Literal as KifLiteral,
     SentenceId, Symbol, SymbolId,
 };
-use crate::tokenizer::OpKind;
+use crate::parse::kif::OpKind;
 
 // ── Intermediate Formula tree ─────────────────────────────────────────────────
 

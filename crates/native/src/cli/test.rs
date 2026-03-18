@@ -4,6 +4,7 @@ use inline_colorization::*;
 use crate::cli::args::KbArgs;
 use crate::cli::util::open_or_build_kb;
 use crate::ask::{ask as native_ask, AskOptions, Binding};
+use crate::cli::util::parse_lang;
 use crate::{parse_error};
 use sumo_kb::{tokenize, parse, AstNode, Pretty};
 
@@ -20,7 +21,7 @@ struct TestCase {
     extra_files: Vec<String>,
 }
 
-pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool, backend: String) -> bool {
+pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool, backend: String, lang: String) -> bool {
     log::trace!("run_test(path={:?}, kb_args={:#?})", path, kb_args);
     log::debug!("Test subcommand selected");
 
@@ -132,7 +133,7 @@ pub fn run_test(path: PathBuf, kb_args: KbArgs, keep: bool, backend: String) -> 
                 keep_tmp_file: keep,
                 session: Some(session.clone()),
                 backend: backend.clone(),
-                ..AskOptions::default()
+                lang: parse_lang(&lang),
             },
         );
 

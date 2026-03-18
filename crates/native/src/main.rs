@@ -117,9 +117,11 @@ fn main() {
             timeout,
             session,
             backend,
+            lang,
             kb,
-            keep
-        } => run_ask(formula, tell, timeout, session, backend, kb, keep),
+            keep,
+            proof,
+        } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof),
         Cmd::Translate {
             formula,
             lang,
@@ -133,7 +135,7 @@ fn main() {
             session.as_deref(),
             kb,
         ),
-        Cmd::Test { path, kb, keep, backend } => run_test(path, kb, keep, backend),
+        Cmd::Test { path, kb, keep, backend, lang } => run_test(path, kb, keep, backend, lang),
     };
     process::exit(if ok { 0 } else { 1 });
 }

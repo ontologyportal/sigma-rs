@@ -1,11 +1,11 @@
-// crates/sumo-kb/src/parser.rs
+// crates/sumo-kb/src/parse/kif/parser.rs
 // Ported verbatim from sumo-parser-core/src/parser.rs.
-// Only change: import paths updated to crate-local modules.
+// Only change: import paths updated to local submodule.
 
 use core::fmt;
 use inline_colorization::*;
-use crate::error::{ParseError, Span};
-use crate::tokenizer::{OpKind, Token, TokenKind};
+use super::error::{ParseError, Span};
+use super::tokenizer::{OpKind, Token, TokenKind};
 
 // ── AST ───────────────────────────────────────────────────────────────────────
 
@@ -31,6 +31,47 @@ impl AstNode {
             AstNode::Str { span, .. }         => span,
             AstNode::Number { span, .. }      => span,
             AstNode::Operator { span, .. }    => span,
+        }
+    }
+
+    /// Compact flat KIF string — `(op arg1 arg2)` without extra spaces.
+    pub fn flat(&self) -> String {
+        match self {
+            AstNode::List { elements, .. } => {
+                if elements.is_empty() { return "()".into(); }
+                format!("({})", elements.iter().map(AstNode::flat).collect::<Vec<_>>().join(" "))
+            }
+            AstNode::Symbol { name, .. }      => name.clone(),
+            AstNode::Variable { name, .. }    => format!("?{}", name),
+            AstNode::RowVariable { name, .. } => format!("@{}", name),
+            AstNode::Str { value, .. }
+            | AstNode::Number { value, .. }   => value.clone(),
+            AstNode::Operator { op, .. }      => op.name().to_owned(),
+        }
+    }
+
+    /// Indented KIF pretty-printer.
+    ///
+    /// Expressions that fit within 72 columns at `indent` are kept on one line.
+    /// Longer ones break so that the operator stays on the opening line and
+    /// each argument is placed on its own line indented two spaces further.
+    pub fn pretty_print(&self, indent: usize) -> String {
+        const LINE_WIDTH: usize = 72;
+        let flat = self.flat();
+        if indent + flat.len() <= LINE_WIDTH {
+            return Pretty(self).to_string();
+        }
+        match self {
+            AstNode::List { elements, .. } if elements.len() >= 2 => {
+                println!("indent: {}", indent);
+                let pad  = " ".repeat(indent + 2);
+                let head = elements[0].pretty_print(0);
+                let args: Vec<String> = elements[1..].iter()
+                    .map(|e| format!("{}{}", pad, e.pretty_print(indent + 2)))
+                    .collect();
+                format!("({}\n{})", head, args.join("\n"))
+            }
+            _ => Pretty(self).to_string(),
         }
     }
 }
@@ -72,7 +113,17 @@ impl fmt::Display for Pretty<'_> {
             }
             AstNode::Operator { op, .. } =>
                 write!(f, "{color_cyan}{}{color_reset}", op.name()),
-            other => write!(f, "{}", other),
+            AstNode::Number { value, ..}
+            | AstNode::Str { value, ..} => write!(f, "{color_green}{}{color_reset}", value),
+            AstNode::Variable { ..}
+            | AstNode::RowVariable { .. } => write!(f, "{color_magenta}{}{color_reset}", self.0.flat()),
+            AstNode::Symbol { name, .. } => {
+                if name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                    write!(f, "{color_bright_blue}{}{color_reset}", name)
+                } else {
+                    write!(f, "{color_yellow}{}{color_reset}", name)
+                }
+            }
         }
     }
 }
@@ -180,7 +231,7 @@ pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<(Span, ParseE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tokenizer::tokenize;
+    use super::super::tokenizer::tokenize;
 
     fn parse_kif(src: &str) -> Vec<AstNode> {
         let (tokens, _) = tokenize(src, "test");

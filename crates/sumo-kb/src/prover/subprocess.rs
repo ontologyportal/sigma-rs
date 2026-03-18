@@ -1,15 +1,8 @@
-// crates/sumo-kb/src/prover.rs
+// crates/sumo-kb/src/prover/subprocess.rs
 //
-// ProverRunner trait + VampireRunner implementation.
-// Gated: #[cfg(feature = "ask")] in lib.rs.
-//
-// Ported from sumo-native/src/prover.rs and sumo-native/src/ask.rs.
-
-#[cfg(all(feature = "ask", target_arch = "wasm32"))]
-compile_error!("sumo-kb: the `ask` feature is not available on wasm32 targets");
+// VampireRunner — subprocess-based Vampire prover.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,48 +10,7 @@ use std::process::Command;
 
 use regex::Regex;
 
-// ── Public API types ──────────────────────────────────────────────────────────
-
-pub trait ProverRunner: Send + Sync {
-    fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult;
-}
-
-pub struct ProverOpts {
-    pub timeout_secs: u32,
-    pub mode: ProverMode,
-}
-
-pub enum ProverMode {
-    Prove,
-    CheckConsistency,
-}
-
-pub struct ProverResult {
-    pub status:     ProverStatus,
-    pub raw_output: String,
-    pub bindings:   Vec<Binding>,
-}
-
-pub enum ProverStatus {
-    Proved,
-    Disproved,
-    Consistent,
-    Inconsistent,
-    Timeout,
-    Unknown,
-}
-
-#[derive(Debug, Clone)]
-pub struct Binding {
-    pub variable: String,
-    pub value:    String,
-}
-
-impl fmt::Display for Binding {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} = {}", self.variable, self.value)
-    }
-}
+use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverRunner, ProverStatus};
 
 // ── VampireRunner ─────────────────────────────────────────────────────────────
 
@@ -82,6 +34,7 @@ impl ProverRunner for VampireRunner {
                 status:     ProverStatus::Unknown,
                 raw_output: format!("Failed to write TPTP tmp file: {}", e),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             };
         }
 
@@ -91,6 +44,7 @@ impl ProverRunner for VampireRunner {
         log::debug!(target: "sumo_kb::prover",
             "vampire: {} {} {}",
             self.vampire_path.display(), args.join(" "), tmp_path.display());
+        log::info!(target: "sumo_kb::prover", "starting vampire prover");
 
         let output = Command::new(&self.vampire_path)
             .args(args)
@@ -109,6 +63,7 @@ impl ProverRunner for VampireRunner {
                 status:     ProverStatus::Unknown,
                 raw_output: format!("Failed to run vampire: {}", e),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             },
             Ok(out) => {
                 let stdout   = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -118,8 +73,17 @@ impl ProverRunner for VampireRunner {
                 let status = determine_status(&combined, &opts.mode);
                 log::info!(target: "sumo_kb::prover", "vampire result: {:?}", status_label(&status));
 
-                let bindings = if matches!(opts.mode, ProverMode::Prove) {
-                    let parsed = parse_vampire_output(&combined);
+                // Only extract bindings when Vampire proved the conjecture via
+                // a genuine refutation (SZS Theorem).  ContradictoryAxioms /
+                // Unsatisfiable proofs derive contradiction purely from the
+                // axioms and carry no negated-conjecture steps, so the
+                // TptpProofProcessor cannot find any variable bindings there.
+                let has_proof = combined.contains("SZS output start");
+                let parsed = if has_proof { parse_vampire_output(&combined) } else { VampireOutput::default() };
+
+                let bindings = if matches!(opts.mode, ProverMode::Prove)
+                    && combined.contains("SZS status Theorem")
+                {
                     let mut proc = TptpProofProcessor::new();
                     proc.load_proof(&parsed.proof_steps);
                     proc.extract_answers()
@@ -127,7 +91,34 @@ impl ProverRunner for VampireRunner {
                     Vec::new()
                 };
 
-                ProverResult { status, raw_output: combined, bindings }
+                let proof_kif = if has_proof {
+                    // Build id→index map so we can resolve parent references.
+                    let id_to_idx: HashMap<&str, usize> = parsed.proof_steps
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| (s.id.as_str(), i))
+                        .collect();
+                    let parent_re = Regex::new(r"\b(f\d+)\b").unwrap();
+                    let triples: Vec<(String, String, Vec<usize>)> = parsed.proof_steps
+                        .iter()
+                        .map(|s| {
+                            let premises = s.inference.as_deref()
+                                .and_then(|inf| inf.rfind('[').map(|p| &inf[p..]))
+                                .map(|bracket_part| {
+                                    parent_re.captures_iter(bracket_part)
+                                        .filter_map(|c| id_to_idx.get(c.get(1)?.as_str()).copied())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            (s.formula.clone(), s.role.clone(), premises)
+                        })
+                        .collect();
+                    crate::tptp::kif::proof_steps_to_kif(&triples)
+                } else {
+                    Vec::new()
+                };
+
+                ProverResult { status, raw_output: combined, bindings, proof_kif }
             }
         }
     }

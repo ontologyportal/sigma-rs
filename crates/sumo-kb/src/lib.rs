@@ -8,11 +8,9 @@ compile_error!(
 
 // ── Module declarations ──────────────────────────────────────────────────────
 
+pub mod parse;
 pub mod error;
 pub mod types;
-
-pub mod tokenizer;
-pub mod parser;
 pub(crate) mod kif_store;
 pub(crate) mod semantic;
 pub(crate) mod fingerprint;
@@ -25,11 +23,9 @@ pub(crate) mod cnf;
 #[cfg(feature = "ask")]
 pub mod prover;
 
+
 #[cfg(feature = "persist")]
 pub(crate) mod persist;
-
-#[cfg(feature = "integrated-prover")]
-pub mod embedded_prover;
 
 pub(crate) mod kb;
 
@@ -49,11 +45,12 @@ pub use types::{
 };
 pub use tptp::{TptpOptions, TptpLang};
 pub use kb::KnowledgeBase;
-pub use tokenizer::{tokenize, Token, TokenKind};
-pub use parser::{parse, AstNode, Pretty};
+pub use parse::kif::{tokenize, Token, TokenKind, parse, AstNode, Pretty};
 
 #[cfg(feature = "cnf")]
 pub use kb::{ClausifyOptions, ClausifyReport};
+
+pub use tptp::{formula_to_kif, formula_to_ast, KifProofStep, proof_steps_to_kif};
 
 #[cfg(feature = "ask")]
 pub use prover::{
@@ -62,4 +59,4 @@ pub use prover::{
 };
 
 #[cfg(feature = "integrated-prover")]
-pub use embedded_prover::EmbeddedProverRunner;
+pub use prover::EmbeddedProverRunner;

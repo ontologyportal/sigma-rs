@@ -11,9 +11,7 @@
 use std::{collections::HashMap, fmt};
 use inline_colorization::*;
 
-use crate::error::{ParseError, Span};
-use crate::parser::AstNode;
-use crate::tokenizer::OpKind;
+use crate::parse::kif::{ParseError, Span, AstNode, OpKind};
 use crate::types::{Element, Literal, Sentence, SentenceId, Symbol, SymbolId, TaxEdge, TaxRelation};
 
 // ── KifStore ──────────────────────────────────────────────────────────────────
@@ -483,14 +481,14 @@ impl<'a> fmt::Display for ElementDisplay<'a> {
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) {
                     write!(f, "{color_yellow}{}{color_reset}", name)
                 } else {
-                    write!(f, "{color_green}{}{color_reset}", name)
+                    write!(f, "{color_blue}{}{color_reset}", name)
                 }
             }
-            Element::Variable { name, is_row: false, .. } => write!(f, "{color_bright_blue}?{}{color_reset}", name),
-            Element::Variable { name, is_row: true,  .. } => write!(f, "{color_bright_blue}@{}{color_reset}", name),
+            Element::Variable { name, is_row: false, .. } => write!(f, "{color_magenta}?{}{color_reset}", name),
+            Element::Variable { name, is_row: true,  .. } => write!(f, "{color_magenta}@{}{color_reset}", name),
             Element::Literal(Literal::Str(s))    => write!(f, "{}", s),
-            Element::Literal(Literal::Number(n)) => write!(f, "{}", n),
-            Element::Op(op)                      => write!(f, "{}", op),
+            Element::Literal(Literal::Number(n)) => write!(f, "{color_green}{}{color_reset}", n),
+            Element::Op(op)                      => write!(f, "{color_cyan}{}{color_reset}", op),
             Element::Sub(sid)                    => SentenceDisplay::raw(*sid, self.store, self.indent, -1).fmt(f),
         };
         if self.highlight { write!(f, "{style_reset}") } else { res }
@@ -552,8 +550,7 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
 
 /// Parse `text` (tagged as `file`) into `store`.  Returns hard parse errors.
 pub(crate) fn load_kif(store: &mut KifStore, text: &str, file: &str) -> Vec<(Span, ParseError)> {
-    use crate::tokenizer::tokenize;
-    use crate::parser::parse;
+    use crate::parse::kif::{tokenize, parse};
     let (tokens, tok_errors) = tokenize(text, file);
     let (nodes,  parse_errors) = parse(tokens, file);
     let mut errors = tok_errors;

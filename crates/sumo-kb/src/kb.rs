@@ -25,7 +25,7 @@ use crate::persist::{load_from_db, write_axioms, LmdbEnv};
 use crate::prover::{ProverMode, ProverOpts, ProverResult, ProverStatus, ProverRunner};
 
 #[cfg(feature = "integrated-prover")]
-use crate::embedded_prover::EmbeddedProverRunner;
+use crate::prover::EmbeddedProverRunner;
 
 // ── Feature-gated KB config types ────────────────────────────────────────────
 
@@ -634,12 +634,14 @@ impl KnowledgeBase {
 
     /// Ask the theorem prover whether `query_kif` is entailed by the KB.
     /// `session` = optional in-memory session whose assertions are included as hypotheses.
+    /// `lang` controls the TPTP language used for the generated problem file.
     #[cfg(feature = "ask")]
     pub fn ask(
         &mut self,
         query_kif: &str,
         session:   Option<&str>,
         runner:    &dyn ProverRunner,
+        lang:      TptpLang,
     ) -> ProverResult {
         log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
 
@@ -662,6 +664,7 @@ impl KnowledgeBase {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             };
         }
 
@@ -677,6 +680,7 @@ impl KnowledgeBase {
                 status:     ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             };
         }
 
@@ -687,11 +691,11 @@ impl KnowledgeBase {
             .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
 
-        let kb_opts = TptpOptions { lang: TptpLang::Fof, hide_numbers: true, ..TptpOptions::default() };
+        let kb_opts = TptpOptions { lang, hide_numbers: true, ..TptpOptions::default() };
         let mut tptp = kb_to_tptp(&self.layer, "kb", &kb_opts, &axiom_ids, &assertion_ids);
 
         // Append conjecture(s).
-        let q_opts = TptpOptions { lang: TptpLang::Fof, query: true, hide_numbers: true, ..TptpOptions::default() };
+        let q_opts = TptpOptions { lang, query: true, hide_numbers: true, ..TptpOptions::default() };
         for (i, &qsid) in query_sids.iter().enumerate() {
             let conj = sentence_to_tptp(qsid, &self.layer, &q_opts);
             tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
@@ -739,6 +743,7 @@ impl KnowledgeBase {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             };
         }
 
@@ -754,6 +759,7 @@ impl KnowledgeBase {
                 status:     ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
                 bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
             };
         }
 
@@ -833,7 +839,7 @@ impl KnowledgeBase {
         if !store.has_sentence(sid) { return format!("<sid:{}>", sid); }
         let sentence = &store.sentences[store.sent_idx(sid)];
         let display = format!("{:?}", sentence.elements);
-        if display.len() > 60 { format!("{}…", &display[..60]) } else { display }
+        if display.len() > 60 { format!("{}…", &display[..62]) } else { display }
     }
 }
 

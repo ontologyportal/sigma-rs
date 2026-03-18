@@ -15,7 +15,7 @@ use crate::kif_store::KifStore;
 use crate::types::{Element, SentenceId, Sentence, Symbol, TaxEdge, TaxRelation};
 use super::env::{LmdbEnv, StoredElement, StoredFormula};
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// Public entry point
 
 /// Load all formulas from `env` into a fresh `KifStore`.
 ///
@@ -28,7 +28,7 @@ pub(crate) fn load_from_db(
 ) -> Result<(KifStore, HashMap<SentenceId, Option<String>>), KbError> {
     let txn = env.read_txn()?;
 
-    // ── Load symbols ──────────────────────────────────────────────────────────
+    // Load symbols
     let stored_syms = env.all_symbols(&txn)?;
     log::info!(target: "sumo_kb::persist",
         "load_from_db: loading {} symbols", stored_syms.len());

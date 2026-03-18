@@ -9,7 +9,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 // Re-export OpKind so consumers only need to import from types.
-pub use crate::tokenizer::OpKind;
+pub use crate::parse::kif::OpKind;
 
 // ── Id types ─────────────────────────────────────────────────────────────────
 

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::KbError;
 use crate::types::{Literal, SentenceId, SymbolId};
-use crate::tokenizer::OpKind;
+use crate::parse::kif::OpKind;
 
 // ── Stored types ──────────────────────────────────────────────────────────────
 

@@ -1,10 +1,10 @@
-// crates/sumo-kb/src/tokenizer.rs
+// crates/sumo-kb/src/parse/kif/tokenizer.rs
 // Ported verbatim from sumo-parser-core/src/tokenizer.rs.
 // Only change: inline_colorization used for OpKind Display.
 
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use crate::error::{ParseError, Span};
+use super::error::{ParseError, Span};
 
 // ── OpKind ────────────────────────────────────────────────────────────────────
 

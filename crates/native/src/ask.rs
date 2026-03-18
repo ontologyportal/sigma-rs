@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use sumo_kb::{KnowledgeBase, VampireRunner, ProverStatus};
+use sumo_kb::{KnowledgeBase, VampireRunner, ProverStatus, TptpLang};
 
 pub use sumo_kb::Binding;
 
@@ -21,6 +21,8 @@ pub struct AskOptions {
     pub session: Option<String>,
     /// Prover backend: "subprocess" (default) or "embedded".
     pub backend: String,
+    /// TPTP language to use when generating the problem file.
+    pub lang: TptpLang,
 }
 
 /// Result from `ask()`.
@@ -47,12 +49,20 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
     let result = match opts.backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
+            if matches!(opts.lang, TptpLang::Tff) {
+                return AskResult {
+                    proved:     false,
+                    raw_output: String::new(),
+                    errors:     vec!["TFF is not yet supported with the embedded prover backend".into()],
+                    inference:  Vec::new(),
+                };
+            }
             kb.ask_embedded(query_kif, opts.session.as_deref(), timeout_secs)
         }
         _ => {
             let vampire_path = opts.vampire_path.unwrap_or_else(|| PathBuf::from("vampire"));
             let runner = VampireRunner { vampire_path, timeout_secs };
-            kb.ask(query_kif, opts.session.as_deref(), &runner)
+            kb.ask(query_kif, opts.session.as_deref(), &runner, opts.lang)
         }
     };
 
