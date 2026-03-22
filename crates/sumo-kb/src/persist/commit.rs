@@ -3,7 +3,7 @@
 // Write promoted axioms to LMDB.
 //
 // Key difference from old store/src/commit.rs:
-// IDs are already stable — NO remapping needed.  We write symbols and formulas
+// IDs are already stable -- NO remapping needed.  We write symbols and formulas
 // with the IDs they already hold in `KifStore`.
 #[cfg(feature = "cnf")]
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use super::env::{LmdbEnv, StoredElement, StoredFormula, StoredSymbol};
 /// All sentences listed in `sids` are written together in a single LMDB
 /// write transaction.  On any error the transaction is aborted automatically.
 ///
-/// `session`: `None` → axiom; `Some(name)` → session assertion.
+/// `session`: `None` -> axiom; `Some(name)` -> session assertion.
 /// `clauses`: pre-computed CNF clauses (only used when `cnf` feature is enabled).
 pub(crate) fn write_axioms(
     env:     &LmdbEnv,
@@ -35,7 +35,7 @@ pub(crate) fn write_axioms(
     let mut wtxn = env.write_txn()?;
     log::debug!(target: "sumo_kb::persist", "write txn opened");
 
-    // ── 1. Intern all symbols from `store` (write only new ones) ─────────────
+    // -- 1. Intern all symbols from `store` (write only new ones) -------------
     for sym in &store.symbol_data {
         if sym.name.is_empty() { continue; }
         env.put_symbol(&mut wtxn, &StoredSymbol {
@@ -48,14 +48,14 @@ pub(crate) fn write_axioms(
     log::debug!(target: "sumo_kb::persist",
         "write_axioms: interned {} symbols", store.symbol_data.len());
 
-    // ── 2. Write each sentence ────────────────────────────────────────────────
+    // -- 2. Write each sentence ------------------------------------------------
     for &sid in sids {
         write_sentence(env, &mut wtxn, store, sid,
             #[cfg(feature = "cnf")] clauses,
             session)?;
     }
 
-    // ── 3. Commit ─────────────────────────────────────────────────────────────
+    // -- 3. Commit -------------------------------------------------------------
     wtxn.commit()?;
     log::info!(target: "sumo_kb::persist",
         "write_axioms: committed {} sentence(s)", sids.len());
@@ -102,7 +102,7 @@ fn write_sentence(
     Ok(())
 }
 
-// ── Build StoredElements ──────────────────────────────────────────────────────
+// -- Build StoredElements ------------------------------------------------------
 
 fn build_stored_elements(
     store: &KifStore,
@@ -139,7 +139,7 @@ fn build_stored_element(
     })
 }
 
-// ── Path index from CNF clauses ───────────────────────────────────────────────
+// -- Path index from CNF clauses -----------------------------------------------
 
 #[cfg(feature = "cnf")]
 fn index_cnf_paths(

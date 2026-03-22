@@ -1,48 +1,8 @@
 // crates/sumo-kb/src/parse/kif/tokenizer.rs
-// Ported verbatim from sumo-parser-core/src/tokenizer.rs.
-// Only change: inline_colorization used for OpKind Display.
+use super::error::KifParseError;
+use crate::parse::ast::{Span, OpKind};
 
-use core::fmt;
-use serde::{Deserialize, Serialize};
-use super::error::{ParseError, Span};
-
-// ── OpKind ────────────────────────────────────────────────────────────────────
-
-/// Logical operators that are keywords in KIF.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OpKind {
-    And,
-    Or,
-    Not,
-    Implies,  // =>
-    Iff,      // <=>
-    Equal,    // equal
-    ForAll,   // forall
-    Exists,   // exists
-}
-
-impl OpKind {
-    pub fn name(&self) -> &'static str {
-        match self {
-            OpKind::And     => "and",
-            OpKind::Or      => "or",
-            OpKind::Not     => "not",
-            OpKind::Implies => "=>",
-            OpKind::Iff     => "<=>",
-            OpKind::Equal   => "equal",
-            OpKind::ForAll  => "forall",
-            OpKind::Exists  => "exists",
-        }
-    }
-}
-
-impl fmt::Display for OpKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name())
-    }
-}
-
-// ── Token types ───────────────────────────────────────────────────────────────
+// -- Token types ---------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
@@ -62,13 +22,25 @@ pub enum TokenKind {
     Operator(OpKind),
 }
 
+impl TokenKind {
+    pub fn can_head(&self) -> bool {
+        match self {
+            TokenKind::Symbol(_)
+            | TokenKind::Variable(_)
+            | TokenKind::RowVariable(_)
+            | TokenKind::Operator(_) => return true,
+            _ => return false
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
 
-// ── Tokenizer ─────────────────────────────────────────────────────────────────
+// -- Tokenizer -----------------------------------------------------------------
 
 pub struct Tokenizer<'src> {
     #[allow(dead_code)]
@@ -111,11 +83,11 @@ impl<'src> Tokenizer<'src> {
         }
     }
 
-    fn read_string(&mut self, start_span: Span) -> Result<Token, (Span, ParseError)> {
+    fn read_string(&mut self, start_span: Span) -> Result<Token, (Span, KifParseError)> {
         let mut s = String::from('"');
         loop {
             match self.advance() {
-                None => return Err((start_span.clone(), ParseError::UnterminatedString { span: start_span })),
+                None => return Err((start_span.clone(), KifParseError::UnterminatedString { span: start_span })),
                 Some('"') => { s.push('"'); break; }
                 Some(ch)  => s.push(ch),
             }
@@ -158,7 +130,7 @@ impl<'src> Tokenizer<'src> {
         }
     }
 
-    fn next_token(&mut self) -> Result<Option<Token>, (Span, ParseError)> {
+    fn next_token(&mut self) -> Result<Option<Token>, (Span, KifParseError)> {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() { self.advance(); } else { break; }
         }
@@ -186,7 +158,7 @@ impl<'src> Tokenizer<'src> {
                 // word that classifies as a Symbol but begins with a non-letter
                 // (e.g. `_test`) is a tokenizer error.
                 if matches!(&kind, TokenKind::Symbol(_)) && !ch.is_alphabetic() {
-                    return Err((span.clone(), ParseError::UnexpectedChar { ch, span }));
+                    return Err((span.clone(), KifParseError::UnexpectedChar { ch, span }));
                 }
                 Ok(Some(Token { kind, span }))
             }
@@ -207,7 +179,7 @@ fn is_numeric(s: &str) -> bool {
 
 /// Tokenize `src` and return all tokens plus any hard errors encountered.
 /// Tokenization continues after an error to collect as many issues as possible.
-pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, ParseError)>) {
+pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, KifParseError)>) {
     let mut tok = Tokenizer::new(src, file);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -223,7 +195,7 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, ParseError)>) 
     (tokens, errors)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -289,6 +261,6 @@ mod tests {
         // Symbols must begin with a letter; `_test` should produce an error.
         let (_, errors) = tokenize("_test", "test");
         assert!(!errors.is_empty(), "expected tokenizer error for '_test'");
-        assert!(matches!(&errors[0].1, ParseError::UnexpectedChar { ch: '_', .. }));
+        assert!(matches!(&errors[0].1, KifParseError::UnexpectedChar { ch: '_', .. }));
     }
 }

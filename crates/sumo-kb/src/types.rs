@@ -7,25 +7,26 @@
 
 use std::fmt;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 // Re-export OpKind so consumers only need to import from types.
-pub use crate::parse::kif::OpKind;
+pub use crate::parse::ast::OpKind;
 
-// ── Id types ─────────────────────────────────────────────────────────────────
+// -- Id types -----------------------------------------------------------------
 
 /// Stable symbol identifier.  Unique within a KnowledgeBase for its lifetime.
 /// When persistence is enabled this value is identical to the LMDB sequence
-/// key — no remapping is ever required.
+/// key -- no remapping is ever required.
 pub type SymbolId = u64;
 
 /// Stable sentence / formula identifier.
 pub type SentenceId = u64;
 
-// ── Literal ──────────────────────────────────────────────────────────────────
+// -- Literal ------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Literal {
-    /// String literal — includes surrounding double-quotes as stored in source.
+    /// String literal -- includes surrounding double-quotes as stored in source.
     Str(String),
     /// Numeric literal (integer or decimal) as a raw string.
     Number(String),
@@ -40,7 +41,7 @@ impl fmt::Display for Literal {
     }
 }
 
-// ── Element ───────────────────────────────────────────────────────────────────
+// -- Element -------------------------------------------------------------------
 
 /// One element in a sentence's term list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,13 +60,15 @@ pub enum Element {
     Op(OpKind),
 }
 
-// ── Sentence ──────────────────────────────────────────────────────────────────
+// -- Sentence ------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sentence {
     /// The term list.  `elements[0]` is the head (Symbol or Op).
-    pub elements: Vec<Element>,
-    /// Source file tag — used to group sentences for session management.
+    /// Up to 4 elements fit inline without heap allocation (covers the common
+    /// case of a 3-argument predicate: head + 3 args = 4 elements total).
+    pub elements: SmallVec<[Element; 4]>,
+    /// Source file tag -- used to group sentences for session management.
     pub file: String,
     /// Source location of the opening parenthesis.
     pub span: crate::error::Span,
@@ -94,7 +97,7 @@ impl Sentence {
     }
 }
 
-// ── Symbol ────────────────────────────────────────────────────────────────────
+// -- Symbol --------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
@@ -122,7 +125,7 @@ impl Default for Symbol {
     }
 }
 
-// ── Taxonomy ──────────────────────────────────────────────────────────────────
+// -- Taxonomy ------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaxRelation {
@@ -153,7 +156,7 @@ pub struct TaxEdge {
     pub rel: TaxRelation,
 }
 
-// ── CNF types (feature = "cnf") ───────────────────────────────────────────────
+// -- CNF types (feature = "cnf") -----------------------------------------------
 
 /// A CNF clause: a disjunction of literals.
 #[cfg(feature = "cnf")]
@@ -172,7 +175,7 @@ pub struct CnfLiteral {
     pub args: Vec<CnfTerm>,
 }
 
-/// A CNF term — an argument or predicate position in a literal.
+/// A CNF term -- an argument or predicate position in a literal.
 #[cfg(feature = "cnf")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CnfTerm {

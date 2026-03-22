@@ -9,6 +9,7 @@ pub fn run_translate(
     formula:      Option<String>,
     lang:         &str,
     show_numbers: bool,
+    show_kif:     bool,
     session:      Option<&str>,
     kb_args:      KbArgs,
 ) -> bool {
@@ -21,8 +22,9 @@ pub fn run_translate(
 
     let tptp_lang = parse_lang(lang);
     let opts = TptpOptions {
-        lang:         tptp_lang,
-        hide_numbers: !show_numbers,
+        lang:             tptp_lang,
+        hide_numbers:     !show_numbers,
+        show_kif_comment: show_kif,
         ..TptpOptions::default()
     };
 
@@ -46,6 +48,9 @@ pub fn run_translate(
                 }
             }
             for sid in sids {
+                if show_kif {
+                    println!("% {}", kb.sentence_kif_str(sid));
+                }
                 println!("{}", kb.format_sentence_tptp(sid, &opts));
             }
             true

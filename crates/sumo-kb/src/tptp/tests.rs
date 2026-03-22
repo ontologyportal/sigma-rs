@@ -4,7 +4,7 @@ use crate::kif_store::{load_kif, KifStore};
 use crate::semantic::SemanticLayer;
 use crate::types::{Element, SentenceId};
 use super::options::{TptpLang, TptpOptions};
-use super::tff::{TffContext, translate_sort, infer_var_types};
+use super::tff::{TffContext, infer_var_types};
 use super::translate::{sentence_to_tptp, kb_to_tptp};
 
 fn layer_from(kif: &str) -> SemanticLayer {
@@ -33,7 +33,7 @@ fn free_variable_wrapper() {
     let layer = layer_from("(instance ?X Human)");
     let sid = layer.store.roots[0];
     let tptp = sentence_to_tptp(sid, &layer, &opts());
-    assert!(tptp.contains("! [V__X@"), "got: {}", tptp);
+    assert!(tptp.contains("! [V__X__0"), "got: {}", tptp);
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn query_mode_existential() {
     let sid = layer.store.roots[0];
     let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
     let tptp = sentence_to_tptp(sid, &layer, &q_opts);
-    assert!(tptp.contains("? [V__X@"), "got: {}", tptp);
+    assert!(tptp.contains("? [V__X__0"), "got: {}", tptp);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn nested_predicate_as_term() {
     let sid = layer.store.roots[0];
     let tptp = sentence_to_tptp(sid, &layer, &opts());
     assert!(tptp.contains("s__holds(s__holdsDuring__m,"), "got: {}", tptp);
-    assert!(tptp.contains("s__attribute(V__X,s__LegalPersonhood)"), "got: {}", tptp);
+    assert!(tptp.contains("s__attribute(V__X__0,s__LegalPersonhood)"), "got: {}", tptp);
 }
 
 #[test]
@@ -95,7 +95,7 @@ fn bare_variable_as_formula() {
     let layer = layer_from("(=> (instance ?P Proposition) ?P)");
     let sid = layer.store.roots[0];
     let tptp = sentence_to_tptp(sid, &layer, &opts());
-    assert!(tptp.contains("=> s__holds(V__P))"), "got: {}", tptp);
+    assert!(tptp.contains("=> s__holds(V__P__0))"), "got: {}", tptp);
 }
 
 #[test]
@@ -106,54 +106,54 @@ fn number_hidden_by_default() {
     assert!(tptp.contains("n__42"), "got: {}", tptp);
 }
 
-// ── Tests analogous to SUMOformulaToTPTPformulaTest.java ─────────────────────
+// -- Tests analogous to SUMOformulaToTPTPformulaTest.java ---------------------
 //
 // Java uses direct predicate calls for FOF (s__instance(V__X, s__P));
 // our implementation uses holds-encoding (s__holds(s__instance__m, V__X, s__P)).
-// Both produce the same logical formula — holds() is the standard FOF
+// Both produce the same logical formula -- holds() is the standard FOF
 // encoding of higher-order predicates.  Tests below verify the structural
 // behaviour (quantifier wrapping, operator translation, number mangling,
 // function-in-term-position, mention suffixes) in our encoding.
 // Java also wraps in an extra pair of parens ( ( ! [...] : (...) ) );
 // our output uses a single wrapper ( ! [...] : (...) ).
 
-/// string1 analog — free ?X universally quantified; implication present.
+/// string1 analog -- free ?X universally quantified; implication present.
 /// Java: (=> (instance ?X P) (instance ?X Q))
-///       → ( ! [V__X] : ((s__instance(V__X,s__P) => s__instance(V__X,s__Q)) ) )
+///       -> ( ! [V__X] : ((s__instance(V__X,s__P) => s__instance(V__X,s__Q)) ) )
 #[test]
 fn fof_implication_free_var_universally_quantified() {
     let layer = layer_from("(=> (instance ?X P) (instance ?X Q))");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
-    assert!(tptp.contains("! [V__X@"), "expected universal quantifier: {}", tptp);
+    assert!(tptp.contains("! [V__X__0"), "expected universal quantifier: {}", tptp);
     assert!(tptp.contains("=>"),       "expected implication: {}", tptp);
     assert!(tptp.contains("s__holds("), "FOF should use holds encoding: {}", tptp);
     assert!(tptp.contains("s__P"),     "expected s__P: {}", tptp);
     assert!(tptp.contains("s__Q"),     "expected s__Q: {}", tptp);
 }
 
-/// string2 analog — multiple free variables are all quantified and sorted.
+/// string2 analog -- multiple free variables are all quantified and sorted.
 /// Java: (=> (or (instance ?X Q) (instance ?X R)) (instance ?X ?T))
-///       → ( ! [V__T,V__X] : ... )  — T before X alphabetically
+///       -> ( ! [V__T,V__X] : ... )  -- T before X alphabetically
 #[test]
 fn fof_multiple_free_vars_sorted() {
     let layer = layer_from("(=> (or (instance ?X Q) (instance ?X R)) (instance ?X ?T))");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
     // Both variables should appear in the quantifier list
-    assert!(tptp.contains("V__T@"), "expected V__T in quantifier: {}", tptp);
-    assert!(tptp.contains("V__X@"), "expected V__X in quantifier: {}", tptp);
+    assert!(tptp.contains("V__T__0"), "expected V__T in quantifier: {}", tptp);
+    assert!(tptp.contains("V__X__0"), "expected V__X in quantifier: {}", tptp);
     // T should appear before X (sorted; V__T < V__X lexicographically)
-    let pos_t = tptp.find("V__T@").unwrap();
-    let pos_x = tptp.find("V__X@").unwrap();
+    let pos_t = tptp.find("V__T__0").unwrap();
+    let pos_x = tptp.find("V__X__0").unwrap();
     assert!(pos_t < pos_x, "V__T should precede V__X in sorted list: {}", tptp);
     assert!(tptp.contains("|"),  "expected disjunction: {}", tptp);
     assert!(tptp.contains("=>"), "expected implication: {}", tptp);
 }
 
-/// string3 analog — not → ~, or → |.
+/// string3 analog -- not -> ~, or -> |.
 /// Java: (or (not (instance ?X Q)) (instance ?X R))
-///       → ( ! [V__X] : ((~(s__instance(V__X,s__Q)) | s__instance(V__X,s__R)) ) )
+///       -> ( ! [V__X] : ((~(s__instance(V__X,s__Q)) | s__instance(V__X,s__R)) ) )
 #[test]
 fn fof_negation_in_disjunction() {
     let layer = layer_from("(or (not (instance ?X Q)) (instance ?X R))");
@@ -161,13 +161,13 @@ fn fof_negation_in_disjunction() {
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
     assert!(tptp.contains("~("),       "expected negation: {}", tptp);
     assert!(tptp.contains(" | "),      "expected disjunction: {}", tptp);
-    assert!(tptp.contains("! [V__X@"), "expected universal quantifier: {}", tptp);
+    assert!(tptp.contains("! [V__X__0"), "expected universal quantifier: {}", tptp);
 }
 
-/// string4 analog — biconditional expands to paired implications; integer
+/// string4 analog -- biconditional expands to paired implications; integer
 /// literal 0 hidden as n__0 when hide_numbers is set.
 /// Java: (<=> (instance ?N NegativeRealNumber) (and (lessThan ?N 0) ...))
-///       → (... => ...) & (... => ...)  with n__0
+///       -> (... => ...) & (... => ...)  with n__0
 #[test]
 fn fof_biconditional_expands_with_hidden_integer() {
     let layer = layer_from(
@@ -185,7 +185,7 @@ fn fof_biconditional_expands_with_hidden_integer() {
         "raw 0 should not appear: {}", tptp);
 }
 
-/// string5 analog — decimal literal 0.001 hidden as n__0_001 (dot → _).
+/// string5 analog -- decimal literal 0.001 hidden as n__0_001 (dot -> _).
 #[test]
 fn fof_decimal_number_hidden_with_underscore() {
     let layer = layer_from(
@@ -198,10 +198,10 @@ fn fof_decimal_number_hidden_with_underscore() {
     assert!(!tptp.contains("0.001"),   "raw decimal should not appear: {}", tptp);
 }
 
-/// string6 analog — function application in term position renders as
+/// string6 analog -- function application in term position renders as
 /// s__WhenFn(V__THING) not as a holds call.
 /// Java: (<=> (temporalPart ?POS (WhenFn ?THING)) (time ?THING ?POS))
-///       → ... s__temporalPart(V__POS, s__WhenFn(V__THING)) ...
+///       -> ... s__temporalPart(V__POS, s__WhenFn(V__THING)) ...
 #[test]
 fn fof_function_as_term_in_argument_position() {
     let layer = layer_from("(<=> (temporalPart ?POS (WhenFn ?THING)) (time ?THING ?POS))");
@@ -210,17 +210,17 @@ fn fof_function_as_term_in_argument_position() {
     // WhenFn appears in term position: rendered as a direct function call
     assert!(tptp.contains("s__WhenFn("), "WhenFn should be a direct function call: {}", tptp);
     // Both free variables present
-    assert!(tptp.contains("V__POS@"),   "expected V__POS: {}", tptp);
-    assert!(tptp.contains("V__THING@"), "expected V__THING: {}", tptp);
+    assert!(tptp.contains("V__POS__0"),   "expected V__POS: {}", tptp);
+    assert!(tptp.contains("V__THING__0"), "expected V__THING: {}", tptp);
     // Biconditional structure
     assert!(tptp.matches("=>").count() >= 2, "biconditional needs two implications: {}", tptp);
 }
 
-/// string7 analog — biconditional where one side is an existential.
+/// string7 analog -- biconditional where one side is an existential.
 /// The existentially bound variable stays bound; the other free variable
 /// gets a universal quantifier at the top.
 /// Java: (<=> (exists (?BUILD) (and ...)) (instance ?ARTIFACT StationaryArtifact))
-///       → ( ! [V__ARTIFACT] : ((( ? [V__BUILD] : ...) => ...) & (... => ( ? [V__BUILD] : ...))))
+///       -> ( ! [V__ARTIFACT] : ((( ? [V__BUILD] : ...) => ...) & (... => ( ? [V__BUILD] : ...))))
 #[test]
 fn fof_biconditional_with_existential() {
     let layer = layer_from(
@@ -230,21 +230,21 @@ fn fof_biconditional_with_existential() {
     );
     let sid  = layer.store.roots[0];
     let tptp = sentence_to_tptp(sid, &layer, &opts());
-    // ARTIFACT is free → universally quantified at top
-    assert!(tptp.contains("! [V__ARTIFACT@"), "expected outer universal: {}", tptp);
+    // ARTIFACT is free -> universally quantified at top
+    assert!(tptp.contains("! [V__ARTIFACT__0"), "expected outer universal: {}", tptp);
     // BUILD is bound by exists
-    assert!(tptp.contains("? [V__BUILD@"),    "expected inner existential: {}", tptp);
+    assert!(tptp.contains("? [V__BUILD__1"),    "expected inner existential: {}", tptp);
     // Both directions of biconditional
     assert!(tptp.matches("=>").count() >= 2,   "biconditional needs two implications: {}", tptp);
 }
 
-/// embedded analog — predicate used as a term (argument, not head) gets __m suffix.
-/// Java: (instance equal BinaryPredicate) → s__instance(s__equal__m, s__BinaryPredicate)
+/// embedded analog -- predicate used as a term (argument, not head) gets __m suffix.
+/// Java: (instance equal BinaryPredicate) -> s__instance(s__equal__m, s__BinaryPredicate)
 /// Our encoding: s__holds(s__instance__m, s__equal__m, s__BinaryPredicate)
 #[test]
 fn fof_predicate_as_term_gets_mention_suffix() {
     // "instance" is the head (no __m); "subclass" appears in argument position
-    // (as the second arg to domain), which is a term context → __m suffix
+    // (as the second arg to domain), which is a term context -> __m suffix
     let layer = layer_from("(domain subclass 1 Class)");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
@@ -253,20 +253,20 @@ fn fof_predicate_as_term_gets_mention_suffix() {
     assert!(tptp.contains("s__Class"),       "expected class name: {}", tptp);
 }
 
-/// equality analog — (equal A B) → (A = B) in both FOF and TFF.
-/// Java: (equal ?VAL (ListOrderFn ...)) → (V__VAL = s__ListOrderFn(...))
+/// equality analog -- (equal A B) -> (A = B) in both FOF and TFF.
+/// Java: (equal ?VAL (ListOrderFn ...)) -> (V__VAL = s__ListOrderFn(...))
 #[test]
 fn fof_equal_operator_produces_infix_eq() {
     let layer = layer_from("(equal ?VAL (WhenFn ?T))");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
-    // equal → infix =, not s__holds
+    // equal -> infix =, not s__holds
     assert!(tptp.contains(" = "),       "equal should produce infix =: {}", tptp);
     assert!(tptp.contains("s__WhenFn("), "RHS function should be a term call: {}", tptp);
     assert!(!tptp.contains("s__equal"), "equal operator should not appear as s__equal: {}", tptp);
 }
 
-/// hol analog — negated existential: (not (exists (?O2) (...))) → ~(( ? [...] : (...)))
+/// hol analog -- negated existential: (not (exists (?O2) (...))) -> ~(( ? [...] : (...)))
 /// Java hol test also checks that the entire complex formula is wrapped once.
 #[test]
 fn fof_negated_existential() {
@@ -279,10 +279,10 @@ fn fof_negated_existential() {
     assert!(tptp.contains("! ["),     "free vars should be universally quantified: {}", tptp);
     // Negation wraps the existential
     assert!(tptp.contains("~("),      "expected negation: {}", tptp);
-    assert!(tptp.contains("? [V__O2@"), "expected bound existential variable: {}", tptp);
+    assert!(tptp.contains("? [V__O2__1"), "expected bound existential variable: {}", tptp);
 }
 
-/// hol analog — deeply nested formula with conjunction and existential inside negation.
+/// hol analog -- deeply nested formula with conjunction and existential inside negation.
 #[test]
 fn fof_nested_conjunction_in_negated_existential() {
     let layer = layer_from(
@@ -295,11 +295,11 @@ fn fof_nested_conjunction_in_negated_existential() {
     assert!(tptp.contains("! ["),    "free vars should be quantified: {}", tptp);
     assert!(tptp.contains(" & "),    "expected conjunction: {}", tptp);
     assert!(tptp.contains("~("),     "expected negation: {}", tptp);
-    assert!(tptp.contains("? [V__O2@"), "expected bound existential: {}", tptp);
+    assert!(tptp.contains("? [V__O2__1"), "expected bound existential: {}", tptp);
     assert!(tptp.contains("=>"),     "expected outer implication: {}", tptp);
 }
 
-/// Conjunction in formula position — & connects translated sub-formulas.
+/// Conjunction in formula position -- & connects translated sub-formulas.
 #[test]
 fn fof_conjunction_of_predicates() {
     let layer = layer_from("(and (instance ?X Foo) (instance ?Y Bar))");
@@ -307,22 +307,22 @@ fn fof_conjunction_of_predicates() {
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
     assert!(tptp.contains(" & "),      "expected conjunction: {}", tptp);
     assert!(tptp.contains("s__holds("), "FOF should use holds encoding: {}", tptp);
-    assert!(tptp.contains("V__X@"),    "expected V__X: {}", tptp);
-    assert!(tptp.contains("V__Y@"),    "expected V__Y: {}", tptp);
+    assert!(tptp.contains("V__X__0"),    "expected V__X: {}", tptp);
+    assert!(tptp.contains("V__Y__0"),    "expected V__Y: {}", tptp);
 }
 
-/// Forall with bound variable — bound variable not re-quantified at top level.
+/// Forall with bound variable -- bound variable not re-quantified at top level.
 #[test]
 fn fof_forall_bound_var_not_double_quantified() {
     let layer = layer_from("(forall (?X) (instance ?X Human))");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &opts());
-    assert!(tptp.contains("! [V__X@"), "expected forall with V__X: {}", tptp);
+    assert!(tptp.contains("! [V__X__1"), "expected forall with V__X: {}", tptp);
     // The bound variable should appear exactly once in a [ ] quantifier list
-    let q_list_count = tptp.matches("[V__X@").count()
-        + tptp.matches("! [V__X@").count();
+    let q_list_count = tptp.matches("[V__X__1").count()
+        + tptp.matches("! [V__X__1").count();
     // There should NOT be two separate universal quantifiers for the same var
-    assert!(!tptp.contains("! [V__X@") || tptp.matches("! [").count() == 1,
+    assert!(!tptp.contains("! [V__X__1") || tptp.matches("! [").count() == 1,
         "bound var should not get an extra outer quantifier: {}", tptp);
 }
 
@@ -343,53 +343,53 @@ fn kb_to_tptp_contains_axiom() {
     assert!(tptp.contains(",axiom,"), "got: {}", tptp);
 }
 
-// ── translate_sort tests ──────────────────────────────────────────────────────
+// -- sort_for tests (SemanticLayer::sort_for) ---------------------------------
 
 #[test]
-fn translate_sort_exact_integer() {
+fn sort_for_exact_integer() {
     let layer = layer_from("(subclass Integer RationalNumber)");
-    assert_eq!(translate_sort("Integer", &layer), "$int");
+    assert_eq!(layer.sort_for("Integer").tptp(), "$int");
 }
 
 #[test]
-fn translate_sort_exact_rational() {
+fn sort_for_exact_rational() {
     let layer = layer_from("(subclass RationalNumber RealNumber)");
-    assert_eq!(translate_sort("RationalNumber", &layer), "$rat");
+    assert_eq!(layer.sort_for("RationalNumber").tptp(), "$rat");
 }
 
 #[test]
-fn translate_sort_exact_real() {
+fn sort_for_exact_real() {
     let layer = layer_from("(subclass RealNumber Quantity)");
-    assert_eq!(translate_sort("RealNumber", &layer), "$real");
+    assert_eq!(layer.sort_for("RealNumber").tptp(), "$real");
 }
 
 #[test]
-fn translate_sort_subtype_of_integer() {
-    // NonnegativeInteger is a subclass of Integer — taxonomy walk should map to $int
+fn sort_for_subtype_of_integer() {
+    // NonnegativeInteger is a subclass of Integer -- taxonomy walk should map to $int
     let layer = layer_from(
         "(subclass Integer RationalNumber)\n\
          (subclass NonnegativeInteger Integer)"
     );
-    assert_eq!(translate_sort("NonnegativeInteger", &layer), "$int");
+    assert_eq!(layer.sort_for("NonnegativeInteger").tptp(), "$int");
 }
 
 #[test]
-fn translate_sort_non_numeric() {
+fn sort_for_non_numeric() {
     let layer = layer_from("(subclass Human Animal)");
-    assert_eq!(translate_sort("Human", &layer), "$i");
-    assert_eq!(translate_sort("Entity", &layer), "$i");
+    assert_eq!(layer.sort_for("Human").tptp(), "$i");
+    assert_eq!(layer.sort_for("Entity").tptp(), "$i");
 }
 
 #[test]
-fn translate_sort_unknown_type() {
+fn sort_for_unknown_type() {
     let layer = layer_from("(subclass Human Animal)");
-    assert_eq!(translate_sort("NonExistentType", &layer), "$i");
-    assert_eq!(translate_sort("", &layer), "$i");
+    assert_eq!(layer.sort_for("NonExistentType").tptp(), "$i");
+    assert_eq!(layer.sort_for("").tptp(), "$i");
 }
 
 #[test]
 fn infer_var_types_instance_pattern() {
-    // (instance ?X Integer) → ?X should get $int from the instance pattern
+    // (instance ?X Integer) -> ?X should get $int from the instance pattern
     let layer = layer_from(
         "(subclass Integer RationalNumber)\n\
          (instance ?X Integer)"
@@ -406,7 +406,7 @@ fn infer_var_types_instance_pattern() {
 
 #[test]
 fn infer_var_types_literal_cooccurrence() {
-    // (lessThan ?X 5) — no domain info, but integer literal → $int
+    // (lessThan ?X 5) -- no domain info, but integer literal -> $int
     let layer = layer_from("(lessThan ?X 5)");
     let opts  = TptpOptions::default();
     let mut tff = TffContext::new();
@@ -420,7 +420,7 @@ fn infer_var_types_literal_cooccurrence() {
 
 #[test]
 fn infer_var_types_default_i() {
-    // (subclass ?X Animal) — no numeric info → $i
+    // (subclass ?X Animal) -- no numeric info -> $i
     let layer = layer_from("(subclass ?X Animal)");
     let opts  = TptpOptions::default();
     let mut tff = TffContext::new();
@@ -496,7 +496,6 @@ fn tff_ensure_declared_relation_with_domain() {
     ctx.ensure_declared(&Element::Symbol(id), &layer, &opts);
     assert!(ctx.decl_lines.iter().any(|d| d.contains("s__instance") && d.contains("> $o")),
         "declarations: {:?}", ctx.decl_lines);
-    assert!(ctx.signatures.contains_key(&id));
 }
 
 #[test]
@@ -536,7 +535,7 @@ fn tff_ensure_declared_skips_non_symbol() {
     assert!(ctx.decl_lines.is_empty(), "non-symbol leaked: {:?}", ctx.decl_lines);
 }
 
-// ── TFF integration tests ────────────────────────────────────────────────────
+// -- TFF integration tests ----------------------------------------------------
 
 fn tff_opts() -> TptpOptions {
     TptpOptions { lang: TptpLang::Tff, ..TptpOptions::default() }
@@ -596,7 +595,7 @@ fn tff_successor_builtin() {
 
 #[test]
 fn tff_typed_free_variables() {
-    // (instance ?X Integer) — ?X should get $int annotation in quantifier
+    // (instance ?X Integer) -- ?X should get $int annotation in quantifier
     let layer = layer_from(
         "(subclass Integer RationalNumber)\n\
          (instance ?X Integer)"
@@ -622,27 +621,27 @@ fn tff_kb_no_decls_for_builtins() {
     let layer = layer_from("(lessThan ?X ?Y)");
     let axiom_ids: HashSet<SentenceId> = layer.store.roots.iter().copied().collect();
     let tptp = kb_to_tptp(&layer, "test", &tff_opts(), &axiom_ids, &HashSet::new());
-    // $less is a TFF builtin — no type declaration should be emitted for lessThan
+    // $less is a TFF builtin -- no type declaration should be emitted for lessThan
     assert!(!tptp.contains("type_s__lessThan"), "builtin should not have type decl: {}", tptp);
     assert!(tptp.contains("$less("), "got: {}", tptp);
 }
 
-// ── Tests analogous to SUMOtoTFATest.java ────────────────────────────────────
+// -- Tests analogous to SUMOtoTFATest.java ------------------------------------
 //
 // The Java tests require a fully preloaded SUMO KB (type-constraint preprocessing,
 // domain/range data for every predicate).  These tests cover the same TFF behaviours
 // using minimal layer_from() KIF instead.  Exact variable names (V__X@N) are not
-// pinned — we assert on structural substrings that are stable regardless of the
+// pinned -- we assert on structural substrings that are stable regardless of the
 // interning counter.
 
-/// test1 analog — ground atom: no quantifier wrapper, direct predicate call.
-/// Java: (instance Foo Bar) → s__instance(s__Foo, s__Bar)
+/// test1 analog -- ground atom: no quantifier wrapper, direct predicate call.
+/// Java: (instance Foo Bar) -> s__instance(s__Foo, s__Bar)
 #[test]
 fn tff_ground_atom_no_holds_no_quantifier() {
     let layer = layer_from("(instance Foo Bar)");
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &tff_opts());
-    // No free variables → no quantifier wrapper
+    // No free variables -> no quantifier wrapper
     assert!(!tptp.contains('!') && !tptp.contains('?'),
         "ground atom should have no quantifier: {}", tptp);
     assert!(tptp.contains("s__instance("), "got: {}", tptp);
@@ -651,9 +650,9 @@ fn tff_ground_atom_no_holds_no_quantifier() {
     assert!(!tptp.contains("holds"),        "TFF must not use holds: {}", tptp);
 }
 
-/// test2 analog — forall with => and two direct predicates; variable typed $i.
+/// test2 analog -- forall with => and two direct predicates; variable typed $i.
 /// Java: (forall (?X) (=> (instance ?X Human) (attribute ?X Mortal)))
-///       → ( ! [V__X:$i] : (s__instance(V__X, s__Human) => s__attribute(V__X, s__Mortal)))
+///       -> ( ! [V__X:$i] : (s__instance(V__X, s__Human) => s__attribute(V__X, s__Mortal)))
 #[test]
 fn tff_forall_implies_direct_calls() {
     let layer = layer_from("(forall (?X) (=> (instance ?X Human) (attribute ?X Mortal)))");
@@ -667,7 +666,7 @@ fn tff_forall_implies_direct_calls() {
     assert!(!tptp.contains("holds"),     "TFF must not use holds: {}", tptp);
 }
 
-/// test2 analog — negation wraps its argument in ~(...).
+/// test2 analog -- negation wraps its argument in ~(...).
 /// Java uses Not in test9: ~(($less(...) & $less(...)))
 #[test]
 fn tff_negation_of_conjunction() {
@@ -680,8 +679,8 @@ fn tff_negation_of_conjunction() {
     assert!(!tptp.contains("holds"),     "TFF must not use holds: {}", tptp);
 }
 
-/// test4 analog — existential quantifier in TFF with typed variable.
-/// Java: (exists (?R) ...) → ( ? [V__R:$i] : (...))
+/// test4 analog -- existential quantifier in TFF with typed variable.
+/// Java: (exists (?R) ...) -> ( ? [V__R:$i] : (...))
 #[test]
 fn tff_existential_quantifier_typed() {
     let layer = layer_from("(exists (?R) (instance ?R Electricity))");
@@ -693,7 +692,7 @@ fn tff_existential_quantifier_typed() {
     assert!(!tptp.contains("holds"),     "TFF must not use holds: {}", tptp);
 }
 
-/// test9 analog — $less used for lessThan; SuccessorFn maps to $sum(x,1).
+/// test9 analog -- $less used for lessThan; SuccessorFn maps to $sum(x,1).
 /// Java test9 shows: ~(($less(V__INT1,V__INT2) & $less(V__INT2, SuccessorFn(INT1))))
 #[test]
 fn tff_lessthan_and_successor_in_negation() {
@@ -710,7 +709,7 @@ fn tff_lessthan_and_successor_in_negation() {
     assert!(!tptp.contains("s__SuccessorFn"), "should not emit SUMO name: {}", tptp);
 }
 
-/// testMult analog — MultiplicationFn maps to $product in term position.
+/// testMult analog -- MultiplicationFn maps to $product in term position.
 /// Java testMult: equal(SquareRootFn(?N1), ?N2) => $product(V__N2, V__N2) = V__N1
 #[test]
 fn tff_multiplication_in_equality() {
@@ -779,7 +778,7 @@ fn tff_predecessor_builtin() {
         "PredecessorFn should map to $difference(x,1): {}", tptp);
 }
 
-/// Implication at top level (free variables) → universal quantifier with $i sorts.
+/// Implication at top level (free variables) -> universal quantifier with $i sorts.
 /// Java test2: (=> (instance ?X Human) (attribute ?X Mortal))
 ///             after preprocessing adds the forall wrapper.
 #[test]
@@ -795,8 +794,8 @@ fn tff_implies_free_vars_typed_i() {
     assert!(tptp.contains("s__attribute("), "expected direct attribute call: {}", tptp);
 }
 
-/// Integer variable type from instance pattern — free var wrapped with $int.
-/// Java test9: (instance ?INT1 Integer) → V__INT1 : $int
+/// Integer variable type from instance pattern -- free var wrapped with $int.
+/// Java test9: (instance ?INT1 Integer) -> V__INT1 : $int
 #[test]
 fn tff_integer_var_type_from_instance() {
     let layer = layer_from(
@@ -823,7 +822,7 @@ fn tff_type_declaration_format() {
     assert!(tptp.contains("% Type declarations"), "should have section comment: {}", tptp);
 }
 
-/// Multiple arithmetic builtins nested — Floor inside AdditionFn.
+/// Multiple arithmetic builtins nested -- Floor inside AdditionFn.
 /// Java testFloor: equal(MillionYearsAgoFn(?X), BeginFn(YearFn(FloorFn(AdditionFn(1950, ...)))))
 #[test]
 fn tff_nested_arithmetic_builtins() {
@@ -848,7 +847,7 @@ fn tff_biconditional_expands() {
 }
 
 /// Forall/exists inside an implication (nested quantifiers).
-/// Java test4: (=> ... (exists (?R) ...)) → ( ? [V__R:$i] : (...))
+/// Java test4: (=> ... (exists (?R) ...)) -> ( ? [V__R:$i] : (...))
 #[test]
 fn tff_nested_exists_inside_implies() {
     let layer = layer_from(
@@ -887,4 +886,34 @@ fn tff_floor_builtin() {
     let sid   = layer.store.roots[0];
     let tptp  = sentence_to_tptp(sid, &layer, &tff_opts());
     assert!(tptp.contains("$floor("), "FloorFn should map to $floor: {}", tptp);
+}
+
+/// Pass 2: unconstrained variables in comparison builtins are forced to $int.
+#[test]
+fn tff_builtin_unconstrained_vars_forced_to_int() {
+    // ?X and ?Y have no domain or instance constraints -- Pass 2 forces $int.
+    let layer = layer_from("(greaterThan ?X ?Y)");
+    let sid   = layer.store.roots[0];
+    let tptp  = sentence_to_tptp(sid, &layer, &tff_opts());
+    assert!(tptp.contains("$greater("), "should use $greater builtin: {}", tptp);
+    assert!(tptp.contains("$int"),     "unconstrained vars should be $int: {}", tptp);
+}
+
+/// Pass 4: sort-conflict downgrade -- variable forced $i by non-numeric predicate domain.
+#[test]
+fn tff_sort_conflict_downgrade_with_nonnum_predicate() {
+    // ?X appears only in a non-numeric predicate context -- no numeric evidence.
+    // Should produce valid TFF without panicking.
+    let layer = layer_from(
+        "(instance nonNumPred BinaryRelation)\n\
+         (subclass BinaryRelation Relation)\n\
+         (subclass Relation Abstract)\n\
+         (subclass Abstract Entity)\n\
+         (domain nonNumPred 1 Entity)\n\
+         (nonNumPred ?X SomeVal)"
+    );
+    let sid  = *layer.store.roots.last().unwrap();
+    let tptp = sentence_to_tptp(sid, &layer, &tff_opts());
+    assert!(!tptp.is_empty(), "should produce output: {}", tptp);
+    assert!(tptp.contains("V__X"), "variable should appear: {}", tptp);
 }

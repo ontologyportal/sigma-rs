@@ -1,6 +1,6 @@
 // crates/sumo-kb/src/prover/embedded.rs
 //
-// EmbeddedProverRunner — converts KifStore sentences directly to the
+// EmbeddedProverRunner -- converts KifStore sentences directly to the
 // vampire-prover programmatic API, bypassing TPTP string generation.
 //
 // Gated: requires both `ask` (via parent module) and `integrated-prover`.
@@ -13,7 +13,18 @@ compile_error!(
 
 use std::collections::{HashMap, HashSet};
 
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+// -- Pre-compiled regexes ------------------------------------------------------
+
+static RE_UNBOUND:   Lazy<Regex> = Lazy::new(|| Regex::new(r"\bX\d+\b").unwrap());
+static RE_NEG_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(r"~s__holds\(([^()]+)\)").unwrap());
+static RE_POS_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(
+    r"(?:^|[^~])s__holds\(([^()]+)\)"
+).unwrap());
+static RE_VAR:       Lazy<Regex> = Lazy::new(|| Regex::new(r"^X\d+$").unwrap());
+static RE_CONST:     Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(s__[A-Za-z0-9_]+)\b").unwrap());
 use vampire_prover::{Formula, Function, Predicate, Problem, Proof as VampireProof,
                      ProofRes, ProofRule as VampireProofRule, Term, Options};
 
@@ -98,7 +109,7 @@ fn collect_bound_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<Strin
     }
 }
 
-// ── Converter ─────────────────────────────────────────────────────────────────
+// -- Converter -----------------------------------------------------------------
 
 /// Converts KifStore sentences to vampire-prover `Formula` values.
 ///
@@ -110,7 +121,7 @@ fn collect_bound_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<Strin
 /// - Logical operators map to native vampire-prover combinators
 pub(crate) struct Converter<'a> {
     store: &'a KifStore,
-    /// Variable name → stable u32 index (shared across all formulas in a proof).
+    /// Variable name -> stable u32 index (shared across all formulas in a proof).
     vars: &'a HashMap<String, u32>,
 }
 
@@ -124,13 +135,13 @@ impl<'a> Converter<'a> {
             .copied()
             .unwrap_or_else(|| {
                 log::warn!(target: "sumo_kb::embedded_prover",
-                    "unknown variable '{}' — defaulting to index 0", name);
+                    "unknown variable '{}' -- defaulting to index 0", name);
                 0
             });
         Term::new_var(idx)
     }
 
-    // ── Formula builders ──────────────────────────────────────────────────────
+    // -- Formula builders ------------------------------------------------------
 
     /// Convert a SentenceId to a formula.  `query=true` flips free-variable
     /// wrapping to existential (for conjecture sentences).
@@ -280,7 +291,7 @@ impl<'a> Converter<'a> {
         }
     }
 
-    // ── Term builders ─────────────────────────────────────────────────────────
+    // -- Term builders ---------------------------------------------------------
 
     fn element_to_term(&mut self, elem: &Element) -> Option<Term> {
         match elem {
@@ -329,7 +340,7 @@ impl<'a> Converter<'a> {
                 }
             }
             Element::Variable { name, .. } => {
-                // Variable application in term position — return just the variable term
+                // Variable application in term position -- return just the variable term
                 let name = name.clone();
                 Some(self.var_term(&name))
             }
@@ -356,7 +367,7 @@ fn literal_to_term(lit: &Literal) -> Term {
     }
 }
 
-// ── Per-formula variable index allocation ─────────────────────────────────────
+// -- Per-formula variable index allocation -------------------------------------
 
 /// Allocate variable indices for a single sentence and return the mapping.
 /// All variables across all sentences in a proof share a global offset,
@@ -408,12 +419,12 @@ fn wrap_free_vars(
     result
 }
 
-// ── QueryVarMap ───────────────────────────────────────────────────────────────
+// -- QueryVarMap ---------------------------------------------------------------
 
 /// Records the variable indices used for the conjecture's free variables,
 /// enabling binding extraction from the returned proof.
 struct QueryVarMap {
-    /// Variable index → KIF variable name (e.g. 0 → "?X", 1 → "?Y").
+    /// Variable index -> KIF variable name (e.g. 0 -> "?X", 1 -> "?Y").
     idx_to_kif: HashMap<u32, String>,
     /// Free variable indices from the conjecture in sorted order.
     /// These are the ones we need bindings for.
@@ -422,7 +433,7 @@ struct QueryVarMap {
 
 impl QueryVarMap {
     /// Returns the Vampire formula variable names for the free variables
-    /// (e.g. indices [0, 1] → ["X0", "X1"]).
+    /// (e.g. indices [0, 1] -> ["X0", "X1"]).
     fn var_names(&self) -> Vec<String> {
         self.free_var_indices.iter().map(|&i| format!("X{}", i)).collect()
     }
@@ -459,7 +470,7 @@ fn build_conjecture_formula(
     Some((wrapped, QueryVarMap { idx_to_kif, free_var_indices }))
 }
 
-// ── EmbeddedProverRunner ──────────────────────────────────────────────────────
+// -- EmbeddedProverRunner ------------------------------------------------------
 
 /// Converts KB sentences directly to vampire-prover formulas and runs Vampire
 /// in-process.  No TPTP string round-trip.
@@ -578,7 +589,7 @@ fn map_proof_res(res: &ProofRes, mode: &ProverMode) -> ProverStatus {
     }
 }
 
-// ── Binding extraction ────────────────────────────────────────────────────────
+// -- Binding extraction --------------------------------------------------------
 
 /// Strip `s__` prefix and `__m` suffix from a Vampire term name.
 fn unmangle_sumo(term: &str) -> String {
@@ -590,19 +601,15 @@ fn unmangle_sumo(term: &str) -> String {
 
 /// Try to unify a negative literal in `variadic` (containing X\d+ vars) with
 /// a positive literal in `resolvent` (fully ground).  Returns a substitution
-/// map `{ "X0" → "s__Foo", … }` on success.
+/// map `{ "X0" -> "s__Foo", ... }` on success.
 fn unify_negative_with_positive(
     variadic: &str,
     resolvent: &str,
 ) -> Option<HashMap<String, String>> {
-    let neg_lit_re = Regex::new(r"~s__holds\(([^()]+)\)").unwrap();
-    let pos_lit_re = Regex::new(r"(?:^|[^~])s__holds\(([^()]+)\)").unwrap();
-    let var_re     = Regex::new(r"^X\d+$").unwrap();
-
-    let res_cap  = pos_lit_re.captures(resolvent)?;
+    let res_cap  = RE_POS_HOLDS.captures(resolvent)?;
     let res_args: Vec<&str> = res_cap[1].split(',').map(str::trim).collect();
 
-    for cap in neg_lit_re.captures_iter(variadic) {
+    for cap in RE_NEG_HOLDS.captures_iter(variadic) {
         let var_args: Vec<&str> = cap[1].split(',').map(str::trim).collect();
         if var_args.len() != res_args.len() { continue; }
         if var_args[0] != res_args[0] { continue; } // predicate head must match
@@ -610,7 +617,7 @@ fn unify_negative_with_positive(
         let mut sub = HashMap::new();
         let mut consistent = true;
         for (va, ra) in var_args.iter().zip(res_args.iter()).skip(1) {
-            if var_re.is_match(va) {
+            if RE_VAR.is_match(va) {
                 sub.insert(va.to_string(), ra.to_string());
             } else if va != ra {
                 consistent = false;
@@ -631,10 +638,8 @@ fn unify_negative_with_positive(
 /// - **Strategy 3** (descendant heuristic): scan descendants of the negated-
 ///   conjecture for ground constants that appear after a variable disappears.
 fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<Binding> {
-    let vars = qvm.var_names(); // ["X0", "X1", …]
+    let vars = qvm.var_names(); // ["X0", "X1", ...]
     if vars.is_empty() { return Vec::new(); }
-
-    let var_re = Regex::new(r"\bX\d+\b").unwrap();
 
     // Flatten proof into (formula_string, rule, premises) for easy indexing.
     let steps: Vec<(String, VampireProofRule, Vec<usize>)> = proof.steps()
@@ -657,7 +662,7 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
     log::debug!(target: "sumo_kb::embedded_prover",
         "NegatedConjecture step {}: {}", neg_conj_idx, steps[neg_conj_idx].0);
 
-    // ── Build variadic set ────────────────────────────────────────────────────
+    // -- Build variadic set ----------------------------------------------------
     // All steps derived (transitively) from the negated conjecture that still
     // contain free variables.  These are the steps that need to be resolved
     // against ground axioms to produce bindings.
@@ -669,7 +674,7 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
         for (i, (formula, _, premises)) in steps.iter().enumerate() {
             if variadic_set.contains(&i) { continue; }
             if premises.iter().any(|&p| variadic_set.contains(&p))
-                && var_re.is_match(formula)
+                && RE_UNBOUND.is_match(formula)
             {
                 variadic_set.insert(i);
                 changed = true;
@@ -677,7 +682,7 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
         }
     }
 
-    // ── Strategy 2: resolution unification ───────────────────────────────────
+    // -- Strategy 2: resolution unification -----------------------------------
     for (_formula, _rule, premises) in &steps {
         // Look for a step with NO variables (fully ground) that was derived
         // from at least one variadic parent and at least one ground resolvent.
@@ -686,12 +691,12 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
             None => continue,
         };
         let variadic_formula = &steps[variadic_parent_idx].0;
-        if !var_re.is_match(variadic_formula) { continue; }
+        if !RE_UNBOUND.is_match(variadic_formula) { continue; }
 
         for &resolvent_idx in premises.iter() {
             if variadic_set.contains(&resolvent_idx) { continue; }
             let resolvent_formula = &steps[resolvent_idx].0;
-            if var_re.is_match(resolvent_formula) { continue; } // resolvent must be ground
+            if RE_UNBOUND.is_match(resolvent_formula) { continue; } // resolvent must be ground
 
             if let Some(sub) = unify_negative_with_positive(variadic_formula, resolvent_formula) {
                 let bindings: Vec<Binding> = vars.iter()
@@ -711,7 +716,7 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
         }
     }
 
-    // ── Strategy 3: descendant heuristic ─────────────────────────────────────
+    // -- Strategy 3: descendant heuristic -------------------------------------
     // Collect all descendants of the variadic set.
     let descendants: Vec<usize> = {
         let mut result  = Vec::new();
@@ -729,13 +734,12 @@ fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<B
         result
     };
 
-    let const_re = Regex::new(r"\b(s__[A-Za-z0-9_]+)\b").unwrap();
     let bindings: Vec<Binding> = vars.iter()
         .filter_map(|var_name| {
             let value = descendants.iter().find_map(|&i| {
                 let formula = &steps[i].0;
                 if !formula.contains(var_name.as_str()) {
-                    const_re.captures_iter(formula).find_map(|cap| {
+                    RE_CONST.captures_iter(formula).find_map(|cap| {
                         let candidate = cap[1].to_string();
                         if !candidate.ends_with("__m") { Some(candidate) } else { None }
                     })

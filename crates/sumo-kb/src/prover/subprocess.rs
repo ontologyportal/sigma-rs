@@ -1,62 +1,90 @@
 // crates/sumo-kb/src/prover/subprocess.rs
 //
-// VampireRunner — subprocess-based Vampire prover.
+// VampireRunner -- subprocess-based Vampire prover.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
+use once_cell::sync::Lazy;
 use regex::Regex;
 
 use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverRunner, ProverStatus};
 
-// ── VampireRunner ─────────────────────────────────────────────────────────────
+// -- Pre-compiled regexes ------------------------------------------------------
 
-/// Default runner — spawns Vampire as a subprocess.
+static RE_PARENT:    Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(f\d+)\b").unwrap());
+static RE_FOF:       Lazy<Regex> = Lazy::new(|| Regex::new(
+    r"(?s)(fof|cnf|tff|thf)\((f\d+),\s*(\w+),\s*\((.*?)\),\s*(.*?)\)\."
+).unwrap());
+static RE_UNBOUND:   Lazy<Regex> = Lazy::new(|| Regex::new(r"\bX\d+\b").unwrap());
+static RE_NEG_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(r"~s__holds\(([^()]+)\)").unwrap());
+static RE_POS_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(
+    r"(?:^|[^~])s__holds\(([^()]+)\)"
+).unwrap());
+static RE_VAR:       Lazy<Regex> = Lazy::new(|| Regex::new(r"^X\d+$").unwrap());
+static RE_VAR_CAP:   Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(X\d+)\b").unwrap());
+static RE_CONST:     Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(s__[A-Za-z0-9_]+)\b").unwrap());
+
+// -- VampireRunner -------------------------------------------------------------
+
+/// Default runner -- spawns Vampire as a subprocess.
 pub struct VampireRunner {
     pub vampire_path: PathBuf,
     pub timeout_secs: u32,
+    /// If set, write the generated TPTP to this path before running Vampire.
+    /// When `None` the TPTP is piped directly to Vampire via stdin with no
+    /// intermediate file.
+    pub tptp_dump_path: Option<PathBuf>,
 }
 
 impl ProverRunner for VampireRunner {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult {
-        // Write TPTP to a temp file
-        let tmp_path = {
-            let mut p = std::env::temp_dir();
-            p.push(format!("sumo_ask_{}.tptp", std::process::id()));
-            p
-        };
-
-        if let Err(e) = write_file(&tmp_path, tptp) {
-            return ProverResult {
-                status:     ProverStatus::Unknown,
-                raw_output: format!("Failed to write TPTP tmp file: {}", e),
-                bindings:   Vec::new(),
-                proof_kif:  Vec::new(),
-            };
+        // Optionally dump TPTP to a file for inspection.
+        if let Some(path) = &self.tptp_dump_path {
+            if let Err(e) = write_file(path, tptp) {
+                log::warn!(target: "sumo_kb::prover",
+                    "failed to write TPTP dump to {}: {}", path.display(), e);
+            } else {
+                log::info!(target: "sumo_kb::prover",
+                    "wrote TPTP dump: {}", path.display());
+            }
         }
 
         let timeout = self.timeout_secs.to_string();
         let args    = ["--mode", "casc", "--input_syntax", "tptp", "-t", &timeout];
 
         log::debug!(target: "sumo_kb::prover",
-            "vampire: {} {} {}",
-            self.vampire_path.display(), args.join(" "), tmp_path.display());
+            "vampire: {} {} /dev/stdin", self.vampire_path.display(), args.join(" "));
         log::info!(target: "sumo_kb::prover", "starting vampire prover");
 
-        let output = Command::new(&self.vampire_path)
+        let mut child = match Command::new(&self.vampire_path)
             .args(args)
-            .arg(&tmp_path)
-            .output();
+            .arg("/dev/stdin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(c)  => c,
+            Err(e) => return ProverResult {
+                status:     ProverStatus::Unknown,
+                raw_output: format!("Failed to spawn vampire: {}", e),
+                bindings:   Vec::new(),
+                proof_kif:  Vec::new(),
+            },
+        };
 
-        // Keep the file if SUMO_KEEP_TPTP is set (for debugging).
-        if std::env::var("SUMO_KEEP_TPTP").is_err() {
-            let _ = fs::remove_file(&tmp_path);
-        } else {
-            log::info!(target: "sumo_kb::prover", "SUMO_KEEP_TPTP: kept {}", tmp_path.display());
+        // Write TPTP to Vampire's stdin then close it so Vampire sees EOF.
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(tptp.as_bytes()) {
+                log::warn!(target: "sumo_kb::prover", "failed to write to vampire stdin: {}", e);
+            }
         }
+
+        let output = child.wait_with_output();
 
         match output {
             Err(e) => ProverResult {
@@ -92,20 +120,19 @@ impl ProverRunner for VampireRunner {
                 };
 
                 let proof_kif = if has_proof {
-                    // Build id→index map so we can resolve parent references.
+                    // Build id->index map so we can resolve parent references.
                     let id_to_idx: HashMap<&str, usize> = parsed.proof_steps
                         .iter()
                         .enumerate()
                         .map(|(i, s)| (s.id.as_str(), i))
                         .collect();
-                    let parent_re = Regex::new(r"\b(f\d+)\b").unwrap();
                     let triples: Vec<(String, String, Vec<usize>)> = parsed.proof_steps
                         .iter()
                         .map(|s| {
                             let premises = s.inference.as_deref()
                                 .and_then(|inf| inf.rfind('[').map(|p| &inf[p..]))
                                 .map(|bracket_part| {
-                                    parent_re.captures_iter(bracket_part)
+                                    RE_PARENT.captures_iter(bracket_part)
                                         .filter_map(|c| id_to_idx.get(c.get(1)?.as_str()).copied())
                                         .collect::<Vec<_>>()
                                 })
@@ -175,7 +202,7 @@ fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
     f.write_all(content.as_bytes())
 }
 
-// ── Vampire output parsing ────────────────────────────────────────────────────
+// -- Vampire output parsing ----------------------------------------------------
 
 #[derive(Debug)]
 pub(crate) struct ProofStep {
@@ -193,14 +220,10 @@ pub(crate) struct VampireOutput {
 pub(crate) fn parse_vampire_output(input: &str) -> VampireOutput {
     let mut proof_steps = Vec::new();
 
-    let fof_re = Regex::new(
-        r"(?s)(fof|cnf|tff|thf)\((f\d+),\s*(\w+),\s*\((.*?)\),\s*(.*?)\)\."
-    ).unwrap();
-
     if let Some(start_idx) = input.find("SZS output start") {
         if let Some(end_idx) = input.find("SZS output end") {
             let proof_section = &input[start_idx..end_idx];
-            for cap in fof_re.captures_iter(proof_section) {
+            for cap in RE_FOF.captures_iter(proof_section) {
                 proof_steps.push(ProofStep {
                     id:        cap[2].to_string(),
                     role:      cap[3].to_string(),
@@ -214,7 +237,7 @@ pub(crate) fn parse_vampire_output(input: &str) -> VampireOutput {
     VampireOutput { proof_steps }
 }
 
-// ── TptpProofProcessor ────────────────────────────────────────────────────────
+// -- TptpProofProcessor --------------------------------------------------------
 
 struct GraphNode {
     id:      String,
@@ -234,12 +257,11 @@ impl TptpProofProcessor {
     }
 
     pub(crate) fn load_proof(&mut self, steps: &[ProofStep]) {
-        let parent_re = Regex::new(r"\b(f\d+)\b").unwrap();
         for step in steps {
             let mut parents = Vec::new();
             if let Some(inf) = &step.inference {
                 if let Some(last_bracket) = inf.rfind('[') {
-                    for cap in parent_re.captures_iter(&inf[last_bracket..]) {
+                    for cap in RE_PARENT.captures_iter(&inf[last_bracket..]) {
                         parents.push(cap[1].to_string());
                     }
                 }
@@ -272,7 +294,7 @@ impl TptpProofProcessor {
         self.extract_from_descendants(neg_conj_id, &vars)
     }
 
-    // ── Strategy 1: answer literal ────────────────────────────────────────────
+    // -- Strategy 1: answer literal --------------------------------------------
 
     fn extract_from_answer_literal(&self, vars: &[String]) -> Option<Vec<Binding>> {
         for node in self.nodes.values() {
@@ -293,7 +315,7 @@ impl TptpProofProcessor {
     }
 
     fn has_unbound_vars(formula: &str) -> bool {
-        Regex::new(r"\bX\d+\b").unwrap().is_match(formula)
+        RE_UNBOUND.is_match(formula)
     }
 
     fn extract_answer_args(formula: &str) -> Option<Vec<String>> {
@@ -346,7 +368,7 @@ impl TptpProofProcessor {
         s.to_string()
     }
 
-    // ── Strategy 2: resolution unification ───────────────────────────────────
+    // -- Strategy 2: resolution unification -----------------------------------
 
     fn extract_from_resolution_unification(
         &self,
@@ -393,14 +415,10 @@ impl TptpProofProcessor {
         variadic:  &str,
         resolvent: &str,
     ) -> Option<HashMap<String, String>> {
-        let neg_lit_re = Regex::new(r"~s__holds\(([^()]+)\)").unwrap();
-        let pos_lit_re = Regex::new(r"(?:^|[^~])s__holds\(([^()]+)\)").unwrap();
-        let var_re     = Regex::new(r"^X\d+$").unwrap();
-
-        let res_cap  = pos_lit_re.captures(resolvent)?;
+        let res_cap  = RE_POS_HOLDS.captures(resolvent)?;
         let res_args: Vec<&str> = res_cap[1].split(',').map(str::trim).collect();
 
-        for cap in neg_lit_re.captures_iter(variadic) {
+        for cap in RE_NEG_HOLDS.captures_iter(variadic) {
             let var_args: Vec<&str> = cap[1].split(',').map(str::trim).collect();
             if var_args.len() != res_args.len() { continue; }
             if var_args[0] != res_args[0] { continue; }
@@ -408,7 +426,7 @@ impl TptpProofProcessor {
             let mut sub = HashMap::new();
             let mut consistent = true;
             for (va, ra) in var_args.iter().zip(res_args.iter()).skip(1) {
-                if var_re.is_match(va) {
+                if RE_VAR.is_match(va) {
                     sub.insert(va.to_string(), ra.to_string());
                 } else if va != ra {
                     consistent = false;
@@ -420,7 +438,7 @@ impl TptpProofProcessor {
         None
     }
 
-    // ── Strategy 3: descendant heuristic ─────────────────────────────────────
+    // -- Strategy 3: descendant heuristic -------------------------------------
 
     fn extract_from_descendants(&self, neg_conj_id: &str, vars: &[String]) -> Vec<Binding> {
         let descendants = self.get_all_descendants(neg_conj_id);
@@ -434,13 +452,12 @@ impl TptpProofProcessor {
             .collect()
     }
 
-    // ── Shared helpers ────────────────────────────────────────────────────────
+    // -- Shared helpers --------------------------------------------------------
 
     fn extract_variables_ordered(&self, formula: &str) -> Vec<String> {
-        let var_re = Regex::new(r"\b(X\d+)\b").unwrap();
         let mut seen = HashSet::new();
         let mut vars = Vec::new();
-        for cap in var_re.captures_iter(formula) {
+        for cap in RE_VAR_CAP.captures_iter(formula) {
             let v = cap[1].to_string();
             if seen.insert(v.clone()) { vars.push(v); }
         }
@@ -468,10 +485,9 @@ impl TptpProofProcessor {
         var: &str,
         descendants: &[&GraphNode],
     ) -> Option<String> {
-        let const_re = Regex::new(r"\b(s__[A-Za-z0-9_]+)\b").unwrap();
         for node in descendants {
             if !node.formula.contains(var) {
-                for cap in const_re.captures_iter(&node.formula) {
+                for cap in RE_CONST.captures_iter(&node.formula) {
                     let candidate = cap[1].to_string();
                     if !candidate.ends_with("__m") { return Some(candidate); }
                 }

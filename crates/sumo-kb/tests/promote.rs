@@ -36,7 +36,7 @@ mod tests {
         // --- Reopen and verify axiom is present ---
         {
             let mut kb = KnowledgeBase::open(&dir).expect("reopen DB");
-            // Tell the same formula — should now warn DuplicateAxiom (loaded from DB)
+            // Tell the same formula -- should now warn DuplicateAxiom (loaded from DB)
             let r = kb.tell("s1", "(instance Dog Animal)");
             assert!(r.ok);
             let dup_axiom: Vec<_> = r.warnings.iter()
@@ -62,7 +62,7 @@ mod tests {
             kb.promote_assertions_unchecked("s1").expect("promote");
         }
 
-        // Second round: tell the SAME formula + a new one → only new one is promoted
+        // Second round: tell the SAME formula + a new one -> only new one is promoted
         {
             let mut kb = KnowledgeBase::open(&dir).expect("reopen DB");
             let r1 = kb.tell("s2", "(subclass Dog Animal)");  // dup of DB axiom

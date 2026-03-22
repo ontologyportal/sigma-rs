@@ -6,7 +6,7 @@ compile_error!(
      Remove 'ask' from the features list for wasm builds."
 );
 
-// ── Module declarations ──────────────────────────────────────────────────────
+// -- Module declarations ------------------------------------------------------
 
 pub mod parse;
 pub mod error;
@@ -29,7 +29,7 @@ pub(crate) mod persist;
 
 pub(crate) mod kb;
 
-// ── Public re-exports ────────────────────────────────────────────────────────
+// -- Public re-exports --------------------------------------------------------
 
 pub use error::{
     KbError, ParseError, SemanticError, Span,
@@ -43,9 +43,9 @@ pub use types::{
     TaxRelation, TaxEdge,
     OpKind,
 };
-pub use tptp::{TptpOptions, TptpLang};
+pub use tptp::{TptpOptions, TptpLang, TestCase, parse_test_content};
 pub use kb::KnowledgeBase;
-pub use parse::kif::{tokenize, Token, TokenKind, parse, AstNode, Pretty};
+pub use parse::{AstNode, Pretty, Parser};
 
 #[cfg(feature = "cnf")]
 pub use kb::{ClausifyOptions, ClausifyReport};

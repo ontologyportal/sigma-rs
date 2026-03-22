@@ -26,7 +26,8 @@ pub struct Cli {
     pub enable_config: bool,
 
     /// Knowledge base name from config.xml to load.
-    #[arg(long, value_name = "NAME", global = true)]
+    /// Requires -c (config mode) to be active.
+    #[arg(long, value_name = "NAME", global = true, requires = "enable_config")]
     pub kb: Option<String>,
 
     /// Warning control (mimics GCC).
@@ -47,22 +48,28 @@ pub struct Cli {
 #[derive(clap::Args, Clone, Debug)]
 pub struct KbArgs {
     /// KIF file to load into the knowledge base (repeatable).
-    #[arg(short = 'f', long = "file", value_name = "FILE")]
+    #[arg(short = 'f', long = "file", value_name = "FILE", global = true)]
     pub files: Vec<PathBuf>,
 
     /// Directory whose *.kif files are loaded into the knowledge base (repeatable).
-    #[arg(short = 'd', long = "dir", value_name = "DIR")]
+    #[arg(short = 'd', long = "dir", value_name = "DIR", global = true)]
     pub dirs: Vec<PathBuf>,
 
     /// Path to the LMDB database directory.
     /// Defaults to `./sumo.lmdb` in the current working directory.
-    #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb")]
+    #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]
     pub db: PathBuf,
 
-    /// Hard upper bound on CNF clauses per formula.
-    /// Overrides the SUMO_MAX_CLAUSES environment variable.
-    #[arg(long, value_name = "N", default_value_t = 10_000)]
-    pub max_clauses: usize,
+    /// Skip the LMDB database entirely -- do not open or warn about it.
+    /// Useful when running without a pre-built database.
+    #[arg(long, global = true)]
+    pub no_db: bool,
+
+    // #[cfg(feature = "cnf")]
+    // /// Hard upper bound on CNF clauses per formula.
+    // /// Overrides the SUMO_MAX_CLAUSES environment variable.
+    // #[arg(long, value_name = "N", default_value_t = 10_000)]
+    // pub max_clauses: usize,
 
     /// Path to the Vampire executable (default: 'vampire' on PATH).
     #[arg(long, value_name = "PATH")]
@@ -80,6 +87,16 @@ pub enum Cmd {
         /// Formula to validate against the database.  If omitted, validates
         /// every formula already in the database.
         formula: Option<String>,
+
+        /// Perform parse-only validation -- skip semantic checks entirely.
+        #[arg(long)]
+        parse: bool,
+
+        /// Do not semantically validate the loaded KB files; assume they are
+        /// correct and only check the inline formula (if provided).
+        /// Parse errors in KB files are still reported.
+        #[arg(long)]
+        no_kb_check: bool,
 
         #[command(flatten)]
         kb: KbArgs,
@@ -115,9 +132,10 @@ pub enum Cmd {
         #[command(flatten)]
         kb: KbArgs,
 
-        /// Do not delete generated TPTP file
-        #[arg(short = 'k', long)]
-        keep: bool,
+        /// Write the generated TPTP to FILE (for debugging).
+        /// When omitted, TPTP is piped directly to Vampire via stdin.
+        #[arg(short = 'k', long, value_name = "FILE")]
+        keep: Option<PathBuf>,
 
         /// Print the proof steps translated to SUO-KIF after a successful proof.
         #[arg(long)]
@@ -143,6 +161,10 @@ pub enum Cmd {
         #[arg(long)]
         show_numbers: bool,
 
+        /// Emit a `% <original KIF>` comment before each TPTP formula.
+        #[arg(long)]
+        show_kif: bool,
+
         /// Session key controlling which assertions appear as TPTP hypotheses.
         #[arg(long, value_name = "KEY")]
         session: Option<String>,
@@ -153,16 +175,18 @@ pub enum Cmd {
 
     /// Run one or more KIF test files (*.kif.tq).
     Test {
-        /// Path to a .kif.tq file or a directory containing them.
-        #[arg(value_name = "PATH")]
-        path: PathBuf,
+        /// Path(s) to .kif.tq files or directories containing them.
+        /// Accepts multiple arguments and shell-expanded globs.
+        #[arg(value_name = "PATH", num_args = 1..)]
+        paths: Vec<PathBuf>,
 
         #[command(flatten)]
         kb: KbArgs,
 
-        /// Do not delete generated TPTP file
-        #[arg(short = 'k', long)]
-        keep: bool,
+        /// Write the generated TPTP to FILE (for debugging).
+        /// When omitted, TPTP is piped directly to Vampire via stdin.
+        #[arg(short = 'k', long, value_name = "FILE")]
+        keep: Option<PathBuf>,
 
         /// Prover backend: 'subprocess' (default) or 'embedded'.
         #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
@@ -172,12 +196,16 @@ pub enum Cmd {
         /// Note: 'tff' is not yet supported with the embedded backend.
         #[arg(long, value_name = "LANG", default_value = "fof")]
         lang: String,
+
+        /// Override the per-test timeout (seconds). Overrides any (time N) directive in the test file.
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u32>,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.
     ///
     /// This is the only command that writes to the database.
-    /// Validates all loaded formulas before committing — parse errors or
+    /// Validates all loaded formulas before committing -- parse errors or
     /// promoted warnings (-W) abort the commit and leave the database unchanged.
     /// If no files are given, the database is created/opened but left empty.
     Load {

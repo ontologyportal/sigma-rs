@@ -1,6 +1,6 @@
 // crates/sumo-kb/src/persist/mod.rs
 //
-// Persistence module — LMDB-backed storage for KifStore formulas and symbols.
+// Persistence module -- LMDB-backed storage for KifStore formulas and symbols.
 // Enabled via `--features persist`.
 
 mod env;

@@ -14,7 +14,7 @@ use inline_colorization::*;
 
 use crate::types::SentenceId;
 
-// ── Global warning-control flags ─────────────────────────────────────────────
+// -- Global warning-control flags ---------------------------------------------
 
 /// Treat all ignorable semantic errors as fatal (mimics -Wall).
 static ALL_ERRORS: AtomicBool = AtomicBool::new(false);
@@ -40,13 +40,14 @@ pub fn suppress_warnings(whether: bool) {
     NO_WARNINGS.store(whether, Ordering::SeqCst);
 }
 
-// ── Span and ParseError ───────────────────────────────────────────────────────
+// -- Span and ParseError -------------------------------------------------------
 // Defined in parse::kif; re-exported here for backward compatibility.
-pub use crate::parse::kif::{Span, ParseError};
+pub use crate::parse::ParseError;
+pub use crate::parse::ast::Span;
 
-// ── SemanticError ─────────────────────────────────────────────────────────────
+// -- SemanticError -------------------------------------------------------------
 
-/// Semantic errors — non-fatal during KB construction, fatal during tell().
+/// Semantic errors -- non-fatal during KB construction, fatal during tell().
 #[derive(Debug, Clone, Error)]
 pub enum SemanticError {
     #[error("symbol '{sym}' must have a valid derivation to Entity")]
@@ -58,8 +59,8 @@ pub enum SemanticError {
     #[error("sentence head is not a symbol")]
     HeadInvalid { sid: SentenceId },
 
-    #[error("argument {arg} of operator sentence must be logical (predicate or operator) sentence")]
-    NonLogicalArg { sid: SentenceId, arg: usize },
+    #[error("argument {arg} of the operator, {op}, must be logical (predicate or operator) sentence")]
+    NonLogicalArg { sid: SentenceId, arg: usize, op: String },
 
     #[error("arity mismatch for '{rel}': expected {expected}, got {got}")]
     ArityMismatch { sid: SentenceId, rel: String, expected: usize, got: usize },
@@ -222,13 +223,13 @@ impl SemanticError {
     }
 }
 
-// ── KbError ───────────────────────────────────────────────────────────────────
+// -- KbError -------------------------------------------------------------------
 
 /// Top-level error type for all sumo-kb operations.
 #[derive(Debug, Error)]
 pub enum KbError {
     #[error(transparent)]
-    Parse(#[from] ParseError),
+    Parse(#[from] Box<dyn ParseError>),
 
     #[error(transparent)]
     Semantic(#[from] SemanticError),
@@ -252,7 +253,7 @@ impl From<heed::Error> for KbError {
     }
 }
 
-// ── tell() result types ───────────────────────────────────────────────────────
+// -- tell() result types -------------------------------------------------------
 
 /// Result returned by `KnowledgeBase::tell()` and `load_kif()`.
 #[derive(Debug, Default)]
@@ -261,7 +262,7 @@ pub struct TellResult {
     /// Duplicate-skipped formulas do NOT make this false.
     pub ok: bool,
     /// Hard errors (parse failures, fatal semantic errors).
-    pub errors: Vec<String>,
+    pub errors: Vec<KbError>,
     /// Non-fatal notices (semantic warnings, duplicates skipped).
     pub warnings: Vec<TellWarning>,
 }
@@ -298,7 +299,7 @@ impl std::fmt::Display for TellWarning {
     }
 }
 
-// ── promote_assertions() result types ────────────────────────────────────────
+// -- promote_assertions() result types ----------------------------------------
 
 /// Successful result from `KnowledgeBase::promote_assertions*()`.
 #[derive(Debug, Default)]

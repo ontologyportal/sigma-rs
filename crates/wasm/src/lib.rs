@@ -6,7 +6,7 @@
 use wasm_bindgen::prelude::*;
 use sumo_kb::{KnowledgeBase, TptpOptions, TptpLang};
 
-// ── WasmKnowledgeBase ─────────────────────────────────────────────────────────
+// -- WasmKnowledgeBase ---------------------------------------------------------
 
 /// A KIF knowledge base exposed to JavaScript.
 #[wasm_bindgen]
@@ -28,7 +28,8 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let result = self.inner.load_kif(kif_text, file_tag, None);
-        serde_wasm_bindgen::to_value(&result.errors)
+        let errors: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
+        serde_wasm_bindgen::to_value(&errors)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -43,7 +44,8 @@ impl WasmKnowledgeBase {
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let errs_js = serde_wasm_bindgen::to_value(&result.errors)
+        let errors: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
+        let errs_js = serde_wasm_bindgen::to_value(&errors)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         js_sys::Reflect::set(&obj, &"errors".into(), &errs_js)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
@@ -120,7 +122,8 @@ impl WasmKnowledgeBase {
         let query_tag = "__query__";
         let tell_result = self.inner.tell(query_tag, query_kif);
         if !tell_result.ok {
-            return Err(serde_wasm_bindgen::to_value(&tell_result.errors)
+            let errors: Vec<String> = tell_result.errors.iter().map(|e| e.to_string()).collect();
+            return Err(serde_wasm_bindgen::to_value(&errors)
                 .unwrap_or_else(|_| JsValue::from_str("parse error")));
         }
 

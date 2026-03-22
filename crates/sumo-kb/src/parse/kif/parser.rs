@@ -1,142 +1,18 @@
 // crates/sumo-kb/src/parse/kif/parser.rs
-// Ported verbatim from sumo-parser-core/src/parser.rs.
-// Only change: import paths updated to local submodule.
+use super::error::KifParseError;
+use super::tokenizer::{Token, TokenKind};
 
-use core::fmt;
-use inline_colorization::*;
-use super::error::{ParseError, Span};
-use super::tokenizer::{OpKind, Token, TokenKind};
+use crate::parse::ast::{AstNode, OpKind, Span};
 
-// ── AST ───────────────────────────────────────────────────────────────────────
+// Parser
 
-/// A node in the raw abstract syntax tree produced by the parser.
-#[derive(Debug, Clone)]
-pub enum AstNode {
-    List     { elements: Vec<AstNode>, span: Span },
-    Symbol   { name: String, span: Span },
-    Variable { name: String, span: Span },   // includes leading `?`
-    RowVariable { name: String, span: Span }, // includes leading `@`
-    Str      { value: String, span: Span },  // includes surrounding `"`
-    Number   { value: String, span: Span },
-    Operator { op: OpKind, span: Span },
-}
-
-impl AstNode {
-    pub fn span(&self) -> &Span {
-        match self {
-            AstNode::List { span, .. }        => span,
-            AstNode::Symbol { span, .. }      => span,
-            AstNode::Variable { span, .. }    => span,
-            AstNode::RowVariable { span, .. } => span,
-            AstNode::Str { span, .. }         => span,
-            AstNode::Number { span, .. }      => span,
-            AstNode::Operator { span, .. }    => span,
-        }
-    }
-
-    /// Compact flat KIF string — `(op arg1 arg2)` without extra spaces.
-    pub fn flat(&self) -> String {
-        match self {
-            AstNode::List { elements, .. } => {
-                if elements.is_empty() { return "()".into(); }
-                format!("({})", elements.iter().map(AstNode::flat).collect::<Vec<_>>().join(" "))
-            }
-            AstNode::Symbol { name, .. }      => name.clone(),
-            AstNode::Variable { name, .. }    => format!("?{}", name),
-            AstNode::RowVariable { name, .. } => format!("@{}", name),
-            AstNode::Str { value, .. }
-            | AstNode::Number { value, .. }   => value.clone(),
-            AstNode::Operator { op, .. }      => op.name().to_owned(),
-        }
-    }
-
-    /// Indented KIF pretty-printer.
-    ///
-    /// Expressions that fit within 72 columns at `indent` are kept on one line.
-    /// Longer ones break so that the operator stays on the opening line and
-    /// each argument is placed on its own line indented two spaces further.
-    pub fn pretty_print(&self, indent: usize) -> String {
-        const LINE_WIDTH: usize = 72;
-        let flat = self.flat();
-        if indent + flat.len() <= LINE_WIDTH {
-            return Pretty(self).to_string();
-        }
-        match self {
-            AstNode::List { elements, .. } if elements.len() >= 2 => {
-                println!("indent: {}", indent);
-                let pad  = " ".repeat(indent + 2);
-                let head = elements[0].pretty_print(0);
-                let args: Vec<String> = elements[1..].iter()
-                    .map(|e| format!("{}{}", pad, e.pretty_print(indent + 2)))
-                    .collect();
-                format!("({}\n{})", head, args.join("\n"))
-            }
-            _ => Pretty(self).to_string(),
-        }
-    }
-}
-
-/// Plain KIF display — output is always re-parseable (no ANSI codes).
-/// Use [`Pretty`] for colourised terminal/log output.
-impl fmt::Display for AstNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AstNode::List { elements, .. } => {
-                write!(f, "( ")?;
-                for el in elements { write!(f, "{} ", el)?; }
-                write!(f, ")")
-            }
-            AstNode::Symbol { name, .. }        => write!(f, "{}", name),
-            AstNode::Variable { name, .. }      => write!(f, "?{}", name),
-            AstNode::RowVariable { name, .. }   => write!(f, "@{}", name),
-            AstNode::Str { value, .. }
-            | AstNode::Number { value, .. }     => write!(f, "{}", value),
-            AstNode::Operator { op, .. }        => write!(f, "{}", op.name()),
-        }
-    }
-}
-
-/// Colourised display wrapper for [`AstNode`].
-///
-/// Use this for terminal output and log messages where ANSI colour is
-/// desirable.  Operators are rendered in cyan.  For output that must be
-/// fed back into the parser or KB, use plain [`Display`] / [`to_string`].
-pub struct Pretty<'a>(pub &'a AstNode);
-
-impl fmt::Display for Pretty<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            AstNode::List { elements, .. } => {
-                write!(f, "( ")?;
-                for el in elements { write!(f, "{} ", Pretty(el))?; }
-                write!(f, ")")
-            }
-            AstNode::Operator { op, .. } =>
-                write!(f, "{color_cyan}{}{color_reset}", op.name()),
-            AstNode::Number { value, ..}
-            | AstNode::Str { value, ..} => write!(f, "{color_green}{}{color_reset}", value),
-            AstNode::Variable { ..}
-            | AstNode::RowVariable { .. } => write!(f, "{color_magenta}{}{color_reset}", self.0.flat()),
-            AstNode::Symbol { name, .. } => {
-                if name.chars().next().map_or(false, |c| c.is_lowercase()) {
-                    write!(f, "{color_bright_blue}{}{color_reset}", name)
-                } else {
-                    write!(f, "{color_yellow}{}{color_reset}", name)
-                }
-            }
-        }
-    }
-}
-
-// ── Parser ────────────────────────────────────────────────────────────────────
-
-pub struct Parser {
+pub struct KifParser {
     tokens: Vec<Token>,
     pos:    usize,
     file:   String,
 }
 
-impl Parser {
+impl KifParser {
     fn new(tokens: Vec<Token>, file: &str) -> Self {
         Self { tokens, pos: 0, file: file.to_owned() }
     }
@@ -154,9 +30,9 @@ impl Parser {
         else { Span { file: self.file.clone(), line: 1, col: 1, offset: 0 } }
     }
 
-    fn parse_node(&mut self) -> Result<AstNode, (Span, ParseError)> {
+    fn parse_node(&mut self) -> Result<AstNode, (Span, KifParseError)> {
         let tok = match self.peek() {
-            None => return Err((self.eof_span(), ParseError::UnexpectedEof { span: self.eof_span() })),
+            None => return Err((self.eof_span(), KifParseError::UnexpectedEof { span: self.eof_span() })),
             Some(t) => t,
         };
         match &tok.kind {
@@ -164,19 +40,66 @@ impl Parser {
                 let start_span = tok.span.clone();
                 self.advance();
                 let mut elements = Vec::new();
+                let mut idx = 0;
                 loop {
                     match self.peek() {
-                        None => return Err((start_span.clone(), ParseError::UnbalancedParens { span: start_span })),
-                        Some(t) if matches!(t.kind, TokenKind::RParen) => { self.advance(); break; }
+                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx == 0 => { 
+                            return Err((start_span.clone(), KifParseError::EmptySentence { span: start_span.clone() }));
+                        }
+                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx > 0 => { self.advance(); break; }
+                        None => {
+                            return Err((start_span.clone(), KifParseError::UnbalancedParens { span: start_span }))
+                        },
+                        Some(Token { kind: TokenKind::Operator(op), span, .. }) if idx > 0 => { 
+                            return Err((span.clone(), KifParseError::OperatorOutOfPosition {
+                                op: op.name().to_string(),
+                                span: span.clone(),
+                            }));
+                        },
+                        Some(t) if idx == 0 &&  !t.kind.can_head() => {
+                            return Err((t.span.clone(), KifParseError::FirstTerm { span: t.span.clone() }));
+                        },
                         _ => elements.push(self.parse_node()?),
                     }
+                    idx += 1;
                 }
+
+                // QuantifierArg: `(forall VAR_LIST BODY)` and `(exists VAR_LIST BODY)`.
+                //   * VAR_LIST must be a parenthesised list -- not a bare variable.
+                //   * Every element of VAR_LIST must be a plain or row variable.
+                if matches!(
+                    elements.first(),
+                    Some(AstNode::Operator { op: OpKind::ForAll | OpKind::Exists, .. })
+                ) {
+                    match elements.get(1) {
+                        Some(AstNode::List { elements: var_els, .. }) => {
+                            for el in var_els {
+                                if !matches!(el, AstNode::Variable { .. } | AstNode::RowVariable { .. }) {
+                                    return Err((el.span().clone(), KifParseError::QuantifierArg {
+                                        span: el.span().clone(),
+                                    }));
+                                }
+                            }
+                        }
+                        Some(other) => {
+                            return Err((other.span().clone(), KifParseError::QuantifierArg {
+                                span: other.span().clone(),
+                            }));
+                        }
+                        None => {
+                            return Err((start_span.clone(), KifParseError::QuantifierArg {
+                                span: start_span.clone(),
+                            }));
+                        }
+                    }
+                }
+
                 Ok(AstNode::List { elements, span: start_span })
             }
             TokenKind::RParen => {
                 let span = tok.span.clone();
                 self.advance();
-                Err((span.clone(), ParseError::UnbalancedParens { span }))
+                Err((span.clone(), KifParseError::UnbalancedParens { span }))
             }
             TokenKind::Symbol(name) => {
                 let node = AstNode::Symbol { name: name.clone(), span: tok.span.clone() };
@@ -207,13 +130,34 @@ impl Parser {
         }
     }
 
-    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<(Span, ParseError)>) {
+    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<(Span, KifParseError)>) {
         let mut nodes  = Vec::new();
         let mut errors = Vec::new();
         while self.peek().is_some() {
+            // Remember the position so we know whether parse_node consumed any
+            // tokens before failing.  If it did (e.g. a complete but structurally
+            // invalid list), we must NOT advance again -- doing so would skip the
+            // opening token of the next well-formed sentence.
+            let pos_before = self.pos;
             match self.parse_node() {
-                Ok(node) => nodes.push(node),
-                Err(e)   => { errors.push(e); self.advance(); }
+                Ok(node) => {
+                    // Top-level-only structural checks.  These cannot be caught
+                    // inside `parse_node` because sub-lists are allowed to be
+                    // empty (e.g. the variable list of a bare `forall` with no
+                    // bound vars) and to start with non-symbol elements.
+                    nodes.push(node);
+                }
+                Err(e) => {
+                    errors.push(e);
+                    // Only skip a token when parse_node made no progress -- i.e.
+                    // the error occurred before any token was consumed.  If the
+                    // parser consumed tokens and then found a structural problem
+                    // (OperatorOutOfPosition, QuantifierArg) the stream is already
+                    // positioned at the start of the next sentence.
+                    if self.pos == pos_before {
+                        self.advance();
+                    }
+                }
             }
         }
         (nodes, errors)
@@ -221,17 +165,19 @@ impl Parser {
 }
 
 /// Parse `tokens` into a list of top-level AST nodes.
-pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<(Span, ParseError)>) {
-    let mut parser = Parser::new(tokens, file);
+pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<(Span, KifParseError)>) {
+    let mut parser = KifParser::new(tokens, file);
     parser.parse_all()
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// Tests
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use super::super::tokenizer::tokenize;
+    use crate::parse::ast::OpKind;
 
     fn parse_kif(src: &str) -> Vec<AstNode> {
         let (tokens, _) = tokenize(src, "test");
@@ -271,5 +217,124 @@ mod tests {
             assert!(matches!(&elements[1], AstNode::Variable { name, .. } if name == "X"));
             assert!(matches!(&elements[2], AstNode::Number { value, .. } if value == "42"));
         }
+    }
+
+    // -- Structural validation tests -------------------------------------------
+
+    fn parse_errors(src: &str) -> Vec<KifParseError> {
+        let (tokens, _) = tokenize(src, "test");
+        let (_, errors) = parse(tokens, "test");
+        errors.into_iter().map(|(_, e)| e).collect()
+    }
+
+    #[test]
+    fn empty_sentence_is_an_error() {
+        let errs = parse_errors("()");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::EmptySentence { .. })),
+            "expected EmptySentence, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn empty_sentence_does_not_abort_remaining_sentences() {
+        // The empty list should be rejected but the valid sentence after it
+        // must still be parsed.
+        let (tokens, _) = tokenize("() (subclass Human Animal)", "test");
+        let (nodes, errors) = parse(tokens, "test");
+        assert!(errors.iter().any(|e| matches!(e.1, KifParseError::EmptySentence { .. })));
+        assert_eq!(nodes.len(), 1, "the valid sentence after () should survive");
+    }
+
+    #[test]
+    fn first_term_number_is_an_error() {
+        let errs = parse_errors("(42 ?X)");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn first_term_string_is_an_error() {
+        let errs = parse_errors("(\"hello\" ?X)");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn first_term_nested_list_is_an_error() {
+        // A sub-list as the head of a top-level sentence is invalid.
+        let errs = parse_errors("((P ?X) Foo)");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn operator_out_of_position_is_an_error() {
+        // `and` in argument position is invalid.
+        let errs = parse_errors("(instance and Foo)");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::OperatorOutOfPosition { .. })),
+            "expected OperatorOutOfPosition, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn operator_out_of_position_in_nested_list() {
+        // Even inside a sub-list, operators must be the head.
+        let errs = parse_errors("(=> (P ?X) (Q and ?Y))");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::OperatorOutOfPosition { .. })),
+            "expected OperatorOutOfPosition, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn quantifier_arg_bare_variable_is_an_error() {
+        // `(forall ?X body)` -- variable list must be wrapped in parens.
+        let errs = parse_errors("(forall ?X (instance ?X Human))");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
+            "expected QuantifierArg, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn quantifier_arg_non_variable_in_list_is_an_error() {
+        // A symbol inside the variable list is invalid.
+        let errs = parse_errors("(forall (?X Human) (instance ?X Human))");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
+            "expected QuantifierArg, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn quantifier_arg_missing_var_list_is_an_error() {
+        // `(forall)` with no arguments at all.
+        let errs = parse_errors("(forall)");
+        assert!(
+            errs.iter().any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
+            "expected QuantifierArg, got: {:?}", errs
+        );
+    }
+
+    #[test]
+    fn valid_forall_still_parses() {
+        // Sanity-check: well-formed forall must not trigger QuantifierArg.
+        let nodes = parse_kif("(forall (?X) (instance ?X Human))");
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn valid_forall_with_row_variable() {
+        // Row variables in the quantifier list are allowed.
+        let nodes = parse_kif("(forall (@ROW) (P @ROW))");
+        assert_eq!(nodes.len(), 1);
     }
 }

@@ -6,6 +6,6 @@ pub mod error;
 pub mod tokenizer;
 pub mod parser;
 
-pub use error::{Span, ParseError};
-pub use tokenizer::{tokenize, Token, TokenKind, OpKind};
-pub use parser::{parse, AstNode, Pretty};
+pub use error::KifParseError;
+pub(crate) use tokenizer::tokenize;
+pub use parser::parse;

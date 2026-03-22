@@ -8,7 +8,7 @@ compile_error!("sumo-kb: the `ask` feature is not available on wasm32 targets");
 
 use std::fmt;
 
-// ── Sub-prover modules ────────────────────────────────────────────────────────
+// -- Sub-prover modules --------------------------------------------------------
 
 pub mod subprocess;
 
@@ -20,22 +20,27 @@ pub use subprocess::VampireRunner;
 #[cfg(feature = "integrated-prover")]
 pub use embedded::EmbeddedProverRunner;
 
-// ── Shared types ──────────────────────────────────────────────────────────────
+use serde::{Serialize, Deserialize};
+
+// -- Shared types --------------------------------------------------------------
 
 pub trait ProverRunner: Send + Sync {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult;
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProverOpts {
     pub timeout_secs: u32,
     pub mode: ProverMode,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProverMode {
     Prove,
     CheckConsistency,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProverResult {
     pub status:     ProverStatus,
     pub raw_output: String,
@@ -44,6 +49,7 @@ pub struct ProverResult {
     pub proof_kif:  Vec<crate::tptp::kif::KifProofStep>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProverStatus {
     Proved,
     Disproved,
@@ -53,7 +59,7 @@ pub enum ProverStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
     pub variable: String,
     pub value:    String,

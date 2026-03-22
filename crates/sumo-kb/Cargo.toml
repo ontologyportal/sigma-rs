@@ -8,13 +8,13 @@ default = []
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
 # Theorem proving via subprocess spawning (e.g. Vampire).
-# NOT available on wasm32 — enforced by compile_error! in lib.rs.
+# NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = ["dep:regex"]
 # CNF clausification. Can be used independently of ask or persist.
 cnf     = []
 # Embedded Vampire prover (links Vampire as a static library via CMake).
 # Requires CMake 3.10+, a C++ compiler, and the vampire-lib submodule.
-# NOT available on wasm32 — Vampire uses threads/fork/platform syscalls.
+# NOT available on wasm32 -- Vampire uses threads/fork/platform syscalls.
 integrated-prover = ["dep:vampire-prover", "ask"]
 
 [dependencies]
@@ -26,6 +26,7 @@ log.workspace               = true
 inline_colorization.workspace = true
 xxhash-rust                 = { version = "0.8.15", features = ["xxh64"] }
 once_cell                   = "1.21.4"
+smallvec                    = { version = "1", features = ["serde"] }
 
 # persist feature
 heed    = { version = "0.20", features = ["serde-bincode"], optional = true }

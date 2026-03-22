@@ -1,6 +1,6 @@
 // crates/sumo-kb/src/kb.rs
 //
-// KnowledgeBase — the single public API type for sumo-kb.
+// KnowledgeBase -- the single public API type for sumo-kb.
 // Assembles KifStore + SemanticLayer + sessions + fingerprints + optional persist/ask/cnf.
 
 use std::collections::{HashMap, HashSet};
@@ -27,7 +27,7 @@ use crate::prover::{ProverMode, ProverOpts, ProverResult, ProverStatus, ProverRu
 #[cfg(feature = "integrated-prover")]
 use crate::prover::EmbeddedProverRunner;
 
-// ── Feature-gated KB config types ────────────────────────────────────────────
+// -- Feature-gated KB config types --------------------------------------------
 
 #[cfg(feature = "cnf")]
 pub struct ClausifyOptions {
@@ -47,17 +47,17 @@ pub struct ClausifyReport {
     pub exceeded_limit:  Vec<SentenceId>,
 }
 
-// ── KnowledgeBase ─────────────────────────────────────────────────────────────
+// -- KnowledgeBase -------------------------------------------------------------
 
 pub struct KnowledgeBase {
     /// Wrapped KifStore + semantic cache.
     layer: SemanticLayer,
 
-    /// In-memory session assertions: session name → Vec<SentenceId>.
+    /// In-memory session assertions: session name -> Vec<SentenceId>.
     /// Sentences here have NOT been promoted to axioms yet.
     sessions: HashMap<String, Vec<SentenceId>>,
 
-    /// Deduplication table: fingerprint hash → (SentenceId, session).
+    /// Deduplication table: fingerprint hash -> (SentenceId, session).
     /// session=None means promoted axiom; Some(s) means assertion in session s.
     fingerprints: HashMap<u64, (SentenceId, Option<String>)>,
 
@@ -77,7 +77,7 @@ pub struct KnowledgeBase {
 }
 
 impl KnowledgeBase {
-    // ── Construction ──────────────────────────────────────────────────────────
+    // -- Construction ----------------------------------------------------------
 
     pub fn new() -> Self {
         Self {
@@ -128,7 +128,7 @@ impl KnowledgeBase {
         })
     }
 
-    // ── Ingestion ─────────────────────────────────────────────────────────────
+    // -- Ingestion -------------------------------------------------------------
 
     /// Assert a single KIF string into a named session.
     ///
@@ -169,8 +169,8 @@ impl KnowledgeBase {
 
         if !parse_errors.is_empty() {
             result.ok = false;
-            for (_, e) in &parse_errors {
-                result.errors.push(e.to_string());
+            for (_, e) in parse_errors {
+                result.errors.push(e);
             }
             return result;
         }
@@ -184,7 +184,7 @@ impl KnowledgeBase {
         let mut accepted: Vec<SentenceId> = Vec::new();
 
         for sid in new_roots {
-            // Semantic validation — only for interactive tell(), not bulk load_kif().
+            // Semantic validation -- only for interactive tell(), not bulk load_kif().
             if validate {
                 if let Err(e) = self.layer.validate_sentence(sid) {
                     result.warnings.push(TellWarning::Semantic(e));
@@ -231,6 +231,7 @@ impl KnowledgeBase {
         }
 
         self.sessions.entry(session.to_owned()).or_default().extend(&accepted);
+        self.layer.extend_taxonomy();
         log::info!(target: "sumo_kb::kb",
             "tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len());
         result
@@ -255,7 +256,7 @@ impl KnowledgeBase {
             count, session);
     }
 
-    // ── Session management ────────────────────────────────────────────────────
+    // -- Session management ----------------------------------------------------
 
     /// Discard all assertions in `session` (removes from store and fingerprints).
     pub fn flush_session(&mut self, session: &str) {
@@ -267,6 +268,7 @@ impl KnowledgeBase {
 
         // Remove sentences from KifStore.
         self.layer.store.remove_file(session);
+        self.layer.rebuild_taxonomy();
         self.layer.invalidate_cache();
 
         #[cfg(feature = "cnf")]
@@ -282,7 +284,7 @@ impl KnowledgeBase {
         for s in sessions { self.flush_session(&s); }
     }
 
-    // ── Promotion ─────────────────────────────────────────────────────────────
+    // -- Promotion -------------------------------------------------------------
 
     /// Promote all assertions in `session` to axioms WITHOUT a consistency check.
     /// Requires `persist` feature (writes to LMDB).
@@ -305,7 +307,7 @@ impl KnowledgeBase {
             return Ok(report);
         }
 
-        // ── Step 1: Cross-session dedup ───────────────────────────────────────
+        // -- Step 1: Cross-session dedup ---------------------------------------
         let mut surviving: Vec<SentenceId> = Vec::new();
         for &sid in &session_sids {
             let fp = fingerprint(&self.layer.store, sid);
@@ -315,7 +317,7 @@ impl KnowledgeBase {
                 match s {
                     None                        => true,  // already an axiom
                     Some(s) if s != session     => true,  // in another session
-                    _                           => false, // same session → OK
+                    _                           => false, // same session -> OK
                 }
             }).unwrap_or(false);
 
@@ -345,7 +347,7 @@ impl KnowledgeBase {
             return Ok(report);
         }
 
-        // ── Step 2: Semantic validation ───────────────────────────────────────
+        // -- Step 2: Semantic validation ---------------------------------------
         let sem_errors: Vec<(SentenceId, SemanticError)> = surviving.iter()
             .filter_map(|&sid| self.layer.validate_sentence(sid).err().map(|e| (sid, e)))
             .collect();
@@ -356,7 +358,7 @@ impl KnowledgeBase {
             return Err(KbError::Semantic(sem_errors.into_iter().next().unwrap().1));
         }
 
-        // ── Step 3: Clausify [cnf feature] ───────────────────────────────────
+        // -- Step 3: Clausify [cnf feature] -----------------------------------
         #[cfg(feature = "cnf")]
         let clause_map: HashMap<SentenceId, Vec<Clause>> = {
             if self.cnf_mode {
@@ -379,7 +381,7 @@ impl KnowledgeBase {
             }
         };
 
-        // ── Step 4: Write to LMDB ─────────────────────────────────────────────
+        // -- Step 4: Write to LMDB ---------------------------------------------
         // Promoted sentences become axioms (session=None) in the DB.
         if let Some(env) = &self.db {
             write_axioms(
@@ -391,17 +393,17 @@ impl KnowledgeBase {
             )?;
         }
 
-        // ── Step 5: Update fingerprints to axiom (session=None) ───────────────
+        // -- Step 5: Update fingerprints to axiom (session=None) ---------------
         for &sid in &surviving {
             let fp = fingerprint(&self.layer.store, sid);
             self.fingerprints.insert(fp, (sid, None));
         }
 
-        // ── Step 6: Store CNF clauses ─────────────────────────────────────────
+        // -- Step 6: Store CNF clauses -----------------------------------------
         #[cfg(feature = "cnf")]
         self.clauses.extend(clause_map);
 
-        // ── Step 7: Detach from session ───────────────────────────────────────
+        // -- Step 7: Detach from session ---------------------------------------
         self.sessions.remove(session);
         self.layer.store.clear_file_roots(session);
         // Note: sentences remain in store.roots as promoted axioms.
@@ -462,14 +464,14 @@ impl KnowledgeBase {
                     reason: format!("{:?}", std::mem::discriminant(&prover_result.status)),
                 });
             }
-            _ => {} // Consistent or other → proceed
+            _ => {} // Consistent or other -> proceed
         }
 
         self.promote_assertions_unchecked(session)
             .map_err(PromoteError::Db)
     }
 
-    // ── Semantic queries ──────────────────────────────────────────────────────
+    // -- Semantic queries ------------------------------------------------------
 
     pub fn is_instance(&self, sym: crate::types::SymbolId) -> bool {
         self.layer.is_instance(sym)
@@ -499,7 +501,7 @@ impl KnowledgeBase {
         self.layer.store.sym_id(name)
     }
 
-    // ── Validation ────────────────────────────────────────────────────────────
+    // -- Validation ------------------------------------------------------------
 
     pub fn validate_sentence(&self, sid: SentenceId) -> Result<(), SemanticError> {
         self.layer.validate_sentence(sid)
@@ -520,7 +522,7 @@ impl KnowledgeBase {
             .collect()
     }
 
-    // ── TPTP output ───────────────────────────────────────────────────────────
+    // -- TPTP output -----------------------------------------------------------
 
     /// Generate TPTP for the KB.
     ///
@@ -576,7 +578,7 @@ impl KnowledgeBase {
         Ok(out)
     }
 
-    // ── CNF control ───────────────────────────────────────────────────────────
+    // -- CNF control -----------------------------------------------------------
 
     #[cfg(feature = "cnf")]
     pub fn enable_cnf(&mut self, opts: ClausifyOptions) {
@@ -630,7 +632,7 @@ impl KnowledgeBase {
         Ok(report)
     }
 
-    // ── Theorem proving ───────────────────────────────────────────────────────
+    // -- Theorem proving -------------------------------------------------------
 
     /// Ask the theorem prover whether `query_kif` is entailed by the KB.
     /// `session` = optional in-memory session whose assertions are included as hypotheses.
@@ -643,24 +645,28 @@ impl KnowledgeBase {
         runner:    &dyn ProverRunner,
         lang:      TptpLang,
     ) -> ProverResult {
+        use crate::Span;
+
         log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
 
         // Parse the query directly into the store, bypassing fingerprint
-        // deduplication.  The query is a conjecture — it must be translated
+        // deduplication.  The query is a conjecture -- it must be translated
         // even if the same formula already exists as an axiom in the KB.
         let query_tag = "__query__";
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
         self.layer.invalidate_cache();
-        let parse_errors = load_kif(&mut self.layer.store, query_kif, query_tag);
+        let parse_errors: Vec<(Span, KbError)> = load_kif(&mut self.layer.store, query_kif, query_tag);
         if !parse_errors.is_empty() {
+
             self.layer.store.remove_file(query_tag);
+            self.layer.rebuild_taxonomy();
             self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: parse_errors.iter()
-                    .map(|(_, e)| e.to_string())
+                    .map(|(_, e): &(Span, KbError)| e.to_string())
                     .collect::<Vec<_>>()
                     .join("\n"),
                 bindings:   Vec::new(),
@@ -675,6 +681,7 @@ impl KnowledgeBase {
 
         if query_sids.is_empty() {
             self.layer.store.remove_file(query_tag);
+            self.layer.rebuild_taxonomy();
             self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
@@ -698,7 +705,7 @@ impl KnowledgeBase {
         let q_opts = TptpOptions { lang, query: true, hide_numbers: true, ..TptpOptions::default() };
         for (i, &qsid) in query_sids.iter().enumerate() {
             let conj = sentence_to_tptp(qsid, &self.layer, &q_opts);
-            tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
+            tptp.push_str(&format!("\n{}(query_{}, conjecture, ({})).\n", lang.as_str(), i, conj));
         }
 
         log::debug!(target: "sumo_kb::kb", "ask: TPTP size={} bytes", tptp.len());
@@ -706,13 +713,14 @@ impl KnowledgeBase {
         // Remove query sentences from the store (they were added directly,
         // not via a session, so flush_session would not clean them up).
         self.layer.store.remove_file(query_tag);
+        self.layer.rebuild_taxonomy();
         self.layer.invalidate_cache();
 
         let prover_opts = ProverOpts { timeout_secs: 30, mode: ProverMode::Prove };
         runner.prove(&tptp, &prover_opts)
     }
 
-    // ── Embedded theorem proving ──────────────────────────────────────────────
+    // -- Embedded theorem proving ----------------------------------------------
 
     /// Ask the embedded Vampire prover whether `query_kif` is entailed by the KB.
     ///
@@ -735,6 +743,7 @@ impl KnowledgeBase {
         let parse_errors = load_kif(&mut self.layer.store, query_kif, query_tag);
         if !parse_errors.is_empty() {
             self.layer.store.remove_file(query_tag);
+            self.layer.rebuild_taxonomy();
             self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
@@ -754,6 +763,7 @@ impl KnowledgeBase {
 
         if query_sids.is_empty() {
             self.layer.store.remove_file(query_tag);
+            self.layer.rebuild_taxonomy();
             self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
@@ -780,14 +790,15 @@ impl KnowledgeBase {
         );
 
         self.layer.store.remove_file(query_tag);
+        self.layer.rebuild_taxonomy();
         self.layer.invalidate_cache();
 
         result
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────────────
+    // -- Internal helpers ------------------------------------------------------
 
-    // ── Additional helpers for embeddings (wasm, etc.) ────────────────────────
+    // -- Additional helpers for embeddings (wasm, etc.) ------------------------
 
     /// Pattern-based sentence lookup (delegates to KifStore::lookup).
     pub fn lookup(&self, pattern: &str) -> Vec<SentenceId> {
@@ -820,6 +831,11 @@ impl KnowledgeBase {
         sentence_to_tptp(sid, &self.layer, opts)
     }
 
+    /// Render a single sentence back to KIF notation (plain text, no ANSI).
+    pub fn sentence_kif_str(&self, sid: SentenceId) -> String {
+        crate::kif_store::sentence_to_plain_kif(sid, &self.layer.store)
+    }
+
     /// Collect all SentenceIds that are currently promoted axioms.
     fn axiom_ids_set(&self) -> HashSet<SentenceId> {
         self.fingerprints.values()
@@ -839,7 +855,7 @@ impl KnowledgeBase {
         if !store.has_sentence(sid) { return format!("<sid:{}>", sid); }
         let sentence = &store.sentences[store.sent_idx(sid)];
         let display = format!("{:?}", sentence.elements);
-        if display.len() > 60 { format!("{}…", &display[..62]) } else { display }
+        if display.len() > 60 { format!("{}...", &display[..62]) } else { display }
     }
 }
 
@@ -847,7 +863,7 @@ impl Default for KnowledgeBase {
     fn default() -> Self { Self::new() }
 }
 
-// ── CNF clause formatting ─────────────────────────────────────────────────────
+// -- CNF clause formatting -----------------------------------------------------
 
 #[cfg(feature = "cnf")]
 fn format_cnf_literal(store: &KifStore, lit: &crate::types::CnfLiteral) -> String {

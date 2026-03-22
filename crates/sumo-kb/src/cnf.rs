@@ -2,15 +2,6 @@
 // #[cfg(feature = "cnf")]
 //
 // CNF (Conjunctive Normal Form) conversion for KIF/SUMO formulas.
-//
-// Ported from sumo-store/src/cnf.rs.
-// Changes:
-//   - `sumo_parser_core` imports → local `crate::types` / `crate::kif_store`
-//   - `StoredSymbol` → `crate::types::Symbol`
-//   - `StoreError::ClauseCountExceeded` → `crate::error::KbError::Other(...)`
-//   - `sentences[sid as usize]` → `sentences[store.sent_idx(sid)]`
-//   - `id_map` parameter removed — stable IDs mean symbols already have correct IDs
-//   - Entire file gated on `#[cfg(feature = "cnf")]` in lib.rs
 
 use crate::error::KbError;
 use crate::kif_store::KifStore;
@@ -19,9 +10,9 @@ use crate::types::{
     Element, Literal as KifLiteral,
     SentenceId, Symbol, SymbolId,
 };
-use crate::parse::kif::OpKind;
+use crate::OpKind;
 
-// ── Intermediate Formula tree ─────────────────────────────────────────────────
+// -- Intermediate Formula tree -------------------------------------------------
 
 #[derive(Debug, Clone)]
 enum Formula {
@@ -60,7 +51,7 @@ impl FTerm {
     }
 }
 
-// ── Build Formula from KifStore ───────────────────────────────────────────────
+// -- Build Formula from KifStore -----------------------------------------------
 
 fn build_formula(store: &KifStore, sid: SentenceId) -> Formula {
     let sentence = &store.sentences[store.sent_idx(sid)];
@@ -160,7 +151,7 @@ fn build_fterm(store: &KifStore, elem: &Element) -> FTerm {
         Element::Literal(KifLiteral::Number(n)) => FTerm::Num(n.clone()),
         Element::Literal(KifLiteral::Str(s))   => FTerm::Str(s.clone()),
         Element::Op(op)                        => {
-            // Operator used as a term — treat as a constant with a synthetic id
+            // Operator used as a term -- treat as a constant with a synthetic id
             let id = store.sym_id(op.name()).unwrap_or(u64::MAX);
             FTerm::Const(id)
         }
@@ -177,7 +168,7 @@ fn build_fterm(store: &KifStore, elem: &Element) -> FTerm {
     }
 }
 
-// ── CNF transformation passes ─────────────────────────────────────────────────
+// -- CNF transformation passes -------------------------------------------------
 
 fn to_nnf(f: Formula) -> Formula {
     match f {
@@ -240,7 +231,7 @@ fn skolemize(
                 };
                 subst.push((*var_id, sk_term));
                 log::debug!(target: "sumo_kb::cnf",
-                    "Skolemize: existential var {} → Skolem '{}' (arity {})",
+                    "Skolemize: existential var {} -> Skolem '{}' (arity {})",
                     var_id, sk_name, arity);
             }
             let body = subst_formula(*body, &subst);
@@ -352,13 +343,13 @@ fn distribute(f: Formula, max_clauses: usize) -> Result<Vec<Vec<FLiteral>>, KbEr
         Formula::True  => Ok(vec![]),
         Formula::False => Ok(vec![vec![]]),
         Formula::Forall { body, .. } | Formula::Exists { body, .. } => {
-            log::warn!(target: "sumo_kb::cnf", "quantifier survived to distribution pass — dropping");
+            log::warn!(target: "sumo_kb::cnf", "quantifier survived to distribution pass -- dropping");
             distribute(*body, max_clauses)
         }
     }
 }
 
-// ── Public entry point ────────────────────────────────────────────────────────
+// -- Public entry point --------------------------------------------------------
 
 /// Convert a single root sentence into a set of CNF clauses.
 ///
@@ -397,7 +388,7 @@ pub(crate) fn sentence_to_cnf(
     Ok(clauses)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

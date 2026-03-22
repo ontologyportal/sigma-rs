@@ -18,7 +18,7 @@ pub fn run_ask(
     backend:  String,
     lang:     String,
     kb_args:  KbArgs,
-    keep:     bool,
+    keep:     Option<PathBuf>,
     show_proof: bool,
 ) -> bool {
     log::debug!(
@@ -27,10 +27,6 @@ pub fn run_ask(
     );
 
     let tptp_lang = parse_lang(&lang);
-
-    if keep {
-        log::warn!("--keep is no longer supported; the TPTP temp file will be removed automatically");
-    }
 
     let conjecture = match formula.or_else(read_stdin) {
         Some(f) => f,
@@ -68,7 +64,7 @@ pub fn run_ask(
         "subprocess" | "" => {
             use sumo_kb::VampireRunner;
             let vampire_path = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
-            let runner = VampireRunner { vampire_path, timeout_secs: timeout };
+            let runner = VampireRunner { vampire_path, timeout_secs: timeout, tptp_dump_path: keep };
             kb.ask(&conjecture, Some(&session), &runner, tptp_lang)
         }
         other => {
@@ -89,7 +85,7 @@ pub fn run_ask(
             let premises = if step.premises.is_empty() {
                 String::new()
             } else {
-                format!(" ← [{}]", step.premises.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
+                format!(" <- [{}]", step.premises.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
             };
             // Header line: index, rule, premises
             println!("  {:>3}. [{}]{}", step.index + 1, step.rule, premises);

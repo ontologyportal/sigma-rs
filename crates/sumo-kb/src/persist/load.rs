@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use crate::error::{KbError, Span};
 use crate::kif_store::KifStore;
-use crate::types::{Element, SentenceId, Sentence, Symbol, TaxEdge, TaxRelation};
+use crate::types::{Element, SentenceId, Sentence, Symbol};
+use smallvec::SmallVec;
 use super::env::{LmdbEnv, StoredElement, StoredFormula};
 
 // Public entry point
@@ -38,7 +39,7 @@ pub(crate) fn load_from_db(
     let mut symbols:     HashMap<String, SentenceId> = HashMap::new();
     let mut symbol_data: Vec<Symbol>                  = Vec::new();
     // We pre-size symbol_data to hold all symbols by ID position temporarily.
-    // Then we build sym_idx from (stable_id → vec_pos).
+    // Then we build sym_idx from (stable_id -> vec_pos).
     // However, to avoid huge allocations for sparse IDs, we insert in order.
     let mut sym_id_to_vec: HashMap<u64, usize> = HashMap::new();
 
@@ -55,7 +56,7 @@ pub(crate) fn load_from_db(
         });
     }
 
-    // ── Load formulas ─────────────────────────────────────────────────────────
+    // -- Load formulas ---------------------------------------------------------
     let stored_formulas = env.all_formulas(&txn)?;
     log::info!(target: "sumo_kb::persist",
         "load_from_db: loading {} formulas", stored_formulas.len());
@@ -94,7 +95,7 @@ pub(crate) fn load_from_db(
         }
     }
 
-    // ── Assemble KifStore ─────────────────────────────────────────────────────
+    // -- Assemble KifStore -----------------------------------------------------
     let mut store = KifStore::default();
     store.sentences     = sentences;
     store.symbols       = symbols;
@@ -112,9 +113,6 @@ pub(crate) fn load_from_db(
         store.insert_sym_idx(*sym_id, *vec_pos);
     }
 
-    // Rebuild taxonomy edges
-    rebuild_taxonomy(&mut store);
-
     // Seed counters so new IDs do not collide with loaded ones
     store.seed_counters(max_sym_id + 1, max_sent_id + 1);
 
@@ -126,7 +124,7 @@ pub(crate) fn load_from_db(
     Ok((store, session_map))
 }
 
-// ── Allocate a StoredFormula into the KifStore ────────────────────────────────
+// -- Allocate a StoredFormula into the KifStore --------------------------------
 
 /// Recursively allocate a `StoredFormula` and all its inline sub-formulas
 /// into `sentences`, returning the `SentenceId` of the root.
@@ -137,7 +135,7 @@ fn allocate_formula(
     sf:           &StoredFormula,
     symbols:      &HashMap<String, u64>,
 ) -> SentenceId {
-    let elements: Vec<Element> = sf.elements.iter().map(|se| {
+    let elements: SmallVec<[Element; 4]> = sf.elements.iter().map(|se| {
         stored_element_to_element(sentences, sent_idx_map, sub_sentences, se, symbols)
     }).collect();
 
@@ -174,35 +172,8 @@ fn stored_element_to_element(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// -- Helpers -------------------------------------------------------------------
 
 fn lmdb_span(formula_id: SentenceId) -> Span {
     Span { file: format!("<lmdb:{}>", formula_id), line: 0, col: 0, offset: 0 }
-}
-
-fn rebuild_taxonomy(store: &mut KifStore) {
-    store.tax_edges.clear();
-    store.tax_incoming.clear();
-    let root_sids: Vec<SentenceId> = store.roots.clone();
-    for sid in root_sids {
-        let vec_pos  = match store.sent_idx_map().get(&sid) { Some(&p) => p, None => continue };
-        let sentence = &store.sentences[vec_pos];
-        let head_sym = match sentence.head_symbol() { Some(id) => id, None => continue };
-        let head_name = match store.symbols.iter().find(|(_, &id)| id == head_sym) {
-            Some((name, _)) => name.clone(),
-            None            => continue,
-        };
-        let rel = match TaxRelation::from_str(&head_name) { Some(r) => r, None => continue };
-        let arg1 = match sentence.elements.get(1) {
-            Some(Element::Symbol(id)) | Some(Element::Variable { id, is_row: false, .. }) => *id,
-            _ => continue,
-        };
-        let arg2 = match sentence.elements.get(2) {
-            Some(Element::Symbol(id)) | Some(Element::Variable { id, is_row: false, .. }) => *id,
-            _ => continue,
-        };
-        let edge_idx = store.tax_edges.len();
-        store.tax_edges.push(TaxEdge { from: arg2, to: arg1, rel });
-        store.tax_incoming.entry(arg1).or_default().push(edge_idx);
-    }
 }

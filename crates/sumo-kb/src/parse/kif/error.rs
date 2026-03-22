@@ -1,32 +1,13 @@
 // crates/sumo-kb/src/parse/kif/error.rs
 //
-// Span and ParseError — source location and tokenizer/parser hard errors.
-
-use serde::{Deserialize, Serialize};
+// Span and ParseError -- source location and tokenizer/parser hard errors.
 use thiserror::Error;
-
-// ── Span ──────────────────────────────────────────────────────────────────────
-
-/// Source location (1-based line and column).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Span {
-    pub file:   String,
-    pub line:   u32,
-    pub col:    u32,
-    pub offset: usize,
-}
-
-impl std::fmt::Display for Span {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}:{}", self.file, self.line, self.col)
-    }
-}
-
-// ── ParseError ────────────────────────────────────────────────────────────────
+use crate::parse::ast::Span;
+use crate::parse::error::ParseError;
 
 /// Hard tokenizer / parser / syntax errors that prevent sentence acceptance.
-#[derive(Debug, Clone, Error)]
-pub enum ParseError {
+#[derive(Debug, Error)]
+pub enum KifParseError {
     #[error("unterminated string literal")]
     UnterminatedString { span: Span },
 
@@ -56,4 +37,21 @@ pub enum ParseError {
 
     #[error("{msg}")]
     Other { msg: String },
+}
+
+impl ParseError for KifParseError {
+    fn get_span(&self) -> Span {
+        match self {
+            KifParseError::Other {..} => Span::default(),
+            KifParseError::UnterminatedString { span }
+            | KifParseError::UnexpectedChar { span, .. }
+            | KifParseError::EmptySentence { span }
+            | KifParseError::UnexpectedEof { span }
+            | KifParseError::UnbalancedParens { span }
+            | KifParseError::OperatorOutOfPosition { span, .. }
+            | KifParseError::QuantifierArg { span }
+            | KifParseError::FirstTerm { span }
+            | KifParseError::Syntax { span, .. } => span.clone(),
+        }
+    }
 }

@@ -11,24 +11,29 @@
 use std::{collections::HashMap, fmt};
 use inline_colorization::*;
 
-use crate::parse::kif::{ParseError, Span, AstNode, OpKind};
-use crate::types::{Element, Literal, Sentence, SentenceId, Symbol, SymbolId, TaxEdge, TaxRelation};
+use crate::KbError;
+use crate::parse::ast::{Span, AstNode, OpKind};
+use crate::types::{Element, Literal, Sentence, SentenceId, Symbol, SymbolId};
+use smallvec::SmallVec;
 
-// ── KifStore ──────────────────────────────────────────────────────────────────
+// -- KifStore ------------------------------------------------------------------
 
-/// The raw parsed store — all sentences, symbols, and taxonomy edges.
+/// The raw parsed store -- sentences, symbols, and indices.
 ///
 /// Populated incrementally by [`load_kif`].  Symbol and sentence IDs are
 /// stable `u64` values driven by explicit atomic-style counters that can be
 /// seeded from LMDB on `open()`, ensuring no ID collision between in-memory
 /// and persisted data.
+///
+/// Taxonomy edges (subclass/instance/subrelation/subAttribute) are derived
+/// semantic structure and live in [`SemanticLayer`], not here.
 #[derive(Debug, Default)]
 pub(crate) struct KifStore {
     pub sentences:    Vec<Sentence>,
     pub symbols:      HashMap<String, SymbolId>,
     pub symbol_data:  Vec<Symbol>,
 
-    /// Root (top-level) sentence ids — in insertion order.
+    /// Root (top-level) sentence ids -- in insertion order.
     pub roots:        Vec<SentenceId>,
     /// All sub-sentence ids (nested inside root sentences).
     pub sub_sentences: Vec<SentenceId>,
@@ -36,28 +41,24 @@ pub(crate) struct KifStore {
     pub file_roots:   HashMap<String, Vec<SentenceId>>,
     /// Root sentences indexed by head predicate name.
     pub head_index:   HashMap<String, Vec<SentenceId>>,
-    /// Taxonomy edges extracted from the store.
-    pub tax_edges:    Vec<TaxEdge>,
-    /// `tax_incoming[sym_id]` = list of indices into `tax_edges` where `edge.to == sym_id`.
-    pub tax_incoming: HashMap<SymbolId, Vec<usize>>,
 
-    /// SentenceId → Vec index.  Decouples stable IDs from Vec positions so that
+    /// SentenceId -> Vec index.  Decouples stable IDs from Vec positions so that
     /// seeded counters (e.g. starting at 1000 after an LMDB load) do not cause
     /// out-of-bounds accesses.
     sent_idx:         HashMap<SentenceId, usize>,
-    /// SymbolId → Vec index into symbol_data.
+    /// SymbolId -> Vec index into symbol_data.
     sym_idx:          HashMap<SymbolId, usize>,
 
-    /// Explicit counter for next SymbolId — seeded from LMDB max on open().
+    /// Explicit counter for next SymbolId -- seeded from LMDB max on open().
     next_symbol_id:   u64,
-    /// Explicit counter for next SentenceId — seeded from LMDB max on open().
+    /// Explicit counter for next SentenceId -- seeded from LMDB max on open().
     next_sentence_id: u64,
     /// Internal counter for variable scope disambiguation (not persisted).
     scope_counter:    u64,
 }
 
 impl KifStore {
-    // ── Counter seeding ───────────────────────────────────────────────────────
+    // -- Counter seeding -------------------------------------------------------
 
     /// Seed the ID counters from the LMDB max values.  Called by `open()` after
     /// loading all existing formulas from the DB so that any new IDs assigned
@@ -70,7 +71,7 @@ impl KifStore {
             next_sym, next_sent);
     }
 
-    // ── Symbol table ─────────────────────────────────────────────────────────
+    // -- Symbol table ---------------------------------------------------------
 
     /// Intern a symbol name.  Returns the existing id on cache hit,
     /// allocates a new stable id on miss.
@@ -90,7 +91,7 @@ impl KifStore {
         });
         self.symbols.insert(name.to_owned(), id);
         self.sym_idx.insert(id, idx);
-        log::debug!(target: "sumo_kb::kif_store", "interned symbol '{}' → id={}", name, id);
+        log::debug!(target: "sumo_kb::kif_store", "interned symbol '{}' -> id={}", name, id);
         id
     }
 
@@ -113,7 +114,7 @@ impl KifStore {
         self.symbols.insert(name.to_owned(), id);
         self.sym_idx.insert(id, idx);
         log::debug!(target: "sumo_kb::kif_store",
-            "interned skolem '{}' (arity={:?}) → id={}", name, arity, id);
+            "interned skolem '{}' (arity={:?}) -> id={}", name, arity, id);
         id
     }
 
@@ -150,19 +151,19 @@ impl KifStore {
         &self.sent_idx
     }
 
-    /// Insert a stable SentenceId → Vec position mapping (used by persist::load).
+    /// Insert a stable SentenceId -> Vec position mapping (used by persist::load).
     #[cfg(feature = "persist")]
     pub(crate) fn insert_sent_idx(&mut self, sid: SentenceId, vec_pos: usize) {
         self.sent_idx.insert(sid, vec_pos);
     }
 
-    /// Insert a stable SymbolId → Vec position mapping (used by persist::load).
+    /// Insert a stable SymbolId -> Vec position mapping (used by persist::load).
     #[cfg(feature = "persist")]
     pub(crate) fn insert_sym_idx(&mut self, sym_id: SymbolId, vec_pos: usize) {
         self.sym_idx.insert(sym_id, vec_pos);
     }
 
-    // ── Sentence allocation ───────────────────────────────────────────────────
+    // -- Sentence allocation ---------------------------------------------------
 
     fn alloc_sentence(&mut self, sentence: Sentence) -> SentenceId {
         let id  = self.next_sentence_id;
@@ -180,12 +181,12 @@ impl KifStore {
         id
     }
 
-    // ── Load (syntax pass) ───────────────────────────────────────────────────
+    // Load (syntax pass)
 
     /// Process a list of top-level AST nodes into this store, tagging them
-    /// with `file`.  Returns any hard syntax errors found.
-    pub(crate) fn load(&mut self, nodes: &[AstNode], file: &str) -> Vec<(Span, ParseError)> {
-        let mut errors = Vec::new();
+    /// with `file`.  Returns any stoppable errors found.
+    pub(crate) fn load(&mut self, nodes: &[AstNode], file: &str) -> Vec<(Span, KbError)> {
+        let mut errors: Vec<(Span, KbError)> = Vec::new();
         for node in nodes {
             if let AstNode::List { .. } = node {
                 let ctx = ScopeCtx { default: self.next_scope(), overrides: HashMap::new() };
@@ -211,7 +212,7 @@ impl KifStore {
         ctx: &ScopeCtx,
         node: &AstNode,
         file: &str,
-        errors: &mut Vec<(Span, ParseError)>,
+        errors: &mut Vec<(Span, KbError)>,
         top_level: bool,
     ) -> Option<SentenceId> {
         let (elements_ast, span) = match node {
@@ -221,10 +222,9 @@ impl KifStore {
 
         if elements_ast.is_empty() {
             if top_level {
-                errors.push((span.clone(), ParseError::EmptySentence { span: span.clone() }));
-                return None;
+                unreachable!("The parser should have found and rejected empty sentences");
             } else {
-                let sid = self.alloc_sentence(Sentence { elements: Vec::new(), file: file.to_owned(), span });
+                let sid = self.alloc_sentence(Sentence { elements: SmallVec::new(), file: file.to_owned(), span });
                 return Some(sid);
             }
         }
@@ -232,18 +232,14 @@ impl KifStore {
         if top_level {
             let first = &elements_ast[0];
             if !matches!(first, AstNode::Symbol { .. } | AstNode::Variable { .. } | AstNode::RowVariable { .. } | AstNode::Operator { .. }) {
-                errors.push((first.span().clone(), ParseError::FirstTerm { span: first.span().clone() }));
-                return None;
+                unreachable!("The parser should have caught sentences which did not start with a symbol");
             }
         }
 
         for (i, el) in elements_ast.iter().enumerate() {
             if i > 0 {
-                if let AstNode::Operator { op, span } = el {
-                    errors.push((span.clone(), ParseError::OperatorOutOfPosition {
-                        op: op.name().to_owned(), span: span.clone(),
-                    }));
-                    return None;
+                if let AstNode::Operator { .. } = el {
+                    unreachable!("The parser should have caught sentences where the symbol did not appear in the first term of a sentence");
                 }
             }
         }
@@ -251,16 +247,16 @@ impl KifStore {
         // If this is a quantifier, build a child context for its body.
         let child_ctx;
         let body_ctx = if matches!(elements_ast.get(0), Some(AstNode::Operator { op: OpKind::Exists | OpKind::ForAll, .. })) {
-            let bound = match elements_ast.get(1) {
+            let bound: Vec<String> = match elements_ast.get(1) {
                 Some(AstNode::List { elements, .. }) => {
-                    let result: Result<Vec<String>, (Span, ParseError)> = elements.iter().map(|e| match e {
-                        AstNode::Variable { name, .. }    => Ok(name.clone()),
-                        AstNode::RowVariable { name, .. } => Ok(name.clone()),
-                        _ => Err((span.clone(), ParseError::QuantifierArg { span: span.clone() })),
-                    }).collect();
-                    match result { Ok(vars) => vars, Err(e) => { errors.push(e); return None; } }
+                    elements.iter().map(|e| match e {
+                        AstNode::Variable { name, .. }
+                        | AstNode::RowVariable { name, .. } => name.clone(),
+                        _ => unreachable!("The parser should have caught a quantifier variable sentence"),
+                    }).collect()
                 }
-                _ => { errors.push((span.clone(), ParseError::QuantifierArg { span: span.clone() })); return None; }
+                _ => unreachable!("The parser should have caught a quantifier variable sentence"),
+
             };
             let q_scope = self.next_scope();
             child_ctx = ScopeCtx {
@@ -274,13 +270,12 @@ impl KifStore {
             ctx
         };
 
-        let mut elements = Vec::with_capacity(elements_ast.len());
+        let mut elements: SmallVec<[Element; 4]> = SmallVec::with_capacity(elements_ast.len());
         for el in elements_ast {
             let elem = self.build_element(body_ctx, el, file, errors)?;
             elements.push(elem);
         }
         let sid = self.alloc_sentence(Sentence { elements, file: file.to_owned(), span });
-        self.extract_tax_edge(sid);
         Some(sid)
     }
 
@@ -289,18 +284,18 @@ impl KifStore {
         ctx: &ScopeCtx,
         node: &AstNode,
         file: &str,
-        errors: &mut Vec<(Span, ParseError)>,
+        errors: &mut Vec<(Span, KbError)>,
     ) -> Option<Element> {
         log::trace!(target: "sumo_kb::kif_store", "building element: {}", node);
         match node {
             AstNode::Symbol { name, .. } => Some(Element::Symbol(self.intern(name))),
             AstNode::Variable { name, .. } => {
                 let scope = ctx.scope_for(name);
-                Some(Element::Variable { id: self.intern(&format!("{}@{}", name, scope)), name: name.clone(), is_row: false })
+                Some(Element::Variable { id: self.intern(&format!("{}__{}", name, scope)), name: name.clone(), is_row: false })
             }
             AstNode::RowVariable { name, .. } => {
                 let scope = ctx.scope_for(name);
-                Some(Element::Variable { id: self.intern(&format!("{}@{}", name, scope)), name: name.clone(), is_row: true })
+                Some(Element::Variable { id: self.intern(&format!("{}__{}", name, scope)), name: name.clone(), is_row: true })
             }
             AstNode::Str    { value, .. } => Some(Element::Literal(Literal::Str(value.clone()))),
             AstNode::Number { value, .. } => Some(Element::Literal(Literal::Number(value.clone()))),
@@ -314,29 +309,7 @@ impl KifStore {
         }
     }
 
-    fn extract_tax_edge(&mut self, sent_id: SentenceId) {
-        let sentence = &self.sentences[self.sent_idx(sent_id)];
-        let head_sym = match sentence.head_symbol() { Some(id) => id, None => return };
-        let head_name = self.sym_name(head_sym).to_owned();
-        let rel = match TaxRelation::from_str(&head_name) { Some(r) => r, None => return };
-        let arg1 = match sentence.elements.get(1) {
-            Some(Element::Symbol(id))                    => *id,
-            Some(Element::Variable { id, is_row: false, .. }) => *id,
-            _ => return,
-        };
-        let arg2 = match sentence.elements.get(2) {
-            Some(Element::Symbol(id))                    => *id,
-            Some(Element::Variable { id, is_row: false, .. }) => *id,
-            _ => return,
-        };
-        let edge_idx = self.tax_edges.len();
-        self.tax_edges.push(TaxEdge { from: arg2, to: arg1, rel });
-        self.tax_incoming.entry(arg1).or_default().push(edge_idx);
-        log::trace!(target: "sumo_kb::kif_store",
-            "tax edge: {} -{}-> {}", self.sym_name(arg2), head_name, self.sym_name(arg1));
-    }
-
-    // ── remove_file ───────────────────────────────────────────────────────────
+    // -- remove_file -----------------------------------------------------------
 
     /// Remove all sentences tagged with `file`.
     /// Remove the `file_roots` mapping for `file` without touching `roots` or `sentences`.
@@ -359,22 +332,9 @@ impl KifStore {
                 self.sentences[vec_idx].elements.clear();
             }
         }
-        self.rebuild_taxonomy();
         self.prune_orphaned_symbols(&id_set);
         log::debug!(target: "sumo_kb::kif_store",
             "removed {} sentences from file '{}'", ids_to_remove.len(), file);
-    }
-
-    fn rebuild_taxonomy(&mut self) {
-        self.tax_edges.clear();
-        self.tax_incoming.clear();
-        // Iterate using actual SentenceIds from the index, not vec positions.
-        // Vec positions and SentenceIds diverge when sentences are loaded from
-        // LMDB (where SIDs were allocated by a prior run and may not start at 0).
-        let sids: Vec<SentenceId> = self.sent_idx.keys().copied().collect();
-        for sid in sids {
-            self.extract_tax_edge(sid);
-        }
     }
 
     fn prune_orphaned_symbols(&mut self, _removed_ids: &std::collections::HashSet<SentenceId>) {
@@ -403,7 +363,7 @@ impl KifStore {
         }
     }
 
-    // ── Lookup helpers ────────────────────────────────────────────────────────
+    // -- Lookup helpers --------------------------------------------------------
 
     pub(crate) fn by_head(&self, head: &str) -> &[SentenceId] {
         self.head_index.get(head).map(|v| v.as_slice()).unwrap_or(&[])
@@ -451,7 +411,7 @@ impl KifStore {
     }
 }
 
-// ── Scope context ─────────────────────────────────────────────────────────────
+// -- Scope context -------------------------------------------------------------
 
 struct ScopeCtx {
     default:   u64,
@@ -463,7 +423,7 @@ impl ScopeCtx {
     }
 }
 
-// ── Display wrappers ──────────────────────────────────────────────────────────
+// -- Display wrappers ----------------------------------------------------------
 
 pub(crate) struct ElementDisplay<'a> {
     pub element:   &'a Element,
@@ -546,22 +506,54 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
     }
 }
 
-// ── Top-level load_kif ────────────────────────────────────────────────────────
+// -- Plain-text KIF formatter -------------------------------------------------
+
+/// Recursively format a sentence as plain KIF text (no ANSI escapes).
+pub(crate) fn sentence_to_plain_kif(sid: SentenceId, store: &KifStore) -> String {
+    let sentence = &store.sentences[store.sent_idx(sid)];
+    let mut out = String::from("(");
+    for (i, elem) in sentence.elements.iter().enumerate() {
+        if i > 0 { out.push(' '); }
+        match elem {
+            Element::Symbol(id) => out.push_str(store.sym_name(*id)),
+            Element::Variable { name, is_row: false, .. } => {
+                out.push('?');
+                out.push_str(name);
+            }
+            Element::Variable { name, is_row: true, .. } => {
+                out.push('@');
+                out.push_str(name);
+            }
+            Element::Literal(Literal::Str(s))    => out.push_str(s),
+            Element::Literal(Literal::Number(n)) => out.push_str(n),
+            Element::Op(op)                      => out.push_str(op.name()),
+            Element::Sub(sub_sid)                => out.push_str(&sentence_to_plain_kif(*sub_sid, store)),
+        }
+    }
+    out.push(')');
+    out
+}
+
+// Top-level load_kif
 
 /// Parse `text` (tagged as `file`) into `store`.  Returns hard parse errors.
-pub(crate) fn load_kif(store: &mut KifStore, text: &str, file: &str) -> Vec<(Span, ParseError)> {
-    use crate::parse::kif::{tokenize, parse};
-    let (tokens, tok_errors) = tokenize(text, file);
-    let (nodes,  parse_errors) = parse(tokens, file);
-    let mut errors = tok_errors;
-    errors.extend(parse_errors);
+///
+/// Formulas containing row variables (`@VAR`) are automatically expanded into
+/// up to [`crate::row_vars::MAX_ARITY`] concrete variants before being stored.
+/// This follows the approach of Java's `RowVars.expandRowVars`.
+pub(crate) fn load_kif(store: &mut KifStore, text: &str, file: &str) -> Vec<(Span, KbError)> {
+    use crate::parse::Parser;
+    let mut errors: Vec<(Span, KbError)> = Vec::new();
+
+    let (nodes, parse_err) = Parser::Kif.parse(text, file);
+    errors.extend(parse_err.into_iter().map(|(span, p)| { (span, KbError::Parse(p)) }));
     errors.extend(store.load(&nodes, file));
     log::info!(target: "sumo_kb::kif_store",
         "loaded '{}': {} root sentences, {} errors", file, store.roots.len(), errors.len());
     errors
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -602,16 +594,6 @@ mod tests {
         // First new symbol should get id >= 1000
         let dog_id = store.sym_id("Dog").unwrap();
         assert!(dog_id >= 1000, "symbol id {} < seeded base 1000", dog_id);
-    }
-
-    #[test]
-    fn taxonomy_edge() {
-        let store = store_from("(subclass Human Animal)");
-        assert_eq!(store.tax_edges.len(), 1);
-        let edge = &store.tax_edges[0];
-        assert_eq!(edge.rel, TaxRelation::Subclass);
-        assert_eq!(store.sym_name(edge.from), "Animal");
-        assert_eq!(store.sym_name(edge.to),   "Human");
     }
 
     #[test]

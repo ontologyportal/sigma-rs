@@ -3,7 +3,7 @@
 // LMDB environment and named database handles.
 // Ported from sumo-store/src/env.rs.
 // Changes:
-//   - StoreError → KbError
+//   - StoreError -> KbError
 //   - StoredSymbol/StoredFormula are defined here (no separate schema.rs)
 //   - No `next_seq("sym")` / `next_seq("formula")`: stable IDs from KifStore counters
 //     are written directly; we only use a sequence for Skolem symbols.
@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::KbError;
 use crate::types::{Literal, SentenceId, SymbolId};
-use crate::parse::kif::OpKind;
+use crate::parse::ast::OpKind;
 
-// ── Stored types ──────────────────────────────────────────────────────────────
+// -- Stored types --------------------------------------------------------------
 
 /// A symbol as stored in LMDB (stable ID, no in-memory sentence lists).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub(crate) struct StoredSymbol {
     pub skolem_arity: Option<usize>,
 }
 
-/// A formula element as stored in LMDB — sub-sentences stored inline.
+/// A formula element as stored in LMDB -- sub-sentences stored inline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum StoredElement {
     Symbol(SymbolId),
@@ -55,21 +55,21 @@ pub(crate) struct StoredFormula {
     pub file:     String,
 }
 
-// ── Database names ────────────────────────────────────────────────────────────
+// -- Database names ------------------------------------------------------------
 
-const DB_SYMBOLS_FWD: &str = "symbols_fwd";  // name → id (8-byte BE)
-const DB_SYMBOLS_REV: &str = "symbols_rev";  // id BE → StoredSymbol
-const DB_FORMULAS:    &str = "formulas";     // id BE → StoredFormula
+const DB_SYMBOLS_FWD: &str = "symbols_fwd";  // name -> id (8-byte BE)
+const DB_SYMBOLS_REV: &str = "symbols_rev";  // id BE -> StoredSymbol
+const DB_FORMULAS:    &str = "formulas";     // id BE -> StoredFormula
 #[cfg(feature = "cnf")]
-const DB_PATH_INDEX:  &str = "path_index";   // 18-byte key → Vec<SentenceId>
-const DB_HEAD_INDEX:  &str = "head_index";   // pred_id (8-byte BE) → Vec<SentenceId>
-const DB_SESSIONS:    &str = "sessions";     // session name → Vec<SentenceId>
-const DB_SEQUENCES:   &str = "sequences";    // "skolem" → u64 (Skolem counter only)
+const DB_PATH_INDEX:  &str = "path_index";   // 18-byte key -> Vec<SentenceId>
+const DB_HEAD_INDEX:  &str = "head_index";   // pred_id (8-byte BE) -> Vec<SentenceId>
+const DB_SESSIONS:    &str = "sessions";     // session name -> Vec<SentenceId>
+const DB_SEQUENCES:   &str = "sequences";    // "skolem" -> u64 (Skolem counter only)
 
 const MAX_DBS:  u32   = 8;
 const MAP_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB virtual
 
-// ── LmdbEnv ───────────────────────────────────────────────────────────────────
+// -- LmdbEnv -------------------------------------------------------------------
 
 pub(crate) struct LmdbEnv {
     pub env:         Env,
@@ -123,7 +123,7 @@ impl LmdbEnv {
         Ok(self.env.write_txn()?)
     }
 
-    // ── Symbol helpers ────────────────────────────────────────────────────────
+    // -- Symbol helpers --------------------------------------------------------
 
     /// Look up a symbol id by name (read within a write txn).
     pub(crate) fn get_symbol_id(&self, txn: &RoTxn, name: &str) -> Result<Option<SymbolId>, KbError> {
@@ -216,7 +216,7 @@ impl LmdbEnv {
         Ok(())
     }
 
-    // ── Read helpers ──────────────────────────────────────────────────────────
+    // -- Read helpers ----------------------------------------------------------
 
     pub(crate) fn all_formulas(&self, txn: &RoTxn) -> Result<Vec<StoredFormula>, KbError> {
         let mut out = Vec::new();

@@ -4,7 +4,7 @@
 //
 // Two formulas are considered equal if and only if they are alpha-equivalent:
 // identical up to consistent renaming of variables.  We normalise all
-// variables to positional names (Var_0, Var_1, …) in DFS visitation order
+// variables to positional names (Var_0, Var_1, ...) in DFS visitation order
 // and hash the resulting byte sequence with xxHash64.
 
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use xxhash_rust::xxh64::Xxh64;
 use crate::kif_store::KifStore;
 use crate::types::{Element, OpKind, SentenceId, SymbolId};
 
-// ── Discriminant bytes ────────────────────────────────────────────────────────
+// -- Discriminant bytes --------------------------------------------------------
 const D_SYMBOL:   u8 = 0x01;
 const D_VARIABLE: u8 = 0x02;
 const D_LITERAL:  u8 = 0x03;
@@ -35,7 +35,7 @@ fn op_byte(op: &OpKind) -> u8 {
     }
 }
 
-// ── Internal DFS hasher ───────────────────────────────────────────────────────
+// -- Internal DFS hasher -------------------------------------------------------
 
 /// Recursively hash `sid` into `hasher`, normalising variables via `var_map`.
 /// `var_counter` increments each time a new variable is encountered.
@@ -82,7 +82,7 @@ fn hash_sentence(
     }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// -- Public API ----------------------------------------------------------------
 
 /// Compute a canonical xxHash64 fingerprint for the formula rooted at `sid`.
 ///
@@ -112,7 +112,7 @@ pub(crate) fn fingerprint_depth1(store: &KifStore, sid: SentenceId) -> Vec<u64> 
     result
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(fingerprint(&s1, r1[0]), fingerprint(&s2, r2[0]));
     }
 
-    /// fingerprint_depth1 returns ≥1 entry (at least the root).
+    /// fingerprint_depth1 returns >=1 entry (at least the root).
     #[test]
     fn depth1_includes_root() {
         let (s, r) = store_with("(=> (instance ?X Human) (instance ?X Animal))");

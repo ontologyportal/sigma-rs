@@ -1,12 +1,12 @@
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use sumo_kb::{KnowledgeBase, ParseError, Span, TptpLang};
+use sumo_kb::{KbError, KnowledgeBase, Span, TptpLang};
 
 use crate::cli::args::KbArgs;
 use crate::parse_error;
 
-// ── LMDB / KB helpers ────────────────────────────────────────────────────────
+// -- LMDB / KB helpers --------------------------------------------------------
 
 /// Open an existing LMDB-backed `KnowledgeBase`.
 /// Fails with a log error if the database directory does not exist.
@@ -32,14 +32,19 @@ pub fn open_existing_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     let has_files = !args.files.is_empty() || !args.dirs.is_empty();
 
-    let mut kb = if args.db.exists() {
+    let mut kb = if args.no_db {
+        if !has_files {
+            log::warn!("--no-db specified and no -f files given -- using empty KB");
+        }
+        KnowledgeBase::new()
+    } else if args.db.exists() {
         KnowledgeBase::open(&args.db).map_err(|e| {
             log::error!("Failed to open database at '{}': {}", args.db.display(), e);
         })?
     } else {
         if !has_files {
             log::warn!(
-                "No database found at '{}' and no -f files specified — using empty KB",
+                "No database found at '{}' and no -f files specified -- using empty KB",
                 args.db.display()
             );
         }
@@ -55,7 +60,10 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
             let result = kb.load_kif(&text, &tag, Some(BASE));
             if !result.ok {
                 for e in &result.errors {
-                    log::error!("{}: {}", path.display(), e);
+                    match e {
+                        KbError::Parse(p) => parse_error!(p.get_span(), p, text),
+                        _ => log::error!("{}: {}", path.display(), e) 
+                    }
                 }
                 return Err(());
             }
@@ -67,7 +75,7 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     Ok(kb)
 }
 
-// ── KIF file loading ──────────────────────────────────────────────────────────
+// -- KIF file loading ----------------------------------------------------------
 
 /// Parse all KIF files referenced by `args` into an in-memory `KnowledgeBase`
 /// (no LMDB).  Returns `Err(())` and logs errors on failure.
@@ -84,7 +92,10 @@ pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
         let result = kb.load_kif(&text, &tag, Some(BASE));
         if !result.ok {
             for e in &result.errors {
-                log::error!("{}: {}", path.display(), e);
+                match e {
+                    KbError::Parse(p) => parse_error!(p.get_span(), p, text),
+                    _ => log::error!("{}: {}", path.display(), e) 
+                }
             }
             return Err(());
         }
@@ -97,7 +108,7 @@ pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     Ok(kb)
 }
 
-/// Parse KIF files → open/create LMDB → clausify → commit to database.
+/// Parse KIF files -> open/create LMDB -> clausify -> commit to database.
 ///
 /// Returns the `KnowledgeBase` (still open against the LMDB) so the caller
 /// can run further operations (validation, translation) in the same session.
@@ -117,7 +128,10 @@ pub fn load_and_commit_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
         let result = kb.load_kif(&text, &tag, Some(SESSION));
         if !result.ok {
             for e in &result.errors {
-                log::error!("{}: {}", path.display(), e);
+                match e {
+                    KbError::Parse(p) => parse_error!(p.get_span(), p, text),
+                    _ => log::error!("{}: {}", path.display(), e) 
+                }
             }
             return Err(());
         }
@@ -135,7 +149,7 @@ pub fn load_and_commit_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     Ok(kb)
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// -- Internal helpers ----------------------------------------------------------
 
 pub(crate) fn collect_kif_files(args: &KbArgs) -> Result<Vec<PathBuf>, ()> {
     let mut all_files: Vec<PathBuf> = args.files.clone();
@@ -158,13 +172,13 @@ pub(crate) fn read_kif_file(path: &Path) -> Result<String, ()> {
     })
 }
 
-// ── Directory helpers ─────────────────────────────────────────────────────────
+// -- Directory helpers ---------------------------------------------------------
 
 /// Collect all `*.kif` files in a directory, sorted for deterministic ordering.
-pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, ParseError)> {
+pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, KbError)> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
         let span = Span { file: format!("{}", dir.display()), line: 0, col: 0, offset: 0 };
-        (span, ParseError::Other { msg: format!("cannot read directory '{}': {}", dir.display(), e) })
+        (span, KbError::Other(format!("cannot read directory '{}': {}", dir.display(), e)))
     })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -175,7 +189,7 @@ pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, ParseError)> 
     Ok(files)
 }
 
-// ── stdin / source tag ────────────────────────────────────────────────────────
+// -- stdin / source tag --------------------------------------------------------
 
 /// Read stdin if it is piped (not a TTY); return `None` if empty or a TTY.
 pub fn read_stdin() -> Option<String> {

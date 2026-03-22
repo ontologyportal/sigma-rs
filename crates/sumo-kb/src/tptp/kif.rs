@@ -4,20 +4,20 @@
 //
 // Inverse of the TPTP encoding applied by tptp.rs:
 //
-//   s__holds(s__pred__m, t1, t2, …)  →  (pred t1_kif t2_kif …)
-//   s__Const                          →  Const
-//   Xn  (uppercase var)               →  ?Xn
-//   !  [X0,X1] : F                   →  (forall (?X0 ?X1) F_kif)
-//   ?  [X0,X1] : F                   →  (exists (?X0 ?X1) F_kif)
-//   F & G   /  F | G                 →  (and …) / (or …)
-//   ~F                               →  (not F_kif)
-//   F => G  /  F <=> G               →  (=> …) / (<=> …)
-//   t1 = t2  /  t1 != t2             →  (equal …) / (not (equal …))
-//   $false   /  $true                →  false / true
+//   s__holds(s__pred__m, t1, t2, ...)  ->  (pred t1_kif t2_kif ...)
+//   s__Const                          ->  Const
+//   Xn  (uppercase var)               ->  ?Xn
+//   !  [X0,X1] : F                   ->  (forall (?X0 ?X1) F_kif)
+//   ?  [X0,X1] : F                   ->  (exists (?X0 ?X1) F_kif)
+//   F & G   /  F | G                 ->  (and ...) / (or ...)
+//   ~F                               ->  (not F_kif)
+//   F => G  /  F <=> G               ->  (=> ...) / (<=> ...)
+//   t1 = t2  /  t1 != t2             ->  (equal ...) / (not (equal ...))
+//   $false   /  $true                ->  false / true
 //
 // Gated under the `ask` feature (regex already available).
 
-use crate::parse::kif::{AstNode, Span, OpKind};
+use crate::parse::ast::{AstNode, Span, OpKind};
 
 fn dummy_span() -> Span { Span { file: String::new(), line: 0, col: 0, offset: 0 } }
 fn sym(name: &str)  -> AstNode { AstNode::Symbol   { name: name.to_owned(), span: dummy_span() } }
@@ -51,7 +51,7 @@ pub fn formula_to_kif(tptp: &str) -> String {
 }
 
 /// One step of a proof rendered in SUO-KIF.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct KifProofStep {
     /// Position in the proof (0-based).
     pub index:    usize,
@@ -64,7 +64,7 @@ pub struct KifProofStep {
 }
 
 /// Convert a sequence of `(formula_str, rule_label, premise_indices)` triples
-/// — as produced by both the TPTP and embedded prover paths — to KIF steps.
+/// -- as produced by both the TPTP and embedded prover paths -- to KIF steps.
 pub fn proof_steps_to_kif(
     steps: &[(String, String, Vec<usize>)],
 ) -> Vec<KifProofStep> {
@@ -81,11 +81,11 @@ pub fn proof_steps_to_kif(
         .collect()
 }
 
-// ── Tokens ────────────────────────────────────────────────────────────────────
+// -- Tokens --------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
-    Word(String), // identifier, keyword ($false…), number-word
+    Word(String), // identifier, keyword ($false...), number-word
     LParen,       // (
     RParen,       // )
     LBrack,       // [
@@ -140,19 +140,42 @@ fn tokenize(src: &str) -> Vec<Tok> {
                 }
                 out.push(Tok::Word(src[start..i].iter().collect()));
             }
+            // TPTP single-quoted atoms: 'hello world', 'it\'s a string'.
+            // Collect content between the quotes into a Word token so the
+            // parser can unmangle it as a symbol.  Escaped quotes `\'` are
+            // treated as a literal `'` character inside the atom.
+            '\'' => {
+                i += 1; // skip opening quote
+                let mut atom = String::new();
+                while i < src.len() {
+                    if src[i] == '\\' && i + 1 < src.len() && src[i + 1] == '\'' {
+                        atom.push('\'');
+                        i += 2;
+                    } else if src[i] == '\'' {
+                        i += 1; // skip closing quote
+                        break;
+                    } else {
+                        atom.push(src[i]);
+                        i += 1;
+                    }
+                }
+                if !atom.is_empty() {
+                    out.push(Tok::Word(atom));
+                }
+            }
             _ => { i += 1; } // skip unexpected chars
         }
     }
     out
 }
 
-// ── AST ───────────────────────────────────────────────────────────────────────
+// -- AST -----------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 enum Fml {
     False,
     True,
-    /// Predicate application: `name(args…)` or bare `name` in formula position.
+    /// Predicate application: `name(args...)` or bare `name` in formula position.
     Pred(String, Vec<Trm>),
     Eq(Trm, Trm),
     Neq(Trm, Trm),
@@ -167,20 +190,21 @@ enum Fml {
 
 #[derive(Debug, Clone)]
 enum Trm {
-    Var(String),           // uppercase → TPTP variable
+    Var(String),           // uppercase -> TPTP variable
     Const(String),         // lowercase / s__ prefixed constant
     App(String, Vec<Trm>), // function application
 }
 
-// ── KIF string emitter (flat) ─────────────────────────────────────────────────
+// -- KIF string emitter (flat) -------------------------------------------------
 
+#[allow(dead_code)]
 impl Fml {
     fn to_kif(&self) -> String {
         match self {
             Fml::False => "false".into(),
             Fml::True  => "true".into(),
 
-            // Core SUMO unwrapping: s__holds(s__pred__m, t1, t2, …) → (pred t1 t2 …)
+            // Core SUMO unwrapping: s__holds(s__pred__m, t1, t2, ...) -> (pred t1 t2 ...)
             Fml::Pred(name, args)
                 if name == "s__holds" && !args.is_empty() =>
             {
@@ -193,7 +217,7 @@ impl Fml {
                 }
             }
 
-            // Other predicates (including s__holds with 0 args — shouldn't happen, but safe)
+            // Other predicates (including s__holds with 0 args -- shouldn't happen, but safe)
             Fml::Pred(name, args) => {
                 let kif = unmangle(name);
                 if args.is_empty() {
@@ -225,6 +249,7 @@ impl Fml {
     }
 }
 
+#[allow(dead_code)]
 impl Trm {
     fn to_kif(&self) -> String {
         match self {
@@ -241,8 +266,8 @@ impl Trm {
         }
     }
 
-    /// Used when this term appears as the first argument of `s__holds` —
-    /// it's a mention constant like `s__pred__m` → return `pred`.
+    /// Used when this term appears as the first argument of `s__holds` --
+    /// it's a mention constant like `s__pred__m` -> return `pred`.
     fn as_pred_name(&self) -> String {
         match self {
             Trm::Const(name) => unmangle(name),
@@ -328,17 +353,21 @@ impl Fml {
     }
 }
 
-// ── Name unmangling ───────────────────────────────────────────────────────────
+// -- Name unmangling -----------------------------------------------------------
 
 /// Strip `s__` prefix and `__m` suffix from a TPTP symbol name.
 fn unmangle(name: &str) -> String {
     let s = name.strip_prefix("s__").unwrap_or(name);
     let s = s.strip_suffix("__m").unwrap_or(s);
-    // Number encoding: n__42 → 42, n__3_14 → 3.14 (underscores back to dots)
+    // Number encoding: n__42 -> 42, n__3_14 -> 3.14, n__neg_42 -> -42.
+    // `neg_` prefix encodes the minus sign; underscores elsewhere encode dots.
     if let Some(n) = s.strip_prefix("n__") {
+        if let Some(pos) = n.strip_prefix("neg_") {
+            return format!("-{}", pos.replace('_', "."));
+        }
         return n.replace('_', ".");
     }
-    // String encoding: str__hello → "hello"
+    // String encoding: str__hello -> "hello"
     if let Some(content) = s.strip_prefix("str__") {
         return format!("\"{}\"", content);
     }
@@ -351,7 +380,7 @@ fn unmangle_func(name: &str) -> String {
     s.strip_suffix("__op").unwrap_or(&s).to_owned()
 }
 
-// ── Recursive descent parser ──────────────────────────────────────────────────
+// -- Recursive descent parser --------------------------------------------------
 
 struct Parser {
     tokens: Vec<Tok>,
@@ -446,6 +475,15 @@ impl Parser {
                 Tok::Word(w) => { vars.push(w.clone()); self.advance(); }
                 _ => break,
             }
+            // TFF annotates variables with sorts: `V__X: $int`.
+            // Eat `: <sort-word>` when present so the annotation does not
+            // corrupt the rest of the parse.  The sort is discarded here
+            // because KIF variables are untyped at the AST level.
+            if self.eat(&Tok::Colon) {
+                if matches!(self.peek(), Some(Tok::Word(_))) {
+                    self.advance();
+                }
+            }
             if !self.eat(&Tok::Comma) { break; }
         }
         self.eat(&Tok::RBrack);
@@ -493,7 +531,15 @@ impl Parser {
         let name = match self.peek()? {
             Tok::Word(w) => { let w = w.clone(); self.advance(); w }
             Tok::Question => {
-                self.advance();
+                // `?` in term position is the prefix of a TPTP variable name
+                // (`?X` style, used in some output formats).  Peek ahead before
+                // advancing: if the token after `?` is not a Word we cannot form
+                // a variable name and must return None *without* consuming `?`,
+                // so the caller sees the stream unchanged.
+                if !matches!(self.tokens.get(self.pos + 1), Some(Tok::Word(_))) {
+                    return None;
+                }
+                self.advance(); // consume `?`
                 match self.peek()? {
                     Tok::Word(w) => { let w = w.clone(); self.advance(); w }
                     _ => return None,
@@ -528,7 +574,7 @@ impl Parser {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

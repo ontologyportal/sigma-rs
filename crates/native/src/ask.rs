@@ -4,7 +4,7 @@ use sumo_kb::{KnowledgeBase, VampireRunner, ProverStatus, TptpLang};
 
 pub use sumo_kb::Binding;
 
-// ── AskOptions / AskResult ────────────────────────────────────────────────────
+// -- AskOptions / AskResult ----------------------------------------------------
 
 /// Options for `ask()`.
 #[derive(Debug, Default)]
@@ -13,10 +13,9 @@ pub struct AskOptions {
     pub vampire_path: Option<PathBuf>,
     /// Timeout passed to Vampire in seconds. Defaults to 30.
     pub timeout_secs: Option<u32>,
-    /// If true, keep the temporary TPTP file after the call.
-    /// NOTE: no longer supported by the underlying VampireRunner; this field
-    /// is accepted for source compatibility but has no effect.
-    pub keep_tmp_file: bool,
+    /// If set, write the generated TPTP to this path (subprocess backend only).
+    /// When `None`, TPTP is piped directly to Vampire via stdin.
+    pub tptp_dump_path: Option<PathBuf>,
     /// Session whose assertions are included as TPTP hypotheses.
     pub session: Option<String>,
     /// Prover backend: "subprocess" (default) or "embedded".
@@ -38,7 +37,7 @@ pub struct AskResult {
     pub inference: Vec<Binding>,
 }
 
-// ── ask() ─────────────────────────────────────────────────────────────────────
+// -- ask() ---------------------------------------------------------------------
 
 /// Assert a conjecture and run Vampire to attempt a proof.
 pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResult {
@@ -61,7 +60,7 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
         }
         _ => {
             let vampire_path = opts.vampire_path.unwrap_or_else(|| PathBuf::from("vampire"));
-            let runner = VampireRunner { vampire_path, timeout_secs };
+            let runner = VampireRunner { vampire_path, timeout_secs, tptp_dump_path: opts.tptp_dump_path };
             kb.ask(query_kif, opts.session.as_deref(), &runner, opts.lang)
         }
     };

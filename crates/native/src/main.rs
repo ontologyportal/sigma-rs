@@ -1,4 +1,4 @@
-/// sumo-parser — command-line interface.
+/// sumo-parser -- command-line interface.
 use std::process;
 use std::io::Write;
 use log;
@@ -110,7 +110,7 @@ fn main() {
 
     let ok = match cli.command {
         Cmd::Load { kb } => run_load(kb),
-        Cmd::Validate { formula, kb } => run_validate(formula, kb),
+        Cmd::Validate { formula, parse, no_kb_check, kb } => run_validate(formula, parse, no_kb_check, kb),
         Cmd::Ask {
             formula,
             tell,
@@ -126,16 +126,18 @@ fn main() {
             formula,
             lang,
             show_numbers,
+            show_kif,
             session,
             kb,
         } => run_translate(
             formula,
             &lang,
             show_numbers,
+            show_kif,
             session.as_deref(),
             kb,
         ),
-        Cmd::Test { path, kb, keep, backend, lang } => run_test(path, kb, keep, backend, lang),
+        Cmd::Test { paths, kb, keep, backend, lang, timeout } => run_test(paths, kb, keep, backend, lang, timeout),
     };
     process::exit(if ok { 0 } else { 1 });
 }
