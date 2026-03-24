@@ -424,6 +424,42 @@ fn poly_variant_name(
     format!("{}__{}", base_name, suffix)
 }
 
+/// Emit a TFF formula string for a numeric-class characterization condition,
+/// substituting `var_tptp` for the implicit instance variable.
+/// `sort` is the TFF sort string of the variable (`"$int"`, `"$rat"`, `"$real"`).
+fn emit_arith_cond_tptp(cond: &crate::semantic::ArithCond, var_tptp: &str, sort: &str) -> String {
+    use crate::semantic::ArithCond;
+    // Format the bound literal to match the variable's sort so both sides of
+    // the comparison have the same type (Vampire requires uniform sorts).
+    let fmt_bound = |bound: &str| -> String {
+        match sort {
+            "$int"  => bound.to_string(),
+            "$real" => if bound.contains('.') { bound.to_string() } else { format!("{}.0", bound) },
+            "$rat"  => if bound.contains('/') { bound.to_string() } else { format!("{}/1", bound) },
+            _       => bound.to_string(),
+        }
+    };
+    match cond {
+        ArithCond::GreaterThan          { bound } => format!("$greater({},{})",   var_tptp, fmt_bound(bound)),
+        ArithCond::GreaterThanOrEqualTo { bound } => format!("$greatereq({},{})", var_tptp, fmt_bound(bound)),
+        ArithCond::LessThan             { bound } => format!("$less({},{})",      var_tptp, fmt_bound(bound)),
+        ArithCond::LessThanOrEqualTo    { bound } => format!("$lesseq({},{})",    var_tptp, fmt_bound(bound)),
+        ArithCond::And(parts) => {
+            let inner: Vec<String> = parts.iter()
+                .map(|c| emit_arith_cond_tptp(c, var_tptp, sort))
+                .collect();
+            format!("({})", inner.join(" & "))
+        }
+        ArithCond::EqualFn { fn_name, other_arg, result } => {
+            let tff_fn = match (fn_name.as_str(), sort) {
+                ("RemainderFn", "$int") => "$remainder_e",
+                _ => return "$true".to_string(),
+            };
+            format!("{}({},{}) = {}", tff_fn, var_tptp, other_arg, result)
+        }
+    }
+}
+
 /// Translate a single sentence (list node in the KIF store) to a TPTP string.
 ///
 /// A KIF sentence is either:
@@ -495,16 +531,23 @@ fn translate_sentence(
 
                 // TFF: (instance ?X NumericType) can't be expressed as a typed
                 // predicate call because $i (Entity domain) and numeric sorts are
-                // incompatible.  The Java SUMOtoTFAform translator eliminates these
-                // calls by substituting the defining arithmetic constraint.  We
-                // approximate this by returning `$true` -- the call is dropped, and
-                // the variable keeps its numeric sort from Pass 1 so arithmetic
-                // builtins remain valid.
+                // incompatible.  When an arithmetic characterization of the class is
+                // known (cached in SemanticLayer::numeric_char_cache), substitute it
+                // directly -- e.g. (instance ?X NegativeRealNumber) becomes
+                // $less(V__X, 0.0).  For classes without a characterization (or when
+                // the variable isn't numeric-sorted), drop to $true as before.
                 if as_formula && head_name == "instance" && sentence.elements.len() == 3 {
-                    if let (Element::Variable { .. }, Element::Symbol(type_id)) =
+                    if let (Element::Variable { id: var_id, .. }, Element::Symbol(type_id)) =
                         (&sentence.elements[1], &sentence.elements[2])
                     {
                         if tc.layer.sort_for(tc.store.sym_name(*type_id)) != crate::semantic::Sort::Individual {
+                            if let Some(cond) = tc.layer.numeric_char_for(*type_id) {
+                                let sort = tc.var_types.get(var_id).copied().unwrap_or("$i");
+                                if is_numeric_sort(sort) {
+                                    let var_tptp = translate_variable(tc.layer.store.sym_name(*var_id));
+                                    return emit_arith_cond_tptp(cond, &var_tptp, sort);
+                                }
+                            }
                             return "$true".to_string();
                         }
                     }

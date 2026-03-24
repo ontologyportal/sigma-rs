@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use sumo_kb::{KnowledgeBase, VampireRunner, ProverStatus, TptpLang};
+pub use sumo_kb::prover::ProverTimings;
 
 pub use sumo_kb::Binding;
 
@@ -35,6 +36,8 @@ pub struct AskResult {
     pub errors: Vec<String>,
     /// Variable binding inferences extracted from the proof.
     pub inference: Vec<Binding>,
+    /// Per-phase timing breakdown.
+    pub timings: ProverTimings,
 }
 
 // -- ask() ---------------------------------------------------------------------
@@ -48,14 +51,6 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
     let result = match opts.backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
-            if matches!(opts.lang, TptpLang::Tff) {
-                return AskResult {
-                    proved:     false,
-                    raw_output: String::new(),
-                    errors:     vec!["TFF is not yet supported with the embedded prover backend".into()],
-                    inference:  Vec::new(),
-                };
-            }
             kb.ask_embedded(query_kif, opts.session.as_deref(), timeout_secs)
         }
         _ => {
@@ -79,5 +74,6 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
         raw_output: result.raw_output,
         errors,
         inference: result.bindings,
+        timings: result.timings,
     }
 }

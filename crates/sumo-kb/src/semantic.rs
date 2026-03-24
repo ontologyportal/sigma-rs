@@ -52,6 +52,25 @@ impl Sort {
     }
 }
 
+// -- ArithCond -----------------------------------------------------------------
+
+/// Arithmetic condition characterizing numeric-class membership.
+///
+/// When `(instance ?X C)` appears in TFF mode and `?X` has a numeric sort, the
+/// translator substitutes this condition for the otherwise-unsound `$true` drop.
+/// The variable is always implicit (the instance variable being checked).
+/// `bound` is the raw numeric literal string from the source KIF (e.g. `"0"`, `"1"`).
+#[derive(Debug, Clone)]
+pub(crate) enum ArithCond {
+    GreaterThan          { bound: String },
+    GreaterThanOrEqualTo { bound: String },
+    LessThan             { bound: String },
+    LessThanOrEqualTo    { bound: String },
+    And(Vec<ArithCond>),
+    /// `(equal (fn_name ?VAR other_arg) result)` — e.g. `(equal (RemainderFn ?X 2) 0)`.
+    EqualFn { fn_name: String, other_arg: String, result: String },
+}
+
 // -- RelationDomain ------------------------------------------------------------
 
 /// Describes the expected type of a relation argument or return value.
@@ -195,6 +214,9 @@ pub(crate) struct SemanticLayer {
     ///
     /// Built by `rebuild_taxonomy` after `numeric_ancestor_set` is ready.
     poly_variant_symbols:   HashSet<SymbolId>,
+    /// Arithmetic characterizations of numeric subclasses.
+    /// Built by `build_numeric_char_cache()` after `numeric_sort_cache` is ready.
+    numeric_char_cache:     HashMap<SymbolId, ArithCond>,
     cache:               RwLock<SemanticCache>,
     var_type_inference:  RwLock<Option<VarTypeInference>>,
     sort_annotations:    RwLock<Option<SortAnnotations>>,
@@ -209,6 +231,7 @@ impl SemanticLayer {
             numeric_sort_cache:   HashMap::new(),
             numeric_ancestor_set: HashSet::new(),
             poly_variant_symbols: HashSet::new(),
+            numeric_char_cache:   HashMap::new(),
             cache:                RwLock::new(SemanticCache::default()),
             var_type_inference:   RwLock::new(None),
             sort_annotations:     RwLock::new(None),
@@ -275,10 +298,12 @@ impl SemanticLayer {
         self.numeric_sort_cache   = self.build_numeric_sort_cache();
         self.numeric_ancestor_set = self.build_numeric_ancestor_set();
         self.poly_variant_symbols = self.build_poly_variant_symbols();
+        self.numeric_char_cache   = self.build_numeric_char_cache();
         log::debug!(target: "sumo_kb::semantic",
-            "numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols",
+            "numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols, \
+             {} numeric characterizations",
             self.numeric_sort_cache.len(), self.numeric_ancestor_set.len(),
-            self.poly_variant_symbols.len());
+            self.poly_variant_symbols.len(), self.numeric_char_cache.len());
     }
 
     /// Build the numeric sort cache by BFS downward from each root in
@@ -409,6 +434,234 @@ impl SemanticLayer {
         }
         result
     }
+
+    // -- Numeric characterization cache ----------------------------------------
+
+    /// Build arithmetic characterizations of numeric subclasses.
+    ///
+    /// Scans root sentences for:
+    ///   Form A: `(<=> (instance ?VAR C) conditions)` — biconditional (preferred)
+    ///   Form B: `(=> ANT (instance ?VAR C))` — forward implication (fallback)
+    ///
+    /// The extracted condition is stored with the variable implicit; at emit time
+    /// the actual variable name is substituted.  Root numeric classes
+    /// (RealNumber, RationalNumber, Integer) are excluded — their sort membership
+    /// is already encoded by the TFF quantifier annotation.
+    fn build_numeric_char_cache(&self) -> HashMap<SymbolId, ArithCond> {
+        let mut result: HashMap<SymbolId, ArithCond> = HashMap::new();
+
+        let root_ids: HashSet<SymbolId> = NUMERIC_ROOTS.iter()
+            .filter_map(|(name, _)| self.store.sym_id(name))
+            .collect();
+
+        for &root_sid in &self.store.roots {
+            let sentence = &self.store.sentences[self.store.sent_idx(root_sid)];
+
+            // Form A: (<=> (instance ?VAR C) conditions)
+            if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Iff))) {
+                if let (Some(Element::Sub(lhs)), Some(Element::Sub(rhs))) =
+                    (sentence.elements.get(1), sentence.elements.get(2))
+                {
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*lhs) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*rhs, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Form B: (=> ANT (instance ?VAR C)) — sufficient condition; only if not already found.
+            // Form C: (=> (instance ?VAR C) CON) — necessary condition; only if not already found.
+            if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Implies))) {
+                if let (Some(Element::Sub(ant)), Some(Element::Sub(con))) =
+                    (sentence.elements.get(1), sentence.elements.get(2))
+                {
+                    // Form B: consequent is the instance check
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*con) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                            && !result.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*ant, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                    // Form C: antecedent is the instance check
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*ant) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                            && !result.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*con, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// If `sid` represents `(instance ?VAR C)`, return `(C_id, var_name)`.
+    fn extract_instance_clause(&self, sid: SentenceId) -> Option<(SymbolId, String)> {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+        if let (
+            Some(Element::Symbol(inst_id)),
+            Some(Element::Variable { name, .. }),
+            Some(Element::Symbol(class_id)),
+        ) = (
+            sentence.elements.get(0),
+            sentence.elements.get(1),
+            sentence.elements.get(2),
+        ) {
+            if self.store.sym_name(*inst_id) == "instance" {
+                return Some((*class_id, name.clone()));
+            }
+        }
+        None
+    }
+
+    /// Recursively extract an `ArithCond` from `sid`, treating `var_name` as
+    /// the implicit instance variable.  Strips `(instance var_name C)` conjuncts
+    /// where C is any numeric class.  Returns `None` for unrecognised patterns.
+    fn extract_arith_cond(&self, sid: SentenceId, var_name: &str) -> Option<ArithCond> {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+
+        // (and ...) is an operator sentence: elements[0] is Op(And), not a Symbol.
+        if matches!(sentence.elements.first(), Some(Element::Op(OpKind::And))) {
+            let parts: Vec<ArithCond> = sentence.elements[1..]
+                .iter()
+                .filter_map(|e| {
+                    if let Element::Sub(sub_sid) = e {
+                        if self.is_numeric_instance_of_var(*sub_sid, var_name) {
+                            None  // strip (instance var_name NumericClass) conjuncts
+                        } else {
+                            self.extract_arith_cond(*sub_sid, var_name)
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return match parts.len() {
+                0 => None,
+                1 => Some(parts.into_iter().next().unwrap()),
+                _ => Some(ArithCond::And(parts)),
+            };
+        }
+
+        // (equal ...) is an operator sentence: Op(Equal)
+        // Handles: (equal (FnName ?VAR literal) literal) — e.g. (equal (RemainderFn ?X 2) 0)
+        if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Equal))) {
+            let arg0 = sentence.elements.get(1)?;
+            let arg1 = sentence.elements.get(2)?;
+            // (equal (FnName ?VAR other_literal) result_literal)
+            if let (Element::Sub(fn_sid), Element::Literal(Literal::Number(result))) = (arg0, arg1) {
+                let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
+                if let (
+                    Some(Element::Symbol(fn_id)),
+                    Some(Element::Variable { name, .. }),
+                    Some(Element::Literal(Literal::Number(other_arg))),
+                ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
+                {
+                    if name == var_name {
+                        return Some(ArithCond::EqualFn {
+                            fn_name:   self.store.sym_name(*fn_id).to_string(),
+                            other_arg: other_arg.clone(),
+                            result:    result.clone(),
+                        });
+                    }
+                }
+            }
+            // (equal result_literal (FnName ?VAR other_literal)) — reversed
+            if let (Element::Literal(Literal::Number(result)), Element::Sub(fn_sid)) = (arg0, arg1) {
+                let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
+                if let (
+                    Some(Element::Symbol(fn_id)),
+                    Some(Element::Variable { name, .. }),
+                    Some(Element::Literal(Literal::Number(other_arg))),
+                ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
+                {
+                    if name == var_name {
+                        return Some(ArithCond::EqualFn {
+                            fn_name:   self.store.sym_name(*fn_id).to_string(),
+                            other_arg: other_arg.clone(),
+                            result:    result.clone(),
+                        });
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Symbol-headed sentences: greaterThan, greaterThanOrEqualTo, etc.
+        let head_id = sentence.head_symbol()?;
+        let head    = self.store.sym_name(head_id);
+
+        match head {
+            "greaterThan" | "greaterThanOrEqualTo" | "lessThan" | "lessThanOrEqualTo" => {
+                let arg0 = sentence.elements.get(1)?;
+                let arg1 = sentence.elements.get(2)?;
+                // (pred ?VAR literal) — normal order
+                if matches!(arg0, Element::Variable { name, .. } if name == var_name) {
+                    if let Element::Literal(Literal::Number(n)) = arg1 {
+                        return Some(self.make_cmp_cond(head, n.clone(), false));
+                    }
+                }
+                // (pred literal ?VAR) — reversed; flip the comparison direction
+                if matches!(arg1, Element::Variable { name, .. } if name == var_name) {
+                    if let Element::Literal(Literal::Number(n)) = arg0 {
+                        return Some(self.make_cmp_cond(head, n.clone(), true));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn make_cmp_cond(&self, pred: &str, bound: String, flip: bool) -> ArithCond {
+        match (pred, flip) {
+            ("greaterThan",          false) | ("lessThan",             true)  => ArithCond::GreaterThan          { bound },
+            ("greaterThanOrEqualTo", false) | ("lessThanOrEqualTo",    true)  => ArithCond::GreaterThanOrEqualTo { bound },
+            ("lessThan",             false) | ("greaterThan",          true)  => ArithCond::LessThan             { bound },
+            ("lessThanOrEqualTo",    false) | ("greaterThanOrEqualTo", true)  => ArithCond::LessThanOrEqualTo    { bound },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns `true` if `sid` is `(instance var_name C)` where C is a numeric class.
+    fn is_numeric_instance_of_var(&self, sid: SentenceId, var_name: &str) -> bool {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+        if let (
+            Some(Element::Symbol(inst_id)),
+            Some(Element::Variable { name, .. }),
+            Some(Element::Symbol(class_id)),
+        ) = (
+            sentence.elements.get(0),
+            sentence.elements.get(1),
+            sentence.elements.get(2),
+        ) {
+            return self.store.sym_name(*inst_id) == "instance"
+                && name == var_name
+                && self.numeric_sort_cache.contains_key(class_id);
+        }
+        false
+    }
+
+    /// Return the arithmetic characterization of a numeric subclass, if known.
+    pub(crate) fn numeric_char_for(&self, class_id: SymbolId) -> Option<&ArithCond> {
+        self.numeric_char_cache.get(&class_id)
+    }
+
+    // -- Poly-variant symbols --------------------------------------------------
 
     /// Returns `true` if `id` has at least one domain position that is a
     /// numeric-ancestor class (and thus needs polymorphic TFF variants).

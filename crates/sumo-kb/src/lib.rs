@@ -23,6 +23,8 @@ pub(crate) mod cnf;
 #[cfg(feature = "ask")]
 pub mod prover;
 
+#[cfg(feature = "vampire")]
+pub(crate) mod vampire;
 
 #[cfg(feature = "persist")]
 pub(crate) mod persist;

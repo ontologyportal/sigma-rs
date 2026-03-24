@@ -16,7 +16,7 @@ default = []
 integrated-prover = ["sumo-kb/integrated-prover"]
 
 [dependencies]
-sumo-kb = { workspace = true, features = ["persist", "ask", "cnf"] }
+sumo-kb = { workspace = true, features = ["persist", "ask", "cnf", "vampire"] }
 serde.workspace            = true
 serde_json.workspace       = true
 inline_colorization.workspace = true

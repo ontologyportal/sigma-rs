@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
@@ -7,7 +8,7 @@ use crate::ask::{ask as native_ask, AskOptions, Binding};
 use crate::cli::util::parse_lang;
 use sumo_kb::parse_test_content;
 
-pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, backend: String, lang: String, timeout_override: Option<u32>) -> bool {
+pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, backend: String, lang: String, timeout_override: Option<u32>, profile: bool) -> bool {
     log::trace!("run_test(paths={:?}, kb_args={:#?})", paths, kb_args);
     log::debug!("Test subcommand selected");
 
@@ -51,10 +52,18 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
     let total_tests = test_files.len();
     let mut passed_count = 0;
 
+    let t_kb = Instant::now();
     let mut kb = match open_or_build_kb(&kb_args) {
         Ok(k)   => k,
         Err(()) => return false,
     };
+    let kb_load = t_kb.elapsed();
+
+    // Accumulators for --profile
+    let mut acc_input_gen    = Duration::ZERO;
+    let mut acc_prover_run   = Duration::ZERO;
+    let mut acc_output_parse = Duration::ZERO;
+    let mut profile_count    = 0usize;
 
     for (idx, test_file) in test_files.iter().enumerate() {
         let content = match std::fs::read_to_string(test_file) {
@@ -69,8 +78,6 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         let mut test_case = match parse_test_content(&content, &test_file.to_string_lossy()) {
             Ok(tc) => tc,
             Err(e) => {
-                // We don't have the span here easily from KbError without more work, 
-                // but we can at least log it.
                 log::error!("failed to parse test file {}: {}", test_file.display(), e);
                 all_passed = false;
                 continue;
@@ -141,6 +148,12 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
             },
         );
 
+        // Accumulate per-test timings.
+        acc_input_gen    += result.timings.input_gen;
+        acc_prover_run   += result.timings.prover_run;
+        acc_output_parse += result.timings.output_parse;
+        profile_count    += 1;
+
         kb.flush_session(&session);
 
         if !result.errors.is_empty() {
@@ -173,7 +186,7 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
             passed_count += 1;
         } else {
             println!("  {color_bright_red}FAILED{color_reset}");
-            println!("    expected: {}, got: {}", 
+            println!("    expected: {}, got: {}",
                 if expected { "yes" } else { "no" },
                 if result.proved { "yes" } else { "no" }
             );
@@ -181,7 +194,21 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         }
     }
 
-    println!("
-Test Summary: {} / {} passed", passed_count, total_tests);
+    println!("\nTest Summary: {} / {} passed", passed_count, total_tests);
+
+    if profile && profile_count > 0 {
+        let n = profile_count as f64;
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        println!("\n{style_bold}Profile (totals / avg over {} test(s)):{style_reset}", profile_count);
+        println!("  KB load      {:>10.3} ms  (one-time)", ms(kb_load));
+        println!("  Input gen    {:>10.3} ms  ({:.3} ms / test)", ms(acc_input_gen),    ms(acc_input_gen)    / n);
+        println!("  Prover run   {:>10.3} ms  ({:.3} ms / test)", ms(acc_prover_run),   ms(acc_prover_run)   / n);
+        println!("  Output parse {:>10.3} ms  ({:.3} ms / test)", ms(acc_output_parse), ms(acc_output_parse) / n);
+        let total_query = acc_input_gen + acc_prover_run + acc_output_parse;
+        println!("  ─────────────────────────────────────────────────");
+        println!("  Query total  {:>10.3} ms  ({:.3} ms / test)", ms(total_query), ms(total_query) / n);
+        println!("  Grand total  {:>10.3} ms", ms(kb_load + total_query));
+    }
+
     all_passed
 }

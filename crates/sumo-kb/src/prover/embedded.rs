@@ -30,7 +30,7 @@ use vampire_prover::{Formula, Function, Predicate, Problem, Proof as VampireProo
 
 use crate::kif_store::KifStore;
 use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverStatus};
-use crate::parse::kif::OpKind;
+use crate::parse::ast::OpKind;
 use crate::types::{Element, Literal, SentenceId};
 
 // Symbol name helpers (mirror TPTP conventions)
@@ -57,6 +57,18 @@ fn sym_mention(name: &str) -> Term {
 }
 
 // Variable collection
+
+/// Collect every variable name that appears anywhere in the sentence tree
+/// (both free and quantifier-bound).
+fn collect_all_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<String>) {
+    for elem in &store.sentences[store.sent_idx(sid)].elements {
+        match elem {
+            Element::Variable { name, .. } => { out.insert(name.clone()); }
+            Element::Sub(sub) => collect_all_vars(*sub, store, out),
+            _ => {}
+        }
+    }
+}
 
 fn collect_free_vars(sid: SentenceId, store: &KifStore, out: &mut HashSet<u64>, bound: &mut HashSet<u64>) {
     let sent_idx = store.sent_idx(sid);
@@ -370,22 +382,25 @@ fn literal_to_term(lit: &Literal) -> Term {
 // -- Per-formula variable index allocation -------------------------------------
 
 /// Allocate variable indices for a single sentence and return the mapping.
-/// All variables across all sentences in a proof share a global offset,
-/// so callers must pass `base` = the next free index.
-/// Returns (mapping, new_base).
+///
+/// Indexes ALL variables in the sentence (both free and bound by quantifiers)
+/// so that bound variables are available in the Converter when processing
+/// ForAll/Exists bodies.
+///
+/// The caller also receives a set of free variable names (for top-level
+/// quantifier wrapping) and the next free index.
+/// Returns (all_vars, free_var_names, new_base).
 fn alloc_vars(
     sid: SentenceId,
     store: &KifStore,
     base: u32,
 ) -> (HashMap<String, u32>, u32) {
-    let mut free_vars: HashSet<u64> = HashSet::new();
-    let mut bound_vars: HashSet<u64> = HashSet::new();
-    collect_free_vars(sid, store, &mut free_vars, &mut bound_vars);
+    let mut all_var_names: HashSet<String> = HashSet::new();
+    collect_all_vars(sid, store, &mut all_var_names);
     let mut next = base;
-    let vars: HashMap<String, u32> = free_vars
+    let vars: HashMap<String, u32> = all_var_names
         .into_iter()
-        .map(|id| {
-            let name = store.sym_name(id);
+        .map(|name| {
             let idx = next;
             next += 1;
             (name, idx)
@@ -423,12 +438,12 @@ fn wrap_free_vars(
 
 /// Records the variable indices used for the conjecture's free variables,
 /// enabling binding extraction from the returned proof.
-struct QueryVarMap {
+pub(crate) struct QueryVarMap {
     /// Variable index -> KIF variable name (e.g. 0 -> "?X", 1 -> "?Y").
-    idx_to_kif: HashMap<u32, String>,
+    pub idx_to_kif: HashMap<u32, String>,
     /// Free variable indices from the conjecture in sorted order.
     /// These are the ones we need bindings for.
-    free_var_indices: Vec<u32>,
+    pub free_var_indices: Vec<u32>,
 }
 
 impl QueryVarMap {
@@ -558,6 +573,7 @@ impl EmbeddedProverRunner {
             raw_output: format!("{:?}", res),
             bindings,
             proof_kif: Vec::new(),
+            timings:   Default::default(),
         }
     }
 }
@@ -637,7 +653,7 @@ fn unify_negative_with_positive(
 ///   a ground axiom clause, then read off the substitution.
 /// - **Strategy 3** (descendant heuristic): scan descendants of the negated-
 ///   conjecture for ground constants that appear after a variable disappears.
-fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<Binding> {
+pub(crate) fn extract_bindings_from_proof(proof: &VampireProof, qvm: &QueryVarMap) -> Vec<Binding> {
     let vars = qvm.var_names(); // ["X0", "X1", ...]
     if vars.is_empty() { return Vec::new(); }
 

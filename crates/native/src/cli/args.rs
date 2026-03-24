@@ -125,7 +125,6 @@ pub enum Cmd {
         backend: String,
 
         /// TPTP language variant: 'fof' (default) or 'tff'.
-        /// Note: 'tff' is not yet supported with the embedded backend.
         #[arg(long, value_name = "LANG", default_value = "fof")]
         lang: String,
 
@@ -140,6 +139,10 @@ pub enum Cmd {
         /// Print the proof steps translated to SUO-KIF after a successful proof.
         #[arg(long)]
         proof: bool,
+
+        /// Print a timing breakdown of the major pipeline phases.
+        #[arg(long)]
+        profile: bool,
     },
 
     /// Translate KIF formula(s) or a full KB to TPTP.
@@ -193,13 +196,16 @@ pub enum Cmd {
         backend: String,
 
         /// TPTP language variant: 'fof' (default) or 'tff'.
-        /// Note: 'tff' is not yet supported with the embedded backend.
         #[arg(long, value_name = "LANG", default_value = "fof")]
         lang: String,
 
         /// Override the per-test timeout (seconds). Overrides any (time N) directive in the test file.
         #[arg(long, value_name = "SECS")]
         timeout: Option<u32>,
+
+        /// Print a timing breakdown of the major pipeline phases.
+        #[arg(long)]
+        profile: bool,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.

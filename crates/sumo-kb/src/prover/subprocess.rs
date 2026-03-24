@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverRunner, ProverStatus};
+use std::time::Instant;
+use super::{Binding, ProverMode, ProverOpts, ProverResult, ProverRunner, ProverStatus, ProverTimings};
 
 // -- Pre-compiled regexes ------------------------------------------------------
 
@@ -41,6 +42,8 @@ pub struct VampireRunner {
 }
 
 impl ProverRunner for VampireRunner {
+    fn timeout_secs(&self) -> u32 { self.timeout_secs }
+
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult {
         // Optionally dump TPTP to a file for inspection.
         if let Some(path) = &self.tptp_dump_path {
@@ -74,6 +77,7 @@ impl ProverRunner for VampireRunner {
                 raw_output: format!("Failed to spawn vampire: {}", e),
                 bindings:   Vec::new(),
                 proof_kif:  Vec::new(),
+                timings:    ProverTimings::default(),
             },
         };
 
@@ -84,7 +88,9 @@ impl ProverRunner for VampireRunner {
             }
         }
 
+        let t_prover = Instant::now();
         let output = child.wait_with_output();
+        let prover_run = t_prover.elapsed();
 
         match output {
             Err(e) => ProverResult {
@@ -92,8 +98,10 @@ impl ProverRunner for VampireRunner {
                 raw_output: format!("Failed to run vampire: {}", e),
                 bindings:   Vec::new(),
                 proof_kif:  Vec::new(),
+                timings:    ProverTimings { prover_run, ..Default::default() },
             },
             Ok(out) => {
+                let t_parse = Instant::now();
                 let stdout   = String::from_utf8_lossy(&out.stdout).into_owned();
                 let stderr   = String::from_utf8_lossy(&out.stderr).into_owned();
                 let combined = format!("{}{}", stdout, stderr);
@@ -145,7 +153,11 @@ impl ProverRunner for VampireRunner {
                     Vec::new()
                 };
 
-                ProverResult { status, raw_output: combined, bindings, proof_kif }
+                let output_parse = t_parse.elapsed();
+                ProverResult {
+                    status, raw_output: combined, bindings, proof_kif,
+                    timings: ProverTimings { prover_run, output_parse, ..Default::default() },
+                }
             }
         }
     }
@@ -155,10 +167,13 @@ fn determine_status(output: &str, mode: &ProverMode) -> ProverStatus {
     match mode {
         ProverMode::Prove => {
             if output.contains("SZS status Theorem")
-                || output.contains("SZS status ContradictoryAxioms")
                 || output.contains("SZS status Unsatisfiable")
             {
                 ProverStatus::Proved
+            } else if output.contains("SZS status ContradictoryAxioms") {
+                // The axiom set itself is contradictory; the conjecture was never
+                // tested.  Report Inconsistent so the caller knows the KB is broken.
+                ProverStatus::Inconsistent
             } else if output.contains("SZS status CounterSatisfiable") {
                 ProverStatus::Disproved
             } else if output.contains("SZS status Timeout") {

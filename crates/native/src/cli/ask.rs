@@ -1,10 +1,9 @@
 use std::path::PathBuf;
+use std::time::Instant;
 
 use log;
 use inline_colorization::*;
 use sumo_kb::ProverStatus;
-#[cfg(feature = "integrated-prover")]
-use sumo_kb::TptpLang;
 use crate::cli::util::parse_lang;
 
 use crate::cli::args::KbArgs;
@@ -20,6 +19,7 @@ pub fn run_ask(
     kb_args:  KbArgs,
     keep:     Option<PathBuf>,
     show_proof: bool,
+    profile:  bool,
 ) -> bool {
     log::debug!(
         "run_ask: formula={:?}, tell={}, timeout={}, session={:?}, backend={:?}, lang={:?}",
@@ -36,10 +36,12 @@ pub fn run_ask(
         }
     };
 
+    let t_kb = Instant::now();
     let mut kb = match open_or_build_kb(&kb_args) {
         Ok(k)   => k,
         Err(()) => return false,
     };
+    let kb_load = t_kb.elapsed();
 
     // Apply --tell assertions into the named session (in-memory only).
     for kif in &tell {
@@ -54,11 +56,7 @@ pub fn run_ask(
     let result = match backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
-            if matches!(tptp_lang, TptpLang::Tff) {
-                log::error!("ask: TFF is not yet supported with the embedded backend");
-                return false;
-            }
-            log::info!("ask: using embedded Vampire backend");
+            log::info!("ask: using embedded Vampire backend (TFF)");
             kb.ask_embedded(&conjecture, Some(&session), timeout)
         }
         "subprocess" | "" => {
@@ -87,9 +85,7 @@ pub fn run_ask(
             } else {
                 format!(" <- [{}]", step.premises.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
             };
-            // Header line: index, rule, premises
             println!("  {:>3}. [{}]{}", step.index + 1, step.rule, premises);
-            // Formula pretty-printed with 8-space indent so it reads as body of the step
             println!("        {}", step.formula.pretty_print(2).replace('\n', "\n        "));
         }
     }
@@ -98,6 +94,18 @@ pub fn run_ask(
         "{style_bold}Theorem prover output: {style_reset}{}",
         result.raw_output
     );
+
+    if profile {
+        let t = &result.timings;
+        println!("\n{style_bold}Profile:{style_reset}");
+        println!("  KB load      {:>10.3} ms", kb_load.as_secs_f64() * 1000.0);
+        println!("  Input gen    {:>10.3} ms", t.input_gen.as_secs_f64() * 1000.0);
+        println!("  Prover run   {:>10.3} ms", t.prover_run.as_secs_f64() * 1000.0);
+        println!("  Output parse {:>10.3} ms", t.output_parse.as_secs_f64() * 1000.0);
+        let total = kb_load + t.input_gen + t.prover_run + t.output_parse;
+        println!("  ─────────────────────────");
+        println!("  Total        {:>10.3} ms", total.as_secs_f64() * 1000.0);
+    }
 
     matches!(result.status, ProverStatus::Proved)
 }
