@@ -1,0 +1,4 @@
+[submodule "crates/vampire-rs"]
+	path = crates/vampire-rs
+	url = https://github.com/theo-kim/vampire-rs
+	branch = tff-support

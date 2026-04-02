@@ -40,7 +40,8 @@ bincode = { version = "1",                                  optional = true }
 regex   = { version = "1", optional = true }
 
 # integrated-prover feature
-vampire-prover = { path = "/home/iggy/projects/vampire-rs/vampire", optional = true }
+vampire-prover = { workspace = true, optional = true }
+vampire-prover = { path = "$HOME/projects/vampire-rs/vampire", optional = true }
 
 [dev-dependencies]
 env_logger = "0.11"
