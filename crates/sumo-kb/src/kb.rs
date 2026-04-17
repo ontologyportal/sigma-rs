@@ -48,7 +48,7 @@ pub struct ClausifyReport {
 }
 
 // -- KnowledgeBase -------------------------------------------------------------
-
+/// The base structure defining a knowledge base
 pub struct KnowledgeBase {
     /// Wrapped KifStore + semantic cache.
     layer: SemanticLayer,
@@ -57,6 +57,7 @@ pub struct KnowledgeBase {
     /// Sentences here have NOT been promoted to axioms yet.
     sessions: HashMap<String, Vec<SentenceId>>,
 
+    // TODO: Convert fingerprints such that it uses CNF simplifications
     /// Deduplication table: fingerprint hash -> (SentenceId, session).
     /// session=None means promoted axiom; Some(s) means assertion in session s.
     fingerprints: HashMap<u64, (SentenceId, Option<String>)>,
@@ -84,7 +85,7 @@ pub struct KnowledgeBase {
 
 impl KnowledgeBase {
     // -- Construction ----------------------------------------------------------
-
+    /// Constructs a new KnowledgeBase
     pub fn new() -> Self {
         Self {
             layer:        SemanticLayer::new(KifStore::default()),
@@ -99,8 +100,11 @@ impl KnowledgeBase {
     }
 
     #[cfg(feature = "persist")]
+    /// Opens the knowledge base from a persistent storage (LMDB) path
     pub fn open(path: &std::path::Path) -> Result<Self, KbError> {
+        // Open the LMDB path
         let env = LmdbEnv::open(path)?;
+        // Load the kifstore from the saved database
         let (store, session_map) = load_from_db(&env)?;
 
         // Fingerprint every loaded sentence as an axiom (session=None).
@@ -120,10 +124,12 @@ impl KnowledgeBase {
             }
         }
 
+        // Generate the Semantic Layer from the KIF Symbol Store
         let layer = SemanticLayer::new(store);
         log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} axioms fingerprinted",
             path, fingerprints.len());
 
+        // Return a new KB object
         Ok(Self {
             layer,
             sessions:     HashMap::new(),
@@ -163,6 +169,7 @@ impl KnowledgeBase {
     /// `validate`: if `true`, run per-sentence semantic validation (used by `tell`).
     ///             if `false`, skip validation (used by `load_kif` for bulk loading).
     fn ingest(&mut self, text: &str, file_tag: &str, session: &str, validate: bool) -> TellResult {
+        // Set up the result to return
         let mut result = TellResult { ok: true, errors: vec![], warnings: vec![] };
 
         // Snapshot root count before loading so we only process truly new roots.
@@ -171,10 +178,15 @@ impl KnowledgeBase {
             .map(|v| v.len())
             .unwrap_or(0);
 
-        // Parse into store using file_tag as the KIF "file" name.
+        // We have to invalidate the cache layer as ingestion may introduce 
+        // new axioms which invalidates the kb semantics
+        // TODO: Fix this so it regenerates the semantic layer intelligently
         self.layer.invalidate_cache();
+        
+        // Parse into store using file_tag as the KIF "file" name.
         let parse_errors = load_kif(&mut self.layer.store, text, file_tag);
 
+        // Failed to ingest due to parse errors
         if !parse_errors.is_empty() {
             result.ok = false;
             for (_, e) in parse_errors {

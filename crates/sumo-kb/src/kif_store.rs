@@ -1,13 +1,8 @@
 // crates/sumo-kb/src/kif_store.rs
 //
-// Ported from sumo-parser-core/src/store.rs.
-// Key change: explicit `next_symbol_id` and `next_sentence_id` counters replace
-// implicit Vec::len() -based IDs, enabling `seed_counters()` so the persist
-// layer can set the in-memory counter to continue from the LMDB max, eliminating
-// ID remapping at commit time.
-//
-// DisplayWrapper types (ElementDisplay, SentenceDisplay) live here.
-
+/// The KIF Store provides the syntactical construction structure and methods
+/// for KIF based symbol tables. This is the primary persistent layer and is
+/// constructed following parsing of input strings.
 use std::{collections::HashMap, fmt};
 use inline_colorization::*;
 
@@ -24,13 +19,13 @@ use smallvec::SmallVec;
 /// stable `u64` values driven by explicit atomic-style counters that can be
 /// seeded from LMDB on `open()`, ensuring no ID collision between in-memory
 /// and persisted data.
-///
-/// Taxonomy edges (subclass/instance/subrelation/subAttribute) are derived
-/// semantic structure and live in [`SemanticLayer`], not here.
 #[derive(Debug, Default)]
 pub(crate) struct KifStore {
+    /// A vector of sentences from the source knowledge bases
     pub sentences:    Vec<Sentence>,
+    /// A hash map mapping the symbol name to its ID
     pub symbols:      HashMap<String, SymbolId>,
+    /// A vector containing the symbol data structures
     pub symbol_data:  Vec<Symbol>,
 
     /// Root (top-level) sentence ids -- in insertion order.
@@ -39,14 +34,18 @@ pub(crate) struct KifStore {
     pub sub_sentences: Vec<SentenceId>,
     /// Root sentences grouped by file tag.
     pub file_roots:   HashMap<String, Vec<SentenceId>>,
-    /// Root sentences indexed by head predicate name.
+    /// Root sentences indexed by head symbol name (e.g. "instance" -> [...]).
+    /// TODO replace the key with the symbol id of the predicate rather than 
+    /// the string
     pub head_index:   HashMap<String, Vec<SentenceId>>,
 
-    /// SentenceId -> Vec index.  Decouples stable IDs from Vec positions so that
-    /// seeded counters (e.g. starting at 1000 after an LMDB load) do not cause
-    /// out-of-bounds accesses.
+    /// SentenceId -> Vec index.  Maps stable IDs from position of the sentence
+    /// in the sentences vector so that seeded counters (e.g. starting at 1000 
+    /// after an LMDB load) do not cause out-of-bounds accesses.
     sent_idx:         HashMap<SentenceId, usize>,
-    /// SymbolId -> Vec index into symbol_data.
+    /// SymbolId -> Vec index. Maps stable IDs from position of the symbol
+    /// in the symbol vector so that seeded counters (e.g. starting at 1000 
+    /// after an LMDB load) do not cause out-of-bounds accesses.
     sym_idx:          HashMap<SymbolId, usize>,
 
     /// Explicit counter for next SymbolId -- seeded from LMDB max on open().
@@ -76,19 +75,25 @@ impl KifStore {
     /// Intern a symbol name.  Returns the existing id on cache hit,
     /// allocates a new stable id on miss.
     pub(crate) fn intern(&mut self, name: &str) -> SymbolId {
+        // If the symbol name already exists, return it
         if let Some(&id) = self.symbols.get(name) {
             return id;
         }
+        // Get the next symbol id based on the counter
         let id  = self.next_symbol_id;
+        // Get the local in-memory id (the index of the vector)
         let idx = self.symbol_data.len();
+        // Increment the id counter
         self.next_symbol_id += 1;
+        // Add a new symbol to the symbol data vector
         self.symbol_data.push(Symbol {
             name: name.to_owned(),
-            head_sentences: Vec::new(),
-            all_sentences:  Vec::new(),
+            head_sentences: Vec::new(), // Indexed sentence refs
+            all_sentences:  Vec::new(), 
             is_skolem:      false,
             skolem_arity:   None,
         });
+        // Add to the various reference arrays
         self.symbols.insert(name.to_owned(), id);
         self.sym_idx.insert(id, idx);
         log::debug!(target: "sumo_kb::kif_store", "interned symbol '{}' -> id={}", name, id);
@@ -118,11 +123,15 @@ impl KifStore {
         id
     }
 
+    // -- Shortcut functions ---------------------------------------------------------
+    
+    /// Get the string name of a symbol from its ID
     pub(crate) fn sym_name(&self, id: SymbolId) -> &str {
         let idx = self.sym_idx[&id];
         &self.symbol_data[idx].name
     }
 
+    /// Get the symbol ID from its string name
     pub(crate) fn sym_id(&self, name: &str) -> Option<SymbolId> {
         self.symbols.get(name).copied()
     }
@@ -146,10 +155,10 @@ impl KifStore {
     }
 
     /// Return a reference to the sent_idx map (used by persist::load).
-    #[cfg(feature = "persist")]
-    pub(crate) fn sent_idx_map(&self) -> &HashMap<SentenceId, usize> {
-        &self.sent_idx
-    }
+    // #[cfg(feature = "persist")]
+    // pub(crate) fn sent_idx_map(&self) -> &HashMap<SentenceId, usize> {
+    //     &self.sent_idx
+    // }
 
     /// Insert a stable SentenceId -> Vec position mapping (used by persist::load).
     #[cfg(feature = "persist")]
