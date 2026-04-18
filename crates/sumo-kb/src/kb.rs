@@ -553,13 +553,81 @@ impl KnowledgeBase {
     /// - Axioms = all promoted/loaded sentences (fingerprint session=None).
     /// - Assertions = sentences in `session` (if Some) rendered as `hypothesis`.
     /// - Pass `session=None` to omit assertions.
+    ///
+    /// When compiled with the `vampire` feature, this routes through the
+    /// `NativeConverter` + `assemble_tptp` IR pipeline (SID-based axiom
+    /// names, per-axiom KIF comments when `opts.show_kif_comment` is set).
+    /// Without the feature, falls back to the legacy `kb_to_tptp` emitter.
     pub fn to_tptp(&self, opts: &TptpOptions, session: Option<&str>) -> String {
-        let axiom_ids = self.axiom_ids_set();
-        let assertion_ids: HashSet<SentenceId> = session
-            .and_then(|s| self.sessions.get(s))
-            .map(|v| v.iter().copied().collect())
-            .unwrap_or_default();
-        kb_to_tptp(&self.layer, "kb", opts, &axiom_ids, &assertion_ids)
+        #[cfg(feature = "vampire")]
+        {
+            use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
+            use crate::vampire::converter::{Mode, NativeConverter};
+
+            let mode = match opts.lang {
+                TptpLang::Tff => Mode::Tff,
+                TptpLang::Fof => Mode::Fof,
+            };
+
+            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
+                .with_hide_numbers(opts.hide_numbers);
+
+            let axiom_ids = self.axiom_ids_set();
+            let mut axioms_sorted: Vec<SentenceId> = axiom_ids.into_iter().collect();
+            axioms_sorted.sort_unstable();
+            for sid in axioms_sorted {
+                if self.sentence_excluded(sid, &opts.excluded) { continue; }
+                conv.add_axiom(sid);
+            }
+
+            if let Some(name) = session {
+                if let Some(sids) = self.sessions.get(name) {
+                    for &sid in sids {
+                        if self.sentence_excluded(sid, &opts.excluded) { continue; }
+                        conv.add_axiom(sid);
+                    }
+                }
+            }
+
+            let (problem, sid_map) = conv.finish();
+            return assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+                show_kif: opts.show_kif_comment,
+                layer:    Some(&self.layer),
+                ..AssemblyOpts::default()
+            });
+        }
+
+        #[cfg(not(feature = "vampire"))]
+        {
+            let axiom_ids = self.axiom_ids_set();
+            let assertion_ids: HashSet<SentenceId> = session
+                .and_then(|s| self.sessions.get(s))
+                .map(|v| v.iter().copied().collect())
+                .unwrap_or_default();
+            kb_to_tptp(&self.layer, "kb", opts, &axiom_ids, &assertion_ids)
+        }
+    }
+
+    /// Return the head predicate name of a sentence, if it has one.
+    /// Returns `None` for operator-rooted sentences (e.g. `(and ...)`) or
+    /// for sentences whose first element is not a plain symbol.
+    fn sentence_head_name(&self, sid: SentenceId) -> Option<String> {
+        use crate::types::Element;
+        let store = &self.layer.store;
+        if !store.has_sentence(sid) { return None; }
+        let sentence = &store.sentences[store.sent_idx(sid)];
+        match sentence.elements.first()? {
+            Element::Symbol(id) => Some(store.sym_name(*id).to_owned()),
+            _ => None,
+        }
+    }
+
+    /// `true` if the sentence's head predicate matches an `excluded` entry.
+    fn sentence_excluded(&self, sid: SentenceId, excluded: &HashSet<String>) -> bool {
+        if excluded.is_empty() { return false; }
+        self.sentence_head_name(sid)
+            .map(|n| excluded.contains(&n))
+            .unwrap_or(false)
     }
 
     /// Generate TPTP CNF from pre-computed clauses.
@@ -972,8 +1040,47 @@ impl KnowledgeBase {
     }
 
     /// Render a single sentence as TPTP.
+    ///
+    /// Returns the formula body only (no `tff(...)` / `fof(...)` wrapper);
+    /// callers add their own `<kw>(name, role, ...)` framing.  Respects
+    /// `opts.query` (existential wrap for conjectures vs universal wrap
+    /// for axioms), `opts.lang`, and `opts.hide_numbers`.
+    ///
+    /// Routes through `NativeConverter` when the `vampire` feature is on;
+    /// falls back to the legacy `sentence_to_tptp` emitter otherwise.
     pub fn format_sentence_tptp(&self, sid: SentenceId, opts: &TptpOptions) -> String {
-        sentence_to_tptp(sid, &self.layer, opts)
+        #[cfg(feature = "vampire")]
+        {
+            use crate::vampire::converter::{Mode, NativeConverter};
+
+            let mode = match opts.lang {
+                TptpLang::Tff => Mode::Tff,
+                TptpLang::Fof => Mode::Fof,
+            };
+            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
+                .with_hide_numbers(opts.hide_numbers);
+
+            if opts.query {
+                conv.set_conjecture(sid);
+                let (problem, _) = conv.finish();
+                return problem
+                    .conjecture_ref()
+                    .map(|f| f.to_tptp())
+                    .unwrap_or_default();
+            }
+            conv.add_axiom(sid);
+            let (problem, _) = conv.finish();
+            return problem
+                .axioms()
+                .first()
+                .map(|f| f.to_tptp())
+                .unwrap_or_default();
+        }
+
+        #[cfg(not(feature = "vampire"))]
+        {
+            sentence_to_tptp(sid, &self.layer, opts)
+        }
     }
 
     /// Render a single sentence back to KIF notation (plain text, no ANSI).

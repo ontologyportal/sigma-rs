@@ -85,6 +85,12 @@ pub struct NativeConverter<'a> {
     problem: IrProblem,
     mode: Mode,
 
+    /// When `true`, numeric literals are encoded as opaque symbolic
+    /// constants (`n__42`, `n__3_14`).  When `false`, they're emitted as
+    /// raw TPTP integer / real literals.  Default: `true` — matches the
+    /// existing embedded-prover code path, which never interprets numbers.
+    hide_numbers: bool,
+
     // -- per-sentence state (reset per add_axiom / set_conjecture) ------------
     vars:     HashMap<String, u32>,
     var_ids:  HashMap<String, SymbolId>,
@@ -145,6 +151,7 @@ impl<'a> NativeConverter<'a> {
             layer,
             problem,
             mode,
+            hide_numbers: true,
             vars: HashMap::new(),
             var_ids: HashMap::new(),
             next_var: 0,
@@ -153,6 +160,13 @@ impl<'a> NativeConverter<'a> {
             declared_preds,
             sid_map,
         }
+    }
+
+    /// Toggle numeric-literal encoding.  `true` (default) emits `n__<N>`
+    /// symbolic constants; `false` emits raw TPTP numeric literals.
+    pub fn with_hide_numbers(mut self, hide: bool) -> Self {
+        self.hide_numbers = hide;
+        self
     }
 
     /// Convert and append `sid` as an axiom. Returns `true` on success,
@@ -563,7 +577,7 @@ impl<'a> NativeConverter<'a> {
                 }
             }
             Element::Variable { name, .. } => Some(self.var_term(name)),
-            Element::Literal(lit) => Some(literal_to_term(lit)),
+            Element::Literal(lit) => Some(self.literal_to_term(lit)),
             Element::Sub(sid) => self.sid_to_term(*sid),
             Element::Op(op) => Some(IrT::constant(IrFn::new(&sym_name(op.name()), 0))),
         }
@@ -616,6 +630,33 @@ impl<'a> NativeConverter<'a> {
         }
     }
 
+    /// Convert a KIF literal to an IR term.  Numeric literals follow the
+    /// `hide_numbers` setting: `true` → `n__<N>` symbolic constants,
+    /// `false` → raw TPTP integer / real literals.
+    fn literal_to_term(&self, lit: &Literal) -> IrT {
+        match lit {
+            Literal::Str(s) => {
+                let inner = &s[1..s.len() - 1];
+                let safe: String = inner
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '_')
+                    .take(48)
+                    .collect();
+                IrT::constant(IrFn::new(&format!("str__{}", safe), 0))
+            }
+            Literal::Number(n) => {
+                if self.hide_numbers {
+                    let safe = n.replace('.', "_").replace('-', "neg_");
+                    IrT::constant(IrFn::new(&format!("n__{}", safe), 0))
+                } else if n.contains('.') {
+                    IrT::real(n.clone())
+                } else {
+                    IrT::int(n.clone())
+                }
+            }
+        }
+    }
+
     fn wrap_free_vars(
         &self,
         formula: IrF,
@@ -642,24 +683,6 @@ impl<'a> NativeConverter<'a> {
     }
 }
 
-fn literal_to_term(lit: &Literal) -> IrT {
-    match lit {
-        Literal::Str(s) => {
-            let inner = &s[1..s.len() - 1];
-            let safe: String = inner
-                .chars()
-                .filter(|c| c.is_alphanumeric() || *c == '_')
-                .take(48)
-                .collect();
-            IrT::constant(IrFn::new(&format!("str__{}", safe), 0))
-        }
-        Literal::Number(n) => {
-            // Symbolic encoding matches the existing converter: n__42, n__neg_1.
-            let safe = n.replace('.', "_").replace('-', "neg_");
-            IrT::constant(IrFn::new(&format!("n__{}", safe), 0))
-        }
-    }
-}
 
 // -- Variable collection (free standing, reused by QueryVarMap builder) ------
 
