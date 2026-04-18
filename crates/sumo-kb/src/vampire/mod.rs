@@ -1,120 +1,68 @@
 // crates/sumo-kb/src/vampire/mod.rs
 //
-// Vampire-specific cache and native TFF Problem builder for sumo-kb.
+// Vampire axiom cache for sumo-kb.
 //
-// The KnowledgeBase holds one `Option<VampireAxiomCache>` field.  On the
-// first `ask()` or `ask_embedded()` call after a KB mutation that changes the
-// axiom set, the cache is rebuilt lazily.  At query time:
+// The KnowledgeBase keeps a lazily-built `VampireAxiomCache` that holds the
+// pre-converted axiom set as a pure-Rust `ir::Problem` plus a parallel
+// `sid_map` that records which SentenceId produced each axiom (needed for
+// proof back-translation).  At ask time:
 //
-//   Subprocess path (always): cached TFF TPTP string → prepend to query TPTP.
-//   Embedded path (integrated-prover): cached native Problem → clone + append conjecture.
+//   Embedded path   (integrated-prover): clone the cached Problem, add the
+//                    conjecture, run `lower_problem(...).solve_and_prove()`.
+//   Subprocess path (always):            clone the cached Problem, add the
+//                    conjecture, call `Problem::to_tptp()` and pipe the
+//                    string into vampire.
 //
 // Gated: requires the `vampire` feature.
 
 use std::collections::HashSet;
 
+use vampire_prover::ir::Problem as IrProblem;
+
 use crate::semantic::SemanticLayer;
-use crate::tptp::{TptpOptions, TptpLang, kb_to_tptp};
 use crate::types::SentenceId;
 
-#[cfg(feature = "integrated-prover")]
-pub(crate) mod convert;
+pub(crate) mod converter;
 
-#[cfg(feature = "integrated-prover")]
-use vampire_prover::{Formula, Options as VOptions, Problem};
+use converter::{Mode, NativeConverter};
 
-#[cfg(feature = "integrated-prover")]
-use convert::{TffConverter, alloc_vars_tff, collect_bound_var_names, wrap_free_vars_tff};
-
-/// Pre-generated axiom data for the Vampire theorem prover.
+/// Pre-built axiom data shared by both prover backends.
 pub(crate) struct VampireAxiomCache {
-    /// Full TFF TPTP string: type-declaration preamble + all axiom formulas.
-    /// Used by the subprocess runner (passed directly without re-parsing).
-    pub axiom_tptp: String,
+    /// Fully-typed TFF problem containing the axiom set and its sort /
+    /// function / predicate declarations.  No conjecture.
+    pub problem: IrProblem,
 
-    /// Native vampire-prover Problem pre-loaded with all axiom formulas (TFF-typed).
-    /// Used by the embedded runner: clone this, append the conjecture, then solve.
-    /// The clone is cheap — it copies formula indices, not the C++ term algebra.
-    #[cfg(feature = "integrated-prover")]
-    pub axiom_problem: Problem,
+    /// Parallel to `problem.axioms()`: `sid_map[i]` is the KIF SentenceId
+    /// that produced `problem.axioms()[i]`.  Callers use this to re-link
+    /// proof steps back to KIF sentences.
+    pub sid_map: Vec<SentenceId>,
 }
 
 impl VampireAxiomCache {
-    /// Build the cache from the current axiom set.
-    ///
-    /// Serialises `axiom_ids` to TFF TPTP (for subprocess) and, when the
-    /// `integrated-prover` feature is enabled, also builds a native TFF Problem.
-    pub fn build(layer: &SemanticLayer, axiom_ids: &HashSet<SentenceId>) -> Self {
-        // -- TFF TPTP string (used by subprocess runner) -----------------------
-        let opts = TptpOptions {
-            lang:         TptpLang::Tff,
-            hide_numbers: true,
-            ..TptpOptions::default()
-        };
-        let axiom_tptp = kb_to_tptp(layer, "kb", &opts, axiom_ids, &HashSet::new());
+    /// Build a fresh cache from `axiom_ids` under the requested logic mode.
+    pub fn build(
+        layer:     &SemanticLayer,
+        axiom_ids: &HashSet<SentenceId>,
+        mode:      Mode,
+    ) -> Self {
+        let mut conv = NativeConverter::new(&layer.store, layer, mode);
+        let mut skipped = 0usize;
+
+        // Iterate deterministically so sid_map ordering is stable.
+        let mut sorted: Vec<SentenceId> = axiom_ids.iter().copied().collect();
+        sorted.sort_unstable();
+
+        for sid in sorted {
+            if !conv.add_axiom(sid) {
+                skipped += 1;
+            }
+        }
+        let (problem, sid_map) = conv.finish();
+
         log::debug!(target: "sumo_kb::vampire",
-            "axiom cache built: {} axiom(s), {} bytes of TFF TPTP",
-            axiom_ids.len(), axiom_tptp.len());
+            "axiom cache built: mode={:?}, {} axiom(s), {} skipped",
+            mode, sid_map.len(), skipped);
 
-        // -- Native TFF Problem (used by embedded runner) ----------------------
-        #[cfg(feature = "integrated-prover")]
-        let axiom_problem = {
-            build_tff_problem(layer, axiom_ids)
-        };
-
-        VampireAxiomCache {
-            axiom_tptp,
-            #[cfg(feature = "integrated-prover")]
-            axiom_problem,
-        }
+        VampireAxiomCache { problem, sid_map }
     }
-}
-
-// -- Native TFF Problem builder ------------------------------------------------
-
-/// Build a vampire-prover `Problem` containing all axiom sentences in TFF form.
-///
-/// Iterates every sentence in `axiom_ids`, converts it to a typed `Formula`,
-/// and adds it as an axiom.  Sentences that cannot be converted (e.g. complex
-/// row-variable expansions) are silently skipped.
-#[cfg(feature = "integrated-prover")]
-pub(crate) fn build_tff_problem(
-    layer:     &SemanticLayer,
-    axiom_ids: &HashSet<SentenceId>,
-) -> Problem {
-    let mut problem = Problem::new(VOptions::new());
-    let mut skipped = 0usize;
-
-    let mut n_added = 0usize;
-    for &sid in axiom_ids {
-        if let Some(f) = convert_sid_tff_top(layer, sid, false) {
-            problem.with_axiom(f);
-            n_added += 1;
-        } else {
-            skipped += 1;
-        }
-    }
-
-    log::debug!(target: "sumo_kb::vampire",
-        "TFF problem builder: added={} skipped={}", n_added, skipped);
-    problem
-}
-
-/// Convert one sentence to a top-level TFF formula (with free-variable wrapping).
-///
-/// Returns `None` if the sentence cannot be converted (e.g. unsupported structure).
-#[cfg(feature = "integrated-prover")]
-pub(crate) fn convert_sid_tff_top(
-    layer:       &SemanticLayer,
-    sid:         SentenceId,
-    existential: bool,   // true for conjecture (free vars wrapped in ∃)
-) -> Option<Formula> {
-    let store = &layer.store;
-    let (vars, var_ids, _) = alloc_vars_tff(sid, store, 0);
-    let mut bound: HashSet<String> = HashSet::new();
-    collect_bound_var_names(sid, store, &mut bound);
-
-    let mut conv = TffConverter::new(store, layer, &vars, &var_ids);
-    let formula = conv.sid_to_formula(sid)?;
-    Some(wrap_free_vars_tff(formula, &vars, &var_ids, &bound, layer, existential))
 }

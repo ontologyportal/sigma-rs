@@ -60,5 +60,3 @@ pub use prover::{
     ProverStatus, Binding, VampireRunner,
 };
 
-#[cfg(feature = "integrated-prover")]
-pub use prover::EmbeddedProverRunner;

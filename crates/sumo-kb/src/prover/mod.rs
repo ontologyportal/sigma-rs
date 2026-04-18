@@ -12,13 +12,7 @@ use std::{fmt, time::Duration};
 
 pub mod subprocess;
 
-#[cfg(feature = "integrated-prover")]
-pub mod embedded;
-
 pub use subprocess::VampireRunner;
-
-#[cfg(feature = "integrated-prover")]
-pub use embedded::EmbeddedProverRunner;
 
 use serde::{Serialize, Deserialize};
 

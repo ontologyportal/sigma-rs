@@ -723,40 +723,39 @@ impl KnowledgeBase {
             .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
 
-        // TFF path with vampire feature: use the pre-built axiom cache so the
-        // large axiom TPTP is not regenerated on every query.
+        // TFF path with vampire feature: build the Problem from the cached
+        // axiom set, add session assertions + conjecture, serialise through
+        // the pure-Rust IR, and hand the TPTP string to the subprocess runner.
         #[cfg(feature = "vampire")]
         if lang == TptpLang::Tff {
+            use crate::vampire::converter::{Mode, NativeConverter};
             let t_input = Instant::now();
             self.ensure_axiom_cache();
-            let tptp = {
-                let axiom_tptp = &self.axiom_cache.as_ref().unwrap().axiom_tptp;
-                let mut tptp = String::with_capacity(axiom_tptp.len() + 4096);
-                tptp.push_str(axiom_tptp);
-                // Assertions as hypothesis (may introduce new symbol declarations).
-                if !assertion_ids.is_empty() {
-                    let h_opts = TptpOptions {
-                        lang: TptpLang::Tff, hide_numbers: true, ..TptpOptions::default()
-                    };
-                    tptp.push_str(&kb_to_tptp(
-                        &self.layer, "hyp", &h_opts, &HashSet::new(), &assertion_ids,
-                    ));
-                }
-                // Conjecture(s).
-                let q_opts = TptpOptions {
-                    lang: TptpLang::Tff, query: true, hide_numbers: true, ..TptpOptions::default()
-                };
-                for (i, &qsid) in query_sids.iter().enumerate() {
-                    let conj = sentence_to_tptp(qsid, &self.layer, &q_opts);
-                    tptp.push_str(&format!("\ntff(query_{}, conjecture, ({})).\n", i, conj));
-                }
-                tptp
+
+            let (seed_problem, seed_sid_map) = {
+                let cache = self.axiom_cache.as_ref().unwrap();
+                (cache.problem.clone(), cache.sid_map.clone())
             };
+            let mut conv = NativeConverter::from_parts(
+                &self.layer.store, &self.layer, seed_problem, seed_sid_map, Mode::Tff,
+            );
+            for &sid in &assertion_ids {
+                conv.add_axiom(sid);
+            }
+            for &qsid in &query_sids {
+                if conv.set_conjecture(qsid).is_some() {
+                    break;
+                }
+            }
+            let (problem, _sid_map) = conv.finish();
+            let tptp = problem.to_tptp();
             let input_gen = t_input.elapsed();
             log::debug!(target: "sumo_kb::kb", "ask(cached): TPTP size={} bytes", tptp.len());
+
             self.layer.store.remove_file(query_tag);
             self.layer.rebuild_taxonomy();
             self.layer.invalidate_cache();
+
             let prover_opts = ProverOpts { timeout_secs: runner.timeout_secs(), mode: ProverMode::Prove };
             let mut result = runner.prove(&tptp, &prover_opts);
             result.timings.input_gen = input_gen;
@@ -851,49 +850,38 @@ impl KnowledgeBase {
             .cloned()
             .unwrap_or_default();
 
-        // Ensure the axiom cache (TFF TPTP + native Problem) is built.
+        // Ensure the IR axiom cache is built.
         self.ensure_axiom_cache();
 
-        // Clone the pre-built axiom Problem (cheap -- copies formula indices).
-        use vampire_prover::Options as VOptions;
-        let mut problem = {
+        // Build the IR problem: clone the cached axiom set, extend with
+        // session assertions and the conjecture.
+        use crate::vampire::converter::{Mode, NativeConverter};
+        let (seed_problem, seed_sid_map) = {
             let cache = self.axiom_cache.as_ref().unwrap();
-            let mut vp_opts = VOptions::new();
-            if timeout_secs > 0 {
-                vp_opts.timeout(std::time::Duration::from_secs(timeout_secs as u64));
-            }
-            vp_opts.set_option("mode", "casc");
-            let mut p = cache.axiom_problem.clone();
-            p.with_options(vp_opts)
+            (cache.problem.clone(), cache.sid_map.clone())
         };
-
-        // Add session assertions as additional axioms (not in the axiom cache).
+        let mut conv = NativeConverter::from_parts(
+            &self.layer.store, &self.layer, seed_problem, seed_sid_map, Mode::Tff,
+        );
         for &sid in &assertion_sids {
-            if let Some(f) = crate::vampire::convert_sid_tff_top(&self.layer, sid, false) {
-                problem.with_axiom(f);
-            }
+            conv.add_axiom(sid);
         }
-
-        // Build the conjecture from the first query sentence.
         for &sid in &query_sids {
-            use crate::vampire::convert::{alloc_vars_tff, collect_bound_var_names,
-                                           TffConverter, wrap_free_vars_tff};
-            let store = &self.layer.store;
-            let (vars, var_ids, _) = alloc_vars_tff(sid, store, 0);
-            let mut bound_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-            collect_bound_var_names(sid, store, &mut bound_names);
-
-            let mut conv = TffConverter::new(store, &self.layer, &vars, &var_ids);
-            if let Some(formula) = conv.sid_to_formula(sid) {
-                let wrapped = wrap_free_vars_tff(
-                    formula, &vars, &var_ids, &bound_names, &self.layer, true,
-                );
-                problem.conjecture(wrapped);
+            if conv.set_conjecture(sid).is_some() {
                 break;
             }
         }
+        let (ir_problem, _sid_map) = conv.finish();
 
-        let (res, proof) = problem.solve_and_prove();
+        // Lower to the FFI problem, set options, and solve.
+        let mut opts = vampire_prover::Options::new();
+        if timeout_secs > 0 {
+            opts.timeout(std::time::Duration::from_secs(timeout_secs as u64));
+        }
+        opts.set_option("mode", "casc");
+        let mut problem = vampire_prover::lower_problem(&ir_problem, opts);
+
+        let (res, _proof) = problem.solve_and_prove();
         log::debug!(target: "sumo_kb::embedded_prover", "TFF embedded result: {:?}", res);
 
         let status = match res {
@@ -902,7 +890,8 @@ impl KnowledgeBase {
             vampire_prover::ProofRes::Unknown(_) => ProverStatus::Unknown,
         };
 
-        let bindings = Vec::new(); // TODO: extract from proof
+        // Binding extraction from the native proof is Phase 3 work.
+        let bindings = Vec::new();
 
         self.layer.store.remove_file(query_tag);
         self.layer.rebuild_taxonomy();
@@ -919,13 +908,17 @@ impl KnowledgeBase {
 
     // -- Internal helpers ------------------------------------------------------
 
-    /// Ensure the TFF TPTP axiom cache is populated; build it if needed.
+    /// Ensure the TFF IR axiom cache is populated; build it if needed.
     /// After this call `self.axiom_cache` is guaranteed to be `Some`.
     #[cfg(feature = "vampire")]
     fn ensure_axiom_cache(&mut self) {
         if self.axiom_cache.is_none() {
             let axiom_ids = self.axiom_ids_set();
-            self.axiom_cache = Some(crate::vampire::VampireAxiomCache::build(&self.layer, &axiom_ids));
+            self.axiom_cache = Some(crate::vampire::VampireAxiomCache::build(
+                &self.layer,
+                &axiom_ids,
+                crate::vampire::converter::Mode::Tff,
+            ));
         }
     }
 
