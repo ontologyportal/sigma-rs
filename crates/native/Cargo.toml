@@ -12,11 +12,23 @@ name = "sumo_native"
 path = "src/lib.rs"
 
 [features]
-default = []
-integrated-prover = ["sumo-kb/integrated-prover"]
+# Default build is the full experience: IR pipeline + embedded C++
+# Vampire.  Translate / validate / load / ask / test all available.
+default = ["integrated-prover"]
+
+# Pure-Rust path: translate / validate / load PLUS ask / test via the
+# IR-based pipeline.  The subprocess prover is available (needs a
+# vampire binary on PATH); the embedded solver is not.  No CMake
+# required.
+vampire = ["sumo-kb/vampire"]
+
+# Everything in `vampire` plus the embedded C++ solver (CMake + the
+# vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
+# and native-proof binding extraction.
+integrated-prover = ["vampire", "sumo-kb/integrated-prover"]
 
 [dependencies]
-sumo-kb = { workspace = true, features = ["persist", "ask", "cnf", "vampire"] }
+sumo-kb = { workspace = true, features = ["persist", "cnf"] }
 serde.workspace            = true
 serde_json.workspace       = true
 inline_colorization.workspace = true

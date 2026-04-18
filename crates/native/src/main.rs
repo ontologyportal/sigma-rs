@@ -5,7 +5,9 @@ use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_ask, run_translate, run_test};
+use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_translate};
+#[cfg(feature = "vampire")]
+use sumo_native::cli::{run_ask, run_test};
 use sumo_native::config::{resolve_config_path, parse_config_xml};
 
 use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
@@ -80,8 +82,10 @@ fn main() {
         let kb_args = match &mut cli.command {
             Cmd::Load { kb } => Some(kb),
             Cmd::Validate { kb, .. } => Some(kb),
-            Cmd::Ask { kb, .. } => Some(kb),
             Cmd::Translate { kb, .. } => Some(kb),
+            #[cfg(feature = "vampire")]
+            Cmd::Ask { kb, .. } => Some(kb),
+            #[cfg(feature = "vampire")]
             Cmd::Test { kb, .. } => Some(kb),
         };
 
@@ -111,18 +115,6 @@ fn main() {
     let ok = match cli.command {
         Cmd::Load { kb } => run_load(kb),
         Cmd::Validate { formula, parse, no_kb_check, kb } => run_validate(formula, parse, no_kb_check, kb),
-        Cmd::Ask {
-            formula,
-            tell,
-            timeout,
-            session,
-            backend,
-            lang,
-            kb,
-            keep,
-            proof,
-            profile,
-        } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof, profile),
         Cmd::Translate {
             formula,
             lang,
@@ -138,6 +130,20 @@ fn main() {
             session.as_deref(),
             kb,
         ),
+        #[cfg(feature = "vampire")]
+        Cmd::Ask {
+            formula,
+            tell,
+            timeout,
+            session,
+            backend,
+            lang,
+            kb,
+            keep,
+            proof,
+            profile,
+        } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof, profile),
+        #[cfg(feature = "vampire")]
         Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } => run_test(paths, kb, keep, backend, lang, timeout, profile),
     };
     process::exit(if ok { 0 } else { 1 });
