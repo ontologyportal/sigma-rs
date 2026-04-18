@@ -40,62 +40,115 @@ axioms.  Two separate contradictions existed:
 
 ## High Priority
 
-### Remove dead `EmbeddedProverRunner` (FOF embedded path)
+### ~~Remove dead `EmbeddedProverRunner` (FOF embedded path)~~ — FIXED (2026-04-17)
 
-`crates/sumo-kb/src/prover/embedded.rs` contains `EmbeddedProverRunner`, a FOF
-holds-reification converter that was the original embedded prover. It is no
-longer called by the CLI or by `kb.ask_embedded()`. The current embedded path
-uses the TFF converter in `crates/sumo-kb/src/vampire/convert.rs` directly.
-
-`EmbeddedProverRunner` is still exported as a public type (`pub use
-prover::EmbeddedProverRunner` in `lib.rs`) but is dead code from the
-application's perspective.
-
-**Proposed action**: Delete `prover/embedded.rs`, remove the `pub use`
-re-export from `lib.rs`, and remove `pub mod embedded` from `prover/mod.rs`.
-Confirm that no downstream code depends on the public type before deleting.
+Deleted in commit `ae529c4` as part of the vampire-rs IR migration. The
+`prover/embedded.rs` file is gone, the `pub use` re-export from `lib.rs`
+and `prover/mod.rs` is gone. The current embedded path routes through
+`vampire/converter.rs::NativeConverter` + `lower_problem`.
 
 ---
 
 ## Medium Priority
 
-### Consolidate the three sentence→formula converters
+### ~~Consolidate the three sentence→formula converters~~ — PARTIAL (2026-04-17)
 
-The same sentence-tree traversal (operators, quantifiers, terms, literals) is
-implemented three times:
+Converters (2) and (3) are now a single `NativeConverter<Mode>` in
+`vampire/converter.rs`, dispatching on `Mode::Fof` / `Mode::Tff`
+(commit `ae529c4`).  It produces `vampire_prover::ir::Formula` values
+that can be lowered to the FFI types or serialised to TPTP via
+`vampire/assemble.rs::assemble_tptp`.
 
-1. `tptp/translate.rs` + `tptp/tff.rs` — produces TPTP strings (FOF and TFF)
-2. `prover/embedded.rs` `Converter` — produces FOF `Formula` objects (dead, see above)
-3. `vampire/convert.rs` `TffConverter` — produces TFF `Formula` objects
-
-After removing (2), the operator-dispatch logic in (1) and (3) is still
-duplicated: `And`, `Or`, `Not`, `Implies`, `Iff`, `Equal`, `ForAll`, `Exists`
-are handled identically in both, with only the leaf encoding differing.
-
-Variable collection helpers (`collect_all_vars`, `collect_bound_var_names`,
-`collect_free_vars`) similarly appear independently in both modules.
-
-**Proposed action**: Extract a shared visitor/walker utility that handles
-operator dispatch and variable collection, with a pluggable leaf encoder.
-Both the string-based (TPTP) and native-formula paths would use it.
+Converter (1) — `tptp/translate.rs` + `tptp/tff.rs` — still exists and
+produces TPTP strings directly.  Phase 4 of the migration will repoint
+`sumo translate` at `NativeConverter` + `assemble_tptp`, at which
+point (1) can be deleted as well.
 
 ---
 
-### Embedded prover binding extraction
+### ~~Embedded prover binding extraction~~ — PARTIAL (2026-04-17)
 
-`kb.ask_embedded()` uses `solve_and_prove()` but discards the returned `Proof`
-object. Variable bindings from embedded-prover queries are never extracted.
+Implemented in `vampire/bindings.rs` (commit `6af76e1`).  Single-variable
+existential queries now return bindings:
 
-The `Proof` struct in `vampire-prover` exposes `steps()` → `&[ProofStep]`,
-`ProofStep::conclusion()` → `Formula`, and `ProofStep::rule()` →
-`ProofRule`. Bindings could be extracted by:
+```
+$ sumo ask -f tiny.kif --lang tff --backend embedded "(instance ?WHO Mortal)"
+  WHO = Socrates
+```
 
-1. Finding the step with `rule == NegatedConjecture`
-2. Walking resolution steps that derive from it
-3. Extracting ground resolvent variable assignments structurally
+Known limitation: multi-variable queries (e.g. `(grandparent ?GP ?GC)`)
+still prove but return empty bindings.  See "Multi-variable binding
+extraction" below for follow-up.
 
-Until this is implemented, `ask_embedded()` always returns empty `bindings`
-regardless of the proof found.
+Discovered upstream issue while implementing this — see
+"vampire-prover: ProofRule::NegatedConjecture never surfaces on input
+steps" below.
+
+---
+
+### Multi-variable binding extraction from native proofs
+
+The binding extractor in `sumo-kb/src/vampire/bindings.rs` uses
+single-literal resolution unification: it finds one proof step that
+resolves the negated conjecture against one ground axiom, and reads the
+full substitution off the argument lists.
+
+That works when Vampire proves an existential by deriving a single
+ground atom that matches the conjecture (the common shape for simple
+queries against Merge.kif).  It does NOT work when the substitution
+requires tracking across multiple resolution steps — e.g. a
+`(grandparent ?X ?Z)` query against `(parent Alice Bob)` +
+`(parent Bob Carol)` + transitivity axiom proves correctly but
+the extractor returns empty because `Alice` and `Carol` get bound in
+separate steps that the single-literal unifier can't rejoin.
+
+**Proposed action**: build a proper substitution tracker that walks the
+proof DAG from the `$false` conclusion backwards, composing unifiers
+produced by each Resolution / Superposition step until it reaches the
+conjecture's free-variable positions.  The structural walk is the right
+long-term approach; regex-over-stringified-formulas has hit its ceiling.
+
+---
+
+### vampire-prover: `ProofRule::NegatedConjecture` never surfaces on input steps
+
+When `Problem::solve_and_prove()` returns a `Proof` for a problem
+submitted with `Problem::conjecture(f)`, the input step carrying the
+negated conjecture comes back with `rule == ProofRule::Axiom`, not
+`NegatedConjecture`.  This is despite `vampire_conjecture_formula`
+being called at solve time (so the C++ side knows it's a conjecture)
+and despite `ProofRule::from_raw` in `crates/vampire-rs/vampire/src/ffi.rs`
+containing logic to map both `VAMPIRE_CONJECTURE` and
+`VAMPIRE_NEGATED_CONJECTURE` input types to `ProofRule::NegatedConjecture`.
+
+Reproduction: the example at the bottom of the file (can be built
+off-tree to isolate).  Observed on vampire-rs commit `e2378aa` +
+the Phase 1 IR changes; all input steps show `rule=Axiom`.
+
+```
+0: rule=Axiom  premises=[] conclusion='human(socrates)'                    <- axiom
+1: rule=Axiom  premises=[] conclusion='! [X0] : (human(X0) => mortal(X0))' <- axiom
+2: rule=Axiom  premises=[] conclusion='~? [X0] : mortal(X0)'               <- NEGATED CONJECTURE, mis-tagged
+```
+
+Impact: consumers that need to distinguish the conjecture in the proof
+(binding extractors, proof translators, ...) have no reliable enum
+signal to identify it.
+
+Workaround currently used in `sumo-kb/src/vampire/bindings.rs`:
+fall back to "first input step whose conclusion starts with `~?` or
+`~!`" -- the negated-quantifier prefix only appears when Vampire has
+inverted a quantified input, so this picks out existential and
+universal conjectures.  Fails for ground conjectures (no quantifier to
+flip) but those have no variables to bind anyway.
+
+**Proposed action (upstream)**: audit `ProofRule::from_raw` against
+actual Vampire C-API return values.  Either the shim in `vampire-sys`
+isn't returning the right `input_type` for conjecture units, or
+Vampire's preprocessing is rewriting the unit in a way that drops the
+tag.  Fix should propagate the "this was submitted as a conjecture"
+signal all the way to the `ProofStep` introspection path.  Track as a
+vampire-rs issue once the repo URL/tracker is in use.
 
 ---
 
