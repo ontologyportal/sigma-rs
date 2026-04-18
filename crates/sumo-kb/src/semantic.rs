@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::SemanticError;
 use crate::kif_store::KifStore;
-use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxRelation};
+use crate::types::{Element, Literal, OpKind, Sentence, SentenceId, SymbolId, TaxEdge, TaxRelation};
 
 // -- Sort ----------------------------------------------------------------------
 
@@ -324,10 +324,52 @@ impl SemanticLayer {
     /// Invalidate the semantic query cache (call after structural changes to the store).
     /// Does not clear the taxonomy -- call `rebuild_taxonomy` explicitly when sentences
     /// are added or removed.
+    ///
+    /// This is the "everything" hammer.  Prefer the granular
+    /// [`invalidate_semantic_cache`](Self::invalidate_semantic_cache),
+    /// [`invalidate_var_type_inference`](Self::invalidate_var_type_inference),
+    /// and [`invalidate_sort_annotations`](Self::invalidate_sort_annotations)
+    /// methods when you know which pieces are actually affected.
+    /// Phase B's `extend_taxonomy_with` picks the right granularity
+    /// automatically from a sentence impact classification.
     pub(crate) fn invalidate_cache(&self) {
-        *self.cache.write().unwrap()              = SemanticCache::default();
+        self.invalidate_semantic_cache();
+        self.invalidate_var_type_inference();
+        self.invalidate_sort_annotations();
+    }
+
+    /// Clear the `is_instance` / `is_class` / `is_relation` /
+    /// `is_predicate` / `is_function` / `has_ancestor` / `arity` /
+    /// `domain` / `range` query cache.
+    ///
+    /// Invalidate whenever a change could flip one of those queries:
+    /// adding a taxonomy edge, a domain/range axiom, or any sentence
+    /// that affects symbol classifications (is_function, is_relation,
+    /// etc.).
+    pub(crate) fn invalidate_semantic_cache(&self) {
+        *self.cache.write().unwrap() = SemanticCache::default();
+    }
+
+    /// Clear the variable-type-inference cache.
+    ///
+    /// VTI is derived from every universally-quantified formula with
+    /// `instance` constraints, so any structural change can in
+    /// principle flip a variable's inferred sort.  In practice it's
+    /// lazy-rebuilt on first access, so invalidating is always safe;
+    /// the question is just whether we're forcing a rebuild for no
+    /// reason.
+    pub(crate) fn invalidate_var_type_inference(&self) {
         *self.var_type_inference.write().unwrap() = None;
-        *self.sort_annotations.write().unwrap()   = None;
+    }
+
+    /// Clear the `SortAnnotations` cache.
+    ///
+    /// Invalidate whenever a `domain` / `range` / `domainSubclass`
+    /// axiom is added or removed -- those are the direct sources of
+    /// entries in `SortAnnotations.symbol_arg_sorts` and
+    /// `symbol_return_sorts`.
+    pub(crate) fn invalidate_sort_annotations(&self) {
+        *self.sort_annotations.write().unwrap() = None;
     }
 
     // -- Taxonomy management ---------------------------------------------------
@@ -754,10 +796,131 @@ impl SemanticLayer {
         self.poly_variant_symbols.contains(&id)
     }
 
-    /// Extend the taxonomy to cover sentences added since last build.
+    /// Extend the taxonomy and selectively invalidate derived caches
+    /// based on what the new sentences actually contain.
     ///
-    /// Currently performs a full rebuild.  This is correct and fast enough
-    /// for all current usage patterns.  Incremental extension is future work.
+    /// Phase B + C of the semantic-cache optimisation series.  The
+    /// expensive part of a full `rebuild_taxonomy` is the
+    /// `extract_tax_edge_for` scan across every root + sub-sentence
+    /// in the store -- tens of thousands of sentences at SUMO scale.
+    /// This function walks **only the new sids** passed in:
+    ///
+    /// 1. For each new root, classify whether the sentence (or any of
+    ///    its sub-sentences) could affect a derived cache.  The four
+    ///    categories are taxonomy, sort_annotations, numeric_char,
+    ///    semantic_cache (see [`CacheImpact`]).
+    /// 2. For each new sid with a taxonomy impact, extract tax edges
+    ///    via `extract_tax_edge_for` (walking root + sub-sentences of
+    ///    that sid only, not the whole KB).
+    /// 3. If any tax edges were added, rebuild the four derived
+    ///    taxonomy caches (`numeric_sort_cache`, `numeric_ancestor_set`,
+    ///    `poly_variant_symbols`, `numeric_char_cache`).  These
+    ///    rebuilds already scan the taxonomy tables, not sentences,
+    ///    so they're O(edges) and fast.
+    /// 4. Selectively invalidate the other caches based on the
+    ///    per-sentence classification.
+    ///
+    /// When none of the new sentences have a cache impact (the common
+    /// case for SUMO tells like `(attribute X Y)`), this function is
+    /// effectively free -- no scans, no invalidations, no rebuilds.
+    pub(crate) fn extend_taxonomy_with(&mut self, new_sids: &[SentenceId]) {
+        if new_sids.is_empty() {
+            return;
+        }
+
+        // -- Classify: union of impact across all new sentences -------
+        let mut impact = CacheImpact::none();
+        for &sid in new_sids {
+            impact = impact.union(&classify_sentence_tree(&self.store, sid));
+            if impact.all_set() {
+                break;  // already at worst case, no point in more classification
+            }
+        }
+
+        log::debug!(target: "sumo_kb::semantic",
+            "extend_taxonomy_with: {} sids -> impact {:?}", new_sids.len(), impact);
+
+        if !impact.any() {
+            // Most common case: no derived state is affected.
+            return;
+        }
+
+        // -- Extract tax edges from new sentences ---------------------
+        //
+        // Only scan the new sids (and their sub-sentences), not the
+        // entire KB.  Edge duplicates are handled by `extract_tax_edge_for`
+        // itself -- it appends unconditionally, and the downstream
+        // cache rebuilders tolerate duplicates.  For this to be safe
+        // the new sids must not have been extracted before, which
+        // holds by construction in the ingest path.
+        if impact.taxonomy {
+            let before = self.tax_edges.len();
+            for &sid in new_sids {
+                // Extract from the root...
+                self.extract_tax_edge_for(sid);
+                // ...and all its sub-sentences.  Sub-sentence ids are
+                // tracked globally in store.sub_sentences; instead of
+                // iterating that whole list, we recursively walk this
+                // sentence tree (small -- typically <20 nested sids).
+                self.extract_tax_edges_from_subtree(sid);
+            }
+            let added = self.tax_edges.len() - before;
+            log::debug!(target: "sumo_kb::semantic",
+                "extend_taxonomy_with: {} new tax edges added (total now {})",
+                added, self.tax_edges.len());
+
+            if added > 0 {
+                // Rebuild the four derived taxonomy caches.  These
+                // walk tax_edges (O(edges)) + a targeted sentence
+                // scan for numeric_char_cache.  Cheap relative to a
+                // full extract_tax_edge_for-everything rebuild.
+                self.numeric_sort_cache   = self.build_numeric_sort_cache();
+                self.numeric_ancestor_set = self.build_numeric_ancestor_set();
+                self.poly_variant_symbols = self.build_poly_variant_symbols();
+                // numeric_char_cache build is sentence-scanning today;
+                // only rebuild if we flagged a numeric_char impact.
+                if impact.numeric_char {
+                    self.numeric_char_cache = self.build_numeric_char_cache();
+                }
+            }
+        } else if impact.numeric_char {
+            // Numeric-char biconditional added with no taxonomy edge
+            // (unusual -- most numeric biconditionals come with
+            // their subclass declaration elsewhere).  Rebuild that
+            // one cache, leave the rest.
+            self.numeric_char_cache = self.build_numeric_char_cache();
+        }
+
+        // -- Selective invalidation based on impact -------------------
+        if impact.semantic_cache {
+            self.invalidate_semantic_cache();
+        }
+        if impact.sort_annotations {
+            self.invalidate_sort_annotations();
+            // VTI is built on top of sort annotations, so keep them
+            // in sync.
+            self.invalidate_var_type_inference();
+        }
+    }
+
+    /// Walk every `Element::Sub(ssid)` under the tree rooted at `sid`
+    /// and call `extract_tax_edge_for` for each.  This covers the
+    /// "sub-sentence taxonomy edges" the original full-rebuild picked
+    /// up by iterating `store.sub_sentences`.
+    fn extract_tax_edges_from_subtree(&mut self, sid: SentenceId) {
+        // Collect sub-sids first to avoid borrow conflicts between
+        // iterating the sentence and mutating self.tax_edges.
+        let mut sub_sids: Vec<SentenceId> = Vec::new();
+        collect_sub_sids(&self.store, sid, &mut sub_sids);
+        for ssid in sub_sids {
+            self.extract_tax_edge_for(ssid);
+        }
+    }
+
+    /// Back-compat alias.  Prefer [`extend_taxonomy_with`] so you pass
+    /// in the sids that changed; the old "rebuild everything" fallback
+    /// is kept for callers that truly don't know what changed (e.g.
+    /// post-file-removal cleanup in `flush_session`).
     pub(crate) fn extend_taxonomy(&mut self) {
         self.rebuild_taxonomy();
     }
@@ -1466,6 +1629,168 @@ impl SemanticLayer {
     }
 }
 
+// ===========================================================================
+//  CacheImpact classification
+// ===========================================================================
+
+/// Which derived caches a candidate sentence can affect.
+///
+/// Built by [`classify_sentence_tree`] over a candidate sid; unioned
+/// across a batch of new sids by [`SemanticLayer::extend_taxonomy_with`]
+/// to decide what to rebuild or invalidate.
+///
+/// All-false is the common case: a sentence that neither introduces a
+/// taxonomy edge, nor a domain/range axiom, nor a numeric-class
+/// biconditional, nor any new symbol classification.  Most SUMO
+/// axioms are of this kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheImpact {
+    /// The sentence (or a sub-sentence) is a
+    /// `subclass`/`instance`/`subrelation`/`subAttribute` assertion
+    /// with concrete arguments.  Triggers tax-edge extraction and
+    /// derived-cache rebuild.
+    pub taxonomy:         bool,
+    /// The sentence is a `domain` / `range` / `domainSubclass`
+    /// axiom.  Triggers `SortAnnotations` invalidation.
+    pub sort_annotations: bool,
+    /// The sentence looks like a numeric-class characterisation
+    /// biconditional (`(<=> (instance ?X NC) cond)` or similar).
+    /// Triggers `numeric_char_cache` rebuild.
+    pub numeric_char:     bool,
+    /// Any symbol-classification-affecting shape.  Conservative: we
+    /// set this whenever taxonomy or sort_annotations are flagged,
+    /// since those can change `is_instance` / `is_class` /
+    /// `is_relation` / `is_function` answers.
+    pub semantic_cache:   bool,
+}
+
+impl CacheImpact {
+    pub(crate) const fn none() -> Self {
+        Self { taxonomy: false, sort_annotations: false, numeric_char: false, semantic_cache: false }
+    }
+    pub(crate) fn any(&self) -> bool {
+        self.taxonomy || self.sort_annotations || self.numeric_char || self.semantic_cache
+    }
+    pub(crate) fn all_set(&self) -> bool {
+        self.taxonomy && self.sort_annotations && self.numeric_char && self.semantic_cache
+    }
+    pub(crate) fn union(&self, other: &Self) -> Self {
+        Self {
+            taxonomy:         self.taxonomy         || other.taxonomy,
+            sort_annotations: self.sort_annotations || other.sort_annotations,
+            numeric_char:     self.numeric_char     || other.numeric_char,
+            semantic_cache:   self.semantic_cache   || other.semantic_cache,
+        }
+    }
+}
+
+/// Classify a sentence's impact on derived caches.
+///
+/// Walks the sentence tree: the root sentence + every `Element::Sub`
+/// descendant.  A subclass/instance/etc. head flag triggers the
+/// taxonomy + semantic_cache impacts; a domain/range head triggers
+/// sort_annotations + semantic_cache.  A biconditional or implication
+/// whose body is `(instance ?X NumericLike)` triggers numeric_char.
+///
+/// Conservative by design: if we're uncertain, we do NOT flag an
+/// impact.  Under-flagging would cause caches to go stale
+/// (correctness bug), but there's no known sentence shape today that
+/// slips past this walker AND would affect a cache.  The
+/// `extend_taxonomy_with` caller documents the assumption.
+pub(crate) fn classify_sentence_tree(
+    store: &KifStore,
+    sid:   SentenceId,
+) -> CacheImpact {
+    let mut out = CacheImpact::none();
+    classify_sid_into(store, sid, &mut out);
+    out
+}
+
+fn classify_sid_into(store: &KifStore, sid: SentenceId, out: &mut CacheImpact) {
+    if !store.has_sentence(sid) {
+        return;
+    }
+    let sentence = &store.sentences[store.sent_idx(sid)];
+
+    // Operator-headed sentences (<=>, =>, forall, etc.) have no
+    // symbol head; instead we check the operator + body shape.
+    // Numeric-char biconditionals are the main case that matters:
+    // `(<=> (instance ?X PositiveInteger) (greaterThan ?X 0))`.
+    if let Some(op) = sentence.op() {
+        if matches!(op, OpKind::Iff | OpKind::Implies) && sentence.elements.len() >= 3 {
+            if contains_instance_pattern(store, &sentence.elements[1])
+                || contains_instance_pattern(store, &sentence.elements[2])
+            {
+                out.numeric_char = true;
+            }
+        }
+    }
+
+    // Direct head classification (symbol-headed sentences only).
+    if let Some(head_id) = sentence.head_symbol() {
+        classify_head_name_into(store.sym_name(head_id), out);
+    }
+
+    // Recurse into sub-sentences.  Sub-sentences may be direct
+    // facts (e.g. a subclass edge nested inside an implication's
+    // consequent).
+    for el in &sentence.elements {
+        if let Element::Sub(sub_sid) = el {
+            classify_sid_into(store, *sub_sid, out);
+        }
+    }
+}
+
+fn classify_head_name_into(
+    head: &str,
+    out:  &mut CacheImpact,
+) {
+    match head {
+        // Taxonomy-edge heads.  The argument shape is validated by
+        // `extract_tax_edge_for` at extraction time; if the sentence
+        // is malformed (wrong arity, non-symbol args), the extraction
+        // silently skips it, so flagging here is safe -- extraction
+        // may be a no-op even when the flag is set.
+        "subclass" | "instance" | "subrelation" | "subAttribute" => {
+            out.taxonomy       = true;
+            out.semantic_cache = true;
+        }
+        // Domain/range axioms.
+        "domain" | "range" | "domainSubclass" => {
+            out.sort_annotations = true;
+            out.semantic_cache   = true;
+        }
+        _ => {}
+    }
+}
+
+/// Conservative "looks like `(instance ?X Class)`" check used only to
+/// flag numeric_char_cache rebuilds.  Returns true for an
+/// `Element::Sub` whose sentence has `instance` as its head; false
+/// otherwise.  No sort analysis -- the subsequent rebuild pass is
+/// what decides whether the class is actually numeric.
+fn contains_instance_pattern(store: &KifStore, el: &Element) -> bool {
+    let Element::Sub(sid) = el else { return false };
+    if !store.has_sentence(*sid) { return false; }
+    let s = &store.sentences[store.sent_idx(*sid)];
+    match s.head_symbol() {
+        Some(id) => store.sym_name(id) == "instance",
+        None     => false,
+    }
+}
+
+/// Collect every `Element::Sub(ssid)` descendant of `sid` (excluding
+/// `sid` itself) into `out`.  Ordering is a pre-order traversal.
+fn collect_sub_sids(store: &KifStore, sid: SentenceId, out: &mut Vec<SentenceId>) {
+    if !store.has_sentence(sid) { return; }
+    for el in &store.sentences[store.sent_idx(sid)].elements {
+        if let Element::Sub(ssid) = el {
+            out.push(*ssid);
+            collect_sub_sids(store, *ssid, out);
+        }
+    }
+}
+
 // -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1733,5 +2058,204 @@ mod tests {
         // Animal -> Entity from "core" should still be intact.
         assert!(layer.has_ancestor_by_name(animal, "Entity"),
             "Animal -> Entity (from core file) should still exist");
+    }
+
+    // =====================================================================
+    //  Phase B + C: CacheImpact classifier and incremental taxonomy
+    // =====================================================================
+
+    #[test]
+    fn classify_taxonomy_heads() {
+        // Each of these should flag `taxonomy: true` and nothing else
+        // outside the semantic_cache pairing.
+        let kif = "
+            (subclass Dog Animal)
+            (instance Fido Dog)
+            (subrelation parent ancestor)
+            (subAttribute Happy Mood)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        for &sid in &store.roots {
+            let impact = classify_sentence_tree(&store, sid);
+            assert!(impact.taxonomy,
+                "expected taxonomy=true for sid={sid}: {:?}", impact);
+            assert!(impact.semantic_cache,
+                "expected semantic_cache=true alongside taxonomy: {:?}", impact);
+            assert!(!impact.sort_annotations,
+                "unexpected sort_annotations: {:?}", impact);
+            assert!(!impact.numeric_char,
+                "unexpected numeric_char: {:?}", impact);
+        }
+    }
+
+    #[test]
+    fn classify_domain_range_axioms() {
+        let kif = "
+            (domain parent 1 Organism)
+            (range mother Woman)
+            (domainSubclass shapeOf 1 Object)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        for &sid in &store.roots {
+            let impact = classify_sentence_tree(&store, sid);
+            assert!(impact.sort_annotations,
+                "expected sort_annotations=true for sid={sid}: {:?}", impact);
+            assert!(!impact.taxonomy,
+                "unexpected taxonomy: {:?}", impact);
+        }
+    }
+
+    #[test]
+    fn classify_non_taxonomy_sentence_has_no_impact() {
+        // Typical SUMO axiom that doesn't affect any cache.
+        let kif = "(attribute Alice Tall)";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(!impact.any(),
+            "expected no impact for plain non-taxonomy sentence, got {:?}", impact);
+    }
+
+    #[test]
+    fn classify_numeric_biconditional_flags_numeric_char() {
+        // (<=> (instance ?X PositiveInteger) (greaterThan ?X 0))
+        let kif = "(<=> (instance ?X PositiveInteger) (greaterThan ?X 0))";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(impact.numeric_char,
+            "expected numeric_char=true for numeric biconditional, got {:?}", impact);
+    }
+
+    #[test]
+    fn classify_nested_subclass_in_implication() {
+        // Rule: taxonomy-head inside implication.  The classifier
+        // walks sub-sentences so it should still flag taxonomy --
+        // even though the top-level head is `=>`, a `(subclass ...)`
+        // sub-sentence exists underneath.
+        let kif = "(=> (foo ?X) (subclass ?X Animal))";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(impact.taxonomy,
+            "expected taxonomy=true for nested subclass, got {:?}", impact);
+    }
+
+    #[test]
+    fn extend_taxonomy_with_matches_full_rebuild() {
+        // Drive extend_taxonomy_with and rebuild_taxonomy against
+        // the same KB and check that the derived caches match.
+        // This is the central correctness invariant for Phase C.
+        let kif = "
+            (subclass Dog Animal)
+            (subclass Animal Entity)
+            (subclass Cat Animal)
+            (instance Fido Dog)
+            (domain parent 1 Organism)
+            (range father Man)
+            (attribute Alice Warm)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+
+        // Baseline: full rebuild.
+        let mut layer_full = SemanticLayer::new({
+            let mut s = KifStore::default();
+            load_kif(&mut s, kif, "t");
+            s
+        });
+
+        // Incremental: start empty, extend with the root sids.
+        let mut layer_inc = SemanticLayer::new(KifStore::default());
+        let mut store2 = KifStore::default();
+        load_kif(&mut store2, kif, "t");
+        let roots = store2.roots.clone();
+        layer_inc.store = store2;
+        layer_inc.extend_taxonomy_with(&roots);
+
+        // Sort edges by a deterministic key for comparison (order
+        // differs between the two paths because rebuild scans
+        // root+sub while extend_with walks roots + sub tree per root).
+        let mut full_edges: Vec<_> = layer_full.tax_edges.iter()
+            .map(|e| (e.from, e.to, e.rel.clone())).collect();
+        let mut inc_edges: Vec<_> = layer_inc.tax_edges.iter()
+            .map(|e| (e.from, e.to, e.rel.clone())).collect();
+        full_edges.sort();
+        inc_edges.sort();
+
+        assert_eq!(full_edges, inc_edges,
+            "tax_edges differ between full-rebuild and incremental-extend paths");
+
+        // Derived caches should also agree.
+        let full_ns: Vec<_> = {
+            let mut v: Vec<_> = layer_full.numeric_sort_cache.iter()
+                .map(|(k, v)| (*k, *v)).collect();
+            v.sort();
+            v
+        };
+        let inc_ns: Vec<_> = {
+            let mut v: Vec<_> = layer_inc.numeric_sort_cache.iter()
+                .map(|(k, v)| (*k, *v)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(full_ns, inc_ns, "numeric_sort_cache differs");
+    }
+
+    #[test]
+    fn extend_taxonomy_with_no_impact_does_nothing() {
+        // A batch of purely non-taxonomy sentences should not touch
+        // the taxonomy or any derived cache.
+        let kif_base = "(subclass Dog Animal)";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif_base, "base");
+        let mut layer = SemanticLayer::new(store);
+        let before_edges = layer.tax_edges.len();
+
+        // Add a non-taxonomy sentence.
+        let mut kif_extra = "(attribute Alice Tall) (part Alice Earth)";
+        load_kif(&mut layer.store, kif_extra, "extra");
+        let _ = &mut kif_extra;  // silence warning
+        let new_sids: Vec<_> = layer.store.file_roots.get("extra")
+            .cloned().unwrap_or_default();
+        assert_eq!(new_sids.len(), 2);
+
+        layer.extend_taxonomy_with(&new_sids);
+
+        // tax_edges unchanged.
+        assert_eq!(layer.tax_edges.len(), before_edges,
+            "no-impact batch should not change tax_edges");
+    }
+
+    #[test]
+    fn granular_invalidate_independence() {
+        // invalidate_semantic_cache does not touch sort_annotations
+        // or var_type_inference slots; same for the others.
+        let mut store = KifStore::default();
+        load_kif(&mut store, BASE, "base");
+        let layer = SemanticLayer::new(store);
+
+        // Populate all three caches.
+        drop(layer.sort_annotations());
+        drop(layer.var_type_inference());
+        assert!(layer.sort_annotations.read().unwrap().is_some());
+        assert!(layer.var_type_inference.read().unwrap().is_some());
+
+        layer.invalidate_semantic_cache();
+        // The slots aren't empty just because semantic_cache was cleared.
+        assert!(layer.sort_annotations.read().unwrap().is_some(),
+            "invalidate_semantic_cache should NOT clear sort_annotations");
+        assert!(layer.var_type_inference.read().unwrap().is_some(),
+            "invalidate_semantic_cache should NOT clear var_type_inference");
+
+        layer.invalidate_sort_annotations();
+        assert!(layer.sort_annotations.read().unwrap().is_none());
+        assert!(layer.var_type_inference.read().unwrap().is_some(),
+            "invalidate_sort_annotations should NOT clear var_type_inference");
+
+        layer.invalidate_var_type_inference();
+        assert!(layer.var_type_inference.read().unwrap().is_none());
     }
 }

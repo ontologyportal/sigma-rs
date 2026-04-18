@@ -275,11 +275,14 @@ impl KnowledgeBase {
             .map(|v| v.len())
             .unwrap_or(0);
 
-        // We have to invalidate the cache layer as ingestion may introduce 
-        // new axioms which invalidates the kb semantics
-        // TODO: Fix this so it regenerates the semantic layer intelligently
-        self.layer.invalidate_cache();
-        
+        // Phase B: we NO LONGER preemptively invalidate caches before
+        // parsing.  Parsing only adds sentences to the store; none of
+        // the existing cache entries become stale *because* of a parse.
+        // Whether the cache is actually affected depends on which
+        // sentences survived validation + dedup and made it into the
+        // store as accepted axioms -- we handle that below via
+        // `extend_taxonomy_with(&accepted)`.
+        //
         // Parse into store using file_tag as the KIF "file" name.
         let parse_errors = load_kif(&mut self.layer.store, text, file_tag);
 
@@ -372,7 +375,13 @@ impl KnowledgeBase {
         }
 
         self.sessions.entry(session.to_owned()).or_default().extend(&accepted);
-        self.layer.extend_taxonomy();
+
+        // Phase B + C: incremental taxonomy extension + targeted cache
+        // invalidation.  When the batch contains no taxonomy-relevant
+        // sentences (the common case for most SUMO axioms), this is
+        // essentially free -- no scans, no invalidations.
+        self.layer.extend_taxonomy_with(&accepted);
+
         log::info!(target: "sumo_kb::kb",
             "tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len());
         result

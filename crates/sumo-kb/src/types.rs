@@ -134,7 +134,7 @@ impl Default for Symbol {
 
 // -- Taxonomy ------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TaxRelation {
     Subclass,
     Instance,
