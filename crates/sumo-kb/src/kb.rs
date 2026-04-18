@@ -886,13 +886,21 @@ impl KnowledgeBase {
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
-        self.layer.invalidate_cache();
+        // Phase A: we do NOT preemptively invalidate the cache here.
+        //   - Nothing has changed in the KB since the previous operation
+        //     that correctly maintained cache validity.
+        //   - If the query itself turns out to affect a taxonomy-cache
+        //     invariant (only when its head is a taxonomy relation like
+        //     `subclass`/`instance`/`subrelation`/`subAttribute`), we do
+        //     a targeted invalidation on the way out, not a preemptive
+        //     full-cache nuke on the way in.
         let parse_errors: Vec<(Span, KbError)> = load_kif(&mut self.layer.store, query_kif, query_tag);
         if !parse_errors.is_empty() {
-
+            // Parse failed -- no sentences were added, so nothing to
+            // clean up beyond the (possibly partial) file_roots entry.
             self.layer.store.remove_file(query_tag);
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
+            // No taxonomy or cache invariants were touched: the query
+            // never made it into the store as a well-formed sentence.
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: parse_errors.iter()
@@ -911,9 +919,10 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         if query_sids.is_empty() {
+            // No sentences parsed from the query text -- nothing got
+            // into the store or the taxonomy, so no cleanup beyond
+            // remove_file is needed (Phase A).
             self.layer.store.remove_file(query_tag);
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
@@ -979,9 +988,20 @@ impl KnowledgeBase {
 
         // Remove query sentences from the store (they were added directly,
         // not via a session, so flush_session would not clean them up).
+        //
+        // Phase A: only rebuild the taxonomy / invalidate caches if the
+        // query actually affected taxonomy-relevant state.  The common
+        // case -- a non-taxonomy conjecture like
+        // `(attribute Alice Tall)` -- touches neither `tax_edges` nor
+        // the `sort_annotations` / `var_type_inference` caches, so we
+        // skip both a full scan of all KB sentences and a wipe of the
+        // derived tables.
+        let needs_rebuild = self.query_affects_taxonomy(&query_sids);
         self.layer.store.remove_file(query_tag);
-        self.layer.rebuild_taxonomy();
-        self.layer.invalidate_cache();
+        if needs_rebuild {
+            self.layer.rebuild_taxonomy();
+            self.layer.invalidate_cache();
+        }
 
         let prover_opts = ProverOpts { timeout_secs: runner.timeout_secs(), mode: ProverMode::Prove };
         let mut result = runner.prove(&tptp, &prover_opts);
@@ -1008,12 +1028,11 @@ impl KnowledgeBase {
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
-        self.layer.invalidate_cache();
+        // Phase A: no preemptive invalidation.  See the comment in
+        // `ask()` for the reasoning.
         let parse_errors = load_kif(&mut self.layer.store, query_kif, query_tag);
         if !parse_errors.is_empty() {
             self.layer.store.remove_file(query_tag);
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: parse_errors.iter()
@@ -1032,9 +1051,10 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         if query_sids.is_empty() {
+            // No sentences parsed from the query text -- nothing got
+            // into the store or the taxonomy, so no cleanup beyond
+            // remove_file is needed (Phase A).
             self.layer.store.remove_file(query_tag);
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
@@ -1109,9 +1129,14 @@ impl KnowledgeBase {
             Vec::new()
         };
 
+        // Phase A: skip the full taxonomy rebuild unless the query
+        // actually added a taxonomy edge.  See the comment in `ask()`.
+        let needs_rebuild = self.query_affects_taxonomy(&query_sids);
         self.layer.store.remove_file(query_tag);
-        self.layer.rebuild_taxonomy();
-        self.layer.invalidate_cache();
+        if needs_rebuild {
+            self.layer.rebuild_taxonomy();
+            self.layer.invalidate_cache();
+        }
 
         ProverResult {
             status,
@@ -1123,6 +1148,38 @@ impl KnowledgeBase {
     }
 
     // -- Internal helpers ------------------------------------------------------
+
+    /// `true` if any sentence in `sids` has a taxonomy-relation head
+    /// (`subclass`, `instance`, `subrelation`, or `subAttribute`).
+    ///
+    /// Used by `ask()` / `ask_embedded()` to decide whether the
+    /// post-proof cleanup needs a `rebuild_taxonomy` + `invalidate_cache`
+    /// cycle.  For the overwhelming majority of conjectures (which are
+    /// not taxonomy relations), both sides are no-ops and can be
+    /// skipped -- saving an O(total KB) rebuild per ask.
+    ///
+    /// This check is intentionally conservative: it only looks at the
+    /// head of each root sentence, not sub-sentences.  A negated
+    /// taxonomy-head query (`(not (subclass X Y))`) returns `false`
+    /// here because its head is `not`, not `subclass`; we'd miss the
+    /// rebuild in that case.  In practice, negated taxonomy queries
+    /// don't add taxonomy edges because `extract_tax_edge_for` only
+    /// acts on positive top-level taxonomy sentences, so this
+    /// conservativeness is safe.
+    #[cfg(feature = "ask")]
+    fn query_affects_taxonomy(&self, sids: &[SentenceId]) -> bool {
+        use crate::types::TaxRelation;
+        sids.iter().any(|&sid| {
+            let sentence = &self.layer.store.sentences[self.layer.store.sent_idx(sid)];
+            match sentence.head_symbol() {
+                Some(head_id) => {
+                    let name = self.layer.store.sym_name(head_id);
+                    TaxRelation::from_str(name).is_some()
+                }
+                None => false,
+            }
+        })
+    }
 
     /// Ensure the TFF IR axiom cache is populated; build it if needed.
     /// After this call `self.axiom_cache` is guaranteed to be `Some`.
