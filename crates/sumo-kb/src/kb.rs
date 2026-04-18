@@ -79,7 +79,7 @@ pub struct KnowledgeBase {
     /// Pre-built TFF TPTP for the current axiom set; None when invalidated.
     /// Rebuilt lazily on the first `ask()` or `ask_embedded()` call after the
     /// axiom set changes.
-    #[cfg(feature = "vampire")]
+    #[cfg(feature = "ask")]
     axiom_cache: Option<crate::vampire::VampireAxiomCache>,
 }
 
@@ -95,7 +95,7 @@ impl KnowledgeBase {
             #[cfg(feature = "cnf")] cnf_mode: false,
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             #[cfg(feature = "persist")] db:   None,
-            #[cfg(feature = "vampire")]  axiom_cache: None,
+            #[cfg(feature = "ask")]  axiom_cache: None,
         }
     }
 
@@ -138,7 +138,7 @@ impl KnowledgeBase {
             #[cfg(feature = "cnf")] cnf_mode: false,
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             db: Some(env),
-            #[cfg(feature = "vampire")]  axiom_cache: None,
+            #[cfg(feature = "ask")]  axiom_cache: None,
         })
     }
 
@@ -274,7 +274,7 @@ impl KnowledgeBase {
         log::info!(target: "sumo_kb::kb",
             "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",
             count, session);
-        #[cfg(feature = "vampire")]
+        #[cfg(feature = "ask")]
         { self.axiom_cache = None; }
     }
 
@@ -434,7 +434,7 @@ impl KnowledgeBase {
         log::info!(target: "sumo_kb::kb",
             "promote: {} sentence(s) promoted from session '{}'",
             report.promoted.len(), session);
-        #[cfg(feature = "vampire")]
+        #[cfg(feature = "ask")]
         { self.axiom_cache = None; }
         Ok(report)
     }
@@ -554,58 +554,45 @@ impl KnowledgeBase {
     /// - Assertions = sentences in `session` (if Some) rendered as `hypothesis`.
     /// - Pass `session=None` to omit assertions.
     ///
-    /// When compiled with the `vampire` feature, this routes through the
-    /// `NativeConverter` + `assemble_tptp` IR pipeline (SID-based axiom
-    /// names, per-axiom KIF comments when `opts.show_kif_comment` is set).
-    /// Without the feature, falls back to the legacy `kb_to_tptp` emitter.
+    /// Routes through the `NativeConverter` + `assemble_tptp` IR pipeline:
+    /// SID-based axiom names (`kb_<sid>`), per-axiom KIF comments when
+    /// `opts.show_kif_comment` is set, `excluded` predicate filter
+    /// applied before conversion.
     pub fn to_tptp(&self, opts: &TptpOptions, session: Option<&str>) -> String {
-        #[cfg(feature = "vampire")]
-        {
-            use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
-            use crate::vampire::converter::{Mode, NativeConverter};
+        use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
+        use crate::vampire::converter::{Mode, NativeConverter};
 
-            let mode = match opts.lang {
-                TptpLang::Tff => Mode::Tff,
-                TptpLang::Fof => Mode::Fof,
-            };
+        let mode = match opts.lang {
+            TptpLang::Tff => Mode::Tff,
+            TptpLang::Fof => Mode::Fof,
+        };
 
-            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
-                .with_hide_numbers(opts.hide_numbers);
+        let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
+            .with_hide_numbers(opts.hide_numbers);
 
-            let axiom_ids = self.axiom_ids_set();
-            let mut axioms_sorted: Vec<SentenceId> = axiom_ids.into_iter().collect();
-            axioms_sorted.sort_unstable();
-            for sid in axioms_sorted {
-                if self.sentence_excluded(sid, &opts.excluded) { continue; }
-                conv.add_axiom(sid);
-            }
+        let axiom_ids = self.axiom_ids_set();
+        let mut axioms_sorted: Vec<SentenceId> = axiom_ids.into_iter().collect();
+        axioms_sorted.sort_unstable();
+        for sid in axioms_sorted {
+            if self.sentence_excluded(sid, &opts.excluded) { continue; }
+            conv.add_axiom(sid);
+        }
 
-            if let Some(name) = session {
-                if let Some(sids) = self.sessions.get(name) {
-                    for &sid in sids {
-                        if self.sentence_excluded(sid, &opts.excluded) { continue; }
-                        conv.add_axiom(sid);
-                    }
+        if let Some(name) = session {
+            if let Some(sids) = self.sessions.get(name) {
+                for &sid in sids {
+                    if self.sentence_excluded(sid, &opts.excluded) { continue; }
+                    conv.add_axiom(sid);
                 }
             }
-
-            let (problem, sid_map) = conv.finish();
-            return assemble_tptp(&problem, &sid_map, &AssemblyOpts {
-                show_kif: opts.show_kif_comment,
-                layer:    Some(&self.layer),
-                ..AssemblyOpts::default()
-            });
         }
 
-        #[cfg(not(feature = "vampire"))]
-        {
-            let axiom_ids = self.axiom_ids_set();
-            let assertion_ids: HashSet<SentenceId> = session
-                .and_then(|s| self.sessions.get(s))
-                .map(|v| v.iter().copied().collect())
-                .unwrap_or_default();
-            kb_to_tptp(&self.layer, "kb", opts, &axiom_ids, &assertion_ids)
-        }
+        let (problem, sid_map) = conv.finish();
+        assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+            show_kif: opts.show_kif_comment,
+            layer:    Some(&self.layer),
+            ..AssemblyOpts::default()
+        })
     }
 
     /// Return the head predicate name of a sentence, if it has one.
@@ -794,7 +781,7 @@ impl KnowledgeBase {
         // TFF path with vampire feature: build the Problem from the cached
         // axiom set, add session assertions + conjecture, serialise through
         // the pure-Rust IR, and hand the TPTP string to the subprocess runner.
-        #[cfg(feature = "vampire")]
+        #[cfg(feature = "ask")]
         if lang == TptpLang::Tff {
             use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
             use crate::vampire::converter::{Mode, NativeConverter};
@@ -999,7 +986,7 @@ impl KnowledgeBase {
 
     /// Ensure the TFF IR axiom cache is populated; build it if needed.
     /// After this call `self.axiom_cache` is guaranteed to be `Some`.
-    #[cfg(feature = "vampire")]
+    #[cfg(feature = "ask")]
     fn ensure_axiom_cache(&mut self) {
         if self.axiom_cache.is_none() {
             let axiom_ids = self.axiom_ids_set();
@@ -1045,42 +1032,31 @@ impl KnowledgeBase {
     /// callers add their own `<kw>(name, role, ...)` framing.  Respects
     /// `opts.query` (existential wrap for conjectures vs universal wrap
     /// for axioms), `opts.lang`, and `opts.hide_numbers`.
-    ///
-    /// Routes through `NativeConverter` when the `vampire` feature is on;
-    /// falls back to the legacy `sentence_to_tptp` emitter otherwise.
     pub fn format_sentence_tptp(&self, sid: SentenceId, opts: &TptpOptions) -> String {
-        #[cfg(feature = "vampire")]
-        {
-            use crate::vampire::converter::{Mode, NativeConverter};
+        use crate::vampire::converter::{Mode, NativeConverter};
 
-            let mode = match opts.lang {
-                TptpLang::Tff => Mode::Tff,
-                TptpLang::Fof => Mode::Fof,
-            };
-            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
-                .with_hide_numbers(opts.hide_numbers);
+        let mode = match opts.lang {
+            TptpLang::Tff => Mode::Tff,
+            TptpLang::Fof => Mode::Fof,
+        };
+        let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode)
+            .with_hide_numbers(opts.hide_numbers);
 
-            if opts.query {
-                conv.set_conjecture(sid);
-                let (problem, _) = conv.finish();
-                return problem
-                    .conjecture_ref()
-                    .map(|f| f.to_tptp())
-                    .unwrap_or_default();
-            }
-            conv.add_axiom(sid);
+        if opts.query {
+            conv.set_conjecture(sid);
             let (problem, _) = conv.finish();
             return problem
-                .axioms()
-                .first()
+                .conjecture_ref()
                 .map(|f| f.to_tptp())
                 .unwrap_or_default();
         }
-
-        #[cfg(not(feature = "vampire"))]
-        {
-            sentence_to_tptp(sid, &self.layer, opts)
-        }
+        conv.add_axiom(sid);
+        let (problem, _) = conv.finish();
+        problem
+            .axioms()
+            .first()
+            .map(|f| f.to_tptp())
+            .unwrap_or_default()
     }
 
     /// Render a single sentence back to KIF notation (plain text, no ANSI).

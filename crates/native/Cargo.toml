@@ -16,16 +16,15 @@ path = "src/lib.rs"
 # Vampire.  Translate / validate / load / ask / test all available.
 default = ["integrated-prover"]
 
-# Pure-Rust path: translate / validate / load PLUS ask / test via the
-# IR-based pipeline.  The subprocess prover is available (needs a
-# vampire binary on PATH); the embedded solver is not.  No CMake
-# required.
-vampire = ["sumo-kb/vampire"]
+# Pure-Rust path with subprocess prover: translate / validate / load
+# PLUS ask / test, running against an external `vampire` binary.
+# No CMake required.
+ask = ["sumo-kb/ask"]
 
-# Everything in `vampire` plus the embedded C++ solver (CMake + the
+# Everything in `ask` plus the embedded C++ solver (CMake + the
 # vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
 # and native-proof binding extraction.
-integrated-prover = ["vampire", "sumo-kb/integrated-prover"]
+integrated-prover = ["ask", "sumo-kb/integrated-prover"]
 
 [dependencies]
 sumo-kb = { workspace = true, features = ["persist", "cnf"] }

@@ -103,7 +103,7 @@ pub enum Cmd {
     },
 
     /// Run a KIF conjecture through Vampire against the knowledge base.
-    #[cfg(feature = "vampire")]
+    #[cfg(feature = "ask")]
     Ask {
         /// KIF conjecture to prove.  May also be supplied via stdin.
         formula: Option<String>,
@@ -178,7 +178,7 @@ pub enum Cmd {
     },
 
     /// Run one or more KIF test files (*.kif.tq).
-    #[cfg(feature = "vampire")]
+    #[cfg(feature = "ask")]
     Test {
         /// Path(s) to .kif.tq files or directories containing them.
         /// Accepts multiple arguments and shell-expanded globs.

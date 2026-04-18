@@ -6,7 +6,7 @@ use clap::Parser;
 use inline_colorization::*;
 
 use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_translate};
-#[cfg(feature = "vampire")]
+#[cfg(feature = "ask")]
 use sumo_native::cli::{run_ask, run_test};
 use sumo_native::config::{resolve_config_path, parse_config_xml};
 
@@ -83,9 +83,9 @@ fn main() {
             Cmd::Load { kb } => Some(kb),
             Cmd::Validate { kb, .. } => Some(kb),
             Cmd::Translate { kb, .. } => Some(kb),
-            #[cfg(feature = "vampire")]
+            #[cfg(feature = "ask")]
             Cmd::Ask { kb, .. } => Some(kb),
-            #[cfg(feature = "vampire")]
+            #[cfg(feature = "ask")]
             Cmd::Test { kb, .. } => Some(kb),
         };
 
@@ -130,7 +130,7 @@ fn main() {
             session.as_deref(),
             kb,
         ),
-        #[cfg(feature = "vampire")]
+        #[cfg(feature = "ask")]
         Cmd::Ask {
             formula,
             tell,
@@ -143,7 +143,7 @@ fn main() {
             proof,
             profile,
         } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof, profile),
-        #[cfg(feature = "vampire")]
+        #[cfg(feature = "ask")]
         Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } => run_test(paths, kb, keep, backend, lang, timeout, profile),
     };
     process::exit(if ok { 0 } else { 1 });

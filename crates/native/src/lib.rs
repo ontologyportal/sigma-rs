@@ -3,12 +3,12 @@ pub mod cli;
 
 // Library-level prover façade and programmatic ask() entry point are
 // only available when sumo-kb's prover API is compiled in.
-#[cfg(feature = "vampire")]
+#[cfg(feature = "ask")]
 pub mod prover;
-#[cfg(feature = "vampire")]
+#[cfg(feature = "ask")]
 pub mod ask;
 
-#[cfg(feature = "vampire")]
+#[cfg(feature = "ask")]
 pub use ask::{ask, AskOptions, AskResult};
 
 pub use sumo_kb::{

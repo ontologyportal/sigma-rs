@@ -7,24 +7,24 @@ edition.workspace = true
 default = []
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
-# Theorem proving via subprocess spawning (e.g. Vampire).
+# Theorem proving: the subprocess prover (spawns a `vampire` process)
+# and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = ["dep:regex"]
 # CNF clausification. Can be used independently of ask or persist.
 cnf     = []
-# Pure-Rust IR path: pulls in vampire-prover's IR + TPTP emitter /
-# parser but NOT the Vampire C++ library.  Enables `NativeConverter`,
-# `assemble_tptp`, and subprocess-prover TPTP generation.  No CMake
-# required.  Implies `ask` so the subprocess runner is available.
-# NOT on wasm32 -- the subprocess runner uses threads and process
-# spawning.
-vampire           = ["dep:vampire-prover", "ask"]
 # Embedded Vampire prover: additionally links vampire-sys (Vampire C++
 # library) via CMake, enabling `ask_embedded` and native-proof binding
 # extraction.  Requires CMake 3.10+, a C++ compiler, and the
 # vampire-sys/vampire-lib submodule.
 # NOT on wasm32.
-integrated-prover = ["vampire", "vampire-prover/integrated-prover"]
+integrated-prover = ["ask", "vampire-prover/integrated-prover"]
+
+# Note: the pure-Rust IR (`vampire_prover::ir::*`) and TPTP emitter /
+# parser are ALWAYS available, regardless of features.  They drive
+# `NativeConverter`, `assemble_tptp`, and KnowledgeBase's TPTP output
+# methods unconditionally.  The `ask` and `integrated-prover` features
+# add prover runners on top.
 
 [dependencies]
 # Always present
@@ -44,10 +44,10 @@ bincode = { version = "1",                                  optional = true }
 # ask feature
 regex   = { version = "1", optional = true }
 
-# vampire / integrated-prover features
-# `default-features = false` pins us to vampire-prover's pure-Rust IR;
-# the C++ backend is pulled in only when `integrated-prover` is enabled.
-vampire-prover = { path = "../vampire-rs/vampire", optional = true, default-features = false }
+# Pure-Rust IR + TPTP parser/emitter, always present.
+# `default-features = false` keeps the C++ backend off; the
+# `integrated-prover` feature adds it.
+vampire-prover = { path = "../vampire-rs/vampire", default-features = false }
 
 [dev-dependencies]
 env_logger = "0.11"
