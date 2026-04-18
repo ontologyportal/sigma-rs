@@ -69,11 +69,23 @@ pub(crate) fn write_axioms(
     log::debug!(target: "sumo_kb::persist",
         "write_axioms: kb_version bumped to {}", new_kb_version);
 
-    // -- 4. Commit -------------------------------------------------------------
+    // -- 4. Stamp the feature manifest with the current build's features.
+    //       Written unconditionally so the next open can detect any drift
+    //       (feature on->off or off->on) and warn the user.  Serialised
+    //       via the cache table so it lives in the same bincode-blob
+    //       container as the other Phase D caches.
+    let manifest = super::env::FeatureManifest {
+        schema:     super::env::SCHEMA_VERSION,
+        kb_version: new_kb_version,
+        features:   super::env::FeatureSet::current(),
+    };
+    env.put_cache(&mut wtxn, super::env::CACHE_KEY_FEATURE_MANIFEST, &manifest)?;
+
+    // -- 5. Commit -------------------------------------------------------------
     wtxn.commit()?;
     log::info!(target: "sumo_kb::persist",
-        "write_axioms: committed {} sentence(s), kb_version={}",
-        sids.len(), new_kb_version);
+        "write_axioms: committed {} sentence(s), kb_version={}, features={:?}",
+        sids.len(), new_kb_version, manifest.features);
     Ok(())
 }
 

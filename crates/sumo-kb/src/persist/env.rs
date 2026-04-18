@@ -130,6 +130,86 @@ pub(crate) struct CachedSortAnnotations {
     pub sorts:      SortAnnotations,
 }
 
+/// Snapshot of the cargo features that were active during the most
+/// recent `write_axioms` commit.
+///
+/// Schema drift ("the on-disk bytes don't match the current struct
+/// shapes") is handled separately via `SCHEMA_VERSION` and returns a
+/// hard `SchemaMigrationRequired` error.  *Feature* drift ("the
+/// struct shapes match, but the set of optional LMDB tables that
+/// got populated is different") is softer: it's never wrong to open
+/// a DB with a different feature set, but some tables may be empty
+/// or stale.  This manifest captures that distinction so
+/// `LmdbEnv::open` can warn the user and so downstream code can
+/// decide how to degrade (e.g. if `cnf` was off at write time but on
+/// now, the clause-dedup tables have no content to dedup against and
+/// we'd want to log that rather than silently accept every tell as
+/// fresh).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FeatureManifest {
+    /// Redundant copy of `SCHEMA_VERSION` for easy inspection and as
+    /// a one-step consistency check against
+    /// `sequences["schema_version"]`.
+    pub schema: u64,
+    /// `kb_version` counter at the time this manifest was stamped.
+    /// Tracks the same underlying counter as the cache blobs, so a
+    /// manifest carrying version N is known to be consistent with
+    /// caches also carrying version N.
+    pub kb_version: u64,
+    /// Which features were active at write time.
+    pub features: FeatureSet,
+}
+
+/// Flat bool-per-feature used by [`FeatureManifest`].  Add a new
+/// field here whenever a feature becomes able to mutate LMDB
+/// contents in a way that's observable across processes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub(crate) struct FeatureSet {
+    /// `cnf`: clause-level dedup + CNF storage tables are populated.
+    pub cnf:               bool,
+    /// `integrated-prover`: the vampire-prover C++ library is linked
+    /// into the writing build.  Affects which axiom-cache modes can
+    /// be produced.
+    pub integrated_prover: bool,
+    /// `ask`: prover-runner plumbing (subprocess or embedded) is
+    /// compiled in.  Used by downstream tooling to decide whether
+    /// persisted axiom caches will be exercised.
+    pub ask:               bool,
+}
+
+impl FeatureSet {
+    /// Snapshot of the features active in the current build.
+    pub(crate) fn current() -> Self {
+        Self {
+            cnf:               cfg!(feature = "cnf"),
+            integrated_prover: cfg!(feature = "integrated-prover"),
+            ask:               cfg!(feature = "ask"),
+        }
+    }
+
+    /// Features that were enabled in `prev` but are off now.  Data
+    /// produced by those features may sit unused in LMDB until a
+    /// future build re-enables them.
+    pub(crate) fn removed_since(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if prev.cnf               && !self.cnf               { out.push("cnf"); }
+        if prev.integrated_prover && !self.integrated_prover { out.push("integrated-prover"); }
+        if prev.ask               && !self.ask               { out.push("ask"); }
+        out
+    }
+
+    /// Features that are enabled now but were off at last write.  The
+    /// newly-available tables have no persisted content yet; they'll
+    /// start filling on the next write.
+    pub(crate) fn added_since(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if !prev.cnf               && self.cnf               { out.push("cnf"); }
+        if !prev.integrated_prover && self.integrated_prover { out.push("integrated-prover"); }
+        if !prev.ask               && self.ask               { out.push("ask"); }
+        out
+    }
+}
+
 /// Persisted form of a `VampireAxiomCache`.
 ///
 /// The IR `Problem` is serialised directly via bincode (the
@@ -195,8 +275,8 @@ const MAP_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB virtual
 //      `clauses` / `clause_hashes` / `formula_hashes`.
 // 1 -- legacy (pre-Phase-4).  Detected and rejected with
 //      `SchemaMigrationRequired`.
-const SCHEMA_VERSION:    u64  = 3;
-const SCHEMA_KEY:        &str = "schema_version";
+pub(super) const SCHEMA_VERSION: u64 = 3;
+const SCHEMA_KEY:                &str = "schema_version";
 
 // Well-known keys inside `DB_CACHES`.
 pub(crate) const CACHE_KEY_TAXONOMY:        &str = "taxonomy";
@@ -209,6 +289,11 @@ pub(crate) const CACHE_KEY_SORT_ANNOT:      &str = "sort_annotations";
 pub(crate) const CACHE_KEY_AXIOM_CACHE_TFF: &str = "axiom_cache_tff";
 #[cfg(feature = "ask")]
 pub(crate) const CACHE_KEY_AXIOM_CACHE_FOF: &str = "axiom_cache_fof";
+
+/// Feature-manifest key in `DB_CACHES`.  Populated by every
+/// `write_axioms` call with the feature set that was active at commit
+/// time.  See [`FeatureManifest`] for the semantics on open.
+pub(crate) const CACHE_KEY_FEATURE_MANIFEST: &str = "feature_manifest";
 
 // Well-known key inside `DB_SEQUENCES` for the KB-version counter used
 // by Phase D caches.  Bumped by `write_axioms`.
@@ -338,6 +423,60 @@ impl LmdbEnv {
         wtxn.commit()?;
         log::debug!(target: "sumo_kb::persist",
             "LMDB opened; schema v{}, max_dbs={}", SCHEMA_VERSION, MAX_DBS);
+
+        // -- Feature-manifest comparison ------------------------------
+        //
+        // After the write txn commits the (possibly freshly-created)
+        // caches table, read the manifest back and diff against the
+        // current build's features.  This catches the case where the
+        // DB was written by a different feature-set configuration
+        // (e.g. `cnf` was off at write time, on now).  Correctness
+        // isn't at risk -- schema mismatches already refused to open
+        // above -- but the user deserves a clear signal about which
+        // tables may be stale, empty, or ignored.
+        {
+            let rtxn = env.read_txn()?;
+            let current = FeatureSet::current();
+            let manifest: Option<FeatureManifest> = caches
+                .get(&rtxn, CACHE_KEY_FEATURE_MANIFEST)?
+                .and_then(|b| bincode::deserialize(b).ok());
+
+            match manifest {
+                None => {
+                    // Fresh DB, or a pre-Phase-D write that never
+                    // stamped a manifest.  Nothing to diff against;
+                    // the manifest will be written on the next
+                    // `write_axioms` call.
+                    log::debug!(target: "sumo_kb::persist",
+                        "no feature manifest present; will stamp on next commit (features={:?})",
+                        current);
+                }
+                Some(m) if m.features == current => {
+                    log::debug!(target: "sumo_kb::persist",
+                        "feature manifest matches current build: {:?}", current);
+                }
+                Some(m) => {
+                    let removed = current.removed_since(&m.features);
+                    let added   = current.added_since(&m.features);
+                    if !removed.is_empty() {
+                        log::warn!(target: "sumo_kb::persist",
+                            "feature drift: DB was written with {:?} but this build \
+                             lacks those features.  The corresponding LMDB tables \
+                             will sit unused; data is preserved across reopens.",
+                            removed);
+                    }
+                    if !added.is_empty() {
+                        log::warn!(target: "sumo_kb::persist",
+                            "feature drift: DB was written WITHOUT {:?} but this build \
+                             enables them.  The corresponding LMDB tables are empty; \
+                             they'll populate on the next `promote_assertions_unchecked`. \
+                             Existing axioms will not participate in these features \
+                             until re-promoted.",
+                            added);
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             env,
@@ -570,11 +709,28 @@ impl LmdbEnv {
             .unwrap_or(0))
     }
 
-    /// Bump the `kb_version` counter (read-modify-write).  Called by
-    /// `write_axioms` each time the persisted axiom set mutates, so
-    /// caches persisted at the old version are detected as stale on
-    /// the next open.
-    pub(crate) fn bump_kb_version(&self, wtxn: &mut RwTxn) -> Result<u64, KbError> {
+    /// Bump the `kb_version` counter (read-modify-write).
+    ///
+    /// # Invariant: `write_axioms` is the sole authorised caller
+    ///
+    /// Every Phase D cache (`taxonomy`, `sort_annotations`,
+    /// `axiom_cache_*`, `feature_manifest`) is validated by comparing
+    /// its stored `kb_version` with the value this method returns.
+    /// If any mutation path touches persisted axioms **without**
+    /// routing through `write_axioms`, the counter stays the same
+    /// while the underlying data changes, and next-open cache
+    /// restoration would return stale state without warning.
+    ///
+    /// To enforce the invariant at the type level, this method is
+    /// `pub(super)` — visible only inside `crate::persist`.  Code
+    /// outside the persist module cannot call it directly; any new
+    /// writer that mutates the axiom set must live in `commit.rs`
+    /// (next to `write_axioms`) and bump the counter there.
+    ///
+    /// If you find yourself needing to call this from elsewhere in
+    /// the tree, the right move is to move your mutation function
+    /// into `persist/commit.rs` instead of widening the visibility.
+    pub(super) fn bump_kb_version(&self, wtxn: &mut RwTxn) -> Result<u64, KbError> {
         let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
         let current = self.kb_version(rtxn)?;
         let next = current + 1;
@@ -872,6 +1028,105 @@ mod tests {
             }
             Err(other) => panic!("expected SchemaMigrationRequired, got {:?}", other),
         }
+
+        cleanup(&dir);
+    }
+
+    // =====================================================================
+    //  Feature manifest tests
+    // =====================================================================
+
+    /// `FeatureSet::current()` reports the exact features the test
+    /// binary was compiled with.  The sumo-kb test suite runs with
+    /// `cnf integrated-prover persist ask`, so all flags must be on.
+    #[test]
+    fn feature_set_current_reflects_build() {
+        let fs = FeatureSet::current();
+        // If this assertion fails, either the Cargo.toml features
+        // stopped matching what the test suite needs, or the test
+        // configuration changed -- investigate either way.
+        assert!(fs.cnf,               "cnf feature expected on in test build");
+        assert!(fs.integrated_prover, "integrated-prover expected on in test build");
+        assert!(fs.ask,               "ask expected on in test build");
+    }
+
+    /// `removed_since` / `added_since` report directional drift.
+    #[test]
+    fn feature_set_drift_detection() {
+        let all  = FeatureSet { cnf: true,  integrated_prover: true,  ask: true  };
+        let none = FeatureSet { cnf: false, integrated_prover: false, ask: false };
+        let cnf_only = FeatureSet { cnf: true, integrated_prover: false, ask: false };
+
+        // all -> none: everything removed.
+        assert_eq!(none.removed_since(&all),
+            vec!["cnf", "integrated-prover", "ask"]);
+        assert_eq!(none.added_since(&all), Vec::<&str>::new());
+
+        // none -> all: everything added.
+        assert_eq!(all.added_since(&none),
+            vec!["cnf", "integrated-prover", "ask"]);
+        assert_eq!(all.removed_since(&none), Vec::<&str>::new());
+
+        // cnf_only -> all: integrated_prover + ask added.
+        assert_eq!(all.added_since(&cnf_only),
+            vec!["integrated-prover", "ask"]);
+        // all -> cnf_only: integrated_prover + ask removed.
+        assert_eq!(cnf_only.removed_since(&all),
+            vec!["integrated-prover", "ask"]);
+    }
+
+    /// Manifest is stamped by `write_axioms` and survives a close +
+    /// reopen.  The round-tripped value matches the in-process
+    /// `FeatureSet::current()` exactly.
+    #[test]
+    fn manifest_roundtrips_across_reopen() {
+        use crate::kif_store::{load_kif, KifStore};
+        use crate::persist::write_axioms;
+        use std::collections::HashMap;
+
+        let dir = tmp_dir("manifest-roundtrip");
+        cleanup(&dir);
+
+        // Populate one axiom so `write_axioms` actually runs.
+        let kb_version_after = {
+            let env = LmdbEnv::open(&dir).expect("open");
+            let mut store = KifStore::default();
+            load_kif(&mut store, "(subclass Dog Animal)", "t");
+            let sid = *store.roots.last().unwrap();
+            let clauses = HashMap::new();
+            write_axioms(&env, &store, &[sid], &clauses, None).unwrap();
+            let rtxn = env.read_txn().unwrap();
+            env.kb_version(&rtxn).unwrap()
+        };
+        assert!(kb_version_after >= 1, "kb_version should be bumped");
+
+        // Reopen and inspect the manifest.
+        let env = LmdbEnv::open(&dir).expect("reopen");
+        let rtxn = env.read_txn().unwrap();
+        let manifest: FeatureManifest = bincode::deserialize(
+            env.caches.get(&rtxn, CACHE_KEY_FEATURE_MANIFEST).unwrap().unwrap()
+        ).unwrap();
+
+        assert_eq!(manifest.schema,     SCHEMA_VERSION);
+        assert_eq!(manifest.kb_version, kb_version_after);
+        assert_eq!(manifest.features,   FeatureSet::current());
+
+        cleanup(&dir);
+    }
+
+    /// A fresh LMDB with no prior commit does not have a manifest
+    /// yet.  Opening must succeed (no hard error on missing manifest)
+    /// but the caches table has no `feature_manifest` key.
+    #[test]
+    fn fresh_db_has_no_manifest_but_opens() {
+        let dir = tmp_dir("no-manifest");
+        cleanup(&dir);
+
+        let env = LmdbEnv::open(&dir).expect("fresh open");
+        let rtxn = env.read_txn().unwrap();
+        let present = env.caches.get(&rtxn, CACHE_KEY_FEATURE_MANIFEST).unwrap();
+        assert!(present.is_none(),
+            "fresh DB should not have a manifest yet (will be stamped on first write_axioms)");
 
         cleanup(&dir);
     }
