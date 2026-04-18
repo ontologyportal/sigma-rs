@@ -25,6 +25,9 @@ use crate::types::SentenceId;
 pub(crate) mod converter;
 pub(crate) mod assemble;
 
+#[cfg(feature = "integrated-prover")]
+pub(crate) mod bindings;
+
 use converter::{Mode, NativeConverter};
 
 /// Pre-built axiom data shared by both prover backends.

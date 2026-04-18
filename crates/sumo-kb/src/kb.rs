@@ -23,7 +23,7 @@ use crate::types::Clause;
 use crate::persist::{load_from_db, write_axioms, LmdbEnv};
 
 #[cfg(feature = "ask")]
-use crate::prover::{ProverMode, ProverOpts, ProverResult, ProverStatus, ProverRunner, ProverTimings};
+use crate::prover::{Binding, ProverMode, ProverOpts, ProverResult, ProverStatus, ProverRunner, ProverTimings};
 
 // EmbeddedProverRunner used only in the FOF embedded path (not the TFF native path)
 
@@ -870,8 +870,10 @@ impl KnowledgeBase {
         for &sid in &assertion_sids {
             conv.add_axiom(sid);
         }
+        let mut query_var_map: Option<crate::vampire::converter::QueryVarMap> = None;
         for &sid in &query_sids {
-            if conv.set_conjecture(sid).is_some() {
+            if let Some(qvm) = conv.set_conjecture(sid) {
+                query_var_map = Some(qvm);
                 break;
             }
         }
@@ -885,7 +887,7 @@ impl KnowledgeBase {
         opts.set_option("mode", "casc");
         let mut problem = vampire_prover::lower_problem(&ir_problem, opts);
 
-        let (res, _proof) = problem.solve_and_prove();
+        let (res, proof) = problem.solve_and_prove();
         log::debug!(target: "sumo_kb::embedded_prover", "TFF embedded result: {:?}", res);
 
         let status = match res {
@@ -894,8 +896,23 @@ impl KnowledgeBase {
             vampire_prover::ProofRes::Unknown(_) => ProverStatus::Unknown,
         };
 
-        // Binding extraction from the native proof is Phase 3 work.
-        let bindings = Vec::new();
+        // Extract variable bindings from the native proof when one is
+        // available. Empty result is non-fatal (prover may not produce a
+        // proof, or the extractor may not recognise the encoding).
+        let bindings: Vec<Binding> = if matches!(status, ProverStatus::Proved) {
+            log::debug!(target: "sumo_kb::embedded_prover",
+                "bindings eligibility: proof={}, qvm={}",
+                proof.is_some(), query_var_map.is_some());
+            match (proof, query_var_map) {
+                (Some(p), Some(qvm)) => crate::vampire::bindings::extract_bindings(&p, &qvm)
+                    .into_iter()
+                    .map(|b| Binding { variable: b.variable, value: b.value })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
 
         self.layer.store.remove_file(query_tag);
         self.layer.rebuild_taxonomy();
