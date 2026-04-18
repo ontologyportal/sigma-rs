@@ -1,33 +1,49 @@
 # Phase D — Semantic-cache persistence
 
-Phase D of the `ask()` optimisation series persists derived semantic
-state (taxonomy + `SortAnnotations`) in LMDB so they survive close/
-reopen.  The first cold-open-then-ask cycle is the target: without the
-caches, every new process has to rescan the full axiom set to rebuild
-the taxonomy (via `SemanticLayer::rebuild_taxonomy`) and derive the
-sort annotations on first access.
+Phase D of the `ask()` optimisation series persists three derived
+caches (taxonomy + `SortAnnotations` + `VampireAxiomCache`) in LMDB
+so they survive close/reopen.  The first cold-open-then-ask cycle is
+the target: without the caches, every new process has to rescan the
+full axiom set to rebuild the taxonomy (via
+`SemanticLayer::rebuild_taxonomy`), derive the sort annotations on
+first access, and walk the KIF store via `NativeConverter` to build
+the axiom-set IR problem on first ask.
 
 ## Numbers
 
 Measured on Merge.kif + Mid-level-ontology.kif (~15,875 axioms) in
 release mode on Apple Silicon, via `tests/cold_open_bench.rs`.
 
-| Metric | Baseline | Phase D | Δ |
-|---|---|---|---|
-| Initial load + promote + close | 918 ms | 974 ms | **+56 ms** (cache write) |
-| LMDB size on disk | 12.62 MiB | **12.88 MiB** | **+260 KiB** |
-| Cold open wall-clock | 21 ms | **18 ms** | **−3 ms** |
-| First ask after cold open | 137 ms | **113 ms** | **−24 ms** |
-| Warm ask average | 79 ms | 81 ms | noise |
-| Cold-open → first-ask delta | 58 ms | **32 ms** | **−26 ms** |
+| Metric | Baseline | Phase D (tax + sort only) | Phase D + bincode axiom cache | Δ from baseline |
+|---|---|---|---|---|
+| Initial load + promote + close | 918 ms | 974 ms | 969 ms | +51 ms (cache write) |
+| LMDB size on disk (post-commit) | 12.62 MiB | 12.88 MiB | 12.87 MiB | +250 KiB |
+| LMDB size after first ask persists axiom cache | — | — | **17.48 MiB** | **+4.86 MiB** |
+| Cold open wall-clock | 21 ms | 18 ms | 18 ms | −3 ms |
+| 1st ask (first process, axiom cache being persisted) | 137 ms | 113 ms | 131 ms | — (writes the cache) |
+| 1st ask (second process, axiom cache restored from LMDB) | 137 ms | 113 ms | **90 ms** | **−47 ms** |
+| Warm ask average | 79 ms | 81 ms | 82 ms | noise |
+| Cold-open → first-ask delta | 58 ms | 32 ms | **8 ms** | **−50 ms (−86%)** |
 
-The 24 ms saving on first-ask comes from restoring the `SortAnnotations`
-cache (which the first ask otherwise builds lazily by scanning every
-`domain`/`range` axiom).  The 3 ms saving on cold open is the taxonomy
-cache avoiding the full `extract_tax_edge_for` scan.
+Savings breakdown (per cold process after the KB is promoted once):
 
-260 KiB of extra LMDB (≈ 2% of the existing footprint) buys a 45%
-shorter cold-open → first-ask cycle.
+- 3 ms on the cold-open scan itself — taxonomy restored, so
+  `rebuild_taxonomy` doesn't walk every sentence.
+- 24 ms on the first ask — `SortAnnotations` restored, so the lazy
+  `build_sort_annotations` scan doesn't run.
+- 23 ms on the first ask — `VampireAxiomCache` restored via bincode,
+  so `NativeConverter::add_axiom` doesn't walk 15k KIF sentences.
+
+The three caches compose: on a second cold-open after the axiom
+cache has been persisted, the first-ask overhead drops from 58 ms
+to **8 ms** — the first ask is essentially as fast as a warm ask.
+
+**Storage cost**: +4.86 MiB of LMDB (≈ 38% growth), the bulk in the
+axiom-cache bincode blob.  The taxonomy + sort_annotations caches are
+only ~250 KiB combined.  If the axiom cache is ever cost-prohibitive
+for a deployment, the blob can be trimmed by just not calling
+`persist_axiom_cache` after the rebuild -- taxonomy + sort_annotations
+alone still halve the cold-open overhead.
 
 ## Schema
 
@@ -58,26 +74,32 @@ Phase D caches start populating on the next `promote_assertions_unchecked`
 call.  Explicit schema check accepts `v2` as a forward-compatible
 read; only `v != 2 && v != 3` triggers `SchemaMigrationRequired`.
 
-## Axiom cache: tried and rejected
+## Axiom cache: TPTP tried, bincode shipped
 
-A third cache slot was prototyped: the `VampireAxiomCache` (a
-`vampire_prover::ir::Problem` carrying every KB axiom as IR) would be
-serialised to a TPTP string and restored on first `ask()` via
-`TptpParser::parse`.  The intent was to skip the ~45 ms
-`NativeConverter::add_axiom` walk on cold start.
+Two formats were evaluated for persisting `VampireAxiomCache`:
 
-Result: the round-trip is **slower** than the rebuild it replaces.
+**TPTP string + re-parse (rejected).**  Initial implementation wrote
+the cache as the output of `ir::Problem::to_tptp()` and restored it
+via `TptpParser::parse`.  Measured cost: ~66 ms to reparse on a
+15k-axiom KB, compared to ~45 ms to rebuild from the already-loaded
+in-memory store via `NativeConverter`.  Net slowdown.  The reparse is
+slower because it has to tokenise text, allocate fresh strings for
+every symbol name, and rebuild the typed `Function`/`Predicate`
+objects — the in-memory rebuild path skips all of that because its
+inputs are pre-interned KIF element trees.  1.88 MiB of extra LMDB
+for a slowdown was strictly worse than not persisting at all.
 
-| | Time | Notes |
-|---|---|---|
-| In-memory rebuild (NativeConverter) | ~45 ms | walks pre-interned KIF elements |
-| LMDB read + TPTP reparse | ~66 ms | parses text, re-interns symbols |
-
-On top of that, the serialised TPTP blob was **1.88 MiB** — 15% of the
-total LMDB footprint for a net slowdown.  The schema slot and
-`CachedAxiomProblem` type are left in place for a future bincode-based
-implementation that skips the re-interning cost.  `ensure_axiom_cache`
-takes the direct in-memory path today.
+**Bincode (shipped).**  Gating the pure-Rust IR types behind a new
+`vampire-prover/serde` feature unlocks `#[derive(Serialize, Deserialize)]`
+on `ir::Problem`, `ir::Formula`, `ir::Term`, `ir::Function`,
+`ir::Predicate`, `ir::Sort`, `ir::Interp`, `ir::VarId`, `ir::LogicMode`,
+and the internal `FuncKind`/`PredKind`.  `CachedAxiomProblem.problem`
+becomes `ir::Problem` directly; `put_cache` bincodes it through LMDB's
+usual `Bytes` codec.  Benchmark: ~8 ms first-ask overhead after
+restore — **5x faster than the TPTP attempt, 10x faster than the
+original rebuild-every-time**.  Blob is ~4.86 MiB (bincode is less
+compact than TPTP text because every string carries a length prefix),
+which is the main cost.
 
 ## Risks & known limitations
 

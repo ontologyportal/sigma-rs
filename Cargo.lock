@@ -868,6 +868,7 @@ name = "vampire-prover"
 version = "0.6.0"
 dependencies = [
  "libc",
+ "serde",
  "vampire-sys",
  "winnow",
 ]

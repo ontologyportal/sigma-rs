@@ -16,12 +16,17 @@ pub(crate) use env::{
 #[cfg(feature = "ask")]
 pub(crate) use env::{
     CachedSortAnnotations,
+    CachedAxiomProblem,
     CACHE_KEY_SORT_ANNOT,
+    CACHE_KEY_AXIOM_CACHE_TFF,
 };
 pub(crate) use commit::{
     write_axioms,
     persist_taxonomy_cache,
 };
 #[cfg(feature = "ask")]
-pub(crate) use commit::persist_sort_annotations_cache;
+pub(crate) use commit::{
+    persist_sort_annotations_cache,
+    persist_axiom_cache,
+};
 pub(crate) use load::load_from_db;

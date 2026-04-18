@@ -130,17 +130,25 @@ pub(crate) struct CachedSortAnnotations {
     pub sorts:      SortAnnotations,
 }
 
-/// Reserved for future axiom-cache persistence via bincode.  A TPTP-
-/// based version was prototyped and measured to be slower than the
-/// in-memory rebuild path, so it was dropped; see the design note
-/// in `docs/phase-d-notes.md`.
+/// Persisted form of a `VampireAxiomCache`.
+///
+/// The IR `Problem` is serialised directly via bincode (the
+/// `vampire-prover/serde` feature derives `Serialize`/`Deserialize` on
+/// every IR type).  An earlier TPTP-text version was ~50% slower on
+/// reload than the in-memory rebuild it replaced; bincode round-trips
+/// the typed tree and skips all parsing, which on benchmarks is the
+/// first approach that actually undercuts `NativeConverter::add_axiom`.
 #[cfg(feature = "ask")]
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CachedAxiomProblem {
     pub kb_version: u64,
+    /// Logic mode the cache was built for.  Reject on mismatch with
+    /// the caller's request (e.g. cache is TFF, ask wants FOF).
     pub mode_tff:   bool,
-    pub tptp:       String,
+    /// Full IR Problem (axioms + sort / function / predicate decls).
+    /// No conjecture -- that's built fresh per ask.
+    pub problem:    vampire_prover::ir::Problem,
+    /// Parallel to `problem.axioms()` in the rebuilt problem.
     pub sid_map:    Vec<SentenceId>,
 }
 
@@ -195,14 +203,11 @@ pub(crate) const CACHE_KEY_TAXONOMY:        &str = "taxonomy";
 #[cfg(feature = "ask")]
 pub(crate) const CACHE_KEY_SORT_ANNOT:      &str = "sort_annotations";
 
-// Reserved keys -- not used yet, but the schema leaves room for a
-// future axiom-cache persistence if a bincode-based format is added.
-// (A TPTP-based version was prototyped and rejected; see docs.)
+// Axiom-cache persistence keys.  Populated at ensure_axiom_cache time
+// and restored on the next open (as long as kb_version matches).
 #[cfg(feature = "ask")]
-#[allow(dead_code)]
 pub(crate) const CACHE_KEY_AXIOM_CACHE_TFF: &str = "axiom_cache_tff";
 #[cfg(feature = "ask")]
-#[allow(dead_code)]
 pub(crate) const CACHE_KEY_AXIOM_CACHE_FOF: &str = "axiom_cache_fof";
 
 // Well-known key inside `DB_SEQUENCES` for the KB-version counter used

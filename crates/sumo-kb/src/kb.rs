@@ -1262,23 +1262,68 @@ impl KnowledgeBase {
     /// Ensure the TFF IR axiom cache is populated; build it if needed.
     /// After this call `self.axiom_cache` is guaranteed to be `Some`.
     ///
-    /// Phase D evaluation note: we tried persisting this cache as a
-    /// TPTP blob in LMDB and reparsing on first-ask.  Benchmark showed
-    /// the reparse was actually *slower* than rebuilding from the
-    /// already-loaded in-memory store via `NativeConverter` (parsing
-    /// text + re-interning symbols costs more than walking pre-
-    /// interned KIF element trees).  The persistence path is dropped;
-    /// the build-from-memory path below is the fast one.  See
-    /// `docs/phase-d-notes.md` for the numbers.
+    /// Phase D: before rebuilding the cache via `NativeConverter` (a
+    /// ~45 ms walk over every KB axiom), try to restore it from the
+    /// LMDB `axiom_cache_tff` blob.  The blob is a bincode-serialised
+    /// `ir::Problem` + parallel `sid_map`; deserialising is a linear
+    /// byte walk with no semantic-layer lookups and no re-interning,
+    /// which benchmarks faster than the rebuild path.  Stale /
+    /// version-mismatched / missing blobs fall through to the rebuild.
     #[cfg(feature = "ask")]
     fn ensure_axiom_cache(&mut self) {
         if self.axiom_cache.is_some() { return; }
+
+        // -- Fast path: restore from LMDB -------------------------------
+        #[cfg(feature = "persist")]
+        if let Some(env) = &self.db {
+            if let Ok(Some(cached)) = (|| -> Result<Option<crate::persist::CachedAxiomProblem>, KbError> {
+                let rtxn = env.read_txn()?;
+                let current = env.kb_version(&rtxn)?;
+                match env.get_cache::<crate::persist::CachedAxiomProblem>(
+                    &rtxn, crate::persist::CACHE_KEY_AXIOM_CACHE_TFF,
+                )? {
+                    Some(c) if c.kb_version == current && c.mode_tff => Ok(Some(c)),
+                    Some(c) => {
+                        log::debug!(target: "sumo_kb::kb",
+                            "Phase D: axiom cache TFF stale (kb_version {} vs current {}, mode_tff={}); rebuilding",
+                            c.kb_version, current, c.mode_tff);
+                        Ok(None)
+                    }
+                    None => Ok(None),
+                }
+            })() {
+                log::info!(target: "sumo_kb::kb",
+                    "Phase D: restored axiom cache from bincode blob ({} axioms)",
+                    cached.sid_map.len());
+                self.axiom_cache = Some(crate::vampire::VampireAxiomCache {
+                    problem: cached.problem,
+                    sid_map: cached.sid_map,
+                });
+                return;
+            }
+        }
+
+        // -- Slow path: rebuild from in-memory store via NativeConverter.
         let axiom_ids = self.axiom_ids_set();
-        self.axiom_cache = Some(crate::vampire::VampireAxiomCache::build(
+        let cache = crate::vampire::VampireAxiomCache::build(
             &self.layer,
             &axiom_ids,
             crate::vampire::converter::Mode::Tff,
-        ));
+        );
+
+        // -- Phase D: persist the freshly-built cache so the next
+        //    cold open skips the rebuild.
+        #[cfg(feature = "persist")]
+        if let Some(env) = &self.db {
+            if let Err(e) = crate::persist::persist_axiom_cache(
+                env, /* mode_tff */ true, &cache.problem, &cache.sid_map,
+            ) {
+                log::warn!(target: "sumo_kb::kb",
+                    "Phase D: axiom cache persist failed: {}", e);
+            }
+        }
+
+        self.axiom_cache = Some(cache);
     }
 
     // -- Additional helpers for embeddings (wasm, etc.) ------------------------

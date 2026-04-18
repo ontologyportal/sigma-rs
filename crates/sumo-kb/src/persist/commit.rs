@@ -221,7 +221,10 @@ use super::env::{
 #[cfg(feature = "ask")]
 use super::env::{
     CACHE_KEY_SORT_ANNOT,
+    CACHE_KEY_AXIOM_CACHE_TFF,
+    CACHE_KEY_AXIOM_CACHE_FOF,
     CachedSortAnnotations,
+    CachedAxiomProblem,
 };
 
 /// Persist the taxonomy portion of the semantic layer.  Idempotent;
@@ -279,13 +282,38 @@ pub(crate) fn persist_sort_annotations_cache(
     Ok(())
 }
 
-// Axiom-cache persistence was prototyped as a TPTP blob on the `caches`
-// table (keys `axiom_cache_tff` / `axiom_cache_fof`) but rejected: the
-// TPTP reparse cost on reopen exceeded the cost of building the cache
-// fresh from the already-loaded in-memory store via `NativeConverter`.
-// The schema slot and `CachedAxiomProblem` type are left in place
-// (marked `#[allow(dead_code)]`) so a future bincode-based version
-// can land without another schema bump.  See `docs/phase-d-notes.md`.
+/// Persist an axiom cache (IR `Problem` + sid_map) for the given mode.
+///
+/// The IR tree is bincoded directly -- no TPTP round-trip -- thanks
+/// to the `vampire-prover/serde` feature that derives
+/// Serialize/Deserialize on every IR type.  See `docs/phase-d-notes.md`
+/// for the benchmark justifying bincode over TPTP.
+#[cfg(feature = "ask")]
+pub(crate) fn persist_axiom_cache(
+    env:      &LmdbEnv,
+    mode_tff: bool,
+    problem:  &vampire_prover::ir::Problem,
+    sid_map:  &[SentenceId],
+) -> Result<(), KbError> {
+    let mut wtxn = env.write_txn()?;
+    let version = env.kb_version(unsafe {
+        std::mem::transmute::<&heed::RwTxn, &heed::RoTxn>(&wtxn)
+    })?;
+    let blob = CachedAxiomProblem {
+        kb_version: version,
+        mode_tff,
+        problem:    problem.clone(),
+        sid_map:    sid_map.to_vec(),
+    };
+    let key = if mode_tff { CACHE_KEY_AXIOM_CACHE_TFF } else { CACHE_KEY_AXIOM_CACHE_FOF };
+    env.put_cache(&mut wtxn, key, &blob)?;
+    wtxn.commit()?;
+    log::info!(target: "sumo_kb::persist",
+        "axiom cache persisted ({}): {} axioms bincoded, kb_version={}",
+        if mode_tff { "TFF" } else { "FOF" },
+        sid_map.len(), version);
+    Ok(())
+}
 
 // -- Path index from CNF clauses -----------------------------------------------
 

@@ -52,8 +52,9 @@ regex   = { version = "1", optional = true }
 
 # Pure-Rust IR + TPTP parser/emitter, always present.
 # `default-features = false` keeps the C++ backend off; the
-# `integrated-prover` feature adds it.
-vampire-prover = { path = "../vampire-rs/vampire", default-features = false }
+# `integrated-prover` feature adds it.  `serde` turns on the IR
+# derives so the Phase D axiom cache can bincode the whole problem.
+vampire-prover = { path = "../vampire-rs/vampire", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
 env_logger = "0.11"
