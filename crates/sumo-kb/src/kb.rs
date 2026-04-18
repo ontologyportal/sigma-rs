@@ -1115,6 +1115,11 @@ fn format_cnf_term(store: &KifStore, term: &crate::types::CnfTerm) -> String {
     match term {
         CnfTerm::Const(id)  => format!("s__{}", store.sym_name(*id)),
         CnfTerm::Var(id)    => format!("V__{}", store.sym_name(*id).replace('@', "_")),
+        CnfTerm::Fn { id, args } => {
+            let name = format!("s__{}", store.sym_name(*id));
+            let arg_strs: Vec<String> = args.iter().map(|a| format_cnf_term(store, a)).collect();
+            format!("{}({})", name, arg_strs.join(","))
+        }
         CnfTerm::SkolemFn { id, args } => {
             let name = format!("s__{}", store.sym_name(*id));
             let arg_strs: Vec<String> = args.iter().map(|a| format_cnf_term(store, a)).collect();
