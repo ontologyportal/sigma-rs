@@ -983,7 +983,12 @@ impl KnowledgeBase {
         if !store.has_sentence(sid) { return format!("<sid:{}>", sid); }
         let sentence = &store.sentences[store.sent_idx(sid)];
         let display = format!("{:?}", sentence.elements);
-        if display.len() > 60 { format!("{}...", &display[..62]) } else { display }
+        if display.chars().count() > 60 {
+            let truncated: String = display.chars().take(60).collect();
+            format!("{}...", truncated)
+        } else {
+            display
+        }
     }
 }
 
