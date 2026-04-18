@@ -220,6 +220,69 @@ extraction (see below).
 
 ## Low Priority
 
+### Feed stored clauses directly to Vampire (skip second-clausification)
+
+Clausification is currently pure dedup infrastructure: `cnf::sentence_to_clauses`
+runs at tell time, stores results in `DB_CLAUSES`, and nothing else touches
+the output.  The `ask()` path builds a fresh `ir::Problem` of formulas from
+KIF and hands it to `vampire_prove`, which clausifies a second time inside
+`Shell::Preprocess`.
+
+The C API already has the shape for clause-first proving:
+
+```c
+vampire_clause_t* vampire_clause(vampire_literal_t**, size_t, input_type);
+vampire_clause_t* vampire_axiom_clause(vampire_literal_t**, size_t);
+vampire_clause_t* vampire_conjecture_clause(vampire_literal_t**, size_t);
+vampire_problem_t* vampire_problem_from_clauses(vampire_clause_t**, size_t);
+```
+
+All four are declared in `vampire_c_api.h` but **never implemented** in
+`vampire_c_api.cpp` (same Phase-2-style landmine we hit with
+`vampire_unit_as_clause`).  Filling them in is ~30 lines of C++ wrapping
+`Kernel::Clause::fromArray`.
+
+`Shell::Preprocess::clausify` already short-circuits on `u->isClause()`
+(see Preprocess.cpp:722), so feeding pre-clausified units genuinely skips
+the NewCNF phase inside preprocessing.
+
+**Estimated speedup for a 13k-axiom KB (Merge.kif scale)**, cold ask:
+- Skip IR rebuild from KIF:  **~3.2 s**
+- Skip NewCNF in preprocess: **~0.4 s**
+- Other preprocessing:       unchanged (~1.9 s)
+- Total savings:             **~3.4 s per cold ask**
+
+The savings mostly live in "don't rebuild IR from KIF per ask" rather
+than "skip clausify" -- the `VampireAxiomCache` is supposed to amortize
+the former but currently may not survive across asks robustly.
+
+**Caveats**:
+1. Lose Vampire's predicate-definition elimination on the axiom side
+   (inlines `(forall X. p(X) <=> def)` before clausification).  SUMO
+   biconditionals are rare enough that this probably doesn't hurt.
+2. Vampire's signature + `Kernel::Literal*` caches are wiped by
+   `vampire_prepare_for_next_proof`.  We can't persist Vampire-compatible
+   compiled clauses across asks; we have to rebuild them from
+   `StoredClause` every time (cheap: ~20 µs/clause).
+3. TFF mode needs sort info attached to variables and function args.
+   `StoredClause.sort_meta` is reserved but currently always `None`;
+   populating it is prerequisite #1.
+
+**Proposed sequence** (when this becomes worthwhile):
+1. Populate `StoredClause.sort_meta` during commit.
+2. Implement the four C++ stubs in `vampire_c_api.cpp` + Rust bindings.
+3. Add `crate::vampire::clauses_to_sys_problem(db, axiom_sids, opts)` that
+   walks `DB_CLAUSES` and builds a `SysProblem` via the clause-first API.
+4. Gate behind `AskOpts::prefer_stored_clauses` (opt-in first) and
+   benchmark on the SUMO corpus before flipping the default.
+5. Only after numbers confirm the win, retire the formula-based ask path.
+
+See also the "VampireAxiomCache double-build" item below; that one is a
+much cheaper path to the same cold-ask speedup and should probably be
+done first.
+
+---
+
 ### `VampireAxiomCache` double-build
 
 `VampireAxiomCache::build()` makes two independent O(n_axioms) passes over the
