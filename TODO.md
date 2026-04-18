@@ -4,6 +4,50 @@ Unresolved issues identified during code review (2026-03-24).
 
 ---
 
+## Recently completed
+
+### ~~Vampire-backed clausification + clause-level dedup~~ — DONE (2026-04-18)
+
+Replaced the hand-rolled 500-line `cnf.rs` clausifier and the
+"half-working" alpha-equivalence `fingerprint.rs` with a unified
+clause-based pipeline.  Six-phase rollout, all phases committed on
+`claude/friendly-wing-52cc99`:
+
+- **Phase 1** — 12 structured literal/term accessors on the vampire-sys
+  C shim (`vampire_literal_*`, `vampire_term_*`, `vampire_functor_name`,
+  `vampire_predicate_name`) + Rust FFI bindings.
+- **Phase 2** — `ir::Clause` / `ir::Literal` / `ir::LitKind` types in
+  vampire-prover + `ir::Problem::clausify(Options) -> Result<Vec<Clause>>`
+  that walks post-clausify `vampire_problem_t*` through the new
+  accessors.  Includes a Rust-side `Imp`-elimination pre-pass to
+  work around a `NewCNF::process` precondition
+  (`ASS(g->connective() != IMP)`) that only surfaces when NewCNF is
+  called without `Shell::Preprocess`.
+- **Phase 3** — `sumo_kb::cnf::sentence_to_clauses` (Vampire-backed,
+  interns skolems into the KifStore as it walks) +
+  `sumo_kb::canonical::{canonical_clause_hash, formula_hash_from_clauses}`
+  for dedup.  `CnfTerm::Fn { id, args }` variant added for non-skolem
+  function applications.
+- **Phase 4** — LMDB schema bump to v2: three new DBs (`clauses`,
+  `clause_hashes`, `formula_hashes`), `StoredClause` record type,
+  `StoredFormula.clause_ids: Vec<ClauseId>` replaces the old inline
+  `clauses: Vec<Clause>`, `KbError::SchemaMigrationRequired` for
+  legacy DB detection.
+- **Phase 5** — `fingerprint.rs` deleted.  Hand-rolled `cnf.rs`
+  deleted (replaced by Phase-3 cnf2).  `cnf` feature is now default
+  and implies `integrated-prover`.  `KnowledgeBase::fingerprints`
+  gated on `#[cfg(feature = "cnf")]`; without the feature no dedup
+  runs.  Reopens rehydrate `fingerprints` from `DB_FORMULA_HASHES`
+  in one pass.
+- **Phase 6** — README + TODO + design-note updates.
+
+Verification: 103 lib tests + 4 promote integration tests + 5 env
+unit tests pass (cnf-on).  `--no-default-features --features persist`
+builds and accepts duplicates silently as designed.  Design doc lives
+at `docs/clause-dedup.md`.
+
+---
+
 ## Critical
 
 ### ~~TFF axiom translation produces contradictory axioms~~ — FIXED (2026-03-24)
