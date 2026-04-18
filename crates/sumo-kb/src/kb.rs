@@ -153,8 +153,68 @@ impl KnowledgeBase {
         #[cfg(not(feature = "cnf"))]
         let _ = session_map;
 
-        // Generate the Semantic Layer from the KIF Symbol Store
-        let layer = SemanticLayer::new(store);
+        // -- Phase D: try to restore the taxonomy cache ---------------
+        //
+        // The cache only applies when its `kb_version` matches the
+        // current counter.  On mismatch (or absence), we fall back to
+        // `SemanticLayer::new`, which does the full `rebuild_taxonomy`
+        // scan as before.  Either way the result is correct; Phase D
+        // just skips the scan when the cache is valid.
+        let layer = {
+            let rtxn = env.read_txn()?;
+            let current_version = env.kb_version(&rtxn)?;
+            let cached: Option<crate::persist::CachedTaxonomy> =
+                env.get_cache(&rtxn, crate::persist::CACHE_KEY_TAXONOMY)?;
+            drop(rtxn);
+
+            match cached {
+                Some(tx) if tx.kb_version == current_version => {
+                    log::info!(target: "sumo_kb::kb",
+                        "Phase D: restored taxonomy cache (kb_version={}, {} edges)",
+                        tx.kb_version, tx.tax_edges.len());
+                    SemanticLayer::from_cached_taxonomy(
+                        store,
+                        tx.tax_edges,
+                        tx.numeric_sort_cache,
+                        tx.numeric_ancestor_set,
+                        tx.poly_variant_symbols,
+                        tx.numeric_char_cache,
+                    )
+                }
+                Some(tx) => {
+                    log::info!(target: "sumo_kb::kb",
+                        "Phase D: taxonomy cache stale (cache kb_version={}, current={}); \
+                         rebuilding", tx.kb_version, current_version);
+                    SemanticLayer::new(store)
+                }
+                None => {
+                    // First open or cache never written -- do the
+                    // normal full-rebuild path.
+                    SemanticLayer::new(store)
+                }
+            }
+        };
+
+        // -- Phase D: restore SortAnnotations if cached ---------------
+        #[cfg(feature = "ask")]
+        {
+            let rtxn = env.read_txn()?;
+            let current_version = env.kb_version(&rtxn)?;
+            let cached: Option<crate::persist::CachedSortAnnotations> =
+                env.get_cache(&rtxn, crate::persist::CACHE_KEY_SORT_ANNOT)?;
+            if let Some(sa) = cached {
+                if sa.kb_version == current_version {
+                    layer.install_sort_annotations(sa.sorts);
+                    log::info!(target: "sumo_kb::kb",
+                        "Phase D: restored sort_annotations cache (kb_version={})",
+                        sa.kb_version);
+                } else {
+                    log::info!(target: "sumo_kb::kb",
+                        "Phase D: sort_annotations cache stale ({}/{}); will rebuild on first access",
+                        sa.kb_version, current_version);
+                }
+            }
+        }
 
         #[cfg(feature = "cnf")]
         log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} formulas fingerprinted",
@@ -542,6 +602,24 @@ impl KnowledgeBase {
                 #[cfg(feature = "cnf")] &clause_map,
                 None,
             )?;
+
+            // Phase D: persist the derived semantic caches alongside
+            // the axiom set.  `write_axioms` already bumped
+            // `kb_version`, so the blobs we write next carry the
+            // current counter and will be accepted by the next open.
+            //
+            // Each helper opens its own txn.  Failures are logged but
+            // not propagated -- the caches are a performance hint;
+            // losing them just means the next cold open rebuilds.
+            if let Err(e) = crate::persist::persist_taxonomy_cache(env, &self.layer) {
+                log::warn!(target: "sumo_kb::kb",
+                    "Phase D: taxonomy cache persist failed: {}", e);
+            }
+            #[cfg(feature = "ask")]
+            if let Err(e) = crate::persist::persist_sort_annotations_cache(env, &self.layer) {
+                log::warn!(target: "sumo_kb::kb",
+                    "Phase D: sort_annotations cache persist failed: {}", e);
+            }
         }
 
         // -- Step 5: Update fingerprints to axiom (session=None) ---------------
@@ -1183,16 +1261,24 @@ impl KnowledgeBase {
 
     /// Ensure the TFF IR axiom cache is populated; build it if needed.
     /// After this call `self.axiom_cache` is guaranteed to be `Some`.
+    ///
+    /// Phase D evaluation note: we tried persisting this cache as a
+    /// TPTP blob in LMDB and reparsing on first-ask.  Benchmark showed
+    /// the reparse was actually *slower* than rebuilding from the
+    /// already-loaded in-memory store via `NativeConverter` (parsing
+    /// text + re-interning symbols costs more than walking pre-
+    /// interned KIF element trees).  The persistence path is dropped;
+    /// the build-from-memory path below is the fast one.  See
+    /// `docs/phase-d-notes.md` for the numbers.
     #[cfg(feature = "ask")]
     fn ensure_axiom_cache(&mut self) {
-        if self.axiom_cache.is_none() {
-            let axiom_ids = self.axiom_ids_set();
-            self.axiom_cache = Some(crate::vampire::VampireAxiomCache::build(
-                &self.layer,
-                &axiom_ids,
-                crate::vampire::converter::Mode::Tff,
-            ));
-        }
+        if self.axiom_cache.is_some() { return; }
+        let axiom_ids = self.axiom_ids_set();
+        self.axiom_cache = Some(crate::vampire::VampireAxiomCache::build(
+            &self.layer,
+            &axiom_ids,
+            crate::vampire::converter::Mode::Tff,
+        ));
     }
 
     // -- Additional helpers for embeddings (wasm, etc.) ------------------------

@@ -61,7 +61,7 @@ impl Sort {
 /// translator substitutes this condition for the otherwise-unsound `$true` drop.
 /// The variable is always implicit (the instance variable being checked).
 /// `bound` is the raw numeric literal string from the source KIF (e.g. `"0"`, `"1"`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ArithCond {
     GreaterThan          { bound: String },
     GreaterThanOrEqualTo { bound: String },
@@ -152,7 +152,7 @@ pub(crate) struct VarTypeInference {
 /// The sentinel `u64::MAX` in a `RelationDomain` also maps to `Sort::Individual`.
 ///
 /// Built lazily; cleared by `invalidate_cache()`.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SortAnnotations {
     /// Ordered argument sorts for all relations, predicates, and functions
     /// that have at least one `domain` axiom.
@@ -239,6 +239,86 @@ impl SemanticLayer {
         };
         layer.rebuild_taxonomy();
         layer
+    }
+
+    /// Construct a SemanticLayer with its taxonomy state prepopulated
+    /// from a persisted cache.  The `tax_incoming` reverse index is
+    /// rederived in one linear pass over `tax_edges` (we don't persist
+    /// it because derivation is cheaper than reading it back).
+    ///
+    /// Skips the full `rebuild_taxonomy` scan -- Phase D's core
+    /// cold-open optimisation.
+    #[cfg(feature = "persist")]
+    pub(crate) fn from_cached_taxonomy(
+        store:                KifStore,
+        tax_edges:            Vec<TaxEdge>,
+        numeric_sort_cache:   HashMap<SymbolId, Sort>,
+        numeric_ancestor_set: HashSet<SymbolId>,
+        poly_variant_symbols: HashSet<SymbolId>,
+        numeric_char_cache:   HashMap<SymbolId, ArithCond>,
+    ) -> Self {
+        // Rebuild the reverse index (edge_index -> tax_incoming[to]).
+        let mut tax_incoming: HashMap<SymbolId, Vec<usize>> = HashMap::new();
+        for (i, edge) in tax_edges.iter().enumerate() {
+            tax_incoming.entry(edge.to).or_default().push(i);
+        }
+        Self {
+            store,
+            tax_edges,
+            tax_incoming,
+            numeric_sort_cache,
+            numeric_ancestor_set,
+            poly_variant_symbols,
+            numeric_char_cache,
+            cache:              RwLock::new(SemanticCache::default()),
+            var_type_inference: RwLock::new(None),
+            sort_annotations:   RwLock::new(None),
+        }
+    }
+
+    // Phase D accessors for persistence.  These expose internal state
+    // to the persist layer in `write_axioms` without letting arbitrary
+    // callers mutate it.
+
+    #[cfg(feature = "persist")]
+    pub(crate) fn tax_edges_snapshot(&self) -> Vec<TaxEdge> {
+        self.tax_edges.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_sort_cache_snapshot(&self) -> HashMap<SymbolId, Sort> {
+        self.numeric_sort_cache.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_ancestor_set_snapshot(&self) -> HashSet<SymbolId> {
+        self.numeric_ancestor_set.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn poly_variant_symbols_snapshot(&self) -> HashSet<SymbolId> {
+        self.poly_variant_symbols.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_char_cache_snapshot(&self) -> HashMap<SymbolId, ArithCond> {
+        self.numeric_char_cache.clone()
+    }
+
+    /// Phase D: install a precomputed `SortAnnotations` directly into
+    /// the cache slot, bypassing the usual build-on-first-access path.
+    #[cfg(all(feature = "persist", feature = "ask"))]
+    pub(crate) fn install_sort_annotations(&self, sa: SortAnnotations) {
+        *self.sort_annotations.write().unwrap() = Some(sa);
+    }
+
+    /// Phase D: snapshot of the current `SortAnnotations`, triggering
+    /// the lazy build if needed.
+    #[cfg(all(feature = "persist", feature = "ask"))]
+    pub(crate) fn sort_annotations_snapshot(&self) -> SortAnnotations {
+        // The guard returned by `sort_annotations()` holds the read
+        // lock for the duration of this scope; clone the inner
+        // `SortAnnotations` out before the guard drops.
+        let guard = self.sort_annotations();
+        guard.as_ref()
+            .expect("sort_annotations() populates the slot")
+            .clone()
     }
 
     /// Invalidate the semantic query cache (call after structural changes to the store).

@@ -89,6 +89,61 @@ pub(crate) struct StoredClause {
     pub sort_meta: Option<Vec<Sort>>,
 }
 
+// =========================================================================
+//  Phase D: semantic-layer / axiom-cache persistence
+// =========================================================================
+//
+// Each persisted cache carries its own `kb_version` -- a monotonic u64
+// stored under `sequences["kb_version"]` and bumped by `write_axioms`
+// whenever the persisted axiom set changes.  On open, a cache blob is
+// accepted only if its `kb_version` matches the current counter; on
+// mismatch the cache is treated as absent and the semantic layer
+// rebuilds from scratch.  This is strictly a performance optimisation
+// -- correctness is preserved even if the cache is corrupted or
+// missing, because the derivations are deterministic from the persisted
+// sentences.
+
+use crate::semantic::ArithCond;
+#[cfg(feature = "ask")]
+use crate::semantic::SortAnnotations;
+
+/// Persisted form of `SemanticLayer`'s taxonomy state.
+///
+/// `tax_incoming` is NOT persisted: it's a reverse index derivable from
+/// `tax_edges` in a single linear pass, so we save the ~O(edges) LMDB
+/// bytes and recompute on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedTaxonomy {
+    pub kb_version:           u64,
+    pub tax_edges:            Vec<crate::types::TaxEdge>,
+    pub numeric_sort_cache:   std::collections::HashMap<SymbolId, crate::semantic::Sort>,
+    pub numeric_ancestor_set: std::collections::HashSet<SymbolId>,
+    pub poly_variant_symbols: std::collections::HashSet<SymbolId>,
+    pub numeric_char_cache:   std::collections::HashMap<SymbolId, ArithCond>,
+}
+
+/// Persisted form of `SemanticLayer::SortAnnotations`.
+#[cfg(feature = "ask")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedSortAnnotations {
+    pub kb_version: u64,
+    pub sorts:      SortAnnotations,
+}
+
+/// Reserved for future axiom-cache persistence via bincode.  A TPTP-
+/// based version was prototyped and measured to be slower than the
+/// in-memory rebuild path, so it was dropped; see the design note
+/// in `docs/phase-d-notes.md`.
+#[cfg(feature = "ask")]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CachedAxiomProblem {
+    pub kb_version: u64,
+    pub mode_tff:   bool,
+    pub tptp:       String,
+    pub sid_map:    Vec<SentenceId>,
+}
+
 // -- Database names ------------------------------------------------------------
 
 const DB_SYMBOLS_FWD:    &str = "symbols_fwd";     // name -> id (8-byte BE)
@@ -108,22 +163,51 @@ const DB_CLAUSE_HASHES:  &str = "clause_hashes";   // canonical-hash BE -> Claus
 #[cfg(feature = "cnf")]
 const DB_FORMULA_HASHES: &str = "formula_hashes";  // formula-hash BE  -> SentenceId
 
+// Phase D: semantic / axiom-cache persistence.
+// One kv table keyed by a short name ("taxonomy", "sort_annotations",
+// "axiom_cache_tff", "axiom_cache_fof"); the value is a bincode blob
+// whose first field is a `kb_version` u64 used to detect staleness.
+const DB_CACHES:         &str = "caches";
+
 // Bump must match the number of named DBs actually created below.
-// Includes room for the three clause-dedup tables even in non-cnf builds
-// so the LMDB map doesn't need resizing across feature flips.
-const MAX_DBS:  u32   = 11;
+// Includes room for all optional tables even in feature-off builds so
+// the LMDB map doesn't need resizing across feature flips.
+const MAX_DBS:  u32   = 12;
 const MAP_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB virtual
 
 // Current on-disk schema revision.  Bump whenever a persisted type
 // changes shape in a non-backward-compatible way.
 //
+// 3 -- Phase D: adds the `caches` table for
+//      taxonomy / SortAnnotations / axiom-cache persistence.
+//      Old-schema DBs (v2) still load; the cache table is absent but
+//      will be populated on the next promote.
 // 2 -- Phase 4 of the clause-dedup work: `StoredFormula.clauses` is
 //      replaced by `clause_ids: Vec<ClauseId>`, with side tables for
 //      `clauses` / `clause_hashes` / `formula_hashes`.
 // 1 -- legacy (pre-Phase-4).  Detected and rejected with
 //      `SchemaMigrationRequired`.
-const SCHEMA_VERSION:    u64  = 2;
+const SCHEMA_VERSION:    u64  = 3;
 const SCHEMA_KEY:        &str = "schema_version";
+
+// Well-known keys inside `DB_CACHES`.
+pub(crate) const CACHE_KEY_TAXONOMY:        &str = "taxonomy";
+#[cfg(feature = "ask")]
+pub(crate) const CACHE_KEY_SORT_ANNOT:      &str = "sort_annotations";
+
+// Reserved keys -- not used yet, but the schema leaves room for a
+// future axiom-cache persistence if a bincode-based format is added.
+// (A TPTP-based version was prototyped and rejected; see docs.)
+#[cfg(feature = "ask")]
+#[allow(dead_code)]
+pub(crate) const CACHE_KEY_AXIOM_CACHE_TFF: &str = "axiom_cache_tff";
+#[cfg(feature = "ask")]
+#[allow(dead_code)]
+pub(crate) const CACHE_KEY_AXIOM_CACHE_FOF: &str = "axiom_cache_fof";
+
+// Well-known key inside `DB_SEQUENCES` for the KB-version counter used
+// by Phase D caches.  Bumped by `write_axioms`.
+pub(crate) const SEQ_KEY_KB_VERSION: &str = "kb_version";
 
 // -- LmdbEnv -------------------------------------------------------------------
 
@@ -143,6 +227,11 @@ pub(crate) struct LmdbEnv {
     pub clause_hashes:  Database<Bytes, Bytes>,  // canonical-hash BE -> ClauseId BE
     #[cfg(feature = "cnf")]
     pub formula_hashes: Database<Bytes, Bytes>,  // formula-hash BE -> SentenceId BE
+
+    /// Phase D: keyed cache table.  See `CACHE_KEY_*` constants above
+    /// for the valid keys.  Values are bincode blobs whose leading
+    /// field is a `kb_version` u64 for staleness detection.
+    pub caches:         Database<Str, Bytes>,
 }
 
 impl LmdbEnv {
@@ -198,10 +287,14 @@ impl LmdbEnv {
                 }
                 let arr: [u8; 8] = bytes.as_slice().try_into().unwrap();
                 let v = u64::from_le_bytes(arr);
-                if v != SCHEMA_VERSION {
+                // Accept v2 as a forward-compatible read: Phase D adds
+                // the `caches` table on top of the v2 layout, and the
+                // v2 side is unchanged.  On the first promote we'll
+                // stamp v3 and start populating caches.
+                if v != SCHEMA_VERSION && v != 2 {
                     return Err(KbError::SchemaMigrationRequired(format!(
                         "LMDB at {} is at schema version {}; this build \
-                         expects version {}.",
+                         expects version {} (or the forward-compatible 2).",
                         path.display(), v, SCHEMA_VERSION,
                     )));
                 }
@@ -224,9 +317,16 @@ impl LmdbEnv {
         let clause_hashes  = env.create_database::<Bytes, Bytes>(&mut wtxn, Some(DB_CLAUSE_HASHES))?;
         #[cfg(feature = "cnf")]
         let formula_hashes = env.create_database::<Bytes, Bytes>(&mut wtxn, Some(DB_FORMULA_HASHES))?;
+        let caches         = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_CACHES))?;
 
-        // Stamp the schema version for fresh DBs (no-op on reopens).
-        if sequences.get(&wtxn, SCHEMA_KEY)?.is_none() {
+        // Stamp (or upgrade) the schema version for fresh + v2 DBs.
+        // v2 DBs become v3 at first open: the `caches` table is
+        // already created empty above, so the upgrade is a pure
+        // metadata bump with no data migration.
+        let current_schema = sequences.get(&wtxn, SCHEMA_KEY)?
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes);
+        if current_schema != Some(SCHEMA_VERSION) {
             sequences.put(&mut wtxn, SCHEMA_KEY, &SCHEMA_VERSION.to_le_bytes())?;
         }
 
@@ -246,6 +346,7 @@ impl LmdbEnv {
             clause_hashes,
             #[cfg(feature = "cnf")]
             formula_hashes,
+            caches,
         })
     }
 
@@ -452,6 +553,64 @@ impl LmdbEnv {
         let next = current + 1;
         self.sequences.put(wtxn, KEY, &next.to_le_bytes())?;
         Ok(current)
+    }
+
+    // -- Phase D: semantic / axiom-cache helpers --------------------------
+
+    /// Read the current `kb_version` counter (0 if absent).
+    pub(crate) fn kb_version(&self, txn: &RoTxn) -> Result<u64, KbError> {
+        Ok(self.sequences.get(txn, SEQ_KEY_KB_VERSION)?
+            .and_then(|b| <[u8; 8]>::try_from(b).ok())
+            .map(u64::from_le_bytes)
+            .unwrap_or(0))
+    }
+
+    /// Bump the `kb_version` counter (read-modify-write).  Called by
+    /// `write_axioms` each time the persisted axiom set mutates, so
+    /// caches persisted at the old version are detected as stale on
+    /// the next open.
+    pub(crate) fn bump_kb_version(&self, wtxn: &mut RwTxn) -> Result<u64, KbError> {
+        let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
+        let current = self.kb_version(rtxn)?;
+        let next = current + 1;
+        self.sequences.put(wtxn, SEQ_KEY_KB_VERSION, &next.to_le_bytes())?;
+        Ok(next)
+    }
+
+    /// Write a cache blob under `key` (bincode-serialised).
+    ///
+    /// The caller is responsible for packing the current `kb_version`
+    /// into the blob; this helper only handles the bytes.
+    pub(crate) fn put_cache<T: Serialize>(
+        &self,
+        wtxn:  &mut RwTxn,
+        key:   &str,
+        value: &T,
+    ) -> Result<(), KbError> {
+        let bytes = bincode::serialize(value)
+            .map_err(|e| KbError::Db(format!("cache serialize for '{key}': {e}")))?;
+        self.caches.put(wtxn, key, &bytes)?;
+        Ok(())
+    }
+
+    /// Read a cache blob under `key`.  Returns `Ok(None)` if the key
+    /// is absent or the blob fails to deserialize (treated as absent
+    /// so a stale/garbled cache degrades to a rebuild rather than an
+    /// open failure).
+    pub(crate) fn get_cache<T: for<'de> Deserialize<'de>>(
+        &self,
+        txn:  &RoTxn,
+        key:  &str,
+    ) -> Result<Option<T>, KbError> {
+        let Some(bytes) = self.caches.get(txn, key)? else { return Ok(None) };
+        match bincode::deserialize::<T>(bytes) {
+            Ok(v)  => Ok(Some(v)),
+            Err(e) => {
+                log::warn!(target: "sumo_kb::persist",
+                    "cache '{}' deserialize failed ({}); treating as absent", key, e);
+                Ok(None)
+            }
+        }
     }
 
     // -- Read helpers ----------------------------------------------------------

@@ -61,10 +61,19 @@ pub(crate) fn write_axioms(
             session)?;
     }
 
-    // -- 3. Commit -------------------------------------------------------------
+    // -- 3. Bump kb_version so any persisted Phase D cache from before
+    //       this commit is recognised as stale on the next open.
+    //       Done in the same txn as the sentence writes so the counter
+    //       and the axiom set move together atomically.
+    let new_kb_version = env.bump_kb_version(&mut wtxn)?;
+    log::debug!(target: "sumo_kb::persist",
+        "write_axioms: kb_version bumped to {}", new_kb_version);
+
+    // -- 4. Commit -------------------------------------------------------------
     wtxn.commit()?;
     log::info!(target: "sumo_kb::persist",
-        "write_axioms: committed {} sentence(s)", sids.len());
+        "write_axioms: committed {} sentence(s), kb_version={}",
+        sids.len(), new_kb_version);
     Ok(())
 }
 
@@ -191,6 +200,92 @@ fn build_stored_element(
         }
     })
 }
+
+// =========================================================================
+//  Phase D: semantic-layer + axiom-cache persistence
+// =========================================================================
+//
+// These helpers are called *after* `write_axioms` has committed the
+// new axiom set and bumped `kb_version`.  They open a second txn to
+// serialise and commit the in-memory caches alongside the current
+// counter.  Splitting into two transactions keeps the sentence-write
+// path simple and lets cache-persistence failures (which only degrade
+// performance, not correctness) surface as warnings rather than
+// aborting the whole commit.
+
+use crate::semantic::SemanticLayer;
+use super::env::{
+    CACHE_KEY_TAXONOMY,
+    CachedTaxonomy,
+};
+#[cfg(feature = "ask")]
+use super::env::{
+    CACHE_KEY_SORT_ANNOT,
+    CachedSortAnnotations,
+};
+
+/// Persist the taxonomy portion of the semantic layer.  Idempotent;
+/// the blob is rewritten from scratch on every call.
+pub(crate) fn persist_taxonomy_cache(
+    env:   &LmdbEnv,
+    layer: &SemanticLayer,
+) -> Result<(), KbError> {
+    let mut wtxn = env.write_txn()?;
+    let version = env.kb_version(unsafe {
+        std::mem::transmute::<&heed::RwTxn, &heed::RoTxn>(&wtxn)
+    })?;
+    let blob = CachedTaxonomy {
+        kb_version:           version,
+        tax_edges:            layer.tax_edges_snapshot(),
+        numeric_sort_cache:   layer.numeric_sort_cache_snapshot(),
+        numeric_ancestor_set: layer.numeric_ancestor_set_snapshot(),
+        poly_variant_symbols: layer.poly_variant_symbols_snapshot(),
+        numeric_char_cache:   layer.numeric_char_cache_snapshot(),
+    };
+    env.put_cache(&mut wtxn, CACHE_KEY_TAXONOMY, &blob)?;
+    wtxn.commit()?;
+    log::info!(target: "sumo_kb::persist",
+        "taxonomy cache persisted: {} edges, {} numeric classes, \
+         {} numeric ancestors, {} poly variants, {} numeric chars, \
+         kb_version={}",
+        blob.tax_edges.len(),
+        blob.numeric_sort_cache.len(),
+        blob.numeric_ancestor_set.len(),
+        blob.poly_variant_symbols.len(),
+        blob.numeric_char_cache.len(),
+        version);
+    Ok(())
+}
+
+/// Persist the `SortAnnotations` derived cache.
+#[cfg(feature = "ask")]
+pub(crate) fn persist_sort_annotations_cache(
+    env:   &LmdbEnv,
+    layer: &SemanticLayer,
+) -> Result<(), KbError> {
+    let mut wtxn = env.write_txn()?;
+    let version = env.kb_version(unsafe {
+        std::mem::transmute::<&heed::RwTxn, &heed::RoTxn>(&wtxn)
+    })?;
+    let blob = CachedSortAnnotations {
+        kb_version: version,
+        sorts:      layer.sort_annotations_snapshot(),
+    };
+    env.put_cache(&mut wtxn, CACHE_KEY_SORT_ANNOT, &blob)?;
+    wtxn.commit()?;
+    log::info!(target: "sumo_kb::persist",
+        "sort_annotations cache persisted: {} arg-sort entries, kb_version={}",
+        blob.sorts.symbol_arg_sorts.len(), version);
+    Ok(())
+}
+
+// Axiom-cache persistence was prototyped as a TPTP blob on the `caches`
+// table (keys `axiom_cache_tff` / `axiom_cache_fof`) but rejected: the
+// TPTP reparse cost on reopen exceeded the cost of building the cache
+// fresh from the already-loaded in-memory store via `NativeConverter`.
+// The schema slot and `CachedAxiomProblem` type are left in place
+// (marked `#[allow(dead_code)]`) so a future bincode-based version
+// can land without another schema bump.  See `docs/phase-d-notes.md`.
 
 // -- Path index from CNF clauses -----------------------------------------------
 
