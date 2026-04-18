@@ -86,27 +86,37 @@ steps" below.
 
 ---
 
-### Multi-variable binding extraction from native proofs
+### ~~Multi-variable binding extraction from native proofs~~ — FIXED (2026-04-17)
 
-The binding extractor in `sumo-kb/src/vampire/bindings.rs` uses
-single-literal resolution unification: it finds one proof step that
-resolves the negated conjecture against one ground axiom, and reads the
-full substitution off the argument lists.
+Implemented via an `AliasTracker` in `sumo-kb/src/vampire/bindings.rs`
+(commit `538551d`).  A single forward walk over the proof carries an
+alias for each conjecture variable -- either a bound constant or the
+step-local variable name currently holding it -- and updates on every
+Resolution-family step via a one-sided unifier.  Transformation
+rules (Flatten, CNFT, EENFT, Rectify, NNFT) preserve variable names;
+resolution rules invoke the unifier on the resolved literal pair.
 
-That works when Vampire proves an existential by deriving a single
-ground atom that matches the conjecture (the common shape for simple
-queries against Merge.kif).  It does NOT work when the substitution
-requires tracking across multiple resolution steps — e.g. a
-`(grandparent ?X ?Z)` query against `(parent Alice Bob)` +
-`(parent Bob Carol)` + transitivity axiom proves correctly but
-the extractor returns empty because `Alice` and `Carol` get bound in
-separate steps that the single-literal unifier can't rejoin.
+Verified:
 
-**Proposed action**: build a proper substitution tracker that walks the
-proof DAG from the `$false` conclusion backwards, composing unifiers
-produced by each Resolution / Superposition step until it reaches the
-conjecture's free-variable positions.  The structural walk is the right
-long-term approach; regex-over-stringified-formulas has hit its ceiling.
+```
+$ sumo ask -f multi.kif --lang tff --backend embedded \
+         "(grandparent ?GP ?GC)"
+  GC = Carol
+  GP = Alice
+```
+
+where `multi.kif` = `(parent Alice Bob)` + `(parent Bob Carol)` +
+transitivity.  Single-variable extraction (the earlier scope) is
+unchanged.
+
+Known limitations documented in code:
+- The literal regex requires no nested parens (covers atomic
+  predicate calls -- the common case).
+- Transformation rules are assumed to preserve variable names
+  (holds in every proof shape I've observed; not guaranteed in
+  general).
+- Superposition and Demodulation get the generic resolution
+  treatment, which may miss substitutions in unusual shapes.
 
 ---
 
