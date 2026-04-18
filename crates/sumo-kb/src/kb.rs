@@ -13,7 +13,7 @@ use crate::error::{
 use crate::fingerprint::{fingerprint, fingerprint_depth1};
 use crate::kif_store::{load_kif, KifStore};
 use crate::semantic::SemanticLayer;
-use crate::tptp::{kb_to_tptp, sentence_to_tptp, TptpLang, TptpOptions};
+use crate::tptp::{TptpLang, TptpOptions};
 use crate::types::SentenceId;
 
 #[cfg(feature = "cnf")]
@@ -458,12 +458,22 @@ impl KnowledgeBase {
             return Ok(PromoteReport::default());
         }
 
-        // Build TPTP: existing axioms as axioms + session assertions as hypotheses + $false as conjecture.
-        let axiom_ids = self.axiom_ids_set();
-        let assertion_ids: HashSet<SentenceId> = session_sids.iter().copied().collect();
+        // Build TPTP: existing axioms + session assertions + $false as conjecture.
+        use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
+        use crate::vampire::converter::{Mode, NativeConverter};
 
-        let kb_opts = TptpOptions { lang: TptpLang::Fof, hide_numbers: true, ..TptpOptions::default() };
-        let mut tptp = kb_to_tptp(&self.layer, "kb", &kb_opts, &axiom_ids, &assertion_ids);
+        let mut conv = NativeConverter::new(&self.layer.store, &self.layer, Mode::Fof);
+        let mut axioms_sorted: Vec<SentenceId> =
+            self.axiom_ids_set().into_iter().collect();
+        axioms_sorted.sort_unstable();
+        for sid in axioms_sorted {
+            conv.add_axiom(sid);
+        }
+        for &sid in &session_sids {
+            conv.add_axiom(sid);
+        }
+        let (problem, sid_map) = conv.finish();
+        let mut tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts::default());
         tptp.push_str("\nfof(check_consistency, conjecture, ($false)).\n");
 
         log::debug!(target: "sumo_kb::kb",
@@ -778,16 +788,21 @@ impl KnowledgeBase {
             .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
 
-        // TFF path with vampire feature: build the Problem from the cached
-        // axiom set, add session assertions + conjecture, serialise through
-        // the pure-Rust IR, and hand the TPTP string to the subprocess runner.
-        #[cfg(feature = "ask")]
-        if lang == TptpLang::Tff {
-            use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
-            use crate::vampire::converter::{Mode, NativeConverter};
-            let t_input = Instant::now();
-            self.ensure_axiom_cache();
+        // Unified FOF + TFF path: build the Problem through NativeConverter,
+        // serialise through assemble_tptp, hand off to the runner.  TFF
+        // reuses the cached axiom problem (rebuilt lazily); FOF rebuilds
+        // fresh each call (no cache for FOF mode today).
+        use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
+        use crate::vampire::converter::{Mode, NativeConverter};
 
+        let mode = match lang {
+            TptpLang::Tff => Mode::Tff,
+            TptpLang::Fof => Mode::Fof,
+        };
+        let t_input = Instant::now();
+
+        let (problem, sid_map) = if mode == Mode::Tff {
+            self.ensure_axiom_cache();
             let (seed_problem, seed_sid_map) = {
                 let cache = self.axiom_cache.as_ref().unwrap();
                 (cache.problem.clone(), cache.sid_map.clone())
@@ -795,47 +810,31 @@ impl KnowledgeBase {
             let mut conv = NativeConverter::from_parts(
                 &self.layer.store, &self.layer, seed_problem, seed_sid_map, Mode::Tff,
             );
-            for &sid in &assertion_ids {
-                conv.add_axiom(sid);
-            }
+            for &sid in &assertion_ids { conv.add_axiom(sid); }
             for &qsid in &query_sids {
-                if conv.set_conjecture(qsid).is_some() {
-                    break;
-                }
+                if conv.set_conjecture(qsid).is_some() { break; }
             }
-            let (problem, sid_map) = conv.finish();
-            let tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts {
-                conjecture_name: "query_0",
-                ..AssemblyOpts::default()
-            });
-            let input_gen = t_input.elapsed();
-            log::debug!(target: "sumo_kb::kb", "ask(cached): TPTP size={} bytes", tptp.len());
+            conv.finish()
+        } else {
+            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, Mode::Fof);
+            let mut axioms_sorted: Vec<SentenceId> =
+                self.axiom_ids_set().into_iter().collect();
+            axioms_sorted.sort_unstable();
+            for sid in axioms_sorted { conv.add_axiom(sid); }
+            for &sid in &assertion_ids { conv.add_axiom(sid); }
+            for &qsid in &query_sids {
+                if conv.set_conjecture(qsid).is_some() { break; }
+            }
+            conv.finish()
+        };
 
-            self.layer.store.remove_file(query_tag);
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
-
-            let prover_opts = ProverOpts { timeout_secs: runner.timeout_secs(), mode: ProverMode::Prove };
-            let mut result = runner.prove(&tptp, &prover_opts);
-            result.timings.input_gen = input_gen;
-            return result;
-        }
-
-        // FOF path (or TFF without vampire feature): regenerate axiom TPTP each call.
-        let t_input = Instant::now();
-        let axiom_ids = self.axiom_ids_set();
-        let kb_opts = TptpOptions { lang, hide_numbers: true, ..TptpOptions::default() };
-        let mut tptp = kb_to_tptp(&self.layer, "kb", &kb_opts, &axiom_ids, &assertion_ids);
-
-        // Append conjecture(s).
-        let q_opts = TptpOptions { lang, query: true, hide_numbers: true, ..TptpOptions::default() };
-        for (i, &qsid) in query_sids.iter().enumerate() {
-            let conj = sentence_to_tptp(qsid, &self.layer, &q_opts);
-            tptp.push_str(&format!("\n{}(query_{}, conjecture, ({})).\n", lang.as_str(), i, conj));
-        }
+        let tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+            conjecture_name: "query_0",
+            ..AssemblyOpts::default()
+        });
         let input_gen = t_input.elapsed();
-
-        log::debug!(target: "sumo_kb::kb", "ask: TPTP size={} bytes", tptp.len());
+        log::debug!(target: "sumo_kb::kb",
+            "ask({:?}): TPTP size={} bytes", mode, tptp.len());
 
         // Remove query sentences from the store (they were added directly,
         // not via a session, so flush_session would not clean them up).
