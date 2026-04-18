@@ -1,4 +1,11 @@
-/// Integration tests: duplicate detection in tell() / load_kif().
+//! Integration tests: duplicate detection in tell() / load_kif().
+//!
+//! These tests exercise the clause-based dedup layer, which only
+//! runs when the `cnf` feature is on.  In `--no-default-features`
+//! builds duplicate axioms are accepted silently by design, so the
+//! tests are gated off.
+#![cfg(feature = "cnf")]
+
 use sumo_kb::{KnowledgeBase, TellWarning};
 
 fn kb() -> KnowledgeBase {
