@@ -4,15 +4,21 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+# Default includes the Vampire-backed clausifier + clause-level dedup.
+# `cnf` now implies `integrated-prover` (Phase 5 of the clause-dedup work):
+# the hand-rolled clausifier was retired, so CNF requires the linked
+# Vampire clausifier.  Builds without the default features skip dedup
+# entirely -- duplicate axioms are silently accepted.
+default = ["cnf"]
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
 # Theorem proving: the subprocess prover (spawns a `vampire` process)
 # and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = ["dep:regex"]
-# CNF clausification. Can be used independently of ask or persist.
-cnf     = []
+# CNF clausification + clause-level deduplication.  Pulls in the
+# integrated Vampire prover because the clausifier is part of it.
+cnf     = ["integrated-prover"]
 # Embedded Vampire prover: additionally links vampire-sys (Vampire C++
 # library) via CMake, enabling `ask_embedded` and native-proof binding
 # extraction.  Requires CMake 3.10+, a C++ compiler, and the

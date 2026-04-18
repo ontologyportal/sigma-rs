@@ -13,25 +13,18 @@ pub mod error;
 pub mod types;
 pub(crate) mod kif_store;
 pub(crate) mod semantic;
-pub(crate) mod fingerprint;
 
 pub mod tptp;
 
+// Vampire-backed clausifier.  `cnf` implies `integrated-prover`, so
+// this module is always backed by the linked Vampire library.
 #[cfg(feature = "cnf")]
 pub(crate) mod cnf;
 
-// Canonical hashing of CNF clauses -- foundation for clause-level dedup.
-// Works entirely on the crate-local `Clause` / `CnfTerm` types, so it
-// does not require the integrated prover.
+// Canonical hashing of CNF clauses -- foundation for clause-level
+// dedup.  Works on the crate-local `Clause` / `CnfTerm` types alone.
 #[cfg(feature = "cnf")]
 pub(crate) mod canonical;
-
-// Vampire-backed clausifier.  Requires both `cnf` (storage types) and
-// `integrated-prover` (linked C++ clausifier) to be on -- Phase 5 of the
-// clause-dedup work will collapse the feature graph so that `cnf` implies
-// `integrated-prover`, at which point this gate simplifies to `cnf`.
-#[cfg(all(feature = "cnf", feature = "integrated-prover"))]
-pub(crate) mod cnf2;
 
 #[cfg(feature = "ask")]
 pub mod prover;

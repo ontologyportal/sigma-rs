@@ -1,7 +1,21 @@
 // crates/sumo-kb/src/kb.rs
 //
 // KnowledgeBase -- the single public API type for sumo-kb.
-// Assembles KifStore + SemanticLayer + sessions + fingerprints + optional persist/ask/cnf.
+// Assembles KifStore + SemanticLayer + sessions + (optionally) the
+// clause-level dedup map + optional persist/ask/cnf.
+//
+// Deduplication model (Phase 5 of the clause-dedup work):
+//   * With `cnf` on (default):
+//       - tell/load_kif clausifies each candidate root sentence via
+//         `cnf::sentence_to_clauses`, derives a formula hash via
+//         `canonical::formula_hash_from_clauses` over the canonical
+//         clause hashes, and checks against the in-memory
+//         `fingerprints` map.
+//       - On reopen, `fingerprints` is populated from
+//         `DB_FORMULA_HASHES`.
+//   * With `cnf` off:
+//       - No dedup.  Duplicate axioms are accepted silently.  The
+//         in-memory map does not exist.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -10,7 +24,6 @@ use crate::error::{
     DuplicateInfo, DuplicateSource, KbError, PromoteError, PromoteReport, SemanticError,
     TellResult, TellWarning,
 };
-use crate::fingerprint::{fingerprint, fingerprint_depth1};
 use crate::kif_store::{load_kif, KifStore};
 use crate::semantic::SemanticLayer;
 use crate::tptp::{TptpLang, TptpOptions};
@@ -57,12 +70,20 @@ pub struct KnowledgeBase {
     /// Sentences here have NOT been promoted to axioms yet.
     sessions: HashMap<String, Vec<SentenceId>>,
 
-    // TODO: Convert fingerprints such that it uses CNF simplifications
-    /// Deduplication table: fingerprint hash -> (SentenceId, session).
+    /// Deduplication table: formula-hash -> (SentenceId, session).
     /// session=None means promoted axiom; Some(s) means assertion in session s.
+    ///
+    /// Populated from `DB_FORMULA_HASHES` on open and from fresh
+    /// clausifications in `tell` / `load_kif` / `promote_*`.  Gated on
+    /// `cnf`: without that feature no clausifier is linked, so there
+    /// is no way to compute the canonical hash and duplicate axioms are
+    /// accepted silently.
+    #[cfg(feature = "cnf")]
     fingerprints: HashMap<u64, (SentenceId, Option<String>)>,
 
-    /// CNF side-car: pre-computed clauses per sentence.
+    /// CNF side-car: pre-computed clauses per sentence.  Populated by
+    /// the ingestion path and drained at promote time into the LMDB
+    /// clause-dedup tables.
     #[cfg(feature = "cnf")]
     clauses: HashMap<SentenceId, Vec<Clause>>,
 
@@ -90,9 +111,9 @@ impl KnowledgeBase {
         Self {
             layer:        SemanticLayer::new(KifStore::default()),
             sessions:     HashMap::new(),
-            fingerprints: HashMap::new(),
+            #[cfg(feature = "cnf")] fingerprints: HashMap::new(),
             #[cfg(feature = "cnf")] clauses:  HashMap::new(),
-            #[cfg(feature = "cnf")] cnf_mode: false,
+            #[cfg(feature = "cnf")] cnf_mode: true,
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             #[cfg(feature = "persist")] db:   None,
             #[cfg(feature = "ask")]  axiom_cache: None,
@@ -100,42 +121,58 @@ impl KnowledgeBase {
     }
 
     #[cfg(feature = "persist")]
-    /// Opens the knowledge base from a persistent storage (LMDB) path
+    /// Opens the knowledge base from a persistent storage (LMDB) path.
+    ///
+    /// With the `cnf` feature on, the in-memory `fingerprints` dedup
+    /// map is rehydrated from the `formula_hashes` LMDB table -- each
+    /// key is a formula hash and each value is the owning `SentenceId`.
+    /// Without `cnf`, no dedup map is built.
     pub fn open(path: &std::path::Path) -> Result<Self, KbError> {
         // Open the LMDB path
         let env = LmdbEnv::open(path)?;
         // Load the kifstore from the saved database
         let (store, session_map) = load_from_db(&env)?;
 
-        // Fingerprint every loaded sentence as an axiom (session=None).
-        let mut fingerprints: HashMap<u64, (SentenceId, Option<String>)> = HashMap::new();
-        for &sid in &store.roots {
-            for fp in fingerprint_depth1(&store, sid) {
-                fingerprints.entry(fp).or_insert((sid, None));
+        // -- Rehydrate fingerprints from DB_FORMULA_HASHES ---------------
+        //
+        // Only present when the `cnf` feature was on at write time.
+        // Sessions for session-tagged sentences are patched in afterwards.
+        #[cfg(feature = "cnf")]
+        let mut fingerprints: HashMap<u64, (SentenceId, Option<String>)> = {
+            let rtxn = env.read_txn()?;
+            let entries = env.all_formula_hashes(&rtxn)?;
+            let mut map = HashMap::with_capacity(entries.len());
+            for (fh, sid) in entries {
+                let session = session_map.get(&sid).cloned().flatten();
+                map.insert(fh, (sid, session));
             }
-        }
+            map
+        };
 
-        // Track any session-tagged sentences from the DB.
-        for (sid, session_opt) in session_map {
-            if let Some(session) = session_opt {
-                fingerprints.entry(fingerprint(&store, sid))
-                    .and_modify(|entry| entry.1 = Some(session.clone()))
-                    .or_insert((sid, Some(session)));
-            }
-        }
+        // Silence the unused-variable warning in cnf-off builds.
+        #[cfg(not(feature = "cnf"))]
+        let _ = session_map;
 
         // Generate the Semantic Layer from the KIF Symbol Store
         let layer = SemanticLayer::new(store);
-        log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} axioms fingerprinted",
-            path, fingerprints.len());
 
-        // Return a new KB object
+        #[cfg(feature = "cnf")]
+        log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} formulas fingerprinted",
+            path, fingerprints.len());
+        #[cfg(not(feature = "cnf"))]
+        log::info!(target: "sumo_kb::kb", "opened KB from {:?} (no-dedup build)", path);
+
+        // Silence mut-not-needed in cnf-on builds (we don't add new
+        // entries here; tell/promote will do it).
+        #[cfg(feature = "cnf")]
+        { let _ = &mut fingerprints; }
+
         Ok(Self {
             layer,
             sessions:     HashMap::new(),
-            fingerprints,
+            #[cfg(feature = "cnf")] fingerprints,
             #[cfg(feature = "cnf")] clauses:  HashMap::new(),
-            #[cfg(feature = "cnf")] cnf_mode: false,
+            #[cfg(feature = "cnf")] cnf_mode: true,
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             db: Some(env),
             #[cfg(feature = "ask")]  axiom_cache: None,
@@ -211,36 +248,60 @@ impl KnowledgeBase {
                 }
             }
 
-            // Fingerprint check for deduplication.
-            let fps = fingerprint_depth1(&self.layer.store, sid);
-            let mut duplicate = false;
-            for fp in &fps {
-                if let Some((existing_id, existing_session)) = self.fingerprints.get(fp) {
-                    let preview = self.formula_preview(*existing_id);
-                    match existing_session {
-                        None => {
-                            result.warnings.push(TellWarning::DuplicateAxiom {
-                                existing_id: *existing_id,
-                                formula_preview: preview,
-                            });
-                        }
-                        Some(s) => {
-                            result.warnings.push(TellWarning::DuplicateAssertion {
-                                existing_id: *existing_id,
-                                existing_session: s.clone(),
-                                formula_preview: preview,
-                            });
+            // -- Dedup via clause-level formula hash (cnf feature) -----
+            //
+            // In the cnf-on build we clausify the candidate sentence,
+            // derive a canonical-hash-set-based formula fingerprint,
+            // and probe the in-memory `fingerprints` table.  The
+            // clauses stay in the side-car so `promote_*` doesn't have
+            // to re-clausify.
+            //
+            // In cnf-off builds no dedup runs; every syntactically-
+            // fresh root sentence is accepted.
+            #[cfg(feature = "cnf")]
+            let duplicate = {
+                match self.compute_formula_hash(sid) {
+                    Some((fh, clauses)) => {
+                        if let Some((existing_id, existing_session)) =
+                            self.fingerprints.get(&fh).cloned()
+                        {
+                            let preview = self.formula_preview(existing_id);
+                            match existing_session {
+                                None => {
+                                    result.warnings.push(TellWarning::DuplicateAxiom {
+                                        existing_id,
+                                        formula_preview: preview,
+                                    });
+                                }
+                                Some(s) => {
+                                    result.warnings.push(TellWarning::DuplicateAssertion {
+                                        existing_id,
+                                        existing_session: s,
+                                        formula_preview: preview,
+                                    });
+                                }
+                            }
+                            true
+                        } else {
+                            // Accept and register.
+                            self.fingerprints.insert(fh, (sid, Some(session.to_owned())));
+                            self.clauses.insert(sid, clauses);
+                            false
                         }
                     }
-                    duplicate = true;
-                    break;
+                    None => {
+                        // Clausification failed; accept without dedup so
+                        // the sentence isn't lost.  Error is logged
+                        // upstream in `compute_formula_hash`.
+                        false
+                    }
                 }
-            }
+            };
+
+            #[cfg(not(feature = "cnf"))]
+            let duplicate = false;
 
             if !duplicate {
-                // Accept: add fingerprint + add to session.
-                let root_fp = fingerprint(&self.layer.store, sid);
-                self.fingerprints.insert(root_fp, (sid, Some(session.to_owned())));
                 accepted.push(sid);
                 log::debug!(target: "sumo_kb::kb",
                     "tell: accepted sid={} into session '{}'", sid, session);
@@ -257,6 +318,36 @@ impl KnowledgeBase {
         result
     }
 
+    /// Clausify `sid`, derive the canonical formula hash, and return the
+    /// hash alongside the (cached) clause list.  Returns `None` if
+    /// clausification failed -- the caller should treat that as "skip
+    /// dedup, accept the sentence".
+    ///
+    /// The clause list is `Vec<Clause>` so callers that accept the
+    /// sentence can stash it in `self.clauses` without recomputing it
+    /// later at promote time.
+    #[cfg(feature = "cnf")]
+    fn compute_formula_hash(&mut self, sid: SentenceId) -> Option<(u64, Vec<Clause>)> {
+        use crate::canonical::{canonical_clause_hash, formula_hash_from_clauses};
+
+        // `cnf::sentence_to_clauses` borrows the semantic layer mutably to
+        // intern new skolem/wrapper symbols into the KifStore.
+        let clauses = match crate::cnf::sentence_to_clauses(&mut self.layer, sid) {
+            Ok(cs)  => cs,
+            Err(e)  => {
+                log::warn!(target: "sumo_kb::kb",
+                    "compute_formula_hash: sid={} clausify failed: {}", sid, e);
+                return None;
+            }
+        };
+        let canonical: Vec<u64> = clauses
+            .iter()
+            .map(canonical_clause_hash)
+            .collect();
+        let fh = formula_hash_from_clauses(&canonical);
+        Some((fh, clauses))
+    }
+
     /// Mark all assertions in `session` as permanent axioms without semantic
     /// validation or LMDB writes.
     ///
@@ -267,10 +358,18 @@ impl KnowledgeBase {
     pub fn make_session_axiomatic(&mut self, session: &str) {
         let sids = self.sessions.remove(session).unwrap_or_default();
         let count = sids.len();
-        for &sid in &sids {
-            let fp = fingerprint(&self.layer.store, sid);
-            self.fingerprints.insert(fp, (sid, None));
+
+        // Flip each sentence's fingerprint entry from session-tagged to
+        // axiom (session=None).  Without cnf, no dedup map exists.
+        #[cfg(feature = "cnf")]
+        {
+            for &sid in &sids {
+                if let Some((fh, _clauses)) = self.compute_formula_hash(sid) {
+                    self.fingerprints.insert(fh, (sid, None));
+                }
+            }
         }
+
         log::info!(target: "sumo_kb::kb",
             "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",
             count, session);
@@ -285,7 +384,9 @@ impl KnowledgeBase {
         let sids = self.sessions.remove(session).unwrap_or_default();
         if sids.is_empty() { return; }
 
-        // Remove fingerprint entries for this session.
+        // Drop the in-memory fingerprint entries belonging to this
+        // session.  No-op in cnf-off builds (no fingerprints table).
+        #[cfg(feature = "cnf")]
         self.fingerprints.retain(|_, (_, s)| s.as_deref() != Some(session));
 
         // Remove sentences from KifStore.
@@ -329,37 +430,67 @@ impl KnowledgeBase {
             return Ok(report);
         }
 
-        // -- Step 1: Cross-session dedup ---------------------------------------
+        // -- Step 1: Cross-session dedup (cnf feature) -------------------
+        //
+        // With `cnf` on, we consult `fingerprints` -- populated at
+        // tell/load_kif time and at open() rehydration -- and skip any
+        // sentence whose formula hash is already attached to an axiom
+        // or a different session.  With `cnf` off there is no dedup
+        // map, so every session sentence proceeds to promotion.
         let mut surviving: Vec<SentenceId> = Vec::new();
-        for &sid in &session_sids {
-            let fp = fingerprint(&self.layer.store, sid);
-            // Check if this fp exists in fingerprints with session=None (already an axiom)
-            // or with a DIFFERENT session (duplicate assertion).
-            let is_dup = self.fingerprints.get(&fp).map(|(_, s)| {
-                match s {
-                    None                        => true,  // already an axiom
-                    Some(s) if s != session     => true,  // in another session
-                    _                           => false, // same session -> OK
-                }
-            }).unwrap_or(false);
+        #[cfg(feature = "cnf")]
+        {
+            for &sid in &session_sids {
+                // The tell/load_kif path has already populated the
+                // formula hash; look it up in the session's clause cache.
+                // If the sentence was added without going through tell
+                // (unusual), recompute on the fly.
+                let fh_opt = match self.clauses.get(&sid) {
+                    Some(cs) => {
+                        let canonical: Vec<u64> = cs.iter()
+                            .map(crate::canonical::canonical_clause_hash)
+                            .collect();
+                        Some(crate::canonical::formula_hash_from_clauses(&canonical))
+                    }
+                    None => self.compute_formula_hash(sid).map(|(h, cs)| {
+                        self.clauses.insert(sid, cs);
+                        h
+                    }),
+                };
+                let Some(fh) = fh_opt else {
+                    // Clausification failed; accept without dedup.
+                    surviving.push(sid);
+                    continue;
+                };
 
-            if is_dup {
-                if let Some((dup_of, dup_session)) = self.fingerprints.get(&fp) {
-                    let preview = self.formula_preview(sid);
-                    report.duplicates_removed.push(DuplicateInfo {
-                        sentence_id:     sid,
-                        duplicate_of:    *dup_of,
-                        source:          match dup_session {
-                            None    => DuplicateSource::Axiom,
-                            Some(s) => DuplicateSource::Session(s.clone()),
-                        },
-                        formula_preview: preview,
-                    });
+                let entry = self.fingerprints.get(&fh).cloned();
+                let is_dup = match &entry {
+                    Some((_, None))                       => true,  // existing axiom
+                    Some((_, Some(s))) if s != session    => true,  // other session
+                    _                                      => false, // same session or absent
+                };
+
+                if is_dup {
+                    if let Some((dup_of, dup_session)) = entry {
+                        let preview = self.formula_preview(sid);
+                        report.duplicates_removed.push(DuplicateInfo {
+                            sentence_id:     sid,
+                            duplicate_of:    dup_of,
+                            source:          match dup_session {
+                                None    => DuplicateSource::Axiom,
+                                Some(s) => DuplicateSource::Session(s),
+                            },
+                            formula_preview: preview,
+                        });
+                    }
+                } else {
+                    surviving.push(sid);
                 }
-            } else {
-                surviving.push(sid);
             }
         }
+        #[cfg(not(feature = "cnf"))]
+        { surviving.extend(&session_sids); }
+
         log::debug!(target: "sumo_kb::kb",
             "promote: {} surviving after dedup ({} duplicates removed)",
             surviving.len(), report.duplicates_removed.len());
@@ -380,21 +511,19 @@ impl KnowledgeBase {
             return Err(KbError::Semantic(sem_errors.into_iter().next().unwrap().1));
         }
 
-        // -- Step 3: Clausify [cnf feature] -----------------------------------
+        // -- Step 3: Clausify (cnf feature) -----------------------------------
+        //
+        // Reuse the side-car clauses populated at tell time; fall back
+        // to clausifying on demand for anything that wasn't cached.
         #[cfg(feature = "cnf")]
         let clause_map: HashMap<SentenceId, Vec<Clause>> = {
             if self.cnf_mode {
                 let mut map = HashMap::new();
                 for &sid in &surviving {
-                    let mut skolem_counter = 0u64;
-                    let mut skolem_syms: Vec<crate::types::Symbol> = Vec::new();
-                    let max_clauses = self.cnf_opts.max_clauses_per_formula;
-                    match crate::cnf::sentence_to_cnf(
-                        &self.layer.store, sid, &mut skolem_counter, &mut skolem_syms, max_clauses,
-                    ) {
-                        Ok(clauses) => { map.insert(sid, clauses); }
-                        Err(e) => log::warn!(target: "sumo_kb::kb",
-                            "clausify: sid={} failed: {}", sid, e),
+                    if let Some(cs) = self.clauses.get(&sid).cloned() {
+                        map.insert(sid, cs);
+                    } else if let Some((_h, cs)) = self.compute_formula_hash(sid) {
+                        map.insert(sid, cs);
                     }
                 }
                 map
@@ -416,9 +545,17 @@ impl KnowledgeBase {
         }
 
         // -- Step 5: Update fingerprints to axiom (session=None) ---------------
-        for &sid in &surviving {
-            let fp = fingerprint(&self.layer.store, sid);
-            self.fingerprints.insert(fp, (sid, None));
+        #[cfg(feature = "cnf")]
+        {
+            for &sid in &surviving {
+                if let Some(cs) = clause_map.get(&sid) {
+                    let canonical: Vec<u64> = cs.iter()
+                        .map(crate::canonical::canonical_clause_hash)
+                        .collect();
+                    let fh = crate::canonical::formula_hash_from_clauses(&canonical);
+                    self.fingerprints.insert(fh, (sid, None));
+                }
+            }
         }
 
         // -- Step 6: Store CNF clauses -----------------------------------------
@@ -683,41 +820,45 @@ impl KnowledgeBase {
     }
 
     /// Clausify all current axioms and session assertions into the clauses side-car.
+    ///
+    /// In the Phase-5 pipeline the side-car is populated opportunistically
+    /// by `tell` / `load_kif`, so this method is mostly idempotent --
+    /// it forces re-clausification of any sentence that isn't already
+    /// cached and reports the count.  Skolem symbols discovered by the
+    /// Vampire clausifier are interned directly into the `KifStore` by
+    /// `cnf::sentence_to_clauses`, so the method no longer needs an
+    /// out-parameter for new symbols.
     #[cfg(feature = "cnf")]
     pub fn clausify(&mut self) -> Result<ClausifyReport, KbError> {
         let mut report = ClausifyReport::default();
-        let max_clauses = self.cnf_opts.max_clauses_per_formula;
 
         // Collect all SIDs to clausify (axioms + all session assertions).
         let axiom_ids = self.axiom_ids_set();
         let mut all_sids: Vec<SentenceId> = axiom_ids.into_iter().collect();
         for sids in self.sessions.values() { all_sids.extend(sids.iter().copied()); }
 
-        let mut skolem_counter = 0u64;
-        let mut skolem_syms: Vec<crate::types::Symbol> = Vec::new();
-
         for sid in all_sids {
-            match crate::cnf::sentence_to_cnf(
-                &self.layer.store, sid, &mut skolem_counter, &mut skolem_syms, max_clauses,
-            ) {
+            if self.clauses.contains_key(&sid) {
+                report.clausified += 1;
+                continue;
+            }
+            match crate::cnf::sentence_to_clauses(&mut self.layer, sid) {
                 Ok(clauses) => {
                     self.clauses.insert(sid, clauses);
                     report.clausified += 1;
                 }
-                Err(_) => {
+                Err(e) => {
+                    log::warn!(target: "sumo_kb::kb",
+                        "clausify: sid={} failed: {}", sid, e);
                     report.exceeded_limit.push(sid);
                     report.skipped += 1;
                 }
             }
         }
 
-        // Add Skolem symbols to store.
-        for sym in skolem_syms {
-            self.layer.store.intern_skolem(&sym.name, sym.skolem_arity);
-        }
-
         log::info!(target: "sumo_kb::kb",
-            "clausify: {} clausified, {} exceeded limit", report.clausified, report.skipped);
+            "clausify: {} clausified, {} skipped",
+            report.clausified, report.skipped);
         Ok(report)
     }
 
@@ -1064,11 +1205,30 @@ impl KnowledgeBase {
     }
 
     /// Collect all SentenceIds that are currently promoted axioms.
+    ///
+    /// "Promoted" means "not currently attached to any open session".
+    /// In cnf-on builds we fast-path through the fingerprint table
+    /// (value `.1 == None` marks an axiom); in cnf-off builds we
+    /// reconstruct the set by subtracting every session sid from
+    /// `store.roots`.
     fn axiom_ids_set(&self) -> HashSet<SentenceId> {
-        self.fingerprints.values()
-            .filter(|(_, s)| s.is_none())
-            .map(|(sid, _)| *sid)
-            .collect()
+        #[cfg(feature = "cnf")]
+        {
+            self.fingerprints.values()
+                .filter(|(_, s)| s.is_none())
+                .map(|(sid, _)| *sid)
+                .collect()
+        }
+        #[cfg(not(feature = "cnf"))]
+        {
+            let session_sids: HashSet<SentenceId> = self.sessions.values()
+                .flat_map(|v| v.iter().copied())
+                .collect();
+            self.layer.store.roots.iter()
+                .copied()
+                .filter(|sid| !session_sids.contains(sid))
+                .collect()
+        }
     }
 
     /// Print a SemanticError with formula context to the log.

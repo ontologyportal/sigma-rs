@@ -89,22 +89,27 @@ fn write_sentence(
     //      match, otherwise writes a new `StoredClause` and hash mapping.
     //   3. Collect the resulting ClauseIds; they become `clause_ids` on
     //      the `StoredFormula`.
-    //   4. Derive a formula-level fingerprint from the sorted ClauseId
-    //      list and record it in `formula_hashes`.
+    //   4. Derive a formula-level fingerprint from the *canonical*
+    //      hashes (not the ClauseIds) and record it in `formula_hashes`.
+    //      This must match the hash that `kb.rs::compute_formula_hash`
+    //      uses at tell() time so reopen-time dedup can look up the
+    //      same key.
     //
     // In `--no-default-features` / non-cnf builds none of this runs and
     // the formula is stored without dedup state.
     #[cfg(feature = "cnf")]
-    let clause_ids: Vec<crate::types::ClauseId> = {
+    let (clause_ids, canonical_hashes): (Vec<crate::types::ClauseId>, Vec<u64>) = {
         use crate::canonical;
         let per_sid = clauses.get(&sid).cloned().unwrap_or_default();
-        let mut out = Vec::with_capacity(per_sid.len());
+        let mut ids    = Vec::with_capacity(per_sid.len());
+        let mut hashes = Vec::with_capacity(per_sid.len());
         for clause in &per_sid {
             let h  = canonical::canonical_clause_hash(clause);
             let id = env.intern_clause(wtxn, h, clause, /* sort_meta */ None)?;
-            out.push(id);
+            ids.push(id);
+            hashes.push(h);
         }
-        out
+        (ids, hashes)
     };
 
     let formula = StoredFormula {
@@ -120,7 +125,7 @@ fn write_sentence(
 
     #[cfg(feature = "cnf")]
     {
-        let f_hash = crate::canonical::formula_hash_from_clauses(&clause_ids);
+        let f_hash = crate::canonical::formula_hash_from_clauses(&canonical_hashes);
         env.put_formula_hash(wtxn, f_hash, sid)?;
     }
 
