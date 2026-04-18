@@ -728,6 +728,7 @@ impl KnowledgeBase {
         // the pure-Rust IR, and hand the TPTP string to the subprocess runner.
         #[cfg(feature = "vampire")]
         if lang == TptpLang::Tff {
+            use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
             use crate::vampire::converter::{Mode, NativeConverter};
             let t_input = Instant::now();
             self.ensure_axiom_cache();
@@ -747,8 +748,11 @@ impl KnowledgeBase {
                     break;
                 }
             }
-            let (problem, _sid_map) = conv.finish();
-            let tptp = problem.to_tptp();
+            let (problem, sid_map) = conv.finish();
+            let tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+                conjecture_name: "query_0",
+                ..AssemblyOpts::default()
+            });
             let input_gen = t_input.elapsed();
             log::debug!(target: "sumo_kb::kb", "ask(cached): TPTP size={} bytes", tptp.len());
 

@@ -23,6 +23,7 @@ use crate::semantic::SemanticLayer;
 use crate::types::SentenceId;
 
 pub(crate) mod converter;
+pub(crate) mod assemble;
 
 use converter::{Mode, NativeConverter};
 
