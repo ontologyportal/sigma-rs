@@ -31,7 +31,8 @@ use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxR
 /// `$o` (formula/Boolean sort) is NOT in this enum. It is a TPTP-specific
 /// concept with no semantic meaning and is emitted as a literal string inside
 /// `tptp/tff.rs` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+          serde::Serialize, serde::Deserialize)]
 pub enum Sort {
     Individual = 1,
     Real       = 2,

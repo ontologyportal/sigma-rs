@@ -22,6 +22,13 @@ pub type SymbolId = u64;
 /// Stable sentence / formula identifier.
 pub type SentenceId = u64;
 
+/// Stable clause identifier.  Allocated by the `clause_id` sequence in
+/// the LMDB persistence layer when a new, canonical-hash-fresh clause
+/// is first interned; existing clauses retain their id across reopens.
+/// Used as the deduped key type in `StoredFormula.clause_ids`.
+#[cfg(feature = "cnf")]
+pub type ClauseId = u64;
+
 // -- Literal ------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

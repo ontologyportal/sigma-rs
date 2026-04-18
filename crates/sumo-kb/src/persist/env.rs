@@ -6,7 +6,19 @@
 //   - StoreError -> KbError
 //   - StoredSymbol/StoredFormula are defined here (no separate schema.rs)
 //   - No `next_seq("sym")` / `next_seq("formula")`: stable IDs from KifStore counters
-//     are written directly; we only use a sequence for Skolem symbols.
+//     are written directly; we use a sequence DB for Skolem symbols (legacy)
+//     and for clause IDs (Phase 4).
+//
+// Clause dedup layer (Phase 4):
+//   - `clauses`         ClauseId BE       -> StoredClause
+//   - `clause_hashes`   canonical-hash BE -> ClauseId
+//   - `formula_hashes`  formula-hash BE   -> SentenceId
+//   - `StoredFormula.clause_ids: Vec<ClauseId>`  (replaces the old inline
+//     `clauses: Vec<Clause>`)
+//
+// The schema is versioned via a `"schema_version"` entry in the
+// `sequences` DB (value: 8-byte LE u64 = 2).  Pre-Phase-4 DBs lack the
+// entry; opening one returns `KbError::SchemaMigrationRequired`.
 
 use std::path::Path;
 
@@ -17,6 +29,10 @@ use serde::{Deserialize, Serialize};
 use crate::error::KbError;
 use crate::types::{Literal, SentenceId, SymbolId};
 use crate::parse::ast::OpKind;
+#[cfg(feature = "cnf")]
+use crate::types::{ClauseId, CnfLiteral};
+#[cfg(feature = "cnf")]
+use crate::semantic::Sort;
 
 // -- Stored types --------------------------------------------------------------
 
@@ -44,42 +60,89 @@ pub(crate) enum StoredElement {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StoredFormula {
     /// Stable `SentenceId` assigned by `KifStore`.
-    pub id:       SentenceId,
-    pub elements: Vec<StoredElement>,
-    /// Pre-computed CNF clauses (only present when `cnf` feature was enabled at commit time).
+    pub id:        SentenceId,
+    pub elements:  Vec<StoredElement>,
+    /// Pre-computed CNF clause ids (only present when `cnf` feature was
+    /// enabled at commit time).  Each id resolves to a `StoredClause` in
+    /// the `clauses` DB; shared clauses dedup to a single record.
     #[cfg(feature = "cnf")]
-    pub clauses:  Vec<crate::types::Clause>,
+    pub clause_ids: Vec<ClauseId>,
     /// Session tag; `None` for promoted axioms.
-    pub session:  Option<String>,
+    pub session:   Option<String>,
     /// File/session tag used to group sentences in `KifStore`.
-    pub file:     String,
+    pub file:      String,
+}
+
+/// A canonically-addressed CNF clause as stored in LMDB.
+///
+/// Multiple formulas that share the same canonical clause hash point at
+/// the same `StoredClause` record via `StoredFormula.clause_ids`.  The
+/// on-disk shape deliberately keeps the full `CnfLiteral` contents so
+/// the clause can be rehydrated without joining against the formula
+/// table; `sort_meta` is reserved for a future sort-aware auxiliary
+/// hash (see Risk 3 of the design plan) and is always `None` today.
+#[cfg(feature = "cnf")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StoredClause {
+    pub id:        ClauseId,
+    pub literals:  Vec<CnfLiteral>,
+    pub sort_meta: Option<Vec<Sort>>,
 }
 
 // -- Database names ------------------------------------------------------------
 
-const DB_SYMBOLS_FWD: &str = "symbols_fwd";  // name -> id (8-byte BE)
-const DB_SYMBOLS_REV: &str = "symbols_rev";  // id BE -> StoredSymbol
-const DB_FORMULAS:    &str = "formulas";     // id BE -> StoredFormula
+const DB_SYMBOLS_FWD:    &str = "symbols_fwd";     // name -> id (8-byte BE)
+const DB_SYMBOLS_REV:    &str = "symbols_rev";     // id BE -> StoredSymbol
+const DB_FORMULAS:       &str = "formulas";        // id BE -> StoredFormula
 #[cfg(feature = "cnf")]
-const DB_PATH_INDEX:  &str = "path_index";   // 18-byte key -> Vec<SentenceId>
-const DB_HEAD_INDEX:  &str = "head_index";   // pred_id (8-byte BE) -> Vec<SentenceId>
-const DB_SESSIONS:    &str = "sessions";     // session name -> Vec<SentenceId>
-const DB_SEQUENCES:   &str = "sequences";    // "skolem" -> u64 (Skolem counter only)
+const DB_PATH_INDEX:     &str = "path_index";      // 18-byte key -> Vec<SentenceId>
+const DB_HEAD_INDEX:     &str = "head_index";      // pred_id (8-byte BE) -> Vec<SentenceId>
+const DB_SESSIONS:       &str = "sessions";        // session name -> Vec<SentenceId>
+const DB_SEQUENCES:      &str = "sequences";       // "skolem"|"clause_id"|"schema_version"
 
-const MAX_DBS:  u32   = 8;
+// Clause dedup tables (feature = "cnf").
+#[cfg(feature = "cnf")]
+const DB_CLAUSES:        &str = "clauses";         // ClauseId BE -> StoredClause
+#[cfg(feature = "cnf")]
+const DB_CLAUSE_HASHES:  &str = "clause_hashes";   // canonical-hash BE -> ClauseId
+#[cfg(feature = "cnf")]
+const DB_FORMULA_HASHES: &str = "formula_hashes";  // formula-hash BE  -> SentenceId
+
+// Bump must match the number of named DBs actually created below.
+// Includes room for the three clause-dedup tables even in non-cnf builds
+// so the LMDB map doesn't need resizing across feature flips.
+const MAX_DBS:  u32   = 11;
 const MAP_SIZE: usize = 10 * 1024 * 1024 * 1024; // 10 GiB virtual
+
+// Current on-disk schema revision.  Bump whenever a persisted type
+// changes shape in a non-backward-compatible way.
+//
+// 2 -- Phase 4 of the clause-dedup work: `StoredFormula.clauses` is
+//      replaced by `clause_ids: Vec<ClauseId>`, with side tables for
+//      `clauses` / `clause_hashes` / `formula_hashes`.
+// 1 -- legacy (pre-Phase-4).  Detected and rejected with
+//      `SchemaMigrationRequired`.
+const SCHEMA_VERSION:    u64  = 2;
+const SCHEMA_KEY:        &str = "schema_version";
 
 // -- LmdbEnv -------------------------------------------------------------------
 
 pub(crate) struct LmdbEnv {
-    pub env:         Env,
-    pub symbols_fwd: Database<Str, Bytes>,
-    pub symbols_rev: Database<Bytes, SerdeBincode<StoredSymbol>>,
-    pub formulas:    Database<Bytes, SerdeBincode<StoredFormula>>,
+    pub env:            Env,
+    pub symbols_fwd:    Database<Str, Bytes>,
+    pub symbols_rev:    Database<Bytes, SerdeBincode<StoredSymbol>>,
+    pub formulas:       Database<Bytes, SerdeBincode<StoredFormula>>,
     #[cfg(feature = "cnf")]
-    pub path_index:  Database<Bytes, SerdeBincode<Vec<u64>>>,
-    pub head_index:  Database<Bytes, SerdeBincode<Vec<u64>>>,
-    pub sessions:    Database<Str, SerdeBincode<Vec<u64>>>,
+    pub path_index:     Database<Bytes, SerdeBincode<Vec<u64>>>,
+    pub head_index:     Database<Bytes, SerdeBincode<Vec<u64>>>,
+    pub sessions:       Database<Str, SerdeBincode<Vec<u64>>>,
+    pub sequences:      Database<Str, Bytes>,
+    #[cfg(feature = "cnf")]
+    pub clauses:        Database<Bytes, SerdeBincode<StoredClause>>,
+    #[cfg(feature = "cnf")]
+    pub clause_hashes:  Database<Bytes, Bytes>,  // canonical-hash BE -> ClauseId BE
+    #[cfg(feature = "cnf")]
+    pub formula_hashes: Database<Bytes, Bytes>,  // formula-hash BE -> SentenceId BE
 }
 
 impl LmdbEnv {
@@ -97,22 +160,93 @@ impl LmdbEnv {
                 .open(path)
         }.map_err(|e| KbError::Db(format!("cannot open LMDB at {}: {}", path.display(), e)))?;
 
-        let mut wtxn = env.write_txn()?;
-        let symbols_fwd = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_SYMBOLS_FWD))?;
-        let symbols_rev = env.create_database::<Bytes, SerdeBincode<StoredSymbol>>(&mut wtxn, Some(DB_SYMBOLS_REV))?;
-        let formulas    = env.create_database::<Bytes, SerdeBincode<StoredFormula>>(&mut wtxn, Some(DB_FORMULAS))?;
-        #[cfg(feature = "cnf")]
-        let path_index  = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_PATH_INDEX))?;
-        let head_index  = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_HEAD_INDEX))?;
-        let sessions    = env.create_database::<Str, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_SESSIONS))?;
-        let _sequences  = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_SEQUENCES))?;
-        wtxn.commit()?;
-        log::debug!(target: "sumo_kb::persist", "LMDB opened; {} databases initialised", MAX_DBS);
+        // -- Schema-drift probe (pre-creation) -------------------------
+        //
+        // If the `formulas` table already has entries but `sequences`
+        // is missing the `schema_version` key, we're looking at a
+        // pre-Phase-4 database.  Bail out before `create_database` in
+        // the write txn silently creates the new DBs on top of the
+        // legacy layout.
+        {
+            let rtxn = env.read_txn()?;
+            let formulas_opt =
+                env.open_database::<Bytes, SerdeBincode<StoredFormula>>(&rtxn, Some(DB_FORMULAS))?;
+            let has_formulas = match formulas_opt {
+                Some(db) => db.iter(&rtxn)?.next().is_some(),
+                None     => false,
+            };
+            let sequences_opt =
+                env.open_database::<Str, Bytes>(&rtxn, Some(DB_SEQUENCES))?;
+            let schema_marker = match sequences_opt {
+                Some(db) => db.get(&rtxn, SCHEMA_KEY)?.map(|b| b.to_vec()),
+                None     => None,
+            };
+            if has_formulas && schema_marker.is_none() {
+                return Err(KbError::SchemaMigrationRequired(format!(
+                    "LMDB at {} was created by an older build of sumo-kb \
+                     (no `{}` key in `sequences`).  Delete the directory \
+                     and re-import, or downgrade to a pre-Phase-4 build.",
+                    path.display(), SCHEMA_KEY,
+                )));
+            }
+            if let Some(bytes) = schema_marker {
+                if bytes.len() != 8 {
+                    return Err(KbError::Db(format!(
+                        "malformed schema_version entry ({} bytes; expected 8)",
+                        bytes.len(),
+                    )));
+                }
+                let arr: [u8; 8] = bytes.as_slice().try_into().unwrap();
+                let v = u64::from_le_bytes(arr);
+                if v != SCHEMA_VERSION {
+                    return Err(KbError::SchemaMigrationRequired(format!(
+                        "LMDB at {} is at schema version {}; this build \
+                         expects version {}.",
+                        path.display(), v, SCHEMA_VERSION,
+                    )));
+                }
+            }
+        }
 
-        Ok(Self { env, symbols_fwd, symbols_rev, formulas, 
-            #[cfg(feature = "cnf")]    
-            path_index, 
-            head_index, sessions })
+        // -- DB creation --------------------------------------------------
+        let mut wtxn = env.write_txn()?;
+        let symbols_fwd    = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_SYMBOLS_FWD))?;
+        let symbols_rev    = env.create_database::<Bytes, SerdeBincode<StoredSymbol>>(&mut wtxn, Some(DB_SYMBOLS_REV))?;
+        let formulas       = env.create_database::<Bytes, SerdeBincode<StoredFormula>>(&mut wtxn, Some(DB_FORMULAS))?;
+        #[cfg(feature = "cnf")]
+        let path_index     = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_PATH_INDEX))?;
+        let head_index     = env.create_database::<Bytes, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_HEAD_INDEX))?;
+        let sessions       = env.create_database::<Str, SerdeBincode<Vec<u64>>>(&mut wtxn, Some(DB_SESSIONS))?;
+        let sequences      = env.create_database::<Str, Bytes>(&mut wtxn, Some(DB_SEQUENCES))?;
+        #[cfg(feature = "cnf")]
+        let clauses        = env.create_database::<Bytes, SerdeBincode<StoredClause>>(&mut wtxn, Some(DB_CLAUSES))?;
+        #[cfg(feature = "cnf")]
+        let clause_hashes  = env.create_database::<Bytes, Bytes>(&mut wtxn, Some(DB_CLAUSE_HASHES))?;
+        #[cfg(feature = "cnf")]
+        let formula_hashes = env.create_database::<Bytes, Bytes>(&mut wtxn, Some(DB_FORMULA_HASHES))?;
+
+        // Stamp the schema version for fresh DBs (no-op on reopens).
+        if sequences.get(&wtxn, SCHEMA_KEY)?.is_none() {
+            sequences.put(&mut wtxn, SCHEMA_KEY, &SCHEMA_VERSION.to_le_bytes())?;
+        }
+
+        wtxn.commit()?;
+        log::debug!(target: "sumo_kb::persist",
+            "LMDB opened; schema v{}, max_dbs={}", SCHEMA_VERSION, MAX_DBS);
+
+        Ok(Self {
+            env,
+            symbols_fwd, symbols_rev, formulas,
+            #[cfg(feature = "cnf")]
+            path_index,
+            head_index, sessions, sequences,
+            #[cfg(feature = "cnf")]
+            clauses,
+            #[cfg(feature = "cnf")]
+            clause_hashes,
+            #[cfg(feature = "cnf")]
+            formula_hashes,
+        })
     }
 
     pub(crate) fn read_txn(&self) -> Result<RoTxn<'_>, KbError> {
@@ -216,6 +350,110 @@ impl LmdbEnv {
         Ok(())
     }
 
+    // -- Clause dedup helpers (feature = "cnf") -------------------------------
+
+    /// Intern a clause by its canonical hash, returning its `ClauseId`.
+    ///
+    /// If a record with the same canonical hash already exists, returns
+    /// the existing `ClauseId` without writing.  Otherwise allocates a
+    /// fresh id via the `clause_id` sequence, writes the `StoredClause`
+    /// record, and records the hash-to-id mapping.
+    ///
+    /// `sort_meta` is currently always `None`; the parameter is kept on
+    /// the signature so the future sort-aware auxiliary hash (Risk 3 in
+    /// the design plan) has a place to flow through.
+    #[cfg(feature = "cnf")]
+    pub(crate) fn intern_clause(
+        &self,
+        wtxn:      &mut RwTxn,
+        canonical: u64,
+        clause:    &crate::types::Clause,
+        sort_meta: Option<Vec<Sort>>,
+    ) -> Result<ClauseId, KbError> {
+        let hash_key = canonical.to_be_bytes();
+
+        // Existing?
+        let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
+        if let Some(bytes) = self.clause_hashes.get(rtxn, &hash_key)? {
+            let arr: [u8; 8] = bytes.try_into()
+                .map_err(|_| KbError::Db("bad clause_hashes value length".into()))?;
+            let id = u64::from_be_bytes(arr);
+            log::trace!(target: "sumo_kb::persist",
+                "intern_clause: hash={:016x} -> existing id={}", canonical, id);
+            return Ok(id);
+        }
+
+        // Fresh id.
+        let id = self.next_clause_id(wtxn)?;
+        let record = StoredClause {
+            id,
+            literals: clause.literals.clone(),
+            sort_meta,
+        };
+        self.clauses.put(wtxn, &id.to_be_bytes(), &record)?;
+        self.clause_hashes.put(wtxn, &hash_key, &id.to_be_bytes())?;
+        log::trace!(target: "sumo_kb::persist",
+            "intern_clause: hash={:016x} -> new id={}", canonical, id);
+        Ok(id)
+    }
+
+    /// Record a formula-level fingerprint → `SentenceId` mapping.
+    ///
+    /// Idempotent by hash; later writes overwrite earlier ones, which is
+    /// fine because an identical clause set always maps to the same
+    /// SentenceId (or, in the dedup-rejection path, the earliest id
+    /// already recorded — the caller checks existence before calling).
+    #[cfg(feature = "cnf")]
+    pub(crate) fn put_formula_hash(
+        &self,
+        wtxn:         &mut RwTxn,
+        formula_hash: u64,
+        sid:          SentenceId,
+    ) -> Result<(), KbError> {
+        self.formula_hashes.put(
+            wtxn,
+            &formula_hash.to_be_bytes(),
+            &sid.to_be_bytes(),
+        )?;
+        Ok(())
+    }
+
+    /// Look up a formula-level fingerprint in `formula_hashes`.
+    #[cfg(feature = "cnf")]
+    pub(crate) fn get_formula_hash(
+        &self,
+        txn:          &RoTxn,
+        formula_hash: u64,
+    ) -> Result<Option<SentenceId>, KbError> {
+        let key = formula_hash.to_be_bytes();
+        match self.formula_hashes.get(txn, &key)? {
+            Some(bytes) => {
+                let arr: [u8; 8] = bytes.try_into()
+                    .map_err(|_| KbError::Db("bad formula_hashes value length".into()))?;
+                Ok(Some(u64::from_be_bytes(arr)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Allocate the next `ClauseId` from the `clause_id` sequence.
+    #[cfg(feature = "cnf")]
+    fn next_clause_id(&self, wtxn: &mut RwTxn) -> Result<ClauseId, KbError> {
+        const KEY: &str = "clause_id";
+        let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
+        let current: u64 = match self.sequences.get(rtxn, KEY)? {
+            Some(bytes) => {
+                let arr: [u8; 8] = bytes.try_into()
+                    .map_err(|_| KbError::Db("bad clause_id seq length".into()))?;
+                u64::from_le_bytes(arr)
+            }
+            None => 0,
+        };
+        let next = current + 1;
+        self.sequences.put(wtxn, KEY, &next.to_le_bytes())?;
+        Ok(current)
+    }
+
     // -- Read helpers ----------------------------------------------------------
 
     pub(crate) fn all_formulas(&self, txn: &RoTxn) -> Result<Vec<StoredFormula>, KbError> {
@@ -238,4 +476,239 @@ impl LmdbEnv {
         Ok(out)
     }
 
+    /// Iterate every `StoredClause` in the `clauses` table.  Used by
+    /// diagnostics and by the Phase 5 fingerprint-rehydration path when
+    /// a KB is reopened.
+    #[cfg(feature = "cnf")]
+    pub(crate) fn all_clauses(&self, txn: &RoTxn) -> Result<Vec<StoredClause>, KbError> {
+        let mut out = Vec::new();
+        for result in self.clauses.iter(txn)? {
+            let (_, clause) = result?;
+            out.push(clause);
+        }
+        Ok(out)
+    }
+
+    /// Iterate every `(formula_hash, SentenceId)` pair in the
+    /// `formula_hashes` table.  Used at open time to rehydrate the
+    /// in-memory dedup map.
+    #[cfg(feature = "cnf")]
+    pub(crate) fn all_formula_hashes(
+        &self,
+        txn: &RoTxn,
+    ) -> Result<Vec<(u64, SentenceId)>, KbError> {
+        let mut out = Vec::new();
+        for result in self.formula_hashes.iter(txn)? {
+            let (k, v) = result?;
+            let k_arr: [u8; 8] = k.try_into()
+                .map_err(|_| KbError::Db("bad formula_hashes key length".into()))?;
+            let v_arr: [u8; 8] = v.try_into()
+                .map_err(|_| KbError::Db("bad formula_hashes value length".into()))?;
+            out.push((u64::from_be_bytes(k_arr), u64::from_be_bytes(v_arr)));
+        }
+        Ok(out)
+    }
+
+}
+
+// =========================================================================
+//  Tests
+// =========================================================================
+
+#[cfg(all(test, feature = "cnf"))]
+mod tests {
+    use super::*;
+    use crate::types::{Clause, CnfLiteral, CnfTerm};
+
+    /// Make a unique temp dir path per test invocation.  Uses PID + a
+    /// monotonic counter so concurrent runs don't collide.
+    fn tmp_dir(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut p = std::env::temp_dir();
+        p.push(format!("sumo-kb-phase4-{}-{}-{}",
+            name, std::process::id(), n));
+        p
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    fn clause_p(pred_id: SymbolId) -> Clause {
+        Clause {
+            literals: vec![CnfLiteral {
+                positive: true,
+                pred:     CnfTerm::Const(pred_id),
+                args:     vec![CnfTerm::Const(42)],
+            }],
+        }
+    }
+
+    /// Fresh DB gets stamped with the current schema version and
+    /// reopens cleanly.
+    #[test]
+    fn fresh_db_stamps_schema_and_reopens() {
+        let dir = tmp_dir("schema-stamp");
+        cleanup(&dir);
+
+        {
+            let env = LmdbEnv::open(&dir).expect("fresh open");
+            // Version stamped?
+            let rtxn = env.read_txn().unwrap();
+            let bytes = env.sequences.get(&rtxn, SCHEMA_KEY).unwrap()
+                .expect("schema_version key missing after fresh open");
+            assert_eq!(bytes.len(), 8);
+            let v = u64::from_le_bytes(bytes.try_into().unwrap());
+            assert_eq!(v, SCHEMA_VERSION);
+        }
+
+        // Second open on the same path should succeed.
+        let _env2 = LmdbEnv::open(&dir).expect("reopen");
+
+        cleanup(&dir);
+    }
+
+    /// `intern_clause` is idempotent: two calls with the same canonical
+    /// hash return the same ClauseId and leave the `clauses` DB with a
+    /// single entry.
+    #[test]
+    fn intern_clause_dedups_by_hash() {
+        let dir = tmp_dir("intern-dedup");
+        cleanup(&dir);
+
+        let env = LmdbEnv::open(&dir).expect("open");
+        let c1 = clause_p(100);
+        let c2 = clause_p(100); // structurally identical
+        let c3 = clause_p(200); // different pred
+
+        let (id1, id2, id3) = {
+            let mut wtxn = env.write_txn().unwrap();
+            let id1 = env.intern_clause(&mut wtxn, 0xAAAA, &c1, None).unwrap();
+            let id2 = env.intern_clause(&mut wtxn, 0xAAAA, &c2, None).unwrap();
+            let id3 = env.intern_clause(&mut wtxn, 0xBBBB, &c3, None).unwrap();
+            wtxn.commit().unwrap();
+            (id1, id2, id3)
+        };
+
+        assert_eq!(id1, id2, "same hash must return same ClauseId");
+        assert_ne!(id1, id3, "different hash must allocate fresh id");
+
+        // `clauses` DB should have exactly two records.
+        let rtxn = env.read_txn().unwrap();
+        let all = env.all_clauses(&rtxn).unwrap();
+        assert_eq!(all.len(), 2);
+
+        cleanup(&dir);
+    }
+
+    /// `put_formula_hash` / `get_formula_hash` round-trip.
+    #[test]
+    fn formula_hash_roundtrip() {
+        let dir = tmp_dir("formula-hash");
+        cleanup(&dir);
+
+        let env = LmdbEnv::open(&dir).expect("open");
+        {
+            let mut wtxn = env.write_txn().unwrap();
+            env.put_formula_hash(&mut wtxn, 0x1234_5678, 42).unwrap();
+            env.put_formula_hash(&mut wtxn, 0xDEAD_BEEF, 99).unwrap();
+            wtxn.commit().unwrap();
+        }
+        let rtxn = env.read_txn().unwrap();
+        assert_eq!(env.get_formula_hash(&rtxn, 0x1234_5678).unwrap(), Some(42));
+        assert_eq!(env.get_formula_hash(&rtxn, 0xDEAD_BEEF).unwrap(), Some(99));
+        assert_eq!(env.get_formula_hash(&rtxn, 0x0000_0000).unwrap(), None);
+
+        let all = env.all_formula_hashes(&rtxn).unwrap();
+        assert_eq!(all.len(), 2);
+
+        cleanup(&dir);
+    }
+
+    /// `next_clause_id` is monotonic and persists across reopens.
+    #[test]
+    fn clause_id_sequence_is_monotonic_and_persisted() {
+        let dir = tmp_dir("seq-persist");
+        cleanup(&dir);
+
+        let first_batch = {
+            let env = LmdbEnv::open(&dir).unwrap();
+            let mut wtxn = env.write_txn().unwrap();
+            let a = env.intern_clause(&mut wtxn, 1, &clause_p(1), None).unwrap();
+            let b = env.intern_clause(&mut wtxn, 2, &clause_p(2), None).unwrap();
+            wtxn.commit().unwrap();
+            (a, b)
+        };
+        assert!(first_batch.0 < first_batch.1);
+
+        // Reopen: new id should start past the existing max.
+        let env2 = LmdbEnv::open(&dir).unwrap();
+        let mut wtxn = env2.write_txn().unwrap();
+        let c = env2.intern_clause(&mut wtxn, 3, &clause_p(3), None).unwrap();
+        wtxn.commit().unwrap();
+        assert!(c > first_batch.1, "seq reset across reopen: {} <= {}", c, first_batch.1);
+
+        cleanup(&dir);
+    }
+
+    /// Reject a DB that has formulas but no schema marker (pre-Phase-4
+    /// layout).  We simulate this by hand-building the legacy shape
+    /// before calling `open()`.
+    #[test]
+    fn legacy_db_is_rejected() {
+        let dir = tmp_dir("legacy-reject");
+        cleanup(&dir);
+
+        // -- Stage 1: create a DB with the legacy shape ---------------
+        //
+        // We can't open via `LmdbEnv::open` because that would stamp
+        // the schema version.  Go directly through heed with a
+        // minimal write that only populates `formulas` + `sequences`
+        // (without the `schema_version` key).
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = unsafe {
+            EnvOpenOptions::new()
+                .max_dbs(MAX_DBS)
+                .map_size(MAP_SIZE)
+                .open(&dir)
+                .unwrap()
+        };
+        {
+            let mut wtxn = env.write_txn().unwrap();
+            let formulas = env.create_database::<Bytes, SerdeBincode<StoredFormula>>(
+                &mut wtxn, Some(DB_FORMULAS)).unwrap();
+            let _sequences = env.create_database::<Str, Bytes>(
+                &mut wtxn, Some(DB_SEQUENCES)).unwrap();
+
+            // Pre-Phase-4 StoredFormula had `clauses: Vec<Clause>` rather
+            // than `clause_ids: Vec<ClauseId>`.  We can't construct that
+            // shape directly anymore, but the detector only cares
+            // whether `formulas` has any entry at all — any byte payload
+            // keyed under an 8-byte BE id will do.  Use the `Bytes`
+            // codec via a second open handle so the raw bytes bypass
+            // the strict SerdeBincode decoder.
+            let raw_formulas = env.open_database::<Bytes, Bytes>(
+                &wtxn, Some(DB_FORMULAS)).unwrap().unwrap();
+            raw_formulas.put(&mut wtxn, &1u64.to_be_bytes(), b"legacy-bytes").unwrap();
+
+            wtxn.commit().unwrap();
+            // Deliberately do NOT write `schema_version` into sequences.
+            let _ = formulas;
+        }
+        drop(env);
+
+        // -- Stage 2: opening must fail with SchemaMigrationRequired --
+        match LmdbEnv::open(&dir) {
+            Ok(_) => panic!("opening legacy-shape DB must fail"),
+            Err(KbError::SchemaMigrationRequired(msg)) => {
+                assert!(msg.contains(SCHEMA_KEY) || msg.contains("schema"),
+                    "unexpected message: {msg}");
+            }
+            Err(other) => panic!("expected SchemaMigrationRequired, got {:?}", other),
+        }
+
+        cleanup(&dir);
+    }
 }

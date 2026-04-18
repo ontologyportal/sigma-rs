@@ -5,6 +5,12 @@
 // Key difference from old store/src/commit.rs:
 // IDs are already stable -- NO remapping needed.  We write symbols and formulas
 // with the IDs they already hold in `KifStore`.
+//
+// Phase 4 adds a clause-dedup stage: per root sentence, each CNF clause
+// is interned via `LmdbEnv::intern_clause` (keyed by canonical hash).
+// `StoredFormula.clause_ids` stores the deduped ids rather than the full
+// clause bodies, and a formula-level hash derived from the sorted id
+// list is recorded in `formula_hashes`.
 #[cfg(feature = "cnf")]
 use std::collections::HashMap;
 
@@ -75,22 +81,60 @@ fn write_sentence(
     let elements  = build_stored_elements(store, sid)?;
     let head_id   = sentence.head_symbol();
 
+    // -- Clause dedup stage (cnf feature only) -------------------------
+    //
+    // For each clause produced by the clausifier we:
+    //   1. Compute its canonical hash via `canonical::canonical_clause_hash`.
+    //   2. Intern via `env.intern_clause` -- returns existing id on hash
+    //      match, otherwise writes a new `StoredClause` and hash mapping.
+    //   3. Collect the resulting ClauseIds; they become `clause_ids` on
+    //      the `StoredFormula`.
+    //   4. Derive a formula-level fingerprint from the sorted ClauseId
+    //      list and record it in `formula_hashes`.
+    //
+    // In `--no-default-features` / non-cnf builds none of this runs and
+    // the formula is stored without dedup state.
+    #[cfg(feature = "cnf")]
+    let clause_ids: Vec<crate::types::ClauseId> = {
+        use crate::canonical;
+        let per_sid = clauses.get(&sid).cloned().unwrap_or_default();
+        let mut out = Vec::with_capacity(per_sid.len());
+        for clause in &per_sid {
+            let h  = canonical::canonical_clause_hash(clause);
+            let id = env.intern_clause(wtxn, h, clause, /* sort_meta */ None)?;
+            out.push(id);
+        }
+        out
+    };
+
     let formula = StoredFormula {
         id: sid,
         elements,
         #[cfg(feature = "cnf")]
-        clauses: clauses.get(&sid).cloned().unwrap_or_default(),
+        clause_ids: clause_ids.clone(),
         session: session.map(str::to_owned),
         file:    sentence.file.clone(),
     };
 
     env.put_formula(wtxn, &formula)?;
 
+    #[cfg(feature = "cnf")]
+    {
+        let f_hash = crate::canonical::formula_hash_from_clauses(&clause_ids);
+        env.put_formula_hash(wtxn, f_hash, sid)?;
+    }
+
     if let Some(pred_id) = head_id {
         env.index_head(wtxn, pred_id, sid)?;
-        // Path index: ground CNF arguments
+        // Path index: ground CNF arguments from the *in-flight* clause
+        // vector (not round-tripped through the DB) to avoid a
+        // read-then-decode per sentence write.
         #[cfg(feature = "cnf")]
-        index_cnf_paths(env, wtxn, formula.clauses.as_slice(), sid)?;
+        {
+            let per_sid: &[crate::types::Clause] =
+                clauses.get(&sid).map(|v| v.as_slice()).unwrap_or(&[]);
+            index_cnf_paths(env, wtxn, per_sid, sid)?;
+        }
     }
 
     if let Some(s) = session {
@@ -128,12 +172,16 @@ fn build_stored_element(
             let sub_elements = build_stored_elements(store, *sub_sid)?;
             let sub_sentence = &store.sentences[store.sent_idx(*sub_sid)];
             StoredElement::Sub(Box::new(StoredFormula {
-                id:       *sub_sid,
-                elements: sub_elements,
+                id:         *sub_sid,
+                elements:   sub_elements,
+                // CNF lives only at root-formula level; sub-formulas
+                // carry an empty id list.  Clause dedup for a subtree
+                // is already reflected in the root's `clause_ids`
+                // because clausification walks the whole tree.
                 #[cfg(feature = "cnf")]
-                clauses:  Vec::new(), // CNF only at root level
-                session:  None,
-                file:     sub_sentence.file.clone(),
+                clause_ids: Vec::new(),
+                session:    None,
+                file:       sub_sentence.file.clone(),
             }))
         }
     })

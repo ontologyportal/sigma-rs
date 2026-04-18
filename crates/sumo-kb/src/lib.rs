@@ -57,6 +57,9 @@ pub use types::{
     TaxRelation, TaxEdge,
     OpKind,
 };
+
+#[cfg(feature = "cnf")]
+pub use types::ClauseId;
 pub use tptp::{TptpOptions, TptpLang, TestCase, parse_test_content};
 pub use kb::KnowledgeBase;
 pub use parse::{AstNode, Pretty, Parser};

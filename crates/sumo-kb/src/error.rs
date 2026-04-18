@@ -238,6 +238,15 @@ pub enum KbError {
     #[error("database error: {0}")]
     Db(String),
 
+    /// The on-disk LMDB schema was created by an older build of
+    /// `sumo-kb` and is not compatible with the current one.  There is
+    /// no auto-migration pre-1.0 — the caller must delete the DB and
+    /// re-import, or downgrade to a compatible build.  The `String`
+    /// gives a short human-readable description of what was detected.
+    #[cfg(feature = "persist")]
+    #[error("schema migration required: {0}")]
+    SchemaMigrationRequired(String),
+
     #[cfg(feature = "ask")]
     #[error("prover error: {0}")]
     Prover(String),
