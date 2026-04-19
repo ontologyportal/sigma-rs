@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::SemanticError;
 use crate::kif_store::KifStore;
-use crate::types::{Element, Literal, OpKind, Sentence, SentenceId, SymbolId, TaxEdge, TaxRelation};
+use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxRelation};
 
 // -- Sort ----------------------------------------------------------------------
 
@@ -43,6 +43,12 @@ pub enum Sort {
 impl Sort {
     /// Convert to the TPTP sort string.
     /// Call only inside `tptp/` -- never let this string escape into semantic logic.
+    ///
+    /// Currently only exercised from this module's tests; kept on the
+    /// public API so the TFF-emitter code paths in `vampire/converter.rs`
+    /// and downstream clausify consumers can call it without a re-export
+    /// gymnastics.
+    #[allow(dead_code)]
     pub fn tptp(self) -> &'static str {
         match self {
             Sort::Individual => "$i",
@@ -106,15 +112,6 @@ struct SemanticCache {
     range:        HashMap<SymbolId, RelationDomain>,
 }
 
-// -- VarTypeInference ----------------------------------------------------------
-
-/// Precomputed variable sort table for the entire KB.
-///
-/// Keyed by `variable_symbol_id` -- each variable already has a globally unique
-/// `SymbolId` because the parser interns variables as `{name}__{scope}` (e.g.
-/// `X__3`), so two `?X` bindings in different scopes have distinct ids.
-///
-/// Only sorts stronger than `Individual` are stored.  A missing entry means
 // -- Numeric sort roots --------------------------------------------------------
 //
 // The three SUMO class names that anchor the TFF numeric sort hierarchy.
@@ -132,12 +129,6 @@ const NUMERIC_ROOTS: &[(&str, Sort)] = &[
     ("RationalNumber", Sort::Rational),
     ("Integer",       Sort::Integer),
 ];
-
-/// `Sort::Individual`.  Built lazily; cleared by `invalidate_cache()`.
-#[derive(Debug)]
-pub(crate) struct VarTypeInference {
-    pub var_sorts: HashMap<SymbolId, Sort>,
-}
 
 // -- SortAnnotations -----------------------------------------------------------
 
@@ -218,9 +209,8 @@ pub(crate) struct SemanticLayer {
     /// Arithmetic characterizations of numeric subclasses.
     /// Built by `build_numeric_char_cache()` after `numeric_sort_cache` is ready.
     numeric_char_cache:     HashMap<SymbolId, ArithCond>,
-    cache:               RwLock<SemanticCache>,
-    var_type_inference:  RwLock<Option<VarTypeInference>>,
-    sort_annotations:    RwLock<Option<SortAnnotations>>,
+    cache:                  RwLock<SemanticCache>,
+    sort_annotations:       RwLock<Option<SortAnnotations>>,
 }
 
 impl SemanticLayer {
@@ -234,7 +224,6 @@ impl SemanticLayer {
             poly_variant_symbols: HashSet::new(),
             numeric_char_cache:   HashMap::new(),
             cache:                RwLock::new(SemanticCache::default()),
-            var_type_inference:   RwLock::new(None),
             sort_annotations:     RwLock::new(None),
         };
         layer.rebuild_taxonomy();
@@ -271,7 +260,6 @@ impl SemanticLayer {
             poly_variant_symbols,
             numeric_char_cache,
             cache:              RwLock::new(SemanticCache::default()),
-            var_type_inference: RwLock::new(None),
             sort_annotations:   RwLock::new(None),
         }
     }
@@ -326,15 +314,13 @@ impl SemanticLayer {
     /// are added or removed.
     ///
     /// This is the "everything" hammer.  Prefer the granular
-    /// [`invalidate_semantic_cache`](Self::invalidate_semantic_cache),
-    /// [`invalidate_var_type_inference`](Self::invalidate_var_type_inference),
+    /// [`invalidate_semantic_cache`](Self::invalidate_semantic_cache)
     /// and [`invalidate_sort_annotations`](Self::invalidate_sort_annotations)
     /// methods when you know which pieces are actually affected.
     /// Phase B's `extend_taxonomy_with` picks the right granularity
     /// automatically from a sentence impact classification.
     pub(crate) fn invalidate_cache(&self) {
         self.invalidate_semantic_cache();
-        self.invalidate_var_type_inference();
         self.invalidate_sort_annotations();
     }
 
@@ -348,18 +334,6 @@ impl SemanticLayer {
     /// etc.).
     pub(crate) fn invalidate_semantic_cache(&self) {
         *self.cache.write().unwrap() = SemanticCache::default();
-    }
-
-    /// Clear the variable-type-inference cache.
-    ///
-    /// VTI is derived from every universally-quantified formula with
-    /// `instance` constraints, so any structural change can in
-    /// principle flip a variable's inferred sort.  In practice it's
-    /// lazy-rebuilt on first access, so invalidating is always safe;
-    /// the question is just whether we're forcing a rebuild for no
-    /// reason.
-    pub(crate) fn invalidate_var_type_inference(&self) {
-        *self.var_type_inference.write().unwrap() = None;
     }
 
     /// Clear the `SortAnnotations` cache.
@@ -779,23 +753,6 @@ impl SemanticLayer {
         false
     }
 
-    /// Return the arithmetic characterization of a numeric subclass, if known.
-    pub(crate) fn numeric_char_for(&self, class_id: SymbolId) -> Option<&ArithCond> {
-        self.numeric_char_cache.get(&class_id)
-    }
-
-    // -- Poly-variant symbols --------------------------------------------------
-
-    /// Returns `true` if `id` has at least one domain position that is a
-    /// numeric-ancestor class (and thus needs polymorphic TFF variants).
-    ///
-    /// Used by `tff::ensure_declared` to decide whether to emit `__int`,
-    /// `__rat`, and `__real` variant declarations alongside the base one,
-    /// and by the call-site translator to select the appropriate variant name.
-    pub(crate) fn has_poly_variant_args(&self, id: SymbolId) -> bool {
-        self.poly_variant_symbols.contains(&id)
-    }
-
     /// Extend the taxonomy and selectively invalidate derived caches
     /// based on what the new sentences actually contain.
     ///
@@ -897,9 +854,6 @@ impl SemanticLayer {
         }
         if impact.sort_annotations {
             self.invalidate_sort_annotations();
-            // VTI is built on top of sort annotations, so keep them
-            // in sync.
-            self.invalidate_var_type_inference();
         }
     }
 
@@ -917,13 +871,6 @@ impl SemanticLayer {
         }
     }
 
-    /// Back-compat alias.  Prefer [`extend_taxonomy_with`] so you pass
-    /// in the sids that changed; the old "rebuild everything" fallback
-    /// is kept for callers that truly don't know what changed (e.g.
-    /// post-file-removal cleanup in `flush_session`).
-    pub(crate) fn extend_taxonomy(&mut self) {
-        self.rebuild_taxonomy();
-    }
 
     // -- Basic semantic queries -------------------------------------------------
 
@@ -1359,13 +1306,6 @@ impl SemanticLayer {
     /// The only hardcoded strings in the system are the three roots in
     /// `NUMERIC_ROOTS`; all subclass memberships are resolved at taxonomy
     /// build time and stored in `numeric_sort_cache`.
-    pub(crate) fn sort_for(&self, sumo_type: &str) -> Sort {
-        match self.store.sym_id(sumo_type) {
-            Some(id) => self.sort_for_id(id),
-            None     => Sort::Individual,
-        }
-    }
-
     /// Map a `SymbolId` to its most specific primitive [`Sort`].
     ///
     /// O(1) -- a single `HashMap` lookup with no string operations.
@@ -1373,178 +1313,6 @@ impl SemanticLayer {
     pub(crate) fn sort_for_id(&self, class_id: SymbolId) -> Sort {
         if class_id == u64::MAX { return Sort::Individual; }
         self.numeric_sort_cache.get(&class_id).copied().unwrap_or(Sort::Individual)
-    }
-
-    // -- VarTypeInference ------------------------------------------------------
-
-    /// Depth-first walk of the sentence tree rooted at `sid`.
-    /// `f` is called with each node's element slice (parent before children).
-    fn visit_sentence<F>(sid: SentenceId, store: &KifStore, f: &mut F)
-    where
-        F: FnMut(&[Element]),
-    {
-        let elems = &store.sentences[store.sent_idx(sid)].elements;
-        f(elems);
-        for elem in elems {
-            if let Element::Sub(sub_sid) = elem {
-                Self::visit_sentence(*sub_sid, store, f);
-            }
-        }
-    }
-
-    /// Walk every root sentence and collect per-variable class constraints from
-    /// three patterns, then resolve each variable's constraints to a `Sort`.
-    ///
-    /// Resolution uses **max-sort**: map each class to a `Sort`, then:
-    ///   - If all constraints are numeric (non-Individual) -> take the most
-    ///     specific (maximum) sort.  This is correct because numeric sorts are
-    ///     totally ordered by inclusion (Integer <= Rational <= Real), so the
-    ///     most specific sort satisfies all weaker constraints simultaneously.
-    ///     Example: PositiveInteger + RealNumber -> Integer ($int).
-    ///   - If any constraint is Individual (non-numeric) -> fall back to
-    ///     Individual.  A variable that is both a Number and an Animal cannot
-    ///     be given a useful numeric type.
-    ///
-    /// Only non-Individual (numeric) sorts are stored in the output map.
-    fn build_var_type_inference(&self) -> VarTypeInference {
-        let entity_id = self.store.sym_id("Entity").unwrap_or(u64::MAX);
-        let mut constraints: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
-
-        for &root_sid in &self.store.roots {
-            Self::visit_sentence(root_sid, &self.store, &mut |elems| {
-
-                // -- Pattern 1: (instance ?X Class) --------------------------
-                // Skip Entity (everything is an Entity -> no useful constraint)
-                // and u64::MAX (gap sentinel, not a real class).
-                if elems.len() >= 3 {
-                    let is_instance = matches!(&elems[0],
-                        Element::Symbol(id) if self.store.sym_name(*id) == "instance");
-                    if is_instance {
-                        if let (Element::Variable { id: var_id, .. },
-                                Element::Symbol(class_id)) = (&elems[1], &elems[2])
-                        {
-                            if *class_id != entity_id && *class_id != u64::MAX {
-                                constraints.entry(*var_id).or_default().push(*class_id);
-                            }
-                        }
-                    }
-                }
-
-                // -- Pattern 2: argument position with domain axiom -----------
-                // (Rel ?X ?Y) where Rel has (domain Rel N SomeClass) gives ?X
-                // the class constraint SomeClass.  Variable-arity: the last
-                // declared domain carries over to all later positions.
-                // DomainSubclass positions are skipped (they constrain subclass
-                // variables, not instance variables).
-                //
-                // Entity IS included here (unlike Pattern 1).  A variable in an
-                // Entity-domain position is typed as $i; including that as a
-                // Sort::Individual constraint lets the "any-Individual -> skip"
-                // rule in the resolution step prevent a spurious numeric sort
-                // for variables that also appear in non-numeric positions.
-                if let Some(Element::Symbol(head_id)) = elems.first() {
-                    let domains = self.domain(*head_id);
-                    if !domains.is_empty() {
-                        let rest = domains.last().cloned();
-                        for (i, elem) in elems[1..].iter().enumerate() {
-                            if let Element::Variable { id: var_id, .. } = elem {
-                                let dom = domains.get(i).or_else(|| rest.as_ref());
-                                if let Some(RelationDomain::Domain(class_id)) = dom {
-                                    if *class_id != u64::MAX {
-                                        constraints.entry(*var_id)
-                                            .or_default().push(*class_id);
-                                    }
-                                }
-                                // RelationDomain::DomainSubclass -> skip
-                            }
-                        }
-                    }
-                }
-
-                // -- Pattern 3: (equal ?X (Fn ...)) with range axiom ---------
-                // If (range Fn Class) exists, then in (equal ?X (Fn ...)) the
-                // variable ?X gets Class as a constraint.  Both argument orders
-                // are tried.  RangeSubclass ranges are skipped.
-                if matches!(elems.first(), Some(Element::Op(OpKind::Equal))) {
-                    for &(fn_idx, var_idx) in &[(1usize, 2usize), (2, 1)] {
-                        let (fn_elem, var_elem) = match (elems.get(fn_idx), elems.get(var_idx)) {
-                            (Some(f), Some(v)) => (f, v),
-                            _ => continue,
-                        };
-                        let var_id = match var_elem {
-                            Element::Variable { id, .. } => id,
-                            _ => continue,
-                        };
-                        let fn_sub_sid = match fn_elem {
-                            Element::Sub(s) => s,
-                            _ => continue,
-                        };
-                        let fn_elems = &self.store.sentences[
-                            self.store.sent_idx(*fn_sub_sid)].elements;
-                        let fn_sym_id = match fn_elems.first() {
-                            Some(Element::Symbol(id)) => *id,
-                            _ => continue,
-                        };
-                        if let Ok(Some(RelationDomain::Domain(class_id))) =
-                            self.range(fn_sym_id)
-                        {
-                            if class_id != entity_id && class_id != u64::MAX {
-                                constraints.entry(*var_id)
-                                    .or_default().push(class_id);
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        let mut var_sorts = HashMap::new();
-        for (var_id, classes) in constraints {
-            // Map each class to a Sort, then resolve.
-            let sorts: Vec<Sort> = classes.iter()
-                .map(|&c| self.sort_for_id(c))
-                .collect();
-            // Take the most specific sort across all constraints.
-            //
-            // If the winning sort is numeric (> Individual), verify that all
-            // constraints that mapped to Individual are numeric-ancestor classes
-            // (e.g. Entity, Quantity -- superclasses of the numeric roots).
-            // Such classes are compatible: Integer IS-A Entity, so a variable
-            // constrained by [Integer, Entity] is correctly typed as Integer.
-            //
-            // A non-ancestor Individual constraint (e.g. Animal) means the
-            // variable could genuinely be non-numeric at runtime -- leave it
-            // absent so TFF defaults it to $i.
-            if let Some(&sort) = sorts.iter().max() {
-                if sort != Sort::Individual {
-                    let all_compatible = classes.iter()
-                        .zip(sorts.iter())
-                        .all(|(&cls, &s)| {
-                            s != Sort::Individual
-                                || self.numeric_ancestor_set.contains(&cls)
-                        });
-                    if all_compatible {
-                        var_sorts.insert(var_id, sort);
-                    }
-                }
-            }
-        }
-
-        VarTypeInference { var_sorts }
-    }
-
-    /// Returns the lazily-computed KB-wide variable sort table.
-    ///
-    /// On first call builds the table by walking all root sentences.
-    /// Result is cached; cleared by `invalidate_cache()`.
-    pub(crate) fn var_type_inference(&self) -> RwLockReadGuard<'_, Option<VarTypeInference>> {
-        {
-            let mut guard = self.var_type_inference.write().unwrap();
-            if guard.is_none() {
-                *guard = Some(self.build_var_type_inference());
-            }
-        }
-        self.var_type_inference.read().unwrap()
     }
 
     // -- SortAnnotations -------------------------------------------------------
@@ -1893,71 +1661,6 @@ mod tests {
     }
 
     #[test]
-    fn var_type_inference_instance_pattern() {
-        // Pattern 1: (instance ?X Integer) inside an implication.
-        // visit_sentence recurses into sub-sentences, so the instance call is found.
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (=> (instance ?X Integer) (Positive ?X))
-        ");
-        let vti_guard = layer.var_type_inference();
-        let vti = vti_guard.as_ref().unwrap();
-        // ?X appears in the => sentence; its SymbolId is unique due to scope suffix.
-        // Find it by looking for the variable in the roots.
-        let x_id = layer.store.roots.iter().find_map(|&sid| {
-            let mut found = None;
-            SemanticLayer::visit_sentence(sid, &layer.store, &mut |elems| {
-                for e in elems {
-                    if let Element::Variable { id, .. } = e { found = Some(*id); }
-                }
-            });
-            found
-        }).expect("should find ?X");
-        assert_eq!(vti.var_sorts.get(&x_id), Some(&Sort::Integer));
-    }
-
-    #[test]
-    fn var_type_inference_lca_incompatible() {
-        // ?X constrained by both Integer and Animal -> Animal maps to Individual ->
-        // mixed numeric/non-numeric -> not stored (defaults to $i at use sites).
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (subclass Animal Entity)
-            (=> (or (instance ?X Integer) (instance ?X Animal)) (foo ?X))
-        ");
-        let vti_guard = layer.var_type_inference();
-        let vti = vti_guard.as_ref().unwrap();
-        // All ?X occurrences in the => sentence share the same SymbolId.
-        let x_id = layer.store.roots.iter().find_map(|&sid| {
-            let mut found = None;
-            SemanticLayer::visit_sentence(sid, &layer.store, &mut |elems| {
-                for e in elems {
-                    if let Element::Variable { id, .. } = e { found = Some(*id); }
-                }
-            });
-            found
-        }).expect("should find ?X");
-        assert_eq!(vti.var_sorts.get(&x_id), None,
-            "Integer + Animal: mixed numeric/non-numeric -> should not be stored");
-    }
-
-    #[test]
-    fn var_type_inference_cleared_on_invalidate() {
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (=> (instance ?X Integer) (Positive ?X))
-        ");
-        // Trigger build, verify non-empty.
-        { assert!(!layer.var_type_inference().as_ref().unwrap().var_sorts.is_empty()); }
-        // Invalidate clears it; next call rebuilds.
-        layer.invalidate_cache();
-        { assert!(!layer.var_type_inference().as_ref().unwrap().var_sorts.is_empty()); }
-    }
-
-    #[test]
     fn sort_annotations_predicate_arg_sorts() {
         let layer = kif("
             (subclass BinaryPredicate Predicate)
@@ -2231,31 +1934,21 @@ mod tests {
 
     #[test]
     fn granular_invalidate_independence() {
-        // invalidate_semantic_cache does not touch sort_annotations
-        // or var_type_inference slots; same for the others.
+        // invalidate_semantic_cache does not touch sort_annotations.
         let mut store = KifStore::default();
         load_kif(&mut store, BASE, "base");
         let layer = SemanticLayer::new(store);
 
-        // Populate all three caches.
+        // Populate the sort_annotations cache.
         drop(layer.sort_annotations());
-        drop(layer.var_type_inference());
         assert!(layer.sort_annotations.read().unwrap().is_some());
-        assert!(layer.var_type_inference.read().unwrap().is_some());
 
         layer.invalidate_semantic_cache();
-        // The slots aren't empty just because semantic_cache was cleared.
+        // sort_annotations is not touched by semantic-cache invalidation.
         assert!(layer.sort_annotations.read().unwrap().is_some(),
             "invalidate_semantic_cache should NOT clear sort_annotations");
-        assert!(layer.var_type_inference.read().unwrap().is_some(),
-            "invalidate_semantic_cache should NOT clear var_type_inference");
 
         layer.invalidate_sort_annotations();
         assert!(layer.sort_annotations.read().unwrap().is_none());
-        assert!(layer.var_type_inference.read().unwrap().is_some(),
-            "invalidate_sort_annotations should NOT clear var_type_inference");
-
-        layer.invalidate_var_type_inference();
-        assert!(layer.var_type_inference.read().unwrap().is_none());
     }
 }

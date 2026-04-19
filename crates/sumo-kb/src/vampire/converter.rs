@@ -51,16 +51,6 @@ fn mention_name(name: &str) -> String {
     format!("{}{}{}", S, name.replace('.', "_").replace('-', "_"), M)
 }
 
-/// Map a SUMO numeric sort to the corresponding TPTP sort.
-fn kif_to_ir_sort(s: KifSort) -> IrSort {
-    match s {
-        KifSort::Individual => IrSort::default_sort(),
-        KifSort::Integer    => IrSort::int(),
-        KifSort::Rational   => IrSort::rational(),
-        KifSort::Real       => IrSort::real(),
-    }
-}
-
 /// Map recorded for each converted conjecture so that downstream binding
 /// extraction can rejoin Vampire's `X<n>` variable names with the original
 /// KIF names.

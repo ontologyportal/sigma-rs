@@ -38,7 +38,7 @@ use vampire_prover::ir;
 use crate::error::KbError;
 use crate::kif_store::KifStore;
 use crate::semantic::SemanticLayer;
-use crate::types::{Clause, CnfLiteral, CnfTerm, SentenceId, Symbol, SymbolId};
+use crate::types::{Clause, CnfLiteral, CnfTerm, SentenceId, SymbolId};
 use crate::vampire::converter::{Mode, NativeConverter};
 
 // =========================================================================
@@ -267,13 +267,6 @@ fn is_skolem_name(name: &str) -> bool {
 fn strip_s_prefix(name: &str) -> &str {
     name.strip_prefix("s__").unwrap_or(name)
 }
-
-// A no-op shim kept around so future audit tooling can find the "unused"
-// `Symbol` dependency import without tripping unused-import warnings
-// when the skolem path is exercised but `Symbol` never surfaces as a
-// value.  (Compiler-visible comment only.)
-#[allow(dead_code)]
-const _: fn() -> Option<Symbol> = || None;
 
 // =========================================================================
 //  Tests

@@ -680,7 +680,11 @@ impl LmdbEnv {
     }
 
     /// Look up a formula-level fingerprint in `formula_hashes`.
-    #[cfg(feature = "cnf")]
+    ///
+    /// Test-only helper: production code populates the in-memory
+    /// `fingerprints` map via `all_formula_hashes` at open time; no
+    /// runtime path does point lookups.
+    #[cfg(all(feature = "cnf", test))]
     pub(crate) fn get_formula_hash(
         &self,
         txn:          &RoTxn,
@@ -837,10 +841,13 @@ impl LmdbEnv {
         Ok(out)
     }
 
-    /// Iterate every `StoredClause` in the `clauses` table.  Used by
-    /// diagnostics and by the Phase 5 fingerprint-rehydration path when
-    /// a KB is reopened.
-    #[cfg(feature = "cnf")]
+    /// Iterate every `StoredClause` in the `clauses` table.
+    ///
+    /// Test-only helper: lets tests assert the exact dedup shape of
+    /// the `clauses` table.  Production rehydration reads via
+    /// `all_formula_hashes` (formula-level map) rather than
+    /// reconstructing clauses.
+    #[cfg(all(feature = "cnf", test))]
     pub(crate) fn all_clauses(&self, txn: &RoTxn) -> Result<Vec<StoredClause>, KbError> {
         let mut out = Vec::new();
         for result in self.clauses.iter(txn)? {

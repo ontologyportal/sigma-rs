@@ -43,8 +43,6 @@ pub struct Token {
 // -- Tokenizer -----------------------------------------------------------------
 
 pub struct Tokenizer<'src> {
-    #[allow(dead_code)]
-    src:    &'src str,
     chars:  std::str::CharIndices<'src>,
     peeked: Option<(usize, char)>,
     file:   String,
@@ -56,7 +54,7 @@ impl<'src> Tokenizer<'src> {
     fn new(src: &'src str, file: &str) -> Self {
         let mut chars = src.char_indices();
         let peeked = chars.next();
-        Self { src, chars, peeked, file: file.to_owned(), line: 1, col: 1 }
+        Self { chars, peeked, file: file.to_owned(), line: 1, col: 1 }
     }
 
     fn span(&self) -> Span {

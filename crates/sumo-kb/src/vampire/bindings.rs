@@ -33,7 +33,7 @@
 // Gated: requires both the `ask` and `integrated-prover` features via
 // the parent module.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -56,7 +56,6 @@ pub struct ProofBinding {
 
 static RE_UNBOUND: Lazy<Regex> = Lazy::new(|| Regex::new(r"\bX\d+\b").unwrap());
 static RE_VAR:     Lazy<Regex> = Lazy::new(|| Regex::new(r"^X\d+$").unwrap());
-static RE_CONST:   Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(s__[A-Za-z0-9_]+)\b").unwrap());
 
 /// Top-level (non-nested) literal in either FOF or TFF encoding.
 /// Captures polarity, predicate name, and the flat argument list.  The
