@@ -427,6 +427,13 @@ impl SemanticLayer {
 
         let mut cache: HashMap<SymbolId, Sort> = HashMap::new();
 
+        // Hoisted across roots; cleared per-iteration.  The per-root
+        // `visited` semantics are preserved because multi-root classes
+        // are still overwritten in `cache` by the later root's sort
+        // (the "more-specific sort wins" contract documented above).
+        let mut queue:   VecDeque<SymbolId> = VecDeque::new();
+        let mut visited: HashSet<SymbolId>  = HashSet::new();
+
         for &(root_name, sort) in NUMERIC_ROOTS {
             let root_id = match self.store.sym_id(root_name) {
                 Some(id) => id,
@@ -434,8 +441,8 @@ impl SemanticLayer {
             };
 
             // BFS downward from root_id, including the root itself.
-            let mut queue:   VecDeque<SymbolId> = VecDeque::new();
-            let mut visited: HashSet<SymbolId>  = HashSet::new();
+            queue.clear();
+            visited.clear();
             queue.push_back(root_id);
             while let Some(id) = queue.pop_front() {
                 if !visited.insert(id) { continue; }  // cycle guard
@@ -511,8 +518,7 @@ impl SemanticLayer {
     ///   `(domain foo 1 Animal)`    -> Animal fails condition 1 -> not added.
     fn build_poly_variant_symbols(&self) -> HashSet<SymbolId> {
         let mut result: HashSet<SymbolId> = HashSet::new();
-        let sids = self.store.by_head("domain").to_vec();
-        for sid in sids {
+        for &sid in self.store.by_head("domain") {
             let sentence = &self.store.sentences[self.store.sent_idx(sid)];
             // (domain Relation Position Class)
             let rel_id = match sentence.elements.get(1) {
@@ -1016,8 +1022,7 @@ impl SemanticLayer {
         &self, rel: SymbolId,
     ) -> Result<Option<RelationDomain>, SemanticError> {
         let process = |head: &str, make: fn(SymbolId) -> RelationDomain| -> Option<RelationDomain> {
-            let sids = self.store.by_head(head).to_vec();
-            for sid in sids {
+            for &sid in self.store.by_head(head) {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
@@ -1060,8 +1065,7 @@ impl SemanticLayer {
     fn compute_domain(&self, rel: SymbolId) -> Vec<RelationDomain> {
         let mut entries: Vec<(usize, RelationDomain)> = Vec::new();
         let mut process = |head: &str, make: fn(SymbolId) -> RelationDomain| {
-            let sids = self.store.by_head(head).to_vec();
-            for sid in sids {
+            for &sid in self.store.by_head(head) {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
