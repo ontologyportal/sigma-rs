@@ -174,6 +174,13 @@ impl KifStore {
         self.sym_idx.contains_key(&id)
     }
 
+    /// O(1) `SymbolId -> &Symbol` lookup.  Returns `None` for ids
+    /// not in the intern table (e.g. stale ids from removed files).
+    #[inline]
+    pub(crate) fn symbol_of(&self, id: SymbolId) -> Option<&Symbol> {
+        self.sym_idx.get(&id).map(|&idx| &self.symbol_data[idx])
+    }
+
     /// Resolve a SymbolId to its Vec index (panics if not found).
     #[inline]
     fn sym_vec_idx(&self, id: SymbolId) -> usize {

@@ -12,10 +12,14 @@
 // widest compatibility.  `ropey::Rope` gives us cheap UTF-16 ↔ byte
 // conversion on large files.
 
+use std::collections::HashMap;
+
 use lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, Position, Range, Url};
 use ropey::Rope;
 
 use sumo_kb::{Diagnostic as KbDiagnostic, Severity, Span};
+
+use crate::state::DocState;
 
 // -- URI ↔ file tag -----------------------------------------------------------
 
@@ -52,6 +56,60 @@ pub fn uri_to_tag(uri: &Url) -> String {
 /// a parseable file path (e.g. fallback ad-hoc strings).
 pub fn tag_to_uri(tag: &str) -> Option<Url> {
     Url::from_file_path(tag).ok()
+}
+
+/// Convert a `Span` to an LSP `Range` against whichever buffer
+/// can be located for `uri`:
+///
+/// 1. The open-document table (`docs`) if the URI is currently
+///    open in the client.
+/// 2. An on-demand disk read as a fallback for cross-file
+///    references into files not yet opened.
+/// 3. An empty rope as a last resort (malformed URI, unreadable
+///    file, permissions error).  A `debug`-level log line is
+///    emitted so misconfigurations surface without cluttering
+///    normal operation.
+///
+/// Centralising this logic avoids drift across handlers that all
+/// need the same "give me a range for this span, wherever the
+/// source text lives" primitive.
+pub fn span_to_range_with_fallback(
+    docs: &HashMap<Url, DocState>,
+    uri:  &Url,
+    span: &Span,
+) -> Range {
+    if let Some(doc) = docs.get(uri) {
+        return span_to_range(&doc.rope, span);
+    }
+    let rope = match read_rope_from_disk(uri) {
+        Some(r) => r,
+        None    => Rope::new(),
+    };
+    span_to_range(&rope, span)
+}
+
+/// Best-effort disk read of a `file://` URL into a `Rope`.  Emits
+/// a debug log when the read fails -- silent would let bad paths
+/// silently misreport ranges -- then lets the caller decide
+/// whether to use an empty rope or bail.
+fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
+    let path = match uri.to_file_path() {
+        Ok(p)  => p,
+        Err(_) => {
+            log::debug!(target: "sumo_lsp::conv",
+                "non-file URI '{}' in cross-file range lookup; using empty rope", uri);
+            return None;
+        }
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(Rope::from_str(&text)),
+        Err(e)   => {
+            log::debug!(target: "sumo_lsp::conv",
+                "cross-file read of '{}' failed ({}); using empty rope",
+                path.display(), e);
+            None
+        }
+    }
 }
 
 // -- Position ↔ byte offset ---------------------------------------------------

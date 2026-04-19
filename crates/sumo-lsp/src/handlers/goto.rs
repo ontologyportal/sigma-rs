@@ -6,9 +6,8 @@
 // `KnowledgeBase::defining_sentence`) and returns its `Location`.
 
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location};
-use ropey::Rope;
 
-use crate::conv::{position_to_offset, span_to_range, tag_to_uri, uri_to_tag};
+use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
 
 /// Handle a `textDocument/definition` request.  Returns `None`
@@ -35,21 +34,8 @@ pub fn handle_goto_definition(
     // URL.  If the file isn't in our per-doc rope table, build a
     // temporary rope from disk (best-effort).  `span_to_range`
     // only needs byte positions and the source text layout.
-    let target_uri = tag_to_uri(&span.file)?;
-    let target_doc = docs.get(&target_uri);
-    let target_range = if let Some(td) = target_doc {
-        span_to_range(&td.rope, &span)
-    } else {
-        // The defining file isn't currently open for editing; read
-        // it from disk once to compute the LSP range.  Cheap for a
-        // hover-driven goto -- we're re-reading one file, not the
-        // whole workspace.
-        let text = target_uri.to_file_path().ok()
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .unwrap_or_default();
-        let rope = Rope::from_str(&text);
-        span_to_range(&rope, &span)
-    };
+    let target_uri   = tag_to_uri(&span.file)?;
+    let target_range = span_to_range_with_fallback(&docs, &target_uri, &span);
 
     Some(GotoDefinitionResponse::Scalar(Location {
         uri:   target_uri,

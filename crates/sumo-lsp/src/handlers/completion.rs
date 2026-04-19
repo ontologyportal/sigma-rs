@@ -27,7 +27,7 @@ use lsp_types::{
     Documentation, MarkupContent, MarkupKind,
 };
 
-use sumo_kb::{KnowledgeBase, OpKind, TokenKind};
+use sumo_kb::{KnowledgeBase, TokenKind};
 
 use crate::conv::{position_to_offset, uri_to_tag};
 use crate::state::GlobalState;
@@ -228,11 +228,6 @@ fn classify_completion_kind(kb: &KnowledgeBase, name: &str) -> CompletionItemKin
     if kb.is_instance(id)   { return CompletionItemKind::CONSTANT; }
     CompletionItemKind::VARIABLE
 }
-
-// -- Unused-import silencer --------------------------------------------------
-
-#[allow(dead_code)]
-fn _opkind_import() { let _ = OpKind::And; }
 
 // -- Tests -------------------------------------------------------------------
 

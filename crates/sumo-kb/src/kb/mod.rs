@@ -996,11 +996,9 @@ impl KnowledgeBase {
     /// reporting, programmatic walks.  Returns an empty slice when
     /// the symbol is unknown or has no non-synthetic occurrences.
     pub fn occurrences(&self, symbol: &str) -> &[crate::types::Occurrence] {
-        match self.symbol_id(symbol) {
-            Some(id) => self.layer.store.occurrences
-                .get(&id).map(|v| v.as_slice()).unwrap_or(&[]),
-            None => &[],
-        }
+        self.symbol_id(symbol)
+            .map(|id| self.occurrences_of(id))
+            .unwrap_or(&[])
     }
 
     /// Occurrences by raw `SymbolId`.  Useful when the caller has
@@ -1011,17 +1009,17 @@ impl KnowledgeBase {
         self.layer.store.occurrences.get(&id).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Iterate every interned symbol name in insertion order.
+    /// Iterate every interned symbol as `(SymbolId, name)` pairs.
     /// Powers workspace-symbol search (fuzzy "jump to any symbol
     /// in the KB"), dump utilities, and any consumer that needs
     /// the full symbol set.  Skolem symbols are included --
     /// callers that want to hide them can filter via
     /// [`symbol_is_skolem`](Self::symbol_is_skolem).
+    ///
+    /// Iteration order matches the intern table's hash-map order
+    /// (i.e. arbitrary but stable within one KB instance).
     pub fn iter_symbols(&self) -> impl Iterator<Item = (crate::types::SymbolId, &str)> + '_ {
-        self.layer.store.symbol_data.iter()
-            .filter_map(move |sym| {
-                self.layer.store.sym_id(&sym.name).map(|id| (id, sym.name.as_str()))
-            })
+        self.layer.store.symbols.iter().map(|(name, &id)| (id, name.as_str()))
     }
 
     /// Iterate every distinct head-predicate name currently indexed
@@ -1064,11 +1062,11 @@ impl KnowledgeBase {
 
     /// True when `symbol` is a Skolem function introduced by the
     /// CNF clausifier.  Exposed so workspace-symbol search can
-    /// filter these out by default.
+    /// filter these out by default.  O(1) -- name -> id -> Symbol
+    /// via the intern table + `sym_idx`.
     pub fn symbol_is_skolem(&self, symbol: &str) -> bool {
-        self.layer.store.symbol_data
-            .iter()
-            .find(|s| s.name == symbol)
+        self.symbol_id(symbol)
+            .and_then(|id| self.layer.store.symbol_of(id))
             .map(|s| s.is_skolem)
             .unwrap_or(false)
     }
@@ -1107,9 +1105,9 @@ impl KnowledgeBase {
             }
         }
 
-        // Priority 2: any root where symbol is the head.
-        let sym_vec = store.symbol_data.iter()
-            .find(|s| s.name == symbol)?;
+        // Priority 2: any root where symbol is the head.  O(1)
+        // id -> &Symbol via `symbol_of`.
+        let sym_vec = store.symbol_of(sym_id)?;
         for &sid in &sym_vec.head_sentences {
             let sent = &store.sentences[store.sent_idx(sid)];
             if !sent.span.is_synthetic() {

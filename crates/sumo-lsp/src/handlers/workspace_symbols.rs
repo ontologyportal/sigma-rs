@@ -15,9 +15,8 @@ use lsp_types::{
     Location, SymbolInformation, SymbolKind, WorkspaceSymbolParams,
     WorkspaceSymbolResponse,
 };
-use ropey::Rope;
 
-use crate::conv::{span_to_range, tag_to_uri};
+use crate::conv::{span_to_range_with_fallback, tag_to_uri};
 use crate::state::GlobalState;
 
 /// Hard cap on how many symbols we stream back per query.  The
@@ -45,15 +44,7 @@ pub fn handle_workspace_symbols(
         let Some((_sid, span)) = kb.defining_sentence(name) else { continue; };
         let Some(uri)          = tag_to_uri(&span.file)     else { continue; };
 
-        let range = if let Some(td) = docs.get(&uri) {
-            span_to_range(&td.rope, &span)
-        } else {
-            let text = uri.to_file_path().ok()
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .unwrap_or_default();
-            let rope = Rope::from_str(&text);
-            span_to_range(&rope, &span)
-        };
+        let range = span_to_range_with_fallback(&docs, &uri, &span);
 
         let kind = classify_symbol(&kb, name);
 

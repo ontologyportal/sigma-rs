@@ -7,9 +7,8 @@
 // `Location`.
 
 use lsp_types::{Location, ReferenceParams};
-use ropey::Rope;
 
-use crate::conv::{position_to_offset, span_to_range, tag_to_uri, uri_to_tag};
+use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
 
 pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option<Vec<Location>> {
@@ -43,17 +42,7 @@ pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option
             continue;
         }
         let Some(occ_uri) = tag_to_uri(&occ.span.file) else { continue; };
-        let range = if occ_uri == uri {
-            span_to_range(&doc.rope, &occ.span)
-        } else if let Some(td) = docs.get(&occ_uri) {
-            span_to_range(&td.rope, &occ.span)
-        } else {
-            let text = occ_uri.to_file_path().ok()
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .unwrap_or_default();
-            let rope = Rope::from_str(&text);
-            span_to_range(&rope, &occ.span)
-        };
+        let range = span_to_range_with_fallback(&docs, &occ_uri, &occ.span);
         locations.push(Location { uri: occ_uri, range });
     }
 

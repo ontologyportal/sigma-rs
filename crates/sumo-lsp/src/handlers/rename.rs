@@ -22,11 +22,11 @@
 use std::collections::HashMap;
 
 use lsp_types::{RenameParams, TextEdit, Url, WorkspaceEdit};
-use ropey::Rope;
+// `Url` is used as the key type in `HashMap<Url, Vec<TextEdit>>`.
 
 use sumo_kb::types::Element;
 
-use crate::conv::{position_to_offset, span_to_range, tag_to_uri, uri_to_tag};
+use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
 
 pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<WorkspaceEdit> {
@@ -66,17 +66,7 @@ pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<Worksp
 
     for occ in occurrences {
         let Some(occ_uri) = tag_to_uri(&occ.span.file) else { continue; };
-        let range = if occ_uri == uri {
-            span_to_range(&doc.rope, &occ.span)
-        } else if let Some(td) = docs.get(&occ_uri) {
-            span_to_range(&td.rope, &occ.span)
-        } else {
-            let text = occ_uri.to_file_path().ok()
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .unwrap_or_default();
-            let rope = Rope::from_str(&text);
-            span_to_range(&rope, &occ.span)
-        };
+        let range = span_to_range_with_fallback(&docs, &occ_uri, &occ.span);
         changes.entry(occ_uri).or_default().push(TextEdit {
             range,
             new_text: replacement.clone(),
