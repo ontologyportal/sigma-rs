@@ -11,6 +11,7 @@ use std::sync::{RwLock, RwLockReadGuard};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::SemanticError;
+use crate::kb::man::DocEntry;
 use crate::kif_store::KifStore;
 use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxRelation};
 
@@ -110,6 +111,16 @@ struct SemanticCache {
     arity:        HashMap<SymbolId, Option<i32>>,
     domain:       HashMap<SymbolId, Vec<RelationDomain>>,
     range:        HashMap<SymbolId, RelationDomain>,
+
+    // Ontology-native doc-relation caches.  Each stores the full
+    // list of entries (across all languages) for a symbol; per-call
+    // language filtering happens at the lookup boundary.  Populated
+    // lazily on first query; cleared wholesale by
+    // `invalidate_semantic_cache` or granularly by
+    // `invalidate_symbols`.
+    documentation: HashMap<SymbolId, Vec<DocEntry>>,
+    term_format:   HashMap<SymbolId, Vec<DocEntry>>,
+    format:        HashMap<SymbolId, Vec<DocEntry>>,
 }
 
 // -- Numeric sort roots --------------------------------------------------------
@@ -1096,6 +1107,116 @@ impl SemanticLayer {
         result
     }
 
+    // -- Doc-relation lookups --------------------------------------------------
+    //
+    // These three scan the store's head-indexed view for
+    // `(documentation SYM LANG TEXT)`, `(termFormat LANG SYM TEXT)`, and
+    // `(format LANG REL TEXT)` respectively.  Results are cached per
+    // SymbolId on first query; subsequent lookups are HashMap hits.
+    //
+    // `language` filters the cached result at retrieval time; the cache
+    // itself always holds the full cross-language list for a symbol.
+
+    /// `(documentation sym lang text)` entries for this symbol.
+    pub(crate) fn documentation(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().documentation.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "documentation", sym, 1, 2, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().documentation.insert(sym, all);
+        filtered
+    }
+
+    /// `(termFormat lang sym text)` entries for this symbol.
+    pub(crate) fn term_format(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().term_format.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "termFormat", sym, 2, 1, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().term_format.insert(sym, all);
+        filtered
+    }
+
+    /// `(format lang relation text)` entries for this symbol.
+    pub(crate) fn format(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().format.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "format", sym, 2, 1, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().format.insert(sym, all);
+        filtered
+    }
+
+    /// Internal scan over head-indexed root sentences with shape
+    /// `(head A B C)` where `target_idx` / `lang_idx` / `text_idx` pick
+    /// the target-symbol, language-tag, and text-literal argument
+    /// positions (1-based over `elements`).  Runs once per cache miss.
+    fn collect_doc_relation(
+        store:      &KifStore,
+        head:       &str,
+        target:     SymbolId,
+        target_idx: usize,
+        lang_idx:   usize,
+        text_idx:   usize,
+    ) -> Vec<DocEntry> {
+        let mut out = Vec::new();
+        for &sid in store.by_head(head) {
+            let sent = &store.sentences[store.sent_idx(sid)];
+            let tgt  = match sent.elements.get(target_idx) {
+                Some(Element::Symbol(id)) => *id,
+                _ => continue,
+            };
+            if tgt != target { continue; }
+            let lang = match sent.elements.get(lang_idx) {
+                Some(Element::Symbol(id)) => store.sym_name(*id).to_string(),
+                _ => continue,
+            };
+            let text = match sent.elements.get(text_idx) {
+                Some(Element::Literal(Literal::Str(s))) => strip_quotes(s),
+                _ => continue,
+            };
+            out.push(DocEntry { language: lang, text });
+        }
+        out
+    }
+
+    /// Granular cache eviction for a specific set of symbols.
+    ///
+    /// Evicts every entry in the symbol-keyed caches whose key is in
+    /// `symbols`, plus every entry in the `(SymbolId, SymbolId)`
+    /// `has_ancestor` cache whose *either* key is in the set
+    /// (conservative over-eviction -- see plan risk #9).  Leaves
+    /// unrelated entries untouched, so a single-sentence edit doesn't
+    /// flush the whole cache.
+    ///
+    /// Does **not** touch `SortAnnotations` -- that cache rebuilds
+    /// wholesale via `invalidate_sort_annotations` since its
+    /// dependency tracking is coarser.
+    #[allow(dead_code)] // first caller lands in Phase 2 (apply_file_diff)
+    pub(crate) fn invalidate_symbols(&self, symbols: &HashSet<SymbolId>) {
+        if symbols.is_empty() { return; }
+        let mut cache = self.cache.write().unwrap();
+        for &id in symbols {
+            cache.is_instance.remove(&id);
+            cache.is_class.remove(&id);
+            cache.is_relation.remove(&id);
+            cache.is_predicate.remove(&id);
+            cache.is_function.remove(&id);
+            cache.arity.remove(&id);
+            cache.domain.remove(&id);
+            cache.range.remove(&id);
+            cache.documentation.remove(&id);
+            cache.term_format.remove(&id);
+            cache.format.remove(&id);
+        }
+        cache.has_ancestor.retain(|&(a, b), _| {
+            !symbols.contains(&a) && !symbols.contains(&b)
+        });
+    }
+
     // -- Validation ------------------------------------------------------------
 
     pub(crate) fn validate_element(&self, el: &Element) -> Result<(), SemanticError> {
@@ -1398,6 +1519,28 @@ impl SemanticLayer {
         self.store.roots.iter()
             .filter_map(|&sid| self.validate_sentence(sid).err().map(|e| (sid, e)))
             .collect()
+    }
+}
+
+// -- Doc-relation helpers -----------------------------------------------------
+
+/// Strip the surrounding `"..."` that the KIF tokenizer preserves on
+/// string literals.  Safe on unquoted input -- no-op when the bounds
+/// don't match.
+fn strip_quotes(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Filter a cached `DocEntry` list by language, returning owned clones.
+fn filter_lang(entries: &[DocEntry], want: Option<&str>) -> Vec<DocEntry> {
+    match want {
+        None    => entries.to_vec(),
+        Some(l) => entries.iter().filter(|e| e.language == l).cloned().collect(),
     }
 }
 
