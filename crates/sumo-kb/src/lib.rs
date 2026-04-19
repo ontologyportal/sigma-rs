@@ -10,6 +10,7 @@ compile_error!(
 
 pub mod parse;
 pub mod error;
+pub mod diagnostic;
 pub mod types;
 pub(crate) mod kif_store;
 pub(crate) mod semantic;
@@ -44,6 +45,7 @@ pub use error::{
     PromoteError, PromoteReport, DuplicateInfo, DuplicateSource,
 
 };
+pub use diagnostic::{Diagnostic, RelatedInfo, Severity, ToDiagnostic};
 pub use types::{
     SymbolId, SentenceId,
     Element, Literal, Symbol, Sentence,
@@ -56,7 +58,8 @@ pub use types::ClauseId;
 pub use tptp::{TptpOptions, TptpLang, TestCase, parse_test_content};
 pub use kb::KnowledgeBase;
 pub use kb::man::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
-pub use parse::{AstNode, Pretty, Parser};
+pub use parse::{AstNode, Pretty, Parser, ParsedDocument, parse_document, sentence_fingerprint};
+pub use parse::kif::{Token, TokenKind};
 
 #[cfg(feature = "cnf")]
 pub use kb::{ClausifyOptions, ClausifyReport};
