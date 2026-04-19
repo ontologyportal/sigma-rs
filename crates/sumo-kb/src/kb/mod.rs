@@ -36,12 +36,14 @@ use crate::persist::{load_from_db, write_axioms, LmdbEnv};
 #[cfg(feature = "ask")]
 use crate::prover::{ProverMode, ProverOpts, ProverRunner, ProverStatus};
 
-// Sub-modules: prove/export methods broken out for file-size hygiene.
-// All three files share the same `KnowledgeBase` and see each other's
-// private items because they live in the same module tree.
+// Sub-modules: prove/export/man methods broken out for file-size
+// hygiene.  All four files share the same `KnowledgeBase` and see
+// each other's private items because they live in the same module
+// tree.
 #[cfg(feature = "ask")]
 mod prove;
 mod export;
+pub mod man;
 
 // -- Feature-gated KB config types --------------------------------------------
 

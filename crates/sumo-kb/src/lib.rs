@@ -55,6 +55,7 @@ pub use types::{
 pub use types::ClauseId;
 pub use tptp::{TptpOptions, TptpLang, TestCase, parse_test_content};
 pub use kb::KnowledgeBase;
+pub use kb::man::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
 pub use parse::{AstNode, Pretty, Parser};
 
 #[cfg(feature = "cnf")]

@@ -5,7 +5,7 @@ use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_translate};
+use sumo_native::cli::{Cli, Cmd, run_load, run_validate, run_translate, run_man};
 #[cfg(feature = "ask")]
 use sumo_native::cli::{run_ask, run_test};
 use sumo_native::config::{resolve_config_path, parse_config_xml};
@@ -83,6 +83,7 @@ fn main() {
             Cmd::Load { kb } => Some(kb),
             Cmd::Validate { kb, .. } => Some(kb),
             Cmd::Translate { kb, .. } => Some(kb),
+            Cmd::Man { kb, .. } => Some(kb),
             #[cfg(feature = "ask")]
             Cmd::Ask { kb, .. } => Some(kb),
             #[cfg(feature = "ask")]
@@ -145,6 +146,7 @@ fn main() {
         } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof, profile),
         #[cfg(feature = "ask")]
         Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } => run_test(paths, kb, keep, backend, lang, timeout, profile),
+        Cmd::Man { symbol, lang, kb } => run_man(symbol, lang, kb),
     };
     process::exit(if ok { 0 } else { 1 });
 }

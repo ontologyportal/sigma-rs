@@ -220,4 +220,26 @@ pub enum Cmd {
         #[command(flatten)]
         kb: KbArgs,
     },
+
+    /// Show documentation, signatures, and taxonomy for a symbol -- the
+    /// KIF-native equivalent of `man`.
+    ///
+    /// The information is extracted from the ontology-level relations
+    /// `documentation`, `termFormat`, `format`, plus the `subclass` /
+    /// `instance` / `domain` / `range` declarations.  KIF has no
+    /// syntactic doc-comment; everything man shows is first-class
+    /// ontology data.
+    Man {
+        /// Symbol to describe (e.g. `Human`, `subclass`, `instance`).
+        symbol: String,
+
+        /// Language tag to filter documentation / term-format entries
+        /// (e.g. `EnglishLanguage`).  When omitted, entries in all
+        /// languages are shown.
+        #[arg(long, value_name = "LANG")]
+        lang: Option<String>,
+
+        #[command(flatten)]
+        kb: KbArgs,
+    },
 }
