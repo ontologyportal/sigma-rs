@@ -13,13 +13,16 @@ use lsp_server::{Connection, ExtractError, Message, Notification, Request, Respo
 use lsp_types::{
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _},
     request::{
-        DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Rename,
-        Request as _, WorkspaceSymbolRequest,
+        Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
+        RangeFormatting, References, Rename, Request as _, SemanticTokensFullRequest,
+        WorkspaceSymbolRequest,
     },
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, OneOf, PositionEncodingKind, RenameOptions,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextDocumentSyncOptions, Url, WorkDoneProgressOptions, WorkspaceFolder,
+    CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, InitializeParams, InitializeResult, OneOf,
+    PositionEncodingKind, RenameOptions, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url,
+    WorkDoneProgressOptions, WorkspaceFolder,
 };
 use ropey::Rope;
 use serde::de::DeserializeOwned;
@@ -28,8 +31,10 @@ use sumo_kb::parse_document;
 
 use crate::conv::uri_to_tag;
 use crate::handlers::{
-    handle_document_symbol, handle_goto_definition, handle_hover, handle_references,
-    handle_rename, handle_workspace_symbols, publish_diagnostics,
+    handle_completion, handle_document_symbol, handle_formatting, handle_goto_definition,
+    handle_hover, handle_range_formatting, handle_references, handle_rename,
+    handle_semantic_tokens_full, handle_workspace_symbols, publish_diagnostics,
+    semantic_tokens_legend,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -102,18 +107,37 @@ fn server_capabilities() -> ServerCapabilities {
                 will_save_wait_until: None,
             },
         )),
-        definition_provider:         Some(OneOf::Left(true)),
-        hover_provider:              Some(lsp_types::HoverProviderCapability::Simple(true)),
-        document_symbol_provider:    Some(OneOf::Left(true)),
-        references_provider:         Some(OneOf::Left(true)),
-        rename_provider:             Some(OneOf::Right(RenameOptions {
-            prepare_provider:       Some(false),
-            work_done_progress_options: WorkDoneProgressOptions::default(),
+        definition_provider:              Some(OneOf::Left(true)),
+        hover_provider:                   Some(lsp_types::HoverProviderCapability::Simple(true)),
+        document_symbol_provider:         Some(OneOf::Left(true)),
+        references_provider:              Some(OneOf::Left(true)),
+        rename_provider:                  Some(OneOf::Right(RenameOptions {
+            prepare_provider:                    Some(false),
+            work_done_progress_options:          WorkDoneProgressOptions::default(),
         })),
-        workspace_symbol_provider:   Some(OneOf::Left(true)),
-        // Phase 5+ capabilities: completion, semantic tokens,
-        // formatting -- flipped on as handlers land.
-        completion_provider:      None,
+        workspace_symbol_provider:        Some(OneOf::Left(true)),
+        // Phase 5: semantic highlighting, formatting, completion.
+        semantic_tokens_provider:         Some(
+            SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                work_done_progress_options:       WorkDoneProgressOptions::default(),
+                legend:                           semantic_tokens_legend(),
+                range:                            Some(false),
+                full:                             Some(SemanticTokensFullOptions::Bool(true)),
+            })
+        ),
+        document_formatting_provider:     Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
+        completion_provider:              Some(CompletionOptions {
+            // Firing on `(` gives sentence-head completion; space
+            // advances to arg-position completion.  Clients that
+            // invoke completion on Ctrl-Space still work -- these
+            // are purely user-convenience auto-triggers.
+            trigger_characters:             Some(vec![
+                "(".to_string(), " ".to_string(), "?".to_string(), "@".to_string(),
+            ]),
+            resolve_provider:               Some(false),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -213,6 +237,18 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
         }
         WorkspaceSymbolRequest::METHOD => {
             dispatch::<WorkspaceSymbolRequest, _>(req, |p| Some(handle_workspace_symbols(state, p)))
+        }
+        SemanticTokensFullRequest::METHOD => {
+            dispatch::<SemanticTokensFullRequest, _>(req, |p| Some(handle_semantic_tokens_full(state, p)))
+        }
+        Formatting::METHOD => {
+            dispatch::<Formatting, _>(req, |p| Some(handle_formatting(state, p)))
+        }
+        RangeFormatting::METHOD => {
+            dispatch::<RangeFormatting, _>(req, |p| Some(handle_range_formatting(state, p)))
+        }
+        Completion::METHOD => {
+            dispatch::<Completion, _>(req, |p| Some(handle_completion(state, p)))
         }
         _ => Response {
             id:     req.id,
