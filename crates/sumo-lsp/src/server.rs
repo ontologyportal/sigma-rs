@@ -12,11 +12,14 @@ use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
 use lsp_types::{
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _},
-    request::{DocumentSymbolRequest, GotoDefinition, HoverRequest, Request as _},
+    request::{
+        DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Rename,
+        Request as _, WorkspaceSymbolRequest,
+    },
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, OneOf, PositionEncodingKind, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    Url, WorkspaceFolder,
+    InitializeParams, InitializeResult, OneOf, PositionEncodingKind, RenameOptions,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, Url, WorkDoneProgressOptions, WorkspaceFolder,
 };
 use ropey::Rope;
 use serde::de::DeserializeOwned;
@@ -25,7 +28,8 @@ use sumo_kb::parse_document;
 
 use crate::conv::uri_to_tag;
 use crate::handlers::{
-    handle_document_symbol, handle_goto_definition, handle_hover, publish_diagnostics,
+    handle_document_symbol, handle_goto_definition, handle_hover, handle_references,
+    handle_rename, handle_workspace_symbols, publish_diagnostics,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -98,13 +102,17 @@ fn server_capabilities() -> ServerCapabilities {
                 will_save_wait_until: None,
             },
         )),
-        definition_provider:      Some(OneOf::Left(true)),
-        hover_provider:           Some(lsp_types::HoverProviderCapability::Simple(true)),
-        document_symbol_provider: Some(OneOf::Left(true)),
-        // Phase 4+ capabilities: references, rename, completion,
-        // semantic tokens -- flipped on as the handlers land.
-        references_provider:      None,
-        rename_provider:          None,
+        definition_provider:         Some(OneOf::Left(true)),
+        hover_provider:              Some(lsp_types::HoverProviderCapability::Simple(true)),
+        document_symbol_provider:    Some(OneOf::Left(true)),
+        references_provider:         Some(OneOf::Left(true)),
+        rename_provider:             Some(OneOf::Right(RenameOptions {
+            prepare_provider:       Some(false),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
+        workspace_symbol_provider:   Some(OneOf::Left(true)),
+        // Phase 5+ capabilities: completion, semantic tokens,
+        // formatting -- flipped on as handlers land.
         completion_provider:      None,
         ..Default::default()
     }
@@ -196,6 +204,15 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
         }
         DocumentSymbolRequest::METHOD => {
             dispatch::<DocumentSymbolRequest, _>(req, |p| Some(handle_document_symbol(state, p)))
+        }
+        References::METHOD => {
+            dispatch::<References, _>(req, |p| Some(handle_references(state, p)))
+        }
+        Rename::METHOD => {
+            dispatch::<Rename, _>(req, |p| Some(handle_rename(state, p)))
+        }
+        WorkspaceSymbolRequest::METHOD => {
+            dispatch::<WorkspaceSymbolRequest, _>(req, |p| Some(handle_workspace_symbols(state, p)))
         }
         _ => Response {
             id:     req.id,
