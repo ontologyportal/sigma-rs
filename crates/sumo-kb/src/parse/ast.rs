@@ -197,11 +197,17 @@ impl AstNode {
         }
     }
 
-    /// Indented KIF pretty-printer.
+    /// Indented, ANSI-colored KIF pretty-printer for terminal output.
     ///
     /// Expressions that fit within 72 columns at `indent` are kept on one line.
     /// Longer ones break so that the operator stays on the opening line and
     /// each argument is placed on its own line indented two spaces further.
+    ///
+    /// **Contains ANSI escape codes.**  Downstream tools emitting to
+    /// non-terminal sinks (LSP edits, file writes, JSON reports)
+    /// should use [`format_plain`](Self::format_plain) instead --
+    /// `pretty_print`'s output is only re-parseable by KIF tooling
+    /// that strips the escapes first.
     pub fn pretty_print(&self, indent: usize) -> String {
         const LINE_WIDTH: usize = 72;
         let flat = self.flat();
@@ -218,6 +224,34 @@ impl AstNode {
                 format!("({}\n{})", head, args.join("\n"))
             }
             _ => Pretty(self).to_string(),
+        }
+    }
+
+    /// Indented plain-text pretty-printer.  Identical line-width
+    /// breaking to [`pretty_print`] but produces ASCII-only output
+    /// with no ANSI colour escapes -- always safe to round-trip
+    /// through the KIF parser.
+    ///
+    /// Use cases: LSP formatting, file emission, anything where
+    /// the output isn't going to a colour-aware terminal.  The
+    /// `sumo man` CLI and proof-trace printers use
+    /// [`pretty_print`] because their destination is a terminal.
+    pub fn format_plain(&self, indent: usize) -> String {
+        const LINE_WIDTH: usize = 72;
+        let flat = self.flat();
+        if indent + flat.len() <= LINE_WIDTH {
+            return flat;
+        }
+        match self {
+            AstNode::List { elements, .. } if elements.len() >= 2 => {
+                let pad  = " ".repeat(indent + 2);
+                let head = elements[0].format_plain(0);
+                let args: Vec<String> = elements[1..].iter()
+                    .map(|e| format!("{}{}", pad, e.format_plain(indent + 2)))
+                    .collect();
+                format!("({}\n{})", head, args.join("\n"))
+            }
+            _ => flat,
         }
     }
 }

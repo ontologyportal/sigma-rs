@@ -1024,6 +1024,44 @@ impl KnowledgeBase {
             })
     }
 
+    /// Iterate every distinct head-predicate name currently indexed
+    /// in the store.  These are the relations / predicates /
+    /// functions that *actually appear as sentence heads*, which is
+    /// almost always what a completion menu at sentence-head
+    /// position wants to suggest (anything declared but never used
+    /// as a head isn't a useful completion target).
+    ///
+    /// Non-LSP uses: any tool presenting a menu of the KB's
+    /// relation vocabulary -- CLI REPL completions, doc generators,
+    /// summary reports.
+    pub fn head_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.layer.store.head_index.keys().map(|s| s.as_str())
+    }
+
+    /// Expected domain class for argument `arg_idx` (1-based) of
+    /// relation `head`, or `None` when the relation has no explicit
+    /// `(domain head arg_idx class)` axiom for this position.
+    ///
+    /// Completion and validation both want this: context-aware
+    /// completion filters the candidate list by the expected class;
+    /// arity / domain checks use the same data from a different
+    /// angle.  The return is the declared class name (instance-of
+    /// or subclass-of flag folded away) -- callers that care about
+    /// the distinction (e.g. TFF sort derivation) use the lower-level
+    /// `SemanticLayer::domain` path.
+    pub fn expected_arg_class(&self, head: &str, arg_idx: usize) -> Option<String> {
+        let head_id   = self.symbol_id(head)?;
+        let domains   = self.layer.domain(head_id);
+        // `arg_idx` is 1-based (element-index convention); `domains`
+        // is 0-based.
+        if arg_idx == 0 || arg_idx > domains.len() { return None; }
+        let rd = &domains[arg_idx - 1];
+        let class_id = rd.id();
+        // Sentinel `u64::MAX` means "no explicit domain for this arg".
+        if class_id == u64::MAX { return None; }
+        self.sym_name(class_id)
+    }
+
     /// True when `symbol` is a Skolem function introduced by the
     /// CNF clausifier.  Exposed so workspace-symbol search can
     /// filter these out by default.
