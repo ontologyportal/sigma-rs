@@ -84,7 +84,7 @@ pub(crate) fn load_from_db(
         session_map.insert(root_sid, sf.session.clone());
 
         // Head index
-        if let Some(Element::Symbol(pred_id)) =
+        if let Some(Element::Symbol { id: pred_id, .. }) =
             sentences[*sent_idx_map.get(&root_sid).unwrap()].elements.first()
         {
             if let Some(sym_pos) = sym_id_to_vec.get(pred_id) {
@@ -157,17 +157,21 @@ fn stored_element_to_element(
     se:           &StoredElement,
     symbols:      &HashMap<String, u64>,
 ) -> Element {
+    // Rehydrated-from-LMDB elements have no source location -- the
+    // synthetic sentinel makes this explicit and lets position
+    // queries skip over them cleanly.
+    let span = Span::synthetic();
     match se {
-        StoredElement::Symbol(id)                    => Element::Symbol(*id),
+        StoredElement::Symbol(id) => Element::Symbol { id: *id, span },
         StoredElement::Variable { id, name, is_row } => Element::Variable {
-            id: *id, name: name.clone(), is_row: *is_row,
+            id: *id, name: name.clone(), is_row: *is_row, span,
         },
-        StoredElement::Literal(lit)                  => Element::Literal(lit.clone()),
-        StoredElement::Op(op)                        => Element::Op(op.clone()),
-        StoredElement::Sub(sub_sf) => {
+        StoredElement::Literal(lit) => Element::Literal { lit: lit.clone(), span },
+        StoredElement::Op(op)       => Element::Op { op: op.clone(), span },
+        StoredElement::Sub(sub_sf)  => {
             let sub_sid = allocate_formula(sentences, sent_idx_map, sub_sentences, sub_sf, symbols);
             sub_sentences.push(sub_sid);
-            Element::Sub(sub_sid)
+            Element::Sub { sid: sub_sid, span }
         }
     }
 }

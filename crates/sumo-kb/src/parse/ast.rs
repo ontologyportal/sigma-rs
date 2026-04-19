@@ -46,6 +46,29 @@ impl Span {
         }
     }
 
+    /// Sentinel span for synthesised Elements that have no source
+    /// origin (CNF clausifier output, macro expansions, test
+    /// fixtures, rehydrated-from-LMDB sentences).  Position queries
+    /// (`element_at_offset`, goto, hover) treat these as invisible
+    /// so bogus ranges never leak to downstream tooling.
+    ///
+    /// The sentinel is a distinctive `file` tag; actual positions
+    /// are zero.  Equality is by `file` only -- any span with
+    /// `file == "<synthetic>"` is synthetic.
+    pub fn synthetic() -> Self {
+        Self {
+            file:       "<synthetic>".to_string(),
+            line:       0, col: 0, offset: 0,
+            end_line:   0, end_col: 0, end_offset: 0,
+        }
+    }
+
+    /// True if this span was produced by [`Span::synthetic`] (i.e.
+    /// it has no real source location).
+    pub fn is_synthetic(&self) -> bool {
+        self.file == "<synthetic>"
+    }
+
     /// True if the span covers zero bytes (a point span).
     pub fn is_point(&self) -> bool {
         self.offset == self.end_offset

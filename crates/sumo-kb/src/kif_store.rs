@@ -157,6 +157,12 @@ impl KifStore {
         self.sent_idx.contains_key(&sid)
     }
 
+    /// Return true if `id` is a known symbol.
+    #[inline]
+    pub(crate) fn has_symbol(&self, id: SymbolId) -> bool {
+        self.sym_idx.contains_key(&id)
+    }
+
     /// Resolve a SymbolId to its Vec index (panics if not found).
     #[inline]
     fn sym_vec_idx(&self, id: SymbolId) -> usize {
@@ -338,21 +344,47 @@ impl KifStore {
     ) -> Option<Element> {
         log::trace!(target: "sumo_kb::kif_store", "building element: {}", node);
         match node {
-            AstNode::Symbol { name, .. } => Some(Element::Symbol(self.intern(name))),
-            AstNode::Variable { name, .. } => {
+            AstNode::Symbol { name, span } => Some(Element::Symbol {
+                id:   self.intern(name),
+                span: span.clone(),
+            }),
+            AstNode::Variable { name, span } => {
                 let scope = ctx.scope_for(name);
-                Some(Element::Variable { id: self.intern(&format!("{}__{}", name, scope)), name: name.clone(), is_row: false })
+                Some(Element::Variable {
+                    id:     self.intern(&format!("{}__{}", name, scope)),
+                    name:   name.clone(),
+                    is_row: false,
+                    span:   span.clone(),
+                })
             }
-            AstNode::RowVariable { name, .. } => {
+            AstNode::RowVariable { name, span } => {
                 let scope = ctx.scope_for(name);
-                Some(Element::Variable { id: self.intern(&format!("{}__{}", name, scope)), name: name.clone(), is_row: true })
+                Some(Element::Variable {
+                    id:     self.intern(&format!("{}__{}", name, scope)),
+                    name:   name.clone(),
+                    is_row: true,
+                    span:   span.clone(),
+                })
             }
-            AstNode::Str    { value, .. } => Some(Element::Literal(Literal::Str(value.clone()))),
-            AstNode::Number { value, .. } => Some(Element::Literal(Literal::Number(value.clone()))),
-            AstNode::Operator { op, .. } => Some(Element::Op(op.clone())),
-            AstNode::List { .. } => {
+            AstNode::Str    { value, span } => Some(Element::Literal {
+                lit:  Literal::Str(value.clone()),
+                span: span.clone(),
+            }),
+            AstNode::Number { value, span } => Some(Element::Literal {
+                lit:  Literal::Number(value.clone()),
+                span: span.clone(),
+            }),
+            AstNode::Operator { op, span } => Some(Element::Op {
+                op:   op.clone(),
+                span: span.clone(),
+            }),
+            AstNode::List { span, .. } => {
+                let list_span = span.clone();
                 match self.build_sentence(ctx, node, file, errors, false) {
-                    Some(sub_id) => { self.sub_sentences.push(sub_id); Some(Element::Sub(sub_id)) }
+                    Some(sub_id) => {
+                        self.sub_sentences.push(sub_id);
+                        Some(Element::Sub { sid: sub_id, span: list_span })
+                    }
                     None => None,
                 }
             }
@@ -493,8 +525,8 @@ impl KifStore {
         let sentence = &self.sentences[self.sent_idx(sent_id)];
         for el in &sentence.elements {
             match el {
-                Element::Symbol(id) => { out.insert(*id); }
-                Element::Sub(sub_id) => self.collect_symbols(*sub_id, out),
+                Element::Symbol { id, .. } => { out.insert(*id); }
+                Element::Sub { sid: sub_id, .. } => self.collect_symbols(*sub_id, out),
                 _ => {}
             }
         }
@@ -538,12 +570,12 @@ impl KifStore {
 
     fn elem_matches_name(&self, elem: &Element, name: &str) -> bool {
         match elem {
-            Element::Symbol(id)              => self.sym_name(*id) == name,
-            Element::Op(op)                  => op.name() == name,
-            Element::Variable { name: n, .. }=> n == name,
-            Element::Literal(Literal::Number(n)) => n == name,
-            Element::Literal(Literal::Str(s))    => s == name,
-            Element::Sub(_)                  => false,
+            Element::Symbol { id, .. }                          => self.sym_name(*id) == name,
+            Element::Op { op, .. }                              => op.name() == name,
+            Element::Variable { name: n, .. }                   => n == name,
+            Element::Literal { lit: Literal::Number(n), .. }    => n == name,
+            Element::Literal { lit: Literal::Str(s), .. }       => s == name,
+            Element::Sub { .. }                                 => false,
         }
     }
 }
@@ -573,7 +605,7 @@ impl<'a> fmt::Display for ElementDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.highlight { write!(f, "{style_bold}{style_underline}")?; }
         let res = match self.element {
-            Element::Symbol(id) => {
+            Element::Symbol { id, .. } => {
                 let name = self.store.sym_name(*id);
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) {
                     write!(f, "{color_yellow}{}{color_reset}", name)
@@ -581,12 +613,12 @@ impl<'a> fmt::Display for ElementDisplay<'a> {
                     write!(f, "{color_blue}{}{color_reset}", name)
                 }
             }
-            Element::Variable { name, is_row: false, .. } => write!(f, "{color_magenta}?{}{color_reset}", name),
-            Element::Variable { name, is_row: true,  .. } => write!(f, "{color_magenta}@{}{color_reset}", name),
-            Element::Literal(Literal::Str(s))    => write!(f, "{}", s),
-            Element::Literal(Literal::Number(n)) => write!(f, "{color_green}{}{color_reset}", n),
-            Element::Op(op)                      => write!(f, "{color_cyan}{}{color_reset}", op),
-            Element::Sub(sid)                    => SentenceDisplay::raw(*sid, self.store, self.indent, -1).fmt(f),
+            Element::Variable { name, is_row: false, .. }    => write!(f, "{color_magenta}?{}{color_reset}", name),
+            Element::Variable { name, is_row: true,  .. }    => write!(f, "{color_magenta}@{}{color_reset}", name),
+            Element::Literal { lit: Literal::Str(s), .. }    => write!(f, "{}", s),
+            Element::Literal { lit: Literal::Number(n), .. } => write!(f, "{color_green}{}{color_reset}", n),
+            Element::Op { op, .. }                           => write!(f, "{color_cyan}{}{color_reset}", op),
+            Element::Sub { sid, .. }                         => SentenceDisplay::raw(*sid, self.store, self.indent, -1).fmt(f),
         };
         if self.highlight { write!(f, "{style_reset}") } else { res }
     }
@@ -631,7 +663,7 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
             let highlight = self.highlight_arg == i as i32;
             if i == 0 {
                 ElementDisplay { element: el, store: self.store, indent: child_indent, highlight }.fmt(f)?;
-            } else if matches!(el, Element::Sub(_)) {
+            } else if matches!(el, Element::Sub { .. }) {
                 write!(f, "\n{}", "  ".repeat(child_indent))?;
                 ElementDisplay { element: el, store: self.store, indent: child_indent, highlight }.fmt(f)?;
             } else {
@@ -652,7 +684,7 @@ pub(crate) fn sentence_to_plain_kif(sid: SentenceId, store: &KifStore) -> String
     for (i, elem) in sentence.elements.iter().enumerate() {
         if i > 0 { out.push(' '); }
         match elem {
-            Element::Symbol(id) => out.push_str(store.sym_name(*id)),
+            Element::Symbol { id, .. } => out.push_str(store.sym_name(*id)),
             Element::Variable { name, is_row: false, .. } => {
                 out.push('?');
                 out.push_str(name);
@@ -661,10 +693,10 @@ pub(crate) fn sentence_to_plain_kif(sid: SentenceId, store: &KifStore) -> String
                 out.push('@');
                 out.push_str(name);
             }
-            Element::Literal(Literal::Str(s))    => out.push_str(s),
-            Element::Literal(Literal::Number(n)) => out.push_str(n),
-            Element::Op(op)                      => out.push_str(op.name()),
-            Element::Sub(sub_sid)                => out.push_str(&sentence_to_plain_kif(*sub_sid, store)),
+            Element::Literal { lit: Literal::Str(s), .. }    => out.push_str(s),
+            Element::Literal { lit: Literal::Number(n), .. } => out.push_str(n),
+            Element::Op { op, .. }                           => out.push_str(op.name()),
+            Element::Sub { sid: sub_sid, .. }                => out.push_str(&sentence_to_plain_kif(*sub_sid, store)),
         }
     }
     out.push(')');

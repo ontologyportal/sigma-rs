@@ -187,14 +187,14 @@ fn build_stored_element(
     elem:  &Element,
 ) -> Result<StoredElement, KbError> {
     Ok(match elem {
-        Element::Symbol(id)                       => StoredElement::Symbol(*id),
-        Element::Variable { id, name, is_row }    => StoredElement::Variable {
+        Element::Symbol { id, .. }                       => StoredElement::Symbol(*id),
+        Element::Variable { id, name, is_row, .. }       => StoredElement::Variable {
             id: *id, name: name.clone(), is_row: *is_row,
         },
-        Element::Literal(Literal::Str(s))         => StoredElement::Literal(Literal::Str(s.clone())),
-        Element::Literal(Literal::Number(n))      => StoredElement::Literal(Literal::Number(n.clone())),
-        Element::Op(op)                           => StoredElement::Op(op.clone()),
-        Element::Sub(sub_sid) => {
+        Element::Literal { lit: Literal::Str(s), .. }    => StoredElement::Literal(Literal::Str(s.clone())),
+        Element::Literal { lit: Literal::Number(n), .. } => StoredElement::Literal(Literal::Number(n.clone())),
+        Element::Op { op, .. }                           => StoredElement::Op(op.clone()),
+        Element::Sub { sid: sub_sid, .. } => {
             let sub_elements = build_stored_elements(store, *sub_sid)?;
             let sub_sentence = &store.sentences[store.sent_idx(*sub_sid)];
             StoredElement::Sub(Box::new(StoredFormula {

@@ -370,12 +370,12 @@ impl SemanticLayer {
         let head_name = self.store.sym_name(head_sym).to_owned();
         let rel       = match TaxRelation::from_str(&head_name) { Some(r) => r, None => return };
         let arg1 = match sentence.elements.get(1) {
-            Some(Element::Symbol(id))                        => *id,
+            Some(Element::Symbol { id, .. })                        => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => return,
         };
         let arg2 = match sentence.elements.get(2) {
-            Some(Element::Symbol(id))                        => *id,
+            Some(Element::Symbol { id, .. })                        => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => return,
         };
@@ -533,11 +533,11 @@ impl SemanticLayer {
             let sentence = &self.store.sentences[self.store.sent_idx(sid)];
             // (domain Relation Position Class)
             let rel_id = match sentence.elements.get(1) {
-                Some(Element::Symbol(id)) => *id,
+                Some(Element::Symbol { id, .. }) => *id,
                 _ => continue,
             };
             let class_id = match sentence.elements.get(3) {
-                Some(Element::Symbol(id)) => *id,
+                Some(Element::Symbol { id, .. }) => *id,
                 _ => continue,
             };
             if self.numeric_ancestor_set.contains(&class_id)
@@ -572,8 +572,8 @@ impl SemanticLayer {
             let sentence = &self.store.sentences[self.store.sent_idx(root_sid)];
 
             // Form A: (<=> (instance ?VAR C) conditions)
-            if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Iff))) {
-                if let (Some(Element::Sub(lhs)), Some(Element::Sub(rhs))) =
+            if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Iff, .. })) {
+                if let (Some(Element::Sub { sid: lhs, .. }), Some(Element::Sub { sid: rhs, .. })) =
                     (sentence.elements.get(1), sentence.elements.get(2))
                 {
                     if let Some((class_id, var_name)) = self.extract_instance_clause(*lhs) {
@@ -590,8 +590,8 @@ impl SemanticLayer {
 
             // Form B: (=> ANT (instance ?VAR C)) — sufficient condition; only if not already found.
             // Form C: (=> (instance ?VAR C) CON) — necessary condition; only if not already found.
-            if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Implies))) {
-                if let (Some(Element::Sub(ant)), Some(Element::Sub(con))) =
+            if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Implies, .. })) {
+                if let (Some(Element::Sub { sid: ant, .. }), Some(Element::Sub { sid: con, .. })) =
                     (sentence.elements.get(1), sentence.elements.get(2))
                 {
                     // Form B: consequent is the instance check
@@ -627,9 +627,9 @@ impl SemanticLayer {
     fn extract_instance_clause(&self, sid: SentenceId) -> Option<(SymbolId, String)> {
         let sentence = &self.store.sentences[self.store.sent_idx(sid)];
         if let (
-            Some(Element::Symbol(inst_id)),
+            Some(Element::Symbol { id: inst_id, .. }),
             Some(Element::Variable { name, .. }),
-            Some(Element::Symbol(class_id)),
+            Some(Element::Symbol { id: class_id, .. }),
         ) = (
             sentence.elements.get(0),
             sentence.elements.get(1),
@@ -649,11 +649,11 @@ impl SemanticLayer {
         let sentence = &self.store.sentences[self.store.sent_idx(sid)];
 
         // (and ...) is an operator sentence: elements[0] is Op(And), not a Symbol.
-        if matches!(sentence.elements.first(), Some(Element::Op(OpKind::And))) {
+        if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::And, .. })) {
             let parts: Vec<ArithCond> = sentence.elements[1..]
                 .iter()
                 .filter_map(|e| {
-                    if let Element::Sub(sub_sid) = e {
+                    if let Element::Sub { sid: sub_sid, .. } = e {
                         if self.is_numeric_instance_of_var(*sub_sid, var_name) {
                             None  // strip (instance var_name NumericClass) conjuncts
                         } else {
@@ -673,16 +673,16 @@ impl SemanticLayer {
 
         // (equal ...) is an operator sentence: Op(Equal)
         // Handles: (equal (FnName ?VAR literal) literal) — e.g. (equal (RemainderFn ?X 2) 0)
-        if matches!(sentence.elements.first(), Some(Element::Op(OpKind::Equal))) {
+        if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Equal, .. })) {
             let arg0 = sentence.elements.get(1)?;
             let arg1 = sentence.elements.get(2)?;
             // (equal (FnName ?VAR other_literal) result_literal)
-            if let (Element::Sub(fn_sid), Element::Literal(Literal::Number(result))) = (arg0, arg1) {
+            if let (Element::Sub { sid: fn_sid, .. }, Element::Literal { lit: Literal::Number(result), .. }) = (arg0, arg1) {
                 let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
                 if let (
-                    Some(Element::Symbol(fn_id)),
+                    Some(Element::Symbol { id: fn_id, .. }),
                     Some(Element::Variable { name, .. }),
-                    Some(Element::Literal(Literal::Number(other_arg))),
+                    Some(Element::Literal { lit: Literal::Number(other_arg), .. }),
                 ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
                 {
                     if name == var_name {
@@ -695,12 +695,12 @@ impl SemanticLayer {
                 }
             }
             // (equal result_literal (FnName ?VAR other_literal)) — reversed
-            if let (Element::Literal(Literal::Number(result)), Element::Sub(fn_sid)) = (arg0, arg1) {
+            if let (Element::Literal { lit: Literal::Number(result), .. }, Element::Sub { sid: fn_sid, .. }) = (arg0, arg1) {
                 let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
                 if let (
-                    Some(Element::Symbol(fn_id)),
+                    Some(Element::Symbol { id: fn_id, .. }),
                     Some(Element::Variable { name, .. }),
-                    Some(Element::Literal(Literal::Number(other_arg))),
+                    Some(Element::Literal { lit: Literal::Number(other_arg), .. }),
                 ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
                 {
                     if name == var_name {
@@ -725,13 +725,13 @@ impl SemanticLayer {
                 let arg1 = sentence.elements.get(2)?;
                 // (pred ?VAR literal) — normal order
                 if matches!(arg0, Element::Variable { name, .. } if name == var_name) {
-                    if let Element::Literal(Literal::Number(n)) = arg1 {
+                    if let Element::Literal { lit: Literal::Number(n), .. } = arg1 {
                         return Some(self.make_cmp_cond(head, n.clone(), false));
                     }
                 }
                 // (pred literal ?VAR) — reversed; flip the comparison direction
                 if matches!(arg1, Element::Variable { name, .. } if name == var_name) {
-                    if let Element::Literal(Literal::Number(n)) = arg0 {
+                    if let Element::Literal { lit: Literal::Number(n), .. } = arg0 {
                         return Some(self.make_cmp_cond(head, n.clone(), true));
                     }
                 }
@@ -755,9 +755,9 @@ impl SemanticLayer {
     fn is_numeric_instance_of_var(&self, sid: SentenceId, var_name: &str) -> bool {
         let sentence = &self.store.sentences[self.store.sent_idx(sid)];
         if let (
-            Some(Element::Symbol(inst_id)),
+            Some(Element::Symbol { id: inst_id, .. }),
             Some(Element::Variable { name, .. }),
-            Some(Element::Symbol(class_id)),
+            Some(Element::Symbol { id: class_id, .. }),
         ) = (
             sentence.elements.get(0),
             sentence.elements.get(1),
@@ -874,7 +874,7 @@ impl SemanticLayer {
         }
     }
 
-    /// Walk every `Element::Sub(ssid)` under the tree rooted at `sid`
+    /// Walk every `Element::Sub { sid: ssid, .. }` under the tree rooted at `sid`
     /// and call `extract_tax_edge_for` for each.  This covers the
     /// "sub-sentence taxonomy edges" the original full-rebuild picked
     /// up by iterating `store.sub_sentences`.
@@ -1037,13 +1037,13 @@ impl SemanticLayer {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
-                    Some(Element::Symbol(id)) if *id == rel
+                    Some(Element::Symbol { id, .. }) if *id == rel
                 );
                 if !arg1_ok { continue; }
                 // `range` has 2 args: (range rel class) -> class is at index 2.
                 // `domain` has 3 args: (domain rel argNum class) -> class at index 3.
                 let class_id = match sentence.elements.get(2) {
-                    Some(Element::Symbol(id)) => *id,
+                    Some(Element::Symbol { id, .. }) => *id,
                     _ => continue,
                 };
                 return Some(make(class_id));
@@ -1080,17 +1080,17 @@ impl SemanticLayer {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
-                    Some(Element::Symbol(id)) if *id == rel
+                    Some(Element::Symbol { id, .. }) if *id == rel
                 );
                 if !arg1_ok { continue; }
                 let pos = match sentence.elements.get(2) {
-                    Some(Element::Literal(Literal::Number(n))) => {
+                    Some(Element::Literal { lit: Literal::Number(n), .. }) => {
                         n.parse::<usize>().unwrap_or(0).saturating_sub(1)
                     }
                     _ => continue,
                 };
                 let class_id = match sentence.elements.get(3) {
-                    Some(Element::Symbol(id)) => *id,
+                    Some(Element::Symbol { id, .. }) => *id,
                     _ => continue,
                 };
                 entries.push((pos, make(class_id)));
@@ -1166,16 +1166,16 @@ impl SemanticLayer {
         for &sid in store.by_head(head) {
             let sent = &store.sentences[store.sent_idx(sid)];
             let tgt  = match sent.elements.get(target_idx) {
-                Some(Element::Symbol(id)) => *id,
+                Some(Element::Symbol { id, .. }) => *id,
                 _ => continue,
             };
             if tgt != target { continue; }
             let lang = match sent.elements.get(lang_idx) {
-                Some(Element::Symbol(id)) => store.sym_name(*id).to_string(),
+                Some(Element::Symbol { id, .. }) => store.sym_name(*id).to_string(),
                 _ => continue,
             };
             let text = match sent.elements.get(text_idx) {
-                Some(Element::Literal(Literal::Str(s))) => strip_quotes(s),
+                Some(Element::Literal { lit: Literal::Str(s), .. }) => strip_quotes(s),
                 _ => continue,
             };
             out.push(DocEntry { language: lang, text });
@@ -1222,8 +1222,8 @@ impl SemanticLayer {
     pub(crate) fn validate_element(&self, el: &Element) -> Result<(), SemanticError> {
         let id = match el {
             Element::Variable { is_row: false, .. } => return Ok(()),
-            Element::Symbol(id)  => *id,
-            Element::Sub(sid)    => return self.validate_sentence(*sid),
+            Element::Symbol { id, .. }  => *id,
+            Element::Sub { sid, .. }    => return self.validate_sentence(*sid),
             _                    => return Ok(()),
         };
         if !self.has_ancestor_by_name(id, "Entity") {
@@ -1294,7 +1294,7 @@ impl SemanticLayer {
             "validating sentence sid={}", sid);
 
         let head_id = match sentence.elements.first() {
-            Some(Element::Symbol(id))                    => *id,
+            Some(Element::Symbol { id, .. })                    => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => unreachable!("parser ensures sentence head is a symbol or variable"),
         };
@@ -1349,7 +1349,7 @@ impl SemanticLayer {
         let sub_ids: Vec<SentenceId> = self.store.sentences[self.store.sent_idx(sid)]
             .elements[args_start..]
             .iter()
-            .filter_map(|e| if let Element::Sub(id) = e { Some(*id) } else { None })
+            .filter_map(|e| if let Element::Sub { sid: id, .. } = e { Some(*id) } else { None })
             .collect();
 
         for (idx, sub_id) in sub_ids.iter().enumerate() {
@@ -1364,7 +1364,7 @@ impl SemanticLayer {
         let sentence = &self.store.sentences[self.store.sent_idx(sid)];
         if sentence.is_operator() { return true; }
         let head_id = match sentence.elements.first() {
-            Some(Element::Symbol(id))    => *id,
+            Some(Element::Symbol { id, .. })    => *id,
             Some(Element::Variable { id, .. }) => *id,
             _ => return false,
         };
@@ -1377,7 +1377,7 @@ impl SemanticLayer {
 
     fn arg_satisfies_domain(&self, arg: &Element, dom: &RelationDomain) -> bool {
         match arg {
-            Element::Symbol(sym_id) => {
+            Element::Symbol { id: sym_id, .. } => {
                 let sym_id = *sym_id;
                 match dom {
                     RelationDomain::Domain(dom_id) => {
@@ -1417,9 +1417,9 @@ impl SemanticLayer {
                 }
             }
             Element::Variable { is_row: true, .. }
-            | Element::Sub(_)
-            | Element::Literal(_) => true,
-            Element::Op(_) => false,
+            | Element::Sub { sid: _, .. }
+            | Element::Literal { lit: _, .. } => true,
+            Element::Op { op: _, .. } => false,
         }
     }
 
@@ -1650,7 +1650,7 @@ fn classify_sid_into(store: &KifStore, sid: SentenceId, out: &mut CacheImpact) {
     // facts (e.g. a subclass edge nested inside an implication's
     // consequent).
     for el in &sentence.elements {
-        if let Element::Sub(sub_sid) = el {
+        if let Element::Sub { sid: sub_sid, .. } = el {
             classify_sid_into(store, *sub_sid, out);
         }
     }
@@ -1685,7 +1685,7 @@ fn classify_head_name_into(
 /// otherwise.  No sort analysis -- the subsequent rebuild pass is
 /// what decides whether the class is actually numeric.
 fn contains_instance_pattern(store: &KifStore, el: &Element) -> bool {
-    let Element::Sub(sid) = el else { return false };
+    let Element::Sub { sid, .. } = el else { return false };
     if !store.has_sentence(*sid) { return false; }
     let s = &store.sentences[store.sent_idx(*sid)];
     match s.head_symbol() {
@@ -1694,12 +1694,12 @@ fn contains_instance_pattern(store: &KifStore, el: &Element) -> bool {
     }
 }
 
-/// Collect every `Element::Sub(ssid)` descendant of `sid` (excluding
+/// Collect every `Element::Sub { sid: ssid, .. }` descendant of `sid` (excluding
 /// `sid` itself) into `out`.  Ordering is a pre-order traversal.
 fn collect_sub_sids(store: &KifStore, sid: SentenceId, out: &mut Vec<SentenceId>) {
     if !store.has_sentence(sid) { return; }
     for el in &store.sentences[store.sent_idx(sid)].elements {
-        if let Element::Sub(ssid) = el {
+        if let Element::Sub { sid: ssid, .. } = el {
             out.push(*ssid);
             collect_sub_sids(store, *ssid, out);
         }

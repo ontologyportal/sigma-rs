@@ -51,20 +51,68 @@ impl fmt::Display for Literal {
 // -- Element -------------------------------------------------------------------
 
 /// One element in a sentence's term list.
+///
+/// Every variant carries a [`Span`] locating the element in its
+/// source file.  Spans are `#[serde(skip)]`-transparent to the
+/// LMDB bincode format -- the on-disk payload is the same as
+/// before per-element spans were added.  Rehydrated-from-LMDB
+/// sentences have their spans defaulted to `Span::default()`,
+/// which is effectively synthetic.
+///
+/// Consumers that construct Elements without source origin
+/// (CNF clausifier, macro expansions, test fixtures) use
+/// [`Span::synthetic`] so position queries skip them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
     /// A ground symbol, referenced by its stable id.
-    Symbol(SymbolId),
+    Symbol {
+        id:   SymbolId,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A logical variable or row-variable.
     /// `id` is the interned symbol id for the scope-qualified name (e.g. `x@3`).
-    Variable { id: SymbolId, name: String, is_row: bool },
+    Variable {
+        id:     SymbolId,
+        name:   String,
+        is_row: bool,
+        #[serde(skip)]
+        span:   crate::error::Span,
+    },
     /// A string or numeric literal.
-    Literal(Literal),
+    Literal {
+        lit:  Literal,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A nested sub-sentence.  The id indexes into the same flat sentence Vec
     /// owned by KifStore.
-    Sub(SentenceId),
+    Sub {
+        sid:  SentenceId,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A logical operator (always at index 0 in operator sentences).
-    Op(OpKind),
+    Op {
+        op:   OpKind,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
+}
+
+impl Element {
+    /// Source range covering this element.  Returns the stored
+    /// span verbatim -- no fallback / merging logic.  Synthetic
+    /// elements (see [`Span::synthetic`]) return a synthetic span.
+    pub fn span(&self) -> &crate::error::Span {
+        match self {
+            Self::Symbol   { span, .. } => span,
+            Self::Variable { span, .. } => span,
+            Self::Literal  { span, .. } => span,
+            Self::Sub      { span, .. } => span,
+            Self::Op       { span, .. } => span,
+        }
+    }
 }
 
 // -- Sentence ------------------------------------------------------------------
@@ -84,13 +132,13 @@ pub struct Sentence {
 impl Sentence {
     /// True if this is an operator sentence (and, or, not, =>, <=>, forall, exists).
     pub fn is_operator(&self) -> bool {
-        matches!(self.elements.first(), Some(Element::Op(_)))
+        matches!(self.elements.first(), Some(Element::Op { .. }))
     }
 
     /// The operator kind, if this is an operator sentence.
     pub fn op(&self) -> Option<&OpKind> {
         match self.elements.first() {
-            Some(Element::Op(op)) => Some(op),
+            Some(Element::Op { op, .. }) => Some(op),
             _ => None,
         }
     }
@@ -98,7 +146,7 @@ impl Sentence {
     /// The head symbol id, if this is a symbol-headed sentence.
     pub fn head_symbol(&self) -> Option<SymbolId> {
         match self.elements.first() {
-            Some(Element::Symbol(id)) => Some(*id),
+            Some(Element::Symbol { id, .. }) => Some(*id),
             _ => None,
         }
     }

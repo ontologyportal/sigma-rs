@@ -386,7 +386,7 @@ impl<'a> NativeConverter<'a> {
         let n_args = sentence.elements.len().saturating_sub(1);
 
         match sentence.elements.first()? {
-            Element::Symbol(head_id) => {
+            Element::Symbol { id: head_id, .. } => {
                 let head_id = *head_id;
                 let head_name = self.store.sym_name(head_id).to_owned();
                 let elems: Vec<Element> = sentence.elements[1..].to_vec();
@@ -510,7 +510,7 @@ impl<'a> NativeConverter<'a> {
 
     fn extract_quantifier_vars(&self, elem: &Element) -> Vec<String> {
         match elem {
-            Element::Sub(vl_sid) => self.store.sentences[self.store.sent_idx(*vl_sid)]
+            Element::Sub { sid: vl_sid, .. } => self.store.sentences[self.store.sent_idx(*vl_sid)]
                 .elements
                 .iter()
                 .filter_map(|e| match e {
@@ -524,8 +524,8 @@ impl<'a> NativeConverter<'a> {
 
     fn element_to_formula(&mut self, elem: &Element) -> Option<IrF> {
         match elem {
-            Element::Sub(sid) => self.sid_to_formula(*sid),
-            Element::Symbol(id) => {
+            Element::Sub { sid, .. } => self.sid_to_formula(*sid),
+            Element::Symbol { id, .. } => {
                 // Bare symbol in formula position.
                 let name = self.store.sym_name(*id).to_owned();
                 match self.mode {
@@ -555,7 +555,7 @@ impl<'a> NativeConverter<'a> {
 
     fn element_to_term(&mut self, elem: &Element) -> Option<IrT> {
         match elem {
-            Element::Symbol(id) => {
+            Element::Symbol { id, .. } => {
                 let id = *id;
                 let name = self.store.sym_name(id).to_owned();
                 if self.mode == Mode::Tff && self.layer.is_function(id) {
@@ -567,9 +567,9 @@ impl<'a> NativeConverter<'a> {
                 }
             }
             Element::Variable { name, .. } => Some(self.var_term(name)),
-            Element::Literal(lit) => Some(self.literal_to_term(lit)),
-            Element::Sub(sid) => self.sid_to_term(*sid),
-            Element::Op(op) => Some(IrT::constant(IrFn::new(&sym_name(op.name()), 0))),
+            Element::Literal { lit, .. } => Some(self.literal_to_term(lit)),
+            Element::Sub { sid, .. } => self.sid_to_term(*sid),
+            Element::Op { op, .. } => Some(IrT::constant(IrFn::new(&sym_name(op.name()), 0))),
         }
     }
 
@@ -592,7 +592,7 @@ impl<'a> NativeConverter<'a> {
         }
 
         match sentence.elements.first()? {
-            Element::Symbol(head_id) => {
+            Element::Symbol { id: head_id, .. } => {
                 let head_id = *head_id;
                 let head_name = self.store.sym_name(head_id).to_owned();
                 let args: Vec<IrT> = sentence.elements[1..]
@@ -686,7 +686,7 @@ fn collect_all_var_ids(
             Element::Variable { id, name, .. } => {
                 out.entry(name.clone()).or_insert(*id);
             }
-            Element::Sub(sub) => collect_all_var_ids(*sub, store, out),
+            Element::Sub { sid: sub, .. } => collect_all_var_ids(*sub, store, out),
             _ => {}
         }
     }
@@ -700,7 +700,7 @@ fn collect_bound_var_names(
     let sentence = &store.sentences[store.sent_idx(sid)];
     if let Some(op) = sentence.op() {
         if matches!(op, OpKind::ForAll | OpKind::Exists) {
-            if let Some(Element::Sub(vl_sid)) = sentence.elements.get(1) {
+            if let Some(Element::Sub { sid: vl_sid, .. }) = sentence.elements.get(1) {
                 for e in &store.sentences[store.sent_idx(*vl_sid)].elements {
                     if let Element::Variable { name, .. } = e {
                         out.insert(name.clone());
@@ -710,7 +710,7 @@ fn collect_bound_var_names(
         }
     }
     for elem in &sentence.elements {
-        if let Element::Sub(sub) = elem {
+        if let Element::Sub { sid: sub, .. } = elem {
             collect_bound_var_names(*sub, store, out);
         }
     }

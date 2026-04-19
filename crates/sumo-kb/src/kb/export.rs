@@ -72,7 +72,7 @@ impl KnowledgeBase {
         if !store.has_sentence(sid) { return None; }
         let sentence = &store.sentences[store.sent_idx(sid)];
         match sentence.elements.first()? {
-            Element::Symbol(id) => Some(store.sym_name(*id).to_owned()),
+            Element::Symbol { id, .. } => Some(store.sym_name(*id).to_owned()),
             _ => None,
         }
     }

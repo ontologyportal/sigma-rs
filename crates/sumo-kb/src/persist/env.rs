@@ -51,7 +51,7 @@ pub(crate) enum StoredElement {
     Symbol(SymbolId),
     Variable { id: SymbolId, name: String, is_row: bool },
     Literal(Literal),
-    /// Inline sub-formula (was `Element::Sub(SentenceId)` in-memory).
+    /// Inline sub-formula (was `Element::Sub { sid: SentenceId, .. }` in-memory).
     Sub(Box<StoredFormula>),
     Op(OpKind),
 }

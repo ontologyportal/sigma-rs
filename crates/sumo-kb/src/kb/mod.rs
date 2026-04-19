@@ -917,12 +917,90 @@ impl KnowledgeBase {
         self.layer.store.sym_id(name)
     }
 
+    /// Inverse of [`symbol_id`]: resolve a SymbolId to its interned
+    /// name.  Returns an owned `String` to keep the lifetime simple.
+    /// Ids that aren't in the store return `None`.
+    pub fn sym_name(&self, id: crate::types::SymbolId) -> Option<String> {
+        if self.layer.store.has_symbol(id) {
+            Some(self.layer.store.sym_name(id).to_owned())
+        } else {
+            None
+        }
+    }
+
     /// Fetch a root or sub-sentence by id.  Returns `None` when
     /// `sid` isn't a known sentence (e.g. after `remove_sentence`
     /// the id is valid but the body is empty -- see [`has_sentence`]).
     pub fn sentence(&self, sid: SentenceId) -> Option<&crate::types::Sentence> {
         if !self.layer.store.has_sentence(sid) { return None; }
         Some(&self.layer.store.sentences[self.layer.store.sent_idx(sid)])
+    }
+
+    /// Find the innermost element at byte `offset` in `file`.
+    ///
+    /// Walks the file's root sentences and descends through sub-
+    /// sentences; returns the deepest non-synthetic element whose
+    /// span covers the offset.  Useful for hover, goto-definition,
+    /// rename, and any other cursor-driven query.
+    ///
+    /// Returns `None` when `file` isn't loaded or when `offset`
+    /// falls outside every root sentence's `(...)` range.
+    pub fn element_at_offset(&self, file: &str, offset: usize) -> Option<crate::lookup::ElementHit> {
+        crate::lookup::element_at_offset(&self.layer.store, file, offset)
+    }
+
+    /// Name of the symbol at `offset`, if the element there is a
+    /// [`Element::Symbol`](crate::types::Element::Symbol).  Thin
+    /// wrapper over [`element_at_offset`](Self::element_at_offset)
+    /// + a type check.
+    pub fn symbol_at_offset(&self, file: &str, offset: usize) -> Option<String> {
+        crate::lookup::symbol_at_offset(&self.layer.store, file, offset)
+    }
+
+    /// Defining sentence for `symbol`, by heuristic: the first
+    /// `(subclass sym _)`, `(instance sym _)`, `(subrelation sym _)`,
+    /// `(subAttribute sym _)`, or `(documentation sym _ _)`
+    /// root sentence, in that priority order.  Returns the
+    /// `(SentenceId, Span)` of that sentence so the caller can
+    /// resolve the source location (e.g. LSP goto-definition).
+    ///
+    /// Falls back to any root where `symbol` appears as the head,
+    /// then to any root where it appears at all.  `None` when the
+    /// symbol has no declarations anywhere.
+    pub fn defining_sentence(&self, symbol: &str) -> Option<(SentenceId, crate::error::Span)> {
+        let sym_id  = self.symbol_id(symbol)?;
+        let store   = &self.layer.store;
+
+        // Priority 1: canonical declarations -- subclass / instance /
+        // subrelation / subAttribute with this symbol as arg 1.
+        const DECLARATIONS: &[&str] = &[
+            "subclass", "instance", "subrelation", "subAttribute",
+            "documentation",
+        ];
+        for &head in DECLARATIONS {
+            for &sid in store.by_head(head) {
+                let sent = &store.sentences[store.sent_idx(sid)];
+                if matches!(
+                    sent.elements.get(1),
+                    Some(crate::types::Element::Symbol { id, .. }) if *id == sym_id
+                ) {
+                    if !sent.span.is_synthetic() {
+                        return Some((sid, sent.span.clone()));
+                    }
+                }
+            }
+        }
+
+        // Priority 2: any root where symbol is the head.
+        let sym_vec = store.symbol_data.iter()
+            .find(|s| s.name == symbol)?;
+        for &sid in &sym_vec.head_sentences {
+            let sent = &store.sentences[store.sent_idx(sid)];
+            if !sent.span.is_synthetic() {
+                return Some((sid, sent.span.clone()));
+            }
+        }
+        None
     }
 
     // -- Validation ------------------------------------------------------------
@@ -1032,12 +1110,12 @@ impl KnowledgeBase {
         if !self.layer.store.has_sentence(sid) { return format!("<sid:{}>", sid); }
         let sentence = &self.layer.store.sentences[self.layer.store.sent_idx(sid)];
         let parts: Vec<String> = sentence.elements.iter().map(|e| match e {
-            Element::Symbol(id)                   => self.layer.store.sym_name(*id).to_owned(),
-            Element::Variable { name, .. }        => name.clone(),
-            Element::Literal(crate::types::Literal::Str(s))    => s.clone(),
-            Element::Literal(crate::types::Literal::Number(n)) => n.clone(),
-            Element::Op(op)                       => op.name().to_owned(),
-            Element::Sub(sub_id)                  => format!("({})", self.sentence_to_string(*sub_id)),
+            Element::Symbol { id, .. }                                       => self.layer.store.sym_name(*id).to_owned(),
+            Element::Variable { name, .. }                                   => name.clone(),
+            Element::Literal { lit: crate::types::Literal::Str(s), .. }      => s.clone(),
+            Element::Literal { lit: crate::types::Literal::Number(n), .. }   => n.clone(),
+            Element::Op { op, .. }                                           => op.name().to_owned(),
+            Element::Sub { sid: sub_id, .. }                                 => format!("({})", self.sentence_to_string(*sub_id)),
         }).collect();
         format!("({})", parts.join(" "))
     }

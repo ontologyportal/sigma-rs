@@ -13,6 +13,7 @@ pub mod error;
 pub mod diagnostic;
 pub mod types;
 pub(crate) mod kif_store;
+pub(crate) mod lookup;
 pub(crate) mod semantic;
 
 pub mod tptp;
@@ -59,6 +60,7 @@ pub use tptp::{TptpOptions, TptpLang, TestCase, parse_test_content};
 pub use kb::KnowledgeBase;
 pub use kb::{FileDiff, compute_file_diff};
 pub use kb::man::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
+pub use lookup::ElementHit;
 pub use parse::{AstNode, Pretty, Parser, ParsedDocument, parse_document, sentence_fingerprint};
 pub use parse::kif::{Token, TokenKind};
 

@@ -182,10 +182,10 @@ fn collect_parents(store: &KifStore, sym_id: SymbolId) -> Vec<ParentEdge> {
             // Shape: (rel CHILD PARENT) -- child at elements[1], parent at [2].
             let child_ok = matches!(
                 sent.elements.get(1),
-                Some(Element::Symbol(id)) if *id == sym_id
+                Some(Element::Symbol { id, .. }) if *id == sym_id
             );
             if !child_ok { continue; }
-            if let Some(Element::Symbol(parent)) = sent.elements.get(2) {
+            if let Some(Element::Symbol { id: parent, .. }) = sent.elements.get(2) {
                 out.push(ParentEdge {
                     relation: rel_head.to_string(),
                     parent:   store.sym_name(*parent).to_string(),
