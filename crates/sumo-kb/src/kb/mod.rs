@@ -1259,6 +1259,64 @@ impl KnowledgeBase {
         self.layer.store.file_roots.get(file).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Iterate every file tag currently loaded in the KB, in
+    /// HashMap-iteration (arbitrary but stable-within-run) order.
+    ///
+    /// Non-LSP uses: CLI dump utilities ("which files are live in
+    /// this KB?"), file watchers that want to diff against disk,
+    /// any consumer reconciling an external file list against
+    /// the in-memory state.
+    pub fn iter_files(&self) -> impl Iterator<Item = &str> + '_ {
+        self.layer.store.file_roots.keys().map(|s| s.as_str())
+    }
+
+    /// Drop every root sentence tagged with `file`.  Orphaned
+    /// symbols (those no longer referenced by any remaining
+    /// sentence) are pruned from the intern table.  The
+    /// occurrence index, head-index, and file-hash side table
+    /// all update in lockstep via the underlying
+    /// `KifStore::remove_file` primitive.
+    ///
+    /// Non-LSP uses: `sumo watch` file-watchers that want to
+    /// drop a deleted file from the in-memory KB, test harness
+    /// hot-reloads, any external-driver that wants a clean
+    /// per-file tear-down without invoking the full diff path.
+    ///
+    /// The persistent LMDB store (when `persist` is enabled) is
+    /// not touched -- `remove_file` operates purely on the
+    /// in-memory view.  Use `flush_session` / `flush_assertions`
+    /// for LMDB-affecting mutations.
+    pub fn remove_file(&mut self, file: &str) {
+        // Snapshot the removed-sentence set before the store mutation
+        // so we can drop only those fingerprint entries.  Clone the
+        // Vec so we don't hold a borrow across the mutation.
+        #[cfg(feature = "cnf")]
+        let removed_sids: std::collections::HashSet<SentenceId> =
+            self.layer.store.file_roots.get(file)
+                .map(|v| v.iter().copied().collect())
+                .unwrap_or_default();
+
+        self.layer.store.remove_file(file);
+
+        #[cfg(feature = "cnf")]
+        {
+            self.clauses.retain(|sid, _| !removed_sids.contains(sid));
+            self.fingerprints.retain(|_, (sid, _)| !removed_sids.contains(sid));
+        }
+
+        // The session-assertion map may also reference these sids
+        // (e.g. a file loaded as a session assertion rather than an
+        // axiom).  Prune.
+        for sids in self.sessions.values_mut() {
+            sids.retain(|s| {
+                #[cfg(feature = "cnf")]
+                { !removed_sids.contains(s) }
+                #[cfg(not(feature = "cnf"))]
+                { self.layer.store.has_sentence(*s) }
+            });
+        }
+    }
+
     /// Apply an incremental reload diff to the knowledge base.
     ///
     /// General-purpose primitive for any consumer that wants to

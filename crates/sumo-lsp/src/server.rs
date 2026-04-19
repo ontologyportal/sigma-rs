@@ -33,8 +33,9 @@ use crate::conv::uri_to_tag;
 use crate::handlers::{
     handle_completion, handle_document_symbol, handle_formatting, handle_goto_definition,
     handle_hover, handle_range_formatting, handle_references, handle_rename,
-    handle_semantic_tokens_full, handle_workspace_symbols, publish_diagnostics,
-    semantic_tokens_legend,
+    handle_semantic_tokens_full, handle_set_active_files, handle_workspace_symbols,
+    publish_diagnostics, semantic_tokens_legend, SET_ACTIVE_FILES_METHOD,
+    SetActiveFilesParams,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -326,6 +327,9 @@ fn handle_notification(connection: &Connection, state: &GlobalState, not: Notifi
             let params = cast_notification::<DidCloseTextDocument>(not)?;
             on_did_close(state, params);
         }
+        m if m == SET_ACTIVE_FILES_METHOD => {
+            on_set_active_files(connection, state, not)?;
+        }
         _ => {
             log::trace!(target: "sumo_lsp", "ignored notification '{}'", not.method);
         }
@@ -342,6 +346,8 @@ fn cast_notification<N: lsp_types::notification::Notification>(
 // -- didOpen ------------------------------------------------------------------
 
 fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenTextDocumentParams) {
+    use std::sync::atomic::Ordering;
+
     let uri      = params.text_document.uri;
     let text     = params.text_document.text;
     let version  = params.text_document.version;
@@ -351,12 +357,15 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
 
     // If the workspace sweep already loaded this file, skip the
     // re-load (the KB's state is already canonical).  Otherwise
-    // ingest this text as a fresh file in the KB.
+    // ingest this text as a fresh file in the KB -- *unless* the
+    // client has taken over KB membership via `sumo/setActiveFiles`,
+    // in which case the file's inclusion is its decision alone.
     let already_loaded = {
         let kb = state.kb.read().expect("kb not poisoned");
         !kb.file_roots(&tag).is_empty()
     };
-    if !already_loaded {
+    let client_managed = state.client_manages_files.load(Ordering::SeqCst);
+    if !already_loaded && !client_managed {
         let mut kb = state.kb.write().expect("kb not poisoned");
         let _ = kb.load_kif(&text, &tag, None);
     }
@@ -433,4 +442,67 @@ fn on_did_close(state: &GlobalState, params: DidCloseTextDocumentParams) {
     // documents that cross-reference them still resolve.  A separate
     // "drop workspace file" command can remove it explicitly if
     // required later.
+}
+
+// -- sumo/setActiveFiles ------------------------------------------------------
+
+/// Client-owned KB membership control.  The extension sends the
+/// authoritative file list for the union of its active KBs (one
+/// or more, permanent and / or temporary).  We diff against the
+/// currently-loaded set and apply the delta via the same load /
+/// remove primitives the workspace sweep uses.  Diagnostics are
+/// republished for every affected file so the client reconciles
+/// its UI to the new state.
+fn on_set_active_files(
+    connection: &Connection,
+    state:      &GlobalState,
+    not:        Notification,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+
+    let params: SetActiveFilesParams =
+        serde_json::from_value(not.params).map_err(|e| anyhow::anyhow!(e))?;
+
+    // Flip the "client owns membership" latch before the first
+    // application so subsequent didOpen calls don't race-add
+    // files behind the client's back.
+    state.client_manages_files.store(true, Ordering::SeqCst);
+
+    let report = handle_set_active_files(state, params);
+
+    // Republish diagnostics for added + removed files.  Removed
+    // files that the client still has open get an empty diagnostic
+    // list, clearing any leftover squiggles.
+    let docs = state.docs.read().expect("docs lock not poisoned");
+    let kb   = state.kb.read().expect("kb lock not poisoned");
+    for tag in report.added.iter().chain(report.removed.iter()) {
+        let Some(uri) = uri_from_tag(tag) else { continue; };
+        let doc = docs.get(&uri);
+        let rope = doc.map(|d| d.rope.clone())
+            .unwrap_or_else(|| Rope::from_str(""));
+        let parsed = doc.and_then(|d| d.parsed.as_ref());
+
+        match parsed {
+            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, &kb, None),
+            None => {
+                // No open document for this tag -- reparse from
+                // disk on the fly so diagnostics reflect current
+                // state.  Cheap for a one-off.
+                if let Ok(text) = std::fs::read_to_string(tag) {
+                    let p    = sumo_kb::parse_document(tag.clone(), text.as_str());
+                    let rope = Rope::from_str(&text);
+                    publish_diagnostics(&connection.sender, &uri, &rope, &p, &kb, None);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Reverse of `uri_to_tag`: build a `file://` URL from a
+/// filesystem-path tag.  Returns `None` on non-file tags (should
+/// not happen in practice; setActiveFiles uses absolute paths).
+fn uri_from_tag(tag: &str) -> Option<Url> {
+    Url::from_file_path(tag).ok()
 }

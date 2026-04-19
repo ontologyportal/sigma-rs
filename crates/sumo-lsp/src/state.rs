@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::AtomicBool;
 
 use lsp_types::Url;
 use ropey::Rope;
@@ -72,6 +73,14 @@ pub struct GlobalState {
     /// simplicity; the MVP traffic pattern (sequential LSP requests)
     /// doesn't benefit from finer locking.
     pub docs: Arc<RwLock<HashMap<Url, DocState>>>,
+    /// Set to true once the client sends a `sumo/setActiveFiles`
+    /// notification -- the client has taken authoritative control
+    /// of KB membership.  While `true`, `didOpen` does **not**
+    /// auto-add files to the shared KB; it only publishes
+    /// diagnostics for whatever's already loaded.  Prevents drift
+    /// between the extension's session model and the server's
+    /// file_roots.
+    pub client_manages_files: Arc<AtomicBool>,
 }
 
 impl GlobalState {
@@ -79,6 +88,7 @@ impl GlobalState {
         Self {
             kb:   Arc::new(RwLock::new(KnowledgeBase::new())),
             docs: Arc::new(RwLock::new(HashMap::new())),
+            client_manages_files: Arc::new(AtomicBool::new(false)),
         }
     }
 }
