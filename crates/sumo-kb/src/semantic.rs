@@ -1195,7 +1195,6 @@ impl SemanticLayer {
     /// Does **not** touch `SortAnnotations` -- that cache rebuilds
     /// wholesale via `invalidate_sort_annotations` since its
     /// dependency tracking is coarser.
-    #[allow(dead_code)] // first caller lands in Phase 2 (apply_file_diff)
     pub(crate) fn invalidate_symbols(&self, symbols: &HashSet<SymbolId>) {
         if symbols.is_empty() { return; }
         let mut cache = self.cache.write().unwrap();
