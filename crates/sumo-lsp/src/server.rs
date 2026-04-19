@@ -12,17 +12,21 @@ use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
 use lsp_types::{
     notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _},
+    request::{DocumentSymbolRequest, GotoDefinition, HoverRequest, Request as _},
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, OneOf, PositionEncodingKind, ServerCapabilities,
     ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     Url, WorkspaceFolder,
 };
 use ropey::Rope;
+use serde::de::DeserializeOwned;
 
 use sumo_kb::parse_document;
 
 use crate::conv::uri_to_tag;
-use crate::handlers::publish_diagnostics;
+use crate::handlers::{
+    handle_document_symbol, handle_goto_definition, handle_hover, publish_diagnostics,
+};
 use crate::state::{DocState, GlobalState};
 
 /// Run the server against a `Connection`.  Returns on clean
@@ -62,7 +66,7 @@ pub fn run(connection: Connection) -> Result<()> {
                     log::info!(target: "sumo_lsp", "shutdown requested");
                     return Ok(());
                 }
-                handle_request(&connection, req);
+                handle_request(&connection, &state, req);
             }
             Message::Notification(not) => {
                 if let Err(e) = handle_notification(&connection, &state, not) {
@@ -94,10 +98,11 @@ fn server_capabilities() -> ServerCapabilities {
                 will_save_wait_until: None,
             },
         )),
-        // Phase 3+ capabilities will be added here as they land.
-        definition_provider:      Some(OneOf::Left(false)),
-        hover_provider:           None,
-        document_symbol_provider: None,
+        definition_provider:      Some(OneOf::Left(true)),
+        hover_provider:           Some(lsp_types::HoverProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        // Phase 4+ capabilities: references, rename, completion,
+        // semantic tokens -- flipped on as the handlers land.
         references_provider:      None,
         rename_provider:          None,
         completion_provider:      None,
@@ -178,20 +183,78 @@ fn is_kif_file(path: &std::path::Path) -> bool {
 
 // -- Request dispatch ---------------------------------------------------------
 
-fn handle_request(connection: &Connection, req: Request) {
-    // MVP: no read requests implemented yet -- just respond with a
-    // MethodNotFound so clients don't hang waiting.  Phase 3 will
-    // expand this match arm with hover / definition / documentSymbol.
-    let resp = Response {
-        id: req.id,
-        result: None,
-        error: Some(lsp_server::ResponseError {
-            code:    lsp_server::ErrorCode::MethodNotFound as i32,
-            message: format!("sumo-lsp: method '{}' not implemented yet", req.method),
-            data:    None,
-        }),
+fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
+    // `R::Result` for hover/definition/documentSymbol is itself
+    // `Option<_>`; our inner handler already returns that shape, so
+    // we wrap the whole thing in `Some` for `dispatch`.
+    let resp = match req.method.as_str() {
+        HoverRequest::METHOD => {
+            dispatch::<HoverRequest, _>(req, |p| Some(handle_hover(state, p)))
+        }
+        GotoDefinition::METHOD => {
+            dispatch::<GotoDefinition, _>(req, |p| Some(handle_goto_definition(state, p)))
+        }
+        DocumentSymbolRequest::METHOD => {
+            dispatch::<DocumentSymbolRequest, _>(req, |p| Some(handle_document_symbol(state, p)))
+        }
+        _ => Response {
+            id:     req.id,
+            result: None,
+            error:  Some(lsp_server::ResponseError {
+                code:    lsp_server::ErrorCode::MethodNotFound as i32,
+                message: format!("sumo-lsp: method '{}' not implemented", req.method),
+                data:    None,
+            }),
+        },
     };
     let _ = connection.sender.send(Message::Response(resp));
+}
+
+/// Extract the typed `Params` from a `Request`, run the handler,
+/// and re-wrap the `Result` into an `lsp_server::Response`.
+/// `handler` returns an `Option` -- `None` encodes "no result"
+/// (empty response body, not an error), which is the LSP
+/// convention for hover/definition when the cursor isn't on a
+/// recognisable element.
+fn dispatch<R, F>(req: Request, handler: F) -> Response
+where
+    R:            lsp_types::request::Request,
+    R::Params:    DeserializeOwned,
+    R::Result:    serde::Serialize,
+    F: FnOnce(R::Params) -> Option<R::Result>,
+{
+    match req.extract::<R::Params>(R::METHOD) {
+        Ok((id, params)) => match handler(params) {
+            Some(result) => Response {
+                id,
+                result: Some(serde_json::to_value(&result).expect("serialisable")),
+                error:  None,
+            },
+            None => Response {
+                id,
+                result: Some(serde_json::Value::Null),
+                error:  None,
+            },
+        },
+        Err(ExtractError::MethodMismatch(r)) => Response {
+            id:     r.id,
+            result: None,
+            error:  Some(lsp_server::ResponseError {
+                code:    lsp_server::ErrorCode::MethodNotFound as i32,
+                message: format!("method mismatch for {}", R::METHOD),
+                data:    None,
+            }),
+        },
+        Err(ExtractError::JsonError { method: _, error }) => Response {
+            id:     lsp_server::RequestId::from(0),
+            result: None,
+            error:  Some(lsp_server::ResponseError {
+                code:    lsp_server::ErrorCode::InvalidParams as i32,
+                message: format!("parse error: {}", error),
+                data:    None,
+            }),
+        },
+    }
 }
 
 // -- Notification dispatch ----------------------------------------------------

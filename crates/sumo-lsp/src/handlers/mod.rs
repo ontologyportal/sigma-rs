@@ -6,5 +6,11 @@
 // via the caller-provided sender).
 
 pub mod diagnostics;
+pub mod hover;
+pub mod goto;
+pub mod symbols;
 
 pub use diagnostics::publish_diagnostics;
+pub use hover::handle_hover;
+pub use goto::handle_goto_definition;
+pub use symbols::handle_document_symbol;
