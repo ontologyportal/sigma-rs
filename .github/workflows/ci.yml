@@ -1,0 +1,147 @@
+# CI for sumo-kb / sumo-lsp / sumo-native.
+#
+# Jobs are split by dependency weight:
+#
+#   * lsp-fast:   cross-OS matrix covering the CMake-free surface --
+#                 sumo-lsp (default-features=false sumo-kb) and
+#                 sumo-kb itself without the cnf / integrated-prover
+#                 features.  Runs on every push / PR.
+#
+#   * full-matrix: Linux-only job exercising `--all-features` over
+#                 the whole workspace -- pulls in vampire-sys /
+#                 vampire-lib via submodules and requires CMake.
+#                 Also runs on every push / PR; it's the only job
+#                 that can validate the ask + integrated-prover
+#                 paths.
+#
+#   * audit:      enforces the core-library generalization posture
+#                 (no LSP-flavoured deps in sumo-kb's dep graph,
+#                 no LSP-flavoured names in sumo-kb's public API).
+#                 Fast Linux job, catches accidental architectural
+#                 drift on every PR.
+#
+# Editor-side packaging (VSCode extension, Neovim config, etc.) is
+# explicitly out of scope for this CI -- the sumo-lsp binary is
+# published as a stand-alone stdio server via release.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # -- Fast cross-OS lane: sumo-lsp + CMake-free sumo-kb --------------------
+  lsp-fast:
+    name: lsp-fast / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: lsp-fast-${{ matrix.os }}
+
+      - name: Build sumo-lsp (release)
+        run: cargo build -p sumo-lsp --release
+
+      - name: Test sumo-lsp
+        run: cargo test -p sumo-lsp --all-features
+
+      - name: Test sumo-kb (CMake-free -- no cnf / no integrated-prover)
+        run: cargo test -p sumo-kb --no-default-features --features persist,ask
+
+      - name: Clippy -- sumo-lsp
+        run: cargo clippy -p sumo-lsp --all-features --tests -- -D warnings
+
+      - name: Clippy -- sumo-kb (CMake-free)
+        run: >-
+          cargo clippy -p sumo-kb --no-default-features
+          --features persist,ask --tests -- -D warnings
+
+  # -- Linux full matrix: all-features, incl. vampire-sys ---------------------
+  full-matrix:
+    name: full-matrix / ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install CMake + toolchain deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: full-matrix-linux
+
+      - name: Test workspace --all-features
+        run: cargo test --workspace --all-features
+
+      - name: Clippy --workspace --all-features
+        run: cargo clippy --workspace --all-features --tests -- -D warnings
+
+  # -- Generalization audit: no LSP leakage into sumo-kb ---------------------
+  audit:
+    name: audit / generalization gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: audit
+
+      - name: Dep-graph denylist -- no LSP / async / buffer crates in sumo-kb
+        run: |
+          set -euo pipefail
+          DENYLIST='lsp-server|lsp-types|tower-lsp|ropey|^url$|dashmap|arc-swap|crossbeam-|^tokio$|^async-'
+          if cargo tree -p sumo-kb --prefix none --edges normal 2>/dev/null \
+             | awk '{print $1}' \
+             | grep -E "${DENYLIST}"; then
+            echo "::error::sumo-kb dep graph contains LSP-flavoured crates"
+            exit 1
+          fi
+          echo "sumo-kb dep graph clean"
+
+      - name: Public-API naming check -- no LSP-flavoured pub symbols in sumo-kb
+        run: |
+          set -euo pipefail
+          # Grep sumo-kb's source for any public declaration whose
+          # name starts with a reserved LSP-concept prefix.
+          # Matches only lines where the name begins one of the
+          # forbidden stems; doc comments that merely *mention*
+          # "Position" (e.g. "independent of LSP's Position")
+          # are left alone.
+          PATTERN='^\s*pub(\s*\([^)]*\))?\s+(struct|enum|fn|trait|type|const|static)\s+(Lsp|Uri|Url[A-Z_]|Position[A-Z_])'
+          if grep -R -nE "${PATTERN}" crates/sumo-kb/src; then
+            echo "::error::sumo-kb public API contains an LSP-flavoured symbol name"
+            exit 1
+          fi
+          echo "sumo-kb public API naming clean"

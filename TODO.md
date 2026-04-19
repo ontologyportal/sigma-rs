@@ -6,6 +6,67 @@ Unresolved issues identified during code review (2026-03-24).
 
 ## Recently completed
 
+### ~~`sumo-lsp` crate: LSP server for KIF / SUMO~~ — DONE (2026-04-19)
+
+New top-level crate `crates/sumo-lsp/` plus ~15 general-purpose
+`sumo-kb` additions land a full-featured editor-agnostic stdio
+language server backed by the shared `KnowledgeBase`.  Six phases
+committed on `claude/friendly-wing-52cc99`:
+
+- **Phase 1** — pure-parse primitives in sumo-kb: `Diagnostic` +
+  `ToDiagnostic` trait, `sentence_fingerprint`, `ParsedDocument`
+  (tokens + AST + diagnostics + per-root hashes / spans retained
+  on one reparse), `SemanticCache` extended with
+  `documentation` / `term_format` / `format` doc-relation caches +
+  `invalidate_symbols` granular eviction.
+- **Phase 2** — `FileDiff` + `apply_file_diff` + `remove_sentence`
+  + `file_hashes` + `compute_file_diff` positional-greedy diff;
+  new `sumo-lsp` crate with `lsp-server`-based event loop,
+  workspace sweep on initialize, `didOpen` / `didChange` /
+  `didClose` driving the diff-apply path, `publishDiagnostics`.
+- **Phase 3** — per-Element spans (`Span::synthetic` sentinel for
+  CNF / rehydrated elements), `lookup::element_at_offset`,
+  `sentence(sid)` / `sym_name(id)` / `element_at_offset` /
+  `symbol_at_offset` / `defining_sentence` on KnowledgeBase; LSP
+  handlers for hover (ManPage → Markdown), goto-definition
+  (first-declaration heuristic, cross-file), documentSymbol.
+- **Phase 4** — `Occurrence` + `OccurrenceKind` types, reverse
+  index built during load / torn down in remove; `occurrences` /
+  `occurrences_of` / `iter_symbols` / `symbol_is_skolem` /
+  `id_at_offset` accessors; LSP handlers for references, rename
+  (scope-qualified variable rename respects quantifier
+  boundaries, sigil preserved), workspace / symbol.
+- **Phase 5** — `AstNode::format_plain` (ANSI-free), `head_names`
+  / `expected_arg_class` accessors; LSP handlers for semantic
+  tokens (6-entry legend, KB-taxonomy-aware classification),
+  formatting (full + range), completion (token-stream context
+  detection: sentence head / arg position / free).
+- **Phase 6** — CI + release + docs: `.github/workflows/ci.yml`
+  cross-OS matrix (ubuntu / macos / windows) for the CMake-free
+  lane (sumo-lsp + cnf-off sumo-kb) plus a Linux
+  `--all-features` lane, plus a generalization-audit gate that
+  fails CI on any LSP-flavoured dep or name landing in sumo-kb's
+  public surface; `.github/workflows/release.yml` cross-compile
+  sumo-lsp for 4 target triples on tag push with stripped
+  tarball / zip artifacts and SHA-256 sidecars; `docs/lsp.md`
+  user-facing docs (install, per-editor config, supported
+  capabilities, protocol notes).
+
+**Code review pass (2026-04-19)**: extracted duplicated rope /
+disk-fallback pattern to `conv::span_to_range_with_fallback`,
+added `KifStore::symbol_of(id)` O(1) accessor to retire two
+O(N) symbol scans in workspace-symbol search, dropped stale
+`#[allow(dead_code)]` markers and unused-import sentinels.
+
+**Architecture posture verified clean**: sumo-kb dep graph
+contains zero LSP-flavoured crates (`lsp-*`, `tower-lsp`,
+`ropey`, `tokio`, `async-*`, `dashmap`, `arc-swap`,
+`crossbeam-*`); public API contains zero LSP-flavoured names
+(`Uri*`, `Url`, `Lsp*`, `Position*`).  Every sumo-kb addition
+is useful to at least two non-LSP consumers (CLI introspection,
+REPL, file watchers, test harnesses).  Release binary ~3.3 MB
+stripped.
+
 ### ~~Architectural cleanup pass~~ — DONE (2026-04-18)
 
 Three-agent code review (perf + redundancy + architecture) + resulting

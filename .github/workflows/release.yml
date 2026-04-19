@@ -1,0 +1,120 @@
+# Tag-triggered release workflow for the sumo-lsp binary.
+#
+# Pushing a tag of the form `sumo-lsp-vX.Y.Z` builds sumo-lsp for
+# four target triples in parallel and uploads the stripped
+# archives to the corresponding GitHub release:
+#
+#   * darwin-arm64  (macos-14, Apple Silicon)
+#   * darwin-x64    (macos-13, Intel)
+#   * linux-x64-gnu (ubuntu-latest)
+#   * win32-x64     (windows-latest)
+#
+# sumo-lsp depends on sumo-kb with `default-features = false`, so
+# none of the builds need CMake or the vampire-sys submodule --
+# the binary is parse + validate + manpage only.  Stripped release
+# binary measures ~3.3 MB on Linux / macOS.
+#
+# This workflow does NOT publish to crates.io; distribution is
+# via GitHub-release artifacts plus `cargo install --git` for
+# developers who want to build from source.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'sumo-lsp-v*'
+
+permissions:
+  contents: write  # needed to upload release artifacts
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target:  aarch64-apple-darwin
+            os:      macos-14
+            archive: tar.gz
+            label:   darwin-arm64
+          - target:  x86_64-apple-darwin
+            os:      macos-13
+            archive: tar.gz
+            label:   darwin-x64
+          - target:  x86_64-unknown-linux-gnu
+            os:      ubuntu-latest
+            archive: tar.gz
+            label:   linux-x64-gnu
+          - target:  x86_64-pc-windows-msvc
+            os:      windows-latest
+            archive: zip
+            label:   win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false  # sumo-lsp doesn't need vampire-sys
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build sumo-lsp (release, --target)
+        run: cargo build -p sumo-lsp --release --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: strip target/${{ matrix.target }}/release/sumo-lsp
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#sumo-lsp-v}"
+          staging="sumo-lsp-${ver}-${{ matrix.label }}"
+          mkdir "${staging}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/sumo-lsp.exe" "${staging}/"
+          else
+            cp "target/${{ matrix.target }}/release/sumo-lsp" "${staging}/"
+          fi
+          # Ship the LSP docs with the binary so editor-extension
+          # authors see protocol notes alongside the executable.
+          cp README.md         "${staging}/" 2>/dev/null || true
+          cp docs/lsp.md       "${staging}/LSP.md" 2>/dev/null || true
+          echo "STAGING=${staging}" >> "${GITHUB_ENV}"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          tar -czf "${STAGING}.tar.gz" "${STAGING}"
+          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "$env:STAGING" -DestinationPath "$env:STAGING.zip"
+          Get-FileHash "$env:STAGING.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $env:STAGING.zip" } |
+            Out-File -Encoding ASCII "$env:STAGING.zip.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.STAGING }}.${{ matrix.archive }}
+            ${{ env.STAGING }}.${{ matrix.archive }}.sha256
+          # The release itself is auto-created on the tag if it
+          # doesn't exist; otherwise the files are appended.
+          draft: false
+          generate_release_notes: true
