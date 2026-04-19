@@ -1,5 +1,5 @@
 [workspace]
-members  = ["crates/sumo-kb", "crates/wasm", "crates/native"]
+members  = ["crates/sumo-kb", "crates/wasm", "crates/native", "crates/sumo-lsp"]
 resolver = "2"
 
 [workspace.package]
