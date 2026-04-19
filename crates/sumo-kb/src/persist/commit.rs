@@ -294,6 +294,124 @@ pub(crate) fn persist_sort_annotations_cache(
     Ok(())
 }
 
+/// Report returned by `backfill_cnf_tables`.
+#[cfg(feature = "cnf")]
+pub(crate) struct BackfillReport {
+    pub axioms_processed: usize,
+    pub clauses_interned: usize,
+    pub formula_hashes:   usize,
+    /// Parallel to `axioms_processed` but keyed by sid; lets the caller
+    /// (KnowledgeBase::open) populate the in-memory `clauses` and
+    /// `fingerprints` maps without re-clausifying.
+    pub clauses_by_sid:        std::collections::HashMap<SentenceId, Vec<crate::types::Clause>>,
+    pub formula_hash_by_sid:   Vec<(SentenceId, u64)>,
+}
+
+/// Auto-backfill: populate Phase 4 cnf tables for every existing
+/// axiom when the DB was written without `cnf` but the current build
+/// has it on.
+///
+/// For each root sentence in `layer.store.roots`:
+///
+/// 1. Clausify via `cnf::sentence_to_clauses` (mutates the store to
+///    intern skolems).
+/// 2. Compute canonical hashes per clause + formula hash over the set.
+/// 3. Intern each clause via `LmdbEnv::intern_clause` (reuses the same
+///    dedup logic `write_axioms` uses on new commits).
+/// 4. Write `(formula_hash -> sid)` into `DB_FORMULA_HASHES`.
+/// 5. After all sids are processed, re-stamp the feature manifest
+///    with the current build's features.  `kb_version` is NOT bumped
+///    -- the axiom set hasn't changed, only feature-specific tables
+///    have been populated, so the taxonomy / sort_annotations / axiom
+///    caches remain valid.
+///
+/// All of this happens in a single write txn so the DB moves from the
+/// "cnf missing" state to the "cnf populated" state atomically.
+///
+/// `StoredFormula.clause_ids` entries are NOT rewritten -- they'd
+/// require reading + mutating + writing every StoredFormula.  The
+/// dedup path uses `DB_FORMULA_HASHES` for the "is this a duplicate"
+/// check, so leaving legacy formulas with empty `clause_ids` is
+/// correct: they just don't participate in cross-formula clause
+/// sharing.  Future tells / promotes will write clause_ids normally.
+#[cfg(feature = "cnf")]
+pub(crate) fn backfill_cnf_tables(
+    env:   &LmdbEnv,
+    layer: &mut crate::semantic::SemanticLayer,
+) -> Result<BackfillReport, KbError> {
+    use crate::canonical;
+    use std::collections::HashMap;
+
+    let axiom_sids: Vec<SentenceId> = layer.store.roots.clone();
+
+    log::info!(target: "sumo_kb::persist",
+        "cnf backfill: starting for {} axioms", axiom_sids.len());
+    let t0 = std::time::Instant::now();
+
+    let mut wtxn = env.write_txn()?;
+    let mut report = BackfillReport {
+        axioms_processed: 0,
+        clauses_interned: 0,
+        formula_hashes:   0,
+        clauses_by_sid:   HashMap::new(),
+        formula_hash_by_sid: Vec::new(),
+    };
+
+    let mut clausify_failures = 0usize;
+
+    for sid in axiom_sids {
+        // Clausify.  Errors (e.g. Vampire internal exception on a
+        // pathological formula) are logged and the sid is skipped --
+        // backfill continues for the remaining axioms.
+        let clauses = match crate::cnf::sentence_to_clauses(layer, sid) {
+            Ok(cs) => cs,
+            Err(e) => {
+                log::warn!(target: "sumo_kb::persist",
+                    "cnf backfill: sid={} clausify failed: {}; skipping", sid, e);
+                clausify_failures += 1;
+                continue;
+            }
+        };
+
+        // Intern clauses.
+        let canonical_hashes: Vec<u64> = clauses.iter()
+            .map(canonical::canonical_clause_hash)
+            .collect();
+        let mut clause_ids = Vec::with_capacity(clauses.len());
+        for (i, clause) in clauses.iter().enumerate() {
+            let id = env.intern_clause(&mut wtxn, canonical_hashes[i], clause, None)?;
+            clause_ids.push(id);
+        }
+
+        // Formula hash.
+        let fh = canonical::formula_hash_from_clauses(&canonical_hashes);
+        env.put_formula_hash(&mut wtxn, fh, sid)?;
+
+        report.axioms_processed += 1;
+        report.clauses_interned += clause_ids.len();
+        report.formula_hashes   += 1;
+        report.clauses_by_sid.insert(sid, clauses);
+        report.formula_hash_by_sid.push((sid, fh));
+    }
+
+    // Re-stamp the manifest so the next open sees `cnf: true` and
+    // skips backfill.  kb_version is NOT bumped -- see the method's
+    // doc for the reasoning.
+    env.stamp_current_feature_manifest(&mut wtxn)?;
+
+    wtxn.commit()?;
+
+    log::info!(target: "sumo_kb::persist",
+        "cnf backfill: done in {:?} -- {} axioms, {} clauses interned, {} formula hashes ({} clausify failures)",
+        t0.elapsed(),
+        report.axioms_processed,
+        report.clauses_interned,
+        report.formula_hashes,
+        clausify_failures);
+
+    Ok(report)
+}
+
 /// Persist an axiom cache (IR `Problem` + sid_map) for the given mode.
 ///
 /// The IR tree is bincoded directly -- no TPTP round-trip -- thanks

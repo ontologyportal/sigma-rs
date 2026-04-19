@@ -24,6 +24,8 @@ pub(crate) use commit::{
     write_axioms,
     persist_taxonomy_cache,
 };
+#[cfg(feature = "cnf")]
+pub(crate) use commit::backfill_cnf_tables;
 #[cfg(feature = "ask")]
 pub(crate) use commit::{
     persist_sort_annotations_cache,

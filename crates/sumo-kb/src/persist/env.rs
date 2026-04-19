@@ -322,6 +322,16 @@ pub(crate) struct LmdbEnv {
     /// for the valid keys.  Values are bincode blobs whose leading
     /// field is a `kb_version` u64 for staleness detection.
     pub caches:         Database<Str, Bytes>,
+
+    /// Features that were off at the last `write_axioms` commit but
+    /// are enabled in the current build.  Populated during
+    /// [`LmdbEnv::open`] from the feature manifest comparison; read
+    /// by higher-level code (e.g. [`KnowledgeBase::open`]) to decide
+    /// whether to auto-backfill the now-relevant tables.
+    ///
+    /// Empty when the manifest matches (fast path) or when the DB is
+    /// fresh (nothing to diff against).
+    pub added_features: Vec<&'static str>,
 }
 
 impl LmdbEnv {
@@ -434,7 +444,11 @@ impl LmdbEnv {
         // isn't at risk -- schema mismatches already refused to open
         // above -- but the user deserves a clear signal about which
         // tables may be stale, empty, or ignored.
-        {
+        //
+        // Populate `added_features` so higher-level callers can
+        // trigger an automatic backfill of the newly-enabled
+        // feature's tables.
+        let added_features: Vec<&'static str> = {
             let rtxn = env.read_txn()?;
             let current = FeatureSet::current();
             let manifest: Option<FeatureManifest> = caches
@@ -450,10 +464,12 @@ impl LmdbEnv {
                     log::debug!(target: "sumo_kb::persist",
                         "no feature manifest present; will stamp on next commit (features={:?})",
                         current);
+                    Vec::new()
                 }
                 Some(m) if m.features == current => {
                     log::debug!(target: "sumo_kb::persist",
                         "feature manifest matches current build: {:?}", current);
+                    Vec::new()
                 }
                 Some(m) => {
                     let removed = current.removed_since(&m.features);
@@ -466,17 +482,16 @@ impl LmdbEnv {
                             removed);
                     }
                     if !added.is_empty() {
-                        log::warn!(target: "sumo_kb::persist",
+                        log::info!(target: "sumo_kb::persist",
                             "feature drift: DB was written WITHOUT {:?} but this build \
-                             enables them.  The corresponding LMDB tables are empty; \
-                             they'll populate on the next `promote_assertions_unchecked`. \
-                             Existing axioms will not participate in these features \
-                             until re-promoted.",
+                             enables them.  An automatic backfill will populate the \
+                             corresponding LMDB tables from the existing axioms.",
                             added);
                     }
+                    added
                 }
             }
-        }
+        };
 
         Ok(Self {
             env,
@@ -491,6 +506,7 @@ impl LmdbEnv {
             #[cfg(feature = "cnf")]
             formula_hashes,
             caches,
+            added_features,
         })
     }
 
@@ -707,6 +723,31 @@ impl LmdbEnv {
             .and_then(|b| <[u8; 8]>::try_from(b).ok())
             .map(u64::from_le_bytes)
             .unwrap_or(0))
+    }
+
+    /// Re-stamp the feature manifest with the current build's feature
+    /// set at the current `kb_version`.
+    ///
+    /// Used by the auto-backfill path, which populates tables made
+    /// newly-relevant by a feature flip (e.g. `cnf` off -> on).  The
+    /// underlying axiom set is unchanged so `kb_version` is NOT
+    /// bumped; only the manifest's `features` field moves.  This
+    /// keeps the taxonomy / sort_annotations / axiom caches valid
+    /// (their stored `kb_version` still matches the counter) while
+    /// recording that the cnf tables are now populated.
+    pub(super) fn stamp_current_feature_manifest(
+        &self,
+        wtxn: &mut RwTxn,
+    ) -> Result<(), KbError> {
+        let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
+        let kb_version = self.kb_version(rtxn)?;
+        let manifest = FeatureManifest {
+            schema: SCHEMA_VERSION,
+            kb_version,
+            features: FeatureSet::current(),
+        };
+        self.put_cache(wtxn, CACHE_KEY_FEATURE_MANIFEST, &manifest)?;
+        Ok(())
     }
 
     /// Bump the `kb_version` counter (read-modify-write).

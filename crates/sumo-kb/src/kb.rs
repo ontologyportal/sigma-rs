@@ -160,7 +160,7 @@ impl KnowledgeBase {
         // `SemanticLayer::new`, which does the full `rebuild_taxonomy`
         // scan as before.  Either way the result is correct; Phase D
         // just skips the scan when the cache is valid.
-        let layer = {
+        let mut layer = {
             let rtxn = env.read_txn()?;
             let current_version = env.kb_version(&rtxn)?;
             let cached: Option<crate::persist::CachedTaxonomy> =
@@ -216,22 +216,52 @@ impl KnowledgeBase {
             }
         }
 
+        // -- Auto-backfill: cnf tables when cnf was off at last write -
+        //
+        // `env.added_features` carries the set of features that were
+        // off in the persisted manifest but are on in this build.
+        // When `cnf` shows up there, the `clauses`, `clause_hashes`,
+        // and `formula_hashes` tables are empty for existing axioms,
+        // so newly-written duplicates of existing axioms would slip
+        // past the in-memory fingerprint lookup.  We'd rather fix
+        // that up automatically than leave the user with a silently
+        // incomplete dedup table.
+        //
+        // The backfill clausifies every persisted axiom, interns the
+        // clauses, and populates `DB_FORMULA_HASHES` so subsequent
+        // opens see a populated table and take the fast path.  The
+        // manifest is re-stamped with current features; `kb_version`
+        // is NOT bumped (the axiom set hasn't changed, just the cnf
+        // tables), so other Phase D caches stay valid.
+        #[cfg(feature = "cnf")]
+        let initial_clauses: HashMap<SentenceId, Vec<Clause>> = {
+            if env.added_features.iter().any(|f| *f == "cnf") {
+                log::info!(target: "sumo_kb::kb",
+                    "Phase D: auto-backfilling cnf tables for {} axioms",
+                    layer.store.roots.len());
+                let report = crate::persist::backfill_cnf_tables(&env, &mut layer)?;
+                // Backfill repopulates fingerprints too (they were
+                // empty before because DB_FORMULA_HASHES was empty).
+                for (sid, fh) in &report.formula_hash_by_sid {
+                    fingerprints.insert(*fh, (*sid, None));
+                }
+                report.clauses_by_sid
+            } else {
+                HashMap::new()
+            }
+        };
+
         #[cfg(feature = "cnf")]
         log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} formulas fingerprinted",
             path, fingerprints.len());
         #[cfg(not(feature = "cnf"))]
         log::info!(target: "sumo_kb::kb", "opened KB from {:?} (no-dedup build)", path);
 
-        // Silence mut-not-needed in cnf-on builds (we don't add new
-        // entries here; tell/promote will do it).
-        #[cfg(feature = "cnf")]
-        { let _ = &mut fingerprints; }
-
         Ok(Self {
             layer,
             sessions:     HashMap::new(),
             #[cfg(feature = "cnf")] fingerprints,
-            #[cfg(feature = "cnf")] clauses:  HashMap::new(),
+            #[cfg(feature = "cnf")] clauses:  initial_clauses,
             #[cfg(feature = "cnf")] cnf_mode: true,
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             db: Some(env),
@@ -424,17 +454,50 @@ impl KnowledgeBase {
     /// `axiom`).  This is the right operation for in-memory KBs where the full
     /// KB content should be available to the prover without a prior
     /// `promote_assertions_unchecked` round-trip through LMDB.
+    ///
+    /// ## Why we don't clausify here
+    ///
+    /// A tempting refactor is: "let `tell()` just store sentences
+    /// without clausifying, and batch-clausify them all here under the
+    /// assumption that batching Vampire's clausifier is faster than
+    /// 15k per-sentence calls."  Don't.  Vampire's `clausify()` takes
+    /// a whole problem and returns a **flat, interleaved** list of
+    /// clauses with no per-input-unit attribution.  We need per-sid
+    /// clauses because `StoredFormula.clause_ids` must map each
+    /// formula to its own ClauseIds and the formula-level hash is
+    /// `xxh64(sorted(canonical_hashes_of_that_sid's_clauses))`.
+    /// Batching would require either a custom C-shim that
+    /// sid-tags each input unit, or post-hoc clause partitioning
+    /// based on a synthetic predicate injected into every sentence.
+    /// Both are ~200-line shim extensions for a ~300 ms one-time
+    /// bulk-load win and would defer duplicate-detection feedback
+    /// from tell-time to promote-time -- a real DX regression.
+    ///
+    /// So: clausify per-tell (fast feedback, simple code), and in
+    /// this function just retag the fingerprint entries from
+    /// `Some(session)` to `None`.  That makes this call O(|fingerprints|)
+    /// and avoids any clausification work at all.
     pub fn make_session_axiomatic(&mut self, session: &str) {
         let sids = self.sessions.remove(session).unwrap_or_default();
         let count = sids.len();
 
-        // Flip each sentence's fingerprint entry from session-tagged to
-        // axiom (session=None).  Without cnf, no dedup map exists.
+        // Flip each sentence's fingerprint entry from session-tagged
+        // to axiom (session=None).  The `tell()` path already
+        // clausified these sentences and registered
+        // (formula_hash -> (sid, Some(session))) in `self.fingerprints`;
+        // all we need to do here is retag those entries.  Earlier
+        // revisions re-clausified every sid in this loop, paying the
+        // full dedup cost a second time; on a 15k-axiom KB that was a
+        // ~1.7 s tax per `make_session_axiomatic` call.
+        //
+        // Walk `self.fingerprints` once and retag in place.
         #[cfg(feature = "cnf")]
         {
-            for &sid in &sids {
-                if let Some((fh, _clauses)) = self.compute_formula_hash(sid) {
-                    self.fingerprints.insert(fh, (sid, None));
+            use std::collections::HashSet;
+            let sid_set: HashSet<SentenceId> = sids.iter().copied().collect();
+            for (_, (sid, s)) in self.fingerprints.iter_mut() {
+                if sid_set.contains(sid) && s.as_deref() == Some(session) {
+                    *s = None;
                 }
             }
         }
