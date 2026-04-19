@@ -177,7 +177,7 @@ pub(crate) fn read_kif_file(path: &Path) -> Result<String, ()> {
 /// Collect all `*.kif` files in a directory, sorted for deterministic ordering.
 pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, KbError)> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        let span = Span { file: format!("{}", dir.display()), line: 0, col: 0, offset: 0 };
+        let span = Span::point(format!("{}", dir.display()), 0, 0, 0);
         (span, KbError::Other(format!("cannot read directory '{}': {}", dir.display(), e)))
     })?;
     let mut files: Vec<PathBuf> = entries

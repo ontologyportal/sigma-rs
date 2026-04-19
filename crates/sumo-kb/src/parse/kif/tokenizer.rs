@@ -48,17 +48,45 @@ pub struct Tokenizer<'src> {
     file:   String,
     line:   u32,
     col:    u32,
+    /// Byte length of the source; used to close the final span's end
+    /// offset cleanly when the tokenizer runs off the end of input.
+    src_len: usize,
 }
 
 impl<'src> Tokenizer<'src> {
     fn new(src: &'src str, file: &str) -> Self {
         let mut chars = src.char_indices();
         let peeked = chars.next();
-        Self { chars, peeked, file: file.to_owned(), line: 1, col: 1 }
+        Self {
+            chars, peeked,
+            file: file.to_owned(),
+            line: 1, col: 1,
+            src_len: src.len(),
+        }
     }
 
-    fn span(&self) -> Span {
-        Span { file: self.file.clone(), line: self.line, col: self.col, offset: self.chars.offset().saturating_sub(1) }
+    /// Current position as a zero-width point-span -- used when we
+    /// only know the start of a token or an error site.  The offset
+    /// snaps to the next character's byte position (or end-of-input).
+    fn point(&self) -> Span {
+        let off = match self.peeked {
+            Some((off, _)) => off,
+            None           => self.src_len,
+        };
+        Span::point(self.file.clone(), self.line, self.col, off)
+    }
+
+    /// Seal a span whose start was taken earlier by extending its
+    /// end fields to the tokenizer's current position.
+    fn seal(&self, mut start: Span) -> Span {
+        let off = match self.peeked {
+            Some((off, _)) => off,
+            None           => self.src_len,
+        };
+        start.end_line   = self.line;
+        start.end_col    = self.col;
+        start.end_offset = off;
+        start
     }
 
     fn advance(&mut self) -> Option<char> {
@@ -90,7 +118,8 @@ impl<'src> Tokenizer<'src> {
                 Some(ch)  => s.push(ch),
             }
         }
-        Ok(Token { kind: TokenKind::Str(s), span: start_span })
+        let span = self.seal(start_span);
+        Ok(Token { kind: TokenKind::Str(s), span })
     }
 
     fn read_word(&mut self, first: char) -> String {
@@ -132,24 +161,28 @@ impl<'src> Tokenizer<'src> {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() { self.advance(); } else { break; }
         }
-        let span = self.span();
+        // Capture the start position BEFORE consuming the first char.
+        let start = self.point();
         let ch = match self.advance() { None => return Ok(None), Some(c) => c };
         match ch {
             ';'  => { self.skip_line_comment(); self.next_token() }
-            '('  => Ok(Some(Token { kind: TokenKind::LParen, span })),
-            ')'  => Ok(Some(Token { kind: TokenKind::RParen, span })),
-            '"'  => Ok(Some(self.read_string(span)?)),
+            '('  => { let span = self.seal(start); Ok(Some(Token { kind: TokenKind::LParen, span })) }
+            ')'  => { let span = self.seal(start); Ok(Some(Token { kind: TokenKind::RParen, span })) }
+            '"'  => Ok(Some(self.read_string(start)?)),
             '?'  => {
                 let rest = self.read_word_rest();
+                let span = self.seal(start);
                 Ok(Some(Token { kind: TokenKind::Variable(format!("?{}", rest)), span }))
             }
             '@'  => {
                 let rest = self.read_word_rest();
+                let span = self.seal(start);
                 Ok(Some(Token { kind: TokenKind::RowVariable(format!("@{}", rest)), span }))
             }
             _    => {
                 let word = self.read_word(ch);
                 let kind = Self::classify_word(word);
+                let span = self.seal(start);
                 // Symbols must start with a letter.  Numbers are handled by
                 // classify_word already; operators like `=>` and `<=>` start
                 // with punctuation but are matched explicitly above.  Any other
@@ -260,5 +293,57 @@ mod tests {
         let (_, errors) = tokenize("_test", "test");
         assert!(!errors.is_empty(), "expected tokenizer error for '_test'");
         assert!(matches!(&errors[0].1, KifParseError::UnexpectedChar { ch: '_', .. }));
+    }
+
+    // -- Span end-position coverage ------------------------------------------
+
+    #[test]
+    fn spans_cover_token_width() {
+        // Byte offsets are [start, end); `byte_len` matches token textual width.
+        let (tokens, _) = tokenize("(subclass Human Animal)", "test");
+        assert_eq!(tokens.len(), 5);
+        // `(`  at offset 0 .. 1
+        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.end_offset, 1);
+        // `subclass`  at offset 1 .. 9
+        assert_eq!(tokens[1].span.offset,     1);
+        assert_eq!(tokens[1].span.end_offset, 9);
+        assert_eq!(tokens[1].span.byte_len(), "subclass".len());
+        // `Human`  at offset 10 .. 15
+        assert_eq!(tokens[2].span.offset,     10);
+        assert_eq!(tokens[2].span.end_offset, 15);
+        // `Animal`  at offset 16 .. 22
+        assert_eq!(tokens[3].span.offset,     16);
+        assert_eq!(tokens[3].span.end_offset, 22);
+        // `)`  at offset 22 .. 23
+        assert_eq!(tokens[4].span.offset,     22);
+        assert_eq!(tokens[4].span.end_offset, 23);
+    }
+
+    #[test]
+    fn string_span_includes_quotes() {
+        let (tokens, _) = tokenize("\"hi\"", "test");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.end_offset, 4);
+    }
+
+    #[test]
+    fn variable_span_includes_question_mark() {
+        let (tokens, _) = tokenize("?Foo", "test");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].span.byte_len(), 4);
+    }
+
+    #[test]
+    fn spans_track_line_breaks() {
+        let (tokens, _) = tokenize("(a\n  b)", "test");
+        // tokens: ( a b )
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[1].span.line,     1);          // `a` on line 1
+        assert_eq!(tokens[1].span.end_line, 1);
+        assert_eq!(tokens[2].span.line,     2);          // `b` on line 2
+        assert_eq!(tokens[2].span.end_line, 2);
+        assert_eq!(tokens[2].span.col,      3);          // indented 2 cols
     }
 }

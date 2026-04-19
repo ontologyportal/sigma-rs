@@ -27,7 +27,7 @@ impl KifParser {
 
     fn eof_span(&self) -> Span {
         if let Some(t) = self.tokens.last() { t.span.clone() }
-        else { Span { file: self.file.clone(), line: 1, col: 1, offset: 0 } }
+        else { Span::point(self.file.clone(), 1, 1, 0) }
     }
 
     fn parse_node(&mut self) -> Result<AstNode, (Span, KifParseError)> {
@@ -41,16 +41,23 @@ impl KifParser {
                 self.advance();
                 let mut elements = Vec::new();
                 let mut idx = 0;
-                loop {
+                // Set once we consume the closing `)` so the list span can
+                // cover the whole `( ... )` range.  The loop yields the
+                // close span so assignment is flow-obvious to the compiler.
+                let close_span: Span = loop {
                     match self.peek() {
-                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx == 0 => { 
+                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx == 0 => {
                             return Err((start_span.clone(), KifParseError::EmptySentence { span: start_span.clone() }));
                         }
-                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx > 0 => { self.advance(); break; }
+                        Some(t) if matches!(t.kind, TokenKind::RParen) && idx > 0 => {
+                            let close = t.span.clone();
+                            self.advance();
+                            break close;
+                        }
                         None => {
                             return Err((start_span.clone(), KifParseError::UnbalancedParens { span: start_span }))
                         },
-                        Some(Token { kind: TokenKind::Operator(op), span, .. }) if idx > 0 => { 
+                        Some(Token { kind: TokenKind::Operator(op), span, .. }) if idx > 0 => {
                             return Err((span.clone(), KifParseError::OperatorOutOfPosition {
                                 op: op.name().to_string(),
                                 span: span.clone(),
@@ -62,7 +69,7 @@ impl KifParser {
                         _ => elements.push(self.parse_node()?),
                     }
                     idx += 1;
-                }
+                };
 
                 // QuantifierArg: `(forall VAR_LIST BODY)` and `(exists VAR_LIST BODY)`.
                 //   * VAR_LIST must be a parenthesised list -- not a bare variable.
@@ -94,7 +101,9 @@ impl KifParser {
                     }
                 }
 
-                Ok(AstNode::List { elements, span: start_span })
+                // The list span runs from `(` through `)`.
+                let full_span = start_span.join(&close_span);
+                Ok(AstNode::List { elements, span: full_span })
             }
             TokenKind::RParen => {
                 let span = tok.span.clone();
@@ -336,5 +345,34 @@ mod tests {
         // Row variables in the quantifier list are allowed.
         let nodes = parse_kif("(forall (@ROW) (P @ROW))");
         assert_eq!(nodes.len(), 1);
+    }
+
+    // -- Span coverage -------------------------------------------------------
+
+    #[test]
+    fn list_span_covers_full_sentence() {
+        let src = "(subclass Human Animal)";
+        let nodes = parse_kif(src);
+        let span = nodes[0].span();
+        // `(` starts at byte 0, `)` ends at byte 23 (exclusive).
+        assert_eq!(span.offset,     0);
+        assert_eq!(span.end_offset, src.len());
+        assert_eq!(span.byte_len(), src.len());
+    }
+
+    #[test]
+    fn nested_list_span_covers_nested_parens() {
+        let src = "(=> (P ?X) (Q ?X))";
+        let nodes = parse_kif(src);
+        let outer = nodes[0].span();
+        assert_eq!(outer.offset,     0);
+        assert_eq!(outer.end_offset, src.len());
+
+        // Inner (P ?X) starts at byte 4, ends at 10 (exclusive).
+        if let AstNode::List { elements, .. } = &nodes[0] {
+            let inner_p = elements[1].span();
+            assert_eq!(inner_p.offset,     4);
+            assert_eq!(inner_p.end_offset, 10);
+        } else { panic!("expected List"); }
     }
 }

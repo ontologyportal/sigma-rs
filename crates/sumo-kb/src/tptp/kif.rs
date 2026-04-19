@@ -19,7 +19,7 @@
 
 use crate::parse::ast::{AstNode, Span, OpKind};
 
-fn dummy_span() -> Span { Span { file: String::new(), line: 0, col: 0, offset: 0 } }
+fn dummy_span() -> Span { Span::point(String::new(), 0, 0, 0) }
 fn sym(name: &str)  -> AstNode { AstNode::Symbol   { name: name.to_owned(), span: dummy_span() } }
 fn op(o: OpKind)    -> AstNode { AstNode::Operator  { op: o, span: dummy_span() } }
 fn lst(els: Vec<AstNode>) -> AstNode { AstNode::List { elements: els, span: dummy_span() } }

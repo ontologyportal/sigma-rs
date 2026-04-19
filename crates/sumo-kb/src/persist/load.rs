@@ -175,5 +175,5 @@ fn stored_element_to_element(
 // -- Helpers -------------------------------------------------------------------
 
 fn lmdb_span(formula_id: SentenceId) -> Span {
-    Span { file: format!("<lmdb:{}>", formula_id), line: 0, col: 0, offset: 0 }
+    Span::point(format!("<lmdb:{}>", formula_id), 0, 0, 0)
 }
