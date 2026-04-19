@@ -21,11 +21,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::{
     DuplicateInfo, DuplicateSource, KbError, PromoteError, PromoteReport, SemanticError,
-    TellResult, TellWarning,
+    Span, TellResult, TellWarning,
 };
 use crate::kif_store::{load_kif, KifStore};
+use crate::parse::ast::AstNode;
 use crate::semantic::SemanticLayer;
-use crate::types::SentenceId;
+use crate::types::{SentenceId, SymbolId};
 
 #[cfg(feature = "cnf")]
 use crate::types::Clause;
@@ -63,6 +64,95 @@ pub struct ClausifyReport {
     pub clausified:      usize,
     pub skipped:         usize,
     pub exceeded_limit:  Vec<SentenceId>,
+}
+
+// -- FileDiff -----------------------------------------------------------------
+
+/// Incremental-reload input for a single file.
+///
+/// Describes the delta between the KB's current view of `file` and
+/// the new source text: which existing sentences survive (with their
+/// updated spans), which are gone, and which fresh AST nodes need to
+/// be built into new root sentences.
+///
+/// Produced by `compute_file_diff` (or directly by any consumer that
+/// already tracks per-file fingerprints).  Consumed by
+/// [`KnowledgeBase::apply_file_diff`].
+///
+/// Entirely general-purpose: used by LSP didChange handling, file
+/// watcher CLIs, and hot-reload test harnesses with no type
+/// differences.
+#[derive(Debug, Clone, Default)]
+pub struct FileDiff {
+    /// The `Sentence.file` tag this diff applies to.
+    pub file:     String,
+    /// Sentence ids whose body is unchanged; only the span moves.
+    pub retained: Vec<(SentenceId, Span)>,
+    /// Sentence ids that no longer exist in the new source.
+    pub removed:  Vec<SentenceId>,
+    /// Fresh AST nodes to intern as new root sentences.  Positionally
+    /// aligned with `added_hashes` / `added_spans` when produced by
+    /// `compute_file_diff`; the `apply_file_diff` path doesn't require
+    /// the auxiliary vectors.
+    pub added:    Vec<AstNode>,
+}
+
+/// Compute a sentence-level diff for `file` given its new
+/// per-root-sentence fingerprint list + AST nodes + spans.
+///
+/// Uses a positional-greedy match: walks `new_hashes` in source order
+/// and, for each hash, pops a matching old sid off a per-hash bucket
+/// if one exists.  Duplicate sentences (same hash) preserve their
+/// ids in source-order pairing; the first new duplicate pairs with
+/// the first old duplicate, second with second, etc.  Anything left
+/// over on the old side becomes `removed`; anything left over on the
+/// new side becomes `added`.
+///
+/// Callers that don't need AST preservation (e.g. consumers that
+/// plan to rebuild from scratch anyway) can pass `new_ast = &[]`
+/// and ignore the `added` field.
+pub fn compute_file_diff(
+    file:        &str,
+    old_sids:    &[SentenceId],
+    old_hashes:  &[u64],
+    new_hashes:  &[u64],
+    new_ast:     &[AstNode],
+    new_spans:   &[Span],
+) -> FileDiff {
+    debug_assert_eq!(old_sids.len(),    old_hashes.len(),
+                     "old_sids and old_hashes must be positionally aligned");
+    debug_assert_eq!(new_hashes.len(),  new_spans.len(),
+                     "new_hashes and new_spans must be positionally aligned");
+    debug_assert!(new_ast.is_empty() || new_ast.len() == new_hashes.len(),
+                  "new_ast, when provided, must be positionally aligned with new_hashes");
+
+    // Bucket old sids by hash, preserving source order for duplicates.
+    let mut buckets: HashMap<u64, std::collections::VecDeque<SentenceId>> = HashMap::new();
+    for (sid, &h) in old_sids.iter().zip(old_hashes) {
+        buckets.entry(h).or_default().push_back(*sid);
+    }
+
+    let mut retained = Vec::with_capacity(new_hashes.len().min(old_sids.len()));
+    let mut added: Vec<AstNode> = Vec::new();
+
+    for (i, &h) in new_hashes.iter().enumerate() {
+        match buckets.get_mut(&h).and_then(|b| b.pop_front()) {
+            Some(sid) => {
+                retained.push((sid, new_spans[i].clone()));
+            }
+            None => {
+                if !new_ast.is_empty() {
+                    added.push(new_ast[i].clone());
+                }
+            }
+        }
+    }
+
+    // Anything still in the buckets is gone.
+    let mut removed: Vec<SentenceId> = buckets.into_values().flatten().collect();
+    removed.sort_unstable();  // deterministic for testing
+
+    FileDiff { file: file.to_owned(), retained, removed, added }
 }
 
 // -- KnowledgeBase -------------------------------------------------------------
@@ -827,6 +917,14 @@ impl KnowledgeBase {
         self.layer.store.sym_id(name)
     }
 
+    /// Fetch a root or sub-sentence by id.  Returns `None` when
+    /// `sid` isn't a known sentence (e.g. after `remove_sentence`
+    /// the id is valid but the body is empty -- see [`has_sentence`]).
+    pub fn sentence(&self, sid: SentenceId) -> Option<&crate::types::Sentence> {
+        if !self.layer.store.has_sentence(sid) { return None; }
+        Some(&self.layer.store.sentences[self.layer.store.sent_idx(sid)])
+    }
+
     // -- Validation ------------------------------------------------------------
 
     pub fn validate_sentence(&self, sid: SentenceId) -> Result<(), SemanticError> {
@@ -947,6 +1045,105 @@ impl KnowledgeBase {
     /// Render a single sentence back to KIF notation (plain text, no ANSI).
     pub fn sentence_kif_str(&self, sid: SentenceId) -> String {
         crate::kif_store::sentence_to_plain_kif(sid, &self.layer.store)
+    }
+
+    // -- Incremental file reload ----------------------------------------------
+    //
+    // `apply_file_diff` and `compute_file_diff` are the general-purpose
+    // primitives any incremental-reload workflow can use -- file
+    // watchers, LSP didChange, test harness hot-reload.  They operate
+    // purely on sumo-kb types (`AstNode`, `Span`, `SentenceId`) and
+    // have no LSP / editor dependency.
+
+    /// Read-only view of the per-file fingerprint vector.  The
+    /// returned slice is positionally aligned with
+    /// [`file_roots`](Self::file_roots) for the same `file`.
+    pub fn file_hashes(&self, file: &str) -> &[u64] {
+        self.layer.store.file_hashes.get(file).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Read-only view of the per-file root-sentence ids, in source order.
+    pub fn file_roots(&self, file: &str) -> &[SentenceId] {
+        self.layer.store.file_roots.get(file).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Apply an incremental reload diff to the knowledge base.
+    ///
+    /// General-purpose primitive for any consumer that wants to
+    /// re-sync an in-memory KB with a changed source file without
+    /// paying the full `remove_file` + `load_kif` cost.  LSP
+    /// didChange is the motivating caller, but a file-watcher CLI
+    /// or hot-reload test harness uses the same entry point.
+    ///
+    /// * `retained` — sentence ids whose body is unchanged; only the
+    ///   span is updated to the new source position.
+    /// * `removed` — sentence ids that no longer exist in the new
+    ///   source.  Bodies are cleared and indices updated; the stable
+    ///   `SentenceId` position is left in place to preserve dangling
+    ///   references.
+    /// * `added` — fresh AST nodes to build into new root sentences,
+    ///   tagged with `diff.file`.
+    ///
+    /// Orphan pruning + cache invalidation run once at the end: the
+    /// union of symbol sets from removed + added sentences is
+    /// collected and handed to
+    /// [`SemanticLayer::invalidate_symbols`](crate::semantic::SemanticLayer)
+    /// for targeted eviction.  Retained sentences trigger no cache
+    /// churn.
+    pub fn apply_file_diff(&mut self, diff: FileDiff) -> TellResult {
+        let mut result = TellResult { ok: true, errors: Vec::new(), warnings: Vec::new() };
+        let mut affected_syms: HashSet<SymbolId> = HashSet::new();
+
+        // 1. Retained: update spans only.
+        for (sid, new_span) in &diff.retained {
+            let ok = self.layer.store.update_sentence_span(*sid, new_span.clone());
+            if !ok {
+                log::warn!(target: "sumo_kb::kb",
+                    "apply_file_diff: retained sid={} missing in store", sid);
+            }
+        }
+
+        // 2. Removed: collect symbols first (they'll need invalidation),
+        //    then drop each sentence.
+        for &sid in &diff.removed {
+            for sym in self.layer.store.sentence_symbols(sid) {
+                affected_syms.insert(sym);
+            }
+            self.layer.store.remove_sentence(sid);
+        }
+
+        // 3. Added: append as root sentences.
+        let mut parse_errs: Vec<(Span, KbError)> = Vec::new();
+        for node in &diff.added {
+            if let Some(sid) = self.layer.store.append_root_sentence(node, &diff.file, &mut parse_errs) {
+                for sym in self.layer.store.sentence_symbols(sid) {
+                    affected_syms.insert(sym);
+                }
+            }
+        }
+        for (_, e) in parse_errs {
+            result.ok = false;
+            result.errors.push(e);
+        }
+
+        // 4. Prune orphaned symbols + invalidate affected cache entries.
+        if !diff.removed.is_empty() {
+            self.layer.store.prune_orphaned_symbols_now();
+        }
+        self.layer.invalidate_symbols(&affected_syms);
+        // `SortAnnotations` depends on domain/range edges -- easier to
+        // rebuild wholesale than track per-sentence.  Only flush when
+        // the diff actually mutated the KB.
+        if !diff.removed.is_empty() || !diff.added.is_empty() {
+            self.layer.invalidate_sort_annotations();
+        }
+
+        log::debug!(target: "sumo_kb::kb",
+            "apply_file_diff file='{}': {} retained, {} removed, {} added, {} affected syms",
+            diff.file, diff.retained.len(), diff.removed.len(), diff.added.len(),
+            affected_syms.len());
+
+        result
     }
 
     /// Collect all SentenceIds that are currently promoted axioms.

@@ -8,6 +8,7 @@ use inline_colorization::*;
 
 use crate::KbError;
 use crate::parse::ast::{Span, AstNode, OpKind};
+use crate::parse::fingerprint::sentence_fingerprint;
 use crate::types::{Element, Literal, Sentence, SentenceId, Symbol, SymbolId};
 use smallvec::SmallVec;
 
@@ -34,8 +35,16 @@ pub(crate) struct KifStore {
     pub sub_sentences: Vec<SentenceId>,
     /// Root sentences grouped by file tag.
     pub file_roots:   HashMap<String, Vec<SentenceId>>,
+    /// Per-root-sentence fingerprints for each file, positionally
+    /// aligned with `file_roots[file]`.  Populated during `load`;
+    /// used by incremental-reload workflows (file watchers,
+    /// LSP didChange) to compute sentence-level diffs without
+    /// re-consulting the AST.  Kept in lockstep with `file_roots`
+    /// by every mutation path -- `remove_sentence`, `remove_file`,
+    /// and `apply_file_diff` all update both tables.
+    pub file_hashes:  HashMap<String, Vec<u64>>,
     /// Root sentences indexed by head symbol name (e.g. "instance" -> [...]).
-    /// TODO replace the key with the symbol id of the predicate rather than 
+    /// TODO replace the key with the symbol id of the predicate rather than
     /// the string
     pub head_index:   HashMap<String, Vec<SentenceId>>,
 
@@ -204,6 +213,10 @@ impl KifStore {
                         "registered root sentence id={}", sent_id);
                     self.roots.push(sent_id);
                     self.file_roots.entry(file.to_owned()).or_default().push(sent_id);
+                    // Keep file_hashes in lockstep with file_roots for
+                    // incremental-diff workflows.
+                    let fp = sentence_fingerprint(node);
+                    self.file_hashes.entry(file.to_owned()).or_default().push(fp);
                     if let Some(head_id) = self.sentences[self.sent_idx(sent_id)].head_symbol() {
                         let head_name = self.sym_name(head_id).to_owned();
                         self.head_index.entry(head_name).or_default().push(sent_id);
@@ -214,6 +227,34 @@ impl KifStore {
             }
         }
         errors
+    }
+
+    /// Append a single already-parsed root AST node to `file`.
+    ///
+    /// Identical to what [`load`] does for one list node, with the
+    /// return value exposed for callers (e.g. [`KnowledgeBase::apply_file_diff`])
+    /// that need the allocated `SentenceId` to build their response.
+    /// Returns `None` when the node is not a list (malformed root).
+    pub(crate) fn append_root_sentence(
+        &mut self,
+        node: &AstNode,
+        file: &str,
+        errors: &mut Vec<(Span, KbError)>,
+    ) -> Option<SentenceId> {
+        if !matches!(node, AstNode::List { .. }) { return None; }
+        let ctx     = ScopeCtx { default: self.next_scope(), overrides: HashMap::new() };
+        let sent_id = self.build_sentence(&ctx, node, file, errors, true)?;
+        self.roots.push(sent_id);
+        self.file_roots.entry(file.to_owned()).or_default().push(sent_id);
+        let fp = sentence_fingerprint(node);
+        self.file_hashes.entry(file.to_owned()).or_default().push(fp);
+        if let Some(head_id) = self.sentences[self.sent_idx(sent_id)].head_symbol() {
+            let head_name    = self.sym_name(head_id).to_owned();
+            self.head_index.entry(head_name).or_default().push(sent_id);
+            let head_vec_idx = self.sym_vec_idx(head_id);
+            self.symbol_data[head_vec_idx].head_sentences.push(sent_id);
+        }
+        Some(sent_id)
     }
 
     fn build_sentence(
@@ -330,6 +371,7 @@ impl KifStore {
 
     pub(crate) fn remove_file(&mut self, file: &str) {
         let ids_to_remove: Vec<SentenceId> = self.file_roots.remove(file).unwrap_or_default();
+        self.file_hashes.remove(file);
         if ids_to_remove.is_empty() { return; }
         let id_set: std::collections::HashSet<SentenceId> = ids_to_remove.iter().copied().collect();
         self.roots.retain(|id| !id_set.contains(id));
@@ -344,6 +386,92 @@ impl KifStore {
         self.prune_orphaned_symbols(&id_set);
         log::debug!(target: "sumo_kb::kif_store",
             "removed {} sentences from file '{}'", ids_to_remove.len(), file);
+    }
+
+    /// Drop a single root sentence and every structural reference to it.
+    ///
+    /// Intended for incremental-reload workflows (file watchers,
+    /// LSP didChange) that need fine-grained removal without the
+    /// batched pruning that [`remove_file`] performs.  Updates
+    /// `roots`, `file_roots` / `file_hashes` for the owning file,
+    /// the `head_index`, and the head symbol's `head_sentences`
+    /// vector.  Clears the `Sentence.elements` in place but leaves
+    /// the stable `SentenceId` position in `self.sentences`
+    /// untouched so existing `SentenceId` references elsewhere
+    /// don't dangle.
+    ///
+    /// Does **not** prune orphaned symbols -- callers applying a
+    /// batch of removals should invoke `prune_orphaned_symbols`
+    /// once at the end (or skip it if the batch also contains
+    /// additions that may re-reference those symbols).
+    pub(crate) fn remove_sentence(&mut self, sid: SentenceId) {
+        if !self.sent_idx.contains_key(&sid) { return; }
+
+        // Snapshot the head symbol and owning file BEFORE we clear
+        // the sentence body -- both are read out of `Sentence`.
+        let vec_idx     = self.sent_idx(sid);
+        let head_symbol = self.sentences[vec_idx].head_symbol();
+        let file_name   = self.sentences[vec_idx].file.clone();
+
+        // Remove from roots / per-file indices.
+        self.roots.retain(|&id| id != sid);
+        if let Some(roots) = self.file_roots.get_mut(&file_name) {
+            if let Some(pos) = roots.iter().position(|&id| id == sid) {
+                roots.remove(pos);
+                // Keep file_hashes positionally aligned.
+                if let Some(hashes) = self.file_hashes.get_mut(&file_name) {
+                    if pos < hashes.len() { hashes.remove(pos); }
+                }
+            }
+        }
+
+        // Head-index entries for this specific sid.
+        for v in self.head_index.values_mut() { v.retain(|&id| id != sid); }
+        self.head_index.retain(|_, v| !v.is_empty());
+        if let Some(hid) = head_symbol {
+            let head_vec_idx = self.sym_vec_idx(hid);
+            self.symbol_data[head_vec_idx].head_sentences.retain(|&id| id != sid);
+        }
+
+        // Blank the sentence body.  `SentenceId` → Vec index mapping
+        // stays so other code referencing `sid` sees an empty sentence
+        // rather than a panic.
+        self.sentences[vec_idx].elements.clear();
+
+        log::trace!(target: "sumo_kb::kif_store",
+            "removed sentence sid={} (file='{}')", sid, file_name);
+    }
+
+    /// Update the `Sentence.span` for `sid` to `new_span`, without
+    /// changing any other fields.  Used by the incremental-reload
+    /// path when a root sentence is textually unchanged but has
+    /// shifted in its file.  Returns `true` when the sentence
+    /// existed and was updated.
+    pub(crate) fn update_sentence_span(&mut self, sid: SentenceId, new_span: Span) -> bool {
+        if !self.sent_idx.contains_key(&sid) { return false; }
+        let vec_idx = self.sent_idx(sid);
+        self.sentences[vec_idx].span = new_span;
+        true
+    }
+
+    /// Run the orphan-symbol prune as a public(-to-crate) operation.
+    /// Callers applying a batch of `remove_sentence` + add operations
+    /// should invoke this once at the end.
+    pub(crate) fn prune_orphaned_symbols_now(&mut self) {
+        let empty = std::collections::HashSet::new();
+        self.prune_orphaned_symbols(&empty);
+    }
+
+    /// Collect the set of SymbolIds referenced by the given sentence
+    /// (transitively into its sub-sentences).  Public-to-crate for use
+    /// by the incremental-reload path, which needs the symbol set of
+    /// removed + added sentences to drive targeted cache invalidation.
+    pub(crate) fn sentence_symbols(&self, sid: SentenceId) -> std::collections::HashSet<SymbolId> {
+        let mut out = std::collections::HashSet::new();
+        if self.sent_idx.contains_key(&sid) {
+            self.collect_symbols(sid, &mut out);
+        }
+        out
     }
 
     fn prune_orphaned_symbols(&mut self, _removed_ids: &std::collections::HashSet<SentenceId>) {
