@@ -9,7 +9,7 @@ use inline_colorization::*;
 use crate::KbError;
 use crate::parse::ast::{Span, AstNode, OpKind};
 use crate::parse::fingerprint::sentence_fingerprint;
-use crate::types::{Element, Literal, Sentence, SentenceId, Symbol, SymbolId};
+use crate::types::{Element, Literal, Occurrence, OccurrenceKind, Sentence, SentenceId, Symbol, SymbolId};
 use smallvec::SmallVec;
 
 // -- KifStore ------------------------------------------------------------------
@@ -43,6 +43,17 @@ pub(crate) struct KifStore {
     /// by every mutation path -- `remove_sentence`, `remove_file`,
     /// and `apply_file_diff` all update both tables.
     pub file_hashes:  HashMap<String, Vec<u64>>,
+
+    /// Reverse index: SymbolId -> every occurrence in the KB.
+    /// Populated during `index_sentence_occurrences` after each
+    /// new root or sub-sentence is built; drained by
+    /// `remove_sentence` when a sentence is dropped.  Synthetic
+    /// spans (CNF output, rehydrated-from-LMDB elements) are
+    /// excluded so the index only contains real source positions.
+    ///
+    /// Non-LSP uses: CLI `sumo find-refs`, coverage analysis,
+    /// programmatic symbol-walk tools.
+    pub occurrences:  HashMap<SymbolId, Vec<Occurrence>>,
     /// Root sentences indexed by head symbol name (e.g. "instance" -> [...]).
     /// TODO replace the key with the symbol id of the predicate rather than
     /// the string
@@ -229,6 +240,10 @@ impl KifStore {
                         let head_vec_idx = self.sym_vec_idx(head_id);
                         self.symbol_data[head_vec_idx].head_sentences.push(sent_id);
                     }
+                    // Record every symbol reference in this sentence
+                    // (and all transitively-reached sub-sentences) in
+                    // the reverse index.
+                    self.index_sentence_occurrences(sent_id);
                 }
             }
         }
@@ -260,6 +275,7 @@ impl KifStore {
             let head_vec_idx = self.sym_vec_idx(head_id);
             self.symbol_data[head_vec_idx].head_sentences.push(sent_id);
         }
+        self.index_sentence_occurrences(sent_id);
         Some(sent_id)
     }
 
@@ -405,6 +421,11 @@ impl KifStore {
         let ids_to_remove: Vec<SentenceId> = self.file_roots.remove(file).unwrap_or_default();
         self.file_hashes.remove(file);
         if ids_to_remove.is_empty() { return; }
+        // Drop occurrences for every sentence (and their sub-chain)
+        // before the bodies are cleared.
+        for &sid in &ids_to_remove {
+            self.drop_sentence_occurrences(sid);
+        }
         let id_set: std::collections::HashSet<SentenceId> = ids_to_remove.iter().copied().collect();
         self.roots.retain(|id| !id_set.contains(id));
         for v in self.head_index.values_mut() { v.retain(|id| !id_set.contains(id)); }
@@ -418,6 +439,81 @@ impl KifStore {
         self.prune_orphaned_symbols(&id_set);
         log::debug!(target: "sumo_kb::kif_store",
             "removed {} sentences from file '{}'", ids_to_remove.len(), file);
+    }
+
+    /// Walk `sid` and every sub-sentence it transitively reaches,
+    /// recording each `Element::Symbol` in the reverse index.
+    /// Intended to be called once per newly-built root or
+    /// sub-sentence; idempotent on sentences whose occurrences
+    /// were previously dropped (the index entries are Vecs, so
+    /// re-indexing just appends -- callers should drop first).
+    pub(crate) fn index_sentence_occurrences(&mut self, sid: SentenceId) {
+        if !self.sent_idx.contains_key(&sid) { return; }
+        let mut stack: Vec<SentenceId> = vec![sid];
+        while let Some(cur) = stack.pop() {
+            let vec_idx = self.sent_idx(cur);
+            // Collect first to avoid holding `&self.sentences` across the
+            // mutation of `self.occurrences`.
+            let entries: Vec<(SymbolId, Occurrence)> = {
+                let sentence = &self.sentences[vec_idx];
+                sentence.elements.iter().enumerate().filter_map(|(i, el)| {
+                    match el {
+                        // Ordinary symbols: indexed by their stable id.
+                        Element::Symbol { id, span } if !span.is_synthetic() => {
+                            let kind = if i == 0 { OccurrenceKind::Head } else { OccurrenceKind::Arg };
+                            Some((*id, Occurrence { sid: cur, idx: i, span: span.clone(), kind }))
+                        }
+                        // Variables: indexed by scope-qualified id so
+                        // rename can enumerate every co-bound reference
+                        // and respect quantifier scoping automatically.
+                        Element::Variable { id, span, .. } if !span.is_synthetic() => {
+                            // Variables are always argument position,
+                            // never heads (the parser rejects
+                            // variable-headed sentences).
+                            Some((*id, Occurrence { sid: cur, idx: i, span: span.clone(),
+                                                    kind: OccurrenceKind::Arg }))
+                        }
+                        Element::Sub { sid: sub, .. } => {
+                            stack.push(*sub);
+                            None
+                        }
+                        _ => None,
+                    }
+                }).collect()
+            };
+            for (id, occ) in entries {
+                self.occurrences.entry(id).or_default().push(occ);
+            }
+        }
+    }
+
+    /// Drop all occurrence-index entries attached to `sid` (and
+    /// every sub-sentence it transitively reaches via
+    /// `Element::Sub`).  Called by `remove_sentence` and
+    /// `remove_file` before the sentence body is cleared.
+    pub(crate) fn drop_sentence_occurrences(&mut self, sid: SentenceId) {
+        if !self.sent_idx.contains_key(&sid) { return; }
+        // Collect the set of sids we need to purge (root + every
+        // reachable sub-sentence) before mutating the index.
+        let mut to_purge: Vec<SentenceId> = vec![sid];
+        let mut stack: Vec<SentenceId>    = vec![sid];
+        while let Some(cur) = stack.pop() {
+            if !self.sent_idx.contains_key(&cur) { continue; }
+            let vec_idx  = self.sent_idx(cur);
+            let sentence = &self.sentences[vec_idx];
+            for el in &sentence.elements {
+                if let Element::Sub { sid: sub, .. } = el {
+                    to_purge.push(*sub);
+                    stack.push(*sub);
+                }
+            }
+        }
+        let purge: std::collections::HashSet<SentenceId> =
+            to_purge.into_iter().collect();
+        for entries in self.occurrences.values_mut() {
+            entries.retain(|o| !purge.contains(&o.sid));
+        }
+        self.occurrences.retain(|_, v| !v.is_empty());
     }
 
     /// Drop a single root sentence and every structural reference to it.
@@ -438,6 +534,11 @@ impl KifStore {
     /// additions that may re-reference those symbols).
     pub(crate) fn remove_sentence(&mut self, sid: SentenceId) {
         if !self.sent_idx.contains_key(&sid) { return; }
+
+        // Drop every occurrence entry tied to this sentence and its
+        // sub-sentences *before* we clear the body -- the walker
+        // needs the elements to identify sub-sentences.
+        self.drop_sentence_occurrences(sid);
 
         // Snapshot the head symbol and owning file BEFORE we clear
         // the sentence body -- both are read out of `Sentence`.
@@ -789,5 +890,76 @@ mod tests {
         assert_eq!(store.roots.len(), 1);
         assert!(!store.symbols.contains_key("Cat"));
         assert!(store.symbols.contains_key("Human"));
+    }
+
+    // -- Occurrence index ---------------------------------------------------
+
+    #[test]
+    fn occurrences_indexed_for_root_symbols() {
+        let mut store = KifStore::default();
+        load_kif(&mut store, "(subclass Human Animal)", "t.kif");
+        let human_id = store.sym_id("Human").expect("Human interned");
+        let occs = store.occurrences.get(&human_id).expect("Human has occurrences");
+        assert_eq!(occs.len(), 1);
+        assert_eq!(occs[0].idx,  1);
+        assert_eq!(occs[0].kind, OccurrenceKind::Arg);
+
+        let sub_id = store.sym_id("subclass").unwrap();
+        let sub_occs = &store.occurrences[&sub_id];
+        assert_eq!(sub_occs[0].kind, OccurrenceKind::Head);
+    }
+
+    #[test]
+    fn occurrences_indexed_through_sub_sentences() {
+        let mut store = KifStore::default();
+        load_kif(&mut store, "(=> (P ?X) (Q ?X))", "t.kif");
+        let p_id = store.sym_id("P").expect("P interned");
+        let q_id = store.sym_id("Q").expect("Q interned");
+        assert_eq!(store.occurrences[&p_id].len(), 1);
+        assert_eq!(store.occurrences[&q_id].len(), 1);
+        assert_eq!(store.occurrences[&p_id][0].kind, OccurrenceKind::Head);
+        assert_eq!(store.occurrences[&q_id][0].kind, OccurrenceKind::Head);
+    }
+
+    #[test]
+    fn occurrences_cleared_on_remove_file() {
+        let mut store = KifStore::default();
+        load_kif(&mut store, "(subclass Human Animal)", "a.kif");
+        load_kif(&mut store, "(subclass Human Mammal)", "b.kif");
+        let human_id = store.sym_id("Human").unwrap();
+        assert_eq!(store.occurrences[&human_id].len(), 2);
+
+        store.remove_file("b.kif");
+        // One of the two Human occurrences should now be gone.
+        let remaining = store.occurrences.get(&human_id)
+            .map(|v| v.len()).unwrap_or(0);
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn occurrences_cleared_on_remove_sentence() {
+        let mut store = KifStore::default();
+        load_kif(&mut store, "(subclass Human Animal)\n(subclass Human Mammal)", "t.kif");
+        let human_id = store.sym_id("Human").unwrap();
+        assert_eq!(store.occurrences[&human_id].len(), 2);
+
+        // Drop the first sentence.
+        let first_sid = store.file_roots["t.kif"][0];
+        store.remove_sentence(first_sid);
+        assert_eq!(store.occurrences.get(&human_id).map(|v| v.len()).unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn variables_have_scope_qualified_occurrences() {
+        let mut store = KifStore::default();
+        load_kif(&mut store, "(forall (?X) (P ?X))\n(forall (?X) (Q ?X))", "t.kif");
+        // Variables in different scopes get different SymbolIds.
+        // Each scope has its own `?X` id; the occurrence index
+        // correctly distinguishes them.
+        let xs: Vec<&str> = store.symbols.keys()
+            .filter(|k| k.starts_with("X__"))
+            .map(|s| s.as_str())
+            .collect();
+        assert!(xs.len() >= 2, "expected distinct X__<scope> ids, got {:?}", xs);
     }
 }

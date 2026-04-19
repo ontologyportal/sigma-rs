@@ -152,6 +152,43 @@ impl Sentence {
     }
 }
 
+// -- Occurrence ----------------------------------------------------------------
+
+/// Position of a single symbol reference inside the knowledge base.
+///
+/// Produced by the occurrence index populated during
+/// `KifStore::load` / `append_root_sentence`.  Every `Element::Symbol`
+/// in a non-synthetic sentence generates one `Occurrence` entry;
+/// rehydrated-from-LMDB and CNF-synthesised elements carry synthetic
+/// spans and are filtered out of the index.
+///
+/// Useful beyond LSP — CLI tools ("sumo find-refs Human"), test
+/// coverage reporters, code-walkers of any kind.  The shape is
+/// deliberately small so it can be stored densely in the
+/// per-symbol index.
+#[derive(Debug, Clone)]
+pub struct Occurrence {
+    /// Sentence containing the reference.
+    pub sid:  SentenceId,
+    /// Index within the sentence's `elements` vector.
+    pub idx:  usize,
+    /// Source range of the symbol reference itself (not the
+    /// containing sentence).
+    pub span: crate::error::Span,
+    /// Role the symbol plays within the sentence.
+    pub kind: OccurrenceKind,
+}
+
+/// Classification of a symbol occurrence by its position inside the
+/// sentence.  `Head` means the symbol is `elements[0]` of a
+/// top-level or nested form; `Arg` means it appears as any
+/// subsequent argument (including deeply nested under `Sub`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceKind {
+    Head,
+    Arg,
+}
+
 // -- Symbol --------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

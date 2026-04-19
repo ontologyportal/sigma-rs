@@ -50,6 +50,7 @@ pub use diagnostic::{Diagnostic, RelatedInfo, Severity, ToDiagnostic};
 pub use types::{
     SymbolId, SentenceId,
     Element, Literal, Symbol, Sentence,
+    Occurrence, OccurrenceKind,
     TaxRelation, TaxEdge,
     OpKind,
 };

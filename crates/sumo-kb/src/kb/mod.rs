@@ -957,6 +957,84 @@ impl KnowledgeBase {
         crate::lookup::symbol_at_offset(&self.layer.store, file, offset)
     }
 
+    /// Interned id for whatever symbol-like element is at `offset`,
+    /// **including** `Element::Variable`.  For ordinary symbols the
+    /// id is the intern-table entry; for variables it's the
+    /// scope-qualified id (distinct `?X` instances in different
+    /// quantifier bodies get distinct ids).
+    ///
+    /// Powers references / rename for variables: looking up the
+    /// occurrence index by this id automatically gives back every
+    /// co-bound occurrence inside the same scope and excludes
+    /// same-named variables in other scopes.
+    ///
+    /// Returns `(id, display_name)` -- the display name is `"?X"` or
+    /// `"@Row"` for variables, the plain interned name for symbols.
+    pub fn id_at_offset(
+        &self, file: &str, offset: usize,
+    ) -> Option<(crate::types::SymbolId, String)> {
+        let hit = self.element_at_offset(file, offset)?;
+        let sent = self.sentence(hit.sid)?;
+        match sent.elements.get(hit.idx)? {
+            crate::types::Element::Symbol { id, .. } => {
+                let name = self.layer.store.sym_name(*id).to_owned();
+                Some((*id, name))
+            }
+            crate::types::Element::Variable { id, name, is_row, .. } => {
+                let display = if *is_row { format!("@{}", name) } else { format!("?{}", name) };
+                Some((*id, display))
+            }
+            _ => None,
+        }
+    }
+
+    /// Every occurrence of `symbol` across every loaded file.
+    ///
+    /// Returned in insertion order (root sentences first by their
+    /// load order, then sub-sentences within each).  Non-LSP
+    /// consumers: a CLI "find references" command, coverage
+    /// reporting, programmatic walks.  Returns an empty slice when
+    /// the symbol is unknown or has no non-synthetic occurrences.
+    pub fn occurrences(&self, symbol: &str) -> &[crate::types::Occurrence] {
+        match self.symbol_id(symbol) {
+            Some(id) => self.layer.store.occurrences
+                .get(&id).map(|v| v.as_slice()).unwrap_or(&[]),
+            None => &[],
+        }
+    }
+
+    /// Occurrences by raw `SymbolId`.  Useful when the caller has
+    /// already done name lookup (variables' scope-qualified ids,
+    /// cursor-driven queries that already produced a
+    /// `KnowledgeBase::element_at_offset` hit).
+    pub fn occurrences_of(&self, id: crate::types::SymbolId) -> &[crate::types::Occurrence] {
+        self.layer.store.occurrences.get(&id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Iterate every interned symbol name in insertion order.
+    /// Powers workspace-symbol search (fuzzy "jump to any symbol
+    /// in the KB"), dump utilities, and any consumer that needs
+    /// the full symbol set.  Skolem symbols are included --
+    /// callers that want to hide them can filter via
+    /// [`symbol_is_skolem`](Self::symbol_is_skolem).
+    pub fn iter_symbols(&self) -> impl Iterator<Item = (crate::types::SymbolId, &str)> + '_ {
+        self.layer.store.symbol_data.iter()
+            .filter_map(move |sym| {
+                self.layer.store.sym_id(&sym.name).map(|id| (id, sym.name.as_str()))
+            })
+    }
+
+    /// True when `symbol` is a Skolem function introduced by the
+    /// CNF clausifier.  Exposed so workspace-symbol search can
+    /// filter these out by default.
+    pub fn symbol_is_skolem(&self, symbol: &str) -> bool {
+        self.layer.store.symbol_data
+            .iter()
+            .find(|s| s.name == symbol)
+            .map(|s| s.is_skolem)
+            .unwrap_or(false)
+    }
+
     /// Defining sentence for `symbol`, by heuristic: the first
     /// `(subclass sym _)`, `(instance sym _)`, `(subrelation sym _)`,
     /// `(subAttribute sym _)`, or `(documentation sym _ _)`
