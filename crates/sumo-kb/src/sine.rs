@@ -136,54 +136,29 @@ pub struct SineIndex {
     /// axioms it triggers at the current tolerance.
     trigger_idx: HashMap<SymbolId, HashSet<SentenceId>>,
 
-    /// Cumulative per-phase counters across `add_axiom` / `remove_axiom`
-    /// calls since the last `take_stats()`.  Overhead to maintain is
-    /// three `Instant::now()` calls per mutation (≈30ns) — negligible
-    /// compared to the hash-table work these methods do.  Exposed via
-    /// [`take_stats`] for profile tooling (see `profile_ask` example).
+    /// Which-code-path counters.  Incremented by `add_axiom` /
+    /// `update_affected_axiom` / `rebuild_from`.  Reset via
+    /// `take_stats()`.  Used by unit tests to verify that the
+    /// fine-grained fast path and bulk rebuild fire when expected.
+    /// Not exposed at the public API boundary — timing is the
+    /// general profiler's job (see `crate::profiling`).
     stats: AddAxiomStats,
 }
 
-/// Breakdown of where time went inside `SineIndex::add_axiom` / `remove_axiom`,
-/// plus counters for how much work the affected-set expansion produced.
-///
-/// All nanosecond fields accumulate across every mutation since the last
-/// `take_stats()`.  Useful for answering questions like "is bootstrap
-/// promotion bottlenecked on finding affected axioms or recomputing
-/// their triggers?"
+/// Counters for which code paths `SineIndex` took since the last
+/// `take_stats()` call.  Exclusively for unit-test assertions; timing
+/// of these paths belongs to the general `crate::profiling::Profiler`.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct AddAxiomStats {
-    /// Number of `add_axiom` / `remove_axiom` calls.
-    pub calls:            usize,
-    /// Sum of per-call affected-set sizes.  Dividing by `calls` gives
-    /// the average affected-set size, which grows as the KB fills up.
-    pub affected_total:   usize,
-    /// Number of times `recompute_triggers_for` ran (one per affected
-    /// axiom per mutation).  Shrinks dramatically on dense KBs once
-    /// the fine-grained fast path lands — most affected axioms don't
-    /// need a full recompute when the bumped symbol is not the unique
-    /// minimum.
-    pub recompute_calls:  usize,
-    /// Number of affected axioms that took the fine-grained fast path
-    /// (O(|bumped_symbols|) targeted update) instead of a full
-    /// `recompute_triggers_for`.
-    pub fast_path:        usize,
-    /// Number of times a bulk rebuild fired (via `add_axioms` bulk
-    /// entry, when the batch is a large fraction of the current axiom
-    /// set).  At most once per `add_axioms` call.
-    pub bulk_rebuilds:    usize,
-    /// Time inside `store.collect_axiom_symbol_set`.
-    pub collect_ns:       u128,
-    /// Time building the `affected: HashSet<SentenceId>` union from
-    /// the reverse index `sym_axioms`.
-    pub find_affected_ns: u128,
-    /// Time inside the `recompute_triggers_for` loop.
-    pub recompute_ns:     u128,
-    /// Time inside the fine-grained fast path (per-symbol targeted
-    /// trigger-set updates).
-    pub fast_path_ns:     u128,
-    /// Time inside `rebuild_from` bulk builds.
-    pub rebuild_ns:       u128,
+pub(crate) struct AddAxiomStats {
+    /// Number of `add_axiom` calls.
+    pub calls:           usize,
+    /// Number of full `recompute_triggers_for` calls.
+    pub recompute_calls: usize,
+    /// Number of affected axioms that took the fine-grained fast path.
+    pub fast_path:       usize,
+    /// Number of times `rebuild_from` fired (at most once per
+    /// `add_axioms` call, and only when the batch is large).
+    pub bulk_rebuilds:   usize,
 }
 
 impl SineIndex {
@@ -201,11 +176,10 @@ impl SineIndex {
         }
     }
 
-    /// Consume the cumulative per-phase timing counters since the last
-    /// `take_stats()` call and reset them to zero.  Useful for profiling
-    /// the internal breakdown of `make_session_axiomatic` and similar
-    /// bulk-mutation sites.
-    pub fn take_stats(&mut self) -> AddAxiomStats {
+    /// Take-and-reset the which-path counters.  Test-only; not
+    /// exposed outside the crate.
+    #[allow(dead_code)] // used by tests
+    pub(crate) fn take_stats(&mut self) -> AddAxiomStats {
         let s = self.stats;
         self.stats = AddAxiomStats::default();
         s
@@ -258,9 +232,7 @@ impl SineIndex {
         if self.axiom_syms.contains_key(&sid) { return; }
         if !store.has_sentence(sid) { return; }
 
-        let t_collect = std::time::Instant::now();
         let syms = store.collect_axiom_symbol_set(sid);
-        self.stats.collect_ns += t_collect.elapsed().as_nanos();
 
         // Record even "symbol-less" axioms (pure var/literal bodies — rare
         // in SUMO but possible) so axiom_count and contains() stay accurate.
@@ -285,20 +257,15 @@ impl SineIndex {
 
         // Affected = axioms sharing any symbol with sid (includes sid
         // itself, since sym_axioms now contains it).
-        let t_find = std::time::Instant::now();
         let mut affected: HashSet<SentenceId> = HashSet::new();
         for &s in &syms {
             if let Some(set) = self.sym_axioms.get(&s) {
                 affected.extend(set.iter().copied());
             }
         }
-        self.stats.find_affected_ns += t_find.elapsed().as_nanos();
-        self.stats.affected_total   += affected.len();
 
         // The new axiom always needs a fresh trigger computation — it
-        // has no cached state.  Do that outside the fine-grained-vs-full
-        // decision to keep the loop tidy.
-        let t_recompute = std::time::Instant::now();
+        // has no cached state.
         self.recompute_triggers_for(sid);
         self.stats.recompute_calls += 1;
 
@@ -308,7 +275,6 @@ impl SineIndex {
             if a == sid { continue; }
             self.update_affected_axiom(a, &syms, &old_occ);
         }
-        self.stats.recompute_ns += t_recompute.elapsed().as_nanos();
     }
 
     /// Process an existing affected axiom `a` after a new axiom was
@@ -380,7 +346,6 @@ impl SineIndex {
         // Fast path: g_min unchanged, threshold unchanged.  Only the
         // bumped symbols' own trigger status can have changed (their
         // new occ might exceed the threshold).
-        let t_fast = std::time::Instant::now();
         self.stats.fast_path += 1;
         let threshold = (self.tolerance * old_g_min as f32).floor() as usize;
         for &s in &bumped {
@@ -411,7 +376,6 @@ impl SineIndex {
             let new_count = old_g_min_count.saturating_sub(min_tied_removed);
             self.axiom_g_min_count.insert(a, new_count);
         }
-        self.stats.fast_path_ns += t_fast.elapsed().as_nanos();
     }
 
     /// Remove an axiom and bring the D-relation up to date.
@@ -521,9 +485,7 @@ impl SineIndex {
     ///
     /// `tolerance` is preserved; everything else is re-derived.
     fn rebuild_from(&mut self, store: &KifStore, sids: &[SentenceId]) {
-        let t_rebuild = std::time::Instant::now();
         self.stats.bulk_rebuilds += 1;
-
         // Preserve tolerance; drop all derived state.
         self.axiom_syms.clear();
         self.sym_axioms.clear();
@@ -536,9 +498,7 @@ impl SineIndex {
         for &sid in sids {
             if self.axiom_syms.contains_key(&sid) { continue; }  // dedup
             if !store.has_sentence(sid) { continue; }
-            let t_collect = std::time::Instant::now();
             let syms = store.collect_axiom_symbol_set(sid);
-            self.stats.collect_ns += t_collect.elapsed().as_nanos();
             for &s in &syms {
                 self.sym_axioms.entry(s).or_default().insert(sid);
             }
@@ -548,14 +508,9 @@ impl SineIndex {
         // Pass 2: compute triggers using the final generality table.
         let axiom_sids: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
         for a in axiom_sids {
-            // recompute_triggers_for tolerates axiom_triggers missing
-            // an entry — the .insert(..).unwrap_or_default() at its
-            // head returns an empty set, so no stale triggers are
-            // un-indexed (correct for a fresh rebuild).
             self.recompute_triggers_for(a);
         }
 
-        self.stats.rebuild_ns += t_rebuild.elapsed().as_nanos();
         log::debug!(target: "sumo_kb::sine",
             "SineIndex::rebuild_from: {} axioms, {} symbols, {} trigger entries",
             self.axiom_count(),

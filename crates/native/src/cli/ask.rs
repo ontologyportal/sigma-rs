@@ -1,13 +1,14 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use log;
 use inline_colorization::*;
-use sumo_kb::ProverStatus;
+use sumo_kb::{ProverStatus, Profiler};
 use crate::cli::util::parse_lang;
 
 use crate::cli::args::KbArgs;
-use crate::cli::util::{open_or_build_kb, read_stdin};
+use crate::cli::util::{open_or_build_kb_profiled, read_stdin};
 
 pub fn run_ask(
     formula:  Option<String>,
@@ -36,8 +37,15 @@ pub fn run_ask(
         }
     };
 
+    // Build the profiler first if --profile was passed, so it is
+    // installed BEFORE KB load — this way the initial `load_kif` /
+    // `make_session_axiomatic` phases are also captured.  When
+    // `profiling` is off at build time this is still safe: the
+    // profiler is zero-sized and every record call is a no-op.
+    let profiler = if profile { Some(Arc::new(Profiler::new())) } else { None };
+
     let t_kb = Instant::now();
-    let mut kb = match open_or_build_kb(&kb_args) {
+    let mut kb = match open_or_build_kb_profiled(&kb_args, profiler.clone()) {
         Ok(k)   => k,
         Err(()) => return false,
     };
@@ -96,8 +104,11 @@ pub fn run_ask(
     );
 
     if profile {
+        // Coarse four-phase summary (the pre-existing `--profile`
+        // output — kept for familiarity and because `kb_load` is
+        // measured externally, outside the profiler's view).
         let t = &result.timings;
-        println!("\n{style_bold}Profile:{style_reset}");
+        println!("\n{style_bold}Profile (coarse):{style_reset}");
         println!("  KB load      {:>10.3} ms", kb_load.as_secs_f64() * 1000.0);
         println!("  Input gen    {:>10.3} ms", t.input_gen.as_secs_f64() * 1000.0);
         println!("  Prover run   {:>10.3} ms", t.prover_run.as_secs_f64() * 1000.0);
@@ -105,6 +116,14 @@ pub fn run_ask(
         let total = kb_load + t.input_gen + t.prover_run + t.output_parse;
         println!("  ─────────────────────────");
         println!("  Total        {:>10.3} ms", total.as_secs_f64() * 1000.0);
+
+        // Fine-grained per-phase report (requires the `profiling`
+        // cargo feature to be on at sumo-kb build time; otherwise
+        // the report is just a one-line "feature off" placeholder).
+        if let Some(p) = profiler.as_ref() {
+            println!("\n{style_bold}Profile (fine-grained, from sumo-kb `profiling` feature):{style_reset}");
+            println!("{}", p.report());
+        }
     }
 
     matches!(result.status, ProverStatus::Proved)

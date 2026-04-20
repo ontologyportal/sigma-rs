@@ -25,6 +25,12 @@ cnf     = ["integrated-prover"]
 # vampire-sys/vampire-lib submodule.
 # NOT on wasm32.
 integrated-prover = ["ask", "vampire-prover/integrated-prover"]
+# Fine-grained timing/profiling of ingest, promote, ask, and load
+# phases.  When enabled the `Profiler` on `KnowledgeBase` (optional —
+# set via `kb.set_profiler(...)`) accumulates per-phase durations that
+# can be printed via `Profiler::report()`.  When disabled, every
+# `span()` call compiles to a zero-sized no-op — no runtime cost.
+profiling = []
 
 # Note: the pure-Rust IR (`vampire_prover::ir::*`) and TPTP emitter /
 # parser are ALWAYS available, regardless of features.  They drive

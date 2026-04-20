@@ -30,6 +30,17 @@ pub fn open_existing_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 ///   (never commits to the database).
 /// - If neither DB nor files are present, returns an empty KB with a warning.
 pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
+    open_or_build_kb_profiled(args, None)
+}
+
+/// Like [`open_or_build_kb`], but installs the given profiler onto
+/// the KB *before* the file-ingest and promote passes so those
+/// phases are captured in the profile report.  Pass `None` to get
+/// the un-profiled behaviour (identical to [`open_or_build_kb`]).
+pub fn open_or_build_kb_profiled(
+    args: &KbArgs,
+    profiler: Option<std::sync::Arc<sumo_kb::Profiler>>,
+) -> Result<KnowledgeBase, ()> {
     let has_files = !args.files.is_empty() || !args.dirs.is_empty();
 
     let mut kb = if args.no_db {
@@ -51,6 +62,12 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
         KnowledgeBase::new()
     };
 
+    // Install the profiler BEFORE any ingest/promote so every phase
+    // goes through instrumented code paths.
+    if let Some(p) = profiler {
+        kb.set_profiler(p);
+    }
+
     if has_files {
         let all_files = collect_kif_files(args)?;
         const BASE: &str = "__files__";
@@ -62,7 +79,7 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
                 for e in &result.errors {
                     match e {
                         KbError::Parse(p) => parse_error!(p.get_span(), p, text),
-                        _ => log::error!("{}: {}", path.display(), e) 
+                        _ => log::error!("{}: {}", path.display(), e)
                     }
                 }
                 return Err(());

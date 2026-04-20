@@ -45,6 +45,12 @@ pub(crate) mod kb;
 #[cfg(feature = "ask")]
 pub mod sine;
 
+// General per-phase profiling hooks.  Always compiled (so call sites
+// don't need `cfg` gates on every `span()` invocation) but the
+// recording path is feature-gated: when `feature = "profiling"` is
+// off, all operations are no-ops and `Profiler` is zero-sized.
+pub mod profiling;
+
 // -- Public re-exports --------------------------------------------------------
 
 pub use error::{
@@ -85,4 +91,6 @@ pub use prover::{
 
 #[cfg(feature = "ask")]
 pub use sine::{SineIndex, SineParams};
+
+pub use profiling::{Profiler, ProfileSpan, PhaseSnapshot};
 

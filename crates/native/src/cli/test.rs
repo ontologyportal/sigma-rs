@@ -1,12 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
-use crate::cli::util::open_or_build_kb;
+use crate::cli::util::open_or_build_kb_profiled;
 use crate::ask::{ask as native_ask, AskOptions, Binding};
 use crate::cli::util::parse_lang;
-use sumo_kb::parse_test_content;
+use sumo_kb::{parse_test_content, Profiler};
 
 pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, backend: String, lang: String, timeout_override: Option<u32>, profile: bool) -> bool {
     log::trace!("run_test(paths={:?}, kb_args={:#?})", paths, kb_args);
@@ -52,14 +53,20 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
     let total_tests = test_files.len();
     let mut passed_count = 0;
 
+    // Install the profiler BEFORE KB build so the initial load/promote
+    // phases are captured.
+    let profiler = if profile { Some(Arc::new(Profiler::new())) } else { None };
+
     let t_kb = Instant::now();
-    let mut kb = match open_or_build_kb(&kb_args) {
+    let mut kb = match open_or_build_kb_profiled(&kb_args, profiler.clone()) {
         Ok(k)   => k,
         Err(()) => return false,
     };
     let kb_load = t_kb.elapsed();
 
-    // Accumulators for --profile
+    // Accumulators for --profile (coarse per-test summary kept for
+    // compatibility; the fine-grained report from the profiler is
+    // printed alongside).
     let mut acc_input_gen    = Duration::ZERO;
     let mut acc_prover_run   = Duration::ZERO;
     let mut acc_output_parse = Duration::ZERO;
@@ -199,7 +206,7 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
     if profile && profile_count > 0 {
         let n = profile_count as f64;
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
-        println!("\n{style_bold}Profile (totals / avg over {} test(s)):{style_reset}", profile_count);
+        println!("\n{style_bold}Profile (coarse, totals / avg over {} test(s)):{style_reset}", profile_count);
         println!("  KB load      {:>10.3} ms  (one-time)", ms(kb_load));
         println!("  Input gen    {:>10.3} ms  ({:.3} ms / test)", ms(acc_input_gen),    ms(acc_input_gen)    / n);
         println!("  Prover run   {:>10.3} ms  ({:.3} ms / test)", ms(acc_prover_run),   ms(acc_prover_run)   / n);
@@ -208,6 +215,13 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         println!("  ─────────────────────────────────────────────────");
         println!("  Query total  {:>10.3} ms  ({:.3} ms / test)", ms(total_query), ms(total_query) / n);
         println!("  Grand total  {:>10.3} ms", ms(kb_load + total_query));
+
+        // Fine-grained per-phase report.  When the `profiling` cargo
+        // feature is off, this is a one-line "feature off" placeholder.
+        if let Some(p) = profiler.as_ref() {
+            println!("\n{style_bold}Profile (fine-grained, from sumo-kb `profiling` feature):{style_reset}");
+            println!("{}", p.report());
+        }
     }
 
     all_passed

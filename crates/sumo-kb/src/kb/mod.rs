@@ -46,6 +46,63 @@ use crate::prover::{ProverMode, ProverOpts, ProverRunner, ProverStatus};
 // hygiene.  All four files share the same `KnowledgeBase` and see
 // each other's private items because they live in the same module
 // tree.
+/// Timed-span macro for KB instrumentation.
+///
+/// Expands to `self.profiler.as_ref().map(|p| p.span(phase))` at the
+/// call site.  Using a macro (instead of a `fn span(&self, ...)`
+/// method) preserves Rust's field-level borrow disjointness: the
+/// returned guard borrows only `self.profiler`, not all of `self`,
+/// so surrounding code can still mutate other fields.
+///
+/// Usage:
+///
+/// ```ignore
+/// let _span = profile_span!(self, "ingest.parse");
+/// // ... work ...
+/// // _span drops here, recording duration onto the profiler.
+/// ```
+///
+/// When no profiler is installed, `.as_ref()` returns `None` and
+/// `.map` yields `None`, so the `_span = None` binding compiles to
+/// nothing measurable.  When the `profiling` feature is off at
+/// build time, the span guard itself is a zero-sized no-op.
+///
+/// Declared BEFORE the `mod prove;` / `mod export;` / `pub mod man;`
+/// sub-module declarations so those submodules can use it too.
+macro_rules! profile_span {
+    ($self:ident, $phase:literal) => {
+        $self.profiler.as_ref().map(|p| p.span($phase))
+    };
+}
+
+/// Companion to `profile_span!`: time an expression that requires
+/// `&mut self`.
+///
+/// `profile_span!` holds an immutable borrow on `self.profiler` for
+/// the whole span's lifetime and so is incompatible with calling
+/// `&mut self` methods inside the measured scope.  `profile_call!`
+/// instead captures the start time, evaluates the expression (which
+/// is free to take a mutable borrow), and records the elapsed time
+/// against the profiler only after the expression completes — by
+/// which point the mutable borrow has already been released.
+///
+/// Usage:
+///
+/// ```ignore
+/// let r = profile_call!(self, "ask.sine_select",
+///     self.sine_select_for_query(query_kif, params));
+/// ```
+macro_rules! profile_call {
+    ($self:ident, $phase:literal, $e:expr) => {{
+        let __t = std::time::Instant::now();
+        let __r = $e;
+        if let Some(p) = $self.profiler.as_ref() {
+            p.record($phase, __t.elapsed());
+        }
+        __r
+    }};
+}
+
 #[cfg(feature = "ask")]
 mod prove;
 mod export;
@@ -218,6 +275,18 @@ pub struct KnowledgeBase {
     /// pay no maintenance cost.
     #[cfg(feature = "ask")]
     sine_index: RwLock<SineIndex>,
+
+    /// Optional per-phase profiler for ingest/promote/ask work.
+    /// `None` unless the caller has explicitly installed one via
+    /// [`set_profiler`].  When a profiler is installed, hot paths
+    /// create RAII `ProfileSpan`s inside each instrumented block;
+    /// when `feature = "profiling"` is off at build time those
+    /// spans are zero-sized no-ops.
+    ///
+    /// The field itself is an `Option<Arc<...>>` so that the same
+    /// profiler can be shared across multiple KB instances (useful
+    /// for test harnesses that open and close KBs within one run).
+    profiler: Option<std::sync::Arc<crate::profiling::Profiler>>,
 }
 
 impl KnowledgeBase {
@@ -237,8 +306,40 @@ impl KnowledgeBase {
             sine_index: RwLock::new(
                 SineIndex::new(SineParams::default().tolerance)
             ),
+            profiler: None,
         }
     }
+
+    // -- Profiler hook --------------------------------------------------------
+
+    /// Install a per-phase profiler.  Every subsequent instrumented
+    /// call site on this `KnowledgeBase` (ingest, promote, ask, load)
+    /// records its duration onto the given profiler.  Call
+    /// [`Profiler::report`] on the handle to get a formatted
+    /// breakdown.
+    ///
+    /// Pass `None`-valued setters aren't exposed — to detach,
+    /// construct a fresh `KnowledgeBase` or create a new profiler
+    /// and drop the old handle.
+    ///
+    /// No-op when built without `feature = "profiling"` (the spans
+    /// don't record), but still safe to call — the profiler handle
+    /// is kept for uniform API.
+    pub fn set_profiler(&mut self, profiler: std::sync::Arc<crate::profiling::Profiler>) {
+        self.profiler = Some(profiler);
+    }
+
+    /// The currently-installed profiler, if any.
+    pub fn profiler(&self) -> Option<&std::sync::Arc<crate::profiling::Profiler>> {
+        self.profiler.as_ref()
+    }
+
+    // Phase-span macro is declared at module level (`profile_span!`)
+    // because a `fn span(&self, ...)` method would borrow all of
+    // `self`, making it impossible to mutate any other field while
+    // the returned guard is alive.  The macro inlines direct field
+    // access to `self.profiler`, giving the borrow checker enough
+    // information to see that the span only borrows that one field.
 
     #[cfg(feature = "persist")]
     /// Opens the knowledge base from a persistent storage (LMDB) path.
@@ -414,6 +515,7 @@ impl KnowledgeBase {
             db: Some(env),
             #[cfg(feature = "ask")]  axiom_cache: None,
             #[cfg(feature = "ask")]  sine_index,
+            profiler: None,
         })
     }
 
@@ -444,6 +546,11 @@ impl KnowledgeBase {
     /// `validate`: if `true`, run per-sentence semantic validation (used by `tell`).
     ///             if `false`, skip validation (used by `load_kif` for bulk loading).
     fn ingest(&mut self, text: &str, file_tag: &str, session: &str, validate: bool) -> TellResult {
+        // No top-level `ingest.total` span here: it would hold an
+        // immutable borrow on `self.profiler` across the many
+        // `&mut self` mutations below.  Per-phase spans cover
+        // everything of interest; the profiler's grand-total line
+        // aggregates sibling phases within the [ingest] bucket.
         // Set up the result to return
         let mut result = TellResult { ok: true, errors: vec![], warnings: vec![] };
 
@@ -462,7 +569,10 @@ impl KnowledgeBase {
         // `extend_taxonomy_with(&accepted)`.
         //
         // Parse into store using file_tag as the KIF "file" name.
-        let parse_errors = load_kif(&mut self.layer.store, text, file_tag);
+        let parse_errors = {
+            let _span = profile_span!(self, "ingest.parse_and_store");
+            load_kif(&mut self.layer.store, text, file_tag)
+        };
 
         // Failed to ingest due to parse errors
         if !parse_errors.is_empty() {
@@ -484,6 +594,7 @@ impl KnowledgeBase {
         for sid in new_roots {
             // Semantic validation -- only for interactive tell(), not bulk load_kif().
             if validate {
+                let _span = profile_span!(self, "ingest.semantic_validate");
                 if let Err(e) = self.layer.validate_sentence(sid) {
                     result.warnings.push(TellWarning::Semantic(e));
                 }
@@ -501,7 +612,13 @@ impl KnowledgeBase {
             // fresh root sentence is accepted.
             #[cfg(feature = "cnf")]
             let duplicate = {
-                match self.compute_formula_hash(sid) {
+                // Time the CNF-hash computation on its own (it takes
+                // `&mut self`, so use `profile_call!`), then wrap the
+                // subsequent lookup in a sibling span.
+                let fh_clauses = profile_call!(self, "ingest.formula_hash",
+                    self.compute_formula_hash(sid));
+                let _span_dedup = profile_span!(self, "ingest.dedup_check");
+                match fh_clauses {
                     Some((fh, clauses)) => {
                         if let Some((existing_id, existing_session)) =
                             self.fingerprints.get(&fh).cloned()
@@ -558,7 +675,10 @@ impl KnowledgeBase {
         // invalidation.  When the batch contains no taxonomy-relevant
         // sentences (the common case for most SUMO axioms), this is
         // essentially free -- no scans, no invalidations.
-        self.layer.extend_taxonomy_with(&accepted);
+        {
+            let _span = profile_span!(self, "ingest.taxonomy_extend");
+            self.layer.extend_taxonomy_with(&accepted);
+        }
 
         log::info!(target: "sumo_kb::kb",
             "tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len());
@@ -626,10 +746,9 @@ impl KnowledgeBase {
     /// `Some(session)` to `None`.  That makes this call O(|fingerprints|)
     /// and avoids any clausification work at all.
     pub fn make_session_axiomatic(&mut self, session: &str) {
-        let profile = std::env::var_os("SINE_PROFILE").is_some();
-        let t_total = std::time::Instant::now();
-
-        let sids = self.sessions.remove(session).unwrap_or_default();
+        // Per-phase spans below; no outer `promote.total` since it
+        // would conflict with the inner `&mut self` accesses.
+        let sids  = self.sessions.remove(session).unwrap_or_default();
         let count = sids.len();
 
         // Flip each sentence's fingerprint entry from session-tagged
@@ -642,9 +761,9 @@ impl KnowledgeBase {
         // ~1.7 s tax per `make_session_axiomatic` call.
         //
         // Walk `self.fingerprints` once and retag in place.
-        let t_fp = std::time::Instant::now();
         #[cfg(feature = "cnf")]
         {
+            let _span = profile_span!(self, "promote.fingerprint_retag");
             use std::collections::HashSet;
             let sid_set: HashSet<SentenceId> = sids.iter().copied().collect();
             for (_, (sid, s)) in self.fingerprints.iter_mut() {
@@ -653,67 +772,28 @@ impl KnowledgeBase {
                 }
             }
         }
-        let fp_time = t_fp.elapsed();
 
         // Populate the axiom-occurrence index for each newly-promoted
         // axiom.  Must happen before the SInE update so both indexes
         // reflect the same axiom set.
-        let t_reg = std::time::Instant::now();
-        for &sid in &sids {
-            self.layer.store.register_axiom_symbols(sid);
+        {
+            let _span = profile_span!(self, "promote.all_sentences_register");
+            for &sid in &sids {
+                self.layer.store.register_axiom_symbols(sid);
+            }
         }
-        let register_time = t_reg.elapsed();
 
         // Eagerly extend the SInE index with each new axiom.  Work per
         // axiom is proportional to the number of axioms sharing a
         // symbol with it (typically dozens to low hundreds on SUMO-scale
         // KBs); in exchange the query-time `ask()` path does zero
         // rebuild work.
-        let t_sine = std::time::Instant::now();
         #[cfg(feature = "ask")]
         {
+            let _span = profile_span!(self, "promote.sine_maintain");
             let mut idx = self.sine_index.write().expect("sine_index poisoned");
-            if profile { let _ = idx.take_stats(); }
             idx.add_axioms(&self.layer.store, sids.iter().copied());
-            if profile {
-                let stats = idx.take_stats();
-                let total = t_total.elapsed();
-                let sine_total_ms = t_sine.elapsed().as_secs_f64() * 1000.0;
-                eprintln!("[SINE_PROFILE] make_session_axiomatic session='{}' sids={}",
-                          session, count);
-                eprintln!("[SINE_PROFILE]   fingerprint retag:       {:>10.3} ms",
-                          fp_time.as_secs_f64() * 1000.0);
-                eprintln!("[SINE_PROFILE]   register_axiom_symbols:  {:>10.3} ms",
-                          register_time.as_secs_f64() * 1000.0);
-                eprintln!("[SINE_PROFILE]   sine_index dispatch:     {:>10.3} ms",
-                          sine_total_ms);
-                if stats.bulk_rebuilds > 0 {
-                    eprintln!("[SINE_PROFILE]     bulk rebuilds:         {:>10.3} ms  ({} rebuild{})",
-                              (stats.rebuild_ns as f64) / 1e6,
-                              stats.bulk_rebuilds,
-                              if stats.bulk_rebuilds == 1 { "" } else { "s" });
-                    eprintln!("[SINE_PROFILE]       collect_symbols:     {:>10.3} ms  (across rebuild passes)",
-                              (stats.collect_ns as f64) / 1e6);
-                }
-                if stats.calls > 0 {
-                    eprintln!("[SINE_PROFILE]     incremental adds:      {} add_axiom calls",
-                              stats.calls);
-                    eprintln!("[SINE_PROFILE]       collect_symbols:     {:>10.3} ms",
-                              (stats.collect_ns as f64) / 1e6);
-                    eprintln!("[SINE_PROFILE]       find_affected union: {:>10.3} ms  (avg {} affected per call)",
-                              (stats.find_affected_ns as f64) / 1e6,
-                              stats.affected_total / stats.calls);
-                    eprintln!("[SINE_PROFILE]       recompute_triggers:  {:>10.3} ms  ({} full recomputes)",
-                              (stats.recompute_ns as f64) / 1e6, stats.recompute_calls);
-                    eprintln!("[SINE_PROFILE]       fast-path updates:   {:>10.3} ms  ({} fast-path hits)",
-                              (stats.fast_path_ns as f64) / 1e6, stats.fast_path);
-                }
-                eprintln!("[SINE_PROFILE]   total (incl. overheads): {:>10.3} ms",
-                          total.as_secs_f64() * 1000.0);
-            }
         }
-        #[cfg(not(feature = "ask"))]
-        let _ = (profile, t_sine, fp_time, register_time, t_total);
 
         log::info!(target: "sumo_kb::kb",
             "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",

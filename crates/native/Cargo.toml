@@ -13,8 +13,12 @@ path = "src/lib.rs"
 
 [features]
 # Default build is the full experience: IR pipeline + embedded C++
-# Vampire.  Translate / validate / load / ask / test all available.
-default = ["integrated-prover"]
+# Vampire + fine-grained profiling.  Translate / validate / load /
+# ask / test all available, and `--profile` produces the full
+# per-phase breakdown.  When no profiler is installed on the KB
+# every `span()` is a no-op, so this flag carries no cost in
+# non-profiling runs.
+default = ["integrated-prover", "profiling"]
 
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.
@@ -25,6 +29,14 @@ ask = ["sumo-kb/ask"]
 # vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
 # and native-proof binding extraction.
 integrated-prover = ["ask", "sumo-kb/integrated-prover"]
+
+# Fine-grained per-phase profiling of KnowledgeBase operations
+# (ingest, promote, ask, load).  When on, the `--profile` flag on
+# `sumo ask` / `sumo test` emits a per-phase breakdown in addition
+# to the existing coarse ProverResult timings.  When off, `--profile`
+# still works but only shows the four-phase coarse timings from
+# `ProverResult.timings`.
+profiling = ["sumo-kb/profiling"]
 
 [dependencies]
 sumo-kb = { workspace = true, features = ["persist", "cnf"] }

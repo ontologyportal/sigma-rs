@@ -46,12 +46,21 @@ impl KnowledgeBase {
         use crate::sine::SineParams;
 
         log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
+        // No top-level `ask.total` span: it would hold an immutable
+        // borrow on `self.profiler` across the many `&mut self` calls
+        // below.  The profiler's grand-total line already aggregates
+        // sibling phases within the [ask] bucket.
 
         // -- Step 1: SInE-select the relevant axiom subset. --------------
         // `sine_select_for_query` parses the conjecture into a temporary
         // file tag, walks its symbols, and rolls the parse back before
-        // returning.
-        let selected_axioms = match self.sine_select_for_query(query_kif, SineParams::default()) {
+        // returning.  Use `profile_call!` here because
+        // `sine_select_for_query` takes `&mut self`, which is
+        // incompatible with `profile_span!`'s immutable borrow on
+        // `self.profiler`.
+        let selected_axioms = match profile_call!(self, "ask.sine_select",
+            self.sine_select_for_query(query_kif, SineParams::default()))
+        {
             Ok(s) => s,
             Err(e) => {
                 return ProverResult {
@@ -69,7 +78,8 @@ impl KnowledgeBase {
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
-        let parse_errors: Vec<(Span, KbError)> = load_kif(&mut self.layer.store, query_kif, query_tag);
+        let parse_errors: Vec<(Span, KbError)> = profile_call!(self, "ask.parse_query",
+            load_kif(&mut self.layer.store, query_kif, query_tag));
         if !parse_errors.is_empty() {
             self.layer.store.remove_file(query_tag);
             return ProverResult {
@@ -123,6 +133,7 @@ impl KnowledgeBase {
         let t_input = Instant::now();
 
         let (problem, sid_map) = {
+            let _span = profile_span!(self, "ask.tptp_build");
             let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode);
             // SInE-selected axioms, sorted for deterministic output.
             let mut axioms_sorted: Vec<SentenceId> =
@@ -139,10 +150,13 @@ impl KnowledgeBase {
             conv.finish()
         };
 
-        let tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts {
-            conjecture_name: "query_0",
-            ..AssemblyOpts::default()
-        });
+        let tptp = {
+            let _span = profile_span!(self, "ask.tptp_build");
+            assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+                conjecture_name: "query_0",
+                ..AssemblyOpts::default()
+            })
+        };
         let input_gen = t_input.elapsed();
         log::debug!(target: "sumo_kb::kb",
             "ask({:?}): TPTP size={} bytes ({} SInE-selected axioms, {} assertions)",
@@ -153,15 +167,34 @@ impl KnowledgeBase {
         // itself touched taxonomy predicates (`subclass`/`instance`/
         // `subrelation`/`subAttribute`).  Non-taxonomy conjectures
         // leave derived state untouched.
-        let needs_rebuild = self.query_affects_taxonomy(&query_sids);
-        self.layer.store.remove_file(query_tag);
-        if needs_rebuild {
-            self.layer.rebuild_taxonomy();
-            self.layer.invalidate_cache();
-        }
+        //
+        // `query_affects_taxonomy` takes `&self`; `rebuild_taxonomy`
+        // and `invalidate_cache` take `&mut self`.  We use
+        // `profile_call!` (post-call record) to time the whole rollback
+        // cleanup including the possible rebuild.
+        profile_call!(self, "ask.rollback", {
+            let needs_rebuild = self.query_affects_taxonomy(&query_sids);
+            self.layer.store.remove_file(query_tag);
+            if needs_rebuild {
+                self.layer.rebuild_taxonomy();
+                self.layer.invalidate_cache();
+            }
+        });
 
         let prover_opts = ProverOpts { timeout_secs: runner.timeout_secs(), mode: ProverMode::Prove };
-        let mut result = runner.prove(&tptp, &prover_opts);
+        let mut result = {
+            // `runner.prove` takes `&dyn ProverRunner`, not `&mut self`,
+            // so `profile_span!` works here.  Keep it as a span so the
+            // inner sub-phases (`ask.output_parse`, see below) can be
+            // recorded as siblings rather than nested children.
+            let _span = profile_span!(self, "ask.prover_run");
+            runner.prove(&tptp, &prover_opts)
+        };
+        // Also record the prover-reported sub-phase timings (output parse,
+        // binding extraction) into the profiler for unified reporting.
+        if let Some(p) = self.profiler.as_ref() {
+            p.record("ask.output_parse", result.timings.output_parse);
+        }
         result.timings.input_gen = input_gen;
         result
     }
