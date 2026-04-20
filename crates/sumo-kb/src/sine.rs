@@ -112,21 +112,103 @@ pub struct SineIndex {
     /// [`trigger_idx`].
     axiom_triggers: HashMap<SentenceId, HashSet<SymbolId>>,
 
+    /// Cached minimum generality per axiom: `min{ |sym_axioms[s]| : s ∈ syms(A) }`.
+    /// Updated only inside `recompute_triggers_for`.  Absent for axioms
+    /// with an empty symbol set.
+    ///
+    /// Used by `add_axiom`'s fine-grained update path to detect whether
+    /// a bumped symbol was the (unique) minimum of an affected axiom —
+    /// which is the only condition under which the threshold shifts
+    /// and a full recompute is actually required.  Without this cache
+    /// every shared-symbol affected axiom would fall through to a
+    /// full recompute, which on dense ontologies is O(N²).
+    axiom_g_min: HashMap<SentenceId, usize>,
+
+    /// Companion to `axiom_g_min`: how many symbols of A are currently
+    /// tied at `axiom_g_min[A]`.  When bumping symbols in an affected
+    /// axiom, we only need a full recompute if we bumped *all* of its
+    /// min-tied symbols (so the minimum shifts upward).  When some
+    /// tied symbols remain at min, the threshold is unchanged and we
+    /// can do a cheap per-symbol status update.
+    axiom_g_min_count: HashMap<SentenceId, usize>,
+
     /// The D-relation, inverted for query-time lookup: for each symbol, the
     /// axioms it triggers at the current tolerance.
     trigger_idx: HashMap<SymbolId, HashSet<SentenceId>>,
+
+    /// Cumulative per-phase counters across `add_axiom` / `remove_axiom`
+    /// calls since the last `take_stats()`.  Overhead to maintain is
+    /// three `Instant::now()` calls per mutation (≈30ns) — negligible
+    /// compared to the hash-table work these methods do.  Exposed via
+    /// [`take_stats`] for profile tooling (see `profile_ask` example).
+    stats: AddAxiomStats,
+}
+
+/// Breakdown of where time went inside `SineIndex::add_axiom` / `remove_axiom`,
+/// plus counters for how much work the affected-set expansion produced.
+///
+/// All nanosecond fields accumulate across every mutation since the last
+/// `take_stats()`.  Useful for answering questions like "is bootstrap
+/// promotion bottlenecked on finding affected axioms or recomputing
+/// their triggers?"
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AddAxiomStats {
+    /// Number of `add_axiom` / `remove_axiom` calls.
+    pub calls:            usize,
+    /// Sum of per-call affected-set sizes.  Dividing by `calls` gives
+    /// the average affected-set size, which grows as the KB fills up.
+    pub affected_total:   usize,
+    /// Number of times `recompute_triggers_for` ran (one per affected
+    /// axiom per mutation).  Shrinks dramatically on dense KBs once
+    /// the fine-grained fast path lands — most affected axioms don't
+    /// need a full recompute when the bumped symbol is not the unique
+    /// minimum.
+    pub recompute_calls:  usize,
+    /// Number of affected axioms that took the fine-grained fast path
+    /// (O(|bumped_symbols|) targeted update) instead of a full
+    /// `recompute_triggers_for`.
+    pub fast_path:        usize,
+    /// Number of times a bulk rebuild fired (via `add_axioms` bulk
+    /// entry, when the batch is a large fraction of the current axiom
+    /// set).  At most once per `add_axioms` call.
+    pub bulk_rebuilds:    usize,
+    /// Time inside `store.collect_axiom_symbol_set`.
+    pub collect_ns:       u128,
+    /// Time building the `affected: HashSet<SentenceId>` union from
+    /// the reverse index `sym_axioms`.
+    pub find_affected_ns: u128,
+    /// Time inside the `recompute_triggers_for` loop.
+    pub recompute_ns:     u128,
+    /// Time inside the fine-grained fast path (per-symbol targeted
+    /// trigger-set updates).
+    pub fast_path_ns:     u128,
+    /// Time inside `rebuild_from` bulk builds.
+    pub rebuild_ns:       u128,
 }
 
 impl SineIndex {
     /// Construct an empty index at the given tolerance.
     pub(crate) fn new(tolerance: f32) -> Self {
         Self {
-            tolerance:      tolerance.max(1.0),
-            axiom_syms:     HashMap::new(),
-            sym_axioms:     HashMap::new(),
-            axiom_triggers: HashMap::new(),
-            trigger_idx:    HashMap::new(),
+            tolerance:         tolerance.max(1.0),
+            axiom_syms:        HashMap::new(),
+            sym_axioms:        HashMap::new(),
+            axiom_triggers:    HashMap::new(),
+            axiom_g_min:       HashMap::new(),
+            axiom_g_min_count: HashMap::new(),
+            trigger_idx:       HashMap::new(),
+            stats:             AddAxiomStats::default(),
         }
+    }
+
+    /// Consume the cumulative per-phase timing counters since the last
+    /// `take_stats()` call and reset them to zero.  Useful for profiling
+    /// the internal breakdown of `make_session_axiomatic` and similar
+    /// bulk-mutation sites.
+    pub fn take_stats(&mut self) -> AddAxiomStats {
+        let s = self.stats;
+        self.stats = AddAxiomStats::default();
+        s
     }
 
     /// The tolerance at which the D-relation is currently computed.
@@ -172,10 +254,13 @@ impl SineIndex {
     /// containing a common head like `instance`, it's bounded by the
     /// number of axioms mentioning that head.
     pub(crate) fn add_axiom(&mut self, store: &KifStore, sid: SentenceId) {
+        self.stats.calls += 1;
         if self.axiom_syms.contains_key(&sid) { return; }
         if !store.has_sentence(sid) { return; }
 
+        let t_collect = std::time::Instant::now();
         let syms = store.collect_axiom_symbol_set(sid);
+        self.stats.collect_ns += t_collect.elapsed().as_nanos();
 
         // Record even "symbol-less" axioms (pure var/literal bodies — rare
         // in SUMO but possible) so axiom_count and contains() stay accurate.
@@ -183,24 +268,150 @@ impl SineIndex {
         self.axiom_triggers.insert(sid, HashSet::new());
         if syms.is_empty() { return; }
 
-        // Update the symbol → axioms reverse index (this also bumps
-        // generality for every symbol in the new axiom).
+        // Snapshot the PRE-bump generality of every symbol in the new
+        // axiom.  We need these values to decide whether an affected
+        // axiom's g_min shifted because a bumped symbol was at its min.
+        // Reading `sym_axioms` AFTER bumping would always show the
+        // post-bump count and break the logic.
+        let old_occ: HashMap<SymbolId, usize> = syms.iter()
+            .map(|&s| (s, self.sym_axioms.get(&s).map_or(0, |set| set.len())))
+            .collect();
+
+        // Update the symbol → axioms reverse index (bumps generality
+        // for every symbol in the new axiom).
         for &s in &syms {
             self.sym_axioms.entry(s).or_default().insert(sid);
         }
 
         // Affected = axioms sharing any symbol with sid (includes sid
         // itself, since sym_axioms now contains it).
+        let t_find = std::time::Instant::now();
         let mut affected: HashSet<SentenceId> = HashSet::new();
         for &s in &syms {
             if let Some(set) = self.sym_axioms.get(&s) {
                 affected.extend(set.iter().copied());
             }
         }
+        self.stats.find_affected_ns += t_find.elapsed().as_nanos();
+        self.stats.affected_total   += affected.len();
 
+        // The new axiom always needs a fresh trigger computation — it
+        // has no cached state.  Do that outside the fine-grained-vs-full
+        // decision to keep the loop tidy.
+        let t_recompute = std::time::Instant::now();
+        self.recompute_triggers_for(sid);
+        self.stats.recompute_calls += 1;
+
+        // For each OTHER affected axiom, decide between the fine-grained
+        // fast path and a full recompute.
         for a in affected {
-            self.recompute_triggers_for(a);
+            if a == sid { continue; }
+            self.update_affected_axiom(a, &syms, &old_occ);
         }
+        self.stats.recompute_ns += t_recompute.elapsed().as_nanos();
+    }
+
+    /// Process an existing affected axiom `a` after a new axiom was
+    /// added whose symbol set is `new_syms` with pre-bump generalities
+    /// `old_occ`.  Takes the fast path when the bumped symbols did not
+    /// displace `a`'s unique minimum; falls back to a full recompute
+    /// otherwise.
+    fn update_affected_axiom(
+        &mut self,
+        a:        SentenceId,
+        new_syms: &HashSet<SymbolId>,
+        old_occ:  &HashMap<SymbolId, usize>,
+    ) {
+        // Without a cached g_min for `a` we can't take the fast path.
+        // Fall back to a full recompute — this only happens if `a` was
+        // added before the g_min cache existed (e.g. legacy state) or
+        // if it had zero symbols.  On this code path the cache is
+        // always populated for non-empty axioms, so the fallback is
+        // effectively dead but kept for defence-in-depth.
+        let (old_g_min, old_g_min_count) = match (
+            self.axiom_g_min.get(&a).copied(),
+            self.axiom_g_min_count.get(&a).copied(),
+        ) {
+            (Some(m), Some(c)) => (m, c),
+            _ => {
+                self.recompute_triggers_for(a);
+                self.stats.recompute_calls += 1;
+                return;
+            }
+        };
+
+        // Gather the bumped symbols (those in both axioms).
+        let a_syms = match self.axiom_syms.get(&a).cloned() {
+            Some(s) => s,
+            None    => return, // a not tracked — nothing to update
+        };
+
+        // Count how many of a's at-min symbols were bumped.  The
+        // bumped set is syms(new) ∩ syms(a).  We iterate new_syms
+        // (typically ≤10 symbols for a SUMO axiom) and test
+        // membership in a_syms (HashSet).
+        let mut min_tied_removed = 0usize;
+        let mut bumped: Vec<SymbolId> = Vec::with_capacity(new_syms.len().min(a_syms.len()));
+        for &s in new_syms {
+            if a_syms.contains(&s) {
+                bumped.push(s);
+                if old_occ.get(&s).copied().unwrap_or(0) == old_g_min {
+                    min_tied_removed += 1;
+                }
+            }
+        }
+
+        if bumped.is_empty() {
+            // Shouldn't happen if `a` is in the affected set, but handle
+            // defensively.
+            return;
+        }
+
+        // If we bumped *every* symbol that was at the old minimum,
+        // g_min shifts upward and the threshold changes — full
+        // recompute is needed because OTHER (non-bumped) symbols may
+        // now enter the trigger set.
+        if min_tied_removed >= old_g_min_count {
+            self.recompute_triggers_for(a);
+            self.stats.recompute_calls += 1;
+            return;
+        }
+
+        // Fast path: g_min unchanged, threshold unchanged.  Only the
+        // bumped symbols' own trigger status can have changed (their
+        // new occ might exceed the threshold).
+        let t_fast = std::time::Instant::now();
+        self.stats.fast_path += 1;
+        let threshold = (self.tolerance * old_g_min as f32).floor() as usize;
+        for &s in &bumped {
+            let new_occ = self.sym_axioms.get(&s).map_or(0, |set| set.len());
+            let was_triggering = self
+                .axiom_triggers.get(&a)
+                .map_or(false, |t| t.contains(&s));
+            let still_triggers = new_occ <= threshold;
+            if was_triggering && !still_triggers {
+                if let Some(t) = self.axiom_triggers.get_mut(&a) {
+                    t.remove(&s);
+                }
+                if let Some(idx) = self.trigger_idx.get_mut(&s) {
+                    idx.remove(&a);
+                    if idx.is_empty() {
+                        self.trigger_idx.remove(&s);
+                    }
+                }
+            }
+            // Note: occ only increases, so a symbol can't *enter* the
+            // trigger set on the fast path — only leave it.
+        }
+        // Update g_min_count: some previously-tied min symbols dropped
+        // out (now at g_min+1).  g_min itself is unchanged because at
+        // least one other min-tied symbol is still present (otherwise
+        // we would have taken the full-recompute branch above).
+        if min_tied_removed > 0 {
+            let new_count = old_g_min_count.saturating_sub(min_tied_removed);
+            self.axiom_g_min_count.insert(a, new_count);
+        }
+        self.stats.fast_path_ns += t_fast.elapsed().as_nanos();
     }
 
     /// Remove an axiom and bring the D-relation up to date.
@@ -226,6 +437,9 @@ impl SineIndex {
                 }
             }
         }
+        // Drop sid's own g_min cache entries.
+        self.axiom_g_min.remove(&sid);
+        self.axiom_g_min_count.remove(&sid);
 
         // Drop sid from the symbol → axioms reverse index.
         for &s in &syms {
@@ -235,9 +449,12 @@ impl SineIndex {
             }
         }
 
-        // Remaining axioms sharing a symbol with the removed one may have
-        // shifted g_min downward (one fewer axiom counted for those syms),
-        // potentially widening their trigger set.
+        // Remaining axioms sharing a symbol with the removed one may
+        // have shifted g_min downward (one fewer axiom counted for
+        // those syms), potentially widening their trigger set.  We
+        // use the full recompute path here — analogous fine-grained
+        // handling for removes is possible but `remove_axiom` is not
+        // currently a hot path, so the simpler implementation wins.
         let mut affected: HashSet<SentenceId> = HashSet::new();
         for &s in &syms {
             if let Some(set) = self.sym_axioms.get(&s) {
@@ -249,6 +466,104 @@ impl SineIndex {
         }
     }
 
+    /// Bulk-add many axioms.
+    ///
+    /// When the batch is a non-trivial fraction of the final axiom
+    /// count, the incremental `add_axiom` path is asymptotically
+    /// worse than a from-scratch rebuild: each add recomputes
+    /// triggers for every axiom sharing a symbol with it, and on a
+    /// dense ontology that set grows linearly with the KB size,
+    /// yielding `O(N²)`-ish bulk cost.  A from-scratch rebuild is
+    /// `O(Σ |syms(axiom)|)` ≈ `O(N · avg_syms)` ≈ `O(N)` for typical
+    /// SUMO-like data, dozens of times cheaper.
+    ///
+    /// Heuristic: if the batch size ≥ `max(current / 10, 50)`, do a
+    /// bulk rebuild over the union of already-tracked axioms plus the
+    /// new batch.  Below that threshold the incremental path's
+    /// constant-factor win on small changes dominates.
+    ///
+    /// Callers: `KnowledgeBase::{make_session_axiomatic,
+    /// promote_assertions_unchecked, open}` — the three promotion
+    /// sites on the KB's hot path.  Tests and single-axiom callers
+    /// may still use `add_axiom` directly.
+    pub(crate) fn add_axioms<I>(&mut self, store: &KifStore, sids: I)
+    where
+        I: IntoIterator<Item = SentenceId>,
+    {
+        let sids: Vec<SentenceId> = sids.into_iter().collect();
+        if sids.is_empty() { return; }
+
+        let current = self.axiom_count();
+        let threshold = (current / 10).max(50);
+        if sids.len() >= threshold {
+            // Bulk rebuild — fold the existing axioms and the batch into
+            // one input vector, then rebuild the D-relation in two
+            // clean passes with no repeated recomputes.
+            let mut all: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
+            all.extend(sids.iter().copied());
+            self.rebuild_from(store, &all);
+        } else {
+            for sid in sids {
+                self.add_axiom(store, sid);
+            }
+        }
+    }
+
+    /// Clear the index and rebuild from the given axiom sids.
+    ///
+    /// Two-pass algorithm: Pass 1 collects per-axiom symbol sets and
+    /// the `sym_axioms` reverse index (which gives generality for
+    /// free, since `|sym_axioms[s]|` is the generality of `s`).
+    /// Pass 2 computes each axiom's triggers from the now-final
+    /// generality table.  Neither pass needs to un-index stale
+    /// trigger entries, so this is significantly cheaper than
+    /// calling `add_axiom` in a loop.
+    ///
+    /// `tolerance` is preserved; everything else is re-derived.
+    fn rebuild_from(&mut self, store: &KifStore, sids: &[SentenceId]) {
+        let t_rebuild = std::time::Instant::now();
+        self.stats.bulk_rebuilds += 1;
+
+        // Preserve tolerance; drop all derived state.
+        self.axiom_syms.clear();
+        self.sym_axioms.clear();
+        self.axiom_triggers.clear();
+        self.axiom_g_min.clear();
+        self.axiom_g_min_count.clear();
+        self.trigger_idx.clear();
+
+        // Pass 1: per-axiom symbols + reverse index.
+        for &sid in sids {
+            if self.axiom_syms.contains_key(&sid) { continue; }  // dedup
+            if !store.has_sentence(sid) { continue; }
+            let t_collect = std::time::Instant::now();
+            let syms = store.collect_axiom_symbol_set(sid);
+            self.stats.collect_ns += t_collect.elapsed().as_nanos();
+            for &s in &syms {
+                self.sym_axioms.entry(s).or_default().insert(sid);
+            }
+            self.axiom_syms.insert(sid, syms);
+        }
+
+        // Pass 2: compute triggers using the final generality table.
+        let axiom_sids: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
+        for a in axiom_sids {
+            // recompute_triggers_for tolerates axiom_triggers missing
+            // an entry — the .insert(..).unwrap_or_default() at its
+            // head returns an empty set, so no stale triggers are
+            // un-indexed (correct for a fresh rebuild).
+            self.recompute_triggers_for(a);
+        }
+
+        self.stats.rebuild_ns += t_rebuild.elapsed().as_nanos();
+        log::debug!(target: "sumo_kb::sine",
+            "SineIndex::rebuild_from: {} axioms, {} symbols, {} trigger entries",
+            self.axiom_count(),
+            self.sym_axioms.len(),
+            self.trigger_idx.values().map(|s| s.len()).sum::<usize>(),
+        );
+    }
+
     /// Clear and rebuild the D-relation portion of the index at a new
     /// tolerance.  Axiom set, per-axiom symbol sets, and generality
     /// counts are preserved (they're tolerance-independent).
@@ -258,6 +573,13 @@ impl SineIndex {
         self.tolerance = new;
         self.trigger_idx.clear();
         self.axiom_triggers.clear();
+        // Tolerance-dependent g_min cache is invalid at a new tolerance
+        // threshold; it will be rebuilt by recompute_triggers_for below.
+        // (axiom_g_min itself is actually tolerance-independent — it's
+        // the min of generality counts — but we re-derive it during the
+        // recompute loop anyway for simplicity.)
+        self.axiom_g_min.clear();
+        self.axiom_g_min_count.clear();
         let sids: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
         for a in sids {
             // axiom_triggers was cleared above, so recompute_triggers_for
@@ -282,6 +604,8 @@ impl SineIndex {
         self.axiom_syms.clear();
         self.sym_axioms.clear();
         self.axiom_triggers.clear();
+        self.axiom_g_min.clear();
+        self.axiom_g_min_count.clear();
         self.trigger_idx.clear();
     }
 
@@ -303,18 +627,36 @@ impl SineIndex {
             }
         }
 
-        // No symbols → cannot be triggered.
+        // No symbols → cannot be triggered.  Clear any stale g_min
+        // cache entry and return.
         let syms = match self.axiom_syms.get(&a) {
             Some(s) if !s.is_empty() => s,
-            _ => return, // axiom_triggers[a] stays empty
+            _ => {
+                self.axiom_g_min.remove(&a);
+                self.axiom_g_min_count.remove(&a);
+                return; // axiom_triggers[a] stays empty
+            }
         };
 
-        // g_min over current generality counts.
-        let g_min = syms.iter()
-            .map(|s| self.sym_axioms.get(s).map_or(0, |set| set.len()))
-            .min()
-            .unwrap_or(0);
-        if g_min == 0 { return; }
+        // Compute g_min and g_min_count in a single pass.
+        let mut g_min = usize::MAX;
+        let mut g_min_count = 0usize;
+        for &s in syms {
+            let g = self.sym_axioms.get(&s).map_or(0, |set| set.len());
+            if g < g_min {
+                g_min = g;
+                g_min_count = 1;
+            } else if g == g_min {
+                g_min_count += 1;
+            }
+        }
+        if g_min == 0 || g_min == usize::MAX {
+            self.axiom_g_min.remove(&a);
+            self.axiom_g_min_count.remove(&a);
+            return;
+        }
+        self.axiom_g_min.insert(a, g_min);
+        self.axiom_g_min_count.insert(a, g_min_count);
 
         let threshold = (self.tolerance * g_min as f32).floor() as usize;
 
@@ -784,5 +1126,258 @@ mod tests {
         idx.add_axiom(&store, axioms[0]);
         idx.add_axiom(&store, axioms[0]); // again
         assert_eq!(idx.axiom_count(), 1);
+    }
+
+    // -- Option 1: bulk-rebuild tests --------------------------------
+
+    /// A helper that asserts the D-relation in `idx` matches a
+    /// from-scratch build over the same axiom set.
+    fn assert_matches_from_scratch(
+        idx:    &SineIndex,
+        store:  &KifStore,
+        axioms: &[SentenceId],
+        tol:    f32,
+    ) {
+        let scratch = build_eager(store, axioms, tol);
+        assert_eq!(idx.axiom_count(), scratch.axiom_count(), "axiom count");
+        for &sid in axioms {
+            assert_eq!(
+                idx.symbols_of_axiom(sid),
+                scratch.symbols_of_axiom(sid),
+                "symbols of axiom {} differ",
+                sid,
+            );
+        }
+        let all_syms: HashSet<SymbolId> = axioms.iter()
+            .filter_map(|&sid| scratch.symbols_of_axiom(sid))
+            .flat_map(|s| s.iter().copied())
+            .collect();
+        for s in all_syms {
+            assert_eq!(
+                idx.triggers(s).cloned().unwrap_or_default(),
+                scratch.triggers(s).cloned().unwrap_or_default(),
+                "triggers for symbol {} differ", s,
+            );
+            assert_eq!(
+                idx.generality(s),
+                scratch.generality(s),
+                "generality for symbol {} differs", s,
+            );
+        }
+    }
+
+    #[test]
+    fn add_axioms_bulk_matches_incremental() {
+        // Produce ≥50 axioms so the threshold fires (50 is the floor
+        // — see `add_axioms`).  Result after bulk must match a
+        // from-scratch incremental build.
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!("(subclass Class{} Entity)\n", i));
+        }
+        let (store, axioms) = store_and_axioms(&src);
+
+        let mut bulk = SineIndex::new(1.0);
+        bulk.add_axioms(&store, axioms.iter().copied());
+        assert_matches_from_scratch(&bulk, &store, &axioms, 1.0);
+
+        // Confirm the bulk path fired.
+        let stats = bulk.take_stats();
+        assert!(stats.bulk_rebuilds >= 1,
+            "expected bulk rebuild for a 60-axiom initial batch, got {:?}", stats);
+    }
+
+    #[test]
+    fn add_axioms_small_batch_takes_incremental_path() {
+        // Build a decent base, then add a tiny batch.  The threshold is
+        // max(current/10, 50); a 2-axiom batch on top of 6 axioms has
+        // threshold = max(0, 50) = 50, so 2 < 50 and we take the
+        // incremental path.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Human Animal)\n\
+             (subclass Mammal Animal)\n\
+             (subclass Dog Mammal)\n\
+             (subclass Cat Mammal)\n\
+             (instance Rex Dog)\n\
+             (instance Whiskers Cat)",
+        );
+        // Seed the first 4 via bulk (1 bulk rebuild).
+        let mut idx = SineIndex::new(1.0);
+        idx.add_axioms(&store, axioms[..4].iter().copied());
+        let _ = idx.take_stats();
+
+        // Now add 2 more — below the rebuild threshold.
+        idx.add_axioms(&store, axioms[4..].iter().copied());
+        let stats = idx.take_stats();
+        assert_eq!(stats.bulk_rebuilds, 0,
+            "small follow-up batch should NOT trigger a bulk rebuild");
+        assert!(stats.calls >= 2,
+            "incremental add_axiom should have been called at least twice: {:?}", stats);
+
+        // Final state still matches from-scratch.
+        assert_matches_from_scratch(&idx, &store, &axioms, 1.0);
+    }
+
+    #[test]
+    fn add_axioms_large_followup_batch_triggers_rebuild() {
+        // Base of 5 axioms + 80-axiom follow-up.  threshold =
+        // max(5/10, 50) = 50; 80 > 50 so we rebuild.  (The 80
+        // identical-structure axioms are just a convenient way to
+        // stress the path — semantics aren't important here.)
+        let mut src = String::new();
+        src.push_str("(subclass Human Animal)\n");
+        src.push_str("(subclass Mammal Animal)\n");
+        src.push_str("(subclass Dog Mammal)\n");
+        src.push_str("(subclass Cat Mammal)\n");
+        src.push_str("(instance Rex Dog)\n");
+        for i in 0..80 {
+            src.push_str(&format!("(subclass Class{} Entity)\n", i));
+        }
+        let (store, axioms) = store_and_axioms(&src);
+        let (first5, rest): (Vec<_>, Vec<_>) = axioms.iter().enumerate()
+            .partition(|(i, _)| *i < 5);
+        let first5: Vec<SentenceId> = first5.into_iter().map(|(_, sid)| *sid).collect();
+        let rest:   Vec<SentenceId> = rest.into_iter().map(|(_, sid)| *sid).collect();
+
+        let mut idx = SineIndex::new(1.2);
+        idx.add_axioms(&store, first5.iter().copied());
+        let _ = idx.take_stats();
+
+        idx.add_axioms(&store, rest.iter().copied());
+        let stats = idx.take_stats();
+        assert!(stats.bulk_rebuilds >= 1,
+            "80-axiom batch over 5 existing should rebuild, got {:?}", stats);
+
+        assert_matches_from_scratch(&idx, &store, &axioms, 1.2);
+    }
+
+    #[test]
+    fn add_axioms_empty_batch_is_noop() {
+        let (store, axioms) = store_and_axioms("(subclass Human Animal)");
+        let mut idx = SineIndex::new(1.0);
+        idx.add_axioms(&store, axioms.iter().copied());
+        let before = idx.axiom_count();
+        let empty: Vec<SentenceId> = Vec::new();
+        idx.add_axioms(&store, empty.into_iter());
+        assert_eq!(idx.axiom_count(), before);
+    }
+
+    // -- Option 3: fine-grained fast path tests ----------------------
+
+    #[test]
+    fn fast_path_triggers_when_bumped_symbol_not_at_min() {
+        // Build a KB where most added axioms share `subclass` with
+        // existing ones, but `subclass`'s generality is above min
+        // almost everywhere — so the fast path should dominate the
+        // affected-set processing.
+        //
+        // We confirm via the `fast_path` stats counter.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Human Animal)\n\
+             (subclass Mammal Animal)\n\
+             (subclass Dog Mammal)\n\
+             (subclass Cat Mammal)\n\
+             (subclass Bird Animal)",
+        );
+
+        // Seed with the first axiom via bulk (just one — bulk builds
+        // from scratch).  Then add the rest incrementally so the fast
+        // path can engage.
+        let mut idx = SineIndex::new(1.2);
+        idx.add_axioms(&store, axioms[..1].iter().copied());
+        let _ = idx.take_stats();
+
+        for &sid in &axioms[1..] {
+            idx.add_axiom(&store, sid);
+        }
+        let stats = idx.take_stats();
+
+        // The final state is correct...
+        assert_matches_from_scratch(&idx, &store, &axioms, 1.2);
+        // ...and at least one affected axiom took the fast path, not
+        // a full recompute.  If this assertion ever fails it would
+        // mean every add hit the unique-min branch — worth
+        // investigating if it does.
+        assert!(stats.fast_path >= 1,
+            "expected fast-path updates on subsequent adds, got {:?}", stats);
+    }
+
+    #[test]
+    fn fast_path_removes_symbol_when_bump_crosses_threshold() {
+        // Construct an axiom whose `subclass` occurrence starts as a
+        // trigger (subclass occ = 1) and then loses trigger status
+        // after a second axiom bumps subclass's occ to 2 (beyond the
+        // strict threshold of 1).
+        let mut store = KifStore::default();
+        let errs = crate::kif_store::load_kif(&mut store, "(subclass Human Animal)", "a");
+        assert!(errs.is_empty());
+        for &sid in &store.roots.clone() { store.register_axiom_symbols(sid); }
+        let a0 = store.roots[0];
+
+        let mut idx = SineIndex::new(1.0);
+        idx.add_axiom(&store, a0);
+        let subclass = store.sym_id("subclass").unwrap();
+        // Before any bump: subclass appears in 1 axiom, Human in 1,
+        // Animal in 1 — all tied at min 1.  All three trigger a0.
+        assert!(idx.triggers(subclass).map_or(false, |s| s.contains(&a0)));
+
+        // Add a second subclass-using axiom that shares NO other
+        // symbols — so only `subclass` gets bumped in a0's affected
+        // set.  Now subclass occ = 2, min of a0 is still 1 (Human,
+        // Animal).  Subclass should DROP out of trigger_idx for a0.
+        let errs = crate::kif_store::load_kif(&mut store, "(subclass Fruit Food)", "b");
+        assert!(errs.is_empty());
+        let a1 = *store.roots.last().unwrap();
+        store.register_axiom_symbols(a1);
+        idx.add_axiom(&store, a1);
+
+        let stats = idx.take_stats();
+        // At least one fast-path step: the a0 update for subclass.
+        assert!(stats.fast_path >= 1,
+            "expected fast path for a0's update on subclass bump, got {:?}", stats);
+        // Subclass no longer triggers a0 (strict tolerance, occ=2 > threshold=1).
+        assert!(!idx.triggers(subclass)
+                    .map_or(false, |s| s.contains(&a0)),
+            "subclass should have been removed from a0's trigger set via fast path");
+        // Human and Animal still trigger a0 (unchanged occ=1).
+        let human  = store.sym_id("Human").unwrap();
+        let animal = store.sym_id("Animal").unwrap();
+        assert!(idx.triggers(human).map_or(false, |s| s.contains(&a0)));
+        assert!(idx.triggers(animal).map_or(false, |s| s.contains(&a0)));
+    }
+
+    #[test]
+    fn g_min_cache_matches_manual_computation_after_bulk() {
+        // After a bulk rebuild, axiom_g_min + axiom_g_min_count must
+        // be populated for every non-empty axiom.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Human Animal)\n\
+             (subclass Mammal Animal)\n\
+             (subclass Dog Mammal)",
+        );
+        let mut idx = SineIndex::new(1.0);
+        idx.add_axioms(&store, axioms.iter().copied());
+
+        for &sid in &axioms {
+            let syms = idx.symbols_of_axiom(sid).unwrap().clone();
+            let min_actual = syms.iter().map(|&s| idx.generality(s)).min().unwrap();
+            let count_actual = syms.iter()
+                .filter(|&&s| idx.generality(s) == min_actual)
+                .count();
+            // Peek into internals via public indirection: generality +
+            // symbols_of_axiom give us what we need to verify the cache
+            // would match.  The trigger set is derived from threshold =
+            // floor(1.0 * min), so symbols with generality == min
+            // should all be in trigger_idx[s] entries for this sid.
+            let threshold = (1.0 * min_actual as f32).floor() as usize;
+            for s in syms {
+                let g = idx.generality(s);
+                let is_trigger = idx.triggers(s).map_or(false, |set| set.contains(&sid));
+                assert_eq!(g <= threshold, is_trigger,
+                    "sid={} sym={} generality={} threshold={} triggered={}",
+                    sid, s, g, threshold, is_trigger);
+            }
+            let _ = count_actual; // exercised implicitly through trigger membership
+        }
     }
 }

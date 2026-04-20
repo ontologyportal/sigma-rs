@@ -400,9 +400,7 @@ impl KnowledgeBase {
         #[cfg(feature = "ask")]
         let sine_index = {
             let mut idx = SineIndex::new(SineParams::default().tolerance);
-            for &sid in &axiom_sids {
-                idx.add_axiom(&layer.store, sid);
-            }
+            idx.add_axioms(&layer.store, axiom_sids.iter().copied());
             RwLock::new(idx)
         };
 
@@ -628,6 +626,9 @@ impl KnowledgeBase {
     /// `Some(session)` to `None`.  That makes this call O(|fingerprints|)
     /// and avoids any clausification work at all.
     pub fn make_session_axiomatic(&mut self, session: &str) {
+        let profile = std::env::var_os("SINE_PROFILE").is_some();
+        let t_total = std::time::Instant::now();
+
         let sids = self.sessions.remove(session).unwrap_or_default();
         let count = sids.len();
 
@@ -641,6 +642,7 @@ impl KnowledgeBase {
         // ~1.7 s tax per `make_session_axiomatic` call.
         //
         // Walk `self.fingerprints` once and retag in place.
+        let t_fp = std::time::Instant::now();
         #[cfg(feature = "cnf")]
         {
             use std::collections::HashSet;
@@ -651,26 +653,67 @@ impl KnowledgeBase {
                 }
             }
         }
+        let fp_time = t_fp.elapsed();
 
         // Populate the axiom-occurrence index for each newly-promoted
         // axiom.  Must happen before the SInE update so both indexes
         // reflect the same axiom set.
+        let t_reg = std::time::Instant::now();
         for &sid in &sids {
             self.layer.store.register_axiom_symbols(sid);
         }
+        let register_time = t_reg.elapsed();
 
         // Eagerly extend the SInE index with each new axiom.  Work per
         // axiom is proportional to the number of axioms sharing a
         // symbol with it (typically dozens to low hundreds on SUMO-scale
         // KBs); in exchange the query-time `ask()` path does zero
         // rebuild work.
+        let t_sine = std::time::Instant::now();
         #[cfg(feature = "ask")]
         {
             let mut idx = self.sine_index.write().expect("sine_index poisoned");
-            for &sid in &sids {
-                idx.add_axiom(&self.layer.store, sid);
+            if profile { let _ = idx.take_stats(); }
+            idx.add_axioms(&self.layer.store, sids.iter().copied());
+            if profile {
+                let stats = idx.take_stats();
+                let total = t_total.elapsed();
+                let sine_total_ms = t_sine.elapsed().as_secs_f64() * 1000.0;
+                eprintln!("[SINE_PROFILE] make_session_axiomatic session='{}' sids={}",
+                          session, count);
+                eprintln!("[SINE_PROFILE]   fingerprint retag:       {:>10.3} ms",
+                          fp_time.as_secs_f64() * 1000.0);
+                eprintln!("[SINE_PROFILE]   register_axiom_symbols:  {:>10.3} ms",
+                          register_time.as_secs_f64() * 1000.0);
+                eprintln!("[SINE_PROFILE]   sine_index dispatch:     {:>10.3} ms",
+                          sine_total_ms);
+                if stats.bulk_rebuilds > 0 {
+                    eprintln!("[SINE_PROFILE]     bulk rebuilds:         {:>10.3} ms  ({} rebuild{})",
+                              (stats.rebuild_ns as f64) / 1e6,
+                              stats.bulk_rebuilds,
+                              if stats.bulk_rebuilds == 1 { "" } else { "s" });
+                    eprintln!("[SINE_PROFILE]       collect_symbols:     {:>10.3} ms  (across rebuild passes)",
+                              (stats.collect_ns as f64) / 1e6);
+                }
+                if stats.calls > 0 {
+                    eprintln!("[SINE_PROFILE]     incremental adds:      {} add_axiom calls",
+                              stats.calls);
+                    eprintln!("[SINE_PROFILE]       collect_symbols:     {:>10.3} ms",
+                              (stats.collect_ns as f64) / 1e6);
+                    eprintln!("[SINE_PROFILE]       find_affected union: {:>10.3} ms  (avg {} affected per call)",
+                              (stats.find_affected_ns as f64) / 1e6,
+                              stats.affected_total / stats.calls);
+                    eprintln!("[SINE_PROFILE]       recompute_triggers:  {:>10.3} ms  ({} full recomputes)",
+                              (stats.recompute_ns as f64) / 1e6, stats.recompute_calls);
+                    eprintln!("[SINE_PROFILE]       fast-path updates:   {:>10.3} ms  ({} fast-path hits)",
+                              (stats.fast_path_ns as f64) / 1e6, stats.fast_path);
+                }
+                eprintln!("[SINE_PROFILE]   total (incl. overheads): {:>10.3} ms",
+                          total.as_secs_f64() * 1000.0);
             }
         }
+        #[cfg(not(feature = "ask"))]
+        let _ = (profile, t_sine, fp_time, register_time, t_total);
 
         log::info!(target: "sumo_kb::kb",
             "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",
@@ -894,9 +937,7 @@ impl KnowledgeBase {
         #[cfg(feature = "ask")]
         {
             let mut idx = self.sine_index.write().expect("sine_index poisoned");
-            for &sid in &surviving {
-                idx.add_axiom(&self.layer.store, sid);
-            }
+            idx.add_axioms(&self.layer.store, surviving.iter().copied());
         }
 
         report.promoted = surviving;
@@ -1538,9 +1579,7 @@ impl KnowledgeBase {
         let axiom_ids = self.axiom_ids_set();
         let tolerance = self.sine_index.read().expect("sine_index poisoned").tolerance();
         let mut idx = SineIndex::new(tolerance);
-        for sid in axiom_ids {
-            idx.add_axiom(&self.layer.store, sid);
-        }
+        idx.add_axioms(&self.layer.store, axiom_ids.into_iter());
         *self.sine_index.write().expect("sine_index poisoned") = idx;
     }
 
