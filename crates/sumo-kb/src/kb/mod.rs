@@ -611,73 +611,66 @@ impl KnowledgeBase {
         //
         // Clausification is the single most expensive phase during
         // bootstrap (~47 µs per sentence × 15k axioms ≈ 750 ms on
-        // SUMO).  When `parallel` is on, the pure IR-building step
-        // `clausify_ir(&SemanticLayer, sid)` runs across sids with
-        // `rayon::par_iter`.  The follow-up translation +
-        // canonical-hash + fingerprint-insert steps mutate the store
-        // and must run serially, so we split the work into:
-        //   1. parallel clausify → Vec<(sid, Result<Vec<ir::Clause>>)>
-        //   2. serial merge: translate, hash, dedup, insert
+        // SUMO).  We batch all new roots into ONE
+        // `cnf::clausify_sentences_batch` call — one Vampire global-
+        // mutex acquisition instead of N — and translate + hash the
+        // per-sid output serially.  If Vampire throws on the batch,
+        // we bisect to isolate the bad sentence(s) and keep going;
+        // see `clausify_with_bisection` below.
         //
-        // Preserving `new_roots` order through `par_iter().map().collect()`
-        // keeps intra-batch dedup deterministic.
+        // Output attribution: with NewCNF's naming threshold set to
+        // 0 (see `cnf::clausify_sentences_batch`), every output
+        // clause traces back to exactly one input sentence.  The
+        // `shared` bucket should be empty.
         let mut accepted: Vec<SentenceId> = Vec::new();
 
         #[cfg(feature = "cnf")]
         {
             use crate::canonical::{canonical_clause_hash, formula_hash_from_clauses};
 
-            // Phase 1: clausify each sid into `Vec<ir::Clause>`.
-            //
-            // Note on parallelism.  `clausify_ir` takes `&SemanticLayer`
-            // and doesn't touch the store's interning tables, so the
-            // Rust-side work is in principle thread-safe.  However
-            // `vampire-prover` protects every Vampire C++ call with
-            // a single global `Mutex` (see `vampire/src/lock.rs`),
-            // and `Problem::clausify` calls into that serialized
-            // section.  Empirically, running this with
-            // `rayon::par_iter` on SUMO-scale inputs is ~30% slower
-            // than the serial version: the rayon scheduler + mutex
-            // contention overhead dominates any parallelism benefit,
-            // since the C++ clausifier is the hot inner loop and
-            // that's exactly the part that must serialize.
-            //
-            // We keep the two-phase structure (clausify → translate)
-            // because it's cleaner than the interleaved original,
-            // but we always iterate serially.  Re-enable parallelism
-            // here only if vampire-prover's global mutex is split
-            // into finer-grained locks (or if the hot Vampire call
-            // moves out of the critical section).
-            //
-            // `KbError` contains a `Box<dyn ParseError>` which isn't
-            // `Send`; we still convert to `String` here so a future
-            // switch back to `par_iter` needs no further refactor.
-            let ir_results: Vec<(SentenceId, Result<Vec<vampire_prover::ir::Clause>, String>)> = {
+            // Phase 1: batched clausification with bisection fallback.
+            let batched = {
                 let _span = profile_span!(self, "ingest.clausify_ir");
-                new_roots.iter().map(|&sid| {
-                    (sid, crate::cnf::clausify_ir(&self.layer, sid).map_err(|e| e.to_string()))
-                }).collect()
+                clausify_with_bisection(&self.layer, &new_roots)
             };
 
+            if !batched.shared.is_empty() {
+                // With naming=0 this shouldn't fire; log as a
+                // canary in case NewCNF introduces shared clauses
+                // through some other path.
+                log::warn!(target: "sumo_kb::kb",
+                    "ingest: {} shared clauses from batch (unattributed); discarding",
+                    batched.shared.len());
+            }
+
             // Phase 2: serial translate + hash + dedup + side-car insert.
-            for (sid, ir_result) in ir_results {
-                let fh_clauses: Option<(u64, Vec<Clause>)> = match ir_result {
-                    Ok(ir_cs) => {
-                        let clauses = {
-                            let _span = profile_span!(self, "ingest.translate_and_hash");
-                            crate::cnf::translate_ir_clauses(&mut self.layer.store, &ir_cs)
-                        };
-                        let hashes: Vec<u64> = clauses.iter()
-                            .map(canonical_clause_hash)
-                            .collect();
-                        let fh = formula_hash_from_clauses(&hashes);
-                        Some((fh, clauses))
-                    }
-                    Err(e) => {
-                        log::warn!(target: "sumo_kb::kb",
-                            "ingest: clausify failed for sid={}: {}", sid, e);
-                        None
-                    }
+            // Walk `new_roots` in original order so intra-batch dedup
+            // is deterministic and matches the pre-batch behaviour.
+            let skipped_set: std::collections::HashSet<SentenceId> =
+                batched.skipped.iter().copied().collect();
+            for sid in new_roots.iter().copied() {
+                let fh_clauses: Option<(u64, Vec<Clause>)> = if skipped_set.contains(&sid) {
+                    // Converter refused this sentence — accept without dedup.
+                    log::warn!(target: "sumo_kb::kb",
+                        "ingest: converter refused sid={}; accepting without dedup", sid);
+                    None
+                } else if let Some(ir_cs) = batched.by_sid.get(&sid) {
+                    let clauses = {
+                        let _span = profile_span!(self, "ingest.translate_and_hash");
+                        crate::cnf::translate_ir_clauses(&mut self.layer.store, ir_cs)
+                    };
+                    let hashes: Vec<u64> = clauses.iter()
+                        .map(canonical_clause_hash)
+                        .collect();
+                    let fh = formula_hash_from_clauses(&hashes);
+                    Some((fh, clauses))
+                } else {
+                    // Bisection left this sid as an isolated failure —
+                    // accept without dedup.
+                    log::warn!(target: "sumo_kb::kb",
+                        "ingest: sid={} isolated by bisection as clausify-failing; \
+                         accepting without dedup", sid);
+                    None
                 };
 
                 let _span_dedup = profile_span!(self, "ingest.dedup_check");
@@ -710,11 +703,7 @@ impl KnowledgeBase {
                             false
                         }
                     }
-                    None => {
-                        // Clausification failed; accept without dedup so
-                        // the sentence isn't lost.
-                        false
-                    }
+                    None => false,
                 };
                 if !duplicate {
                     accepted.push(sid);
@@ -1851,4 +1840,79 @@ impl KnowledgeBase {
 
 impl Default for KnowledgeBase {
     fn default() -> Self { Self::new() }
+}
+
+// -- Batched clausification with bisection-based recovery -------------------
+//
+// The batched clausify path (`cnf::clausify_sentences_batch`) sends the
+// whole batch through one Vampire call — much cheaper than N per-sentence
+// calls.  The failure mode is also whole-batch: if one sentence triggers
+// a C++ exception in NewCNF, the entire batch returns `Err`.
+//
+// To preserve the per-sentence isolation of the pre-batch code, we wrap
+// the batch call in bisection: on failure, split the sid list in half
+// and recurse.  In the worst case (one bad sid in a batch of N) this
+// does O(log N) batch retries before isolating the bad sentence.  For
+// a 15,000-sentence bootstrap with 3 bad sentences that's ~45 batch
+// retries — still far fewer than 15,000 per-sentence calls in the old
+// code, and only in the (rare) failure path.
+//
+// Sentences that are isolated as individually-failing come back in the
+// `skipped` list; callers in `ingest()` then treat them as "accept
+// without dedup" to match the pre-batch fallback.
+#[cfg(feature = "cnf")]
+fn clausify_with_bisection(
+    layer: &SemanticLayer,
+    sids:  &[SentenceId],
+) -> crate::cnf::BatchedSentenceClauses {
+    use crate::cnf::BatchedSentenceClauses;
+    use std::collections::HashMap;
+
+    // Base case: empty slice — nothing to clausify.
+    if sids.is_empty() {
+        return BatchedSentenceClauses {
+            by_sid:  HashMap::new(),
+            shared:  Vec::new(),
+            skipped: Vec::new(),
+        };
+    }
+
+    match crate::cnf::clausify_sentences_batch(layer, sids) {
+        Ok(batched) => batched,
+        Err(e) if sids.len() == 1 => {
+            // Base case: single bad sentence.  Record it as skipped
+            // so the caller falls back to "accept without dedup".
+            log::warn!(target: "sumo_kb::kb",
+                "ingest: clausify failed for sid={}: {}; will accept without dedup",
+                sids[0], e);
+            BatchedSentenceClauses {
+                by_sid:  HashMap::new(),
+                shared:  Vec::new(),
+                skipped: vec![sids[0]],
+            }
+        }
+        Err(_) => {
+            // Split and recurse.  Log at info level so the
+            // bisection walk is visible on bootstrap debugging but
+            // doesn't clutter normal output.
+            let mid = sids.len() / 2;
+            log::info!(target: "sumo_kb::kb",
+                "ingest: batch clausify failed for {} sids; bisecting ({}/{})",
+                sids.len(), mid, sids.len() - mid);
+            let left  = clausify_with_bisection(layer, &sids[..mid]);
+            let right = clausify_with_bisection(layer, &sids[mid..]);
+            merge_batched(left, right)
+        }
+    }
+}
+
+#[cfg(feature = "cnf")]
+fn merge_batched(
+    mut a: crate::cnf::BatchedSentenceClauses,
+    b:     crate::cnf::BatchedSentenceClauses,
+) -> crate::cnf::BatchedSentenceClauses {
+    a.by_sid.extend(b.by_sid);
+    a.shared.extend(b.shared);
+    a.skipped.extend(b.skipped);
+    a
 }

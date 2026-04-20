@@ -97,6 +97,120 @@ pub(crate) fn translate_ir_clauses(
 }
 
 // =========================================================================
+//  Batched clausification — single Vampire call for many sentences
+// =========================================================================
+
+/// Output of [`clausify_sentences_batch`]: per-sid IR clauses plus any
+/// that couldn't be attributed to a single source sentence.
+pub(crate) struct BatchedSentenceClauses {
+    /// One entry per input sentence that the `NativeConverter` accepted.
+    /// The map preserves attribution only — not the order in which
+    /// sentences were added; callers that care about order should walk
+    /// their original sid vector.
+    pub by_sid: std::collections::HashMap<SentenceId, Vec<ir::Clause>>,
+    /// Clauses whose inference graph traces to TWO OR MORE input
+    /// sentences (NewCNF definitional naming over shared subformulas)
+    /// or to none.  Stored here so callers can decide whether to
+    /// attribute them to every participating sid, ignore them, or
+    /// keep them in a dedicated "shared" fingerprint bucket.  Rare
+    /// in practice on SUMO-style inputs with `--naming 0`.
+    pub shared: Vec<ir::Clause>,
+    /// Sentences the `NativeConverter` rejected (typically because
+    /// the sentence shape is unrepresentable in Vampire's IR —
+    /// e.g. a head that isn't a Symbol/Op).  Callers should treat
+    /// these as "accept-without-dedup" to match the per-sentence
+    /// fallback behaviour.
+    pub skipped: Vec<SentenceId>,
+}
+
+/// Clausify many sentences in a single Vampire call, returning per-sid
+/// IR clauses.
+///
+/// This is the batched counterpart to [`clausify_ir`] — one mutex
+/// acquisition and one Vampire problem-setup teardown for an entire
+/// batch, instead of N of each for per-sentence calls.  Output
+/// attribution is driven by
+/// [`vampire_prover::clausify::clausify_batch`], which walks
+/// Vampire's `Inference` graph from each output clause back to its
+/// input axiom(s).
+///
+/// Semantics:
+/// - Sentences accepted by the converter land in `by_sid`, keyed by
+///   their original `SentenceId`.
+/// - Sentences refused by the converter land in `skipped`.
+/// - Clauses whose ancestry traces to >1 input sentence land in
+///   `shared` (rare; driven by NewCNF's naming optimisation when a
+///   shared sub-formula is large enough to be abstracted).
+///
+/// # Errors
+///
+/// Returns `Err` only if the whole-batch clausify call itself fails
+/// at the FFI boundary (e.g. Vampire throws a C++ exception on a bad
+/// sentence).  Callers that need to recover from a single-sentence
+/// failure should wrap this with bisection-based retry logic — see
+/// `KnowledgeBase::ingest` in `kb/mod.rs` for an example.
+pub(crate) fn clausify_sentences_batch(
+    layer: &SemanticLayer,
+    sids:  &[SentenceId],
+) -> Result<BatchedSentenceClauses, KbError> {
+    use std::collections::HashMap;
+
+    // Build one NativeConverter, feed every sid in order.  Remember
+    // the per-position → sid mapping so we can translate the
+    // `BatchedClauses::by_axiom` vector (positionally aligned) back
+    // to a sid-keyed map.
+    let mut conv   = NativeConverter::new(&layer.store, layer, Mode::Tff);
+    let mut order: Vec<SentenceId> = Vec::with_capacity(sids.len());
+    let mut skipped: Vec<SentenceId> = Vec::new();
+    for &sid in sids {
+        if conv.add_axiom(sid) {
+            order.push(sid);
+        } else {
+            skipped.push(sid);
+        }
+    }
+    let (problem, _sid_map) = conv.finish();
+
+    // Disable NewCNF's definitional naming for the batch.  With naming
+    // on, a sub-formula that appears in multiple input axioms can be
+    // abstracted into a fresh predicate + definitional clauses.  Those
+    // clauses are "shared" — they trace back to multiple input axioms
+    // in the inference graph — and complicate per-sid attribution.
+    // Setting `naming=0` forces NewCNF to inline every subformula,
+    // so every output clause has exactly one input ancestor and
+    // `batched.shared` stays empty.  Also aligns batch output with
+    // per-sentence output for hash-consistency.
+    let mut opts = ir::Options::new();
+    opts.set_option("naming", "0");
+
+    let batched = problem
+        .clausify_batch(opts)
+        .map_err(|e| KbError::Other(format!("cnf2: clausify_batch failed: {e}")))?;
+
+    // The `by_axiom` vec is positionally aligned with the accepted
+    // inputs (in the order we added them via conv.add_axiom).
+    debug_assert_eq!(
+        batched.by_axiom.len(),
+        order.len(),
+        "clausify_batch returned {} axiom buckets for {} inputs",
+        batched.by_axiom.len(),
+        order.len(),
+    );
+
+    let mut by_sid: HashMap<SentenceId, Vec<ir::Clause>> =
+        HashMap::with_capacity(order.len());
+    for (i, bucket) in batched.by_axiom.into_iter().enumerate() {
+        by_sid.insert(order[i], bucket);
+    }
+
+    Ok(BatchedSentenceClauses {
+        by_sid,
+        shared: batched.shared,
+        skipped,
+    })
+}
+
+// =========================================================================
 //  IR -> CnfLiteral / CnfTerm translation
 // =========================================================================
 
