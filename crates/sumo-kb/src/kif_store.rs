@@ -640,6 +640,68 @@ impl KifStore {
         }
     }
 
+    /// Crate-internal mirror of `collect_symbols` for consumers outside this impl.
+    pub(crate) fn collect_axiom_symbol_set(
+        &self,
+        sid: SentenceId,
+    ) -> std::collections::HashSet<SymbolId> {
+        let mut out = std::collections::HashSet::new();
+        if self.has_sentence(sid) {
+            self.collect_symbols(sid, &mut out);
+        }
+        out
+    }
+
+    // -- Axiom-occurrence index (Symbol.all_sentences) ------------------------
+    //
+    // Semantics of `Symbol.all_sentences`: axiom SentenceIds in which the
+    // symbol appears.  "Axiom" means a root sentence that has been promoted
+    // (fingerprint session = None); session assertions do NOT update this
+    // index.  Population sites: `KnowledgeBase::{make_session_axiomatic,
+    // promote_assertions_unchecked, open}`.
+    //
+    // This is the generality source for SInE: `generality(s) =
+    // symbol.all_sentences.len()` is O(1) and always live against the
+    // promoted axiom set, so no per-query recomputation is needed.
+    //
+    // De-duplicated per axiom: if a symbol appears multiple times in the
+    // same axiom (e.g. `(subclass Dog Dog)`), the axiom is recorded once.
+
+    /// Register the symbols of `sid` (recursively through sub-sentences) as
+    /// axiom occurrences.  Idempotent: calling twice for the same sid
+    /// does not create duplicate entries.
+    pub(crate) fn register_axiom_symbols(&mut self, sid: SentenceId) {
+        let syms = self.collect_axiom_symbol_set(sid);
+        for s in syms {
+            let vec_idx = self.sym_vec_idx(s);
+            let entries = &mut self.symbol_data[vec_idx].all_sentences;
+            if !entries.contains(&sid) {
+                entries.push(sid);
+            }
+        }
+    }
+
+    /// Symmetric to [`register_axiom_symbols`]: remove `sid` from every
+    /// symbol's `all_sentences` list.  Used if an axiom is ever demoted
+    /// or removed from the promoted set.
+    #[allow(dead_code)]
+    pub(crate) fn unregister_axiom_symbols(&mut self, sid: SentenceId) {
+        let syms = self.collect_axiom_symbol_set(sid);
+        for s in syms {
+            let vec_idx = self.sym_vec_idx(s);
+            self.symbol_data[vec_idx].all_sentences.retain(|&x| x != sid);
+        }
+    }
+
+    /// Read-only access to a symbol's axiom-occurrence list.  Empty slice
+    /// for unknown ids.
+    #[allow(dead_code)] // exposed for future CLI/tooling consumers
+    pub(crate) fn axiom_sentences_of(&self, sym: SymbolId) -> &[SentenceId] {
+        self.sym_idx.get(&sym)
+            .map(|&idx| self.symbol_data[idx].all_sentences.as_slice())
+            .unwrap_or(&[])
+    }
+
     // -- Lookup helpers --------------------------------------------------------
 
     pub(crate) fn by_head(&self, head: &str) -> &[SentenceId] {

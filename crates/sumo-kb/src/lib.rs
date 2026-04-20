@@ -38,6 +38,13 @@ pub(crate) mod persist;
 
 pub(crate) mod kb;
 
+// SInE axiom selection — gated behind `ask` since it only matters at
+// prover-query time.  Editor tooling (parser, validator, language
+// server) builds without `ask` and therefore never pays SInE's
+// eager-maintenance cost.
+#[cfg(feature = "ask")]
+pub mod sine;
+
 // -- Public re-exports --------------------------------------------------------
 
 pub use error::{
@@ -75,4 +82,7 @@ pub use prover::{
     ProverRunner, ProverOpts, ProverMode, ProverResult,
     ProverStatus, Binding, VampireRunner,
 };
+
+#[cfg(feature = "ask")]
+pub use sine::{SineIndex, SineParams};
 

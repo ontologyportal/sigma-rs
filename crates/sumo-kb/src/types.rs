@@ -196,7 +196,21 @@ pub struct Symbol {
     pub name: String,
     /// Root sentences where this symbol is the predicate / function head.
     pub head_sentences: Vec<SentenceId>,
-    /// All root sentences (and sub-sentences) where this symbol appears anywhere.
+    /// **Axiom** sentences in which this symbol appears anywhere (including
+    /// transitively through sub-sentences).  De-duplicated per axiom —
+    /// `(subclass Dog Dog)` counts `Dog` once, not twice.
+    ///
+    /// "Axiom" means a promoted root sentence (fingerprint `session = None`).
+    /// Session assertions do NOT update this index; the entry is a true
+    /// reflection of the permanent axiom base.
+    ///
+    /// Consequence: `symbol.all_sentences.len()` is the symbol's generality
+    /// in the SInE sense (number of axioms it appears in) and is always
+    /// live — no recomputation needed on query.
+    ///
+    /// Populated in `KnowledgeBase::{make_session_axiomatic,
+    /// promote_assertions_unchecked, open}` via
+    /// `KifStore::register_axiom_symbols`.
     pub all_sentences: Vec<SentenceId>,
     /// True for Skolem function/constant symbols generated during CNF conversion.
     /// Always false for ordinary KB symbols.

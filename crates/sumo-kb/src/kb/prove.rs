@@ -21,8 +21,20 @@ use crate::types::SentenceId;
 
 impl KnowledgeBase {
     /// Ask the theorem prover whether `query_kif` is entailed by the KB.
-    /// `session` = optional in-memory session whose assertions are included as hypotheses.
-    /// `lang` controls the TPTP language used for the generated problem file.
+    ///
+    /// **SInE filtering is always on.**  The axioms shipped to the prover
+    /// are the subset SInE deems relevant to the conjecture's symbols at
+    /// [`SineParams::default`] tolerance — typically a small fraction of
+    /// the whole KB for focused queries.  Session assertions (if `session`
+    /// is `Some`) are always included as `hypothesis` rows, regardless
+    /// of SInE relevance.
+    ///
+    /// Power users who want to tune tolerance or inspect the selected
+    /// axiom set can call [`sine_select_for_query`] directly and build
+    /// their own TPTP — but the common path is `ask` with defaults.
+    ///
+    /// `session` = optional in-memory session whose assertions become `hypothesis`.
+    /// `lang` selects the TPTP language (FOF, TFF) for the generated problem file.
     pub fn ask(
         &mut self,
         query_kif: &str,
@@ -31,31 +43,35 @@ impl KnowledgeBase {
         lang:      TptpLang,
     ) -> ProverResult {
         use crate::Span;
+        use crate::sine::SineParams;
 
         log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
 
-        // Parse the query directly into the store, bypassing fingerprint
-        // deduplication.  The query is a conjecture -- it must be translated
-        // even if the same formula already exists as an axiom in the KB.
+        // -- Step 1: SInE-select the relevant axiom subset. --------------
+        // `sine_select_for_query` parses the conjecture into a temporary
+        // file tag, walks its symbols, and rolls the parse back before
+        // returning.
+        let selected_axioms = match self.sine_select_for_query(query_kif, SineParams::default()) {
+            Ok(s) => s,
+            Err(e) => {
+                return ProverResult {
+                    status:     ProverStatus::Unknown,
+                    raw_output: format!("SInE selection failed: {}", e),
+                    bindings:   Vec::new(),
+                    proof_kif:  Vec::new(),
+                    timings:    ProverTimings::default(),
+                };
+            }
+        };
+
+        // -- Step 2: Re-parse the conjecture for the native converter. ---
         let query_tag = "__query__";
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
-        // Phase A: we do NOT preemptively invalidate the cache here.
-        //   - Nothing has changed in the KB since the previous operation
-        //     that correctly maintained cache validity.
-        //   - If the query itself turns out to affect a taxonomy-cache
-        //     invariant (only when its head is a taxonomy relation like
-        //     `subclass`/`instance`/`subrelation`/`subAttribute`), we do
-        //     a targeted invalidation on the way out, not a preemptive
-        //     full-cache nuke on the way in.
         let parse_errors: Vec<(Span, KbError)> = load_kif(&mut self.layer.store, query_kif, query_tag);
         if !parse_errors.is_empty() {
-            // Parse failed -- no sentences were added, so nothing to
-            // clean up beyond the (possibly partial) file_roots entry.
             self.layer.store.remove_file(query_tag);
-            // No taxonomy or cache invariants were touched: the query
-            // never made it into the store as a well-formed sentence.
             return ProverResult {
                 status:     ProverStatus::Unknown,
                 raw_output: parse_errors.iter()
@@ -74,9 +90,6 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         if query_sids.is_empty() {
-            // No sentences parsed from the query text -- nothing got
-            // into the store or the taxonomy, so no cleanup beyond
-            // remove_file is needed (Phase A).
             self.layer.store.remove_file(query_tag);
             return ProverResult {
                 status:     ProverStatus::Unknown,
@@ -87,16 +100,19 @@ impl KnowledgeBase {
             };
         }
 
-        // Collect assertion SentenceIds for the requested session.
+        // -- Step 3: Collect session-assertion sids. ---------------------
         let assertion_ids: HashSet<SentenceId> = session
             .and_then(|s| self.sessions.get(s))
             .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
 
-        // Unified FOF + TFF path: build the Problem through NativeConverter,
-        // serialise through assemble_tptp, hand off to the runner.  TFF
-        // reuses the cached axiom problem (rebuilt lazily); FOF rebuilds
-        // fresh each call (no cache for FOF mode today).
+        // -- Step 4: Build TPTP via the native converter, with
+        // SInE-filtered axioms in place of the full axiom set.  Both FOF
+        // and TFF go through the same path: we can no longer reuse the
+        // whole-KB TFF axiom cache because the filtered set differs per
+        // conjecture.  For a large KB this is still net faster than
+        // unfiltered: fewer axioms => less work for the generator AND
+        // much less work for the prover.
         use crate::vampire::assemble::{assemble_tptp, AssemblyOpts};
         use crate::vampire::converter::{Mode, NativeConverter};
 
@@ -106,26 +122,16 @@ impl KnowledgeBase {
         };
         let t_input = Instant::now();
 
-        let (problem, sid_map) = if mode == Mode::Tff {
-            self.ensure_axiom_cache();
-            let (seed_problem, seed_sid_map) = {
-                let cache = self.axiom_cache.as_ref().unwrap();
-                (cache.problem.clone(), cache.sid_map.clone())
-            };
-            let mut conv = NativeConverter::from_parts(
-                &self.layer.store, &self.layer, seed_problem, seed_sid_map, Mode::Tff,
-            );
-            for &sid in &assertion_ids { conv.add_axiom(sid); }
-            for &qsid in &query_sids {
-                if conv.set_conjecture(qsid).is_some() { break; }
-            }
-            conv.finish()
-        } else {
-            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, Mode::Fof);
+        let (problem, sid_map) = {
+            let mut conv = NativeConverter::new(&self.layer.store, &self.layer, mode);
+            // SInE-selected axioms, sorted for deterministic output.
             let mut axioms_sorted: Vec<SentenceId> =
-                self.axiom_ids_set().into_iter().collect();
+                selected_axioms.iter().copied().collect();
             axioms_sorted.sort_unstable();
             for sid in axioms_sorted { conv.add_axiom(sid); }
+            // Session assertions always ride along as additional axioms
+            // (the TPTP assembler labels them `axiom`, which the prover
+            // treats identically to `hypothesis` for our purposes).
             for &sid in &assertion_ids { conv.add_axiom(sid); }
             for &qsid in &query_sids {
                 if conv.set_conjecture(qsid).is_some() { break; }
@@ -139,18 +145,14 @@ impl KnowledgeBase {
         });
         let input_gen = t_input.elapsed();
         log::debug!(target: "sumo_kb::kb",
-            "ask({:?}): TPTP size={} bytes", mode, tptp.len());
+            "ask({:?}): TPTP size={} bytes ({} SInE-selected axioms, {} assertions)",
+            mode, tptp.len(), selected_axioms.len(), assertion_ids.len());
 
-        // Remove query sentences from the store (they were added directly,
-        // not via a session, so flush_session would not clean them up).
-        //
-        // Phase A: only rebuild the taxonomy / invalidate caches if the
-        // query actually affected taxonomy-relevant state.  The common
-        // case -- a non-taxonomy conjecture like
-        // `(attribute Alice Tall)` -- touches neither `tax_edges` nor
-        // the `sort_annotations` / `var_type_inference` caches, so we
-        // skip both a full scan of all KB sentences and a wipe of the
-        // derived tables.
+        // Roll back the conjecture parse.  Phase A optimisation:
+        // only rebuild taxonomy/invalidate caches if the query head
+        // itself touched taxonomy predicates (`subclass`/`instance`/
+        // `subrelation`/`subAttribute`).  Non-taxonomy conjectures
+        // leave derived state untouched.
         let needs_rebuild = self.query_affects_taxonomy(&query_sids);
         self.layer.store.remove_file(query_tag);
         if needs_rebuild {
