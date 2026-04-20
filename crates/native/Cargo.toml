@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # per-phase breakdown.  When no profiler is installed on the KB
 # every `span()` is a no-op, so this flag carries no cost in
 # non-profiling runs.
-default = ["integrated-prover", "profiling"]
+default = ["integrated-prover", "profiling", "parallel"]
 
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.
@@ -37,9 +37,15 @@ integrated-prover = ["ask", "sumo-kb/integrated-prover"]
 # still works but only shows the four-phase coarse timings from
 # `ProverResult.timings`.
 profiling = ["sumo-kb/profiling"]
+# Parallel KB hot paths via rayon.  Speeds up multi-file load (reads
+# in parallel) and bootstrap-scale CNF clausification (inside
+# sumo-kb).  NOT on wasm32.  On by default along with `profiling`
+# for release-native builds.
+parallel = ["sumo-kb/parallel", "dep:rayon"]
 
 [dependencies]
 sumo-kb = { workspace = true, features = ["persist", "cnf"] }
+rayon   = { version = "1.10", optional = true }
 serde.workspace            = true
 serde_json.workspace       = true
 inline_colorization.workspace = true

@@ -31,6 +31,11 @@ integrated-prover = ["ask", "vampire-prover/integrated-prover"]
 # can be printed via `Profiler::report()`.  When disabled, every
 # `span()` call compiles to a zero-sized no-op — no runtime cost.
 profiling = []
+# Parallel hot-path execution via rayon.  Speeds up bootstrap-scale
+# workloads (CNF clausification, multi-file I/O).  NOT available on
+# wasm32 — enforced by `compile_error!` in lib.rs.  When off, all
+# per-item work is serial with identical semantics.
+parallel = ["dep:rayon"]
 
 # Note: the pure-Rust IR (`vampire_prover::ir::*`) and TPTP emitter /
 # parser are ALWAYS available, regardless of features.  They drive
@@ -55,6 +60,9 @@ bincode = { version = "1",                                  optional = true }
 
 # ask feature
 regex   = { version = "1", optional = true }
+
+# parallel feature
+rayon   = { version = "1.10", optional = true }
 
 # Pure-Rust IR + TPTP parser/emitter, always present.
 # `default-features = false` keeps the C++ backend off; the

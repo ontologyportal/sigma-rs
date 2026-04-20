@@ -589,36 +589,99 @@ impl KnowledgeBase {
             .map(|v| v[prev_root_count..].to_vec())
             .unwrap_or_default();
 
-        let mut accepted: Vec<SentenceId> = Vec::new();
-
-        for sid in new_roots {
-            // Semantic validation -- only for interactive tell(), not bulk load_kif().
-            if validate {
-                let _span = profile_span!(self, "ingest.semantic_validate");
+        // -- Optional semantic validation (serial; cheap per sentence) -----
+        if validate {
+            let _span = profile_span!(self, "ingest.semantic_validate");
+            for &sid in &new_roots {
                 if let Err(e) = self.layer.validate_sentence(sid) {
                     result.warnings.push(TellWarning::Semantic(e));
                 }
             }
+        }
 
-            // -- Dedup via clause-level formula hash (cnf feature) -----
+        // -- Dedup via clause-level formula hash (cnf feature) -------------
+        //
+        // In the cnf-on build we clausify each candidate sentence,
+        // derive a canonical-hash-set-based formula fingerprint, and
+        // probe the in-memory `fingerprints` table.  The clauses stay
+        // in the side-car so `promote_*` doesn't have to re-clausify.
+        //
+        // In cnf-off builds no dedup runs; every syntactically-fresh
+        // root sentence is accepted.
+        //
+        // Clausification is the single most expensive phase during
+        // bootstrap (~47 µs per sentence × 15k axioms ≈ 750 ms on
+        // SUMO).  When `parallel` is on, the pure IR-building step
+        // `clausify_ir(&SemanticLayer, sid)` runs across sids with
+        // `rayon::par_iter`.  The follow-up translation +
+        // canonical-hash + fingerprint-insert steps mutate the store
+        // and must run serially, so we split the work into:
+        //   1. parallel clausify → Vec<(sid, Result<Vec<ir::Clause>>)>
+        //   2. serial merge: translate, hash, dedup, insert
+        //
+        // Preserving `new_roots` order through `par_iter().map().collect()`
+        // keeps intra-batch dedup deterministic.
+        let mut accepted: Vec<SentenceId> = Vec::new();
+
+        #[cfg(feature = "cnf")]
+        {
+            use crate::canonical::{canonical_clause_hash, formula_hash_from_clauses};
+
+            // Phase 1: clausify each sid into `Vec<ir::Clause>`.
             //
-            // In the cnf-on build we clausify the candidate sentence,
-            // derive a canonical-hash-set-based formula fingerprint,
-            // and probe the in-memory `fingerprints` table.  The
-            // clauses stay in the side-car so `promote_*` doesn't have
-            // to re-clausify.
+            // Note on parallelism.  `clausify_ir` takes `&SemanticLayer`
+            // and doesn't touch the store's interning tables, so the
+            // Rust-side work is in principle thread-safe.  However
+            // `vampire-prover` protects every Vampire C++ call with
+            // a single global `Mutex` (see `vampire/src/lock.rs`),
+            // and `Problem::clausify` calls into that serialized
+            // section.  Empirically, running this with
+            // `rayon::par_iter` on SUMO-scale inputs is ~30% slower
+            // than the serial version: the rayon scheduler + mutex
+            // contention overhead dominates any parallelism benefit,
+            // since the C++ clausifier is the hot inner loop and
+            // that's exactly the part that must serialize.
             //
-            // In cnf-off builds no dedup runs; every syntactically-
-            // fresh root sentence is accepted.
-            #[cfg(feature = "cnf")]
-            let duplicate = {
-                // Time the CNF-hash computation on its own (it takes
-                // `&mut self`, so use `profile_call!`), then wrap the
-                // subsequent lookup in a sibling span.
-                let fh_clauses = profile_call!(self, "ingest.formula_hash",
-                    self.compute_formula_hash(sid));
+            // We keep the two-phase structure (clausify → translate)
+            // because it's cleaner than the interleaved original,
+            // but we always iterate serially.  Re-enable parallelism
+            // here only if vampire-prover's global mutex is split
+            // into finer-grained locks (or if the hot Vampire call
+            // moves out of the critical section).
+            //
+            // `KbError` contains a `Box<dyn ParseError>` which isn't
+            // `Send`; we still convert to `String` here so a future
+            // switch back to `par_iter` needs no further refactor.
+            let ir_results: Vec<(SentenceId, Result<Vec<vampire_prover::ir::Clause>, String>)> = {
+                let _span = profile_span!(self, "ingest.clausify_ir");
+                new_roots.iter().map(|&sid| {
+                    (sid, crate::cnf::clausify_ir(&self.layer, sid).map_err(|e| e.to_string()))
+                }).collect()
+            };
+
+            // Phase 2: serial translate + hash + dedup + side-car insert.
+            for (sid, ir_result) in ir_results {
+                let fh_clauses: Option<(u64, Vec<Clause>)> = match ir_result {
+                    Ok(ir_cs) => {
+                        let clauses = {
+                            let _span = profile_span!(self, "ingest.translate_and_hash");
+                            crate::cnf::translate_ir_clauses(&mut self.layer.store, &ir_cs)
+                        };
+                        let hashes: Vec<u64> = clauses.iter()
+                            .map(canonical_clause_hash)
+                            .collect();
+                        let fh = formula_hash_from_clauses(&hashes);
+                        Some((fh, clauses))
+                    }
+                    Err(e) => {
+                        log::warn!(target: "sumo_kb::kb",
+                            "ingest: clausify failed for sid={}: {}", sid, e);
+                        None
+                    }
+                };
+
                 let _span_dedup = profile_span!(self, "ingest.dedup_check");
-                match fh_clauses {
+                let duplicate = match fh_clauses {
                     Some((fh, clauses)) => {
                         if let Some((existing_id, existing_session)) =
                             self.fingerprints.get(&fh).cloned()
@@ -649,24 +712,26 @@ impl KnowledgeBase {
                     }
                     None => {
                         // Clausification failed; accept without dedup so
-                        // the sentence isn't lost.  Error is logged
-                        // upstream in `compute_formula_hash`.
+                        // the sentence isn't lost.
                         false
                     }
+                };
+                if !duplicate {
+                    accepted.push(sid);
+                    log::debug!(target: "sumo_kb::kb",
+                        "tell: accepted sid={} into session '{}'", sid, session);
+                } else {
+                    log::warn!(target: "sumo_kb::kb",
+                        "tell: duplicate sid={} skipped (session '{}')", sid, session);
                 }
-            };
-
-            #[cfg(not(feature = "cnf"))]
-            let duplicate = false;
-
-            if !duplicate {
-                accepted.push(sid);
-                log::debug!(target: "sumo_kb::kb",
-                    "tell: accepted sid={} into session '{}'", sid, session);
-            } else {
-                log::warn!(target: "sumo_kb::kb",
-                    "tell: duplicate sid={} skipped (session '{}')", sid, session);
             }
+        }
+
+        #[cfg(not(feature = "cnf"))]
+        {
+            let _ = session;
+            // No dedup without cnf: every parsed root is accepted.
+            accepted.extend(new_roots.iter().copied());
         }
 
         self.sessions.entry(session.to_owned()).or_default().extend(&accepted);

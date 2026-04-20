@@ -6,6 +6,19 @@ compile_error!(
      Remove 'ask' from the features list for wasm builds."
 );
 
+// `parallel` uses rayon, whose default thread-pool story on wasm32
+// requires cross-origin isolation and a non-trivial runtime setup
+// (wasm-bindgen-rayon).  Rather than smuggle that in through the
+// back door, refuse to compile the feature on wasm32 and make
+// downstream consumers make an explicit choice.
+#[cfg(all(feature = "parallel", target_arch = "wasm32"))]
+compile_error!(
+    "The 'parallel' feature is not supported on wasm32 targets. \
+     Remove 'parallel' from the features list for wasm builds, \
+     or enable it only on non-wasm targets via target-conditional \
+     dependency declarations."
+);
+
 // -- Module declarations ------------------------------------------------------
 
 pub mod parse;

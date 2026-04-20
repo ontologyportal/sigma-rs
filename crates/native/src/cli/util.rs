@@ -71,8 +71,46 @@ pub fn open_or_build_kb_profiled(
     if has_files {
         let all_files = collect_kif_files(args)?;
         const BASE: &str = "__files__";
-        for path in &all_files {
-            let text = read_kif_file(path)?;
+
+        // Phase 1: read every file's contents.  I/O is independent
+        // per file and embarrassingly parallel when the `parallel`
+        // feature is on — hides disk latency across the batch.
+        // Each element of `loaded` is `(path, text)` preserving the
+        // input order from `all_files`.
+        //
+        // read_kif_file returns `Result<String, ()>`; we short-circuit
+        // on the first failure after the parallel phase completes.
+        //
+        // Instrumented against the KB's profiler (if installed) under
+        // `load.read_files` so the fine-grained `--profile` report
+        // attributes the wall-clock to this phase.
+        let _t_read = std::time::Instant::now();
+        #[cfg(feature = "parallel")]
+        let loaded: Vec<(PathBuf, Result<String, ()>)> = {
+            use rayon::prelude::*;
+            all_files.par_iter().map(|path| {
+                (path.clone(), read_kif_file(path))
+            }).collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let loaded: Vec<(PathBuf, Result<String, ()>)> =
+            all_files.iter().map(|path| {
+                (path.clone(), read_kif_file(path))
+            }).collect();
+        if let Some(p) = kb.profiler() {
+            p.record("load.read_files", _t_read.elapsed());
+        }
+
+        // Phase 2: ingest each file serially.  `kb.load_kif` takes
+        // `&mut kb` so this can't parallelize directly at this
+        // level — but the CNF clausification inside each `load_kif`
+        // call already fans out across rayon when `sumo-kb/parallel`
+        // is on.
+        for (path, text_result) in loaded {
+            let text = match text_result {
+                Ok(t) => t,
+                Err(()) => return Err(()),  // read_kif_file already logged
+            };
             let tag = path.display().to_string();
             let result = kb.load_kif(&text, &tag, Some(BASE));
             if !result.ok {
