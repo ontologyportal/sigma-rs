@@ -256,7 +256,25 @@ impl KnowledgeBase {
         if timeout_secs > 0 {
             opts.timeout(std::time::Duration::from_secs(timeout_secs as u64));
         }
-        opts.set_option("mode", "casc");
+
+        // SInE handling (mirror of the subprocess path — see
+        // `crates/sumo-kb/src/prover/subprocess.rs::build_vampire_args`
+        // for the full rationale).  The KB applies SInE externally
+        // before lowering to the Vampire problem; we disable
+        // Vampire's own SInE to prevent over-selection:
+        //
+        // 1. `mode = vampire`: single-strategy mode.  The `casc`
+        //    portfolio's schedules contain strategies with `ss=axioms`
+        //    encoded in their option-strings; `readFromEncodedOptions`
+        //    applies those per-strategy and overrides any global
+        //    `sine_selection=off`.  Only `vampire` mode fully escapes
+        //    that re-filter.
+        // 2. `sine_selection = off`: defensive explicit disable at the
+        //    preprocessing level.  Vampire's default is already `off`
+        //    but spelling it out makes the intent explicit.
+        opts.set_option("mode", "vampire");
+        opts.set_option("sine_selection", "off");
+
         let mut problem = vampire_prover::lower_problem(&ir_problem, opts);
 
         let (res, proof) = problem.solve_and_prove();

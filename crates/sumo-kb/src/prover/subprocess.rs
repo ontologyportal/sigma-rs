@@ -41,6 +41,42 @@ pub struct VampireRunner {
     pub tptp_dump_path: Option<PathBuf>,
 }
 
+/// Construct the Vampire command-line arguments.
+///
+/// **SInE handling.**  The KB already performs SInE axiom selection
+/// internally before handing TPTP to Vampire (see
+/// `KnowledgeBase::ask`).  To prevent Vampire from re-applying SInE on
+/// top of our already-filtered input — which would risk over-selection
+/// (dropping axioms our external filter deliberately kept) — we
+/// explicitly:
+///
+/// 1. Set `--mode vampire` (single-strategy, no portfolio).  The
+///    `casc` portfolio's strategies are encoded as option-strings like
+///    `ss=axioms:st=1.5` which `readFromEncodedOptions` applies per
+///    strategy, overriding command-line SInE settings.  The only
+///    reliable way to disable SInE across the whole run is to avoid
+///    the portfolio entirely.
+/// 2. Set `--sine_selection off` as a defensive belt-and-braces
+///    measure.  Vampire's default for this option is already `off`,
+///    but spelling it out makes the intent explicit and survives any
+///    future default change.
+///
+/// If the single-strategy default proof search turns out to be
+/// insufficient on hard queries, options are:
+/// - Loosen the external SInE tolerance (`SineParams::benevolent(..)`)
+///   to feed more axioms into Vampire.
+/// - Switch back to `--mode casc` and accept the minor over-selection
+///   risk (CASC portfolio strategies may re-filter; non-SInE
+///   strategies still receive the full external-SInE set).
+fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
+    vec![
+        "--mode".into(),            "vampire".into(),
+        "--input_syntax".into(),    "tptp".into(),
+        "--sine_selection".into(),  "off".into(),
+        "-t".into(),                timeout_secs.into(),
+    ]
+}
+
 impl ProverRunner for VampireRunner {
     fn timeout_secs(&self) -> u32 { self.timeout_secs }
 
@@ -57,14 +93,14 @@ impl ProverRunner for VampireRunner {
         }
 
         let timeout = self.timeout_secs.to_string();
-        let args    = ["--mode", "casc", "--input_syntax", "tptp", "-t", &timeout];
+        let args    = build_vampire_args(&timeout);
 
         log::debug!(target: "sumo_kb::prover",
             "vampire: {} {} /dev/stdin", self.vampire_path.display(), args.join(" "));
         log::info!(target: "sumo_kb::prover", "starting vampire prover");
 
         let mut child = match Command::new(&self.vampire_path)
-            .args(args)
+            .args(&args)
             .arg("/dev/stdin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -516,5 +552,58 @@ impl TptpProofProcessor {
         if clean.starts_with("s__") { clean = clean[3..].to_string(); }
         if clean.ends_with("__m")  { clean = clean[..clean.len() - 3].to_string(); }
         clean
+    }
+}
+
+// -- Vampire args construction tests -----------------------------------------
+
+#[cfg(test)]
+mod args_tests {
+    use super::build_vampire_args;
+
+    #[test]
+    fn args_use_single_strategy_vampire_mode() {
+        // `casc` would pull the CASC portfolio, whose per-strategy
+        // encoded options include `ss=axioms` and thus override any
+        // command-line `--sine_selection off`.  We therefore use the
+        // single-strategy `vampire` mode so SInE is genuinely disabled
+        // across the entire run.
+        let args = build_vampire_args("60");
+        let mode_idx = args.iter().position(|a| a == "--mode")
+            .expect("--mode flag must be present");
+        assert_eq!(args[mode_idx + 1], "vampire",
+            "must use vampire mode to prevent CASC portfolio strategies \
+             from re-applying SInE on our already-filtered input");
+        assert!(!args.iter().any(|a| a == "casc"),
+            "must not invoke CASC portfolio: {:?}", args);
+    }
+
+    #[test]
+    fn args_explicitly_disable_sine_selection() {
+        // Defensive belt-and-braces: Vampire's default is off, but we
+        // spell it out so the intent survives any future default change
+        // and is self-documenting in logs.
+        let args = build_vampire_args("60");
+        let ss_idx = args.iter().position(|a| a == "--sine_selection")
+            .expect("--sine_selection flag must be present");
+        assert_eq!(args[ss_idx + 1], "off",
+            "SInE must be explicitly disabled on Vampire's side; \
+             the KB applies its own SInE filter before invoking the prover");
+    }
+
+    #[test]
+    fn args_include_timeout() {
+        let args = build_vampire_args("42");
+        let t_idx = args.iter().position(|a| a == "-t")
+            .expect("-t flag must be present");
+        assert_eq!(args[t_idx + 1], "42");
+    }
+
+    #[test]
+    fn args_use_tptp_input_syntax() {
+        let args = build_vampire_args("60");
+        let is_idx = args.iter().position(|a| a == "--input_syntax")
+            .expect("--input_syntax flag must be present");
+        assert_eq!(args[is_idx + 1], "tptp");
     }
 }
