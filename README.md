@@ -4,6 +4,54 @@ A parser, validator, and theorem-prover interface for the [SUO-KIF](https://www.
 
 KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb) database. Formulas are stored in Conjunctive Normal Form (CNF) with full Skolemization so that subsequent theorem-prover queries require no runtime conversion. The [Vampire](https://vprover.github.io/) prover is used for automated reasoning.
 
+## Install
+
+The plan is to ultimately place this on crates.io so a user with Rust installed would just have to run:
+
+```bash
+cargo install sigmakee
+```
+
+Today, there are two installation options:
+
+1. Use Github releases to install a native binary. Rust statically links all their dependencies
+so you do not need to install anything other than copying the binary to your machine. Choose your
+correct architecture (`amd64`, `aarch64`, etc).
+
+2. Compile from source. 
+
+To compile from source, first install Rust:
+
+```bash
+$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+When clone this repository:
+
+```bash
+
+$ git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
+```
+
+Then initialize the git submodules:
+
+```bash
+$ git submodule update --recursive
+```
+
+Finally, compile everything:
+
+```bash
+$ cargo build --release
+```
+
+The executable is located in `target/release/sumo`. You can link it to your PATh using:
+
+```bash
+sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
+```
+
+
 ---
 
 ## Workspace layout
@@ -121,6 +169,8 @@ sumo test PATH [-f FILE]... [-d DIR]... [--keep]
 ```
 
 Test files are KIF-like but may contain special directives: `(note "…")`, `(time N)`, `(answer yes|no)`, `(query FORMULA)`. Everything else is treated as an axiom.
+
+**TODO: Add `man` and `debug` command references**
 
 ---
 
