@@ -1,0 +1,143 @@
+# Tag-triggered release workflow for the `sumo` CLI (sigmakee crate).
+#
+# Pushing a tag of the form `sigmakee-vX.Y.Z` builds the `sumo`
+# binary for five target triples in parallel and uploads the
+# stripped archives to the corresponding GitHub release:
+#
+#   * darwin-arm64   (macos-14,         Apple Silicon)
+#   * darwin-x64     (macos-13,         Intel)
+#   * linux-x64-gnu  (ubuntu-latest,    x86_64 glibc)
+#   * linux-arm64-gnu (ubuntu-24.04-arm, native arm64 runner)
+#   * win32-x64      (windows-latest,   x86_64 MSVC)
+#
+# Unlike `sumo-lsp`, the `sumo` binary pulls in the full KB stack
+# including the vampire-sys C++ backend via CMake, so every job
+# checks out submodules recursively and the Linux job installs
+# `cmake` / `build-essential` explicitly.  macOS + Windows runners
+# ship with CMake preinstalled.
+#
+# `fail-fast: false` so a Windows-specific C++-build hiccup doesn't
+# cancel the proven-good platforms.  The `ci.yml::cli-build` job
+# already validates each platform's build on every push, so a
+# release-time surprise is unlikely — but a stuck Windows run
+# shouldn't starve the other four artifacts.
+#
+# This workflow does NOT publish to crates.io; distribution is
+# via GitHub-release artifacts plus `cargo install --git` for
+# developers who want to build from source.
+
+name: Release (sumo CLI)
+
+on:
+  push:
+    tags:
+      - 'sigmakee-v*'
+
+permissions:
+  contents: write  # needed to upload release artifacts
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build / ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target:  aarch64-apple-darwin
+            os:      macos-14
+            archive: tar.gz
+            label:   darwin-arm64
+            bin:     sumo
+          - target:  x86_64-apple-darwin
+            os:      macos-13
+            archive: tar.gz
+            label:   darwin-x64
+            bin:     sumo
+          - target:  x86_64-unknown-linux-gnu
+            os:      ubuntu-latest
+            archive: tar.gz
+            label:   linux-x64-gnu
+            bin:     sumo
+          - target:  aarch64-unknown-linux-gnu
+            os:      ubuntu-24.04-arm
+            archive: tar.gz
+            label:   linux-arm64-gnu
+            bin:     sumo
+          - target:  x86_64-pc-windows-msvc
+            os:      windows-latest
+            archive: zip
+            label:   win32-x64
+            bin:     sumo.exe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # vampire-rs + vampire-lib + z3/cadical/viras
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install CMake + toolchain (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-sumo-${{ matrix.target }}
+
+      - name: Build sumo CLI (release, --target)
+        run: cargo build -p sigmakee --release --target ${{ matrix.target }}
+
+      - name: Strip binary (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: strip target/${{ matrix.target }}/release/sumo
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tag format: `sigmakee-vX.Y.Z`.  Strip the prefix so the
+          # version inside the archive name is clean.
+          ver="${GITHUB_REF_NAME#sigmakee-v}"
+          staging="sumo-${ver}-${{ matrix.label }}"
+          mkdir "${staging}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${staging}/"
+          # Ship the primary docs with the binary so users have a
+          # self-contained tarball.  Each `|| true` guards against
+          # a missing file on dev branches that haven't caught up
+          # with the doc layout yet.
+          cp README.md                "${staging}/" 2>/dev/null || true
+          cp docs/INTEGRATION.md      "${staging}/INTEGRATION.md" 2>/dev/null || true
+          echo "STAGING=${staging}" >> "${GITHUB_ENV}"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          tar -czf "${STAGING}.tar.gz" "${STAGING}"
+          shasum -a 256 "${STAGING}.tar.gz" > "${STAGING}.tar.gz.sha256"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "$env:STAGING" -DestinationPath "$env:STAGING.zip"
+          Get-FileHash "$env:STAGING.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $env:STAGING.zip" } |
+            Out-File -Encoding ASCII "$env:STAGING.zip.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.STAGING }}.${{ matrix.archive }}
+            ${{ env.STAGING }}.${{ matrix.archive }}.sha256
+          # The release itself is auto-created on the tag if it
+          # doesn't exist; otherwise the files are appended.
+          draft: false
+          generate_release_notes: true

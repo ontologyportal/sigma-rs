@@ -5,7 +5,7 @@ use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sigmakee::cli::{Cli, Cmd, run_load, run_validate, run_translate, run_man};
+use sigmakee::cli::{Cli, Cmd, KbArgs, run_load, run_validate, run_translate, run_man};
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_test, run_debug};
 #[cfg(feature = "server")]
@@ -17,7 +17,7 @@ use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
 fn main() {
     log::trace!("main()");
     // Parse the CLI Options
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
     // Distinguish "user explicitly asked for this config" from "auto-discover".
     // When the user passes `--config PATH`, a failure to load is a hard error:
@@ -92,37 +92,41 @@ fn main() {
         .init();
     log::debug!("Debug logging enabled");
 
+    // Build the universal source-selection struct from the
+    // top-level globals.  Every `run_*` handler still takes a
+    // `KbArgs`; for subcommands that flatten `KbArgs` (ask / test /
+    // debug / serve), we merge the flattened `vampire` field on top
+    // of this base.  For subcommands that don't flatten, the
+    // synthesised base IS the argument they receive.
+    let mut base_kb_args = KbArgs {
+        files:   cli.files.clone(),
+        dirs:    cli.dirs.clone(),
+        db:      cli.db.clone(),
+        no_db:   cli.no_db,
+        vampire: None,
+    };
+
+    // Config.xml integration: prepend config-declared files to the
+    // user's `-f` list and fall back to the config-declared Vampire
+    // path when none was given on the command line.  Touches
+    // `base_kb_args` in place; the values propagate to every
+    // subcommand via the merge at dispatch time.
     if let Some(ref cfg) = config_xml {
         log::debug!("Found config_xml");
         let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
-        
-        let kb_args = match &mut cli.command {
-            Cmd::Load { kb, .. } => Some(kb),
-            Cmd::Validate { kb, .. } => Some(kb),
-            Cmd::Translate { kb, .. } => Some(kb),
-            Cmd::Man { kb, .. } => Some(kb),
-            #[cfg(feature = "ask")]
-            Cmd::Ask { kb, .. } => Some(kb),
-            #[cfg(feature = "ask")]
-            Cmd::Test { kb, .. } => Some(kb),
-            #[cfg(feature = "ask")]
-            Cmd::Debug { kb, .. } => Some(kb),
-            #[cfg(feature = "server")]
-            Cmd::Serve { kb } => Some(kb),
-        };
-
-        if let Some(kb_args) = kb_args {
-            if let Some(name) = kb_name {
-                if let Some(files) = cfg.get_kb_files(name) {
-                    // Prepend config files to manually specified files
-                    let mut all_files = files;
-                    all_files.extend(kb_args.files.clone());
-                    kb_args.files = all_files;
-                }
+        if let Some(name) = kb_name {
+            if let Some(files) = cfg.get_kb_files(name) {
+                // Config files come first so the order matches the
+                // canonical "Merge.kif before Mid-level-ontology.kif"
+                // convention (`get_kb_files` already returns them in
+                // that order); user-supplied `-f` files append after.
+                let mut all_files = files;
+                all_files.extend(base_kb_args.files);
+                base_kb_args.files = all_files;
             }
-            if kb_args.vampire.is_none() {
-                kb_args.vampire = cfg.vampire_path();
-            }
+        }
+        if base_kb_args.vampire.is_none() {
+            base_kb_args.vampire = cfg.vampire_path();
         }
     }
 
@@ -134,23 +138,40 @@ fn main() {
         }
     }
 
+    // Helper for the four subcommands that do flatten `KbArgs` (to
+    // expose `--vampire`): take their flattened value's `vampire`
+    // field and graft it onto the base.  Every other field of the
+    // flattened struct is a placeholder (`#[arg(skip)]` default) and
+    // is discarded.
+    let merge_vampire = |base: &KbArgs,
+                         flattened: KbArgs|
+                         -> KbArgs {
+        KbArgs {
+            vampire: flattened.vampire.or_else(|| base.vampire.clone()),
+            files:   base.files.clone(),
+            dirs:    base.dirs.clone(),
+            db:      base.db.clone(),
+            no_db:   base.no_db,
+        }
+    };
+
     let ok = match cli.command {
-        Cmd::Load { kb, flush } => run_load(kb, flush),
-        Cmd::Validate { formula, parse, no_kb_check, kb } => run_validate(formula, parse, no_kb_check, kb),
+        Cmd::Load { flush } => run_load(base_kb_args, flush),
+        Cmd::Validate { formula, parse, no_kb_check } =>
+            run_validate(formula, parse, no_kb_check, base_kb_args),
         Cmd::Translate {
             formula,
             lang,
             show_numbers,
             show_kif,
             session,
-            kb,
         } => run_translate(
             formula,
             &lang,
             show_numbers,
             show_kif,
             session.as_deref(),
-            kb,
+            base_kb_args,
         ),
         #[cfg(feature = "ask")]
         Cmd::Ask {
@@ -164,15 +185,24 @@ fn main() {
             keep,
             proof,
             profile,
-        } => run_ask(formula, tell, timeout, session, backend, lang, kb, keep, proof, profile),
+        } => run_ask(
+            formula, tell, timeout, session, backend, lang,
+            merge_vampire(&base_kb_args, kb),
+            keep, proof, profile,
+        ),
         #[cfg(feature = "ask")]
-        Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } => run_test(paths, kb, keep, backend, lang, timeout, profile),
+        Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } =>
+            run_test(paths, merge_vampire(&base_kb_args, kb), keep, backend, lang, timeout, profile),
         #[cfg(feature = "ask")]
         Cmd::Debug { file, thoroughness, scope, timeout, keep, proof, kb } =>
-            run_debug(file, thoroughness, scope, timeout, keep, proof, kb),
-        Cmd::Man { symbol, lang, no_pager, kb } => run_man(symbol, lang, no_pager, kb),
+            run_debug(
+                file, thoroughness, scope, timeout, keep, proof,
+                merge_vampire(&base_kb_args, kb),
+            ),
+        Cmd::Man { symbol, lang, no_pager } =>
+            run_man(symbol, lang, no_pager, base_kb_args),
         #[cfg(feature = "server")]
-        Cmd::Serve { kb } => run_serve(kb),
+        Cmd::Serve { kb } => run_serve(merge_vampire(&base_kb_args, kb)),
     };
     process::exit(if ok { 0 } else { 1 });
 }

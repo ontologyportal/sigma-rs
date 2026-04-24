@@ -4,8 +4,19 @@
 SUO-KIF / SUMO knowledge bases.  It is editor-agnostic: any client
 that speaks the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
 can consume it.  This document covers installation, per-editor
-configuration, supported capabilities, and protocol notes for
-downstream extension authors.
+configuration, supported capabilities, custom `sumo/*` protocol
+extensions, and protocol notes for downstream extension authors.
+
+> **Looking for programmatic query access, not an LSP?**  The
+> `sumo serve` command exposes a JSON-RPC kernel with
+> `tell` / `ask` / `debug` / `test` methods over stdio — purpose-
+> built for editor extensions and long-running tool chains that
+> need to query a loaded knowledge base without paying the load
+> cost per call.  See [`INTEGRATION.md`](INTEGRATION.md) for the
+> wire format and a VSCode extension sketch.  `sumo-lsp` and
+> `sumo serve` are complementary: the LSP handles editing-surface
+> concerns (diagnostics, hover, rename), the kernel handles
+> proving-surface concerns (theorem proving, consistency checks).
 
 ## Installation
 
@@ -159,22 +170,170 @@ editor-integration ecosystem.
 | Semantic tokens `range` variant       | ❌     | `full` variant only for MVP                             |
 | `completionItem/resolve`              | ❌     | Items carry documentation inline                        |
 
+## Custom protocol extensions (`sumo/*`)
+
+`sumo-lsp` ships three SUMO-specific extensions on top of
+standard LSP.  They're namespaced under `sumo/` and are safe to
+ignore — clients that don't understand them get standard-LSP
+behaviour throughout.
+
+| Method                          | Kind         | Direction     | Purpose |
+|---------------------------------|--------------|---------------|---------|
+| `sumo/setActiveFiles`           | Notification | Client→Server | Replace the server's KB file population to match a client-managed active set |
+| `sumo/setIgnoredDiagnostics`    | Notification | Client→Server | Suppress specific diagnostic codes from every `publishDiagnostics` |
+| `sumo/taxonomy`                 | Request      | Client→Server | Fetch the upward taxonomy graph + documentation for a single symbol |
+
+### `sumo/setActiveFiles`
+
+Clients that own the "which files make up the active KB"
+decision (e.g. a VSCode extension reading SigmaKEE's
+`config.xml`) hand the server the authoritative set.  The
+server diffs against its currently-loaded population, loads
+any missing files from disk, and removes any files the client
+no longer wants.
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "method": "sumo/setActiveFiles",
+  "params": {
+    // Absolute canonical filesystem paths.  Files currently
+    // loaded but not in this list are removed; files in this
+    // list but not loaded are read from disk and ingested.
+    "files": ["/Users/.../sumo/Merge.kif", "/Users/.../sumo/Economy.kif"]
+  }
+}
+```
+
+After handling a `sumo/setActiveFiles`, the server republishes
+diagnostics for every affected file (added + removed).  Clients
+should treat the notification as equivalent to sending N
+`didOpen`s and `didClose`s — the server does the bookkeeping.
+
+**Performance note.**  `remove_file` is O(total occurrences in
+the KB) per call, so large unload batches would be quadratic.
+When the server detects "more files removed than kept," it
+throws the KB away and rebuilds from just the requested files —
+cheaper than removing each individually.  Clients don't need to
+know about the rebuild path; it's a transparent optimisation.
+
+### `sumo/setIgnoredDiagnostics`
+
+Silences selected semantic-diagnostic codes server-side so the
+next `publishDiagnostics` round drops them before the client
+ever sees them.
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "method": "sumo/setIgnoredDiagnostics",
+  "params": {
+    // Either a `SemanticError::code()` (e.g. "E005") or a
+    // `SemanticError::name()` (e.g. "arity-mismatch").  Both
+    // forms are accepted; unknown entries are silently kept
+    // in the filter set so a client typo doesn't crash the
+    // server.
+    "codes": ["W011", "unused-variable"]
+  }
+}
+```
+
+A fresh notification **replaces** the server-side set entirely;
+send `{ "codes": [] }` to clear all filters.  Parse errors are
+never filterable — they remain visible regardless of the
+ignore list.  After handling, the client should trigger a
+re-publish (e.g. by sending a no-op `didChange`) if immediate
+UI refresh is desired.
+
+### `sumo/taxonomy`
+
+Fetches the upward taxonomy graph from one symbol, plus that
+symbol's documentation entries.  Typical use: the client
+renders the response as a Mermaid graph in a webview.
+
+Request:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "method": "sumo/taxonomy",
+  "params": { "symbol": "Human" }
+}
+```
+
+Response:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 42,
+  "result": {
+    "symbol": "Human",
+    "unknown": false,                         // true when the symbol isn't in the KB
+    "documentation": [
+      { "language": "EnglishLanguage", "text": "Modern man …" }
+    ],
+    "edges": [
+      // BFS upward from the root; `from` is the child, `to` is the parent.
+      { "from": "Human",   "to": "Hominid",    "relation": "subclass" },
+      { "from": "Hominid", "to": "Primate",    "relation": "subclass" }
+    ]
+  }
+}
+```
+
+Traversal is upward-only (child → parent) and breadth-first
+with an internal node cap to avoid unbounded walks in
+pathological ontologies.  When `unknown: true`, `documentation`
+and `edges` are empty and the client should render an
+informational panel, not a graph.
+
+### `initializationOptions.clientManagesFiles`
+
+Opt out of the server's initial workspace sweep.  Set on the
+LSP `initialize` request:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 0,
+  "method": "initialize",
+  "params": {
+    "initializationOptions": { "clientManagesFiles": true },
+    ...
+  }
+}
+```
+
+With this set, the server skips recursively loading every
+`*.kif` / `*.kif.tq` under `workspaceFolders` at startup.  The
+client is expected to follow up with `sumo/setActiveFiles` once
+it has decided the file set.  Headless clients that never
+intend to send `setActiveFiles` should leave this unset or
+`false` and accept the default workspace sweep.
+
+Rationale: on large workspaces the default sweep loads every
+file, and a subsequent `setActiveFiles` that wants only a
+subset pays the quadratic `remove_file` cost on each
+leftover.  `clientManagesFiles: true` skips the load entirely,
+so the `setActiveFiles` path is a clean add-only operation.
+
 ## Configuration (per-session)
 
 `sumo-lsp` does not require a configuration file.  Two
-server-side knobs are settable via LSP's `initializationOptions`
-or via environment variables:
+server-side knobs are settable:
 
-| Key / env var                              | Default             | Purpose                                           |
-|--------------------------------------------|---------------------|---------------------------------------------------|
-| `SUMO_LSP_LOG`                             | `warn`              | `env_logger`-style level / target filter          |
-| `sumo-lsp.workspace.rootFiles` (future)    | `["Merge.kif"]`     | Root-file load order for the initial sweep        |
+| Key                                           | Settable via                         | Default      | Purpose                                          |
+|-----------------------------------------------|--------------------------------------|--------------|--------------------------------------------------|
+| `SUMO_LSP_LOG`                                | env var                              | `warn`       | `env_logger`-style level / target filter         |
+| `clientManagesFiles`                          | `initializationOptions`              | `false`      | Opt out of the workspace-folder sweep at boot (see [Custom protocol extensions](#custom-protocol-extensions-sumo)) |
+| `sumo-lsp.workspace.rootFiles` *(future)*     | `initializationOptions` *(unwired)*  | n/a          | Root-file load order for the initial sweep       |
 
-Workspace root files are loaded in the declared order so
-first-pass diagnostics are stable on large projects (e.g. loading
-`Merge.kif` before `Mid-level-ontology.kif` avoids transient
-"head not a declared relation" warnings).  Currently hard-coded;
-a configuration surface is planned.
+When the default workspace sweep is active, files are loaded
+in `WalkDir` iteration order.  Client-driven orderings (via
+`setActiveFiles`) should send files in the order the client
+wants them loaded; the server preserves input order.
 
 ## Protocol notes for editor-extension authors
 
@@ -209,6 +368,11 @@ workspace files automatically.
 Files opened outside any workspace root (e.g. standalone
 `sumo-lsp` invocations with no `workspaceFolders`) are loaded
 per-document; cross-file resolution is unavailable.
+
+**Opt-out.**  Clients that manage KB membership themselves
+(e.g. via `sumo/setActiveFiles`) should set
+`initializationOptions.clientManagesFiles = true` to skip the
+auto-sweep.  See [Custom protocol extensions](#custom-protocol-extensions-sumo).
 
 ### Diagnostics model
 
@@ -280,14 +444,30 @@ response as the auto-triggered form.
 
 ## Reporting issues
 
+`sumo-lsp` is a pure LSP transport — it doesn't parse command-
+line arguments, so there's no `--version` flag.  The version is
+available through:
+
+- **The server-info field of the `initialize` response**:
+  `InitializeResult.server_info.version` is set from
+  `CARGO_PKG_VERSION` at build time.  Any LSP client that stores
+  the init response (most do) can surface this.
+- **The first stderr line**: when started with any `SUMO_LSP_LOG`
+  level at least `info`, the server logs
+  `sumo-lsp starting (version X.Y.Z)` before reading any request.
+- **The built binary's ELF / Mach-O metadata**: `strings
+  $(which sumo-lsp) | grep CARGO_PKG_VERSION` as a last resort.
+
 File issues on the main project repository with:
 
-1. `sumo-lsp --version` output (the server identifies itself via
-   `InitializeResult.server_info.version`).
+1. The version (any of the three sources above).
 2. Editor + LSP-client version.
 3. `SUMO_LSP_LOG=debug` trace for the reproducing session.
 4. A minimal `.kif` file exhibiting the problem.
+5. Whether the issue is on a standard LSP method or a
+   `sumo/*` extension — the two are implemented in different
+   subtrees and usually fail for different reasons.
 
 For protocol-level questions (what capabilities the server
-advertises, expected request shapes), this document is the
-canonical reference.
+advertises, expected request shapes, `sumo/*` extension
+semantics), this document is the canonical reference.
