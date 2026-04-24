@@ -1,16 +1,16 @@
 [workspace]
-members  = ["crates/sumo-kb", "crates/wasm", "crates/native"]
+members  = ["crates/sumo-kb", "crates/wasm", "crates/cli", "crates/sumo-lsp"]
 resolver = "2"
 
 [workspace.package]
-version     = "0.1.0"
+version     = "1.0.0"
 edition     = "2021"
-authors     = ["sumo-parser contributors"]
-license     = "GPL-2.0"
+authors     = ["Theodore Kim", "Adam Pease"]
+license     = "GPL-3.0"
 
 [workspace.dependencies]
 sumo-kb           = { path = "crates/sumo-kb" }
-sumo-native       = { path = "crates/native" }
+sigmakee          = { path = "crates/cli" }
 serde             = { version = "1", features = ["derive"] }
 serde_json        = "1"
 thiserror         = "2"

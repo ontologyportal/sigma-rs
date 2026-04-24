@@ -4,18 +4,44 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+# Default includes the Vampire-backed clausifier + clause-level dedup.
+# `cnf` now implies `integrated-prover` (Phase 5 of the clause-dedup work):
+# the hand-rolled clausifier was retired, so CNF requires the linked
+# Vampire clausifier.  Builds without the default features skip dedup
+# entirely -- duplicate axioms are silently accepted.
 default = []
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
-# Theorem proving via subprocess spawning (e.g. Vampire).
+# Theorem proving: the subprocess prover (spawns a `vampire` process)
+# and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = ["dep:regex"]
-# CNF clausification. Can be used independently of ask or persist.
-cnf     = []
-# Embedded Vampire prover (links Vampire as a static library via CMake).
-# Requires CMake 3.10+, a C++ compiler, and the vampire-lib submodule.
-# NOT available on wasm32 -- Vampire uses threads/fork/platform syscalls.
-integrated-prover = ["dep:vampire-prover", "ask"]
+# CNF clausification + clause-level deduplication.  Pulls in the
+# integrated Vampire prover because the clausifier is part of it.
+cnf     = ["integrated-prover"]
+# Embedded Vampire prover: additionally links vampire-sys (Vampire C++
+# library) via CMake, enabling `ask_embedded` and native-proof binding
+# extraction.  Requires CMake 3.10+, a C++ compiler, and the
+# vampire-sys/vampire-lib submodule.
+# NOT on wasm32.
+integrated-prover = ["ask", "vampire-prover/integrated-prover"]
+# Fine-grained timing/profiling of ingest, promote, ask, and load
+# phases.  When enabled the `Profiler` on `KnowledgeBase` (optional —
+# set via `kb.set_profiler(...)`) accumulates per-phase durations that
+# can be printed via `Profiler::report()`.  When disabled, every
+# `span()` call compiles to a zero-sized no-op — no runtime cost.
+profiling = []
+# Parallel hot-path execution via rayon.  Speeds up bootstrap-scale
+# workloads (CNF clausification, multi-file I/O).  NOT available on
+# wasm32 — enforced by `compile_error!` in lib.rs.  When off, all
+# per-item work is serial with identical semantics.
+parallel = ["dep:rayon"]
+
+# Note: the pure-Rust IR (`vampire_prover::ir::*`) and TPTP emitter /
+# parser are ALWAYS available, regardless of features.  They drive
+# `NativeConverter`, `assemble_tptp`, and KnowledgeBase's TPTP output
+# methods unconditionally.  The `ask` and `integrated-prover` features
+# add prover runners on top.
 
 [dependencies]
 # Always present
@@ -35,8 +61,14 @@ bincode = { version = "1",                                  optional = true }
 # ask feature
 regex   = { version = "1", optional = true }
 
-# integrated-prover feature
-vampire-prover = { path = "/home/iggy/projects/vampire-rs/vampire", optional = true }
+# parallel feature
+rayon   = { version = "1.10", optional = true }
+
+# Pure-Rust IR + TPTP parser/emitter, always present.
+# `default-features = false` keeps the C++ backend off; the
+# `integrated-prover` feature adds it.  `serde` turns on the IR
+# derives so the Phase D axiom cache can bincode the whole problem.
+vampire-prover = { path = "../vampire-rs/vampire", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
 env_logger = "0.11"

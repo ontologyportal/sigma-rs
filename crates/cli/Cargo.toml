@@ -1,0 +1,67 @@
+[package]
+name    = "sigmakee"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sumo"
+path = "src/main.rs"
+
+[lib]
+name = "sigmakee"
+path = "src/lib.rs"
+
+[features]
+# Default build is the full experience: IR pipeline + embedded C++
+# Vampire + fine-grained profiling.  Translate / validate / load /
+# ask / test all available, and `--profile` produces the full
+# per-phase breakdown.  When no profiler is installed on the KB
+# every `span()` is a no-op, so this flag carries no cost in
+# non-profiling runs. Also enables JSON RPC API used for language
+# server
+default = ["profiling", "parallel", "server"]
+
+# Pure-Rust path with subprocess prover: translate / validate / load
+# PLUS ask / test, running against an external `vampire` binary.
+# No CMake required.
+ask = ["sumo-kb/ask"]
+
+# Everything in `ask` plus the embedded C++ solver (CMake + the
+# vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
+# and native-proof binding extraction.
+integrated-prover = ["ask", "sumo-kb/integrated-prover"]
+
+# Fine-grained per-phase profiling of KnowledgeBase operations
+# (ingest, promote, ask, load).  When on, the `--profile` flag on
+# `sumo ask` / `sumo test` emits a per-phase breakdown in addition
+# to the existing coarse ProverResult timings.  When off, `--profile`
+# still works but only shows the four-phase coarse timings from
+# `ProverResult.timings`.
+profiling = ["sumo-kb/profiling"]
+
+# Parallel KB hot paths via rayon.  Speeds up multi-file load (reads
+# in parallel) and bootstrap-scale CNF clausification (inside
+# sumo-kb).  NOT on wasm32.  On by default along with `profiling`
+# for release-native builds.
+parallel = ["sumo-kb/parallel", "dep:rayon"]
+
+# Enable the JSON RPC server which allows you to utilize the cli
+# programmatically like via an IDE. Requires ask but not integrated
+# prover
+server = ["ask"]
+
+[dependencies]
+sumo-kb = { workspace = true, features = ["persist"] }
+rayon   = { version = "1.10", optional = true }
+serde.workspace            = true
+serde_json.workspace       = true
+inline_colorization.workspace = true
+log.workspace              = true
+clap                       = { version = "4", features = ["derive"] }
+env_logger                 = "0.11"
+quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }
+minus = { version = "5", features = ["static_output", "search"] }
+# `rand` is only used by `sumo debug`, which is ask-gated.  Pulled in
+# unconditionally to avoid feature gymnastics on a tiny (~200 KB) dep —
+# `cargo tree` already shows it transitively through vampire-sys etc.
+rand = "0.8"

@@ -11,6 +11,7 @@ use std::sync::{RwLock, RwLockReadGuard};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::SemanticError;
+use crate::kb::man::DocEntry;
 use crate::kif_store::KifStore;
 use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxRelation};
 
@@ -31,7 +32,8 @@ use crate::types::{Element, Literal, OpKind, SentenceId, SymbolId, TaxEdge, TaxR
 /// `$o` (formula/Boolean sort) is NOT in this enum. It is a TPTP-specific
 /// concept with no semantic meaning and is emitted as a literal string inside
 /// `tptp/tff.rs` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
+          serde::Serialize, serde::Deserialize)]
 pub enum Sort {
     Individual = 1,
     Real       = 2,
@@ -42,6 +44,12 @@ pub enum Sort {
 impl Sort {
     /// Convert to the TPTP sort string.
     /// Call only inside `tptp/` -- never let this string escape into semantic logic.
+    ///
+    /// Currently only exercised from this module's tests; kept on the
+    /// public API so the TFF-emitter code paths in `vampire/converter.rs`
+    /// and downstream clausify consumers can call it without a re-export
+    /// gymnastics.
+    #[allow(dead_code)]
     pub fn tptp(self) -> &'static str {
         match self {
             Sort::Individual => "$i",
@@ -50,6 +58,25 @@ impl Sort {
             Sort::Integer    => "$int",
         }
     }
+}
+
+// -- ArithCond -----------------------------------------------------------------
+
+/// Arithmetic condition characterizing numeric-class membership.
+///
+/// When `(instance ?X C)` appears in TFF mode and `?X` has a numeric sort, the
+/// translator substitutes this condition for the otherwise-unsound `$true` drop.
+/// The variable is always implicit (the instance variable being checked).
+/// `bound` is the raw numeric literal string from the source KIF (e.g. `"0"`, `"1"`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ArithCond {
+    GreaterThan          { bound: String },
+    GreaterThanOrEqualTo { bound: String },
+    LessThan             { bound: String },
+    LessThanOrEqualTo    { bound: String },
+    And(Vec<ArithCond>),
+    /// `(equal (fn_name ?VAR other_arg) result)` — e.g. `(equal (RemainderFn ?X 2) 0)`.
+    EqualFn { fn_name: String, other_arg: String, result: String },
 }
 
 // -- RelationDomain ------------------------------------------------------------
@@ -84,17 +111,18 @@ struct SemanticCache {
     arity:        HashMap<SymbolId, Option<i32>>,
     domain:       HashMap<SymbolId, Vec<RelationDomain>>,
     range:        HashMap<SymbolId, RelationDomain>,
+
+    // Ontology-native doc-relation caches.  Each stores the full
+    // list of entries (across all languages) for a symbol; per-call
+    // language filtering happens at the lookup boundary.  Populated
+    // lazily on first query; cleared wholesale by
+    // `invalidate_semantic_cache` or granularly by
+    // `invalidate_symbols`.
+    documentation: HashMap<SymbolId, Vec<DocEntry>>,
+    term_format:   HashMap<SymbolId, Vec<DocEntry>>,
+    format:        HashMap<SymbolId, Vec<DocEntry>>,
 }
 
-// -- VarTypeInference ----------------------------------------------------------
-
-/// Precomputed variable sort table for the entire KB.
-///
-/// Keyed by `variable_symbol_id` -- each variable already has a globally unique
-/// `SymbolId` because the parser interns variables as `{name}__{scope}` (e.g.
-/// `X__3`), so two `?X` bindings in different scopes have distinct ids.
-///
-/// Only sorts stronger than `Individual` are stored.  A missing entry means
 // -- Numeric sort roots --------------------------------------------------------
 //
 // The three SUMO class names that anchor the TFF numeric sort hierarchy.
@@ -113,12 +141,6 @@ const NUMERIC_ROOTS: &[(&str, Sort)] = &[
     ("Integer",       Sort::Integer),
 ];
 
-/// `Sort::Individual`.  Built lazily; cleared by `invalidate_cache()`.
-#[derive(Debug)]
-pub(crate) struct VarTypeInference {
-    pub var_sorts: HashMap<SymbolId, Sort>,
-}
-
 // -- SortAnnotations -----------------------------------------------------------
 
 /// Precomputed TFF sort signatures for all relations and functions in the KB.
@@ -132,7 +154,7 @@ pub(crate) struct VarTypeInference {
 /// The sentinel `u64::MAX` in a `RelationDomain` also maps to `Sort::Individual`.
 ///
 /// Built lazily; cleared by `invalidate_cache()`.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SortAnnotations {
     /// Ordered argument sorts for all relations, predicates, and functions
     /// that have at least one `domain` axiom.
@@ -195,9 +217,11 @@ pub(crate) struct SemanticLayer {
     ///
     /// Built by `rebuild_taxonomy` after `numeric_ancestor_set` is ready.
     poly_variant_symbols:   HashSet<SymbolId>,
-    cache:               RwLock<SemanticCache>,
-    var_type_inference:  RwLock<Option<VarTypeInference>>,
-    sort_annotations:    RwLock<Option<SortAnnotations>>,
+    /// Arithmetic characterizations of numeric subclasses.
+    /// Built by `build_numeric_char_cache()` after `numeric_sort_cache` is ready.
+    numeric_char_cache:     HashMap<SymbolId, ArithCond>,
+    cache:                  RwLock<SemanticCache>,
+    sort_annotations:       RwLock<Option<SortAnnotations>>,
 }
 
 impl SemanticLayer {
@@ -209,21 +233,128 @@ impl SemanticLayer {
             numeric_sort_cache:   HashMap::new(),
             numeric_ancestor_set: HashSet::new(),
             poly_variant_symbols: HashSet::new(),
+            numeric_char_cache:   HashMap::new(),
             cache:                RwLock::new(SemanticCache::default()),
-            var_type_inference:   RwLock::new(None),
             sort_annotations:     RwLock::new(None),
         };
         layer.rebuild_taxonomy();
         layer
     }
 
+    /// Construct a SemanticLayer with its taxonomy state prepopulated
+    /// from a persisted cache.  The `tax_incoming` reverse index is
+    /// rederived in one linear pass over `tax_edges` (we don't persist
+    /// it because derivation is cheaper than reading it back).
+    ///
+    /// Skips the full `rebuild_taxonomy` scan -- Phase D's core
+    /// cold-open optimisation.
+    #[cfg(feature = "persist")]
+    pub(crate) fn from_cached_taxonomy(
+        store:                KifStore,
+        tax_edges:            Vec<TaxEdge>,
+        numeric_sort_cache:   HashMap<SymbolId, Sort>,
+        numeric_ancestor_set: HashSet<SymbolId>,
+        poly_variant_symbols: HashSet<SymbolId>,
+        numeric_char_cache:   HashMap<SymbolId, ArithCond>,
+    ) -> Self {
+        // Rebuild the reverse index (edge_index -> tax_incoming[to]).
+        let mut tax_incoming: HashMap<SymbolId, Vec<usize>> = HashMap::new();
+        for (i, edge) in tax_edges.iter().enumerate() {
+            tax_incoming.entry(edge.to).or_default().push(i);
+        }
+        Self {
+            store,
+            tax_edges,
+            tax_incoming,
+            numeric_sort_cache,
+            numeric_ancestor_set,
+            poly_variant_symbols,
+            numeric_char_cache,
+            cache:              RwLock::new(SemanticCache::default()),
+            sort_annotations:   RwLock::new(None),
+        }
+    }
+
+    // Phase D accessors for persistence.  These expose internal state
+    // to the persist layer in `write_axioms` without letting arbitrary
+    // callers mutate it.
+
+    #[cfg(feature = "persist")]
+    pub(crate) fn tax_edges_snapshot(&self) -> Vec<TaxEdge> {
+        self.tax_edges.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_sort_cache_snapshot(&self) -> HashMap<SymbolId, Sort> {
+        self.numeric_sort_cache.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_ancestor_set_snapshot(&self) -> HashSet<SymbolId> {
+        self.numeric_ancestor_set.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn poly_variant_symbols_snapshot(&self) -> HashSet<SymbolId> {
+        self.poly_variant_symbols.clone()
+    }
+    #[cfg(feature = "persist")]
+    pub(crate) fn numeric_char_cache_snapshot(&self) -> HashMap<SymbolId, ArithCond> {
+        self.numeric_char_cache.clone()
+    }
+
+    /// Phase D: install a precomputed `SortAnnotations` directly into
+    /// the cache slot, bypassing the usual build-on-first-access path.
+    #[cfg(all(feature = "persist", feature = "ask"))]
+    pub(crate) fn install_sort_annotations(&self, sa: SortAnnotations) {
+        *self.sort_annotations.write().unwrap() = Some(sa);
+    }
+
+    /// Phase D: snapshot of the current `SortAnnotations`, triggering
+    /// the lazy build if needed.
+    #[cfg(all(feature = "persist", feature = "ask"))]
+    pub(crate) fn sort_annotations_snapshot(&self) -> SortAnnotations {
+        // The guard returned by `sort_annotations()` holds the read
+        // lock for the duration of this scope; clone the inner
+        // `SortAnnotations` out before the guard drops.
+        let guard = self.sort_annotations();
+        guard.as_ref()
+            .expect("sort_annotations() populates the slot")
+            .clone()
+    }
+
     /// Invalidate the semantic query cache (call after structural changes to the store).
     /// Does not clear the taxonomy -- call `rebuild_taxonomy` explicitly when sentences
     /// are added or removed.
+    ///
+    /// This is the "everything" hammer.  Prefer the granular
+    /// [`invalidate_semantic_cache`](Self::invalidate_semantic_cache)
+    /// and [`invalidate_sort_annotations`](Self::invalidate_sort_annotations)
+    /// methods when you know which pieces are actually affected.
+    /// Phase B's `extend_taxonomy_with` picks the right granularity
+    /// automatically from a sentence impact classification.
     pub(crate) fn invalidate_cache(&self) {
-        *self.cache.write().unwrap()              = SemanticCache::default();
-        *self.var_type_inference.write().unwrap() = None;
-        *self.sort_annotations.write().unwrap()   = None;
+        self.invalidate_semantic_cache();
+        self.invalidate_sort_annotations();
+    }
+
+    /// Clear the `is_instance` / `is_class` / `is_relation` /
+    /// `is_predicate` / `is_function` / `has_ancestor` / `arity` /
+    /// `domain` / `range` query cache.
+    ///
+    /// Invalidate whenever a change could flip one of those queries:
+    /// adding a taxonomy edge, a domain/range axiom, or any sentence
+    /// that affects symbol classifications (is_function, is_relation,
+    /// etc.).
+    pub(crate) fn invalidate_semantic_cache(&self) {
+        *self.cache.write().unwrap() = SemanticCache::default();
+    }
+
+    /// Clear the `SortAnnotations` cache.
+    ///
+    /// Invalidate whenever a `domain` / `range` / `domainSubclass`
+    /// axiom is added or removed -- those are the direct sources of
+    /// entries in `SortAnnotations.symbol_arg_sorts` and
+    /// `symbol_return_sorts`.
+    pub(crate) fn invalidate_sort_annotations(&self) {
+        *self.sort_annotations.write().unwrap() = None;
     }
 
     // -- Taxonomy management ---------------------------------------------------
@@ -239,12 +370,12 @@ impl SemanticLayer {
         let head_name = self.store.sym_name(head_sym).to_owned();
         let rel       = match TaxRelation::from_str(&head_name) { Some(r) => r, None => return };
         let arg1 = match sentence.elements.get(1) {
-            Some(Element::Symbol(id))                        => *id,
+            Some(Element::Symbol { id, .. })                        => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => return,
         };
         let arg2 = match sentence.elements.get(2) {
-            Some(Element::Symbol(id))                        => *id,
+            Some(Element::Symbol { id, .. })                        => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => return,
         };
@@ -275,10 +406,12 @@ impl SemanticLayer {
         self.numeric_sort_cache   = self.build_numeric_sort_cache();
         self.numeric_ancestor_set = self.build_numeric_ancestor_set();
         self.poly_variant_symbols = self.build_poly_variant_symbols();
+        self.numeric_char_cache   = self.build_numeric_char_cache();
         log::debug!(target: "sumo_kb::semantic",
-            "numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols",
+            "numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols, \
+             {} numeric characterizations",
             self.numeric_sort_cache.len(), self.numeric_ancestor_set.len(),
-            self.poly_variant_symbols.len());
+            self.poly_variant_symbols.len(), self.numeric_char_cache.len());
     }
 
     /// Build the numeric sort cache by BFS downward from each root in
@@ -305,6 +438,13 @@ impl SemanticLayer {
 
         let mut cache: HashMap<SymbolId, Sort> = HashMap::new();
 
+        // Hoisted across roots; cleared per-iteration.  The per-root
+        // `visited` semantics are preserved because multi-root classes
+        // are still overwritten in `cache` by the later root's sort
+        // (the "more-specific sort wins" contract documented above).
+        let mut queue:   VecDeque<SymbolId> = VecDeque::new();
+        let mut visited: HashSet<SymbolId>  = HashSet::new();
+
         for &(root_name, sort) in NUMERIC_ROOTS {
             let root_id = match self.store.sym_id(root_name) {
                 Some(id) => id,
@@ -312,8 +452,8 @@ impl SemanticLayer {
             };
 
             // BFS downward from root_id, including the root itself.
-            let mut queue:   VecDeque<SymbolId> = VecDeque::new();
-            let mut visited: HashSet<SymbolId>  = HashSet::new();
+            queue.clear();
+            visited.clear();
             queue.push_back(root_id);
             while let Some(id) = queue.pop_front() {
                 if !visited.insert(id) { continue; }  // cycle guard
@@ -389,16 +529,15 @@ impl SemanticLayer {
     ///   `(domain foo 1 Animal)`    -> Animal fails condition 1 -> not added.
     fn build_poly_variant_symbols(&self) -> HashSet<SymbolId> {
         let mut result: HashSet<SymbolId> = HashSet::new();
-        let sids = self.store.by_head("domain").to_vec();
-        for sid in sids {
+        for &sid in self.store.by_head("domain") {
             let sentence = &self.store.sentences[self.store.sent_idx(sid)];
             // (domain Relation Position Class)
             let rel_id = match sentence.elements.get(1) {
-                Some(Element::Symbol(id)) => *id,
+                Some(Element::Symbol { id, .. }) => *id,
                 _ => continue,
             };
             let class_id = match sentence.elements.get(3) {
-                Some(Element::Symbol(id)) => *id,
+                Some(Element::Symbol { id, .. }) => *id,
                 _ => continue,
             };
             if self.numeric_ancestor_set.contains(&class_id)
@@ -410,23 +549,345 @@ impl SemanticLayer {
         result
     }
 
-    /// Returns `true` if `id` has at least one domain position that is a
-    /// numeric-ancestor class (and thus needs polymorphic TFF variants).
+    // -- Numeric characterization cache ----------------------------------------
+
+    /// Build arithmetic characterizations of numeric subclasses.
     ///
-    /// Used by `tff::ensure_declared` to decide whether to emit `__int`,
-    /// `__rat`, and `__real` variant declarations alongside the base one,
-    /// and by the call-site translator to select the appropriate variant name.
-    pub(crate) fn has_poly_variant_args(&self, id: SymbolId) -> bool {
-        self.poly_variant_symbols.contains(&id)
+    /// Scans root sentences for:
+    ///   Form A: `(<=> (instance ?VAR C) conditions)` — biconditional (preferred)
+    ///   Form B: `(=> ANT (instance ?VAR C))` — forward implication (fallback)
+    ///
+    /// The extracted condition is stored with the variable implicit; at emit time
+    /// the actual variable name is substituted.  Root numeric classes
+    /// (RealNumber, RationalNumber, Integer) are excluded — their sort membership
+    /// is already encoded by the TFF quantifier annotation.
+    fn build_numeric_char_cache(&self) -> HashMap<SymbolId, ArithCond> {
+        let mut result: HashMap<SymbolId, ArithCond> = HashMap::new();
+
+        let root_ids: HashSet<SymbolId> = NUMERIC_ROOTS.iter()
+            .filter_map(|(name, _)| self.store.sym_id(name))
+            .collect();
+
+        for &root_sid in &self.store.roots {
+            let sentence = &self.store.sentences[self.store.sent_idx(root_sid)];
+
+            // Form A: (<=> (instance ?VAR C) conditions)
+            if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Iff, .. })) {
+                if let (Some(Element::Sub { sid: lhs, .. }), Some(Element::Sub { sid: rhs, .. })) =
+                    (sentence.elements.get(1), sentence.elements.get(2))
+                {
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*lhs) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*rhs, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Form B: (=> ANT (instance ?VAR C)) — sufficient condition; only if not already found.
+            // Form C: (=> (instance ?VAR C) CON) — necessary condition; only if not already found.
+            if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Implies, .. })) {
+                if let (Some(Element::Sub { sid: ant, .. }), Some(Element::Sub { sid: con, .. })) =
+                    (sentence.elements.get(1), sentence.elements.get(2))
+                {
+                    // Form B: consequent is the instance check
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*con) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                            && !result.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*ant, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                    // Form C: antecedent is the instance check
+                    if let Some((class_id, var_name)) = self.extract_instance_clause(*ant) {
+                        if !root_ids.contains(&class_id)
+                            && self.numeric_sort_cache.contains_key(&class_id)
+                            && !result.contains_key(&class_id)
+                        {
+                            if let Some(cond) = self.extract_arith_cond(*con, &var_name) {
+                                result.insert(class_id, cond);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
     }
 
-    /// Extend the taxonomy to cover sentences added since last build.
-    ///
-    /// Currently performs a full rebuild.  This is correct and fast enough
-    /// for all current usage patterns.  Incremental extension is future work.
-    pub(crate) fn extend_taxonomy(&mut self) {
-        self.rebuild_taxonomy();
+    /// If `sid` represents `(instance ?VAR C)`, return `(C_id, var_name)`.
+    fn extract_instance_clause(&self, sid: SentenceId) -> Option<(SymbolId, String)> {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+        if let (
+            Some(Element::Symbol { id: inst_id, .. }),
+            Some(Element::Variable { name, .. }),
+            Some(Element::Symbol { id: class_id, .. }),
+        ) = (
+            sentence.elements.get(0),
+            sentence.elements.get(1),
+            sentence.elements.get(2),
+        ) {
+            if self.store.sym_name(*inst_id) == "instance" {
+                return Some((*class_id, name.clone()));
+            }
+        }
+        None
     }
+
+    /// Recursively extract an `ArithCond` from `sid`, treating `var_name` as
+    /// the implicit instance variable.  Strips `(instance var_name C)` conjuncts
+    /// where C is any numeric class.  Returns `None` for unrecognised patterns.
+    fn extract_arith_cond(&self, sid: SentenceId, var_name: &str) -> Option<ArithCond> {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+
+        // (and ...) is an operator sentence: elements[0] is Op(And), not a Symbol.
+        if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::And, .. })) {
+            let parts: Vec<ArithCond> = sentence.elements[1..]
+                .iter()
+                .filter_map(|e| {
+                    if let Element::Sub { sid: sub_sid, .. } = e {
+                        if self.is_numeric_instance_of_var(*sub_sid, var_name) {
+                            None  // strip (instance var_name NumericClass) conjuncts
+                        } else {
+                            self.extract_arith_cond(*sub_sid, var_name)
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            return match parts.len() {
+                0 => None,
+                1 => Some(parts.into_iter().next().unwrap()),
+                _ => Some(ArithCond::And(parts)),
+            };
+        }
+
+        // (equal ...) is an operator sentence: Op(Equal)
+        // Handles: (equal (FnName ?VAR literal) literal) — e.g. (equal (RemainderFn ?X 2) 0)
+        if matches!(sentence.elements.first(), Some(Element::Op { op: OpKind::Equal, .. })) {
+            let arg0 = sentence.elements.get(1)?;
+            let arg1 = sentence.elements.get(2)?;
+            // (equal (FnName ?VAR other_literal) result_literal)
+            if let (Element::Sub { sid: fn_sid, .. }, Element::Literal { lit: Literal::Number(result), .. }) = (arg0, arg1) {
+                let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
+                if let (
+                    Some(Element::Symbol { id: fn_id, .. }),
+                    Some(Element::Variable { name, .. }),
+                    Some(Element::Literal { lit: Literal::Number(other_arg), .. }),
+                ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
+                {
+                    if name == var_name {
+                        return Some(ArithCond::EqualFn {
+                            fn_name:   self.store.sym_name(*fn_id).to_string(),
+                            other_arg: other_arg.clone(),
+                            result:    result.clone(),
+                        });
+                    }
+                }
+            }
+            // (equal result_literal (FnName ?VAR other_literal)) — reversed
+            if let (Element::Literal { lit: Literal::Number(result), .. }, Element::Sub { sid: fn_sid, .. }) = (arg0, arg1) {
+                let fn_sent = &self.store.sentences[self.store.sent_idx(*fn_sid)];
+                if let (
+                    Some(Element::Symbol { id: fn_id, .. }),
+                    Some(Element::Variable { name, .. }),
+                    Some(Element::Literal { lit: Literal::Number(other_arg), .. }),
+                ) = (fn_sent.elements.get(0), fn_sent.elements.get(1), fn_sent.elements.get(2))
+                {
+                    if name == var_name {
+                        return Some(ArithCond::EqualFn {
+                            fn_name:   self.store.sym_name(*fn_id).to_string(),
+                            other_arg: other_arg.clone(),
+                            result:    result.clone(),
+                        });
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Symbol-headed sentences: greaterThan, greaterThanOrEqualTo, etc.
+        let head_id = sentence.head_symbol()?;
+        let head    = self.store.sym_name(head_id);
+
+        match head {
+            "greaterThan" | "greaterThanOrEqualTo" | "lessThan" | "lessThanOrEqualTo" => {
+                let arg0 = sentence.elements.get(1)?;
+                let arg1 = sentence.elements.get(2)?;
+                // (pred ?VAR literal) — normal order
+                if matches!(arg0, Element::Variable { name, .. } if name == var_name) {
+                    if let Element::Literal { lit: Literal::Number(n), .. } = arg1 {
+                        return Some(self.make_cmp_cond(head, n.clone(), false));
+                    }
+                }
+                // (pred literal ?VAR) — reversed; flip the comparison direction
+                if matches!(arg1, Element::Variable { name, .. } if name == var_name) {
+                    if let Element::Literal { lit: Literal::Number(n), .. } = arg0 {
+                        return Some(self.make_cmp_cond(head, n.clone(), true));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn make_cmp_cond(&self, pred: &str, bound: String, flip: bool) -> ArithCond {
+        match (pred, flip) {
+            ("greaterThan",          false) | ("lessThan",             true)  => ArithCond::GreaterThan          { bound },
+            ("greaterThanOrEqualTo", false) | ("lessThanOrEqualTo",    true)  => ArithCond::GreaterThanOrEqualTo { bound },
+            ("lessThan",             false) | ("greaterThan",          true)  => ArithCond::LessThan             { bound },
+            ("lessThanOrEqualTo",    false) | ("greaterThanOrEqualTo", true)  => ArithCond::LessThanOrEqualTo    { bound },
+            _ => unreachable!(),
+        }
+    }
+
+    /// Returns `true` if `sid` is `(instance var_name C)` where C is a numeric class.
+    fn is_numeric_instance_of_var(&self, sid: SentenceId, var_name: &str) -> bool {
+        let sentence = &self.store.sentences[self.store.sent_idx(sid)];
+        if let (
+            Some(Element::Symbol { id: inst_id, .. }),
+            Some(Element::Variable { name, .. }),
+            Some(Element::Symbol { id: class_id, .. }),
+        ) = (
+            sentence.elements.get(0),
+            sentence.elements.get(1),
+            sentence.elements.get(2),
+        ) {
+            return self.store.sym_name(*inst_id) == "instance"
+                && name == var_name
+                && self.numeric_sort_cache.contains_key(class_id);
+        }
+        false
+    }
+
+    /// Extend the taxonomy and selectively invalidate derived caches
+    /// based on what the new sentences actually contain.
+    ///
+    /// Phase B + C of the semantic-cache optimisation series.  The
+    /// expensive part of a full `rebuild_taxonomy` is the
+    /// `extract_tax_edge_for` scan across every root + sub-sentence
+    /// in the store -- tens of thousands of sentences at SUMO scale.
+    /// This function walks **only the new sids** passed in:
+    ///
+    /// 1. For each new root, classify whether the sentence (or any of
+    ///    its sub-sentences) could affect a derived cache.  The four
+    ///    categories are taxonomy, sort_annotations, numeric_char,
+    ///    semantic_cache (see [`CacheImpact`]).
+    /// 2. For each new sid with a taxonomy impact, extract tax edges
+    ///    via `extract_tax_edge_for` (walking root + sub-sentences of
+    ///    that sid only, not the whole KB).
+    /// 3. If any tax edges were added, rebuild the four derived
+    ///    taxonomy caches (`numeric_sort_cache`, `numeric_ancestor_set`,
+    ///    `poly_variant_symbols`, `numeric_char_cache`).  These
+    ///    rebuilds already scan the taxonomy tables, not sentences,
+    ///    so they're O(edges) and fast.
+    /// 4. Selectively invalidate the other caches based on the
+    ///    per-sentence classification.
+    ///
+    /// When none of the new sentences have a cache impact (the common
+    /// case for SUMO tells like `(attribute X Y)`), this function is
+    /// effectively free -- no scans, no invalidations, no rebuilds.
+    pub(crate) fn extend_taxonomy_with(&mut self, new_sids: &[SentenceId]) {
+        if new_sids.is_empty() {
+            return;
+        }
+
+        // -- Classify: union of impact across all new sentences -------
+        let mut impact = CacheImpact::none();
+        for &sid in new_sids {
+            impact = impact.union(&classify_sentence_tree(&self.store, sid));
+            if impact.all_set() {
+                break;  // already at worst case, no point in more classification
+            }
+        }
+
+        log::debug!(target: "sumo_kb::semantic",
+            "extend_taxonomy_with: {} sids -> impact {:?}", new_sids.len(), impact);
+
+        if !impact.any() {
+            // Most common case: no derived state is affected.
+            return;
+        }
+
+        // -- Extract tax edges from new sentences ---------------------
+        //
+        // Only scan the new sids (and their sub-sentences), not the
+        // entire KB.  Edge duplicates are handled by `extract_tax_edge_for`
+        // itself -- it appends unconditionally, and the downstream
+        // cache rebuilders tolerate duplicates.  For this to be safe
+        // the new sids must not have been extracted before, which
+        // holds by construction in the ingest path.
+        if impact.taxonomy {
+            let before = self.tax_edges.len();
+            for &sid in new_sids {
+                // Extract from the root...
+                self.extract_tax_edge_for(sid);
+                // ...and all its sub-sentences.  Sub-sentence ids are
+                // tracked globally in store.sub_sentences; instead of
+                // iterating that whole list, we recursively walk this
+                // sentence tree (small -- typically <20 nested sids).
+                self.extract_tax_edges_from_subtree(sid);
+            }
+            let added = self.tax_edges.len() - before;
+            log::debug!(target: "sumo_kb::semantic",
+                "extend_taxonomy_with: {} new tax edges added (total now {})",
+                added, self.tax_edges.len());
+
+            if added > 0 {
+                // Rebuild the four derived taxonomy caches.  These
+                // walk tax_edges (O(edges)) + a targeted sentence
+                // scan for numeric_char_cache.  Cheap relative to a
+                // full extract_tax_edge_for-everything rebuild.
+                self.numeric_sort_cache   = self.build_numeric_sort_cache();
+                self.numeric_ancestor_set = self.build_numeric_ancestor_set();
+                self.poly_variant_symbols = self.build_poly_variant_symbols();
+                // numeric_char_cache build is sentence-scanning today;
+                // only rebuild if we flagged a numeric_char impact.
+                if impact.numeric_char {
+                    self.numeric_char_cache = self.build_numeric_char_cache();
+                }
+            }
+        } else if impact.numeric_char {
+            // Numeric-char biconditional added with no taxonomy edge
+            // (unusual -- most numeric biconditionals come with
+            // their subclass declaration elsewhere).  Rebuild that
+            // one cache, leave the rest.
+            self.numeric_char_cache = self.build_numeric_char_cache();
+        }
+
+        // -- Selective invalidation based on impact -------------------
+        if impact.semantic_cache {
+            self.invalidate_semantic_cache();
+        }
+        if impact.sort_annotations {
+            self.invalidate_sort_annotations();
+        }
+    }
+
+    /// Walk every `Element::Sub { sid: ssid, .. }` under the tree rooted at `sid`
+    /// and call `extract_tax_edge_for` for each.  This covers the
+    /// "sub-sentence taxonomy edges" the original full-rebuild picked
+    /// up by iterating `store.sub_sentences`.
+    fn extract_tax_edges_from_subtree(&mut self, sid: SentenceId) {
+        // Collect sub-sids first to avoid borrow conflicts between
+        // iterating the sentence and mutating self.tax_edges.
+        let mut sub_sids: Vec<SentenceId> = Vec::new();
+        collect_sub_sids(&self.store, sid, &mut sub_sids);
+        for ssid in sub_sids {
+            self.extract_tax_edge_for(ssid);
+        }
+    }
+
 
     // -- Basic semantic queries -------------------------------------------------
 
@@ -572,18 +1033,17 @@ impl SemanticLayer {
         &self, rel: SymbolId,
     ) -> Result<Option<RelationDomain>, SemanticError> {
         let process = |head: &str, make: fn(SymbolId) -> RelationDomain| -> Option<RelationDomain> {
-            let sids = self.store.by_head(head).to_vec();
-            for sid in sids {
+            for &sid in self.store.by_head(head) {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
-                    Some(Element::Symbol(id)) if *id == rel
+                    Some(Element::Symbol { id, .. }) if *id == rel
                 );
                 if !arg1_ok { continue; }
                 // `range` has 2 args: (range rel class) -> class is at index 2.
                 // `domain` has 3 args: (domain rel argNum class) -> class at index 3.
                 let class_id = match sentence.elements.get(2) {
-                    Some(Element::Symbol(id)) => *id,
+                    Some(Element::Symbol { id, .. }) => *id,
                     _ => continue,
                 };
                 return Some(make(class_id));
@@ -616,22 +1076,21 @@ impl SemanticLayer {
     fn compute_domain(&self, rel: SymbolId) -> Vec<RelationDomain> {
         let mut entries: Vec<(usize, RelationDomain)> = Vec::new();
         let mut process = |head: &str, make: fn(SymbolId) -> RelationDomain| {
-            let sids = self.store.by_head(head).to_vec();
-            for sid in sids {
+            for &sid in self.store.by_head(head) {
                 let sentence = &self.store.sentences[self.store.sent_idx(sid)];
                 let arg1_ok = matches!(
                     sentence.elements.get(1),
-                    Some(Element::Symbol(id)) if *id == rel
+                    Some(Element::Symbol { id, .. }) if *id == rel
                 );
                 if !arg1_ok { continue; }
                 let pos = match sentence.elements.get(2) {
-                    Some(Element::Literal(Literal::Number(n))) => {
+                    Some(Element::Literal { lit: Literal::Number(n), .. }) => {
                         n.parse::<usize>().unwrap_or(0).saturating_sub(1)
                     }
                     _ => continue,
                 };
                 let class_id = match sentence.elements.get(3) {
-                    Some(Element::Symbol(id)) => *id,
+                    Some(Element::Symbol { id, .. }) => *id,
                     _ => continue,
                 };
                 entries.push((pos, make(class_id)));
@@ -648,13 +1107,122 @@ impl SemanticLayer {
         result
     }
 
+    // -- Doc-relation lookups --------------------------------------------------
+    //
+    // These three scan the store's head-indexed view for
+    // `(documentation SYM LANG TEXT)`, `(termFormat LANG SYM TEXT)`, and
+    // `(format LANG REL TEXT)` respectively.  Results are cached per
+    // SymbolId on first query; subsequent lookups are HashMap hits.
+    //
+    // `language` filters the cached result at retrieval time; the cache
+    // itself always holds the full cross-language list for a symbol.
+
+    /// `(documentation sym lang text)` entries for this symbol.
+    pub(crate) fn documentation(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().documentation.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "documentation", sym, 1, 2, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().documentation.insert(sym, all);
+        filtered
+    }
+
+    /// `(termFormat lang sym text)` entries for this symbol.
+    pub(crate) fn term_format(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().term_format.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "termFormat", sym, 2, 1, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().term_format.insert(sym, all);
+        filtered
+    }
+
+    /// `(format lang relation text)` entries for this symbol.
+    pub(crate) fn format(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        if let Some(v) = self.cache.read().unwrap().format.get(&sym) {
+            return filter_lang(v, language);
+        }
+        let all = Self::collect_doc_relation(&self.store, "format", sym, 2, 1, 3);
+        let filtered = filter_lang(&all, language);
+        self.cache.write().unwrap().format.insert(sym, all);
+        filtered
+    }
+
+    /// Internal scan over head-indexed root sentences with shape
+    /// `(head A B C)` where `target_idx` / `lang_idx` / `text_idx` pick
+    /// the target-symbol, language-tag, and text-literal argument
+    /// positions (1-based over `elements`).  Runs once per cache miss.
+    fn collect_doc_relation(
+        store:      &KifStore,
+        head:       &str,
+        target:     SymbolId,
+        target_idx: usize,
+        lang_idx:   usize,
+        text_idx:   usize,
+    ) -> Vec<DocEntry> {
+        let mut out = Vec::new();
+        for &sid in store.by_head(head) {
+            let sent = &store.sentences[store.sent_idx(sid)];
+            let tgt  = match sent.elements.get(target_idx) {
+                Some(Element::Symbol { id, .. }) => *id,
+                _ => continue,
+            };
+            if tgt != target { continue; }
+            let lang = match sent.elements.get(lang_idx) {
+                Some(Element::Symbol { id, .. }) => store.sym_name(*id).to_string(),
+                _ => continue,
+            };
+            let text = match sent.elements.get(text_idx) {
+                Some(Element::Literal { lit: Literal::Str(s), .. }) => strip_quotes(s),
+                _ => continue,
+            };
+            out.push(DocEntry { language: lang, text });
+        }
+        out
+    }
+
+    /// Granular cache eviction for a specific set of symbols.
+    ///
+    /// Evicts every entry in the symbol-keyed caches whose key is in
+    /// `symbols`, plus every entry in the `(SymbolId, SymbolId)`
+    /// `has_ancestor` cache whose *either* key is in the set
+    /// (conservative over-eviction -- see plan risk #9).  Leaves
+    /// unrelated entries untouched, so a single-sentence edit doesn't
+    /// flush the whole cache.
+    ///
+    /// Does **not** touch `SortAnnotations` -- that cache rebuilds
+    /// wholesale via `invalidate_sort_annotations` since its
+    /// dependency tracking is coarser.
+    pub(crate) fn invalidate_symbols(&self, symbols: &HashSet<SymbolId>) {
+        if symbols.is_empty() { return; }
+        let mut cache = self.cache.write().unwrap();
+        for &id in symbols {
+            cache.is_instance.remove(&id);
+            cache.is_class.remove(&id);
+            cache.is_relation.remove(&id);
+            cache.is_predicate.remove(&id);
+            cache.is_function.remove(&id);
+            cache.arity.remove(&id);
+            cache.domain.remove(&id);
+            cache.range.remove(&id);
+            cache.documentation.remove(&id);
+            cache.term_format.remove(&id);
+            cache.format.remove(&id);
+        }
+        cache.has_ancestor.retain(|&(a, b), _| {
+            !symbols.contains(&a) && !symbols.contains(&b)
+        });
+    }
+
     // -- Validation ------------------------------------------------------------
 
     pub(crate) fn validate_element(&self, el: &Element) -> Result<(), SemanticError> {
         let id = match el {
             Element::Variable { is_row: false, .. } => return Ok(()),
-            Element::Symbol(id)  => *id,
-            Element::Sub(sid)    => return self.validate_sentence(*sid),
+            Element::Symbol { id, .. }  => *id,
+            Element::Sub { sid, .. }    => return self.validate_sentence(*sid),
             _                    => return Ok(()),
         };
         if !self.has_ancestor_by_name(id, "Entity") {
@@ -725,7 +1293,7 @@ impl SemanticLayer {
             "validating sentence sid={}", sid);
 
         let head_id = match sentence.elements.first() {
-            Some(Element::Symbol(id))                    => *id,
+            Some(Element::Symbol { id, .. })                    => *id,
             Some(Element::Variable { id, is_row: false, .. }) => *id,
             _ => unreachable!("parser ensures sentence head is a symbol or variable"),
         };
@@ -780,7 +1348,7 @@ impl SemanticLayer {
         let sub_ids: Vec<SentenceId> = self.store.sentences[self.store.sent_idx(sid)]
             .elements[args_start..]
             .iter()
-            .filter_map(|e| if let Element::Sub(id) = e { Some(*id) } else { None })
+            .filter_map(|e| if let Element::Sub { sid: id, .. } = e { Some(*id) } else { None })
             .collect();
 
         for (idx, sub_id) in sub_ids.iter().enumerate() {
@@ -795,7 +1363,7 @@ impl SemanticLayer {
         let sentence = &self.store.sentences[self.store.sent_idx(sid)];
         if sentence.is_operator() { return true; }
         let head_id = match sentence.elements.first() {
-            Some(Element::Symbol(id))    => *id,
+            Some(Element::Symbol { id, .. })    => *id,
             Some(Element::Variable { id, .. }) => *id,
             _ => return false,
         };
@@ -808,7 +1376,7 @@ impl SemanticLayer {
 
     fn arg_satisfies_domain(&self, arg: &Element, dom: &RelationDomain) -> bool {
         match arg {
-            Element::Symbol(sym_id) => {
+            Element::Symbol { id: sym_id, .. } => {
                 let sym_id = *sym_id;
                 match dom {
                     RelationDomain::Domain(dom_id) => {
@@ -848,9 +1416,9 @@ impl SemanticLayer {
                 }
             }
             Element::Variable { is_row: true, .. }
-            | Element::Sub(_)
-            | Element::Literal(_) => true,
-            Element::Op(_) => false,
+            | Element::Sub { sid: _, .. }
+            | Element::Literal { lit: _, .. } => true,
+            Element::Op { op: _, .. } => false,
         }
     }
 
@@ -862,13 +1430,6 @@ impl SemanticLayer {
     /// The only hardcoded strings in the system are the three roots in
     /// `NUMERIC_ROOTS`; all subclass memberships are resolved at taxonomy
     /// build time and stored in `numeric_sort_cache`.
-    pub(crate) fn sort_for(&self, sumo_type: &str) -> Sort {
-        match self.store.sym_id(sumo_type) {
-            Some(id) => self.sort_for_id(id),
-            None     => Sort::Individual,
-        }
-    }
-
     /// Map a `SymbolId` to its most specific primitive [`Sort`].
     ///
     /// O(1) -- a single `HashMap` lookup with no string operations.
@@ -876,178 +1437,6 @@ impl SemanticLayer {
     pub(crate) fn sort_for_id(&self, class_id: SymbolId) -> Sort {
         if class_id == u64::MAX { return Sort::Individual; }
         self.numeric_sort_cache.get(&class_id).copied().unwrap_or(Sort::Individual)
-    }
-
-    // -- VarTypeInference ------------------------------------------------------
-
-    /// Depth-first walk of the sentence tree rooted at `sid`.
-    /// `f` is called with each node's element slice (parent before children).
-    fn visit_sentence<F>(sid: SentenceId, store: &KifStore, f: &mut F)
-    where
-        F: FnMut(&[Element]),
-    {
-        let elems = &store.sentences[store.sent_idx(sid)].elements;
-        f(elems);
-        for elem in elems {
-            if let Element::Sub(sub_sid) = elem {
-                Self::visit_sentence(*sub_sid, store, f);
-            }
-        }
-    }
-
-    /// Walk every root sentence and collect per-variable class constraints from
-    /// three patterns, then resolve each variable's constraints to a `Sort`.
-    ///
-    /// Resolution uses **max-sort**: map each class to a `Sort`, then:
-    ///   - If all constraints are numeric (non-Individual) -> take the most
-    ///     specific (maximum) sort.  This is correct because numeric sorts are
-    ///     totally ordered by inclusion (Integer <= Rational <= Real), so the
-    ///     most specific sort satisfies all weaker constraints simultaneously.
-    ///     Example: PositiveInteger + RealNumber -> Integer ($int).
-    ///   - If any constraint is Individual (non-numeric) -> fall back to
-    ///     Individual.  A variable that is both a Number and an Animal cannot
-    ///     be given a useful numeric type.
-    ///
-    /// Only non-Individual (numeric) sorts are stored in the output map.
-    fn build_var_type_inference(&self) -> VarTypeInference {
-        let entity_id = self.store.sym_id("Entity").unwrap_or(u64::MAX);
-        let mut constraints: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
-
-        for &root_sid in &self.store.roots {
-            Self::visit_sentence(root_sid, &self.store, &mut |elems| {
-
-                // -- Pattern 1: (instance ?X Class) --------------------------
-                // Skip Entity (everything is an Entity -> no useful constraint)
-                // and u64::MAX (gap sentinel, not a real class).
-                if elems.len() >= 3 {
-                    let is_instance = matches!(&elems[0],
-                        Element::Symbol(id) if self.store.sym_name(*id) == "instance");
-                    if is_instance {
-                        if let (Element::Variable { id: var_id, .. },
-                                Element::Symbol(class_id)) = (&elems[1], &elems[2])
-                        {
-                            if *class_id != entity_id && *class_id != u64::MAX {
-                                constraints.entry(*var_id).or_default().push(*class_id);
-                            }
-                        }
-                    }
-                }
-
-                // -- Pattern 2: argument position with domain axiom -----------
-                // (Rel ?X ?Y) where Rel has (domain Rel N SomeClass) gives ?X
-                // the class constraint SomeClass.  Variable-arity: the last
-                // declared domain carries over to all later positions.
-                // DomainSubclass positions are skipped (they constrain subclass
-                // variables, not instance variables).
-                //
-                // Entity IS included here (unlike Pattern 1).  A variable in an
-                // Entity-domain position is typed as $i; including that as a
-                // Sort::Individual constraint lets the "any-Individual -> skip"
-                // rule in the resolution step prevent a spurious numeric sort
-                // for variables that also appear in non-numeric positions.
-                if let Some(Element::Symbol(head_id)) = elems.first() {
-                    let domains = self.domain(*head_id);
-                    if !domains.is_empty() {
-                        let rest = domains.last().cloned();
-                        for (i, elem) in elems[1..].iter().enumerate() {
-                            if let Element::Variable { id: var_id, .. } = elem {
-                                let dom = domains.get(i).or_else(|| rest.as_ref());
-                                if let Some(RelationDomain::Domain(class_id)) = dom {
-                                    if *class_id != u64::MAX {
-                                        constraints.entry(*var_id)
-                                            .or_default().push(*class_id);
-                                    }
-                                }
-                                // RelationDomain::DomainSubclass -> skip
-                            }
-                        }
-                    }
-                }
-
-                // -- Pattern 3: (equal ?X (Fn ...)) with range axiom ---------
-                // If (range Fn Class) exists, then in (equal ?X (Fn ...)) the
-                // variable ?X gets Class as a constraint.  Both argument orders
-                // are tried.  RangeSubclass ranges are skipped.
-                if matches!(elems.first(), Some(Element::Op(OpKind::Equal))) {
-                    for &(fn_idx, var_idx) in &[(1usize, 2usize), (2, 1)] {
-                        let (fn_elem, var_elem) = match (elems.get(fn_idx), elems.get(var_idx)) {
-                            (Some(f), Some(v)) => (f, v),
-                            _ => continue,
-                        };
-                        let var_id = match var_elem {
-                            Element::Variable { id, .. } => id,
-                            _ => continue,
-                        };
-                        let fn_sub_sid = match fn_elem {
-                            Element::Sub(s) => s,
-                            _ => continue,
-                        };
-                        let fn_elems = &self.store.sentences[
-                            self.store.sent_idx(*fn_sub_sid)].elements;
-                        let fn_sym_id = match fn_elems.first() {
-                            Some(Element::Symbol(id)) => *id,
-                            _ => continue,
-                        };
-                        if let Ok(Some(RelationDomain::Domain(class_id))) =
-                            self.range(fn_sym_id)
-                        {
-                            if class_id != entity_id && class_id != u64::MAX {
-                                constraints.entry(*var_id)
-                                    .or_default().push(class_id);
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        let mut var_sorts = HashMap::new();
-        for (var_id, classes) in constraints {
-            // Map each class to a Sort, then resolve.
-            let sorts: Vec<Sort> = classes.iter()
-                .map(|&c| self.sort_for_id(c))
-                .collect();
-            // Take the most specific sort across all constraints.
-            //
-            // If the winning sort is numeric (> Individual), verify that all
-            // constraints that mapped to Individual are numeric-ancestor classes
-            // (e.g. Entity, Quantity -- superclasses of the numeric roots).
-            // Such classes are compatible: Integer IS-A Entity, so a variable
-            // constrained by [Integer, Entity] is correctly typed as Integer.
-            //
-            // A non-ancestor Individual constraint (e.g. Animal) means the
-            // variable could genuinely be non-numeric at runtime -- leave it
-            // absent so TFF defaults it to $i.
-            if let Some(&sort) = sorts.iter().max() {
-                if sort != Sort::Individual {
-                    let all_compatible = classes.iter()
-                        .zip(sorts.iter())
-                        .all(|(&cls, &s)| {
-                            s != Sort::Individual
-                                || self.numeric_ancestor_set.contains(&cls)
-                        });
-                    if all_compatible {
-                        var_sorts.insert(var_id, sort);
-                    }
-                }
-            }
-        }
-
-        VarTypeInference { var_sorts }
-    }
-
-    /// Returns the lazily-computed KB-wide variable sort table.
-    ///
-    /// On first call builds the table by walking all root sentences.
-    /// Result is cached; cleared by `invalidate_cache()`.
-    pub(crate) fn var_type_inference(&self) -> RwLockReadGuard<'_, Option<VarTypeInference>> {
-        {
-            let mut guard = self.var_type_inference.write().unwrap();
-            if guard.is_none() {
-                *guard = Some(self.build_var_type_inference());
-            }
-        }
-        self.var_type_inference.read().unwrap()
     }
 
     // -- SortAnnotations -------------------------------------------------------
@@ -1129,6 +1518,207 @@ impl SemanticLayer {
         self.store.roots.iter()
             .filter_map(|&sid| self.validate_sentence(sid).err().map(|e| (sid, e)))
             .collect()
+    }
+
+    /// Run `validate_sentence` and return *every* `SemanticError`
+    /// it raises -- warnings and hard errors alike -- so the LSP
+    /// can turn each into a diagnostic without caring about the
+    /// CLI's severity config.
+    ///
+    /// Internally installs a thread-local collector via
+    /// [`crate::error::with_collector`] so the existing
+    /// `handle()`-based dispatch loop in `validate_sentence` /
+    /// `validate_element` is reused verbatim.  The `handle()`
+    /// calls push into the collector instead of swallowing the
+    /// warning or returning the hard error, so every check in the
+    /// chain runs to completion.
+    pub(crate) fn validate_sentence_collect(&self, sid: SentenceId) -> Vec<SemanticError> {
+        let (_, errs) = crate::error::with_collector(|| self.validate_sentence(sid));
+        errs
+    }
+}
+
+// -- Doc-relation helpers -----------------------------------------------------
+
+/// Strip the surrounding `"..."` that the KIF tokenizer preserves on
+/// string literals.  Safe on unquoted input -- no-op when the bounds
+/// don't match.
+fn strip_quotes(s: &str) -> String {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Filter a cached `DocEntry` list by language, returning owned clones.
+fn filter_lang(entries: &[DocEntry], want: Option<&str>) -> Vec<DocEntry> {
+    match want {
+        None    => entries.to_vec(),
+        Some(l) => entries.iter().filter(|e| e.language == l).cloned().collect(),
+    }
+}
+
+// ===========================================================================
+//  CacheImpact classification
+// ===========================================================================
+
+/// Which derived caches a candidate sentence can affect.
+///
+/// Built by [`classify_sentence_tree`] over a candidate sid; unioned
+/// across a batch of new sids by [`SemanticLayer::extend_taxonomy_with`]
+/// to decide what to rebuild or invalidate.
+///
+/// All-false is the common case: a sentence that neither introduces a
+/// taxonomy edge, nor a domain/range axiom, nor a numeric-class
+/// biconditional, nor any new symbol classification.  Most SUMO
+/// axioms are of this kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CacheImpact {
+    /// The sentence (or a sub-sentence) is a
+    /// `subclass`/`instance`/`subrelation`/`subAttribute` assertion
+    /// with concrete arguments.  Triggers tax-edge extraction and
+    /// derived-cache rebuild.
+    pub taxonomy:         bool,
+    /// The sentence is a `domain` / `range` / `domainSubclass`
+    /// axiom.  Triggers `SortAnnotations` invalidation.
+    pub sort_annotations: bool,
+    /// The sentence looks like a numeric-class characterisation
+    /// biconditional (`(<=> (instance ?X NC) cond)` or similar).
+    /// Triggers `numeric_char_cache` rebuild.
+    pub numeric_char:     bool,
+    /// Any symbol-classification-affecting shape.  Conservative: we
+    /// set this whenever taxonomy or sort_annotations are flagged,
+    /// since those can change `is_instance` / `is_class` /
+    /// `is_relation` / `is_function` answers.
+    pub semantic_cache:   bool,
+}
+
+impl CacheImpact {
+    pub(crate) const fn none() -> Self {
+        Self { taxonomy: false, sort_annotations: false, numeric_char: false, semantic_cache: false }
+    }
+    pub(crate) fn any(&self) -> bool {
+        self.taxonomy || self.sort_annotations || self.numeric_char || self.semantic_cache
+    }
+    pub(crate) fn all_set(&self) -> bool {
+        self.taxonomy && self.sort_annotations && self.numeric_char && self.semantic_cache
+    }
+    pub(crate) fn union(&self, other: &Self) -> Self {
+        Self {
+            taxonomy:         self.taxonomy         || other.taxonomy,
+            sort_annotations: self.sort_annotations || other.sort_annotations,
+            numeric_char:     self.numeric_char     || other.numeric_char,
+            semantic_cache:   self.semantic_cache   || other.semantic_cache,
+        }
+    }
+}
+
+/// Classify a sentence's impact on derived caches.
+///
+/// Walks the sentence tree: the root sentence + every `Element::Sub`
+/// descendant.  A subclass/instance/etc. head flag triggers the
+/// taxonomy + semantic_cache impacts; a domain/range head triggers
+/// sort_annotations + semantic_cache.  A biconditional or implication
+/// whose body is `(instance ?X NumericLike)` triggers numeric_char.
+///
+/// Conservative by design: if we're uncertain, we do NOT flag an
+/// impact.  Under-flagging would cause caches to go stale
+/// (correctness bug), but there's no known sentence shape today that
+/// slips past this walker AND would affect a cache.  The
+/// `extend_taxonomy_with` caller documents the assumption.
+pub(crate) fn classify_sentence_tree(
+    store: &KifStore,
+    sid:   SentenceId,
+) -> CacheImpact {
+    let mut out = CacheImpact::none();
+    classify_sid_into(store, sid, &mut out);
+    out
+}
+
+fn classify_sid_into(store: &KifStore, sid: SentenceId, out: &mut CacheImpact) {
+    if !store.has_sentence(sid) {
+        return;
+    }
+    let sentence = &store.sentences[store.sent_idx(sid)];
+
+    // Operator-headed sentences (<=>, =>, forall, etc.) have no
+    // symbol head; instead we check the operator + body shape.
+    // Numeric-char biconditionals are the main case that matters:
+    // `(<=> (instance ?X PositiveInteger) (greaterThan ?X 0))`.
+    if let Some(op) = sentence.op() {
+        if matches!(op, OpKind::Iff | OpKind::Implies) && sentence.elements.len() >= 3 {
+            if contains_instance_pattern(store, &sentence.elements[1])
+                || contains_instance_pattern(store, &sentence.elements[2])
+            {
+                out.numeric_char = true;
+            }
+        }
+    }
+
+    // Direct head classification (symbol-headed sentences only).
+    if let Some(head_id) = sentence.head_symbol() {
+        classify_head_name_into(store.sym_name(head_id), out);
+    }
+
+    // Recurse into sub-sentences.  Sub-sentences may be direct
+    // facts (e.g. a subclass edge nested inside an implication's
+    // consequent).
+    for el in &sentence.elements {
+        if let Element::Sub { sid: sub_sid, .. } = el {
+            classify_sid_into(store, *sub_sid, out);
+        }
+    }
+}
+
+fn classify_head_name_into(
+    head: &str,
+    out:  &mut CacheImpact,
+) {
+    match head {
+        // Taxonomy-edge heads.  The argument shape is validated by
+        // `extract_tax_edge_for` at extraction time; if the sentence
+        // is malformed (wrong arity, non-symbol args), the extraction
+        // silently skips it, so flagging here is safe -- extraction
+        // may be a no-op even when the flag is set.
+        "subclass" | "instance" | "subrelation" | "subAttribute" => {
+            out.taxonomy       = true;
+            out.semantic_cache = true;
+        }
+        // Domain/range axioms.
+        "domain" | "range" | "domainSubclass" => {
+            out.sort_annotations = true;
+            out.semantic_cache   = true;
+        }
+        _ => {}
+    }
+}
+
+/// Conservative "looks like `(instance ?X Class)`" check used only to
+/// flag numeric_char_cache rebuilds.  Returns true for an
+/// `Element::Sub` whose sentence has `instance` as its head; false
+/// otherwise.  No sort analysis -- the subsequent rebuild pass is
+/// what decides whether the class is actually numeric.
+fn contains_instance_pattern(store: &KifStore, el: &Element) -> bool {
+    let Element::Sub { sid, .. } = el else { return false };
+    if !store.has_sentence(*sid) { return false; }
+    let s = &store.sentences[store.sent_idx(*sid)];
+    match s.head_symbol() {
+        Some(id) => store.sym_name(id) == "instance",
+        None     => false,
+    }
+}
+
+/// Collect every `Element::Sub { sid: ssid, .. }` descendant of `sid` (excluding
+/// `sid` itself) into `out`.  Ordering is a pre-order traversal.
+fn collect_sub_sids(store: &KifStore, sid: SentenceId, out: &mut Vec<SentenceId>) {
+    if !store.has_sentence(sid) { return; }
+    for el in &store.sentences[store.sent_idx(sid)].elements {
+        if let Element::Sub { sid: ssid, .. } = el {
+            out.push(*ssid);
+            collect_sub_sids(store, *ssid, out);
+        }
     }
 }
 
@@ -1220,6 +1810,40 @@ mod tests {
     }
 
     #[test]
+    fn validate_sentence_collect_surfaces_warnings() {
+        // `HeadNotRelation` is a default-warning severity error
+        // (see `error.rs:promote` -- nothing is promoted in this
+        // test).  The existing `validate_sentence` swallows it
+        // (returns `Ok(())`), but `validate_sentence_collect`
+        // must surface it.
+        let layer = kif(r#"
+            (subclass Foo Entity)
+            ;; `Foo` is NOT declared as a relation -- using it as
+            ;; a sentence head should raise HeadNotRelation.
+            (Foo Bar Baz)
+        "#);
+        // Find the sentence whose head is "Foo" (the bad one).
+        let foo_id = layer.store.sym_id("Foo").expect("Foo interned");
+        let sid = *layer.store.by_head("Foo").iter()
+            .find(|&&s| {
+                let sent = &layer.store.sentences[layer.store.sent_idx(s)];
+                matches!(sent.elements.first(),
+                    Some(crate::types::Element::Symbol { id, .. }) if *id == foo_id)
+            })
+            .expect("found a sentence headed by Foo");
+
+        // Sanity: the existing severity-aware API returns Ok (warning-level).
+        assert!(layer.validate_sentence(sid).is_ok(),
+            "HeadNotRelation is a warning by default; validate_sentence must return Ok");
+
+        // The collector API must surface it.
+        let errs = layer.validate_sentence_collect(sid);
+        assert!(errs.iter().any(|e| e.code() == "E002"),
+            "validate_sentence_collect should include HeadNotRelation (E002); got {:?}",
+            errs.iter().map(|e| e.code()).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn is_logical_sentence() {
         let layer = kif("
             (and (relation A B) (relation D C))
@@ -1231,71 +1855,6 @@ mod tests {
         assert!(layer.is_logical_sentence(store.roots[0]));
         assert!(layer.is_logical_sentence(store.roots[2]));
         assert!(!layer.is_logical_sentence(store.roots[3]));
-    }
-
-    #[test]
-    fn var_type_inference_instance_pattern() {
-        // Pattern 1: (instance ?X Integer) inside an implication.
-        // visit_sentence recurses into sub-sentences, so the instance call is found.
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (=> (instance ?X Integer) (Positive ?X))
-        ");
-        let vti_guard = layer.var_type_inference();
-        let vti = vti_guard.as_ref().unwrap();
-        // ?X appears in the => sentence; its SymbolId is unique due to scope suffix.
-        // Find it by looking for the variable in the roots.
-        let x_id = layer.store.roots.iter().find_map(|&sid| {
-            let mut found = None;
-            SemanticLayer::visit_sentence(sid, &layer.store, &mut |elems| {
-                for e in elems {
-                    if let Element::Variable { id, .. } = e { found = Some(*id); }
-                }
-            });
-            found
-        }).expect("should find ?X");
-        assert_eq!(vti.var_sorts.get(&x_id), Some(&Sort::Integer));
-    }
-
-    #[test]
-    fn var_type_inference_lca_incompatible() {
-        // ?X constrained by both Integer and Animal -> Animal maps to Individual ->
-        // mixed numeric/non-numeric -> not stored (defaults to $i at use sites).
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (subclass Animal Entity)
-            (=> (or (instance ?X Integer) (instance ?X Animal)) (foo ?X))
-        ");
-        let vti_guard = layer.var_type_inference();
-        let vti = vti_guard.as_ref().unwrap();
-        // All ?X occurrences in the => sentence share the same SymbolId.
-        let x_id = layer.store.roots.iter().find_map(|&sid| {
-            let mut found = None;
-            SemanticLayer::visit_sentence(sid, &layer.store, &mut |elems| {
-                for e in elems {
-                    if let Element::Variable { id, .. } = e { found = Some(*id); }
-                }
-            });
-            found
-        }).expect("should find ?X");
-        assert_eq!(vti.var_sorts.get(&x_id), None,
-            "Integer + Animal: mixed numeric/non-numeric -> should not be stored");
-    }
-
-    #[test]
-    fn var_type_inference_cleared_on_invalidate() {
-        let layer = kif("
-            (subclass Integer RationalNumber)
-            (subclass RationalNumber RealNumber)
-            (=> (instance ?X Integer) (Positive ?X))
-        ");
-        // Trigger build, verify non-empty.
-        { assert!(!layer.var_type_inference().as_ref().unwrap().var_sorts.is_empty()); }
-        // Invalidate clears it; next call rebuilds.
-        layer.invalidate_cache();
-        { assert!(!layer.var_type_inference().as_ref().unwrap().var_sorts.is_empty()); }
     }
 
     #[test]
@@ -1399,5 +1958,194 @@ mod tests {
         // Animal -> Entity from "core" should still be intact.
         assert!(layer.has_ancestor_by_name(animal, "Entity"),
             "Animal -> Entity (from core file) should still exist");
+    }
+
+    // =====================================================================
+    //  Phase B + C: CacheImpact classifier and incremental taxonomy
+    // =====================================================================
+
+    #[test]
+    fn classify_taxonomy_heads() {
+        // Each of these should flag `taxonomy: true` and nothing else
+        // outside the semantic_cache pairing.
+        let kif = "
+            (subclass Dog Animal)
+            (instance Fido Dog)
+            (subrelation parent ancestor)
+            (subAttribute Happy Mood)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        for &sid in &store.roots {
+            let impact = classify_sentence_tree(&store, sid);
+            assert!(impact.taxonomy,
+                "expected taxonomy=true for sid={sid}: {:?}", impact);
+            assert!(impact.semantic_cache,
+                "expected semantic_cache=true alongside taxonomy: {:?}", impact);
+            assert!(!impact.sort_annotations,
+                "unexpected sort_annotations: {:?}", impact);
+            assert!(!impact.numeric_char,
+                "unexpected numeric_char: {:?}", impact);
+        }
+    }
+
+    #[test]
+    fn classify_domain_range_axioms() {
+        let kif = "
+            (domain parent 1 Organism)
+            (range mother Woman)
+            (domainSubclass shapeOf 1 Object)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        for &sid in &store.roots {
+            let impact = classify_sentence_tree(&store, sid);
+            assert!(impact.sort_annotations,
+                "expected sort_annotations=true for sid={sid}: {:?}", impact);
+            assert!(!impact.taxonomy,
+                "unexpected taxonomy: {:?}", impact);
+        }
+    }
+
+    #[test]
+    fn classify_non_taxonomy_sentence_has_no_impact() {
+        // Typical SUMO axiom that doesn't affect any cache.
+        let kif = "(attribute Alice Tall)";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(!impact.any(),
+            "expected no impact for plain non-taxonomy sentence, got {:?}", impact);
+    }
+
+    #[test]
+    fn classify_numeric_biconditional_flags_numeric_char() {
+        // (<=> (instance ?X PositiveInteger) (greaterThan ?X 0))
+        let kif = "(<=> (instance ?X PositiveInteger) (greaterThan ?X 0))";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(impact.numeric_char,
+            "expected numeric_char=true for numeric biconditional, got {:?}", impact);
+    }
+
+    #[test]
+    fn classify_nested_subclass_in_implication() {
+        // Rule: taxonomy-head inside implication.  The classifier
+        // walks sub-sentences so it should still flag taxonomy --
+        // even though the top-level head is `=>`, a `(subclass ...)`
+        // sub-sentence exists underneath.
+        let kif = "(=> (foo ?X) (subclass ?X Animal))";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+        let impact = classify_sentence_tree(&store, store.roots[0]);
+        assert!(impact.taxonomy,
+            "expected taxonomy=true for nested subclass, got {:?}", impact);
+    }
+
+    #[test]
+    fn extend_taxonomy_with_matches_full_rebuild() {
+        // Drive extend_taxonomy_with and rebuild_taxonomy against
+        // the same KB and check that the derived caches match.
+        // This is the central correctness invariant for Phase C.
+        let kif = "
+            (subclass Dog Animal)
+            (subclass Animal Entity)
+            (subclass Cat Animal)
+            (instance Fido Dog)
+            (domain parent 1 Organism)
+            (range father Man)
+            (attribute Alice Warm)
+        ";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif, "t");
+
+        // Baseline: full rebuild.
+        let layer_full = SemanticLayer::new({
+            let mut s = KifStore::default();
+            load_kif(&mut s, kif, "t");
+            s
+        });
+
+        // Incremental: start empty, extend with the root sids.
+        let mut layer_inc = SemanticLayer::new(KifStore::default());
+        let mut store2 = KifStore::default();
+        load_kif(&mut store2, kif, "t");
+        let roots = store2.roots.clone();
+        layer_inc.store = store2;
+        layer_inc.extend_taxonomy_with(&roots);
+
+        // Sort edges by a deterministic key for comparison (order
+        // differs between the two paths because rebuild scans
+        // root+sub while extend_with walks roots + sub tree per root).
+        let mut full_edges: Vec<_> = layer_full.tax_edges.iter()
+            .map(|e| (e.from, e.to, e.rel.clone())).collect();
+        let mut inc_edges: Vec<_> = layer_inc.tax_edges.iter()
+            .map(|e| (e.from, e.to, e.rel.clone())).collect();
+        full_edges.sort();
+        inc_edges.sort();
+
+        assert_eq!(full_edges, inc_edges,
+            "tax_edges differ between full-rebuild and incremental-extend paths");
+
+        // Derived caches should also agree.
+        let full_ns: Vec<_> = {
+            let mut v: Vec<_> = layer_full.numeric_sort_cache.iter()
+                .map(|(k, v)| (*k, *v)).collect();
+            v.sort();
+            v
+        };
+        let inc_ns: Vec<_> = {
+            let mut v: Vec<_> = layer_inc.numeric_sort_cache.iter()
+                .map(|(k, v)| (*k, *v)).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(full_ns, inc_ns, "numeric_sort_cache differs");
+    }
+
+    #[test]
+    fn extend_taxonomy_with_no_impact_does_nothing() {
+        // A batch of purely non-taxonomy sentences should not touch
+        // the taxonomy or any derived cache.
+        let kif_base = "(subclass Dog Animal)";
+        let mut store = KifStore::default();
+        load_kif(&mut store, kif_base, "base");
+        let mut layer = SemanticLayer::new(store);
+        let before_edges = layer.tax_edges.len();
+
+        // Add a non-taxonomy sentence.
+        let mut kif_extra = "(attribute Alice Tall) (part Alice Earth)";
+        load_kif(&mut layer.store, kif_extra, "extra");
+        let _ = &mut kif_extra;  // silence warning
+        let new_sids: Vec<_> = layer.store.file_roots.get("extra")
+            .cloned().unwrap_or_default();
+        assert_eq!(new_sids.len(), 2);
+
+        layer.extend_taxonomy_with(&new_sids);
+
+        // tax_edges unchanged.
+        assert_eq!(layer.tax_edges.len(), before_edges,
+            "no-impact batch should not change tax_edges");
+    }
+
+    #[test]
+    fn granular_invalidate_independence() {
+        // invalidate_semantic_cache does not touch sort_annotations.
+        let mut store = KifStore::default();
+        load_kif(&mut store, BASE, "base");
+        let layer = SemanticLayer::new(store);
+
+        // Populate the sort_annotations cache.
+        drop(layer.sort_annotations());
+        assert!(layer.sort_annotations.read().unwrap().is_some());
+
+        layer.invalidate_semantic_cache();
+        // sort_annotations is not touched by semantic-cache invalidation.
+        assert!(layer.sort_annotations.read().unwrap().is_some(),
+            "invalidate_semantic_cache should NOT clear sort_annotations");
+
+        layer.invalidate_sort_annotations();
+        assert!(layer.sort_annotations.read().unwrap().is_none());
     }
 }

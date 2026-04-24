@@ -1,0 +1,32 @@
+[package]
+name    = "sumo-lsp"
+version.workspace = true
+edition.workspace = true
+
+# Standalone stdio language-server binary for KIF / SUMO.  Editor
+# integration (VSCode, Neovim, Helix, Emacs, Zed) lives in
+# downstream extension repositories; this crate is protocol-only.
+[[bin]]
+name = "sumo-lsp"
+path = "src/main.rs"
+
+[lib]
+name = "sumo_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+# sumo-kb is the only first-party dep.  No `ask` / `integrated-prover`
+# / `cnf` / `persist` features -- LSP wants parse + validate + manpage
+# and nothing else (no Vampire, no CMake, no LMDB).
+sumo-kb      = { path = "../sumo-kb", default-features = false }
+
+lsp-server      = "0.7"
+lsp-types       = "0.95"
+crossbeam-channel = "0.5"
+ropey           = "1.6"
+url             = "2.5"
+serde.workspace = true
+serde_json.workspace = true
+log.workspace   = true
+env_logger      = "0.11"
+anyhow          = "1"

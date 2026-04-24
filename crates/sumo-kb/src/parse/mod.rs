@@ -7,9 +7,13 @@ pub mod kif;
 pub mod ast;
 pub mod macros;
 pub mod error;
+pub mod fingerprint;
+pub mod document;
 
 pub use ast::*;
 pub use error::*;
+pub use fingerprint::sentence_fingerprint;
+pub use document::{parse_document, ParsedDocument};
 
 use crate::parse::kif::tokenizer::Token;
 

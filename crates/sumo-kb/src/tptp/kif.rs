@@ -19,7 +19,7 @@
 
 use crate::parse::ast::{AstNode, Span, OpKind};
 
-fn dummy_span() -> Span { Span { file: String::new(), line: 0, col: 0, offset: 0 } }
+fn dummy_span() -> Span { Span::point(String::new(), 0, 0, 0) }
 fn sym(name: &str)  -> AstNode { AstNode::Symbol   { name: name.to_owned(), span: dummy_span() } }
 fn op(o: OpKind)    -> AstNode { AstNode::Operator  { op: o, span: dummy_span() } }
 fn lst(els: Vec<AstNode>) -> AstNode { AstNode::List { elements: els, span: dummy_span() } }
@@ -27,15 +27,27 @@ fn lst(els: Vec<AstNode>) -> AstNode { AstNode::List { elements: els, span: dumm
 /// Convert a single Vampire/TPTP formula string to a SUO-KIF [`AstNode`].
 ///
 /// Returns `None` when the formula cannot be parsed.
-/// The top-level universal quantifier is stripped (implicit in SUO-KIF).
+///
+/// **Top-level universal quantifiers are stripped** (they're implicit
+/// in SUO-KIF convention — a free uppercase variable is implicitly
+/// universally quantified).  Any number of stacked leading `!` blocks
+/// is removed, so `! [X0] : ! [X1] : body` and `! [X0,X1] : body` both
+/// yield the same AST.  A `!` that occurs under another connective
+/// (e.g. `! [X0] : (foo(X0) => ! [X1] : bar(X1))`) is preserved as a
+/// visible `(forall (?X1) ...)` block.
+///
+/// Same-kind nested quantifiers that aren't at the top level are
+/// collapsed by [`Fml::peel_same_quantifier`] during AST
+/// conversion — `(exists (?X1) (exists (?X2) body))` becomes
+/// `(exists (?X1 ?X2) body)`.
 pub fn formula_to_ast(tptp: &str) -> Option<AstNode> {
     let tokens = tokenize(tptp.trim());
     let mut parser = Parser { tokens, pos: 0 };
-    match parser.parse_formula() {
-        Some(Fml::Forall(_, body)) => Some(body.to_ast_node()),
-        Some(fml) => Some(fml.to_ast_node()),
-        None => None,
+    let mut current = parser.parse_formula()?;
+    while let Fml::Forall(_, body) = current {
+        current = *body;
     }
+    Some(current.to_ast_node())
 }
 
 /// Convert a single Vampire/TPTP formula string to a flat SUO-KIF string.
@@ -61,24 +73,61 @@ pub struct KifProofStep {
     pub premises: Vec<usize>,
     /// The formula for this step as a KIF AST, ready for pretty-printing.
     pub formula:  AstNode,
+    /// Source [`SentenceId`] when this step traces directly back to an
+    /// input axiom whose name Vampire preserved (requires
+    /// `--output_axiom_names on`).  `None` for derived steps, for
+    /// older Vampire builds, and for anonymous axioms.  Downstream
+    /// consumers (e.g. proof-display in the CLI) should prefer this
+    /// for O(1) source lookup when present and fall back to the
+    /// canonical-hash path on [`crate::axiom_source::AxiomSourceIndex`]
+    /// when `None` — the hash path is robust to alpha-renaming and
+    /// quantifier-normalisation but requires a whole-KB scan.
+    ///
+    /// Serialisation: `#[serde(default, skip_serializing_if = …)]`
+    /// keeps the JSON wire format compatible — old consumers that
+    /// don't know about this field deserialize it as `None`; new
+    /// consumers omit the field from the output when it's `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sid: Option<crate::types::SentenceId>,
 }
 
-/// Convert a sequence of `(formula_str, rule_label, premise_indices)` triples
-/// -- as produced by both the TPTP and embedded prover paths -- to KIF steps.
+/// Convert a sequence of `(formula, rule, premise_indices, source_name)`
+/// tuples — as produced by both the TPTP and embedded prover paths — to
+/// KIF steps.
+///
+/// The fourth element is the axiom's original TPTP name when Vampire
+/// preserved it via `--output_axiom_names on` (e.g. `Some("kb_42")`);
+/// `None` for derived steps or when the flag wasn't active.  When the
+/// name matches our `kb_<sid>` convention, the numeric suffix is parsed
+/// into [`KifProofStep::source_sid`] for direct source-axiom lookup.
+/// Anything else — including Vampire's own anonymous axioms (`kb_anon_N`)
+/// and names from prover backends that don't use our convention —
+/// leaves `source_sid` as `None`.
 pub fn proof_steps_to_kif(
-    steps: &[(String, String, Vec<usize>)],
+    steps: &[(String, String, Vec<usize>, Option<String>)],
 ) -> Vec<KifProofStep> {
     steps
         .iter()
         .enumerate()
-        .map(|(i, (formula, rule, premises))| KifProofStep {
+        .map(|(i, (formula, rule, premises, source_name))| KifProofStep {
             index:   i,
             rule:    rule.clone(),
             premises: premises.clone(),
             formula: formula_to_ast(formula)
                 .unwrap_or_else(|| sym(&format!("; [unparseable] {}", formula))),
+            source_sid: source_name
+                .as_deref()
+                .and_then(parse_kb_axiom_name),
         })
         .collect()
+}
+
+/// Parse an axiom name of the form `"kb_<digits>"` into a
+/// [`SentenceId`](crate::types::SentenceId).  Anything else — including
+/// `"kb_anon_0"` (Vampire's fallback for axioms we couldn't assign a
+/// sid to) and names from other prover conventions — returns `None`.
+fn parse_kb_axiom_name(name: &str) -> Option<crate::types::SentenceId> {
+    name.strip_prefix("kb_")?.parse().ok()
 }
 
 // -- Tokens --------------------------------------------------------------------
@@ -197,6 +246,59 @@ enum Trm {
 
 // -- KIF string emitter (flat) -------------------------------------------------
 
+impl Fml {
+    /// Peel nested same-kind quantifiers starting at `self`, which
+    /// must itself be [`Fml::Forall`] or [`Fml::Exists`].  Returns
+    /// `(merged_vars, inner_body)`.
+    ///
+    /// `(exists (?X1) (exists (?X2) body))`
+    ///     -> `(vars = [X1, X2], body = body)`
+    ///
+    /// `(forall (?X1) (forall (?X2) (exists (?X3) body)))`
+    ///     -> `(vars = [X1, X2], body = (exists (?X3) body))`
+    ///
+    /// `(exists (?X1) (not (exists (?X2) body)))`
+    ///     -> `(vars = [X1], body = (not (exists (?X2) body)))`
+    ///
+    /// The peel stops at the first non-matching formula, so mixed
+    /// chains and any formula wrapping a nested quantifier (`not`,
+    /// `and`, `=>`, ...) preserve their structure.  The inner
+    /// quantifier inside the wrapping formula will be peeled on its
+    /// own recursive pass.
+    ///
+    /// TPTP's proof transcripts emit each `?X` and `!X` as its own
+    /// quantifier block (the CNF/skolemisation pipeline introduces
+    /// them one at a time), so this collapse can shrink a 4-level
+    /// nest back to a single `(exists (?X1 ?X2 ?X3 ?X4) ...)` —
+    /// matching how a human would write the same formula by hand.
+    fn peel_same_quantifier(&self) -> (Vec<String>, &Fml) {
+        match self {
+            Fml::Forall(vars, body) => {
+                let mut merged = vars.clone();
+                let mut current: &Fml = body;
+                while let Fml::Forall(vs, inner) = current {
+                    merged.extend(vs.iter().cloned());
+                    current = inner;
+                }
+                (merged, current)
+            }
+            Fml::Exists(vars, body) => {
+                let mut merged = vars.clone();
+                let mut current: &Fml = body;
+                while let Fml::Exists(vs, inner) = current {
+                    merged.extend(vs.iter().cloned());
+                    current = inner;
+                }
+                (merged, current)
+            }
+            // Callers guard the match arm, so this is unreachable in
+            // practice.  Returning the trivial peel keeps the helper
+            // total without an `unwrap` at every call site.
+            _ => (Vec::new(), self),
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl Fml {
     fn to_kif(&self) -> String {
@@ -237,11 +339,13 @@ impl Fml {
             Fml::Implies(a, b) => format!("(=> {} {})",  a.to_kif(), b.to_kif()),
             Fml::Iff(a, b)     => format!("(<=> {} {})", a.to_kif(), b.to_kif()),
 
-            Fml::Forall(vars, body) => {
+            Fml::Forall(..) => {
+                let (vars, body) = self.peel_same_quantifier();
                 let vlist = vars.iter().map(|v| format!("?{}", v)).collect::<Vec<_>>().join(" ");
                 format!("(forall ({}) {})", vlist, body.to_kif())
             }
-            Fml::Exists(vars, body) => {
+            Fml::Exists(..) => {
+                let (vars, body) = self.peel_same_quantifier();
                 let vlist = vars.iter().map(|v| format!("?{}", v)).collect::<Vec<_>>().join(" ");
                 format!("(exists ({}) {})", vlist, body.to_kif())
             }
@@ -337,13 +441,15 @@ impl Fml {
             Fml::Implies(a, b) => lst(vec![op(OpKind::Implies), a.to_ast_node(), b.to_ast_node()]),
             Fml::Iff(a, b)     => lst(vec![op(OpKind::Iff),     a.to_ast_node(), b.to_ast_node()]),
 
-            Fml::Forall(vars, body) => {
+            Fml::Forall(..) => {
+                let (vars, body) = self.peel_same_quantifier();
                 let var_list = lst(vars.iter()
                     .map(|v| AstNode::Variable { name: v.clone(), span: dummy_span() })
                     .collect());
                 lst(vec![op(OpKind::ForAll), var_list, body.to_ast_node()])
             }
-            Fml::Exists(vars, body) => {
+            Fml::Exists(..) => {
+                let (vars, body) = self.peel_same_quantifier();
                 let var_list = lst(vars.iter()
                     .map(|v| AstNode::Variable { name: v.clone(), span: dummy_span() })
                     .collect());
@@ -663,6 +769,78 @@ mod tests {
         assert_eq!(
             kif(tptp),
             "(not (exists (?X0 ?X1) (and (instance ?X0 Carrying) (agent ?X0 John) (instance ?X1 Flower) (objectTransferred ?X0 ?X1))))"
+        );
+    }
+
+    #[test]
+    fn nested_exists_collapsed() {
+        // Vampire's CNF pipeline emits nested single-variable
+        // quantifiers; the translator should merge same-kind ones
+        // into a single variable list.
+        let tptp = "! [X0] : (s__holds(s__instance__m,X0,s__Pair) => \
+                    ? [X1] : ? [X2] : (s__holds(s__member__m,X1,X0) \
+                                        & s__holds(s__member__m,X2,X0) \
+                                        & X1 != X2))";
+        assert_eq!(
+            kif(tptp),
+            "(=> (instance ?X0 Pair) \
+              (exists (?X1 ?X2) \
+                (and (member ?X1 ?X0) (member ?X2 ?X0) (not (equal ?X1 ?X2)))))"
+        );
+    }
+
+    #[test]
+    fn stacked_top_level_foralls_all_stripped() {
+        // Two leading `!` blocks at the top are both stripped —
+        // SUO-KIF convention leaves a free `?X` implicitly
+        // universally quantified, so the output has no `forall`
+        // wrapper at all.
+        let tptp = "! [X0] : ! [X1] : (s__holds(s__sameRow__m,X0,X1) \
+                                        => s__holds(s__sameRow__m,X1,X0))";
+        assert_eq!(
+            kif(tptp),
+            "(=> (sameRow ?X0 ?X1) (sameRow ?X1 ?X0))"
+        );
+    }
+
+    #[test]
+    fn nested_forall_inside_implies_collapsed() {
+        // When `forall` appears under another connective it's kept
+        // as a visible block — and stacked same-kind nests under
+        // the connective merge into one variable list.
+        let tptp = "! [X0] : (s__holds(s__foo__m,X0) => \
+                     ! [X1] : ! [X2] : s__holds(s__bar__m,X1,X2))";
+        assert_eq!(
+            kif(tptp),
+            "(=> (foo ?X0) (forall (?X1 ?X2) (bar ?X1 ?X2)))"
+        );
+    }
+
+    #[test]
+    fn mixed_quantifier_chain_not_collapsed() {
+        // `?` nested directly inside `!` must NOT collapse — they're
+        // different kinds and merging would change semantics.
+        // (`formula_to_ast` strips only the outermost `!`, so the
+        // inner one is preserved; the inner `?` under it becomes the
+        // stop point.)
+        let tptp = "! [X0] : (s__holds(s__instance__m,X0,s__Top) => \
+                    ! [X1] : ? [X2] : s__holds(s__foo__m,X0,X1,X2))";
+        assert_eq!(
+            kif(tptp),
+            "(=> (instance ?X0 Top) \
+              (forall (?X1) (exists (?X2) (foo ?X0 ?X1 ?X2))))"
+        );
+    }
+
+    #[test]
+    fn nested_exists_under_not_not_collapsed_with_outer() {
+        // The inner `exists` is wrapped in `not`, so the outer `exists`
+        // peels only its own vars; the inner stays intact.  Matches
+        // the user-reported Pair example.
+        let tptp = "? [X1] : ? [X2] : (s__holds(s__foo__m,X1,X2) & ~? [X3] : s__holds(s__bar__m,X3))";
+        assert_eq!(
+            kif(tptp),
+            "(exists (?X1 ?X2) (and (foo ?X1 ?X2) (not (exists (?X3) (bar ?X3)))))"
         );
     }
 }

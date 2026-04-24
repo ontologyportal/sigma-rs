@@ -4,6 +4,54 @@ A parser, validator, and theorem-prover interface for the [SUO-KIF](https://www.
 
 KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb) database. Formulas are stored in Conjunctive Normal Form (CNF) with full Skolemization so that subsequent theorem-prover queries require no runtime conversion. The [Vampire](https://vprover.github.io/) prover is used for automated reasoning.
 
+## Install
+
+The plan is to ultimately place this on crates.io so a user with Rust installed would just have to run:
+
+```bash
+cargo install sigmakee
+```
+
+Today, there are two installation options:
+
+1. Use Github releases to install a native binary. Rust statically links all their dependencies
+so you do not need to install anything other than copying the binary to your machine. Choose your
+correct architecture (`amd64`, `aarch64`, etc).
+
+2. Compile from source. 
+
+To compile from source, first install Rust:
+
+```bash
+$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+When clone this repository:
+
+```bash
+
+$ git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
+```
+
+Then initialize the git submodules:
+
+```bash
+$ git submodule update --recursive
+```
+
+Finally, compile everything:
+
+```bash
+$ cargo build --release
+```
+
+The executable is located in `target/release/sumo`. You can link it to your PATh using:
+
+```bash
+sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
+```
+
+
 ---
 
 ## Workspace layout
@@ -121,6 +169,8 @@ sumo test PATH [-f FILE]... [-d DIR]... [--keep]
 ```
 
 Test files are KIF-like but may contain special directives: `(note "…")`, `(time N)`, `(answer yes|no)`, `(query FORMULA)`. Everything else is treated as an axiom.
+
+**TODO: Add `man` and `debug` command references**
 
 ---
 
@@ -295,16 +345,56 @@ This layout supports efficient range scans such as "all formulas where predicate
 
 ## CNF pipeline
 
-Each formula is converted to CNF at commit time via `sumo_store::cnf::sentence_to_cnf`:
+Clausification is performed by Vampire's `NewCNF` via
+`sumo_kb::cnf::sentence_to_clauses` (feature `cnf`, on by default).
+The pipeline is:
 
-1. Inline implications (`=>` → `¬A ∨ B`) and biconditionals (`<=>` → two implications)
-2. Negation Normal Form (push `¬` inward)
-3. Skolemization (replace `∃x` with `sk_N(y₁,…,yₙ)` where `y₁…yₙ` are universally quantified in scope)
-4. Drop universal quantifiers
-5. Distribute `∨` over `∧` to get conjunctions of clauses
-6. Extract clauses; hard-error if count exceeds `max_clauses`
+1. Build a single-sentence `vampire_prover::ir::Problem` in TFF mode
+   via `NativeConverter`.
+2. Call `ir::Problem::clausify(Options::new())`.  Under the hood this
+   runs a Rust-side `Imp`-elimination pre-pass, hands the resulting
+   problem to Vampire's NewCNF, and reads the clauses back through
+   structured FFI accessors (no TPTP-string round-trip).
+3. Translate each `ir::Clause` to the crate-local `Clause` /
+   `CnfLiteral` / `CnfTerm` shape, interning any skolem functors
+   (`sK<n>`) into the `KifStore` as the walk proceeds.
 
-Variables in KIF are already scope-tagged by the parser (`X@5`), so step 3 needs no separate variable standardization.
+Variables in KIF are scope-tagged by the parser (`X@5`); by the time
+NewCNF is done, all variables have been renamed to Vampire's `X0..Xn`.
+The original KIF names are no longer needed -- canonical hashing
+(below) renames them again for dedup.
+
+The `cnf` feature implies `integrated-prover` (the linked Vampire C++
+library).  Builds without default features skip dedup entirely and
+accept duplicate axioms silently -- convenient for
+tooling-that-only-emits-TPTP-as-strings use cases.
+
+## Clause-level deduplication
+
+Two formulas are considered duplicates when their CNF clause sets are
+equal, up to:
+
+- variable renaming,
+- skolem renaming,
+- clause ordering within the formula (clause = set of literals),
+- literal ordering within a clause,
+- equality side orientation (`l=r` ≡ `r=l`),
+- sort erasure (the canonical hash is sort-agnostic).
+
+This is implemented in two layers:
+
+- `sumo_kb::canonical::canonical_clause_hash(&Clause) -> u64` --
+  hashes one clause's canonical form.  Tag-byte-separated, xxh64-based,
+  stable across process runs.
+- `sumo_kb::canonical::formula_hash_from_clauses(&[u64]) -> u64` --
+  fingerprints a formula by sorting its clause's canonical hashes and
+  hashing the resulting byte stream.
+
+LMDB-side, the persistence layer interns every clause it sees by
+canonical hash (`clauses` + `clause_hashes` tables) and records a
+formula-hash → `SentenceId` mapping (`formula_hashes` table).  Reopening
+a KB rehydrates the in-memory dedup map from `formula_hashes` in a
+single pass -- no re-clausification on open.
 
 ---
 

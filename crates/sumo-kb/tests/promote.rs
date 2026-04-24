@@ -1,9 +1,16 @@
 /// Integration tests: promote_assertions_unchecked() + LMDB persistence.
 ///
-/// These tests require the `persist` feature.
+/// These tests require the `persist` feature.  Some of them also
+/// depend on `cnf` because they verify that reopening a DB surfaces
+/// previously-promoted formulas as `DuplicateAxiom` warnings on
+/// re-tell -- a behaviour that only exists when the clause-level
+/// dedup layer is compiled in.  The dedup-sensitive tests are
+/// individually gated on `cnf`.
 #[cfg(feature = "persist")]
 mod tests {
-    use sumo_kb::{KnowledgeBase, TellWarning};
+    use sumo_kb::KnowledgeBase;
+    #[cfg(feature = "cnf")]
+    use sumo_kb::TellWarning;
     use std::path::Path;
 
     fn tmp_dir(name: &str) -> std::path::PathBuf {
@@ -16,6 +23,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(p);
     }
 
+    #[cfg(feature = "cnf")]
     #[test]
     fn promote_then_reopen_loads_axioms() {
         let dir = tmp_dir("promote-reopen");
@@ -49,6 +57,7 @@ mod tests {
         cleanup(&dir);
     }
 
+    #[cfg(feature = "cnf")]
     #[test]
     fn promote_deduplicates_against_existing_axioms() {
         let dir = tmp_dir("promote-dedup-axioms");
@@ -97,6 +106,7 @@ mod tests {
         cleanup(&dir);
     }
 
+    #[cfg(feature = "cnf")]
     #[test]
     fn multiple_formulas_survive_round_trip() {
         let dir = tmp_dir("promote-multi");

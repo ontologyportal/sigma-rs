@@ -22,6 +22,13 @@ pub type SymbolId = u64;
 /// Stable sentence / formula identifier.
 pub type SentenceId = u64;
 
+/// Stable clause identifier.  Allocated by the `clause_id` sequence in
+/// the LMDB persistence layer when a new, canonical-hash-fresh clause
+/// is first interned; existing clauses retain their id across reopens.
+/// Used as the deduped key type in `StoredFormula.clause_ids`.
+#[cfg(feature = "cnf")]
+pub type ClauseId = u64;
+
 // -- Literal ------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,20 +51,68 @@ impl fmt::Display for Literal {
 // -- Element -------------------------------------------------------------------
 
 /// One element in a sentence's term list.
+///
+/// Every variant carries a [`Span`] locating the element in its
+/// source file.  Spans are `#[serde(skip)]`-transparent to the
+/// LMDB bincode format -- the on-disk payload is the same as
+/// before per-element spans were added.  Rehydrated-from-LMDB
+/// sentences have their spans defaulted to `Span::default()`,
+/// which is effectively synthetic.
+///
+/// Consumers that construct Elements without source origin
+/// (CNF clausifier, macro expansions, test fixtures) use
+/// [`Span::synthetic`] so position queries skip them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
     /// A ground symbol, referenced by its stable id.
-    Symbol(SymbolId),
+    Symbol {
+        id:   SymbolId,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A logical variable or row-variable.
     /// `id` is the interned symbol id for the scope-qualified name (e.g. `x@3`).
-    Variable { id: SymbolId, name: String, is_row: bool },
+    Variable {
+        id:     SymbolId,
+        name:   String,
+        is_row: bool,
+        #[serde(skip)]
+        span:   crate::error::Span,
+    },
     /// A string or numeric literal.
-    Literal(Literal),
+    Literal {
+        lit:  Literal,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A nested sub-sentence.  The id indexes into the same flat sentence Vec
     /// owned by KifStore.
-    Sub(SentenceId),
+    Sub {
+        sid:  SentenceId,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
     /// A logical operator (always at index 0 in operator sentences).
-    Op(OpKind),
+    Op {
+        op:   OpKind,
+        #[serde(skip)]
+        span: crate::error::Span,
+    },
+}
+
+impl Element {
+    /// Source range covering this element.  Returns the stored
+    /// span verbatim -- no fallback / merging logic.  Synthetic
+    /// elements (see [`Span::synthetic`]) return a synthetic span.
+    pub fn span(&self) -> &crate::error::Span {
+        match self {
+            Self::Symbol   { span, .. } => span,
+            Self::Variable { span, .. } => span,
+            Self::Literal  { span, .. } => span,
+            Self::Sub      { span, .. } => span,
+            Self::Op       { span, .. } => span,
+        }
+    }
 }
 
 // -- Sentence ------------------------------------------------------------------
@@ -77,13 +132,13 @@ pub struct Sentence {
 impl Sentence {
     /// True if this is an operator sentence (and, or, not, =>, <=>, forall, exists).
     pub fn is_operator(&self) -> bool {
-        matches!(self.elements.first(), Some(Element::Op(_)))
+        matches!(self.elements.first(), Some(Element::Op { .. }))
     }
 
     /// The operator kind, if this is an operator sentence.
     pub fn op(&self) -> Option<&OpKind> {
         match self.elements.first() {
-            Some(Element::Op(op)) => Some(op),
+            Some(Element::Op { op, .. }) => Some(op),
             _ => None,
         }
     }
@@ -91,10 +146,47 @@ impl Sentence {
     /// The head symbol id, if this is a symbol-headed sentence.
     pub fn head_symbol(&self) -> Option<SymbolId> {
         match self.elements.first() {
-            Some(Element::Symbol(id)) => Some(*id),
+            Some(Element::Symbol { id, .. }) => Some(*id),
             _ => None,
         }
     }
+}
+
+// -- Occurrence ----------------------------------------------------------------
+
+/// Position of a single symbol reference inside the knowledge base.
+///
+/// Produced by the occurrence index populated during
+/// `KifStore::load` / `append_root_sentence`.  Every `Element::Symbol`
+/// in a non-synthetic sentence generates one `Occurrence` entry;
+/// rehydrated-from-LMDB and CNF-synthesised elements carry synthetic
+/// spans and are filtered out of the index.
+///
+/// Useful beyond LSP — CLI tools ("sumo find-refs Human"), test
+/// coverage reporters, code-walkers of any kind.  The shape is
+/// deliberately small so it can be stored densely in the
+/// per-symbol index.
+#[derive(Debug, Clone)]
+pub struct Occurrence {
+    /// Sentence containing the reference.
+    pub sid:  SentenceId,
+    /// Index within the sentence's `elements` vector.
+    pub idx:  usize,
+    /// Source range of the symbol reference itself (not the
+    /// containing sentence).
+    pub span: crate::error::Span,
+    /// Role the symbol plays within the sentence.
+    pub kind: OccurrenceKind,
+}
+
+/// Classification of a symbol occurrence by its position inside the
+/// sentence.  `Head` means the symbol is `elements[0]` of a
+/// top-level or nested form; `Arg` means it appears as any
+/// subsequent argument (including deeply nested under `Sub`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceKind {
+    Head,
+    Arg,
 }
 
 // -- Symbol --------------------------------------------------------------------
@@ -104,7 +196,21 @@ pub struct Symbol {
     pub name: String,
     /// Root sentences where this symbol is the predicate / function head.
     pub head_sentences: Vec<SentenceId>,
-    /// All root sentences (and sub-sentences) where this symbol appears anywhere.
+    /// **Axiom** sentences in which this symbol appears anywhere (including
+    /// transitively through sub-sentences).  De-duplicated per axiom —
+    /// `(subclass Dog Dog)` counts `Dog` once, not twice.
+    ///
+    /// "Axiom" means a promoted root sentence (fingerprint `session = None`).
+    /// Session assertions do NOT update this index; the entry is a true
+    /// reflection of the permanent axiom base.
+    ///
+    /// Consequence: `symbol.all_sentences.len()` is the symbol's generality
+    /// in the SInE sense (number of axioms it appears in) and is always
+    /// live — no recomputation needed on query.
+    ///
+    /// Populated in `KnowledgeBase::{make_session_axiomatic,
+    /// promote_assertions_unchecked, open}` via
+    /// `KifStore::register_axiom_symbols`.
     pub all_sentences: Vec<SentenceId>,
     /// True for Skolem function/constant symbols generated during CNF conversion.
     /// Always false for ordinary KB symbols.
@@ -127,7 +233,7 @@ impl Default for Symbol {
 
 // -- Taxonomy ------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TaxRelation {
     Subclass,
     Instance,
@@ -176,13 +282,33 @@ pub struct CnfLiteral {
 }
 
 /// A CNF term -- an argument or predicate position in a literal.
+///
+/// The enum covers both output shapes produced by the two clausifiers that
+/// live in this crate:
+///
+/// - The hand-rolled CNF (`cnf.rs`, feature `cnf`) produces `Const` /
+///   `Var` / `SkolemFn` / `Num` / `Str`.  Variables carry a `KifStore`
+///   SymbolId that resolves to a scope-qualified name like `x@5`.
+/// - The Vampire-backed CNF (`cnf2.rs`) additionally produces `Fn` for
+///   non-skolem function applications that Vampire's clausifier may
+///   introduce (e.g. equality reasoning over function terms).  Variables
+///   from this path carry a *clause-local* index repurposed as a
+///   SymbolId — canonical hashing renames all variables, and no index or
+///   display path dereferences these ids against the store.
 #[cfg(feature = "cnf")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CnfTerm {
     /// A ground constant (ordinary symbol or class name).
     Const(SymbolId),
-    /// A universally-quantified variable (scope-named, e.g. `x@5`).
+    /// A universally-quantified variable.  For the hand-rolled clausifier
+    /// this is a scope-qualified KIF name (`x@5`); for the Vampire-backed
+    /// clausifier this is a clause-local integer index.
     Var(SymbolId),
+    /// A non-skolem function application, produced by the Vampire
+    /// clausifier when equality or theory reasoning requires exposing a
+    /// term-level functor.  `id` interns to an ordinary `KifStore`
+    /// symbol.
+    Fn { id: SymbolId, args: Vec<CnfTerm> },
     /// A Skolem function application.
     SkolemFn { id: SymbolId, args: Vec<CnfTerm> },
     /// A numeric literal.

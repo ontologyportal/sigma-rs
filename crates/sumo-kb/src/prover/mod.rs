@@ -6,19 +6,13 @@
 #[cfg(all(feature = "ask", target_arch = "wasm32"))]
 compile_error!("sumo-kb: the `ask` feature is not available on wasm32 targets");
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 // -- Sub-prover modules --------------------------------------------------------
 
 pub mod subprocess;
 
-#[cfg(feature = "integrated-prover")]
-pub mod embedded;
-
 pub use subprocess::VampireRunner;
-
-#[cfg(feature = "integrated-prover")]
-pub use embedded::EmbeddedProverRunner;
 
 use serde::{Serialize, Deserialize};
 
@@ -26,6 +20,9 @@ use serde::{Serialize, Deserialize};
 
 pub trait ProverRunner: Send + Sync {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult;
+    /// The timeout this runner will apply to the prover, in seconds.
+    /// Returns 0 if the runner manages its own timeout independently.
+    fn timeout_secs(&self) -> u32 { 0 }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,13 +37,34 @@ pub enum ProverMode {
     CheckConsistency,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Per-query timing breakdown, populated on every call.
+#[derive(Debug, Clone, Default)]
+pub struct ProverTimings {
+    /// Time spent building the theorem-prover input (TPTP string or native Problem).
+    pub input_gen:    Duration,
+    /// Time spent inside the theorem prover itself.
+    pub prover_run:   Duration,
+    /// Time spent parsing the prover output / extracting bindings.
+    pub output_parse: Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProverResult {
     pub status:     ProverStatus,
     pub raw_output: String,
     pub bindings:   Vec<Binding>,
     /// Proof steps converted to SUO-KIF, populated when a proof is found.
     pub proof_kif:  Vec<crate::tptp::kif::KifProofStep>,
+    /// Raw TSTP proof section as emitted by Vampire (the text between
+    /// `SZS output start` and `SZS output end`, minus the markers
+    /// themselves).  Empty when no proof was produced.  Preserved so
+    /// the `--proof tptp` CLI format can display the prover's output
+    /// verbatim without re-parsing `raw_output`.
+    #[serde(default)]
+    pub proof_tptp: String,
+    /// Per-phase timing breakdown (not serialized).
+    #[serde(skip)]
+    pub timings:    ProverTimings,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

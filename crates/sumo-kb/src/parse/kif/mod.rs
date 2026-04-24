@@ -7,5 +7,5 @@ pub mod tokenizer;
 pub mod parser;
 
 pub use error::KifParseError;
-pub(crate) use tokenizer::tokenize;
+pub use tokenizer::{tokenize, Token, TokenKind};
 pub use parser::parse;
