@@ -36,7 +36,7 @@ git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
 Then initialize the git submodules:
 
 ```bash
-git submodule update --recursive
+$ git submodule update --recursive --init
 ```
 
 Finally, compile everything:
