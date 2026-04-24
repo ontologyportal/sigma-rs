@@ -1,4 +1,4 @@
-# CI for sumo-kb / sumo-lsp / sumo-native.
+# CI for sumo-kb / sumo-lsp / sigmakee.
 #
 # Jobs are split by dependency weight:
 #
@@ -7,12 +7,18 @@
 #                 sumo-kb itself without the cnf / integrated-prover
 #                 features.  Runs on every push / PR.
 #
-#   * full-matrix: Linux-only job exercising `--all-features` over
-#                 the whole workspace -- pulls in vampire-sys /
-#                 vampire-lib via submodules and requires CMake.
-#                 Also runs on every push / PR; it's the only job
-#                 that can validate the ask + integrated-prover
-#                 paths.
+#   * full-matrix: Linux-only canonical test lane exercising
+#                 `--all-features` over the whole workspace -- pulls
+#                 in vampire-sys / vampire-lib via submodules and
+#                 requires CMake.  Runs on every push / PR.
+#
+#   * cli-build:  cross-OS matrix building (and on non-Windows,
+#                 testing) the `sigmakee` CLI with integrated-prover.
+#                 Catches platform-specific regressions in the
+#                 Vampire C++ build + Rust FFI surface before a
+#                 tagged release hits `release-sumo.yml`.  `fail-
+#                 fast: false` so a Windows-only failure doesn't
+#                 cancel the proven-good platforms.
 #
 #   * audit:      enforces the core-library generalization posture
 #                 (no LSP-flavoured deps in sumo-kb's dep graph,
@@ -22,7 +28,7 @@
 #
 # Editor-side packaging (VSCode extension, Neovim config, etc.) is
 # explicitly out of scope for this CI -- the sumo-lsp binary is
-# published as a stand-alone stdio server via release.yml.
+# published via release.yml, the sigmakee CLI via release-sumo.yml.
 
 name: CI
 
@@ -102,6 +108,59 @@ jobs:
 
       - name: Clippy --workspace --all-features
         run: cargo clippy --workspace --all-features --tests -- -D warnings
+
+  # -- Cross-OS CLI build matrix: sigmakee + integrated-prover ---------------
+  #
+  # Every platform we ship a release for gets a build smoke-test on
+  # every PR.  Compiles Vampire's C++ (via CMake) + the Rust FFI
+  # shim + the `sigmakee` CLI; runs the workspace test suite on
+  # platforms where integrated-prover has been confirmed working.
+  #
+  # Windows is built but not tested — vampire-sys on MSVC is
+  # currently unverified for this fork.  A build failure there
+  # surfaces as a red job, which is actionable; tests would add
+  # noise until the Windows integrated-prover story is proven.
+  #
+  # Linux x86_64's build overlaps with `full-matrix` but adds
+  # ~45 seconds; kept in the matrix so failures localise clearly
+  # (build-only vs. workspace-tests) without cross-referencing.
+  cli-build:
+    name: cli-build / ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,         target: aarch64-apple-darwin,      label: darwin-arm64,    test: true  }
+          - { os: macos-13,         target: x86_64-apple-darwin,       label: darwin-x64,      test: true  }
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  label: linux-x64-gnu,   test: true  }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, label: linux-arm64-gnu, test: true  }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    label: win32-x64,       test: false }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install CMake + toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-build-${{ matrix.label }}
+
+      - name: Build sigmakee (release, integrated-prover)
+        run: cargo build --release -p sigmakee --target ${{ matrix.target }}
+
+      - name: Test workspace --all-features
+        if: matrix.test
+        run: cargo test --workspace --all-features
 
   # -- Generalization audit: no LSP leakage into sumo-kb ---------------------
   audit:

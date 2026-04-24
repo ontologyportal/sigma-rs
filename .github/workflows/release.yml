@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: false  # sumo-lsp doesn't need vampire-sys
+          submodules: recursive   # vampire-rs + vampire-lib + z3/cadical/viras
 
       - uses: dtolnay/rust-toolchain@stable
         with:

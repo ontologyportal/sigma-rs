@@ -21,7 +21,7 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", global = true)]
     pub config: Option<PathBuf>,
 
-    /// Whether to use the system's sigma config.xml to configure the runtime 
+    /// Whether to use the system's sigma config.xml to configure the runtime
     #[arg(short = 'c', global = true)]
     pub enable_config: bool,
 
@@ -37,16 +37,15 @@ pub struct Cli {
     #[arg(short = 'W', long = "warning", value_name = "CODE_OR_ALL", global = true)]
     pub suppress: Vec<String>,
 
-    #[command(subcommand)]
-    pub command: Cmd,
-}
+    // -- Universal source-selection flags -------------------------------------
+    //
+    // Every KB-touching subcommand needs these, so they live on the
+    // top-level `Cli` with `global = true` — accepted either before
+    // OR after the subcommand name.  The `KbArgs` helper struct
+    // below still carries the same fields (via `#[arg(skip)]`) so
+    // every `run_*` handler can receive a single `KbArgs` value;
+    // `main.rs` populates those fields from the top-level parse.
 
-/// Shared arguments for database and KIF-source selection.
-///
-/// KIF files are the initialisation source (like SQL migration scripts).
-/// Once loaded, the LMDB database at `--db` is the canonical store.
-#[derive(clap::Args, Clone, Debug)]
-pub struct KbArgs {
     /// KIF file to load into the knowledge base (repeatable).
     #[arg(short = 'f', long = "file", value_name = "FILE", global = true)]
     pub files: Vec<PathBuf>,
@@ -65,6 +64,51 @@ pub struct KbArgs {
     #[arg(long, global = true)]
     pub no_db: bool,
 
+    #[command(subcommand)]
+    pub command: Cmd,
+}
+
+/// Shared arguments for database and KIF-source selection.
+///
+/// The universal source flags (`-f`, `-d`, `--db`, `--no-db`) live
+/// on the top-level [`Cli`] with `global = true`.  This struct's
+/// equivalent fields carry `#[arg(skip)]` so clap doesn't try to
+/// re-register them; `main.rs` populates those fields from the
+/// top-level parse before handing the struct to a `run_*` handler.
+///
+/// The one genuinely per-subcommand field is `vampire`, which only
+/// the prover-driven subcommands (`ask`, `test`, `debug`, `serve`)
+/// expose.  Those subcommands flatten `KbArgs` into their variant
+/// so clap surfaces `--vampire` in their help text.  Subcommands
+/// that don't touch the prover (`validate`, `translate`, `load`,
+/// `man`) don't flatten `KbArgs` and therefore don't advertise
+/// `--vampire`; they still receive a fully-populated `KbArgs` from
+/// `main.rs` because the struct's shape hasn't changed.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct KbArgs {
+    /// KIF file to load into the knowledge base (repeatable).
+    ///
+    /// Populated from the top-level `Cli::files` by `main.rs`; not
+    /// re-parsed here (clap sees `#[arg(skip)]`).
+    #[arg(skip)]
+    pub files: Vec<PathBuf>,
+
+    /// Directory whose *.kif files are loaded (repeatable).
+    /// Populated from `Cli::dirs`.
+    #[arg(skip)]
+    pub dirs: Vec<PathBuf>,
+
+    /// Path to the LMDB database directory.  Populated from
+    /// `Cli::db`.  The "./sumo.lmdb" default is defined on the
+    /// top-level flag; here it falls back to `PathBuf::new()` when
+    /// `main.rs` doesn't populate it (shouldn't happen in practice).
+    #[arg(skip)]
+    pub db: PathBuf,
+
+    /// Skip the LMDB database entirely.  Populated from `Cli::no_db`.
+    #[arg(skip)]
+    pub no_db: bool,
+
     // #[cfg(feature = "cnf")]
     // /// Hard upper bound on CNF clauses per formula.
     // /// Overrides the SUMO_MAX_CLAUSES environment variable.
@@ -72,6 +116,11 @@ pub struct KbArgs {
     // pub max_clauses: usize,
 
     /// Path to the Vampire executable (default: 'vampire' on PATH).
+    ///
+    /// Only the prover-driven subcommands (`ask`, `test`, `debug`,
+    /// `serve`) flatten `KbArgs` and thus expose this flag.  Other
+    /// subcommands leave it `None` — their run handlers ignore the
+    /// field anyway.
     #[arg(long, value_name = "PATH")]
     pub vampire: Option<PathBuf>,
 }
@@ -97,9 +146,9 @@ pub enum Cmd {
         /// Parse errors in KB files are still reported.
         #[arg(long)]
         no_kb_check: bool,
-
-        #[command(flatten)]
-        kb: KbArgs,
+        // Source selection (`-f`, `-d`, `--db`, `--no-db`) lives
+        // on the top-level `Cli`; main.rs synthesises a `KbArgs`
+        // for this variant's `run_validate` call.
     },
 
     /// Run a KIF conjecture through Vampire against the knowledge base.
@@ -185,9 +234,7 @@ pub enum Cmd {
         /// Session key controlling which assertions appear as TPTP hypotheses.
         #[arg(long, value_name = "KEY")]
         session: Option<String>,
-
-        #[command(flatten)]
-        kb: KbArgs,
+        // Source selection lives on the top-level `Cli`.
     },
 
     /// Run one or more KIF test files (*.kif.tq).
@@ -239,9 +286,6 @@ pub enum Cmd {
     ///   the `-f` / `-d` set.  With no files the result is an
     ///   empty database — useful as a reset.
     Load {
-        #[command(flatten)]
-        kb: KbArgs,
-
         /// Recanonicalise the database: drop every persisted axiom
         /// and rewrite the DB from just the supplied `-f` / `-d`
         /// files.  With no files, leaves an empty database.  Use
@@ -249,6 +293,7 @@ pub enum Cmd {
         /// loads and you want to start clean.
         #[arg(long)]
         flush: bool,
+        // Source selection lives on the top-level `Cli`.
     },
 
     /// Show documentation, signatures, and taxonomy for a symbol -- the
@@ -275,9 +320,7 @@ pub enum Cmd {
         /// or when the `NO_PAGER` environment variable is set.
         #[arg(long = "no-pager", short = 'P')]
         no_pager: bool,
-
-        #[command(flatten)]
-        kb: KbArgs,
+        // Source selection lives on the top-level `Cli`.
     },
 
     /// Consistency-check a single loaded KIF file against the rest of

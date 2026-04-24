@@ -536,7 +536,7 @@ mod tests {
     fn invalidate_symbols_evicts_cached_doc_entries() {
         use std::collections::HashSet;
 
-        let mut kb = kb_from(r#"
+        let kb = kb_from(r#"
             (documentation Human EnglishLanguage "stale")
         "#);
         // Warm the cache.
@@ -564,7 +564,7 @@ mod tests {
     fn invalidate_preserves_unrelated_symbols() {
         use std::collections::HashSet;
 
-        let mut kb = kb_from(r#"
+        let kb = kb_from(r#"
             (documentation Human  EnglishLanguage "h")
             (documentation Animal EnglishLanguage "a")
         "#);

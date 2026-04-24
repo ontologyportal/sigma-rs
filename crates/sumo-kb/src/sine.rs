@@ -519,7 +519,19 @@ impl SineIndex {
         if sids.is_empty() { return; }
 
         let current = self.axiom_count();
-        let threshold = (current / 10).max(50);
+        // Break-even point between the incremental and bulk paths is
+        // roughly `|affected|`, i.e. the number of existing axioms
+        // sharing a symbol with the new one.  On dense ontologies
+        // (SUMO: `instance`/`subclass` touch 60%+ of axioms) that's
+        // a constant ~few-hundred — the old `(current / 10).max(50)`
+        // formula kept escalating the threshold as the KB grew and
+        // routed multi-thousand-axiom batches into the incremental
+        // path, where per-axiom cost scales with KB size and the
+        // total goes quadratic.  Clamping at 500 keeps the cheap
+        // incremental path for small edits (REPL tells, LSP saves)
+        // and routes any batch that would actually pay for itself
+        // as a bulk rebuild through the bulk path.
+        let threshold = (current / 10).clamp(50, 500);
         if sids.len() >= threshold {
             // Bulk rebuild — fold the existing axioms and the batch into
             // one input vector, then rebuild the D-relation in two

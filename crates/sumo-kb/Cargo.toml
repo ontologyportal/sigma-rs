@@ -4,11 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-# Default includes the Vampire-backed clausifier + clause-level dedup.
-# `cnf` now implies `integrated-prover` (Phase 5 of the clause-dedup work):
-# the hand-rolled clausifier was retired, so CNF requires the linked
-# Vampire clausifier.  Builds without the default features skip dedup
-# entirely -- duplicate axioms are silently accepted.
+# No default features
 default = []
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
