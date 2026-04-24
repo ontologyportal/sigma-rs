@@ -82,57 +82,68 @@ pub fn handle_set_active_files(
         if rebuild_is_cheaper {
             // Wipe by replacing the KB; everything we care about
             // lives in the per-file stores, which a fresh KB
-            // starts empty.  We then bulk-load the requested files.
-            // The caller sees each previously-loaded file as
-            // `removed` (for diagnostic republishing) and each
-            // requested file as `added`.
+            // starts empty.  We then bulk-load the requested files
+            // through the batched `reconcile_files` entry point so
+            // promotion + SInE rebuild happen once across the
+            // whole set (quadratic otherwise on a cold KB).
             *kb = sumo_kb::KnowledgeBase::new();
             report.removed = currently_loaded.into_iter().collect();
 
+            let mut readable: Vec<(String, String)> = Vec::with_capacity(requested.len());
             for tag in &requested {
                 match std::fs::read_to_string(tag) {
-                    Ok(text) => {
-                        let r = kb.load_kif(&text, tag, None);
-                        if !r.ok {
-                            log::warn!(target: "sumo_lsp::kb",
-                                "setActiveFiles: load '{}' surfaced {} errors",
-                                tag, r.errors.len());
-                        }
-                        report.added.push(tag.clone());
-                    }
-                    Err(e) => {
+                    Ok(text) => readable.push((tag.clone(), text)),
+                    Err(e)   => {
                         log::warn!(target: "sumo_lsp::kb",
                             "setActiveFiles: cannot read '{}': {}", tag, e);
                         report.failed.push((tag.clone(), e.to_string()));
                     }
                 }
             }
+
+            let reports = kb.reconcile_files(
+                readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
+            );
+            for r in &reports {
+                if !r.parse_errors.is_empty() {
+                    log::warn!(target: "sumo_lsp::kb",
+                        "setActiveFiles: load '{}' surfaced {} parse error(s)",
+                        r.file, r.parse_errors.len());
+                }
+                report.added.push(r.file.clone());
+            }
         } else {
             // Incremental path.  Small delta, same-shape KB.
             // Remove first so stale cache entries aren't quoted by
-            // the load pass.
+            // the reconcile pass, then batch-ingest the adds so a
+            // multi-file delta still collapses to one promotion.
             for tag in &to_remove {
                 kb.remove_file(tag);
                 report.removed.push(tag.clone());
             }
 
+            let mut readable: Vec<(String, String)> = Vec::with_capacity(to_add.len());
             for tag in &to_add {
                 match std::fs::read_to_string(tag) {
-                    Ok(text) => {
-                        let r = kb.load_kif(&text, tag, None);
-                        if !r.ok {
-                            log::warn!(target: "sumo_lsp::kb",
-                                "setActiveFiles: load '{}' surfaced {} errors",
-                                tag, r.errors.len());
-                        }
-                        report.added.push(tag.clone());
-                    }
-                    Err(e) => {
+                    Ok(text) => readable.push((tag.clone(), text)),
+                    Err(e)   => {
                         log::warn!(target: "sumo_lsp::kb",
                             "setActiveFiles: cannot read '{}': {}", tag, e);
                         report.failed.push((tag.clone(), e.to_string()));
                     }
                 }
+            }
+
+            let reports = kb.reconcile_files(
+                readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
+            );
+            for r in &reports {
+                if !r.parse_errors.is_empty() {
+                    log::warn!(target: "sumo_lsp::kb",
+                        "setActiveFiles: load '{}' surfaced {} parse error(s)",
+                        r.file, r.parse_errors.len());
+                }
+                report.added.push(r.file.clone());
             }
         }
     }

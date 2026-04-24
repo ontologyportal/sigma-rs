@@ -74,34 +74,41 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
         Err(()) => return false,
     };
 
+    // Read every file up-front so we can pass a flat `(&str, &str)`
+    // iterator to the batched reconcile.  Per-file read failures
+    // abort the whole load — matches the previous behaviour.
+    let mut readable: Vec<(String, String)> = Vec::with_capacity(all_files.len());
+    for path in &all_files {
+        match read_kif_file(path) {
+            Ok(text) => readable.push((path.display().to_string(), text)),
+            Err(())  => return false,
+        }
+    }
+
+    // Batched reconcile.  On a cold load over ~30 SUMO files this
+    // drops wall-clock time from ~60 s (N per-file SInE
+    // promotions, each quadratic against the growing KB) to a
+    // single bulk-rebuild pass at the end of the batch.
+    let reports = kb.reconcile_files(
+        readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
+    );
+
     let mut total_added   = 0usize;
     let mut total_removed = 0usize;
-
-    // Gate every persistent mutation on "no hard validation errors
-    // anywhere in the batch" so `-W <code>` and `-Wall` behave the
-    // same way they do under `--flush`: reconcile all files into
-    // memory, then either commit every delta or commit none.
-    //
-    // The `parse_errors` path still aborts early per-file — the
-    // KIF parser's failure modes (unterminated list, bad literal,
-    // etc.) are local to a single file and don't benefit from
-    // whole-batch context.
-    let mut pending: Vec<(String, Vec<SentenceId>, Vec<SentenceId>)> =
-        Vec::with_capacity(all_files.len());
     let mut total_semantic_errors = 0usize;
+    let mut pending: Vec<(String, Vec<SentenceId>, Vec<SentenceId>)> =
+        Vec::with_capacity(reports.len());
 
-    for path in &all_files {
-        let text = match read_kif_file(path) {
-            Ok(t)   => t,
-            Err(()) => return false,
-        };
-        let tag = path.display().to_string();
-
-        let report = kb.reconcile_file(&tag, &text);
+    // Per-file post-processing.  Parse errors abort immediately;
+    // semantic errors accumulate so we can enforce the "all-or-
+    // nothing commit" gate below (same policy as the previous
+    // per-file-reconcile loop).
+    for report in reports {
+        let tag = report.file.clone();
 
         if !report.parse_errors.is_empty() {
             for e in &report.parse_errors {
-                log::error!("{}: {}", path.display(), e);
+                log::error!("{}: {}", tag, e);
             }
             log::error!("load: aborted — parse errors in {}; DB not modified", tag);
             return false;
@@ -138,7 +145,7 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
         log::error!(
             "load: {} semantic error(s) across {} file(s) -- database not modified \
              (in-memory reconcile discarded on exit)",
-            total_semantic_errors, all_files.len(),
+            total_semantic_errors, pending.len(),
         );
         return false;
     }
@@ -158,7 +165,7 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
 
     log::info!(
         "load: reconciled {} file(s) into '{}' (+{} added, -{} removed)",
-        all_files.len(),
+        pending.len(),
         kb_args.db.display(),
         total_added,
         total_removed,

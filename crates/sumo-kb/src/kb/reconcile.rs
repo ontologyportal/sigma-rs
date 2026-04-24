@@ -291,6 +291,41 @@ impl KnowledgeBase {
         report:       &mut ReconcileReport,
     ) -> bool {
         if added.is_empty() { return false; }
+        let touches_tax = self.reconcile_apply_additions_deferred(
+            file, added, altered_syms, report,
+        );
+        // Single-file callers promote here.  The batched
+        // `reconcile_files` skips this and promotes once after the
+        // whole batch so `make_session_axiomatic` can do one bulk
+        // SInE rebuild instead of N quadratic per-axiom updates.
+        self.make_session_axiomatic(crate::session_tags::SESSION_RECONCILE_ADD);
+        touches_tax
+    }
+
+    /// Deferred-promotion variant of [`reconcile_apply_additions`].
+    ///
+    /// Performs every step of the addition phase — snapshot the
+    /// pre-ingest root set, stream the new ASTs through `ingest()`
+    /// into the shared `SESSION_RECONCILE_ADD`, diff the post-ingest
+    /// root set to identify freshly-minted sids, collect their
+    /// symbols into `altered_syms` — except the final
+    /// `make_session_axiomatic` call.
+    ///
+    /// Callers batching across multiple files (the bulk
+    /// [`reconcile_files`] path) invoke this once per file, then
+    /// call `make_session_axiomatic(SESSION_RECONCILE_ADD)` exactly
+    /// once after the last file.  That way `SineIndex::add_axioms`
+    /// sees the whole batch in one call and routes it through the
+    /// bulk-rebuild path instead of paying per-file incremental
+    /// cost that scales with KB size.
+    fn reconcile_apply_additions_deferred(
+        &mut self,
+        file:         &str,
+        added:        &[crate::parse::ast::AstNode],
+        altered_syms: &mut HashSet<SymbolId>,
+        report:       &mut ReconcileReport,
+    ) -> bool {
+        if added.is_empty() { return false; }
 
         let added_text = added.iter()
             .map(|n| n.format_plain(0))
@@ -308,7 +343,6 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         let _ingest_result = self.ingest(&added_text, file, ADD_SESSION, /*validate=*/ false);
-        self.make_session_axiomatic(ADD_SESSION);
 
         let new_sids: Vec<SentenceId> = self.layer.store.file_roots
             .get(file).cloned().unwrap_or_default()
@@ -353,19 +387,151 @@ impl KnowledgeBase {
         }
     }
 
-    /// Reconcile multiple `(file_tag, new_text)` pairs in one pass.
-    /// Each file is reconciled independently — removals in one
-    /// don't cascade into another, which matches the user's stated
-    /// semantics: `-f` is a per-file operation.
+    /// Reconcile multiple `(file_tag, new_text)` pairs in a single
+    /// batched pass.
+    ///
+    /// Structurally equivalent to calling [`reconcile_file`] in a
+    /// loop, but with every "batchable" phase folded into one
+    /// whole-batch pass at the end:
+    ///
+    /// | Phase                           | Per-file / batched |
+    /// |---------------------------------|--------------------|
+    /// | Parse                           | per-file           |
+    /// | Compute diff                    | per-file           |
+    /// | Update retained spans           | per-file           |
+    /// | Apply removals                  | per-file           |
+    /// | Ingest additions (shared session) | per-file (deferred) |
+    /// | `make_session_axiomatic`        | **batched (once)** |
+    /// | `rebuild_taxonomy`              | **batched (if needed)** |
+    /// | Drop axiom cache                | batched (once)     |
+    /// | Smart revalidation              | **batched (union of altered symbols)** |
+    ///
+    /// The batched shape is a strict speed win on any multi-file
+    /// input where the per-file batches would otherwise fall into
+    /// `SineIndex::add_axioms`' incremental path: boot-time bulk
+    /// loads, `sumo/setActiveFiles` wholesale KB swaps, and the
+    /// `load` subcommand's initial ingest.  For a single-file call
+    /// the semantics are identical to [`reconcile_file`] modulo
+    /// the SInE call site.
+    ///
+    /// Per-file error reporting is preserved: parse errors surface
+    /// on the offending file's `ReconcileReport` and don't abort
+    /// the rest of the batch; semantic errors from the union
+    /// revalidation fan back to whichever file each errored sid
+    /// lives in via its `Sentence.file` tag.
+    ///
+    /// Returns one `ReconcileReport` per input file, in input
+    /// order.  Files with parse errors produce a report with
+    /// `parse_errors` populated and `retained` / `added_sids` /
+    /// `removed_sids` empty.
     pub fn reconcile_files<'a, I, S>(&mut self, files: I) -> Vec<ReconcileReport>
     where
         I: IntoIterator<Item = (&'a str, S)>,
         S: AsRef<str>,
     {
-        files
-            .into_iter()
-            .map(|(tag, text)| self.reconcile_file(tag, text.as_ref()))
-            .collect()
+        let mut reports:       Vec<ReconcileReport>     = Vec::new();
+        let mut altered_syms:  HashSet<SymbolId>        = HashSet::new();
+        let mut needs_tax_rebuild = false;
+        let mut any_adds_or_removes = false;
+
+        // -- Phase 1: per-file work that can't batch. -----------------------
+        for (tag, text) in files {
+            let mut report = ReconcileReport {
+                file: tag.to_owned(),
+                ..Default::default()
+            };
+
+            // Parse.
+            let doc = match self.reconcile_parse(tag, text.as_ref(), &mut report) {
+                Some(d) => d,
+                None    => { reports.push(report); continue; }
+            };
+
+            // Diff.
+            let diff = self.reconcile_compute_diff(tag, &doc);
+            report.retained     = diff.retained.len();
+            report.removed_sids = diff.removed.clone();
+
+            // Retained: span-only updates.
+            for (sid, new_span) in &diff.retained {
+                self.layer.store.update_sentence_span(*sid, new_span.clone());
+            }
+
+            // Noop fast-path — same signal reconcile_file uses.
+            if diff.removed.is_empty() && diff.added.is_empty() {
+                reports.push(report);
+                continue;
+            }
+            any_adds_or_removes = true;
+
+            // Removals: must apply per-file (they mutate per-file
+            // state), but altered_syms accumulates across files.
+            if !diff.removed.is_empty() {
+                needs_tax_rebuild |= self.any_touches_taxonomy(&diff.removed);
+                self.reconcile_apply_removals(&diff.removed, &mut altered_syms);
+            }
+
+            // Additions: ingest into the shared session, DO NOT promote.
+            if !diff.added.is_empty() {
+                let added_tax_touch = self.reconcile_apply_additions_deferred(
+                    tag, &diff.added, &mut altered_syms, &mut report,
+                );
+                needs_tax_rebuild |= added_tax_touch;
+            }
+
+            reports.push(report);
+        }
+
+        // Nothing mutated — every file was a no-op or parse-errored.
+        // Skip the expensive phase 2–4 passes entirely.
+        if !any_adds_or_removes {
+            return reports;
+        }
+
+        // -- Phase 2: one promotion over the accumulated shared session. ----
+        // Even if no file contributed adds (pure-removal batch), the
+        // session is empty and `make_session_axiomatic` is a no-op —
+        // cheap to call unconditionally.
+        self.make_session_axiomatic(crate::session_tags::SESSION_RECONCILE_ADD);
+
+        // -- Phase 3: one taxonomy rebuild if any file needed it. -----------
+        if needs_tax_rebuild {
+            self.layer.rebuild_taxonomy();
+        }
+        #[cfg(feature = "ask")]
+        { self.axiom_cache = None; }
+
+        // -- Phase 4: one SInE-scoped revalidation over the union. ----------
+        if !altered_syms.is_empty() {
+            let selected: HashSet<SentenceId> = {
+                let idx = self.sine_index.read().expect("sine_index poisoned");
+                idx.select(&altered_syms, SineParams::default().depth_limit)
+            };
+            // Per-file revalidated counts + semantic-error fan-out.
+            // Each selected sid maps to exactly one file via its
+            // `Sentence.file` tag, so the attribution is deterministic.
+            // Lookups into `reports` are linear per-error, but the
+            // typical batch is 10s of files and errors are rare —
+            // the constant-factor cost is far below the cost of doing
+            // N SInE selects in a per-file loop.
+            for sid in &selected {
+                let file_opt = self.sentence(*sid).map(|s| s.file.clone());
+                if let Some(ref file) = file_opt {
+                    if let Some(r) = reports.iter_mut().find(|r| r.file == *file) {
+                        r.revalidated += 1;
+                    }
+                }
+                if let Err(e) = self.layer.validate_sentence(*sid) {
+                    if let Some(file) = file_opt {
+                        if let Some(r) = reports.iter_mut().find(|r| r.file == file) {
+                            r.semantic_errors.push(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        reports
     }
 
     /// Thin delegator to [`KifStore::any_touches_taxonomy`].  Kept
@@ -382,7 +548,6 @@ impl KnowledgeBase {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::KnowledgeBase;
 
     fn load_file(kb: &mut KnowledgeBase, file: &str, text: &str) {

@@ -1,4 +1,4 @@
-# sumo-parser
+# SigmaKEE-rs
 
 A parser, validator, and theorem-prover interface for the [SUO-KIF](https://www.ontologyportal.org/suo-kif.pdf) / [SUMO](https://www.ontologyportal.org/) knowledge representation language.
 
@@ -23,26 +23,26 @@ correct architecture (`amd64`, `aarch64`, etc).
 To compile from source, first install Rust:
 
 ```bash
-$ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 When clone this repository:
 
 ```bash
 
-$ git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
+git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
 ```
 
 Then initialize the git submodules:
 
 ```bash
-$ git submodule update --recursive
+git submodule update --recursive
 ```
 
 Finally, compile everything:
 
 ```bash
-$ cargo build --release
+cargo build --release
 ```
 
 The executable is located in `target/release/sumo`. You can link it to your PATh using:
@@ -58,9 +58,9 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 
 | Crate | Description |
 |---|---|
-| `crates/core` (`sumo-parser-core`) | Parser, tokenizer, in-memory `KifStore`, semantic validator, TPTP FOF emitter |
-| `crates/store` (`sumo-store`) | LMDB-backed persistent store: symbol interning, CNF conversion, path index, TPTP CNF emitter |
-| `crates/native` (`sumo-native`) | CLI binary and library wrapping core + store |
+| `crates/sumo-kb` (`sumo-kb`) | Core library for the Sigmakee implementation |
+| `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
+| `crates/sumo-lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
 | `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) |
 
 ---
@@ -68,27 +68,77 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 ## Quick start
 
 ```bash
-# 1. Parse KIF files into the database (run once, like a SQL migration)
-sumo validate -f base.kif -f domain.kif --db ./my.lmdb
+# 1. Parse KIF files specified in you config.xml into a cached database, 
+# by default the cached database is ./sumo.lmdb
+# NOTE: it will look for your config.xml in $SIGMA_HOME/KBs/config.xml. If you 
+# have your config.xml somewhere else, pass the path using --config 
+sumo -c load
 
 # 2. Ask a conjecture
-sumo ask "(instance Socrates Human)" --db ./my.lmdb
+sumo ask "(instance Socrates Human)"
 
 # 3. Assert facts then ask
-sumo ask "(instance Socrates Human)" \
-     --tell "(instance Socrates Philosopher)" \
-     --session demo --db ./my.lmdb
+sumo ask --tell "(instance Socrates Philosopher)" \
+  "(instance Socrates Human)"
 
-# 4. Dump the KB as TPTP CNF
-sumo translate --db ./my.lmdb
+# 4. Dump the KB as TFF TPTP
+sumo --lang tff translate > sumo.p
 
-# 5. Translate a single formula in-memory (no database required)
-sumo translate -f base.kif "(instance Socrates Human)"
+# 5. Look up information about a symbol
+sumo man Socrates
 ```
 
 ---
 
 ## CLI reference
+
+### To cache or not to cache, that is the question
+
+The `sigmakee` CLI is highly optimized to amortize runtime efficiency over multiple
+KB accesses. To get the FULL effect of these optimizations, you should cache your KB
+to an LMDB database file prior to running any of the CLI's commands.
+
+Running the `load` subcommand, you can pass any number of constituent files manually using
+the `-f` flag, whole directories of `.kif` files using the `-d` or use the files listed
+in your `config.xml` using the `-c` flag. By default, `load` will write the compiled
+cache to the current directory in a file called `sumo.lmdb`. You can change the DB location
+and name using the `--db` flag.
+
+By default, all other commands will first look for a cached DB either in your current
+directory (`./sumo.lmdb`) or at the location specified by the `--db` flag. If you do
+not have a `sumo.lmdb` and you do not specify one using `--db`, or if you use the
+`--no-db` flag, it will perform all operations in memory and will parse any files you
+manually pass to the command at runtime without writing it to disk. ONLY `load` and
+`serve` (the persistent kernel) write to disk.
+
+So, the following command will translate a single file to TPTP and nothing else:
+
+```bash
+sumo --no-db -f Merge.kif translate
+```
+
+Whereas this command will first cache the file to disk then use that cache to
+generate the TPTP translation:
+
+```bash
+sumo -f Merge.kif load
+sumo translate
+```
+
+`load` defaults to **per-file reconcile** semantics: each `-f`/`-d` file is diffed
+against its prior contents in the DB and only the delta is committed. Files unrelated
+to the supplied set stay untouched. This makes repeat loads idempotent and cheap:
+
+```bash
+sumo -f /path/to/modified/file.kif --db sumo.lmdb load
+```
+
+updates only that one file in the cache. Pass `--flush` to drop the entire DB and
+rewrite it from just the supplied files (the pre-reconcile "full rewrite" behaviour):
+
+```bash
+sumo -f Merge.kif --db sumo.lmdb load --flush
+```
 
 ### Global flags
 
@@ -96,305 +146,163 @@ sumo translate -f base.kif "(instance Socrates Human)"
 |---|---|---|
 | `-v` / `--verbose` | — | Logging verbosity: `-v` = info, `-vv` = debug, `-vvv` = trace |
 | `-q` / `--quiet` | — | Suppress all warnings |
+| `-c` | — | Use the `config.xml` for options and KB constituents |
 | `--config PATH` | — | Path to a SigmaKEE `config.xml` or the directory containing it |
-| `--kb NAME` | — | Knowledge-base name from `config.xml` to load |
-| `-W CODE\|all` | — | Treat warning `CODE` (e.g. `E005`) or all warnings as errors |
+| `--kb NAME` | — | Knowledge-base name from `config.xml` to load (requires `-c`) |
+| `-W CODE\|all` / `--warning CODE\|all` | — | Promote semantic warning `CODE` (e.g. `E005`, `arity-mismatch`) or `all` to a hard error (repeatable) |
 
-### Shared KB arguments (`-f`, `-d`, `--db`, `--max-clauses`, `--vampire`)
+### Shared KB arguments (`-f`, `-d`, `--db`, `--no-db`, `--vampire`)
 
 These flags are available on every subcommand:
 
 | Flag | Default | Description |
 |---|---|---|
-| `-f FILE` | — | KIF file to load (repeatable) |
-| `-d DIR` | — | Directory of `*.kif` files to load (repeatable) |
+| `-f` / `--file FILE` | — | KIF file to load (repeatable) |
+| `-d` / `--dir DIR` | — | Directory of `*.kif` files to load (repeatable) |
 | `--db DIR` | `./sumo.lmdb` | Path to the LMDB database directory |
-| `--max-clauses N` | `10000` | Hard upper bound on CNF clauses per formula. Also read from `SUMO_MAX_CLAUSES` env var |
-| `--vampire PATH` | `vampire` | Path to the Vampire executable |
+| `--no-db` | — | Skip the LMDB database entirely — do not open or warn about it. Useful when running without a pre-built database |
+| `--vampire PATH` | `vampire` | Path to the Vampire executable. If a config.xml file is specified, it will derive this setting from their by default |
 
 ### `sumo validate`
 
-Parse KIF files, validate every formula, and commit to `--db`.
+Parse KIF files and semantically validate every formula.
 
 ```
-sumo validate [FORMULA] [-f FILE]... [-d DIR]... [--db DIR]
+sumo validate [FORMULA] [--parse] [--no-kb-check] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
-- **With `-f`/`-d` files** — parse → validate → commit. The database becomes the canonical store.
-- **With `FORMULA` only** — validate the formula against the existing database.
+- **With `-f`/`-d` files** — parse → validate.
+- **With `FORMULA` only** — validate the formula against the loaded KB.
 - **No files, no formula** — re-validate every formula already in the database.
+
+| Flag | Default | Description |
+|---|---|---|
+| `FORMULA` | — | Inline KIF formula to validate against the KB |
+| `--parse` | — | Parse-only validation; skip semantic checks entirely |
+| `--no-kb-check` | — | Do not semantically validate loaded KB files; only check the inline `FORMULA` (parse errors in KB files are still reported) |
 
 ### `sumo ask`
 
 Prove a KIF conjecture using Vampire.
 
 ```
-sumo ask [FORMULA] [--tell KIF]... [--timeout SECS] [--session KEY] [--keep] [--db DIR]
+sumo ask [FORMULA] [-t KIF]... [--timeout SECS] [--session KEY] [--backend NAME]
+         [--lang fof|tff] [-k FILE] [--proof FORMAT] [--profile]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `FORMULA` | stdin | KIF conjecture to prove |
-| `--tell KIF` | — | Assert a formula into the KB before asking (repeatable). Committed under `--session` |
+| `-t` / `--tell KIF` | — | Assert a KIF formula into the KB before asking (repeatable). Committed under `--session` |
 | `--timeout SECS` | `30` | Vampire proof-search timeout |
-| `--session KEY` | `default` | Session key for `--tell` assertions |
-| `--keep` | — | Keep the generated TPTP file instead of deleting it |
+| `--session KEY` | `default` | Session key for `--tell` assertions and TPTP hypothesis filtering |
+| `--backend NAME` | `subprocess` | Prover backend: `subprocess` (external `vampire` binary) or `embedded` (in-process, requires the `integrated-prover` build feature) |
+| `--lang fof\|tff` | `fof` | TPTP language variant |
+| `-k` / `--keep FILE` | — | Write the generated TPTP to `FILE` instead of piping it directly to Vampire (for debugging) |
+| `--proof FORMAT` | — | Print proof steps when Vampire finds one. `FORMAT` is `tptp`, `kif`, or a SUMO language tag (e.g. `EnglishLanguage`) — see below |
+| `--profile` | — | Print a timing breakdown of the major pipeline phases |
 
 Exits `0` if the theorem is proved, `1` otherwise.
+
+**`--proof FORMAT` values:**
+
+- `tptp` — raw TSTP proof section as emitted by Vampire (no translation).
+- `kif` — SUO-KIF pretty-print of each step's formula.
+- Any SUMO language identifier (`EnglishLanguage`, `ChineseLanguage`, …) — natural-language rendering via the KB's `format` / `termFormat` relations. Steps whose formulas reference a symbol that lacks a language spec fall back to KIF for that step only, with a warning listing the missing specifiers.
 
 ### `sumo translate`
 
 Emit TPTP from the KB.
 
 ```
-sumo translate [FORMULA] [--lang fof|tff] [--show-numbers] [--session KEY] [--db DIR]
+sumo translate [FORMULA] [--lang fof|tff] [--show-numbers] [--show-kif]
+               [--session KEY] [-f FILE]... [-d DIR]... [--db DIR]
 ```
-
-**DB mode** (database exists at `--db`): reads pre-computed CNF clauses from LMDB and emits TPTP CNF. Any `-f`/`-d`/`FORMULA` input is committed as a session assertion first.
-
-**Legacy in-memory mode** (no database): parses `-f`/`-d` files in memory and emits TPTP FOF.
 
 | Flag | Default | Description |
 |---|---|---|
+| `FORMULA` | stdin | Inline KIF formula to translate |
 | `--lang fof\|tff` | `fof` | TPTP language variant (legacy in-memory mode only) |
 | `--show-numbers` | — | Emit numeric literals as-is instead of `n__N` tokens |
-| `--session KEY` | — | Filter TPTP output to a specific session |
+| `--show-kif` | — | Emit a `% <original KIF>` comment before each TPTP formula |
+| `--session KEY` | — | Session key controlling which assertions appear as TPTP hypotheses |
 
 ### `sumo test`
 
 Run KIF test files (`*.kif.tq` format).
 
 ```
-sumo test PATH [-f FILE]... [-d DIR]... [--keep]
+sumo test PATH... [-k FILE] [--backend NAME] [--lang fof|tff]
+          [--timeout SECS] [--profile] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
 Test files are KIF-like but may contain special directives: `(note "…")`, `(time N)`, `(answer yes|no)`, `(query FORMULA)`. Everything else is treated as an axiom.
 
-**TODO: Add `man` and `debug` command references**
+| Flag | Default | Description |
+|---|---|---|
+| `PATH` | — | Path to a `.kif.tq` file or a directory containing them. Multiple paths accepted; shell globs are expanded |
+| `-k` / `--keep FILE` | — | Write generated TPTP to `FILE` (for debugging) |
+| `--backend NAME` | `subprocess` | Prover backend: `subprocess` or `embedded` |
+| `--lang fof\|tff` | `fof` | TPTP language variant |
+| `--timeout SECS` | — | Override the per-test timeout, superseding any `(time N)` directive inside the test file |
+| `--profile` | — | Print a timing breakdown of the major pipeline phases |
 
----
+### `sumo load`
 
-## `sumo-store` API
-
-The `sumo-store` crate is the persistence layer. It is usable independently of the CLI.
-
-### Opening the database
-
-```rust
-use sumo_store::LmdbEnv;
-
-let env = LmdbEnv::open("./my.lmdb")?;
-```
-
-Creates the directory if it does not exist. The map size is 10 GiB; up to 8 named databases are opened.
-
-### Committing a KifStore
-
-```rust
-use sumo_store::{CommitOptions, commit_kifstore};
-
-let opts = CommitOptions {
-    max_clauses: 10_000,  // hard error if any formula exceeds this
-    session: None,        // None = base KB, Some("name") = named session
-};
-
-let formula_ids = commit_kifstore(&env, &kif_store, &opts)?;
-```
-
-`commit_kifstore` performs a single LMDB write transaction:
-1. Interns all symbols from the ephemeral `KifStore` into LMDB, assigning persistent `u64` IDs.
-2. Converts each root formula to CNF (via full Skolemization).
-3. Writes `StoredFormula` records (element tree + CNF clauses) to the `formulas` database.
-4. Indexes each formula by head predicate (`head_index`) and by predicate+argument-position+symbol (`path_index`).
-5. Commits atomically; any error aborts the whole transaction (no partial state).
-
-### Reconstructing an in-memory KB
-
-```rust
-use sumo_store::load_kifstore_from_db;
-use sumo_parser_core::KnowledgeBase;
-
-let kif_store = load_kifstore_from_db(&env)?;
-let kb = KnowledgeBase::new(kif_store);
-```
-
-Reconstructs the in-memory `KifStore` from LMDB for semantic validation or in-memory queries. Taxonomy edges are rebuilt from the reconstructed sentences.
-
-### Generating TPTP CNF
-
-```rust
-use sumo_store::db_to_tptp_cnf;
-
-// All formulas
-let tptp = db_to_tptp_cnf(&env, "kb", None)?;
-
-// Only a specific session
-let tptp = db_to_tptp_cnf(&env, "kb", Some("my_session"))?;
-
-print!("{}", tptp);
-```
-
-Returns a `String` of `cnf(…)` declarations suitable for passing to Vampire.
-
-### CommitOptions defaults
-
-```rust
-use sumo_store::CommitOptions;
-
-// Reads SUMO_MAX_CLAUSES env var, falls back to 10,000
-let opts = CommitOptions::default();
-```
-
-### Error type
-
-```rust
-use sumo_store::StoreError;
-```
-
-| Variant | Meaning |
-|---|---|
-| `StoreError::Lmdb(e)` | Underlying LMDB error |
-| `StoreError::Serialise(msg)` | Bincode serialisation failure |
-| `StoreError::ClauseCountExceeded { limit }` | Formula exceeded the CNF clause limit — hard error |
-| `StoreError::DatabaseNotFound { path }` | `--db` path does not exist; run `sumo validate` first |
-| `StoreError::Other(msg)` | Catch-all |
-
-### Schema types
-
-```rust
-use sumo_store::{
-    StoredFormula,   // persisted formula: element tree + CNF clauses
-    StoredElement,   // Symbol(SymbolId) | Variable | Literal | Sub(Box<StoredFormula>) | Op
-    StoredSymbol,    // id, name, is_skolem, skolem_arity
-    Clause,          // CNF clause: Vec<CnfLiteral>
-    CnfLiteral,      // positive/negative literal: pred + args
-    CnfTerm,         // Const(SymbolId) | Var(SymbolId) | SkolemFn { id, args } | Num | Str
-    FormulaId,       // type alias: u64
-};
-```
-
----
-
-## `sumo-parser-core` API
-
-### Loading KIF
-
-```rust
-use sumo_parser_core::{KifStore, load_kif};
-
-let mut store = KifStore::default();
-let errors = load_kif(&mut store, "(subclass Human Animal)", "my_tag");
-```
-
-### Semantic validation
-
-```rust
-use sumo_parser_core::KnowledgeBase;
-
-let mut kb = KnowledgeBase::new(store);
-
-// Validate all root sentences
-let errors: Vec<(SentenceId, SemanticError)> = kb.validate_all();
-
-// Validate one sentence
-kb.validate_sentence(sid)?;
-
-// Assert a formula at runtime
-let result = kb.tell("my_session", "(instance Socrates Human)");
-assert!(result.ok);
-```
-
-### TPTP FOF output (legacy / in-memory)
-
-```rust
-use sumo_parser_core::{kb_to_tptp, sentence_to_tptp, TptpOptions, TptpLang};
-
-let opts = TptpOptions {
-    lang: TptpLang::Fof,
-    hide_numbers: true,
-    ..TptpOptions::default()
-};
-
-let full_kb = kb_to_tptp(&kb, "kb", &opts, None);
-let one     = sentence_to_tptp(sid, &kb, &opts);
-```
-
-### Key types
-
-| Type | Description |
-|---|---|
-| `SymbolId = u64` | Persistent symbol identifier |
-| `SentenceId = u64` | Persistent sentence identifier |
-| `KifStore` | In-memory parsed store (symbols, sentences, taxonomy) |
-| `KnowledgeBase` | Wraps `KifStore` with validation and `tell()` |
-| `TellResult` | `ok: bool`, `errors: Vec<String>`, `sentence_id: Option<SentenceId>` |
-
----
-
-## Path index
-
-The `path_index` database uses 18-byte big-endian keys:
+Parse KIF files and commit them to the LMDB database. **The only command that writes to the database besides `sumo serve`.**
 
 ```
-[ pred_id: u64 (8 bytes) ][ arg_pos: u16 (2 bytes) ][ sym_id: u64 (8 bytes) ]
+sumo load [--flush] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
-This layout supports efficient range scans such as "all formulas where predicate P appears with symbol S at argument position N".
+Validates all loaded formulas before committing — parse errors or promoted warnings (`-W`) abort the commit and leave the database unchanged. If no files are given, the database is created / opened but left empty.
 
----
+**Default (reconcile mode)** — per-file diff + incremental commit. Each `-f`/`-d` file is diffed against its prior contents in the DB under the same file tag, and only the delta (added + removed sentences) is committed. Files unrelated to the supplied set stay untouched. Idempotent — safe to run repeatedly. Cheap when nothing has changed.
 
-## CNF pipeline
+**`--flush`** — drop the entire DB and rewrite it from just the supplied `-f`/`-d` files. With no files, the result is an empty initialised database. Use when the DB has accumulated stale axioms from earlier loads and you want to start clean.
 
-Clausification is performed by Vampire's `NewCNF` via
-`sumo_kb::cnf::sentence_to_clauses` (feature `cnf`, on by default).
-The pipeline is:
+| Flag | Default | Description |
+|---|---|---|
+| `--flush` | — | Drop the whole DB and rebuild from just the supplied files |
 
-1. Build a single-sentence `vampire_prover::ir::Problem` in TFF mode
-   via `NativeConverter`.
-2. Call `ir::Problem::clausify(Options::new())`.  Under the hood this
-   runs a Rust-side `Imp`-elimination pre-pass, hands the resulting
-   problem to Vampire's NewCNF, and reads the clauses back through
-   structured FFI accessors (no TPTP-string round-trip).
-3. Translate each `ir::Clause` to the crate-local `Clause` /
-   `CnfLiteral` / `CnfTerm` shape, interning any skolem functors
-   (`sK<n>`) into the `KifStore` as the walk proceeds.
+### `sumo man`
 
-Variables in KIF are scope-tagged by the parser (`X@5`); by the time
-NewCNF is done, all variables have been renamed to Vampire's `X0..Xn`.
-The original KIF names are no longer needed -- canonical hashing
-(below) renames them again for dedup.
+Show documentation, signature, and taxonomy for a symbol — the KIF-native equivalent of `man(1)`. Everything surfaced is extracted from the ontology-level relations `documentation`, `termFormat`, `format`, plus `subclass` / `instance` / `domain` / `range` declarations.
 
-The `cnf` feature implies `integrated-prover` (the linked Vampire C++
-library).  Builds without default features skip dedup entirely and
-accept duplicate axioms silently -- convenient for
-tooling-that-only-emits-TPTP-as-strings use cases.
+```
+sumo man SYMBOL [--lang LANG] [-f FILE]... [-d DIR]... [--db DIR]
+```
 
-## Clause-level deduplication
+| Flag | Default | Description |
+|---|---|---|
+| `SYMBOL` | — | Symbol to describe (e.g. `Human`, `subclass`, `instance`) |
+| `--lang LANG` | — | Filter documentation / term-format entries by language tag (e.g. `EnglishLanguage`). When omitted, entries in all languages are shown |
 
-Two formulas are considered duplicates when their CNF clause sets are
-equal, up to:
+### `sumo serve`
 
-- variable renaming,
-- skolem renaming,
-- clause ordering within the formula (clause = set of literals),
-- literal ordering within a clause,
-- equality side orientation (`l=r` ≡ `r=l`),
-- sort erasure (the canonical hash is sort-agnostic).
+Run as a persistent kernel: reads newline-delimited JSON requests from stdin and writes responses to stdout. Owns one long-lived `KnowledgeBase` in memory so every request amortises the load cost — designed for editor integrations (see the VSCode extension under `crates/sumo-vscode/`).
 
-This is implemented in two layers:
+```
+sumo serve [-f FILE]... [-d DIR]... [--db DIR | --no-db] [--vampire PATH]
+```
 
-- `sumo_kb::canonical::canonical_clause_hash(&Clause) -> u64` --
-  hashes one clause's canonical form.  Tag-byte-separated, xxh64-based,
-  stable across process runs.
-- `sumo_kb::canonical::formula_hash_from_clauses(&[u64]) -> u64` --
-  fingerprints a formula by sorting its clause's canonical hashes and
-  hashing the resulting byte stream.
+**Default (`--db`)** — opens the LMDB at `--db` (creating if absent) and reconciles every `-f`/`-d` file against it on boot. Subsequent kernel spawns on an unchanged KB are near-instant (no-op reconciles detect unchanged content). Running RPC methods that mutate the KB (`kb.reconcileFile`, `kb.removeFile`, `kb.flush`) update the DB transactionally.
 
-LMDB-side, the persistence layer interns every clause it sees by
-canonical hash (`clauses` + `clause_hashes` tables) and records a
-formula-hash → `SentenceId` mapping (`formula_hashes` table).  Reopening
-a KB rehydrates the in-memory dedup map from `formula_hashes` in a
-single pass -- no re-clausification on open.
+**`--no-db`** — everything in memory; `-f`/`-d` files load as session axioms and vanish when the process exits.
+
+The kernel's RPC surface is:
+
+| Method | Params | Description |
+|---|---|---|
+| `tell` | `{ session, kif }` | Session-local assertion (ephemeral) |
+| `ask` | `{ session, query, timeoutSecs }` | Run a conjecture through Vampire |
+| `kb.reconcileFile` | `{ path, text? }` | Sync one file from disk (or inline text) into the DB |
+| `kb.removeFile` | `{ path }` | Drop one file from the in-memory KB + DB |
+| `kb.flush` | `{}` | Wipe all persisted files (in-memory + DB) |
+| `kb.listFiles` | `{}` | Return loaded files + sentence counts |
+| `shutdown` | `{}` | Clean exit |
+
+Semantic warnings never populate the reconcile report's `semanticErrors` list by default — they're logged to stderr via the standard `SemanticError::handle` path. Run `sumo -W <code> serve` (or `-W all`) to promote specific warnings to hard errors that the RPC caller sees.
 
 ---
 
