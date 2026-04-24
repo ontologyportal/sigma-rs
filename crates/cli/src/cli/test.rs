@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
-use crate::cli::util::open_or_build_kb_profiled;
+use crate::cli::util::{open_or_build_kb_profiled, resolve_vampire_path};
 use crate::ask::{ask as native_ask, AskOptions, Binding};
 use crate::cli::util::parse_lang;
 use sumo_kb::{parse_test_content, Profiler};
@@ -46,6 +46,19 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         log::error!("no .kif.tq files found");
         return false;
     }
+
+    // Resolve the Vampire binary once up-front so a missing subprocess
+    // prover is reported before we pay the KB-build cost.  The embedded
+    // backend bypasses this (no external binary needed).
+    let resolved_vampire = if backend != "embedded" {
+        let candidate = kb_args.vampire.clone().unwrap_or_else(|| PathBuf::from("vampire"));
+        match resolve_vampire_path(&candidate) {
+            Ok(p)   => Some(p),
+            Err(()) => return false,
+        }
+    } else {
+        None
+    };
 
     // 1. Build the base KB once
     log::debug!("Building base KB");
@@ -146,7 +159,10 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
             &mut kb,
             &query,
             AskOptions {
-                vampire_path: kb_args.vampire.clone(),
+                // Pass the pre-resolved absolute path so each test doesn't
+                // re-walk $PATH and we skip any surprise if $PATH changes
+                // mid-run.  `None` for the embedded backend.
+                vampire_path: resolved_vampire.clone(),
                 timeout_secs: Some(test_case.timeout),
                 tptp_dump_path: keep.clone(),
                 session: Some(session.clone()),

@@ -2,6 +2,15 @@ use core::fmt;
 use inline_colorization::*;
 use serde::{Deserialize, Serialize};
 
+/// Soft wrap threshold for the AST pretty-printers.  Expressions that
+/// fit within this many columns at their target indent are kept on
+/// one line; longer ones break across lines with each argument
+/// indented two columns further.  Shared by [`AstNode::pretty_print`]
+/// (ANSI-coloured terminal output) and [`AstNode::format_plain`]
+/// (plain-text output) so a change to the wrapping width stays
+/// consistent across both sinks.
+const LINE_WIDTH: usize = 72;
+
 /// Source range (1-based line / column, byte offset at both ends).
 ///
 /// `line` / `col` / `offset` describe the START of the range (backward
@@ -63,10 +72,13 @@ impl Span {
         }
     }
 
-    /// True if this span was produced by [`Span::synthetic`] (i.e.
-    /// it has no real source location).
+    /// True if this span has no real source location.  Covers both
+    /// [`Span::synthetic`] (`<synthetic>`) and LMDB-rehydrated
+    /// placeholders (`<lmdb:N>`) -- every caller of this predicate
+    /// wants to treat "no real origin" the same way regardless of
+    /// which sentinel was used.
     pub fn is_synthetic(&self) -> bool {
-        self.file == "<synthetic>"
+        self.file == "<synthetic>" || self.file.starts_with("<lmdb:")
     }
 
     /// True if the span covers zero bytes (a point span).
@@ -209,7 +221,6 @@ impl AstNode {
     /// `pretty_print`'s output is only re-parseable by KIF tooling
     /// that strips the escapes first.
     pub fn pretty_print(&self, indent: usize) -> String {
-        const LINE_WIDTH: usize = 72;
         let flat = self.flat();
         if indent + flat.len() <= LINE_WIDTH {
             return Pretty(self).to_string();
@@ -237,7 +248,6 @@ impl AstNode {
     /// `sumo man` CLI and proof-trace printers use
     /// [`pretty_print`] because their destination is a terminal.
     pub fn format_plain(&self, indent: usize) -> String {
-        const LINE_WIDTH: usize = 72;
         let flat = self.flat();
         if indent + flat.len() <= LINE_WIDTH {
             return flat;

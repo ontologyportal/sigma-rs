@@ -9,7 +9,7 @@ edition.workspace = true
 # the hand-rolled clausifier was retired, so CNF requires the linked
 # Vampire clausifier.  Builds without the default features skip dedup
 # entirely -- duplicate axioms are silently accepted.
-default = ["cnf"]
+default = []
 # LMDB-backed persistence. Pulls in heed + bincode.
 persist = ["dep:heed", "dep:bincode"]
 # Theorem proving: the subprocess prover (spawns a `vampire` process)

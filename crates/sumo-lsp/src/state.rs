@@ -12,7 +12,7 @@
 // a bottleneck we'll split to an arc-swap + writer-thread pattern;
 // this model is intentionally simple until then.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
 
@@ -81,6 +81,14 @@ pub struct GlobalState {
     /// between the extension's session model and the server's
     /// file_roots.
     pub client_manages_files: Arc<AtomicBool>,
+    /// Semantic-error codes + names the client has opted out of
+    /// (see the `sumo/setIgnoredDiagnostics` notification).
+    /// Matched against both `SemanticError::code()` (e.g. `"E005"`)
+    /// and `SemanticError::name()` (e.g. `"arity-mismatch"`) so
+    /// the client can use whichever form it exposes in its UI.
+    /// Empty by default -- the client sets this after it
+    /// resolves its `sumo.diagnostics.ignoredCodes` config.
+    pub ignored_diagnostic_codes: Arc<RwLock<HashSet<String>>>,
 }
 
 impl GlobalState {
@@ -88,7 +96,8 @@ impl GlobalState {
         Self {
             kb:   Arc::new(RwLock::new(KnowledgeBase::new())),
             docs: Arc::new(RwLock::new(HashMap::new())),
-            client_manages_files: Arc::new(AtomicBool::new(false)),
+            client_manages_files:     Arc::new(AtomicBool::new(false)),
+            ignored_diagnostic_codes: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }

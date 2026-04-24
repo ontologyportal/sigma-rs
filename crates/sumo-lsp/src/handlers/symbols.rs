@@ -34,11 +34,19 @@ pub fn handle_document_symbol(
         let Some(sent) = kb.sentence(sid) else { continue; };
         if sent.span.is_synthetic() { continue; }
         let range = span_to_range(&doc.rope, &sent.span);
-        // Selection range: the head symbol's span if available,
-        // otherwise the whole sentence.  Editors use this for
-        // highlighting the symbol-navigator entry.
+        // Selection range: the head symbol's span if available and
+        // real, otherwise the whole sentence.  VSCode rejects the
+        // whole response if selectionRange is not contained in
+        // fullRange, so drop back to `range` for synthetic/mixed
+        // elements (cache rehydration leaves element spans at the
+        // `<synthetic>` sentinel while the sentence may have a real
+        // re-parsed span) and verify byte containment defensively.
         let sel_range = sent.elements.first()
-            .map(|e| span_to_range(&doc.rope, e.span()))
+            .map(|e| e.span())
+            .filter(|sp| !sp.is_synthetic()
+                      && sp.offset     >= sent.span.offset
+                      && sp.end_offset <= sent.span.end_offset)
+            .map(|sp| span_to_range(&doc.rope, sp))
             .unwrap_or(range);
 
         let (name, detail, kind) = describe_sentence(&kb, sent);

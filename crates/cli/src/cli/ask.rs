@@ -8,7 +8,8 @@ use sumo_kb::{ProverStatus, Profiler};
 use crate::cli::util::parse_lang;
 
 use crate::cli::args::KbArgs;
-use crate::cli::util::{open_or_build_kb_profiled, read_stdin};
+use crate::cli::proof::print_proof;
+use crate::cli::util::{open_or_build_kb_profiled, read_stdin, resolve_vampire_path};
 
 pub fn run_ask(
     formula:  Option<String>,
@@ -19,7 +20,7 @@ pub fn run_ask(
     lang:     String,
     kb_args:  KbArgs,
     keep:     Option<PathBuf>,
-    show_proof: bool,
+    show_proof: Option<String>,
     profile:  bool,
 ) -> bool {
     log::debug!(
@@ -64,12 +65,19 @@ pub fn run_ask(
     let result = match backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
-            log::info!("ask: using embedded Vampire backend (TFF)");
-            kb.ask_embedded(&conjecture, Some(&session), timeout)
+            log::info!("ask: using embedded Vampire backend ({:?})", tptp_lang);
+            kb.ask_embedded(&conjecture, Some(&session), timeout, tptp_lang)
         }
         "subprocess" | "" => {
             use sumo_kb::VampireRunner;
-            let vampire_path = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
+            let candidate = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
+            // Fail fast when the external binary is missing — otherwise the
+            // spawn error is buried inside the ProverResult's raw_output and
+            // only visible with `-v`.
+            let vampire_path = match resolve_vampire_path(&candidate) {
+                Ok(p)   => p,
+                Err(()) => return false,
+            };
             let runner = VampireRunner { vampire_path, timeout_secs: timeout, tptp_dump_path: keep };
             kb.ask(&conjecture, Some(&session), &runner, tptp_lang)
         }
@@ -79,27 +87,37 @@ pub fn run_ask(
         }
     };
 
+    // Always surface the verdict to the user, regardless of `-v`.  The
+    // exit code also reflects this (see the final `matches!` below),
+    // but scripting against stdout is much friendlier with an explicit
+    // line — and interactive users shouldn't have to pass `-v` just to
+    // see whether their query was proved.
+    let (verdict, colour) = match result.status {
+        ProverStatus::Proved       => ("Proved",       color_bright_green),
+        ProverStatus::Disproved    => ("Disproved",    color_bright_yellow),
+        ProverStatus::Consistent   => ("Consistent",   color_bright_green),
+        ProverStatus::Inconsistent => ("Inconsistent", color_bright_red),
+        ProverStatus::Timeout      => ("Timeout",      color_bright_yellow),
+        ProverStatus::Unknown      => ("Unknown",      color_bright_red),
+    };
+    println!("{style_bold}Result:{style_reset} {colour}{}{color_reset}", verdict);
+
     if !result.bindings.is_empty() {
         for b in &result.bindings {
             println!("  {style_bold}{}{style_reset}", b);
         }
     }
 
-    if show_proof && !result.proof_kif.is_empty() {
-        println!("\n{style_bold}Proof (SUO-KIF):{style_reset}");
-        for step in &result.proof_kif {
-            let premises = if step.premises.is_empty() {
-                String::new()
-            } else {
-                format!(" <- [{}]", step.premises.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "))
-            };
-            println!("  {:>3}. [{}]{}", step.index + 1, step.rule, premises);
-            println!("        {}", step.formula.pretty_print(2).replace('\n', "\n        "));
-        }
+    if let Some(format) = show_proof.as_deref() {
+        print_proof(&kb, &result, format);
     }
 
-    log::debug!(
-        "{style_bold}Theorem prover output: {style_reset}{}",
+
+    // Promote the raw Vampire transcript to `info` so `-v` (one `v`) is
+    // enough to inspect it.  Previously this required `-vv` (debug) and
+    // lived next to tens of thousands of unrelated debug lines.
+    log::info!(
+        "{style_bold}Theorem prover output:{style_reset}\n{}",
         result.raw_output
     );
 
@@ -128,3 +146,4 @@ pub fn run_ask(
 
     matches!(result.status, ProverStatus::Proved)
 }
+

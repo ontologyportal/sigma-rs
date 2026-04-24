@@ -72,7 +72,16 @@ pub struct SineParams {
 }
 
 impl Default for SineParams {
-    fn default() -> Self { Self { tolerance: 1.2, depth_limit: None } }
+    /// Default tolerance is read from `SINE_TOLERANCE` at compile
+    /// time if set (via `.cargo/config.toml` or the environment),
+    /// falling back to 2.0.  `option_env!` (not `env!`) is used so a
+    /// fresh checkout without the override variable still compiles.
+    fn default() -> Self {
+        let tol = option_env!("SINE_TOLERANCE")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2.0);
+        Self { tolerance: tol, depth_limit: None }
+    }
 }
 
 impl SineParams {
@@ -159,6 +168,8 @@ pub(crate) struct AddAxiomStats {
     /// Number of times `rebuild_from` fired (at most once per
     /// `add_axioms` call, and only when the batch is large).
     pub bulk_rebuilds:   usize,
+    /// Number of `remove_axiom` calls.
+    pub removes:         usize,
 }
 
 impl SineIndex {
@@ -232,7 +243,7 @@ impl SineIndex {
         if self.axiom_syms.contains_key(&sid) { return; }
         if !store.has_sentence(sid) { return; }
 
-        let syms = store.collect_axiom_symbol_set(sid);
+        let syms = store.sentence_symbols(sid);
 
         // Record even "symbol-less" axioms (pure var/literal bodies — rare
         // in SUMO but possible) so axiom_count and contains() stay accurate.
@@ -274,6 +285,105 @@ impl SineIndex {
         for a in affected {
             if a == sid { continue; }
             self.update_affected_axiom(a, &syms, &old_occ);
+        }
+    }
+
+    /// Remove `sid` from the index, decrementing per-symbol
+    /// generality counts and recomputing triggers for every other
+    /// axiom that shared a symbol with it.
+    ///
+    /// Symmetric to [`add_axiom`].  Idempotent: calling twice, or on
+    /// an sid that was never added, is a no-op.  After removal `sid`
+    /// is not reported by [`triggers`](SineIndex::triggers),
+    /// [`generality`](SineIndex::generality),
+    /// [`symbols_of_axiom`](SineIndex::symbols_of_axiom), or
+    /// [`contains`](SineIndex::contains).
+    ///
+    /// **Does not read the store.**  The symbol set is pulled from
+    /// the cached `axiom_syms` entry populated when the axiom was
+    /// added, so callers are free to remove the underlying
+    /// `Sentence` from the store before or after this call.
+    ///
+    /// # Why not a fast path
+    ///
+    /// `add_axiom`'s fine-grained update exploits a one-directional
+    /// monotonicity: adding an axiom only *increments* symbol
+    /// generalities, so thresholds only ever loosen.  Removal runs
+    /// the same logic in reverse — thresholds tighten — and the set
+    /// of axioms whose g_min shifts is conceptually symmetric, but
+    /// the resulting trigger-set changes go in the opposite
+    /// direction (triggers drop out rather than enter).  We could
+    /// mirror the fast path, but removal is expected to be dwarfed
+    /// in volume by addition in every realistic workload
+    /// (reconcile-on-load touches ~1% of axioms per edit), so
+    /// correctness-first via full recompute is the better trade-off.
+    /// Revisit if profiling shows `remove_axiom` hot.
+    pub(crate) fn remove_axiom(&mut self, sid: SentenceId) {
+        self.stats.removes += 1;
+
+        // Drop the cached symbol set.  Early-out on unknown sid.
+        let Some(syms) = self.axiom_syms.remove(&sid) else { return };
+
+        // Un-index `sid`'s trigger entries.
+        if let Some(old_triggers) = self.axiom_triggers.remove(&sid) {
+            for &s in &old_triggers {
+                if let Some(set) = self.trigger_idx.get_mut(&s) {
+                    set.remove(&sid);
+                    if set.is_empty() { self.trigger_idx.remove(&s); }
+                }
+            }
+        }
+        self.axiom_g_min.remove(&sid);
+        self.axiom_g_min_count.remove(&sid);
+
+        if syms.is_empty() {
+            // Pure var / literal body — no generality to update.
+            return;
+        }
+
+        // Collect affected axioms BEFORE dropping generality.  An
+        // axiom is affected iff it shares ≥1 symbol with `sid`.
+        let mut affected: HashSet<SentenceId> = HashSet::new();
+        for &s in &syms {
+            if let Some(set) = self.sym_axioms.get(&s) {
+                affected.extend(set.iter().copied());
+            }
+        }
+        affected.remove(&sid);
+
+        // Decrement per-symbol generality by dropping `sid` from the
+        // reverse index.  An empty bucket for a symbol that's no
+        // longer in any axiom is purged outright to keep
+        // `generality(s)` returning 0 consistent with a post-
+        // removal KB.
+        for &s in &syms {
+            if let Some(set) = self.sym_axioms.get_mut(&s) {
+                set.remove(&sid);
+                if set.is_empty() { self.sym_axioms.remove(&s); }
+            }
+        }
+
+        // Recompute triggers for every affected axiom.  See the
+        // "Why not a fast path" doc comment above for rationale.
+        for a in affected {
+            self.recompute_triggers_for(a);
+            self.stats.recompute_calls += 1;
+        }
+    }
+
+    /// Bulk-remove sids.  Delegates to [`remove_axiom`] in a loop —
+    /// if profiling shows per-call overhead, a future optimisation
+    /// could gather affected axioms once across the entire batch
+    /// and recompute each one just once rather than up to |sids|
+    /// times.  Today, removals are sparse enough that the naive
+    /// loop is fine.
+    #[allow(dead_code)]  // exposed for tests + future reconcile batching
+    pub(crate) fn remove_axioms<I>(&mut self, sids: I)
+    where
+        I: IntoIterator<Item = SentenceId>,
+    {
+        for sid in sids {
+            self.remove_axiom(sid);
         }
     }
 
@@ -378,57 +488,8 @@ impl SineIndex {
         }
     }
 
-    /// Remove an axiom and bring the D-relation up to date.
-    ///
-    /// Symmetric to [`add_axiom`] in both semantics and complexity.
-    /// Provided for completeness; the KB does not currently expose a
-    /// "demote axiom" operation, so this is a future-proofing hook
-    /// rather than a hot path today.
-    #[allow(dead_code)]
-    pub(crate) fn remove_axiom(&mut self, sid: SentenceId) {
-        let syms = match self.axiom_syms.remove(&sid) {
-            Some(s) => s,
-            None => return,
-        };
-
-        // Remove sid from the D-relation (before affected-set recomputation,
-        // so the recomputation sees the post-removal state).
-        if let Some(old_triggers) = self.axiom_triggers.remove(&sid) {
-            for &s in &old_triggers {
-                if let Some(set) = self.trigger_idx.get_mut(&s) {
-                    set.remove(&sid);
-                    if set.is_empty() { self.trigger_idx.remove(&s); }
-                }
-            }
-        }
-        // Drop sid's own g_min cache entries.
-        self.axiom_g_min.remove(&sid);
-        self.axiom_g_min_count.remove(&sid);
-
-        // Drop sid from the symbol → axioms reverse index.
-        for &s in &syms {
-            if let Some(set) = self.sym_axioms.get_mut(&s) {
-                set.remove(&sid);
-                if set.is_empty() { self.sym_axioms.remove(&s); }
-            }
-        }
-
-        // Remaining axioms sharing a symbol with the removed one may
-        // have shifted g_min downward (one fewer axiom counted for
-        // those syms), potentially widening their trigger set.  We
-        // use the full recompute path here — analogous fine-grained
-        // handling for removes is possible but `remove_axiom` is not
-        // currently a hot path, so the simpler implementation wins.
-        let mut affected: HashSet<SentenceId> = HashSet::new();
-        for &s in &syms {
-            if let Some(set) = self.sym_axioms.get(&s) {
-                affected.extend(set.iter().copied());
-            }
-        }
-        for a in affected {
-            self.recompute_triggers_for(a);
-        }
-    }
+    // `remove_axiom` / `remove_axioms` moved earlier in the file,
+    // grouped next to `add_axiom` / `add_axioms` for discoverability.
 
     /// Bulk-add many axioms.
     ///
@@ -498,7 +559,7 @@ impl SineIndex {
         for &sid in sids {
             if self.axiom_syms.contains_key(&sid) { continue; }  // dedup
             if !store.has_sentence(sid) { continue; }
-            let syms = store.collect_axiom_symbol_set(sid);
+            let syms = store.sentence_symbols(sid);
             for &s in &syms {
                 self.sym_axioms.entry(s).or_default().insert(sid);
             }
@@ -956,7 +1017,7 @@ mod tests {
              (subclass Mammal Animal)\n\
              (subclass Dog Mammal)",
         );
-        let new_sid = *store2.roots.last().unwrap();
+        // let new_sid = *store2.roots.last().unwrap();
         // Need to use the same store for the index, so simulate: add
         // a new axiom derived from store2 but using store's symbols where
         // possible.  Simplest: fork a fresh scenario — load everything
@@ -1081,6 +1142,134 @@ mod tests {
         idx.add_axiom(&store, axioms[0]);
         idx.add_axiom(&store, axioms[0]); // again
         assert_eq!(idx.axiom_count(), 1);
+    }
+
+    // -- remove_axiom --------------------------------------------------
+
+    #[test]
+    fn remove_unknown_sid_is_noop() {
+        let (store, axioms) = store_and_axioms("(subclass Human Animal)");
+        let mut idx = build_eager(&store, &axioms, 1.0);
+        let before = idx.axiom_count();
+        idx.remove_axiom(99_999_999);
+        assert_eq!(idx.axiom_count(), before);
+    }
+
+    #[test]
+    fn remove_then_readd_matches_from_scratch() {
+        // The structural invariant: after remove+re-add, the index
+        // must be bytewise identical to a fresh from-scratch build.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Human Animal)\n\
+             (subclass Dog Mammal)\n\
+             (=> (instance ?X Dog) (instance ?X Animal))",
+        );
+        let mut idx = build_eager(&store, &axioms, 1.2);
+        idx.remove_axiom(axioms[1]);
+        idx.add_axiom(&store, axioms[1]);
+        assert_matches_from_scratch(&idx, &store, &axioms, 1.2);
+    }
+
+    #[test]
+    fn remove_axiom_decrements_generality() {
+        // Two axioms mentioning the same symbol → gen(sym) = 2.
+        // Remove one → gen(sym) = 1.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
+        let mammal = store.sym_id("Mammal").expect("Mammal interned");
+        let mut idx = build_eager(&store, &axioms, 1.0);
+        assert_eq!(idx.generality(mammal), 2);
+        idx.remove_axiom(axioms[0]);
+        assert_eq!(idx.generality(mammal), 1);
+        assert!(!idx.contains(axioms[0]));
+        assert!(idx.contains(axioms[1]));
+    }
+
+    #[test]
+    fn remove_axiom_unindexes_its_triggers() {
+        // After remove, no symbol should report this sid as a
+        // trigger.  Uses tolerance 1.0 so triggers are unambiguous.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
+        let mut idx = build_eager(&store, &axioms, 1.0);
+        let dog = store.sym_id("Dog").expect("Dog interned");
+        assert!(idx.triggers(dog).map_or(false, |s| s.contains(&axioms[0])),
+            "Dog should trigger axiom 0 before removal");
+        idx.remove_axiom(axioms[0]);
+        assert!(!idx.triggers(dog).map_or(false, |s| s.contains(&axioms[0])),
+            "Dog must not trigger axiom 0 after removal");
+        assert!(idx.symbols_of_axiom(axioms[0]).is_none());
+    }
+
+    #[test]
+    fn remove_axiom_recomputes_affected_triggers() {
+        // A four-axiom corpus where removing one shifts another's g_min.
+        //   A1: (subclass Dog Mammal)       — symbols {subclass, Dog, Mammal}
+        //   A2: (subclass Mammal Animal)    — symbols {subclass, Mammal, Animal}
+        //   A3: (subclass Cat Mammal)       — symbols {subclass, Cat, Mammal}
+        //   A4: (subclass Animal Entity)    — symbols {subclass, Animal, Entity}
+        // Generalities before: subclass=4, Mammal=3, Animal=2,
+        // Dog=Cat=Entity=1.
+        // Remove A2 → Mammal gen drops 3→2, Animal gen drops 2→1.
+        // The new generalities are consistent with a from-scratch build.
+        let (store, axioms) = store_and_axioms(
+            "(subclass Dog Mammal)\n\
+             (subclass Mammal Animal)\n\
+             (subclass Cat Mammal)\n\
+             (subclass Animal Entity)",
+        );
+        let mut idx = build_eager(&store, &axioms, 1.2);
+        idx.remove_axiom(axioms[1]);
+        // Rebuild the axiom list without the removed one and verify
+        // the resulting index matches.
+        let kept: Vec<_> = [axioms[0], axioms[2], axioms[3]].into_iter().collect();
+        assert_matches_from_scratch(&idx, &store, &kept, 1.2);
+    }
+
+    #[test]
+    fn remove_is_idempotent() {
+        let (store, axioms) = store_and_axioms(
+            "(subclass Human Animal)\n(subclass Dog Mammal)",
+        );
+        let mut idx = build_eager(&store, &axioms, 1.0);
+        idx.remove_axiom(axioms[0]);
+        idx.remove_axiom(axioms[0]); // again
+        assert_eq!(idx.axiom_count(), 1);
+        assert!(!idx.contains(axioms[0]));
+    }
+
+    #[test]
+    fn remove_axioms_batch_equivalent_to_singletons() {
+        let (store, axioms) = store_and_axioms(
+            "(subclass Dog Mammal)\n\
+             (subclass Cat Mammal)\n\
+             (subclass Mammal Animal)\n\
+             (subclass Animal Entity)",
+        );
+        // Singleton removals baseline.
+        let mut a = build_eager(&store, &axioms, 1.2);
+        a.remove_axiom(axioms[0]);
+        a.remove_axiom(axioms[2]);
+        // Batched removal.
+        let mut b = build_eager(&store, &axioms, 1.2);
+        b.remove_axioms([axioms[0], axioms[2]]);
+        // Both indexes must agree with a from-scratch build over the
+        // surviving axioms.
+        let kept = [axioms[1], axioms[3]];
+        assert_matches_from_scratch(&a, &store, &kept, 1.2);
+        assert_matches_from_scratch(&b, &store, &kept, 1.2);
+    }
+
+    #[test]
+    fn remove_axiom_bumps_stats_counter() {
+        let (store, axioms) = store_and_axioms("(subclass Dog Mammal)");
+        let mut idx = build_eager(&store, &axioms, 1.0);
+        let _ = idx.take_stats();  // clear build-time counters
+        idx.remove_axiom(axioms[0]);
+        let s = idx.take_stats();
+        assert_eq!(s.removes, 1, "removes counter must tick: {:?}", s);
     }
 
     // -- Option 1: bulk-rebuild tests --------------------------------

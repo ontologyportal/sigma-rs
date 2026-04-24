@@ -1519,6 +1519,23 @@ impl SemanticLayer {
             .filter_map(|&sid| self.validate_sentence(sid).err().map(|e| (sid, e)))
             .collect()
     }
+
+    /// Run `validate_sentence` and return *every* `SemanticError`
+    /// it raises -- warnings and hard errors alike -- so the LSP
+    /// can turn each into a diagnostic without caring about the
+    /// CLI's severity config.
+    ///
+    /// Internally installs a thread-local collector via
+    /// [`crate::error::with_collector`] so the existing
+    /// `handle()`-based dispatch loop in `validate_sentence` /
+    /// `validate_element` is reused verbatim.  The `handle()`
+    /// calls push into the collector instead of swallowing the
+    /// warning or returning the hard error, so every check in the
+    /// chain runs to completion.
+    pub(crate) fn validate_sentence_collect(&self, sid: SentenceId) -> Vec<SemanticError> {
+        let (_, errs) = crate::error::with_collector(|| self.validate_sentence(sid));
+        errs
+    }
 }
 
 // -- Doc-relation helpers -----------------------------------------------------
@@ -1793,6 +1810,40 @@ mod tests {
     }
 
     #[test]
+    fn validate_sentence_collect_surfaces_warnings() {
+        // `HeadNotRelation` is a default-warning severity error
+        // (see `error.rs:promote` -- nothing is promoted in this
+        // test).  The existing `validate_sentence` swallows it
+        // (returns `Ok(())`), but `validate_sentence_collect`
+        // must surface it.
+        let layer = kif(r#"
+            (subclass Foo Entity)
+            ;; `Foo` is NOT declared as a relation -- using it as
+            ;; a sentence head should raise HeadNotRelation.
+            (Foo Bar Baz)
+        "#);
+        // Find the sentence whose head is "Foo" (the bad one).
+        let foo_id = layer.store.sym_id("Foo").expect("Foo interned");
+        let sid = *layer.store.by_head("Foo").iter()
+            .find(|&&s| {
+                let sent = &layer.store.sentences[layer.store.sent_idx(s)];
+                matches!(sent.elements.first(),
+                    Some(crate::types::Element::Symbol { id, .. }) if *id == foo_id)
+            })
+            .expect("found a sentence headed by Foo");
+
+        // Sanity: the existing severity-aware API returns Ok (warning-level).
+        assert!(layer.validate_sentence(sid).is_ok(),
+            "HeadNotRelation is a warning by default; validate_sentence must return Ok");
+
+        // The collector API must surface it.
+        let errs = layer.validate_sentence_collect(sid);
+        assert!(errs.iter().any(|e| e.code() == "E002"),
+            "validate_sentence_collect should include HeadNotRelation (E002); got {:?}",
+            errs.iter().map(|e| e.code()).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn is_logical_sentence() {
         let layer = kif("
             (and (relation A B) (relation D C))
@@ -2010,7 +2061,7 @@ mod tests {
         load_kif(&mut store, kif, "t");
 
         // Baseline: full rebuild.
-        let mut layer_full = SemanticLayer::new({
+        let layer_full = SemanticLayer::new({
             let mut s = KifStore::default();
             load_kif(&mut s, kif, "t");
             s

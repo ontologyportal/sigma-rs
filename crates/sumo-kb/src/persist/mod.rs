@@ -5,7 +5,7 @@
 
 mod env;
 mod path_index;
-mod commit;
+pub(crate) mod commit;
 mod load;
 
 pub(crate) use env::LmdbEnv;
@@ -19,6 +19,7 @@ pub(crate) use env::{
     CachedAxiomProblem,
     CACHE_KEY_SORT_ANNOT,
     CACHE_KEY_AXIOM_CACHE_TFF,
+    CACHE_KEY_AXIOM_CACHE_FOF,
 };
 pub(crate) use commit::{
     write_axioms,

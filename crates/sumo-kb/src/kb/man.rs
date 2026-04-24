@@ -17,6 +17,7 @@
 // The `KnowledgeBase::man*` methods return plain `Vec<DocEntry>` so
 // multi-language KBs (English + other) can be rendered without loss.
 
+use crate::SentenceId;
 use crate::kif_store::KifStore;
 use crate::semantic::RelationDomain;
 use crate::types::{Element, SymbolId};
@@ -70,6 +71,21 @@ pub struct SortSig {
     pub subclass: bool,
 }
 
+/// One (position, sid) reference to a sentence where the symbol
+/// appears at the sentence's **root** level.
+///
+/// - `position == 0`  — the symbol is the head of the root list
+///   (e.g. `(Human X)` references `Human` at position 0).
+/// - `position >= 1`  — the symbol is an argument at that 1-based
+///   position counting from the head (e.g. `(instance X Human)`
+///   references `Human` at position 2).
+///
+/// Sentences where the symbol only appears inside a nested
+/// sub-sentence are recorded in [`ManPage::ref_nested`] instead —
+/// see that field for the rationale.
+#[derive(Debug, Clone)]
+pub struct SentenceRef(pub usize, pub SentenceId);
+
 /// Everything a man-page view needs for one symbol.
 #[derive(Debug, Clone)]
 pub struct ManPage {
@@ -92,6 +108,21 @@ pub struct ManPage {
     pub domains:       Vec<(usize, SortSig)>,
     /// Declared range (functions and relations that declare one).
     pub range:         Option<SortSig>,
+    /// Sentences where the symbol appears at the **root level** of
+    /// the sentence's element list, along with the 0-based position
+    /// of its first such occurrence.  One entry per sentence (first
+    /// position wins) — if the same symbol appears at multiple root
+    /// positions in one sentence, only the leftmost is recorded.
+    pub ref_args:      Vec<SentenceRef>,
+    /// Sentences where the symbol appears **only inside a nested
+    /// sub-sentence** (never at the root level).  Common for
+    /// quantified axioms like `(forall (?X) (instance ?X Human))`:
+    /// `Human` is buried inside the sub-sentence, so the root's
+    /// elements are `[forall, vars, Sub]` and none of them is
+    /// literally `Human`.  These references are surfaced separately
+    /// so consumers can display them under a dedicated heading
+    /// without mis-reporting an argument position.
+    pub ref_nested:    Vec<SentenceId>,
 }
 
 /// One taxonomic parent edge from the symbol.  `relation` is the KIF
@@ -159,6 +190,7 @@ fn build_manpage(kb: &KnowledgeBase, sym_id: SymbolId, name: &str) -> ManPage {
 
     let parents = collect_parents(&kb.layer.store, sym_id);
     let (arity, domains, range) = signature(kb, sym_id);
+    let (ref_args, ref_nested) = collect_refs(&kb.layer.store, sym_id);
 
     ManPage {
         name: name.to_string(),
@@ -170,6 +202,8 @@ fn build_manpage(kb: &KnowledgeBase, sym_id: SymbolId, name: &str) -> ManPage {
         arity,
         domains,
         range,
+        ref_args,
+        ref_nested,
     }
 }
 
@@ -220,6 +254,88 @@ fn sort_sig(kb: &KnowledgeBase, rd: &RelationDomain) -> SortSig {
         class:    kb.layer.store.sym_name(id).to_string(),
         subclass: matches!(rd, RelationDomain::DomainSubclass(_)),
     }
+}
+
+// -- Reference collection ----------------------------------------------------
+
+/// Classify each sentence in which `sym_id` occurs into one of two
+/// buckets:
+///
+/// - **`ref_args`** — the symbol appears at the root level of the
+///   sentence's element list.  Record the 0-based position of its
+///   first such occurrence (position 0 = head; position ≥ 1 =
+///   argument slot).
+/// - **`ref_nested`** — the symbol appears only inside a nested
+///   sub-sentence, never at the root level.
+///
+/// Both lists are sorted by sid for deterministic output across
+/// runs, and deduplicated (one entry per root sid even if the
+/// symbol occurs multiple times in that sentence).
+///
+/// `KifStore::axiom_sentences_of` already recurses through
+/// sub-sentences during registration, so every root sid in which
+/// `sym_id` appears (at any depth) is in the scan.  The classifier
+/// below decides *where* the occurrence lives per root.
+fn collect_refs(
+    store:  &KifStore,
+    sym_id: SymbolId,
+) -> (Vec<SentenceRef>, Vec<SentenceId>) {
+    let mut args:   Vec<SentenceRef> = Vec::new();
+    let mut nested: Vec<SentenceId>  = Vec::new();
+    let mut sids: Vec<SentenceId> = store.axiom_sentences_of(sym_id).to_vec();
+    sids.sort_unstable();
+    sids.dedup();
+
+    for sid in sids {
+        let sent = &store.sentences[store.sent_idx(sid)];
+        // Scan root-level elements first.  A direct Symbol match at
+        // depth 0 is the common case — record its position.
+        let root_hit = sent.elements.iter().enumerate().find_map(|(i, el)| {
+            match el {
+                Element::Symbol { id, .. } if *id == sym_id => Some(i),
+                _ => None,
+            }
+        });
+        if let Some(pos) = root_hit {
+            args.push(SentenceRef(pos, sid));
+            continue;
+        }
+        // Not at root — recurse into any Subs.  Since
+        // `axiom_sentences_of` told us the symbol IS somewhere in
+        // this sentence, at least one sub must contain it.  If not
+        // (shouldn't happen, but defensive), we drop the sid rather
+        // than emit a bogus nested reference.
+        let appears_nested = sent.elements.iter().any(|el| match el {
+            Element::Sub { sid: sub_sid, .. } => subtree_contains_symbol(store, *sub_sid, sym_id),
+            _ => false,
+        });
+        if appears_nested {
+            nested.push(sid);
+        }
+    }
+
+    (args, nested)
+}
+
+/// Recursive helper: does the sentence tree rooted at `sid` contain
+/// any direct `Element::Symbol { id: sym_id }` at any depth?
+///
+/// Complements [`collect_refs`]'s root-level scan — used when the
+/// target sid's root doesn't contain the symbol but the
+/// axiom-occurrence index says it's somewhere in the tree.
+fn subtree_contains_symbol(store: &KifStore, sid: SentenceId, sym_id: SymbolId) -> bool {
+    if !store.has_sentence(sid) { return false; }
+    let sent = &store.sentences[store.sent_idx(sid)];
+    for el in &sent.elements {
+        match el {
+            Element::Symbol { id, .. } if *id == sym_id => return true,
+            Element::Sub { sid: sub_sid, .. } => {
+                if subtree_contains_symbol(store, *sub_sid, sym_id) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 // -- Tests --------------------------------------------------------------------
@@ -279,6 +395,76 @@ mod tests {
         let kb = kb_from("(subclass Human Animal)");
         assert!(kb.manpage("DoesNotExist").is_none());
         assert!(kb.documentation("DoesNotExist", None).is_empty());
+    }
+
+    /// `kb_from` loads into a session but doesn't promote to axiom
+    /// status — and `sym_refs` (backing the man-page reference
+    /// scanner) only tracks promoted sentences.  `kb_promoted_from`
+    /// promotes the loaded session so reference-collection tests
+    /// see the data.  In the real CLI, `open_or_build_kb` calls
+    /// `make_session_axiomatic(BASE)` on every load, so this
+    /// mirrors production.
+    fn kb_promoted_from(kif: &str) -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.load_kif(kif, "test.kif", None);
+        assert!(r.ok, "load failed: {:?}", r.errors);
+        kb.make_session_axiomatic("test.kif");
+        kb
+    }
+
+    #[test]
+    fn refs_split_root_level_and_nested_occurrences() {
+        // Three sentences that mention `Human`:
+        //   1. `(subclass Human Hominid)`     — root pos 1 (arg 1)
+        //   2. `(instance Socrates Human)`     — root pos 2 (arg 2)
+        //   3. `(forall (?X) (instance ?X Human))` — only buried in the Sub
+        let kb = kb_promoted_from(r#"
+            (subclass Human Hominid)
+            (instance Socrates Human)
+            (forall (?X) (instance ?X Human))
+        "#);
+        let man = kb.manpage("Human").expect("Human must resolve");
+        // Root-level refs: positions 1 and 2 (both are argument
+        // slots; no head occurrence in this fixture).
+        let positions: std::collections::BTreeSet<usize> =
+            man.ref_args.iter().map(|r| r.0).collect();
+        assert!(
+            positions.contains(&1) && positions.contains(&2),
+            "expected arg-1 and arg-2 occurrences, got {:?}", man.ref_args,
+        );
+        // The quantified sentence must show up as nested.
+        assert_eq!(
+            man.ref_nested.len(), 1,
+            "expected exactly one nested ref for the forall axiom, got {:?}",
+            man.ref_nested,
+        );
+    }
+
+    #[test]
+    fn refs_one_per_sentence_when_symbol_appears_twice() {
+        // `Human` appears at root position 1 AND inside the nested
+        // sub-sentence — should be counted as a single root-level
+        // ref (the leftmost position wins), NOT as both a root ref
+        // AND a nested ref.
+        let kb = kb_promoted_from("(=> (instance Human Agent) (instance Human Entity))");
+        let man = kb.manpage("Human").expect("Human must resolve");
+        assert_eq!(
+            man.ref_args.len() + man.ref_nested.len(), 1,
+            "Human referenced once per sentence: ref_args={:?}, ref_nested={:?}",
+            man.ref_args, man.ref_nested,
+        );
+    }
+
+    #[test]
+    fn refs_position_records_arg_slot() {
+        // `Hominid` appears at root position 2 in the subclass axiom.
+        let kb = kb_promoted_from("(subclass Human Hominid)");
+        let man = kb.manpage("Hominid").expect("Hominid must resolve");
+        assert!(
+            man.ref_args.iter().any(|r| r.0 == 2),
+            "expected arg-2 position, got {:?}", man.ref_args,
+        );
+        assert!(man.ref_nested.is_empty());
     }
 
     #[test]
@@ -395,5 +581,44 @@ mod tests {
         let animal_docs = kb.documentation("Animal", None);
         assert_eq!(animal_docs.len(), 1);
         assert_eq!(animal_docs[0].text, "a");
+    }
+
+    #[test]
+    fn parse_error_does_not_poison_subsequent_lookups() {
+        // The critical invariant: one bad sentence in one file must
+        // not take the rest of the KB out of service.  Before the
+        // fix, `ingest()` early-returned on any parse error, which
+        // skipped the semantic-cache update; queries on symbols in
+        // the broken file returned None even though the store had
+        // their sentences.  That cascaded into `manpage()` failing
+        // for unrelated files because the taxonomy layer was in an
+        // inconsistent state.
+        let mut kb = KnowledgeBase::new();
+
+        // File A: clean, loads cleanly.
+        let r_a = kb.load_kif(r#"
+            (subclass Hominid Primate)
+            (documentation Hominid EnglishLanguage "Great apes.")
+        "#, "a.kif", None);
+        assert!(r_a.ok);
+
+        // File B: has a trailing incomplete sentence (common when
+        // a user is mid-edit) plus a valid sentence.  The parse
+        // surfaces an error but the recovered valid sentence must
+        // still be queryable, and A must remain untouched.
+        let r_b = kb.load_kif(r#"
+            (subclass Human Hominid)
+            (documentation Human EnglishLanguage
+        "#, "b.kif", None);
+        assert!(!r_b.ok, "expected parse error");
+        assert!(!r_b.errors.is_empty());
+
+        // Both files' manpages resolve.
+        let hominid = kb.manpage("Hominid").expect("Hominid still present");
+        assert!(hominid.documentation.iter().any(|d| d.text.contains("Great apes")));
+
+        let human = kb.manpage("Human").expect("Human recovered despite parse error");
+        // Human inherits from Hominid via the recovered subclass edge.
+        assert!(human.parents.iter().any(|p| p.parent == "Hominid" && p.relation == "subclass"));
     }
 }

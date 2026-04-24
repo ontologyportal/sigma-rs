@@ -20,6 +20,7 @@
 //
 // Gated: requires the `vampire` feature.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use vampire_prover::ir::{LogicMode, Problem as IrProblem};
@@ -51,6 +52,26 @@ pub struct AssemblyOpts<'a> {
     /// Identifier used for the problem's conjecture.  Default:
     /// `"conjecture"`.
     pub conjecture_name: &'a str,
+
+    /// Optional allow-list of axiom SentenceIds: when `Some`, only
+    /// axioms whose parallel [`sid_map`] entry is a member of the
+    /// set are emitted.  `None` emits every axiom in
+    /// `problem.axioms()` (the default).
+    ///
+    /// This lets the subprocess `ask` path feed a whole-KB cached
+    /// [`IrProblem`] through assembly and filter down to the
+    /// SInE-selected subset at emit time — avoiding a per-query
+    /// `NativeConverter` rebuild over the entire axiom set.  The
+    /// conjecture (`problem.conjecture_ref()`) is always emitted
+    /// when present; filtering affects axioms only.
+    ///
+    /// Axioms whose `sid_map` entry is missing (index beyond
+    /// `sid_map.len()`, emitted as `<prefix>anon_<i>`) are always
+    /// emitted regardless of the filter — the filter can't decide
+    /// relevance without a sid.
+    ///
+    /// [`sid_map`]: assemble_tptp
+    pub axiom_filter: Option<&'a HashSet<SentenceId>>,
 }
 
 impl<'a> Default for AssemblyOpts<'a> {
@@ -61,6 +82,7 @@ impl<'a> Default for AssemblyOpts<'a> {
             axiom_prefix: "kb_",
             axiom_role: "axiom",
             conjecture_name: "conjecture",
+            axiom_filter: None,
         }
     }
 }
@@ -99,9 +121,14 @@ pub fn assemble_tptp(
         }
     }
 
-    // Axioms.
+    // Axioms.  Honour `opts.axiom_filter` when set: keep only axioms
+    // whose paired sid is in the allow-list.  Anonymous axioms (no
+    // sid) are always kept — the filter can't classify them.
     for (i, ax) in problem.axioms().iter().enumerate() {
         let sid = sid_map.get(i).copied();
+        if let (Some(s), Some(filter)) = (sid, opts.axiom_filter) {
+            if !filter.contains(&s) { continue; }
+        }
         if opts.show_kif {
             if let (Some(s), Some(layer)) = (sid, opts.layer) {
                 let kif = sentence_to_plain_kif(s, &layer.store);
@@ -184,6 +211,85 @@ mod tests {
         let tptp = assemble_tptp(&pb, &[1], &opts);
         assert!(tptp.contains("fof(kb_1, hypothesis, P)."),    "{}", tptp);
         assert!(tptp.contains("fof(query_0, conjecture, P)."), "{}", tptp);
+    }
+
+    #[test]
+    fn axiom_filter_keeps_only_allow_listed_sids() {
+        // Build a problem with three axioms (sids 10, 20, 30).
+        // Filter to {10, 30} — only those two should appear in the
+        // emitted TPTP, sid 20 is dropped.
+        let p = IrPd::new("P", 1);
+        let a = IrT::constant(IrFn::new("a", 0));
+        let b = IrT::constant(IrFn::new("b", 0));
+        let c = IrT::constant(IrFn::new("c", 0));
+
+        let mut pb = IrProblem::new();
+        pb.with_axiom(IrF::atom(p.clone(), vec![a]));
+        pb.with_axiom(IrF::atom(p.clone(), vec![b]));
+        pb.with_axiom(IrF::atom(p,         vec![c]));
+
+        let allow: HashSet<SentenceId> = [10, 30].into_iter().collect();
+        let opts = AssemblyOpts { axiom_filter: Some(&allow), ..AssemblyOpts::default() };
+        let tptp = assemble_tptp(&pb, &[10, 20, 30], &opts);
+        assert!(tptp.contains("fof(kb_10"),  "must keep sid 10: {}", tptp);
+        assert!(!tptp.contains("fof(kb_20"), "must drop sid 20: {}", tptp);
+        assert!(tptp.contains("fof(kb_30"),  "must keep sid 30: {}", tptp);
+    }
+
+    #[test]
+    fn axiom_filter_none_emits_every_axiom() {
+        // Default `axiom_filter: None` is the historical all-emit
+        // behaviour.  Regression guard so the new field doesn't
+        // accidentally flip that default.
+        let p = IrPd::new("P", 0);
+        let mut pb = IrProblem::new();
+        pb.with_axiom(IrF::atom(p.clone(), vec![]));
+        pb.with_axiom(IrF::atom(p,         vec![]));
+
+        let tptp = assemble_tptp(&pb, &[1, 2], &AssemblyOpts::default());
+        assert!(tptp.contains("fof(kb_1"), "{}", tptp);
+        assert!(tptp.contains("fof(kb_2"), "{}", tptp);
+    }
+
+    #[test]
+    fn axiom_filter_preserves_conjecture() {
+        // Filtering applies to axioms; the conjecture is emitted
+        // unconditionally when `problem.conjecture_ref()` is `Some`.
+        let p = IrPd::new("P", 0);
+        let mut pb = IrProblem::new();
+        pb.with_axiom(IrF::atom(p.clone(), vec![]));
+        pb.conjecture(IrF::atom(p, vec![]));
+
+        // Filter excludes every axiom — conjecture still rendered.
+        let empty: HashSet<SentenceId> = HashSet::new();
+        let opts = AssemblyOpts {
+            axiom_filter:    Some(&empty),
+            conjecture_name: "query_0",
+            ..AssemblyOpts::default()
+        };
+        let tptp = assemble_tptp(&pb, &[1], &opts);
+        assert!(!tptp.contains("fof(kb_1"),           "axiom must be dropped: {}", tptp);
+        assert!(tptp.contains("fof(query_0, conjecture, P)."), "conjecture must survive: {}", tptp);
+    }
+
+    #[test]
+    fn axiom_filter_keeps_anonymous_axioms() {
+        // Axioms with no sid_map entry can't be classified by the
+        // filter, so the assembler keeps them rather than silently
+        // dropping them — they fall through to the `kb_anon_<i>`
+        // name.  Regression guard for this escape hatch.
+        let p = IrPd::new("P", 0);
+        let mut pb = IrProblem::new();
+        pb.with_axiom(IrF::atom(p.clone(), vec![]));
+        pb.with_axiom(IrF::atom(p,         vec![]));
+
+        // sid_map is shorter than axioms() — the second axiom is
+        // anonymous.  Filter excludes the first (sid 7).
+        let empty: HashSet<SentenceId> = HashSet::new();
+        let opts = AssemblyOpts { axiom_filter: Some(&empty), ..AssemblyOpts::default() };
+        let tptp = assemble_tptp(&pb, &[7], &opts);
+        assert!(!tptp.contains("fof(kb_7"),      "sid 7 must be dropped: {}", tptp);
+        assert!(tptp.contains("fof(kb_anon_1"),  "anon axiom must survive: {}", tptp);
     }
 
     #[test]

@@ -55,6 +55,13 @@ pub struct ProverResult {
     pub bindings:   Vec<Binding>,
     /// Proof steps converted to SUO-KIF, populated when a proof is found.
     pub proof_kif:  Vec<crate::tptp::kif::KifProofStep>,
+    /// Raw TSTP proof section as emitted by Vampire (the text between
+    /// `SZS output start` and `SZS output end`, minus the markers
+    /// themselves).  Empty when no proof was produced.  Preserved so
+    /// the `--proof tptp` CLI format can display the prover's output
+    /// verbatim without re-parsing `raw_output`.
+    #[serde(default)]
+    pub proof_tptp: String,
     /// Per-phase timing breakdown (not serialized).
     #[serde(skip)]
     pub timings:    ProverTimings,

@@ -51,7 +51,7 @@ pub fn ask(kb: &mut KnowledgeBase, query_kif: &str, opts: AskOptions) -> AskResu
     let result = match opts.backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
-            kb.ask_embedded(query_kif, opts.session.as_deref(), timeout_secs)
+            kb.ask_embedded(query_kif, opts.session.as_deref(), timeout_secs, opts.lang)
         }
         _ => {
             let vampire_path = opts.vampire_path.unwrap_or_else(|| PathBuf::from("vampire"));

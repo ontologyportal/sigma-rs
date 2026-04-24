@@ -43,6 +43,37 @@ pub enum Mode {
 const S: &str = "s__";
 const M: &str = "__m";
 
+/// FNV-1a 32-bit hash.  Used to disambiguate string literals whose
+/// non-ASCII characters collapse to `_` during TPTP-identifier
+/// sanitisation — keeps the emitted constants unique per source string
+/// without pulling in a hashing dependency.
+fn fnv1a_32(s: &str) -> u32 {
+    let mut h: u32 = 0x811c9dc5;
+    for b in s.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x01000193);
+    }
+    h
+}
+
+/// Alphanumeric TPTP name for a KIF operator, used when the operator
+/// appears in *term position* (reified into `s__<name>_op`).  The KIF
+/// surface names `=>` and `<=>` contain characters that TPTP reserves
+/// for connectives, so we can't reuse `OpKind::name()` here.  All
+/// other names are alphanumeric and passed through unchanged.
+fn op_tptp_safe_name(op: &OpKind) -> &'static str {
+    match op {
+        OpKind::And     => "and",
+        OpKind::Or      => "or",
+        OpKind::Not     => "not",
+        OpKind::Implies => "imp",
+        OpKind::Iff     => "iff",
+        OpKind::Equal   => "equal",
+        OpKind::ForAll  => "forall",
+        OpKind::Exists  => "exists",
+    }
+}
+
 fn sym_name(name: &str) -> String {
     format!("{}{}", S, name.replace('.', "_").replace('-', "_"))
 }
@@ -54,11 +85,17 @@ fn mention_name(name: &str) -> String {
 /// Map recorded for each converted conjecture so that downstream binding
 /// extraction can rejoin Vampire's `X<n>` variable names with the original
 /// KIF names.
+///
+/// Only consumed by `vampire/bindings.rs` (gated on `integrated-prover`).
+/// Allow dead_code on the fields for `--no-default-features --features ask`
+/// builds where the binding extractor isn't compiled.
 #[derive(Debug, Default, Clone)]
 pub struct QueryVarMap {
     /// Variable index -> KIF variable name.
+    #[allow(dead_code)]
     pub idx_to_kif: HashMap<u32, String>,
     /// Free-variable indices in sorted order.
+    #[allow(dead_code)]
     pub free_var_indices: Vec<u32>,
 }
 
@@ -85,6 +122,30 @@ pub struct NativeConverter<'a> {
     vars:     HashMap<String, u32>,
     var_ids:  HashMap<String, SymbolId>,
     next_var: u32,
+
+    /// Scope stack for α-renaming bound variables inside *reified*
+    /// quantifiers (`s__exists_op`, `s__forall_op`).  Each entry is a
+    /// fresh per-reification mapping from KIF name to TPTP index.
+    /// `var_term` checks this stack top-down before falling back to
+    /// the sentence-wide `vars` map.
+    ///
+    /// Without this, an axiom that mentions `?W` in *both* a reified
+    /// quantifier (term position) *and* a real quantifier (formula
+    /// position) of the same name — e.g.
+    ///     `(and (desires ?A (exists (?W) ...))
+    ///           (not (exists (?W) ...)))`
+    /// — collapses all `?W` occurrences onto a single TPTP index.
+    /// The real `?[X]: …` then binds it locally, `wrap_free_vars` skips
+    /// it at the top, and Vampire rejects the free occurrence inside
+    /// `s__exists_op(X, …)` with "unquantified variable detected".
+    reif_scopes: Vec<HashMap<String, u32>>,
+
+    /// Fresh TPTP indices minted for reified-quantifier bound variables.
+    /// Tracked so `wrap_free_vars` can add a top-level universal for
+    /// each one (they're free in the FOL output: the reified
+    /// `s__exists_op(X, …)` is just a ground function term, not a real
+    /// binder).  Cleared on every `reset_sentence_state`.
+    reif_free: Vec<u32>,
 
     // -- cross-sentence state ------------------------------------------------
     declared_sorts: HashSet<String>,
@@ -145,6 +206,8 @@ impl<'a> NativeConverter<'a> {
             vars: HashMap::new(),
             var_ids: HashMap::new(),
             next_var: 0,
+            reif_scopes: Vec::new(),
+            reif_free: Vec::new(),
             declared_sorts,
             declared_funcs,
             declared_preds,
@@ -200,6 +263,8 @@ impl<'a> NativeConverter<'a> {
         self.vars.clear();
         self.var_ids.clear();
         self.next_var = 0;
+        self.reif_scopes.clear();
+        self.reif_free.clear();
     }
 
     fn alloc_vars(&mut self, sid: SentenceId) {
@@ -284,6 +349,14 @@ impl<'a> NativeConverter<'a> {
     // -- Variable / sort helpers ---------------------------------------------
 
     fn var_term(&self, name: &str) -> IrT {
+        // Walk the reified-quantifier scope stack inside-out first —
+        // an entry on the stack shadows the global `vars` map for the
+        // duration of a `s__exists_op(…)` / `s__forall_op(…)` body.
+        for scope in self.reif_scopes.iter().rev() {
+            if let Some(&idx) = scope.get(name) {
+                return IrT::var(idx);
+            }
+        }
         let idx = self.vars.get(name).copied().unwrap_or_else(|| {
             log::warn!(target: "sumo_kb::converter",
                 "unknown variable '{}' -- defaulting to index 0", name);
@@ -578,9 +651,56 @@ impl<'a> NativeConverter<'a> {
         let n_args = sentence.elements.len().saturating_sub(1);
 
         if sentence.is_operator() {
-            // Operator in term position: opaque symbolic function.
+            // Operator in term position: opaque symbolic function.  We
+            // must use the TPTP-safe *alphanumeric* operator name here,
+            // not the KIF surface name — `OpKind::name()` returns
+            // `"=>"` for Implies and `"<=>"` for Iff, and those chars
+            // are reserved connectives in TPTP.  Embedding them into
+            // a symbol like `s__=>_op(...)` makes Vampire's parser
+            // split around `=>` and report the resulting term as
+            // "Non-boolean term X<n> of sort $i used in a formula
+            // context".  Map each `OpKind` to a safe-by-construction
+            // identifier (`imp`, `iff`, etc.).  The others are already
+            // alphanumeric, but routing them through the same helper
+            // keeps the encoding in one place.
             let op = sentence.op()?.clone();
-            let func = IrFn::new(&format!("s__{}_op", op.name()), n_args as u32);
+            let safe_name = op_tptp_safe_name(&op);
+            let func = IrFn::new(&format!("s__{}_op", safe_name), n_args as u32);
+
+            // Special case: reified `(exists (?V ...) body)` or
+            // `(forall (?V ...) body)`.  The bound variables *in the
+            // reified body* must get fresh TPTP indices to avoid
+            // shadow-collisions with other occurrences of the same
+            // KIF name elsewhere in the axiom.  Allocate a scope
+            // frame, translate both the var-list arg and the body
+            // under it, then pop.
+            if matches!(op, OpKind::Exists | OpKind::ForAll) {
+                let bound_names = sentence.elements.get(1)
+                    .map(|e| self.extract_quantifier_vars(e))
+                    .unwrap_or_default();
+                let mut frame: HashMap<String, u32> = HashMap::with_capacity(bound_names.len());
+                for name in &bound_names {
+                    let idx = self.next_var;
+                    self.next_var += 1;
+                    frame.insert(name.clone(), idx);
+                    // These fresh indices are free in the FOL output
+                    // (the reified `s__exists_op(…)` is just a function
+                    // term, not a binder).  Remember them so
+                    // `wrap_free_vars` adds a top-level universal.
+                    self.reif_free.push(idx);
+                }
+                self.reif_scopes.push(frame);
+                let args: Vec<IrT> = sentence.elements[1..]
+                    .iter()
+                    .filter_map(|e| self.element_to_term(e))
+                    .collect();
+                self.reif_scopes.pop();
+                if args.len() == n_args {
+                    return Some(IrT::apply(func, args));
+                }
+                return None;
+            }
+
             let args: Vec<IrT> = sentence.elements[1..]
                 .iter()
                 .filter_map(|e| self.element_to_term(e))
@@ -626,13 +746,37 @@ impl<'a> NativeConverter<'a> {
     fn literal_to_term(&self, lit: &Literal) -> IrT {
         match lit {
             Literal::Str(s) => {
+                // TPTP identifiers must be ASCII: `char::is_alphanumeric`
+                // returns `true` for Unicode letters like `花` or `é`, which
+                // Vampire rejects with "parse error: Bad character".
+                //
+                // Restrict to ASCII alphanumerics + underscore and substitute
+                // everything else with `_`.  To keep distinct source strings
+                // mapped to distinct constants (e.g. `2n是1的簡稱` vs.
+                // `2n是1的简称` — traditional vs. simplified Chinese — which
+                // would otherwise collide to the same `str__2n_1_`), append
+                // an 8-hex-digit FNV-1a hash of the full original inner
+                // string whenever any character had to be sanitised.
                 let inner = &s[1..s.len() - 1];
+                let mut needs_hash = false;
                 let safe: String = inner
                     .chars()
-                    .filter(|c| c.is_alphanumeric() || *c == '_')
                     .take(48)
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            c
+                        } else {
+                            needs_hash = true;
+                            '_'
+                        }
+                    })
                     .collect();
-                IrT::constant(IrFn::new(&format!("str__{}", safe), 0))
+                let name = if needs_hash {
+                    format!("str__{}_{:08x}", safe, fnv1a_32(inner))
+                } else {
+                    format!("str__{}", safe)
+                };
+                IrT::constant(IrFn::new(&name, 0))
             }
             Literal::Number(n) => {
                 if self.hide_numbers {
@@ -659,7 +803,13 @@ impl<'a> NativeConverter<'a> {
             .filter(|(name, _)| !bound.contains(*name))
             .map(|(_, &idx)| idx)
             .collect();
+        // Reified-quantifier bound variables got fresh indices that
+        // live outside `self.vars`.  They are semantically free in
+        // the FOL output — `s__exists_op(X, …)` doesn't bind X — so
+        // add a top-level universal for each.
+        free.extend(self.reif_free.iter().copied());
         free.sort_unstable();
+        free.dedup();
 
         let mut result = formula;
         for idx in free.into_iter().rev() {
@@ -692,26 +842,81 @@ fn collect_all_var_ids(
     }
 }
 
+/// Collect the names of KIF variables that are *genuinely* bound by a
+/// FOL quantifier in the translated formula.
+///
+/// A `(forall ...)` / `(exists ...)` only acts as a real binder when it
+/// sits in **formula position**.  When it appears nested inside a
+/// non-logical relation — e.g. `(hasPurpose ?X (exists (?Y) ...))` —
+/// `sid_to_term` reifies it as a ground function term
+/// `s__exists_op(?Y, ...)`.  The variables inside that reified term
+/// remain free in the surrounding FOL sentence, so they must still
+/// receive the top-level universal added by `wrap_free_vars`.
+///
+/// The previous implementation walked every sub-sentence indiscriminately
+/// and added its quantifier variables to `out`, causing
+/// `wrap_free_vars` to skip them and emitting formulas like
+/// `![X1]: (... => hasPurpose(X1, s__exists_op(X3, p(X3))))` — Vampire
+/// rejects these with "unquantified variable detected" because X3 is
+/// free at the top level of the FOF clause.
 fn collect_bound_var_names(
     sid: SentenceId,
     store: &KifStore,
     out: &mut HashSet<String>,
 ) {
+    collect_bound_var_names_at(sid, store, /*in_formula_pos=*/ true, out);
+}
+
+fn collect_bound_var_names_at(
+    sid: SentenceId,
+    store: &KifStore,
+    in_formula_pos: bool,
+    out: &mut HashSet<String>,
+) {
     let sentence = &store.sentences[store.sent_idx(sid)];
-    if let Some(op) = sentence.op() {
-        if matches!(op, OpKind::ForAll | OpKind::Exists) {
-            if let Some(Element::Sub { sid: vl_sid, .. }) = sentence.elements.get(1) {
-                for e in &store.sentences[store.sent_idx(*vl_sid)].elements {
-                    if let Element::Variable { name, .. } = e {
-                        out.insert(name.clone());
+
+    if in_formula_pos {
+        if let Some(op) = sentence.op() {
+            if matches!(op, OpKind::ForAll | OpKind::Exists) {
+                if let Some(Element::Sub { sid: vl_sid, .. }) = sentence.elements.get(1) {
+                    for e in &store.sentences[store.sent_idx(*vl_sid)].elements {
+                        if let Element::Variable { name, .. } = e {
+                            out.insert(name.clone());
+                        }
                     }
                 }
             }
         }
     }
+
+    // Dispatch sub-sentence positions by the current operator/head. The
+    // rules mirror what `sid_to_formula` vs `sid_to_term` actually do
+    // when they recurse, so `bound` stays in lockstep with where real
+    // FOL binders end up in the IR output.
+    let op = sentence.op();
+    let sub_in_formula_pos = match op {
+        // Logical connectives keep their children in formula position.
+        Some(OpKind::And) | Some(OpKind::Or) | Some(OpKind::Not)
+        | Some(OpKind::Implies) | Some(OpKind::Iff) => in_formula_pos,
+
+        // Quantifiers are formula-level when we're at a formula site;
+        // their body (and the var-list sub, which collect_all_var_ids
+        // already indexes) inherit that position.
+        Some(OpKind::ForAll) | Some(OpKind::Exists) => in_formula_pos,
+
+        // `Equal` emits `IrF::eq(term, term)` — both sides are terms.
+        Some(OpKind::Equal) => false,
+
+        // Non-operator heads / atomic predicate applications:
+        // `atomic_sid_to_formula` processes their args as terms
+        // (`element_to_term`).  Inside a term context, everything
+        // nested stays a term.
+        None => false,
+    };
+
     for elem in &sentence.elements {
         if let Element::Sub { sid: sub, .. } = elem {
-            collect_bound_var_names(*sub, store, out);
+            collect_bound_var_names_at(*sub, store, sub_in_formula_pos, out);
         }
     }
 }

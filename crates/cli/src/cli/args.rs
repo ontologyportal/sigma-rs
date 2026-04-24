@@ -137,9 +137,22 @@ pub enum Cmd {
         #[arg(short = 'k', long, value_name = "FILE")]
         keep: Option<PathBuf>,
 
-        /// Print the proof steps translated to SUO-KIF after a successful proof.
-        #[arg(long)]
-        proof: bool,
+        /// Print the proof steps when Vampire finds one.
+        ///
+        /// Accepted values:
+        /// - `tptp`: raw TSTP proof section as emitted by Vampire (no translation).
+        /// - `kif`:  SUO-KIF pretty-print of each step's formula.
+        /// - any SUMO language symbol (e.g. `EnglishLanguage`,
+        ///   `ChineseLanguage`): natural-language rendering using the KB's
+        ///   `format` / `termFormat` relations.  Steps whose formulas reference
+        ///   a symbol that lacks a `format` or `termFormat` entry in the
+        ///   chosen language fall back to the KIF line with a warning listing
+        ///   the missing specifiers.
+        ///
+        /// Omit the flag to suppress proof output.  Specifying `--proof`
+        /// without a value is rejected (clap: value required).
+        #[arg(long, value_name = "FORMAT")]
+        proof: Option<String>,
 
         /// Print a timing breakdown of the major pipeline phases.
         #[arg(long)]
@@ -216,9 +229,26 @@ pub enum Cmd {
     /// Validates all loaded formulas before committing -- parse errors or
     /// promoted warnings (-W) abort the commit and leave the database unchanged.
     /// If no files are given, the database is created/opened but left empty.
+    ///
+    /// Default behaviour vs `--flush`:
+    /// - Default: the DB is opened *in place*; per-file reconcile
+    ///   diffs disk content against DB content under the same file
+    ///   tag and commits only the delta (added + removed).  Files
+    ///   unrelated to the `-f` / `-d` set are left untouched.
+    /// - `--flush`: drops the entire DB and rebuilds it from just
+    ///   the `-f` / `-d` set.  With no files the result is an
+    ///   empty database — useful as a reset.
     Load {
         #[command(flatten)]
         kb: KbArgs,
+
+        /// Recanonicalise the database: drop every persisted axiom
+        /// and rewrite the DB from just the supplied `-f` / `-d`
+        /// files.  With no files, leaves an empty database.  Use
+        /// when the DB has accumulated stale axioms from earlier
+        /// loads and you want to start clean.
+        #[arg(long)]
+        flush: bool,
     },
 
     /// Show documentation, signatures, and taxonomy for a symbol -- the
@@ -239,6 +269,106 @@ pub enum Cmd {
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
 
+        /// Disable the interactive pager; print the man page directly
+        /// to stdout.  The pager is also disabled automatically when
+        /// stdout is not a TTY (e.g. when piping to another program)
+        /// or when the `NO_PAGER` environment variable is set.
+        #[arg(long = "no-pager", short = 'P')]
+        no_pager: bool,
+
+        #[command(flatten)]
+        kb: KbArgs,
+    },
+
+    /// Consistency-check a single loaded KIF file against the rest of
+    /// the knowledge base via Vampire, surfacing any axioms that
+    /// contradict each other.
+    ///
+    /// The flow is:
+    ///   1. Collect the sentences of `<FILE>` (must already be in the
+    ///      KB — pass `-f` / `-d` the same way as other subcommands).
+    ///   2. Randomly subsample by `--thoroughness` (default 1.0 = all).
+    ///   3. SInE-expand from the sampled sentences' symbols at
+    ///      tolerance `--scope` (default: crate SInE default, usually
+    ///      2.0).  This pulls in every axiom the sampled sentences
+    ///      semantically depend on, across every other loaded file.
+    ///   4. Feed the union (sampled ∪ SInE-expanded) to Vampire with
+    ///      NO conjecture — pure axiom-satisfiability.
+    ///   5. If Vampire reports Unsatisfiable / ContradictoryAxioms,
+    ///      parse the refutation proof and trace each axiom-role step
+    ///      back to its source `file:line`.
+    ///   6. Report: verdict, contradictory axioms (if any), and the
+    ///      set of other files whose axioms SInE pulled in.
+    ///
+    /// Uses TPTP FOF (TFF is not currently wired through `debug`).
+    #[cfg(feature = "ask")]
+    Debug {
+        /// Path to a `.kif` file already loaded into the KB (via `-f`
+        /// or via the LMDB store).  The file tag is matched
+        /// case-sensitively against the loaded tags; pass the same
+        /// path form you used when loading.
+        file: PathBuf,
+
+        /// Fraction of the file's root sentences to sample for the
+        /// consistency check, in (0.0, 1.0].  `1.0` uses every
+        /// sentence; `0.5` a random half; `0.1` a random tenth.
+        /// Smaller values run faster at the cost of coverage — the
+        /// SInE expansion step then pulls in a proportionally smaller
+        /// relevant axiom set.
+        #[arg(long, value_name = "F", default_value_t = 1.0)]
+        thoroughness: f32,
+
+        /// SInE tolerance factor (`≥ 1.0`) for the axiom expansion
+        /// step.  Higher values pull in more axioms — more thorough
+        /// but more expensive.  Values below 1.0 are clamped.  When
+        /// omitted, uses the crate default (usually 2.0; overridable
+        /// at sumo-kb build time via `SINE_TOLERANCE`).
+        #[arg(long, value_name = "F")]
+        scope: Option<f32>,
+
+        /// Vampire proof-search timeout in seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        timeout: u32,
+
+        /// Write the generated TPTP to FILE (for debugging).  When
+        /// omitted, TPTP is piped directly to Vampire via stdin.
+        #[arg(short = 'k', long, value_name = "FILE")]
+        keep: Option<PathBuf>,
+
+        /// Print the full refutation proof when Vampire finds one.
+        ///
+        /// Accepted values (same as `sumo ask --proof`):
+        /// - `tptp`: raw TSTP proof section as emitted by Vampire.
+        /// - `kif`:  SUO-KIF pretty-print of each step's formula.
+        /// - any SUMO language symbol (e.g. `EnglishLanguage`,
+        ///   `ChineseLanguage`): natural-language rendering via the
+        ///   KB's `format` / `termFormat` relations.  Steps with a
+        ///   symbol lacking a spec in the chosen language fall back
+        ///   to the KIF line with a warning listing what was missing.
+        ///
+        /// Omit the flag to suppress the full proof — the compact
+        /// "contradiction summary" (axioms contributing to the
+        /// refutation, one per line) is always shown.  The two are
+        /// complementary: the summary is a quick scan, `--proof` is
+        /// the full derivation.
+        #[arg(long, value_name = "FORMAT")]
+        proof: Option<String>,
+
+        #[command(flatten)]
+        kb: KbArgs,
+    },
+
+    /// Run as a persistent kernel: read newline-delimited JSON
+    /// requests from stdin and write responses to stdout.  The
+    /// process owns one long-lived `KnowledgeBase` so every
+    /// request amortises the load cost.
+    ///
+    /// Designed for editor integrations (e.g. the VSCode extension
+    /// that spawns `sumo-kernel`) -- the LSP analog of a Jupyter
+    /// kernel.  See `crates/native/src/cli/serve.rs` for the wire
+    /// format; current methods are `tell`, `ask`, `shutdown`.
+    #[cfg(feature = "server")]
+    Serve {
         #[command(flatten)]
         kb: KbArgs,
     },

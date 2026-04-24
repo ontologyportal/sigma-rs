@@ -397,3 +397,39 @@ The `timeout_secs` field on `ProverOpts` is therefore misleading — it exists
 but has no effect. Either `VampireRunner` should switch to using
 `opts.timeout_secs` exclusively (removing the duplicate field), or
 `timeout_secs` should be removed from `ProverOpts`.
+
+---
+
+### `persist::delete_formula` leaves orphaned clause blobs
+
+`LmdbEnv::delete_formula` (added in the reconcile/`sumo load` diff-commit
+work) scrubs the main `formulas` table plus the `head_index`, `path_index`,
+and `formula_hashes` secondary indexes when a sentence is removed.  It
+does **not** touch the clause-interning tables (`StoredClause` + canonical
+hash map) because clauses are deduped globally — one interned clause may be
+referenced by multiple `StoredFormula.clause_ids` lists.  Proper cleanup
+would need either reference counts or a separate GC pass.
+
+Impact today: deleted sentences' clauses linger as unreachable blobs in
+the DB file.  Each clause is typically a few hundred bytes, and the
+amortised rate of leaked clauses per `sumo load` is bounded by the
+`-` (removed) count of that load.  On a developer machine running
+dozens of reconciles per week this accumulates at a rate of ~KB/day —
+well under any threshold worth a GC pass right now.
+
+Options when this *does* start to matter:
+
+1. **Reference counts.**  Add a `refcount: u32` column to the clause
+   table, increment on `intern_clause`, decrement inside
+   `delete_formula` once per clause-id, drop rows that hit zero.
+   Moves the cost onto the write path, which is already transactional.
+2. **Periodic GC.**  New `sumo load --vacuum` flag that walks every
+   reachable clause id, marks the interning tables, and deletes the
+   unmarked rows in a single txn.  Simple but requires a full scan.
+3. **Accept the leak.**  Database size grows monotonically across
+   reconciles.  `--flush` already provides an explicit reset.  Add a
+   periodic "DB size X% larger than axiom count suggests, consider
+   `--flush`" diagnostic if size becomes user-visible.
+
+None of these is on the critical path until a profile shows the
+wasted space matters.  Revisit when someone notices.

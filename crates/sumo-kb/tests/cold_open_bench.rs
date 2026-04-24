@@ -107,7 +107,7 @@ fn cold_open_baseline() {
     let mut kb = kb;
     println!("\n  === first ask_embedded after cold open ===");
     let t = Instant::now();
-    let _r = kb.ask_embedded("(attribute Alice Warm)", None, 3);
+    let _r = kb.ask_embedded("(attribute Alice Warm)", None, 3, sumo_kb::TptpLang::Tff);
     let first_ask = t.elapsed();
     println!("  first ask_embedded:             {:?}", first_ask);
 
@@ -116,7 +116,7 @@ fn cold_open_baseline() {
     let mut warm_asks = Vec::new();
     for i in 2..=5 {
         let t = Instant::now();
-        let _r = kb.ask_embedded("(attribute Alice Warm)", None, 3);
+        let _r = kb.ask_embedded("(attribute Alice Warm)", None, 3, sumo_kb::TptpLang::Tff);
         let dt = t.elapsed();
         warm_asks.push(dt);
         println!("  ask #{i}:                         {dt:?}");
@@ -140,12 +140,12 @@ fn cold_open_baseline() {
     println!("  second cold open:               {:?}", second_open);
 
     let t = Instant::now();
-    let _r = kb2.ask_embedded("(attribute Alice Warm)", None, 3);
+    let _r = kb2.ask_embedded("(attribute Alice Warm)", None, 3, sumo_kb::TptpLang::Tff);
     let second_first_ask = t.elapsed();
     println!("  first ask after reopen:         {:?}", second_first_ask);
 
     let t = Instant::now();
-    let _r = kb2.ask_embedded("(attribute Alice Warm)", None, 3);
+    let _r = kb2.ask_embedded("(attribute Alice Warm)", None, 3, sumo_kb::TptpLang::Tff);
     let second_warm_ask = t.elapsed();
     println!("  second ask (warm):              {:?}", second_warm_ask);
 

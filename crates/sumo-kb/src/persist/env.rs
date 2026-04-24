@@ -330,7 +330,10 @@ pub(crate) struct LmdbEnv {
     /// whether to auto-backfill the now-relevant tables.
     ///
     /// Empty when the manifest matches (fast path) or when the DB is
-    /// fresh (nothing to diff against).
+    /// fresh (nothing to diff against).  Read only by the cnf-gated
+    /// backfill decision in `kb::open`; allow dead_code for non-cnf
+    /// builds.
+    #[allow(dead_code)]
     pub added_features: Vec<&'static str>,
 }
 
@@ -564,6 +567,123 @@ impl LmdbEnv {
         Ok(())
     }
 
+    /// Delete a formula from `formulas` DB and scrub every secondary
+    /// index entry that referenced its `SentenceId`.
+    ///
+    /// Idempotent — deleting an absent sid is fine.  Indexes that
+    /// would be left empty after scrubbing are removed entirely
+    /// (consistent with `index_head` / `index_path`, which lazily
+    /// create them on first insert).
+    ///
+    /// Used by the `sumo load` per-file reconcile path to commit
+    /// `removed` deltas without a full DB rewrite.  Does **not**
+    /// touch clause interning (clauses are deduped globally; a
+    /// stale clause blob costs at most a few KB until the next
+    /// rewrite) or the `sessions` table (session assertions aren't
+    /// persisted beyond the process).
+    pub(crate) fn delete_formula(
+        &self,
+        wtxn: &mut RwTxn,
+        sid:  SentenceId,
+    ) -> Result<(), KbError> {
+        // 1. Load the formula so we know which head-predicate and
+        //    path-index buckets to scrub.  Absent → nothing to do.
+        let key = sid.to_be_bytes();
+        let stored: Option<StoredFormula> = {
+            let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(&*wtxn) };
+            self.formulas.get(rtxn, &key)?
+        };
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+
+        // 2. Delete from formulas table.
+        self.formulas.delete(wtxn, &key)?;
+
+        // 3. Scrub head_index.  The stored `elements` preserve the
+        //    exact head bytes that `write_sentence` used when
+        //    inserting, so we can recover the pred_id without a
+        //    symbols-rev lookup.
+        if let Some(StoredElement::Symbol(pred_id)) = stored.elements.first() {
+            let pkey = pred_id.to_be_bytes();
+            let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(&*wtxn) };
+            if let Some(mut ids) = self.head_index.get(rtxn, &pkey)? {
+                ids.retain(|&id| id != sid);
+                if ids.is_empty() {
+                    self.head_index.delete(wtxn, &pkey)?;
+                } else {
+                    self.head_index.put(wtxn, &pkey, &ids)?;
+                }
+            }
+        }
+
+        // 4. Scrub path_index (cnf feature only).  Each indexed path
+        //    key is derived from (pred_id, arg_pos, sym_id); we walk
+        //    the stored elements to reconstruct the same keys rather
+        //    than opening a cursor over the whole path table.
+        #[cfg(feature = "cnf")]
+        {
+            if let Some(StoredElement::Symbol(pred_id)) = stored.elements.first() {
+                for (i, elem) in stored.elements.iter().enumerate().skip(1) {
+                    if let StoredElement::Symbol(sym_id) = elem {
+                        let arg_pos = (i - 1) as u16;
+                        let k = super::path_index::encode_key(*pred_id, arg_pos, *sym_id);
+                        let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(&*wtxn) };
+                        if let Some(mut ids) = self.path_index.get(rtxn, &k)? {
+                            ids.retain(|&id| id != sid);
+                            if ids.is_empty() {
+                                self.path_index.delete(wtxn, &k)?;
+                            } else {
+                                self.path_index.put(wtxn, &k, &ids)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. Scrub formula_hashes by value.  `put_formula_hash`
+        //    stores `hash -> sid`; to find the hash for this sid we
+        //    could either (a) walk the table, or (b) require the
+        //    caller to supply the hash.  (a) is O(|formulas|); (b)
+        //    is O(1) but complicates the caller.  We go with (a)
+        //    since `delete_formula` is off the hot path and the
+        //    simpler API is worth the scan.
+        #[cfg(feature = "cnf")]
+        {
+            // `formula_hashes` is declared `Database<Bytes, Bytes>`
+            // (see field decl near the top of this file), with
+            // `put_formula_hash` writing both key and value as 8-byte
+            // big-endian encodings.  Iter yields `(&[u8], &[u8])`, so
+            // we decode the 8-byte value before comparing to `sid`,
+            // and copy the key bytes into an owned `[u8; 8]` before
+            // the borrow ends.
+            let mut to_delete: Vec<[u8; 8]> = Vec::new();
+            {
+                let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(&*wtxn) };
+                for result in self.formula_hashes.iter(rtxn)? {
+                    let (k, v) = result?;
+                    let arr: [u8; 8] = v.try_into().map_err(|_| {
+                        KbError::Db("bad formula_hashes value length".into())
+                    })?;
+                    if SentenceId::from_be_bytes(arr) == sid {
+                        let key_arr: [u8; 8] = k.try_into().map_err(|_| {
+                            KbError::Db("bad formula_hashes key length".into())
+                        })?;
+                        to_delete.push(key_arr);
+                    }
+                }
+            }
+            for k in to_delete {
+                self.formula_hashes.delete(wtxn, &k)?;
+            }
+        }
+
+        log::trace!(target: "sumo_kb::persist",
+            "delete_formula: sid={} removed", sid);
+        Ok(())
+    }
+
     /// Append a `SentenceId` to the head-predicate index.
     pub(crate) fn index_head(
         &self,
@@ -739,6 +859,7 @@ impl LmdbEnv {
     /// keeps the taxonomy / sort_annotations / axiom caches valid
     /// (their stored `kb_version` still matches the counter) while
     /// recording that the cnf tables are now populated.
+    #[cfg(feature = "cnf")]
     pub(super) fn stamp_current_feature_manifest(
         &self,
         wtxn: &mut RwTxn,

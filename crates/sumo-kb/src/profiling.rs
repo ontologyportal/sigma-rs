@@ -21,7 +21,13 @@
 // report groups by the dot-separated bucket prefix and prints them in
 // stable bucket order when possible.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// Only referenced in `profiling`-feature paths; un-gate and the
+// non-profiling build warns.  The `let _ = Instant::now;` in the
+// span constructor is a separate no-op to keep that branch's
+// closure capture consistent across features.
+#[cfg(feature = "profiling")]
+use std::time::Instant;
 
 // -- Always-present public surface -------------------------------------------
 
@@ -171,7 +177,6 @@ impl<'a> ProfileSpan<'a> {
     fn new(profiler: &'a Profiler, phase: &'static str) -> Self {
         #[cfg(feature = "profiling")]
         {
-            let _ = Instant::now; // suppress unused-import warning when feature off
             Self { profiler, phase, start: Instant::now() }
         }
         #[cfg(not(feature = "profiling"))]

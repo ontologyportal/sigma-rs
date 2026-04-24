@@ -51,11 +51,16 @@ pub(crate) mod persist;
 
 pub(crate) mod kb;
 
-// SInE axiom selection — gated behind `ask` since it only matters at
-// prover-query time.  Editor tooling (parser, validator, language
-// server) builds without `ask` and therefore never pays SInE's
-// eager-maintenance cost.
-#[cfg(feature = "ask")]
+// SInE axiom selection — a general "relevance index" over symbols.
+//
+// Originally gated behind `ask` because the only consumer was the
+// prover input filter.  Un-gated now: the same index is useful for
+// smart revalidation in `kb::reconcile`, LSP "related axioms"
+// features, and any consumer that wants "which axioms share symbols
+// with X?" — none of which require a prover to be built.  Eager
+// maintenance runs on every promote and reconcile regardless of
+// feature set; the cost is microseconds per edit and bounded by
+// shared-symbol counts.
 pub mod sine;
 
 // General per-phase profiling hooks.  Always compiled (so call sites
@@ -63,6 +68,36 @@ pub mod sine;
 // recording path is feature-gated: when `feature = "profiling"` is
 // off, all operations are no-ops and `Profiler` is zero-sized.
 pub mod profiling;
+
+// Reserved session / file tags for internal KB plumbing.  One place
+// for every `"__query__"` / `"__reconcile_add__"` / `"__load__"`
+// literal so typos in one call site can't silently create a phantom
+// session.
+pub mod session_tags;
+
+// Natural-language rendering of SUO-KIF formulas via SUMO's `format`
+// / `termFormat` relations.  Gated on `ask` since its only consumer
+// is the proof-printing path in the CLI — editor tooling that builds
+// without `ask` has no need for it.
+#[cfg(feature = "ask")]
+pub mod natural_lang;
+
+#[cfg(feature = "ask")]
+pub use natural_lang::RenderReport;
+
+// Map proof-step formulas back to the source axioms that produced
+// them.  Uses the alpha-equivalent `canonical_sentence_fingerprint`
+// to bridge Vampire's variable renaming (?HUMAN → ?X0).
+#[cfg(feature = "ask")]
+pub mod axiom_source;
+
+#[cfg(feature = "ask")]
+pub use axiom_source::{AxiomSource, AxiomSourceIndex};
+
+// File-level reconcile report produced by `KnowledgeBase::reconcile_file`.
+// Un-gated along with `sine` — reconcile's only `ask` dependency was
+// the SInE-based smart revalidator.
+pub use kb::reconcile::ReconcileReport;
 
 // -- Public re-exports --------------------------------------------------------
 
@@ -102,7 +137,7 @@ pub use prover::{
     ProverStatus, Binding, VampireRunner,
 };
 
-#[cfg(feature = "ask")]
+// SInE types are now available unconditionally.
 pub use sine::{SineIndex, SineParams};
 
 pub use profiling::{Profiler, ProfileSpan, PhaseSnapshot};

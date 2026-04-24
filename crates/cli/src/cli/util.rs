@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use sumo_kb::{KbError, KnowledgeBase, Span, TptpLang};
 
 use crate::cli::args::KbArgs;
+// `expand_tilde` lives in `crate::config`; imported here so CLI
+// argument paths (e.g. `--vampire "~/bin/vampire"`) pick up the same
+// `~`-expansion as `--config` does.
+use crate::config::expand_tilde;
 use crate::parse_error;
 
 // -- LMDB / KB helpers --------------------------------------------------------
@@ -70,7 +74,7 @@ pub fn open_or_build_kb_profiled(
 
     if has_files {
         let all_files = collect_kif_files(args)?;
-        const BASE: &str = "__files__";
+        const BASE: &str = sumo_kb::session_tags::SESSION_FILES;
 
         // Phase 1: read every file's contents.  I/O is independent
         // per file and embarrassingly parallel when the `parallel`
@@ -101,17 +105,62 @@ pub fn open_or_build_kb_profiled(
             p.record("load.read_files", _t_read.elapsed());
         }
 
-        // Phase 2: ingest each file serially.  `kb.load_kif` takes
-        // `&mut kb` so this can't parallelize directly at this
-        // level — but the CNF clausification inside each `load_kif`
-        // call already fans out across rayon when `sumo-kb/parallel`
-        // is on.
+        // Phase 2: ingest each file serially.
+        //
+        // For every file we handle two cases:
+        //   (a) The file tag is already present in `kb.file_roots()`
+        //       because the DB was opened and it rehydrated sentences
+        //       under that tag.  We diff the on-disk content against
+        //       those sentences and apply the delta in-memory via
+        //       `reconcile_file` — this is the "DB stale / disk
+        //       fresh" case the user's reconcile design targets.
+        //       The `ask` feature gate is required for reconcile
+        //       (SInE maintenance lives behind it); builds without
+        //       `ask` fall back to the classic load path and accept
+        //       that stale DB axioms are visible.
+        //   (b) The file tag is unknown to the KB — this is a fresh
+        //       `-f` file.  Use the classic `load_kif` pipeline and
+        //       let the trailing `make_session_axiomatic(BASE)`
+        //       promote it to axiom status.
+        //
+        // Reconcile output is intentionally quiet here.  Only
+        // `sumo load` promotes these deltas to the DB and surfaces
+        // per-file add/remove/retain counts at info level.
         for (path, text_result) in loaded {
             let text = match text_result {
                 Ok(t) => t,
                 Err(()) => return Err(()),  // read_kif_file already logged
             };
             let tag = path.display().to_string();
+
+            // DB-rehydrated files take the reconcile path; fresh
+            // `-f` files (no existing entry in `file_roots`) fall
+            // through to the classic `load_kif` loader below.
+            // `reconcile_file` is now available in every feature
+            // combo (previously `ask`-gated via SInE).
+            if !kb.file_roots(&tag).is_empty() {
+                let report = kb.reconcile_file(&tag, &text);
+                if !report.parse_errors.is_empty() {
+                    for e in &report.parse_errors {
+                        log::error!("{}: {}", path.display(), e);
+                    }
+                    return Err(());
+                }
+                // Smart-revalidation findings surface at debug level
+                // so `-v` (info) stays focused on higher-level
+                // progress.  Each entry is a hard semantic error —
+                // either naturally severe or promoted via
+                // `-W` / `-Wall`.  Read-only commands (`ask`,
+                // `validate`, `translate`, …) surface them but keep
+                // going; only `sumo load` treats them as abort
+                // triggers (see `cli::load`).
+                for e in &report.semantic_errors {
+                    log::debug!(target: "sumo_kb::reconcile",
+                        "{}: {}", tag, e);
+                }
+                continue;
+            }
+
             let result = kb.load_kif(&text, &tag, Some(BASE));
             if !result.ok {
                 for e in &result.errors {
@@ -140,7 +189,7 @@ pub fn open_or_build_kb_profiled(
 pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     let all_files = collect_kif_files(args)?;
     let mut kb = KnowledgeBase::new();
-    const BASE: &str = "__base__";
+    const BASE: &str = sumo_kb::session_tags::SESSION_BASE;
     for path in &all_files {
         let text = read_kif_file(path)?;
         let tag = path.display().to_string();
@@ -176,7 +225,7 @@ pub fn load_and_commit_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 
     // kb.enable_cnf(ClausifyOptions { max_clauses_per_formula: args.max_clauses });
 
-    const SESSION: &str = "__load__";
+    const SESSION: &str = sumo_kb::session_tags::SESSION_LOAD;
     for path in &all_files {
         let text = read_kif_file(path)?;
         let tag = path.display().to_string();
@@ -264,3 +313,63 @@ pub fn source_tag() -> &'static str {
 pub fn parse_lang(s: &str) -> TptpLang {
     match s { "tff" => TptpLang::Tff, _ => TptpLang::Fof }
 }
+
+// -- Vampire binary discovery --------------------------------------------------
+
+/// Resolve the caller-supplied Vampire path to an existing executable, or
+/// error out with a clear message pointing to the root cause.
+///
+/// When the user selects the `subprocess` prover backend without
+/// `--integrated-prover`, spawning an unresolved binary would silently
+/// return `ProverStatus::Unknown` with the spawn error buried in
+/// `raw_output` (only visible with `-v`).  Running this up-front turns
+/// that into a visible `log::error!` and a non-zero exit code before we
+/// waste time clausifying the KB for a prover that can't run.
+///
+/// Resolution rules:
+/// * If `candidate` contains a separator (absolute or relative like
+///   `./vampire`, `~/bin/vampire`), it is checked directly.
+/// * Otherwise it is treated as a PATH name and each `$PATH` entry is
+///   probed for an existing regular file with that name.
+/// * `~` is expanded via `$HOME` on Unix as a courtesy — `Command::spawn`
+///   does not expand it and the XML config commonly stores
+///   `~/path/to/vampire`.
+pub fn resolve_vampire_path(candidate: &Path) -> Result<PathBuf, ()> {
+    let expanded = expand_tilde(candidate);
+
+    let has_separator = expanded.components().count() > 1
+        || expanded.is_absolute()
+        || candidate.to_string_lossy().contains('/');
+
+    if has_separator {
+        if expanded.is_file() {
+            return Ok(expanded);
+        }
+        log::error!(
+            "vampire binary not found at '{}': supply a valid --vampire path, \
+             set <preference name=\"inferenceEngine\"> in config.xml, or install \
+             the integrated prover with `--features integrated-prover`",
+            expanded.display()
+        );
+        return Err(());
+    }
+
+    // Bare name → walk $PATH.
+    let name = expanded.as_os_str();
+    if let Some(path_env) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_env) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    log::error!(
+        "vampire binary '{}' not found on PATH: supply an explicit --vampire \
+         path, set <preference name=\"inferenceEngine\"> in config.xml, or \
+         install the integrated prover with `--features integrated-prover`",
+        candidate.display()
+    );
+    Err(())
+}
+

@@ -33,9 +33,10 @@ use crate::conv::uri_to_tag;
 use crate::handlers::{
     handle_completion, handle_document_symbol, handle_formatting, handle_goto_definition,
     handle_hover, handle_range_formatting, handle_references, handle_rename,
-    handle_semantic_tokens_full, handle_set_active_files, handle_workspace_symbols,
-    publish_diagnostics, semantic_tokens_legend, SET_ACTIVE_FILES_METHOD,
-    SetActiveFilesParams,
+    handle_semantic_tokens_full, handle_set_active_files, handle_set_ignored_diagnostics,
+    handle_taxonomy, handle_workspace_symbols, publish_diagnostics, semantic_tokens_legend,
+    TaxonomyRequest, SET_ACTIVE_FILES_METHOD, SET_IGNORED_DIAGNOSTICS_METHOD,
+    SetActiveFilesParams, SetIgnoredDiagnosticsParams,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -59,12 +60,34 @@ pub fn run(connection: Connection) -> Result<()> {
     // Event state.
     let state = GlobalState::new();
 
-    // Best-effort workspace index: load every `.kif` / `.kif.tq`
-    // under each workspaceFolder into the shared KB, then publish
-    // a first-pass diagnostics sweep for each.  Failures are logged
-    // and ignored -- missing perms or a non-file root shouldn't
-    // kill the server.
-    initial_workspace_sweep(&connection, &state, &init_params);
+    // Clients that plan to own KB membership via `sumo/setActiveFiles`
+    // (notably the VSCode extension) can advertise
+    // `initializationOptions: { "clientManagesFiles": true }` to
+    // suppress the server's initial workspace sweep.  The sweep
+    // otherwise loads every .kif under the workspace roots, which
+    // `setActiveFiles` then has to partially un-load — `remove_file`
+    // is O(total occurrences in KB) per call, so the dance is
+    // quadratic on larger workspaces and hangs the event loop long
+    // enough to starve every subsequent request.  Headless clients
+    // that never send `setActiveFiles` still get the sweep.
+    let client_manages_files = init_params.initialization_options
+        .as_ref()
+        .and_then(|v| v.get("clientManagesFiles"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if client_manages_files {
+        use std::sync::atomic::Ordering;
+        state.client_manages_files.store(true, Ordering::SeqCst);
+        log::info!(target: "sumo_lsp",
+            "clientManagesFiles=true in init options; skipping workspace sweep");
+    } else {
+        // Best-effort workspace index: load every `.kif` / `.kif.tq`
+        // under each workspaceFolder into the shared KB, then publish
+        // a first-pass diagnostics sweep for each.  Failures are logged
+        // and ignored -- missing perms or a non-file root shouldn't
+        // kill the server.
+        initial_workspace_sweep(&connection, &state, &init_params);
+    }
 
     // Main message loop.
     for msg in &connection.receiver {
@@ -169,11 +192,21 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let Ok(uri) = Url::from_file_path(&path) else { continue; };
                 let tag      = uri_to_tag(&uri);
-                // Load into the shared KB.  Errors get published as
-                // diagnostics along with the parse pass.
-                {
+                // Load into the shared KB.  Parse errors reject the
+                // file entirely (see `sumo_kb::kif_store::load_kif`)
+                // so the rest of the workspace stays healthy; the
+                // bad file still publishes diagnostics below via
+                // `parse_document`, which the client surfaces in
+                // the Problems panel.
+                let load_report = {
                     let mut kb = state.kb.write().expect("kb not poisoned");
-                    let _ = kb.load_kif(&text, &tag, None);
+                    kb.load_kif(&text, &tag, None)
+                };
+                if !load_report.ok {
+                    log::warn!(target: "sumo_lsp",
+                        "workspace sweep: skipped '{}' ({} parse error(s)); \
+                         LSP features on this file will be unavailable until it parses cleanly",
+                        tag, load_report.errors.len());
                 }
                 // Build the per-doc state so subsequent didChanges
                 // can diff.  parse_document gives us the token
@@ -188,7 +221,7 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                 }
                 // Publish initial diagnostics for this file.
                 let kb = state.kb.read().expect("kb not poisoned");
-                publish_diagnostics(&connection.sender, &uri, &rope, &parsed, &kb, None);
+                publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, None);
             }
         }
     }
@@ -250,6 +283,11 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
         }
         Completion::METHOD => {
             dispatch::<Completion, _>(req, |p| Some(handle_completion(state, p)))
+        }
+        // Custom extension request: taxonomy graph for a symbol.
+        // See `handlers::taxonomy` for the wire format.
+        m if m == <TaxonomyRequest as lsp_types::request::Request>::METHOD => {
+            dispatch::<TaxonomyRequest, _>(req, |p| Some(handle_taxonomy(state, p)))
         }
         _ => Response {
             id:     req.id,
@@ -330,6 +368,9 @@ fn handle_notification(connection: &Connection, state: &GlobalState, not: Notifi
         m if m == SET_ACTIVE_FILES_METHOD => {
             on_set_active_files(connection, state, not)?;
         }
+        m if m == SET_IGNORED_DIAGNOSTICS_METHOD => {
+            on_set_ignored_diagnostics(connection, state, not)?;
+        }
         _ => {
             log::trace!(target: "sumo_lsp", "ignored notification '{}'", not.method);
         }
@@ -379,7 +420,7 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
         docs.insert(uri.clone(), ds);
     }
     let kb = state.kb.read().expect("kb not poisoned");
-    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, &kb, Some(version));
+    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, Some(version));
 }
 
 // -- didChange ----------------------------------------------------------------
@@ -428,7 +469,7 @@ fn on_did_change(connection: &Connection, state: &GlobalState, params: DidChange
     }
 
     let kb = state.kb.read().expect("kb not poisoned");
-    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, &kb, Some(version));
+    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, Some(version));
 }
 
 // -- didClose -----------------------------------------------------------------
@@ -483,7 +524,7 @@ fn on_set_active_files(
         let parsed = doc.and_then(|d| d.parsed.as_ref());
 
         match parsed {
-            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, &kb, None),
+            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, state, &kb, None),
             None => {
                 // No open document for this tag -- reparse from
                 // disk on the fly so diagnostics reflect current
@@ -491,7 +532,7 @@ fn on_set_active_files(
                 if let Ok(text) = std::fs::read_to_string(tag) {
                     let p    = sumo_kb::parse_document(tag.clone(), text.as_str());
                     let rope = Rope::from_str(&text);
-                    publish_diagnostics(&connection.sender, &uri, &rope, &p, &kb, None);
+                    publish_diagnostics(&connection.sender, &uri, &rope, &p, state, &kb, None);
                 }
             }
         }
@@ -505,4 +546,34 @@ fn on_set_active_files(
 /// not happen in practice; setActiveFiles uses absolute paths).
 fn uri_from_tag(tag: &str) -> Option<Url> {
     Url::from_file_path(tag).ok()
+}
+
+// -- sumo/setIgnoredDiagnostics ----------------------------------------------
+
+/// Update the server's `ignored_diagnostic_codes` set from a
+/// client notification and re-publish diagnostics for every
+/// currently-open document so the change takes effect without a
+/// restart.
+fn on_set_ignored_diagnostics(
+    connection: &Connection,
+    state:      &GlobalState,
+    not:        Notification,
+) -> Result<()> {
+    let params: SetIgnoredDiagnosticsParams =
+        serde_json::from_value(not.params).map_err(|e| anyhow::anyhow!(e))?;
+
+    handle_set_ignored_diagnostics(state, params);
+
+    // Republish diagnostics for every open document.  Closed
+    // documents don't need refreshing -- they have no visible
+    // Problems-panel entry to update.
+    let docs = state.docs.read().expect("docs lock not poisoned");
+    let kb   = state.kb.read().expect("kb lock not poisoned");
+    for (uri, doc) in docs.iter() {
+        let rope = doc.rope.clone();
+        if let Some(parsed) = doc.parsed.as_ref() {
+            publish_diagnostics(&connection.sender, uri, &rope, parsed, state, &kb, Some(doc.version));
+        }
+    }
+    Ok(())
 }

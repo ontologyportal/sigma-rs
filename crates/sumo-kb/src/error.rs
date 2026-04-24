@@ -4,6 +4,7 @@
 // Ports sumo-parser-core/src/error.rs and adds the new types needed by the
 // unified API (KbError, TellResult, PromoteError, etc.).
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
@@ -13,6 +14,62 @@ use thiserror::Error;
 use inline_colorization::*;
 
 use crate::types::SentenceId;
+
+// -- Thread-local diagnostic collector ---------------------------------------
+//
+// The LSP needs every `SemanticError` the validator raises -- hard
+// errors *and* warnings -- so it can turn each into an LSP
+// diagnostic.  The existing `SemanticError::handle()` swallows
+// warnings (`Ok(())`) and hard errors short-circuit the `?`
+// propagation in `validate_sentence` / `validate_element`.  That
+// means `validate_sentence` at best returns the *first* hard
+// error it hits and at worst returns nothing.
+//
+// To keep `validate_sentence`'s control flow untouched (it's used
+// by `tell()` and the CLI with the existing severity semantics)
+// we install a thread-local collector.  When set, `handle()`
+// pushes into the collector and returns `Ok(())` regardless of
+// severity -- the caller's `?` chain therefore never short-
+// circuits, and every check runs.  The LSP drains the collector
+// at the end of the validation call.
+
+thread_local! {
+    static COLLECTOR: RefCell<Option<Vec<SemanticError>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with a diagnostic collector installed on the current
+/// thread.  Every `SemanticError::handle()` call inside `f`
+/// pushes its error into the collector and short-circuits
+/// neither the `?` chain nor the `handle()`-internal log output.
+/// Returns the collected errors alongside whatever `f` returned.
+///
+/// Re-entrant-safe via a drop guard -- if `f` panics or a nested
+/// `with_collector` is installed, the thread-local is restored
+/// to its previous value on unwind.
+pub(crate) fn with_collector<F, R>(f: F) -> (R, Vec<SemanticError>)
+where
+    F: FnOnce() -> R,
+{
+    struct Guard(Option<Vec<SemanticError>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // Restore the previous collector (usually `None`).  Even
+            // when that previous value was `Some`, this preserves any
+            // errors we collected on behalf of an outer scope.
+            let prev = self.0.take();
+            COLLECTOR.with(|c| *c.borrow_mut() = prev);
+        }
+    }
+
+    let prev = COLLECTOR.with(|c| c.borrow_mut().replace(Vec::new()));
+    let guard = Guard(prev);
+    let result = f();
+    let collected = COLLECTOR
+        .with(|c| c.borrow_mut().take())
+        .unwrap_or_default();
+    drop(guard);
+    (result, collected)
+}
 
 // -- Global warning-control flags ---------------------------------------------
 
@@ -38,6 +95,15 @@ pub fn promote_to_error(code_or_name: &str) {
 
 pub fn suppress_warnings(whether: bool) {
     NO_WARNINGS.store(whether, Ordering::SeqCst);
+}
+
+/// Query whether warnings are currently being suppressed (set via [`suppress_warnings`]).
+///
+/// The CLI flips this on for `-q` / `--quiet`. Call sites that emit non-semantic
+/// warnings (e.g. `log::warn!` for duplicate axioms) should gate on this so
+/// `-q` silences them in addition to semantic warnings.
+pub fn warnings_suppressed() -> bool {
+    NO_WARNINGS.load(Ordering::SeqCst)
 }
 
 // -- Span and ParseError -------------------------------------------------------
@@ -118,7 +184,24 @@ impl SemanticError {
 
     /// Dispatch: log as warning or return as error, depending on severity config.
     /// `store` is used for pretty-printing the offending sentence.
+    ///
+    /// When a thread-local collector is installed (see
+    /// [`with_collector`]) every call pushes into it and returns
+    /// `Ok(())` -- the caller's `?` chain does not short-circuit,
+    /// so every check in `validate_sentence` / `validate_element`
+    /// runs to completion.  Logging is skipped in that mode; the
+    /// caller is responsible for surfacing the errors (the LSP
+    /// emits them as diagnostics).
     pub(crate) fn handle(&self, store: &crate::kif_store::KifStore) -> Result<(), Self> {
+        let collected = COLLECTOR.with(|c| {
+            match c.borrow_mut().as_mut() {
+                Some(vec) => { vec.push(self.clone()); true }
+                None      => false,
+            }
+        });
+        if collected {
+            return Ok(());
+        }
         if self.is_warn() {
             if !NO_WARNINGS.load(Ordering::SeqCst) {
                 log::warn!(target: "sumo_kb::semantic", "semantic warning ({}) {}", self.code(), self);

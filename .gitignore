@@ -1,2 +1,6 @@
 target/
 *.lmdb/
+**/*.DS_Store
+.claude
+.vscode
+scripts/

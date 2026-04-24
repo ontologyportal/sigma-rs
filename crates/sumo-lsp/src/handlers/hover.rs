@@ -149,6 +149,7 @@ mod tests {
             arity:   None,
             domains: vec![],
             range:   None,
+            ref_args: Vec::new()
         }
     }
 
@@ -183,6 +184,7 @@ mod tests {
                 (2, SortSig { class: "Class".into(), subclass: true }),
             ],
             range:         None,
+            ref_args: Vec::new()
         };
         let md = render_manpage_markdown(&page);
         assert!(md.contains("Signature"));
@@ -205,6 +207,7 @@ mod tests {
             arity:         None,
             domains:       vec![],
             range:         None,
+            ref_args: Vec::new()
         };
         let md = render_manpage_markdown(&page);
         assert!(md.contains("### X"));

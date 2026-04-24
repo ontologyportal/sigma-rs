@@ -19,18 +19,28 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{
-    DuplicateInfo, DuplicateSource, KbError, PromoteError, PromoteReport, SemanticError,
-    Span, TellResult, TellWarning,
-};
+use crate::error::{KbError, SemanticError, Span, TellResult, TellWarning};
+// Feature-gated imports — each is only used inside a matching cfg
+// block below.  Un-gating them produces "unused import" warnings
+// under feature combos that compile only some of the dedup /
+// promote / persist code paths.
+#[cfg(feature = "cnf")]
+use crate::error::warnings_suppressed;
+#[cfg(feature = "persist")]
+use crate::error::{PromoteError, PromoteReport};
+// `DuplicateInfo` / `DuplicateSource` only populate the
+// promote_assertions_unchecked *dedup* report, which needs both
+// `persist` (to compile) and `cnf` (to reach the dup path).
+#[cfg(all(feature = "persist", feature = "cnf"))]
+use crate::error::{DuplicateInfo, DuplicateSource};
 use crate::kif_store::{load_kif, KifStore};
 use crate::parse::ast::AstNode;
 use crate::semantic::SemanticLayer;
 use crate::types::{SentenceId, SymbolId};
 
-#[cfg(feature = "ask")]
+// SInE is now un-gated — it's used by reconcile's smart
+// revalidation in addition to the (ask-gated) prover input filter.
 use std::sync::RwLock;
-#[cfg(feature = "ask")]
 use crate::sine::{collect_conjecture_symbols, SineIndex, SineParams};
 
 #[cfg(feature = "cnf")]
@@ -92,6 +102,9 @@ macro_rules! profile_span {
 /// let r = profile_call!(self, "ask.sine_select",
 ///     self.sine_select_for_query(query_kif, params));
 /// ```
+// Only consumed by `kb/prove.rs` (gated on `ask`).  Allow-unused so
+// the no-ask build doesn't warn about a macro with no callers.
+#[allow(unused_macros)]
 macro_rules! profile_call {
     ($self:ident, $phase:literal, $e:expr) => {{
         let __t = std::time::Instant::now();
@@ -105,6 +118,9 @@ macro_rules! profile_call {
 
 #[cfg(feature = "ask")]
 mod prove;
+// `reconcile` is un-gated — its only `ask` dependency was SInE,
+// which moved out of the `ask` gate.
+pub mod reconcile;
 mod export;
 pub mod man;
 
@@ -256,24 +272,34 @@ pub struct KnowledgeBase {
 
     /// Pre-built TFF TPTP for the current axiom set; None when invalidated.
     /// Rebuilt lazily on the first `ask_embedded()` call after the axiom
-    /// set changes.  Not reused by `ask()` itself, which SInE-filters
-    /// per-conjecture and thus cannot benefit from a whole-KB cache.
+    /// set changes.  Holds both TFF and FOF shapes — built eagerly in
+    /// a single `ensure_axiom_cache` pass so either-mode `ask` /
+    /// `ask_embedded` hits a warm IR without a per-query rebuild.
+    /// The subprocess `ask` path reuses the cache by seeding a
+    /// `NativeConverter` from it and applying SInE filtering at
+    /// TPTP-assembly time (see [`assemble_tptp`]'s `axiom_filter`).
+    ///
+    /// [`assemble_tptp`]: crate::vampire::assemble::assemble_tptp
     #[cfg(feature = "ask")]
-    axiom_cache: Option<crate::vampire::VampireAxiomCache>,
+    axiom_cache: Option<crate::vampire::VampireAxiomCacheSet>,
 
     /// Eagerly-maintained SInE axiom-selection index.
     ///
     /// Every axiom promotion incrementally updates this index (adding
     /// the new axiom and recomputing triggers for axioms that share a
-    /// symbol with it).  `ask()` reads the index on every query to
-    /// SInE-filter the axiom set it ships to the prover; no rebuild
-    /// is done at query time (except on tolerance switch, which
-    /// rebuilds just the D-relation in place).
+    /// symbol with it).  Consumers:
     ///
-    /// Gated on `ask` because SInE is only useful to consumers that
-    /// actually call the prover.  Editor builds (no `ask` feature)
-    /// pay no maintenance cost.
-    #[cfg(feature = "ask")]
+    /// - `ask()` (feature = "ask"): SInE-filters the axiom set sent
+    ///   to the prover per-conjecture.
+    /// - `reconcile_file()`: uses `remove_axiom` on removed sids and
+    ///   `select` on the altered-symbol set for smart revalidation.
+    /// - External callers (LSP "related axioms", linters, explore
+    ///   UIs): free to read via the public `sine_select_for_query`
+    ///   / `symbols_of_axiom` / `generality` methods.
+    ///
+    /// Maintenance cost is microseconds per promote/reconcile edit,
+    /// bounded by the shared-symbol fan-out; cheap enough to keep
+    /// on every build regardless of whether the prover is linked.
     sine_index: RwLock<SineIndex>,
 
     /// Optional per-phase profiler for ingest/promote/ask work.
@@ -290,6 +316,20 @@ pub struct KnowledgeBase {
 }
 
 impl KnowledgeBase {
+    /// Crate-internal read-only access to the underlying [`KifStore`].
+    /// Used by sibling modules that need to walk sentences directly
+    /// (axiom-source attribution, fingerprint cross-checks, the
+    /// reconcile path's taxonomy probe).  Not part of the public API.
+    ///
+    /// `#[allow(dead_code)]`: the release build with
+    /// `--no-default-features --features cnf` has no call sites
+    /// reachable from the default-compiled surface, but the method
+    /// is needed for several `ask`-gated features.
+    #[allow(dead_code)]
+    pub(crate) fn store_for_testing(&self) -> &crate::kif_store::KifStore {
+        &self.layer.store
+    }
+
     // -- Construction ----------------------------------------------------------
     /// Constructs a new KnowledgeBase
     pub fn new() -> Self {
@@ -302,7 +342,6 @@ impl KnowledgeBase {
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             #[cfg(feature = "persist")] db:   None,
             #[cfg(feature = "ask")]  axiom_cache: None,
-            #[cfg(feature = "ask")]
             sine_index: RwLock::new(
                 SineIndex::new(SineParams::default().tolerance)
             ),
@@ -498,7 +537,6 @@ impl KnowledgeBase {
         }
 
         // Eagerly build the SInE index over the loaded axioms.
-        #[cfg(feature = "ask")]
         let sine_index = {
             let mut idx = SineIndex::new(SineParams::default().tolerance);
             idx.add_axioms(&layer.store, axiom_sids.iter().copied());
@@ -514,7 +552,7 @@ impl KnowledgeBase {
             #[cfg(feature = "cnf")] cnf_opts: ClausifyOptions::default(),
             db: Some(env),
             #[cfg(feature = "ask")]  axiom_cache: None,
-            #[cfg(feature = "ask")]  sine_index,
+            sine_index,
             profiler: None,
         })
     }
@@ -569,18 +607,34 @@ impl KnowledgeBase {
         // `extend_taxonomy_with(&accepted)`.
         //
         // Parse into store using file_tag as the KIF "file" name.
+        // The parser is error-recovering: `parse_errors` contains
+        // diagnostics for malformed sentences, while the nodes that
+        // *did* parse are already in the store.  We used to early-
+        // return here on any error, which skipped the post-parse
+        // phases (validation, dedup, taxonomy update) and left the
+        // store inconsistent: sentences were present in the head
+        // index but absent from the semantic cache, so downstream
+        // lookups on symbols in that file returned wrong results
+        // or panicked.  A single bad sentence in a single file
+        // poisoned the whole KB until a clean reload.
+        //
+        // Current semantics: record parse errors in `result.errors`
+        // and mark `result.ok = false`, then continue running the
+        // full pipeline on whatever *did* parse.  The LSP keeps
+        // serving valid sentences while the user fixes the bad
+        // ones; the `sumo load` CLI still aborts on `!result.ok`
+        // so the database isn't polluted with a partial file.
         let parse_errors = {
             let _span = profile_span!(self, "ingest.parse_and_store");
             load_kif(&mut self.layer.store, text, file_tag)
         };
-
-        // Failed to ingest due to parse errors
         if !parse_errors.is_empty() {
             result.ok = false;
             for (_, e) in parse_errors {
                 result.errors.push(e);
             }
-            return result;
+            // Fall through -- run the pipeline on the sentences
+            // that did parse so the KB stays internally consistent.
         }
 
         // Collect only roots added by THIS call (file_roots accumulates across calls).
@@ -709,7 +763,9 @@ impl KnowledgeBase {
                     accepted.push(sid);
                     log::debug!(target: "sumo_kb::kb",
                         "tell: accepted sid={} into session '{}'", sid, session);
-                } else {
+                } else if !warnings_suppressed() {
+                    // -q / suppress_warnings(true) silences duplicate-axiom notices
+                    // the same way it silences semantic warnings.
                     log::warn!(target: "sumo_kb::kb",
                         "tell: duplicate sid={} skipped (session '{}')", sid, session);
                 }
@@ -840,9 +896,9 @@ impl KnowledgeBase {
         // Eagerly extend the SInE index with each new axiom.  Work per
         // axiom is proportional to the number of axioms sharing a
         // symbol with it (typically dozens to low hundreds on SUMO-scale
-        // KBs); in exchange the query-time `ask()` path does zero
-        // rebuild work.
-        #[cfg(feature = "ask")]
+        // KBs); in exchange downstream consumers (ask(), reconcile's
+        // smart revalidate, LSP "related axioms") get O(answer-size)
+        // lookups with no rebuild.
         {
             let _span = profile_span!(self, "promote.sine_maintain");
             let mut idx = self.sine_index.write().expect("sine_index poisoned");
@@ -1068,7 +1124,6 @@ impl KnowledgeBase {
         for &sid in &surviving {
             self.layer.store.register_axiom_symbols(sid);
         }
-        #[cfg(feature = "ask")]
         {
             let mut idx = self.sine_index.write().expect("sine_index poisoned");
             idx.add_axioms(&self.layer.store, surviving.iter().copied());
@@ -1081,6 +1136,74 @@ impl KnowledgeBase {
         #[cfg(feature = "ask")]
         { self.axiom_cache = None; }
         Ok(report)
+    }
+
+    /// Commit a reconcile delta to the persistent LMDB.
+    ///
+    /// `removed_sids` are deleted from the DB (main table + head /
+    /// path indexes + formula-hash map); `added_sids` are written
+    /// fresh as axioms (session = None).  Runs in **two LMDB write
+    /// transactions**: one for deletions, one for insertions, each
+    /// committing atomically.  Splitting is deliberate — the
+    /// insertion path reuses `write_axioms`, which bumps
+    /// `kb_version` on commit; we want the version bump to reflect
+    /// the final post-add state, so deletions go in a separate
+    /// txn before it.
+    ///
+    /// No-op when both slices are empty.  Callers should check
+    /// [`ReconcileReport::is_noop`] first in the hot path to avoid
+    /// opening txns unnecessarily.
+    ///
+    /// Requires the `persist` feature; callers without it should
+    /// keep their reconcile in memory.
+    #[cfg(feature = "persist")]
+    pub fn persist_reconcile_diff(
+        &self,
+        removed_sids: &[SentenceId],
+        added_sids:   &[SentenceId],
+    ) -> Result<(), KbError> {
+        let Some(env) = &self.db else {
+            return Ok(());
+        };
+        if removed_sids.is_empty() && added_sids.is_empty() {
+            return Ok(());
+        }
+
+        // -- Phase 1: delete removed rows -----------------------------------
+        if !removed_sids.is_empty() {
+            let mut wtxn = env.write_txn()?;
+            for &sid in removed_sids {
+                env.delete_formula(&mut wtxn, sid)?;
+            }
+            wtxn.commit()?;
+            log::debug!(target: "sumo_kb::kb",
+                "persist_reconcile_diff: deleted {} sentence(s)", removed_sids.len());
+        }
+
+        // -- Phase 2: write added rows --------------------------------------
+        if !added_sids.is_empty() {
+            #[cfg(feature = "cnf")]
+            let clause_map: HashMap<SentenceId, Vec<Clause>> = {
+                let mut m = HashMap::new();
+                for &sid in added_sids {
+                    if let Some(cs) = self.clauses.get(&sid).cloned() {
+                        m.insert(sid, cs);
+                    }
+                }
+                m
+            };
+            crate::persist::commit::write_axioms(
+                env,
+                &self.layer.store,
+                added_sids,
+                #[cfg(feature = "cnf")] &clause_map,
+                None,
+            )?;
+            log::debug!(target: "sumo_kb::kb",
+                "persist_reconcile_diff: wrote {} sentence(s)", added_sids.len());
+        }
+
+        Ok(())
     }
 
     /// Promote assertions WITH a consistency check via the theorem prover.
@@ -1169,6 +1292,10 @@ impl KnowledgeBase {
 
     pub fn is_predicate(&self, sym: crate::types::SymbolId) -> bool {
         self.layer.is_predicate(sym)
+    }
+
+    pub fn sym_refs(&self, sym: crate::types::SymbolId) -> Vec<SentenceId> {
+        self.layer.store.axiom_sentences_of(sym).to_vec()
     }
 
     pub fn has_ancestor(&self, sym: crate::types::SymbolId, ancestor: &str) -> bool {
@@ -1385,6 +1512,19 @@ impl KnowledgeBase {
         self.layer.validate_sentence(sid)
     }
 
+    /// Run semantic validation on `sid` and return every finding
+    /// (warnings + hard errors).
+    ///
+    /// Unlike [`validate_sentence`], this does not honour the
+    /// CLI's `-Wall` / `--warning=<code>` promotion flags -- it
+    /// always returns the raw set of checks the validator
+    /// performed.  The caller decides how to surface them (the
+    /// LSP maps each to an LSP diagnostic using `is_warn()` to
+    /// pick a severity).
+    pub fn validate_sentence_all(&self, sid: SentenceId) -> Vec<SemanticError> {
+        self.layer.validate_sentence_collect(sid)
+    }
+
     pub fn validate_all(&self) -> Vec<(SentenceId, SemanticError)> {
         self.layer.validate_all()
     }
@@ -1501,6 +1641,38 @@ impl KnowledgeBase {
         crate::kif_store::sentence_to_plain_kif(sid, &self.layer.store)
     }
 
+    /// Pretty-print a stored sentence as **ANSI-coloured, indented
+    /// KIF** — the same layout produced by [`AstNode::pretty_print`]
+    /// for parsed formulas.  Sentences that fit within ~72 columns
+    /// at `base_indent` are kept on a single line; longer ones break
+    /// across lines with each top-level argument indented two columns
+    /// further.
+    ///
+    /// Implemented as round-trip through [`sentence_kif_str`] +
+    /// [`crate::parse::parse_document`] + `pretty_print`, so it
+    /// inherits every formatting decision the proof-display path
+    /// uses.  Re-parse overhead is O(sentence size) — tiny compared
+    /// with the display sink (a terminal or pager).  Falls back to
+    /// the flat [`sentence_kif_str`] output on re-parse failure (a
+    /// defensive guard — `sentence_kif_str` produces re-parseable
+    /// output by construction).
+    ///
+    /// Non-LSP uses: proof-display summary, man-page REFERENCES
+    /// section, any CLI that wants a consistent indented sentence
+    /// rendering without teaching the formatter about `Sentence`
+    /// directly.
+    ///
+    /// [`AstNode::pretty_print`]: crate::parse::AstNode::pretty_print
+    /// [`sentence_kif_str`]: KnowledgeBase::sentence_kif_str
+    pub fn pretty_print_sentence(&self, sid: SentenceId, base_indent: usize) -> String {
+        let kif = self.sentence_kif_str(sid);
+        let doc = crate::parse::parse_document("<display>", kif.as_str());
+        match doc.ast.into_iter().next() {
+            Some(node) => node.pretty_print(base_indent),
+            None       => kif,
+        }
+    }
+
     // -- Incremental file reload ----------------------------------------------
     //
     // `apply_file_diff` and `compute_file_diff` are the general-purpose
@@ -1602,6 +1774,36 @@ impl KnowledgeBase {
     /// [`SemanticLayer::invalidate_symbols`](crate::semantic::SemanticLayer)
     /// for targeted eviction.  Retained sentences trigger no cache
     /// churn.
+    ///
+    /// # What this does **not** do
+    ///
+    /// Compared to [`KnowledgeBase::reconcile_file`] (which runs the
+    /// full ingest pipeline on added sentences), this method is a
+    /// lower-level primitive and deliberately skips several
+    /// derived-state updates:
+    ///
+    /// - **No CNF dedup / fingerprint registration.**  Added
+    ///   sentences go straight into the store without consulting
+    ///   `self.fingerprints`.  An added sentence that happens to be
+    ///   a clause-level duplicate of an existing axiom is accepted
+    ///   silently — both copies remain.  The LSP use case doesn't
+    ///   need prover-level dedup; CLI reconcile does, which is why
+    ///   CLI callers should use `reconcile_file` instead.
+    /// - **No SInE maintenance.**  Removed sids stay in
+    ///   [`SineIndex::sym_axioms`]; added sids aren't inserted.
+    ///   Correct only under the LSP invariant that proofs aren't run
+    ///   between diffs.
+    /// - **No taxonomy rebuild or extend.**  The `SemanticLayer`'s
+    ///   taxonomy keeps any stale edges from the removed sentences.
+    ///   Again, acceptable for editor tooling, not for proof paths.
+    /// - **No axiom cache invalidation.**  The TFF IR cache survives
+    ///   across the diff.
+    ///
+    /// For any caller that runs proofs, persists to the DB, or
+    /// otherwise needs the full derived-state consistency, use
+    /// [`KnowledgeBase::reconcile_file`] — it layers
+    /// `compute_file_diff` + the full ingest pipeline on top of this
+    /// primitive's shape.
     pub fn apply_file_diff(&mut self, diff: FileDiff) -> TellResult {
         let mut result = TellResult { ok: true, errors: Vec::new(), warnings: Vec::new() };
         let mut affected_syms: HashSet<SymbolId> = HashSet::new();
@@ -1685,22 +1887,24 @@ impl KnowledgeBase {
         }
     }
 
-    // -- SInE axiom selection (feature = "ask") -------------------------------
+    // -- SInE axiom selection -------------------------------------------------
     //
     // The SInE index is maintained eagerly by `make_session_axiomatic`,
     // `promote_assertions_unchecked`, and `open`: every axiom promotion
     // incrementally updates the D-relation.  Query-path methods below
     // are pure reads (plus a parse-and-roll-back to extract conjecture
     // symbols) and pay zero rebuild cost at query time.
+    //
+    // Consumers don't need the `ask` feature — SInE is a plain
+    // axiom-relevance index that also powers `reconcile_file`'s smart
+    // revalidation and any LSP-side "related axioms" feature.
 
     /// Number of axioms currently tracked by the SInE index.
-    #[cfg(feature = "ask")]
     pub fn sine_axiom_count(&self) -> usize {
         self.sine_index.read().expect("sine_index poisoned").axiom_count()
     }
 
     /// The tolerance at which the SInE D-relation is currently computed.
-    #[cfg(feature = "ask")]
     pub fn sine_tolerance(&self) -> f32 {
         self.sine_index.read().expect("sine_index poisoned").tolerance()
     }
@@ -1708,7 +1912,6 @@ impl KnowledgeBase {
     /// Rebuild the SInE index from scratch over the current axiom set.
     /// Normally not needed — the index is maintained eagerly — but
     /// useful as an escape hatch after non-standard axiom mutations.
-    #[cfg(feature = "ask")]
     pub fn rebuild_sine_index(&mut self) {
         let axiom_ids = self.axiom_ids_set();
         let tolerance = self.sine_index.read().expect("sine_index poisoned").tolerance();
@@ -1733,9 +1936,8 @@ impl KnowledgeBase {
     /// straight into [`sine_select_for_query`] or similar — they are
     /// not stable across multiple calls because the name→id interning
     /// resets under roll-back.
-    #[cfg(feature = "ask")]
     pub fn query_symbols(&mut self, query_kif: &str) -> Result<HashSet<SymbolId>, KbError> {
-        let query_tag = "__sine_query__";
+        let query_tag = crate::session_tags::SESSION_SINE_QUERY;
         let prev_count = self.layer.store.file_roots
             .get(query_tag).map(|v| v.len()).unwrap_or(0);
 
@@ -1789,7 +1991,6 @@ impl KnowledgeBase {
     /// tolerance-independent per-axiom symbol sets and generality
     /// counts).  In the common case — all queries at the same
     /// tolerance — this rebuild never fires.
-    #[cfg(feature = "ask")]
     pub fn sine_select_for_query(
         &mut self,
         query_kif: &str,
@@ -1824,6 +2025,13 @@ impl KnowledgeBase {
     }
 
     /// Produce a short human-readable preview of a sentence.
+    /// Used by the CNF dedup path (both in `ingest`'s
+    /// fingerprint-match arm and in `promote_assertions_unchecked`'s
+    /// cross-session dedup arm) to attach context to
+    /// `TellWarning::DuplicateAxiom` / `DuplicateInfo`.  Both call
+    /// sites are inside `#[cfg(feature = "cnf")]` blocks, so gate
+    /// on `cnf` alone.
+    #[cfg(feature = "cnf")]
     fn formula_preview(&self, sid: SentenceId) -> String {
         let store = &self.layer.store;
         if !store.has_sentence(sid) { return format!("<sid:{}>", sid); }

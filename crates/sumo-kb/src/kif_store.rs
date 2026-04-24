@@ -82,6 +82,7 @@ impl KifStore {
     /// Seed the ID counters from the LMDB max values.  Called by `open()` after
     /// loading all existing formulas from the DB so that any new IDs assigned
     /// in-memory are guaranteed not to collide with existing persisted IDs.
+    #[cfg(feature = "persist")]
     pub(crate) fn seed_counters(&mut self, next_sym: u64, next_sent: u64) {
         self.next_symbol_id   = next_sym;
         self.next_sentence_id = next_sent;
@@ -174,6 +175,36 @@ impl KifStore {
         self.sym_idx.contains_key(&id)
     }
 
+    /// `true` iff any sentence in `sids` has a taxonomy-relation
+    /// head (`subclass` / `instance` / `subrelation` / `subAttribute`).
+    ///
+    /// Used by the ask post-query cleanup and the reconcile path to
+    /// decide whether a full [`SemanticLayer::rebuild_taxonomy`] is
+    /// needed or whether the cheaper incremental
+    /// [`SemanticLayer::extend_taxonomy_with`] will do.  Missing
+    /// sids (from a prior `remove_sentence`) are silently skipped —
+    /// a gone sentence can't affect the taxonomy.
+    ///
+    /// Intentionally head-only (doesn't descend into sub-sentences):
+    /// `(not (subclass …))` returns `false` because its head is
+    /// `not`, but `extract_tax_edge_for` only reacts to *positive*
+    /// top-level taxonomy heads, so the missed rebuild would have
+    /// been a no-op anyway.
+    pub(crate) fn any_touches_taxonomy(&self, sids: &[SentenceId]) -> bool {
+        use crate::types::TaxRelation;
+        sids.iter().any(|&sid| {
+            if !self.has_sentence(sid) { return false; }
+            let sentence = &self.sentences[self.sent_idx(sid)];
+            match sentence.head_symbol() {
+                Some(head_id) => {
+                    let name = self.sym_name(head_id);
+                    TaxRelation::from_str(name).is_some()
+                }
+                None => false,
+            }
+        })
+    }
+
     /// O(1) `SymbolId -> &Symbol` lookup.  Returns `None` for ids
     /// not in the intern table (e.g. stale ids from removed files).
     #[inline]
@@ -235,22 +266,7 @@ impl KifStore {
                 if let Some(sent_id) = self.build_sentence(&ctx, node, file, &mut errors, true) {
                     log::trace!(target: "sumo_kb::kif_store",
                         "registered root sentence id={}", sent_id);
-                    self.roots.push(sent_id);
-                    self.file_roots.entry(file.to_owned()).or_default().push(sent_id);
-                    // Keep file_hashes in lockstep with file_roots for
-                    // incremental-diff workflows.
-                    let fp = sentence_fingerprint(node);
-                    self.file_hashes.entry(file.to_owned()).or_default().push(fp);
-                    if let Some(head_id) = self.sentences[self.sent_idx(sent_id)].head_symbol() {
-                        let head_name = self.sym_name(head_id).to_owned();
-                        self.head_index.entry(head_name).or_default().push(sent_id);
-                        let head_vec_idx = self.sym_vec_idx(head_id);
-                        self.symbol_data[head_vec_idx].head_sentences.push(sent_id);
-                    }
-                    // Record every symbol reference in this sentence
-                    // (and all transitively-reached sub-sentences) in
-                    // the reverse index.
-                    self.index_sentence_occurrences(sent_id);
+                    self.finalize_root(sent_id, node, file);
                 }
             }
         }
@@ -272,8 +288,25 @@ impl KifStore {
         if !matches!(node, AstNode::List { .. }) { return None; }
         let ctx     = ScopeCtx { default: self.next_scope(), overrides: HashMap::new() };
         let sent_id = self.build_sentence(&ctx, node, file, errors, true)?;
+        self.finalize_root(sent_id, node, file);
+        Some(sent_id)
+    }
+
+    /// Shared post-build bookkeeping for a freshly-created root sentence.
+    ///
+    /// Registers the sid with every per-root index the store maintains:
+    /// `roots`, `file_roots`, `file_hashes` (kept positionally in
+    /// lockstep with `file_roots[file]` for incremental-diff
+    /// workflows), `head_index`, `symbol_data[head].head_sentences`,
+    /// and the symbol occurrence reverse index.  Called from both
+    /// [`load`] (bulk path) and [`append_root_sentence`] (incremental
+    /// path) so they can't drift out of sync.
+    fn finalize_root(&mut self, sent_id: SentenceId, node: &AstNode, file: &str) {
         self.roots.push(sent_id);
         self.file_roots.entry(file.to_owned()).or_default().push(sent_id);
+        // Keep file_hashes positionally aligned with file_roots — any
+        // consumer (reconcile, file-diff, LSP didChange) relies on
+        // `file_hashes[file][i]` fingerprinting `file_roots[file][i]`.
         let fp = sentence_fingerprint(node);
         self.file_hashes.entry(file.to_owned()).or_default().push(fp);
         if let Some(head_id) = self.sentences[self.sent_idx(sent_id)].head_symbol() {
@@ -282,8 +315,9 @@ impl KifStore {
             let head_vec_idx = self.sym_vec_idx(head_id);
             self.symbol_data[head_vec_idx].head_sentences.push(sent_id);
         }
+        // Record every symbol reference in this sentence (and all
+        // transitively-reached sub-sentences) in the reverse index.
         self.index_sentence_occurrences(sent_id);
-        Some(sent_id)
     }
 
     fn build_sentence(
@@ -416,10 +450,13 @@ impl KifStore {
 
     // -- remove_file -----------------------------------------------------------
 
-    /// Remove all sentences tagged with `file`.
-    /// Remove the `file_roots` mapping for `file` without touching `roots` or `sentences`.
-    /// Used after promotion to detach sentences from their session tag
-    /// while keeping them as in-memory axioms.
+    /// Remove the `file_roots` mapping for `file` without touching
+    /// `roots` or `sentences`.  Used after promotion to detach
+    /// sentences from their session tag while keeping them as
+    /// in-memory axioms.  Only called from the persist-gated
+    /// `promote_assertions_unchecked`; gate to avoid a dead-code
+    /// warning in no-persist builds.
+    #[cfg(feature = "persist")]
     pub(crate) fn clear_file_roots(&mut self, file: &str) {
         self.file_roots.remove(file);
     }
@@ -640,18 +677,6 @@ impl KifStore {
         }
     }
 
-    /// Crate-internal mirror of `collect_symbols` for consumers outside this impl.
-    pub(crate) fn collect_axiom_symbol_set(
-        &self,
-        sid: SentenceId,
-    ) -> std::collections::HashSet<SymbolId> {
-        let mut out = std::collections::HashSet::new();
-        if self.has_sentence(sid) {
-            self.collect_symbols(sid, &mut out);
-        }
-        out
-    }
-
     // -- Axiom-occurrence index (Symbol.all_sentences) ------------------------
     //
     // Semantics of `Symbol.all_sentences`: axiom SentenceIds in which the
@@ -671,7 +696,7 @@ impl KifStore {
     /// axiom occurrences.  Idempotent: calling twice for the same sid
     /// does not create duplicate entries.
     pub(crate) fn register_axiom_symbols(&mut self, sid: SentenceId) {
-        let syms = self.collect_axiom_symbol_set(sid);
+        let syms = self.sentence_symbols(sid);
         for s in syms {
             let vec_idx = self.sym_vec_idx(s);
             let entries = &mut self.symbol_data[vec_idx].all_sentences;
@@ -686,7 +711,7 @@ impl KifStore {
     /// or removed from the promoted set.
     #[allow(dead_code)]
     pub(crate) fn unregister_axiom_symbols(&mut self, sid: SentenceId) {
-        let syms = self.collect_axiom_symbol_set(sid);
+        let syms = self.sentence_symbols(sid);
         for s in syms {
             let vec_idx = self.sym_vec_idx(s);
             self.symbol_data[vec_idx].all_sentences.retain(|&x| x != sid);
@@ -880,6 +905,16 @@ pub(crate) fn sentence_to_plain_kif(sid: SentenceId, store: &KifStore) -> String
 /// Formulas containing row variables (`@VAR`) are automatically expanded into
 /// up to [`crate::row_vars::MAX_ARITY`] concrete variants before being stored.
 /// This follows the approach of Java's `RowVars.expandRowVars`.
+///
+/// ## Error-recovery semantics
+///
+/// The KIF parser is error-recovering: it returns every top-level
+/// sentence it *could* parse alongside a diagnostic for each bad
+/// one.  We commit the recovered nodes so mid-edit state (e.g. a
+/// user typing a new sentence at the end of a file) doesn't blow
+/// away the rest of the file's symbols.  The caller is responsible
+/// for putting those nodes through the full semantic / dedup /
+/// taxonomy pipeline -- see `KnowledgeBase::ingest`.
 pub(crate) fn load_kif(store: &mut KifStore, text: &str, file: &str) -> Vec<(Span, KbError)> {
     use crate::parse::Parser;
     let mut errors: Vec<(Span, KbError)> = Vec::new();
@@ -926,6 +961,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "persist")]
     fn seed_counters() {
         let mut store = KifStore::default();
         store.seed_counters(1000, 500);
@@ -939,6 +975,45 @@ mod tests {
     fn head_index() {
         let store = store_from("(subclass Human Animal)\n(subclass Dog Animal)");
         assert_eq!(store.by_head("subclass").len(), 2);
+    }
+
+    #[test]
+    fn parse_error_preserves_recovered_sentences() {
+        // The parser is error-recovering: a file with one bad
+        // sentence should still surface the well-formed ones.
+        // Callers (LSP, CLI) decide what to do with the errors --
+        // the store unconditionally commits whatever parsed.
+        let mut store = KifStore::default();
+        let errors = load_kif(&mut store,
+            "(subclass Human Animal)\n(\"bad\" head)\n(subclass Dog Animal)",
+            "mixed");
+        assert!(!errors.is_empty(), "expected a parse error");
+        // The two valid subclass sentences should be indexed.
+        assert_eq!(store.by_head("subclass").len(), 2,
+            "recovered sentences should be committed despite the parse error");
+        assert!(store.symbols.contains_key("Human"));
+        assert!(store.symbols.contains_key("Dog"));
+    }
+
+    #[test]
+    fn parse_error_leaves_earlier_files_intact() {
+        // A bad file loaded after a good one must not disturb the
+        // good one's state -- this is the "one broken file shouldn't
+        // break the KB" invariant the LSP depends on.
+        let mut store = KifStore::default();
+        let ok = load_kif(&mut store, "(subclass Human Animal)", "good");
+        assert!(ok.is_empty());
+        assert_eq!(store.by_head("subclass").len(), 1);
+
+        let errs = load_kif(&mut store, "(\"broken\"", "bad");
+        assert!(!errs.is_empty());
+
+        // The good file's index entry must still resolve.  (The bad
+        // file may or may not have a partial file_roots entry, depending
+        // on what the recovery parser salvaged; that's the caller's
+        // problem, not the store's.)
+        assert_eq!(store.by_head("subclass").len(), 1,
+            "good file's roots disturbed by bad file's parse failure");
     }
 
     #[test]

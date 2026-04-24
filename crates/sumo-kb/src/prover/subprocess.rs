@@ -20,6 +20,18 @@ static RE_PARENT:    Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(f\d+)\b").unwrap
 static RE_FOF:       Lazy<Regex> = Lazy::new(|| Regex::new(
     r"(?s)(fof|cnf|tff|thf)\((f\d+),\s*(\w+),\s*\((.*?)\),\s*(.*?)\)\."
 ).unwrap());
+/// Extract our `kb_<sid>` axiom name from Vampire's source annotation.
+///
+/// With `--output_axiom_names on` Vampire emits an axiom step's tail as
+///   `file('<path>', kb_<sid>)`
+/// — the second component of `file(..)` carries the axiom's original
+/// TPTP name.  Without the flag the tail becomes
+///   `file('<path>', unknown)`
+/// and this regex simply doesn't match (axiom traceback falls back to
+/// the canonical-hash path).
+static RE_AXIOM_NAME: Lazy<Regex> = Lazy::new(|| Regex::new(
+    r"file\('[^']*',\s*(kb_\d+)\s*\)"
+).unwrap());
 static RE_UNBOUND:   Lazy<Regex> = Lazy::new(|| Regex::new(r"\bX\d+\b").unwrap());
 static RE_NEG_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(r"~s__holds\(([^()]+)\)").unwrap());
 static RE_POS_HOLDS: Lazy<Regex> = Lazy::new(|| Regex::new(
@@ -73,7 +85,29 @@ fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
         "--mode".into(),            "vampire".into(),
         "--input_syntax".into(),    "tptp".into(),
         "--sine_selection".into(),  "off".into(),
+        // Emit proofs in TSTP/TPTP format.  Without this Vampire
+        // defaults to `--proof on` which prints steps as
+        //     `36373. FORMULA [input(axiom)]`
+        // — a human-readable format that `parse_vampire_output`'s
+        // `fof(...)` regex can't parse.  Setting `-p tptp` produces
+        //     `fof(f36373, axiom, (FORMULA), inference(...,[],[...])).`
+        // which our parser *does* understand, and the `--proof`
+        // CLI flag's SUO-KIF translation (`proof_kif`) depends on
+        // that parse succeeding.  Kept on unconditionally: proof-
+        // parsing is cheap and only happens when Vampire actually
+        // emitted an "SZS output start" block.
+        "-p".into(),                "tptp".into(),
         "-t".into(),                timeout_secs.into(),
+        // Preserve our `kb_<sid>` axiom names in the proof
+        // transcript's source annotation.  Vampire's default strips
+        // them (axiom tails become `file('/dev/stdin', unknown)`);
+        // with this option on the tails become
+        // `file('/dev/stdin', kb_42)`, letting the proof-display
+        // path map each axiom-role step back to its source sid in
+        // O(1) via `AxiomSourceIndex::lookup_by_sid` — much cheaper
+        // and more robust (survives CNF transforms and alpha-
+        // renaming) than the canonical-fingerprint fallback.
+        "--output_axiom_names".into(), "on".into(),
     ]
 }
 
@@ -113,6 +147,7 @@ impl ProverRunner for VampireRunner {
                 raw_output: format!("Failed to spawn vampire: {}", e),
                 bindings:   Vec::new(),
                 proof_kif:  Vec::new(),
+                proof_tptp: String::new(),
                 timings:    ProverTimings::default(),
             },
         };
@@ -134,6 +169,7 @@ impl ProverRunner for VampireRunner {
                 raw_output: format!("Failed to run vampire: {}", e),
                 bindings:   Vec::new(),
                 proof_kif:  Vec::new(),
+                proof_tptp: String::new(),
                 timings:    ProverTimings { prover_run, ..Default::default() },
             },
             Ok(out) => {
@@ -163,6 +199,23 @@ impl ProverRunner for VampireRunner {
                     Vec::new()
                 };
 
+                // Preserve the raw SZS proof section verbatim so the
+                // `--proof tptp` CLI path can emit Vampire's output
+                // without re-parsing.  Empty when no proof was found.
+                let proof_tptp = if has_proof {
+                    combined
+                        .find("SZS output start")
+                        .and_then(|s| combined[s..].find('\n').map(|nl| s + nl + 1))
+                        .and_then(|body_start| {
+                            combined[body_start..]
+                                .find("SZS output end")
+                                .map(|len| combined[body_start..body_start + len].to_string())
+                        })
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
                 let proof_kif = if has_proof {
                     // Build id->index map so we can resolve parent references.
                     let id_to_idx: HashMap<&str, usize> = parsed.proof_steps
@@ -170,7 +223,14 @@ impl ProverRunner for VampireRunner {
                         .enumerate()
                         .map(|(i, s)| (s.id.as_str(), i))
                         .collect();
-                    let triples: Vec<(String, String, Vec<usize>)> = parsed.proof_steps
+                    // Fourth tuple element is the axiom's `kb_<sid>`
+                    // source name when Vampire's source annotation
+                    // preserved it (only populated for axiom-role
+                    // steps whose origin traces back to an input
+                    // axiom we named via `assemble_tptp`).  See
+                    // `proof_steps_to_kif` for how it's consumed.
+                    let inputs: Vec<(String, String, Vec<usize>, Option<String>)> =
+                        parsed.proof_steps
                         .iter()
                         .map(|s| {
                             let premises = s.inference.as_deref()
@@ -181,17 +241,22 @@ impl ProverRunner for VampireRunner {
                                         .collect::<Vec<_>>()
                                 })
                                 .unwrap_or_default();
-                            (s.formula.clone(), s.role.clone(), premises)
+                            (
+                                s.formula.clone(),
+                                s.role.clone(),
+                                premises,
+                                s.source_name.clone(),
+                            )
                         })
                         .collect();
-                    crate::tptp::kif::proof_steps_to_kif(&triples)
+                    crate::tptp::kif::proof_steps_to_kif(&inputs)
                 } else {
                     Vec::new()
                 };
 
                 let output_parse = t_parse.elapsed();
                 ProverResult {
-                    status, raw_output: combined, bindings, proof_kif,
+                    status, raw_output: combined, bindings, proof_kif, proof_tptp,
                     timings: ProverTimings { prover_run, output_parse, ..Default::default() },
                 }
             }
@@ -261,6 +326,12 @@ pub(crate) struct ProofStep {
     pub role:      String,
     pub formula:   String,
     pub inference: Option<String>,
+    /// Original axiom name as preserved by Vampire's
+    /// `--output_axiom_names on` flag, e.g. `Some("kb_42")` when this
+    /// step descended from an input axiom named `kb_42`.  `None` for
+    /// derived steps (CNF transforms, resolution, etc.) and for older
+    /// Vampire builds that don't support the flag.
+    pub source_name: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -275,11 +346,23 @@ pub(crate) fn parse_vampire_output(input: &str) -> VampireOutput {
         if let Some(end_idx) = input.find("SZS output end") {
             let proof_section = &input[start_idx..end_idx];
             for cap in RE_FOF.captures_iter(proof_section) {
+                let inference_raw = cap[5].trim().to_string();
+                // Extract `kb_<sid>` from a Vampire source annotation
+                // like `file('/dev/stdin', kb_42)`.  Only matches when
+                // `--output_axiom_names on` is in effect AND the step
+                // actually traces back to an input axiom; derived
+                // `inference(…)` tails don't match and fall through to
+                // `None`, which the consumer handles by falling back
+                // to canonical-hash lookup.
+                let source_name = RE_AXIOM_NAME
+                    .captures(&inference_raw)
+                    .map(|c| c[1].to_string());
                 proof_steps.push(ProofStep {
                     id:        cap[2].to_string(),
                     role:      cap[3].to_string(),
                     formula:   cap[4].trim().replace('\n', " ").to_string(),
-                    inference: Some(cap[5].trim().to_string()),
+                    inference: Some(inference_raw),
+                    source_name,
                 });
             }
         }
@@ -605,5 +688,71 @@ mod args_tests {
         let is_idx = args.iter().position(|a| a == "--input_syntax")
             .expect("--input_syntax flag must be present");
         assert_eq!(args[is_idx + 1], "tptp");
+    }
+
+    #[test]
+    fn args_preserve_axiom_names() {
+        // Without this flag the proof transcript's axiom tails read
+        // `file('/dev/stdin', unknown)` and we lose the mapping from
+        // proof step back to input sid.  Must stay on.
+        let args = build_vampire_args("60");
+        let idx = args.iter().position(|a| a == "--output_axiom_names")
+            .expect("--output_axiom_names flag must be present");
+        assert_eq!(args[idx + 1], "on");
+    }
+}
+
+// -- Vampire output parsing tests --------------------------------------------
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    fn parse_block(body: &str) -> Vec<ProofStep> {
+        let input = format!(
+            "% SZS output start Proof\n{}\n% SZS output end Proof\n",
+            body,
+        );
+        parse_vampire_output(&input).proof_steps
+    }
+
+    #[test]
+    fn source_name_extracted_from_file_annotation() {
+        // `--output_axiom_names on` emits the axiom name as the second
+        // component of `file(..)`.  We want that captured into
+        // `ProofStep.source_name`.
+        let body = "\
+fof(f1,axiom,(
+  s__holds(s__foo__m,s__A)),
+  file('/dev/stdin',kb_42)).
+fof(f2,axiom,(
+  ~s__holds(s__foo__m,s__A)),
+  file('/dev/stdin',kb_99)).
+fof(f3,plain,(
+  $false),
+  inference(forward_subsumption_resolution,[],[f1,f2])).
+";
+        let steps = parse_block(body);
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].source_name.as_deref(), Some("kb_42"));
+        assert_eq!(steps[1].source_name.as_deref(), Some("kb_99"));
+        // Derived step — no source name.
+        assert_eq!(steps[2].source_name, None);
+    }
+
+    #[test]
+    fn source_name_none_when_vampire_strips_names() {
+        // Older Vampire builds, or invocations without
+        // `--output_axiom_names`, emit `file('/dev/stdin', unknown)`
+        // — must degrade to `None` and let the canonical-hash path
+        // take over downstream.
+        let body = "\
+fof(f1,axiom,(
+  s__holds(s__foo__m,s__A)),
+  file('/dev/stdin',unknown)).
+";
+        let steps = parse_block(body);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].source_name, None);
     }
 }
