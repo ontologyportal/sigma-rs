@@ -66,7 +66,11 @@ use sumo_kb::{
     TptpLang, TptpOptions, VampireRunner,
 };
 
-use crate::ask::{ask as native_ask, AskOptions};
+// `crate::ask` (the inline `native_ask` shim) is no longer used
+// from serve.rs — `handle_test` and `handle_ask` both go through
+// `sumo_sdk::TestOp` / `AskOp` now.  The shim is kept in
+// `crates/cli/src/ask.rs` as a re-exported public API + for the
+// `ask_parse_error` unit test in lib.rs; deleting it is a follow-up.
 use crate::cli::args::KbArgs;
 use crate::cli::debug::resolve_file_tag;
 use crate::cli::util::{collect_kif_files, parse_lang, read_kif_file, resolve_vampire_path};
@@ -738,18 +742,25 @@ fn handle_ask(
         "ask: session={:?} query-bytes={} timeout={}s",
         params.session, params.query.len(), params.timeout_secs);
 
-    // MVP sticks to the subprocess backend + FOF.
-    let runner = VampireRunner {
-        vampire_path,
-        timeout_secs: params.timeout_secs,
-        tptp_dump_path: None,
+    // Drive AskOp.  MVP sticks to the subprocess backend + FOF.
+    // `AskOp` handles backend selection, vampire-path threading,
+    // and result assembly; the JSON-RPC handler just builds the
+    // wire-shaped response.
+    let result = match sumo_sdk::AskOp::new(kb, &params.query)
+        .session(&*params.session)
+        .timeout_secs(params.timeout_secs)
+        .vampire_path(vampire_path)
+        .lang(sumo_kb::TptpLang::Fof)
+        .run()
+    {
+        Ok(r) => r,
+        Err(sumo_sdk::SdkError::VampireNotFound(msg)) => {
+            return err_response(INTERNAL_ERROR, format!("vampire not found: {}", msg));
+        }
+        Err(e) => {
+            return err_response(INTERNAL_ERROR, format!("ask failed: {}", e));
+        }
     };
-    let result = kb.ask(
-        &params.query,
-        Some(&params.session),
-        &runner,
-        sumo_kb::TptpLang::Fof,
-    );
 
     let status = match result.status {
         ProverStatus::Proved       => "Proved",
@@ -1022,7 +1033,16 @@ fn handle_test(
     let mut failed = 0usize;
     let mut results: Vec<TestCaseResult> = Vec::with_capacity(total);
 
-    for (idx, test_file) in test_files.iter().enumerate() {
+    let prover_backend = if params.backend == "embedded" {
+        #[cfg(feature = "integrated-prover")]
+        { sumo_sdk::ProverBackend::Embedded }
+        #[cfg(not(feature = "integrated-prover"))]
+        { sumo_sdk::ProverBackend::Subprocess }
+    } else {
+        sumo_sdk::ProverBackend::Subprocess
+    };
+
+    for test_file in &test_files {
         let file_display = test_file.display().to_string();
         let content = match std::fs::read_to_string(test_file) {
             Ok(c)  => c,
@@ -1060,137 +1080,162 @@ fn handle_test(
                 continue;
             }
         };
-
-        let session = format!("test-{}", idx);
-        let axiom_text = test_case.axioms.join("\n");
-        let load_tag = format!("test-src-{}", idx);
-        let load_result = kb.load_kif(&axiom_text, &load_tag, Some(&session));
-        if !load_result.ok {
-            let errs: Vec<String> = load_result.errors.iter().map(|e| e.to_string()).collect();
-            kb.flush_session(&session);
-            results.push(TestCaseResult {
-                file:             file_display.clone(),
-                note:             test_case.note.clone(),
-                outcome:          "Error".into(),
-                expected_proof:   test_case.expected_proof.unwrap_or(true),
-                actual_proved:    false,
-                expected_answers: test_case.expected_answer.clone(),
-                found_answers:    Vec::new(),
-                missing_answers:  Vec::new(),
-                error:            Some(format!("axiom parse error(s): {}", errs.join("; "))),
-            });
-            failed += 1;
-            continue;
-        }
-
-        let semantic_errors = kb.validate_session(&session);
-        if !semantic_errors.is_empty() {
-            let errs: Vec<String> = semantic_errors.iter().map(|(_, e)| e.to_string()).collect();
-            kb.flush_session(&session);
-            results.push(TestCaseResult {
-                file:             file_display.clone(),
-                note:             test_case.note.clone(),
-                outcome:          "Error".into(),
-                expected_proof:   test_case.expected_proof.unwrap_or(true),
-                actual_proved:    false,
-                expected_answers: test_case.expected_answer.clone(),
-                found_answers:    Vec::new(),
-                missing_answers:  Vec::new(),
-                error:            Some(format!("semantic error(s): {}", errs.join("; "))),
-            });
-            failed += 1;
-            continue;
-        }
-
         if let Some(t) = params.timeout_secs {
             test_case.timeout = t;
         }
-
-        let Some(query) = test_case.query.clone() else {
-            kb.flush_session(&session);
-            results.push(TestCaseResult {
-                file:             file_display.clone(),
-                note:             test_case.note.clone(),
-                outcome:          "Error".into(),
-                expected_proof:   test_case.expected_proof.unwrap_or(true),
-                actual_proved:    false,
-                expected_answers: test_case.expected_answer.clone(),
-                found_answers:    Vec::new(),
-                missing_answers:  Vec::new(),
-                error:            Some("test file has no (query …) form".into()),
-            });
-            failed += 1;
-            continue;
-        };
-
-        let ask_result = native_ask(kb, &query, AskOptions {
-            vampire_path:   resolved_vampire.clone(),
-            timeout_secs:   Some(test_case.timeout),
-            tptp_dump_path: None,
-            session:        Some(session.clone()),
-            backend:        params.backend.clone(),
-            lang,
-        });
-        kb.flush_session(&session);
-
         let expected = test_case.expected_proof.unwrap_or(true);
-        let found_answers: Vec<String> = ask_result.inference.iter().map(|b| b.value.clone()).collect();
+        let expected_answers = test_case.expected_answer.clone();
+        let note = test_case.note.clone();
 
-        if !ask_result.errors.is_empty() {
-            results.push(TestCaseResult {
-                file:             file_display.clone(),
-                note:             test_case.note.clone(),
-                outcome:          "Error".into(),
-                expected_proof:   expected,
-                actual_proved:    ask_result.proved,
-                expected_answers: test_case.expected_answer.clone(),
-                found_answers,
-                missing_answers:  Vec::new(),
-                error:            Some(ask_result.errors.join("; ")),
-            });
-            failed += 1;
-            continue;
-        }
+        // Drive TestOp for this single case.  Per-case session
+        // management, axiom load, validation, prover invocation, and
+        // post-run flush all happen inside TestOp::run().  We
+        // translate `TestOutcome` back into the wire-shaped
+        // `TestCaseResult` the JSON-RPC client expects.
+        let mut op = sumo_sdk::TestOp::new(kb)
+            .add_case(file_display.clone(), test_case)
+            .backend(prover_backend)
+            .lang(lang);
+        if let Some(p) = resolved_vampire.clone() { op = op.vampire_path(p); }
 
-        if ask_result.proved != expected {
-            results.push(TestCaseResult {
-                file:             file_display.clone(),
-                note:             test_case.note.clone(),
-                outcome:          "Failed".into(),
-                expected_proof:   expected,
-                actual_proved:    ask_result.proved,
-                expected_answers: test_case.expected_answer.clone(),
-                found_answers,
-                missing_answers:  Vec::new(),
-                error:            None,
-            });
-            failed += 1;
-            continue;
-        }
-
-        // Verdict matches.  Check the answer set if the test
-        // specified one.
-        let missing: Vec<String> = match &test_case.expected_answer {
-            Some(expected_answers) => expected_answers.iter()
-                .filter(|e| !found_answers.iter().any(|f| f == *e))
-                .cloned()
-                .collect(),
-            None => Vec::new(),
+        let suite = match op.run() {
+            Ok(s) => s,
+            Err(e) => {
+                results.push(TestCaseResult {
+                    file:             file_display.clone(),
+                    note:             note.clone(),
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers: expected_answers.clone(),
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some(format!("test op: {}", e)),
+                });
+                failed += 1;
+                continue;
+            }
+        };
+        let case = match suite.cases.into_iter().next() {
+            Some(c) => c,
+            None => {
+                // TestOp returned an empty suite — internal error.
+                results.push(TestCaseResult {
+                    file:             file_display.clone(),
+                    note:             note.clone(),
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers: expected_answers.clone(),
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some("TestOp returned an empty case list".into()),
+                });
+                failed += 1;
+                continue;
+            }
         };
 
-        let outcome = if missing.is_empty() { "Passed" } else { "Incomplete" };
-        if missing.is_empty() { passed += 1; } else { failed += 1; }
-        results.push(TestCaseResult {
-            file:             file_display,
-            note:             test_case.note,
-            outcome:          outcome.into(),
-            expected_proof:   expected,
-            actual_proved:    ask_result.proved,
-            expected_answers: test_case.expected_answer,
-            found_answers,
-            missing_answers:  missing,
-            error:            None,
-        });
+        match case.outcome {
+            sumo_sdk::TestOutcome::Passed => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Passed".into(),
+                    expected_proof:   expected,
+                    actual_proved:    expected,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            None,
+                });
+                passed += 1;
+            }
+            sumo_sdk::TestOutcome::Failed { expected: e, got } => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Failed".into(),
+                    expected_proof:   e,
+                    actual_proved:    got,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            None,
+                });
+                failed += 1;
+            }
+            sumo_sdk::TestOutcome::Incomplete { inferred, missing } => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Incomplete".into(),
+                    expected_proof:   expected,
+                    actual_proved:    expected,
+                    expected_answers,
+                    found_answers:    inferred,
+                    missing_answers:  missing,
+                    error:            None,
+                });
+                failed += 1;
+            }
+            sumo_sdk::TestOutcome::ParseError(msg) => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some(format!("axiom parse error(s): {}", msg)),
+                });
+                failed += 1;
+            }
+            sumo_sdk::TestOutcome::SemanticError(msg) => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some(format!("semantic error(s): {}", msg)),
+                });
+                failed += 1;
+            }
+            sumo_sdk::TestOutcome::ProverError(msg) => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some(msg),
+                });
+                failed += 1;
+            }
+            sumo_sdk::TestOutcome::NoQuery => {
+                results.push(TestCaseResult {
+                    file:             file_display,
+                    note,
+                    outcome:          "Error".into(),
+                    expected_proof:   expected,
+                    actual_proved:    false,
+                    expected_answers,
+                    found_answers:    Vec::new(),
+                    missing_answers:  Vec::new(),
+                    error:            Some("test file has no (query …) form".into()),
+                });
+                failed += 1;
+            }
+        }
     }
 
     ok_response(TestResponse { total, passed, failed, results })

@@ -1,5 +1,5 @@
 [workspace]
-members  = ["crates/sumo-kb", "crates/wasm", "crates/cli", "crates/sumo-lsp"]
+members  = ["crates/sumo-kb", "crates/sumo-sdk", "crates/wasm", "crates/cli", "crates/sumo-lsp"]
 resolver = "2"
 
 [workspace.package]
@@ -10,9 +10,21 @@ license     = "GPL-3.0"
 
 [workspace.dependencies]
 sumo-kb           = { path = "crates/sumo-kb" }
+sumo-sdk          = { path = "crates/sumo-sdk" }
 sigmakee          = { path = "crates/cli" }
 serde             = { version = "1", features = ["derive"] }
 serde_json        = "1"
 thiserror         = "2"
 inline_colorization        = "0.1.6"
 log                        = "0.4"
+
+# Per-package release profile overrides.  Cargo only honours
+# `[profile.*]` sections at the workspace root; nested members get
+# silently ignored (and warn).  These overrides used to live in
+# `crates/wasm/Cargo.toml` — moved here to silence the warning while
+# preserving the binary-size optimisations the wasm build needs.
+[profile.release.package.sumo-parser-wasm]
+opt-level = "z"   # minimise WASM binary size
+# `lto` is not configurable per-package; if you want LTO on the wasm
+# build only, build it with `cargo build -p sumo-parser-wasm --release`
+# from a workspace where the root profile already enables it.

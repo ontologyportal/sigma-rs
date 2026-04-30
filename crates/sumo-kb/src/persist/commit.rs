@@ -35,11 +35,10 @@ pub(crate) fn write_axioms(
     session: Option<&str>,
 ) -> Result<(), KbError> {
     if sids.is_empty() { return Ok(()); }
-    log::info!(target: "sumo_kb::persist",
-        "write_axioms: {} sentence(s), session={:?}", sids.len(), session);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("write_axioms: {} sentence(s), session={:?}", sids.len(), session) });
 
     let mut wtxn = env.write_txn()?;
-    log::debug!(target: "sumo_kb::persist", "write txn opened");
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("write txn opened") });
 
     // -- 1. Intern all symbols from `store` (write only new ones) -------------
     for sym in &store.symbol_data {
@@ -51,8 +50,7 @@ pub(crate) fn write_axioms(
             skolem_arity: sym.skolem_arity,
         })?;
     }
-    log::debug!(target: "sumo_kb::persist",
-        "write_axioms: interned {} symbols", store.symbol_data.len());
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("write_axioms: interned {} symbols", store.symbol_data.len()) });
 
     // -- 2. Write each sentence ------------------------------------------------
     for &sid in sids {
@@ -66,8 +64,7 @@ pub(crate) fn write_axioms(
     //       Done in the same txn as the sentence writes so the counter
     //       and the axiom set move together atomically.
     let new_kb_version = env.bump_kb_version(&mut wtxn)?;
-    log::debug!(target: "sumo_kb::persist",
-        "write_axioms: kb_version bumped to {}", new_kb_version);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("write_axioms: kb_version bumped to {}", new_kb_version) });
 
     // -- 4. Stamp the feature manifest with the current build's features.
     //       Written unconditionally so the next open can detect any drift
@@ -83,9 +80,7 @@ pub(crate) fn write_axioms(
 
     // -- 5. Commit -------------------------------------------------------------
     wtxn.commit()?;
-    log::info!(target: "sumo_kb::persist",
-        "write_axioms: committed {} sentence(s), kb_version={}, features={:?}",
-        sids.len(), new_kb_version, manifest.features);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("write_axioms: committed {} sentence(s), kb_version={}, features={:?}", sids.len(), new_kb_version, manifest.features) });
     Ok(())
 }
 
@@ -167,8 +162,7 @@ fn write_sentence(
         env.append_session(wtxn, s, sid)?;
     }
 
-    log::debug!(target: "sumo_kb::persist",
-        "write_sentence: sid={} written", sid);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("write_sentence: sid={} written", sid) });
     Ok(())
 }
 
@@ -259,16 +253,9 @@ pub(crate) fn persist_taxonomy_cache(
     };
     env.put_cache(&mut wtxn, CACHE_KEY_TAXONOMY, &blob)?;
     wtxn.commit()?;
-    log::info!(target: "sumo_kb::persist",
-        "taxonomy cache persisted: {} edges, {} numeric classes, \
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("taxonomy cache persisted: {} edges, {} numeric classes, \
          {} numeric ancestors, {} poly variants, {} numeric chars, \
-         kb_version={}",
-        blob.tax_edges.len(),
-        blob.numeric_sort_cache.len(),
-        blob.numeric_ancestor_set.len(),
-        blob.poly_variant_symbols.len(),
-        blob.numeric_char_cache.len(),
-        version);
+         kb_version={}", blob.tax_edges.len(), blob.numeric_sort_cache.len(), blob.numeric_ancestor_set.len(), blob.poly_variant_symbols.len(), blob.numeric_char_cache.len(), version) });
     Ok(())
 }
 
@@ -288,9 +275,7 @@ pub(crate) fn persist_sort_annotations_cache(
     };
     env.put_cache(&mut wtxn, CACHE_KEY_SORT_ANNOT, &blob)?;
     wtxn.commit()?;
-    log::info!(target: "sumo_kb::persist",
-        "sort_annotations cache persisted: {} arg-sort entries, kb_version={}",
-        blob.sorts.symbol_arg_sorts.len(), version);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("sort_annotations cache persisted: {} arg-sort entries, kb_version={}", blob.sorts.symbol_arg_sorts.len(), version) });
     Ok(())
 }
 
@@ -344,8 +329,7 @@ pub(crate) fn backfill_cnf_tables(
 
     let axiom_sids: Vec<SentenceId> = layer.store.roots.clone();
 
-    log::info!(target: "sumo_kb::persist",
-        "cnf backfill: starting for {} axioms", axiom_sids.len());
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("cnf backfill: starting for {} axioms", axiom_sids.len()) });
     let t0 = std::time::Instant::now();
 
     let mut wtxn = env.write_txn()?;
@@ -366,8 +350,7 @@ pub(crate) fn backfill_cnf_tables(
         let clauses = match crate::cnf::sentence_to_clauses(layer, sid) {
             Ok(cs) => cs,
             Err(e) => {
-                log::warn!(target: "sumo_kb::persist",
-                    "cnf backfill: sid={} clausify failed: {}; skipping", sid, e);
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::persist", message: format!("cnf backfill: sid={} clausify failed: {}; skipping", sid, e) });
                 clausify_failures += 1;
                 continue;
             }
@@ -401,13 +384,7 @@ pub(crate) fn backfill_cnf_tables(
 
     wtxn.commit()?;
 
-    log::info!(target: "sumo_kb::persist",
-        "cnf backfill: done in {:?} -- {} axioms, {} clauses interned, {} formula hashes ({} clausify failures)",
-        t0.elapsed(),
-        report.axioms_processed,
-        report.clauses_interned,
-        report.formula_hashes,
-        clausify_failures);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("cnf backfill: done in {:?} -- {} axioms, {} clauses interned, {} formula hashes ({} clausify failures)", t0.elapsed(), report.axioms_processed, report.clauses_interned, report.formula_hashes, clausify_failures) });
 
     Ok(report)
 }
@@ -438,10 +415,7 @@ pub(crate) fn persist_axiom_cache(
     let key = if mode_tff { CACHE_KEY_AXIOM_CACHE_TFF } else { CACHE_KEY_AXIOM_CACHE_FOF };
     env.put_cache(&mut wtxn, key, &blob)?;
     wtxn.commit()?;
-    log::info!(target: "sumo_kb::persist",
-        "axiom cache persisted ({}): {} axioms bincoded, kb_version={}",
-        if mode_tff { "TFF" } else { "FOF" },
-        sid_map.len(), version);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("axiom cache persisted ({}): {} axioms bincoded, kb_version={}", if mode_tff { "TFF" } else { "FOF" }, sid_map.len(), version) });
     Ok(())
 }
 

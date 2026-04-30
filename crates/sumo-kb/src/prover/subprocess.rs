@@ -118,20 +118,17 @@ impl ProverRunner for VampireRunner {
         // Optionally dump TPTP to a file for inspection.
         if let Some(path) = &self.tptp_dump_path {
             if let Err(e) = write_file(path, tptp) {
-                log::warn!(target: "sumo_kb::prover",
-                    "failed to write TPTP dump to {}: {}", path.display(), e);
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::prover", message: format!("failed to write TPTP dump to {}: {}", path.display(), e) });
             } else {
-                log::info!(target: "sumo_kb::prover",
-                    "wrote TPTP dump: {}", path.display());
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::prover", message: format!("wrote TPTP dump: {}", path.display()) });
             }
         }
 
         let timeout = self.timeout_secs.to_string();
         let args    = build_vampire_args(&timeout);
 
-        log::debug!(target: "sumo_kb::prover",
-            "vampire: {} {} /dev/stdin", self.vampire_path.display(), args.join(" "));
-        log::info!(target: "sumo_kb::prover", "starting vampire prover");
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::prover", message: format!("vampire: {} {} /dev/stdin", self.vampire_path.display(), args.join(" ")) });
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::prover", message: format!("starting vampire prover") });
 
         let mut child = match Command::new(&self.vampire_path)
             .args(&args)
@@ -155,7 +152,7 @@ impl ProverRunner for VampireRunner {
         // Write TPTP to Vampire's stdin then close it so Vampire sees EOF.
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(tptp.as_bytes()) {
-                log::warn!(target: "sumo_kb::prover", "failed to write to vampire stdin: {}", e);
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::prover", message: format!("failed to write to vampire stdin: {}", e) });
             }
         }
 
@@ -179,7 +176,7 @@ impl ProverRunner for VampireRunner {
                 let combined = format!("{}{}", stdout, stderr);
 
                 let status = determine_status(&combined, &opts.mode);
-                log::info!(target: "sumo_kb::prover", "vampire result: {:?}", status_label(&status));
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::prover", message: format!("vampire result: {:?}", status_label(&status)) });
 
                 // Only extract bindings when Vampire proved the conjecture via
                 // a genuine refutation (SZS Theorem).  ContradictoryAxioms /

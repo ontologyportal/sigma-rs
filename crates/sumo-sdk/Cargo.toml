@@ -1,0 +1,49 @@
+[package]
+name    = "sumo-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Programmatic Rust API over sumo-kb: load, validate, translate, ask, test."
+keywords    = ["sumo", "ontology", "kif", "tptp", "vampire"]
+categories  = ["api-bindings", "data-structures"]
+readme      = "README.md"
+
+[lib]
+name = "sumo_sdk"
+path = "src/lib.rs"
+
+# docs.rs builds with `--all-features` so every gated module shows up
+# (AskOp, TestOp, LoadOp).  `integrated-prover` requires CMake + the
+# vampire-sys submodule, which docs.rs can't build, so we stop short
+# of `all-features` and instead pick the rich-but-buildable set.
+[package.metadata.docs.rs]
+features          = ["persist", "ask", "parallel"]
+all-features      = false
+rustdoc-args      = ["--cfg", "docsrs"]
+default-target    = "x86_64-unknown-linux-gnu"
+
+[features]
+# Default mirrors sumo-kb's "everything-on, no C++" sweet spot — the
+# SDK is most useful when ask/test work, but we don't force CMake on
+# casual consumers.  Equivalent to `sumo-kb` without `integrated-prover`.
+default            = ["persist", "ask", "parallel"]
+
+# 1:1 forwards to the matching sumo-kb feature.  The SDK never gates
+# differently from sumo-kb; downstream consumers enable here and we
+# pass it through.  Activating any of these may change the public
+# API surface (e.g. `ask` adds AskOp / TestOp).
+persist            = ["sumo-kb/persist"]
+ask                = ["sumo-kb/ask"]
+integrated-prover  = ["ask", "sumo-kb/integrated-prover"]
+parallel           = ["sumo-kb/parallel", "dep:rayon"]
+
+[dependencies]
+sumo-kb            = { workspace = true }
+log.workspace      = true
+thiserror.workspace = true
+rayon              = { version = "1.10", optional = true }
+
+[dev-dependencies]
+tempfile  = "3"
+env_logger = "0.11"

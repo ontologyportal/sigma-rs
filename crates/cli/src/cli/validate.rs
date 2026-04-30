@@ -1,9 +1,10 @@
 use log;
 use sumo_kb::{KbError, KnowledgeBase};
+use sumo_sdk::ValidateOp;
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb, read_stdin, source_tag};
-use crate::{parse_error, semantic_error};
+use crate::{parse_error, semantic_error, semantic_warning};
 
 /// Entry point for `sumo validate`.
 ///
@@ -57,61 +58,71 @@ pub fn validate_single_formula(
 ) -> bool {
     log::debug!("validate_single_formula: parse_only={}, no_kb_check={}", parse_only, no_kb_check);
 
-    // If not skipping KB validation, validate the already-loaded KB sentences first.
-    if !parse_only && !no_kb_check {
-        let failures = kb.validate_all();
-        for (_, e) in &failures {
-            semantic_error!(e, kb);
+    let mut op = ValidateOp::formula(&mut kb, tag, text);
+    op = op.parse_only(parse_only).skip_kb_check(no_kb_check);
+    let report = match op.run() {
+        Ok(r)  => r,
+        Err(e) => {
+            log::error!("validate: {}", e);
+            return false;
         }
-    }
+    };
 
-    let result = kb.load_kif(text, tag, Some(tag));
-    if !result.ok {
-        for e in &result.errors { 
+    // Surface parse errors with the colourised macro that knows
+    // about the source text in scope.  The SDK's report is plain
+    // KbError values; we restore the rich rendering here.
+    if !report.parse_errors.is_empty() {
+        for e in &report.parse_errors {
             match e {
                 KbError::Parse(p) => parse_error!(p.get_span(), p, text),
-                _ => log::error!("{}: {}", "Inline Query: ", e) 
+                _ => log::error!("{}: {}", "Inline Query: ", e),
             }
         }
         return false;
     }
 
-    // Parse-only: stop here -- syntax is valid.
+    // Render findings (the KB-pre-pass plus the inline-formula pass
+    // both show up here).  Errors fail the run; warnings don't.
+    for (_, e) in &report.semantic_errors   { semantic_error!(e, kb); }
+    for (_, e) in &report.semantic_warnings { semantic_warning!(e, kb); }
+
     if parse_only {
         println!("Parse check passed: OK");
         return true;
     }
 
-    let sids = kb.session_sids(tag);
-    if sids.is_empty() {
-        log::error!("no sentences were parsed from input");
+    if !report.is_clean() {
         return false;
     }
 
-    let mut ok = true;
-    for sid in sids {
-        if let Err(e) = kb.validate_sentence(sid) {
-            semantic_error!(&e, kb);
-            ok = false;
-        }
+    if report.inspected == 0 && !report.parse_errors.is_empty() {
+        log::error!("no sentences were parsed from input");
+        return false;
     }
-    ok
+    true
 }
 
 // -- Validate all formulas in the KB ------------------------------------------
 
 pub fn validate_all_roots(kb: &KnowledgeBase) -> bool {
-    let failures = kb.validate_all();
+    // ValidateOp's whole-KB pass calls validate_all_findings under
+    // the hood; we render via the classified macros.  `&KnowledgeBase`
+    // is read-only here but ValidateOp wants &mut for its formula
+    // path; we hand-roll the rendering instead to avoid a redundant
+    // mutable borrow.
+    let findings = kb.validate_all_findings();
 
-    for (_, e) in &failures {
-        semantic_error!(e, kb);
-    }
+    for (_, e) in &findings.errors   { semantic_error!(e, kb); }
+    for (_, e) in &findings.warnings { semantic_warning!(e, kb); }
 
-    if failures.is_empty() {
+    if findings.is_clean() {
         println!("All formulas validated: OK");
         true
     } else {
-        log::warn!("{} validation error(s)", failures.len());
+        log::warn!(
+            "{} validation error(s), {} warning(s)",
+            findings.errors.len(), findings.warnings.len(),
+        );
         false
     }
 }

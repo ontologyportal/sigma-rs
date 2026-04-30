@@ -85,18 +85,14 @@ pub fn extract_bindings(proof: &Proof, qvm: &QueryVarMap) -> Vec<ProofBinding> {
         .iter()
         .map(|&i| format!("X{}", i))
         .collect();
-    log::debug!(target: "sumo_kb::bindings",
-        "extract_bindings: {} steps, target_vars={:?}, idx_to_kif={:?}",
-        steps.len(), target_vars, qvm.idx_to_kif);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::bindings", message: format!("extract_bindings: {} steps, target_vars={:?}, idx_to_kif={:?}", steps.len(), target_vars, qvm.idx_to_kif) });
     for (i, (f, rule, prems)) in steps.iter().enumerate() {
-        log::trace!(target: "sumo_kb::bindings",
-            "  step {}: rule={:?} prems={:?} conclusion={:?}", i, rule, prems, f);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::bindings", message: format!("  step {}: rule={:?} prems={:?} conclusion={:?}", i, rule, prems, f) });
     }
 
     // Identify the conjecture-input step.
     let Some(neg_conj_idx) = find_negated_conjecture(&steps) else {
-        log::debug!(target: "sumo_kb::bindings",
-            "no conjecture-like step in proof; cannot extract bindings");
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::bindings", message: format!("no conjecture-like step in proof; cannot extract bindings") });
         return Vec::new();
     };
 
@@ -342,8 +338,7 @@ impl AliasTracker {
         // Stable ordering by variable name, so the binding list is
         // deterministic regardless of HashMap iteration order.
         out.sort_by(|a, b| a.variable.cmp(&b.variable));
-        log::debug!(target: "sumo_kb::bindings",
-            "finalise: extracted {} binding(s)", out.len());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::bindings", message: format!("finalise: extracted {} binding(s)", out.len()) });
         out
     }
 }

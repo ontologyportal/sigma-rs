@@ -2,6 +2,7 @@ use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
 use sumo_kb::{KbError, KnowledgeBase, Span, TptpLang};
+use sumo_sdk::{IngestOp, LoadOp, SdkError};
 
 use crate::cli::args::KbArgs;
 // `expand_tilde` lives in `crate::config`; imported here so CLI
@@ -37,13 +38,25 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
     open_or_build_kb_profiled(args, None)
 }
 
-/// Like [`open_or_build_kb`], but installs the given profiler onto
-/// the KB *before* the file-ingest and promote passes so those
-/// phases are captured in the profile report.  Pass `None` to get
-/// the un-profiled behaviour (identical to [`open_or_build_kb`]).
+/// Like [`open_or_build_kb`], but installs the given progress sink
+/// onto the KB *before* the file-ingest and promote passes so those
+/// phases are captured.  Pass `None` to get the un-profiled
+/// behaviour (identical to [`open_or_build_kb`]).
+///
+/// File-loading orchestration is delegated to [`sumo_sdk::IngestOp`].
+/// The CLI keeps two concerns it owns:
+///
+/// 1. **Parallel pre-read** of disk files (via rayon) before handing
+///    text-only sources to `IngestOp::add_sources`.  IngestOp's own
+///    `add_file` path reads serially; pre-reading in parallel keeps
+///    the bootstrap-load wall-clock tight on multi-file workspaces.
+/// 2. **`parse_error!`-flavoured error rendering** — the SDK returns
+///    a plain `SdkError::Kb(KbError::Parse(...))`, which we translate
+///    back into the colourised macro using the source text we
+///    already have in hand.
 pub fn open_or_build_kb_profiled(
     args: &KbArgs,
-    profiler: Option<std::sync::Arc<sumo_kb::Profiler>>,
+    sink: Option<sumo_kb::DynSink>,
 ) -> Result<KnowledgeBase, ()> {
     let has_files = !args.files.is_empty() || !args.dirs.is_empty();
 
@@ -66,117 +79,94 @@ pub fn open_or_build_kb_profiled(
         KnowledgeBase::new()
     };
 
-    // Install the profiler BEFORE any ingest/promote so every phase
-    // goes through instrumented code paths.
-    if let Some(p) = profiler {
-        kb.set_profiler(p);
+    // Install the progress sink BEFORE any ingest so every phase
+    // event flows through it from the very first instrumented call.
+    if let Some(s) = sink {
+        kb.set_progress_sink(s);
     }
 
     if has_files {
-        let all_files = collect_kif_files(args)?;
-        const BASE: &str = sumo_kb::session_tags::SESSION_FILES;
-
-        // Phase 1: read every file's contents.  I/O is independent
-        // per file and embarrassingly parallel when the `parallel`
-        // feature is on — hides disk latency across the batch.
-        // Each element of `loaded` is `(path, text)` preserving the
-        // input order from `all_files`.
-        //
-        // read_kif_file returns `Result<String, ()>`; we short-circuit
-        // on the first failure after the parallel phase completes.
-        //
-        // Instrumented against the KB's profiler (if installed) under
-        // `load.read_files` so the fine-grained `--profile` report
-        // attributes the wall-clock to this phase.
-        let _t_read = std::time::Instant::now();
-        #[cfg(feature = "parallel")]
-        let loaded: Vec<(PathBuf, Result<String, ()>)> = {
-            use rayon::prelude::*;
-            all_files.par_iter().map(|path| {
-                (path.clone(), read_kif_file(path))
-            }).collect()
-        };
-        #[cfg(not(feature = "parallel"))]
-        let loaded: Vec<(PathBuf, Result<String, ()>)> =
-            all_files.iter().map(|path| {
-                (path.clone(), read_kif_file(path))
-            }).collect();
-        if let Some(p) = kb.profiler() {
-            p.record("load.read_files", _t_read.elapsed());
-        }
-
-        // Phase 2: ingest each file serially.
-        //
-        // For every file we handle two cases:
-        //   (a) The file tag is already present in `kb.file_roots()`
-        //       because the DB was opened and it rehydrated sentences
-        //       under that tag.  We diff the on-disk content against
-        //       those sentences and apply the delta in-memory via
-        //       `reconcile_file` — this is the "DB stale / disk
-        //       fresh" case the user's reconcile design targets.
-        //       The `ask` feature gate is required for reconcile
-        //       (SInE maintenance lives behind it); builds without
-        //       `ask` fall back to the classic load path and accept
-        //       that stale DB axioms are visible.
-        //   (b) The file tag is unknown to the KB — this is a fresh
-        //       `-f` file.  Use the classic `load_kif` pipeline and
-        //       let the trailing `make_session_axiomatic(BASE)`
-        //       promote it to axiom status.
-        //
-        // Reconcile output is intentionally quiet here.  Only
-        // `sumo load` promotes these deltas to the DB and surfaces
-        // per-file add/remove/retain counts at info level.
-        for (path, text_result) in loaded {
-            let text = match text_result {
-                Ok(t) => t,
-                Err(()) => return Err(()),  // read_kif_file already logged
-            };
-            let tag = path.display().to_string();
-
-            // DB-rehydrated files take the reconcile path; fresh
-            // `-f` files (no existing entry in `file_roots`) fall
-            // through to the classic `load_kif` loader below.
-            // `reconcile_file` is now available in every feature
-            // combo (previously `ask`-gated via SInE).
-            if !kb.file_roots(&tag).is_empty() {
-                let report = kb.reconcile_file(&tag, &text);
-                if !report.parse_errors.is_empty() {
-                    for e in &report.parse_errors {
-                        log::error!("{}: {}", path.display(), e);
-                    }
-                    return Err(());
-                }
-                // Smart-revalidation findings surface at debug level
-                // so `-v` (info) stays focused on higher-level
-                // progress.  Each entry is a hard semantic error —
-                // either naturally severe or promoted via
-                // `-W` / `-Wall`.  Read-only commands (`ask`,
-                // `validate`, `translate`, …) surface them but keep
-                // going; only `sumo load` treats them as abort
-                // triggers (see `cli::load`).
-                for e in &report.semantic_errors {
-                    log::debug!(target: "sumo_kb::reconcile",
-                        "{}: {}", tag, e);
-                }
-                continue;
-            }
-
-            let result = kb.load_kif(&text, &tag, Some(BASE));
-            if !result.ok {
-                for e in &result.errors {
-                    match e {
-                        KbError::Parse(p) => parse_error!(p.get_span(), p, text),
-                        _ => log::error!("{}: {}", path.display(), e)
-                    }
-                }
-                return Err(());
-            }
-        }
-        kb.make_session_axiomatic(BASE);
-        log::info!("open_or_build_kb: loaded {} file(s) as in-memory axioms", all_files.len());
+        let loaded = read_files_parallel(args)?;
+        ingest_via_sdk(&mut kb, loaded)?;
     }
 
     Ok(kb)
+}
+
+/// Phase 1: parallel-read all `-f` / `-d` files (rayon when on,
+/// serial otherwise).  Returns `(tag, text)` pairs in input order.
+/// Read failures abort the whole load — matches the legacy
+/// behaviour and gives the user a single "first bad file" message
+/// rather than N races.
+fn read_files_parallel(args: &KbArgs) -> Result<Vec<(String, String)>, ()> {
+    let all_files = collect_kif_files(args)?;
+    if all_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    #[cfg(feature = "parallel")]
+    let raw: Vec<(PathBuf, Result<String, ()>)> = {
+        use rayon::prelude::*;
+        all_files.par_iter().map(|path| {
+            (path.clone(), read_kif_file(path))
+        }).collect()
+    };
+    #[cfg(not(feature = "parallel"))]
+    let raw: Vec<(PathBuf, Result<String, ()>)> =
+        all_files.iter().map(|path| {
+            (path.clone(), read_kif_file(path))
+        }).collect();
+
+    let mut out: Vec<(String, String)> = Vec::with_capacity(raw.len());
+    for (path, text_result) in raw {
+        let text = text_result?;            // read_kif_file already logged
+        out.push((path.display().to_string(), text));
+    }
+    Ok(out)
+}
+
+/// Phase 2: drive `IngestOp` over the pre-read sources.  On a
+/// parse-flavoured failure we re-render via `parse_error!` using
+/// the file's text (which we still hold in `loaded`); other SDK
+/// errors get the plain `log::error!` treatment.
+fn ingest_via_sdk(
+    kb:     &mut KnowledgeBase,
+    loaded: Vec<(String, String)>,
+) -> Result<(), ()> {
+    let count = loaded.len();
+    // Keep a copy of the text per tag so `parse_error!` can find
+    // the offending source line when the SDK aborts.
+    let by_tag: std::collections::HashMap<String, String> = loaded
+        .iter()
+        .map(|(t, s)| (t.clone(), s.clone()))
+        .collect();
+
+    let result = IngestOp::new(kb).add_sources(loaded).run();
+    match result {
+        Ok(_report) => {
+            log::info!("loaded {} file(s) as in-memory axioms", count);
+            Ok(())
+        }
+        Err(SdkError::Kb(KbError::Parse(p))) => {
+            // The span carries the file tag; look up the source
+            // text we read in phase 1 to render with context.
+            let span = p.get_span();
+            if let Some(text) = by_tag.get(&span.file) {
+                parse_error!(span, p, text);
+            } else {
+                parse_error!(span, p);
+            }
+            Err(())
+        }
+        Err(SdkError::Kb(e)) => {
+            log::error!("ingest failed: {}", e);
+            Err(())
+        }
+        Err(e) => {
+            log::error!("ingest failed: {}", e);
+            Err(())
+        }
+    }
 }
 
 // -- KIF file loading ----------------------------------------------------------
@@ -186,29 +176,14 @@ pub fn open_or_build_kb_profiled(
 ///
 /// All loaded sentences are immediately promoted to axioms so that a
 /// subsequent [`KnowledgeBase::ask`] call includes them in the TPTP problem.
+///
+/// Now a thin wrapper over [`sumo_sdk::IngestOp`] — the previous
+/// hand-rolled loop has been folded into the same SDK code path
+/// `open_or_build_kb_profiled` uses.
 pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
-    let all_files = collect_kif_files(args)?;
     let mut kb = KnowledgeBase::new();
-    const BASE: &str = sumo_kb::session_tags::SESSION_BASE;
-    for path in &all_files {
-        let text = read_kif_file(path)?;
-        let tag = path.display().to_string();
-        let result = kb.load_kif(&text, &tag, Some(BASE));
-        if !result.ok {
-            for e in &result.errors {
-                match e {
-                    KbError::Parse(p) => parse_error!(p.get_span(), p, text),
-                    _ => log::error!("{}: {}", path.display(), e) 
-                }
-            }
-            return Err(());
-        }
-    }
-    kb.make_session_axiomatic(BASE);
-    log::info!(
-        "build_kb_from_files: loaded {} file(s) as axioms",
-        all_files.len()
-    );
+    let loaded = read_files_parallel(args)?;
+    ingest_via_sdk(&mut kb, loaded)?;
     Ok(kb)
 }
 
@@ -216,41 +191,55 @@ pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 ///
 /// Returns the `KnowledgeBase` (still open against the LMDB) so the caller
 /// can run further operations (validation, translation) in the same session.
+///
+/// Delegates to [`sumo_sdk::LoadOp`] for the reconcile + persist
+/// pipeline.  `parse_error!`-flavoured rendering is preserved by
+/// pre-reading each file and threading the text into the error
+/// translation if `LoadOp::run` aborts on a parse failure.
 pub fn load_and_commit_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
-    let all_files = collect_kif_files(args)?;
-
     let mut kb = KnowledgeBase::open(&args.db).map_err(|e| {
         log::error!("Failed to open database at '{}': {}", args.db.display(), e);
     })?;
 
-    // kb.enable_cnf(ClausifyOptions { max_clauses_per_formula: args.max_clauses });
+    let loaded = read_files_parallel(args)?;
+    let count  = loaded.len();
+    let by_tag: std::collections::HashMap<String, String> = loaded
+        .iter()
+        .map(|(t, s)| (t.clone(), s.clone()))
+        .collect();
 
-    const SESSION: &str = sumo_kb::session_tags::SESSION_LOAD;
-    for path in &all_files {
-        let text = read_kif_file(path)?;
-        let tag = path.display().to_string();
-        let result = kb.load_kif(&text, &tag, Some(SESSION));
-        if !result.ok {
-            for e in &result.errors {
-                match e {
-                    KbError::Parse(p) => parse_error!(p.get_span(), p, text),
-                    _ => log::error!("{}: {}", path.display(), e) 
-                }
+    let result = LoadOp::new(&mut kb).add_sources(loaded).run();
+    match result {
+        Ok(report) if report.committed => {
+            log::info!(
+                "load_and_commit_files: committed {} file(s) to LMDB at '{}': +{} -{}",
+                count, args.db.display(), report.total_added, report.total_removed,
+            );
+            Ok(kb)
+        }
+        Ok(report) => {
+            // Strict mode aborted the commit because of semantic errors.
+            log::error!(
+                "load_and_commit_files: {} semantic error(s) blocked commit",
+                report.semantic_errors.len(),
+            );
+            for (_, e) in &report.semantic_errors { log::error!("{}", e); }
+            Err(())
+        }
+        Err(SdkError::Kb(KbError::Parse(p))) => {
+            let span = p.get_span();
+            if let Some(text) = by_tag.get(&span.file) {
+                parse_error!(span, p, text);
+            } else {
+                parse_error!(span, p);
             }
-            return Err(());
+            Err(())
+        }
+        Err(e) => {
+            log::error!("load_and_commit_files: {}", e);
+            Err(())
         }
     }
-
-    log::info!(
-        "load_and_commit_files: promoting {} file(s) to LMDB at '{}'",
-        all_files.len(),
-        args.db.display()
-    );
-    kb.promote_assertions_unchecked(SESSION).map_err(|e| {
-        log::error!("Failed to commit KB to database: {}", e);
-    })?;
-
-    Ok(kb)
 }
 
 // -- Internal helpers ----------------------------------------------------------

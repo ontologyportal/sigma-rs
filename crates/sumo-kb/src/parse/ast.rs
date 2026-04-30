@@ -239,14 +239,14 @@ impl AstNode {
     }
 
     /// Indented plain-text pretty-printer.  Identical line-width
-    /// breaking to [`pretty_print`] but produces ASCII-only output
+    /// breaking to `pretty_print` but produces ASCII-only output
     /// with no ANSI colour escapes -- always safe to round-trip
     /// through the KIF parser.
     ///
     /// Use cases: LSP formatting, file emission, anything where
     /// the output isn't going to a colour-aware terminal.  The
     /// `sumo man` CLI and proof-trace printers use
-    /// [`pretty_print`] because their destination is a terminal.
+    /// `pretty_print` because their destination is a terminal.
     pub fn format_plain(&self, indent: usize) -> String {
         let flat = self.flat();
         if indent + flat.len() <= LINE_WIDTH {
@@ -290,7 +290,7 @@ impl fmt::Display for AstNode {
 ///
 /// Use this for terminal output and log messages where ANSI colour is
 /// desirable.  Operators are rendered in cyan.  For output that must be
-/// fed back into the parser or KB, use plain [`Display`] / [`to_string`].
+/// fed back into the parser or KB, use plain [`std::fmt::Display`] / [`ToString::to_string`].
 pub struct Pretty<'a>(pub &'a AstNode);
 
 impl fmt::Display for Pretty<'_> {

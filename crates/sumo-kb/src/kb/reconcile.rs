@@ -124,6 +124,7 @@ impl KnowledgeBase {
     /// Parse errors abort without mutating the KB — the existing
     /// sentences under `file` stay intact.
     pub fn reconcile_file(&mut self, file: &str, new_text: &str) -> ReconcileReport {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         let mut report = ReconcileReport {
             file: file.to_owned(),
             ..Default::default()
@@ -390,7 +391,7 @@ impl KnowledgeBase {
     /// Reconcile multiple `(file_tag, new_text)` pairs in a single
     /// batched pass.
     ///
-    /// Structurally equivalent to calling [`reconcile_file`] in a
+    /// Structurally equivalent to calling [`Self::reconcile_file`] in a
     /// loop, but with every "batchable" phase folded into one
     /// whole-batch pass at the end:
     ///
@@ -411,7 +412,7 @@ impl KnowledgeBase {
     /// `SineIndex::add_axioms`' incremental path: boot-time bulk
     /// loads, `sumo/setActiveFiles` wholesale KB swaps, and the
     /// `load` subcommand's initial ingest.  For a single-file call
-    /// the semantics are identical to [`reconcile_file`] modulo
+    /// the semantics are identical to [`Self::reconcile_file`] modulo
     /// the SInE call site.
     ///
     /// Per-file error reporting is preserved: parse errors surface
@@ -429,6 +430,7 @@ impl KnowledgeBase {
         I: IntoIterator<Item = (&'a str, S)>,
         S: AsRef<str>,
     {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         let mut reports:       Vec<ReconcileReport>     = Vec::new();
         let mut altered_syms:  HashSet<SymbolId>        = HashSet::new();
         let mut needs_tax_rebuild = false;

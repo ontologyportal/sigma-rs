@@ -86,9 +86,7 @@ impl KifStore {
     pub(crate) fn seed_counters(&mut self, next_sym: u64, next_sent: u64) {
         self.next_symbol_id   = next_sym;
         self.next_sentence_id = next_sent;
-        log::debug!(target: "sumo_kb::kif_store",
-            "ID counters seeded: next_symbol_id={}, next_sentence_id={}",
-            next_sym, next_sent);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kif_store", message: format!("ID counters seeded: next_symbol_id={}, next_sentence_id={}", next_sym, next_sent) });
     }
 
     // -- Symbol table ---------------------------------------------------------
@@ -117,7 +115,8 @@ impl KifStore {
         // Add to the various reference arrays
         self.symbols.insert(name.to_owned(), id);
         self.sym_idx.insert(id, idx);
-        log::debug!(target: "sumo_kb::kif_store", "interned symbol '{}' -> id={}", name, id);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kif_store", message: format!("interned symbol '{}' -> id={}", name, id) });
         id
     }
 
@@ -139,8 +138,7 @@ impl KifStore {
         });
         self.symbols.insert(name.to_owned(), id);
         self.sym_idx.insert(id, idx);
-        log::debug!(target: "sumo_kb::kif_store",
-            "interned skolem '{}' (arity={:?}) -> id={}", name, arity, id);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kif_store", message: format!("interned skolem '{}' (arity={:?}) -> id={}", name, arity, id) });
         id
     }
 
@@ -244,7 +242,8 @@ impl KifStore {
         self.next_sentence_id += 1;
         self.sentences.push(sentence);
         self.sent_idx.insert(id, idx);
-        log::trace!(target: "sumo_kb::kif_store", "allocated sentence id={} at vec[{}]", id, idx);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::kif_store", message: format!("allocated sentence id={} at vec[{}]", id, idx) });
         id
     }
 
@@ -264,8 +263,8 @@ impl KifStore {
             if let AstNode::List { .. } = node {
                 let ctx = ScopeCtx { default: self.next_scope(), overrides: HashMap::new() };
                 if let Some(sent_id) = self.build_sentence(&ctx, node, file, &mut errors, true) {
-                    log::trace!(target: "sumo_kb::kif_store",
-                        "registered root sentence id={}", sent_id);
+                    #[cfg(debug_assertions)]
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::kif_store", message: format!("registered root sentence id={}", sent_id) });
                     self.finalize_root(sent_id, node, file);
                 }
             }
@@ -399,7 +398,8 @@ impl KifStore {
         file: &str,
         errors: &mut Vec<(Span, KbError)>,
     ) -> Option<Element> {
-        log::trace!(target: "sumo_kb::kif_store", "building element: {}", node);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::kif_store", message: format!("building element: {}", node) });
         match node {
             AstNode::Symbol { name, span } => Some(Element::Symbol {
                 id:   self.intern(name),
@@ -481,8 +481,7 @@ impl KifStore {
             }
         }
         self.prune_orphaned_symbols(&id_set);
-        log::debug!(target: "sumo_kb::kif_store",
-            "removed {} sentences from file '{}'", ids_to_remove.len(), file);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kif_store", message: format!("removed {} sentences from file '{}'", ids_to_remove.len(), file) });
     }
 
     /// Walk `sid` and every sub-sentence it transitively reaches,
@@ -615,8 +614,7 @@ impl KifStore {
         // rather than a panic.
         self.sentences[vec_idx].elements.clear();
 
-        log::trace!(target: "sumo_kb::kif_store",
-            "removed sentence sid={} (file='{}')", sid, file_name);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::kif_store", message: format!("removed sentence sid={} (file='{}')", sid, file_name) });
     }
 
     /// Update the `Sentence.span` for `sid` to `new_span`, without
@@ -922,8 +920,7 @@ pub(crate) fn load_kif(store: &mut KifStore, text: &str, file: &str) -> Vec<(Spa
     let (nodes, parse_err) = Parser::Kif.parse(text, file);
     errors.extend(parse_err.into_iter().map(|(span, p)| { (span, KbError::Parse(p)) }));
     errors.extend(store.load(&nodes, file));
-    log::info!(target: "sumo_kb::kif_store",
-        "loaded '{}': {} root sentences, {} errors", file, store.roots.len(), errors.len());
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kif_store", message: format!("loaded '{}': {} root sentences, {} errors", file, store.roots.len(), errors.len()) });
     errors
 }
 

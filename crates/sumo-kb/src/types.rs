@@ -52,7 +52,7 @@ impl fmt::Display for Literal {
 
 /// One element in a sentence's term list.
 ///
-/// Every variant carries a [`Span`] locating the element in its
+/// Every variant carries a [`crate::error::Span`] locating the element in its
 /// source file.  Spans are `#[serde(skip)]`-transparent to the
 /// LMDB bincode format -- the on-disk payload is the same as
 /// before per-element spans were added.  Rehydrated-from-LMDB
@@ -61,7 +61,7 @@ impl fmt::Display for Literal {
 ///
 /// Consumers that construct Elements without source origin
 /// (CNF clausifier, macro expansions, test fixtures) use
-/// [`Span::synthetic`] so position queries skip them.
+/// [`crate::error::Span::synthetic`] so position queries skip them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
     /// A ground symbol, referenced by its stable id.
@@ -103,7 +103,7 @@ pub enum Element {
 impl Element {
     /// Source range covering this element.  Returns the stored
     /// span verbatim -- no fallback / merging logic.  Synthetic
-    /// elements (see [`Span::synthetic`]) return a synthetic span.
+    /// elements (see [`crate::error::Span::synthetic`]) return a synthetic span.
     pub fn span(&self) -> &crate::error::Span {
         match self {
             Self::Symbol   { span, .. } => span,

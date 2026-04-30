@@ -339,7 +339,7 @@ pub(crate) struct LmdbEnv {
 
 impl LmdbEnv {
     pub(crate) fn open(path: &Path) -> Result<Self, KbError> {
-        log::info!(target: "sumo_kb::persist", "opening LMDB at {}", path.display());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("opening LMDB at {}", path.display()) });
         std::fs::create_dir_all(path).map_err(|e| {
             KbError::Db(format!("cannot create DB directory {}: {}", path.display(), e))
         })?;
@@ -434,8 +434,7 @@ impl LmdbEnv {
         }
 
         wtxn.commit()?;
-        log::debug!(target: "sumo_kb::persist",
-            "LMDB opened; schema v{}, max_dbs={}", SCHEMA_VERSION, MAX_DBS);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("LMDB opened; schema v{}, max_dbs={}", SCHEMA_VERSION, MAX_DBS) });
 
         // -- Feature-manifest comparison ------------------------------
         //
@@ -464,32 +463,25 @@ impl LmdbEnv {
                     // stamped a manifest.  Nothing to diff against;
                     // the manifest will be written on the next
                     // `write_axioms` call.
-                    log::debug!(target: "sumo_kb::persist",
-                        "no feature manifest present; will stamp on next commit (features={:?})",
-                        current);
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("no feature manifest present; will stamp on next commit (features={:?})", current) });
                     Vec::new()
                 }
                 Some(m) if m.features == current => {
-                    log::debug!(target: "sumo_kb::persist",
-                        "feature manifest matches current build: {:?}", current);
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("feature manifest matches current build: {:?}", current) });
                     Vec::new()
                 }
                 Some(m) => {
                     let removed = current.removed_since(&m.features);
                     let added   = current.added_since(&m.features);
                     if !removed.is_empty() {
-                        log::warn!(target: "sumo_kb::persist",
-                            "feature drift: DB was written with {:?} but this build \
+                        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::persist", message: format!("feature drift: DB was written with {:?} but this build \
                              lacks those features.  The corresponding LMDB tables \
-                             will sit unused; data is preserved across reopens.",
-                            removed);
+                             will sit unused; data is preserved across reopens.", removed) });
                     }
                     if !added.is_empty() {
-                        log::info!(target: "sumo_kb::persist",
-                            "feature drift: DB was written WITHOUT {:?} but this build \
+                        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("feature drift: DB was written WITHOUT {:?} but this build \
                              enables them.  An automatic backfill will populate the \
-                             corresponding LMDB tables from the existing axioms.",
-                            added);
+                             corresponding LMDB tables from the existing axioms.", added) });
                     }
                     added
                 }
@@ -544,12 +536,12 @@ impl LmdbEnv {
     ) -> Result<(), KbError> {
         let rtxn = unsafe { std::mem::transmute::<&RwTxn, &RoTxn>(wtxn) };
         if self.get_symbol_id(rtxn, &sym.name)?.is_some() {
-            log::trace!(target: "sumo_kb::persist",
-                "put_symbol: '{}' already in DB", sym.name);
+            #[cfg(debug_assertions)]
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("put_symbol: '{}' already in DB", sym.name) });
             return Ok(());
         }
-        log::trace!(target: "sumo_kb::persist",
-            "put_symbol: '{}' id={}", sym.name, sym.id);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("put_symbol: '{}' id={}", sym.name, sym.id) });
         self.symbols_fwd.put(wtxn, &sym.name, &sym.id.to_be_bytes())?;
         self.symbols_rev.put(wtxn, &sym.id.to_be_bytes(), sym)?;
         Ok(())
@@ -561,8 +553,8 @@ impl LmdbEnv {
         wtxn:    &mut RwTxn,
         formula: &StoredFormula,
     ) -> Result<(), KbError> {
-        log::trace!(target: "sumo_kb::persist",
-            "put_formula: id={}", formula.id);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("put_formula: id={}", formula.id) });
         self.formulas.put(wtxn, &formula.id.to_be_bytes(), formula)?;
         Ok(())
     }
@@ -679,8 +671,8 @@ impl LmdbEnv {
             }
         }
 
-        log::trace!(target: "sumo_kb::persist",
-            "delete_formula: sid={} removed", sid);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("delete_formula: sid={} removed", sid) });
         Ok(())
     }
 
@@ -759,8 +751,8 @@ impl LmdbEnv {
             let arr: [u8; 8] = bytes.try_into()
                 .map_err(|_| KbError::Db("bad clause_hashes value length".into()))?;
             let id = u64::from_be_bytes(arr);
-            log::trace!(target: "sumo_kb::persist",
-                "intern_clause: hash={:016x} -> existing id={}", canonical, id);
+            #[cfg(debug_assertions)]
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("intern_clause: hash={:016x} -> existing id={}", canonical, id) });
             return Ok(id);
         }
 
@@ -773,8 +765,8 @@ impl LmdbEnv {
         };
         self.clauses.put(wtxn, &id.to_be_bytes(), &record)?;
         self.clause_hashes.put(wtxn, &hash_key, &id.to_be_bytes())?;
-        log::trace!(target: "sumo_kb::persist",
-            "intern_clause: hash={:016x} -> new id={}", canonical, id);
+        #[cfg(debug_assertions)]
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::persist", message: format!("intern_clause: hash={:016x} -> new id={}", canonical, id) });
         Ok(id)
     }
 
@@ -933,8 +925,7 @@ impl LmdbEnv {
         match bincode::deserialize::<T>(bytes) {
             Ok(v)  => Ok(Some(v)),
             Err(e) => {
-                log::warn!(target: "sumo_kb::persist",
-                    "cache '{}' deserialize failed ({}); treating as absent", key, e);
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::persist", message: format!("cache '{}' deserialize failed ({}); treating as absent", key, e) });
                 Ok(None)
             }
         }
@@ -948,8 +939,7 @@ impl LmdbEnv {
             let (_, formula) = result?;
             out.push(formula);
         }
-        log::debug!(target: "sumo_kb::persist",
-            "all_formulas: {} formula(s) loaded", out.len());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::persist", message: format!("all_formulas: {} formula(s) loaded", out.len()) });
         Ok(out)
     }
 

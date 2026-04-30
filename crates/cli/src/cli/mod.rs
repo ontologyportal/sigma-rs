@@ -1,4 +1,6 @@
 pub mod args;
+pub mod profile;
+pub mod update;
 pub mod util;
 pub mod load;
 pub mod validate;
@@ -22,6 +24,7 @@ pub mod serve;
 
 pub use args::{Cli, KbArgs, Cmd};
 pub use load::run_load;
+pub use update::run_update;
 pub use validate::run_validate;
 pub use translate::run_translate;
 pub use man::run_man;

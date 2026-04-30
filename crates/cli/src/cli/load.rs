@@ -1,11 +1,12 @@
 use std::fs;
 
 use log;
-use sumo_kb::{KnowledgeBase, SentenceId};
+use sumo_kb::KnowledgeBase;
+use sumo_sdk::{LoadOp, SdkError};
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{collect_kif_files, read_kif_file};
-use crate::semantic_error;
+use crate::{semantic_error, semantic_warning};
 
 /// Entry point for `sumo load`.
 ///
@@ -74,9 +75,12 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
         Err(()) => return false,
     };
 
-    // Read every file up-front so we can pass a flat `(&str, &str)`
-    // iterator to the batched reconcile.  Per-file read failures
-    // abort the whole load — matches the previous behaviour.
+    // Read every file up-front (for parallel I/O when the
+    // `parallel` feature is on inside the CLI helpers) so we can
+    // hand pre-resident text to `LoadOp::add_sources`.  Per-file
+    // read failures abort the whole load — matches the previous
+    // behaviour and is the simplest UX ("first bad file" message
+    // instead of N races).
     let mut readable: Vec<(String, String)> = Vec::with_capacity(all_files.len());
     for path in &all_files {
         match read_kif_file(path) {
@@ -84,91 +88,57 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
             Err(())  => return false,
         }
     }
+    let count = readable.len();
 
-    // Batched reconcile.  On a cold load over ~30 SUMO files this
-    // drops wall-clock time from ~60 s (N per-file SInE
-    // promotions, each quadratic against the growing KB) to a
-    // single bulk-rebuild pass at the end of the batch.
-    let reports = kb.reconcile_files(
-        readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
-    );
-
-    let mut total_added   = 0usize;
-    let mut total_removed = 0usize;
-    let mut total_semantic_errors = 0usize;
-    let mut pending: Vec<(String, Vec<SentenceId>, Vec<SentenceId>)> =
-        Vec::with_capacity(reports.len());
-
-    // Per-file post-processing.  Parse errors abort immediately;
-    // semantic errors accumulate so we can enforce the "all-or-
-    // nothing commit" gate below (same policy as the previous
-    // per-file-reconcile loop).
-    for report in reports {
-        let tag = report.file.clone();
-
-        if !report.parse_errors.is_empty() {
-            for e in &report.parse_errors {
-                log::error!("{}: {}", tag, e);
-            }
-            log::error!("load: aborted — parse errors in {}; DB not modified", tag);
+    // Drive `LoadOp` for the reconcile + persist pipeline.  Strict
+    // mode (the default) preserves the historical "all-or-nothing
+    // commit on semantic errors" gate.  The SDK handles the batched
+    // reconcile, the per-file commit loop, and the strict-abort
+    // path; the CLI just picks a rendering for the report.
+    let report = match LoadOp::new(&mut kb).add_sources(readable).run() {
+        Ok(r) => r,
+        Err(SdkError::Kb(e)) => {
+            log::error!("load: aborted — {}; DB not modified", e);
             return false;
         }
-
-        // Surface every semantic error.  An entry lands in
-        // `semantic_errors` only when `validate_sentence` returned
-        // `Err` — i.e. a true hard error *or* a warning promoted
-        // via `-W` / `-Wall`.  Plain warnings are logged by
-        // `SemanticError::handle` and never reach us here.
-        for e in &report.semantic_errors {
-            semantic_error!(e, kb);
+        Err(e) => {
+            log::error!("load: {}", e);
+            return false;
         }
-        total_semantic_errors += report.semantic_errors.len();
+    };
 
-        if report.is_noop() {
-            log::info!(target: "sumo_kb::load",
-                "reconciled {}: unchanged ({} retained)", tag, report.retained);
-        } else {
-            log::info!(target: "sumo_kb::load",
-                "reconciled {}: +{} -{} ={}",
-                tag, report.added(), report.removed(), report.retained);
-        }
-
-        total_added   += report.added();
-        total_removed += report.removed();
-        pending.push((tag, report.removed_sids, report.added_sids));
-    }
-
-    // All-or-nothing commit gate.  Matches `--flush` semantics:
-    // a single hard validation error anywhere aborts the whole
-    // load and leaves the DB exactly as it was on disk.
-    if total_semantic_errors > 0 {
+    // Strict-mode abort: report came back with semantic errors,
+    // committed=false.  Render via the standard semantic_error!
+    // macro so the user sees the same colour/format as elsewhere.
+    if !report.committed {
+        for (tag, e) in &report.semantic_errors { semantic_error!(e, kb); let _ = tag; }
         log::error!(
             "load: {} semantic error(s) across {} file(s) -- database not modified \
              (in-memory reconcile discarded on exit)",
-            total_semantic_errors, pending.len(),
+            report.semantic_errors.len(), report.files.len(),
         );
         return false;
     }
 
-    // Commit pass — per-file.  Each `persist_reconcile_diff` is its
-    // own pair of transactions (delete + write), so a mid-batch
-    // failure leaves earlier files committed and later ones
-    // untouched.  Not atomic across files, but each file is
-    // individually consistent; an interrupted load resumes cleanly
-    // on the next invocation via reconcile's idempotence.
-    for (tag, removed_sids, added_sids) in &pending {
-        if let Err(e) = kb.persist_reconcile_diff(removed_sids, added_sids) {
-            log::error!("load: failed to commit delta for {}: {}", tag, e);
-            return false;
+    // Successful commit.  Render advisory warnings (don't block),
+    // then per-file reconcile counts at info, then the aggregate.
+    for (_, e) in &report.semantic_errors    { semantic_error!(e, kb); }
+    for status in &report.files {
+        if status.is_noop() {
+            log::info!(target: "sumo_kb::load",
+                "reconciled {}: unchanged ({} retained)", status.tag, status.retained);
+        } else {
+            log::info!(target: "sumo_kb::load",
+                "reconciled {}: +{} -{} ={}",
+                status.tag, status.added, status.removed, status.retained);
         }
+        for w in &status.semantic_warnings { semantic_warning!(w, kb); }
     }
 
     log::info!(
         "load: reconciled {} file(s) into '{}' (+{} added, -{} removed)",
-        pending.len(),
-        kb_args.db.display(),
-        total_added,
-        total_removed,
+        count, kb_args.db.display(),
+        report.total_added, report.total_removed,
     );
     true
 }
@@ -214,77 +184,56 @@ fn run_flush(kb_args: KbArgs, has_files: bool) -> bool {
         return true;
     }
 
-    // Files supplied: parse-into-session → validate → promote —
-    // identical to the pre-reconcile `sumo load` flow, but against
-    // a guaranteed-empty DB.
+    // Files supplied: drive `LoadOp` against the now-empty DB.
+    // Reconcile-against-nothing means everything classifies as
+    // "added", which is functionally equivalent to the legacy
+    // `promote_assertions_unchecked` flow but reuses the SDK's
+    // strict-commit gate for free.
     let all_files = match collect_kif_files(&kb_args) {
         Ok(f)   => f,
         Err(()) => return false,
     };
-
-    const SESSION: &str = sumo_kb::session_tags::SESSION_LOAD;
+    let mut readable: Vec<(String, String)> = Vec::with_capacity(all_files.len());
     for path in &all_files {
-        let text = match read_kif_file(path) {
-            Ok(t)   => t,
+        match read_kif_file(path) {
+            Ok(t)   => readable.push((path.display().to_string(), t)),
             Err(()) => return false,
-        };
-        let tag = path.display().to_string();
-        let result = kb.load_kif(&text, &tag, Some(SESSION));
-        if !result.ok {
-            for e in &result.errors {
-                log::error!("{}: {}", path.display(), e);
-            }
+        }
+    }
+    let count = readable.len();
+
+    let report = match LoadOp::new(&mut kb).add_sources(readable).run() {
+        Ok(r) => r,
+        Err(SdkError::Kb(e)) => {
+            log::error!("load --flush: aborted — {}; DB not modified", e);
             return false;
         }
-    }
-    log::info!("load --flush: parsed {} file(s)", all_files.len());
+        Err(e) => {
+            log::error!("load --flush: {}", e);
+            return false;
+        }
+    };
+    log::info!("load --flush: parsed {} file(s)", count);
 
-    // Validate (same semantics as the legacy load path — promoted
-    // warnings abort the commit).
-    let errors = kb.validate_session(SESSION);
-    if !errors.is_empty() {
+    if !report.committed {
         log::error!(
             "load --flush: {} validation error(s) -- database not modified",
-            errors.len()
+            report.semantic_errors.len()
         );
-        for (sid, e) in &errors {
-            semantic_error!(e, kb);
-            let _ = sid;
-        }
+        for (_, e) in &report.semantic_errors { semantic_error!(e, kb); }
         return false;
-    }
-    let all_errors = kb.validate_all();
-    let blocking: Vec<_> = all_errors.iter().filter(|(_, e)| !e.is_warn()).collect();
-    if !blocking.is_empty() {
-        log::error!(
-            "load --flush: {} hard validation error(s) -- database not modified",
-            blocking.len()
-        );
-        for (_, e) in &blocking {
-            semantic_error!(e, kb);
-        }
-        return false;
-    }
-    for (_, e) in &all_errors {
-        if e.is_warn() {
-            semantic_error!(e, kb);
-        }
     }
 
-    match kb.promote_assertions_unchecked(SESSION) {
-        Ok(report) => {
-            log::info!(
-                "load --flush: committed {} assertion(s) to '{}' ({} duplicate(s) skipped)",
-                report.promoted.len(),
-                kb_args.db.display(),
-                report.duplicates_removed.len(),
-            );
-            true
-        }
-        Err(e) => {
-            log::error!("load --flush: failed to commit to database: {}", e);
-            false
-        }
+    for (_, e) in &report.semantic_errors { semantic_error!(e, kb); }
+    for status in &report.files {
+        for w in &status.semantic_warnings { semantic_warning!(w, kb); }
     }
+
+    log::info!(
+        "load --flush: committed {} assertion(s) to '{}' (+{} added, -{} removed)",
+        report.total_added, kb_args.db.display(),
+        report.total_added, report.total_removed,
+    );
+    true
 }
 

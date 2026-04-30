@@ -1,0 +1,218 @@
+# Build the workspace's rustdoc and publish it to GitHub Pages.
+#
+# Trigger: every push to `main` (rebuilds + redeploys), plus
+# `workflow_dispatch` for manual runs from the Actions tab.
+#
+# Output: the entire `target/doc/` tree is uploaded as a Pages
+# artifact and served at the repository's GitHub Pages URL
+# (typically `https://<owner>.github.io/<repo>/`).  A small
+# hand-written `index.html` lands at the doc-root so visitors get a
+# crate index instead of a directory listing — `sumo-sdk` is
+# featured first since it's the primary public API surface.
+#
+# Features: build with `--all-features`.  This pulls in
+# `integrated-prover` (Vampire C++) so the gated `ask_embedded` /
+# `AskOp::backend(Embedded)` paths show up in the rendered docs.
+# The cost is one CMake compile of vampire-sys, cached aggressively
+# by Swatinem/rust-cache between runs.
+#
+# Setup checklist (one-time, in repo Settings):
+#   * Pages → Source: "GitHub Actions"
+#   * Permissions → Workflow permissions: "Read and write"
+# After that the first push to `main` produces the live site.
+
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages requires `pages: write` and `id-token: write` on the
+# job that calls `actions/deploy-pages`.  Everything else stays at the
+# default read-only permission.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow only one concurrent Pages deployment.  Don't cancel
+# in-progress runs — we'd rather wait for an active deploy than serve
+# a partial doc tree.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # vampire-sys / vampire-prover live as submodules; the
+          # `integrated-prover` feature won't build without them.
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CMake + toolchain (for vampire-sys)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs
+
+      - name: Build rustdoc (workspace, --all-features, --no-deps)
+        env:
+          # `-D rustdoc::broken_intra_doc_links` would normally be set
+          # via the doc command's `-W ...`-as-error pattern.  Use
+          # RUSTDOCFLAGS so any new doc-link regressions break the
+          # build instead of slipping through silently.
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
+        run: |
+          cargo doc --workspace --all-features --no-deps
+
+      - name: Generate landing-page index.html
+        run: |
+          # Cargo's default rustdoc output puts each crate at
+          # `target/doc/<crate>/index.html` and leaves the doc-root
+          # as a directory.  Drop a small index here that links to
+          # every workspace member, with sumo-sdk first.
+          cat > target/doc/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>sigma-rs &mdash; Rust API documentation</title>
+            <style>
+              :root { color-scheme: light dark; }
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+                             Roboto, "Helvetica Neue", sans-serif;
+                max-width: 760px;
+                margin: 60px auto;
+                padding: 0 24px;
+                line-height: 1.55;
+                color: #222;
+              }
+              @media (prefers-color-scheme: dark) {
+                body { color: #ddd; background: #1b1b1b; }
+                .crates li { border-color: #333; background: #232323; }
+                .crates li a { color: #6cb6ff; }
+                .crates li p { color: #999; }
+                code { background: #2a2a2a; }
+                footer { color: #777; }
+              }
+              h1 { margin-bottom: 0.2em; font-size: 2em; }
+              .lede { color: #666; margin-top: 0; font-size: 1.05em; }
+              .crates { list-style: none; padding: 0; }
+              .crates li {
+                margin: 1em 0;
+                padding: 1em 1.2em;
+                border: 1px solid #e5e5e5;
+                border-radius: 8px;
+                background: #fafafa;
+              }
+              .crates li a {
+                font-size: 1.15em;
+                font-weight: 600;
+                text-decoration: none;
+                color: #0366d6;
+              }
+              .crates li a:hover { text-decoration: underline; }
+              .crates li p { margin: 0.4em 0 0; color: #555; }
+              code {
+                font-family: "SF Mono", Consolas, Menlo, monospace;
+                font-size: 0.9em;
+                background: #f0f0f0;
+                padding: 0.1em 0.35em;
+                border-radius: 3px;
+              }
+              footer {
+                margin-top: 4em;
+                text-align: center;
+                color: #999;
+                font-size: 0.85em;
+              }
+              footer a { color: inherit; }
+            </style>
+          </head>
+          <body>
+            <h1>sigma-rs</h1>
+            <p class="lede">
+              Rust API documentation for the SUMO knowledge-base toolkit:
+              parser, semantic layer, prover bindings, and a programmatic
+              SDK to drive them all.
+            </p>
+
+            <ul class="crates">
+              <li>
+                <a href="sumo_sdk/index.html">sumo-sdk</a>
+                <p>
+                  Programmatic Rust API: <code>IngestOp</code>,
+                  <code>ValidateOp</code>, <code>TranslateOp</code>,
+                  <code>LoadOp</code>, <code>AskOp</code>,
+                  <code>TestOp</code>.  Embed inside language servers,
+                  daemons, custom CLIs, scripted pipelines.
+                </p>
+              </li>
+              <li>
+                <a href="sumo_kb/index.html">sumo-kb</a>
+                <p>
+                  Core knowledge-base library &mdash; KIF parser, semantic
+                  layer, LMDB persistence, SInE indexing, prover bindings.
+                  Foundation for the SDK above.
+                </p>
+              </li>
+              <li>
+                <a href="sigmakee/index.html">sigmakee</a>
+                <p>
+                  The <code>sumo</code> command-line tool and its
+                  sub-handlers (<code>load</code>, <code>ask</code>,
+                  <code>test</code>, <code>man</code>, &hellip;).
+                </p>
+              </li>
+              <li>
+                <a href="sumo_lsp/index.html">sumo-lsp</a>
+                <p>
+                  Language server for SUMO files: hover, definition,
+                  diagnostics on save.
+                </p>
+              </li>
+              <li>
+                <a href="sumo_parser_wasm/index.html">sumo-parser-wasm</a>
+                <p>
+                  WASM bindings exposing the core parser to JavaScript /
+                  TypeScript consumers.
+                </p>
+              </li>
+            </ul>
+
+            <footer>
+              Built from <code>main</code> by GitHub Actions &middot;
+              <a href="https://github.com/ontologyportal/sigma-rs">ontologyportal/sigma-rs</a>
+            </footer>
+          </body>
+          </html>
+          HTML
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    name: deploy to github-pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

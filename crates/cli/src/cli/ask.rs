@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use log;
 use inline_colorization::*;
-use sumo_kb::{ProverStatus, Profiler};
+use sumo_kb::ProverStatus;
+use sumo_sdk::{AskOp, ProverBackend, SdkError};
+use crate::cli::profile::PhaseAggregator;
 use crate::cli::util::parse_lang;
 
 use crate::cli::args::KbArgs;
@@ -38,54 +40,80 @@ pub fn run_ask(
         }
     };
 
-    // Build the profiler first if --profile was passed, so it is
-    // installed BEFORE KB load — this way the initial `load_kif` /
-    // `make_session_axiomatic` phases are also captured.  When
-    // `profiling` is off at build time this is still safe: the
-    // profiler is zero-sized and every record call is a no-op.
-    let profiler = if profile { Some(Arc::new(Profiler::new())) } else { None };
+    // Build the phase aggregator first if --profile was passed, so
+    // it is installed BEFORE KB load — every emit fires through it
+    // from the very first instrumented call.  When --profile is off,
+    // no sink is installed and every emit site is a free
+    // predicted-None branch.
+    let aggregator = if profile { Some(Arc::new(PhaseAggregator::new())) } else { None };
+    let sink: Option<sumo_kb::DynSink> = aggregator.clone()
+        .map(|a| a as sumo_kb::DynSink);
 
     let t_kb = Instant::now();
-    let mut kb = match open_or_build_kb_profiled(&kb_args, profiler.clone()) {
+    let mut kb = match open_or_build_kb_profiled(&kb_args, sink) {
         Ok(k)   => k,
         Err(()) => return false,
     };
     let kb_load = t_kb.elapsed();
 
-    // Apply --tell assertions into the named session (in-memory only).
-    for kif in &tell {
-        log::debug!("ask: tell (session={:?}): {}", session, kif);
-        let r = kb.tell(&session, kif);
-        if !r.ok {
-            for e in &r.errors { log::error!("tell error: {}", e); }
-            return false;
-        }
-    }
-
-    let result = match backend.as_str() {
+    // Resolve backend up-front so we can fail fast on either an
+    // unknown name or a missing vampire binary BEFORE handing
+    // anything to AskOp.
+    let prover_backend = match backend.as_str() {
         #[cfg(feature = "integrated-prover")]
         "embedded" => {
             log::info!("ask: using embedded Vampire backend ({:?})", tptp_lang);
-            kb.ask_embedded(&conjecture, Some(&session), timeout, tptp_lang)
+            ProverBackend::Embedded
         }
-        "subprocess" | "" => {
-            use sumo_kb::VampireRunner;
-            let candidate = kb_args.vampire.unwrap_or_else(|| PathBuf::from("vampire"));
-            // Fail fast when the external binary is missing — otherwise the
-            // spawn error is buried inside the ProverResult's raw_output and
-            // only visible with `-v`.
-            let vampire_path = match resolve_vampire_path(&candidate) {
-                Ok(p)   => p,
-                Err(()) => return false,
-            };
-            let runner = VampireRunner { vampire_path, timeout_secs: timeout, tptp_dump_path: keep };
-            kb.ask(&conjecture, Some(&session), &runner, tptp_lang)
-        }
+        "subprocess" | "" => ProverBackend::Subprocess,
         other => {
             log::error!("ask: unknown backend '{}' (supported: subprocess, embedded)", other);
             return false;
         }
     };
+
+    // For subprocess: pre-resolve the vampire path so we surface
+    // "binary missing" before paying the input-gen cost.
+    let resolved_vampire = if matches!(prover_backend, ProverBackend::Subprocess) {
+        let candidate = kb_args.vampire.clone().unwrap_or_else(|| PathBuf::from("vampire"));
+        match resolve_vampire_path(&candidate) {
+            Ok(p)   => Some(p),
+            Err(()) => return false,
+        }
+    } else {
+        None
+    };
+
+    // Drive AskOp.  It folds the tell-then-ask sequence, vampire
+    // path threading, and result assembly into one call.  Tell
+    // failures propagate as `SdkError::Kb`; spawn failures as
+    // `SdkError::VampireNotFound`; everything else rides out via
+    // the typed AskReport.
+    let mut op = AskOp::new(&mut kb, &conjecture)
+        .session(session.clone())
+        .timeout_secs(timeout)
+        .backend(prover_backend)
+        .lang(tptp_lang)
+        .tells(tell.iter().cloned());
+    if let Some(p) = resolved_vampire { op = op.vampire_path(p); }
+    if let Some(p) = keep             { op = op.tptp_dump(p); }
+
+    let report = match op.run() {
+        Ok(r) => r,
+        Err(SdkError::Kb(e)) => {
+            log::error!("tell error: {}", e);
+            return false;
+        }
+        Err(SdkError::VampireNotFound(msg)) => {
+            log::error!("vampire not found: {}", msg);
+            return false;
+        }
+        Err(e) => {
+            log::error!("ask: {}", e);
+            return false;
+        }
+    };
+    let result = report;
 
     // Always surface the verdict to the user, regardless of `-v`.  The
     // exit code also reflects this (see the final `matches!` below),
@@ -109,7 +137,19 @@ pub fn run_ask(
     }
 
     if let Some(format) = show_proof.as_deref() {
-        print_proof(&kb, &result, format);
+        // print_proof takes a `&ProverResult`; AskReport's fields
+        // are identical so we synthesise one for the call.  Cheap
+        // because the heavy fields (raw_output, proof_kif) are
+        // cloned by-Vec / by-String once each.
+        let pr = sumo_kb::ProverResult {
+            status:     result.status,
+            raw_output: result.raw_output.clone(),
+            bindings:   result.bindings.clone(),
+            proof_kif:  result.proof_kif.clone(),
+            proof_tptp: result.proof_tptp.clone(),
+            timings:    result.timings.clone(),
+        };
+        print_proof(&kb, &pr, format);
     }
 
 
@@ -135,12 +175,11 @@ pub fn run_ask(
         println!("  ─────────────────────────");
         println!("  Total        {:>10.3} ms", total.as_secs_f64() * 1000.0);
 
-        // Fine-grained per-phase report (requires the `profiling`
-        // cargo feature to be on at sumo-kb build time; otherwise
-        // the report is just a one-line "feature off" placeholder).
-        if let Some(p) = profiler.as_ref() {
-            println!("\n{style_bold}Profile (fine-grained, from sumo-kb `profiling` feature):{style_reset}");
-            println!("{}", p.report());
+        // Fine-grained per-phase report aggregated from the
+        // PhaseStarted / PhaseFinished progress events.
+        if let Some(a) = aggregator.as_ref() {
+            println!("\n{style_bold}Profile (fine-grained, per phase):{style_reset}");
+            println!("{}", a.report());
         }
     }
 

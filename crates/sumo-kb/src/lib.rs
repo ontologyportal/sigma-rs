@@ -24,6 +24,7 @@ compile_error!(
 pub mod parse;
 pub mod error;
 pub mod diagnostic;
+pub mod progress;
 pub mod types;
 pub(crate) mod kif_store;
 pub(crate) mod lookup;
@@ -63,11 +64,11 @@ pub(crate) mod kb;
 // shared-symbol counts.
 pub mod sine;
 
-// General per-phase profiling hooks.  Always compiled (so call sites
-// don't need `cfg` gates on every `span()` invocation) but the
-// recording path is feature-gated: when `feature = "profiling"` is
-// off, all operations are no-ops and `Profiler` is zero-sized.
-pub mod profiling;
+// Phase timing is no longer a sumo-kb concern.  Every `profile_span!`
+// /`profile_call!` macro emits `ProgressEvent::PhaseStarted` /
+// `PhaseFinished` through the installed `ProgressSink`; consumers
+// who want timing aggregation listen for those events.  See
+// `crate::progress` for the full event taxonomy.
 
 // Reserved session / file tags for internal KB plumbing.  One place
 // for every `"__query__"` / `"__reconcile_add__"` / `"__load__"`
@@ -105,7 +106,7 @@ pub use error::{
     KbError, ParseError, SemanticError, Span,
     TellResult, TellWarning,
     PromoteError, PromoteReport, DuplicateInfo, DuplicateSource,
-
+    Findings, with_collector, clear_promoted_errors,
 };
 pub use diagnostic::{Diagnostic, RelatedInfo, Severity, ToDiagnostic};
 pub use types::{
@@ -140,5 +141,5 @@ pub use prover::{
 // SInE types are now available unconditionally.
 pub use sine::{SineIndex, SineParams};
 
-pub use profiling::{Profiler, ProfileSpan, PhaseSnapshot};
+pub use progress::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 

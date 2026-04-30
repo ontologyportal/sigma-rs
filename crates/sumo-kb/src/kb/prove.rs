@@ -41,7 +41,7 @@ impl KnowledgeBase {
     /// *or* zero sentences).  On any failure the query sentences are
     /// scrubbed from the store so a follow-up ask starts clean.
     ///
-    /// Shared between [`ask`] (subprocess path) and [`ask_embedded`]
+    /// Shared between [`Self::ask`] (subprocess path) and [`ask_embedded`]
     /// (integrated-prover path) — both need to land a conjecture in
     /// the store before they diverge.
     fn parse_conjecture(
@@ -96,9 +96,10 @@ impl KnowledgeBase {
         runner:    &dyn ProverRunner,
         lang:      TptpLang,
     ) -> ProverResult {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         use crate::sine::SineParams;
 
-        log::debug!(target: "sumo_kb::kb", "ask: query={}", query_kif);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("ask: query={}", query_kif) });
         // No top-level `ask.total` span: it would hold an immutable
         // borrow on `self.profiler` across the many `&mut self` calls
         // below.  The profiler's grand-total line already aggregates
@@ -214,9 +215,7 @@ impl KnowledgeBase {
             })
         };
         let input_gen = t_input.elapsed();
-        log::debug!(target: "sumo_kb::kb",
-            "ask({:?}): TPTP size={} bytes ({} SInE-selected axioms, {} assertions, cache hit)",
-            mode, tptp.len(), selected_axioms.len(), assertion_ids.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("ask({:?}): TPTP size={} bytes ({} SInE-selected axioms, {} assertions, cache hit)", mode, tptp.len(), selected_axioms.len(), assertion_ids.len()) });
 
         // Roll back the conjecture parse.  Phase A optimization:
         // only rebuild taxonomy/invalidate caches if the query head
@@ -246,11 +245,12 @@ impl KnowledgeBase {
             let _span = profile_span!(self, "ask.prover_run");
             runner.prove(&tptp, &prover_opts)
         };
-        // Also record the prover-reported sub-phase timings (output parse,
-        // binding extraction) into the profiler for unified reporting.
-        if let Some(p) = self.profiler.as_ref() {
-            p.record("ask.output_parse", result.timings.output_parse);
-        }
+        // Prover-reported timings (input_gen / prover_run / output_parse)
+        // ride on the returned `ProverResult.timings`.  Consumers who
+        // want them in their phase-aggregator can synthesize
+        // `PhaseFinished` events from those values (or just read
+        // `result.timings` directly — they're a stable part of the
+        // public API).
         result.timings.input_gen = input_gen;
         result
     }
@@ -326,9 +326,7 @@ impl KnowledgeBase {
 
         let tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts::default());
         let input_gen = t_input.elapsed();
-        log::debug!(target: "sumo_kb::kb",
-            "check_consistency({:?}): TPTP size={} bytes ({} axioms)",
-            mode, tptp.len(), problem.axioms().len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("check_consistency({:?}): TPTP size={} bytes ({} axioms)", mode, tptp.len(), problem.axioms().len()) });
 
         let prover_opts = ProverOpts {
             timeout_secs: runner.timeout_secs(),
@@ -343,7 +341,7 @@ impl KnowledgeBase {
 
     /// Ask the embedded Vampire prover whether `query_kif` is entailed by the KB.
     ///
-    /// Feature parity with [`ask`] (subprocess path):
+    /// Feature parity with [`Self::ask`] (subprocess path):
     ///
     /// - **SInE filtering** — runs `sine_select_for_query` on the
     ///   conjecture and ships only the relevant axiom subset (plus
@@ -361,7 +359,7 @@ impl KnowledgeBase {
     ///   backends.
     /// - **`lang` parameter** — FOF or TFF, same as `ask`.  The
     ///   dual-mode axiom cache (see
-    ///   [`VampireAxiomCacheSet`](crate::vampire::VampireAxiomCacheSet))
+    ///   `VampireAxiomCacheSet`)
     ///   holds both IRs, so switching modes is free at query time.
     ///   `vampire_prover::lower_problem` checks
     ///   `IrProblem::mode()` and takes the appropriate FFI path, so
@@ -371,11 +369,11 @@ impl KnowledgeBase {
     ///
     /// - Bypasses TPTP text generation — the IR Problem is lowered
     ///   directly into the Vampire FFI.  Filtering therefore happens
-    ///   on the IR via [`VampireAxiomCache::filtered_problem`], not
+    ///   on the IR via `VampireAxiomCache::filtered_problem`, not
     ///   via `AssemblyOpts::axiom_filter`.
     /// - `proof_tptp` is always empty (no TPTP round-trip).
     /// - `proof_kif` is populated by walking the native `Proof` via
-    ///   [`crate::vampire::native_proof::native_proof_to_kif_steps`]
+    ///   `crate::vampire::native_proof::native_proof_to_kif_steps`
     ///   — feature parity with the subprocess path.  The
     ///   axiom-source traceback uses the canonical-fingerprint
     ///   fallback (native proofs don't preserve `kb_<sid>` names).
@@ -383,7 +381,7 @@ impl KnowledgeBase {
     /// `session` = optional in-memory session whose assertions are
     /// included as hypotheses.
     ///
-    /// [`VampireAxiomCache::filtered_problem`]: crate::vampire::VampireAxiomCache::filtered_problem
+    /// `VampireAxiomCache::filtered_problem` (internal)
     #[cfg(feature = "integrated-prover")]
     pub fn ask_embedded(
         &mut self,
@@ -392,9 +390,10 @@ impl KnowledgeBase {
         timeout_secs: u32,
         lang:         TptpLang,
     ) -> ProverResult {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         use crate::sine::SineParams;
 
-        log::debug!(target: "sumo_kb::embedded_prover", "ask_embedded: query={}", query_kif);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::embedded_prover", message: format!("ask_embedded: query={}", query_kif) });
 
         // -- Step 1: SInE-select the relevant axiom subset. --------------
         // Identical to `ask`'s Step 1 — parses the conjecture into a
@@ -488,9 +487,7 @@ impl KnowledgeBase {
             (ir_problem, query_var_map)
         };
         let input_gen = t_input.elapsed();
-        log::debug!(target: "sumo_kb::embedded_prover",
-            "ask_embedded({:?}): IR built ({} axioms after SInE: {} selected + {} assertions, cache hit)",
-            mode, ir_problem.axioms().len(), selected_axioms.len(), assertion_sids.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::embedded_prover", message: format!("ask_embedded({:?}): IR built ({} axioms after SInE: {} selected + {} assertions, cache hit)", mode, ir_problem.axioms().len(), selected_axioms.len(), assertion_sids.len()) });
 
         // -- Step 6: Configure and run Vampire. --------------------------
         // SInE handling: the KB has now applied SInE externally (Step 1
@@ -522,7 +519,7 @@ impl KnowledgeBase {
             problem.solve_and_prove()
         };
         let prover_run = t_prover.elapsed();
-        log::debug!(target: "sumo_kb::embedded_prover", "embedded result ({:?}): {:?}", mode, res);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::embedded_prover", message: format!("embedded result ({:?}): {:?}", mode, res) });
 
         let status = match res {
             vampire_prover::ProofRes::Proved     => ProverStatus::Proved,
@@ -541,9 +538,7 @@ impl KnowledgeBase {
         let t_parse = Instant::now();
         let (bindings, proof_kif): (Vec<Binding>, Vec<crate::tptp::kif::KifProofStep>) =
             if matches!(status, ProverStatus::Proved) {
-                log::debug!(target: "sumo_kb::embedded_prover",
-                    "proof extraction: proof={}, qvm={}",
-                    proof.is_some(), query_var_map.is_some());
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::embedded_prover", message: format!("proof extraction: proof={}, qvm={}", proof.is_some(), query_var_map.is_some()) });
                 match proof {
                     Some(p) => {
                         let b: Vec<Binding> = match query_var_map {
@@ -574,11 +569,10 @@ impl KnowledgeBase {
                 self.layer.invalidate_cache();
             }
         });
-        // Mirror `ask`'s output-parse timing into the profiler so a
-        // cross-backend `--profile` run shows the same phase set.
-        if let Some(p) = self.profiler.as_ref() {
-            p.record("ask.output_parse", output_parse);
-        }
+        // Output-parse timing rides on `ProverResult.timings` —
+        // consumers that aggregate phase totals can read it from
+        // there or from a `PhaseFinished` event.
+        let _ = output_parse;
 
         ProverResult {
             status,
@@ -674,21 +668,15 @@ impl KnowledgeBase {
                         && !f.mode_tff
                     => Ok(Some((t, f))),
                     (tff_opt, fof_opt) => {
-                        log::debug!(target: "sumo_kb::kb",
-                            "Phase D: axiom cache restore declined \
+                        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("Phase D: axiom cache restore declined \
                              (tff_present={}, fof_present={}, current={}); \
-                             rebuilding both modes",
-                            tff_opt.is_some(), fof_opt.is_some(), current,
-                        );
+                             rebuilding both modes", tff_opt.is_some(), fof_opt.is_some(), current) });
                         Ok(None)
                     }
                 }
             })() {
-                log::info!(target: "sumo_kb::kb",
-                    "Phase D: restored axiom cache from bincode blobs \
-                     (TFF: {} axioms, FOF: {} axioms)",
-                    tff_blob.sid_map.len(), fof_blob.sid_map.len(),
-                );
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: restored axiom cache from bincode blobs \
+                     (TFF: {} axioms, FOF: {} axioms)", tff_blob.sid_map.len(), fof_blob.sid_map.len()) });
                 self.axiom_cache = Some(crate::vampire::VampireAxiomCacheSet {
                     tff: crate::vampire::VampireAxiomCache {
                         problem: tff_blob.problem,
@@ -718,14 +706,12 @@ impl KnowledgeBase {
             if let Err(e) = crate::persist::persist_axiom_cache(
                 env, /* mode_tff */ true, &cache.tff.problem, &cache.tff.sid_map,
             ) {
-                log::warn!(target: "sumo_kb::kb",
-                    "Phase D: axiom cache (TFF) persist failed: {}", e);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("Phase D: axiom cache (TFF) persist failed: {}", e) });
             }
             if let Err(e) = crate::persist::persist_axiom_cache(
                 env, /* mode_tff */ false, &cache.fof.problem, &cache.fof.sid_map,
             ) {
-                log::warn!(target: "sumo_kb::kb",
-                    "Phase D: axiom cache (FOF) persist failed: {}", e);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("Phase D: axiom cache (FOF) persist failed: {}", e) });
             }
         }
 
