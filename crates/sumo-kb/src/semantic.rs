@@ -382,8 +382,7 @@ impl SemanticLayer {
         let edge_idx = self.tax_edges.len();
         self.tax_edges.push(TaxEdge { from: arg2, to: arg1, rel });
         self.tax_incoming.entry(arg1).or_default().push(edge_idx);
-        log::trace!(target: "sumo_kb::semantic",
-            "tax edge: {} -{}-> {}", self.store.sym_name(arg2), head_name, self.store.sym_name(arg1));
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::semantic", message: format!("tax edge: {} -{}-> {}", self.store.sym_name(arg2), head_name, self.store.sym_name(arg1)) });
     }
 
     /// Rebuild the taxonomy from scratch by scanning all known sentences.
@@ -401,17 +400,13 @@ impl SemanticLayer {
         for sid in all_sids {
             self.extract_tax_edge_for(sid);
         }
-        log::debug!(target: "sumo_kb::semantic",
-            "taxonomy rebuilt: {} edges", self.tax_edges.len());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::semantic", message: format!("taxonomy rebuilt: {} edges", self.tax_edges.len()) });
         self.numeric_sort_cache   = self.build_numeric_sort_cache();
         self.numeric_ancestor_set = self.build_numeric_ancestor_set();
         self.poly_variant_symbols = self.build_poly_variant_symbols();
         self.numeric_char_cache   = self.build_numeric_char_cache();
-        log::debug!(target: "sumo_kb::semantic",
-            "numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols, \
-             {} numeric characterizations",
-            self.numeric_sort_cache.len(), self.numeric_ancestor_set.len(),
-            self.poly_variant_symbols.len(), self.numeric_char_cache.len());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::semantic", message: format!("numeric sort cache: {} classes, {} numeric-ancestor classes, {} poly-variant symbols, \
+             {} numeric characterizations", self.numeric_sort_cache.len(), self.numeric_ancestor_set.len(), self.poly_variant_symbols.len(), self.numeric_char_cache.len()) });
     }
 
     /// Build the numeric sort cache by BFS downward from each root in
@@ -811,8 +806,7 @@ impl SemanticLayer {
             }
         }
 
-        log::debug!(target: "sumo_kb::semantic",
-            "extend_taxonomy_with: {} sids -> impact {:?}", new_sids.len(), impact);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::semantic", message: format!("extend_taxonomy_with: {} sids -> impact {:?}", new_sids.len(), impact) });
 
         if !impact.any() {
             // Most common case: no derived state is affected.
@@ -839,9 +833,7 @@ impl SemanticLayer {
                 self.extract_tax_edges_from_subtree(sid);
             }
             let added = self.tax_edges.len() - before;
-            log::debug!(target: "sumo_kb::semantic",
-                "extend_taxonomy_with: {} new tax edges added (total now {})",
-                added, self.tax_edges.len());
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::semantic", message: format!("extend_taxonomy_with: {} new tax edges added (total now {})", added, self.tax_edges.len()) });
 
             if added > 0 {
                 // Rebuild the four derived taxonomy caches.  These
@@ -1289,8 +1281,7 @@ impl SemanticLayer {
         if sentence.is_operator() {
             return self.validate_operator_sentence(sid);
         }
-        log::trace!(target: "sumo_kb::semantic",
-            "validating sentence sid={}", sid);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::semantic", message: format!("validating sentence sid={}", sid) });
 
         let head_id = match sentence.elements.first() {
             Some(Element::Symbol { id, .. })                    => *id,

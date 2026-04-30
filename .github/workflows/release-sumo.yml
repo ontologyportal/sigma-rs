@@ -92,6 +92,16 @@ jobs:
           key: release-sumo-${{ matrix.target }}
 
       - name: Build sumo CLI (release, --target)
+        # `SUMO_BUILD_KIND=release` is embedded into the binary by
+        # `crates/cli/build.rs` and read by `sumo update` to pick
+        # the self-replace flow over the "you built from source —
+        # rebuild" flow.  `SUMO_BUILD_COMMIT` likewise embeds the
+        # release commit so `sumo update` can show useful
+        # provenance even when the binary is run far from a
+        # checkout.
+        env:
+          SUMO_BUILD_KIND:   release
+          SUMO_BUILD_COMMIT: ${{ github.sha }}
         run: cargo build -p sigmakee --release --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)

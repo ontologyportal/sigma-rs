@@ -5,14 +5,27 @@ use log;
 use inline_colorization::*;
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb_profiled, resolve_vampire_path};
-use crate::ask::{ask as native_ask, AskOptions, Binding};
 use crate::cli::util::parse_lang;
-use sumo_kb::{parse_test_content, Profiler};
+use sumo_kb::parse_test_content;
+use sumo_sdk::{ProverBackend, TestOp, TestOutcome};
+use crate::cli::profile::PhaseAggregator;
 
+/// Entry point for `sumo test`.
+///
+/// Walks the supplied paths to discover `.kif.tq` files, builds a
+/// base KB, then drives [`sumo_sdk::TestOp`] per test case so the
+/// CLI can keep its interleaved "Running test: …" / "PASSED" /
+/// "FAILED" / "INCOMPLETE" output between cases — that interleaved
+/// presentation isn't expressible through TestOp's progress events
+/// alone, so we pre-parse each case and feed it via `add_case`.
 pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, backend: String, lang: String, timeout_override: Option<u32>, profile: bool) -> bool {
     log::trace!("run_test(paths={:?}, kb_args={:#?})", paths, kb_args);
     log::debug!("Test subcommand selected");
 
+    // -- Discover .kif.tq files (kept here for the rich error
+    // messages "path not found" and "no .kif.tq files found"; the
+    // SDK's add_dir would discover the same set but with terser
+    // error reporting).
     let mut test_files = Vec::new();
     for path in &paths {
         if path.is_dir() {
@@ -47,10 +60,17 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         return false;
     }
 
-    // Resolve the Vampire binary once up-front so a missing subprocess
-    // prover is reported before we pay the KB-build cost.  The embedded
-    // backend bypasses this (no external binary needed).
-    let resolved_vampire = if backend != "embedded" {
+    // Resolve the Vampire binary once up-front (subprocess only).
+    let prover_backend = match backend.as_str() {
+        #[cfg(feature = "integrated-prover")]
+        "embedded" => ProverBackend::Embedded,
+        "subprocess" | "" => ProverBackend::Subprocess,
+        other => {
+            log::error!("test: unknown backend '{}' (supported: subprocess, embedded)", other);
+            return false;
+        }
+    };
+    let resolved_vampire = if matches!(prover_backend, ProverBackend::Subprocess) {
         let candidate = kb_args.vampire.clone().unwrap_or_else(|| PathBuf::from("vampire"));
         match resolve_vampire_path(&candidate) {
             Ok(p)   => Some(p),
@@ -60,32 +80,31 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         None
     };
 
-    // 1. Build the base KB once
+    // Build the base KB once.  Phase aggregator is installed BEFORE
+    // KB load so the initial load/promote phases are captured.
     log::debug!("Building base KB");
-    let mut all_passed = true;
-    let total_tests = test_files.len();
-    let mut passed_count = 0;
-
-    // Install the profiler BEFORE KB build so the initial load/promote
-    // phases are captured.
-    let profiler = if profile { Some(Arc::new(Profiler::new())) } else { None };
-
+    let aggregator = if profile { Some(Arc::new(PhaseAggregator::new())) } else { None };
+    let sink: Option<sumo_kb::DynSink> = aggregator.clone()
+        .map(|a| a as sumo_kb::DynSink);
     let t_kb = Instant::now();
-    let mut kb = match open_or_build_kb_profiled(&kb_args, profiler.clone()) {
+    let mut kb = match open_or_build_kb_profiled(&kb_args, sink) {
         Ok(k)   => k,
         Err(()) => return false,
     };
     let kb_load = t_kb.elapsed();
 
-    // Accumulators for --profile (coarse per-test summary kept for
-    // compatibility; the fine-grained report from the profiler is
-    // printed alongside).
+    let tptp_lang = parse_lang(&lang);
+    let total_tests = test_files.len();
+    let mut all_passed = true;
+    let mut passed_count = 0;
+
+    // Coarse-summary accumulators kept for `--profile`.
     let mut acc_input_gen    = Duration::ZERO;
     let mut acc_prover_run   = Duration::ZERO;
     let mut acc_output_parse = Duration::ZERO;
     let mut profile_count    = 0usize;
 
-    for (idx, test_file) in test_files.iter().enumerate() {
+    for test_file in &test_files {
         let content = match std::fs::read_to_string(test_file) {
             Ok(c) => c,
             Err(e) => {
@@ -106,9 +125,6 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         log::debug!("Running test from file: {}", test_case.file_name);
         println!("Running test: {} ({})", test_case.note, test_file.display());
 
-        // Each test gets its own session so axioms don't leak between tests.
-        let session = format!("test-{}", idx);
-
         if !test_case.extra_files.is_empty() {
             log::debug!(
                 "test {} references extra files (should be in base KB): {}",
@@ -117,103 +133,80 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
             );
         }
 
-        let axiom_text = test_case.axioms.join("\n");
-        let load_tag = format!("test-src-{}", idx);
-        let load_result = kb.load_kif(&axiom_text, &load_tag, Some(&session));
-        if !load_result.ok {
-            for e in &load_result.errors {
-                log::error!("parse error in test axioms: {}", e);
-            }
-            kb.flush_session(&session);
-            all_passed = false;
-            continue;
-        }
-
-        let semantic_errors = kb.validate_session(&session);
-        if !semantic_errors.is_empty() {
-            for (_, e) in &semantic_errors {
-                log::error!("semantic error in test axioms: {}", e);
-            }
-            kb.flush_session(&session);
-            all_passed = false;
-            continue;
-        }
-
         if let Some(t) = timeout_override {
             test_case.timeout = t;
         }
 
-        let query = match test_case.query {
-            Some(q) => q,
-            None => {
-                log::error!("no query found in test file");
-                kb.flush_session(&session);
+        // Drive TestOp for this single case.  Per-case session
+        // creation, axiom load, validation, prover invocation, and
+        // post-run flush all happen inside TestOp::run().
+        let mut op = TestOp::new(&mut kb)
+            .add_case(test_file.display().to_string(), test_case.clone())
+            .backend(prover_backend)
+            .lang(tptp_lang);
+        if let Some(p) = resolved_vampire.clone() { op = op.vampire_path(p); }
+        if let Some(p) = keep.clone() { op = op.tptp_dump(p); }
+
+        let suite = match op.run() {
+            Ok(s) => s,
+            Err(e) => {
+                log::error!("test: {}", e);
                 all_passed = false;
                 continue;
             }
         };
 
-        log::debug!("Found query for testing: {}", query);
+        // The suite has exactly one case (we added one).  Render it.
+        let case_report = match suite.cases.into_iter().next() {
+            Some(c) => c,
+            None => {
+                log::error!("test: TestOp returned an empty case list — internal error");
+                all_passed = false;
+                continue;
+            }
+        };
 
-        let result = native_ask(
-            &mut kb,
-            &query,
-            AskOptions {
-                // Pass the pre-resolved absolute path so each test doesn't
-                // re-walk $PATH and we skip any surprise if $PATH changes
-                // mid-run.  `None` for the embedded backend.
-                vampire_path: resolved_vampire.clone(),
-                timeout_secs: Some(test_case.timeout),
-                tptp_dump_path: keep.clone(),
-                session: Some(session.clone()),
-                backend: backend.clone(),
-                lang: parse_lang(&lang),
-            },
-        );
-
-        // Accumulate per-test timings.
-        acc_input_gen    += result.timings.input_gen;
-        acc_prover_run   += result.timings.prover_run;
-        acc_output_parse += result.timings.output_parse;
+        acc_input_gen    += case_report.timings.input_gen;
+        acc_prover_run   += case_report.timings.prover_run;
+        acc_output_parse += case_report.timings.output_parse;
         profile_count    += 1;
 
-        kb.flush_session(&session);
-
-        if !result.errors.is_empty() {
-            log::error!("prover error(s) for test {}:", test_case.note);
-            for e in &result.errors {
-                log::error!("  {}", e);
+        match case_report.outcome {
+            TestOutcome::Passed => {
+                println!("  {color_bright_green}PASSED{color_reset}");
+                passed_count += 1;
             }
-            all_passed = false;
-            continue;
-        }
-
-        let expected = test_case.expected_proof.unwrap_or(true);
-        if result.proved == expected {
-            if let Some(expected_answers) = test_case.expected_answer {
-                let found_answers: &Vec<Binding> = result.inference.as_ref();
-                let paired_answers: Vec<(&String, bool)> = expected_answers.iter().map(| e | {
-                    return (e, found_answers.iter().any(|f| *e == f.value))
-                }).collect();
-
-                if !paired_answers.iter().all(|p| p.1) {
-                    println!("  {color_bright_yellow}INCOMPLETE{color_reset}");
-                    println!("    the query was proven but only some answers could be inferred");
-                    println!("    inferred answers: {}", paired_answers.iter().filter_map(| p | if p.1 {Some(p.0.clone())} else {None}).collect::<Vec<String>>().join(", "));
-                    println!("    missing answers: {}", paired_answers.iter().filter_map(| p | if !p.1 {Some(p.0.clone())} else {None}).collect::<Vec<String>>().join(", "));
-                    all_passed = false;
-                    continue
-                }
+            TestOutcome::Failed { expected, got } => {
+                println!("  {color_bright_red}FAILED{color_reset}");
+                println!("    expected: {}, got: {}",
+                    if expected { "yes" } else { "no" },
+                    if got      { "yes" } else { "no" }
+                );
+                all_passed = false;
             }
-            println!("  {color_bright_green}PASSED{color_reset}");
-            passed_count += 1;
-        } else {
-            println!("  {color_bright_red}FAILED{color_reset}");
-            println!("    expected: {}, got: {}",
-                if expected { "yes" } else { "no" },
-                if result.proved { "yes" } else { "no" }
-            );
-            all_passed = false;
+            TestOutcome::Incomplete { inferred, missing } => {
+                println!("  {color_bright_yellow}INCOMPLETE{color_reset}");
+                println!("    the query was proven but only some answers could be inferred");
+                println!("    inferred answers: {}", inferred.join(", "));
+                println!("    missing answers: {}",  missing.join(", "));
+                all_passed = false;
+            }
+            TestOutcome::ParseError(msg) => {
+                log::error!("parse error in test axioms: {}", msg);
+                all_passed = false;
+            }
+            TestOutcome::SemanticError(msg) => {
+                log::error!("semantic error in test axioms: {}", msg);
+                all_passed = false;
+            }
+            TestOutcome::ProverError(msg) => {
+                log::error!("prover error(s) for test {}:\n  {}", case_report.name, msg);
+                all_passed = false;
+            }
+            TestOutcome::NoQuery => {
+                log::error!("no query found in test file");
+                all_passed = false;
+            }
         }
     }
 
@@ -232,11 +225,9 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
         println!("  Query total  {:>10.3} ms  ({:.3} ms / test)", ms(total_query), ms(total_query) / n);
         println!("  Grand total  {:>10.3} ms", ms(kb_load + total_query));
 
-        // Fine-grained per-phase report.  When the `profiling` cargo
-        // feature is off, this is a one-line "feature off" placeholder.
-        if let Some(p) = profiler.as_ref() {
-            println!("\n{style_bold}Profile (fine-grained, from sumo-kb `profiling` feature):{style_reset}");
-            println!("{}", p.report());
+        if let Some(a) = aggregator.as_ref() {
+            println!("\n{style_bold}Profile (fine-grained, per phase):{style_reset}");
+            println!("{}", a.report());
         }
     }
 

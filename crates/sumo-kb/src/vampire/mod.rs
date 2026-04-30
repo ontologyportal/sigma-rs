@@ -73,9 +73,7 @@ impl VampireAxiomCache {
         }
         let (problem, sid_map) = conv.finish();
 
-        log::debug!(target: "sumo_kb::vampire",
-            "axiom cache built: mode={:?}, {} axiom(s), {} skipped",
-            mode, sid_map.len(), skipped);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::vampire", message: format!("axiom cache built: mode={:?}, {} axiom(s), {} skipped", mode, sid_map.len(), skipped) });
 
         VampireAxiomCache { problem, sid_map }
     }

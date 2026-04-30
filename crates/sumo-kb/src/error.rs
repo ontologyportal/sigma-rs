@@ -38,15 +38,24 @@ thread_local! {
 }
 
 /// Run `f` with a diagnostic collector installed on the current
-/// thread.  Every `SemanticError::handle()` call inside `f`
-/// pushes its error into the collector and short-circuits
-/// neither the `?` chain nor the `handle()`-internal log output.
-/// Returns the collected errors alongside whatever `f` returned.
+/// thread.  Every `SemanticError::handle()` call inside `f` pushes
+/// its error into the collector.  Hard errors still short-circuit
+/// `f`'s `?` chain (so `validate_sentence` returns at the first
+/// fatal finding); warnings are pushed and execution continues.
+/// Returns the collected findings alongside whatever `f` returned.
 ///
-/// Re-entrant-safe via a drop guard -- if `f` panics or a nested
-/// `with_collector` is installed, the thread-local is restored
-/// to its previous value on unwind.
-pub(crate) fn with_collector<F, R>(f: F) -> (R, Vec<SemanticError>)
+/// Re-entrant-safe via a drop guard — if `f` panics or a nested
+/// `with_collector` is installed, the thread-local is restored to
+/// its previous value on unwind.
+///
+/// This is the sole supported way for SDK / CLI / LSP consumers to
+/// harvest semantic findings.  `sumo-kb` itself no longer prints
+/// warnings or hard errors — `handle()` is now a pure routing
+/// function (push-to-collector + Result discrimination).  Consumers
+/// render via [`crate::KnowledgeBase::pretty_print_error`] or by
+/// building their own presentation on top of [`SemanticError::code`]
+/// / [`SemanticError::is_warn`].
+pub fn with_collector<F, R>(f: F) -> (R, Vec<SemanticError>)
 where
     F: FnOnce() -> R,
 {
@@ -90,6 +99,18 @@ pub fn set_all_errors(val: bool) {
 pub fn promote_to_error(code_or_name: &str) {
     if let Ok(mut set) = PROMOTED_TO_ERROR.write() {
         set.insert(code_or_name.to_string());
+    }
+}
+
+/// Clear the promoted-error set installed by [`promote_to_error`].
+///
+/// Useful for tests that mutate the global classification table and
+/// need to leave it pristine for subsequent tests, and for long-
+/// running consumers (LSP, daemons) that want to apply a fresh
+/// promotion list when the user's config changes.
+pub fn clear_promoted_errors() {
+    if let Ok(mut set) = PROMOTED_TO_ERROR.write() {
+        set.clear();
     }
 }
 
@@ -182,34 +203,38 @@ impl SemanticError {
         self.current_level() == log::Level::Warn
     }
 
-    /// Dispatch: log as warning or return as error, depending on severity config.
-    /// `store` is used for pretty-printing the offending sentence.
+    /// Dispatch: classify the finding and route it to the caller.
     ///
-    /// When a thread-local collector is installed (see
-    /// [`with_collector`]) every call pushes into it and returns
-    /// `Ok(())` -- the caller's `?` chain does not short-circuit,
-    /// so every check in `validate_sentence` / `validate_element`
-    /// runs to completion.  Logging is skipped in that mode; the
-    /// caller is responsible for surfacing the errors (the LSP
-    /// emits them as diagnostics).
-    pub(crate) fn handle(&self, store: &crate::kif_store::KifStore) -> Result<(), Self> {
-        let collected = COLLECTOR.with(|c| {
-            match c.borrow_mut().as_mut() {
-                Some(vec) => { vec.push(self.clone()); true }
-                None      => false,
+    /// - If a thread-local collector is installed (see
+    ///   [`with_collector`]), the finding is pushed into it.
+    /// - If the finding is a warning (per [`Self::is_warn`]), returns
+    ///   `Ok(())` so the caller's `?` chain continues — every check
+    ///   in `validate_sentence` / `validate_element` runs to
+    ///   completion.
+    /// - If the finding is a hard error, returns `Err(self.clone())`
+    ///   so the caller's `?` chain short-circuits.
+    ///
+    /// **No printing happens here.**  Presentation is the
+    /// consumer's job: the CLI's `semantic_warning!` / `semantic_error!`
+    /// macros call [`crate::KnowledgeBase::pretty_print_error`]; the
+    /// LSP turns each finding into an LSP diagnostic; the SDK
+    /// surfaces them via [`crate::Findings`] on its `ValidationReport`.
+    /// `sumo-kb` is data-only here — the global `NO_WARNINGS` /
+    /// `ALL_ERRORS` / `PROMOTED_TO_ERROR` flags only affect
+    /// classification, never side effects.
+    ///
+    /// `store` is unused in the new design but retained on the
+    /// signature so `semantic.rs`'s ~30 call sites don't churn.  A
+    /// follow-up can drop the parameter.
+    pub(crate) fn handle(&self, _store: &crate::kif_store::KifStore) -> Result<(), Self> {
+        COLLECTOR.with(|c| {
+            if let Some(vec) = c.borrow_mut().as_mut() {
+                vec.push(self.clone());
             }
         });
-        if collected {
-            return Ok(());
-        }
         if self.is_warn() {
-            if !NO_WARNINGS.load(Ordering::SeqCst) {
-                log::warn!(target: "sumo_kb::semantic", "semantic warning ({}) {}", self.code(), self);
-                self.pretty_print(store, log::Level::Warn);
-            }
             Ok(())
         } else {
-            log::error!(target: "sumo_kb::semantic", "semantic error [{}]: {}", self.code(), self);
             Err(self.clone())
         }
     }
@@ -302,6 +327,57 @@ impl SemanticError {
                 }
                 log::log!(target: "clean", level, "\n{}\t{}{color_reset}", color, self);
             }
+        }
+    }
+}
+
+// -- Findings ----------------------------------------------------------------
+
+/// A semantic-validation pass's findings, classified by severity.
+///
+/// Returned from the `_findings` family of validation methods on
+/// [`crate::KnowledgeBase`] and from [`crate::Findings`]-bearing
+/// SDK reports.  Each entry is paired with the [`SentenceId`] the
+/// finding fired against so consumers can map back to source spans
+/// via `kb.sentence(sid)`.
+///
+/// Classification follows [`SemanticError::is_warn`], which honours
+/// the `-Wall` / `-W <code>` / `-q` global flags.  Switching a flag
+/// between two passes will reclassify identical inputs accordingly.
+#[derive(Debug, Clone, Default)]
+pub struct Findings {
+    /// Hard errors (`is_warn() == false`).  Loading commands like
+    /// `sumo load` should treat a non-empty `errors` list as an
+    /// abort condition.
+    pub errors:   Vec<(SentenceId, SemanticError)>,
+    /// Warnings (`is_warn() == true`).  Advisory; consumers may
+    /// render them, suppress them (via `-q` / `warnings_suppressed`),
+    /// or ignore them entirely.
+    pub warnings: Vec<(SentenceId, SemanticError)>,
+}
+
+impl Findings {
+    /// `true` iff no hard errors were reported.  Warnings are
+    /// advisories and don't unset cleanliness — match on
+    /// `warnings.is_empty()` separately if you need a stricter
+    /// "perfectly clean" check.
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Total finding count (errors + warnings).
+    pub fn total(&self) -> usize {
+        self.errors.len() + self.warnings.len()
+    }
+
+    /// Push a finding, classifying by [`SemanticError::is_warn`].
+    /// Useful when collecting findings outside the validate_*
+    /// methods (e.g. inside SDK ops).
+    pub fn push(&mut self, sid: SentenceId, error: SemanticError) {
+        if error.is_warn() {
+            self.warnings.push((sid, error));
+        } else {
+            self.errors.push((sid, error));
         }
     }
 }

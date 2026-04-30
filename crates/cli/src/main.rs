@@ -1,11 +1,10 @@
 /// sumo-parser -- command-line interface.
 use std::process;
 use std::io::Write;
-use log;
 use clap::Parser;
 use inline_colorization::*;
 
-use sigmakee::cli::{Cli, Cmd, KbArgs, run_load, run_validate, run_translate, run_man};
+use sigmakee::cli::{Cli, Cmd, KbArgs, run_load, run_validate, run_translate, run_man, run_update};
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_test, run_debug};
 #[cfg(feature = "server")]
@@ -49,6 +48,8 @@ fn main() {
         None
     };
 
+    // Suppress the semantic warnings based on whether the quiet option
+    // was passed
     suppress_warnings(cli.quiet);
 
     let level = if cli.verbose > 0 {
@@ -203,6 +204,7 @@ fn main() {
             run_man(symbol, lang, no_pager, base_kb_args),
         #[cfg(feature = "server")]
         Cmd::Serve { kb } => run_serve(merge_vampire(&base_kb_args, kb)),
+        Cmd::Update { check } => run_update(check),
     };
     process::exit(if ok { 0 } else { 1 });
 }

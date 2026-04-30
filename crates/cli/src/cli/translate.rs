@@ -1,10 +1,16 @@
 use log;
 use sumo_kb::TptpOptions;
+use sumo_sdk::TranslateOp;
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb, parse_lang, read_stdin, source_tag};
-use crate::semantic_error;
+use crate::{semantic_error, semantic_warning};
 
+/// Entry point for `sumo translate`.
+///
+/// Delegates to [`sumo_sdk::TranslateOp`] for both the inline-formula
+/// and whole-KB paths.  Findings rendered via the CLI macros from
+/// the report's `semantic_errors` / `semantic_warnings` fields.
 pub fn run_translate(
     formula:      Option<String>,
     lang:         &str,
@@ -30,36 +36,52 @@ pub fn run_translate(
 
     match formula {
         Some(text) => {
-            let tag    = source_tag();
-            let sess   = session.unwrap_or(tag);
-            let result = kb.load_kif(&text, tag, Some(sess));
-            if !result.ok {
-                for e in &result.errors { log::error!("{}", e); }
-                return false;
-            }
-            let sids = kb.session_sids(sess);
-            if sids.is_empty() {
-                log::error!("no sentences parsed from input");
-                return false;
-            }
-            for &sid in &sids {
-                if let Err(e) = kb.validate_sentence(sid) {
-                    semantic_error!(&e, kb);
+            let tag = source_tag();
+            // Build the TranslateOp.  `.options(opts)` lets us pass
+            // through CLI-only flags (hide_numbers, show_kif_comment).
+            let mut op = TranslateOp::formula(&mut kb, tag, &text)
+                .lang(tptp_lang)
+                .show_numbers(show_numbers)
+                .show_kif_comments(show_kif);
+            if let Some(s) = session { op = op.session(s); }
+            // Replace whole options block to pick up any future
+            // TptpOptions field additions the dedicated setters
+            // don't cover.  Equivalent to the old direct call.
+            op = op.options(opts);
+
+            let report = match op.run() {
+                Ok(r)  => r,
+                Err(e) => {
+                    log::error!("{}", e);
+                    return false;
                 }
-            }
-            for sid in sids {
-                if show_kif {
-                    println!("% {}", kb.sentence_kif_str(sid));
-                }
-                println!("{}", kb.format_sentence_tptp(sid, &opts));
-            }
+            };
+
+            // The SDK's TranslateReport already carries `tptp` as the
+            // joined output (with optional KIF comments interleaved
+            // when show_kif_comments is on).  Just write it out.
+            for (_, e) in &report.semantic_warnings { semantic_warning!(e, kb); }
+            print!("{}", report.tptp);
             true
         }
         None => {
-            for (_, err) in &kb.validate_all() {
-                semantic_error!(err, kb);
-            }
-            print!("{}", kb.to_tptp(&opts, session));
+            // Whole-KB translate.  Render warnings/errors first so
+            // they precede the TPTP output, matching the legacy
+            // ordering.
+            let f = kb.validate_all_findings();
+            for (_, e) in &f.errors   { semantic_error!(e, kb); }
+            for (_, e) in &f.warnings { semantic_warning!(e, kb); }
+
+            let mut op = TranslateOp::kb(&mut kb).options(opts);
+            if let Some(s) = session { op = op.session(s); }
+            let report = match op.run() {
+                Ok(r)  => r,
+                Err(e) => {
+                    log::error!("{}", e);
+                    return false;
+                }
+            };
+            print!("{}", report.tptp);
             true
         }
     }

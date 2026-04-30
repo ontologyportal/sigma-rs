@@ -31,8 +31,7 @@ pub(crate) fn load_from_db(
 
     // Load symbols
     let stored_syms = env.all_symbols(&txn)?;
-    log::info!(target: "sumo_kb::persist",
-        "load_from_db: loading {} symbols", stored_syms.len());
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("load_from_db: loading {} symbols", stored_syms.len()) });
 
     let max_sym_id = stored_syms.iter().map(|s| s.id).max().unwrap_or(0);
 
@@ -58,8 +57,7 @@ pub(crate) fn load_from_db(
 
     // -- Load formulas ---------------------------------------------------------
     let stored_formulas = env.all_formulas(&txn)?;
-    log::info!(target: "sumo_kb::persist",
-        "load_from_db: loading {} formulas", stored_formulas.len());
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("load_from_db: loading {} formulas", stored_formulas.len()) });
 
     let max_sent_id = stored_formulas.iter().map(|sf| sf.id).max().unwrap_or(0);
 
@@ -116,10 +114,7 @@ pub(crate) fn load_from_db(
     // Seed counters so new IDs do not collide with loaded ones
     store.seed_counters(max_sym_id + 1, max_sent_id + 1);
 
-    log::info!(target: "sumo_kb::persist",
-        "load_from_db: {} sentences, {} symbols; counters seeded at sym={} sent={}",
-        store.sentences.len(), store.symbols.len(),
-        max_sym_id + 1, max_sent_id + 1);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::persist", message: format!("load_from_db: {} sentences, {} symbols; counters seeded at sym={} sent={}", store.sentences.len(), store.symbols.len(), max_sym_id + 1, max_sent_id + 1) });
 
     Ok((store, session_map))
 }

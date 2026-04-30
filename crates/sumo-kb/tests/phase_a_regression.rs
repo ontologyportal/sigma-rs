@@ -8,7 +8,7 @@
 //! results.
 #![cfg(all(feature = "cnf", feature = "integrated-prover", feature = "ask"))]
 
-use sumo_kb::{KnowledgeBase, ProverStatus};
+use sumo_kb::{KnowledgeBase, ProverStatus, TptpLang};
 
 fn tiny_kb() -> KnowledgeBase {
     let mut kb = KnowledgeBase::new();
@@ -38,9 +38,9 @@ fn tiny_kb() -> KnowledgeBase {
 fn non_taxonomy_query_stable_across_repeats() {
     let mut kb = tiny_kb();
     let q = "(attribute Alice Warm)";
-    let s1 = kb.ask_embedded(q, None, 5).status;
-    let s2 = kb.ask_embedded(q, None, 5).status;
-    let s3 = kb.ask_embedded(q, None, 5).status;
+    let s1 = kb.ask_embedded(q, None, 5, TptpLang::Fof).status;
+    let s2 = kb.ask_embedded(q, None, 5, TptpLang::Fof).status;
+    let s3 = kb.ask_embedded(q, None, 5, TptpLang::Fof).status;
     assert_eq!(s1, ProverStatus::Proved);
     assert_eq!(s1, s2);
     assert_eq!(s2, s3);
@@ -54,8 +54,8 @@ fn non_taxonomy_query_stable_across_repeats() {
 fn taxonomy_query_stable_across_repeats() {
     let mut kb = tiny_kb();
     let q = "(subclass Human Entity)";  // transitively derivable
-    let s1 = kb.ask_embedded(q, None, 5).status;
-    let s2 = kb.ask_embedded(q, None, 5).status;
+    let s1 = kb.ask_embedded(q, None, 5, TptpLang::Fof).status;
+    let s2 = kb.ask_embedded(q, None, 5, TptpLang::Fof).status;
     assert_eq!(s1, ProverStatus::Proved);
     assert_eq!(s1, s2);
 }
@@ -68,12 +68,12 @@ fn skipped_rebuild_does_not_poison_later_queries() {
     let mut kb = tiny_kb();
 
     // First: a non-taxonomy ask that exercises the skip path.
-    let _ = kb.ask_embedded("(attribute Alice Warm)", None, 5);
+    let _ = kb.ask_embedded("(attribute Alice Warm)", None, 5, TptpLang::Fof);
 
     // Then: a taxonomy-dependent ask that relies on the full taxonomy
     // being intact.  Must still derive `(instance Alice Animal)` via
     // subclass transitivity.
-    let r = kb.ask_embedded("(instance Alice Animal)", None, 5);
+    let r = kb.ask_embedded("(instance Alice Animal)", None, 5, TptpLang::Fof);
     assert_eq!(r.status, ProverStatus::Proved,
         "taxonomy-dependent query after non-taxonomy ask should still succeed");
 }
@@ -87,14 +87,14 @@ fn taxonomy_ask_does_not_leak_into_axioms() {
     let mut kb = tiny_kb();
 
     // Ask a tax relation NOT present in the KB.
-    let r = kb.ask_embedded("(subclass Rock Animal)", None, 5);
+    let r = kb.ask_embedded("(subclass Rock Animal)", None, 5, TptpLang::Fof);
     // Whatever the answer, we don't care -- we just want the query
     // side-effect-cleaned.
     let _ = r;
 
     // Now query whether Rock is an Animal -- should NOT be provable
     // because we never actually asserted (subclass Rock Animal).
-    let r2 = kb.ask_embedded("(instance SomeRockInstance Animal)", None, 5);
+    let r2 = kb.ask_embedded("(instance SomeRockInstance Animal)", None, 5, TptpLang::Fof);
     // Should not be Proved (there's no `SomeRockInstance` at all).
     assert_ne!(r2.status, ProverStatus::Proved,
         "transient tax-head query leaked into axioms");

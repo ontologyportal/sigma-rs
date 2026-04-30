@@ -171,8 +171,18 @@ fn hover_on_symbol_returns_manpage_markdown() {
         HoverContents::Markup(MarkupContent { kind, value }) => {
             assert_eq!(kind, MarkupKind::Markdown);
             assert!(value.contains("### Human"), "markdown missing heading: {}", value);
-            assert!(value.contains("Human being"),
+            // SDK pre-resolves the `&%Human` cross-ref into a structured
+            // link span; the hover renderer bolds it.  The surrounding
+            // text "A ... being." is still present, just split around
+            // the bolded reference.
+            assert!(value.contains("**Human**"),
+                "markdown missing bolded cross-ref: {}", value);
+            assert!(value.contains("being"),
                 "markdown missing documentation text: {}", value);
+            // And the raw `&%` marker must NOT leak through —
+            // the SDK is the only place that knows that syntax.
+            assert!(!value.contains("&%"),
+                "raw cross-ref marker leaked: {}", value);
         }
         other => panic!("expected markup hover contents, got {:?}", other),
     }

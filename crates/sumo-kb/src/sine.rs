@@ -98,8 +98,8 @@ impl SineParams {
 /// Eagerly-maintained SInE index.
 ///
 /// Lives in `KnowledgeBase` as `RwLock<SineIndex>` (behind `feature = "vampire"`)
-/// and is kept in sync with the promoted axiom set via [`add_axiom`] /
-/// [`remove_axiom`] at every promotion site.  Reads are lock-free for select;
+/// and is kept in sync with the promoted axiom set via `Self::add_axiom` /
+/// `Self::remove_axiom` at every promotion site.  Reads are lock-free for select;
 /// tolerance changes require a write but only rebuild the D-relation portion.
 pub struct SineIndex {
     /// The tolerance at which [`trigger_idx`] and [`axiom_triggers`] are
@@ -156,7 +156,8 @@ pub struct SineIndex {
 
 /// Counters for which code paths `SineIndex` took since the last
 /// `take_stats()` call.  Exclusively for unit-test assertions; timing
-/// of these paths belongs to the general `crate::profiling::Profiler`.
+/// of these paths is reported via `ProgressEvent::PhaseStarted` /
+/// `PhaseFinished` events emitted by `profile_span!` macros.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AddAxiomStats {
     /// Number of `add_axiom` calls.
@@ -292,7 +293,7 @@ impl SineIndex {
     /// generality counts and recomputing triggers for every other
     /// axiom that shared a symbol with it.
     ///
-    /// Symmetric to [`add_axiom`].  Idempotent: calling twice, or on
+    /// Symmetric to `Self::add_axiom`.  Idempotent: calling twice, or on
     /// an sid that was never added, is a no-op.  After removal `sid`
     /// is not reported by [`triggers`](SineIndex::triggers),
     /// [`generality`](SineIndex::generality),
@@ -371,7 +372,7 @@ impl SineIndex {
         }
     }
 
-    /// Bulk-remove sids.  Delegates to [`remove_axiom`] in a loop —
+    /// Bulk-remove sids.  Delegates to `Self::remove_axiom` in a loop —
     /// if profiling shows per-call overhead, a future optimisation
     /// could gather affected axioms once across the entire batch
     /// and recompute each one just once rather than up to |sids|
@@ -584,12 +585,7 @@ impl SineIndex {
             self.recompute_triggers_for(a);
         }
 
-        log::debug!(target: "sumo_kb::sine",
-            "SineIndex::rebuild_from: {} axioms, {} symbols, {} trigger entries",
-            self.axiom_count(),
-            self.sym_axioms.len(),
-            self.trigger_idx.values().map(|s| s.len()).sum::<usize>(),
-        );
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::sine", message: format!("SineIndex::rebuild_from: {} axioms, {} symbols, {} trigger entries", self.axiom_count(), self.sym_axioms.len(), self.trigger_idx.values().map(|s| s.len()).sum::<usize>()) });
     }
 
     /// Clear and rebuild the D-relation portion of the index at a new
@@ -617,12 +613,8 @@ impl SineIndex {
             self.axiom_triggers.insert(a, HashSet::new());
             self.recompute_triggers_for(a);
         }
-        log::debug!(target: "sumo_kb::sine",
-            "SineIndex::set_tolerance: rebuilt trigger relation at t={} \
-             ({} axioms, {} trigger entries)",
-            new, self.axiom_count(),
-            self.trigger_idx.values().map(|s| s.len()).sum::<usize>(),
-        );
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::sine", message: format!("SineIndex::set_tolerance: rebuilt trigger relation at t={} \
+             ({} axioms, {} trigger entries)", new, self.axiom_count(), self.trigger_idx.values().map(|s| s.len()).sum::<usize>()) });
     }
 
     /// Drop all state.  Returns the index to the state of `new(tolerance)`.
@@ -707,7 +699,7 @@ impl SineIndex {
     /// reached.  `depth_limit` (if `Some`) caps the BFS at that many waves.
     ///
     /// `seed_syms` is typically the union of symbols across the conjecture's
-    /// sentences, computed by [`collect_conjecture_symbols`].
+    /// sentences, computed by `collect_conjecture_symbols`.
     pub fn select(
         &self,
         seed_syms:   &HashSet<SymbolId>,
@@ -745,10 +737,7 @@ impl SineIndex {
             depth += 1;
         }
 
-        log::debug!(target: "sumo_kb::sine",
-            "SineIndex::select: {} seed syms -> {} axioms ({} syms visited, depth {})",
-            seed_syms.len(), selected.len(), visited_syms.len(), depth,
-        );
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::sine", message: format!("SineIndex::select: {} seed syms -> {} axioms ({} syms visited, depth {})", seed_syms.len(), selected.len(), visited_syms.len(), depth) });
         selected
     }
 }

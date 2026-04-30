@@ -358,8 +358,7 @@ impl<'a> NativeConverter<'a> {
             }
         }
         let idx = self.vars.get(name).copied().unwrap_or_else(|| {
-            log::warn!(target: "sumo_kb::converter",
-                "unknown variable '{}' -- defaulting to index 0", name);
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::converter", message: format!("unknown variable '{}' -- defaulting to index 0", name) });
             0
         });
         IrT::var(idx)

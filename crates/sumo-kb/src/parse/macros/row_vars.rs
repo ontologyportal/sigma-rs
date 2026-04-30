@@ -183,7 +183,7 @@ pub fn expand_row_vars(node: &AstNode, parser: &Parser) -> Vec<AstNode> {
     let str_rep = node.to_string();
     let row_vars = find_row_var_names(str_rep.as_str());
     
-    log::debug!("Macro expansion: row variable expansion: expanding {}", str_rep);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb", message: format!("Macro expansion: row variable expansion: expanding {}", str_rep) });
 
     // Seed result with the original formula
     let mut result: Vec<String> = vec![str_rep];
@@ -211,8 +211,8 @@ pub fn expand_row_vars(node: &AstNode, parser: &Parser) -> Vec<AstNode> {
         result = new_result;
     }
 
-    log::debug!("Macro expansion: row variable expansion: expanded into {} new sentences", result.len());
-    log::debug!("{}", result.join("\n"));
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb", message: format!("Macro expansion: row variable expansion: expanded into {} new sentences", result.len()) });
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb", message: format!("{}", result.join("\n")) });
 
     // Parse each expanded string back into an AstNode, discarding any failures
     result.into_iter()

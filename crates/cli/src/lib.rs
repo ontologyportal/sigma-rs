@@ -69,6 +69,27 @@ macro_rules! semantic_error {
     };
 }
 
+/// Print a semantic *warning* using the KB's built-in pretty-printer.
+///
+/// Companion to [`semantic_error!`].  Honours the `-q` /
+/// `suppress_warnings(true)` flag — the macro is a no-op when
+/// warnings are suppressed.  Use this for findings classified by
+/// [`sumo_kb::SemanticError::is_warn`] (e.g. everything in
+/// [`sumo_kb::Findings::warnings`] from `kb.validate_*_findings`).
+///
+/// Usage: `semantic_warning!(e, kb)` where `e: &SemanticError`.
+#[macro_export]
+macro_rules! semantic_warning {
+    ($e:expr, $kb:expr) => {
+        {
+            if !sumo_kb::error::warnings_suppressed() {
+                $kb.pretty_print_error($e, log::Level::Warn);
+                eprintln!();
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

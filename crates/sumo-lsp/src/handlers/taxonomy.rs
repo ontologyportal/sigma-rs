@@ -18,11 +18,22 @@
 // that by default would drown the diagram.  We can always add a
 // `direction: "up" | "down" | "both"` parameter later if a client
 // wants to opt in.
+//
+// # SDK migration
+//
+// Symbol introspection goes through [`sumo_sdk::manpage_view`]
+// (rather than `kb.manpage(...)` directly) so that the
+// `&%CrossRef` marker syntax is resolved into structured spans
+// before we render documentation into the wire DTO.  Two consumers
+// of symbol pages (this handler and `handlers::hover`) now share
+// one cross-ref convention; if the marker syntax ever changes,
+// only the SDK needs to know.
 
 use std::collections::{HashSet, VecDeque};
 
 use lsp_types::request::Request;
 use serde::{Deserialize, Serialize};
+use sumo_sdk::{DocBlock, DocSpan};
 
 use crate::state::GlobalState;
 
@@ -69,13 +80,22 @@ pub struct TaxonomyResponse {
     pub edges:         Vec<TaxonomyEdgeDto>,
 }
 
-/// Serialisable mirror of `sumo_kb::DocEntry`.  Mirrored (not
-/// re-exported) so the LSP wire format is decoupled from the KB's
-/// internal types.
+/// Serialisable documentation entry for the taxonomy DTO.  Sourced
+/// from [`sumo_sdk::DocBlock`] — the SDK pre-resolves
+/// `&%Symbol` cross-refs into structured spans, which we then
+/// flatten back to a plain string for the wire format.  The net
+/// effect for the client: the `text` field is free of marker
+/// syntax (e.g. `"&%Animal"` becomes `"Animal"`), matching what
+/// hover already produces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocEntryDto {
+    /// IETF-style language tag (e.g. `"EnglishLanguage"`).
     pub language: String,
+    /// Plain-text rendering of the documentation block, with all
+    /// `&%CrossRef` markers stripped.  Each cross-referenced
+    /// symbol's bare name remains in the text where the marker
+    /// used to be — see `flatten_doc_block`.
     pub text:     String,
 }
 
@@ -114,15 +134,21 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
     };
 
     // Root lookup also validates existence; if the symbol isn't in
-    // the KB we bail without a BFS.
-    let Some(root_page) = kb.manpage(&root) else {
+    // the KB we bail without a BFS.  `manpage_view` is the SDK's
+    // structured projection of `kb.manpage`: same parents data, but
+    // documentation arrives as `Vec<DocBlock>` whose `spans` already
+    // have `&%X` markers parsed into typed link spans.
+    let Some(root_view) = sumo_sdk::manpage_view(&kb, &root) else {
         return TaxonomyResponse {
             symbol: root, unknown: true, ..Default::default()
         };
     };
 
-    let documentation: Vec<DocEntryDto> = root_page.documentation.iter()
-        .map(|d| DocEntryDto { language: d.language.clone(), text: d.text.clone() })
+    let documentation: Vec<DocEntryDto> = root_view.documentation.iter()
+        .map(|block| DocEntryDto {
+            language: block.language.clone(),
+            text:     flatten_doc_block(block),
+        })
         .collect();
 
     // Upward BFS.  `visited` protects against the multi-inheritance
@@ -134,10 +160,10 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
 
     visited.insert(root.clone());
 
-    // Seed the BFS with the root's parents (taken from the ManPage
-    // we already fetched above, so we save a re-query).  Subsequent
+    // Seed the BFS with the root's parents (taken from the view we
+    // already fetched above, so we save a re-query).  Subsequent
     // layers are expanded inside the loop.
-    push_parent_edges(&root, &root_page.parents, &mut edges, &mut visited, &mut queue);
+    push_parent_edges(&root, &root_view.parents, &mut edges, &mut visited, &mut queue);
 
     while let Some(current) = queue.pop_front() {
         if visited.len() >= MAX_NODES {
@@ -147,8 +173,11 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
             break;
         }
 
-        let Some(page) = kb.manpage(&current) else { continue; };
-        push_parent_edges(&current, &page.parents, &mut edges, &mut visited, &mut queue);
+        // BFS layers only need parents — fetch the smaller
+        // `manpage_view` rather than the raw `ManPage` for
+        // consistency, even though we don't render its docs.
+        let Some(view) = sumo_sdk::manpage_view(&kb, &current) else { continue; };
+        push_parent_edges(&current, &view.parents, &mut edges, &mut visited, &mut queue);
     }
 
     TaxonomyResponse {
@@ -157,6 +186,23 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
         documentation,
         edges,
     }
+}
+
+/// Flatten a [`DocBlock`]'s structured spans back to plain text for
+/// the wire DTO.  `Text` spans pass through verbatim; `Link` spans
+/// emit just their visible label (the symbol name, without the
+/// `&%` marker).  Concatenating spans this way reproduces the
+/// original documentation source minus any cross-ref marker syntax —
+/// which is exactly what the client wants for graph annotations.
+fn flatten_doc_block(block: &DocBlock) -> String {
+    let mut out = String::new();
+    for span in &block.spans {
+        match span {
+            DocSpan::Text(t)            => out.push_str(t),
+            DocSpan::Link { text, .. }  => out.push_str(text),
+        }
+    }
+    out
 }
 
 /// Append an edge per parent of `child` and enqueue newly-seen
@@ -296,5 +342,36 @@ mod tests {
         assert!(!resp.unknown);
         // Both edges present, no infinite recursion.
         assert_eq!(resp.edges.len(), 2);
+    }
+
+    #[test]
+    fn cross_refs_in_documentation_are_stripped_to_bare_names() {
+        // SDK's `manpage_view` resolves `&%Symbol` markers into
+        // structured `DocSpan::Link` entries; `flatten_doc_block`
+        // then renders each link as just its visible label.  The
+        // wire DTO must therefore not contain any `&%` markers.
+        let kb = r#"
+            (subclass Human Hominid)
+            (documentation Human EnglishLanguage
+                "A member of the species &%HomoSapiens, distinguished from &%Plant.")
+        "#;
+        let state = load(kb);
+        let resp  = handle_taxonomy(&state, TaxonomyParams {
+            symbol: "Human".into(),
+        });
+        assert!(!resp.unknown);
+        assert_eq!(resp.documentation.len(), 1);
+        let doc = &resp.documentation[0];
+        // The cross-referenced symbol names survive verbatim;
+        // the marker prefix does not.
+        assert!(doc.text.contains("HomoSapiens"),
+            "cross-ref label missing from rendered doc: {}", doc.text);
+        assert!(doc.text.contains("Plant"),
+            "cross-ref label missing from rendered doc: {}", doc.text);
+        assert!(!doc.text.contains("&%"),
+            "raw cross-ref marker leaked into wire DTO: {}", doc.text);
+        // Surrounding prose is preserved.
+        assert!(doc.text.contains("species"));
+        assert!(doc.text.contains("distinguished"));
     }
 }

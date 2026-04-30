@@ -37,7 +37,7 @@ fn lst(els: Vec<AstNode>) -> AstNode { AstNode::List { elements: els, span: dumm
 /// visible `(forall (?X1) ...)` block.
 ///
 /// Same-kind nested quantifiers that aren't at the top level are
-/// collapsed by [`Fml::peel_same_quantifier`] during AST
+/// collapsed by `Fml::peel_same_quantifier` during AST
 /// conversion — `(exists (?X1) (exists (?X2) body))` becomes
 /// `(exists (?X1 ?X2) body)`.
 pub fn formula_to_ast(tptp: &str) -> Option<AstNode> {
@@ -73,7 +73,7 @@ pub struct KifProofStep {
     pub premises: Vec<usize>,
     /// The formula for this step as a KIF AST, ready for pretty-printing.
     pub formula:  AstNode,
-    /// Source [`SentenceId`] when this step traces directly back to an
+    /// Source [`crate::SentenceId`] when this step traces directly back to an
     /// input axiom whose name Vampire preserved (requires
     /// `--output_axiom_names on`).  `None` for derived steps, for
     /// older Vampire builds, and for anonymous axioms.  Downstream
@@ -123,7 +123,7 @@ pub fn proof_steps_to_kif(
 }
 
 /// Parse an axiom name of the form `"kb_<digits>"` into a
-/// [`SentenceId`](crate::types::SentenceId).  Anything else — including
+/// [`crate::SentenceId`](crate::types::SentenceId).  Anything else — including
 /// `"kb_anon_0"` (Vampire's fallback for axioms we couldn't assign a
 /// sid to) and names from other prover conventions — returns `None`.
 fn parse_kb_axiom_name(name: &str) -> Option<crate::types::SentenceId> {

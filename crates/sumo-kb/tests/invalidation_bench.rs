@@ -80,11 +80,11 @@ fn measure_ask_invalidation_cost() {
     fn bench(label: &str, kb: &mut KnowledgeBase, query: &str) {
         println!("\n  === {label}: \"{query}\" ===");
         // Warm-up: prime any lazy caches.
-        let _ = kb.ask_embedded(query, None, 3);
+        let _ = kb.ask_embedded(query, None, 3, TptpLang::Fof);
         let mut times: Vec<Duration> = Vec::with_capacity(5);
         for i in 1..=5 {
             let t = Instant::now();
-            let _r = kb.ask_embedded(query, None, 3);
+            let _r = kb.ask_embedded(query, None, 3, TptpLang::Fof);
             let dt = t.elapsed();
             times.push(dt);
             println!("    ask_embedded #{i}:  {dt:?}");

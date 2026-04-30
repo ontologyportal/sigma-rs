@@ -37,15 +37,28 @@ pub const METHOD: &str = "sumo/setActiveFiles";
 /// Apply a `sumo/setActiveFiles` notification.
 ///
 /// Computes a symmetric difference against the KB's currently-
-/// loaded `file_roots`, then applies adds / removes via the
-/// existing mutation surface.  Returns the files that were added
-/// + those that were removed so callers can republish
-/// diagnostics for each.
+/// loaded `file_roots`, then applies adds / removes via the SDK's
+/// [`sumo_sdk::IngestOp`].  Returns the files that were added + those
+/// that were removed so callers can republish diagnostics for each.
+///
+/// # SDK migration
+///
+/// File reading and per-source dispatch (reconcile vs. fresh-load)
+/// are delegated to `IngestOp`.  The handler keeps the bits the SDK
+/// has no opinion on:
+///
+/// - The "rebuild is cheaper than incremental remove" heuristic
+///   (KB-wide concern, not an ingest concern).
+/// - The actual `kb.remove_file` calls when the incremental path is
+///   chosen (the SDK is additive — ingest only).
+/// - Translating SDK [`sumo_sdk::SdkError::Io`] failures into the
+///   per-tag `failed` vec the protocol returns.
 pub fn handle_set_active_files(
     state:  &GlobalState,
     params: SetActiveFilesParams,
 ) -> SetActiveFilesReport {
     use std::collections::HashSet;
+    use sumo_sdk::{IngestOp, SdkError};
 
     let requested: HashSet<String> = params.files.into_iter().collect();
 
@@ -75,79 +88,67 @@ pub fn handle_set_active_files(
         if rebuild_is_cheaper { " (rebuild path)" } else { "" });
 
     let mut report = SetActiveFilesReport::default();
+    let mut kb = state.kb.write().expect("kb lock not poisoned");
 
-    {
-        let mut kb = state.kb.write().expect("kb lock not poisoned");
+    // Decide which files the SDK should ingest, and whether to
+    // discard the existing KB first.
+    let files_to_ingest: Vec<String> = if rebuild_is_cheaper {
+        *kb = sumo_kb::KnowledgeBase::new();
+        report.removed = currently_loaded.into_iter().collect();
+        requested.into_iter().collect()
+    } else {
+        for tag in &to_remove {
+            kb.remove_file(tag);
+            report.removed.push(tag.clone());
+        }
+        to_add
+    };
 
-        if rebuild_is_cheaper {
-            // Wipe by replacing the KB; everything we care about
-            // lives in the per-file stores, which a fresh KB
-            // starts empty.  We then bulk-load the requested files
-            // through the batched `reconcile_files` entry point so
-            // promotion + SInE rebuild happen once across the
-            // whole set (quadratic otherwise on a cold KB).
-            *kb = sumo_kb::KnowledgeBase::new();
-            report.removed = currently_loaded.into_iter().collect();
-
-            let mut readable: Vec<(String, String)> = Vec::with_capacity(requested.len());
-            for tag in &requested {
-                match std::fs::read_to_string(tag) {
-                    Ok(text) => readable.push((tag.clone(), text)),
-                    Err(e)   => {
+    // Drive the SDK's IngestOp.  It handles the file reads and
+    // dispatches each source to `reconcile_file` (already-known tag)
+    // or `kb.load_kif` + axiomatic-promotion (fresh tag).  Per-source
+    // I/O failures bubble out as `SdkError::Io` and we translate them
+    // into the per-tag `failed` entries the protocol expects.
+    //
+    // `IngestOp::run` aborts on the FIRST failure, so we drive it
+    // file-by-file rather than as one batch — that way a single
+    // bad-read file doesn't take down the whole set.
+    for tag in files_to_ingest {
+        let op_result = IngestOp::new(&mut *kb).add_file(&tag).run();
+        match op_result {
+            Ok(ingest_report) => {
+                for s in &ingest_report.sources {
+                    if !s.semantic_warnings.is_empty() {
                         log::warn!(target: "sumo_lsp::kb",
-                            "setActiveFiles: cannot read '{}': {}", tag, e);
-                        report.failed.push((tag.clone(), e.to_string()));
+                            "setActiveFiles: '{}' surfaced {} semantic warning(s)",
+                            s.tag, s.semantic_warnings.len());
                     }
                 }
+                report.added.push(tag);
             }
-
-            let reports = kb.reconcile_files(
-                readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
-            );
-            for r in &reports {
-                if !r.parse_errors.is_empty() {
-                    log::warn!(target: "sumo_lsp::kb",
-                        "setActiveFiles: load '{}' surfaced {} parse error(s)",
-                        r.file, r.parse_errors.len());
-                }
-                report.added.push(r.file.clone());
+            Err(SdkError::Io { source, .. }) => {
+                log::warn!(target: "sumo_lsp::kb",
+                    "setActiveFiles: cannot read '{}': {}", tag, source);
+                report.failed.push((tag, source.to_string()));
             }
-        } else {
-            // Incremental path.  Small delta, same-shape KB.
-            // Remove first so stale cache entries aren't quoted by
-            // the reconcile pass, then batch-ingest the adds so a
-            // multi-file delta still collapses to one promotion.
-            for tag in &to_remove {
-                kb.remove_file(tag);
-                report.removed.push(tag.clone());
+            Err(SdkError::Kb(e)) => {
+                // Parse failures land here.  Surface as a load
+                // warning (matches the legacy log shape) and still
+                // record the file as added so diagnostics get
+                // republished and the editor sees the squiggle.
+                log::warn!(target: "sumo_lsp::kb",
+                    "setActiveFiles: load '{}' surfaced KB error: {}", tag, e);
+                report.added.push(tag);
             }
-
-            let mut readable: Vec<(String, String)> = Vec::with_capacity(to_add.len());
-            for tag in &to_add {
-                match std::fs::read_to_string(tag) {
-                    Ok(text) => readable.push((tag.clone(), text)),
-                    Err(e)   => {
-                        log::warn!(target: "sumo_lsp::kb",
-                            "setActiveFiles: cannot read '{}': {}", tag, e);
-                        report.failed.push((tag.clone(), e.to_string()));
-                    }
-                }
-            }
-
-            let reports = kb.reconcile_files(
-                readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
-            );
-            for r in &reports {
-                if !r.parse_errors.is_empty() {
-                    log::warn!(target: "sumo_lsp::kb",
-                        "setActiveFiles: load '{}' surfaced {} parse error(s)",
-                        r.file, r.parse_errors.len());
-                }
-                report.added.push(r.file.clone());
+            Err(other) => {
+                log::warn!(target: "sumo_lsp::kb",
+                    "setActiveFiles: ingest of '{}' failed: {}", tag, other);
+                report.failed.push((tag, other.to_string()));
             }
         }
     }
 
+    drop(kb); // release the write lock before returning
     report
 }
 

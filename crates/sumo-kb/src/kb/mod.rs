@@ -19,7 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::error::{KbError, SemanticError, Span, TellResult, TellWarning};
+use crate::error::{Findings, KbError, SemanticError, Span, TellResult, TellWarning};
 // Feature-gated imports — each is only used inside a matching cfg
 // block below.  Un-gating them produces "unused import" warnings
 // under feature combos that compile only some of the dedup /
@@ -58,43 +58,42 @@ use crate::prover::{ProverMode, ProverOpts, ProverRunner, ProverStatus};
 // tree.
 /// Timed-span macro for KB instrumentation.
 ///
-/// Expands to `self.profiler.as_ref().map(|p| p.span(phase))` at the
-/// call site.  Using a macro (instead of a `fn span(&self, ...)`
-/// method) preserves Rust's field-level borrow disjointness: the
-/// returned guard borrows only `self.profiler`, not all of `self`,
-/// so surrounding code can still mutate other fields.
+/// Emits a [`crate::progress::ProgressEvent::PhaseStarted`] at the
+/// call site and a matching [`crate::progress::ProgressEvent::PhaseFinished`]
+/// when the returned guard drops.  When no progress sink is
+/// installed on `self`, the emit sites are predicted-None branches
+/// — effectively free.  Phase names are compile-time `&'static str`
+/// constants so consumers can match cheaply.
 ///
 /// Usage:
 ///
 /// ```ignore
 /// let _span = profile_span!(self, "ingest.parse");
 /// // ... work ...
-/// // _span drops here, recording duration onto the profiler.
+/// // _span drops here, emitting PhaseFinished.
 /// ```
 ///
-/// When no profiler is installed, `.as_ref()` returns `None` and
-/// `.map` yields `None`, so the `_span = None` binding compiles to
-/// nothing measurable.  When the `profiling` feature is off at
-/// build time, the span guard itself is a zero-sized no-op.
+/// Returns a `PhaseGuard` (RAII).  The macro does NOT borrow `self`
+/// for the guard's lifetime — only at the moment of emission — so
+/// surrounding code can freely mutate other fields.
 ///
 /// Declared BEFORE the `mod prove;` / `mod export;` / `pub mod man;`
 /// sub-module declarations so those submodules can use it too.
 macro_rules! profile_span {
-    ($self:ident, $phase:literal) => {
-        $self.profiler.as_ref().map(|p| p.span($phase))
-    };
+    ($self:ident, $phase:literal) => {{
+        $self.emit($crate::progress::ProgressEvent::PhaseStarted { name: $phase });
+        $crate::kb::PhaseGuard::new($self.progress_sink().cloned(), $phase)
+    }};
 }
 
 /// Companion to `profile_span!`: time an expression that requires
 /// `&mut self`.
 ///
-/// `profile_span!` holds an immutable borrow on `self.profiler` for
-/// the whole span's lifetime and so is incompatible with calling
-/// `&mut self` methods inside the measured scope.  `profile_call!`
-/// instead captures the start time, evaluates the expression (which
-/// is free to take a mutable borrow), and records the elapsed time
-/// against the profiler only after the expression completes — by
-/// which point the mutable borrow has already been released.
+/// Emits a [`crate::progress::ProgressEvent::PhaseStarted`] before
+/// the expression evaluates and a matching `PhaseFinished` after it
+/// completes.  Unlike `profile_span!`, the start emit fires *and*
+/// the start-borrow on `self` is released before the expression
+/// runs, so the expression can take `&mut self`.
 ///
 /// Usage:
 ///
@@ -107,13 +106,36 @@ macro_rules! profile_span {
 #[allow(unused_macros)]
 macro_rules! profile_call {
     ($self:ident, $phase:literal, $e:expr) => {{
-        let __t = std::time::Instant::now();
+        $self.emit($crate::progress::ProgressEvent::PhaseStarted { name: $phase });
         let __r = $e;
-        if let Some(p) = $self.profiler.as_ref() {
-            p.record($phase, __t.elapsed());
-        }
+        $self.emit($crate::progress::ProgressEvent::PhaseFinished { name: $phase });
         __r
     }};
+}
+
+/// RAII guard returned by [`profile_span!`].  Holds an optional
+/// reference to the sink so we can emit `PhaseFinished` on drop
+/// without re-borrowing `self`.  Cheap when no sink is installed:
+/// just an `Option<Arc<…>>` the size of one pointer + a discriminant.
+pub struct PhaseGuard {
+    sink: Option<crate::progress::DynSink>,
+    name: &'static str,
+}
+
+impl PhaseGuard {
+    #[inline]
+    pub fn new(sink: Option<crate::progress::DynSink>, name: &'static str) -> Self {
+        Self { sink, name }
+    }
+}
+
+impl Drop for PhaseGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if let Some(sink) = &self.sink {
+            sink.emit(&crate::progress::ProgressEvent::PhaseFinished { name: self.name });
+        }
+    }
 }
 
 #[cfg(feature = "ask")]
@@ -239,7 +261,7 @@ pub struct KnowledgeBase {
     /// Wrapped KifStore + semantic cache.
     layer: SemanticLayer,
 
-    /// In-memory session assertions: session name -> Vec<SentenceId>.
+    /// In-memory session assertions: session name → `Vec<SentenceId>`.
     /// Sentences here have NOT been promoted to axioms yet.
     sessions: HashMap<String, Vec<SentenceId>>,
 
@@ -302,17 +324,15 @@ pub struct KnowledgeBase {
     /// on every build regardless of whether the prover is linked.
     sine_index: RwLock<SineIndex>,
 
-    /// Optional per-phase profiler for ingest/promote/ask work.
-    /// `None` unless the caller has explicitly installed one via
-    /// [`set_profiler`].  When a profiler is installed, hot paths
-    /// create RAII `ProfileSpan`s inside each instrumented block;
-    /// when `feature = "profiling"` is off at build time those
-    /// spans are zero-sized no-ops.
+    /// Optional progress sink.  When set, the KB's internal
+    /// instrumentation emits `ProgressEvent`s through it.  Phase-
+    /// timing events (`PhaseStarted` / `PhaseFinished`) flow through
+    /// the same sink and are aggregated by whichever consumer cares
+    /// (the CLI's `--profile` flag installs an aggregator that
+    /// computes per-phase totals from the event stream).
     ///
-    /// The field itself is an `Option<Arc<...>>` so that the same
-    /// profiler can be shared across multiple KB instances (useful
-    /// for test harnesses that open and close KBs within one run).
-    profiler: Option<std::sync::Arc<crate::profiling::Profiler>>,
+    /// `None` by default; set via [`KnowledgeBase::set_progress_sink`].
+    progress: Option<crate::progress::DynSink>,
 }
 
 impl KnowledgeBase {
@@ -345,32 +365,40 @@ impl KnowledgeBase {
             sine_index: RwLock::new(
                 SineIndex::new(SineParams::default().tolerance)
             ),
-            profiler: None,
+            progress: None,
         }
     }
 
-    // -- Profiler hook --------------------------------------------------------
-
-    /// Install a per-phase profiler.  Every subsequent instrumented
-    /// call site on this `KnowledgeBase` (ingest, promote, ask, load)
-    /// records its duration onto the given profiler.  Call
-    /// [`Profiler::report`] on the handle to get a formatted
-    /// breakdown.
+    /// Install a [`crate::progress::ProgressSink`] on this KB.  All
+    /// internal instrumentation that previously logged via `log::*`
+    /// emits structured events through this sink instead.  When no
+    /// sink is installed, every emit site is a single
+    /// branch-on-`Option::None` and produces no output.
     ///
-    /// Pass `None`-valued setters aren't exposed — to detach,
-    /// construct a fresh `KnowledgeBase` or create a new profiler
-    /// and drop the old handle.
-    ///
-    /// No-op when built without `feature = "profiling"` (the spans
-    /// don't record), but still safe to call — the profiler handle
-    /// is kept for uniform API.
-    pub fn set_profiler(&mut self, profiler: std::sync::Arc<crate::profiling::Profiler>) {
-        self.profiler = Some(profiler);
+    /// Sinks are `Arc`-shared so the same sink can serve multiple
+    /// KBs (e.g. a daemon that opens KBs across requests).
+    pub fn set_progress_sink(&mut self, sink: crate::progress::DynSink) {
+        self.progress = Some(sink);
     }
 
-    /// The currently-installed profiler, if any.
-    pub fn profiler(&self) -> Option<&std::sync::Arc<crate::profiling::Profiler>> {
-        self.profiler.as_ref()
+    /// The currently-installed progress sink, if any.  Used by
+    /// higher layers (e.g. `sumo-sdk`) to emit their own variants
+    /// of [`crate::progress::ProgressEvent`] through the same
+    /// channel a consumer wired up.
+    pub fn progress_sink(&self) -> Option<&crate::progress::DynSink> {
+        self.progress.as_ref()
+    }
+
+    /// Internal helper — emit an event through the installed sink,
+    /// or do nothing.  `#[inline(always)]` so call sites collapse to
+    /// the branch-on-None when no sink is set; the event payload is
+    /// only constructed at the call site (not here), so when the
+    /// branch goes None the construction is dead code.
+    #[inline(always)]
+    pub(crate) fn emit(&self, event: crate::progress::ProgressEvent) {
+        if let Some(sink) = &self.progress {
+            sink.emit(&event);
+        }
     }
 
     // Phase-span macro is declared at module level (`profile_span!`)
@@ -388,6 +416,19 @@ impl KnowledgeBase {
     /// key is a formula hash and each value is the owning `SentenceId`.
     /// Without `cnf`, no dedup map is built.
     pub fn open(path: &std::path::Path) -> Result<Self, KbError> {
+        Self::open_with_progress(path, None)
+    }
+
+    /// Like [`Self::open`], but installs a [`crate::progress::ProgressSink`]
+    /// before doing the LMDB-side work, so events emitted during
+    /// schema-check / rehydrate / index-replay are observable.
+    /// Pass `None` for the same behaviour as `open`.
+    #[cfg(feature = "persist")]
+    pub fn open_with_progress(
+        path: &std::path::Path,
+        sink: Option<crate::progress::DynSink>,
+    ) -> Result<Self, KbError> {
+        let _sink_guard = crate::progress::SinkGuard::install(sink.clone());
         // Open the LMDB path
         let env = LmdbEnv::open(path)?;
         // Load the kifstore from the saved database
@@ -437,9 +478,7 @@ impl KnowledgeBase {
 
             match cached {
                 Some(tx) if tx.kb_version == current_version => {
-                    log::info!(target: "sumo_kb::kb",
-                        "Phase D: restored taxonomy cache (kb_version={}, {} edges)",
-                        tx.kb_version, tx.tax_edges.len());
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: restored taxonomy cache (kb_version={}, {} edges)", tx.kb_version, tx.tax_edges.len()) });
                     SemanticLayer::from_cached_taxonomy(
                         store,
                         tx.tax_edges,
@@ -450,9 +489,8 @@ impl KnowledgeBase {
                     )
                 }
                 Some(tx) => {
-                    log::info!(target: "sumo_kb::kb",
-                        "Phase D: taxonomy cache stale (cache kb_version={}, current={}); \
-                         rebuilding", tx.kb_version, current_version);
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: taxonomy cache stale (cache kb_version={}, current={}); \
+                         rebuilding", tx.kb_version, current_version) });
                     SemanticLayer::new(store)
                 }
                 None => {
@@ -473,13 +511,9 @@ impl KnowledgeBase {
             if let Some(sa) = cached {
                 if sa.kb_version == current_version {
                     layer.install_sort_annotations(sa.sorts);
-                    log::info!(target: "sumo_kb::kb",
-                        "Phase D: restored sort_annotations cache (kb_version={})",
-                        sa.kb_version);
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: restored sort_annotations cache (kb_version={})", sa.kb_version) });
                 } else {
-                    log::info!(target: "sumo_kb::kb",
-                        "Phase D: sort_annotations cache stale ({}/{}); will rebuild on first access",
-                        sa.kb_version, current_version);
+                    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: sort_annotations cache stale ({}/{}); will rebuild on first access", sa.kb_version, current_version) });
                 }
             }
         }
@@ -504,9 +538,7 @@ impl KnowledgeBase {
         #[cfg(feature = "cnf")]
         let initial_clauses: HashMap<SentenceId, Vec<Clause>> = {
             if env.added_features.iter().any(|f| *f == "cnf") {
-                log::info!(target: "sumo_kb::kb",
-                    "Phase D: auto-backfilling cnf tables for {} axioms",
-                    layer.store.roots.len());
+                crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("Phase D: auto-backfilling cnf tables for {} axioms", layer.store.roots.len()) });
                 let report = crate::persist::backfill_cnf_tables(&env, &mut layer)?;
                 // Backfill repopulates fingerprints too (they were
                 // empty before because DB_FORMULA_HASHES was empty).
@@ -520,10 +552,9 @@ impl KnowledgeBase {
         };
 
         #[cfg(feature = "cnf")]
-        log::info!(target: "sumo_kb::kb", "opened KB from {:?}: {} formulas fingerprinted",
-            path, fingerprints.len());
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("opened KB from {:?}: {} formulas fingerprinted", path, fingerprints.len()) });
         #[cfg(not(feature = "cnf"))]
-        log::info!(target: "sumo_kb::kb", "opened KB from {:?} (no-dedup build)", path);
+        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("opened KB from {:?} (no-dedup build)", path) });
 
         // Populate `Symbol.all_sentences` for every loaded axiom (every
         // root that is NOT a session assertion).  This is the live
@@ -553,7 +584,7 @@ impl KnowledgeBase {
             db: Some(env),
             #[cfg(feature = "ask")]  axiom_cache: None,
             sine_index,
-            profiler: None,
+            progress: sink,
         })
     }
 
@@ -564,6 +595,7 @@ impl KnowledgeBase {
     /// Each sentence is semantically validated before acceptance; warnings are
     /// returned in [`TellResult::warnings`] and errors in [`TellResult::errors`].
     pub fn tell(&mut self, session: &str, kif: &str) -> TellResult {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         self.ingest(kif, session, session, true)
     }
 
@@ -572,9 +604,10 @@ impl KnowledgeBase {
     ///
     /// Per-sentence validation is deliberately skipped to avoid false positives
     /// from forward-references within a file or across files.  Call
-    /// [`validate_all`] explicitly after loading all files to get the full set
+    /// [`Self::validate_all`] explicitly after loading all files to get the full set
     /// of warnings with complete KB context.
     pub fn load_kif(&mut self, text: &str, file: &str, session: Option<&str>) -> TellResult {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         let session_key = session.unwrap_or(file);
         self.ingest(text, file, session_key, false)
     }
@@ -692,9 +725,7 @@ impl KnowledgeBase {
                 // With naming=0 this shouldn't fire; log as a
                 // canary in case NewCNF introduces shared clauses
                 // through some other path.
-                log::warn!(target: "sumo_kb::kb",
-                    "ingest: {} shared clauses from batch (unattributed); discarding",
-                    batched.shared.len());
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("ingest: {} shared clauses from batch (unattributed); discarding", batched.shared.len()) });
             }
 
             // Phase 2: serial translate + hash + dedup + side-car insert.
@@ -705,8 +736,7 @@ impl KnowledgeBase {
             for sid in new_roots.iter().copied() {
                 let fh_clauses: Option<(u64, Vec<Clause>)> = if skipped_set.contains(&sid) {
                     // Converter refused this sentence — accept without dedup.
-                    log::warn!(target: "sumo_kb::kb",
-                        "ingest: converter refused sid={}; accepting without dedup", sid);
+                    self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("ingest: converter refused sid={}; accepting without dedup", sid) });
                     None
                 } else if let Some(ir_cs) = batched.by_sid.get(&sid) {
                     let clauses = {
@@ -721,9 +751,8 @@ impl KnowledgeBase {
                 } else {
                     // Bisection left this sid as an isolated failure —
                     // accept without dedup.
-                    log::warn!(target: "sumo_kb::kb",
-                        "ingest: sid={} isolated by bisection as clausify-failing; \
-                         accepting without dedup", sid);
+                    self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("ingest: sid={} isolated by bisection as clausify-failing; \
+                         accepting without dedup", sid) });
                     None
                 };
 
@@ -761,13 +790,11 @@ impl KnowledgeBase {
                 };
                 if !duplicate {
                     accepted.push(sid);
-                    log::debug!(target: "sumo_kb::kb",
-                        "tell: accepted sid={} into session '{}'", sid, session);
+                    self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("tell: accepted sid={} into session '{}'", sid, session) });
                 } else if !warnings_suppressed() {
                     // -q / suppress_warnings(true) silences duplicate-axiom notices
                     // the same way it silences semantic warnings.
-                    log::warn!(target: "sumo_kb::kb",
-                        "tell: duplicate sid={} skipped (session '{}')", sid, session);
+                    self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("tell: duplicate sid={} skipped (session '{}')", sid, session) });
                 }
             }
         }
@@ -790,8 +817,7 @@ impl KnowledgeBase {
             self.layer.extend_taxonomy_with(&accepted);
         }
 
-        log::info!(target: "sumo_kb::kb",
-            "tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("tell: session='{}' accepted={} warnings={}", session, accepted.len(), result.warnings.len()) });
         result
     }
 
@@ -812,8 +838,7 @@ impl KnowledgeBase {
         let clauses = match crate::cnf::sentence_to_clauses(&mut self.layer, sid) {
             Ok(cs)  => cs,
             Err(e)  => {
-                log::warn!(target: "sumo_kb::kb",
-                    "compute_formula_hash: sid={} clausify failed: {}", sid, e);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("compute_formula_hash: sid={} clausify failed: {}", sid, e) });
                 return None;
             }
         };
@@ -828,7 +853,7 @@ impl KnowledgeBase {
     /// Mark all assertions in `session` as permanent axioms without semantic
     /// validation or LMDB writes.
     ///
-    /// After this call the sentences appear in [`ask`]'s axiom set (TPTP role
+    /// After this call the sentences appear in [`Self::ask`]'s axiom set (TPTP role
     /// `axiom`).  This is the right operation for in-memory KBs where the full
     /// KB content should be available to the prover without a prior
     /// `promote_assertions_unchecked` round-trip through LMDB.
@@ -856,6 +881,7 @@ impl KnowledgeBase {
     /// `Some(session)` to `None`.  That makes this call O(|fingerprints|)
     /// and avoids any clausification work at all.
     pub fn make_session_axiomatic(&mut self, session: &str) {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         // Per-phase spans below; no outer `promote.total` since it
         // would conflict with the inner `&mut self` accesses.
         let sids  = self.sessions.remove(session).unwrap_or_default();
@@ -905,9 +931,7 @@ impl KnowledgeBase {
             idx.add_axioms(&self.layer.store, sids.iter().copied());
         }
 
-        log::info!(target: "sumo_kb::kb",
-            "make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms",
-            count, session);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("make_session_axiomatic: {} sentence(s) from session '{}' promoted to axioms", count, session) });
         #[cfg(feature = "ask")]
         { self.axiom_cache = None; }
     }
@@ -916,6 +940,7 @@ impl KnowledgeBase {
 
     /// Discard all assertions in `session` (removes from store and fingerprints).
     pub fn flush_session(&mut self, session: &str) {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         let sids = self.sessions.remove(session).unwrap_or_default();
         if sids.is_empty() { return; }
 
@@ -932,8 +957,7 @@ impl KnowledgeBase {
         #[cfg(feature = "cnf")]
         for sid in &sids { self.clauses.remove(sid); }
 
-        log::info!(target: "sumo_kb::kb",
-            "flush_session: removed {} assertion(s) from session '{}'", sids.len(), session);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("flush_session: removed {} assertion(s) from session '{}'", sids.len(), session) });
     }
 
     /// Discard all in-memory session assertions.
@@ -951,8 +975,8 @@ impl KnowledgeBase {
         &mut self,
         session: &str,
     ) -> Result<PromoteReport, KbError> {
-        log::info!(target: "sumo_kb::kb",
-            "promote_assertions_unchecked: session='{}'", session);
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("promote_assertions_unchecked: session='{}'", session) });
 
         let mut report = PromoteReport::default();
         let session_sids: Vec<SentenceId> = self.sessions
@@ -961,7 +985,7 @@ impl KnowledgeBase {
             .unwrap_or_default();
 
         if session_sids.is_empty() {
-            log::info!(target: "sumo_kb::kb", "promote: session '{}' empty, nothing to do", session);
+            self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("promote: session '{}' empty, nothing to do", session) });
             return Ok(report);
         }
 
@@ -1026,9 +1050,7 @@ impl KnowledgeBase {
         #[cfg(not(feature = "cnf"))]
         { surviving.extend(&session_sids); }
 
-        log::debug!(target: "sumo_kb::kb",
-            "promote: {} surviving after dedup ({} duplicates removed)",
-            surviving.len(), report.duplicates_removed.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("promote: {} surviving after dedup ({} duplicates removed)", surviving.len(), report.duplicates_removed.len()) });
 
         if surviving.is_empty() {
             self.sessions.remove(session);
@@ -1041,8 +1063,7 @@ impl KnowledgeBase {
             .collect();
         if !sem_errors.is_empty() {
             let count = sem_errors.len();
-            log::warn!(target: "sumo_kb::kb",
-                "promote: {} semantic error(s) in session '{}'", count, session);
+            self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("promote: {} semantic error(s) in session '{}'", count, session) });
             return Err(KbError::Semantic(sem_errors.into_iter().next().unwrap().1));
         }
 
@@ -1087,13 +1108,11 @@ impl KnowledgeBase {
             // not propagated -- the caches are a performance hint;
             // losing them just means the next cold open rebuilds.
             if let Err(e) = crate::persist::persist_taxonomy_cache(env, &self.layer) {
-                log::warn!(target: "sumo_kb::kb",
-                    "Phase D: taxonomy cache persist failed: {}", e);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("Phase D: taxonomy cache persist failed: {}", e) });
             }
             #[cfg(feature = "ask")]
             if let Err(e) = crate::persist::persist_sort_annotations_cache(env, &self.layer) {
-                log::warn!(target: "sumo_kb::kb",
-                    "Phase D: sort_annotations cache persist failed: {}", e);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("Phase D: sort_annotations cache persist failed: {}", e) });
             }
         }
 
@@ -1130,9 +1149,7 @@ impl KnowledgeBase {
         }
 
         report.promoted = surviving;
-        log::info!(target: "sumo_kb::kb",
-            "promote: {} sentence(s) promoted from session '{}'",
-            report.promoted.len(), session);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("promote: {} sentence(s) promoted from session '{}'", report.promoted.len(), session) });
         #[cfg(feature = "ask")]
         { self.axiom_cache = None; }
         Ok(report)
@@ -1151,7 +1168,7 @@ impl KnowledgeBase {
     /// txn before it.
     ///
     /// No-op when both slices are empty.  Callers should check
-    /// [`ReconcileReport::is_noop`] first in the hot path to avoid
+    /// [`crate::ReconcileReport::is_noop`] first in the hot path to avoid
     /// opening txns unnecessarily.
     ///
     /// Requires the `persist` feature; callers without it should
@@ -1162,6 +1179,7 @@ impl KnowledgeBase {
         removed_sids: &[SentenceId],
         added_sids:   &[SentenceId],
     ) -> Result<(), KbError> {
+        let _sink_guard = crate::progress::SinkGuard::install(self.progress.clone());
         let Some(env) = &self.db else {
             return Ok(());
         };
@@ -1176,8 +1194,7 @@ impl KnowledgeBase {
                 env.delete_formula(&mut wtxn, sid)?;
             }
             wtxn.commit()?;
-            log::debug!(target: "sumo_kb::kb",
-                "persist_reconcile_diff: deleted {} sentence(s)", removed_sids.len());
+            self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("persist_reconcile_diff: deleted {} sentence(s)", removed_sids.len()) });
         }
 
         // -- Phase 2: write added rows --------------------------------------
@@ -1199,8 +1216,7 @@ impl KnowledgeBase {
                 #[cfg(feature = "cnf")] &clause_map,
                 None,
             )?;
-            log::debug!(target: "sumo_kb::kb",
-                "persist_reconcile_diff: wrote {} sentence(s)", added_sids.len());
+            self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("persist_reconcile_diff: wrote {} sentence(s)", added_sids.len()) });
         }
 
         Ok(())
@@ -1243,8 +1259,7 @@ impl KnowledgeBase {
         let mut tptp = assemble_tptp(&problem, &sid_map, &AssemblyOpts::default());
         tptp.push_str("\nfof(check_consistency, conjecture, ($false)).\n");
 
-        log::debug!(target: "sumo_kb::kb",
-            "promote_assertions: consistency check TPTP size={} bytes", tptp.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("promote_assertions: consistency check TPTP size={} bytes", tptp.len()) });
 
         let prover_opts = ProverOpts {
             timeout_secs: 30,
@@ -1306,7 +1321,7 @@ impl KnowledgeBase {
         self.layer.store.sym_id(name)
     }
 
-    /// Inverse of [`symbol_id`]: resolve a SymbolId to its interned
+    /// Inverse of [`Self::symbol_id`]: resolve a SymbolId to its interned
     /// name.  Returns an owned `String` to keep the lifetime simple.
     /// Ids that aren't in the store return `None`.
     pub fn sym_name(&self, id: crate::types::SymbolId) -> Option<String> {
@@ -1319,7 +1334,7 @@ impl KnowledgeBase {
 
     /// Fetch a root or sub-sentence by id.  Returns `None` when
     /// `sid` isn't a known sentence (e.g. after `remove_sentence`
-    /// the id is valid but the body is empty -- see [`has_sentence`]).
+    /// the id is valid but the body is empty).
     pub fn sentence(&self, sid: SentenceId) -> Option<&crate::types::Sentence> {
         if !self.layer.store.has_sentence(sid) { return None; }
         Some(&self.layer.store.sentences[self.layer.store.sent_idx(sid)])
@@ -1515,7 +1530,7 @@ impl KnowledgeBase {
     /// Run semantic validation on `sid` and return every finding
     /// (warnings + hard errors).
     ///
-    /// Unlike [`validate_sentence`], this does not honour the
+    /// Unlike [`Self::validate_sentence`], this does not honour the
     /// CLI's `-Wall` / `--warning=<code>` promotion flags -- it
     /// always returns the raw set of checks the validator
     /// performed.  The caller decides how to surface them (the
@@ -1531,13 +1546,75 @@ impl KnowledgeBase {
 
     /// Validate only the sentences belonging to `session`.
     ///
-    /// Use this after [`load_kif`] to perform end-of-load validation without
+    /// Use this after `load_kif` to perform end-of-load validation without
     /// re-validating the entire base KB.
     pub fn validate_session(&self, session: &str) -> Vec<(SentenceId, SemanticError)> {
         let sids = self.sessions.get(session).cloned().unwrap_or_default();
         sids.iter()
             .filter_map(|&sid| self.layer.validate_sentence(sid).err().map(|e| (sid, e)))
             .collect()
+    }
+
+    // -- Classified-findings entry points ------------------------------------
+    //
+    // Following Option B of the warning-print extraction: every
+    // semantic finding (warning or hard error) is captured via
+    // `with_collector`, classified by `SemanticError::is_warn`, and
+    // returned to the caller.  `sumo-kb` no longer prints; consumers
+    // (CLI, SDK, LSP) decide how to render.  See `crate::Findings`.
+
+    /// Validate one sentence and return EVERY finding (warnings +
+    /// hard errors), pre-classified.
+    ///
+    /// Same coverage as [`Self::validate_sentence_all`] but in the
+    /// classified [`Findings`] shape so callers don't have to
+    /// partition by [`SemanticError::is_warn`] themselves.
+    pub fn validate_sentence_findings(&self, sid: SentenceId) -> Findings {
+        let mut f = Findings::default();
+        let (_, errs) = crate::error::with_collector(|| self.layer.validate_sentence(sid));
+        for e in errs {
+            f.push(sid, e);
+        }
+        f
+    }
+
+    /// Validate every root sentence in the KB and return classified
+    /// [`Findings`].
+    ///
+    /// Equivalent to looping [`Self::validate_sentence_findings`]
+    /// over `kb.iter_files()`'s roots.  Wraps each per-sentence
+    /// validation in its own `with_collector` so attribution is
+    /// preserved sentence-by-sentence; if you want a flat list, use
+    /// [`Self::validate_all`] (errors only) or accumulate from this
+    /// `Findings`.
+    pub fn validate_all_findings(&self) -> Findings {
+        let mut f = Findings::default();
+        for &sid in self.layer.store.roots.iter() {
+            let (_, errs) = crate::error::with_collector(|| self.layer.validate_sentence(sid));
+            for e in errs {
+                f.push(sid, e);
+            }
+        }
+        f
+    }
+
+    /// Validate only the sentences belonging to `session`, returning
+    /// classified [`Findings`].
+    ///
+    /// Counterpart of [`Self::validate_session`] for the everything-
+    /// classified flow.  Use this from CLI handlers that want to
+    /// render warnings via `semantic_warning!` and abort on the
+    /// `errors` list.
+    pub fn validate_session_findings(&self, session: &str) -> Findings {
+        let sids = self.sessions.get(session).cloned().unwrap_or_default();
+        let mut f = Findings::default();
+        for sid in sids {
+            let (_, errs) = crate::error::with_collector(|| self.layer.validate_sentence(sid));
+            for e in errs {
+                f.push(sid, e);
+            }
+        }
+        f
     }
 
     // -- TPTP output -----------------------------------------------------------
@@ -1551,13 +1628,13 @@ impl KnowledgeBase {
     pub fn enable_cnf(&mut self, opts: ClausifyOptions) {
         self.cnf_mode = true;
         self.cnf_opts = opts;
-        log::debug!(target: "sumo_kb::kb", "CNF mode enabled");
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("CNF mode enabled") });
     }
 
     #[cfg(feature = "cnf")]
     pub fn disable_cnf(&mut self) {
         self.cnf_mode = false;
-        log::debug!(target: "sumo_kb::kb", "CNF mode disabled");
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("CNF mode disabled") });
     }
 
     /// Clausify all current axioms and session assertions into the clauses side-car.
@@ -1589,17 +1666,14 @@ impl KnowledgeBase {
                     report.clausified += 1;
                 }
                 Err(e) => {
-                    log::warn!(target: "sumo_kb::kb",
-                        "clausify: sid={} failed: {}", sid, e);
+                    self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("clausify: sid={} failed: {}", sid, e) });
                     report.exceeded_limit.push(sid);
                     report.skipped += 1;
                 }
             }
         }
 
-        log::info!(target: "sumo_kb::kb",
-            "clausify: {} clausified, {} skipped",
-            report.clausified, report.skipped);
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("clausify: {} clausified, {} skipped", report.clausified, report.skipped) });
         Ok(report)
     }
 
@@ -1771,7 +1845,7 @@ impl KnowledgeBase {
     /// Orphan pruning + cache invalidation run once at the end: the
     /// union of symbol sets from removed + added sentences is
     /// collected and handed to
-    /// [`SemanticLayer::invalidate_symbols`](crate::semantic::SemanticLayer)
+    /// `SemanticLayer::invalidate_symbols`
     /// for targeted eviction.  Retained sentences trigger no cache
     /// churn.
     ///
@@ -1790,7 +1864,7 @@ impl KnowledgeBase {
     ///   need prover-level dedup; CLI reconcile does, which is why
     ///   CLI callers should use `reconcile_file` instead.
     /// - **No SInE maintenance.**  Removed sids stay in
-    ///   [`SineIndex::sym_axioms`]; added sids aren't inserted.
+    ///   `SineIndex::sym_axioms`; added sids aren't inserted.
     ///   Correct only under the LSP invariant that proofs aren't run
     ///   between diffs.
     /// - **No taxonomy rebuild or extend.**  The `SemanticLayer`'s
@@ -1812,8 +1886,7 @@ impl KnowledgeBase {
         for (sid, new_span) in &diff.retained {
             let ok = self.layer.store.update_sentence_span(*sid, new_span.clone());
             if !ok {
-                log::warn!(target: "sumo_kb::kb",
-                    "apply_file_diff: retained sid={} missing in store", sid);
+                self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("apply_file_diff: retained sid={} missing in store", sid) });
             }
         }
 
@@ -1852,10 +1925,7 @@ impl KnowledgeBase {
             self.layer.invalidate_sort_annotations();
         }
 
-        log::debug!(target: "sumo_kb::kb",
-            "apply_file_diff file='{}': {} retained, {} removed, {} added, {} affected syms",
-            diff.file, diff.retained.len(), diff.removed.len(), diff.added.len(),
-            affected_syms.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("apply_file_diff file='{}': {} retained, {} removed, {} added, {} affected syms", diff.file, diff.retained.len(), diff.removed.len(), diff.added.len(), affected_syms.len()) });
 
         result
     }
@@ -1933,7 +2003,7 @@ impl KnowledgeBase {
     /// and literals.
     ///
     /// The returned SymbolIds are a single-use seed: pass them
-    /// straight into [`sine_select_for_query`] or similar — they are
+    /// straight into [`Self::sine_select_for_query`] or similar — they are
     /// not stable across multiple calls because the name→id interning
     /// resets under roll-back.
     pub fn query_symbols(&mut self, query_kif: &str) -> Result<HashSet<SymbolId>, KbError> {
@@ -1967,9 +2037,7 @@ impl KnowledgeBase {
         self.layer.rebuild_taxonomy();
         self.layer.invalidate_cache();
 
-        log::debug!(target: "sumo_kb::kb",
-            "query_symbols: extracted {} syms from {} query sentence(s)",
-            syms.len(), query_sids.len());
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Debug, target: "sumo_kb::kb", message: format!("query_symbols: extracted {} syms from {} query sentence(s)", syms.len(), query_sids.len()) });
         Ok(syms)
     }
 
@@ -2011,11 +2079,8 @@ impl KnowledgeBase {
 
         let idx = self.sine_index.read().expect("sine_index poisoned");
         let selected = idx.select(&seed, params.depth_limit);
-        log::info!(target: "sumo_kb::kb",
-            "sine_select_for_query: {} seed syms -> {} relevant axioms (of {} total) \
-             at tolerance {}",
-            seed.len(), selected.len(), idx.axiom_count(), idx.tolerance(),
-        );
+        self.emit(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("sine_select_for_query: {} seed syms -> {} relevant axioms (of {} total) \
+             at tolerance {}", seed.len(), selected.len(), idx.axiom_count(), idx.tolerance()) });
         Ok(selected)
     }
 
@@ -2090,9 +2155,7 @@ fn clausify_with_bisection(
         Err(e) if sids.len() == 1 => {
             // Base case: single bad sentence.  Record it as skipped
             // so the caller falls back to "accept without dedup".
-            log::warn!(target: "sumo_kb::kb",
-                "ingest: clausify failed for sid={}: {}; will accept without dedup",
-                sids[0], e);
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Warn, target: "sumo_kb::kb", message: format!("ingest: clausify failed for sid={}: {}; will accept without dedup", sids[0], e) });
             BatchedSentenceClauses {
                 by_sid:  HashMap::new(),
                 shared:  Vec::new(),
@@ -2104,9 +2167,7 @@ fn clausify_with_bisection(
             // bisection walk is visible on bootstrap debugging but
             // doesn't clutter normal output.
             let mid = sids.len() / 2;
-            log::info!(target: "sumo_kb::kb",
-                "ingest: batch clausify failed for {} sids; bisecting ({}/{})",
-                sids.len(), mid, sids.len() - mid);
+            crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Info, target: "sumo_kb::kb", message: format!("ingest: batch clausify failed for {} sids; bisecting ({}/{})", sids.len(), mid, sids.len() - mid) });
             let left  = clausify_with_bisection(layer, &sids[..mid]);
             let right = clausify_with_bisection(layer, &sids[mid..]);
             merge_batched(left, right)

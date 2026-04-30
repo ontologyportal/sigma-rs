@@ -221,8 +221,7 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, KifParseError)
             Err(e)      => errors.push(e),
         }
     }
-    log::trace!(target: "sumo_kb::tokenizer", "tokenized {} tokens, {} errors from '{}'",
-        tokens.len(), errors.len(), file);
+    crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::Trace, target: "sumo_kb::tokenizer", message: format!("tokenized {} tokens, {} errors from '{}'", tokens.len(), errors.len(), file) });
     (tokens, errors)
 }
 

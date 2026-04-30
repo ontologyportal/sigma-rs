@@ -1,12 +1,35 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Custom version string surfacing the build provenance embedded by
+/// `crates/cli/build.rs`.  Renders as e.g.
+///
+/// ```text
+/// sumo 1.0.0 (release build, commit a1b2c3d4e5f6, aarch64-apple-darwin)
+/// ```
+///
+/// The `build kind` is the same flag `sumo update` reads to decide
+/// between self-replace and "rebuild from source".  The target
+/// triple lets us pick the right release archive when self-updating
+/// (and tells you which platform binary you're running on a bug
+/// report).  Three pieces of provenance, one source of truth.
+const VERSION_LINE: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("SUMO_BUILD_KIND"),
+    " build, commit ",
+    env!("SUMO_BUILD_COMMIT"),
+    ", ",
+    env!("SUMO_BUILD_TARGET"),
+    ")",
+);
+
 #[derive(Parser)]
 #[command(
     name = "sumo",
     about = "Parse, validate, translate, and query SUMO KIF knowledge bases",
     after_help = "Reference:\n  Niles, I., and Pease, A.  2001.  Towards a Standard Upper Ontology.  In\n  Proceedings of the 2nd International Conference on Formal Ontology in\n  Information Systems (FOIS-2001), Chris Welty and Barry Smith, eds,\n  Ogunquit, Maine, October 17-19, 2001.  Also see http://www.ontologyportal.org",
-    version
+    version = VERSION_LINE,
 )]
 pub struct Cli {
     /// Logging verbosity (-v = info, -vv = debug, -vvv = trace).
@@ -33,7 +56,7 @@ pub struct Cli {
     /// Warning control (mimics GCC).
     /// By default, semantic errors are warnings.
     /// Use '-W all' to treat all as errors.
-    /// Use '-W <CODE>' (e.g., -W E005) to treat a specific one as an error.
+    /// Use `-W <CODE>` (e.g., `-W E005`) to treat a specific one as an error.
     #[arg(short = 'W', long = "warning", value_name = "CODE_OR_ALL", global = true)]
     pub suppress: Vec<String>,
 
@@ -414,5 +437,21 @@ pub enum Cmd {
     Serve {
         #[command(flatten)]
         kb: KbArgs,
+    },
+
+    /// Update the `sumo` binary to the latest official release, OR
+    /// (for source builds) report the latest available version and
+    /// recommend the right rebuild incantation.
+    ///
+    /// The dispatch is determined at compile time by the
+    /// `SUMO_BUILD_KIND` env var the build script reads.  Release
+    /// CI sets it to `release`; everything else defaults to `source`.
+    /// Source builds intentionally never overwrite themselves —
+    /// replacing a developer's local build with an unrelated
+    /// upstream binary would surprise them.
+    Update {
+        /// Don't apply the update — just check upstream and report.
+        #[arg(long)]
+        check: bool,
     },
 }
