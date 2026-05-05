@@ -1,6 +1,6 @@
 use log;
-use sumo_kb::{KbError, KnowledgeBase};
-use sumo_sdk::ValidateOp;
+use sigmakee_rs_core::{KbError, KnowledgeBase};
+use sigmakee_rs_sdk::ValidateOp;
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb, read_stdin, source_tag};

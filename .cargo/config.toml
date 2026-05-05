@@ -1,2 +1,5 @@
 [env]
 SINE_TOLERANCE="1.8"
+
+[alias]
+xtask = "run --quiet --package xtask --"

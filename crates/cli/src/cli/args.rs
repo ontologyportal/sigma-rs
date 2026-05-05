@@ -388,7 +388,7 @@ pub enum Cmd {
         /// step.  Higher values pull in more axioms — more thorough
         /// but more expensive.  Values below 1.0 are clamped.  When
         /// omitted, uses the crate default (usually 2.0; overridable
-        /// at sumo-kb build time via `SINE_TOLERANCE`).
+        /// at sigmakee-rs-core build time via `SINE_TOLERANCE`).
         #[arg(long, value_name = "F")]
         scope: Option<f32>,
 

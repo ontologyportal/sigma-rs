@@ -1,2 +1,2 @@
-/// Re-export prover types from sumo_kb.
-pub use sumo_kb::{Binding, ProverResult, ProverStatus, ProverRunner, ProverOpts, ProverMode};
+/// Re-export prover types from sigmakee_rs_core.
+pub use sigmakee_rs_core::{Binding, ProverResult, ProverStatus, ProverRunner, ProverOpts, ProverMode};

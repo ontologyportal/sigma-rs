@@ -26,7 +26,7 @@ use crossterm::{
     },
 };
 
-use sumo_kb::{DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig};
+use sigmakee_rs_core::{DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig};
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::open_or_build_kb;

@@ -7,7 +7,7 @@
 # artifact and served at the repository's GitHub Pages URL
 # (typically `https://<owner>.github.io/<repo>/`).  A small
 # hand-written `index.html` lands at the doc-root so visitors get a
-# crate index instead of a directory listing — `sumo-sdk` is
+# crate index instead of a directory listing — `sigmakee-rs-sdk` is
 # featured first since it's the primary public API surface.
 #
 # Features: build with `--all-features`.  This pulls in
@@ -80,7 +80,7 @@ jobs:
           # Cargo's default rustdoc output puts each crate at
           # `target/doc/<crate>/index.html` and leaves the doc-root
           # as a directory.  Drop a small index here that links to
-          # every workspace member, with sumo-sdk first.
+          # every workspace member, with sigmakee-rs-sdk first.
           cat > target/doc/index.html <<'HTML'
           <!doctype html>
           <html lang="en">
@@ -151,7 +151,7 @@ jobs:
 
             <ul class="crates">
               <li>
-                <a href="sumo_sdk/index.html">sumo-sdk</a>
+                <a href="sigmakee_rs_sdk/index.html">sigmakee-rs-sdk</a>
                 <p>
                   Programmatic Rust API: <code>IngestOp</code>,
                   <code>ValidateOp</code>, <code>TranslateOp</code>,
@@ -161,7 +161,7 @@ jobs:
                 </p>
               </li>
               <li>
-                <a href="sumo_kb/index.html">sumo-kb</a>
+                <a href="sigmakee_rs_core/index.html">sigmakee-rs-core</a>
                 <p>
                   Core knowledge-base library &mdash; KIF parser, semantic
                   layer, LMDB persistence, SInE indexing, prover bindings.

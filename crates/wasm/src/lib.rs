@@ -1,10 +1,10 @@
-/// WASM bindings for sumo-kb.
+/// WASM bindings for sigmakee-rs-core.
 ///
 /// Exposes the KnowledgeBase API to JavaScript/Node.js via wasm-bindgen.
 /// The `ask()` functionality is handled by a JS callback hook since WASM
 /// cannot spawn native processes.
 use wasm_bindgen::prelude::*;
-use sumo_kb::{KnowledgeBase, TptpOptions, TptpLang};
+use sigmakee_rs_core::{KnowledgeBase, TptpOptions, TptpLang};
 
 // -- WasmKnowledgeBase ---------------------------------------------------------
 

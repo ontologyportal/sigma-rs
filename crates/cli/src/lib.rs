@@ -2,7 +2,7 @@ pub mod config;
 pub mod cli;
 
 // Library-level prover façade and programmatic ask() entry point are
-// only available when sumo-kb's prover API is compiled in.
+// only available when sigmakee-rs-core's prover API is compiled in.
 #[cfg(feature = "ask")]
 pub mod prover;
 #[cfg(feature = "ask")]
@@ -11,7 +11,7 @@ pub mod ask;
 #[cfg(feature = "ask")]
 pub use ask::{ask, AskOptions, AskResult};
 
-pub use sumo_kb::{
+pub use sigmakee_rs_core::{
     KnowledgeBase as Kb, ParseError, SemanticError, TellResult,
 };
 
@@ -74,15 +74,15 @@ macro_rules! semantic_error {
 /// Companion to [`semantic_error!`].  Honours the `-q` /
 /// `suppress_warnings(true)` flag — the macro is a no-op when
 /// warnings are suppressed.  Use this for findings classified by
-/// [`sumo_kb::SemanticError::is_warn`] (e.g. everything in
-/// [`sumo_kb::Findings::warnings`] from `kb.validate_*_findings`).
+/// [`sigmakee_rs_core::SemanticError::is_warn`] (e.g. everything in
+/// [`sigmakee_rs_core::Findings::warnings`] from `kb.validate_*_findings`).
 ///
 /// Usage: `semantic_warning!(e, kb)` where `e: &SemanticError`.
 #[macro_export]
 macro_rules! semantic_warning {
     ($e:expr, $kb:expr) => {
         {
-            if !sumo_kb::error::warnings_suppressed() {
+            if !sigmakee_rs_core::error::warnings_suppressed() {
                 $kb.pretty_print_error($e, log::Level::Warn);
                 eprintln!();
             }
@@ -93,7 +93,7 @@ macro_rules! semantic_warning {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sumo_kb::KnowledgeBase;
+    use sigmakee_rs_core::KnowledgeBase;
 
     const BASE: &str = "
         (subclass Relation Entity)

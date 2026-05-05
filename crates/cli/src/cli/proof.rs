@@ -18,7 +18,7 @@
 
 use inline_colorization::*;
 
-use sumo_kb::{AxiomSourceIndex, KifProofStep, KnowledgeBase, ProverResult};
+use sigmakee_rs_core::{AxiomSourceIndex, KifProofStep, KnowledgeBase, ProverResult};
 
 /// Dispatch the `--proof <FORMAT>` rendering.  Recognised values:
 /// - `tptp`                     → dump `result.proof_tptp` verbatim
@@ -156,7 +156,7 @@ fn print_step_header(step: &KifProofStep) {
 /// one file (rare but SUMO ships some cross-file duplicates in its
 /// upper ontology); the sid path always yields a single entry.
 ///
-/// [`lookup_by_sid`]: sumo_kb::AxiomSourceIndex::lookup_by_sid
+/// [`lookup_by_sid`]: sigmakee_rs_core::AxiomSourceIndex::lookup_by_sid
 fn print_step_source(step: &KifProofStep, idx: &AxiomSourceIndex) {
     // Vampire emits the input axioms with the plain `axiom` role.
     // The negated conjecture (`negated_conjecture`) and every derived

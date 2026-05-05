@@ -1,5 +1,5 @@
 [workspace]
-members  = ["crates/sumo-kb", "crates/sumo-sdk", "crates/wasm", "crates/cli", "crates/sumo-lsp"]
+members  = ["crates/core", "crates/sdk", "crates/wasm", "crates/cli", "crates/lsp", "crates/xtask"]
 resolver = "2"
 
 [workspace.package]
@@ -9,8 +9,8 @@ authors     = ["Theodore Kim", "Adam Pease"]
 license     = "GPL-3.0"
 
 [workspace.dependencies]
-sumo-kb           = { path = "crates/sumo-kb" }
-sumo-sdk          = { path = "crates/sumo-sdk" }
+sigmakee-rs-core  = { path = "crates/core" }
+sigmakee-rs-sdk   = { path = "crates/sdk" }
 sigmakee          = { path = "crates/cli" }
 serde             = { version = "1", features = ["derive"] }
 serde_json        = "1"

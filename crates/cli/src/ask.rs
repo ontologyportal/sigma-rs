@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
-use sumo_kb::{KnowledgeBase, VampireRunner, ProverStatus, TptpLang};
-pub use sumo_kb::prover::ProverTimings;
+use sigmakee_rs_core::{KnowledgeBase, VampireRunner, ProverStatus, TptpLang};
+pub use sigmakee_rs_core::prover::ProverTimings;
 
-pub use sumo_kb::Binding;
+pub use sigmakee_rs_core::Binding;
 
 // -- AskOptions / AskResult ----------------------------------------------------
 

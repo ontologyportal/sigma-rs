@@ -27,12 +27,12 @@ default = ["parallel", "server"]
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.
 # No CMake required.
-ask = ["sumo-sdk/ask"]
+ask = ["sigmakee-rs-sdk/ask"]
 
 # Everything in `ask` plus the embedded C++ solver (CMake + the
 # vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
 # and native-proof binding extraction.
-integrated-prover = ["ask", "sumo-sdk/integrated-prover"]
+integrated-prover = ["ask", "sigmakee-rs-sdk/integrated-prover"]
 
 # Phase timing was previously feature-gated as `profiling`.  It now
 # rides on the unified progress-event system: `--profile` installs
@@ -41,9 +41,9 @@ integrated-prover = ["ask", "sumo-sdk/integrated-prover"]
 
 # Parallel KB hot paths via rayon.  Speeds up multi-file load (reads
 # in parallel) and bootstrap-scale CNF clausification (inside
-# sumo-kb).  NOT on wasm32.  On by default along with `profiling`
+# sigmakee-rs-core).  NOT on wasm32.  On by default along with `profiling`
 # for release-native builds.
-parallel = ["sumo-sdk/parallel", "dep:rayon"]
+parallel = ["sigmakee-rs-sdk/parallel", "dep:rayon"]
 
 # Enable the JSON RPC server which allows you to utilize the cli
 # programmatically like via an IDE. Requires ask but not integrated
@@ -51,8 +51,8 @@ parallel = ["sumo-sdk/parallel", "dep:rayon"]
 server = ["ask"]
 
 [dependencies]
-sumo-kb = { workspace = true, features = ["persist"] }
-sumo-sdk = { workspace = true }
+sigmakee-rs-core = { workspace = true, features = ["persist"] }
+sigmakee-rs-sdk = { workspace = true }
 rayon   = { version = "1.10", optional = true }
 serde.workspace            = true
 serde_json.workspace       = true

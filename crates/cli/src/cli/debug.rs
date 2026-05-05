@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use inline_colorization::*;
 use rand::seq::SliceRandom;
 
-use sumo_kb::{
+use sigmakee_rs_core::{
     KnowledgeBase, ProverStatus, SineParams, TptpLang, VampireRunner,
 };
 
@@ -281,8 +281,8 @@ fn print_header(
 /// refutation came directly from the KB, and where they live.
 fn print_contradiction(
     kb:        &KnowledgeBase,
-    result:    &sumo_kb::ProverResult,
-    check_set: &HashSet<sumo_kb::SentenceId>,
+    result:    &sigmakee_rs_core::ProverResult,
+    check_set: &HashSet<sigmakee_rs_core::SentenceId>,
 ) {
     // `ContradictoryAxioms` sometimes fires before Vampire emits an
     // SZS proof section, in which case `proof_kif` is empty.  Be
@@ -317,7 +317,7 @@ fn print_contradiction(
     );
 
     let mut shown = 0;
-    let mut seen_sids: HashSet<sumo_kb::SentenceId> = HashSet::new();
+    let mut seen_sids: HashSet<sigmakee_rs_core::SentenceId> = HashSet::new();
     for step in &result.proof_kif {
         if step.rule != "axiom" { continue; }
 
@@ -325,7 +325,7 @@ fn print_contradiction(
         // gives at most one (sids are unique); the hash path gives
         // one or more (cross-file duplicates).  Both paths skip
         // ephemeral files.
-        let mut resolved: Vec<&sumo_kb::AxiomSource> = Vec::new();
+        let mut resolved: Vec<&sigmakee_rs_core::AxiomSource> = Vec::new();
 
         // Strategy 1 — direct sid lookup.  Survives CNF transforms
         // and quantifier-normalisation because it's keyed on the
@@ -378,7 +378,7 @@ fn print_contradiction(
 /// Fallback inventory: when the proof transcript gives us nothing
 /// traceable, at least tell the user which *files* contributed to the
 /// check set — that narrows the hunt.
-fn print_check_set_files(kb: &KnowledgeBase, check_set: &HashSet<sumo_kb::SentenceId>) {
+fn print_check_set_files(kb: &KnowledgeBase, check_set: &HashSet<sigmakee_rs_core::SentenceId>) {
     let mut files: BTreeSet<String> = BTreeSet::new();
     for sid in check_set {
         if let Some(s) = kb.sentence(*sid) {
@@ -418,7 +418,7 @@ pub(crate) fn resolve_file_tag(
     file:        &std::path::Path,
     tag_primary: &str,
     tag_canonical: Option<&str>,
-) -> Result<(String, Vec<sumo_kb::SentenceId>), ()> {
+) -> Result<(String, Vec<sigmakee_rs_core::SentenceId>), ()> {
     // 1. Exact match.
     let roots_primary = kb.file_roots(tag_primary);
     if !roots_primary.is_empty() {

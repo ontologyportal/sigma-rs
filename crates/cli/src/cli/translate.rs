@@ -1,6 +1,6 @@
 use log;
-use sumo_kb::TptpOptions;
-use sumo_sdk::TranslateOp;
+use sigmakee_rs_core::TptpOptions;
+use sigmakee_rs_sdk::TranslateOp;
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb, parse_lang, read_stdin, source_tag};
@@ -8,7 +8,7 @@ use crate::{semantic_error, semantic_warning};
 
 /// Entry point for `sumo translate`.
 ///
-/// Delegates to [`sumo_sdk::TranslateOp`] for both the inline-formula
+/// Delegates to [`sigmakee_rs_sdk::TranslateOp`] for both the inline-formula
 /// and whole-KB paths.  Findings rendered via the CLI macros from
 /// the report's `semantic_errors` / `semantic_warnings` fields.
 pub fn run_translate(

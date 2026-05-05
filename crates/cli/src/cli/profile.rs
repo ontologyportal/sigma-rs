@@ -1,12 +1,12 @@
 //! Per-phase timing aggregator for `--profile`.
 //!
 //! Listens for `ProgressEvent::PhaseStarted` and `PhaseFinished`
-//! emitted by `sumo-kb`'s instrumented code paths, captures the
+//! emitted by `sigmakee-rs-core`'s instrumented code paths, captures the
 //! elapsed wall-clock time of each phase, and reports per-phase
-//! totals.  This is purely a CLI concern — sumo-kb itself doesn't
+//! totals.  This is purely a CLI concern — sigmakee-rs-core itself doesn't
 //! know about timing, only about phase boundaries.
 //!
-//! The data structure mirrors what the previous `sumo_kb::Profiler`
+//! The data structure mirrors what the previous `sigmakee_rs_core::Profiler`
 //! exposed: a `phase: &'static str -> total_duration: Duration` map,
 //! plus a call count per phase.  `report()` formats it for
 //! human consumption identical to the old format.
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use sumo_kb::{ProgressEvent, ProgressSink};
+use sigmakee_rs_core::{ProgressEvent, ProgressSink};
 
 #[derive(Default)]
 struct Inner {

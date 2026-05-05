@@ -1,8 +1,8 @@
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use sumo_kb::{KbError, KnowledgeBase, Span, TptpLang};
-use sumo_sdk::{IngestOp, LoadOp, SdkError};
+use sigmakee_rs_core::{KbError, KnowledgeBase, Span, TptpLang};
+use sigmakee_rs_sdk::{IngestOp, LoadOp, SdkError};
 
 use crate::cli::args::KbArgs;
 // `expand_tilde` lives in `crate::config`; imported here so CLI
@@ -43,7 +43,7 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 /// phases are captured.  Pass `None` to get the un-profiled
 /// behaviour (identical to [`open_or_build_kb`]).
 ///
-/// File-loading orchestration is delegated to [`sumo_sdk::IngestOp`].
+/// File-loading orchestration is delegated to [`sigmakee_rs_sdk::IngestOp`].
 /// The CLI keeps two concerns it owns:
 ///
 /// 1. **Parallel pre-read** of disk files (via rayon) before handing
@@ -56,7 +56,7 @@ pub fn open_or_build_kb(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 ///    already have in hand.
 pub fn open_or_build_kb_profiled(
     args: &KbArgs,
-    sink: Option<sumo_kb::DynSink>,
+    sink: Option<sigmakee_rs_core::DynSink>,
 ) -> Result<KnowledgeBase, ()> {
     let has_files = !args.files.is_empty() || !args.dirs.is_empty();
 
@@ -177,7 +177,7 @@ fn ingest_via_sdk(
 /// All loaded sentences are immediately promoted to axioms so that a
 /// subsequent [`KnowledgeBase::ask`] call includes them in the TPTP problem.
 ///
-/// Now a thin wrapper over [`sumo_sdk::IngestOp`] — the previous
+/// Now a thin wrapper over [`sigmakee_rs_sdk::IngestOp`] — the previous
 /// hand-rolled loop has been folded into the same SDK code path
 /// `open_or_build_kb_profiled` uses.
 pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
@@ -192,7 +192,7 @@ pub fn build_kb_from_files(args: &KbArgs) -> Result<KnowledgeBase, ()> {
 /// Returns the `KnowledgeBase` (still open against the LMDB) so the caller
 /// can run further operations (validation, translation) in the same session.
 ///
-/// Delegates to [`sumo_sdk::LoadOp`] for the reconcile + persist
+/// Delegates to [`sigmakee_rs_sdk::LoadOp`] for the reconcile + persist
 /// pipeline.  `parse_error!`-flavoured rendering is preserved by
 /// pre-reading each file and threading the text into the error
 /// translation if `LoadOp::run` aborts on a parse failure.

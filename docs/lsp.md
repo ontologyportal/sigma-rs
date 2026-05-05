@@ -74,7 +74,7 @@ SUMO_LSP_LOG=info sumo-lsp 2>/tmp/sumo-lsp.log
 | `info`            | Lifecycle events (initialize, workspace sweep, …)    |
 | `debug`           | Per-handler traces + cross-file fallback diagnostics |
 | `trace`           | Token-level detail (noisy)                           |
-| `sumo_lsp=debug,sumo_kb=warn` | Per-target filter                         |
+| `sumo_lsp=debug,sigmakee_rs_core=warn` | Per-target filter                         |
 
 ## Editor setup
 
@@ -378,7 +378,7 @@ auto-sweep.  See [Custom protocol extensions](#custom-protocol-extensions-sumo).
 
 Each `publishDiagnostics` notification carries:
 
-- `range` — byte-accurate span from the sumo-kb parser.
+- `range` — byte-accurate span from the sigmakee-rs-core parser.
 - `severity` — `Error`, `Warning`, `Information`, or `Hint`.
 - `code` — stable string (`parse/unterminated-string`, `E005`,
   `W011`, `tell/duplicate-axiom`, …) suitable for filter rules.

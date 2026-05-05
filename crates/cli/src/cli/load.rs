@@ -1,8 +1,8 @@
 use std::fs;
 
 use log;
-use sumo_kb::KnowledgeBase;
-use sumo_sdk::{LoadOp, SdkError};
+use sigmakee_rs_core::KnowledgeBase;
+use sigmakee_rs_sdk::{LoadOp, SdkError};
 
 use crate::cli::args::KbArgs;
 use crate::cli::util::{collect_kif_files, read_kif_file};
@@ -125,10 +125,10 @@ pub fn run_load(kb_args: KbArgs, flush: bool) -> bool {
     for (_, e) in &report.semantic_errors    { semantic_error!(e, kb); }
     for status in &report.files {
         if status.is_noop() {
-            log::info!(target: "sumo_kb::load",
+            log::info!(target: "sigmakee_rs_core::load",
                 "reconciled {}: unchanged ({} retained)", status.tag, status.retained);
         } else {
-            log::info!(target: "sumo_kb::load",
+            log::info!(target: "sigmakee_rs_core::load",
                 "reconciled {}: +{} -{} ={}",
                 status.tag, status.added, status.removed, status.retained);
         }
@@ -159,7 +159,7 @@ fn run_flush(kb_args: KbArgs, has_files: bool) -> bool {
             );
             return false;
         }
-        log::info!(target: "sumo_kb::load",
+        log::info!(target: "sigmakee_rs_core::load",
             "load --flush: wiped '{}'", kb_args.db.display());
     }
 

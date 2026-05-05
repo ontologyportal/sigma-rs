@@ -124,7 +124,7 @@ enforced.
 
 ## Verification
 
-- `cargo test -p sumo-kb --features "cnf integrated-prover persist ask" --release`
+- `cargo test -p sigmakee-rs-core --features "cnf integrated-prover persist ask" --release`
   passes 125+ tests across the lib, `cold_open_bench.rs`,
   `invalidation_bench.rs`, `dedup_bench.rs`, `phase_a_regression.rs`,
   `promote.rs`, `dedup.rs`.

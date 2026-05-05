@@ -1,6 +1,6 @@
 # Integrating with `sumo serve` — the JSON-RPC kernel
 
-`sumo serve` is a persistent daemon that exposes the sumo-kb
+`sumo serve` is a persistent daemon that exposes the sigmakee-rs-core
 primitives — `tell`, `ask`, file reconciliation, consistency
 checking, test running, TPTP export — over a **line-delimited
 JSON-RPC wire format on stdio**. It's designed for editor
@@ -437,7 +437,7 @@ counts.
 
 Emit the loaded KB as TPTP text. Useful for shipping a
 self-contained problem file to an external prover or for
-debugging how sumo-kb translates to FOL.
+debugging how sigmakee-rs-core translates to FOL.
 
 **Params**
 

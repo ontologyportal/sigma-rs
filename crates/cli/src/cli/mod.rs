@@ -7,7 +7,7 @@ pub mod validate;
 pub mod translate;
 pub mod man;
 
-// Ask + test + debug depend on sumo-kb's prover API, which is only
+// Ask + test + debug depend on sigmakee-rs-core's prover API, which is only
 // compiled under the `vampire` feature.  Without it, sumo still builds
 // but provides only translate / validate / load / man.
 #[cfg(feature = "ask")]

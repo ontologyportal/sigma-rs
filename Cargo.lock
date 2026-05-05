@@ -2172,8 +2172,40 @@ dependencies = [
  "self_update",
  "serde",
  "serde_json",
- "sumo-kb",
- "sumo-sdk",
+ "sigmakee-rs-core",
+ "sigmakee-rs-sdk",
+]
+
+[[package]]
+name = "sigmakee-rs-core"
+version = "1.0.0"
+dependencies = [
+ "bincode",
+ "env_logger",
+ "heed",
+ "inline_colorization",
+ "log",
+ "once_cell",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "thiserror 2.0.18",
+ "vampire-prover",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "sigmakee-rs-sdk"
+version = "1.0.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "rayon",
+ "sigmakee-rs-core",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2317,26 +2349,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
-name = "sumo-kb"
-version = "1.0.0"
-dependencies = [
- "bincode",
- "env_logger",
- "heed",
- "inline_colorization",
- "log",
- "once_cell",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "smallvec",
- "thiserror 2.0.18",
- "vampire-prover",
- "xxhash-rust",
-]
-
-[[package]]
 name = "sumo-lsp"
 version = "1.0.0"
 dependencies = [
@@ -2349,8 +2361,8 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
- "sumo-kb",
- "sumo-sdk",
+ "sigmakee-rs-core",
+ "sigmakee-rs-sdk",
  "url",
 ]
 
@@ -2362,20 +2374,8 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "sumo-kb",
+ "sigmakee-rs-core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "sumo-sdk"
-version = "1.0.0"
-dependencies = [
- "env_logger",
- "log",
- "rayon",
- "sumo-kb",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3269,6 +3269,15 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix 1.1.4",
+]
+
+[[package]]
+name = "xtask"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

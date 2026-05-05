@@ -11,7 +11,7 @@ use sigmakee::cli::{run_ask, run_test, run_debug};
 use sigmakee::cli::run_serve;
 use sigmakee::config::{resolve_config_path, parse_config_xml};
 
-use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
+use sigmakee_rs_core::error::{promote_to_error, set_all_errors, suppress_warnings};
 
 fn main() {
     log::trace!("main()");

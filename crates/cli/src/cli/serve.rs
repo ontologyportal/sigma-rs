@@ -61,14 +61,14 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sumo_kb::{
+use sigmakee_rs_core::{
     parse_test_content, KnowledgeBase, ProverStatus, SentenceId, SineParams,
     TptpLang, TptpOptions, VampireRunner,
 };
 
 // `crate::ask` (the inline `native_ask` shim) is no longer used
 // from serve.rs — `handle_test` and `handle_ask` both go through
-// `sumo_sdk::TestOp` / `AskOp` now.  The shim is kept in
+// `sigmakee_rs_sdk::TestOp` / `AskOp` now.  The shim is kept in
 // `crates/cli/src/ask.rs` as a re-exported public API + for the
 // `ask_parse_error` unit test in lib.rs; deleting it is a follow-up.
 use crate::cli::args::KbArgs;
@@ -150,7 +150,7 @@ struct AskParams {
 #[serde(rename_all = "camelCase")]
 struct AskResponse {
     /// `"Proved"`, `"Disproved"`, `"Consistent"`, `"Inconsistent"`,
-    /// `"Timeout"`, `"Unknown"`.  Mirrors `sumo_kb::ProverStatus`.
+    /// `"Timeout"`, `"Unknown"`.  Mirrors `sigmakee_rs_core::ProverStatus`.
     status:    String,
     /// Variable bindings returned by the prover (may be empty).
     bindings:  Vec<String>,
@@ -746,15 +746,15 @@ fn handle_ask(
     // `AskOp` handles backend selection, vampire-path threading,
     // and result assembly; the JSON-RPC handler just builds the
     // wire-shaped response.
-    let result = match sumo_sdk::AskOp::new(kb, &params.query)
+    let result = match sigmakee_rs_sdk::AskOp::new(kb, &params.query)
         .session(&*params.session)
         .timeout_secs(params.timeout_secs)
         .vampire_path(vampire_path)
-        .lang(sumo_kb::TptpLang::Fof)
+        .lang(sigmakee_rs_core::TptpLang::Fof)
         .run()
     {
         Ok(r) => r,
-        Err(sumo_sdk::SdkError::VampireNotFound(msg)) => {
+        Err(sigmakee_rs_sdk::SdkError::VampireNotFound(msg)) => {
             return err_response(INTERNAL_ERROR, format!("vampire not found: {}", msg));
         }
         Err(e) => {
@@ -892,7 +892,7 @@ fn handle_debug(
         for step in &result.proof_kif {
             if step.rule != "axiom" { continue; }
             // Two-tier resolution mirror of `print_step_source`.
-            let mut matched: Vec<&sumo_kb::AxiomSource> = Vec::new();
+            let mut matched: Vec<&sigmakee_rs_core::AxiomSource> = Vec::new();
             if let Some(sid) = step.source_sid {
                 if let Some(src) = src_idx.lookup_by_sid(sid) {
                     if !src.file.starts_with("__") { matched.push(src); }
@@ -958,8 +958,8 @@ fn handle_debug(
 /// CLI path: sid-direct first, canonical-hash fallback, skip
 /// ephemeral files.
 fn resolve_proof_step_source(
-    step:    &sumo_kb::KifProofStep,
-    src_idx: &sumo_kb::AxiomSourceIndex,
+    step:    &sigmakee_rs_core::KifProofStep,
+    src_idx: &sigmakee_rs_core::AxiomSourceIndex,
 ) -> (Option<SentenceId>, Option<String>, Option<u32>) {
     if let Some(sid) = step.source_sid {
         if let Some(src) = src_idx.lookup_by_sid(sid) {
@@ -1035,11 +1035,11 @@ fn handle_test(
 
     let prover_backend = if params.backend == "embedded" {
         #[cfg(feature = "integrated-prover")]
-        { sumo_sdk::ProverBackend::Embedded }
+        { sigmakee_rs_sdk::ProverBackend::Embedded }
         #[cfg(not(feature = "integrated-prover"))]
-        { sumo_sdk::ProverBackend::Subprocess }
+        { sigmakee_rs_sdk::ProverBackend::Subprocess }
     } else {
-        sumo_sdk::ProverBackend::Subprocess
+        sigmakee_rs_sdk::ProverBackend::Subprocess
     };
 
     for test_file in &test_files {
@@ -1092,7 +1092,7 @@ fn handle_test(
         // post-run flush all happen inside TestOp::run().  We
         // translate `TestOutcome` back into the wire-shaped
         // `TestCaseResult` the JSON-RPC client expects.
-        let mut op = sumo_sdk::TestOp::new(kb)
+        let mut op = sigmakee_rs_sdk::TestOp::new(kb)
             .add_case(file_display.clone(), test_case)
             .backend(prover_backend)
             .lang(lang);
@@ -1137,7 +1137,7 @@ fn handle_test(
         };
 
         match case.outcome {
-            sumo_sdk::TestOutcome::Passed => {
+            sigmakee_rs_sdk::TestOutcome::Passed => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1151,7 +1151,7 @@ fn handle_test(
                 });
                 passed += 1;
             }
-            sumo_sdk::TestOutcome::Failed { expected: e, got } => {
+            sigmakee_rs_sdk::TestOutcome::Failed { expected: e, got } => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1165,7 +1165,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::Incomplete { inferred, missing } => {
+            sigmakee_rs_sdk::TestOutcome::Incomplete { inferred, missing } => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1179,7 +1179,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::ParseError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::ParseError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1193,7 +1193,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::SemanticError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::SemanticError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1207,7 +1207,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::ProverError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::ProverError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1221,7 +1221,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::NoQuery => {
+            sigmakee_rs_sdk::TestOutcome::NoQuery => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,

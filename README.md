@@ -58,9 +58,10 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 
 | Crate | Description |
 |---|---|
-| `crates/sumo-kb` (`sumo-kb`) | Core library for the Sigmakee implementation |
+| `crates/core` (`sigmakee-rs-core`) | Core library for the Sigmakee implementation |
+| `crates/sdk` (`sigmakee-rs-sdk`) | SDK which makes software consumption of `sigmakee-rs-core` more intuitive |
 | `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
-| `crates/sumo-lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
+| `crates/lsp` (`lsp`) | Persistent language server for IDE integration |
 | `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) |
 
 ---

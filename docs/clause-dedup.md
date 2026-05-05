@@ -2,7 +2,7 @@
 
 > Design note for the clause-based dedup pipeline introduced in commits
 > `66c5ca7..b7aa34d` (2026-04-18).  Audience: future maintainers
-> touching `sumo-kb`'s persistence layer or the `cnf` / `canonical`
+> touching `sigmakee-rs-core`'s persistence layer or the `cnf` / `canonical`
 > modules.
 
 ## Why it exists
@@ -33,7 +33,7 @@ ENNF, Skolemization, simplification.
                   │                     │
         cnf::sentence_to_clauses        │
   (NativeConverter → ir::Problem →      │
-   NewCNF → ir::Clause → sumo_kb Clause)│
+   NewCNF → ir::Clause → sigmakee_rs_core Clause)│
                   │                     │
           ┌───────┴───────┐             │
           ▼               ▼             │

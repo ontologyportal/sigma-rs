@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sigmakee-rs-sdk + sigmakee-rs-core activity diagrams</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em; color: #222; }
+  h1 { border-bottom: 2px solid #444; padding-bottom: .3em; }
+  h2 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  .legend { background: #f6f6f6; padding: 1em; border-radius: 6px; font-size: 0.9em; }
+  .legend code { background: #eee; padding: 1px 4px; border-radius: 3px; }
+  .mermaid { background: #fafafa; padding: 1em; border-radius: 6px; margin: 1em 0; }
+  .gate-ask    { border-left: 4px solid #2ecc71; padding-left: .8em; }
+  .gate-persist{ border-left: 4px solid #3498db; padding-left: .8em; }
+  .gate-cnf    { border-left: 4px solid #f39c12; padding-left: .8em; }
+</style>
+</head>
+<body>
+<h1>sigmakee-rs-sdk + sigmakee-rs-core activity diagrams</h1>
+
+<div class="legend">
+<strong>Legend</strong> &mdash; rectangles are actions, diamonds are decisions,
+rounded ends are start/end. Function names match
+<code>docs/activity-flows.md</code> §5 glossary.
+Color stripe on heading: <span style="color:#2ecc71">green</span> = <code>feature: ask</code>,
+<span style="color:#3498db">blue</span> = <code>feature: persist</code>,
+<span style="color:#f39c12">orange</span> = <code>feature: cnf</code>.
+</div>
+
+<h2>3.1 IngestOp</h2>
+<div class="mermaid">
+flowchart TD
+  S([IngestOp.run]) --> EX[expand_sources]
+  EX --> EV1[emit LoadStarted]
+  EV1 --> LP{for each<br/>resolved source}
+  LP --> KIND{Disk?}
+  KIND -- yes --> RD[fs::read_to_string] --> FR[emit FileRead]
+  KIND -- no --> PAIR["(tag, text)"]
+  FR --> PAIR
+  PAIR --> IO[ingest_one]
+  IO --> EX2{kb.file_roots tag<br/>non-empty?}
+  EX2 -- yes --> RC[kb.reconcile_file] --> PE1{parse_errors?}
+  PE1 -- yes --> ERR1([Err SdkError::Kb])
+  PE1 -- no --> ST1[SourceIngestStatus<br/>was_reconciled=true]
+  EX2 -- no --> LK[kb.load_kif] --> OK1{!result.ok?}
+  OK1 -- yes --> ERR2([Err SdkError::Kb])
+  OK1 -- no --> ST2[SourceIngestStatus<br/>was_reconciled=false]
+  ST1 --> EV2[emit SourceIngested]
+  ST2 --> EV2
+  EV2 --> ACC[accumulate report]
+  ACC --> LP
+  LP -- done --> PROM[kb.make_session_axiomatic<br/>SESSION_FILES]
+  PROM --> END([Ok IngestReport])
+</div>
+
+<h2>3.2 ValidateOp</h2>
+<div class="mermaid">
+flowchart TD
+  S([ValidateOp.run]) --> T{target?}
+  T -- All --> PO1{parse_only?}
+  PO1 -- yes --> R0([Ok ValidationReport::default])
+  PO1 -- no --> VA[kb.validate_all_findings] --> WRP[wrap as ValidationReport] --> R1([Ok report])
+  T -- Formula --> SK{!parse_only &&<br/>!skip_kb_check?}
+  SK -- yes --> PRE[kb.validate_all_findings<br/>extend errors+warnings]
+  SK -- no --> LK[kb.load_kif tag, Some tag]
+  PRE --> LK
+  LK --> OK{!result.ok?}
+  OK -- yes --> RPE[report.parse_errors = errors] --> R2([Ok report])
+  OK -- no --> PO2{parse_only?}
+  PO2 -- yes --> R3([Ok report])
+  PO2 -- no --> SI[sids = kb.session_sids tag]
+  SI --> EM{sids empty?}
+  EM -- yes --> CFG([Err SdkError::Config])
+  EM -- no --> LOOP[for each sid:<br/>kb.validate_sentence_findings]
+  LOOP --> R4([Ok report])
+</div>
+
+<h2>3.3 TranslateOp</h2>
+<div class="mermaid">
+flowchart TD
+  S([TranslateOp.run]) --> T{target?}
+  T -- Kb --> VA[kb.validate_all<br/>→ semantic_warnings]
+  VA --> TT[kb.to_tptp opts, session]
+  TT --> R1([Ok TranslateReport])
+  T -- Formula --> LK[kb.load_kif tag, Some tag]
+  LK --> OK{!result.ok?}
+  OK -- yes --> ERR1([Err SdkError::Kb])
+  OK -- no --> SI[kb.session_sids tag]
+  SI --> EM{sids empty?}
+  EM -- yes --> ERR2([Err SdkError::Config])
+  EM -- no --> VL[for each sid:<br/>kb.validate_sentence<br/>push warnings]
+  VL --> EL{for each sid}
+  EL --> KIF[kb.sentence_kif_str]
+  KIF --> FMT[kb.format_sentence_tptp]
+  FMT --> KC{opts.show_kif_comment?}
+  KC -- yes --> PRE[prepend % &lt;kif&gt;]
+  KC -- no --> CC[append tptp]
+  PRE --> CC
+  CC --> EL
+  EL -- done --> R2([Ok TranslateReport])
+</div>
+
+<h2 class="gate-persist">3.4 LoadOp <small>[feature: persist]</small></h2>
+<div class="mermaid">
+flowchart TD
+  S([LoadOp.run]) --> MAT[materialise_sources<br/>read all disk + emit FileRead]
+  MAT --> EM{empty?}
+  EM -- yes --> R0([Ok report committed=false])
+  EM -- no --> EV1[emit LoadStarted]
+  EV1 --> RF[kb.reconcile_files batched]
+  RF --> WK{for each ReconcileReport}
+  WK --> PE{parse_errors?}
+  PE -- yes --> ERR1([Err SdkError::Kb])
+  PE -- no --> ACC[push semantic_errors,<br/>emit SourceIngested,<br/>push pending]
+  ACC --> WK
+  WK -- done --> ST{strict &&<br/>semantic_errors?}
+  ST -- yes --> R1([Ok report committed=false])
+  ST -- no --> EV2[emit PromoteStarted]
+  EV2 --> CL{for tag,removed,added<br/>in pending}
+  CL --> PD[kb.persist_reconcile_diff]
+  PD --> POK{Err?}
+  POK -- yes --> ERR2([Err SdkError::Kb])
+  POK -- no --> CL
+  CL -- done --> EV3[emit PromoteFinished]
+  EV3 --> R2([Ok report committed=true])
+</div>
+
+<h2 class="gate-ask">3.5 AskOp <small>[feature: ask]</small></h2>
+<div class="mermaid">
+flowchart TD
+  S([AskOp.run]) --> TL{for kif in tells}
+  TL --> TELL[kb.tell session, kif]
+  TELL --> TOK{!r.ok?}
+  TOK -- yes --> TERR([Err SdkError::Kb])
+  TOK -- no --> TL
+  TL -- done --> EV1[emit AskStarted]
+  EV1 --> BE{backend?}
+  BE -- Subprocess --> VR[build VampireRunner] --> ASK[kb.ask query, session, runner, lang]
+  BE -- Embedded --> ASKE[kb.ask_embedded query, session, timeout, lang]
+  ASK --> EV2[emit AskFinished]
+  ASKE --> EV2
+  EV2 --> VNF{Subprocess && Unknown &&<br/>raw_output ~ &quot;not found&quot;?}
+  VNF -- yes --> VERR([Err SdkError::VampireNotFound])
+  VNF -- no --> R1([Ok AskReport])
+</div>
+
+<h3 class="gate-ask">3.5.a kb.ask internals</h3>
+<div class="mermaid">
+flowchart TD
+  A([kb.ask]) --> SS[kb.sine_select_for_query<br/>SineParams::default]
+  SS --> SE{Err?}
+  SE -- yes --> URET([ProverResult::Unknown])
+  SE -- no --> PC[kb.parse_conjecture<br/>SESSION_QUERY]
+  PC --> PE{parse error<br/>or empty?}
+  PE -- yes --> URET2([ProverResult::Unknown])
+  PE -- no --> EAC[kb.ensure_axiom_cache]
+  EAC --> CV["NativeConverter::from_parts<br/>seed = cache.get(mode).clone"]
+  CV --> AA[for assertion sids:<br/>conv.add_axiom]
+  AA --> SC[for query sids:<br/>conv.set_conjecture]
+  SC --> FN[conv.finish]
+  FN --> AT[assemble_tptp<br/>axiom_filter = SInE ∪ assertions]
+  AT --> RB{query_affects_taxonomy?}
+  RB -- yes --> RB1[remove_file + rebuild_taxonomy<br/>+ invalidate_cache]
+  RB -- no --> RB2[remove_file only]
+  RB1 --> RUN[runner.prove tptp, ProverOpts]
+  RB2 --> RUN
+  RUN --> PR([ProverResult])
+</div>
+
+<h3 class="gate-ask">3.5.b kb.ask_embedded internals <small>[feature: integrated-prover]</small></h3>
+<div class="mermaid">
+flowchart TD
+  A([kb.ask_embedded]) --> SS[kb.sine_select_for_query]
+  SS --> PC[kb.parse_conjecture<br/>SESSION_QUERY_EMBEDDED]
+  PC --> EAC[kb.ensure_axiom_cache]
+  EAC --> FP[cache.filtered_problem<br/>allowed = SInE ∪ assertions]
+  FP --> CV["NativeConverter::from_parts"]
+  CV --> AA[for assertion sids: conv.add_axiom]
+  AA --> SC[for query sids:<br/>conv.set_conjecture<br/>capture QueryVarMap]
+  SC --> FN[conv.finish → ir_problem]
+  FN --> OPT[vampire_prover::Options<br/>mode=vampire, sine_selection=off]
+  OPT --> LOW[lower_problem ir_problem, opts]
+  LOW --> SAP[problem.solve_and_prove]
+  SAP --> ST{status?}
+  ST -- Proved --> EB[extract_bindings proof, qvm]
+  EB --> NPK[native_proof_to_kif_steps proof]
+  NPK --> RB[rollback: remove_file +<br/>maybe rebuild_taxonomy]
+  ST -- not Proved --> RB
+  RB --> PR([ProverResult proof_kif populated,<br/>proof_tptp empty])
+</div>
+
+<h2 class="gate-ask">3.6 TestOp <small>[feature: ask]</small></h2>
+<div class="mermaid">
+flowchart TD
+  S([TestOp.run]) --> EX[expand_sources<br/>File/Dir/Text/Parsed → Prepared]
+  EX --> CL{for idx, prepared<br/>in cases}
+  CL --> RO[run_one]
+  RO --> PR{parsed?}
+  PR -- Err --> OUT_PE[ParseError outcome]
+  PR -- Ok case --> AX{axioms non-empty?}
+  AX -- yes --> LK[kb.load_kif axiom_text, load_tag, session]
+  AX -- no --> Q
+  LK --> LOK{!load_result.ok?}
+  LOK -- yes --> FL1[kb.flush_session] --> OUT_PE2[ParseError outcome]
+  LOK -- no --> VS[kb.validate_session]
+  VS --> SE{semantic empty?}
+  SE -- no --> FL2[kb.flush_session] --> OUT_SE[SemanticError outcome]
+  SE -- yes --> Q
+  Q{case.query?}
+  Q -- None --> FL3[kb.flush_session] --> OUT_NQ[NoQuery outcome]
+  Q -- Some --> TO[timeout = override or case.timeout]
+  TO --> BE{backend?}
+  BE -- Subprocess --> RUN1[kb.ask]
+  BE -- Embedded --> RUN2[kb.ask_embedded]
+  RUN1 --> FL4[kb.flush_session]
+  RUN2 --> FL4
+  FL4 --> CLS{Unknown &&<br/>raw_output non-empty?}
+  CLS -- yes --> OUT_PV[ProverError outcome]
+  CLS -- no --> EXP{proved == expected?}
+  EXP -- no --> OUT_F[Failed outcome]
+  EXP -- yes --> EA{expected_answer?}
+  EA -- Some --> MIS{missing bindings?}
+  MIS -- yes --> OUT_I[Incomplete outcome]
+  MIS -- no --> OUT_P1[Passed outcome]
+  EA -- None --> OUT_P2[Passed outcome]
+  OUT_PE --> EV
+  OUT_PE2 --> EV
+  OUT_SE --> EV
+  OUT_NQ --> EV
+  OUT_PV --> EV
+  OUT_F --> EV
+  OUT_I --> EV
+  OUT_P1 --> EV
+  OUT_P2 --> EV
+  EV[emit TestCase + tally] --> CL
+  CL -- done --> R([Ok TestSuiteReport])
+</div>
+
+<h2>3.7 manpage_view</h2>
+<div class="mermaid">
+flowchart TD
+  S([manpage_view kb, symbol]) --> KMP[kb.manpage symbol]
+  KMP --> SI[kb.symbol_id symbol]
+  SI --> SOK{Some?}
+  SOK -- no --> NONE([None])
+  SOK -- yes --> BM[build_manpage]
+  BM --> K[classify kinds<br/>is_class/function/predicate/relation/instance]
+  K --> P[collect_parents<br/>scan TAX_RELATIONS heads]
+  P --> SIG[signature: arity + domains + range]
+  SIG --> CR[collect_refs → ref_args, ref_nested]
+  CR --> DOC[kb.documentation, term_format, format_string]
+  DOC --> MP[ManPage]
+  MP --> VR[view_from_raw]
+  VR --> SV[SignatureView]
+  SV --> DBL[for each doc/term/format block:<br/>parse_doc_spans → DocBlock]
+  DBL --> RB{ref_args empty &&<br/>ref_nested empty?}
+  RB -- yes --> RD[ReferenceSet::default]
+  RB -- no --> RBK[bucket ref_args by position 0..max_pos]
+  RD --> MV([Some ManPageView])
+  RBK --> MV
+</div>
+
+<h2>2.3 ingest_pipeline (shared by tell, load_kif, reconcile additions)</h2>
+<div class="mermaid">
+flowchart TD
+  S([kb.ingest text, file_tag, session, validate]) --> SN[snapshot prev_root_count]
+  SN --> PS[kif_store::load_kif<br/>parse_document → tokenize → parser]
+  PS --> PE{parse_errors?}
+  PE -- yes --> SOK[result.ok=false; errors pushed<br/>continue pipeline]
+  PE -- no --> NR[new_roots = file_roots tail]
+  SOK --> NR
+  NR --> V{validate?}
+  V -- yes --> VL[for sid in new_roots:<br/>layer.validate_sentence<br/>push TellWarning::Semantic]
+  V -- no --> CNF
+  VL --> CNF{feature: cnf?}
+  CNF -- yes --> CB[clausify_with_bisection<br/>batched IR]
+  CB --> SL{for sid in new_roots}
+  SL --> TR[cnf::translate_ir_clauses]
+  TR --> CH[canonical_clause_hash<br/>+ formula_hash_from_clauses]
+  CH --> DD{fh in fingerprints?}
+  DD -- yes --> DUP[push DuplicateAxiom/<br/>DuplicateAssertion warning]
+  DD -- no --> ACC[fingerprints.insert<br/>clauses.insert<br/>accepted.push]
+  DUP --> SL
+  ACC --> SL
+  SL -- done --> SE
+  CNF -- no --> NA[accepted = new_roots]
+  NA --> SE
+  SE[sessions session.extend accepted] --> ET[layer.extend_taxonomy_with accepted]
+  ET --> R([TellResult ok, errors, warnings])
+</div>
+
+<h2>2.6 axiom_cache_pipeline (kb.ensure_axiom_cache)</h2>
+<div class="mermaid">
+flowchart TD
+  S([kb.ensure_axiom_cache]) --> H{axiom_cache.is_some?}
+  H -- yes --> RET([return])
+  H -- no --> P{feature: persist<br/>+ db?}
+  P -- yes --> RX[env.read_txn → kb_version<br/>get_cache TFF/FOF]
+  RX --> M{both present &&<br/>both versions match?}
+  M -- yes --> HY[hydrate axiom_cache] --> RET
+  M -- no --> RB
+  P -- no --> RB
+  RB[axiom_ids = axiom_ids_set] --> BLD[VampireAxiomCacheSet::build<br/>both TFF + FOF]
+  BLD --> PER{feature: persist<br/>+ db?}
+  PER -- yes --> WR[persist_axiom_cache TFF<br/>+ persist_axiom_cache FOF]
+  PER -- no --> ST
+  WR --> ST[axiom_cache = Some cache]
+  ST --> RET
+</div>
+
+<h2>2.11 reconcile_pipeline (kb.reconcile_file)</h2>
+<div class="mermaid">
+flowchart TD
+  S([kb.reconcile_file file, new_text]) --> RP[reconcile_parse]
+  RP --> PE{has_errors?}
+  PE -- yes --> RE([report.parse_errors populated; return])
+  PE -- no --> CD[reconcile_compute_diff<br/>retained, removed, added]
+  CD --> SP[for retained:<br/>store.update_sentence_span]
+  SP --> NO{removed.empty &&<br/>added.empty?}
+  NO -- yes --> NOO([report; return noop])
+  NO -- no --> RT[removed_touches_tax = any_touches_taxonomy removed]
+  RT --> AR[reconcile_apply_removals<br/>un-index, drop SInE/CNF/cache,<br/>collect altered_syms]
+  AR --> AA[reconcile_apply_additions<br/>re-emit AST as KIF →<br/>ingest_pipeline §2.3 →<br/>make_session_axiomatic]
+  AA --> TX{removed_touches_tax ||<br/>added_touches_tax?}
+  TX -- yes --> RBT[layer.rebuild_taxonomy]
+  TX -- no --> AC
+  RBT --> AC{feature: ask?}
+  AC -- yes --> CL[axiom_cache = None]
+  AC -- no --> SR
+  CL --> SR[reconcile_smart_revalidate<br/>SInE.select altered_syms →<br/>per-sid layer.validate_sentence]
+  SR --> RR([ReconcileReport])
+</div>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', flowchart: { htmlLabels: true, useMaxWidth: true } });
+</script>
+</body>
+</html>

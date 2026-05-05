@@ -9,7 +9,7 @@
 #   * linux-x64-gnu (ubuntu-latest)
 #   * win32-x64     (windows-latest)
 #
-# sumo-lsp depends on sumo-kb with `default-features = false`, so
+# sumo-lsp depends on sigmakee-rs-core with `default-features = false`, so
 # none of the builds need CMake or the vampire-sys submodule --
 # the binary is parse + validate + manpage only.  Stripped release
 # binary measures ~3.3 MB on Linux / macOS.

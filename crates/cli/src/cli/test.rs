@@ -6,14 +6,14 @@ use inline_colorization::*;
 use crate::cli::args::KbArgs;
 use crate::cli::util::{open_or_build_kb_profiled, resolve_vampire_path};
 use crate::cli::util::parse_lang;
-use sumo_kb::parse_test_content;
-use sumo_sdk::{ProverBackend, TestOp, TestOutcome};
+use sigmakee_rs_core::parse_test_content;
+use sigmakee_rs_sdk::{ProverBackend, TestOp, TestOutcome};
 use crate::cli::profile::PhaseAggregator;
 
 /// Entry point for `sumo test`.
 ///
 /// Walks the supplied paths to discover `.kif.tq` files, builds a
-/// base KB, then drives [`sumo_sdk::TestOp`] per test case so the
+/// base KB, then drives [`sigmakee_rs_sdk::TestOp`] per test case so the
 /// CLI can keep its interleaved "Running test: …" / "PASSED" /
 /// "FAILED" / "INCOMPLETE" output between cases — that interleaved
 /// presentation isn't expressible through TestOp's progress events
@@ -84,8 +84,8 @@ pub fn run_test(paths: Vec<PathBuf>, kb_args: KbArgs, keep: Option<PathBuf>, bac
     // KB load so the initial load/promote phases are captured.
     log::debug!("Building base KB");
     let aggregator = if profile { Some(Arc::new(PhaseAggregator::new())) } else { None };
-    let sink: Option<sumo_kb::DynSink> = aggregator.clone()
-        .map(|a| a as sumo_kb::DynSink);
+    let sink: Option<sigmakee_rs_core::DynSink> = aggregator.clone()
+        .map(|a| a as sigmakee_rs_core::DynSink);
     let t_kb = Instant::now();
     let mut kb = match open_or_build_kb_profiled(&kb_args, sink) {
         Ok(k)   => k,

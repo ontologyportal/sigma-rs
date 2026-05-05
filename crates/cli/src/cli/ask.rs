@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use log;
 use inline_colorization::*;
-use sumo_kb::ProverStatus;
-use sumo_sdk::{AskOp, ProverBackend, SdkError};
+use sigmakee_rs_core::ProverStatus;
+use sigmakee_rs_sdk::{AskOp, ProverBackend, SdkError};
 use crate::cli::profile::PhaseAggregator;
 use crate::cli::util::parse_lang;
 
@@ -46,8 +46,8 @@ pub fn run_ask(
     // no sink is installed and every emit site is a free
     // predicted-None branch.
     let aggregator = if profile { Some(Arc::new(PhaseAggregator::new())) } else { None };
-    let sink: Option<sumo_kb::DynSink> = aggregator.clone()
-        .map(|a| a as sumo_kb::DynSink);
+    let sink: Option<sigmakee_rs_core::DynSink> = aggregator.clone()
+        .map(|a| a as sigmakee_rs_core::DynSink);
 
     let t_kb = Instant::now();
     let mut kb = match open_or_build_kb_profiled(&kb_args, sink) {
@@ -141,7 +141,7 @@ pub fn run_ask(
         // are identical so we synthesise one for the call.  Cheap
         // because the heavy fields (raw_output, proof_kif) are
         // cloned by-Vec / by-String once each.
-        let pr = sumo_kb::ProverResult {
+        let pr = sigmakee_rs_core::ProverResult {
             status:     result.status,
             raw_output: result.raw_output.clone(),
             bindings:   result.bindings.clone(),
