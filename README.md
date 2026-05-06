@@ -82,7 +82,7 @@ sumo ask --tell "(instance Socrates Philosopher)" \
   "(instance Socrates Human)"
 
 # 4. Dump the KB as TFF TPTP
-sumo --lang tff translate > sumo.p
+sumo translate --lang tff > sumo.p
 
 # 5. Look up information about a symbol
 sumo man Socrates
