@@ -77,6 +77,13 @@ pub struct Cli {
     #[arg(short = 'd', long = "dir", value_name = "DIR", global = true)]
     pub dirs: Vec<PathBuf>,
 
+    /// Git repository URL to load the ontology from.
+    /// With `load`: clones and commits to the LMDB database (cached).
+    /// With other commands: clones on the fly into a temporary directory.
+    /// -f / -d / -c paths are resolved relative to the repository root.
+    #[arg(long = "git", value_name = "URL", global = true)]
+    pub git: Option<String>,
+
     /// Path to the LMDB database directory.
     /// Defaults to `./sumo.lmdb` in the current working directory.
     #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]

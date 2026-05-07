@@ -71,3 +71,6 @@ self_update = { version = "0.44", default-features = false, features = ["rustls"
 # unconditionally to avoid feature gymnastics on a tiny (~200 KB) dep —
 # `cargo tree` already shows it transitively through vampire-sys etc.
 rand = "0.8"
+tempfile  = "3"
+indicatif = "0.17"
+git2      = { version = "0.19", default-features = false, features = ["https"] }

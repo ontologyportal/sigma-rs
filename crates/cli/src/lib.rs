@@ -1,5 +1,7 @@
 pub mod config;
 pub mod cli;
+pub mod git;
+pub mod progress;
 
 // Library-level prover façade and programmatic ask() entry point are
 // only available when sumo-kb's prover API is compiled in.

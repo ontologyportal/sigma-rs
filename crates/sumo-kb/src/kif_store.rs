@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 // crates/sumo-kb/src/kif_store.rs
 //
 /// The KIF Store provides the syntactical construction structure and methods
@@ -838,13 +839,15 @@ impl<'a> fmt::Display for SentenceDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.show_gutter {
             let content  = self.to_raw_string(self.highlight_arg);
-            let line_no  = self.store.sentences[self.store.sent_idx(self.sid)].span.line;
+            let span  = self.store.sentences[self.store.sent_idx(self.sid)].span.clone();
+            let line_no = span.line;
+            let file = PathBuf::from(span.file).file_name().unwrap_or_default().to_owned();
             let num_str  = line_no.to_string();
-            let width    = num_str.len().min(6);
+            let width    = num_str.len().min(8);
             let blank    = " ".repeat(width);
             for (i, line) in content.lines().enumerate() {
                 if i > 0 { writeln!(f)?; }
-                if i == 0 { write!(f, "{:>width$} | {}", line_no, line, width = width)?; }
+                if i == 0 { write!(f, "{}:{:>width$} | {}", file.to_string_lossy(), line_no, line, width = width)?; }
                 else       { write!(f, "{} | {}", blank, line)?; }
             }
             return Ok(());

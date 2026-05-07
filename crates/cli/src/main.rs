@@ -10,6 +10,7 @@ use sigmakee::cli::{run_ask, run_test, run_debug};
 #[cfg(feature = "server")]
 use sigmakee::cli::run_serve;
 use sigmakee::config::{resolve_config_path, parse_config_xml};
+use sigmakee::git::fetch_repo_sparse;
 
 use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
 
@@ -93,15 +94,67 @@ fn main() {
         .init();
     log::debug!("Debug logging enabled");
 
+    // --git: sparse-checkout only the files the user asked for into a
+    // temp dir.  The TempDir is kept alive in `_git_tempdir` for the
+    // entire process so the checked-out files remain accessible.
+    //
+    // Sparse paths are collected NOW — before the clone — from all three
+    // selection sources: -f, -d, and -c constituents.  We already have
+    // the parsed config_xml at this point so -c paths are available.
+    let _git_tempdir: Option<tempfile::TempDir>;
+    let git_root: Option<std::path::PathBuf> = if let Some(ref url) = cli.git {
+        if !matches!(cli.command, Cmd::Load { .. }) {
+            eprintln!(
+                "warning: --git without `load` downloads on the fly and is not \
+                 cached to the database"
+            );
+        }
+
+        // Collect every repo-relative path the user needs.
+        let mut sparse_paths: Vec<String> = Vec::new();
+        sparse_paths.extend(cli.files.iter().map(|p| p.display().to_string()));
+        sparse_paths.extend(cli.dirs.iter().map(|p| p.display().to_string()));
+        if let Some(ref cfg) = config_xml {
+            let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
+            if let Some(name) = kb_name {
+                if let Some(paths) = cfg.get_kb_constituents(name) {
+                    sparse_paths.extend(paths.into_iter().map(String::from));
+                }
+            }
+        }
+
+        match fetch_repo_sparse(url, &sparse_paths) {
+            Ok((tmp, root)) => {
+                _git_tempdir = Some(tmp);
+                Some(root)
+            }
+            Err(()) => process::exit(1),
+        }
+    } else {
+        _git_tempdir = None;
+        None
+    };
+
     // Build the universal source-selection struct from the
     // top-level globals.  Every `run_*` handler still takes a
     // `KbArgs`; for subcommands that flatten `KbArgs` (ask / test /
     // debug / serve), we merge the flattened `vampire` field on top
     // of this base.  For subcommands that don't flatten, the
     // synthesised base IS the argument they receive.
+    //
+    // When --git is active, rebase -f / -d paths against the repo root
+    // so the user can supply paths relative to the repository.
+    let (base_files, base_dirs) = match git_root.as_ref() {
+        Some(root) => (
+            cli.files.iter().map(|f| root.join(f)).collect(),
+            cli.dirs.iter().map(|d| root.join(d)).collect(),
+        ),
+        None => (cli.files.clone(), cli.dirs.clone()),
+    };
+
     let mut base_kb_args = KbArgs {
-        files:   cli.files.clone(),
-        dirs:    cli.dirs.clone(),
+        files:   base_files,
+        dirs:    base_dirs,
         db:      cli.db.clone(),
         no_db:   cli.no_db,
         vampire: None,
@@ -109,14 +162,18 @@ fn main() {
 
     // Config.xml integration: prepend config-declared files to the
     // user's `-f` list and fall back to the config-declared Vampire
-    // path when none was given on the command line.  Touches
-    // `base_kb_args` in place; the values propagate to every
-    // subcommand via the merge at dispatch time.
+    // path when none was given on the command line.  When --git is
+    // active, constituent paths are resolved relative to the repo root
+    // instead of the config's kbDir.
     if let Some(ref cfg) = config_xml {
         log::debug!("Found config_xml");
         let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
         if let Some(name) = kb_name {
-            if let Some(files) = cfg.get_kb_files(name) {
+            let files = match git_root.as_ref() {
+                Some(root) => cfg.get_kb_files_relative_to(name, root),
+                None       => cfg.get_kb_files(name),
+            };
+            if let Some(files) = files {
                 // Config files come first so the order matches the
                 // canonical "Merge.kif before Mid-level-ontology.kif"
                 // convention (`get_kb_files` already returns them in

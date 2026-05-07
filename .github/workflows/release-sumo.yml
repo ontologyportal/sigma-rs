@@ -102,7 +102,7 @@ jobs:
         env:
           SUMO_BUILD_KIND:   release
           SUMO_BUILD_COMMIT: ${{ github.sha }}
-        run: cargo build -p sigmakee --release --target ${{ matrix.target }}
+        run: cargo build -p sigmakee --release --target ${{ matrix.target }} --features integrated-prover
 
       - name: Strip binary (Unix)
         if: matrix.archive == 'tar.gz'

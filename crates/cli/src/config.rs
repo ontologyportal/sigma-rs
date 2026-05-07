@@ -58,19 +58,30 @@ impl ConfigXml {
         self.get_parameter("sumokbname")
     }
 
-    /// Returns a list of absolute paths for the files in the specified KB.
+    /// Returns a list of absolute paths for the files in the specified KB,
+    /// resolved relative to `kbDir` from the config.
     pub fn get_kb_files(&self, kb_name: &str) -> Option<Vec<PathBuf>> {
-        let kb = self.kbs.iter().find(|k| k.name == kb_name)?;
         let kb_dir = self.kb_dir().unwrap_or_else(|| PathBuf::from("."));
-        
+        self.get_kb_files_relative_to(kb_name, &kb_dir)
+    }
+
+    /// Like [`get_kb_files`] but resolves constituent paths relative to
+    /// `base` instead of the config's `kbDir`.  Used by `--git` to
+    /// treat all constituent paths as relative to the cloned repo root.
+    pub fn get_kb_files_relative_to(&self, kb_name: &str, base: &Path) -> Option<Vec<PathBuf>> {
+        let kb = self.kbs.iter().find(|k| k.name == kb_name)?;
         Some(kb.constituents.iter().map(|c| {
             let p = PathBuf::from(&c.file);
-            if p.is_absolute() {
-                p
-            } else {
-                kb_dir.join(p)
-            }
+            if p.is_absolute() { p } else { base.join(&p) }
         }).collect())
+    }
+
+    /// Return the raw (un-joined) constituent path strings for a KB.
+    /// Used by `--git` to build the sparse-checkout path list before
+    /// cloning — at that point there is no repo root to join against yet.
+    pub fn get_kb_constituents(&self, kb_name: &str) -> Option<Vec<&str>> {
+        let kb = self.kbs.iter().find(|k| k.name == kb_name)?;
+        Some(kb.constituents.iter().map(|c| c.file.as_str()).collect())
     }
 }
 

@@ -3,7 +3,7 @@ members  = ["crates/sumo-kb", "crates/sumo-sdk", "crates/wasm", "crates/cli", "c
 resolver = "2"
 
 [workspace.package]
-version     = "1.0.0"
+version     = "1.0.1"
 edition     = "2021"
 authors     = ["Theodore Kim", "Adam Pease"]
 license     = "GPL-3.0"

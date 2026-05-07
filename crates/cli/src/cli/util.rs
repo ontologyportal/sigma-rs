@@ -5,11 +5,9 @@ use sumo_kb::{KbError, KnowledgeBase, Span, TptpLang};
 use sumo_sdk::{IngestOp, LoadOp, SdkError};
 
 use crate::cli::args::KbArgs;
-// `expand_tilde` lives in `crate::config`; imported here so CLI
-// argument paths (e.g. `--vampire "~/bin/vampire"`) pick up the same
-// `~`-expansion as `--config` does.
 use crate::config::expand_tilde;
 use crate::parse_error;
+use crate::progress::file_load_bar;
 
 // -- LMDB / KB helpers --------------------------------------------------------
 
@@ -104,6 +102,8 @@ fn read_files_parallel(args: &KbArgs) -> Result<Vec<(String, String)>, ()> {
         return Ok(Vec::new());
     }
 
+    let bar = file_load_bar(all_files.len() as u64);
+
     #[cfg(feature = "parallel")]
     let raw: Vec<(PathBuf, Result<String, ()>)> = {
         use rayon::prelude::*;
@@ -119,8 +119,18 @@ fn read_files_parallel(args: &KbArgs) -> Result<Vec<(String, String)>, ()> {
 
     let mut out: Vec<(String, String)> = Vec::with_capacity(raw.len());
     for (path, text_result) in raw {
-        let text = text_result?;            // read_kif_file already logged
+        let text = text_result?;
+        if let Some(ref b) = bar {
+            b.set_message(path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string());
+            b.inc(1);
+        }
         out.push((path.display().to_string(), text));
+    }
+    if let Some(b) = bar {
+        b.finish_and_clear();
     }
     Ok(out)
 }
