@@ -1,0 +1,85 @@
+[package]
+name    = "sigmakee-rs-core"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# No default features
+default = ["ask"]
+# LMDB-backed persistence. Pulls in heed + bincode.
+persist = ["dep:heed", "dep:bincode"]
+# Theorem proving: the subprocess prover (spawns a `vampire` process)
+# and all `KnowledgeBase::ask*` entry points.
+# NOT available on wasm32 -- enforced by compile_error! in lib.rs.
+ask     = ["dep:regex"]
+# Native saturation prover (residue index + theory oracle + given-clause
+# loop).  Pure Rust, no external prover, no new dependencies. 
+# Adds the ProverLayer top layer and KnowledgeBase::new_native.
+native-prover = ["ask"]
+# Generic inductive-definition model builder (the "ModelLayer").  Umbrella
+# flag for wiring the Datalog(¬) model engine into the prover's query path
+# (Phase 5+).  The engine + reproduction tests live under `native-prover`
+# and compile regardless; this flag gates the live prover integration so the
+# saturation path stays byte-identical until coverage is proven.  See
+# docs/model-builder-implementation.md.
+model-builder = ["native-prover"]
+# Embedded Vampire prover: additionally links vampire-sys (Vampire C++
+# library) via CMake, enabling `ask_embedded` and native-proof binding
+# extraction.  Requires CMake 3.10+, a C++ compiler, and the
+# vampire-sys/vampire-lib submodule.
+# NOT on wasm32.
+integrated-prover = ["ask", "vampire-prover/integrated-prover", "dep:vampire-sys"]
+# Phase timing is no longer a sigmakee-rs-core feature.  Every `profile_span!`
+# / `profile_call!` macro emits `ProgressEvent::PhaseStarted` /
+# `PhaseFinished` through the installed sink; consumers aggregate
+# whichever way they want.  See `crate::progress`.
+
+# Parallel hot-path execution via rayon.  Speeds up bootstrap-scale
+# workloads (CNF clausification, multi-file I/O).  NOT available on
+# wasm32 — enforced by `compile_error!` in lib.rs.  When off, all
+# per-item work is serial with identical semantics.
+parallel = ["dep:rayon"]
+
+# Note: the pure-Rust IR (`vampire_prover::ir::*`) and TPTP emitter /
+# parser are ALWAYS available, regardless of features.  They drive
+# `NativeConverter`, `assemble_tptp`, and KnowledgeBase's TPTP output
+# methods unconditionally.  The `ask` and `integrated-prover` features
+# add prover runners on top.
+
+[dependencies]
+# Always present
+serde.workspace             = true
+serde_json.workspace        = true
+thiserror.workspace         = true
+log.workspace               = true
+inline_colorization.workspace = true
+xxhash-rust                 = { version = "0.8.15", features = ["xxh64"] }
+once_cell                   = "1.21.4"
+dashmap                     = "6"
+smallvec                    = { version = "1", features = ["serde"] }
+itertools                   = "0.14"
+
+# persist feature
+heed    = { version = "0.20", features = ["serde-bincode"], optional = true }
+bincode = { version = "1",                                  optional = true }
+
+# ask feature
+regex   = { version = "1", optional = true }
+
+# parallel feature
+rayon   = { version = "1.10", optional = true }
+
+# TPTP parser (moved from vampire-prover to trans/ir/tptp_parse.rs)
+winnow = "0.7"
+
+# Pure-Rust IR + TPTP parser/emitter, always present.
+# `default-features = false` keeps the C++ backend off; the
+# `integrated-prover` feature adds it.  `serde` turns on the IR
+# derives so the Phase D axiom cache can bincode the whole problem.
+vampire-prover = { path = "../vampire-rs/vampire", default-features = false }
+
+# Direct vampire-sys access for the clausify path (integrated-prover only).
+vampire-sys = { path = "../vampire-rs/vampire-sys", optional = true }
+
+[dev-dependencies]
+env_logger = "0.11"

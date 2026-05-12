@@ -1,2 +1,74 @@
 [env]
 SINE_TOLERANCE="2.5"
+
+# Root SUMO symbol from which all other symbols are derived
+SUMO_ROOT_SYMBOL              = "Entity"
+
+# ---------------------------------------------------------------------------
+# SUMO built-in arithmetic predicate names.
+# Used by the TFF converter (trans/converter/builtins.rs) to recognise
+# arithmetic relation heads and map them to TPTP interpreted symbols.
+# ---------------------------------------------------------------------------
+SUMO_LESS_THAN                 = "lessThan"
+SUMO_GREATER_THAN              = "greaterThan"
+SUMO_LESS_THAN_OR_EQUAL_TO     = "lessThanOrEqualTo"
+SUMO_GREATER_THAN_OR_EQUAL_TO  = "greaterThanOrEqualTo"
+
+# ---------------------------------------------------------------------------
+# SUMO built-in math function names
+# ---------------------------------------------------------------------------
+SUMO_ADDITION_FN       = "AdditionFn"
+SUMO_SUBTRACTION_FN    = "SubtractionFn"
+SUMO_MULTIPLICATION_FN = "MultiplicationFn"
+SUMO_DIVISION_FN       = "DivisionFn"
+SUMO_FLOOR_FN          = "FloorFn"
+SUMO_CEILING_FN        = "CeilingFn"
+SUMO_ROUND_FN          = "RoundFn"
+SUMO_REMAINDER_FN      = "RemainderFn"
+
+# ----------------------------------------------------------------------------
+# SUMO built in numeric classes
+# ----------------------------------------------------------------------------
+SUMO_INTEGER_CLASS     = "Integer"
+SUMO_REAL_CLASS        = "RealNumber"
+SUMO_NUMBER_CLASS      = "Number"
+SUMO_RATIONAL_CLASS    = "RationalNumber"
+
+# ----------------------------------------------------------------------------
+# SUMO Taxonomy Classes
+# ----------------------------------------------------------------------------
+SUMO_RELATION_CLASS    = "Relation"
+SUMO_PREDICATE_CLASS   = "Predicate"
+SUMO_FUNCTION_CLASS    = "Function"
+SUMO_INSTANCE_RELATION = "instance"
+
+# ----------------------------------------------------------------------------
+# SUMO Arity Classes
+# ----------------------------------------------------------------------------
+SUMO_ARITY_TWO         = "BinaryRelation"
+SUMO_ARITY_THREE       = "TernaryRelation"
+SUMO_ARITY_FOUR        = "QuaternaryRelation"
+SUMO_ARITY_FIVE        = "QuintaryRelation"
+SUMO_ARITY_VAR         = "VariableArityRelation"
+
+# ----------------------------------------------------------------------------
+# SUMO Type Signature Relations
+# ----------------------------------------------------------------------------
+SUMO_DOMAIN_RELATION   = "domain"
+SUMO_DOMAIN_SUBCLASS_RELATION   = "domainSubclass"
+SUMO_RANGE_RELATION    = "range"
+SUMO_RANGE_SUBCLASS_RELATION   = "rangeSubclass"
+
+# ----------------------------------------------------------------------------
+# SUMO Documentation helper relations
+# ----------------------------------------------------------------------------
+SUMO_DOC_RELATION      = "documentation"
+SUMO_TERM_RELATION     = "termFormat"
+SUMO_FORMAT_RELATION   = "format"
+
+SUMO_SUBCLASS_RELATION    = "subclass"
+SUMO_SUBRELATION_RELATION = "subrelation"
+SUMO_SUBATTRIBUTE_RELATION = "subAttribute"
+
+[alias]
+xtask = "run --quiet --package xtask --"

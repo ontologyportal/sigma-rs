@@ -5,3 +5,7 @@ target/
 .vscode
 scripts/
 TODO.md
+*.tptp
+*.p
+eval-out/
+wikipedia-kb/
