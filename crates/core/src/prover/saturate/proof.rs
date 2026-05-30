@@ -1,0 +1,236 @@
+// crates/core/src/saturate/proof.rs
+//
+// Proof extraction: the derivation DAG rooted at the empty clause →
+// ordered [`KifProofStep`]s (the same backend-agnostic shape the TPTP
+// pipeline emits, so the CLI's proof printing works unchanged).
+//
+// Three step sources:
+//   * input clauses (axiom / hypothesis / negated_conjecture) — cite
+//     their stored root via `source_sid`, so `AxiomSourceIndex` /
+//     direct span lookup can print file:line;
+//   * derived clauses (resolve / factor / para / hyper / oracle) —
+//     premises are their parent steps;
+//   * witness facts (oracle discharges) — stored facts surfaced as
+//     extra "axiom" premise steps, each citing its own sid.
+
+use std::collections::HashMap;
+
+use crate::parse::ast::AstNode;
+use crate::parse::{OpKind, Span};
+use crate::prover::proof::KifProofStep;
+use crate::types::{Element, Literal, SentenceId};
+
+use super::ProverLayer;
+use super::prover::NativeProver;
+
+/// Per-proof skolem display renamer.  The clausifier names skolems
+/// `sk_<root-hash>_<n>` (deterministic, so re-clausification is
+/// byte-identical) — unreadable in a proof.  This maps each distinct
+/// skolem symbol to a clean first-appearance label (`sk0`, `sk1`, …),
+/// shared across every step so the same skolem keeps the same name.
+#[derive(Default)]
+struct SkolemRenamer {
+    map: HashMap<u64, String>,
+}
+
+impl SkolemRenamer {
+    /// Clean label for a skolem symbol, or `None` for ordinary symbols.
+    fn label(&mut self, name: &str, id: u64) -> Option<String> {
+        if !name.starts_with("sk_") {
+            return None;
+        }
+        let next = self.map.len();
+        Some(self.map.entry(id).or_insert_with(|| format!("sk{next}")).clone())
+    }
+}
+
+/// Convert the refutation DAG ending at `empty_id` into proof steps.
+pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<KifProofStep> {
+    // Topological order via DFS over clause parents; witness facts are
+    // emitted (once) before the step that uses them.
+    let mut order: Vec<u32> = Vec::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    fn visit(
+        prover: &NativeProver<'_>,
+        id: u32,
+        seen: &mut std::collections::HashSet<u32>,
+        order: &mut Vec<u32>,
+    ) {
+        if !seen.insert(id) { return; }
+        for p in &prover.clauses[id as usize].parents {
+            visit(prover, *p, seen, order);
+        }
+        order.push(id);
+    }
+    visit(prover, empty_id, &mut seen, &mut order);
+
+    if std::env::var("SIGMA_PROOF_TRACE").is_ok() {
+        for cid in &order {
+            let c = &prover.clauses[*cid as usize];
+            eprintln!("PROOF-CLAUSE id={} rule={} tier={} parents={:?} fact_parents={:?} notes={:?}",
+                c.id, c.rule, c.tier, c.parents, c.fact_parents, c.notes);
+        }
+    }
+
+    let layer = prover.layer();
+    let mut steps: Vec<KifProofStep> = Vec::new();
+    let mut clause_step: HashMap<u32, usize> = HashMap::new();
+    let mut root_steps: HashMap<SentenceId, usize> = HashMap::new();
+    // One renamer for the whole proof: skolem labels are stable across steps.
+    let mut renamer = SkolemRenamer::default();
+
+    // One displayed step per stored root, rendered from the ORIGINAL
+    // source formula (file text shape, original variable names) when
+    // provenance exists, falling back to the stored sentence.  Shared
+    // between witness-fact premises and input clauses, so an axiom that
+    // contributed several clausal fragments (or doubles as a witness)
+    // shows once — the transcript cites axioms as written, not the
+    // clausified internals.
+    fn root_step(
+        layer:      &ProverLayer,
+        sid:        SentenceId,
+        rule:       &str,
+        steps:      &mut Vec<KifProofStep>,
+        root_steps: &mut HashMap<SentenceId, usize>,
+        renamer:    &mut SkolemRenamer,
+    ) -> usize {
+        if let Some(&i) = root_steps.get(&sid) { return i; }
+        let formula = layer.semantic.syntactic.source_node_of(sid)
+            .or_else(|| sentence_ast(layer, sid, renamer))
+            .unwrap_or_else(|| AstNode::Symbol {
+                name: format!("<unresolved {:x}>", sid),
+                span: Span::synthetic(),
+            });
+        steps.push(KifProofStep {
+            index: steps.len(),
+            rule: rule.to_string(),
+            premises: Vec::new(),
+            formula,
+            source_sid: Some(sid),
+        });
+        let i = steps.len() - 1;
+        root_steps.insert(sid, i);
+        i
+    }
+
+    for cid in order {
+        let c = &prover.clauses[cid as usize];
+
+        // Input clauses cite their source root directly: the step IS
+        // the axiom/hypothesis as written.  (Synthesized clauses —
+        // subrel_schema, negated_conjecture — keep their clause form:
+        // no file formula matches them.)
+        if matches!(c.rule, "axiom" | "hypothesis") {
+            if let Some(src) = c.source {
+                let idx = root_step(layer, src, c.rule, &mut steps, &mut root_steps, &mut renamer);
+                clause_step.insert(cid, idx);
+                // Also surface any oracle witnesses attached to this input
+                // clause — e.g. the disjointness/partition axioms that
+                // refute `(instance Length MeasurementAttribute)`.  Without
+                // this a single-axiom (oracle-refuted) contradiction shows
+                // only the trigger, not the axioms it conflicts with.
+                for w in &c.fact_parents {
+                    root_step(layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer);
+                }
+                continue;
+            }
+        }
+
+        // Witness facts first, deduped across the whole proof.
+        let mut fact_premises: Vec<usize> = Vec::new();
+        for sid in &c.fact_parents {
+            fact_premises.push(root_step(
+                layer, *sid, "axiom", &mut steps, &mut root_steps, &mut renamer));
+        }
+
+        let mut premises: Vec<usize> = c
+            .parents
+            .iter()
+            .filter_map(|p| clause_step.get(p).copied())
+            .collect();
+        premises.extend(fact_premises);
+        premises.sort_unstable();
+        premises.dedup();
+
+        steps.push(KifProofStep {
+            index: steps.len(),
+            rule: c.rule.to_string(),
+            premises,
+            formula: clause_ast(layer, c, &mut renamer),
+            source_sid: c.source,
+        });
+        clause_step.insert(cid, steps.len() - 1);
+    }
+    steps
+}
+
+/// A clause as a KIF AST: the empty clause renders as the symbol
+/// `FALSE`, a unit as its (possibly negated) atom, a multi-literal
+/// clause as `(or …)`.
+fn clause_ast(layer: &ProverLayer, c: &super::prover::ClauseRec, renamer: &mut SkolemRenamer) -> AstNode {
+    let sp = Span::synthetic;
+    let mut lits: Vec<AstNode> = Vec::with_capacity(c.lits.len());
+    for l in &c.lits {
+        let atom = atom_ast(layer, l.atom, renamer).unwrap_or_else(|| AstNode::Symbol {
+            name: format!("<unresolved {:x}>", l.atom),
+            span: sp(),
+        });
+        lits.push(if l.pos {
+            atom
+        } else {
+            AstNode::List {
+                elements: vec![
+                    AstNode::Operator { op: OpKind::Not, span: sp() },
+                    atom,
+                ],
+                span: sp(),
+            }
+        });
+    }
+    match lits.len() {
+        0 => AstNode::Symbol { name: "FALSE".to_string(), span: sp() },
+        1 => lits.pop().unwrap(),
+        _ => {
+            let mut elements = vec![AstNode::Operator { op: OpKind::Or, span: sp() }];
+            elements.extend(lits);
+            AstNode::List { elements, span: sp() }
+        }
+    }
+}
+
+/// A stored root sentence as a KIF AST (witness facts, input sources).
+fn sentence_ast(layer: &ProverLayer, sid: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+    atom_ast(layer, sid, renamer)
+}
+
+/// An atom/sentence (AtomTable or store) as a KIF AST.
+fn atom_ast(layer: &ProverLayer, id: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+    let syn = &layer.semantic.syntactic;
+    let s = layer.atoms.resolve(id, syn)?;
+    let sp = Span::synthetic;
+    let mut elements: Vec<AstNode> = Vec::with_capacity(s.elements.len());
+    for el in s.elements.iter() {
+        elements.push(match el {
+            Element::Symbol(sym) => {
+                // Skolems get a clean per-proof label; other symbols pass through.
+                let raw = sym.name();
+                let name = renamer.label(&raw, sym.id()).unwrap_or_else(|| raw.to_string());
+                AstNode::Symbol { name, span: sp() }
+            }
+            // Canonical atoms carry the variable's hashed slot id, not a
+            // readable name.  Recover the dense slot (V0, V1, …) and hand
+            // `flat()`/`Display` a BARE label — they add the leading `?`.
+            Element::Variable { id, .. } => {
+                let label = super::canon::canonical_slot(*id)
+                    .map(|k| format!("V{k}"))
+                    .unwrap_or_else(|| format!("V{id:x}"));
+                AstNode::Variable { name: label, span: sp() }
+            }
+            Element::Literal(Literal::Str(v))    => AstNode::Str { value: v.clone(), span: sp() },
+            Element::Literal(Literal::Number(v)) => AstNode::Number { value: v.clone(), span: sp() },
+            Element::Op(op) => AstNode::Operator { op: op.clone(), span: sp() },
+            Element::Sub(sub) => atom_ast(layer, *sub, renamer)?,
+        });
+    }
+    Some(AstNode::List { elements, span: sp() })
+}
