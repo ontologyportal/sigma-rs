@@ -1,67 +1,42 @@
-// crates/cli/src/cli/update.rs
-//
-// `sumo update` — refresh the running CLI to the latest GitHub
-// release.
-//
-// The handler dispatches on a compile-time provenance flag
-// (`SUMO_BUILD_KIND`, embedded by `build.rs`).  Two flows:
-//
-//   * release: the binary was built by the official release CI.
-//     Query the GitHub Releases API for the latest version, compare
-//     to the running version, download the asset matching this
-//     platform+arch, and atomically replace the running binary
-//     in place.  Powered by the `self_update` crate.
-//
-//   * source: the binary was built from source by a contributor or
-//     by `cargo install --path .`.  We don't replace it — that would
-//     overwrite the developer's local build with an unrelated
-//     binary.  Instead we tell them what version is available
-//     upstream and recommend the right rebuild incantation.
-//
-// `--check` is honoured in both flows: it queries upstream and
-// reports without modifying anything.
+//! `sumo update` — refresh the running CLI to the latest GitHub release.
+//!
+//! Dispatches on the compile-time `SUMO_BUILD_KIND` provenance flag:
+//!
+//!   * release: query the GitHub Releases API, compare to the running version,
+//!     download the asset for this platform+arch, and replace the running binary
+//!     in place via the `self_update` crate.
+//!   * source: report the upstream version and recommend a rebuild rather than
+//!     overwriting the developer's local build.
+//!
+//! `--check` queries upstream and reports without modifying anything in either flow.
 
-use inline_colorization::*;
+use crate::style::*;
 
-/// GitHub repo coordinates for the official `sumo` release stream.
-/// Hard-coded so the binary can self-update without reading a
-/// config file or accepting a `--repo` flag (which would be a foot-
-/// gun: pointing at a fork would let an attacker substitute a
-/// trojan binary on update).
+/// GitHub owner of the official `sumo` release stream. Hard-coded so a fork
+/// cannot be substituted as an update source.
 const REPO_OWNER: &str = "ontologyportal";
+/// GitHub repo name of the official `sumo` release stream.
 const REPO_NAME:  &str = "sigma-rs";
 
-/// Tag prefix used by the release workflow (see
-/// `.github/workflows/release-sumo.yml`).  Tags look like
-/// `sigmakee-vX.Y.Z`; `self_update` strips the prefix automatically.
+/// Tag prefix used by the release workflow. Tags look like `sigmakee-vX.Y.Z`;
+/// `self_update` strips the prefix automatically.
 const TAG_PREFIX: &str = "sigmakee-v";
 
-/// Compile-time provenance, set by `build.rs`.  One of:
-/// - `"release"`: built by the official CI release workflow.
-/// - `"source"`:  built from source (the default).
+/// Compile-time provenance set by `build.rs`: `"release"` or `"source"`.
 const BUILD_KIND: &str = env!("SUMO_BUILD_KIND");
 
-/// Compile-time short git commit SHA.  `"unknown"` when built from
-/// a tarball or any context where `git rev-parse` couldn't run.
+/// Compile-time short git commit SHA; `"unknown"` when git was unavailable.
 const BUILD_COMMIT: &str = env!("SUMO_BUILD_COMMIT");
 
-/// Compile-time Rust target triple (e.g. `aarch64-apple-darwin`).
-/// Used to pick the right release archive when self-updating.
+/// Compile-time Rust target triple (e.g. `aarch64-apple-darwin`), used to pick
+/// the right release archive when self-updating.
 const BUILD_TARGET: &str = env!("SUMO_BUILD_TARGET");
 
-/// CLI version (from `Cargo.toml`).  Compared against the GitHub
-/// release tag's stripped version string.
+/// CLI version from `Cargo.toml`, compared against the release tag's version.
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Map the embedded Rust target triple to the npm-style label used
-/// in the release-asset names (see `.github/workflows/release-sumo.yml`).
-///
-/// Returns `None` for unsupported targets — `sumo update` then errors
-/// out with a clear "no prebuilt binary for this platform" message
-/// instead of silently failing on an asset-not-found.
-///
-/// Keep this aligned with the matrix in `release-sumo.yml`.  Adding
-/// a new release target requires updating both lists.
+/// Map the embedded Rust target triple to the npm-style label used in the
+/// release-asset names. Returns `None` for targets with no prebuilt binary.
 fn target_to_release_label(target: &str) -> Option<&'static str> {
     match target {
         "aarch64-apple-darwin"      => Some("darwin-arm64"),
@@ -75,8 +50,9 @@ fn target_to_release_label(target: &str) -> Option<&'static str> {
 
 /// Run the `update` subcommand.
 ///
-/// `check_only`: don't modify anything; just print whether a newer
-/// version exists upstream.  Always honoured regardless of build kind.
+/// `check_only`: don't modify anything; just print whether a newer version
+/// exists upstream. Honoured regardless of build kind. Returns `true` on
+/// success (including a successful check or an up-to-date binary).
 pub fn run_update(check_only: bool) -> bool {
     let label = target_to_release_label(BUILD_TARGET);
     let label_str = label.unwrap_or("unsupported");
@@ -90,7 +66,6 @@ pub fn run_update(check_only: bool) -> bool {
         CLI_VERSION, BUILD_KIND, BUILD_COMMIT, BUILD_TARGET, label_str,
     );
 
-    // Step 1: query upstream.  Both flows need this.
     let latest = match query_latest_release() {
         Ok(l)  => l,
         Err(e) => {
@@ -101,13 +76,11 @@ pub fn run_update(check_only: bool) -> bool {
 
     println!("  latest release  : {}\n", latest.version);
 
-    // Step 2: compare.  No-op if we're already current.
     if !is_newer(&latest.version, CLI_VERSION) {
         println!("{color_bright_green}You're on the latest version.{color_reset}");
         return true;
     }
 
-    // Step 3: dispatch on build kind.  --check short-circuits both.
     if check_only {
         println!(
             "{color_bright_yellow}A newer version is available: {} → {}{color_reset}",
@@ -140,12 +113,6 @@ fn apply_release_update(latest: &str) -> bool {
         CLI_VERSION, latest,
     );
 
-    // Resolve the release-asset label for this binary's target.
-    // The release workflow names archives `sumo-X.Y.Z-<label>.{tar.gz,zip}`
-    // (see `.github/workflows/release-sumo.yml`).  `self_update` matches
-    // an asset name containing the configured `target` substring —
-    // passing our label (`darwin-arm64`, `linux-x64-gnu`, …) instead
-    // of the Rust triple is what makes the asset lookup succeed.
     let label = match target_to_release_label(BUILD_TARGET) {
         Some(l) => l,
         None => {
@@ -163,14 +130,7 @@ fn apply_release_update(latest: &str) -> bool {
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .bin_name("sumo")
-        // Tell self_update which asset suffix to look for.  Without
-        // this it'd try the Rust triple (`aarch64-apple-darwin`),
-        // which doesn't appear anywhere in our archive names.
         .target(label)
-        // Strip the `sigmakee-v` tag prefix when comparing.
-        // `self_update` accepts a custom tag → version transform via
-        // `identifier`; we pass the raw tag prefix and it does the
-        // right thing.
         .identifier(TAG_PREFIX)
         .show_download_progress(true)
         .show_output(true)
@@ -235,9 +195,6 @@ fn recommend_rebuild(latest: &str) -> bool {
         REPO_OWNER, REPO_NAME,
     );
 
-    // Returning true: the command did its job (informed the user).
-    // The lack of an in-place replacement isn't a failure — it's the
-    // correct behaviour for source builds.
     true
 }
 
@@ -245,16 +202,13 @@ fn recommend_rebuild(latest: &str) -> bool {
 // Upstream query helpers
 // ---------------------------------------------------------------------------
 
-/// Snapshot of the upstream "latest release" info we care about.
+/// Snapshot of the upstream "latest release" info.
 struct LatestRelease {
     /// Version string with the `sigmakee-v` tag prefix stripped.
     version: String,
 }
 
 fn query_latest_release() -> Result<LatestRelease, String> {
-    // `self_update::backends::github::ReleaseList` returns every
-    // release; we filter for the `sigmakee-v` tag prefix and pick
-    // the highest semver.
     let list = self_update::backends::github::ReleaseList::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
@@ -269,9 +223,7 @@ fn query_latest_release() -> Result<LatestRelease, String> {
         .max_by(|a, b| cmp_semver(&a.version, &b.version))
         .ok_or_else(|| "no releases found".to_string())?;
 
-    // Strip the `sigmakee-v` (or bare `v`) prefix for display + the
-    // is-newer comparison upstream.  The raw tag is what we'd send
-    // to `target_version_tag` if applying the update.
+    // Strip the `sigmakee-v` (or bare `v`) prefix for display and comparison.
     let stripped = latest
         .version
         .strip_prefix(TAG_PREFIX)
@@ -282,13 +234,10 @@ fn query_latest_release() -> Result<LatestRelease, String> {
     Ok(LatestRelease { version: stripped })
 }
 
-/// Best-effort semver comparison.  Returns the [`std::cmp::Ordering`]
-/// of `a` vs. `b`.  Falls back to lexical comparison if either side
-/// doesn't parse as `MAJOR.MINOR.PATCH`.
+/// Best-effort semver comparison of `a` vs. `b`. Falls back to lexical
+/// comparison if either side doesn't parse as `MAJOR.MINOR.PATCH`.
 fn cmp_semver(a: &str, b: &str) -> std::cmp::Ordering {
     fn parts(v: &str) -> Option<(u32, u32, u32)> {
-        // Strip the `sigmakee-v` prefix if it slipped through, plus
-        // any leading 'v'.
         let v = v.trim_start_matches(TAG_PREFIX).trim_start_matches('v');
         let mut it = v.split('.').take(3);
         Some((
@@ -340,10 +289,7 @@ mod tests {
 
     #[test]
     fn cmp_semver_handles_rc_suffix() {
-        // `1.2.3-rc.1` should compare equal to `1.2.3` for our
-        // purposes (we ignore prerelease info).  This is intentional:
-        // a release-candidate tag shouldn't trigger an "update
-        // available" prompt for users on the matching final.
+        // Prerelease info is ignored: `-rc.N` compares equal to the final.
         assert_eq!(cmp_semver("1.2.3-rc.1", "1.2.3"), std::cmp::Ordering::Equal);
         assert_eq!(cmp_semver("1.2.4-rc.1", "1.2.3"), std::cmp::Ordering::Greater);
     }

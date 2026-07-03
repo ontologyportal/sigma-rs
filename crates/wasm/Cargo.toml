@@ -7,7 +7,7 @@ edition.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-sumo-kb.workspace = true
+sigmakee-rs-core.workspace = true
 serde.workspace            = true
 serde_json.workspace       = true
 wasm-bindgen               = "0.2"

@@ -1,10 +1,10 @@
-/// WASM bindings for sumo-kb.
+/// WASM bindings for sigmakee-rs-core.
 ///
 /// Exposes the KnowledgeBase API to JavaScript/Node.js via wasm-bindgen.
 /// The `ask()` functionality is handled by a JS callback hook since WASM
 /// cannot spawn native processes.
 use wasm_bindgen::prelude::*;
-use sumo_kb::{KnowledgeBase, TptpOptions, TptpLang};
+use sigmakee_rs_core::{KnowledgeBase, TptpOptions, TptpLang};
 
 // -- WasmKnowledgeBase ---------------------------------------------------------
 
@@ -27,8 +27,11 @@ impl WasmKnowledgeBase {
     /// Returns a JSON array of error strings, or an empty array on success.
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
-        let result = self.inner.load_kif(kif_text, file_tag, None);
-        let errors: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
+        let result = self.inner.load(
+            sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file_tag), kif_text.to_string()),
+            file_tag,
+        );
+        let errors: Vec<String> = result.diagnostics.iter().map(|e: &sigmakee_rs_core::Diagnostic| e.to_string()).collect();
         serde_wasm_bindgen::to_value(&errors)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -40,22 +43,16 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen]
     pub fn tell(&mut self, kif_text: &str, session: Option<String>) -> Result<JsValue, JsValue> {
         let s = session.as_deref().unwrap_or("default");
-        let result = self.inner.tell(s, kif_text);
+        let result = self.inner.tell(kif_text, s);
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
-        let errors: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
+        let errors: Vec<String> = result.diagnostics.iter().map(|e| e.to_string()).collect();
         let errs_js = serde_wasm_bindgen::to_value(&errors)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         js_sys::Reflect::set(&obj, &"errors".into(), &errs_js)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(obj.into())
-    }
-
-    /// Remove all `tell()` assertions from every session.
-    #[wasm_bindgen]
-    pub fn flush(&mut self) {
-        self.inner.flush_assertions();
     }
 
     /// Remove assertions for a specific session only.
@@ -72,7 +69,7 @@ impl WasmKnowledgeBase {
     /// (omit or pass `undefined` to include all sessions).
     #[wasm_bindgen(js_name = toTptp)]
     pub fn to_tptp(
-        &self,
+        &mut self,
         lang:         Option<String>,
         hide_numbers: Option<bool>,
         session:      Option<String>,
@@ -120,9 +117,9 @@ impl WasmKnowledgeBase {
     pub fn ask(&mut self, query_kif: &str, ask_hook: &js_sys::Function) -> Result<JsValue, JsValue> {
         // Parse the query into a temporary session.
         let query_tag = "__query__";
-        let tell_result = self.inner.tell(query_tag, query_kif);
+        let tell_result = self.inner.tell(query_kif, query_tag);
         if !tell_result.ok {
-            let errors: Vec<String> = tell_result.errors.iter().map(|e| e.to_string()).collect();
+            let errors: Vec<String> = tell_result.diagnostics.iter().map(|e| e.to_string()).collect();
             return Err(serde_wasm_bindgen::to_value(&errors)
                 .unwrap_or_else(|_| JsValue::from_str("parse error")));
         }

@@ -22,17 +22,24 @@ path = "src/lib.rs"
 # every `span()` is a no-op, so this flag carries no cost in
 # non-profiling runs. Also enables JSON RPC API used for language
 # server
-default = ["parallel", "server"]
+default = ["parallel", "integrated-prover"]
 
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.
-# No CMake required.
-ask = ["sumo-sdk/ask"]
+# No CMake required.  Also pulls in the SDK's native (in-process)
+# prover, which backs the default `--backend native` and gates the
+# whole `Session` ask/tell API (`native_opts`, `Session<ProverLayer>`).
+ask = ["sigmakee-rs-sdk/ask", "sigmakee-rs-sdk/native-prover"]
 
 # Everything in `ask` plus the embedded C++ solver (CMake + the
 # vampire-sys submodule).  Unlocks `--backend embedded` on `sumo ask`
 # and native-proof binding extraction.
-integrated-prover = ["ask", "sumo-sdk/integrated-prover"]
+integrated-prover = ["ask", "sigmakee-rs-sdk/integrated-vampire"]
+
+# The strategy-sweep subcommand: un-migrated, still drives the core crate
+# directly (the only remaining direct core dependency).  Off by default —
+# its dispatch arm predates the Session migration.
+sweep = ["ask", "dep:sigmakee-rs-core"]
 
 # Phase timing was previously feature-gated as `profiling`.  It now
 # rides on the unified progress-event system: `--profile` installs
@@ -41,9 +48,9 @@ integrated-prover = ["ask", "sumo-sdk/integrated-prover"]
 
 # Parallel KB hot paths via rayon.  Speeds up multi-file load (reads
 # in parallel) and bootstrap-scale CNF clausification (inside
-# sumo-kb).  NOT on wasm32.  On by default along with `profiling`
+# sigmakee-rs-core).  NOT on wasm32.  On by default along with `profiling`
 # for release-native builds.
-parallel = ["sumo-sdk/parallel", "dep:rayon"]
+parallel = ["sigmakee-rs-sdk/parallel", "dep:rayon"]
 
 # Enable the JSON RPC server which allows you to utilize the cli
 # programmatically like via an IDE. Requires ask but not integrated
@@ -51,18 +58,20 @@ parallel = ["sumo-sdk/parallel", "dep:rayon"]
 server = ["ask"]
 
 [dependencies]
-sumo-kb = { workspace = true, features = ["persist"] }
-sumo-sdk = { workspace = true }
+# Direct core dependency ONLY for the un-migrated `sweep` subcommand (see the
+# `sweep` feature); everything else goes through the SDK's re-export surface.
+sigmakee-rs-core = { workspace = true, features = ["persist", "native-prover"], optional = true }
+sigmakee-rs-sdk = { workspace = true, default-features = true }
 rayon   = { version = "1.10", optional = true }
 serde.workspace            = true
 serde_json.workspace       = true
 inline_colorization.workspace = true
 log.workspace              = true
-clap                       = { version = "4", features = ["derive"] }
+clap                       = { version = "4", features = ["derive", "env"] }
 env_logger                 = "0.11"
-quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }
+quick-xml = { version = "0.40.1", features = ["serialize", "overlapped-lists"] }
 minus = { version = "5", features = ["static_output", "search"] }
-crossterm                  = "0.28"
+crossterm                  = "0.29"
 # `sumo update` self-replaces from the latest GitHub release when the
 # binary was built by the official release CI.  Source builds use the
 # crate solely to query the GitHub releases API for the latest tag.
@@ -70,7 +79,6 @@ self_update = { version = "0.44", default-features = false, features = ["rustls"
 # `rand` is only used by `sumo debug`, which is ask-gated.  Pulled in
 # unconditionally to avoid feature gymnastics on a tiny (~200 KB) dep —
 # `cargo tree` already shows it transitively through vampire-sys etc.
-rand = "0.8"
+rand = "0.10.1"
 tempfile  = "3"
-indicatif = "0.17"
-git2      = { version = "0.19", default-features = false, features = ["https"] }
+indicatif = "0.18.4"

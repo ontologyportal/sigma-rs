@@ -1,20 +1,10 @@
 pub mod config;
 pub mod cli;
-pub mod git;
 pub mod progress;
+pub mod style;
 
-// Library-level prover façade and programmatic ask() entry point are
-// only available when sumo-kb's prover API is compiled in.
-#[cfg(feature = "ask")]
-pub mod prover;
-#[cfg(feature = "ask")]
-pub mod ask;
-
-#[cfg(feature = "ask")]
-pub use ask::{ask, AskOptions, AskResult};
-
-pub use sumo_kb::{
-    KnowledgeBase as Kb, ParseError, SemanticError, TellResult,
+pub use sigmakee_rs_sdk::{
+    KnowledgeBase as Kb, SemanticError, TellResult,
 };
 
 // Error reporting macros
@@ -23,7 +13,7 @@ pub use sumo_kb::{
 macro_rules! parse_error {
     ($span:expr, $e:expr) => {
         {
-            use inline_colorization::*;
+            use $crate::style::*;
             log::error!(
                 "{}{}{}, {}line {}{}\n{style_bold}{color_bright_red}{}{style_reset}\n",
                 color_magenta,
@@ -39,7 +29,7 @@ macro_rules! parse_error {
 
     ($span:expr, $e:expr, $txt:expr) => {
         {
-            use inline_colorization::*;
+            use $crate::style::*;
             let line_start = $txt[..$span.offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line_end = $txt[$span.offset..].find('\n').map(|i| i + $span.offset).unwrap_or($txt.len());
             let width: usize = $span.col as usize + 9;
@@ -59,13 +49,15 @@ macro_rules! parse_error {
 
 /// Print a semantic error using the KB's built-in pretty-printer.
 ///
-/// Usage: `semantic_error!(e, kb)` where `e: &SemanticError` and
-/// `kb: KnowledgeBase`.
+/// Accepts `e: &SemanticError`.
+/// Usage: `semantic_error!(e, kb)`.
 #[macro_export]
 macro_rules! semantic_error {
     ($e:expr, $kb:expr) => {
         {
-            $kb.pretty_print_error($e, log::Level::Error);
+            use sigmakee_rs_sdk::ToDiagnostic;
+            let _d = ($e).clone().to_diagnostic();
+            $kb.pretty_print_error(&_d, log::Level::Error);
             eprintln!();
         }
     };
@@ -73,58 +65,19 @@ macro_rules! semantic_error {
 
 /// Print a semantic *warning* using the KB's built-in pretty-printer.
 ///
-/// Companion to [`semantic_error!`].  Honours the `-q` /
-/// `suppress_warnings(true)` flag — the macro is a no-op when
-/// warnings are suppressed.  Use this for findings classified by
-/// [`sumo_kb::SemanticError::is_warn`] (e.g. everything in
-/// [`sumo_kb::Findings::warnings`] from `kb.validate_*_findings`).
-///
+/// Companion to [`semantic_error!`].  Suppressed when
+/// `sigmakee_rs_sdk::warnings_suppressed()` is true.
 /// Usage: `semantic_warning!(e, kb)` where `e: &SemanticError`.
 #[macro_export]
 macro_rules! semantic_warning {
     ($e:expr, $kb:expr) => {
         {
-            if !sumo_kb::error::warnings_suppressed() {
-                $kb.pretty_print_error($e, log::Level::Warn);
+            if !sigmakee_rs_sdk::warnings_suppressed() {
+                use sigmakee_rs_sdk::ToDiagnostic;
+                let _d = ($e).clone().to_diagnostic();
+                $kb.pretty_print_error(&_d, log::Level::Warn);
                 eprintln!();
             }
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sumo_kb::KnowledgeBase;
-
-    const BASE: &str = "
-        (subclass Relation Entity)
-        (subclass BinaryRelation Relation)
-        (subclass Predicate Relation)
-        (subclass BinaryPredicate Predicate)
-        (subclass BinaryPredicate BinaryRelation)
-        (instance subclass BinaryRelation)
-        (domain subclass 1 Class)
-        (domain subclass 2 Class)
-        (instance instance BinaryPredicate)
-        (domain instance 1 Entity)
-        (domain instance 2 Class)
-        (subclass Animal Entity)
-        (subclass Human Entity)
-        (subclass Human Animal)
-    ";
-
-    fn base_kb() -> KnowledgeBase {
-        let mut kb = KnowledgeBase::new();
-        kb.load_kif(BASE, "base", None);
-        kb
-    }
-
-    #[test]
-    fn ask_parse_error() {
-        let mut kb = base_kb();
-        let r = ask(&mut kb, "(subclass Cat", AskOptions::default());
-        assert!(!r.proved);
-        assert!(!r.errors.is_empty());
-    }
 }

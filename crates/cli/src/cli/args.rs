@@ -1,18 +1,11 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Custom version string surfacing the build provenance embedded by
-/// `crates/cli/build.rs`.  Renders as e.g.
+/// Version string embedding build provenance.  Renders as e.g.
 ///
 /// ```text
 /// sumo 1.0.0 (release build, commit a1b2c3d4e5f6, aarch64-apple-darwin)
 /// ```
-///
-/// The `build kind` is the same flag `sumo update` reads to decide
-/// between self-replace and "rebuild from source".  The target
-/// triple lets us pick the right release archive when self-updating
-/// (and tells you which platform binary you're running on a bug
-/// report).  Three pieces of provenance, one source of truth.
 const VERSION_LINE: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
@@ -40,6 +33,18 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet", global = true)]
     pub quiet: bool,
 
+    /// Suppress ANSI styling (colors, bold).  Useful for plain-text logs,
+    /// scripting, CI pipelines, or terminals that mangle escapes.
+    #[arg(long = "ugly", global = true)]
+    pub ugly: bool,
+
+    /// Print a per-phase timing breakdown after the command runs.
+    /// Works with every subcommand: a process-global aggregator captures
+    /// the instrumented phases (file load, promote, SInE, persist,
+    /// saturation, …) and prints the totals at the end, sorted by cost.
+    #[arg(long = "profile", global = true)]
+    pub profile: bool,
+
     /// Path to SigmaKEE config.xml or the directory containing it.
     #[arg(long, value_name = "PATH", global = true)]
     pub config: Option<PathBuf>,
@@ -61,13 +66,6 @@ pub struct Cli {
     pub suppress: Vec<String>,
 
     // -- Universal source-selection flags -------------------------------------
-    //
-    // Every KB-touching subcommand needs these, so they live on the
-    // top-level `Cli` with `global = true` — accepted either before
-    // OR after the subcommand name.  The `KbArgs` helper struct
-    // below still carries the same fields (via `#[arg(skip)]`) so
-    // every `run_*` handler can receive a single `KbArgs` value;
-    // `main.rs` populates those fields from the top-level parse.
 
     /// KIF file to load into the knowledge base (repeatable).
     #[arg(short = 'f', long = "file", value_name = "FILE", global = true)]
@@ -89,6 +87,10 @@ pub struct Cli {
     #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]
     pub db: PathBuf,
 
+    /// Session key for --tell assertions and TPTP hypothesis filtering.
+    #[arg(long, value_name = "KEY", default_value = None)]
+    pub session: Option<String>,
+
     /// Skip the LMDB database entirely -- do not open or warn about it.
     /// Useful when running without a pre-built database.
     #[arg(long, global = true)]
@@ -100,26 +102,14 @@ pub struct Cli {
 
 /// Shared arguments for database and KIF-source selection.
 ///
-/// The universal source flags (`-f`, `-d`, `--db`, `--no-db`) live
-/// on the top-level [`Cli`] with `global = true`.  This struct's
-/// equivalent fields carry `#[arg(skip)]` so clap doesn't try to
-/// re-register them; `main.rs` populates those fields from the
-/// top-level parse before handing the struct to a `run_*` handler.
-///
-/// The one genuinely per-subcommand field is `vampire`, which only
-/// the prover-driven subcommands (`ask`, `test`, `debug`, `serve`)
-/// expose.  Those subcommands flatten `KbArgs` into their variant
-/// so clap surfaces `--vampire` in their help text.  Subcommands
-/// that don't touch the prover (`validate`, `translate`, `load`,
-/// `man`) don't flatten `KbArgs` and therefore don't advertise
-/// `--vampire`; they still receive a fully-populated `KbArgs` from
-/// `main.rs` because the struct's shape hasn't changed.
+/// The universal source flags (`-f`, `-d`, `--db`, `--no-db`) live on the
+/// top-level [`Cli`] with `global = true`; this struct's equivalent fields
+/// carry `#[arg(skip)]` and are populated from the top-level parse by
+/// `main.rs` before the struct is handed to a `run_*` handler.
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct KbArgs {
     /// KIF file to load into the knowledge base (repeatable).
-    ///
-    /// Populated from the top-level `Cli::files` by `main.rs`; not
-    /// re-parsed here (clap sees `#[arg(skip)]`).
+    /// Populated from the top-level `Cli::files` by `main.rs`.
     #[arg(skip)]
     pub files: Vec<PathBuf>,
 
@@ -128,31 +118,14 @@ pub struct KbArgs {
     #[arg(skip)]
     pub dirs: Vec<PathBuf>,
 
-    /// Path to the LMDB database directory.  Populated from
-    /// `Cli::db`.  The "./sumo.lmdb" default is defined on the
-    /// top-level flag; here it falls back to `PathBuf::new()` when
-    /// `main.rs` doesn't populate it (shouldn't happen in practice).
+    /// Path to the LMDB database directory.  Populated from `Cli::db`;
+    /// the `./sumo.lmdb` default is defined on the top-level flag.
     #[arg(skip)]
     pub db: PathBuf,
 
     /// Skip the LMDB database entirely.  Populated from `Cli::no_db`.
     #[arg(skip)]
     pub no_db: bool,
-
-    // #[cfg(feature = "cnf")]
-    // /// Hard upper bound on CNF clauses per formula.
-    // /// Overrides the SUMO_MAX_CLAUSES environment variable.
-    // #[arg(long, value_name = "N", default_value_t = 10_000)]
-    // pub max_clauses: usize,
-
-    /// Path to the Vampire executable (default: 'vampire' on PATH).
-    ///
-    /// Only the prover-driven subcommands (`ask`, `test`, `debug`,
-    /// `serve`) flatten `KbArgs` and thus expose this flag.  Other
-    /// subcommands leave it `None` — their run handlers ignore the
-    /// field anyway.
-    #[arg(long, value_name = "PATH")]
-    pub vampire: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -170,15 +143,6 @@ pub enum Cmd {
         /// Perform parse-only validation -- skip semantic checks entirely.
         #[arg(long)]
         parse: bool,
-
-        /// Do not semantically validate the loaded KB files; assume they are
-        /// correct and only check the inline formula (if provided).
-        /// Parse errors in KB files are still reported.
-        #[arg(long)]
-        no_kb_check: bool,
-        // Source selection (`-f`, `-d`, `--db`, `--no-db`) lives
-        // on the top-level `Cli`; main.rs synthesises a `KbArgs`
-        // for this variant's `run_validate` call.
     },
 
     /// Run a KIF conjecture through Vampire against the knowledge base.
@@ -191,23 +155,6 @@ pub enum Cmd {
         #[arg(short = 't', long = "tell", value_name = "KIF")]
         tell: Vec<String>,
 
-        /// Vampire proof-search timeout in seconds.
-        #[arg(long, value_name = "SECS", default_value_t = 30)]
-        timeout: u32,
-
-        /// Session key for --tell assertions and TPTP hypothesis filtering.
-        #[arg(long, value_name = "KEY", default_value = "default")]
-        session: String,
-
-        /// Prover backend: 'subprocess' (default, requires vampire on PATH) or
-        /// 'embedded' (in-process, requires the integrated-prover feature).
-        #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
-        backend: String,
-
-        /// TPTP language variant: 'fof' (default) or 'tff'.
-        #[arg(long, value_name = "LANG", default_value = "fof")]
-        lang: String,
-
         #[command(flatten)]
         kb: KbArgs,
 
@@ -215,27 +162,68 @@ pub enum Cmd {
         /// When omitted, TPTP is piped directly to Vampire via stdin.
         #[arg(short = 'k', long, value_name = "FILE")]
         keep: Option<PathBuf>,
+    },
 
-        /// Print the proof steps when Vampire finds one.
-        ///
-        /// Accepted values:
-        /// - `tptp`: raw TSTP proof section as emitted by Vampire (no translation).
-        /// - `kif`:  SUO-KIF pretty-print of each step's formula.
-        /// - any SUMO language symbol (e.g. `EnglishLanguage`,
-        ///   `ChineseLanguage`): natural-language rendering using the KB's
-        ///   `format` / `termFormat` relations.  Steps whose formulas reference
-        ///   a symbol that lacks a `format` or `termFormat` entry in the
-        ///   chosen language fall back to the KIF line with a warning listing
-        ///   the missing specifiers.
-        ///
-        /// Omit the flag to suppress proof output.  Specifying `--proof`
-        /// without a value is rejected (clap: value required).
-        #[arg(long, value_name = "FORMAT")]
-        proof: Option<String>,
+    /// Sweep strategy configs over a problem corpus and pick a
+    /// complementary portfolio by greedy marginal coverage.
+    ///
+    /// Corpus paths may mix `.kif.tq` test files/dirs (run against the
+    /// loaded KB) and TPTP `.p` files (each on a fresh KB).  Configs:
+    /// the shipping default is always lane 0; add a JSON array of
+    /// (partial) Strategy specs via --configs and/or seeded random
+    /// samples via --random.  Each (config, problem) cell is one
+    /// single-shot run (fixed SInE budget, no autoscale) so the step
+    /// count is a deterministic objective.
+    #[cfg(feature = "sweep")]
+    Sweep {
+        /// Corpus: .kif.tq files/dirs and/or TPTP .p files.
+        #[arg(value_name = "PATH", num_args = 1..)]
+        paths: Vec<PathBuf>,
 
-        /// Print a timing breakdown of the major pipeline phases.
-        #[arg(long)]
-        profile: bool,
+        /// JSON file holding an array of strategy specs (each spec
+        /// names only the knobs it changes; the rest default).
+        #[arg(long, value_name = "FILE")]
+        configs: Option<PathBuf>,
+
+        /// Generate N random strategies (deterministic from --seed).
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        random: usize,
+
+        /// Seed for --random (config i uses seed+i).
+        #[arg(long, value_name = "SEED", default_value_t = 0xC0FFEE)]
+        seed: u64,
+
+        /// Fixed SInE axiom budget per run (single shot, no autoscale).
+        #[arg(long, value_name = "AXIOMS", default_value_t = 2000)]
+        budget: usize,
+
+        /// Given-clause step cap per run (the primary objective bound).
+        #[arg(long, value_name = "N", default_value_t = 200_000)]
+        steps: usize,
+
+        /// Wall-clock cap per run in seconds (the safety net).
+        #[arg(long, value_name = "SECS", default_value_t = 10)]
+        timeout: u32,
+
+        /// Worker threads (default: available parallelism).
+        #[arg(long, value_name = "N")]
+        jobs: Option<usize>,
+
+        /// Write the full (config x problem) matrix as CSV.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+
+        /// Maximum portfolio lanes the greedy cover may pick.
+        #[arg(long, value_name = "K", default_value_t = 6)]
+        lanes: usize,
+
+        /// Write the chosen portfolio as a strategy-spec JSON array
+        /// (feed it back via --configs, or to the portfolio runner).
+        #[arg(long, value_name = "FILE")]
+        portfolio_out: Option<PathBuf>,
+
+        #[command(flatten)]
+        kb: KbArgs,
     },
 
     /// Translate KIF formula(s) or a full KB to TPTP.
@@ -249,10 +237,6 @@ pub enum Cmd {
         /// Formula to translate.  May also be supplied via stdin.
         formula: Option<String>,
 
-        /// TPTP language variant to emit (legacy in-memory mode only).
-        #[arg(long, value_name = "LANG", default_value = "fof")]
-        lang: String,
-
         /// Emit numeric literals as-is instead of encoding them as n__N tokens.
         #[arg(long)]
         show_numbers: bool,
@@ -261,18 +245,50 @@ pub enum Cmd {
         #[arg(long)]
         show_kif: bool,
 
-        /// Session key controlling which assertions appear as TPTP hypotheses.
-        #[arg(long, value_name = "KEY")]
-        session: Option<String>,
-        // Source selection lives on the top-level `Cli`.
+        /// Translate a `.kif.tq` test file into the exact TPTP problem the
+        /// prover would receive (conjecture + selected axioms + assertions),
+        /// *without* invoking Vampire.  The negated conjecture, SInE
+        /// selection, predicate-variable instantiation, and taxonomy-closure
+        /// injection are all applied — it is `test … -k` minus the prover.
+        /// Output goes to `--keep` if given, otherwise stdout.
+        #[arg(long = "test", value_name = "FILE")]
+        test: Option<PathBuf>,
+
+        /// (with `--test`) Disable SInE preselection and emit the whole KB
+        /// plus the test's assertions and conjecture — mirrors `test --full-kb`.
+        #[arg(long = "full-kb")]
+        full_kb: bool,
+
+        /// (with `--test`) Write the generated TPTP to FILE instead of stdout.
+        #[arg(short = 'k', long, value_name = "FILE")]
+        keep: Option<PathBuf>,
     },
 
-    /// Run one or more KIF test files (*.kif.tq).
+    /// Run proof problems with the native prover.  The handling of each
+    /// PATH is chosen by extension:
+    ///
+    ///   * `.kif.tq`           — a KIF test query, run against the loaded
+    ///                           base KB (`-f`/`-d`, plus any `.ax` below);
+    ///   * `.p` / `.tptp`      — a self-contained TPTP problem, each on a
+    ///                           FRESH KB (`include('Axioms/…')` resolved
+    ///                           against $TPTP / the problem dir / parent),
+    ///                           SZS-styled and checked against the header
+    ///                           `% Status :`;
+    ///   * `.ax`               — a TPTP axiom library; ingested to POPULATE
+    ///                           the KB (no conjecture), so the `.kif.tq`
+    ///                           and `.p` problems run against it;
+    ///   * a directory         — every `*.kif.tq` inside it.
+    ///
+    /// When no path is supplied and `-c` is active, the test directory is
+    /// read from `config.xml`'s `inferenceTestDir` preference.  `.p`/`.ax`
+    /// require the native backend.
     #[cfg(feature = "ask")]
     Test {
-        /// Path(s) to .kif.tq files or directories containing them.
-        /// Accepts multiple arguments and shell-expanded globs.
-        #[arg(value_name = "PATH", num_args = 1..)]
+        /// Path(s) to `.kif.tq` / `.p` / `.tptp` / `.ax` files or
+        /// directories.  Multiple arguments and shell-expanded globs are
+        /// accepted.  Optional when `-c` is active — defaults to the
+        /// `inferenceTestDir` preference in config.xml.
+        #[arg(value_name = "PATH", num_args = 0..)]
         paths: Vec<PathBuf>,
 
         #[command(flatten)]
@@ -283,21 +299,22 @@ pub enum Cmd {
         #[arg(short = 'k', long, value_name = "FILE")]
         keep: Option<PathBuf>,
 
-        /// Prover backend: 'subprocess' (default) or 'embedded'.
-        #[arg(long, value_name = "BACKEND", default_value = "subprocess")]
-        backend: String,
-
-        /// TPTP language variant: 'fof' (default) or 'tff'.
-        #[arg(long, value_name = "LANG", default_value = "fof")]
-        lang: String,
-
-        /// Override the per-test timeout (seconds). Overrides any (time N) directive in the test file.
-        #[arg(long, value_name = "SECS")]
-        timeout: Option<u32>,
-
-        /// Print a timing breakdown of the major pipeline phases.
+        /// Interactively single-step the native prover: pause at each
+        /// given-clause and each inference (`make`), printing a readable
+        /// view and waiting for input.  Use with ONE problem; the prover
+        /// runs single-threaded.  (Same effect as `SIGMA_STEP=1`.)
         #[arg(long)]
-        profile: bool,
+        step: bool,
+
+        /// Disable SInE axiom preselection: feed the prover the entire KB
+        /// (every axiom) plus the test's assertions and conjecture.  This
+        /// mirrors the legacy Java SigmaKEE behaviour (no preselection) and
+        /// is intended for prover-vs-prover benchmarking, where the
+        /// `subprocess` (standalone Vampire) and `embedded` (Rust) backends
+        /// must solve the identical, un-pruned problem.  Much slower per
+        /// query — `--scope` is ignored when this is set.
+        #[arg(long = "full-kb")]
+        full_kb: bool,
     },
 
     /// Parse KIF file(s) and commit them to the LMDB database.
@@ -323,7 +340,6 @@ pub enum Cmd {
         /// loads and you want to start clean.
         #[arg(long)]
         flush: bool,
-        // Source selection lives on the top-level `Cli`.
     },
 
     /// Show documentation, signatures, and taxonomy for a symbol -- the
@@ -346,21 +362,67 @@ pub enum Cmd {
 
         /// Disable the interactive pager; print the man page directly
         /// to stdout.  The pager is also disabled automatically when
-        /// stdout is not a TTY (e.g. when piping to another program)
-        /// or when the `NO_PAGER` environment variable is set.
+        /// stdout is not a TTY (e.g. when piping to another program),
+        /// when the global `--ugly` flag is set, or when the `NO_PAGER`
+        /// environment variable is set.
         #[arg(long = "no-pager", short = 'P')]
         no_pager: bool,
-        // Source selection lives on the top-level `Cli`.
     },
 
-    /// Consistency-check a single loaded KIF file against the rest of
-    /// the knowledge base via Vampire, surfacing any axioms that
-    /// contradict each other.
+    /// Substring search over SUMO's natural-language fields
+    /// (`documentation`, `termFormat`, `format`) — `apropos(1)` to
+    /// `man`'s deep-dive.  Use this when you know the English concept
+    /// but not which SUMO symbol encodes it.
+    ///
+    /// Example: `sumo search wedding` surfaces `Wedding` (class),
+    /// `weddingdate` (relation), and any other symbol whose
+    /// docstring mentions "wedding".
+    Search {
+        /// Substring to look for (case-insensitive).
+        query: String,
+
+        /// Filter results to one symbol kind.  Accepted values:
+        /// `class`, `instance`, `relation`, `function`, `predicate`,
+        /// `individual`.  When omitted, all kinds are returned.
+        #[arg(long, value_name = "KIND")]
+        kind: Option<String>,
+
+        /// Filter to axioms tagged with this language (e.g.
+        /// `EnglishLanguage`).  When omitted, all languages match.
+        #[arg(long, value_name = "LANG")]
+        lang: Option<String>,
+
+        /// Cap on the number of results.  Default: 50.  Pass `0` for unlimited.
+        #[arg(long, value_name = "N", default_value = "50")]
+        limit: usize,
+    },
+
+    /// Audit the knowledge base for inconsistency, enumerating the
+    /// contradictions found and the axioms implicated in each.
+    ///
+    /// With no `<FILE>`, the ENTIRE KB is audited.  Optionally pass:
+    ///   * a `.kif` file already loaded in the KB — restrict the audit
+    ///     to its sentences (and their SInE-relevant neighbourhood),
+    ///   * or a `.kif.tq` test case — its assertions are injected into a
+    ///     temporary session and used as the sample, so you can answer
+    ///     "which axioms made this *test* fail?" by running `audit`
+    ///     directly on the failing `.kif.tq`.
+    ///
+    /// Each contradiction lists the implicated axioms (formula +
+    /// file:line).  With `--proof` (and unless `--ugly` is set) each
+    /// contradiction's full derivation is shown one-per-page in the
+    /// pager; `--proof --ugly` prints the derivations inline.
     ///
     /// The flow is:
-    ///   1. Collect the sentences of `<FILE>` (must already be in the
-    ///      KB — pass `-f` / `-d` the same way as other subcommands).
-    ///   2. Randomly subsample by `--thoroughness` (default 1.0 = all).
+    ///   1. Collect the sample sentences:
+    ///        - `.kif`:    look up `<FILE>` in the loaded KB and take
+    ///          its root sentences.
+    ///        - `.kif.tq`: parse via the test-file grammar, inject
+    ///          every `(...)` assertion into a debug session, take
+    ///          the resulting SIDs.  `--thoroughness` is ignored —
+    ///          the entire test bundle is always used.
+    ///   2. (`.kif` only) Randomly subsample by `--thoroughness`
+    ///      (default 1.0 = all).
     ///   3. SInE-expand from the sampled sentences' symbols at
     ///      tolerance `--scope` (default: crate SInE default, usually
     ///      2.0).  This pulls in every axiom the sampled sentences
@@ -373,14 +435,16 @@ pub enum Cmd {
     ///   6. Report: verdict, contradictory axioms (if any), and the
     ///      set of other files whose axioms SInE pulled in.
     ///
-    /// Uses TPTP FOF (TFF is not currently wired through `debug`).
+    /// Uses TPTP FOF (TFF is not currently wired through `audit`).
     #[cfg(feature = "ask")]
-    Debug {
-        /// Path to a `.kif` file already loaded into the KB (via `-f`
-        /// or via the LMDB store).  The file tag is matched
-        /// case-sensitively against the loaded tags; pass the same
-        /// path form you used when loading.
-        file: PathBuf,
+    Audit {
+        /// OPTIONAL path to scope the audit.  Omit to audit the entire
+        /// KB.  A `.kif` file already loaded into the KB (via `-f` or the
+        /// LMDB store) restricts the sample to that file; a `.kif.tq`
+        /// test file injects its assertions into a debug session.  For
+        /// `.kif` files the tag must match a loaded tag (same path form
+        /// you used when loading); for `.kif.tq` the file is read fresh.
+        file: Option<PathBuf>,
 
         /// Fraction of the file's root sentences to sample for the
         /// consistency check, in (0.0, 1.0].  `1.0` uses every
@@ -391,41 +455,16 @@ pub enum Cmd {
         #[arg(long, value_name = "F", default_value_t = 1.0)]
         thoroughness: f32,
 
-        /// SInE tolerance factor (`≥ 1.0`) for the axiom expansion
-        /// step.  Higher values pull in more axioms — more thorough
-        /// but more expensive.  Values below 1.0 are clamped.  When
-        /// omitted, uses the crate default (usually 2.0; overridable
-        /// at sumo-kb build time via `SINE_TOLERANCE`).
-        #[arg(long, value_name = "F")]
-        scope: Option<f32>,
-
-        /// Vampire proof-search timeout in seconds.
-        #[arg(long, value_name = "SECS", default_value_t = 60)]
-        timeout: u32,
+        /// Stop after finding N distinct contradictions (native backend).
+        /// A smaller limit returns faster — the audit terminates the search
+        /// as soon as N are found instead of saturating for the rest.
+        #[arg(long, value_name = "N", default_value_t = 64)]
+        limit: usize,
 
         /// Write the generated TPTP to FILE (for debugging).  When
         /// omitted, TPTP is piped directly to Vampire via stdin.
         #[arg(short = 'k', long, value_name = "FILE")]
         keep: Option<PathBuf>,
-
-        /// Print the full refutation proof when Vampire finds one.
-        ///
-        /// Accepted values (same as `sumo ask --proof`):
-        /// - `tptp`: raw TSTP proof section as emitted by Vampire.
-        /// - `kif`:  SUO-KIF pretty-print of each step's formula.
-        /// - any SUMO language symbol (e.g. `EnglishLanguage`,
-        ///   `ChineseLanguage`): natural-language rendering via the
-        ///   KB's `format` / `termFormat` relations.  Steps with a
-        ///   symbol lacking a spec in the chosen language fall back
-        ///   to the KIF line with a warning listing what was missing.
-        ///
-        /// Omit the flag to suppress the full proof — the compact
-        /// "contradiction summary" (axioms contributing to the
-        /// refutation, one per line) is always shown.  The two are
-        /// complementary: the summary is a quick scan, `--proof` is
-        /// the full derivation.
-        #[arg(long, value_name = "FORMAT")]
-        proof: Option<String>,
 
         #[command(flatten)]
         kb: KbArgs,
@@ -453,12 +492,14 @@ pub enum Cmd {
     /// The dispatch is determined at compile time by the
     /// `SUMO_BUILD_KIND` env var the build script reads.  Release
     /// CI sets it to `release`; everything else defaults to `source`.
-    /// Source builds intentionally never overwrite themselves —
-    /// replacing a developer's local build with an unrelated
-    /// upstream binary would surprise them.
+    /// Source builds never overwrite themselves.
     Update {
         /// Don't apply the update — just check upstream and report.
         #[arg(long)]
         check: bool,
     },
+
+    /// Print the resolved KBManager configuration (from config.xml when loaded
+    /// with `-c`, else built-in defaults) and how each option maps to its CLI flag.
+    Config {},
 }

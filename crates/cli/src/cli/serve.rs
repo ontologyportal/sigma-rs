@@ -1,55 +1,44 @@
-// crates/native/src/cli/serve.rs
-//
-// `sumo serve` -- a persistent daemon that exposes the ask / tell /
-// KB-maintenance primitives over a line-delimited JSON wire format
-// on stdio.
-//
-// Motivation: the VSCode extension needs interactive querying, but
-// `sumo-lsp` is the wrong place for it (the prover takes seconds,
-// blocking the language server would ruin hover latency).  This
-// daemon is the analogue of a Jupyter kernel: spawned once per
-// editor window, lives as long as the window, owns a long-lived
-// `KnowledgeBase` in memory so every query amortises the load cost
-// over many asks.
-//
-// ## DB lifecycle
-//
-// Default: the kernel opens an LMDB at `--db` (creating if absent)
-// and reconciles every `-f` file against the DB at boot.  Subsequent
-// spawns with the same `--db` and file set skip re-ingestion
-// entirely -- `reconcile_file`'s fast path detects no-ops via the
-// per-file hash manifest.  This is the "persistent kernel" mode the
-// VSCode extension uses.
-//
-// `--no-db`: everything is in-memory.  Files are loaded as session
-// axioms and vanish when the process exits.  Use this for one-off
-// scratch work or when the user has explicitly disabled caching.
-//
-// ## Wire format
-//
-// Each message is a single JSON object on its own line (`\n`-
-// delimited, no framing headers).  Fields follow JSON-RPC 2.0
-// conventions loosely -- `id` / `method` / `params` on requests and
-// `id` / `result` | `error` on responses -- but we omit the
-// `jsonrpc: "2.0"` preamble and don't implement the full spec.
-// This is a pragmatic MVP; upgrade to real JSON-RPC 2.0 framing
-// (Content-Length headers, progress notifications) when streaming /
-// cancellation lands.
-//
-// ## Methods
-//
-// | Method              | Purpose                                          |
-// |---------------------|--------------------------------------------------|
-// | `tell`              | Session-local assertion (ephemeral)              |
-// | `ask`               | Run a conjecture through the prover              |
-// | `debug`             | Consistency-check a loaded file via SInE + prover |
-// | `test`              | Run `.kif.tq` test files and report pass/fail    |
-// | `kb.reconcileFile`  | Sync one file from disk into the DB              |
-// | `kb.removeFile`     | Drop one file from the in-memory KB + DB         |
-// | `kb.flush`          | Wipe all persisted files (in-memory + DB)        |
-// | `kb.listFiles`      | Return loaded files + sentence counts            |
-// | `kb.generateTptp`   | Emit the loaded KB as TPTP (fof/tff)             |
-// | `shutdown`          | Clean exit                                       |
+//! `sumo serve` -- a persistent daemon that exposes the ask / tell /
+//! KB-maintenance primitives over a line-delimited JSON wire format
+//! on stdio.
+//!
+//! Spawned once per editor window, lives as long as the window, and
+//! owns a long-lived `KnowledgeBase` in memory so every query
+//! amortises the load cost over many asks.
+//!
+//! ## DB lifecycle
+//!
+//! Default: the kernel opens an LMDB at `--db` (creating if absent)
+//! and reconciles every `-f` file against the DB at boot.  Subsequent
+//! spawns with the same `--db` and file set skip re-ingestion
+//! entirely -- the fast path detects no-ops via the per-file hash
+//! manifest.
+//!
+//! `--no-db`: everything is in-memory.  Files are loaded as session
+//! axioms and vanish when the process exits.
+//!
+//! ## Wire format
+//!
+//! Each message is a single JSON object on its own line (`\n`-
+//! delimited, no framing headers).  Fields follow JSON-RPC 2.0
+//! conventions loosely -- `id` / `method` / `params` on requests and
+//! `id` / `result` | `error` on responses -- but the `jsonrpc: "2.0"`
+//! preamble is omitted and the full spec is not implemented.
+//!
+//! ## Methods
+//!
+//! | Method              | Purpose                                          |
+//! |---------------------|--------------------------------------------------|
+//! | `tell`              | Session-local assertion (ephemeral)              |
+//! | `ask`               | Run a conjecture through the prover              |
+//! | `debug`             | Consistency-check a loaded file via SInE + prover |
+//! | `test`              | Run `.kif.tq` test files and report pass/fail    |
+//! | `kb.reconcileFile`  | Sync one file from disk into the DB              |
+//! | `kb.removeFile`     | Drop one file from the in-memory KB + DB         |
+//! | `kb.flush`          | Wipe all persisted files (in-memory + DB)        |
+//! | `kb.listFiles`      | Return loaded files + sentence counts            |
+//! | `kb.generateTptp`   | Emit the loaded KB as TPTP (fof/tff)             |
+//! | `shutdown`          | Clean exit                                       |
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -61,16 +50,10 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sumo_kb::{
-    parse_test_content, KnowledgeBase, ProverStatus, SentenceId, SineParams,
-    TptpLang, TptpOptions, VampireRunner,
+use sigmakee_rs_sdk::{
+    KnowledgeBase, ProverStatus, ProvingLayer, SentenceId, SineParams, TptpLang, TptpOptions, VampireRunner, parse_test_content,
 };
 
-// `crate::ask` (the inline `native_ask` shim) is no longer used
-// from serve.rs — `handle_test` and `handle_ask` both go through
-// `sumo_sdk::TestOp` / `AskOp` now.  The shim is kept in
-// `crates/cli/src/ask.rs` as a re-exported public API + for the
-// `ask_parse_error` unit test in lib.rs; deleting it is a follow-up.
 use crate::cli::args::KbArgs;
 use crate::cli::debug::resolve_file_tag;
 use crate::cli::util::{collect_kif_files, parse_lang, read_kif_file, resolve_vampire_path};
@@ -106,9 +89,7 @@ struct ResponseError {
     message: String,
 }
 
-// JSON-RPC-flavoured error codes.  We only use the handful listed
-// here; keeping them as `const` means typos can't escape into the
-// wire format.
+// JSON-RPC-flavoured error codes.
 const METHOD_NOT_FOUND: i32 = -32601;
 const INVALID_PARAMS:   i32 = -32602;
 const INTERNAL_ERROR:   i32 = -32603;
@@ -150,7 +131,7 @@ struct AskParams {
 #[serde(rename_all = "camelCase")]
 struct AskResponse {
     /// `"Proved"`, `"Disproved"`, `"Consistent"`, `"Inconsistent"`,
-    /// `"Timeout"`, `"Unknown"`.  Mirrors `sumo_kb::ProverStatus`.
+    /// `"Timeout"`, `"Unknown"`.
     status:    String,
     /// Variable bindings returned by the prover (may be empty).
     bindings:  Vec<String>,
@@ -158,8 +139,7 @@ struct AskResponse {
     /// prover didn't emit a proof section or if the conjecture was
     /// disproved / timed out.
     proof_kif: Vec<String>,
-    /// Raw Vampire transcript, unparsed.  Useful for debugging or
-    /// for clients that want to render the full proof object.
+    /// Raw Vampire transcript, unparsed.
     raw:       String,
 }
 
@@ -171,9 +151,7 @@ struct ReconcileFileParams {
     path: String,
     /// Optional inline text.  When set, the KB reconciles against
     /// this text (buffer-based update).  When omitted, the kernel
-    /// reads from `path`.  The VSCode extension uses the omitted
-    /// form for save-triggered syncs -- disk is the source of
-    /// truth.
+    /// reads from `path`.
     #[serde(default)]
     text: Option<String>,
 }
@@ -190,8 +168,7 @@ struct ReconcileFileResponse {
     /// Number of sentences retained unchanged.
     retained:        usize,
     /// Number of sentences in the selected SInE neighbourhood that
-    /// were re-validated after the edit.  Diagnostic only -- the
-    /// LSP surfaces the actual findings via `publish_diagnostics`.
+    /// were re-validated after the edit.  Diagnostic only.
     revalidated:     usize,
     /// Hard parse errors, one per unrecoverable sentence.  Empty
     /// on clean files.  Populated errors abort the commit for
@@ -253,18 +230,11 @@ struct FileEntry {
 #[serde(rename_all = "camelCase")]
 struct GenerateTptpParams {
     /// TPTP dialect: `"fof"` or `"tff"`.  Unknown values fall back
-    /// to fof with a warning logged to stderr; we don't reject the
-    /// request outright because that would bubble up as a scary
-    /// error to the VSCode user when the right thing is to just
-    /// emit *something* useful.
+    /// to fof with a warning logged to stderr.
     #[serde(default = "default_tptp_lang")]
     lang: String,
     /// Optional KB session whose assertions get rendered as
-    /// `hypothesis` next to the axioms.  The VSCode extension
-    /// doesn't currently use this -- generateTPTP is a snapshot
-    /// of the persisted KB, not a session dump -- but the wire
-    /// slot is here so a REPL that tells into a session can
-    /// export the full context later.
+    /// `hypothesis` next to the axioms.
     #[serde(default)]
     session: Option<String>,
 }
@@ -276,8 +246,7 @@ struct GenerateTptpResponse {
     tptp:          String,
     /// Count of emitted top-level formulae.  Derived by scanning
     /// the output for `^(fof|tff|cnf)\(` line prefixes.  Ballpark
-    /// only -- a precise count would need the converter to
-    /// surface it, which is more work than the value justifies.
+    /// only.
     formula_count: usize,
     /// Echo of the resolved dialect so the client can confirm
     /// what the kernel actually emitted.
@@ -335,8 +304,7 @@ struct DebugResponse {
     status:           String,
     /// Axioms that appear in the refutation (populated only when
     /// `status == "Inconsistent"` AND Vampire emitted a proof
-    /// transcript).  Same two-tier resolution (sid-first, canonical-
-    /// hash fallback) as the CLI's contradiction summary.
+    /// transcript).
     contradictions:   Vec<ContradictionEntry>,
     /// Full KIF proof transcript, same shape as
     /// `AskResponse.proofKif` on the `ask` method.  Empty when no
@@ -375,10 +343,8 @@ struct ProofStepEntry {
     /// Step formula as flat KIF.
     formula:     String,
     /// When the step is an `"axiom"` AND its source resolved to a
-    /// loaded KB sentence, these three are populated.  Resolution
-    /// tries the preserved-name sid-direct path first, then falls
-    /// back to canonical-fingerprint hashing.  Non-axiom steps and
-    /// unresolvable axioms leave these as `null`.
+    /// loaded KB sentence, these three are populated.  Non-axiom
+    /// steps and unresolvable axioms leave these as `null`.
     #[serde(skip_serializing_if = "Option::is_none")]
     source_sid:  Option<SentenceId>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -472,7 +438,10 @@ fn default_test_backend() -> String { "subprocess".to_string() }
 /// should propagate a non-zero CLI exit code.  Per-request errors
 /// are always reported back to the client as JSON-RPC errors --
 /// the loop itself never returns `false` mid-conversation.
-pub fn run_serve(kb_args: KbArgs) -> bool {
+pub fn run_serve<L>(
+    session: Session<L>,
+    manager: KBManager
+) -> bool where L: ProvingLayer {
     log::info!(target: "sumo_native::serve",
         "sumo-kernel starting (db={}, no_db={})",
         kb_args.db.display(), kb_args.no_db);
@@ -488,10 +457,8 @@ pub fn run_serve(kb_args: KbArgs) -> bool {
     let persistent  = !kb_args.no_db;
     let db_path     = kb_args.db.clone();
 
-    // Resolve the Vampire binary once at startup.  A missing binary
-    // is NOT a fatal startup error -- the client might never send an
-    // `ask` and be perfectly happy to `tell` only -- so we cache the
-    // resolution and surface any failure per-ask instead.
+    // A missing binary is not a fatal startup error; the resolution
+    // is cached and any failure surfaced per-ask instead.
     let vampire_candidate = kb_args.vampire.clone()
         .unwrap_or_else(|| PathBuf::from("vampire"));
     let vampire_path: Option<Arc<PathBuf>> =
@@ -552,9 +519,7 @@ pub fn run_serve(kb_args: KbArgs) -> bool {
 
         let resp = dispatch(&mut kb, persistent, &db_path,
                             vampire_path.as_deref(), &req);
-        // Notifications (no id) get no reply.  The spec says
-        // notifications are one-way; silently dropping the reply
-        // keeps clients that send them happy.
+        // Notifications (no id) get no reply.
         if let Some(id) = req.id {
             let resp = Response { id, ..resp };
             write_response(&mut writer, &resp);
@@ -569,20 +534,14 @@ pub fn run_serve(kb_args: KbArgs) -> bool {
 
 /// Open (or create) the KB and reconcile the requested `-f`/`-d`
 /// files against it.  In `--no-db` mode this is an in-memory KB
-/// with files loaded as session axioms (legacy behaviour); in the
-/// default `--db` mode it's an LMDB-backed KB where each file is
-/// diff-merged via `reconcile_file` + `persist_reconcile_diff`.
+/// with files loaded as session axioms; in the default `--db` mode
+/// it's an LMDB-backed KB where each file is diff-merged.
 fn boot_kb(kb_args: &KbArgs) -> Result<KnowledgeBase, ()> {
     if kb_args.no_db {
-        // Legacy in-memory flow -- files load as session axioms
-        // and vanish with the process.
+        // Files load as session axioms and vanish with the process.
         return crate::cli::util::open_or_build_kb(kb_args);
     }
 
-    // Persistent mode: open the LMDB (creating if absent) and
-    // reconcile every requested file.  `reconcile_file` is a no-op
-    // when the file hasn't changed since the last reconcile, so
-    // repeated kernel spawns on an unchanged KB start in ~200 ms.
     let mut kb = KnowledgeBase::open(&kb_args.db).map_err(|e| {
         log::error!(target: "sumo_native::serve",
             "failed to open LMDB at '{}': {}", kb_args.db.display(), e);
@@ -598,10 +557,8 @@ fn boot_kb(kb_args: &KbArgs) -> Result<KnowledgeBase, ()> {
 
     let all_files = collect_kif_files(kb_args)?;
 
-    // Read every file up-front — `reconcile_files` takes an
-    // `IntoIterator<Item = (&str, impl AsRef<str>)>`, so we need
-    // owned strings to survive the call.  Unreadable files log a
-    // warning and drop out of the batch; readable files continue.
+    // Unreadable files log a warning and drop out of the batch;
+    // readable files continue.
     let mut readable: Vec<(String, String)> = Vec::with_capacity(all_files.len());
     for path in &all_files {
         match read_kif_file(path) {
@@ -611,63 +568,63 @@ fn boot_kb(kb_args: &KbArgs) -> Result<KnowledgeBase, ()> {
         }
     }
 
-    // Batched reconcile.  `reconcile_files` folds the expensive
-    // phases (SInE promotion, taxonomy rebuild, smart revalidation)
-    // into one pass across the whole batch instead of N per-file
-    // passes — on cold SUMO this drops boot from ~60s to ~2–4s.
-    let reports = kb.reconcile_files(
-        readable.iter().map(|(tag, text)| (tag.as_str(), text.as_str())),
-    );
+    let reports: Vec<_> = readable.iter().map(|(tag, text)| {
+        kb.load(sigmakee_rs_sdk::SourceFile::kif(std::path::PathBuf::from(tag), text.clone()), tag)
+    }).collect();
 
-    // Per-file logging + persistence.  The commit happens as N
-    // separate `persist_reconcile_diff` calls today for clarity;
-    // batching LMDB writes into one transaction is a follow-up
-    // that'd shave a bit more wall time but requires a public-API
-    // change.
     let mut total_added   = 0usize;
     let mut total_removed = 0usize;
-    for report in &reports {
-        let tag = report.file.as_str();
+    for r in reports {
+        // Capture before any field moves.
+        let added    = r.added();
+        let removed  = r.removed();
+        let retained = r.retained;
+        let ok       = r.ok;
+        let tag          = r.session;
+        let diagnostics  = r.diagnostics;
+        let removed_sids = r.removed_sids;
+        let added_sids   = r.sids;
 
-        // Parse errors abort *this file only*.  Other files in the
-        // batch already completed — their deltas are in memory and
-        // will be committed below.  Matches the LSP's
-        // "one broken file shouldn't break the KB" invariant.
-        if !report.parse_errors.is_empty() {
-            for e in &report.parse_errors {
+        // Parse/structural errors abort this file only; other files
+        // in the batch are committed below.
+        if !ok {
+            for e in diagnostics.iter().filter(|d| d.severity == sigmakee_rs_sdk::Severity::Error) {
                 log::warn!(target: "sumo_native::serve",
-                    "boot reconcile: {} has {} parse error(s): {}",
-                    tag, report.parse_errors.len(), e);
-            }
-            continue;
-        }
-        if !report.semantic_errors.is_empty() {
-            for e in &report.semantic_errors {
-                log::warn!(target: "sumo_native::serve",
-                    "boot reconcile: {} has semantic error: {}", tag, e);
+                    "boot reconcile: {} has parse error: {}", tag, e);
             }
             continue;
         }
 
-        if report.is_noop() {
+        let sem_warnings: Vec<_> = diagnostics.iter()
+            .filter(|d| d.severity == sigmakee_rs_sdk::Severity::Warning)
+            .collect();
+        if !sem_warnings.is_empty() {
+            for e in &sem_warnings {
+                log::warn!(target: "sumo_native::serve",
+                    "boot reconcile: {} has semantic warning: {}", tag, e);
+            }
+            continue;
+        }
+
+        if added == 0 && removed == 0 {
             log::debug!(target: "sumo_native::serve",
-                "boot reconcile: {} unchanged ({} retained)", tag, report.retained);
+                "boot reconcile: {} unchanged ({} retained)", tag, retained);
             continue;
         }
 
-        if let Err(e) = kb.persist_reconcile_diff(&report.removed_sids, &report.added_sids) {
+        if let Err(e) = kb.persist_reconcile_diff(&removed_sids, &added_sids) {
             log::error!(target: "sumo_native::serve",
                 "boot reconcile: failed to commit delta for {}: {}", tag, e);
             continue;
         }
-        total_added   += report.added();
-        total_removed += report.removed();
+        total_added   += added;
+        total_removed += removed;
         log::info!(target: "sumo_native::serve",
-            "boot reconcile: {} +{} -{}", tag, report.added(), report.removed());
+            "boot reconcile: {} +{} -{}", tag, added, removed);
     }
     log::info!(target: "sumo_native::serve",
         "boot reconcile complete: {} file(s) processed (+{} added, -{} removed)",
-        reports.len(), total_added, total_removed);
+        readable.len(), total_added, total_removed);
 
     Ok(kb)
 }
@@ -711,11 +668,11 @@ fn handle_tell(kb: &mut KnowledgeBase, params: &Value) -> Response {
     log::debug!(target: "sumo_native::serve",
         "tell: session={:?} kif-bytes={}", params.session, params.kif.len());
 
-    let result = kb.tell(&params.session, &params.kif);
+    let result = kb.tell(&params.kif, &params.session);
     let resp = TellResponse {
         ok:       result.ok,
-        errors:   result.errors.iter().map(|e| e.to_string()).collect(),
-        warnings: result.warnings.iter().map(|w| w.to_string()).collect(),
+        errors:   result.errors().map(|e| e.to_string()).collect(),
+        warnings: result.warnings().map(|w| w.to_string()).collect(),
     };
     ok_response(resp)
 }
@@ -742,19 +699,15 @@ fn handle_ask(
         "ask: session={:?} query-bytes={} timeout={}s",
         params.session, params.query.len(), params.timeout_secs);
 
-    // Drive AskOp.  MVP sticks to the subprocess backend + FOF.
-    // `AskOp` handles backend selection, vampire-path threading,
-    // and result assembly; the JSON-RPC handler just builds the
-    // wire-shaped response.
-    let result = match sumo_sdk::AskOp::new(kb, &params.query)
+    let result = match sigmakee_rs_sdk::AskOp::new(kb, &params.query)
         .session(&*params.session)
         .timeout_secs(params.timeout_secs)
         .vampire_path(vampire_path)
-        .lang(sumo_kb::TptpLang::Fof)
+        .lang(sigmakee_rs_sdk::TptpLang::Fof)
         .run()
     {
         Ok(r) => r,
-        Err(sumo_sdk::SdkError::VampireNotFound(msg)) => {
+        Err(sigmakee_rs_sdk::SdkError::VampireNotFound(msg)) => {
             return err_response(INTERNAL_ERROR, format!("vampire not found: {}", msg));
         }
         Err(e) => {
@@ -768,10 +721,11 @@ fn handle_ask(
         ProverStatus::Consistent   => "Consistent",
         ProverStatus::Inconsistent => "Inconsistent",
         ProverStatus::Timeout      => "Timeout",
+        ProverStatus::InputError   => "InputError",
         ProverStatus::Unknown      => "Unknown",
     };
-    // `pretty_print()` injects ANSI colour escapes -- fine for a
-    // terminal, hostile in a webview.  `Display` emits plain KIF.
+    // `Display` emits plain KIF; `pretty_print()` would inject ANSI
+    // colour escapes.
     let proof_kif: Vec<String> = result.proof_kif.iter()
         .map(|step| step.formula.to_string())
         .collect();
@@ -806,9 +760,7 @@ fn handle_debug(
             "vampire binary not available; set `--vampire <PATH>` at kernel startup".into()),
     };
 
-    // -- File-tag resolution: same three-tier strategy as `sumo debug`.
-    // `resolve_file_tag` logs its own error context; we only need
-    // to surface a concise JSON error when it fails.
+    // -- File-tag resolution.
     let file_path = PathBuf::from(&params.file);
     let tag_primary = file_path.display().to_string();
     let tag_canonical = file_path.canonicalize().ok().map(|p| p.display().to_string());
@@ -818,7 +770,7 @@ fn handle_debug(
             format!("file '{}' is not loaded in the KB (check logs for candidates)", params.file)),
     };
 
-    // -- Sampling (same as `run_debug`).
+    // -- Sampling.
     let file_root_count = sids.len();
     let sample: Vec<SentenceId> = if params.thoroughness >= 1.0 {
         sids.clone()
@@ -836,18 +788,12 @@ fn handle_debug(
         "debug: file={} sampled={}/{} thoroughness={}",
         tag, sample_count, file_root_count, params.thoroughness);
 
-    // -- SInE expansion.
-    let tolerance = params.scope.unwrap_or_else(|| SineParams::default().tolerance);
-    let sine_params = SineParams::benevolent(tolerance);
-    let query_kif: String = sample.iter()
-        .map(|sid| kb.sentence_kif_str(*sid))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let selected = match kb.sine_select_for_query(&query_kif, sine_params) {
-        Ok(s)  => s,
-        Err(e) => return err_response(INTERNAL_ERROR,
-            format!("SInE selection failed: {}", e)),
-    };
+    // -- SInE expansion.  No `--scope` ⇒ auto-tolerance (the
+    // SineParams default); an explicit scope pins a fixed tolerance.
+    let sine_params = params.scope
+        .map(SineParams::benevolent)
+        .unwrap_or_default();
+    let selected = kb.sine_select_for_sids(&sample, sine_params);
 
     let mut check_set: HashSet<SentenceId> = sample.iter().copied().collect();
     check_set.extend(selected.iter().copied());
@@ -875,6 +821,7 @@ fn handle_debug(
         ProverStatus::Consistent   => "Consistent",
         ProverStatus::Inconsistent => "Inconsistent",
         ProverStatus::Timeout      => "Timeout",
+        ProverStatus::InputError   => "InputError",
         ProverStatus::Unknown      => "Unknown",
         ProverStatus::Proved       => "Proved (unexpected)",
         ProverStatus::Disproved    => "Disproved (unexpected)",
@@ -886,13 +833,12 @@ fn handle_debug(
     {
         let src_idx = kb.build_axiom_source_index();
 
-        // Summary: dedupe contributing axioms by sid, preserving proof order.
+        // Dedupe contributing axioms by sid, preserving proof order.
         let mut seen: HashSet<SentenceId> = HashSet::new();
         let mut contradictions: Vec<ContradictionEntry> = Vec::new();
         for step in &result.proof_kif {
             if step.rule != "axiom" { continue; }
-            // Two-tier resolution mirror of `print_step_source`.
-            let mut matched: Vec<&sumo_kb::AxiomSource> = Vec::new();
+            let mut matched: Vec<&sigmakee_rs_sdk::AxiomSource> = Vec::new();
             if let Some(sid) = step.source_sid {
                 if let Some(src) = src_idx.lookup_by_sid(sid) {
                     if !src.file.starts_with("__") { matched.push(src); }
@@ -914,8 +860,7 @@ fn handle_debug(
             }
         }
 
-        // Full proof: each step gets axiom sources attached when
-        // applicable.  Same resolution dispatch as the summary.
+        // Each step gets axiom sources attached when applicable.
         let proof_steps: Vec<ProofStepEntry> = result.proof_kif.iter().map(|step| {
             let (src_sid, src_file, src_line) = if step.rule == "axiom" {
                 resolve_proof_step_source(step, &src_idx)
@@ -953,13 +898,11 @@ fn handle_debug(
     })
 }
 
-/// Resolve one axiom-role proof step to its source `(sid, file, line)`
-/// using the same two-tier strategy `print_step_source` uses in the
-/// CLI path: sid-direct first, canonical-hash fallback, skip
-/// ephemeral files.
+/// Resolve one axiom-role proof step to its source `(sid, file, line)`:
+/// sid-direct first, canonical-hash fallback, skipping ephemeral files.
 fn resolve_proof_step_source(
-    step:    &sumo_kb::KifProofStep,
-    src_idx: &sumo_kb::AxiomSourceIndex,
+    step:    &sigmakee_rs_sdk::KifProofStep,
+    src_idx: &sigmakee_rs_sdk::AxiomSourceIndex,
 ) -> (Option<SentenceId>, Option<String>, Option<u32>) {
     if let Some(sid) = step.source_sid {
         if let Some(src) = src_idx.lookup_by_sid(sid) {
@@ -986,7 +929,7 @@ fn handle_test(
         Err(e) => return err_response(INVALID_PARAMS, format!("invalid test params: {}", e)),
     };
 
-    // Gather `.kif.tq` files, same directory-walk rules as `run_test`.
+    // Gather `.kif.tq` files.
     let mut test_files: Vec<PathBuf> = Vec::new();
     for raw in &params.paths {
         let path = PathBuf::from(raw);
@@ -1035,11 +978,11 @@ fn handle_test(
 
     let prover_backend = if params.backend == "embedded" {
         #[cfg(feature = "integrated-prover")]
-        { sumo_sdk::ProverBackend::Embedded }
+        { sigmakee_rs_sdk::ProverBackend::Embedded }
         #[cfg(not(feature = "integrated-prover"))]
-        { sumo_sdk::ProverBackend::Subprocess }
+        { sigmakee_rs_sdk::ProverBackend::Subprocess }
     } else {
-        sumo_sdk::ProverBackend::Subprocess
+        sigmakee_rs_sdk::ProverBackend::Subprocess
     };
 
     for test_file in &test_files {
@@ -1087,12 +1030,7 @@ fn handle_test(
         let expected_answers = test_case.expected_answer.clone();
         let note = test_case.note.clone();
 
-        // Drive TestOp for this single case.  Per-case session
-        // management, axiom load, validation, prover invocation, and
-        // post-run flush all happen inside TestOp::run().  We
-        // translate `TestOutcome` back into the wire-shaped
-        // `TestCaseResult` the JSON-RPC client expects.
-        let mut op = sumo_sdk::TestOp::new(kb)
+        let mut op = sigmakee_rs_sdk::TestOp::new(kb)
             .add_case(file_display.clone(), test_case)
             .backend(prover_backend)
             .lang(lang);
@@ -1119,7 +1057,6 @@ fn handle_test(
         let case = match suite.cases.into_iter().next() {
             Some(c) => c,
             None => {
-                // TestOp returned an empty suite — internal error.
                 results.push(TestCaseResult {
                     file:             file_display.clone(),
                     note:             note.clone(),
@@ -1137,7 +1074,7 @@ fn handle_test(
         };
 
         match case.outcome {
-            sumo_sdk::TestOutcome::Passed => {
+            sigmakee_rs_sdk::TestOutcome::Passed => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1151,7 +1088,7 @@ fn handle_test(
                 });
                 passed += 1;
             }
-            sumo_sdk::TestOutcome::Failed { expected: e, got } => {
+            sigmakee_rs_sdk::TestOutcome::Failed { expected: e, got, .. } => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1165,7 +1102,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::Incomplete { inferred, missing } => {
+            sigmakee_rs_sdk::TestOutcome::Incomplete { inferred, missing } => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1179,7 +1116,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::ParseError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::ParseError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1193,7 +1130,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::SemanticError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::SemanticError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1207,7 +1144,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::ProverError(msg) => {
+            sigmakee_rs_sdk::TestOutcome::ProverError(msg) => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1221,7 +1158,7 @@ fn handle_test(
                 });
                 failed += 1;
             }
-            sumo_sdk::TestOutcome::NoQuery => {
+            sigmakee_rs_sdk::TestOutcome::NoQuery => {
                 results.push(TestCaseResult {
                     file:             file_display,
                     note,
@@ -1252,10 +1189,7 @@ fn handle_reconcile_file(
             format!("invalid kb.reconcileFile params: {}", e)),
     };
 
-    // Resolve the text: inline if the caller provided it,
-    // otherwise read from disk.  The VSCode extension sends the
-    // disk-only form (Option A per the plan) -- `text` is there
-    // for future in-buffer syncs if we revisit that decision.
+    // Inline text if the caller provided it, otherwise read from disk.
     let text = match &params.text {
         Some(t) => t.clone(),
         None => match fs::read_to_string(&params.path) {
@@ -1268,38 +1202,44 @@ fn handle_reconcile_file(
     log::debug!(target: "sumo_native::serve",
         "kb.reconcileFile: path={} bytes={}", params.path, text.len());
 
-    let report = kb.reconcile_file(&params.path, &text);
-    let added   = report.added();
-    let removed = report.removed();
+    let report = kb.load(
+        sigmakee_rs_sdk::SourceFile::kif(std::path::PathBuf::from(&params.path), text),
+        &params.path,
+    );
 
-    // Parse errors are fatal for this file -- the recovered
-    // sentences are NOT committed (matches the LSP's "entire file
-    // invariant" for parse failures).  The caller gets the error
-    // list and can act on it (e.g. show Problems panel entries).
-    if !report.parse_errors.is_empty() {
-        let errors: Vec<String> = report.parse_errors.iter().map(|e| e.to_string()).collect();
+    // Capture before field moves.
+    let added    = report.added();
+    let removed  = report.removed();
+    let retained = report.retained;
+    let ok       = report.ok;
+    let error_msgs:  Vec<String> = report.errors().map(|e| e.to_string()).collect();
+    let sem_errors:  Vec<String> = report.warnings().map(|w| w.to_string()).collect();
+    let removed_sids = report.removed_sids;
+    let added_sids   = report.sids;
+
+    // Parse errors are fatal for this file: the recovered sentences
+    // are NOT committed.
+    if !ok {
         log::info!(target: "sumo_native::serve",
             "kb.reconcileFile: {} has {} parse error(s); delta not persisted",
-            params.path, errors.len());
+            params.path, error_msgs.len());
         return ok_response(ReconcileFileResponse {
             path:            params.path,
             added:           0,
             removed:         0,
-            retained:        report.retained,
-            revalidated:     report.revalidated,
-            parse_errors:    errors,
-            semantic_errors: report.semantic_errors.iter().map(|e| e.to_string()).collect(),
+            retained,
+            revalidated:     0,
+            parse_errors:    error_msgs,
+            semantic_errors: sem_errors,
             persisted:       false,
         });
     }
 
     // Commit the delta to LMDB (if persistent).  Semantic errors
-    // only populate under `-W` / `-Wall`; surface them to the
-    // caller but don't refuse the commit -- editor workflows want
-    // the DB to reflect whatever parsed cleanly.
+    // don't refuse the commit; whatever parsed cleanly is persisted.
     let mut persisted = false;
-    if persistent && (!report.removed_sids.is_empty() || !report.added_sids.is_empty()) {
-        if let Err(e) = kb.persist_reconcile_diff(&report.removed_sids, &report.added_sids) {
+    if persistent && (!removed_sids.is_empty() || !added_sids.is_empty()) {
+        if let Err(e) = kb.persist_reconcile_diff(&removed_sids, &added_sids) {
             return err_response(INTERNAL_ERROR,
                 format!("persist_reconcile_diff failed for '{}': {}", params.path, e));
         }
@@ -1310,10 +1250,10 @@ fn handle_reconcile_file(
         path:            params.path,
         added,
         removed,
-        retained:        report.retained,
-        revalidated:     report.revalidated,
+        retained,
+        revalidated:     0,
         parse_errors:    Vec::new(),
-        semantic_errors: report.semantic_errors.iter().map(|e| e.to_string()).collect(),
+        semantic_errors: sem_errors,
         persisted,
     })
 }
@@ -1329,8 +1269,8 @@ fn handle_remove_file(
             format!("invalid kb.removeFile params: {}", e)),
     };
 
-    // Capture the roots *before* `remove_file` drops them -- we
-    // need the ids for the persistent deletion pass.
+    // Capture the roots before `remove_file` drops them; the ids are
+    // needed for the persistent deletion pass.
     let sids: Vec<SentenceId> = kb.file_roots(&params.path).to_vec();
     let removed = sids.len();
 
@@ -1356,8 +1296,8 @@ fn handle_flush(
     persistent: bool,
     _db_path:   &PathBuf,
 ) -> Response {
-    // Gather the full file set first; `remove_file` mutates the
-    // iterator's source so we have to snapshot.
+    // Snapshot the full file set first; `remove_file` mutates the
+    // iterator's source.
     let files: Vec<String> = kb.iter_files().map(|s| s.to_string()).collect();
     log::info!(target: "sumo_native::serve",
         "kb.flush: clearing {} file(s)", files.len());
@@ -1384,16 +1324,14 @@ fn handle_flush(
     })
 }
 
-fn handle_generate_tptp(kb: &KnowledgeBase, params: &Value) -> Response {
+fn handle_generate_tptp(kb: &mut KnowledgeBase, params: &Value) -> Response {
     let params: GenerateTptpParams = match serde_json::from_value(params.clone()) {
         Ok(p)  => p,
         Err(e) => return err_response(INVALID_PARAMS,
             format!("invalid kb.generateTptp params: {}", e)),
     };
 
-    // Resolve the dialect.  Unknown strings log and default to
-    // fof rather than failing the request -- matches the tolerant
-    // posture used by the CLI's `--lang` flag.
+    // Unknown strings log and default to fof rather than failing.
     let lang = match params.lang.to_ascii_lowercase().as_str() {
         "fof" => TptpLang::Fof,
         "tff" => TptpLang::Tff,
@@ -1406,10 +1344,8 @@ fn handle_generate_tptp(kb: &KnowledgeBase, params: &Value) -> Response {
 
     let opts = TptpOptions {
         lang,
-        // KB export is *not* a conjecture, so leave `query = false`.
         // `show_kif_comment = true` adds `% <KIF>` comments above
-        // each formula -- hugely useful when a user eyeballs the
-        // emitted TPTP to understand what got through.
+        // each formula.
         show_kif_comment: true,
         ..TptpOptions::default()
     };
@@ -1421,9 +1357,7 @@ fn handle_generate_tptp(kb: &KnowledgeBase, params: &Value) -> Response {
     let tptp = kb.to_tptp(&opts, params.session.as_deref());
 
     // Coarse formula count: match the `fof(`, `tff(`, and `cnf(`
-    // prefixes at line starts.  Good enough for a status-bar
-    // message; not a contract the caller should rely on for
-    // anything precise.
+    // prefixes at line starts.
     let formula_count = tptp.lines()
         .filter(|l| {
             let t = l.trim_start();
@@ -1439,8 +1373,6 @@ fn handle_generate_tptp(kb: &KnowledgeBase, params: &Value) -> Response {
 }
 
 fn handle_list_files(kb: &KnowledgeBase) -> Response {
-    // `iter_files()` borrows the store; collect into owned strings
-    // so the response serialisation doesn't fight the borrow.
     let entries: Vec<FileEntry> = kb.iter_files()
         .map(|path| FileEntry {
             path:           path.to_string(),
@@ -1478,8 +1410,7 @@ fn write_response<W: Write>(writer: &mut W, resp: &Response) {
             "failed to write response: {}", e);
         return;
     }
-    // Without the explicit flush each line can sit in the stdout
-    // buffer until the process exits -- the client would time out
-    // waiting for a response to a request it already sent.
+    // Flush is required: without it each line can sit in the stdout
+    // buffer until the process exits.
     let _ = writer.flush();
 }

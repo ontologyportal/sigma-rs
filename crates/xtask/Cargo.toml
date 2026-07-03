@@ -1,0 +1,11 @@
+[package]
+name        = "xtask"
+version     = "0.0.0"
+edition     = "2021"
+publish     = false
+description = "Internal workspace tasks (run via `cargo xtask <cmd>`)."
+
+[dependencies]
+syn         = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = "1"
+quote       = "1"

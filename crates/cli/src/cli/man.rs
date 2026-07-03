@@ -1,18 +1,13 @@
-// crates/cli/src/cli/man.rs
-//
-// `sumo man <symbol>` -- manpage-style introspection.  Opens whatever
-// KB the shared KbArgs point to (LMDB + any `-f/-d` layers), then
-// renders the `ManPage` returned by `KnowledgeBase::manpage` into an
-// interactive viewer (alternate-screen, crossterm raw mode) where Tab
-// cycles through every link on the page (PARENTS entries plus inline
-// `&%Symbol` cross-refs in the documentation / term-format / format
-// blocks), Enter follows the focused link, Backspace pops the
-// navigation history, and `q` quits.
-//
-// The viewer is bypassed automatically when stdout is not a TTY
-// (piped / redirected), when `--no-pager` is passed, or when the
-// `NO_PAGER` environment variable is set -- so scripts and CI pipes
-// keep their plain-text output.
+//! `sumo man <symbol>` -- manpage-style introspection.
+//!
+//! Opens whatever KB the shared KbArgs point to (LMDB + any `-f/-d`
+//! layers), then renders the `ManPage` returned by
+//! `KnowledgeBase::manpage` into an interactive viewer where Tab cycles
+//! through every link on the page, Enter follows the focused link,
+//! Backspace pops the navigation history, and `q` quits.
+//!
+//! The viewer is bypassed when stdout is not a TTY, when `--no-pager` is
+//! passed, or when the `NO_PAGER` environment variable is set.
 
 use std::io::{self, IsTerminal, Write};
 
@@ -26,51 +21,52 @@ use crossterm::{
     },
 };
 
-use sumo_kb::{DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig};
+use sigmakee_rs_sdk::{DocEntry, KnowledgeBase, ManPage, SentenceId, SortSig, TranslationLayer, TptpLang};
+use sigmakee_rs_sdk::Session;
+use sigmakee_rs_sdk::manager::KBManager;
 
-use crate::cli::args::KbArgs;
-use crate::cli::util::open_or_build_kb;
+/// How reference / antecedent formulas are rendered. Toggled with `t`
+/// in the interactive viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormulaMode {
+    /// Pretty-printed SUO-KIF (default).
+    Kif,
+    /// Cached TPTP (TFF). Suppressed sentences show their synthetic
+    /// replacement(s) instead, tagged `(synthetic)`.
+    Tptp,
+}
 
 pub fn run_man(
-    symbol:   String,
-    lang:     Option<String>,
-    no_pager: bool,
-    kb_args:  KbArgs,
+    mut session: Session<TranslationLayer>,
+    _manager:    KBManager,
+    symbol:      String,
+    lang:        Option<String>,
+    no_pager:    bool,
 ) -> bool {
-    let kb = match open_or_build_kb(&kb_args) {
-        Ok(kb) => kb,
-        Err(_) => return false,
-    };
+    session.kb_mut().ensure_introspection();
+    let kb = session.kb();
 
     let Some(man) = kb.manpage(&symbol) else {
         log::error!("symbol '{}' not found in the knowledge base", symbol);
         return false;
     };
 
-    // Decide whether to enter the interactive viewer.  Honour (in order):
-    // explicit --no-pager flag, NO_PAGER env, non-TTY stdout.  Each one
-    // by itself forces direct-print mode.
     let tty       = io::stdout().is_terminal();
     let env_off   = std::env::var_os("NO_PAGER").is_some();
-    let use_pager = !no_pager && !env_off && tty;
+    let use_pager = !no_pager && !crate::style::is_ugly() && !env_off && tty;
 
     if use_pager {
-        // Clone `man` so the fallback path below still has an owned
-        // copy if the viewer returns an error (terminal detach etc.).
-        match interactive_view(&kb, man.clone(), lang.as_deref()) {
+        match interactive_view(kb,man.clone(), lang.as_deref()) {
             Ok(()) => true,
             Err(e) => {
-                // Viewer failed (e.g. detached terminal).  Fall back to
-                // direct print so the user still sees the content
-                // instead of an opaque error.
                 log::warn!("manpage viewer failed ({}); falling back to stdout", e);
-                let doc = build_document(&kb, &man, lang.as_deref());
+                let doc = build_document(kb,&man, lang.as_deref(), FormulaMode::Kif);
                 print_document_plain(&doc);
                 true
             }
         }
     } else {
-        let doc = build_document(&kb, &man, lang.as_deref());
+        let doc = build_document(kb,&man, lang.as_deref(), FormulaMode::Kif);
         print_document_plain(&doc);
         true
     }
@@ -80,17 +76,16 @@ pub fn run_man(
 // Document model
 // ---------------------------------------------------------------------------
 
-/// A single styled run on a line.  `style` is a pre-built ANSI prefix
+/// A single styled run on a line. `style` is a pre-built ANSI prefix
 /// (e.g. `"\x1b[33m\x1b[4m"`); the renderer always emits a `\x1b[0m`
-/// reset after the text.  `link` is `Some(idx)` if this span is the
+/// reset after the text. `link` is `Some(idx)` if this span is the
 /// visible label of a navigable cross-ref, and points into
 /// `Document.links`.
 ///
-/// When `style` is empty *and* the text itself already contains ANSI
-/// escapes (e.g. `kb.pretty_print_sentence` output for the REFERENCES
-/// section), the span is treated as pre-rendered: the renderer prints
-/// it verbatim and only injects an inverse-video overlay if it's the
-/// focused link.  See [`pre_styled`].
+/// When `style` is empty and the text itself already contains ANSI
+/// escapes, the span is treated as pre-rendered: the renderer prints it
+/// verbatim and only injects an inverse-video overlay if it's the
+/// focused link. See [`pre_styled`].
 #[derive(Default, Clone)]
 struct Span {
     text:  String,
@@ -141,9 +136,8 @@ fn cyan<S: Into<String>>(text: S)   -> Span { styled(text, "\x1b[36m") }
 fn blue<S: Into<String>>(text: S)   -> Span { styled(text, "\x1b[94m") }
 fn dim<S: Into<String>>(text: S)    -> Span { styled(text, "\x1b[90m") }
 
-/// Span for text that already contains its own ANSI escapes (e.g.
-/// `kb.pretty_print_sentence` output).  Forces a trailing reset so
-/// styling can't bleed into the next line.
+/// Span for text that already contains its own ANSI escapes. Forces a
+/// trailing reset so styling can't bleed into the next line.
 fn pre_styled<S: Into<String>>(text: S) -> Span {
     let mut t = text.into();
     if !t.ends_with("\x1b[0m") {
@@ -152,7 +146,7 @@ fn pre_styled<S: Into<String>>(text: S) -> Span {
     Span { text: t, style: String::new(), link: None }
 }
 
-/// A linked, underlined symbol label.  Yellow + underline; the focus
+/// A linked, underlined symbol label. Yellow + underline; the focus
 /// overlay (inverse video) is added by the renderer.
 fn link_span<S: Into<String>>(text: S, link_idx: usize) -> Span {
     Span {
@@ -166,8 +160,14 @@ fn link_span<S: Into<String>>(text: S, link_idx: usize) -> Span {
 // Build a Document from a ManPage
 // ---------------------------------------------------------------------------
 
-fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) -> Document {
+fn build_document(
+    kb:          &KnowledgeBase,
+    man:         &ManPage,
+    lang_filter: Option<&str>,
+    mode:        FormulaMode,
+) -> Document {
     let mut doc = Document::default();
+    let src_idx = kb.build_axiom_source_index();
 
     // NAME
     doc.push_header("NAME");
@@ -181,6 +181,26 @@ fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) 
         yellow(man.name.clone()),
         plain("  "),
         dim(format!("({})", kinds)),
+    ]);
+
+    // OCCURRENCES
+    doc.push_header("OCCURRENCES");
+    doc.push_line(vec![
+        plain("    "),
+        dim("appears in:"),
+        plain("  "),
+        yellow(format!("{}", man.appears_in_count)),
+        plain(" formula(s)"),
+    ]);
+    doc.push_line(vec![
+        plain("    "),
+        dim("antecedent of:"),
+        plain("  "),
+        yellow(format!("{}", man.antecedent_refs.len())),
+        plain("   "),
+        dim("consequent of:"),
+        plain("  "),
+        yellow(format!("{}", man.consequent_count)),
     ]);
 
     // PARENTS
@@ -198,6 +218,32 @@ fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) 
                 plain("  "),
                 link_span(p.parent.clone(), link_idx),
             ]);
+        }
+    }
+
+    // CHILDREN — inverse taxonomy edges (`(rel Child sym)`). Capped so a
+    // class with thousands of subclasses stays tab-navigable; the tail
+    // count is noted instead.
+    if !man.children.is_empty() {
+        const CHILD_CAP: usize = 50;
+        let total = man.children.len();
+        doc.push_header(&format!("CHILDREN ({})", total));
+        let width = man.children.iter().take(CHILD_CAP)
+            .map(|c| c.relation.len()).max().unwrap_or(0);
+        for c in man.children.iter().take(CHILD_CAP) {
+            let link_idx = doc.links.len();
+            doc.links.push(Link { target: c.parent.clone(), line: doc.lines.len() });
+            doc.push_line(vec![
+                plain("    "),
+                cyan(format!("{:<width$}", c.relation, width = width)),
+                plain("  "),
+                blue("←"),
+                plain("  "),
+                link_span(c.parent.clone(), link_idx),
+            ]);
+        }
+        if total > CHILD_CAP {
+            doc.push_line(vec![plain("    "), dim(format!("… and {} more", total - CHILD_CAP))]);
         }
     }
 
@@ -268,16 +314,22 @@ fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) 
         }
     }
 
+    // ANTECEDENT — formulas in which the symbol appears in the
+    // antecedent of a (normalized) implication.
+    if !man.antecedent_refs.is_empty() {
+        doc.push_header(&format!("APPEARS IN ANTECEDENT ({})", man.antecedent_refs.len()));
+        let mut refs = man.antecedent_refs.clone();
+        sort_sids_by_source(&mut refs, &src_idx);
+        for sid in &refs {
+            push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
+        }
+    }
+
     // REFERENCES
     //
-    // Group root-level occurrences by position — position 0 is the
-    // head slot, position 1.. are argument slots.  Variable-arity
-    // relations can land at any position, so the bucket vector is
-    // sized from the data (previously hard-coded to 5, which
-    // panicked on `(contraryAttribute a b c d e)`-style lists).
-    //
-    // Within each bucket, sort by (file, line) so the output is
-    // stable across runs and close-together axioms stay adjacent.
+    // Group root-level occurrences by position — position 0 is the head
+    // slot, position 1.. are argument slots. Variable-arity relations can
+    // land at any position, so the bucket vector is sized from the data.
     if !man.ref_args.is_empty() || !man.ref_nested.is_empty() {
         if !man.ref_args.is_empty() {
             let max_pos = man.ref_args.iter().map(|r| r.0).max().unwrap_or(0);
@@ -287,7 +339,7 @@ fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) 
             }
             for (i, pos) in buckets.iter_mut().enumerate() {
                 if pos.is_empty() { continue; }
-                sort_sids_by_source(pos, kb);
+                sort_sids_by_source(pos, &src_idx);
                 let label = if i == 0 {
                     String::from("Appearance as head")
                 } else {
@@ -295,21 +347,20 @@ fn build_document(kb: &KnowledgeBase, man: &ManPage, lang_filter: Option<&str>) 
                 };
                 doc.push_header(&label);
                 for sid in pos.iter() {
-                    push_sentence_block(&mut doc, kb, *sid);
+                    push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
                 }
             }
         }
         if !man.ref_nested.is_empty() {
             let mut nested = man.ref_nested.clone();
-            sort_sids_by_source(&mut nested, kb);
+            sort_sids_by_source(&mut nested, &src_idx);
             doc.push_header("Appearance nested inside other axioms");
             for sid in &nested {
-                push_sentence_block(&mut doc, kb, *sid);
+                push_sentence_block(&mut doc, kb, &src_idx, *sid, man, mode);
             }
         }
     }
 
-    // Trailing blank to mirror the legacy man(1) layout.
     doc.push_blank();
     doc
 }
@@ -328,40 +379,85 @@ fn sig_line(label: &str, sig: &SortSig) -> Vec<Span> {
     spans
 }
 
-/// Render one reference entry: the source `file:line` header (dim
-/// grey) followed by the pretty-printed sentence indented four
-/// spaces, matching the surrounding man-page layout.
-fn push_sentence_block(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
-    let Some(sent) = kb.sentence(sid) else { return };
-    let trace = format!("{}:{}", sent.span.file, sent.span.line);
-    doc.push_line(vec![dim(format!("    {}", trace))]);
-    // `pretty_print_sentence` returns ANSI-coloured multi-line KIF
-    // when the sentence is wide enough to break.  Each line goes in
-    // verbatim via `pre_styled` so the embedded escapes survive.
-    let pretty = kb.pretty_print_sentence(sid, 4);
-    for line in pretty.lines() {
-        doc.push_line(vec![plain("    "), pre_styled(line.to_string())]);
+/// Render one reference entry: the source `file:line` header (dim grey)
+/// followed by the pretty-printed sentence indented four spaces.
+fn push_sentence_block(
+    doc:     &mut Document,
+    kb:      &KnowledgeBase,
+    src_idx: &sigmakee_rs_sdk::AxiomSourceIndex,
+    sid:     SentenceId,
+    man:     &ManPage,
+    mode:    FormulaMode,
+) {
+    if kb.sentence(sid).is_none() { return; }
+    let trace = src_idx
+        .lookup_by_sid(sid)
+        .map(|s| format!("{}:{}", s.file, s.line))
+        .unwrap_or_else(|| format!("sid {:x}", sid));
+    // Source trace, with a SInE-ownership marker when this symbol is the
+    // formula's SInE trigger.
+    let mut header = vec![dim(format!("    {}", trace))];
+    if man.owned_sids.contains(&sid) {
+        header.push(plain("  "));
+        header.push(cyan("⊙ SInE-owned"));
+    }
+    doc.push_line(header);
+
+    match mode {
+        FormulaMode::Kif => {
+            let pretty = kb.pretty_print_sentence(sid, 4);
+            for line in pretty.lines() {
+                doc.push_line(vec![plain("    "), pre_styled(line.to_string())]);
+            }
+        }
+        FormulaMode::Tptp => push_tptp(doc, kb, sid),
     }
 }
 
+/// Render a sentence's cached TPTP (TFF). When the sentence was
+/// suppressed by the rewrite pass, show its synthetic replacement(s)
+/// instead, each tagged `(synthetic)`.
+fn push_tptp(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
+    if let Some(tptp) = kb.sentence_tptp(sid, TptpLang::Tff) {
+        doc.push_line(vec![plain("    "), yellow(tptp)]);
+        return;
+    }
+    if kb.is_suppressed(sid) {
+        let syns = kb.synthetic_replacements_of(sid);
+        let mut shown = false;
+        for s in syns {
+            if let Some(tptp) = kb.sentence_tptp(s, TptpLang::Tff) {
+                doc.push_line(vec![
+                    plain("    "),
+                    yellow(tptp),
+                    plain("  "),
+                    dim("(synthetic)"),
+                ]);
+                shown = true;
+            }
+        }
+        if !shown {
+            doc.push_line(vec![plain("    "), dim("(suppressed; no emittable synthetic)")]);
+        }
+        return;
+    }
+    doc.push_line(vec![plain("    "), dim("(no TPTP — not convertible)")]);
+}
+
 /// Sort a list of sentence ids by (file, line) for stable output.
-fn sort_sids_by_source(sids: &mut Vec<SentenceId>, kb: &KnowledgeBase) {
+fn sort_sids_by_source(sids: &mut Vec<SentenceId>, src_idx: &sigmakee_rs_sdk::AxiomSourceIndex) {
     sids.sort_by(|a, b| {
-        let sa = kb.sentence(*a);
-        let sb = kb.sentence(*b);
-        match (sa, sb) {
-            (Some(a), Some(b)) => (a.file.as_str(), a.span.line)
-                .cmp(&(b.file.as_str(), b.span.line)),
+        match (src_idx.lookup_by_sid(*a), src_idx.lookup_by_sid(*b)) {
+            (Some(x), Some(y)) => (x.file.as_str(), x.line).cmp(&(y.file.as_str(), y.line)),
             _ => a.cmp(b),
         }
     });
 }
 
-/// Scan `text` for `&%Symbol` tokens.  Each match becomes an
-/// underlined link span carrying `Symbol` (the `&%` marker is stripped
-/// from the visible text); other characters become plain spans.  New
-/// links are appended to `links` with `line = line_idx` (the line this
-/// span is about to land on).
+/// Scan `text` for `&%Symbol` tokens. Each match becomes an underlined
+/// link span carrying `Symbol` (the `&%` marker is stripped from the
+/// visible text); other characters become plain spans. New links are
+/// appended to `links` with `line = line_idx`.
 fn parse_cross_refs(text: &str, links: &mut Vec<Link>, line_idx: usize) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     let bytes = text.as_bytes();
@@ -401,10 +497,9 @@ fn parse_cross_refs(text: &str, links: &mut Vec<Link>, line_idx: usize) -> Vec<S
 // Plain (pipe / --no-pager) rendering
 // ---------------------------------------------------------------------------
 
-/// Print the document with all original ANSI styling preserved.  Used
+/// Print the document with all original ANSI styling preserved. Used
 /// when the interactive viewer is bypassed (pipe / `--no-pager` /
-/// `NO_PAGER`).  Styling stays so that `sumo man Foo | less -R` still
-/// renders colour.
+/// `NO_PAGER`), so `sumo man Foo | less -R` still renders colour.
 fn print_document_plain(doc: &Document) {
     let mut stdout = io::stdout().lock();
     for row in &doc.lines {
@@ -427,6 +522,7 @@ enum ViewAction {
     Quit,
     Follow(String),
     Back,
+    ToggleFormula,
 }
 
 fn interactive_view(
@@ -436,6 +532,7 @@ fn interactive_view(
 ) -> io::Result<()> {
     let mut history: Vec<String> = Vec::new();
     let mut current             = initial;
+    let mut mode                = FormulaMode::Kif;
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;
@@ -443,8 +540,8 @@ fn interactive_view(
 
     let result = (|| -> io::Result<()> {
         loop {
-            let doc = build_document(kb, &current, lang_filter);
-            let action = view_loop(&mut stdout, &doc, history.len(), &current.name)?;
+            let doc = build_document(kb, &current, lang_filter, mode);
+            let action = view_loop(&mut stdout, &doc, history.len(), &current.name, mode)?;
             match action {
                 ViewAction::Quit => return Ok(()),
                 ViewAction::Follow(target) => {
@@ -452,8 +549,7 @@ fn interactive_view(
                         history.push(current.name.clone());
                         current = next;
                     }
-                    // No-op if the symbol isn't resolvable; the status
-                    // bar will redraw the current page on the next pass.
+                    // No-op if the symbol isn't resolvable.
                 }
                 ViewAction::Back => {
                     if let Some(prev_name) = history.pop() {
@@ -461,6 +557,12 @@ fn interactive_view(
                             current = prev;
                         }
                     }
+                }
+                ViewAction::ToggleFormula => {
+                    mode = match mode {
+                        FormulaMode::Kif  => FormulaMode::Tptp,
+                        FormulaMode::Tptp => FormulaMode::Kif,
+                    };
                 }
             }
         }
@@ -476,17 +578,25 @@ fn view_loop<W: Write>(
     doc:           &Document,
     history_depth: usize,
     current_name:  &str,
+    mode:          FormulaMode,
 ) -> io::Result<ViewAction> {
     let mut focused: Option<usize> = if doc.links.is_empty() { None } else { Some(0) };
     let mut scroll: usize          = 0;
+    // Only snap the viewport to the focused link when focus moves
+    // (Tab/BackTab); otherwise manual scrolling would be yanked back
+    // every frame, making the bottom of a long page unreachable.
+    let mut scroll_to_focus        = true;
 
     loop {
         let (cols, rows) = size()?;
         let body_rows    = (rows as usize).saturating_sub(1).max(1);
-        ensure_focused_visible(focused, doc, &mut scroll, body_rows);
+        if scroll_to_focus {
+            ensure_focused_visible(focused, doc, &mut scroll, body_rows);
+            scroll_to_focus = false;
+        }
         let max_scroll = doc.lines.len().saturating_sub(body_rows);
         if scroll > max_scroll { scroll = max_scroll; }
-        render(stdout, doc, focused, scroll, body_rows, cols as usize, history_depth, current_name)?;
+        render(stdout, doc, focused, scroll, body_rows, cols as usize, history_depth, current_name, mode)?;
 
         match event::read()? {
             Event::Key(k) => {
@@ -501,12 +611,14 @@ fn view_loop<W: Write>(
                         if !doc.links.is_empty() {
                             let n = doc.links.len();
                             focused = Some(focused.map_or(0, |i| (i + 1) % n));
+                            scroll_to_focus = true;
                         }
                     }
                     (KeyCode::BackTab, _) | (KeyCode::Left, _) => {
                         if !doc.links.is_empty() {
                             let n = doc.links.len();
                             focused = Some(focused.map_or(n - 1, |i| (i + n - 1) % n));
+                            scroll_to_focus = true;
                         }
                     }
                     (KeyCode::Enter, _) | (KeyCode::Char('p'), _) => {
@@ -518,6 +630,9 @@ fn view_loop<W: Write>(
                         if history_depth > 0 {
                             return Ok(ViewAction::Back);
                         }
+                    }
+                    (KeyCode::Char('t'), _) => {
+                        return Ok(ViewAction::ToggleFormula);
                     }
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                         if scroll < max_scroll { scroll += 1; }
@@ -536,7 +651,7 @@ fn view_loop<W: Write>(
                     _ => {}
                 }
             }
-            Event::Resize(_, _) => { /* re-render on next loop */ }
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -567,6 +682,7 @@ fn render<W: Write>(
     cols:          usize,
     history_depth: usize,
     current_name:  &str,
+    mode:          FormulaMode,
 ) -> io::Result<()> {
     queue!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
 
@@ -585,9 +701,10 @@ fn render<W: Write>(
     let focus_s = focused
         .map(|f| format!("{}/{}", f + 1, n_links))
         .unwrap_or_else(|| "-/-".to_string());
+    let mode_s = match mode { FormulaMode::Kif => "kif", FormulaMode::Tptp => "tptp" };
     let raw_status = format!(
-        " {}  links {}  hist {}  [tab cycle · enter follow · b back · q quit] ",
-        current_name, focus_s, history_depth,
+        " {}  links {}  hist {}  fmt {}  [tab cycle · enter follow · b back · t kif/tptp · q quit] ",
+        current_name, focus_s, history_depth, mode_s,
     );
     let status = if raw_status.chars().count() > cols {
         raw_status.chars().take(cols).collect::<String>()
@@ -603,8 +720,8 @@ fn render<W: Write>(
 
 fn write_span<W: Write>(stdout: &mut W, span: &Span, focused: bool) -> io::Result<()> {
     if focused {
-        // Focus gets inverse-video stacked on top of the underlying
-        // style so links remain underlined while highlighted.
+        // Inverse-video stacked on the underlying style so links stay
+        // underlined while highlighted.
         write!(stdout, "{}\x1b[7m{}\x1b[0m", span.style, span.text)
     } else if span.style.is_empty() {
         write!(stdout, "{}", span.text)
@@ -614,7 +731,7 @@ fn write_span<W: Write>(stdout: &mut W, span: &Span, focused: bool) -> io::Resul
 }
 
 // ---------------------------------------------------------------------------
-// Helpers (unchanged from the legacy implementation)
+// Helpers
 // ---------------------------------------------------------------------------
 
 fn filter_lang<'a>(entries: &'a [DocEntry], want: Option<&str>) -> Vec<&'a DocEntry> {
@@ -624,9 +741,9 @@ fn filter_lang<'a>(entries: &'a [DocEntry], want: Option<&str>) -> Vec<&'a DocEn
     }
 }
 
-/// Soft-wrap `text` at `width` columns, splitting on spaces.  The KIF
-/// `documentation` convention sometimes inlines `&%Symbol` cross-refs;
-/// `parse_cross_refs` is responsible for rewriting those after wrap.
+/// Soft-wrap `text` at `width` columns, splitting on spaces. Inlined
+/// `&%Symbol` cross-refs are rewritten separately by `parse_cross_refs`
+/// after wrapping.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cur   = String::new();
@@ -663,7 +780,6 @@ mod tests {
         assert_eq!(spans[3].text, "Plant_Tissue");
         assert!(spans[1].link.is_some());
         assert!(spans[3].link.is_some());
-        // Underline ANSI must be present in the link style.
         assert!(spans[1].style.contains("\x1b[4m"));
     }
 

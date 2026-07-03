@@ -1,267 +1,401 @@
-/// sumo-parser -- command-line interface.
+//! sumo-parser command-line interface.
+use std::path::PathBuf;
 use std::process;
 use std::io::Write;
-use clap::Parser;
-use inline_colorization::*;
+use sigmakee::style::*;
 
-use sigmakee::cli::{Cli, Cmd, KbArgs, run_load, run_validate, run_translate, run_man, run_update};
+use sigmakee::cli::{Cli, Cmd};
+use sigmakee::cli::{
+    run_flush, run_load, run_load_warm, run_validate,
+    run_translate, run_man, run_search, run_update, run_config
+};
 #[cfg(feature = "ask")]
-use sigmakee::cli::{run_ask, run_test, run_debug};
+use sigmakee::cli::{run_ask, run_test, run_audit};
 #[cfg(feature = "server")]
 use sigmakee::cli::run_serve;
-use sigmakee::config::{resolve_config_path, parse_config_xml};
-use sigmakee::git::fetch_repo_sparse;
 
-use sumo_kb::error::{promote_to_error, set_all_errors, suppress_warnings};
+use sigmakee_rs_sdk::{
+    DynSink, KnowledgeBase, ProverLayer,
+    ExternalProverLayer, ProvingLayer, TranslationLayer, TopLayer
+};
+use sigmakee_rs_sdk::prover::external::backends::{
+    EproverRunner, 
+    VampireRunner,
+    IntegratedVampireRunner
+};
+use sigmakee_rs_sdk::{Prover, Session};
+use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 
 fn main() {
-    log::trace!("main()");
-    // Parse the CLI Options
-    let cli = Cli::parse();
+    // Heavy ontologies blow past the 8 MB main-thread stack; run on a 64 MB worker.
+    let handle = std::thread::Builder::new()
+        .name("sumo-main".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(main_worker)
+        .expect("spawn sumo-main worker thread");
+    match handle.join() {
+        Ok(_)  => (),
+        Err(_) => process::exit(101),
+    }
+}
 
-    // Distinguish "user explicitly asked for this config" from "auto-discover".
-    // When the user passes `--config PATH`, a failure to load is a hard error:
-    // silently falling back to an empty config surprised callers by producing
-    // single-line TPTP dumps (empty KB → only the conjecture emitted) with no
-    // obvious cause.  When the config is just auto-discovered, a missing or
-    // unparseable file is still recoverable — continue with defaults.
-    let user_specified_config = cli.config.is_some();
-    let config_xml = if !cli.enable_config {
-        None
-    } else if let Some(config_path) = resolve_config_path(cli.config.as_deref()) {
-        match parse_config_xml(&config_path) {
-            Ok(cfg) => Some(cfg),
-            Err(e) => {
-                eprintln!("Could not parse config.xml at {}: {}", config_path.display(), e);
-                if user_specified_config {
-                    process::exit(2);
-                }
-                None
-            }
-        }
-    } else if user_specified_config {
-        eprintln!(
-            "Could not locate config.xml from `--config {}` (after ~ expansion)",
-            cli.config.as_deref().map(|p| p.display().to_string()).unwrap_or_default()
-        );
+fn main_worker() {
+    let (cli, arg_matches) = sigmakee::cli::args_project::parse();
+    sigmakee::style::set_ugly(cli.ugly);
+
+    let profile = cli.profile;
+    let t_profile = std::time::Instant::now();
+    sigmakee::progress::init(profile);
+
+    let mut manager = build_manager(&cli);
+
+    // Precedence: flag > env > config.xml > default.
+    if let Err(e) = manager.apply_overrides(sigmakee::cli::args_project::overrides(&arg_matches)) {
+        log::error!("config error: {e}");
         process::exit(2);
-    } else {
-        None
-    };
+    }
 
-    // Suppress the semantic warnings based on whether the quiet option
-    // was passed
-    suppress_warnings(cli.quiet);
+    init_logging(&cli, &manager);
 
-    let level = if cli.verbose > 0 {
-        match cli.verbose {
-            1 => log::LevelFilter::Info,
-            2 => log::LevelFilter::Debug,
-            _ => log::LevelFilter::Trace,
+    if let Some(name) = cli.kb.as_deref() {
+        manager.set_current_kb(name);
+    }
+
+    apply_global_overrides(&cli, &mut manager);
+
+    if let Err(e) = manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone()) {
+        log::error!("error: {e}");
+        process::exit(2);
+    }
+
+    // Handle `config` before `validate` so a misconfigured path still shows in
+    // the dump; it needs no KB or session.
+    if matches!(cli.command, Cmd::Config { .. }) {
+        let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
+        let loaded = cli.enable_config && cfg.is_some();
+        process::exit(if run_config(&manager, cfg, loaded) { 0 } else { 1 });
+    }
+
+    if let Err(e) = manager.validate() {
+        log::error!("config error: {e}");
+        process::exit(2);
+    }
+
+    // Use the LMDB store at `<editDir>/<kb>.lmdb` when it exists and `--no-db`
+    // wasn't passed; otherwise build fresh in memory.
+    let sink: Option<DynSink> = sigmakee::progress::global_sink();
+    let db = manager.db_path();
+    let use_db = !cli.no_db && db.as_ref().is_some_and(|p| p.exists());
+    // Flush before rebuild so the store can be recreated.
+    if matches!(cli.command, Cmd::Load { flush } if flush == true && db.is_some()) {
+        run_flush(&manager);
+    }
+
+    let session_name = cli.session;
+    // Sweep drives the core crate directly; route it to a fresh native session
+    // before the generic backend dispatch.
+    #[cfg(feature = "sweep")]
+    if matches!(cli.command, Cmd::Sweep { .. }) {
+        let Cmd::Sweep { paths, configs, random, seed, budget, steps, timeout, jobs, out, lanes, portfolio_out, kb: _ } = cli.command else { unreachable!() };
+        let session = Session::from_kb(KnowledgeBase::new_native(), session_name);
+        let ok = sigmakee::cli::run_sweep(session, &manager, paths, configs, random, seed, budget, steps, timeout, jobs, out, lanes, portfolio_out);
+        process::exit(if ok { 0 } else { 1 });
+    }
+
+    let ok = if matches!(cli.command, Cmd::Translate { .. } | Cmd::Man { .. }) {
+        // Translation-only commands run on a `TranslationLayer`, independent of
+        // `--backend`: the native `ProverLayer` lacks `HasTranslation`.
+        let kb = open_or_new(
+            use_db,
+            || KnowledgeBase::<TranslationLayer>::open(db.as_deref().unwrap(), sink.clone()),
+            KnowledgeBase::new,
+        );
+        if manager.real_numbers == Some(true) {
+            kb.set_reals_only(true);
         }
-    } else if let Some(ref cfg) = config_xml {
-        if let Some(lvl) = cfg.log_level() {
-            match lvl.to_lowercase().as_str() {
-                "info" => log::LevelFilter::Info,
-                "debug" => log::LevelFilter::Debug,
-                "trace" => log::LevelFilter::Trace,
-                "error" => log::LevelFilter::Error,
-                _ => log::LevelFilter::Warn,
+        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile)
+    } else {
+        match manager.default_backend.as_str() {
+            "native" => {
+                let kb = open_or_new(
+                    use_db,
+                    || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
+                    KnowledgeBase::new_native,
+                );
+                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile)
             }
-        } else {
-            log::LevelFilter::Warn
+            // e / eprover / subprocess / embedded → external layer.
+            _ => {
+                // `--keep` (TPTP dump) is threaded from the prover subcommands
+                // into the external runner.
+                let keep = match &cli.command {
+                    #[cfg(feature = "ask")]
+                    Cmd::Ask { keep, .. } | Cmd::Test { keep, .. } | Cmd::Audit { keep, .. } =>
+                        keep.clone(),
+                    _ => None,
+                };
+                let runner = build_runner(&manager, keep);
+                let kb = open_or_new(
+                    use_db,
+                    || KnowledgeBase::<ExternalProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
+                    || KnowledgeBase::new_external(runner.clone()),
+                );
+                let mut session = Session::from_kb(kb, session_name);
+                // `open()` installs the default runner; override it with the
+                // configured E/Vampire runner.
+                session.set_runner(runner);
+                // Reals-only TFF numerics: explicit `--real-numbers` wins;
+                // unset defaults ON for the E backend under TFF (E 3.2.5
+                // mistypes `$to_real` in equality position). Must be set before
+                // dispatch so the lazy TFF caches fill in the chosen mode.
+                let reals_only = manager.real_numbers.unwrap_or_else(|| {
+                    matches!(manager.default_backend.as_str(), "e" | "eprover")
+                        && manager.tptp_lang.eq_ignore_ascii_case("tff")
+                });
+                if reals_only {
+                    session.kb().set_reals_only(true);
+                }
+                if matches!(cli.command, Cmd::Load { .. }) {
+                    run_load_warm(session, manager)
+                } else {
+                    dispatch(session, manager, cli.command, &arg_matches, sink, profile)
+                }
+            }
         }
-    } else {
-        log::LevelFilter::Warn
     };
 
+    // Tear down the spinner, then emit the global `--profile` report.
+    if let Some(sink) = sigmakee::progress::global() {
+        sink.finish(); // clear the spinner so the report starts on a clean row
+        if profile {
+            match sink.report() {
+                Some(rep) if sink.has_data() => {
+                    eprintln!("\n\x1b[1mProfile (per phase, by total time):\x1b[0m");
+                    eprint!("{}", rep);
+                    eprintln!("  {:<48}  {:>10.3} ms", "total wall", t_profile.elapsed().as_secs_f64() * 1000.0);
+                }
+                _ => eprintln!("\n\x1b[1mProfile:\x1b[0m total wall {:.3} ms (no instrumented phases on this path)",
+                        t_profile.elapsed().as_secs_f64() * 1000.0),
+            }
+        }
+    }
+    process::exit(if ok { 0 } else { 1 });
+}
+
+/// Open the persisted KB (exiting with a logged error on failure) or build a
+/// fresh in-memory one when `use_db` is false.
+fn open_or_new<L, E: std::fmt::Display>(
+    use_db: bool,
+    open:   impl FnOnce() -> Result<KnowledgeBase<L>, E>,
+    fresh:  impl FnOnce() -> KnowledgeBase<L>,
+) -> KnowledgeBase<L> {
+    if !use_db {
+        return fresh();
+    }
+    match open() {
+        Ok(kb) => kb,
+        Err(d) => { log::error!("failed to open DB: {d}"); process::exit(1); }
+    }
+}
+
+/// Route a parsed command against a ready proving `Session`. Ingests the
+/// selected KB's constituents, then dispatches `cmd` to its handler. Returns
+/// whether the command succeeded.
+fn dispatch<L: ProvingLayer>(
+    mut session: Session<L>,
+    mut manager: KBManager,
+    cmd: Cmd,
+    arg_matches: &clap::ArgMatches,
+    sink: Option<DynSink>,
+    _profile: bool,
+) -> bool
+where
+    L::Opts: ProverOptsFor,
+{
+    if let Some(s) = sink {
+        session.set_progress_sink(s);
+    }
+    ingest_constituents(&mut session, &manager);
+
+    match cmd {
+        Cmd::Load { flush: _ } =>
+            run_load(session, manager),
+
+        Cmd::Validate { formula, parse } =>
+            run_validate(session, manager, formula, parse),
+
+        #[cfg(feature = "ask")]
+        Cmd::Ask { formula, tell, kb: _, keep } =>
+            run_ask(session, &manager, formula, tell, keep),
+
+        #[cfg(feature = "ask")]
+        Cmd::Test { paths, kb: _, keep, step, full_kb } => {
+            if full_kb { manager.disable_selection = true; }
+            manager.native_prover.step = step;
+            // An explicit `--timeout` overrides every case; its absence means
+            // "use each case's own `(time N)`". Clear the global budget so
+            // `Session::test` stamps `tc.timeout` per case.
+            if !supplied(arg_matches, "timeout") {
+                manager.native_prover.time_limit_secs = 0;
+                manager.external_prover.timeout_secs  = 0;
+            }
+            run_test(session, manager, paths, keep)
+        }
+
+        #[cfg(feature = "ask")]
+        Cmd::Audit { file, thoroughness, limit, keep, kb: _ } => {
+            manager.thoroughness = thoroughness;
+            manager.limit = limit;
+            // `--scope` pins a fixed tolerance (no auto-budget) for the audit.
+            if supplied(arg_matches, "scope") {
+                manager.native_prover.selection.auto_budget = None;
+            }
+            if !supplied(arg_matches, "timeout") {
+                manager.native_prover.time_limit_secs = 60;
+            }
+            manager.native_prover.want_proof = true;
+            manager.native_prover.max_steps  = 500_000;
+            manager.native_prover.max_lits   = 12;
+            manager.native_prover.forward_close = true;
+            run_audit(session, &manager, file, keep)
+        }
+
+        Cmd::Search { query, kind, lang, limit } =>
+            run_search(session, manager, query, kind, lang, limit),
+
+        #[cfg(feature = "server")]
+        Cmd::Serve { kb: _ } => run_serve(session, &manager),
+
+        Cmd::Update { check } => run_update(check),
+
+        _ => false
+    }
+}
+
+/// Dispatch the translation-only commands (`translate`, `man`) on a
+/// `TranslationLayer` session. These don't use a prover, so they run
+/// independent of `--backend`.
+fn dispatch_translation(
+    mut session: Session<TranslationLayer>,
+    mut manager: KBManager,
+    cmd:         Cmd,
+    sink:        Option<DynSink>,
+    _profile:    bool,
+) -> bool {
+    if let Some(s) = sink {
+        session.set_progress_sink(s);
+    }
+    ingest_constituents(&mut session, &manager);
+
+    match cmd {
+        Cmd::Translate { formula, show_numbers, show_kif, test, full_kb, keep: _ } => {
+            // Translation never runs the prover-feedback autoscaling ladder.
+            manager.show_kif = show_kif;
+            if full_kb { manager.disable_selection = true; }
+            manager.native_prover.selection.autoscale = false;
+            run_translate(session, manager, formula, show_numbers, test)
+        }
+        Cmd::Man { symbol, lang, no_pager } =>
+            run_man(session, manager, symbol, lang, no_pager),
+        _ => unreachable!("dispatch_translation only handles Translate/Man"),
+    }
+}
+
+/// Ingest the manager's selected constituents into `session` (core dedups
+/// unchanged files).
+fn ingest_constituents<L: TopLayer>(session: &mut Session<L>, manager: &KBManager) {
+    for src in manager.current_sources_owned() {
+        for e in session.ingest(src, false) {
+            log::error!("ingest: {e}");
+        }
+    }
+}
+
+// -- helpers -----------------------------------------------------------------
+
+/// Build the KBManager from `-c`/`--config`, or defaults.
+fn build_manager(cli: &Cli) -> KBManager {
+    if !cli.enable_config {
+        return KBManager::default();
+    }
+    match sigmakee::config::resolve_config_path(cli.config.as_deref()) {
+        Some(path) => match KBManager::from_config_xml_path(path) {
+            Ok(m) => m,
+            Err(e) => { eprintln!("Error parsing config.xml: {e}"); process::exit(2); }
+        },
+        None => {
+            eprintln!("Could not locate config.xml from `--config {}`",
+                cli.config.as_deref().map(|p| p.display().to_string()).unwrap_or_default());
+            process::exit(2);
+        }
+    }
+}
+
+/// `-v`/`-q` override the configured level; install the env_logger format.
+fn init_logging(cli: &Cli, manager: &KBManager) {
+    let level = if cli.verbose > 0 {
+        match cli.verbose { 1 => log::LevelFilter::Info, 2 => log::LevelFilter::Debug, _ => log::LevelFilter::Trace }
+    } else if cli.quiet {
+        log::LevelFilter::Error
+    } else {
+        manager.log_level
+    };
     env_logger::Builder::new()
         .filter_level(level)
         .format(|f, record| {
-            let level_color = match record.level() {
-                log::Level::Error => color_bright_red,
-                log::Level::Warn  => color_bright_yellow,
-                log::Level::Info  => color_cyan,
-                log::Level::Debug => color_blue,
+            let lc = match record.level() {
+                log::Level::Error => color_bright_red,  log::Level::Warn => color_bright_yellow,
+                log::Level::Info  => color_cyan,        log::Level::Debug => color_blue,
                 log::Level::Trace => color_white,
             };
             if record.target() == "clean" {
                 writeln!(f, "{}", record.args())
             } else {
-                writeln!(f, "[{} {level_color}{}{color_reset}] {}", f.timestamp(), record.level(), record.args())
+                writeln!(f, "[{} {lc}{}{color_reset}] {}", f.timestamp(), record.level(), record.args())
             }
         })
         .init();
-    log::debug!("Debug logging enabled");
-
-    // --git: sparse-checkout only the files the user asked for into a
-    // temp dir.  The TempDir is kept alive in `_git_tempdir` for the
-    // entire process so the checked-out files remain accessible.
-    //
-    // Sparse paths are collected NOW — before the clone — from all three
-    // selection sources: -f, -d, and -c constituents.  We already have
-    // the parsed config_xml at this point so -c paths are available.
-    let _git_tempdir: Option<tempfile::TempDir>;
-    let git_root: Option<std::path::PathBuf> = if let Some(ref url) = cli.git {
-        if !matches!(cli.command, Cmd::Load { .. }) {
-            eprintln!(
-                "warning: --git without `load` downloads on the fly and is not \
-                 cached to the database"
-            );
-        }
-
-        // Collect every repo-relative path the user needs.
-        let mut sparse_paths: Vec<String> = Vec::new();
-        sparse_paths.extend(cli.files.iter().map(|p| p.display().to_string()));
-        sparse_paths.extend(cli.dirs.iter().map(|p| p.display().to_string()));
-        if let Some(ref cfg) = config_xml {
-            let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
-            if let Some(name) = kb_name {
-                if let Some(paths) = cfg.get_kb_constituents(name) {
-                    sparse_paths.extend(paths.into_iter().map(String::from));
-                }
-            }
-        }
-
-        match fetch_repo_sparse(url, &sparse_paths) {
-            Ok((tmp, root)) => {
-                _git_tempdir = Some(tmp);
-                Some(root)
-            }
-            Err(()) => process::exit(1),
-        }
-    } else {
-        _git_tempdir = None;
-        None
-    };
-
-    // Build the universal source-selection struct from the
-    // top-level globals.  Every `run_*` handler still takes a
-    // `KbArgs`; for subcommands that flatten `KbArgs` (ask / test /
-    // debug / serve), we merge the flattened `vampire` field on top
-    // of this base.  For subcommands that don't flatten, the
-    // synthesised base IS the argument they receive.
-    //
-    // When --git is active, rebase -f / -d paths against the repo root
-    // so the user can supply paths relative to the repository.
-    let (base_files, base_dirs) = match git_root.as_ref() {
-        Some(root) => (
-            cli.files.iter().map(|f| root.join(f)).collect(),
-            cli.dirs.iter().map(|d| root.join(d)).collect(),
-        ),
-        None => (cli.files.clone(), cli.dirs.clone()),
-    };
-
-    let mut base_kb_args = KbArgs {
-        files:   base_files,
-        dirs:    base_dirs,
-        db:      cli.db.clone(),
-        no_db:   cli.no_db,
-        vampire: None,
-    };
-
-    // Config.xml integration: prepend config-declared files to the
-    // user's `-f` list and fall back to the config-declared Vampire
-    // path when none was given on the command line.  When --git is
-    // active, constituent paths are resolved relative to the repo root
-    // instead of the config's kbDir.
-    if let Some(ref cfg) = config_xml {
-        log::debug!("Found config_xml");
-        let kb_name = cli.kb.as_deref().or_else(|| cfg.default_kb_name());
-        if let Some(name) = kb_name {
-            let files = match git_root.as_ref() {
-                Some(root) => cfg.get_kb_files_relative_to(name, root),
-                None       => cfg.get_kb_files(name),
-            };
-            if let Some(files) = files {
-                // Config files come first so the order matches the
-                // canonical "Merge.kif before Mid-level-ontology.kif"
-                // convention (`get_kb_files` already returns them in
-                // that order); user-supplied `-f` files append after.
-                let mut all_files = files;
-                all_files.extend(base_kb_args.files);
-                base_kb_args.files = all_files;
-            }
-        }
-        if base_kb_args.vampire.is_none() {
-            base_kb_args.vampire = cfg.vampire_path();
-        }
-    }
-
-    for arg in &cli.suppress {
-        if arg == "all" {
-            set_all_errors(true);
-        } else {
-            promote_to_error(arg);
-        }
-    }
-
-    // Helper for the four subcommands that do flatten `KbArgs` (to
-    // expose `--vampire`): take their flattened value's `vampire`
-    // field and graft it onto the base.  Every other field of the
-    // flattened struct is a placeholder (`#[arg(skip)]` default) and
-    // is discarded.
-    let merge_vampire = |base: &KbArgs,
-                         flattened: KbArgs|
-                         -> KbArgs {
-        KbArgs {
-            vampire: flattened.vampire.or_else(|| base.vampire.clone()),
-            files:   base.files.clone(),
-            dirs:    base.dirs.clone(),
-            db:      base.db.clone(),
-            no_db:   base.no_db,
-        }
-    };
-
-    let ok = match cli.command {
-        Cmd::Load { flush } => run_load(base_kb_args, flush),
-        Cmd::Validate { formula, parse, no_kb_check } =>
-            run_validate(formula, parse, no_kb_check, base_kb_args),
-        Cmd::Translate {
-            formula,
-            lang,
-            show_numbers,
-            show_kif,
-            session,
-        } => run_translate(
-            formula,
-            &lang,
-            show_numbers,
-            show_kif,
-            session.as_deref(),
-            base_kb_args,
-        ),
-        #[cfg(feature = "ask")]
-        Cmd::Ask {
-            formula,
-            tell,
-            timeout,
-            session,
-            backend,
-            lang,
-            kb,
-            keep,
-            proof,
-            profile,
-        } => run_ask(
-            formula, tell, timeout, session, backend, lang,
-            merge_vampire(&base_kb_args, kb),
-            keep, proof, profile,
-        ),
-        #[cfg(feature = "ask")]
-        Cmd::Test { paths, kb, keep, backend, lang, timeout, profile } =>
-            run_test(paths, merge_vampire(&base_kb_args, kb), keep, backend, lang, timeout, profile),
-        #[cfg(feature = "ask")]
-        Cmd::Debug { file, thoroughness, scope, timeout, keep, proof, kb } =>
-            run_debug(
-                file, thoroughness, scope, timeout, keep, proof,
-                merge_vampire(&base_kb_args, kb),
-            ),
-        Cmd::Man { symbol, lang, no_pager } =>
-            run_man(symbol, lang, no_pager, base_kb_args),
-        #[cfg(feature = "server")]
-        Cmd::Serve { kb } => run_serve(merge_vampire(&base_kb_args, kb)),
-        Cmd::Update { check } => run_update(check),
-    };
-    process::exit(if ok { 0 } else { 1 });
 }
+
+/// `-W` warning-elevation policy → core promotion flags.
+fn apply_global_overrides(cli: &Cli, _manager: &mut KBManager) {
+    use sigmakee_rs_sdk::{promote_to_error, set_all_errors};
+    for arg in &cli.suppress {
+        if arg == "all" { set_all_errors(true); } else { promote_to_error(arg); }
+    }
+}
+
+/// Whether the user (or its env var) supplied the projected option `field` on
+/// the active subcommand — for arms that special-case a flag's *presence* (e.g.
+/// `test`/`audit` reading `--timeout` / `--scope`).
+#[cfg(feature = "ask")]
+fn supplied(matches: &clap::ArgMatches, field: &str) -> bool {
+    use clap::parser::ValueSource;
+    matches.subcommand().is_some_and(|(_, sm)| {
+        matches!(sm.value_source(field), Some(ValueSource::CommandLine) | Some(ValueSource::EnvVariable))
+    })
+}
+
+/// Construct the external runner the resolved backend names.
+fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
+    match manager.default_backend.as_str() {
+        "e" | "eprover" => {
+            // Resolve against systemsDir / $PATH; a bogus configured path falls
+            // back to the bare name so a PATH-installed binary still works.
+            let path = manager.resolve_eprover().unwrap_or_else(|e| {
+                log::warn!("{e}; falling back to 'eprover' on PATH");
+                PathBuf::from("eprover")
+            });
+            Prover::Eprover(EproverRunner { eprover_path: path, tptp_dump_path: keep })
+        }
+        "embedded"      => Prover::VampireIntegrated(IntegratedVampireRunner),
+        _ /* subprocess */ => {
+            let path = manager.resolve_vampire().unwrap_or_else(|e| {
+                log::warn!("{e}; falling back to 'vampire' on PATH");
+                PathBuf::from("vampire")
+            });
+            Prover::VampireSubprocess(VampireRunner { vampire_path: path, tptp_dump_path: keep })
+        }
+    }
+}
+

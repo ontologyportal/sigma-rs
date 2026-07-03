@@ -1,88 +1,94 @@
-use log;
-use sumo_kb::TptpOptions;
-use sumo_sdk::TranslateOp;
+use std::path::PathBuf;
 
-use crate::cli::args::KbArgs;
-use crate::cli::util::{open_or_build_kb, parse_lang, read_stdin, source_tag};
-use crate::{semantic_error, semantic_warning};
+use log;
+use sigmakee_rs_sdk::{HasTranslation, TopLayer, TptpOptions};
+use sigmakee_rs_sdk::{SdkError, Session, Source};
+use sigmakee_rs_sdk::manager::KBManager;
+
+use crate::cli::util::{read_stdin};
 
 /// Entry point for `sumo translate`.
 ///
-/// Delegates to [`sumo_sdk::TranslateOp`] for both the inline-formula
+/// Delegates to [`sigmakee_rs_sdk::TranslateOp`] for both the inline-formula
 /// and whole-KB paths.  Findings rendered via the CLI macros from
 /// the report's `semantic_errors` / `semantic_warnings` fields.
-pub fn run_translate(
+///
+/// When `test` is `Some`, the inline/whole-KB paths are bypassed and the
+/// given `.kif.tq` file is translated into the exact TPTP problem the prover
+/// would receive — see [`run_translate_test`] (requires the `ask` feature).
+#[allow(clippy::too_many_arguments)]
+pub fn run_translate<L>(
+    mut session:  Session<L>,
+    manager:      KBManager,
     formula:      Option<String>,
-    lang:         &str,
     show_numbers: bool,
-    show_kif:     bool,
-    session:      Option<&str>,
-    kb_args:      KbArgs,
-) -> bool {
+    test:         Option<PathBuf>,
+) -> bool 
+where 
+    L: HasTranslation + TopLayer {
+    // Handle translating a test file
+    if let Some(test_file) = test {
+        let test_source = Source::Local(vec![test_file]);
+        let prover_opts = manager.external_prover.to_prover_opts();
+        let tptp = session.translate_test(
+            test_source, 
+            manager.into(), 
+            prover_opts
+        );
+        match tptp {
+            Ok(tptp) => println!("{}", tptp),
+            Err(errs) => {
+                for e in errs {
+                    match e {
+                        SdkError::Kb(e) => {
+                            session.kb().pretty_print_error(&e, log::Level::Error);
+                        },
+                        _ => log::error!("{}", e)
+                    }
+                }
+            }
+        };
+        return true;
+    }
+
+    // Translate either a singular formula or a full file
+
+    // Stdin auto-detect: `read_stdin` internally checks `is_terminal()`
+    // and returns None when stdin is a TTY, so this is safe when run
+    // interactively.  Pipes (`cat foo.kif | sumo translate`) are
+    // consumed automatically.
     let formula = formula.or_else(read_stdin);
 
-    let mut kb = match open_or_build_kb(&kb_args) {
-        Ok(k)   => k,
-        Err(()) => return false,
-    };
-
-    let tptp_lang = parse_lang(lang);
-    let opts = TptpOptions {
-        lang:             tptp_lang,
-        hide_numbers:     !show_numbers,
-        show_kif_comment: show_kif,
-        ..TptpOptions::default()
+    let opts: TptpOptions = TptpOptions {
+        hide_numbers: !show_numbers,
+        ..manager.into()
     };
 
     match formula {
         Some(text) => {
-            let tag = source_tag();
-            // Build the TranslateOp.  `.options(opts)` lets us pass
-            // through CLI-only flags (hide_numbers, show_kif_comment).
-            let mut op = TranslateOp::formula(&mut kb, tag, &text)
-                .lang(tptp_lang)
-                .show_numbers(show_numbers)
-                .show_kif_comments(show_kif);
-            if let Some(s) = session { op = op.session(s); }
-            // Replace whole options block to pick up any future
-            // TptpOptions field additions the dedicated setters
-            // don't cover.  Equivalent to the old direct call.
-            op = op.options(opts);
-
-            let report = match op.run() {
-                Ok(r)  => r,
+            // Build the Source            
+            match session.translate_formula(&text, opts.lang) {
+                Ok(s) => {print!("{}", s); true},
                 Err(e) => {
-                    log::error!("{}", e);
-                    return false;
+                    match e {
+                        SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                        _ => log::error!("{}", e)
+                    }
+                    false
                 }
-            };
-
-            // The SDK's TranslateReport already carries `tptp` as the
-            // joined output (with optional KIF comments interleaved
-            // when show_kif_comments is on).  Just write it out.
-            for (_, e) in &report.semantic_warnings { semantic_warning!(e, kb); }
-            print!("{}", report.tptp);
-            true
+            }
         }
         None => {
-            // Whole-KB translate.  Render warnings/errors first so
-            // they precede the TPTP output, matching the legacy
-            // ordering.
-            let f = kb.validate_all_findings();
-            for (_, e) in &f.errors   { semantic_error!(e, kb); }
-            for (_, e) in &f.warnings { semantic_warning!(e, kb); }
-
-            let mut op = TranslateOp::kb(&mut kb).options(opts);
-            if let Some(s) = session { op = op.session(s); }
-            let report = match op.run() {
-                Ok(r)  => r,
+            match session.translate(opts) {
+                Ok(s) => {print!("{}", s); true},
                 Err(e) => {
-                    log::error!("{}", e);
-                    return false;
+                    match e {
+                        SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                        _ => log::error!("{}", e)
+                    }
+                    false
                 }
-            };
-            print!("{}", report.tptp);
-            true
+            }
         }
     }
 }

@@ -58,10 +58,13 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 
 | Crate | Description |
 |---|---|
-| `crates/sumo-kb` (`sumo-kb`) | Core library for the Sigmakee implementation |
+| `crates/core` (`sigmakee-rs-core`) | Core library for the Sigmakee implementation |
+| `crates/sdk` (`sigmakee-rs-sdk`) | SDK which makes software consumption of `sigmakee-rs-core` more intuitive |
 | `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
-| `crates/sumo-lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
+| `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
 | `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) |
+| `crates/xtask` (`xtask`) | Dev-only build / release automation tasks |
+| `crates/vampire-rs` | Vendored Vampire prover bindings (git submodule) |
 
 ---
 
@@ -151,7 +154,7 @@ sumo -f Merge.kif --db sumo.lmdb load --flush
 | `--kb NAME` | — | Knowledge-base name from `config.xml` to load (requires `-c`) |
 | `-W CODE\|all` / `--warning CODE\|all` | — | Promote semantic warning `CODE` (e.g. `E005`, `arity-mismatch`) or `all` to a hard error (repeatable) |
 
-### Shared KB arguments (`-f`, `-d`, `--db`, `--no-db`, `--vampire`)
+### Shared KB arguments (`-f`, `-d`, `--db`, `--no-db`, `--git`)
 
 These flags are available on every subcommand:
 
@@ -161,7 +164,12 @@ These flags are available on every subcommand:
 | `-d` / `--dir DIR` | — | Directory of `*.kif` files to load (repeatable) |
 | `--db DIR` | `./sumo.lmdb` | Path to the LMDB database directory |
 | `--no-db` | — | Skip the LMDB database entirely — do not open or warn about it. Useful when running without a pre-built database |
-| `--vampire PATH` | `vampire` | Path to the Vampire executable. If a config.xml file is specified, it will derive this setting from their by default |
+| `--git URL` | — | Git repository URL to load the ontology from. With `load`: clones and commits to the LMDB database (cached). With other commands: clones on the fly into a temporary directory. `-f` / `-d` / `-c` paths are resolved relative to the repository root |
+
+`--vampire PATH` is exposed only on the prover-driven subcommands —
+`ask`, `test`, `debug`, and `serve`. Defaults to the `vampire` binary
+on `PATH`; if `--config` is active and the config specifies a vampire
+path, that takes precedence over the `PATH` lookup.
 
 ### `sumo validate`
 
@@ -219,6 +227,11 @@ sumo translate [FORMULA] [--lang fof|tff] [--show-numbers] [--show-kif]
                [--session KEY] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
+Without `--db` (or with `--db` pointing to a non-existent path) and with
+`-f` / `-d` files supplied, parses in-memory and emits TPTP FOF. With an
+existing `--db`, reads CNF from the database and emits TPTP CNF;
+any `-f` / `-d` / inline `FORMULA` is treated as a session assertion.
+
 | Flag | Default | Description |
 |---|---|---|
 | `FORMULA` | stdin | Inline KIF formula to translate |
@@ -270,13 +283,62 @@ Validates all loaded formulas before committing — parse errors or promoted war
 Show documentation, signature, and taxonomy for a symbol — the KIF-native equivalent of `man(1)`. Everything surfaced is extracted from the ontology-level relations `documentation`, `termFormat`, `format`, plus `subclass` / `instance` / `domain` / `range` declarations.
 
 ```
-sumo man SYMBOL [--lang LANG] [-f FILE]... [-d DIR]... [--db DIR]
+sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `SYMBOL` | — | Symbol to describe (e.g. `Human`, `subclass`, `instance`) |
 | `--lang LANG` | — | Filter documentation / term-format entries by language tag (e.g. `EnglishLanguage`). When omitted, entries in all languages are shown |
+| `-P` / `--no-pager` | — | Disable the interactive pager; print directly to stdout. Pager is also disabled automatically when stdout is not a TTY or when `NO_PAGER` is set |
+
+### `sumo debug`
+
+Consistency-check a single loaded KIF file against the rest of the
+knowledge base via Vampire, surfacing any axioms that contradict each
+other.
+
+```
+sumo debug FILE [--thoroughness F] [--scope F] [--timeout SECS] [-k FILE]
+                [--proof FORMAT] [--vampire PATH]
+                [-f FILE]... [-d DIR]... [--db DIR]
+```
+
+Flow: collect the sentences of `<FILE>` (must already be in the KB →
+pass `-f` / `-d` the same way as other subcommands) → randomly
+subsample by `--thoroughness` → SInE-expand from the sampled
+sentences' symbols at the configured `--scope` tolerance → feed the
+union to Vampire with no conjecture (pure axiom-satisfiability) → if
+Vampire reports `ContradictoryAxioms`, trace each axiom-role step in
+the refutation back to its source `file:line`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `FILE` | — | Path to a `.kif` file already loaded into the KB. Tag matched case-sensitively against the loaded tags |
+| `--thoroughness F` | `1.0` | Fraction of root sentences to sample, in `(0.0, 1.0]`. Smaller = faster, less coverage |
+| `--scope F` | crate default | SInE tolerance factor (≥ 1.0) for axiom expansion. Higher = more thorough, more expensive |
+| `--timeout SECS` | `60` | Vampire proof-search timeout |
+| `-k` / `--keep FILE` | — | Write generated TPTP to `FILE` (for debugging) |
+| `--proof FORMAT` | — | Print the full refutation proof when one is found (same `FORMAT` values as `ask`) |
+
+Uses TPTP FOF (TFF is not currently wired through `debug`).
+
+### `sumo update`
+
+Update the `sumo` binary to the latest official release, OR (for
+source builds) report the latest available version and recommend the
+right rebuild incantation. Release CI sets `SUMO_BUILD_KIND=release`
+at build time; everything else defaults to `source`, and source builds
+intentionally never overwrite themselves (replacing a developer's
+local build with an upstream binary would be surprising).
+
+```
+sumo update [--check]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--check` | — | Don't apply the update — just check upstream and report |
 
 ### `sumo serve`
 
@@ -296,10 +358,13 @@ The kernel's RPC surface is:
 |---|---|---|
 | `tell` | `{ session, kif }` | Session-local assertion (ephemeral) |
 | `ask` | `{ session, query, timeoutSecs }` | Run a conjecture through Vampire |
+| `debug` | `{ path, thoroughness?, scope?, timeoutSecs? }` | RPC counterpart of the `debug` subcommand |
+| `test` | `{ paths }` | Run `.kif.tq` test files and report pass/fail per case |
 | `kb.reconcileFile` | `{ path, text? }` | Sync one file from disk (or inline text) into the DB |
 | `kb.removeFile` | `{ path }` | Drop one file from the in-memory KB + DB |
 | `kb.flush` | `{}` | Wipe all persisted files (in-memory + DB) |
 | `kb.listFiles` | `{}` | Return loaded files + sentence counts |
+| `kb.generateTptp` | `{ session?, lang?, showKif?, hideNumbers? }` | Emit TPTP for the current KB state |
 | `shutdown` | `{}` | Clean exit |
 
 Semantic warnings never populate the reconcile report's `semanticErrors` list by default — they're logged to stderr via the standard `SemanticError::handle` path. Run `sumo -W <code> serve` (or `-W all`) to promote specific warnings to hard errors that the RPC caller sees.
@@ -310,9 +375,10 @@ Semantic warnings never populate the reconcile report's `semanticErrors` list by
 
 | Variable | Description |
 |---|---|
-| `SUMO_MAX_CLAUSES` | Default CNF clause limit per formula (overridden by `--max-clauses`) |
-| `SIGMA_HOME` | Path to a SigmaKEE checkout (used by integration tests) |
-| `SIGMA_CP` | Java classpath for Java-comparison integration tests |
+| `SIGMA_HOME` | Path to a SigmaKEE checkout. When `-c` is passed without `--config`, the CLI looks for `$SIGMA_HOME/KBs/config.xml` |
+| `NO_PAGER` | When set (to any value), `sumo man` skips the interactive pager and prints directly to stdout |
+| `SINE_TOLERANCE` | Compile-time override (read by the build script of `sigmakee-rs-core`) for the default SInE tolerance factor. Defaults to `2.0` |
+| `SUMO_BUILD_KIND` | Compile-time tag (set by release CI) controlling whether `sumo update` is allowed to overwrite the binary. Defaults to `source` |
 
 ---
 
@@ -322,6 +388,6 @@ Semantic warnings never populate the reconcile report's `semanticErrors` list by
 # Unit and integration tests (no external dependencies)
 cargo test
 
-# Java-comparison integration tests (requires SIGMA_CP)
-SIGMA_CP=/path/to/sigma.jar cargo test -p sumo-parser-core --test java_comparison
+# Lib-only tests for the core crate
+cargo test --lib -p sigmakee-rs-core
 ```

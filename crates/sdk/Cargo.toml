@@ -1,0 +1,70 @@
+[package]
+name    = "sigmakee-rs-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Programmatic Rust API over sigmakee-rs-core: load, validate, translate, ask, test."
+keywords    = ["sumo", "ontology", "kif", "tptp", "vampire"]
+categories  = ["api-bindings", "data-structures"]
+readme      = "README.md"
+
+[lib]
+name = "sigmakee_rs_sdk"
+path = "src/lib.rs"
+
+# docs.rs builds with `--all-features` so every gated module shows up
+# (AskOp, TestOp, LoadOp).  `integrated-prover` requires CMake + the
+# vampire-sys submodule, which docs.rs can't build, so we stop short
+# of `all-features` and instead pick the rich-but-buildable set.
+[package.metadata.docs.rs]
+features          = ["persist", "ask", "parallel"]
+all-features      = false
+rustdoc-args      = ["--cfg", "docsrs"]
+default-target    = "x86_64-unknown-linux-gnu"
+
+[features]
+# Default mirrors sigmakee-rs-core's "everything-on, no C++" sweet spot — the
+# SDK is most useful when ask/test work, but we don't force CMake on
+# casual consumers.  Equivalent to `sigmakee-rs-core` without `integrated-prover`.
+default            = ["persist", "ask", "parallel", "http", "git"]
+
+# 1:1 forwards to the matching sigmakee-rs-core feature.  The SDK never gates
+# differently from sigmakee-rs-core; downstream consumers enable here and we
+# pass it through.  Activating any of these may change the public
+# API surface (e.g. `ask` adds AskOp / TestOp).
+persist            = ["sigmakee-rs-core/persist"]
+ask                = ["sigmakee-rs-core/ask"]
+native-prover      = ["sigmakee-rs-core/native-prover"]
+integrated-vampire = ["ask", "sigmakee-rs-core/integrated-prover"]
+parallel           = ["sigmakee-rs-core/parallel", "dep:rayon"]
+
+# Add remote file processing to the SDK
+http               = ["dep:ureq", "dep:tempfile"]
+git                = ["dep:git2", "dep:tempfile"]
+
+[dependencies]
+# `default-features = false` so the SDK's own feature flags are the SOLE
+# control over which sigmakee-rs-core features are enabled (they forward 1:1
+# below).  Without this, the bare dependency edge pulls core's full default
+# set unconditionally, so a consumer that builds the SDK with
+# `default-features = false` (e.g. sumo-lsp, which wants parse + validate +
+# manpage only) would still drag `ask`/`persist`/`parallel` into core.
+# Direct path dep (not `workspace = true`): workspace inheritance ignores a
+# member's `default-features = false`, so inheriting here would silently
+# re-enable core's full default set regardless of the SDK's own flags.
+sigmakee-rs-core      = { path = "../core", default-features = false }
+log.workspace         = true
+thiserror.workspace   = true
+serde.workspace       = true
+serde_json            = "1"
+quick-xml             = "0.40.1"
+rayon                 = { version = "1.10", optional = true }
+git2                  = { version = "0.21", default-features = false, features = ["https"], optional = true }
+ureq                  = { version = "3.3.0", optional = true }
+tempfile              = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile  = "3"
+env_logger = "0.11"
+serde_json = "1"
