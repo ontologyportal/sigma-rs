@@ -14,8 +14,8 @@
 // * [`Strategy::default`] — the shipping defaults WITH the historical
 //   env-var overrides applied (`SIGMA_NO_SCHEMA`, `SIGMA_GOALDIST`,
 //   `SIGMA_NO_LIU`, `SIGMA_HEADFILTER`, `SIGMA_NO_BG_SNAPSHOT`,
-//   `SIGMA_NO_DECODE`).  Every existing caller goes through this, so
-//   the A/B kill switches keep working exactly as before.
+//   `SIGMA_NO_DECODE`, `SIGMA_DEMOD`).  Every existing caller goes through
+//   this, so the A/B kill switches keep working exactly as before.
 // * [`Strategy::base`] — the pure shipping defaults, no env reads.
 //   Portfolio members derive from this so a stray env var can't skew
 //   one lane of a benchmark.
@@ -310,7 +310,19 @@ impl Strategy {
         if on("SIGMA_NO_LIU")    { s.liu_rescue = false; s.def_completion = false; }
         if on("SIGMA_HEADFILTER") { s.head_filter = true; }
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
+        s.demod = Self::demod_env_override(s.demod);
         s
+    }
+
+    /// `SIGMA_DEMOD=1` forces demod on regardless of a strategy's own
+    /// default — not a "historical" kill switch like the others in
+    /// `from_env()` (demod shipped OFF from the start; see `base()`'s note
+    /// on the measured TPTP regression), but added in the same style: an
+    /// opt-in override for A/B measurement, shared by both `from_env()` and
+    /// `tptp()` so the override works on the TPTP path too (`tptp()` builds
+    /// from `base()` directly and does not otherwise read the environment).
+    fn demod_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
     }
 
     /// The complete-calculus configuration for standalone TPTP problems
@@ -318,9 +330,11 @@ impl Strategy {
     /// axiom×axiom inference is on), ordered superposition + equality
     /// factoring (the complete equality calculus), forward subsumption
     /// (the flooding floor full saturation needs), and strict (honest)
-    /// saturation verdicts.  `demod` stays OFF — measured regression on
-    /// the TPTP cross-section (see `base()`).  The KIF/SUMO path keeps
-    /// `base()` untouched.
+    /// saturation verdicts.  `demod` stays OFF by default — measured
+    /// regression on the TPTP cross-section (see `base()`) — but still
+    /// honors `SIGMA_DEMOD=1` (see [`Self::demod_env_override`]) so it can
+    /// be A/B'd on this path too.  Otherwise the KIF/SUMO path's `base()`
+    /// is untouched.
     pub fn tptp() -> Self {
         Self {
             full_saturation:   true,
@@ -328,6 +342,7 @@ impl Strategy {
             superposition:     true,
             eq_factoring:      true,
             subsumption:       true,
+            demod:             Self::demod_env_override(false),
             ..Self::base()
         }
         .named("tptp-complete")

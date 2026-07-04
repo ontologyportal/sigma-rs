@@ -457,6 +457,14 @@ pub(crate) struct NativeProver<'a> {
     /// every queued clause is scored against.  0 = no conjecture
     /// (consistency audits) ⇒ the distance factor is inert.
     conj_sig: u64,
+    /// Forward-demodulation index: KBO-oriented positive unit equations,
+    /// registered at ACTIVATION (given-clause processing / background
+    /// load) and bucketed by their left side's head shape — see
+    /// [`super::units::DemodIndex`].  Not snapshotted (orientation is
+    /// KBO-dependent and `bg_fingerprint` excludes `prec_seed`);
+    /// hydration rebuilds it from the arena like the superposition
+    /// indexes.
+    demods: super::units::DemodIndex,
     seq: u64,
     tick: u64,
     pub(crate) stats: ProverStats,
@@ -497,6 +505,7 @@ impl<'a> NativeProver<'a> {
             bg_roots: std::collections::HashSet::new(),
             sym_swap_memo: Map64::default(),
             conj_sig: 0,
+            demods: super::units::DemodIndex::default(),
             seq: 0,
             tick: 0,
             stats: ProverStats::default(),
@@ -568,6 +577,9 @@ impl<'a> NativeProver<'a> {
         if p.opts.strategy.superposition {
             p.rebuild_superposition_index();
         }
+        // Same for the demodulator index: orientation depends on THIS
+        // run's KBO (`prec_seed`), which the snapshot key excludes.
+        p.rebuild_demod_index();
         p
     }
 
@@ -586,6 +598,7 @@ impl<'a> NativeProver<'a> {
     pub(crate) fn retain_background(&mut self, keep: &std::collections::HashSet<SentenceId>) {
         self.idx = LiteralIndex::default();
         self.units = UnitStores::default();
+        self.demods.clear();
         self.seen = Set64::default();
         self.support_seeds.clear();
         let n = self.clauses.len() as u32;
@@ -614,6 +627,7 @@ impl<'a> NativeProver<'a> {
                 self.units.add_unit(
                     id, lits[0].pos, lits[0].atom, nv,
                     &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
+                self.index_demodulator(id);
             }
         }
         if self.opts.strategy.superposition {
@@ -714,16 +728,21 @@ impl<'a> NativeProver<'a> {
     }
 
     /// Forward demodulation: rewrite `t` to KBO normal form using the
-    /// active unit equations, oriented by the reduction ordering.  For a
-    /// unit `(equal l r)` we rewrite a subterm matching `l` to `r` ONLY
-    /// when `l >_kbo r` — so every rewrite is strictly downhill in a
-    /// well-founded order (it terminates) and sound (equals for equals).
-    /// Unlike `paramodulants` (which UNIFIES and keeps the parent), this
-    /// MATCHES one-way (binds the rule's variables only) and the
-    /// rewritten clause replaces the original — a simplification.
-    /// Demodulator clause ids are pushed to `used` for the proof DAG.
+    /// indexed oriented unit equations ([`Self::demods`], populated at
+    /// activation).  For a demodulator `l → r` (with `l >_kbo r`, decided
+    /// once at registration and stable under substitution) we rewrite a
+    /// subterm matching `l` under σ to `rσ` — so every rewrite is
+    /// strictly downhill in a well-founded order (it terminates) and
+    /// sound (equals for equals).  Unlike `paramodulants` (which UNIFIES
+    /// and keeps the parent), this MATCHES one-way (binds the rule's
+    /// variables only) and the rewritten clause replaces the original —
+    /// a simplification.  Per subterm position, candidates come from one
+    /// head-shape hash probe instead of a scan of every active equation
+    /// (the scan was the measured TPTP regression that kept `demod`
+    /// off — see `strategy.rs`).  Demodulator clause ids are pushed to
+    /// `used` for the proof DAG.
     fn demodulate(&self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
-        if !self.opts.strategy.demod || self.units.equals.is_empty() {
+        if !self.opts.strategy.demod || self.demods.is_empty() {
             return 0;
         }
         // Cap total rewrites per term — a guard, not the terminator
@@ -739,24 +758,17 @@ impl<'a> NativeProver<'a> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            for (cid, l, r) in self.units.equals.iter() {
-                // A bare-variable left side rewrites everything — never a
-                // sound demodulator; skip (it is also never KBO-greater).
-                if matches!(l, Term::Var(_)) {
-                    continue;
-                }
-                if !self.demod_oriented(l, r) {
-                    continue;
-                }
-                let l2 = shift_slots(l, off);
-                let r2 = shift_slots(r, off);
-                let nslots = max_slot(&l2).unwrap_or(off) + 1;
-                for (path, sub) in positions(t) {
-                    let mut s: Subst = vec![None; nslots as usize];
+            for (path, sub) in positions(t) {
+                let Some(cands) = self.demods.candidates(&sub) else { continue };
+                for d in cands {
+                    let l2 = shift_slots(&d.l, off);
+                    let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
                     if match_one_way(&l2, &sub, &mut s) {
-                        let rr = apply(&r2, &s);
+                        // r's variables ⊆ l's (KBO variable condition),
+                        // so the match bound everything r mentions.
+                        let rr = apply(&shift_slots(&d.r, off), &s);
                         *t = replace(t, &path, &rr);
-                        used.push(*cid);
+                        used.push(d.clause);
                         rewrites += 1;
                         // The term changed; restart the scan from the top
                         // (a rewrite can expose new redexes / new `off`).
@@ -767,6 +779,56 @@ impl<'a> NativeProver<'a> {
             break;
         }
         rewrites
+    }
+
+    /// Register clause `id` as a forward demodulator if it is a positive
+    /// unit equality with a KBO-strictly-oriented side.  Called at
+    /// ACTIVATION (every path: background load, support load, the
+    /// given-clause loop, background completion) — the same moment the
+    /// unit stores register it — and from the hydrate/mask rebuilds.
+    /// At most one direction can be strictly greater, so at most one
+    /// entry per equation.
+    fn index_demodulator(&mut self, id: u32) {
+        let (pos, atom) = {
+            let c = &self.clauses[id as usize];
+            if c.lits.len() != 1 {
+                return;
+            }
+            (c.lits[0].pos, c.lits[0].atom)
+        };
+        if !pos {
+            return;
+        }
+        let Some(t) = slot_atom(&self.layer.atoms, self.syn(), atom, 0) else { return };
+        let Some((a, b)) = eq_sides(&t) else { return };
+        if a == b {
+            return;
+        }
+        for (l, r) in [(&a, &b), (&b, &a)] {
+            // A bare-variable left side rewrites everything — never a
+            // sound demodulator (and never KBO-greater); skip.
+            if matches!(l, Term::Var(_)) {
+                continue;
+            }
+            if self.demod_oriented(l, r) {
+                self.demods.add(id, l.clone(), r.clone());
+                return;
+            }
+        }
+    }
+
+    /// Rebuild the demodulator index from the activated arena — the
+    /// hydrate-path peer of `rebuild_superposition_index` (orientation
+    /// depends on THIS run's KBO, so a frozen index cannot be trusted
+    /// across strategies).
+    fn rebuild_demod_index(&mut self) {
+        self.demods.clear();
+        let n = self.clauses.len() as u32;
+        for id in 0..n {
+            if self.clauses[id as usize].activated {
+                self.index_demodulator(id);
+            }
+        }
     }
 
     /// Whether `(equal l r)` is a sound left-to-right demodulator: `l`
@@ -1401,8 +1463,17 @@ impl<'a> NativeProver<'a> {
             let mut ok = true;
             for l in &c.lits {
                 match slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) {
-                    Some(t) if lit_pattern(&t).is_some() => lits.push(t),
-                    _ => { ok = false; break; }
+                    Some(t) => {
+                        self.stats.model_atoms_seen += 1;
+                        if lit_pattern(&t).is_some() {
+                            lits.push(t);
+                        } else {
+                            self.stats.model_atoms_rejected += 1;
+                            ok = false;
+                            break;
+                        }
+                    }
+                    None => { ok = false; break; }
                 }
             }
             if ok && lits.len() >= 2 {
@@ -1440,22 +1511,10 @@ impl<'a> NativeProver<'a> {
                 continue;
             }
             let mut f = self.store_facts(rel);
-            let mut push_row = |f: &mut Vec<JoinFact>, row: &[SymbolId]| {
-                if f.len() >= MAX_FACTS_PER_REL {
-                    return;
-                }
-                let aargs: Vec<Term> = row
-                    .iter()
-                    .filter_map(|v| self.syn().sym_name(*v).map(Term::Sym))
-                    .collect();
-                if aargs.len() == row.len() && !f.iter().any(|jf| jf.args == aargs) {
-                    f.push(JoinFact { args: aargs, src: FactSrc::Model });
-                }
-            };
             // (a) full model, when it materialized.
             if let Some(model) = full_model.as_ref().and_then(|m| m.get(&rel)) {
                 for row in model {
-                    push_row(&mut f, row);
+                    push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL);
                 }
             }
             // (b) per-atom demand-scoped answers, seeded on the conjuncts'
@@ -1474,10 +1533,16 @@ impl<'a> NativeProver<'a> {
                             _ => super::model::DTerm::Var(0),
                         })
                         .collect();
-                    if let Some(rows) = mp.answer(rel, &dargs, Some(deadline)) {
+                    let mut model_stats = super::model::ModelStats::default();
+                    let answered = mp.answer_stats(rel, &dargs, Some(deadline), &mut model_stats);
+                    self.merge_model_stats(&model_stats);
+                    if let Some(rows) = answered {
+                        self.stats.model_atoms_answered += 1;
                         for row in &rows {
-                            push_row(&mut f, row);
+                            push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL);
                         }
+                    } else {
+                        self.stats.model_atoms_unanswered += 1;
                     }
                 }
             }
@@ -2756,16 +2821,41 @@ impl<'a> NativeProver<'a> {
         // literal costs a walk, not a rebuild.
         let mut lits = lits;
         let mut demod_used: Vec<u32> = Vec::new();
+        // Duplicate-hit probe (Part 2; SIGMA_STATS instrumentation only):
+        // eligible when demod is on and there is at least one indexed
+        // demodulator to rewrite with — mirrors `demodulate`'s own early-out
+        // so "attempts" means "demodulate actually scanned this literal",
+        // not "demod is compiled in".
+        //
+        // CONJECTURE-tier literals are only demodulated under the
+        // superposition regime: there, active clauses get rewritten by
+        // newly activated equations through superposition too, so goal
+        // and fact meet in normal form (standard, complete).  Without
+        // superposition (the KIF/SUMO set-of-support path), rewriting
+        // only the goal could orphan it from an already-active fact in
+        // the original form — and the paraconsistent conjecture guard
+        // (see the disjointness discharge below) wants the asked literal
+        // kept as asked.
+        let demod_eligible = self.opts.strategy.demod
+            && !self.demods.is_empty()
+            && (tier != CONJECTURE || self.opts.strategy.superposition);
         for (_, t) in lits.iter_mut() {
             arith_norm(t);
             self.normalize_eq(t);
             // Forward demodulation: rewrite to KBO normal form with the
-            // active oriented unit equations (a simplification — the
+            // indexed oriented unit equations (a simplification — the
             // normalized literal replaces the original).
-            let n = self.demodulate(t, &mut demod_used);
-            self.stats.demod_rewrites += n;
+            if demod_eligible {
+                self.stats.demod_rewrite_attempts += 1;
+                let n = self.demodulate(t, &mut demod_used);
+                self.stats.demod_rewrites += n;
+            }
         }
-        if !demod_used.is_empty() {
+        let was_demodulated = !demod_used.is_empty();
+        if demod_eligible && was_demodulated {
+            self.stats.demod_rewrites_applied += 1;
+        }
+        if was_demodulated {
             demod_used.sort_unstable();
             demod_used.dedup();
             if self.want_notes() {
@@ -3130,6 +3220,16 @@ impl<'a> NativeProver<'a> {
 
         let clause = canonical_clause(lits, &self.layer.atoms);
 
+        // Duplicate-hit probe (Part 2, continued): of the clauses demod
+        // actually rewrote, how many collapse onto an already-known clause's
+        // key right here — i.e. would dedup away via the same
+        // `self.seen`/`ClauseKey` path `push()` uses later.  Read-only probe:
+        // `push()` still does the real (insert-and-check) dedup itself, so
+        // this changes no behavior, only counts.
+        if demod_eligible && was_demodulated && self.seen.contains(&clause.key) {
+            self.stats.demod_dup_hits += 1;
+        }
+
         // Tautology check on the canonical literals.
         let pos_atoms: Set64<AtomId> =
             clause.lits.iter().filter(|l| l.pos).map(|l| l.atom).collect();
@@ -3284,6 +3384,7 @@ impl<'a> NativeProver<'a> {
             self.units.add_unit(
                 id, lits[0].pos, lits[0].atom, nv,
                 &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
+            self.index_demodulator(id);
         }
         if self.opts.strategy.superposition {
             self.index_superposition(id);
@@ -4985,6 +5086,21 @@ enum FactSrc {
 struct JoinFact {
     args: Vec<Term>,
     src:  FactSrc,
+}
+
+/// Push one model-derived ground tuple into a join generator relation as a
+/// `JoinFact`, deduped and capped.  A free function (rather than a
+/// `NativeProver`-capturing closure) so `discharge_model_joins` can also
+/// mutate `self.stats` for the SIGMA_STATS answer/bail counters in the same
+/// scope without a borrow conflict.
+fn push_join_fact(syn: &crate::syntactic::SyntacticLayer, f: &mut Vec<JoinFact>, row: &[SymbolId], cap: usize) {
+    if f.len() >= cap {
+        return;
+    }
+    let aargs: Vec<Term> = row.iter().filter_map(|v| syn.sym_name(*v).map(Term::Sym)).collect();
+    if aargs.len() == row.len() && !f.iter().any(|jf| jf.args == aargs) {
+        f.push(JoinFact { args: aargs, src: FactSrc::Model });
+    }
 }
 
 /// Seat index over the join's fact map: `(relation, seat, value) →

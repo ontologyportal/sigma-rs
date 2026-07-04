@@ -21,7 +21,7 @@ use crate::types::Element;
 use super::clause::{AtomId, AtomTable, Term};
 use super::AtomInfos;
 use super::hash64::Map64;
-use super::unify::{match_one_way, slot_atom, Subst};
+use super::unify::{match_one_way, slot_atom, term_slots, Subst};
 
 /// Key of an atom's head seat, for the open-unit buckets.  `None` when
 /// the head is a variable (predicate-variable units are not bucketed —
@@ -294,4 +294,198 @@ impl UnitStores {
     }
 
     pub(crate) fn ground_len(&self) -> usize { self.ground.len() }
+}
+
+/// One forward demodulator `l → r`: a positive unit equality whose
+/// left side is STRICTLY KBO-greater than its right.  The orientation
+/// is decided ONCE, at registration — KBO is stable under substitution
+/// (`l >ₖ r ⟹ lσ >ₖ rσ` for every σ), so a registration-time check
+/// licenses rewriting every matched instance without re-comparing.
+/// Terms are slot-form at base 0 (the owning clause's canonical slots).
+#[derive(Debug, Clone)]
+pub(crate) struct Demod {
+    /// Owning unit-equality clause id (a proof-DAG parent of every
+    /// clause it rewrites).
+    pub(crate) clause: u32,
+    /// The KBO-larger side — the rewrite pattern.
+    pub(crate) l: Term,
+    /// The KBO-smaller side — the replacement.  Its variables are a
+    /// subset of `l`'s (KBO's variable condition), so a successful
+    /// match binds everything `r` mentions.
+    pub(crate) r: Term,
+    /// `max_slot(l) + 1` — the pattern's slot-space size, precomputed
+    /// so the matcher's substitution vector sizes without a walk.
+    pub(crate) nslots: u32,
+}
+
+/// The forward-demodulation index: oriented unit equations bucketed by
+/// their left side's top shape, so a rewrite probe for a target
+/// subterm is one hash lookup instead of a scan of every active
+/// equation (the un-indexed scan was the measured 7% TPTP regression
+/// that kept `Strategy.demod` off — see `strategy.rs`).
+///
+/// Buckets:
+/// - `app`:  `(head key, arity)` for compound left sides — one-way
+///   matching demands the pattern's and target's head + length agree
+///   exactly, so the bucket key is a NECESSARY condition.
+/// - `leaf`: bare-constant left sides (symbol id).  These only match
+///   the identical constant.
+///
+/// Variable-headed and literal-valued left sides are not indexed
+/// (skipping a demodulator is always sound — demodulation is optional
+/// simplification; both shapes are vanishingly rare as KBO-oriented
+/// lhs and ground constant equalities are already collapsed by the
+/// oracle's `normalize_eq`).
+///
+/// NOT part of the background snapshot: orientation depends on the
+/// run's KBO (`prec_seed` permutes precedence, and `bg_fingerprint`
+/// deliberately excludes search knobs), so a hydrated prover rebuilds
+/// this from the arena — exactly the superposition indexes' contract.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct DemodIndex {
+    app: Map64<(u64, u8), Vec<Demod>>,
+    leaf: Map64<u64, Vec<Demod>>,
+    len: usize,
+}
+
+impl DemodIndex {
+    pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
+
+    pub(crate) fn clear(&mut self) {
+        self.app = Map64::default();
+        self.leaf = Map64::default();
+        self.len = 0;
+    }
+
+    /// Register the oriented demodulator `l → r` (caller has already
+    /// verified `l >ₖ r`).  Unindexable left-side shapes are dropped.
+    pub(crate) fn add(&mut self, clause: u32, l: Term, r: Term) {
+        let mut slots = std::collections::BTreeSet::new();
+        term_slots(&l, &mut slots);
+        let nslots = slots.iter().max().map_or(0, |m| *m as u32 + 1);
+        match &l {
+            Term::App(elems) => {
+                let key = match elems.first() {
+                    Some(Term::Sym(s)) => s.id(),
+                    Some(Term::Op(op)) => u64::from(op_tag(op)),
+                    // Variable-headed pattern: not bucketable (it would
+                    // have to probe on every arity match) — skip.
+                    _ => return,
+                };
+                let ar = elems.len().min(255) as u8;
+                self.app
+                    .entry((key, ar))
+                    .or_default()
+                    .push(Demod { clause, l, r, nslots });
+            }
+            Term::Sym(s) => {
+                let id = s.id();
+                self.leaf.entry(id).or_default().push(Demod { clause, l, r, nslots });
+            }
+            _ => return,
+        }
+        self.len += 1;
+    }
+
+    /// Demodulators whose left side could match `t`, by top shape —
+    /// the one-hash-probe prefilter (match verifies).
+    pub(crate) fn candidates(&self, t: &Term) -> Option<&[Demod]> {
+        match t {
+            Term::App(elems) => {
+                let key = match elems.first() {
+                    Some(Term::Sym(s)) => s.id(),
+                    Some(Term::Op(op)) => u64::from(op_tag(op)),
+                    _ => return None,
+                };
+                let ar = elems.len().min(255) as u8;
+                self.app.get(&(key, ar)).map(Vec::as_slice)
+            }
+            Term::Sym(s) => self.leaf.get(&s.id()).map(Vec::as_slice),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Symbol;
+
+    fn sym(name: &str) -> Term {
+        Term::Sym(Symbol::from(name))
+    }
+
+    #[test]
+    fn demod_index_buckets_by_head_and_arity() {
+        let mut idx = DemodIndex::default();
+        assert!(idx.is_empty());
+        // sideKick(?0) -> ?0  (non-ground pattern, slot form).
+        let l = Term::App(vec![sym("sideKick"), Term::Var(0)]);
+        idx.add(7, l.clone(), Term::Var(0));
+        assert!(!idx.is_empty());
+
+        // Same head + arity: candidates found.
+        let t = Term::App(vec![sym("sideKick"), sym("Clark")]);
+        let hits = idx.candidates(&t).expect("head bucket must hit");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].clause, 7);
+        assert_eq!(hits[0].nslots, 1);
+
+        // Different head: no candidates (the prefilter's whole point).
+        let other = Term::App(vec![sym("nemesis"), sym("Clark")]);
+        assert!(idx.candidates(&other).is_none());
+        // Different arity, same head: no candidates.
+        let wide = Term::App(vec![sym("sideKick"), sym("a"), sym("b")]);
+        assert!(idx.candidates(&wide).is_none());
+        // A bare variable target is never probed.
+        assert!(idx.candidates(&Term::Var(3)).is_none());
+    }
+
+    #[test]
+    fn demod_index_leaf_bucket_and_clear() {
+        let mut idx = DemodIndex::default();
+        idx.add(3, sym("aliasOf"), sym("real"));
+        let hits = idx.candidates(&sym("aliasOf")).expect("leaf bucket must hit");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].clause, 3);
+        assert!(idx.candidates(&sym("real")).is_none());
+        idx.clear();
+        assert!(idx.is_empty());
+        assert!(idx.candidates(&sym("aliasOf")).is_none());
+    }
+
+    #[test]
+    fn demod_index_skips_unindexable_patterns() {
+        let mut idx = DemodIndex::default();
+        // Variable-headed compound lhs: dropped (sound — demod is
+        // optional simplification).
+        idx.add(1, Term::App(vec![Term::Var(0), sym("a")]), sym("b"));
+        assert!(idx.is_empty());
+    }
+
+    #[test]
+    fn non_ground_demodulator_matches_instance_and_rewrites() {
+        use super::super::unify::{apply, shift_slots};
+        // sideKick(?0) → ?0 against the ground instance sideKick(Clark):
+        // the match binds ?0 = Clark and the replacement is Clark.
+        let mut idx = DemodIndex::default();
+        idx.add(9, Term::App(vec![sym("sideKick"), Term::Var(0)]), Term::Var(0));
+
+        let target = Term::App(vec![sym("sideKick"), sym("Clark")]);
+        let d = &idx.candidates(&target).expect("bucket")[0];
+        let mut s: Subst = vec![None; d.nslots as usize];
+        assert!(match_one_way(&d.l, &target, &mut s));
+        assert_eq!(apply(&d.r, &s), sym("Clark"));
+
+        // Slot-collision soundness: a NON-ground target whose own slot
+        // ids overlap the pattern's.  The pattern is shifted above the
+        // target's slots, so its ?0 must never be confused with the
+        // target's ?0 — the rewrite yields the target's variable intact.
+        let open_target = Term::App(vec![sym("sideKick"), Term::Var(0)]);
+        let off = 1u64; // max target slot + 1
+        let l2 = shift_slots(&d.l, off);
+        let mut s2: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+        assert!(match_one_way(&l2, &open_target, &mut s2));
+        assert_eq!(apply(&shift_slots(&d.r, off), &s2), Term::Var(0));
+    }
 }

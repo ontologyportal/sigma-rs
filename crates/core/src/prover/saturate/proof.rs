@@ -44,6 +44,54 @@ impl SkolemRenamer {
     }
 }
 
+/// SIGMA_STATS instrumentation only (Part 1, proof-DAG reach): walk the
+/// refutation DAG rooted at `empty_id` (same parent-DFS shape as
+/// [`extract_proof`], run separately so this stays a read-only probe with no
+/// effect on proof rendering) and count how many clauses in it carry one of
+/// the model/oracle discharge rule tags — i.e. whether the *found* proof
+/// actually leaned on the model-discharge / rule-join / event-calculus /
+/// oracle mechanisms, as opposed to them merely being enabled.  Zero
+/// behavior change: called only to fill `ProverStats` counters.
+pub(crate) fn count_proof_tags(prover: &NativeProver<'_>, empty_id: u32) -> ProofTagCounts {
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut counts = ProofTagCounts::default();
+    fn visit(
+        prover: &NativeProver<'_>,
+        id: u32,
+        seen: &mut std::collections::HashSet<u32>,
+        counts: &mut ProofTagCounts,
+    ) {
+        if !seen.insert(id) { return; }
+        let c = &prover.clauses[id as usize];
+        for p in &c.parents {
+            visit(prover, *p, seen, counts);
+        }
+        // "rule_join" is the Horn rule-join oracle's tag (SIGMA_RULE_JOIN) —
+        // the mechanism the task/field name `proof_tag_join` refers to; there
+        // is no bare `"join"` tag in the codebase.
+        match c.rule {
+            "model" => counts.model += 1,
+            "model_join" => counts.model_join += 1,
+            "rule_join" => counts.join += 1,
+            "event_calculus" => counts.event_calculus += 1,
+            "oracle" => counts.oracle += 1,
+            _ => {}
+        }
+    }
+    visit(prover, empty_id, &mut seen, &mut counts);
+    counts
+}
+
+/// Per-rule-tag clause counts over one proof DAG — see [`count_proof_tags`].
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ProofTagCounts {
+    pub(crate) model: u64,
+    pub(crate) model_join: u64,
+    pub(crate) join: u64,
+    pub(crate) event_calculus: u64,
+    pub(crate) oracle: u64,
+}
+
 /// Convert the refutation DAG ending at `empty_id` into proof steps.
 pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<KifProofStep> {
     // Topological order via DFS over clause parents; witness facts are

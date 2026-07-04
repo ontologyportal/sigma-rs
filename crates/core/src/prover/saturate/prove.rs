@@ -474,6 +474,20 @@ impl ProverLayer {
                 RunVerdict::Refutation(empty) => prover.conjecture_rooted(empty),
                 _ => false,
             };
+            // Proof-DAG discharge-rule reach (SIGMA_STATS instrumentation
+            // only): at refutation, count how many clauses in the FOUND
+            // proof actually came from a model/oracle discharge mechanism —
+            // cheap (a DFS over already-built clause parents, no proof
+            // rendering), so always computed at refutation regardless of
+            // `want_proof`.
+            if let RunVerdict::Refutation(empty) = verdict {
+                let tags = crate::saturate::proof::count_proof_tags(&prover, empty);
+                prover.stats.proof_tag_model += tags.model;
+                prover.stats.proof_tag_model_join += tags.model_join;
+                prover.stats.proof_tag_join += tags.join;
+                prover.stats.proof_tag_event_calculus += tags.event_calculus;
+                prover.stats.proof_tag_oracle += tags.oracle;
+            }
             // A saturation is COMPLETE only if no capacity cap dropped
             // a clause along the way (input or derived).  Under strict
             // saturation (the TPTP problem path) the bar is refutation-
@@ -535,7 +549,14 @@ impl ProverLayer {
                  fc-join {}/{} ({} ground cand), open-match {}/{} ({} prefiltered), \
                  factor {}/{} ({} prefiltered)\n\
                  schema: {} hits, {} absorbed, {} sym-oriented, {} sym-resolutions, \
-                 mined {} sym / {} trans / {} other",
+                 mined {} sym / {} trans / {} other\n\
+                 model-discharge: {} atoms seen, {} rejected (lit_pattern), \
+                 {} arg collapsed (compound), {} arg collapsed (repeated-var), \
+                 {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
+                 {} budget-or-deadline-overflow / {} undefined-relation\n\
+                 demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits\n\
+                 proof-DAG reach: {} model, {} model_join, {} rule_join, \
+                 {} event_calculus, {} oracle",
                 verdict, steps, prover.clauses.len(), prover.stats.resolvents,
                 prover.stats.decoded_resolutions,
                 prover.stats.oracle_discharges, prover.stats.unit_subsumed,
@@ -563,7 +584,19 @@ impl ProverLayer {
                 prover.stats.schema_hits, prover.stats.schema_absorbed,
                 prover.stats.sym_oriented, prover.stats.sym_resolutions,
                 prover.stats.mined_symmetric, prover.stats.mined_transitive,
-                prover.stats.mined_other);
+                prover.stats.mined_other,
+                prover.stats.model_atoms_seen, prover.stats.model_atoms_rejected,
+                prover.stats.model_arg_collapsed_compound,
+                prover.stats.model_arg_collapsed_repeated_var,
+                prover.stats.model_atoms_answered, prover.stats.model_atoms_unanswered,
+                prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
+                prover.stats.model_budget_or_deadline_overflows,
+                prover.stats.model_undefined_relation,
+                prover.stats.demod_rewrite_attempts, prover.stats.demod_rewrites_applied,
+                prover.stats.demod_dup_hits,
+                prover.stats.proof_tag_model, prover.stats.proof_tag_model_join,
+                prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
+                prover.stats.proof_tag_oracle);
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }
