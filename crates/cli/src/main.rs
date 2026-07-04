@@ -89,9 +89,23 @@ fn main_worker() {
         process::exit(if ok { 0 } else { 1 });
     }
 
-    if let Err(e) = manager.validate() {
-        log::error!("config error: {e}");
-        process::exit(2);
+    // `sumo test` over exclusively self-contained TPTP inputs (`.p` /
+    // `.tptp` / `.ax`) likewise needs no configured base KB — each problem
+    // runs on its own fresh Session (same machinery as `casc`).  Skipping
+    // `validate()` here is what lets TPTP benchmarking run without `-c`,
+    // i.e. without ingesting the whole configured ontology underneath every
+    // problem.  A mixed invocation (any `.kif.tq` / directory path) still
+    // requires the base KB and validates as before.
+    let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
+        if !paths.is_empty() && paths.iter().all(|p| {
+            let s = p.to_string_lossy();
+            s.ends_with(".p") || s.ends_with(".tptp") || s.ends_with(".ax")
+        }));
+    if !tptp_only_test {
+        if let Err(e) = manager.validate() {
+            log::error!("config error: {e}");
+            process::exit(2);
+        }
     }
 
     // Use the LMDB store at `<editDir>/<kb>.lmdb` when it exists and `--no-db`
