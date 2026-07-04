@@ -129,8 +129,14 @@ impl SineIndex {
     #[inline] pub fn axiom_count(&self) -> usize { self.axiom_syms.len() }
 
     /// The sids of every axiom currently tracked (for bulk-rebuild planning).
+    /// Sorted: `axiom_syms` is a `HashMap` (RandomState), and this feeds
+    /// `sine_add_axioms`'s rebuild-prefix — an unsorted return would reseed
+    /// the same axiom-registration-order nondeterminism `rebuild_from`
+    /// otherwise avoids by preserving its caller's order.
     pub(crate) fn axiom_sids(&self) -> Vec<SentenceId> {
-        self.axiom_syms.keys().copied().collect()
+        let mut v: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
+        v.sort_unstable();
+        v
     }
 
     /// Is `sid` currently tracked as an axiom in this index?
@@ -347,17 +353,25 @@ impl SineIndex {
         self.sym_to_axioms.clear();
         self.sym_to_owned.clear();
 
-        // Pass 1: per-axiom symbols + generality counts.
+        // Pass 1: per-axiom symbols + generality counts.  `axiom_sids` keeps
+        // the CALLER'S order (not `axiom_syms.keys()`, whose `HashMap`
+        // RandomState iteration would otherwise seed Pass 2's insertion
+        // order into `sym_to_axioms` — the tie-break among axioms sharing a
+        // symbol's g_min, which the given-clause search order ultimately
+        // depends on).  Callers are responsible for passing a
+        // content-determined order (sorted sids) when reproducibility
+        // matters; this pass just refrains from re-scrambling it.
+        let mut axiom_sids: Vec<SentenceId> = Vec::new();
         for (sid, syms) in pairs {
             if self.axiom_syms.contains_key(&sid) { continue; } // dedup
             for &s in &syms {
                 *self.sym_occ.entry(s).or_insert(0) += 1;
             }
             self.axiom_syms.insert(sid, syms);
+            axiom_sids.push(sid);
         }
 
         // Pass 2: compute g_min and populate sym_to_axioms / sym_to_owned.
-        let axiom_sids: Vec<SentenceId> = self.axiom_syms.keys().copied().collect();
         for a in axiom_sids {
             let syms = self.axiom_syms[&a].clone();
             self.insert_entry(a, &syms);

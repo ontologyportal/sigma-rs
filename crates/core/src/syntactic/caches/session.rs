@@ -155,7 +155,16 @@ impl EagerMapBehavior for SessionCache {
                     // No entry ⇒ nothing to promote. Don't `modify_entry` an
                     // absent key — it `or_default`s a phantom empty session.
                     let Some(entry) = store.get(session) else { continue };
-                    let promoted_now: Vec<SentenceId> = entry.sentences.iter().copied().collect();
+                    // Sorted (not the `HashSet`'s RandomState order): this list
+                    // becomes the `AxiomsPromoted` event's `sids`, which drives
+                    // both the SInE index's axiom-registration order (tie-break
+                    // among same-g_min entries in `sym_to_axioms`) and the
+                    // axiom-occurrence index — both must be a pure function of
+                    // KB content for the native prover's search to be
+                    // reproducible.  SentenceIds are content hashes, so sorting
+                    // gives a stable, KB-content-determined order.
+                    let mut promoted_now: Vec<SentenceId> = entry.sentences.iter().copied().collect();
+                    promoted_now.sort_unstable();
                     let newly: Vec<SentenceId> = promoted_now
                         .iter()
                         .copied()
@@ -230,11 +239,20 @@ impl EagerMap<SessionCache> {
     }
 
     /// The root sids recorded for `session` (empty if the session is unknown).
+    ///
+    /// Sorted (not the `HashSet`'s RandomState order): the native prover
+    /// registers these sids as SUPPORT clauses in this exact order
+    /// (`add_support_root`, via `prove.rs`'s `session_sids`), so an unsorted
+    /// return would make the given-clause search depend on process-local
+    /// hash seeding instead of KB content. SentenceIds are content hashes,
+    /// so sorting gives a stable, KB-content-determined order.
     pub(crate) fn session_sentences(&self, session: &str) -> Vec<SentenceId> {
-        self.entries()
+        let mut v: Vec<SentenceId> = self.entries()
             .get(&session.to_string())
             .map(|e| e.sentences.iter().copied().collect())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        v.sort_unstable();
+        v
     }
 
     /// The root sids of the (unique) session whose name hashes to `sid`.

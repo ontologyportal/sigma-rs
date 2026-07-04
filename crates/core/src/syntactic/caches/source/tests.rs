@@ -10,9 +10,12 @@ fn sp(file: &str, line: u32) -> Span {
 fn node() -> AstNode {
     AstNode::Symbol { name: "x".into(), span: Span::default() }
 }
-/// Build a deduped parse from `(fingerprint, file, line)` triples.
-fn parse(items: &[(u64, &str, u32)]) -> HashMap<u64, (AstNode, Span)> {
-    items.iter().map(|&(h, f, l)| (h, (node(), sp(f, l)))).collect()
+/// Build a deduped parse from `(fingerprint, file, line)` triples, along with
+/// its first-occurrence order (input order, matching `dedup_parse`'s `order`).
+fn parse(items: &[(u64, &str, u32)]) -> (HashMap<u64, (AstNode, Span)>, Vec<u64>) {
+    let current = items.iter().map(|&(h, f, l)| (h, (node(), sp(f, l)))).collect();
+    let order = items.iter().map(|&(h, _, _)| h).collect();
+    (current, order)
 }
 fn sess() -> Arc<String> {
     Arc::new("sess".to_string())
@@ -44,11 +47,12 @@ fn dedup_keeps_first_occurrence_and_warns_on_repeat() {
         (1u64, node(), sp("a", 5)), // same fingerprint again within this parse
         (2u64, node(), sp("a", 9)),
     ];
-    let (current, warnings) = dedup_parse(parsed);
+    let (current, order, warnings) = dedup_parse(parsed);
     assert_eq!(current.len(), 2, "the duplicate of formula 1 is dropped");
     assert_eq!(warnings.len(), 1, "exactly one duplicate warning");
     assert!(matches!(&warnings[0], Event::Diagnostic(d) if d.code == "duplicate-formula"));
     assert_eq!(current[&1].1.line, 1, "the first occurrence (line 1) is canonical");
+    assert_eq!(order, vec![1, 2], "first-occurrence order, not insertion-then-dropped order");
 }
 
 // -- apply_source: refcount / replacement transitions ---------------------
@@ -64,9 +68,10 @@ fn apply(
     side:  &SourceSide,
     key:   &str,
     session: &Arc<String>,
-    current: HashMap<u64, (AstNode, Span)>,
+    parsed: (HashMap<u64, (AstNode, Span)>, Vec<u64>),
 ) -> Vec<Event> {
-    apply_source(store, side, key, session, current, &HashSet::new())
+    let (current, order) = parsed;
+    apply_source(store, side, key, session, current, &order, &HashSet::new())
 }
 
 #[test]

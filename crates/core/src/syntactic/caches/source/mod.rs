@@ -49,16 +49,33 @@ fn duplicate_warning(dup: &Span, first: &Span) -> Event {
 /// Dedup one parse by fingerprint: keep the first occurrence of each formula,
 /// and emit a `duplicate-formula` warning (citing both spans) for any repeat
 /// within the same parse.  Pure — no store access, so it runs outside the lock.
-fn dedup_parse(parsed: Vec<(u64, AstNode, Span)>) -> (HashMap<u64, (AstNode, Span)>, Vec<Event>) {
+///
+/// Returns the deduped map AND the first-occurrence hashes in FILE ORDER —
+/// `current` alone (a `HashMap`, `RandomState`) cannot answer "what order were
+/// these seen in" without re-scrambling it; `order` is what lets
+/// [`apply_source`] emit `FormulaAdded`/`FormulaReferenced` in source order
+/// instead of process-random hash-bucket order.  That order ultimately seeds
+/// each root's variable-scope-disambiguation counter
+/// ([`crate::syntactic::sentence::ScopeCtx`]), which is baked into the
+/// sentence's content hash — so an unordered emission here would make the
+/// SAME axiom text hash differently from run to run, breaking content
+/// addressing (and, downstream, native-prover search reproducibility).
+fn dedup_parse(
+    parsed: Vec<(u64, AstNode, Span)>,
+) -> (HashMap<u64, (AstNode, Span)>, Vec<u64>, Vec<Event>) {
     let mut current: HashMap<u64, (AstNode, Span)> = HashMap::with_capacity(parsed.len());
+    let mut order: Vec<u64> = Vec::with_capacity(parsed.len());
     let mut warnings = Vec::new();
     for (hash, node, span) in parsed {
         match current.get(&hash) {
             Some((_, first)) => warnings.push(duplicate_warning(&span, first)),
-            None             => { current.insert(hash, (node, span)); }
+            None => {
+                current.insert(hash, (node, span));
+                order.push(hash);
+            }
         }
     }
-    (current, warnings)
+    (current, order, warnings)
 }
 
 /// Apply one file's deduped parse to the store as a *replacement* of that
@@ -72,6 +89,10 @@ fn apply_source(
     file_key: &str,
     session:  &Arc<String>,
     current:  HashMap<u64, (AstNode, Span)>,
+    // First-occurrence hashes in FILE order (see `dedup_parse`) — iterated
+    // instead of `current`'s own (RandomState) key order so `FormulaAdded`
+    // fires in a KB-content-determined sequence.
+    order:    &[u64],
     // Fingerprints whose removal must be deferred (staged update of a promoted
     // axiom): kept live and in the file's membership, recorded in the recycle
     // bin, no `FormulaRemoved`. Empty for ordinary (immediate) ingests.
@@ -87,7 +108,8 @@ fn apply_source(
         .map(|r| r.value().clone())
         .unwrap_or_default();
 
-    for (&hash, (node, span)) in &current {
+    for hash in order.iter().copied() {
+        let (node, span) = &current[&hash];
         let mut refs = side.references.entry(hash).or_default();
         if prev.contains(&hash) {
             // Retained (unchanged or moved within this file): refresh this
@@ -251,7 +273,7 @@ impl EagerMapBehavior for SourceCache {
                             (hash, node, span)
                         })
                         .collect();
-                    let (current, mut dup_warnings) = dedup_parse(parsed);
+                    let (current, order, mut dup_warnings) = dedup_parse(parsed);
                     out.append(&mut dup_warnings);
 
                     // The new parse, captured before `apply_source` mutates it,
@@ -271,7 +293,7 @@ impl EagerMapBehavior for SourceCache {
 
                     // -- Under the lock: pure map ops on the store --------------
                     let session = session.clone();
-                    let follow_on = apply_source(store, side, &file_key, &session, current, &protect);
+                    let follow_on = apply_source(store, side, &file_key, &session, current, &order, &protect);
 
                     // -- Negative overlay (session tombstones), scoped to this
                     //    review session. Operates only on fingerprints that already
