@@ -1735,6 +1735,67 @@ fn native_stack_smoke() {
             "demod off must perform no rewrites: {}", res.raw_output);
     }
 
+    // SYMBOL-SIGNATURE prefilter (`DemodIndex::possibly_matches`): a
+    // clause whose literal has TWO subterm positions — one under a head
+    // symbol with no indexed demodulator (`nemesis`, must be SKIPPED by
+    // the O(1) bucket check before any clone/match probe) nested inside
+    // one that IS indexed (`sideKick`, must still be tried and rewrite)
+    // — demodulates to exactly the same normal form the un-prefiltered
+    // walk would produce, and both counters move: the `nemesis` node is
+    // counted as `scans_skipped_by_prefilter`, the `sideKick` node as
+    // `scans_performed`.  Guards against the prefilter accidentally
+    // pruning a whole subtree (unsound here — see `find_demod_redex`'s
+    // docs on why only per-node, not per-subtree, skipping is safe
+    // without a cached per-term symbol fingerprint).
+    #[test]
+    fn demod_prefilter_skips_unindexed_head_but_still_rewrites_indexed_one() {
+        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+        let mut opts = fast();
+        opts.strategy = crate::saturate::strategy::Strategy::base();
+        opts.strategy.demod = true;
+        opts.want_proof = true;
+        let res = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
+            SineParams::default(), opts);
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 demodulated"),
+            "demodulation must fire: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 scans_performed"),
+            "the sideKick node must reach the candidate loop: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 scans_skipped_by_prefilter"),
+            "the nemesis node must be pruned by the prefilter: {}", res.raw_output);
+    }
+
+    // Same fixture with the prefilter's own knob-equivalent (there isn't
+    // one — the prefilter is unconditional whenever demod is on) turned
+    // into a direct behavior-parity check: prefiltered and reference
+    // (would-be-unfiltered) demodulation must reach the identical
+    // rewritten literal.  Exercised via the debug-only cross-check in
+    // `NativeProver::demodulate` (`cfg(test)` `debug_assert_eq!` against
+    // a reference walk with the prefilter forced off) — this test just
+    // needs to drive that code path with a mixed clause and confirm the
+    // run doesn't panic while still proving.
+    #[test]
+    fn demod_prefilter_matches_unfiltered_reference_on_mixed_clause() {
+        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+        assert!(kb.tell("(trusts Jimmy (allyOf (sideKick Clark)))", "h").ok);
+        let mut opts = fast();
+        opts.strategy = crate::saturate::strategy::Strategy::base();
+        opts.strategy.demod = true;
+        opts.want_proof = true;
+        // Two independent goals, each forcing demodulation through a
+        // different mix of indexed/unindexed subterm heads; the
+        // debug_assert_eq! reference check in `demodulate` runs on
+        // every literal touched by either query.
+        let res1 = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
+            SineParams::default(), opts.clone());
+        assert_eq!(res1.status, ProverStatus::Proved, "raw: {}", res1.raw_output);
+        let res2 = kb.ask_query("(trusts Jimmy (allyOf Clark))", Some("h"),
+            SineParams::default(), opts);
+        assert_eq!(res2.status, ProverStatus::Proved, "raw: {}", res2.raw_output);
+    }
+
     // Ordered resolution (superposition prerequisite) restricts binary
     // resolution to KBO-maximal literals — a complete refinement, so a
     // provable goal stays provable.

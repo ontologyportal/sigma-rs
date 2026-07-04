@@ -21,7 +21,7 @@ use super::super::oracle::Witness;
 use super::super::unify::{apply, match_one_way, shift_slots, slot_atom, Subst};
 use super::{
     arith_norm, classify_seats, eq_key, eq_sides,
-    is_equality_atom, lit_kif, max_slot, positions, replace, stepdbg, term_binary_ids,
+    is_equality_atom, lit_kif, max_slot, replace, stepdbg, term_binary_ids,
     term_depth, term_ground_equality_sides, term_head_key, term_kif, term_size,
     term_skolem_apps, witnesses_kif, ClauseRec, NativeProver, BACKGROUND, CONJECTURE,
     MATCH_TARGET_OFF, SUPPORT,
@@ -99,7 +99,7 @@ impl<'a> NativeProver<'a> {
     /// (the scan was the measured TPTP regression that kept `demod`
     /// off — see `strategy.rs`).  Demodulator clause ids are pushed to
     /// `used` for the proof DAG.
-    fn demodulate(&self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
+    fn demodulate(&mut self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
         if !self.opts.strategy.demod || self.demods.is_empty() {
             return 0;
         }
@@ -116,27 +116,146 @@ impl<'a> NativeProver<'a> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            for (path, sub) in positions(t) {
-                let Some(cands) = self.demods.candidates(&sub) else { continue };
-                for d in cands {
-                    let l2 = shift_slots(&d.l, off);
-                    let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-                    if match_one_way(&l2, &sub, &mut s) {
-                        // r's variables ⊆ l's (KBO variable condition),
-                        // so the match bound everything r mentions.
-                        let rr = apply(&shift_slots(&d.r, off), &s);
-                        *t = replace(t, &path, &rr);
-                        used.push(d.clause);
-                        rewrites += 1;
-                        // The term changed; restart the scan from the top
-                        // (a rewrite can expose new redexes / new `off`).
-                        continue 'fixpoint;
-                    }
-                }
+            let hit = self.find_demod_redex(t, off);
+            // Soundness cross-check (debug builds / tests only, zero cost
+            // in release): the prefilter must never change WHAT
+            // `demodulate` finds, only how cheaply it finds it.  Re-walk
+            // with the prefilter bypassed and require byte-identical
+            // results (same redex, or both `None`).
+            #[cfg(any(test, debug_assertions))]
+            {
+                let reference = self.find_demod_redex_unfiltered(t, off);
+                debug_assert_eq!(
+                    hit, reference,
+                    "SYMBOL-SIGNATURE prefilter changed demodulate's result \
+                     (prefiltered {:?} vs unfiltered {:?}) for term {:?}",
+                    hit, reference, t,
+                );
+            }
+            if let Some((path, rr, clause)) = hit {
+                *t = replace(t, &path, &rr);
+                used.push(clause);
+                rewrites += 1;
+                // The term changed; restart the scan from the top (a
+                // rewrite can expose new redexes / new `off`).
+                continue 'fixpoint;
             }
             break;
         }
         rewrites
+    }
+
+    /// One pass over `t`'s non-variable subterm positions (heads
+    /// skipped, same traversal `positions` performs) looking for the
+    /// first demodulation redex, returning its path, replacement, and
+    /// owning clause.  Fused with the SYMBOL-SIGNATURE prefilter: each
+    /// visited node's head key is checked against the index's bucket
+    /// set (`DemodIndex::possibly_matches`, O(1)) BEFORE the subterm is
+    /// cloned or a match probe is built — a subterm whose head shape has
+    /// no indexed demodulator can never produce a match, so the clone
+    /// (`sub`), the `shift_slots`/`Subst` allocation, and the match walk
+    /// are all skipped outright for it.
+    ///
+    /// Per-NODE, not per-subtree: a parent's head key says nothing about
+    /// its children's (a rewrite site can sit arbitrarily deep under an
+    /// unrelated head), so a negative prefilter on a node still recurses
+    /// into its children — it only skips THAT node's own probe.  `Term`
+    /// carries no per-term symbol-set fingerprint to cache (checked:
+    /// the `gf64`/schema fingerprints in `schema.rs` key ATOM shapes for
+    /// the schema/open-unit indexes, not a generic per-subterm symbol
+    /// multiset), so subtree-level pruning is not soundly available
+    /// here — see the module docs on `DemodIndex::possibly_matches`.
+    ///
+    /// Counts every visited node into `self.stats.demod_scans_skipped_
+    /// by_prefilter` (prefilter said no) or `self.stats.demod_scans_
+    /// performed` (passed the prefilter, handed to the candidate loop),
+    /// so `demodulate`'s behavior is externally observable without
+    /// changing what it returns.
+    fn find_demod_redex(&mut self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
+        fn walk(
+            this: &mut NativeProver<'_>,
+            t: &Term,
+            path: &mut Vec<usize>,
+            off: u64,
+        ) -> Option<(Vec<usize>, Term, u32)> {
+            if let Term::App(elems) = t {
+                for (i, e) in elems.iter().enumerate().skip(1) {
+                    path.push(i);
+                    if let Some(hit) = walk(this, e, path, off) {
+                        return Some(hit);
+                    }
+                    path.pop();
+                }
+            }
+            if path.is_empty() || matches!(t, Term::Var(_)) {
+                return None;
+            }
+            if !this.demods.possibly_matches(t) {
+                this.stats.demod_scans_skipped_by_prefilter += 1;
+                return None;
+            }
+            this.stats.demod_scans_performed += 1;
+            // Only now — having passed the O(1) shape check — clone the
+            // subterm and build the match probe.
+            let sub = t.clone();
+            let cands = this.demods.candidates(&sub)?;
+            for d in cands {
+                let l2 = shift_slots(&d.l, off);
+                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+                if match_one_way(&l2, &sub, &mut s) {
+                    // r's variables ⊆ l's (KBO variable condition), so
+                    // the match bound everything r mentions.
+                    let rr = apply(&shift_slots(&d.r, off), &s);
+                    return Some((path.clone(), rr, d.clause));
+                }
+            }
+            None
+        }
+        let mut path = Vec::new();
+        walk(self, atom, &mut path, off)
+    }
+
+    /// Reference (unprefiltered) twin of [`Self::find_demod_redex`]:
+    /// identical traversal and match logic, but every visited node is
+    /// unconditionally handed to `self.demods.candidates` — no
+    /// `possibly_matches` gate, no stats bump.  Exists ONLY for the
+    /// `debug_assert_eq!` cross-check in `demodulate` (debug/test builds)
+    /// that proves the prefilter is a pure performance change: compiled
+    /// out of release builds, so it costs nothing in the timed gates.
+    #[cfg(any(test, debug_assertions))]
+    fn find_demod_redex_unfiltered(&self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
+        fn walk(
+            this: &NativeProver<'_>,
+            t: &Term,
+            path: &mut Vec<usize>,
+            off: u64,
+        ) -> Option<(Vec<usize>, Term, u32)> {
+            if let Term::App(elems) = t {
+                for (i, e) in elems.iter().enumerate().skip(1) {
+                    path.push(i);
+                    if let Some(hit) = walk(this, e, path, off) {
+                        return Some(hit);
+                    }
+                    path.pop();
+                }
+            }
+            if path.is_empty() || matches!(t, Term::Var(_)) {
+                return None;
+            }
+            let sub = t.clone();
+            let cands = this.demods.candidates(&sub)?;
+            for d in cands {
+                let l2 = shift_slots(&d.l, off);
+                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+                if match_one_way(&l2, &sub, &mut s) {
+                    let rr = apply(&shift_slots(&d.r, off), &s);
+                    return Some((path.clone(), rr, d.clause));
+                }
+            }
+            None
+        }
+        let mut path = Vec::new();
+        walk(self, atom, &mut path, off)
     }
 
     /// Register clause `id` as a forward demodulator if it is a positive

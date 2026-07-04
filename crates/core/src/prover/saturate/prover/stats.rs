@@ -135,6 +135,17 @@ pub(crate) struct ProverStats {
     /// via the same `ClauseKey`/`self.seen` dedup path `push()` uses).
     /// Measures the potential payoff of a rewrite-delta pre-probe.
     pub(crate) demod_dup_hits: u64,
+    /// Subterm visits during `demodulate`'s traversal that the
+    /// SYMBOL-SIGNATURE prefilter (`DemodIndex::possibly_matches`) ruled
+    /// out before any match probe was built — no active demodulator
+    /// shares the subterm's head shape, so the clone/shift/match walk
+    /// was skipped outright.
+    pub(crate) demod_scans_skipped_by_prefilter: u64,
+    /// Subterm visits during `demodulate`'s traversal that passed the
+    /// prefilter and were actually handed to the candidate match loop
+    /// (paired with `demod_scans_skipped_by_prefilter` for the
+    /// reduction ratio).
+    pub(crate) demod_scans_performed: u64,
 
     // -- proof-DAG discharge-rule reach (counted once per completed proof
     //    extraction, at refutation time).

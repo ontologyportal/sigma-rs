@@ -404,6 +404,37 @@ impl DemodIndex {
             _ => None,
         }
     }
+
+    /// O(1) SYMBOL-SIGNATURE prefilter: could THIS NODE possibly be a
+    /// demodulation redex, by top shape alone?  `true` is not a
+    /// guarantee (the bucket may still miss on the full match), but
+    /// `false` is — no active demodulator shares `t`'s (head, arity) /
+    /// constant shape, so `candidates(t)` is certain to return `None`
+    /// and any attempt to build a match probe for `t` is wasted work.
+    ///
+    /// This is a bucket-presence check ONLY (one hash probe), same key
+    /// derivation as `candidates` but without materializing the slice —
+    /// callers use it to skip cloning/probing a subterm *before* paying
+    /// for either.  Per-NODE, not per-subtree: a negative head key here
+    /// says nothing about a deeper subterm's head key (see module docs
+    /// on why whole-subtree pruning needs a per-term symbol fingerprint
+    /// the current `Term` representation does not cache), so callers
+    /// must still recurse into children even when this returns `false`.
+    pub(crate) fn possibly_matches(&self, t: &Term) -> bool {
+        match t {
+            Term::App(elems) => {
+                let key = match elems.first() {
+                    Some(Term::Sym(s)) => s.id(),
+                    Some(Term::Op(op)) => u64::from(op_tag(op)),
+                    _ => return false,
+                };
+                let ar = elems.len().min(255) as u8;
+                self.app.contains_key(&(key, ar))
+            }
+            Term::Sym(s) => self.leaf.contains_key(&s.id()),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -439,6 +470,36 @@ mod tests {
         assert!(idx.candidates(&wide).is_none());
         // A bare variable target is never probed.
         assert!(idx.candidates(&Term::Var(3)).is_none());
+    }
+
+    #[test]
+    fn demod_index_possibly_matches_agrees_with_candidates() {
+        let mut idx = DemodIndex::default();
+        idx.add(7, Term::App(vec![sym("sideKick"), Term::Var(0)]), Term::Var(0));
+        idx.add(3, sym("aliasOf"), sym("real"));
+
+        // Same head+arity as an app bucket: possibly_matches true, and a
+        // real bucket exists.
+        let hit = Term::App(vec![sym("sideKick"), sym("Clark")]);
+        assert!(idx.possibly_matches(&hit));
+        assert!(idx.candidates(&hit).is_some());
+
+        // Different head: both agree there is nothing here.
+        let miss = Term::App(vec![sym("nemesis"), sym("Clark")]);
+        assert!(!idx.possibly_matches(&miss));
+        assert!(idx.candidates(&miss).is_none());
+
+        // Different arity, same head: both agree miss.
+        let wide = Term::App(vec![sym("sideKick"), sym("a"), sym("b")]);
+        assert!(!idx.possibly_matches(&wide));
+        assert!(idx.candidates(&wide).is_none());
+
+        // Leaf bucket hit vs miss.
+        assert!(idx.possibly_matches(&sym("aliasOf")));
+        assert!(!idx.possibly_matches(&sym("real")));
+
+        // A bare variable never possibly matches.
+        assert!(!idx.possibly_matches(&Term::Var(3)));
     }
 
     #[test]

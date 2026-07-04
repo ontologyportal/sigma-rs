@@ -628,7 +628,8 @@ impl ProverLayer {
                  {} arg collapsed (compound), {} arg collapsed (repeated-var), \
                  {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
                  {} budget-or-deadline-overflow / {} undefined-relation\n\
-                 demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits\n\
+                 demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
+                 {} scans_performed, {} scans_skipped_by_prefilter\n\
                  proof-DAG reach: {} model, {} model_join, {} rule_join, \
                  {} event_calculus, {} oracle",
                 verdict, steps, prover.clauses.len(), prover.stats.resolvents,
@@ -668,6 +669,8 @@ impl ProverLayer {
                 prover.stats.model_undefined_relation,
                 prover.stats.demod_rewrite_attempts, prover.stats.demod_rewrites_applied,
                 prover.stats.demod_dup_hits,
+                prover.stats.demod_scans_performed,
+                prover.stats.demod_scans_skipped_by_prefilter,
                 prover.stats.proof_tag_model, prover.stats.proof_tag_model_join,
                 prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
                 prover.stats.proof_tag_oracle);
