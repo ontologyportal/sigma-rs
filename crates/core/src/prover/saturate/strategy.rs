@@ -354,6 +354,62 @@ impl Strategy {
         self
     }
 
+    /// The TPTP-regime strategy schedule: a small, named set of lanes, each a
+    /// single-axis delta on [`Self::tptp`], for [`crate::prover::scale`]'s
+    /// portfolio driver to race in sequence over slices of the total
+    /// wall-clock budget.  Single-strategy native runs solve a fraction of
+    /// what Vampire's `--mode casc` schedule finds on the same TPTP
+    /// cross-section; retrying the identical strategy with a widened axiom
+    /// budget is a no-op here (TPTP problems already run `full_saturation` —
+    /// every axiom is in from the first attempt, there is nothing left to
+    /// widen into), so the only lever standing in for "try a different
+    /// search shape" is the strategy itself.
+    ///
+    /// Ordered by (measured) standalone hit rate: the shipping complete
+    /// calculus first, then the classic complementary axes — a rewrite
+    /// engine, conjecture-directed weighting, an alternate literal-selection
+    /// rule, and a different KBO symbol precedence (sweep memory: precedence
+    /// flips are one of the highest-impact single-axis levers).  Each lane
+    /// keeps `full_saturation` / `strict_saturation` / `superposition` /
+    /// `eq_factoring` / `subsumption` on — only ONE knob moves per lane, so a
+    /// win or loss is attributable.
+    pub fn tptp_lanes() -> Vec<Strategy> {
+        let base = Strategy::tptp();
+        vec![
+            base.clone().named("tptp-complete"),
+            Strategy {
+                demod: true,
+                ..base.clone()
+            }
+            .named("tptp-demod"),
+            Strategy {
+                goal_dist: true,
+                // `goal_dist` forces bg_snapshot off on the KIF path (the
+                // factor bakes conjecture-dependent weights into background
+                // clauses); TPTP problems don't share snapshots across
+                // conjectures anyway, but keep the invariant explicit here
+                // too so this lane can't accidentally violate it.
+                bg_snapshot: false,
+                ..base.clone()
+            }
+            .named("tptp-goaldist"),
+            Strategy {
+                // 1 = most index candidates (vs. the default 0 = fewest) —
+                // the complementary literal-selection rule.
+                lit_select: 1,
+                ..base.clone()
+            }
+            .named("tptp-litselect"),
+            Strategy {
+                // A different (non-identity) KBO symbol precedence — the
+                // highest-impact single-axis lever per the sweep notes.
+                prec_seed: 0xA5A5_1234,
+                ..base
+            }
+            .named("tptp-precseed"),
+        ]
+    }
+
     /// Fingerprint of the fields that shape the FROZEN BACKGROUND —
     /// anything `make` consults while loading background clauses
     /// (caps that drop clauses, the schema channel's absorption /
@@ -577,5 +633,36 @@ mod tests {
                 assert_ne!(a, b, "{} duplicates {}", a.name, b.name);
             }
         }
+    }
+
+    #[test]
+    fn tptp_lanes_are_distinct_and_named() {
+        let lanes = Strategy::tptp_lanes();
+        assert_eq!(lanes.len(), 5);
+        for (i, a) in lanes.iter().enumerate() {
+            assert!(!a.name.is_empty());
+            for b in &lanes[i + 1..] {
+                assert_ne!(a, b, "{} duplicates {}", a.name, b.name);
+            }
+        }
+    }
+
+    #[test]
+    fn tptp_lanes_keep_the_complete_calculus_on() {
+        // Every lane must stay within the TPTP-regime contract (full
+        // saturation + strict/honest verdicts + the complete equality
+        // calculus) — only the search-shaping knob named by the lane moves.
+        for s in Strategy::tptp_lanes() {
+            assert!(s.full_saturation, "{}: full_saturation dropped", s.name);
+            assert!(s.strict_saturation, "{}: strict_saturation dropped", s.name);
+            assert!(s.superposition, "{}: superposition dropped", s.name);
+            assert!(s.eq_factoring, "{}: eq_factoring dropped", s.name);
+            assert!(s.subsumption, "{}: subsumption dropped", s.name);
+        }
+    }
+
+    #[test]
+    fn tptp_lanes_first_is_plain_tptp() {
+        assert_eq!(Strategy::tptp_lanes()[0], Strategy::tptp());
     }
 }

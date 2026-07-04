@@ -71,6 +71,18 @@ impl ProverLayer {
             return self.prove_one_driver(&conj, selection, total_timeout, &opts, ctx).0;
         }
 
+        // TPTP regime (standalone `.p`/`.tptp` problem — `set_tptp_problem`
+        // swapped in `Strategy::tptp()`, the only source of
+        // `full_saturation`): a CASC-style strategy schedule stands in for
+        // the budget-widening retry, which is a no-op here (see
+        // `run_portfolio_schedule`'s doc).  `SIGMA_NO_PORTFOLIO=1` forces the
+        // single-lane path for A/B measurement.  The KIF/SUMO path
+        // (`full_saturation` off) is completely unaffected — same `drive`
+        // call as before.
+        if opts.strategy.full_saturation && std::env::var_os("SIGMA_NO_PORTFOLIO").is_none() {
+            return self.run_portfolio_schedule(&conj, total_timeout, &opts, ctx);
+        }
+
         // Prover-feedback autoscaling — the same shared planner the trait
         // `prove` uses, driven here directly so the path stays `&self`.
         use crate::prover::scale::{drive, ScaleConfig};
@@ -84,14 +96,76 @@ impl ProverLayer {
             min_budget:    scale_min_budget(),
             total_timeout,
         };
-        // Native step-exhaustion narrows (mirrors the trait `remap`).
-        let remap = |_status: ProverStatus, term: Option<TerminationReason>| match term {
-            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
-            other => other,
-        };
-        drive(selection, cfg, remap, |params, slice| {
+        drive(selection, cfg, Self::remap_native, |params, slice| {
             self.prove_one_driver(&conj, params, slice, &opts, ctx)
         })
+    }
+
+    /// Native step-exhaustion (`GaveUp`) narrows like a timeout, not widens —
+    /// the search space was too big, the wrong gradient for the planner to
+    /// read as prover-incompleteness. Shared by the plain autoscale loop
+    /// above and each lane of [`run_portfolio_schedule`] (mirrors the trait
+    /// `ProvingLayer::remap` override for `ProverLayer`).
+    fn remap_native(
+        _status: ProverStatus,
+        term:    Option<TerminationReason>,
+    ) -> Option<TerminationReason> {
+        match term {
+            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
+            other => other,
+        }
+    }
+
+    /// CASC-style strategy schedule for a standalone TPTP problem: race
+    /// [`Strategy::tptp_lanes`](super::strategy::Strategy::tptp_lanes) in
+    /// order, each over its own slice of `total_timeout` (see
+    /// [`crate::prover::scale::drive_portfolio`] for the split / carry-forward
+    /// rule). Every lane still runs the ordinary budget-autoscaling `drive`
+    /// loop internally — full saturation means that loop mostly just
+    /// re-confirms the same search, but it costs nothing to leave it wired in
+    /// (a lane that somehow doesn't reach the ceiling on its first shot still
+    /// benefits). A verdict of Proved/Inconsistent, or a CONFIDENT
+    /// Disproved/Consistent, from any lane ends the schedule immediately;
+    /// otherwise the best-ranked (never worse-than-first) result across every
+    /// lane is returned. The winning lane's name is prepended to
+    /// `raw_output` so `SIGMA_STATS`/verbose output can show which lane
+    /// solved it.
+    pub(super) fn run_portfolio_schedule(
+        &self,
+        conj:          &Conjecture,
+        total_timeout: u32,
+        opts:          &NativeOpts,
+        ctx:           &crate::ProveCtx,
+    ) -> ProverResult {
+        use crate::prover::scale::{drive, drive_portfolio, ScaleConfig};
+        use crate::syntactic::sine::{
+            scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
+        };
+
+        let lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        let selection = opts.selection;
+
+        let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {
+            let lane_opts = NativeOpts { strategy: lanes[idx].clone(), ..opts.clone() };
+            let cfg = ScaleConfig {
+                factor:        scale_factor(),
+                max_disproofs: scale_max_disproofs(),
+                max_time_runs: scale_max_time_runs(),
+                min_budget:    scale_min_budget(),
+                total_timeout: slice,
+            };
+            drive(selection, cfg, Self::remap_native, |params, per_run| {
+                self.prove_one_driver(conj, params, per_run, &lane_opts, ctx)
+            })
+        });
+
+        let lane_name = lanes[winner].name.as_str();
+        ctx.debug(format!("portfolio: lane {winner} ({lane_name}) reported the final verdict"));
+        result.raw_output = format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
+        if std::env::var_os("SIGMA_STATS").is_some() {
+            eprintln!("PORTFOLIO winning lane: {lane_name}");
+        }
+        result
     }
 
     pub(super) fn prove_one_driver(

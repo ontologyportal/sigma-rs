@@ -208,6 +208,27 @@ impl ProvingLayer for ProverLayer {
         self.prove_one_driver(conj, params, slice, opts, ctx)
     }
 
+    /// TPTP-regime strategy schedule (see `prove.rs`'s
+    /// `run_portfolio_schedule` / `strategy::Strategy::tptp_lanes`): engages
+    /// only when `opts` was configured for a standalone TPTP problem
+    /// (`set_tptp_problem` swapped in `Strategy::tptp()`, the sole source of
+    /// `full_saturation`) and `SIGMA_NO_PORTFOLIO` isn't set, so the KIF/SUMO
+    /// path (`full_saturation` off) always falls through to `None` — the
+    /// trait default's plain `drive` loop, byte-identical to before this
+    /// hook existed.
+    fn try_portfolio(
+        &self,
+        conj:          &super::Conjecture,
+        total_timeout: u32,
+        opts:          &NativeOpts,
+        ctx:           &crate::ProveCtx,
+    ) -> Option<super::result::ProverResult> {
+        if !opts.strategy.full_saturation || std::env::var_os("SIGMA_NO_PORTFOLIO").is_some() {
+            return None;
+        }
+        Some(self.run_portfolio_schedule(conj, total_timeout, opts, ctx))
+    }
+
     fn check_consistency(&self, opts: &NativeOpts, ctx: &crate::ProveCtx)
         -> super::result::ProverResult {
         // `limit = 1`: stop at the first contradiction — the cross-backend
