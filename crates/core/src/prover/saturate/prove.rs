@@ -13,7 +13,7 @@ use crate::types::Element;
 
 use super::{ProverLayer, Conjecture};
 use super::clause::{AtomId, PClause};
-use super::clausify::clausify_negated_conjunction;
+use super::clausify::clausify_negated_conjunction_lossy;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
 use super::theory::TheoryOracle;
@@ -53,7 +53,7 @@ impl ProverLayer {
         ctx:         &crate::ProveCtx,
     ) -> ProverResult {
         // Prepare: normalize + seed + intern into the atom table (all `&self`).
-        let normalized = Conjecture::normalize(asts);
+        let (normalized, norm_dropped) = Conjecture::normalize(asts);
         let seed_syms  = Conjecture::seed(&normalized);
         let sents      = self.intern_conjecture_native(&normalized);
         if sents.is_empty() {
@@ -63,7 +63,10 @@ impl ProverLayer {
                 ..Default::default()
             };
         }
-        let conj = Conjecture { sents, seed_syms };
+        // Intern/build failures surface as a shortfall (`intern_conjecture_native`
+        // yields at most one entry per normalized ast, skipping failures).
+        let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
+        let conj = Conjecture { sents, seed_syms, dropped };
 
         let selection     = opts.selection;
         let total_timeout = opts.time_limit_secs.min(u64::from(u32::MAX)) as u32;
@@ -257,10 +260,11 @@ impl ProverLayer {
         // split it into several roots: they are ONE conjecture, so the
         // negation must wrap their conjunction (negating each root
         // separately would let one refuted conjunct "prove" the whole
-        // conjunction).
-        let conjecture_clauses: Vec<PClause> = {
+        // conjunction).  `conj_lossy` records goal clauses dropped for
+        // shape/capacity reasons — input loss the completeness gate must see.
+        let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = {
             profile_span!(ctx, "ask.clausify_conjecture");
-            clausify_negated_conjunction(
+            clausify_negated_conjunction_lossy(
                 &self.semantic.syntactic, &self.atoms, conjecture_sents)
         };
 
@@ -289,6 +293,25 @@ impl ProverLayer {
             v.sort_unstable();
             v
         };
+
+        // Input-completeness gate (defense in depth): count input formulas
+        // that FAILED to make it into the clause set — conjecture roots
+        // dropped at normalize/intern (`conj.dropped`), goal clauses lost in
+        // clausification (`conj_lossy`), and selected/support roots that
+        // clausified to nothing for a shape/capacity reason
+        // (`root_load_failed`).  Any such loss makes a later "Saturated"
+        // verdict meaningless as a countermodel certificate: the missing
+        // formula could be the very one that closes the refutation.  The
+        // count feeds `complete_saturation` below, which under strict
+        // saturation (the TPTP path) demotes Disproved/Satisfiable to
+        // Unknown/GaveUp — silent drops become verdict-poisoning by
+        // construction.
+        let failed_roots: usize = selected.iter()
+            .chain(session_sids.iter())
+            .filter(|sid| self.root_load_failed(**sid))
+            .count();
+        let input_load_failures =
+            conj.dropped + usize::from(conj_lossy) + failed_roots;
 
         // Goal-targeted disjointness activation.  The disjointness oracle
         // only discharges inequality / disjoint goals; activating it for a
@@ -606,7 +629,8 @@ impl ProverLayer {
             let complete_saturation = match verdict {
                 RunVerdict::Saturated => {
                     let no_drops = prover.stats.discarded_long == 0
-                        && prover.stats.discarded_deep == 0;
+                        && prover.stats.discarded_deep == 0
+                        && input_load_failures == 0;
                     Some(no_drops && (!strict_saturation || {
                         let st = &prover.opts.strategy;
                         let eq_ok = !prover.stats.saw_equality
@@ -718,6 +742,17 @@ impl ProverLayer {
                 prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
                 prover.stats.proof_tag_oracle,
                 prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
+            // Input-completeness gate: say LOUDLY when input formulas never
+            // made it into the clause set — the line every consumer of a
+            // withheld Satisfiable/Disproved verdict needs to see.
+            if input_load_failures > 0 {
+                raw.push_str(&format!(
+                    "\nWARNING: {input_load_failures} input formula(s) failed to load \
+                     (conjecture roots dropped: {}, goal clausification lossy: {}, \
+                     background/support roots failed: {}) — Satisfiable/countermodel \
+                     verdicts withheld (GaveUp)",
+                    conj.dropped, conj_lossy, failed_roots));
+            }
             // Backward-demodulation line only when the knob is on: the
             // default-path SIGMA_STATS output stays byte-identical.
             if prover.opts.strategy.bwd_demod {

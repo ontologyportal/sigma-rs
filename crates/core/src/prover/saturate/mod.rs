@@ -141,6 +141,23 @@ impl ProverLayer {
     pub(crate) fn clauses_for(&self, root: SentenceId) -> Arc<Vec<PClause>> {
         self.clause_store.get(self, root)
     }
+
+    /// `true` when `root` FAILED to load as an input: it clausified to
+    /// nothing for a shape/capacity reason (unsupported shape, CNF blow-up,
+    /// over-cap clause) or vanished from the store — as opposed to the sound
+    /// empty results (tautology deletion / dedup).  Cheap: the loss
+    /// re-clausification only runs for roots whose
+    /// [`clauses_for`](Self::clauses_for) came back empty.  Feeds the
+    /// input-completeness gate: a failed input root poisons any confident
+    /// Disproved/Satisfiable verdict.
+    pub(crate) fn root_load_failed(&self, root: SentenceId) -> bool {
+        if !self.clauses_for(root).is_empty() {
+            return false;
+        }
+        let syn = &self.semantic.syntactic;
+        let Some(sent) = syn.sentence(root) else { return true };
+        clausify::clausify_sentence_lossy(syn, &self.atoms, &sent, root, false).1
+    }
 }
 
 impl TopLayer for ProverLayer {

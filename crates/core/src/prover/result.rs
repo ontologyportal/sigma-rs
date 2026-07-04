@@ -107,6 +107,32 @@ pub struct ProverResult {
     pub contradiction_proofs: Vec<Vec<crate::prover::proof::KifProofStep>>,
 }
 
+impl ProverResult {
+    /// Input-completeness gate, caller side: `failures` input formulas never
+    /// made it into the prover's clause set (assembly drop, staging error,
+    /// load failure).  A missing input can only HIDE a refutation, never
+    /// fabricate one — so a Proved/Inconsistent verdict stands, but a
+    /// confident "no" (Disproved / Consistent) is demoted to Unknown/GaveUp
+    /// with a loud reason, and `complete_saturation` is forced off so no
+    /// downstream consumer reads the run as a certified countermodel.
+    pub fn withhold_countermodel(&mut self, failures: usize, why: &str) {
+        if failures == 0 {
+            return;
+        }
+        self.raw_output.push_str(&format!(
+            "\nWARNING: {failures} input formula(s) failed to load ({why}) — \
+             Satisfiable/countermodel verdicts withheld (GaveUp)"));
+        if self.complete_saturation == Some(true) {
+            self.complete_saturation = Some(false);
+        }
+        if matches!(self.status, ProverStatus::Disproved | ProverStatus::Consistent) {
+            self.status      = ProverStatus::Unknown;
+            self.termination = Some(TerminationReason::GaveUp);
+            self.complete_saturation = Some(false);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProverStatus {
     Proved,

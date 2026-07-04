@@ -105,7 +105,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Intern the conjecture (if any), collecting its SInE seed symbols and sid.
         let (seed_syms, query_sid): (HashSet<_>, Option<SentenceId>) = match tc.query.clone() {
             Some(query) => {
-                let normalized = Conjecture::normalize(vec![query]);
+                let (normalized, _) = Conjecture::normalize(vec![query]);
                 let syms       = Conjecture::seed(&normalized);
                 let res = self.ingest_source(SourceFile {
                     parser:   Parser::Kif,

@@ -56,6 +56,17 @@ pub struct TestCase {
     /// proper-conjecture reports `Theorem`/`CounterSatisfiable`; CNF /
     /// no-conjecture reports `Unsatisfiable`/`Satisfiable`.
     pub has_fof_conjecture: bool,
+    /// Total number of parsed top-level FORMULAS (statements, not harness
+    /// directives) in the source document.  The input-completeness gate
+    /// compares this against what actually got accounted into the case
+    /// (query + support + background) — see `unaccounted_inputs`.
+    pub input_formulas: usize,
+    /// How many parsed formulas did NOT land in any bucket (query /
+    /// support / background) during assembly.  Structurally 0 for
+    /// [`from_doc_items`]; a nonzero value poisons any confident
+    /// Disproved/Satisfiable verdict downstream (a silently dropped input
+    /// formula could be the one that makes the set unsatisfiable).
+    pub unaccounted_inputs: usize,
 }
 
 impl TestCase {
@@ -83,6 +94,14 @@ impl TestCase {
     ///   * `Hypothesis`        → force-included **support** (`axioms`);
     ///   * `Meta`              → harness directives.
     ///
+    /// Multiple goal-role statements are ALL kept (TPTP CNF problems
+    /// routinely carry many `negated_conjecture` clauses — they are jointly
+    /// the negation of the conjecture): the effective query is
+    /// `(and C₁ … Cₘ (not (and NC₁ … NCₖ)))`, degenerating to the single
+    /// statement / plain [`renegate`] shapes when only one is present.
+    /// Overwriting (keeping only the last) would silently drop goal clauses
+    /// and turn Unsatisfiable problems into false Satisfiable verdicts.
+    ///
     /// Every *other* statement (TPTP `axiom` / `plain` / `definition` / …) is
     /// **not** part of the test obligation — it is the background theory.  Those
     /// `DocItem`s are returned verbatim in the second tuple element for the
@@ -101,29 +120,62 @@ impl TestCase {
             extra_files:     Vec::new(),
             expected_status: None,
             has_fof_conjecture: false,
+            input_formulas:     0,
+            unaccounted_inputs: 0,
         };
         let mut leftover: Vec<DocItem> = Vec::new();
+        let mut conjectures: Vec<AstNode> = Vec::new();
+        let mut negated:     Vec<AstNode> = Vec::new();
         for item in items {
             match item {
-                DocItem::Stmt(node) => match node.role() {
-                    Some(Role::Conjecture) => {
-                        tc.query = Some(node.clone());
-                        tc.has_fof_conjecture = true;
+                DocItem::Stmt(node) => {
+                    tc.input_formulas += 1;
+                    match node.role() {
+                        Some(Role::Conjecture)        => conjectures.push(node.clone()),
+                        Some(Role::NegatedConjecture) => negated.push(node.clone()),
+                        Some(Role::Hypothesis)        => tc.axioms.push(node.clone()),
+                        // Background theory (`axiom`, `plain`, `definition`, …) is
+                        // not part of the obligation — hand it back to be ingested
+                        // as an ordinary, selectable KB axiom.  A role-less
+                        // statement (bare KIF) is tagged `axiom` on the way out so
+                        // downstream partitioning sees a uniform annotation.
+                        None => leftover.push(DocItem::Stmt(annotate(
+                            Role::Axiom, node.clone().strip_annotation(), file_name))),
+                        Some(_) => leftover.push(item.clone()),
                     }
-                    Some(Role::NegatedConjecture) => tc.query = Some(renegate(node, file_name)),
-                    Some(Role::Hypothesis)        => tc.axioms.push(node.clone()),
-                    // Background theory (`axiom`, `plain`, `definition`, …) is
-                    // not part of the obligation — hand it back to be ingested
-                    // as an ordinary, selectable KB axiom.  A role-less
-                    // statement (bare KIF) is tagged `axiom` on the way out so
-                    // downstream partitioning sees a uniform annotation.
-                    None => leftover.push(DocItem::Stmt(annotate(
-                        Role::Axiom, node.clone().strip_annotation(), file_name))),
-                    Some(_) => leftover.push(item.clone()),
-                },
+                }
                 DocItem::Meta(m) => tc.apply_directive(m),
             }
         }
+        tc.has_fof_conjecture = !conjectures.is_empty();
+        let query_stmts = conjectures.len() + negated.len();
+        tc.query = match (conjectures.len(), negated.len()) {
+            (0, 0) => None,
+            // Single goal statement: the long-standing exact shapes.
+            (1, 0) => Some(conjectures.pop().unwrap()),
+            (0, 1) => Some(renegate(&negated[0], file_name)),
+            // Multiple goal statements.  The conjecture is the conjunction of
+            // the positive conjectures AND the negation of the conjunction of
+            // the `negated_conjecture` statements (per TPTP semantics the NC
+            // set is JOINTLY ¬conjecture, so conjecture = ¬(NC₁ ∧ … ∧ NCₖ) —
+            // the prover's refutation negation then restores every NC clause
+            // into the clause set).
+            (_, n) => {
+                let mut parts: Vec<AstNode> =
+                    conjectures.iter().map(|c| c.formula().clone()).collect();
+                if n > 0 {
+                    parts.push(negate(conjoin(
+                        negated.iter().map(|c| c.formula().clone()).collect())));
+                }
+                Some(annotate(Role::Conjecture, conjoin(parts), file_name))
+            }
+        };
+        // Conservation audit: every parsed formula must be accounted into
+        // exactly one bucket.  Structurally 0 today; nonzero would mean a
+        // future partition bug silently dropped inputs — recorded so the
+        // proving path can withhold confident Disproved/Satisfiable verdicts.
+        let accounted = query_stmts + tc.axioms.len() + leftover.len();
+        tc.unaccounted_inputs = tc.input_formulas.saturating_sub(accounted);
         (tc, leftover)
     }
 
@@ -214,6 +266,29 @@ fn renegate(node: &AstNode, file: &str) -> AstNode {
         span: Span::synthetic(),
     };
     annotate(Role::Conjecture, negated, file)
+}
+
+/// The conjunction of `formulas` — the single formula itself when there is
+/// exactly one, else `(and f₁ … fₙ)`.  Callers guarantee non-empty.
+fn conjoin(mut formulas: Vec<AstNode>) -> AstNode {
+    if formulas.len() == 1 {
+        return formulas.pop().unwrap();
+    }
+    let mut elements =
+        vec![AstNode::Operator { op: OpKind::And, span: Span::synthetic() }];
+    elements.extend(formulas);
+    AstNode::List { elements, span: Span::synthetic() }
+}
+
+/// `(not f)`.
+fn negate(formula: AstNode) -> AstNode {
+    AstNode::List {
+        elements: vec![
+            AstNode::Operator { op: OpKind::Not, span: Span::synthetic() },
+            formula,
+        ],
+        span: Span::synthetic(),
+    }
 }
 
 /// Wrap `formula` as a top-level statement with `role`, tagging its source.
@@ -343,6 +418,41 @@ mod tests {
         let q = tc.query.expect("query");
         assert!(matches!(q.role(), Some(Role::Conjecture)));
         assert_eq!(q.formula().to_string(), "(not (not (mammal rex)))");
+    }
+
+    // ALL `negated_conjecture` statements are kept (GRA001-1's shape: a CNF
+    // problem whose clauses are all goal-role).  The query is
+    // `(not (and NC₁ … NCₖ))`, so the prover's refutation negation restores
+    // every NC clause; keeping only the last one silently dropped the rest
+    // and produced false Satisfiable verdicts.
+    #[test]
+    fn multiple_negated_conjectures_all_kept() {
+        let problem = "\
+            cnf(c1, negated_conjecture, a | b).\n\
+            cnf(c2, negated_conjecture, ~a).\n\
+            cnf(c3, negated_conjecture, ~b).\n";
+        let (tc, background, errors) = TestCase::from_tptp(problem, "multi");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(background.is_empty());
+        assert!(!tc.has_fof_conjecture, "pure-NC problems report Unsat/Sat SZS");
+        assert_eq!(tc.input_formulas, 3);
+        assert_eq!(tc.unaccounted_inputs, 0, "every parsed formula accounted");
+        let q = tc.query.expect("query").formula().to_string();
+        assert_eq!(q, "(not (and (or a b) (not a) (not b)))", "query: {q}");
+    }
+
+    // Multiple positive conjectures conjoin (TPTP: prove them together).
+    #[test]
+    fn multiple_conjectures_conjoin() {
+        let problem = "\
+            fof(g1, conjecture, p(a)).\n\
+            fof(g2, conjecture, q(a)).\n";
+        let (tc, _, errors) = TestCase::from_tptp(problem, "multi2");
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(tc.has_fof_conjecture);
+        assert_eq!(tc.unaccounted_inputs, 0);
+        let q = tc.query.expect("query").formula().to_string();
+        assert_eq!(q, "(and (p a) (q a))", "query: {q}");
     }
 
     // End-to-end through the real TPTP parser: `axiom` → background leftover,

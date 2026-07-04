@@ -375,7 +375,25 @@ pub(crate) fn clausify_sentence(
     root:   SentenceId,
     negate: bool,
 ) -> Vec<PClause> {
-    let Some(lifted) = lift_form(syn, atoms, sent) else { return Vec::new() };
+    clausify_sentence_lossy(syn, atoms, sent, root, negate).0
+}
+
+/// [`clausify_sentence`] plus a LOSS flag: `true` when clauses were
+/// (partially or wholly) dropped for shape/capacity reasons — an
+/// unsupported shape (`lift_form` failure), a CNF distribution blow-up
+/// (`MAX_CLAUSES_PER_FORMULA`), or a clause over [`MAX_LITS_PER_CLAUSE`].
+/// Tautology deletion and dedup are NOT loss (dropping a valid clause never
+/// changes satisfiability).  The input-completeness gate uses this to
+/// withhold confident Disproved/Satisfiable verdicts when an input formula
+/// failed to load.
+pub(crate) fn clausify_sentence_lossy(
+    syn:    &SyntacticLayer,
+    atoms:  &AtomTable,
+    sent:   &Sentence,
+    root:   SentenceId,
+    negate: bool,
+) -> (Vec<PClause>, bool) {
+    let Some(lifted) = lift_form(syn, atoms, sent) else { return (Vec::new(), true) };
     let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
     clausify_form(f, atoms, root)
 }
@@ -388,15 +406,19 @@ pub(crate) fn clausify_sentence(
 /// `¬A ∧ ¬B` — the negation of the DISJUNCTION — and a refutation of a
 /// single conjunct would "prove" the whole conjunction.  The negation
 /// must wrap the rebuilt conjunction: `¬(A ∧ B) = ¬A ∨ ¬B`.
-pub(crate) fn clausify_negated_conjunction(
+/// The same LOSS flag as [`clausify_sentence_lossy`] rides along: `true`
+/// when any conjecture root failed to lift or any resulting clause was
+/// dropped for capacity reasons — the refutation set is then missing goal
+/// clauses, so a saturation over it certifies nothing.
+pub(crate) fn clausify_negated_conjunction_lossy(
     syn:   &SyntacticLayer,
     atoms: &AtomTable,
     sents: &[(std::sync::Arc<Sentence>, SentenceId)],
-) -> Vec<PClause> {
-    let Some(root) = sents.first().map(|(_, sid)| *sid) else { return Vec::new() };
+) -> (Vec<PClause>, bool) {
+    let Some(root) = sents.first().map(|(_, sid)| *sid) else { return (Vec::new(), false) };
     let mut parts = Vec::with_capacity(sents.len());
     for (sent, _) in sents {
-        let Some(l) = lift_form(syn, atoms, sent) else { return Vec::new() };
+        let Some(l) = lift_form(syn, atoms, sent) else { return (Vec::new(), true) };
         parts.push(l);
     }
     let conj = if parts.len() == 1 { parts.pop().unwrap() } else { Form::And(parts) };
@@ -405,7 +427,8 @@ pub(crate) fn clausify_negated_conjunction(
 
 /// The shared pipeline below the negation decision: NNF, universal
 /// closure of free variables, skolemization, distribution, dedup.
-fn clausify_form(f: Form, atoms: &AtomTable, root: SentenceId) -> Vec<PClause> {
+/// The second return is the LOSS flag (see [`clausify_sentence_lossy`]).
+fn clausify_form(f: Form, atoms: &AtomTable, root: SentenceId) -> (Vec<PClause>, bool) {
     let f = nnf(elim(f), false);
 
     // Implicit universal closure over the (sorted) free variables.
@@ -420,12 +443,13 @@ fn clausify_form(f: Form, atoms: &AtomTable, root: SentenceId) -> Vec<PClause> {
     let mut ctx = SkolemCtx { root, fresh_n: 0, sk_n: 0 };
     let f = skolemize(f, &[], &HashMap::new(), &mut ctx);
 
-    let Some(raw) = distribute(&f) else { return Vec::new() };
+    let Some(raw) = distribute(&f) else { return (Vec::new(), true) };
 
+    let mut lossy = false;
     let mut out: Vec<PClause> = Vec::with_capacity(raw.len());
     let mut seen_keys = std::collections::HashSet::new();
     'clauses: for cl in raw {
-        if cl.len() > MAX_LITS_PER_CLAUSE { continue; }
+        if cl.len() > MAX_LITS_PER_CLAUSE { lossy = true; continue; }
         // In-clause literal dedup + tautology check on the raw terms
         // (same var names within one clause, so plain equality works —
         // mirrors the prototype's `seen` / `pos_atoms` passes).
@@ -445,5 +469,5 @@ fn clausify_form(f: Form, atoms: &AtomTable, root: SentenceId) -> Vec<PClause> {
             out.push(clause);
         }
     }
-    out
+    (out, lossy)
 }

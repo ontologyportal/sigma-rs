@@ -70,7 +70,7 @@ pub trait ProvingLayer: TopLayer {
     fn prepare(&self, conjecture: Vec<crate::AstNode>)
         -> Result<Conjecture, result::ProverResult>
     {
-        let normalized = Conjecture::normalize(conjecture);
+        let (normalized, norm_dropped) = Conjecture::normalize(conjecture);
         let seed_syms  = Conjecture::seed(&normalized);
         let sents      = self.intern_conjecture(&normalized);
         if sents.is_empty() {
@@ -80,7 +80,10 @@ pub trait ProvingLayer: TopLayer {
                 ..Default::default()
             });
         }
-        Ok(Conjecture { sents, seed_syms })
+        // Intern/build failures surface as a shortfall (`intern_conjecture`
+        // yields at most one entry per normalized ast, skipping failures).
+        let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
+        Ok(Conjecture { sents, seed_syms, dropped })
     }
 
     /// Undo anything [`prepare`](ProvingLayer::prepare) staged, after the proof
@@ -243,17 +246,33 @@ pub struct Conjecture {
     pub sents:     Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>,
     /// The conjecture's concrete symbols — the SInE seed for `select_axioms`.
     pub seed_syms: std::collections::HashSet<crate::SymbolId>,
+    /// How many conjecture input formulas were DROPPED on the way in — a
+    /// normalization that yielded nothing for an ast, or an intern/build
+    /// failure (`sents` shorter than the normalized list).  Nonzero poisons
+    /// any confident Disproved/Satisfiable verdict (the refutation set is
+    /// missing part of the goal); a Proved verdict stays sound.
+    pub dropped:   usize,
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 impl Conjecture {
     /// Macro-expand + normalize the raw conjecture ASTs (preserving a leading
-    /// `(forall …)` so the refutation negation skolemizes).
-    pub(crate) fn normalize(asts: Vec<crate::AstNode>) -> Vec<crate::AstNode> {
-        asts.into_iter()
-            .flat_map(|n| crate::parse::macros::expand_node_conjecture(n))
-            .flat_map(|n| crate::parse::macros::normalize_ast(&n))
-            .collect()
+    /// `(forall …)` so the refutation negation skolemizes).  The second
+    /// return counts input asts whose normalization yielded NOTHING — a
+    /// silently dropped conjecture formula (feeds [`Conjecture::dropped`]).
+    pub(crate) fn normalize(asts: Vec<crate::AstNode>) -> (Vec<crate::AstNode>, usize) {
+        let mut out = Vec::with_capacity(asts.len());
+        let mut dropped = 0usize;
+        for n in asts {
+            let before = out.len();
+            for e in crate::parse::macros::expand_node_conjecture(n) {
+                out.extend(crate::parse::macros::normalize_ast(&e));
+            }
+            if out.len() == before {
+                dropped += 1;
+            }
+        }
+        (out, dropped)
     }
 
     /// The conjecture's concrete symbols — its SInE seed.

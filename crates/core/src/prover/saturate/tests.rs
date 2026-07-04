@@ -2128,3 +2128,123 @@ fn native_stack_smoke() {
         assert_eq!(res.status, ProverStatus::Timeout,
             "pre-raised cancel must stop the loop: {}", res.raw_output);
     }
+
+    // -- input-completeness gate ----------------------------------------------
+
+    // A TPTP numeral constant survives the whole ingest path: the TPTP
+    // parse produces a stored root sentence, and that root clausifies to a
+    // usable clause (numerals intern as ordinary constant symbols).
+    #[test]
+    fn tptp_numeral_constant_round_trips_to_store() {
+        let mut kb = KnowledgeBase::new_native();
+        let src = crate::types::SourceFile {
+            parser:   crate::Parser::Tptp { options: None },
+            name:     "num.p".into(),
+            path:     std::path::PathBuf::from("num.p"),
+            origin:   crate::FileOrigin::Local,
+            contents: "cnf(c1, axiom, p(1)).\n".into(),
+            prebuilt: None,
+        };
+        let r = kb.load(src, "load");
+        assert!(r.ok, "TPTP numeral ingest failed: {:?}", r.diagnostics);
+        let roots = kb.store_for_testing().file_root_sids("num.p");
+        assert_eq!(roots.len(), 1, "numeral clause stored as exactly one root");
+        assert_eq!(kb.prover().clauses_for(roots[0]).len(), 1,
+            "the stored numeral clause clausifies to one usable clause");
+    }
+
+    // Input-completeness gate: an input root that CANNOT be loaded (here: a
+    // formula whose CNF blows the distribution guard, so it clausifies to
+    // nothing) must poison any confident Satisfiable/Disproved verdict under
+    // the strict TPTP regime — the missing formula could be the one that
+    // closes the refutation.  The run must come back Unknown (SZS GaveUp)
+    // with a loud "failed to load" reason, never a certified countermodel.
+    #[test]
+    fn input_load_failure_withholds_satisfiable() {
+        // 8 (and pᵢ qᵢ) disjuncts → 2^8 = 256 clauses > MAX_CLAUSES_PER_FORMULA.
+        let mut blowup = String::from("(or");
+        for i in 0..8 {
+            blowup.push_str(&format!(" (and (p{i} A) (q{i} A))"));
+        }
+        blowup.push(')');
+
+        // Control: without the failing root, strict saturation certifies the
+        // countermodel (Disproved) — proving the gate assertion below bites.
+        let kb = kb_from("(r A)");
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts.clone());
+        assert_eq!(res.status, ProverStatus::Disproved,
+            "control must certify the countermodel: {}", res.raw_output);
+        assert_eq!(res.complete_saturation, Some(true), "control is complete");
+
+        // Gate: the same problem plus an unloadable input root.
+        let kb = kb_from(&format!("(r A)\n{blowup}"));
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_ne!(res.status, ProverStatus::Disproved,
+            "an input load failure must withhold Satisfiable: {}", res.raw_output);
+        assert_eq!(res.status, ProverStatus::Unknown, "raw: {}", res.raw_output);
+        assert_ne!(res.complete_saturation, Some(true));
+        assert!(res.raw_output.contains("failed to load"),
+            "the skip reason must be LOUD: {}", res.raw_output);
+    }
+
+    // The caller-side gate helper: a Disproved result with input losses is
+    // demoted to Unknown/GaveUp; a Proved result stands (a missing input can
+    // hide a refutation, never fabricate one).
+    #[test]
+    fn withhold_countermodel_demotes_only_confident_nos() {
+        use crate::prover::ProverResult;
+
+        let mut no = ProverResult {
+            status: ProverStatus::Disproved,
+            complete_saturation: Some(true),
+            ..Default::default()
+        };
+        no.withhold_countermodel(2, "test");
+        assert_eq!(no.status, ProverStatus::Unknown);
+        assert_eq!(no.termination, Some(TerminationReason::GaveUp));
+        assert_eq!(no.complete_saturation, Some(false));
+        assert!(no.raw_output.contains("2 input formula(s) failed to load"));
+
+        let mut yes = ProverResult { status: ProverStatus::Proved, ..Default::default() };
+        yes.withhold_countermodel(2, "test");
+        assert_eq!(yes.status, ProverStatus::Proved, "Proved stands");
+
+        let mut clean = ProverResult { status: ProverStatus::Disproved, ..Default::default() };
+        clean.withhold_countermodel(0, "test");
+        assert_eq!(clean.status, ProverStatus::Disproved, "no losses → untouched");
+    }
+
+    // Parse-coverage probe (env-gated, skips when unset): for each TPTP
+    // problem path in `SIGMA_TPTP_LIST` (one per line), parse with
+    // `TestCase::from_tptp` and print
+    //   `<path>\t<parsed stmts>\t<parse errors>\t<unaccounted>`
+    // — the input-completeness audit trail.  `cargo test … tptp_parse_coverage
+    //  -- --nocapture` with the env set.
+    #[test]
+    fn tptp_parse_coverage_probe() {
+        let Some(list) = std::env::var_os("SIGMA_TPTP_LIST") else {
+            eprintln!("SIGMA_TPTP_LIST unset — skipping parse-coverage probe");
+            return;
+        };
+        let list = std::fs::read_to_string(&list).expect("read SIGMA_TPTP_LIST");
+        for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                println!("{path}\tREAD_ERROR\t-\t-");
+                continue;
+            };
+            // Blank `include(…)` directives exactly like the SDK's include
+            // resolver does for the problem's own text (the probe audits the
+            // file's OWN statements; included axioms are separate files).
+            let text: String = text.lines()
+                .map(|l| if l.trim_start().starts_with("include(") { "" } else { l })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (tc, background, errors) = crate::TestCase::from_tptp(&text, path);
+            let query_stmts = tc.input_formulas
+                - background.len() - tc.axioms.len() - tc.unaccounted_inputs;
+            println!("{path}\t{}\t{}\t{}\t{}",
+                tc.input_formulas, errors.len(), tc.unaccounted_inputs, query_stmts);
+        }
+    }
