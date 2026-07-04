@@ -1277,6 +1277,35 @@ impl<'a> SemanticOracle<'a> {
         if std::env::var_os("SIGMA_TEMPORAL").is_none() {
             return false;
         }
+        self.temporal_entails_ungated(rel, x, y, why)
+    }
+
+    /// Ungated temporal entailment for callers that scope the decision
+    /// themselves — the rule-join discharge consults the point network for
+    /// its ground body checks even when the global `SIGMA_TEMPORAL` oracle
+    /// gate is unset, so the network's use stays confined to that pass.
+    /// Never touches the `holds` memo (a direct query), so baseline
+    /// `holds()` behavior is unchanged.
+    pub(crate) fn temporal_holds(
+        &self,
+        rel: SymbolId,
+        x:   SymbolId,
+        y:   SymbolId,
+        why: Option<&mut Vec<Witness>>,
+    ) -> bool {
+        self.temporal_entails_ungated(rel, x, y, why)
+    }
+
+    /// [`temporal_entails`](Self::temporal_entails) minus the env gate: the
+    /// shared lazy-network build + query used by both the gated `holds()`
+    /// path and the join-scoped [`temporal_holds`](Self::temporal_holds).
+    fn temporal_entails_ungated(
+        &self,
+        rel: SymbolId,
+        x:   SymbolId,
+        y:   SymbolId,
+        why: Option<&mut Vec<Witness>>,
+    ) -> bool {
         let ids = super::temporal::TemporalRelIds::standard();
         if !ids.is_temporal(rel) {
             return false;

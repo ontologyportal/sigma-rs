@@ -3,9 +3,15 @@
 // Whole-goal semantic discharge passes, run once before the given-clause
 // loop (see `NativeProver::run`): Horn-rule joins, discrete event
 // calculus, inductive-model (Datalog-ish) discharge, and goal-directed
-// backward chaining.  Each pass is gated by its own env var and a no-op
-// when unset, so the saturation baseline stays byte-identical unless the
-// corresponding SIGMA_* flag is set.
+// backward chaining.  Every pass but the first is gated by its own env
+// var and a no-op when unset, so the saturation baseline stays
+// byte-identical unless the corresponding SIGMA_* flag is set.
+// `discharge_horn_joins` is the exception: it runs BY DEFAULT, gated by a
+// cheap per-goal applicability guard (see its doc comment) rather than an
+// env var, because it has a measured win (the "jail" proof) that a
+// blanket flag can't safely ship default-on.  `SIGMA_RULE_JOIN=1` forces
+// it on unconditionally and `SIGMA_NO_RULE_JOIN=1` forces it off
+// unconditionally, for A/B testing and backward compat.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -33,12 +39,23 @@ impl<'a> NativeProver<'a> {
     /// bounded fixpoint feeds each emitted head back as a fact so chained
     /// rules (`breaksLaw ⇒ goesToJail`) fire on later rounds.
     ///
-    /// Gated by `SIGMA_RULE_JOIN`; a no-op when unset (default off, so the
-    /// saturation baseline is byte-identical).
+    /// Applicability is now decided PER GOAL by a guard predicate
+    /// (`guard_applicable`, computed below from the same scan that used to
+    /// only drive `suppress_rules`) rather than by a single blanket flag:
+    /// `SIGMA_RULE_JOIN=1` forces the
+    /// pass on unconditionally (bypassing the guard; kept for A/B testing
+    /// and backward compat), `SIGMA_NO_RULE_JOIN=1` forces it off
+    /// unconditionally (the safety valve; wins if both are set), and with
+    /// neither set the guard runs the pass by default exactly on the
+    /// Horn-chain / conclusion-rule goal shape it wins on (e.g. the
+    /// "jail" proof) while staying inert everywhere else — so the
+    /// saturation baseline is byte-identical off the guarded path, same
+    /// as the old default-off behaviour.
     pub(crate) fn discharge_horn_joins(&mut self) {
-        if std::env::var_os("SIGMA_RULE_JOIN").is_none() {
-            return;
+        if std::env::var_os("SIGMA_NO_RULE_JOIN").is_some() {
+            return; // force-off wins over force-on: the A/B safety valve.
         }
+        let forced_on = std::env::var_os("SIGMA_RULE_JOIN").is_some();
         let roles = self.oracle.roles();
         let tids = super::super::temporal::TemporalRelIds::standard();
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
@@ -196,16 +213,41 @@ impl<'a> NativeProver<'a> {
                 None => false,
             })
         });
+
+        // PER-GOAL APPLICABILITY GUARD (default-on path): lifts the
+        // suppression check above into a positive predicate instead of a
+        // disjoint one.  `suppress_rules` already recognises exactly the
+        // failure mode that hurts blanket activation — a genuine
+        // ground-answerable QA query, where every conjunct is theory- or
+        // fact-backed and the conclusion-rule heads (whose relations have
+        // NO store facts, by construction of the `rules` scan above) are
+        // irrelevant noise that floods the search.  The mirror-image
+        // condition is a real win: at least one Horn-chain / conclusion-rule
+        // goal is present (`!queries.is_empty()`, the negated existential of
+        // a goal like `¬goesToJail`), there is at least one conclusion rule
+        // able to fire (`!rules.is_empty()` — a rule head that itself has no
+        // asserted facts, i.e. a derived-only relation), and NO genuine
+        // fact-query goal is mixed in to get flooded (`!suppress_rules`).
+        // This is exactly the jail-proof shape and exactly the shape the
+        // existing suppression logic already carves out as safe.
+        let guard_applicable = !rules.is_empty() && !queries.is_empty() && !suppress_rules;
+        let run_pass = forced_on || guard_applicable;
         if trace {
             eprintln!(
                 "RULE-JOIN scan: {} generator relations, {} ground facts, {} conclusion rules, \
-                 {} queries, suppress_rules={}",
+                 {} queries, suppress_rules={}, forced_on={}, guard_applicable={}, run_pass={}",
                 facts.len(),
                 facts.values().map(Vec::len).sum::<usize>(),
                 rules.len(),
                 queries.len(),
                 suppress_rules,
+                forced_on,
+                guard_applicable,
+                run_pass,
             );
+        }
+        if !run_pass {
+            return;
         }
 
         // Bounded fixpoint: emit satisfied heads, feed them back as facts
@@ -770,7 +812,12 @@ impl<'a> NativeProver<'a> {
                     if sargs.len() == 2 {
                         if let (Some(x), Some(y)) = (sym_of(&sargs[0]), sym_of(&sargs[1])) {
                             let mut why: Vec<Witness> = Vec::new();
-                            if self.oracle.holds(*rel, x, y, Some(&mut why)) {
+                            // Temporal fallback: interval facts (temporalPart …)
+                            // live in the point network, not the taxonomy
+                            // closure, and the join's use is scoped here.
+                            if self.oracle.holds(*rel, x, y, Some(&mut why))
+                                || self.oracle.temporal_holds(*rel, x, y, Some(&mut why))
+                            {
                                 fact_sids.extend(why.iter().filter_map(|w| w.sid));
                             }
                         }
@@ -1071,7 +1118,9 @@ impl<'a> NativeProver<'a> {
             if sargs.len() == 2 {
                 if let (Some(x), Some(y)) = (sym_of(&sargs[0]), sym_of(&sargs[1])) {
                     let mut why: Vec<Witness> = Vec::new();
-                    if self.oracle.holds(*rel, x, y, Some(&mut why)) {
+                    if self.oracle.holds(*rel, x, y, Some(&mut why))
+                        || self.oracle.temporal_holds(*rel, x, y, Some(&mut why))
+                    {
                         fact_sids.extend(why.iter().filter_map(|w| w.sid));
                     }
                 }
@@ -1090,8 +1139,20 @@ impl<'a> NativeProver<'a> {
     /// are returned; atoms with variable, operator, or compound arguments
     /// are skipped (a generator must bind variables to ground fillers).
     fn store_facts(&self, rel: SymbolId) -> Vec<JoinFact> {
+        let sessions = &self.syn().sessions;
         let mut out = Vec::new();
         for sid in self.syn().by_head_id(&rel) {
+            // Scope filter: the raw head index spans base AND every
+            // session's transient sentences; the join may only see the
+            // asking scope (base, plus the current session's overlay).
+            let owners = sessions.sessions_of(sid);
+            let visible = owners.is_empty()
+                || sessions.is_axiom(sid)
+                || matches!(self.scope,
+                    crate::semantics::types::Scope::Session(id) if owners.contains(&id));
+            if !visible {
+                continue;
+            }
             let Some(s) = self.syn().sentence(sid) else { continue };
             if s.elements.len() < 2 {
                 continue;
@@ -1247,7 +1308,8 @@ impl<'a> NativeProver<'a> {
         }
         if args.len() == 2 {
             if let (Some(x), Some(y)) = (sym_of(&args[0]), sym_of(&args[1])) {
-                return self.oracle.holds(rel, x, y, None);
+                return self.oracle.holds(rel, x, y, None)
+                    || self.oracle.temporal_holds(rel, x, y, None);
             }
         }
         false
