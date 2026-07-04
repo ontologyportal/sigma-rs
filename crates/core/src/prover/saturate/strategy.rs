@@ -364,6 +364,11 @@ impl Strategy {
             eq_factoring:      true,
             subsumption:       true,
             demod:             Self::demod_env_override(false),
+            // Same A/B convention as demod: `SIGMA_GUIDE=1` lets the
+            // semantic-guide tie-break be measured on the TPTP path too
+            // (`from_env()` is not consulted here, so without this the
+            // knob was unreachable for standalone `.p` runs).
+            semantic_guide:    std::env::var_os("SIGMA_GUIDE").is_some(),
             ..Self::base()
         }
         .named("tptp-complete")
