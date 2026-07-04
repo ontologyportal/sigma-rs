@@ -138,12 +138,19 @@ impl ProverLayer {
         opts:          &NativeOpts,
         ctx:           &crate::ProveCtx,
     ) -> ProverResult {
-        use crate::prover::scale::{drive, drive_portfolio, ScaleConfig};
+        use crate::prover::scale::{adaptive_lane_count, drive, drive_portfolio, ScaleConfig};
         use crate::syntactic::sine::{
             scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
         };
 
-        let lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        let all_lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        // Budget-adaptive lane count (task #33): racing all 5 lanes against a
+        // tight total timeout starves every lane after the first — see
+        // `adaptive_lane_count`'s doc for the measured trade-off. Truncating
+        // (not reordering) `all_lanes` keeps the schedule's ordering promise
+        // (`tptp_lanes_first_is_plain_tptp` etc.) intact for any prefix count.
+        let lane_count = adaptive_lane_count(total_timeout, all_lanes.len());
+        let lanes = &all_lanes[..lane_count];
         let selection = opts.selection;
 
         let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {

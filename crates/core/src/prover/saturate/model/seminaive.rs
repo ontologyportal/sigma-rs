@@ -402,10 +402,35 @@ struct Kernel<'p> {
     /// tuples.  Charged against `max_tuples` alongside stored rows.
     aux:         Cell<usize>,
     reach:       RefCell<HashMap<(Pred, bool), ReachIndex>>,
+    /// Wall-clock deadline for the WHOLE evaluation (not just between-rule
+    /// checks) — see `join_rec`'s tick counter below.  `None` ⇒ unbounded.
+    deadline:    Option<Instant>,
+    /// Ticks since `Instant::now()` was last consulted inside `join_rec`'s
+    /// candidate-tuple loop.  A single `fire` call for ONE rule can recurse
+    /// through a huge join (e.g. a dense transitive `sub`/`subclass` body) —
+    /// the old code only checked `deadline` once per rule, BEFORE `fire`
+    /// started, so a single long join could run arbitrarily far past the
+    /// deadline before the next check.  Checking `Instant::now()` on every
+    /// candidate tuple would itself be a real cost on a hot join, so the
+    /// clock is sampled only every `DEADLINE_CHECK_TICKS` expansions — cheap
+    /// (a `Cell` increment) on every tuple, an actual syscall-ish read only
+    /// every Nth.
+    join_ticks:  Cell<u64>,
+    /// Set once `join_rec` samples the clock past `deadline` — `join_rec`
+    /// checks this at recursion entry to unwind immediately (every stack
+    /// frame stops iterating its candidates) rather than only stopping the
+    /// one frame that happened to sample the clock.
+    deadline_hit: Cell<bool>,
 }
 
+/// How many candidate-tuple expansions `join_rec` processes between
+/// `Instant::now()` samples — frequent enough that a dense join can't run far
+/// past the deadline (a few thousand hash-map probes is sub-millisecond),
+/// infrequent enough that the clock read itself is not the hot-path cost.
+const DEADLINE_CHECK_TICKS: u64 = 1000;
+
 impl<'p> Kernel<'p> {
-    fn new(prog: &'p Program, max_tuples: usize) -> Self {
+    fn new(prog: &'p Program, max_tuples: usize, deadline: Option<Instant>) -> Self {
         let mut egd_idx: HashMap<Pred, Vec<usize>> = HashMap::new();
         for (i, e) in prog.egds.iter().enumerate() {
             egd_idx.entry(e.rel).or_default().push(i);
@@ -435,6 +460,9 @@ impl<'p> Kernel<'p> {
             builtin_grew: false,
             aux: Cell::new(0),
             reach: RefCell::new(HashMap::new()),
+            deadline,
+            join_ticks: Cell::new(0),
+            deadline_hit: Cell::new(false),
         }
     }
 
@@ -452,10 +480,36 @@ impl<'p> Kernel<'p> {
     }
 
     fn check_budget(&self) -> Result<(), ModelError> {
-        if self.total + self.aux.get() > self.max_tuples {
+        if self.total + self.aux.get() > self.max_tuples || self.deadline_hit.get() {
             Err(ModelError::Overflow)
         } else {
             Ok(())
+        }
+    }
+
+    /// `true` once a wall-clock deadline was sampled (or previously found)
+    /// past its limit.  Called on every candidate-tuple expansion inside
+    /// `join_rec`'s hot loop, so the actual `Instant::now()` read is
+    /// throttled to once every `DEADLINE_CHECK_TICKS` calls — cheap enough
+    /// that a dense single-rule join (the case the per-rule-only check
+    /// missed) is caught within a few thousand expansions instead of running
+    /// to completion regardless of how long that takes.
+    #[inline]
+    fn join_over_deadline(&self) -> bool {
+        if self.deadline_hit.get() {
+            return true;
+        }
+        let Some(dl) = self.deadline else { return false };
+        let t = self.join_ticks.get() + 1;
+        self.join_ticks.set(t);
+        if t % DEADLINE_CHECK_TICKS != 0 {
+            return false;
+        }
+        if Instant::now() >= dl {
+            self.deadline_hit.set(true);
+            true
+        } else {
+            false
         }
     }
 
@@ -899,6 +953,16 @@ fn join_rec(
     head:    &Atom,
     out:     &mut Vec<(Tuple, Parents)>,
 ) {
+    // Finer-grained deadline check (task: "checked every N join-branch
+    // expansions, N~1000, via a cheap counter — do NOT call Instant::now()
+    // per branch").  `join_over_deadline` throttles the actual clock read
+    // internally; this call itself is just a `Cell` increment + compare on
+    // the common path, so it is safe to call on every recursive entry
+    // (equivalently, every join-branch expansion) rather than only once per
+    // rule the way the old per-rule check did.
+    if k.join_over_deadline() {
+        return;
+    }
     if oi == order.len() {
         if let Some(t) = ground_atom(head, binding) {
             // Skip tuples the store already holds: the insert would discard
@@ -954,9 +1018,13 @@ pub(super) fn run(
     max_tuples: usize,
     deadline:   Option<Instant>,
 ) -> Result<(Model, Provenance), ModelError> {
-    let mut k = Kernel::new(prog, max_tuples);
-    // Check the wall-clock deadline cheaply (once per rule batch, not per
-    // tuple); `Overflow` doubles as the bail signal.
+    let mut k = Kernel::new(prog, max_tuples, deadline);
+    // Between-rule deadline check (cheap: at most once per rule per round).
+    // The FINER-grained check — inside a single rule's join, so one dense
+    // `fire` call can't itself run arbitrarily far past `deadline` — is
+    // `Kernel::join_over_deadline`, consulted from `join_rec` on every
+    // recursive entry and surfaced here via `k.deadline_hit` right after
+    // each `fire` call (mirrors the existing post-`fire` `check_budget()?`).
     let over_deadline = |d: Option<Instant>| d.is_some_and(|dl| Instant::now() > dl);
 
     let mut news: Vec<(Pred, Tuple)> = Vec::new();

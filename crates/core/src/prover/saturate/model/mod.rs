@@ -2693,6 +2693,52 @@ mod tests {
         assert_eq!(cited.len(), 1001, "1000 edges + the declaration, nothing else");
     }
 
+    // -- GATE: a single dense rule-firing must respect the deadline (task
+    //    #33's discharge_model_joins granularity fix). --------------------
+
+    #[test]
+    fn evaluate_within_deadline_caught_mid_single_rule_join_not_just_between_rules() {
+        // One rule `p(X, Y) :- a(X), b(Y)` over two 2000-fact EDB relations is
+        // a single `fire` call that must walk a 4,000,000-pair cross join —
+        // entirely inside ONE rule firing, so the OLD once-per-rule deadline
+        // check (consulted only before `fire` starts, never during it) could
+        // not catch it until the whole cross product had been materialized.
+        // `max_tuples` is set far above what a short deadline should ever let
+        // this reach, so a bail here can ONLY be the deadline firing, not the
+        // tuple budget.
+        let mut p = Program::default();
+        const N: usize = 2000;
+        for i in 0..N {
+            p.fact(s("a"), vec![s(&format!("x{i}"))]);
+            p.fact(s("b"), vec![s(&format!("y{i}"))]);
+        }
+        p.rule(
+            atom("p", vec![v(0), v(1)]),
+            vec![pos(atom("a", vec![v(0)])), pos(atom("b", vec![v(1)]))],
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let t0 = std::time::Instant::now();
+        let result = p.evaluate_within(50_000_000, Some(deadline));
+        let elapsed = t0.elapsed();
+
+        assert_eq!(
+            result.err(),
+            Some(ModelError::Overflow),
+            "a deadline mid-join must bail Overflow, not run the full cross product to completion"
+        );
+        // The old per-rule-only check let a single dense `fire` run to
+        // completion regardless of the deadline (this exact shape took well
+        // over a second on debug/test builds); the fine-grained tick-counted
+        // check must catch it within a small, bounded margin past the 50ms
+        // deadline instead — generous enough to be robust on a loaded CI
+        // machine, but nowhere near "ran the whole join".
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "deadline overshoot too large — mid-join check did not fire: {elapsed:?}"
+        );
+    }
+
     // -- Builtin citation chain, small and exact (the report example). ------
 
     #[test]

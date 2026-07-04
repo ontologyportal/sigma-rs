@@ -305,6 +305,51 @@ where
 // one with a `Strategy` axis) supplies the concrete lanes via `drive_one_lane`
 // indexing into its own list.
 
+/// Budget-adaptive lane count: how many [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]
+/// entries `run_portfolio_schedule` should race, given the TOTAL wall-clock
+/// budget for the whole schedule (not the per-lane slice).
+///
+/// Measured (task #33): the full 5-lane schedule wins at `--timeout 20` (65 vs
+/// 61 solved on the reference slice) because a genuine search-shape swap
+/// (demod / goal-dist / literal-select / KBO precedence) sometimes finds what
+/// `tptp-complete` alone misses — but it HURTS at `--timeout 10`, where
+/// [`lane_shares`]' 40%-first-lane split already only hands lane 0 ~4s, and a
+/// 5-way split leaves the later lanes with a sliver too thin to matter; the
+/// single-strategy path (equivalent to `SIGMA_NO_PORTFOLIO=1`) was solving
+/// MORE problems in that regime purely because it spent the whole 10s on the
+/// strategy most likely to work. So the lane count itself scales with the
+/// budget: too little total time and racing strategies is a net loss (fewer
+/// full-budget shots at the best lane), enough time and the extra search
+/// shapes pay for themselves.
+///
+/// Bucketed (not a continuous formula) to keep the three regimes independently
+/// tunable/measurable — see the task's gate: `< 15s` → 1 lane (just
+/// `tptp-complete`, i.e. behaves like `SIGMA_NO_PORTFOLIO=1` but without
+/// having to set the env var); `15..=40s` → 3 lanes (`tptp-complete` +
+/// `tptp-demod` + `tptp-goaldist`, the two lanes measured to carry most of the
+/// non-first-lane win rate); `> 40s` → all 5 (the full schedule, unchanged
+/// from before this task). `total_timeout == 0` (unbounded — no `--timeout`
+/// given) has no budget to be tight on, so it gets the full schedule too.
+///
+/// `SIGMA_ALL_LANES=1` forces 5 lanes regardless of budget, for A/B'ing this
+/// function's bucketing against the unconditional old behavior.
+pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize {
+    if std::env::var_os("SIGMA_ALL_LANES").is_some() {
+        return all_lanes;
+    }
+    if total_timeout == 0 {
+        return all_lanes;
+    }
+    let lanes = if total_timeout < 15 {
+        1
+    } else if total_timeout <= 40 {
+        3
+    } else {
+        all_lanes
+    };
+    lanes.min(all_lanes)
+}
+
 /// Split `total_timeout` seconds across `lanes` lane slots: the first lane
 /// gets `FIRST_LANE_SHARE` of the total, the remainder splits evenly across
 /// the rest.  Every slice is at least 1s (when `total_timeout > 0`) so a lane
@@ -668,6 +713,67 @@ mod tests {
     #[test]
     fn lane_shares_single_lane_gets_everything() {
         assert_eq!(lane_shares(20, 1), vec![20]);
+    }
+
+    // -- adaptive_lane_count (budget-adaptive portfolio width, task #33) ----
+    //
+    // These never touch `SIGMA_ALL_LANES` (only the dedicated override test
+    // below does, and it cleans up after itself) so they're safe to run
+    // concurrently with everything else in this module.
+
+    #[test]
+    fn adaptive_lane_count_under_15s_is_single_lane() {
+        assert_eq!(adaptive_lane_count(1, 5), 1);
+        assert_eq!(adaptive_lane_count(10, 5), 1);
+        assert_eq!(adaptive_lane_count(14, 5), 1);
+    }
+
+    #[test]
+    fn adaptive_lane_count_15_to_40s_is_three_lanes() {
+        assert_eq!(adaptive_lane_count(15, 5), 3);
+        assert_eq!(adaptive_lane_count(20, 5), 3);
+        assert_eq!(adaptive_lane_count(40, 5), 3);
+    }
+
+    #[test]
+    fn adaptive_lane_count_over_40s_is_all_lanes() {
+        assert_eq!(adaptive_lane_count(41, 5), 5);
+        assert_eq!(adaptive_lane_count(100, 5), 5);
+    }
+
+    #[test]
+    fn adaptive_lane_count_unbounded_timeout_is_all_lanes() {
+        // `total_timeout == 0` (no `--timeout` given) has no tight budget to
+        // protect — the portfolio degrades to "each lane runs unbounded"
+        // territory already handled by `lane_shares`, so the full schedule
+        // still applies.
+        assert_eq!(adaptive_lane_count(0, 5), 5);
+    }
+
+    #[test]
+    fn adaptive_lane_count_never_exceeds_available_lanes() {
+        // A caller with fewer than 5 strategies configured (e.g. a future
+        // trimmed schedule) must not get a count that indexes past the end.
+        assert_eq!(adaptive_lane_count(100, 2), 2);
+        assert_eq!(adaptive_lane_count(20, 2), 2);
+        assert_eq!(adaptive_lane_count(1, 0), 0);
+    }
+
+    #[test]
+    fn adaptive_lane_count_sigma_all_lanes_forces_full_schedule() {
+        // SIGMA_ALL_LANES=1 is the A/B escape hatch: force the pre-task-#33
+        // unconditional 5-lane behavior regardless of budget.  Mutates a
+        // process-global env var — scoped narrowly and cleaned up
+        // immediately after the assertions so it can't leak into any other
+        // test in this binary.
+        std::env::set_var("SIGMA_ALL_LANES", "1");
+        let result = std::panic::catch_unwind(|| {
+            assert_eq!(adaptive_lane_count(1, 5), 5);
+            assert_eq!(adaptive_lane_count(10, 5), 5);
+            assert_eq!(adaptive_lane_count(0, 5), 5);
+        });
+        std::env::remove_var("SIGMA_ALL_LANES");
+        result.unwrap();
     }
 
     #[test]
