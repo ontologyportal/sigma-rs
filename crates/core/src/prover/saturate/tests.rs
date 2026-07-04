@@ -62,7 +62,7 @@ fn model_registry_builds_and_caches() {
     assert!(Arc::ptr_eq(&mp, &mp2), "registry is cached for the KB's life");
 
     // The sound positive model (monotone + KB-derived transitivity).
-    let m = mp.positive_model().expect("positive model evaluates");
+    let (m, _prov) = mp.positive_model().expect("positive model evaluates");
     let tuple = |a: &str, b: &str| vec![Symbol::hash_name(a), Symbol::hash_name(b)];
     let has = |p: &str, a: &str, b: &str|
         m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));
@@ -1067,7 +1067,9 @@ fn native_stack_smoke() {
                 eprintln!("transitive-derivation fixpoint converged after {pass} passes");
                 break;
             }
-            for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh) {
+            let fresh_pairs: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+                fresh.iter().map(|&r| (r, None)).collect();
+            for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh_pairs) {
                 if allow.contains(&r.head.pred)
                     && r.body.iter().all(|l| allow.contains(&l.atom.pred)) {
                     tax.rules.push(r);
@@ -1122,7 +1124,8 @@ fn native_stack_smoke() {
         // schema rules folded in.  This reproduces the taxonomy closure with no
         // allowlist and no manual cluster.
         let mut mono = cluster::positive_program(&prog);
-        let known_vec: Vec<crate::SymbolId> = known.iter().copied().collect();
+        let known_vec: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+            known.iter().map(|&r| (r, None)).collect();
         for r in extract::schema_rules(&decls, &known_vec) {
             mono.rules.push(r);
         }

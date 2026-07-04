@@ -67,7 +67,11 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
     // The goal adornment: bound = constant positions.
     let goal_mask = adornment(goal_args, &HashSet::new());
 
-    let mut out = Program { rules: Vec::new(), edb: prog.edb.clone() };
+    let mut out = Program {
+        rules:    Vec::new(),
+        edb:      prog.edb.clone(),
+        edb_sids: prog.edb_sids.clone(),
+    };
 
     // Seed: the demanded bound tuple from the conjecture's constants.
     let seed: Vec<SymbolId> = goal_args
@@ -112,9 +116,13 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
                     let mut mbody = Vec::with_capacity(j + 1);
                     mbody.push(Literal { atom: magic_head.clone(), negated: false });
                     mbody.extend(rule.body[..j].iter().cloned());
+                    // Magic rules are demand bookkeeping, not entailment
+                    // steps — they carry no citation of their own (their
+                    // matched prefix facts still cite through `parents`).
                     out.rules.push(Rule {
                         head: Atom { pred: magic_pred(lit.atom.pred, qmask), args: bound_args(&lit.atom.args, qmask) },
                         body: mbody,
+                        sid:  None,
                     });
                     work.push((lit.atom.pred, qmask));
                 }
@@ -126,7 +134,9 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
                 }
                 new_body.push(lit.clone());
             }
-            out.rules.push(Rule { head: rule.head.clone(), body: new_body });
+            // The adorned rule derives the same heads as the original — it
+            // keeps the original's citation.
+            out.rules.push(Rule { head: rule.head.clone(), body: new_body, sid: rule.sid });
         }
     }
     out

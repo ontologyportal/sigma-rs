@@ -147,7 +147,7 @@ mod tests {
         Atom { pred: p, args: a.iter().map(|i| DTerm::Var(*i)).collect() }
     }
     fn lit(p: Pred, a: &[u32]) -> Literal { Literal { atom: atom(p, a), negated: false } }
-    fn rule(head: Atom, body: Vec<Literal>) -> Rule { Rule { head, body } }
+    fn rule(head: Atom, body: Vec<Literal>) -> Rule { Rule { head, body, sid: None } }
 
     // The signatures are NAME-INDEPENDENT: the same pattern recognizes the
     // role whatever the relation is called (`genls`, `subPlanOf`, …).

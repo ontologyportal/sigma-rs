@@ -119,6 +119,11 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
                 program.edb.insert(*p, facts.clone());
             }
         }
+        for ((p, t), sid) in &prog.edb_sids {
+            if cpreds.contains(p) {
+                program.edb_sids.insert((*p, t.clone()), *sid);
+            }
+        }
         for r in &prog.rules {
             if cpreds.contains(&r.head.pred) {
                 program.rules.push(r.clone());
@@ -165,6 +170,11 @@ pub(crate) fn scope_program(prog: &Program, preds: &HashSet<Pred>) -> Program {
             p.edb.insert(*pred, facts.clone());
         }
     }
+    for ((pred, t), sid) in &prog.edb_sids {
+        if preds.contains(pred) {
+            p.edb_sids.insert((*pred, t.clone()), *sid);
+        }
+    }
     for r in &prog.rules {
         if preds.contains(&r.head.pred) {
             p.rules.push(r.clone());
@@ -184,7 +194,11 @@ pub(crate) fn scope_program(prog: &Program, preds: &HashSet<Pred>) -> Program {
 /// here.  Negative/complete decisions still require a stratifiable cluster from
 /// `partition`; this fragment serves the (common) positive case.
 pub(crate) fn positive_program(prog: &Program) -> Program {
-    let mut p = Program { rules: Vec::new(), edb: prog.edb.clone() };
+    let mut p = Program {
+        rules:    Vec::new(),
+        edb:      prog.edb.clone(),
+        edb_sids: prog.edb_sids.clone(),
+    };
     for r in &prog.rules {
         if r.body.iter().all(|l| !l.negated) {
             p.rules.push(r.clone());

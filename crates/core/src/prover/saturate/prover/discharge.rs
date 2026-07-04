@@ -462,15 +462,19 @@ impl<'a> NativeProver<'a> {
         // emits nothing) can never eat the prover's time budget — it bails and
         // resolution proceeds.
         let deadline = Instant::now() + std::time::Duration::from_millis(800);
-        let mut to_emit: Vec<(SymbolId, Vec<SymbolId>)> = Vec::new();
+        let mut to_emit: Vec<(SymbolId, Vec<SymbolId>, Vec<SentenceId>)> = Vec::new();
         let mut model_stats = super::super::model::ModelStats::default();
         for (rel, args) in &patterns {
             let dargs = self.bridge_dargs(args);
             let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
-            if let Some(rows) = answered {
+            if let Some((rows, prov)) = answered {
                 self.stats.model_atoms_answered += 1;
                 for row in rows {
-                    to_emit.push((*rel, row));
+                    // The KB sentences (EDB facts, then rules) this answer's
+                    // derivation used — cited on the emitted unit below, the
+                    // same way oracle witness sids are.
+                    let cited = mp.cite(&prov, *rel, &row);
+                    to_emit.push((*rel, row, cited));
                 }
             } else {
                 self.stats.model_atoms_unanswered += 1;
@@ -479,7 +483,7 @@ impl<'a> NativeProver<'a> {
         self.merge_model_stats(&model_stats);
 
         let mut emitted = 0usize;
-        for (rel, row) in to_emit {
+        for (rel, row, cited) in to_emit {
             let Some(relname) = self.syn().sym_name(rel) else { continue };
             let mut elems = vec![Term::Sym(relname)];
             let mut ok = true;
@@ -495,6 +499,16 @@ impl<'a> NativeProver<'a> {
             if let Some(id) =
                 self.make(vec![(true, Term::App(elems))], Vec::new(), "model", SUPPORT, None, true)
             {
+                self.clauses[id as usize].fact_parents.extend(cited);
+                if trace && !self.clauses[id as usize].fact_parents.is_empty() {
+                    let c = &self.clauses[id as usize];
+                    eprintln!(
+                        "MODEL emit [{}] {} fact_parents={:?}",
+                        id,
+                        c.terms.first().map(|(_, t)| term_kif(t, self.syn())).unwrap_or_default(),
+                        c.fact_parents,
+                    );
+                }
                 if self.push(Some(id)).is_some() {
                     emitted += 1;
                 }
@@ -630,17 +644,29 @@ impl<'a> NativeProver<'a> {
         //    Theory relations are oracle-decided, never enumerated.
         let deadline = Instant::now() + std::time::Duration::from_millis(1500);
         const MAX_FACTS_PER_REL: usize = 50_000;
-        let full_model = mp.positive_model();
+        // Provenance of each materialization, in `provs`; a model-sourced
+        // `JoinFact` records WHICH evaluation derived it (`FactSrc::Model`
+        // index), so a satisfying join can cite the KB sentences behind every
+        // model-derived conjunct (per-evaluation state — never cached on the
+        // registry).
+        let mut provs: Vec<super::super::model::Provenance> = Vec::new();
+        let full_model = match mp.positive_model() {
+            Some((m, p)) => {
+                provs.push(p);
+                Some(m)
+            }
+            None => None,
+        };
         let mut facts: HashMap<SymbolId, Vec<JoinFact>> = HashMap::new();
         for &rel in &needed {
             if is_theory_rel(rel, &roles, &tids) {
                 continue;
             }
             let mut f = self.store_facts(rel);
-            // (a) full model, when it materialized.
+            // (a) full model, when it materialized (provenance index 0).
             if let Some(model) = full_model.as_ref().and_then(|m| m.get(&rel)) {
                 for row in model {
-                    push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL);
+                    push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL, 0);
                 }
             }
             // (b) per-atom demand-scoped answers, seeded on the conjuncts'
@@ -662,10 +688,12 @@ impl<'a> NativeProver<'a> {
                     let mut model_stats = super::super::model::ModelStats::default();
                     let answered = mp.answer_stats(rel, &dargs, Some(deadline), &mut model_stats);
                     self.merge_model_stats(&model_stats);
-                    if let Some(rows) = answered {
+                    if let Some((rows, prov)) = answered {
                         self.stats.model_atoms_answered += 1;
+                        let pix = provs.len() as u32;
+                        provs.push(prov);
                         for row in &rows {
-                            push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL);
+                            push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL, pix);
                         }
                     } else {
                         self.stats.model_atoms_unanswered += 1;
@@ -712,7 +740,46 @@ impl<'a> NativeProver<'a> {
                 &mut budget,
             );
             if let Some(sol) = sols.first() {
-                let (fact_sids, _) = self.collect_provenance(&body, sol, &facts);
+                // Re-walk the satisfied conjuncts under the binding to gather
+                // citations: store facts cite their sentence directly;
+                // model-derived facts cite through their evaluation's
+                // provenance (EDB leaves + rules — `cite`); ground binary
+                // literals the oracle decided cite its witness facts.
+                let mut fact_sids: Vec<SentenceId> = Vec::new();
+                for (rel, args) in &body {
+                    let sargs: Vec<Term> = args.iter().map(|a| subst(a, sol)).collect();
+                    if let Some(jf) = facts
+                        .get(rel)
+                        .and_then(|v| v.iter().find(|jf| jf.args == sargs))
+                    {
+                        match jf.src {
+                            FactSrc::Store(sid) => fact_sids.push(sid),
+                            FactSrc::Emitted(_) => {}
+                            FactSrc::Model(pix) => {
+                                let tuple: Option<Vec<SymbolId>> =
+                                    sargs.iter().map(sym_of).collect();
+                                if let (Some(prov), Some(tuple)) =
+                                    (provs.get(pix as usize), tuple)
+                                {
+                                    fact_sids.extend(mp.cite(prov, *rel, &tuple));
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    if sargs.len() == 2 {
+                        if let (Some(x), Some(y)) = (sym_of(&sargs[0]), sym_of(&sargs[1])) {
+                            let mut why: Vec<Witness> = Vec::new();
+                            if self.oracle.holds(*rel, x, y, Some(&mut why)) {
+                                fact_sids.extend(why.iter().filter_map(|w| w.sid));
+                            }
+                        }
+                    }
+                }
+                // Dedup preserving order (each conjunct's citation stays
+                // leaf-facts-first, rules after).
+                let mut seen_sids: HashSet<SentenceId> = HashSet::new();
+                fact_sids.retain(|s| seen_sids.insert(*s));
                 for lit in lits {
                     let g = subst(lit, sol);
                     if g.is_ground() {
@@ -992,7 +1059,10 @@ impl<'a> NativeProver<'a> {
                 match jf.src {
                     FactSrc::Store(sid) => fact_sids.push(sid),
                     FactSrc::Emitted(cid) => cparents.push(cid),
-                    FactSrc::Model => {} // model-derived: no citable store sid
+                    // Model-derived facts never enter the rule-join generator
+                    // map (only `discharge_model_joins` pushes them, and it
+                    // cites through the evaluation provenance instead).
+                    FactSrc::Model(_) => {}
                 }
                 continue;
             }
@@ -1282,10 +1352,11 @@ fn match_args(pat: &[Term], fact: &[Term], b: &mut HashMap<SymbolId, Term>) -> b
 enum FactSrc {
     Store(SentenceId),
     Emitted(u32),
-    /// Derived by the inductive model (semi-naive evaluation), not a single
-    /// stored atom — carries no citable sentence id (the per-atom model path
-    /// likewise emits model units without fact parents).
-    Model,
+    /// Derived by the inductive model (semi-naive evaluation) — the payload
+    /// indexes the evaluation's [`Provenance`](super::super::model::Provenance)
+    /// in the discharge pass's local `provs` list, through which `cite`
+    /// reconstructs the KB sentences (EDB facts + rules) behind the fact.
+    Model(u32),
 }
 
 /// A ground fact in the join's generator map, with its provenance.
@@ -1296,17 +1367,25 @@ struct JoinFact {
 }
 
 /// Push one model-derived ground tuple into a join generator relation as a
-/// `JoinFact`, deduped and capped.  A free function (rather than a
-/// `NativeProver`-capturing closure) so `discharge_model_joins` can also
+/// `JoinFact`, deduped and capped.  `prov_ix` names the evaluation the tuple
+/// came from (an index into the caller's provenance list) so a satisfying
+/// join can later cite the tuple's derivation.  A free function (rather than
+/// a `NativeProver`-capturing closure) so `discharge_model_joins` can also
 /// mutate `self.stats` for the SIGMA_STATS answer/bail counters in the same
 /// scope without a borrow conflict.
-fn push_join_fact(syn: &crate::syntactic::SyntacticLayer, f: &mut Vec<JoinFact>, row: &[SymbolId], cap: usize) {
+fn push_join_fact(
+    syn:     &crate::syntactic::SyntacticLayer,
+    f:       &mut Vec<JoinFact>,
+    row:     &[SymbolId],
+    cap:     usize,
+    prov_ix: u32,
+) {
     if f.len() >= cap {
         return;
     }
     let aargs: Vec<Term> = row.iter().filter_map(|v| syn.sym_name(*v).map(Term::Sym)).collect();
     if aargs.len() == row.len() && !f.iter().any(|jf| jf.args == aargs) {
-        f.push(JoinFact { args: aargs, src: FactSrc::Model });
+        f.push(JoinFact { args: aargs, src: FactSrc::Model(prov_ix) });
     }
 }
 

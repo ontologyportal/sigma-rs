@@ -122,7 +122,7 @@ pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
                     continue;
                 }
                 let Some((head, _)) = atom_of(&con, &mut vars) else { continue };
-                p.rules.push(Rule { head, body });
+                p.rules.push(Rule { head, body, sid: Some(root) });
             }
             // Fact: a ground symbol-headed atom.
             None => {
@@ -133,7 +133,7 @@ pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
                         DTerm::Var(_) => None,
                     }).collect();
                     if tuple.len() == atom.args.len() {
-                        p.fact(atom.pred, tuple);
+                        p.fact_src(atom.pred, tuple, root);
                     }
                 }
             }
@@ -167,15 +167,16 @@ pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
 // (recovered by shape), never from hard-coded names.
 
 /// The relations bearing each algebraic role, gathered from the store's
-/// declarations.
+/// declarations.  Each entry carries the declaring sentence id, so the
+/// instantiated schema rule can cite the declaration in a proof.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct RoleDecls {
-    /// `(subrelation R S)` pairs (sub `R`, super `S`).
-    pub subrelation: Vec<(SymbolId, SymbolId)>,
-    /// Relations declared `(instance R TransitiveRelation)`.
-    pub transitive:  Vec<SymbolId>,
-    /// Relations declared `(instance R SymmetricRelation)`.
-    pub symmetric:   Vec<SymbolId>,
+    /// `(subrelation R S)` pairs (sub `R`, super `S`) + the declaring root.
+    pub subrelation: Vec<(SymbolId, SymbolId, Option<SentenceId>)>,
+    /// Relations declared `(instance R TransitiveRelation)` + the declaration.
+    pub transitive:  Vec<(SymbolId, Option<SentenceId>)>,
+    /// Relations declared `(instance R SymmetricRelation)` + the declaration.
+    pub symmetric:   Vec<(SymbolId, Option<SentenceId>)>,
 }
 
 /// A binary symbol-headed fact's two symbol arguments.
@@ -196,16 +197,16 @@ pub(crate) fn collect_role_decls(syn: &SyntacticLayer, roles: &TaxonomyRoles) ->
     for sid in syn.by_head_id(&roles.subrelation) {
         if let Some((r, s)) = binary_syms(syn, sid) {
             if r != s {
-                d.subrelation.push((r, s));
+                d.subrelation.push((r, s, Some(sid)));
             }
         }
     }
     for sid in syn.by_head_id(&roles.instance) {
         if let Some((r, c)) = binary_syms(syn, sid) {
             if c == roles.transitive {
-                d.transitive.push(r);
+                d.transitive.push((r, Some(sid)));
             } else if c == roles.symmetric {
-                d.symmetric.push(r);
+                d.symmetric.push((r, Some(sid)));
             }
         }
     }
@@ -216,16 +217,26 @@ pub(crate) fn collect_role_decls(syn: &SyntacticLayer, roles: &TaxonomyRoles) ->
 /// generalized schema expander.  `extra_transitive` lets a caller add
 /// relations whose transitivity is known by other means (e.g. the recognized
 /// taxonomy roles `subclass`/`subrelation`, transitive by construction, or
-/// relations found transitive through the relation-class hierarchy).
-pub(crate) fn schema_rules(decls: &RoleDecls, extra_transitive: &[SymbolId]) -> Vec<Rule> {
+/// relations found transitive through the relation-class hierarchy), each
+/// with the sentence to cite for that knowledge (or `None`).  Every emitted
+/// rule carries its declaring sentence as `sid`, so a proof using the rule
+/// can cite the declaration it was instantiated from.
+pub(crate) fn schema_rules(
+    decls:            &RoleDecls,
+    extra_transitive: &[(SymbolId, Option<SentenceId>)],
+) -> Vec<Rule> {
     let app = |p: SymbolId, a: u32, b: u32| Atom { pred: p, args: vec![DTerm::Var(a), DTerm::Var(b)] };
     let mut out = Vec::new();
 
-    for &(r, s) in &decls.subrelation {
+    for &(r, s, sid) in &decls.subrelation {
         // S(x,y) :- R(x,y)
-        out.push(Rule { head: app(s, 0, 1), body: vec![Literal { atom: app(r, 0, 1), negated: false }] });
+        out.push(Rule {
+            head: app(s, 0, 1),
+            body: vec![Literal { atom: app(r, 0, 1), negated: false }],
+            sid,
+        });
     }
-    for &r in decls.transitive.iter().chain(extra_transitive.iter()) {
+    for &(r, sid) in decls.transitive.iter().chain(extra_transitive.iter()) {
         // R(x,z) :- R(x,y), R(y,z)
         out.push(Rule {
             head: Atom { pred: r, args: vec![DTerm::Var(0), DTerm::Var(2)] },
@@ -233,11 +244,16 @@ pub(crate) fn schema_rules(decls: &RoleDecls, extra_transitive: &[SymbolId]) -> 
                 Literal { atom: app(r, 0, 1), negated: false },
                 Literal { atom: app(r, 1, 2), negated: false },
             ],
+            sid,
         });
     }
-    for &r in &decls.symmetric {
+    for &(r, sid) in &decls.symmetric {
         // R(y,x) :- R(x,y)
-        out.push(Rule { head: app(r, 1, 0), body: vec![Literal { atom: app(r, 0, 1), negated: false }] });
+        out.push(Rule {
+            head: app(r, 1, 0),
+            body: vec![Literal { atom: app(r, 0, 1), negated: false }],
+            sid,
+        });
     }
     out
 }

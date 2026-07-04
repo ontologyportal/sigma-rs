@@ -19,7 +19,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::types::SymbolId;
+use smallvec::SmallVec;
+
+use crate::types::{SentenceId, SymbolId};
 
 pub(crate) mod cluster;
 pub(crate) mod extract;
@@ -95,27 +97,39 @@ impl ModelProgram {
     /// hierarchy-inherited declarations) get their transitivity rule and the
     /// model is re-evaluated to a fixpoint.  No conventional seeding, so every
     /// emitted fact is entailed by the KB's own axioms.
-    pub(crate) fn positive_model(&self) -> Option<Model> {
+    pub(crate) fn positive_model(&self) -> Option<(Model, Provenance)> {
         // Materialization budget — bail (→ resolution) rather than blow up on a
         // large un-scoped KB.  Demand scoping (SInE, slice 4) is the real fix;
         // this keeps slice 2 from regressing problems resolution already solves.
         const BUDGET: usize = 250_000;
         let mut work = self.monotone.clone();
         let mut known: HashSet<Pred> = HashSet::new();
-        let mut model = work.evaluate_budgeted(BUDGET).ok()?;
+        let (mut model, mut prov) = work.evaluate_within(BUDGET, None).ok()?;
         loop {
             let trans = extract::transitive_members(&model, &self.roles);
             let fresh: Vec<Pred> = trans.into_iter().filter(|r| known.insert(*r)).collect();
             if fresh.is_empty() {
                 break;
             }
+            // Each derived-transitivity rule cites the `(R, TransitiveRelation)`
+            // membership's own source when the provenance reaches it (the
+            // direct declaration, or the first leaf of the hierarchy chain
+            // that entailed it); `None` when it doesn't.
+            let fresh_cited: Vec<(Pred, Option<SentenceId>)> = fresh
+                .iter()
+                .map(|&r| {
+                    let membership = vec![r, self.roles.transitive];
+                    let sids = prov.cite(self.roles.instance, &membership);
+                    (r, sids.first().copied())
+                })
+                .collect();
             let decls = extract::RoleDecls::default();
-            for r in extract::schema_rules(&decls, &fresh) {
+            for r in extract::schema_rules(&decls, &fresh_cited) {
                 work.rules.push(r);
             }
-            model = work.evaluate_budgeted(BUDGET).ok()?;
+            (model, prov) = work.evaluate_within(BUDGET, None).ok()?;
         }
-        Some(model)
+        Some((model, prov))
     }
 
     /// Demand-scoped positive model (Phase 5, slice 4): materialize only the
@@ -133,8 +147,9 @@ impl ModelProgram {
     /// the whole relation.  Budgeted; `None` ⇒ bail to resolution.
     ///
     /// Thin wrapper over [`answer_stats`](Self::answer_stats) that discards
-    /// the bail-reason breakdown — unchanged signature/behavior for existing
-    /// callers.
+    /// the bail-reason breakdown and the provenance — unchanged
+    /// signature/behavior for existing callers.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn answer(
         &self,
         rel:      Pred,
@@ -142,19 +157,22 @@ impl ModelProgram {
         deadline: Option<std::time::Instant>,
     ) -> Option<Vec<Tuple>> {
         let mut stats = ModelStats::default();
-        self.answer_stats(rel, args, deadline, &mut stats)
+        self.answer_stats(rel, args, deadline, &mut stats).map(|(rows, _)| rows)
     }
 
     /// As [`answer`](Self::answer), but records WHY a bail happened (or that
-    /// an answer was produced) into `stats` — SIGMA_STATS instrumentation
-    /// only, zero behavior change vs `answer`.
+    /// an answer was produced) into `stats`, and returns the evaluation's
+    /// [`Provenance`] alongside the rows so the caller can [`cite`](Self::cite)
+    /// each answer.  The provenance is per-evaluation state (rule indices
+    /// refer to the magic-rewritten cone evaluated here) — it is returned by
+    /// value and must NOT be cached on the KB-lifetime registry.
     pub(crate) fn answer_stats(
         &self,
         rel:      Pred,
         args:     &[DTerm],
         deadline: Option<std::time::Instant>,
         stats:    &mut ModelStats,
-    ) -> Option<Vec<Tuple>> {
+    ) -> Option<(Vec<Tuple>, Provenance)> {
         const BUDGET: usize = 250_000;
         // Magic restricts *facts*, but the naive evaluator still processes
         // every rule in the cone each round.  When the cone is the whole
@@ -179,8 +197,8 @@ impl ModelProgram {
             return None;
         }
         let rewritten = magic::magic_rewrite(&scoped, rel, args);
-        let model = match rewritten.evaluate_within(BUDGET, deadline) {
-            Ok(m) => m,
+        let (model, prov) = match rewritten.evaluate_within(BUDGET, deadline) {
+            Ok(mp) => mp,
             Err(ModelError::Unsafe) => {
                 stats.unsafe_bails += 1;
                 return None;
@@ -216,7 +234,14 @@ impl ModelProgram {
             .cloned()
             .collect();
         stats.answered += 1;
-        Some(ans)
+        Some((ans, prov))
+    }
+
+    /// Reconstruct the KB citation for a model fact from per-evaluation
+    /// provenance — the sentence ids (EDB leaves first, then rules) its
+    /// derivation used.  See [`Provenance::cite`].
+    pub(crate) fn cite(&self, prov: &Provenance, pred: Pred, t: &Tuple) -> Vec<SentenceId> {
+        prov.cite(pred, t)
     }
 }
 
@@ -272,6 +297,12 @@ pub(crate) struct Literal {
 pub(crate) struct Rule {
     pub head: Atom,
     pub body: Vec<Literal>,
+    /// The KB sentence this rule was extracted / instantiated from — the
+    /// `(=> …)` root for extracted Horn rules, the declaring
+    /// `(subrelation R S)` / `(instance R TransitiveRelation)` sentence for
+    /// schema rules.  `None` for synthetic rules (magic guards, hand-authored
+    /// narratives), which contribute no citation of their own.
+    pub sid:  Option<SentenceId>,
 }
 
 /// A Datalog(¬) program: intensional rules + extensional ground facts.
@@ -279,6 +310,80 @@ pub(crate) struct Rule {
 pub(crate) struct Program {
     pub rules: Vec<Rule>,
     pub edb:   HashMap<Pred, HashSet<Tuple>>,
+    /// Source sentence of each EDB fact — the provenance leaves.  Facts
+    /// seeded without a source (magic seeds, hand-authored programs) are
+    /// simply absent and contribute no citation.
+    pub edb_sids: HashMap<(Pred, Tuple), SentenceId>,
+}
+
+/// How one derived fact was FIRST obtained: the deriving rule (an index into
+/// the evaluated program's `rules`) and the ground tuples its positive body
+/// literals matched.  First-parent only — later re-derivations of the same
+/// fact are not recorded (cheap, and sufficient for citation).  Negated
+/// literals contribute no parents (they cite absence, not a fact).
+#[derive(Clone, Debug)]
+pub(crate) struct Derivation {
+    pub rule:    u32,
+    pub parents: SmallVec<[(Pred, Tuple); 4]>,
+}
+
+/// Per-evaluation provenance: everything needed to reconstruct, for any fact
+/// of the computed model, the KB sentences (EDB facts + rules) its derivation
+/// used.  Returned by value from each evaluation — NEVER cached on the
+/// KB-lifetime [`ModelProgram`] registry (rule indices refer to the program
+/// instance that was evaluated, e.g. a magic-rewritten cone).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Provenance {
+    /// `rule_sids[i]` = source sentence of the evaluated program's rule `i`.
+    pub rule_sids: Vec<Option<SentenceId>>,
+    /// Source sentence of each EDB fact (copied from the evaluated program).
+    pub edb_sids:  HashMap<(Pred, Tuple), SentenceId>,
+    /// First derivation of each IDB fact.
+    pub derived:   HashMap<(Pred, Tuple), Derivation>,
+}
+
+impl Provenance {
+    /// Reconstruct the KB citation for one model fact: walk the derivation
+    /// DAG (iterative, memoized), collecting the EDB leaf sentences and each
+    /// step's rule sentence, dedup'd — leaf facts first, then rules, matching
+    /// the taxonomy oracle's bottom-up citation style.  Depth-guarded.
+    pub(crate) fn cite(&self, pred: Pred, t: &Tuple) -> Vec<SentenceId> {
+        const MAX_STEPS: usize = 10_000;
+        let mut fact_sids: Vec<SentenceId> = Vec::new();
+        let mut rule_sids: Vec<SentenceId> = Vec::new();
+        let mut visited: HashSet<(Pred, Tuple)> = HashSet::new();
+        let mut stack: Vec<(Pred, Tuple)> = vec![(pred, t.clone())];
+        let mut steps = 0usize;
+        while let Some(key) = stack.pop() {
+            if !visited.insert(key.clone()) {
+                continue;
+            }
+            steps += 1;
+            if steps > MAX_STEPS {
+                break;
+            }
+            if let Some(d) = self.derived.get(&key) {
+                if let Some(sid) = self.rule_sids.get(d.rule as usize).copied().flatten() {
+                    rule_sids.push(sid);
+                }
+                for p in d.parents.iter() {
+                    if !visited.contains(p) {
+                        stack.push(p.clone());
+                    }
+                }
+            } else if let Some(&sid) = self.edb_sids.get(&key) {
+                fact_sids.push(sid);
+            }
+        }
+        let mut out: Vec<SentenceId> = Vec::with_capacity(fact_sids.len() + rule_sids.len());
+        let mut seen: HashSet<SentenceId> = HashSet::new();
+        for s in fact_sids.into_iter().chain(rule_sids) {
+            if seen.insert(s) {
+                out.push(s);
+            }
+        }
+        out
+    }
 }
 
 /// Why a program could not be evaluated as a stratified Datalog program.
@@ -296,19 +401,26 @@ pub(crate) enum ModelError {
 }
 
 impl Program {
-    /// Add a ground EDB fact.
+    /// Add a ground EDB fact (no citable source).
     pub(crate) fn fact(&mut self, pred: Pred, tuple: Tuple) {
         self.edb.entry(pred).or_default().insert(tuple);
     }
 
-    /// Add a rule.
+    /// Add a ground EDB fact recording the KB sentence it came from.
+    pub(crate) fn fact_src(&mut self, pred: Pred, tuple: Tuple, sid: SentenceId) {
+        self.edb_sids.insert((pred, tuple.clone()), sid);
+        self.edb.entry(pred).or_default().insert(tuple);
+    }
+
+    /// Add a rule (no citable source — hand-authored / synthetic).
     pub(crate) fn rule(&mut self, head: Atom, body: Vec<Literal>) {
-        self.rules.push(Rule { head, body });
+        self.rules.push(Rule { head, body, sid: None });
     }
 
     /// Evaluate the program to its perfect model (bottom-up, stratum by
     /// stratum; positive recursion within a stratum, negation only against
-    /// fully-computed lower strata).
+    /// fully-computed lower strata).  Model-only convenience (provenance
+    /// discarded) — see [`evaluate_within`](Self::evaluate_within).
     pub(crate) fn evaluate(&self) -> Result<Model, ModelError> {
         self.evaluate_budgeted(usize::MAX)
     }
@@ -317,18 +429,21 @@ impl Program {
     /// model exceeds `max_tuples` total facts — the guard that keeps an
     /// un-scoped evaluation over a large KB from blowing up (it bails to
     /// resolution instead).  `usize::MAX` ⇒ unbounded (see [`evaluate`]).
+    /// Model-only convenience (provenance discarded).
     pub(crate) fn evaluate_budgeted(&self, max_tuples: usize) -> Result<Model, ModelError> {
-        self.evaluate_within(max_tuples, None)
+        self.evaluate_within(max_tuples, None).map(|(m, _)| m)
     }
 
     /// As [`evaluate_budgeted`], but also aborts (`Overflow`) past a wall-clock
     /// `deadline` — so a query-time materialization can never eat the prover's
-    /// time budget (it bails to resolution instead).
+    /// time budget (it bails to resolution instead).  Returns the model
+    /// TOGETHER with its per-evaluation [`Provenance`], so callers that emit
+    /// model facts into a proof can cite the KB sentences behind them.
     pub(crate) fn evaluate_within(
         &self,
         max_tuples: usize,
         deadline:   Option<std::time::Instant>,
-    ) -> Result<Model, ModelError> {
+    ) -> Result<(Model, Provenance), ModelError> {
         self.validate_safe()?;
         let strata = self.stratify()?;
         seminaive::run(self, &strata, max_tuples, deadline)
@@ -543,6 +658,7 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
                 args: vec![DTerm::Const(e.event), DTerm::Const(e.fluent), DTerm::Var(0)],
             },
             body,
+            sid: None,
         }
     };
     for e in &n.initiates {
@@ -681,6 +797,49 @@ mod tests {
         p.rule(atom("q", vec![v(0)]),
                vec![pos(atom("dom", vec![v(0)])), neg(atom("p", vec![v(0)]))]);
         assert_eq!(p.evaluate(), Err(ModelError::Unstratifiable));
+    }
+
+    // Provenance: a 2-hop derived fact cites both EDB leaf sentences AND both
+    // rule sentences its derivation chained through — leaf facts first, then
+    // rules (the taxonomy oracle's bottom-up citation style).
+    #[test]
+    fn cite_two_hop_derivation_cites_edb_and_rules() {
+        let (f1, f2, r1, r2): (SentenceId, SentenceId, SentenceId, SentenceId) =
+            (0x11, 0x22, 0x33, 0x44);
+        let mut p = Program::default();
+        p.fact_src(s("edge"), vec![s("a"), s("b")], f1);
+        p.fact_src(s("link"), vec![s("b"), s("c")], f2);
+        // step(X,Y) :- edge(X,Y)                      [rule sid r1]
+        p.rules.push(Rule {
+            head: atom("step", vec![v(0), v(1)]),
+            body: vec![pos(atom("edge", vec![v(0), v(1)]))],
+            sid:  Some(r1),
+        });
+        // reach(X,Z) :- step(X,Y), link(Y,Z)          [rule sid r2]
+        p.rules.push(Rule {
+            head: atom("reach", vec![v(0), v(2)]),
+            body: vec![pos(atom("step", vec![v(0), v(1)])), pos(atom("link", vec![v(1), v(2)]))],
+            sid:  Some(r2),
+        });
+        let (model, prov) = p.evaluate_within(usize::MAX, None).unwrap();
+        assert!(holds(&model, "reach", &["a", "c"]));
+
+        let cited = prov.cite(s("reach"), &vec![s("a"), s("c")]);
+        assert!(cited.contains(&f1), "cites the edge EDB leaf");
+        assert!(cited.contains(&f2), "cites the link EDB leaf");
+        assert!(cited.contains(&r1), "cites the 1st-hop rule");
+        assert!(cited.contains(&r2), "cites the 2nd-hop rule");
+        assert_eq!(cited.len(), 4, "nothing else cited, no duplicates");
+        // Leaf facts precede rules.
+        let pos_of = |sid: SentenceId| cited.iter().position(|x| *x == sid).unwrap();
+        assert!(
+            pos_of(f1).max(pos_of(f2)) < pos_of(r1).min(pos_of(r2)),
+            "EDB leaves come before rules: {cited:?}"
+        );
+        // An EDB fact cites exactly its own sentence.
+        assert_eq!(prov.cite(s("edge"), &vec![s("a"), s("b")]), vec![f1]);
+        // An unknown fact cites nothing.
+        assert!(prov.cite(s("reach"), &vec![s("c"), s("a")]).is_empty());
     }
 
     // Unsafe rule (head var not bound by a positive body literal) is rejected.
