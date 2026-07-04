@@ -11,6 +11,7 @@ use crate::types::SentenceId;
 
 use super::super::clause::PClause;
 use super::super::schema::{SchemaHit, SchemaKind};
+use super::super::theory::TheoryOracle;
 use super::NativeProver;
 
 impl<'a> NativeProver<'a> {

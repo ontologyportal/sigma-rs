@@ -721,6 +721,7 @@ fn equality_units_register_both_orientations() {
 #[test]
 fn oracle_instance_chain_with_witnesses() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -754,6 +755,7 @@ fn oracle_instance_chain_with_witnesses() {
 #[test]
 fn oracle_subclass_and_reflexivity() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -785,6 +787,7 @@ fn oracle_subclass_and_reflexivity() {
 #[test]
 fn oracle_mined_rule_edge_discharges_with_rule_witness() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("
@@ -814,6 +817,7 @@ fn oracle_mined_rule_edge_discharges_with_rule_witness() {
 #[test]
 fn oracle_transitive_reachability_with_chain_witnesses() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -844,6 +848,7 @@ fn oracle_transitive_reachability_with_chain_witnesses() {
 #[test]
 fn oracle_learned_units_extend_the_closure() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -871,6 +876,7 @@ fn oracle_learned_units_extend_the_closure() {
 #[test]
 fn oracle_respects_session_scope() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
     use crate::syntactic::caches::session::session_id;
 

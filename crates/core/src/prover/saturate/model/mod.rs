@@ -1221,6 +1221,7 @@ mod tests {
     #[test]
     fn refutes_agrees_with_taxonomy_oracle_on_shared_taxonomy() {
         use super::super::oracle::SemanticOracle;
+        use super::super::theory::TheoryOracle;
         use crate::semantics::caches::test_support::kif_layer;
         use crate::semantics::types::Scope;
         let kif = "\

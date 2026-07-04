@@ -11,6 +11,7 @@ use crate::types::SentenceId;
 
 use super::super::clause::{AtomId, Term};
 use super::super::oracle::Witness;
+use super::super::theory::TheoryOracle;
 use super::super::unify::{apply, shift_slots, slot_atom, unify, Subst};
 use super::{positions, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver, JOIN_UNIT_OFF, SUPPORT};
 

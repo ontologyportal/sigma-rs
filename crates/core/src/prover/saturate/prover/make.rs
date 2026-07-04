@@ -18,6 +18,7 @@ use super::super::clause::{AtomId, PClause, Term};
 use super::super::hash64::Set64;
 use super::super::kbo::KboCmp;
 use super::super::oracle::Witness;
+use super::super::theory::TheoryOracle;
 use super::super::unify::{apply, match_one_way, shift_slots, slot_atom, Subst};
 use super::{
     arith_norm, classify_seats, eq_key, eq_sides,

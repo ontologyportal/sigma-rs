@@ -26,6 +26,7 @@ pub(crate) mod index;
 pub(crate) mod unify;
 pub(crate) mod units;
 pub(crate) mod oracle;
+pub(crate) mod theory;
 pub(crate) mod temporal;
 pub(crate) mod eventcalc;
 pub(crate) mod model;

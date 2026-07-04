@@ -32,6 +32,7 @@ use crate::semantics::types::{RelationDomain, Scope};
 use crate::types::{Element, Sentence, SentenceId, SymbolId, TaxRelation};
 
 use super::clause::{AtomId, AtomTable};
+use super::theory::{Coverage, CoverageClaim, RelationClaim, TheoryOracle};
 
 /// Provable class-disjointness, built once per problem from SUMO's
 /// `(disjoint A B)` facts and the pairwise-disjoint members of
@@ -466,39 +467,6 @@ pub(crate) struct OracleSnapshot {
 }
 
 impl<'a> SemanticOracle<'a> {
-    /// Capture the owned state (background-load products: input
-    /// equalities, FD/schema registries, exhaustive sets, learned
-    /// edges from input units, the holds memo).
-    pub(crate) fn snapshot(&self) -> OracleSnapshot {
-        OracleSnapshot {
-            learned: self.learned.clone(),
-            eq: self.eq.clone(),
-            disjoint: self.disjoint.clone(),
-            fd_decls: self.fd_decls.clone(),
-            fd_facts: self.fd_facts.clone(),
-            pending_eq: self.pending_eq.clone(),
-            eq_just: self.eq_just.clone(),
-            exhaustive: self.exhaustive.clone(),
-            neg_learned: self.neg_learned.clone(),
-            pending_facts: self.pending_facts.clone(),
-            holds_memo: self.holds_memo.borrow().clone(),
-            epoch: self.epoch.get(),
-            sym_mined: self.sym_mined.clone(),
-            trans_mined: self.trans_mined.clone(),
-            roles: crate::semantics::roles::TaxonomyRoles {
-                instance:    self.instance_id,
-                subclass:    self.subclass_id,
-                subrelation: self.subrelation_id,
-                transitive:  self.transitive_id,
-                symmetric:   self.symmetric_id,
-                disjoint:    self.disjoint_id,
-                partition:   self.partition_id,
-                // domain/range live on the semantic layer, not the oracle —
-                // defaults here (never read through the oracle's snapshot).
-                ..Default::default()
-            },
-        }
-    }
 
     /// Rehydrate an oracle from a snapshot, re-supplying the layer
     /// borrow.  `DisjointSets::build` is skipped — the snapshot's copy
@@ -571,47 +539,6 @@ impl<'a> SemanticOracle<'a> {
         oracle
     }
 
-    /// The taxonomy-role ids currently in force (recognized or the
-    /// English-name defaults).  Pre-pass helpers that read declarations
-    /// (`subrelation`, FD `instance`) consult this so they engage on
-    /// renamed dialects too.
-    pub(crate) fn roles(&self) -> crate::semantics::roles::TaxonomyRoles {
-        crate::semantics::roles::TaxonomyRoles {
-            instance:    self.instance_id,
-            subclass:    self.subclass_id,
-            subrelation: self.subrelation_id,
-            transitive:  self.transitive_id,
-            symmetric:   self.symmetric_id,
-            disjoint:    self.disjoint_id,
-            partition:   self.partition_id,
-            // domain/range are the semantic layer's; not used via the oracle.
-            ..Default::default()
-        }
-    }
-
-    /// Override the taxonomy-role ids with shape-recognized values
-    /// (`Strategy.recognize_roles`).  No-op-safe: passing `default()`
-    /// leaves the historical behavior.  The taxonomy ids are plain swaps;
-    /// `disjoint`/`partition` additionally key the `DisjointSets` and
-    /// `exhaustive` maps, so those are rebuilt when the heads change.
-    pub(crate) fn set_roles(&mut self, roles: crate::semantics::roles::TaxonomyRoles, sem: &'a SemanticLayer) {
-        self.instance_id    = roles.instance;
-        self.subclass_id    = roles.subclass;
-        self.subrelation_id = roles.subrelation;
-        self.transitive_id  = roles.transitive;
-        self.symmetric_id   = roles.symmetric;
-        // Disjointness / exhaustive decomposition are keyed on the
-        // `disjoint` / `partition` heads — rebuild against the recognized
-        // ones (cheap; only runs under `recognize_roles`).
-        if self.disjoint_id != roles.disjoint || self.partition_id != roles.partition {
-            self.disjoint_id  = roles.disjoint;
-            self.partition_id = roles.partition;
-            self.disjoint = DisjointSets::build(sem, self.disjoint_id, self.partition_id);
-            self.exhaustive = Map64::default();
-            self.build_exhaustive(sem);
-        }
-    }
-
     /// Collect `(partition C P1 …)` / `(exhaustiveDecomposition C P1 …)`
     /// declarations — every instance of C is an instance of SOME Pi.
     fn build_exhaustive(&mut self, sem: &SemanticLayer) {
@@ -664,118 +591,6 @@ impl<'a> SemanticOracle<'a> {
             return None;
         }
         Some(element_eq(&s.elements[1], &s.elements[2]))
-    }
-
-    /// Extend the learned overlay with a derived ground unit.
-    pub(crate) fn add_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
-        self.epoch.set(self.epoch.get() + 1);
-        let slot = self.learned.entry(rel).or_default().entry(x).or_default().entry(y).or_insert(src);
-        // A later registration may carry provenance an earlier one lacked
-        // (e.g. assumption pre-pass, then the made clause) — upgrade, never
-        // downgrade to None.
-        if src.is_some() { *slot = src; }
-        // FD congruence: facts of a functional relation feed the
-        // fixpoint; new `instance` facts can satisfy an FD guard, so
-        // they trigger a recheck too.
-        if rel == self.instance_id && !self.exhaustive.is_empty() {
-            self.exh_propagate(x);
-        }
-        if self.fd_decls.contains_key(&rel) {
-            if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
-                eprintln!("FD-OBSERVE rel={rel:?} x={x:?} y={y:?} src={src:?}");
-            }
-            self.fd_facts.entry(rel).or_default().push(FdFact { x, y, clause: src });
-            self.fd_fixpoint();
-        } else if rel == self.instance_id && !self.fd_decls.is_empty() {
-            self.fd_fixpoint();
-        }
-    }
-
-    /// The proof-DAG source clause of a learned edge, when recorded.
-    pub(crate) fn learned_src(&self, rel: SymbolId, x: SymbolId, y: SymbolId) -> Option<u32> {
-        self.learned.get(&rel)?.get(&x)?.get(&y).copied().flatten()
-    }
-
-    /// The current knowledge epoch (bumped by every learned unit /
-    /// equality / mined registration) — external memos key negative
-    /// results on it, mirroring the holds memo's discipline.
-    pub(crate) fn epoch(&self) -> u64 {
-        self.epoch.get()
-    }
-
-    /// Register a rule-mined symmetric relation (schema channel).  A
-    /// NEW registration bumps the epoch — memoized-FALSE `holds`
-    /// entries that the reverse-edge check could now answer TRUE
-    /// expire.  Re-sightings (the same derived rule re-made) are no-ops.
-    pub(crate) fn register_symmetric(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
-        if let Some(slot) = self.sym_mined.get_mut(&rel) {
-            if slot.is_none() && sid.is_some() { *slot = sid; }
-            return;
-        }
-        self.sym_mined.insert(rel, sid);
-        self.epoch.set(self.epoch.get() + 1);
-    }
-
-    /// Register a rule-mined transitive relation (schema channel).
-    pub(crate) fn register_transitive(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
-        if let Some(slot) = self.trans_mined.get_mut(&rel) {
-            if slot.is_none() && sid.is_some() { *slot = sid; }
-            return;
-        }
-        self.trans_mined.insert(rel, sid);
-        self.epoch.set(self.epoch.get() + 1);
-    }
-
-    /// Is `rel` symmetric — declared `(instance rel SymmetricRelation)`
-    /// (directly or via a subclass of SymmetricRelation, in scope,
-    /// including learned units) or rule-mined?  Deliberately NOT
-    /// inherited through `subrelation`: `brother ⊑ sibling` is the
-    /// counterexample (the subrelation's extra constraint breaks the
-    /// symmetry argument).  Memoized via the `holds` front door.
-    pub(crate) fn is_symmetric(&self, rel: SymbolId) -> bool {
-        self.sym_mined.contains_key(&rel)
-            || self.holds(self.instance_id, rel, self.symmetric_id, None)
-    }
-
-    /// The citable source of `rel`'s symmetry: the mined axiom's sid,
-    /// or the declaration fact's sid.
-    pub(crate) fn symmetric_source(&self, rel: SymbolId) -> Option<SentenceId> {
-        if let Some(sid) = self.sym_mined.get(&rel) {
-            return *sid;
-        }
-        self.edge_fact_sid(self.instance_id, rel, self.symmetric_id)
-    }
-
-    /// Union two ground constants into one equality class (smallest id
-    /// becomes the representative).
-    pub(crate) fn add_equality(&mut self, a: SymbolId, b: SymbolId) {
-        self.epoch.set(self.epoch.get() + 1);
-        let (ra, rb) = (self.eq_rep(a), self.eq_rep(b));
-        if ra != rb {
-            let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
-            self.eq.insert(child, root);
-            // An external merge can collapse two FD keys.
-            self.fd_fixpoint();
-        }
-    }
-
-    /// Record a NEGATIVE ground unit (¬(rel x y)) and run
-    /// exhaustiveness propagation: excluding a decomposition member
-    /// may leave exactly one candidate.
-    pub(crate) fn add_neg_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
-        self.epoch.set(self.epoch.get() + 1);
-        let slot = self.neg_learned.entry(rel).or_default()
-            .entry(x).or_default().entry(y).or_insert(src);
-        if src.is_some() { *slot = src; }
-        if rel == self.instance_id && !self.exhaustive.is_empty() {
-            self.exh_propagate(x);
-        }
-    }
-
-    /// Derived positive facts from exhaustiveness case-elimination,
-    /// drained by the prover into activated unit clauses.
-    pub(crate) fn take_pending_facts(&mut self) -> Vec<(SymbolId, SymbolId, SymbolId, EqJust)> {
-        std::mem::take(&mut self.pending_facts)
     }
 
     /// Exhaustiveness case analysis for `x`: for each decomposition of
@@ -845,53 +660,7 @@ impl<'a> SemanticOracle<'a> {
         }
     }
 
-    /// Declare a functional dependency on `rel`.
-    pub(crate) fn register_fd(&mut self, rel: SymbolId, decl: FdDecl) {
-        if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
-            eprintln!("FD-REGISTER rel={rel:?} decl={decl:?}");
-        }
-        self.fd_decls.entry(rel).or_default().push(decl);
-        // Late registration: facts observed before the declaration
-        // (none today — mining precedes loading — but cheap to honor).
-        self.fd_fixpoint();
-    }
-
     pub(crate) fn has_fd(&self) -> bool { !self.fd_decls.is_empty() }
-
-    /// Equalities derived by FD congruence since the last drain — the
-    /// prover turns each into an activated `(equal a b)` unit clause
-    /// with the justification as proof parents.
-    pub(crate) fn take_pending_eq(&mut self) -> Vec<(SymbolId, SymbolId, EqJust)> {
-        std::mem::take(&mut self.pending_eq)
-    }
-
-    /// The proof-forest labels along both arguments' paths to their
-    /// common representative: every fact / deriving clause / axiom
-    /// that contributed a merge between the two.  (Slight
-    /// over-approximation — the labels on the full root paths — but
-    /// every cited premise is a real input to the closure.)
-    pub(crate) fn eq_explain(&self, a: SymbolId, b: SymbolId) -> (Vec<SentenceId>, Vec<u32>) {
-        let mut sids: Vec<SentenceId> = Vec::new();
-        let mut clauses: Vec<u32> = Vec::new();
-        for start in [a, b] {
-            let mut s = start;
-            let mut guard = 0u32;
-            while let Some(&p) = self.eq.get(&s) {
-                if p == s { break; }
-                if let Some(j) = self.eq_just.get(&s) {
-                    sids.extend(j.fact_sids.iter().copied());
-                    clauses.extend(j.clause_parents.iter().copied());
-                    if let Some(ax) = j.axiom { sids.push(ax); }
-                }
-                s = p;
-                guard += 1;
-                if guard > 1 << 20 { break; }
-            }
-        }
-        sids.sort_unstable(); sids.dedup();
-        clauses.sort_unstable(); clauses.dedup();
-        (sids, clauses)
-    }
 
     /// Union with a proof-forest label, queueing the equality for
     /// surfacing as a unit clause.  Internal to the FD fixpoint.
@@ -956,120 +725,12 @@ impl<'a> SemanticOracle<'a> {
         }
     }
 
-    /// Union with a FORCED root (the literal-preference path: numeric
-    /// literals stay representatives so normalization rewrites symbols
-    /// toward numbers, never the reverse).
-    pub(crate) fn add_equality_rooted(&mut self, root: u64, child: u64) {
-        self.epoch.set(self.epoch.get() + 1);
-        let (rr, rc) = (self.eq_rep(root), self.eq_rep(child));
-        if rr != rc {
-            self.eq.insert(rc, rr);
-            self.fd_fixpoint();
-        }
-    }
-
-    /// The representative of `s`'s equality class (itself if unconstrained).
-    pub(crate) fn eq_rep(&self, mut s: SymbolId) -> SymbolId {
-        let mut guard = 0u32;
-        while let Some(&p) = self.eq.get(&s) {
-            if p == s { break; }
-            s = p;
-            guard += 1;
-            if guard > 1 << 20 { break; } // defensive: chains are short
-        }
-        s
-    }
-
-    /// Whether any ground equality has been registered.
-    pub(crate) fn has_equalities(&self) -> bool { !self.eq.is_empty() }
-
-    /// Whether any class-disjointness is declared (gates the sorted filter).
-    pub(crate) fn has_disjointness(&self) -> bool { !self.disjoint.is_empty() }
-
     /// Root sids of the decomposition/`disjoint` meaning axioms whose
     /// semantics this oracle supplies — the prover omits them from
     /// resolution (discharge-and-omit).  Empty unless the decomposition
     /// opt-in is active.
     pub(crate) fn decomposition_meaning_axioms(&self) -> &[SentenceId] {
         &self.disjoint.meaning
-    }
-
-    /// Entailment of a ground symbol equality `(equal x y)`:
-    ///   * reflexivity / equality-class congruence (the union-find), or
-    ///   * **subclass antisymmetry** — `X ⊆ Y ∧ Y ⊆ X ⇒ X = Y` is a SUMO
-    ///     axiom (`subclass` is a partial order), so two mutually-
-    ///     subclassing classes are equal.
-    /// When `why` is `Some`, the two subclass chains are appended.
-    pub(crate) fn equal_holds(
-        &self,
-        x: SymbolId,
-        y: SymbolId,
-        mut why: Option<&mut Vec<Witness>>,
-    ) -> bool {
-        if x == y {
-            return true;
-        }
-        if self.eq_rep(x) == self.eq_rep(y) {
-            if let Some(w) = why.as_deref_mut() {
-                // Cite the facts/axioms whose merges connect the two
-                // (the proof forest); deriving clauses surface through
-                // `eq_explain` at the discharge site.
-                let (sids, _) = self.eq_explain(x, y);
-                for sid in sids {
-                    w.push(Witness { rel: self.subclass_id, x, y, sid: Some(sid) });
-                }
-            }
-            return true;
-        }
-        // Antisymmetry: both subclass directions ⇒ equal.
-        let fwd = self.holds(self.subclass_id, x, y, why.as_deref_mut());
-        if fwd && self.holds(self.subclass_id, y, x, why.as_deref_mut()) {
-            return true;
-        }
-        false
-    }
-
-    /// Provable FALSEHOOD of `(instance x c)`: some class `x` is known
-    /// to inhabit (stored or learned) is provably disjoint from `c`.
-    /// Witnesses cite the instance fact that anchors the refutation.
-    pub(crate) fn refutes_instance(
-        &self,
-        rel: SymbolId,
-        x:   SymbolId,
-        c:   SymbolId,
-        mut why: Option<&mut Vec<Witness>>,
-    ) -> bool {
-        if rel != self.instance_id || self.disjoint.is_empty() {
-            return false;
-        }
-        let direct: Vec<SymbolId> = self
-            .sem
-            .parents_of_scoped(x, self.scope)
-            .into_iter()
-            .filter(|(_, r)| matches!(r, TaxRelation::Instance))
-            .map(|(d, _)| d)
-            .chain(self.learned_objects(self.instance_id, x).collect::<Vec<_>>())
-            .collect();
-        for d in direct {
-            if let Some((a1, a2, decl)) = self.provably_disjoint_chain(d, c) {
-                if let Some(w) = why.as_deref_mut() {
-                    // The membership that conflicts: `(instance x d)`.
-                    w.push(Witness {
-                        rel: self.instance_id, x, y: d,
-                        sid: self.edge_fact_sid(self.instance_id, x, d),
-                    });
-                    // The subclass chains up to the disjoint ancestors, so the
-                    // proof shows WHY d ⊑ a1 and c ⊑ a2 …
-                    self.push_subclass_path(d, a1, w);
-                    self.push_subclass_path(c, a2, w);
-                    // … and the partition/disjoint declaration that makes
-                    // a1 and a2 disjoint — the referee, as a full proof step.
-                    w.push(Witness { rel: self.disjoint_id, x: a1, y: a2, sid: decl });
-                }
-                return true;
-            }
-        }
-        false
     }
 
     /// Like [`provably_disjoint`], but returns the witnessing ancestor pair
@@ -1167,82 +828,12 @@ impl<'a> SemanticOracle<'a> {
         out
     }
 
-    /// Whether a ground symbol-headed relation atom `(rel a1 … an)` is
-    /// **provably ill-sorted** — some ground symbol argument's class is
-    /// disjoint from the position's declared `domain` (or, for
-    /// `domainSubclass`, the argument class is disjoint from the required
-    /// superclass, so it can't be a subclass of it).  Sound one-way
-    /// check: returns `true` only on a provable type violation, never on
-    /// merely-unproven typing, so it never rejects a well-typed atom.
-    /// `args` are the argument symbol ids in order (None for non-symbol
-    /// arguments, which are skipped).
-    pub(crate) fn ill_sorted(&self, rel: SymbolId, args: &[Option<SymbolId>]) -> bool {
-        if self.disjoint.is_empty() {
-            return false;
-        }
-        let domain = self.sem.domain_scoped(rel, self.scope);
-        for (i, arg) in args.iter().enumerate() {
-            let Some(arg) = arg else { continue };
-            let Some(rd) = domain.get(i) else { continue };
-            match rd {
-                RelationDomain::Domain(c) => {
-                    // `arg` must be an instance of `c`: ill-sorted if any
-                    // class `arg` is an instance of is disjoint from `c`.
-                    for (cls, rel2) in self.sem.parents_of_scoped(*arg, self.scope) {
-                        if matches!(rel2, TaxRelation::Instance)
-                            && self.provably_disjoint(cls, *c)
-                        {
-                            return true;
-                        }
-                    }
-                }
-                RelationDomain::DomainSubclass(c) => {
-                    // `arg` (a class) must be a subclass of `c`: ill-sorted
-                    // if `arg` is disjoint from `c`.
-                    if self.provably_disjoint(*arg, *c) {
-                        return true;
-                    }
-                }
-                RelationDomain::Unknown => {}
-            }
-        }
-        false
-    }
-
     fn learned_objects(&self, rel: SymbolId, x: SymbolId) -> impl Iterator<Item = SymbolId> + '_ {
         self.learned
             .get(&rel)
             .and_then(|m| m.get(&x))
             .into_iter()
             .flat_map(|s| s.keys().copied())
-    }
-
-    /// Entailment of the ground binary atom `(rel x y)`.  When `why` is
-    /// `Some`, the witnessing facts are appended on success.
-    pub(crate) fn holds(
-        &self,
-        rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
-        why: Option<&mut Vec<Witness>>,
-    ) -> bool {
-        // Witness-collecting calls bypass the memo (a hit cannot
-        // reproduce the witness chain).  Callers needing witnesses
-        // gate on a witness-free call first, so the expensive path
-        // runs only on entailed atoms.
-        if why.is_some() {
-            return self.holds_uncached(rel, x, y, why);
-        }
-        if let Some(&(ep, res)) = self.holds_memo.borrow().get(&(rel, x, y)) {
-            if res || ep == self.epoch.get() {
-                return res;
-            }
-        }
-        let res = self.holds_uncached(rel, x, y, None);
-        self.holds_memo
-            .borrow_mut()
-            .insert((rel, x, y), (self.epoch.get(), res));
-        res
     }
 
     /// Ground binary `(rel x y)` argument pairs from the store (base ∪
@@ -1277,22 +868,6 @@ impl<'a> SemanticOracle<'a> {
         if std::env::var_os("SIGMA_TEMPORAL").is_none() {
             return false;
         }
-        self.temporal_entails_ungated(rel, x, y, why)
-    }
-
-    /// Ungated temporal entailment for callers that scope the decision
-    /// themselves — the rule-join discharge consults the point network for
-    /// its ground body checks even when the global `SIGMA_TEMPORAL` oracle
-    /// gate is unset, so the network's use stays confined to that pass.
-    /// Never touches the `holds` memo (a direct query), so baseline
-    /// `holds()` behavior is unchanged.
-    pub(crate) fn temporal_holds(
-        &self,
-        rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
-        why: Option<&mut Vec<Witness>>,
-    ) -> bool {
         self.temporal_entails_ungated(rel, x, y, why)
     }
 
@@ -1590,6 +1165,478 @@ impl<'a> SemanticOracle<'a> {
             .into_iter()
             .find(|(obj, _)| *obj == y)
             .map(|(_, sid)| sid)
+    }
+}
+
+/// The prover-facing theory contract for the semantic oracle — method
+/// bodies MOVED verbatim from the inherent impl above (pure interface
+/// factoring, zero behavior change); the private helpers they call
+/// stay inherent.  [`TheoryOracle::coverage`] is the one NEW entry
+/// point: it repackages the role/temporal relation set and the
+/// decomposition meaning axioms the consumers previously hardcoded.
+impl<'a> TheoryOracle for SemanticOracle<'a> {
+    /// Capture the owned state (background-load products: input
+    /// equalities, FD/schema registries, exhaustive sets, learned
+    /// edges from input units, the holds memo).
+    fn snapshot(&self) -> OracleSnapshot {
+        OracleSnapshot {
+            learned: self.learned.clone(),
+            eq: self.eq.clone(),
+            disjoint: self.disjoint.clone(),
+            fd_decls: self.fd_decls.clone(),
+            fd_facts: self.fd_facts.clone(),
+            pending_eq: self.pending_eq.clone(),
+            eq_just: self.eq_just.clone(),
+            exhaustive: self.exhaustive.clone(),
+            neg_learned: self.neg_learned.clone(),
+            pending_facts: self.pending_facts.clone(),
+            holds_memo: self.holds_memo.borrow().clone(),
+            epoch: self.epoch.get(),
+            sym_mined: self.sym_mined.clone(),
+            trans_mined: self.trans_mined.clone(),
+            roles: crate::semantics::roles::TaxonomyRoles {
+                instance:    self.instance_id,
+                subclass:    self.subclass_id,
+                subrelation: self.subrelation_id,
+                transitive:  self.transitive_id,
+                symmetric:   self.symmetric_id,
+                disjoint:    self.disjoint_id,
+                partition:   self.partition_id,
+                // domain/range live on the semantic layer, not the oracle —
+                // defaults here (never read through the oracle's snapshot).
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The taxonomy-role ids currently in force (recognized or the
+    /// English-name defaults).  Pre-pass helpers that read declarations
+    /// (`subrelation`, FD `instance`) consult this so they engage on
+    /// renamed dialects too.
+    fn roles(&self) -> crate::semantics::roles::TaxonomyRoles {
+        crate::semantics::roles::TaxonomyRoles {
+            instance:    self.instance_id,
+            subclass:    self.subclass_id,
+            subrelation: self.subrelation_id,
+            transitive:  self.transitive_id,
+            symmetric:   self.symmetric_id,
+            disjoint:    self.disjoint_id,
+            partition:   self.partition_id,
+            // domain/range are the semantic layer's; not used via the oracle.
+            ..Default::default()
+        }
+    }
+
+    /// Override the taxonomy-role ids with shape-recognized values
+    /// (`Strategy.recognize_roles`).  No-op-safe: passing `default()`
+    /// leaves the historical behavior.  The taxonomy ids are plain swaps;
+    /// `disjoint`/`partition` additionally key the `DisjointSets` and
+    /// `exhaustive` maps, so those are rebuilt when the heads change.
+    /// (Rebuilds read the layer borrow the oracle already holds — the
+    /// same `&SemanticLayer` its constructor captured.)
+    fn set_roles(&mut self, roles: crate::semantics::roles::TaxonomyRoles) {
+        let sem = self.sem;
+        self.instance_id    = roles.instance;
+        self.subclass_id    = roles.subclass;
+        self.subrelation_id = roles.subrelation;
+        self.transitive_id  = roles.transitive;
+        self.symmetric_id   = roles.symmetric;
+        // Disjointness / exhaustive decomposition are keyed on the
+        // `disjoint` / `partition` heads — rebuild against the recognized
+        // ones (cheap; only runs under `recognize_roles`).
+        if self.disjoint_id != roles.disjoint || self.partition_id != roles.partition {
+            self.disjoint_id  = roles.disjoint;
+            self.partition_id = roles.partition;
+            self.disjoint = DisjointSets::build(sem, self.disjoint_id, self.partition_id);
+            self.exhaustive = Map64::default();
+            self.build_exhaustive(sem);
+        }
+    }
+
+    /// Extend the learned overlay with a derived ground unit.
+    fn add_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
+        self.epoch.set(self.epoch.get() + 1);
+        let slot = self.learned.entry(rel).or_default().entry(x).or_default().entry(y).or_insert(src);
+        // A later registration may carry provenance an earlier one lacked
+        // (e.g. assumption pre-pass, then the made clause) — upgrade, never
+        // downgrade to None.
+        if src.is_some() { *slot = src; }
+        // FD congruence: facts of a functional relation feed the
+        // fixpoint; new `instance` facts can satisfy an FD guard, so
+        // they trigger a recheck too.
+        if rel == self.instance_id && !self.exhaustive.is_empty() {
+            self.exh_propagate(x);
+        }
+        if self.fd_decls.contains_key(&rel) {
+            if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
+                eprintln!("FD-OBSERVE rel={rel:?} x={x:?} y={y:?} src={src:?}");
+            }
+            self.fd_facts.entry(rel).or_default().push(FdFact { x, y, clause: src });
+            self.fd_fixpoint();
+        } else if rel == self.instance_id && !self.fd_decls.is_empty() {
+            self.fd_fixpoint();
+        }
+    }
+
+    /// The proof-DAG source clause of a learned edge, when recorded.
+    fn learned_src(&self, rel: SymbolId, x: SymbolId, y: SymbolId) -> Option<u32> {
+        self.learned.get(&rel)?.get(&x)?.get(&y).copied().flatten()
+    }
+
+    /// The current knowledge epoch (bumped by every learned unit /
+    /// equality / mined registration) — external memos key negative
+    /// results on it, mirroring the holds memo's discipline.
+    fn epoch(&self) -> u64 {
+        self.epoch.get()
+    }
+
+    /// Register a rule-mined symmetric relation (schema channel).  A
+    /// NEW registration bumps the epoch — memoized-FALSE `holds`
+    /// entries that the reverse-edge check could now answer TRUE
+    /// expire.  Re-sightings (the same derived rule re-made) are no-ops.
+    fn register_symmetric(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
+        if let Some(slot) = self.sym_mined.get_mut(&rel) {
+            if slot.is_none() && sid.is_some() { *slot = sid; }
+            return;
+        }
+        self.sym_mined.insert(rel, sid);
+        self.epoch.set(self.epoch.get() + 1);
+    }
+
+    /// Register a rule-mined transitive relation (schema channel).
+    fn register_transitive(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
+        if let Some(slot) = self.trans_mined.get_mut(&rel) {
+            if slot.is_none() && sid.is_some() { *slot = sid; }
+            return;
+        }
+        self.trans_mined.insert(rel, sid);
+        self.epoch.set(self.epoch.get() + 1);
+    }
+
+    /// Is `rel` symmetric — declared `(instance rel SymmetricRelation)`
+    /// (directly or via a subclass of SymmetricRelation, in scope,
+    /// including learned units) or rule-mined?  Deliberately NOT
+    /// inherited through `subrelation`: `brother ⊑ sibling` is the
+    /// counterexample (the subrelation's extra constraint breaks the
+    /// symmetry argument).  Memoized via the `holds` front door.
+    fn is_symmetric(&self, rel: SymbolId) -> bool {
+        self.sym_mined.contains_key(&rel)
+            || self.holds(self.instance_id, rel, self.symmetric_id, None)
+    }
+
+    /// The citable source of `rel`'s symmetry: the mined axiom's sid,
+    /// or the declaration fact's sid.
+    fn symmetric_source(&self, rel: SymbolId) -> Option<SentenceId> {
+        if let Some(sid) = self.sym_mined.get(&rel) {
+            return *sid;
+        }
+        self.edge_fact_sid(self.instance_id, rel, self.symmetric_id)
+    }
+
+    /// Union two ground constants into one equality class (smallest id
+    /// becomes the representative).
+    fn add_equality(&mut self, a: SymbolId, b: SymbolId) {
+        self.epoch.set(self.epoch.get() + 1);
+        let (ra, rb) = (self.eq_rep(a), self.eq_rep(b));
+        if ra != rb {
+            let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
+            self.eq.insert(child, root);
+            // An external merge can collapse two FD keys.
+            self.fd_fixpoint();
+        }
+    }
+
+    /// Record a NEGATIVE ground unit (¬(rel x y)) and run
+    /// exhaustiveness propagation: excluding a decomposition member
+    /// may leave exactly one candidate.
+    fn add_neg_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
+        self.epoch.set(self.epoch.get() + 1);
+        let slot = self.neg_learned.entry(rel).or_default()
+            .entry(x).or_default().entry(y).or_insert(src);
+        if src.is_some() { *slot = src; }
+        if rel == self.instance_id && !self.exhaustive.is_empty() {
+            self.exh_propagate(x);
+        }
+    }
+
+    /// Derived positive facts from exhaustiveness case-elimination,
+    /// drained by the prover into activated unit clauses.
+    fn take_pending_facts(&mut self) -> Vec<(SymbolId, SymbolId, SymbolId, EqJust)> {
+        std::mem::take(&mut self.pending_facts)
+    }
+
+    /// Declare a functional dependency on `rel`.
+    fn register_fd(&mut self, rel: SymbolId, decl: FdDecl) {
+        if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
+            eprintln!("FD-REGISTER rel={rel:?} decl={decl:?}");
+        }
+        self.fd_decls.entry(rel).or_default().push(decl);
+        // Late registration: facts observed before the declaration
+        // (none today — mining precedes loading — but cheap to honor).
+        self.fd_fixpoint();
+    }
+
+    /// Equalities derived by FD congruence since the last drain — the
+    /// prover turns each into an activated `(equal a b)` unit clause
+    /// with the justification as proof parents.
+    fn take_pending_eq(&mut self) -> Vec<(SymbolId, SymbolId, EqJust)> {
+        std::mem::take(&mut self.pending_eq)
+    }
+
+    /// The proof-forest labels along both arguments' paths to their
+    /// common representative: every fact / deriving clause / axiom
+    /// that contributed a merge between the two.  (Slight
+    /// over-approximation — the labels on the full root paths — but
+    /// every cited premise is a real input to the closure.)
+    fn eq_explain(&self, a: SymbolId, b: SymbolId) -> (Vec<SentenceId>, Vec<u32>) {
+        let mut sids: Vec<SentenceId> = Vec::new();
+        let mut clauses: Vec<u32> = Vec::new();
+        for start in [a, b] {
+            let mut s = start;
+            let mut guard = 0u32;
+            while let Some(&p) = self.eq.get(&s) {
+                if p == s { break; }
+                if let Some(j) = self.eq_just.get(&s) {
+                    sids.extend(j.fact_sids.iter().copied());
+                    clauses.extend(j.clause_parents.iter().copied());
+                    if let Some(ax) = j.axiom { sids.push(ax); }
+                }
+                s = p;
+                guard += 1;
+                if guard > 1 << 20 { break; }
+            }
+        }
+        sids.sort_unstable(); sids.dedup();
+        clauses.sort_unstable(); clauses.dedup();
+        (sids, clauses)
+    }
+
+    /// Union with a FORCED root (the literal-preference path: numeric
+    /// literals stay representatives so normalization rewrites symbols
+    /// toward numbers, never the reverse).
+    fn add_equality_rooted(&mut self, root: u64, child: u64) {
+        self.epoch.set(self.epoch.get() + 1);
+        let (rr, rc) = (self.eq_rep(root), self.eq_rep(child));
+        if rr != rc {
+            self.eq.insert(rc, rr);
+            self.fd_fixpoint();
+        }
+    }
+
+    /// The representative of `s`'s equality class (itself if unconstrained).
+    fn eq_rep(&self, mut s: SymbolId) -> SymbolId {
+        let mut guard = 0u32;
+        while let Some(&p) = self.eq.get(&s) {
+            if p == s { break; }
+            s = p;
+            guard += 1;
+            if guard > 1 << 20 { break; } // defensive: chains are short
+        }
+        s
+    }
+
+    /// Whether any ground equality has been registered.
+    fn has_equalities(&self) -> bool { !self.eq.is_empty() }
+
+    /// Whether any class-disjointness is declared (gates the sorted filter).
+    fn has_disjointness(&self) -> bool { !self.disjoint.is_empty() }
+
+    /// Entailment of a ground symbol equality `(equal x y)`:
+    ///   * reflexivity / equality-class congruence (the union-find), or
+    ///   * **subclass antisymmetry** — `X ⊆ Y ∧ Y ⊆ X ⇒ X = Y` is a SUMO
+    ///     axiom (`subclass` is a partial order), so two mutually-
+    ///     subclassing classes are equal.
+    /// When `why` is `Some`, the two subclass chains are appended.
+    fn equal_holds(
+        &self,
+        x: SymbolId,
+        y: SymbolId,
+        mut why: Option<&mut Vec<Witness>>,
+    ) -> bool {
+        if x == y {
+            return true;
+        }
+        if self.eq_rep(x) == self.eq_rep(y) {
+            if let Some(w) = why.as_deref_mut() {
+                // Cite the facts/axioms whose merges connect the two
+                // (the proof forest); deriving clauses surface through
+                // `eq_explain` at the discharge site.
+                let (sids, _) = self.eq_explain(x, y);
+                for sid in sids {
+                    w.push(Witness { rel: self.subclass_id, x, y, sid: Some(sid) });
+                }
+            }
+            return true;
+        }
+        // Antisymmetry: both subclass directions ⇒ equal.
+        let fwd = self.holds(self.subclass_id, x, y, why.as_deref_mut());
+        if fwd && self.holds(self.subclass_id, y, x, why.as_deref_mut()) {
+            return true;
+        }
+        false
+    }
+
+    /// Provable FALSEHOOD of `(instance x c)`: some class `x` is known
+    /// to inhabit (stored or learned) is provably disjoint from `c`.
+    /// Witnesses cite the instance fact that anchors the refutation.
+    fn refutes_instance(
+        &self,
+        rel: SymbolId,
+        x:   SymbolId,
+        c:   SymbolId,
+        mut why: Option<&mut Vec<Witness>>,
+    ) -> bool {
+        if rel != self.instance_id || self.disjoint.is_empty() {
+            return false;
+        }
+        let direct: Vec<SymbolId> = self
+            .sem
+            .parents_of_scoped(x, self.scope)
+            .into_iter()
+            .filter(|(_, r)| matches!(r, TaxRelation::Instance))
+            .map(|(d, _)| d)
+            .chain(self.learned_objects(self.instance_id, x).collect::<Vec<_>>())
+            .collect();
+        for d in direct {
+            if let Some((a1, a2, decl)) = self.provably_disjoint_chain(d, c) {
+                if let Some(w) = why.as_deref_mut() {
+                    // The membership that conflicts: `(instance x d)`.
+                    w.push(Witness {
+                        rel: self.instance_id, x, y: d,
+                        sid: self.edge_fact_sid(self.instance_id, x, d),
+                    });
+                    // The subclass chains up to the disjoint ancestors, so the
+                    // proof shows WHY d ⊑ a1 and c ⊑ a2 …
+                    self.push_subclass_path(d, a1, w);
+                    self.push_subclass_path(c, a2, w);
+                    // … and the partition/disjoint declaration that makes
+                    // a1 and a2 disjoint — the referee, as a full proof step.
+                    w.push(Witness { rel: self.disjoint_id, x: a1, y: a2, sid: decl });
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether a ground symbol-headed relation atom `(rel a1 … an)` is
+    /// **provably ill-sorted** — some ground symbol argument's class is
+    /// disjoint from the position's declared `domain` (or, for
+    /// `domainSubclass`, the argument class is disjoint from the required
+    /// superclass, so it can't be a subclass of it).  Sound one-way
+    /// check: returns `true` only on a provable type violation, never on
+    /// merely-unproven typing, so it never rejects a well-typed atom.
+    /// `args` are the argument symbol ids in order (None for non-symbol
+    /// arguments, which are skipped).
+    fn ill_sorted(&self, rel: SymbolId, args: &[Option<SymbolId>]) -> bool {
+        if self.disjoint.is_empty() {
+            return false;
+        }
+        let domain = self.sem.domain_scoped(rel, self.scope);
+        for (i, arg) in args.iter().enumerate() {
+            let Some(arg) = arg else { continue };
+            let Some(rd) = domain.get(i) else { continue };
+            match rd {
+                RelationDomain::Domain(c) => {
+                    // `arg` must be an instance of `c`: ill-sorted if any
+                    // class `arg` is an instance of is disjoint from `c`.
+                    for (cls, rel2) in self.sem.parents_of_scoped(*arg, self.scope) {
+                        if matches!(rel2, TaxRelation::Instance)
+                            && self.provably_disjoint(cls, *c)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                RelationDomain::DomainSubclass(c) => {
+                    // `arg` (a class) must be a subclass of `c`: ill-sorted
+                    // if `arg` is disjoint from `c`.
+                    if self.provably_disjoint(*arg, *c) {
+                        return true;
+                    }
+                }
+                RelationDomain::Unknown => {}
+            }
+        }
+        false
+    }
+
+    /// Entailment of the ground binary atom `(rel x y)`.  When `why` is
+    /// `Some`, the witnessing facts are appended on success.
+    fn holds(
+        &self,
+        rel: SymbolId,
+        x:   SymbolId,
+        y:   SymbolId,
+        why: Option<&mut Vec<Witness>>,
+    ) -> bool {
+        // Witness-collecting calls bypass the memo (a hit cannot
+        // reproduce the witness chain).  Callers needing witnesses
+        // gate on a witness-free call first, so the expensive path
+        // runs only on entailed atoms.
+        if why.is_some() {
+            return self.holds_uncached(rel, x, y, why);
+        }
+        if let Some(&(ep, res)) = self.holds_memo.borrow().get(&(rel, x, y)) {
+            if res || ep == self.epoch.get() {
+                return res;
+            }
+        }
+        let res = self.holds_uncached(rel, x, y, None);
+        self.holds_memo
+            .borrow_mut()
+            .insert((rel, x, y), (self.epoch.get(), res));
+        res
+    }
+
+    /// Ungated temporal entailment for callers that scope the decision
+    /// themselves — the rule-join discharge consults the point network for
+    /// its ground body checks even when the global `SIGMA_TEMPORAL` oracle
+    /// gate is unset, so the network's use stays confined to that pass.
+    /// Never touches the `holds` memo (a direct query), so baseline
+    /// `holds()` behavior is unchanged.
+    fn temporal_holds(
+        &self,
+        rel: SymbolId,
+        x:   SymbolId,
+        y:   SymbolId,
+        why: Option<&mut Vec<Witness>>,
+    ) -> bool {
+        self.temporal_entails_ungated(rel, x, y, why)
+    }
+
+    /// The oracle's footprint: the taxonomy/role relations plus the
+    /// temporal point-network relations it decides — the EXACT set the
+    /// legacy hardcoded `is_theory_rel` role/temporal lists encoded
+    /// (asserted equal in `coverage_equals_legacy_is_theory_rel_lists`)
+    /// — all `Complete` (this oracle carries the refutation power for
+    /// its relations), plus the decomposition meaning axioms it
+    /// licenses for omission from resolution.
+    fn coverage(&self) -> CoverageClaim {
+        let roles = self.roles();
+        let tids = super::temporal::TemporalRelIds::standard();
+        let mut claims: Vec<RelationClaim> = Vec::new();
+        let mut claim = |rel: SymbolId| {
+            if !claims.iter().any(|c| c.rel == rel) {
+                claims.push(RelationClaim { rel, coverage: Coverage::Complete });
+            }
+        };
+        for rel in [
+            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
+            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
+        ] {
+            claim(rel);
+        }
+        for rel in [
+            tids.before, tids.earlier, tids.meets, tids.during, tids.starts,
+            tids.finishes, tids.temporal_part,
+        ] {
+            claim(rel);
+        }
+        CoverageClaim {
+            claims,
+            omitted_axioms: self.decomposition_meaning_axioms().to_vec(),
+        }
     }
 }
 

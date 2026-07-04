@@ -16,6 +16,7 @@ use super::clause::{AtomId, PClause};
 use super::clausify::clausify_negated_conjunction;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
+use super::theory::TheoryOracle;
 
 impl ProverLayer {
     /// Intern the conjecture into the prover-local atom table (content-addressed,
@@ -494,13 +495,16 @@ impl ProverLayer {
                     // meaning axioms whose semantics the oracle now supplies
                     // (recognized during the pre-pass above) — loading them
                     // would re-introduce the resolution flood the oracle is
-                    // meant to replace.  Empty unless the decomposition
-                    // opt-in is active, so the default path is unchanged.
+                    // meant to replace.  The license comes from the oracle's
+                    // `coverage()` claim (same contents as the old
+                    // `decomposition_meaning_axioms` list).  Empty unless the
+                    // decomposition opt-in is active, so the default path is
+                    // unchanged.
                     let omit: HashSet<SentenceId> = prover
                         .oracle
-                        .decomposition_meaning_axioms()
-                        .iter()
-                        .copied()
+                        .coverage()
+                        .omitted_axioms
+                        .into_iter()
                         .collect();
                     for sid in &selected {
                         if omit.contains(sid) {

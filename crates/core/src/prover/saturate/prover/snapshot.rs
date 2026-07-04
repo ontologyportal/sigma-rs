@@ -14,6 +14,7 @@ use super::super::clause::{AtomId, ClauseKey, Term};
 use super::super::hash64::{Map64, Set64};
 use super::super::index::{EntryRef, LiteralIndex};
 use super::super::oracle::OracleSnapshot;
+use super::super::theory::TheoryOracle;
 use super::super::units::UnitStores;
 use super::{ClauseRec, NativeProver};
 

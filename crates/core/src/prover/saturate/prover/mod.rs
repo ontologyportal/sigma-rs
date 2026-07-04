@@ -32,6 +32,7 @@ use super::clause::{AtomId, ClauseKey, PClause, PLit, Term};
 use super::AtomInfo;
 use super::index::{EntryRef, LiteralIndex};
 use super::oracle::{SemanticOracle, Witness};
+use super::theory::TheoryOracle;
 use super::hash64::{Map64, Set64};
 use super::strategy::Strategy;
 use super::unify::{apply, apply_off, match_one_way, shift_slots, slot_atom, unify, unify_off, Subst};
@@ -467,7 +468,7 @@ impl<'a> NativeProver<'a> {
                 roles.disjoint, roles.partition,
             );
         }
-        self.oracle.set_roles(roles, &self.layer.semantic);
+        self.oracle.set_roles(roles);
     }
 
     /// Recognize functional-dependency axioms among `clauses` and

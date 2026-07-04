@@ -20,6 +20,7 @@ use crate::types::{Element, SentenceId, Symbol, SymbolId};
 
 use super::super::clause::{AtomId, Term};
 use super::super::oracle::Witness;
+use super::super::theory::TheoryOracle;
 use super::super::unify::slot_atom;
 use super::{term_kif, NativeProver, CONJECTURE, SUPPORT};
 
@@ -56,8 +57,7 @@ impl<'a> NativeProver<'a> {
             return; // force-off wins over force-on: the A/B safety valve.
         }
         let forced_on = std::env::var_os("SIGMA_RULE_JOIN").is_some();
-        let roles = self.oracle.roles();
-        let tids = super::super::temporal::TemporalRelIds::standard();
+        let cov = self.oracle.coverage();
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
 
         // Conclusion rules from the clause set: one positive head + ≥1
@@ -106,7 +106,7 @@ impl<'a> NativeProver<'a> {
             }
             let rule_id = c.id;
             let Some((head_rel, _)) = lit_pattern(head) else { continue };
-            if is_theory_rel(head_rel, &roles, &tids) {
+            if cov.owns(head_rel) {
                 continue;
             }
             if !self.syn().by_head_id(&head_rel).is_empty() {
@@ -120,7 +120,7 @@ impl<'a> NativeProver<'a> {
                 }
                 match lit_pattern(t) {
                     Some((r, a)) => {
-                        if !is_theory_rel(r, &roles, &tids) {
+                        if !cov.owns(r) {
                             needed.insert(r);
                         }
                         body.push((r, a));
@@ -157,7 +157,7 @@ impl<'a> NativeProver<'a> {
             for (_p, t) in &c.terms {
                 match lit_pattern(t) {
                     Some((r, _)) => {
-                        if !is_theory_rel(r, &roles, &tids) {
+                        if !cov.owns(r) {
                             needed.insert(r);
                         }
                         lits.push(t.clone());
@@ -176,7 +176,7 @@ impl<'a> NativeProver<'a> {
                             term_kif(t, self.syn()).split_whitespace().next().unwrap_or("?")
                                 .trim_start_matches('('),
                             a.len(),
-                            if is_theory_rel(r, &roles, &tids) { "[theory]" }
+                            if cov.owns(r) { "[theory]" }
                             else if self.syn().by_head_id(&r).is_empty() { "[nofacts]" }
                             else { "[facts]" },
                         ))
@@ -209,7 +209,7 @@ impl<'a> NativeProver<'a> {
         // genuine and rule mode stays on — keeping the jail proof intact.)
         let suppress_rules = queries.iter().any(|q| {
             q.lits.iter().all(|lit| match lit_pattern(lit) {
-                Some((r, _)) => is_theory_rel(r, &roles, &tids) || facts.contains_key(&r),
+                Some((r, _)) => cov.owns(r) || facts.contains_key(&r),
                 None => false,
             })
         });
@@ -270,8 +270,7 @@ impl<'a> NativeProver<'a> {
                     &HashMap::new(),
                     &facts,
                     &seat_idx,
-                    &roles,
-                    &tids,
+                    &cov,
                     &mut sols,
                     &mut budget,
                 );
@@ -302,8 +301,7 @@ impl<'a> NativeProver<'a> {
                     &HashMap::new(),
                     &facts,
                     &seat_idx,
-                    &roles,
-                    &tids,
+                    &cov,
                     &mut sols,
                     &mut budget,
                 );
@@ -746,8 +744,7 @@ impl<'a> NativeProver<'a> {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let roles = self.oracle.roles();
-        let tids = super::super::temporal::TemporalRelIds::standard();
+        let cov = self.oracle.coverage();
         let mp = self.layer.model_program();
 
         // 1) Conjunctive-query goals: all-negative conjecture clauses with ≥2
@@ -824,7 +821,7 @@ impl<'a> NativeProver<'a> {
         };
         let mut facts: HashMap<SymbolId, Vec<JoinFact>> = HashMap::new();
         for &rel in &needed {
-            if is_theory_rel(rel, &roles, &tids) {
+            if cov.owns(rel) {
                 continue;
             }
             let mut f = self.store_facts(rel);
@@ -910,8 +907,7 @@ impl<'a> NativeProver<'a> {
                 &HashMap::new(),
                 &facts,
                 &seat_idx,
-                &roles,
-                &tids,
+                &cov,
                 &mut sols,
                 &mut budget,
             );
@@ -1325,8 +1321,7 @@ impl<'a> NativeProver<'a> {
         binding: &HashMap<SymbolId, Term>,
         facts: &HashMap<SymbolId, Vec<JoinFact>>,
         seat_idx: &SeatIndex,
-        roles: &crate::semantics::roles::TaxonomyRoles,
-        tids: &super::super::temporal::TemporalRelIds,
+        cov: &super::super::theory::CoverageClaim,
         out: &mut Vec<HashMap<SymbolId, Term>>,
         budget: &mut usize,
     ) {
@@ -1347,7 +1342,7 @@ impl<'a> NativeProver<'a> {
                     return; // dead branch
                 }
                 let rest: Vec<usize> = pending.iter().copied().filter(|&x| x != li).collect();
-                self.join_rec(body, &rest, binding, facts, seat_idx, roles, tids, out, budget);
+                self.join_rec(body, &rest, binding, facts, seat_idx, cov, out, budget);
                 return;
             }
         }
@@ -1362,7 +1357,7 @@ impl<'a> NativeProver<'a> {
         let mut pick: Option<(usize, Option<Vec<u32>>, usize)> = None;
         for &li in pending {
             let (rel, args) = &body[li];
-            if is_theory_rel(*rel, roles, tids) {
+            if cov.owns(*rel) {
                 continue;
             }
             let Some(rel_facts) = facts.get(rel) else { continue };
@@ -1401,7 +1396,7 @@ impl<'a> NativeProver<'a> {
                     let jf = &rel_facts[fi as usize];
                     let mut b2 = binding.clone();
                     if match_args(&pargs, &jf.args, &mut b2) {
-                        self.join_rec(body, &rest, &b2, facts, seat_idx, roles, tids, out, budget);
+                        self.join_rec(body, &rest, &b2, facts, seat_idx, cov, out, budget);
                         if *budget == 0 {
                             return;
                         }
@@ -1412,7 +1407,7 @@ impl<'a> NativeProver<'a> {
                 for jf in rel_facts {
                     let mut b2 = binding.clone();
                     if match_args(&pargs, &jf.args, &mut b2) {
-                        self.join_rec(body, &rest, &b2, facts, seat_idx, roles, tids, out, budget);
+                        self.join_rec(body, &rest, &b2, facts, seat_idx, cov, out, budget);
                         if *budget == 0 {
                             return;
                         }
@@ -1622,6 +1617,7 @@ fn build_seat_index(facts: &HashMap<SymbolId, Vec<JoinFact>>) -> SeatIndex {
 /// relations are CHECKED through `holds` when a body literal is ground
 /// but are never ENUMERATED as a join generator — the generative axioms
 /// behind their facts are exactly what the join is starving.
+#[cfg(test)]
 fn is_theory_rel(
     rel: SymbolId,
     roles: &crate::semantics::roles::TaxonomyRoles,
@@ -1688,6 +1684,55 @@ mod tests {
             "compound arg must reject the atom for model discharge"
         );
         assert_eq!(ms.bridge_rejected_atoms, 1, "rejection is counted");
+    }
+
+
+    // The NEW coverage() surface must claim EXACTLY the relation set the
+    // legacy hardcoded `is_theory_rel` role/temporal lists encoded, and
+    // exactly the omission list `decomposition_meaning_axioms` returned —
+    // the zero-behavior-change proof for the coverage rewiring.
+    #[test]
+    fn coverage_equals_legacy_is_theory_rel_lists() {
+        use super::super::super::temporal::TemporalRelIds;
+        use super::super::super::theory::TheoryOracle;
+
+        let layer = ProverLayer::new(kif_layer("(instance Fido Dog)"));
+        let prover = NativeProver::new(&layer, Scope::Base, Default::default());
+        let cov = prover.oracle.coverage();
+        let roles = prover.oracle.roles();
+        let tids = TemporalRelIds::standard();
+
+        // Every claimed relation is one the legacy predicate owned…
+        for c in &cov.claims {
+            assert!(
+                is_theory_rel(c.rel, &roles, &tids),
+                "coverage claims a relation the legacy lists never owned"
+            );
+        }
+        // …and every legacy-owned relation is claimed: the same set.
+        let legacy: std::collections::HashSet<SymbolId> = [
+            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
+            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
+            tids.before, tids.earlier, tids.meets, tids.during, tids.starts,
+            tids.finishes, tids.temporal_part,
+        ]
+        .into_iter()
+        .collect();
+        for &rel in &legacy {
+            assert!(cov.owns(rel), "legacy theory relation missing from coverage");
+        }
+        assert_eq!(cov.claims.len(), legacy.len(), "claim set == legacy set");
+
+        // The omission license is exactly the meaning-axiom list.
+        assert_eq!(
+            cov.omitted_axioms,
+            prover.oracle.decomposition_meaning_axioms().to_vec()
+        );
+
+        // Negative probe: an ordinary relation is owned by neither.
+        let jail = Symbol::hash_name("goesToJail");
+        assert!(!cov.owns(jail));
+        assert!(!is_theory_rel(jail, &roles, &tids));
     }
 
     fn a_id() -> SymbolId {
