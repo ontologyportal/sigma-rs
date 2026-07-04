@@ -86,6 +86,11 @@ pub struct Strategy {
     /// Max demodulation rewrites applied to a single term in `make`
     /// (a fan-out guard; KBO already guarantees termination).
     pub demod_cap: u64,
+    /// Max candidate-clause checks per backward-demodulation pass (one
+    /// pass per newly activated oriented unit equation).  Hitting the
+    /// cap leaves the remaining candidates unsimplified — sound:
+    /// interreduction is optional redundancy elimination.
+    pub bwd_demod_cap: usize,
     /// KBO symbol-PRECEDENCE seed — permutes the total order on symbols
     /// (orientation of every equation + literal maximality, the highest-
     /// impact ordering lever).  `0` = the historical id-order (shares the
@@ -139,6 +144,18 @@ pub struct Strategy {
     /// the original — so it shrinks the search space rather than growing
     /// it.  Consumes the reduction ordering ([`super::kbo`]).
     pub demod: bool,
+    /// Backward demodulation (interreduction): when a NEW oriented unit
+    /// equation `l → r` activates, rewrite the EXISTING clauses that
+    /// contain an `l`-redex — the replacement goes back through `make`
+    /// (rule tag `bwd_demod`) and the original is RETIRED (skipped on
+    /// pop, filtered from partner retrieval), so the clause sets stay
+    /// interreduced instead of drowning in unreduced copies.  Candidates
+    /// come from a head-key → clause-ids reverse index maintained per
+    /// made clause while this is on; the pass is bounded by
+    /// [`Self::bwd_demod_cap`].  `SIGMA_BWD_DEMOD=1` forces it on
+    /// (same A/B convention as `SIGMA_DEMOD`).  Pair with `demod` — on
+    /// its own the new clauses are not kept in normal form.
+    pub bwd_demod: bool,
     /// Ordered resolution: restrict binary resolution to KBO-maximal
     /// literals.  The ordered refinement (still complete) and the
     /// prerequisite for ordered superposition.  OFF by default — it
@@ -276,6 +293,7 @@ impl Strategy {
             max_term_size: 64,
             para_cap: 200,
             demod_cap: 64,
+            bwd_demod_cap: 10_000,
             prec_seed: 0,
             fc_max_premise_lits: 6,
             fc_fanout: 16,
@@ -305,6 +323,10 @@ impl Strategy {
             // is indifferent.  Re-default once the demodulator set is
             // indexed; kept as a portfolio knob meanwhile.
             demod: false,
+            // OFF by default, like `demod` (its prerequisite in spirit):
+            // interreduction only pays where the equational rewrite
+            // engine is on.  Rides the `tptp-demod` portfolio lane.
+            bwd_demod: false,
             liu_rescue: true,
             liu_rounds: 1,
             liu_top_k: 32,
@@ -332,6 +354,7 @@ impl Strategy {
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         s.demod = Self::demod_env_override(s.demod);
+        s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
         s
     }
 
@@ -344,6 +367,13 @@ impl Strategy {
     /// from `base()` directly and does not otherwise read the environment).
     fn demod_env_override(default: bool) -> bool {
         if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
+    }
+
+    /// `SIGMA_BWD_DEMOD=1` forces backward demodulation on — the exact
+    /// peer of [`Self::demod_env_override`], shared by `from_env()` and
+    /// `tptp()` so the A/B override works on both paths.
+    fn bwd_demod_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_BWD_DEMOD").is_some() { true } else { default }
     }
 
     /// The complete-calculus configuration for standalone TPTP problems
@@ -364,6 +394,7 @@ impl Strategy {
             eq_factoring:      true,
             subsumption:       true,
             demod:             Self::demod_env_override(false),
+            bwd_demod:         Self::bwd_demod_env_override(false),
             // Same A/B convention as demod: `SIGMA_GUIDE=1` lets the
             // semantic-guide tie-break be measured on the TPTP path too
             // (`from_env()` is not consulted here, so without this the
@@ -405,6 +436,11 @@ impl Strategy {
             base.clone().named("tptp-complete"),
             Strategy {
                 demod: true,
+                // The rewrite-engine lane carries the full interreduction
+                // pair: forward demod keeps NEW clauses in normal form,
+                // backward demod re-normalizes the EXISTING sets when a
+                // new oriented equation lands.
+                bwd_demod: true,
                 ..base.clone()
             }
             .named("tptp-demod"),
@@ -520,6 +556,10 @@ impl Strategy {
             max_term_size: r.pick(&[48, 64, 96, 128]) as usize,
             para_cap: r.pick(&[50, 100, 200, 400, 800]) as usize,
             demod_cap: r.pick(&[32, 64, 128, 256]),
+            // Not in the sweep genome yet (a literal, no RNG draw — the
+            // sample streams of existing seeds shift only by the fields
+            // that DO draw): measure it via the tptp-demod lane first.
+            bwd_demod_cap: 10_000,
             prec_seed: r.pick(&[0, 0, 0, 0xA5A5_1234, 0x1357_9BDF, 0xF00D_CAFE]),
             fc_max_premise_lits: r.pick(&[4, 6, 8]) as usize,
             fc_fanout: r.pick(&[8, 16, 32, 64]) as usize,
@@ -534,6 +574,9 @@ impl Strategy {
             // (see base()); still sampled so the sweep can re-find a
             // win once the demodulator is indexed.
             demod: r.chance(35),
+            // Not in the sweep genome yet (no RNG draw): measure it via
+            // the tptp-demod lane first.
+            bwd_demod: false,
             // Experimental (superposition prerequisites); rarely sampled
             // until the full ordered calculus lands.
             ordered_resolution: r.chance(15),

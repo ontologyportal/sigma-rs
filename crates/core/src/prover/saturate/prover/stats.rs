@@ -160,6 +160,24 @@ pub(crate) struct ProverStats {
     /// reduction ratio).
     pub(crate) demod_scans_performed: u64,
 
+    // -- backward demodulation (Strategy.bwd_demod; see
+    //    NativeProver::backward_demodulate).  All zero unless the knob
+    //    (or SIGMA_BWD_DEMOD=1) is on.
+    /// Backward passes run — one per newly activated, KBO-oriented unit
+    /// equation the demodulator index accepted.
+    pub(crate) bwd_demod_triggered: u64,
+    /// Existing (active/passive) clauses a backward pass rewrote; each
+    /// spawns a replacement through `make` (rule tag `bwd_demod`).
+    pub(crate) bwd_demod_clauses_rewritten: u64,
+    /// Originals retired after a backward rewrite (tracks
+    /// `bwd_demod_clauses_rewritten` 1:1 — split out so an invariant
+    /// break is visible in the stats line).
+    pub(crate) bwd_demod_retired: u64,
+    /// Backward passes truncated by `Strategy.bwd_demod_cap` — the
+    /// remaining candidates were left unsimplified (sound; just less
+    /// interreduced).
+    pub(crate) bwd_demod_cap_hits: u64,
+
     // -- proof-DAG discharge-rule reach (counted once per completed proof
     //    extraction, at refutation time).
     pub(crate) proof_tag_model: u64,

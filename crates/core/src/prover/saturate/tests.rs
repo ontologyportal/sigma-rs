@@ -109,6 +109,136 @@ fn retain_background_masks_excluded_roots() {
     assert_eq!(refrozen.loaded_roots.len(), 2, "coverage = union after extend");
 }
 
+// -- backward demodulation (Strategy.bwd_demod) ----------------------------
+
+/// The root in `roots` whose first clause's first literal has head
+/// symbol `head` (equations report `"Equal"` via `head_of`'s Op arm).
+fn root_by_head(layer: &ProverLayer, roots: &[SentenceId], head: &str) -> SentenceId {
+    *roots
+        .iter()
+        .find(|r| {
+            let cls = layer.clauses_for(**r);
+            cls.first().is_some_and(|c| head_of(layer, &c.lits[0]) == head)
+        })
+        .unwrap_or_else(|| panic!("no root with head {head}"))
+}
+
+fn bwd_opts() -> NativeOpts {
+    let mut opts = NativeOpts::default();
+    opts.strategy.demod = true;
+    opts.strategy.bwd_demod = true;
+    opts
+}
+
+/// Activating a new oriented GROUND equation rewrites an existing
+/// active clause containing its redex, retires the original, and
+/// replaces it with the simplified clause (parents = original +
+/// equation, rule tag `bwd_demod`).
+#[test]
+fn backward_demod_rewrites_and_retires_active_clause() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF A) B)");
+    assert_eq!(roots.len(), 2);
+    let fact = root_by_head(&layer, &roots, "p");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut prover = NativeProver::new(&layer, Scope::Base, bwd_opts());
+    prover.add_background_root(fact); // p(FnF A) activates first
+    prover.add_background_root(eq);   // the equation lands SECOND
+
+    assert!(prover.stats.bwd_demod_triggered >= 1, "pass must have run");
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1);
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    assert_eq!(prover.stats.bwd_demod_cap_hits, 0);
+
+    // The original is retired; the replacement carries the rewrite.
+    let orig = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "axiom" && prover.dbg_lits(c.id) == vec![(true, "(p (FnF A))".to_string())])
+        .expect("original fact clause")
+        .id;
+    assert!(prover.clauses[orig as usize].retired, "original must be retired");
+    let repl = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "bwd_demod")
+        .expect("replacement clause");
+    assert_eq!(prover.dbg_lits(repl.id), vec![(true, "(p B)".to_string())]);
+    assert!(
+        repl.parents.contains(&orig),
+        "replacement cites the original as parent"
+    );
+    assert!(!repl.retired);
+}
+
+/// Orientation decided at registration is respected under instance:
+/// the NON-ground demodulator `(FnF ?X) → ?X` (KBO-oriented once)
+/// rewrites the ground instance `(FnF A)` inside an existing clause.
+#[test]
+fn backward_demod_orientation_under_instance() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF ?X) ?X)");
+    assert_eq!(roots.len(), 2);
+    let fact = root_by_head(&layer, &roots, "p");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut prover = NativeProver::new(&layer, Scope::Base, bwd_opts());
+    prover.add_background_root(fact);
+    prover.add_background_root(eq);
+
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1);
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    let repl = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "bwd_demod")
+        .expect("replacement clause");
+    assert_eq!(
+        prover.dbg_lits(repl.id),
+        vec![(true, "(p A)".to_string())],
+        "instance rewritten under the registration-time orientation"
+    );
+}
+
+/// `bwd_demod_cap` bounds candidate checks per pass: with two
+/// rewritable clauses and cap = 1, exactly one is rewritten/retired and
+/// the truncation is counted — the second stays as it was (sound:
+/// interreduction is optional).
+#[test]
+fn backward_demod_cap_honored() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnG A))\n(q (FnG A))\n(equal (FnG ?X) ?X)");
+    assert_eq!(roots.len(), 3);
+    let p = root_by_head(&layer, &roots, "p");
+    let q = root_by_head(&layer, &roots, "q");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut opts = bwd_opts();
+    opts.strategy.bwd_demod_cap = 1;
+    let mut prover = NativeProver::new(&layer, Scope::Base, opts);
+    prover.add_background_root(p);
+    prover.add_background_root(q);
+    prover.add_background_root(eq);
+
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1, "cap = 1 check");
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    assert_eq!(prover.stats.bwd_demod_cap_hits, 1, "truncation counted");
+    let retired: Vec<&str> = prover
+        .clauses
+        .iter()
+        .filter(|c| c.retired)
+        .map(|c| c.rule)
+        .collect();
+    assert_eq!(retired, vec!["axiom"], "exactly one original retired");
+}
+
 // -- conjecture-distance factor (Liu & Xu via leaf signatures) ------------
 
 #[test]

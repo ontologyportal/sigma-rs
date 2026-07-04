@@ -359,32 +359,37 @@ impl DemodIndex {
 
     /// Register the oriented demodulator `l → r` (caller has already
     /// verified `l >ₖ r`).  Unindexable left-side shapes are dropped.
-    pub(crate) fn add(&mut self, clause: u32, l: Term, r: Term) {
+    /// Returns a copy of the registered demodulator (`None` when the
+    /// shape was dropped) — the backward-demodulation trigger rewrites
+    /// the existing clause sets with exactly this one rule.
+    pub(crate) fn add(&mut self, clause: u32, l: Term, r: Term) -> Option<Demod> {
         let mut slots = std::collections::BTreeSet::new();
         term_slots(&l, &mut slots);
         let nslots = slots.iter().max().map_or(0, |m| *m as u32 + 1);
-        match &l {
+        let d = Demod { clause, l, r, nslots };
+        match &d.l {
             Term::App(elems) => {
                 let key = match elems.first() {
                     Some(Term::Sym(s)) => s.id(),
                     Some(Term::Op(op)) => u64::from(op_tag(op)),
                     // Variable-headed pattern: not bucketable (it would
                     // have to probe on every arity match) — skip.
-                    _ => return,
+                    _ => return None,
                 };
                 let ar = elems.len().min(255) as u8;
                 self.app
                     .entry((key, ar))
                     .or_default()
-                    .push(Demod { clause, l, r, nslots });
+                    .push(d.clone());
             }
             Term::Sym(s) => {
                 let id = s.id();
-                self.leaf.entry(id).or_default().push(Demod { clause, l, r, nslots });
+                self.leaf.entry(id).or_default().push(d.clone());
             }
-            _ => return,
+            _ => return None,
         }
         self.len += 1;
+        Some(d)
     }
 
     /// Demodulators whose left side could match `t`, by top shape —

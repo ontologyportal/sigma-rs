@@ -169,6 +169,14 @@ pub(crate) struct ClauseRec {
     pub(crate) tier: u8,
     pub(crate) weight: u64,
     pub(crate) activated: bool,
+    /// Retired by backward demodulation: a newer oriented unit equation
+    /// rewrote this clause and its simplified replacement (parents =
+    /// {this, the equation}) took over.  The record stays in the arena
+    /// (proof-DAG references remain valid, and stale index entries are
+    /// tolerated by re-checking), but the clause is skipped on given
+    /// selection and filtered from partner retrieval.  Always `false`
+    /// unless `Strategy.bwd_demod` is on.
+    pub(crate) retired: bool,
     /// Bit `i` set ⇔ literal `i` is maximal under the KBO literal
     /// ordering (the ordered-inference eligibility set).  All-ones when
     /// maximality is not needed (the unordered default), so consumers can
@@ -301,6 +309,15 @@ pub(crate) struct NativeProver<'a> {
     /// hydration rebuilds it from the arena like the superposition
     /// indexes.
     demods: super::units::DemodIndex,
+    /// Backward-demodulation reverse index: subterm head key → ids of
+    /// clauses that contain a node with that head shape (i.e. the only
+    /// clauses that could hold an `l`-redex for a demodulator whose left
+    /// side carries that key).  Maintained per made clause ONLY while
+    /// `Strategy.bwd_demod` is on (empty and cost-free otherwise);
+    /// entries are never pruned — stale ids (retired / superseded
+    /// clauses) are tolerated and re-checked by the pass.  Rebuilt from
+    /// the arena on snapshot hydrate, like the other derived indexes.
+    bwd_index: Map64<u64, Vec<u32>>,
     seq: u64,
     tick: u64,
     /// Semantic clause-selection guidance (`Strategy.semantic_guide`):
@@ -352,6 +369,7 @@ impl<'a> NativeProver<'a> {
             sym_swap_memo: Map64::default(),
             conj_sig: 0,
             demods: super::units::DemodIndex::default(),
+            bwd_index: Map64::default(),
             seq: 0,
             tick: 0,
             guide_model: None,
@@ -396,6 +414,11 @@ impl<'a> NativeProver<'a> {
         // Same for the demodulator index: orientation depends on THIS
         // run's KBO (`prec_seed`), which the snapshot key excludes.
         p.rebuild_demod_index();
+        // And the backward-demodulation reverse index (maintained at
+        // `make` time, which the hydrated clauses never went through).
+        if p.opts.strategy.bwd_demod {
+            p.rebuild_bwd_index();
+        }
         p
     }
 
@@ -780,6 +803,9 @@ impl<'a> NativeProver<'a> {
         }
         for cid in cand {
             let c = &self.clauses[cid as usize];
+            if c.retired {
+                continue; // a retired clause must not delete its own replacement
+            }
             if c.lits.len() <= terms.len() && clause_subsumes(&c.terms, terms) {
                 return Some(cid);
             }
@@ -905,13 +931,22 @@ impl<'a> NativeProver<'a> {
         let prefer_age = self.tick % self.opts.strategy.pick_ratio.max(1) == 0;
         for pass in 0..2 {
             let from_age = prefer_age == (pass == 0);
+            // Retired (backward-demodulated) clauses are lazily skipped
+            // here — cheaper than deleting heap entries, and marking
+            // them popped keeps the other heap's copy dead too.
             if from_age {
                 while let Some(Reverse((_, id))) = self.h_age.pop() {
-                    if self.popped.insert(id) { return Some(id); }
+                    if self.popped.insert(id) {
+                        if self.clauses[id as usize].retired { continue; }
+                        return Some(id);
+                    }
                 }
             } else {
                 while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
-                    if self.popped.insert(id) { return Some(id); }
+                    if self.popped.insert(id) {
+                        if self.clauses[id as usize].retired { continue; }
+                        return Some(id);
+                    }
                 }
             }
         }
@@ -934,7 +969,18 @@ impl<'a> NativeProver<'a> {
             self.units.add_unit(
                 id, lits[0].pos, lits[0].atom, nv,
                 &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
-            self.index_demodulator(id);
+            let demod = self.index_demodulator(id);
+            // Backward demodulation: the NEWLY oriented equation
+            // re-normalizes the EXISTING clause sets (interreduction).
+            // Trigger only here — the hydrate/mask rebuild paths call
+            // `index_demodulator` for equations that were already
+            // active, whose backward pass already ran (or predates the
+            // snapshot).
+            if self.opts.strategy.bwd_demod {
+                if let Some(d) = demod {
+                    self.backward_demodulate(id, &d);
+                }
+            }
         }
         if self.opts.strategy.superposition {
             self.index_superposition(id);
@@ -1109,7 +1155,14 @@ impl<'a> NativeProver<'a> {
         let cap = self.opts.strategy.para_cap;
 
         // -- into: active equations rewrite `given`'s maximal subterms.
-        let eqns = self.active_eqns.clone();
+        // (Retired equations dropped: their normalized replacements are
+        // re-indexed on their own activation.)
+        let eqns: Vec<(u32, u8)> = self
+            .active_eqns
+            .iter()
+            .copied()
+            .filter(|&(c, _)| !self.clauses[c as usize].retired)
+            .collect();
         for (li, (_, atom)) in g_terms.iter().enumerate() {
             if li >= 64 || (g_max >> li) & 1 == 0 { continue; }
             for (path, _sub) in positions(atom) {
@@ -1141,6 +1194,9 @@ impl<'a> NativeProver<'a> {
             let src = move |a| layer.atom_info(a);
             let targets = self.term_idx.probe(&qi, &src);
             for tp in targets {
+                if self.clauses[tp.clause as usize].retired {
+                    continue; // superseded by its backward-demod replacement
+                }
                 let path: Vec<usize> = tp.path.iter().map(|&p| p as usize).collect();
                 let made = self.superpose(given, li, tp.clause, tp.lit as usize, &path);
                 if let Some(cid) = made {
@@ -1656,6 +1712,7 @@ impl<'a> NativeProver<'a> {
         let mut n = 0;
         for (eq_cid, l, r) in &equals {
             if matches!(l, Term::Var(_)) { continue; }
+            if self.clauses[*eq_cid as usize].retired { continue; }
             let off = nvars as u64 + 1;
             let l2 = shift_slots(l, off);
             let r2 = shift_slots(r, off);
@@ -2042,6 +2099,9 @@ impl<'a> NativeProver<'a> {
                         );
                     }
                 }
+                // Retired (backward-demodulated) clauses no longer
+                // partner — their simplified replacements do.
+                cands.retain(|at| !self.clauses[at.clause as usize].retired);
                 // Ordered resolution: the partner literal must be maximal
                 // in its own clause too.
                 let cands: Vec<EntryRef> = if ordered {

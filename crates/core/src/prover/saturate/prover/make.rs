@@ -265,22 +265,24 @@ impl<'a> NativeProver<'a> {
     /// given-clause loop, background completion) — the same moment the
     /// unit stores register it — and from the hydrate/mask rebuilds.
     /// At most one direction can be strictly greater, so at most one
-    /// entry per equation.
-    pub(super) fn index_demodulator(&mut self, id: u32) {
+    /// entry per equation.  Returns the registered demodulator (`None`
+    /// when the clause is not one, or its shape was unindexable) — the
+    /// `activate` caller feeds it to the backward-demodulation pass.
+    pub(super) fn index_demodulator(&mut self, id: u32) -> Option<super::super::units::Demod> {
         let (pos, atom) = {
             let c = &self.clauses[id as usize];
             if c.lits.len() != 1 {
-                return;
+                return None;
             }
             (c.lits[0].pos, c.lits[0].atom)
         };
         if !pos {
-            return;
+            return None;
         }
-        let Some(t) = slot_atom(&self.layer.atoms, self.syn(), atom, 0) else { return };
-        let Some((a, b)) = eq_sides(&t) else { return };
+        let t = slot_atom(&self.layer.atoms, self.syn(), atom, 0)?;
+        let (a, b) = eq_sides(&t)?;
         if a == b {
-            return;
+            return None;
         }
         for (l, r) in [(&a, &b), (&b, &a)] {
             // A bare-variable left side rewrites everything — never a
@@ -289,11 +291,140 @@ impl<'a> NativeProver<'a> {
                 continue;
             }
             if self.demod_oriented(l, r) {
-                self.demods.add(id, l.clone(), r.clone());
-                return;
+                return self.demods.add(id, l.clone(), r.clone());
+            }
+        }
+        None
+    }
+
+    // -- backward demodulation (Strategy.bwd_demod) --------------------------
+
+    /// Record clause `id` in the backward-demodulation reverse index:
+    /// one bucket per DISTINCT head key among its literals' proper
+    /// subterm nodes — exactly the nodes `find_demod_redex`'s traversal
+    /// would visit, so a demodulator `l → r` can reach every clause
+    /// that could contain an `l`-redex through the single bucket of
+    /// `l`'s head key.  Only called while `Strategy.bwd_demod` is on.
+    pub(super) fn bwd_index_clause(&mut self, id: u32) {
+        let mut keys: SmallVec<[u64; 8]> = SmallVec::new();
+        for (_, t) in &self.clauses[id as usize].terms {
+            bwd_collect_keys(t, true, &mut keys);
+        }
+        for k in keys {
+            self.bwd_index.entry(k).or_default().push(id);
+        }
+    }
+
+    /// Rebuild the backward-demodulation reverse index from the
+    /// activated arena — the hydrate-path peer of `rebuild_demod_index`
+    /// (`bwd_index` is maintained at `make` time, which hydrated
+    /// clauses never went through in this prover instance).
+    pub(super) fn rebuild_bwd_index(&mut self) {
+        self.bwd_index = super::super::hash64::Map64::default();
+        let n = self.clauses.len() as u32;
+        for id in 0..n {
+            let c = &self.clauses[id as usize];
+            if c.activated && !c.retired {
+                self.bwd_index_clause(id);
             }
         }
     }
+
+    /// Backward demodulation (interreduction): the NEWLY activated
+    /// oriented unit equation `d` (`l → r`, owned by clause `demod_id`)
+    /// rewrites the EXISTING active/passive clauses that contain an
+    /// `l`-redex.  Candidates come from the head-key reverse index
+    /// (one bucket probe — a clause can only hold an `l`-redex if `l`'s
+    /// head key occurs among its subterm nodes); each is re-checked
+    /// (stale/retired entries tolerated) and rewritten with THIS ONE
+    /// rule only.  A rewritten clause is rebuilt through `make` (so
+    /// forward demod, oracle discharge, subsumption, dedup and proof
+    /// bookkeeping all run; parents = {original, equation}, rule tag
+    /// `bwd_demod`) and the ORIGINAL IS RETIRED — it stops being
+    /// selected as given or offered as a partner.  Sound: original ⟺
+    /// replacement modulo the equation, which stays active; the
+    /// `bwd_demod_cap` bound merely leaves the tail unsimplified
+    /// (interreduction is optional redundancy elimination).
+    ///
+    /// Guards mirror forward demodulation exactly: CONJECTURE-tier
+    /// clauses are only rewritten under the superposition regime, and
+    /// the demodulator clause never rewrites itself.
+    pub(super) fn backward_demodulate(
+        &mut self,
+        demod_id: u32,
+        d: &super::super::units::Demod,
+    ) {
+        self.stats.bwd_demod_triggered += 1;
+        let Some(key) = bwd_term_key(&d.l) else { return };
+        let candidates: Vec<u32> = match self.bwd_index.get(&key) {
+            Some(v) => v.clone(),
+            None => return,
+        };
+        let cap = self.opts.strategy.bwd_demod_cap.max(1);
+        let term_cap = self.opts.strategy.demod_cap.max(1);
+        let mut checks = 0usize;
+        for cid in candidates {
+            // Never rewrite the demodulator clause with itself.
+            if cid == demod_id {
+                continue;
+            }
+            if checks >= cap {
+                self.stats.bwd_demod_cap_hits += 1;
+                break;
+            }
+            checks += 1;
+            let (terms, tier) = {
+                let c = &self.clauses[cid as usize];
+                if c.retired || c.lits.is_empty() {
+                    continue;
+                }
+                // Mirror forward demod's tier guard (`demod_eligible` in
+                // `make`): the goal line is only rewritten under the
+                // superposition regime, where active facts get
+                // re-normalized too, so goal and fact meet in normal form.
+                if c.tier == CONJECTURE && !self.opts.strategy.superposition {
+                    continue;
+                }
+                (c.terms.clone(), c.tier)
+            };
+            let mut lits = terms;
+            let mut rewrote = false;
+            for (_, t) in lits.iter_mut() {
+                if bwd_demodulate_term(d, t, term_cap) > 0 {
+                    rewrote = true;
+                }
+            }
+            if !rewrote {
+                continue;
+            }
+            self.stats.bwd_demod_clauses_rewritten += 1;
+            // Retire the original FIRST: it must not forward-subsume
+            // (or otherwise interact with) its own replacement inside
+            // `make`.  Its content lives on in replacement + equation.
+            self.clauses[cid as usize].retired = true;
+            self.stats.bwd_demod_retired += 1;
+            let made = self.make(lits, vec![cid, demod_id], "bwd_demod", tier, None, true);
+            let Some(nid) = made else { continue };
+            if tier == BACKGROUND && !self.opts.strategy.full_saturation {
+                // Mirror `add_background_root`: under set of support the
+                // background tier is indexed as a passive partner, never
+                // queued as given.
+                let nkey = self.clauses[nid as usize].key;
+                if self.clauses[nid as usize].lits.len() <= self.opts.max_lits
+                    && self.seen.insert(nkey)
+                {
+                    self.activate(nid);
+                }
+            } else {
+                // Queue like any derived clause (an empty replacement is
+                // popped and graded by `run`'s reportable-refutation
+                // check, the same path support-load empties take).
+                self.push(Some(nid));
+            }
+        }
+    }
+
+    // -- (forward) demodulator index rebuilds ---------------------------------
 
     /// Rebuild the demodulator index from the activated arena — the
     /// hydrate-path peer of `rebuild_superposition_index` (orientation
@@ -304,7 +435,7 @@ impl<'a> NativeProver<'a> {
         let n = self.clauses.len() as u32;
         for id in 0..n {
             if self.clauses[id as usize].activated {
-                self.index_demodulator(id);
+                let _ = self.index_demodulator(id);
             }
         }
     }
@@ -1202,9 +1333,17 @@ impl<'a> NativeProver<'a> {
             tier,
             weight: base * self.opts.strategy.tier_weight[tier as usize] * dist,
             activated: false,
+            retired: false,
             max_mask,
             notes,
         });
+        // Backward-demodulation reverse index: every arena clause is
+        // findable by the head keys of its subterm nodes, so a LATER
+        // oriented equation can re-normalize it (active or passive).
+        // Zero cost unless the knob is on.
+        if self.opts.strategy.bwd_demod {
+            self.bwd_index_clause(id);
+        }
         if let Some((rel, x, y)) = unit_edge {
             self.oracle.add_unit(rel, x, y, Some(id));
         }
@@ -1213,4 +1352,127 @@ impl<'a> NativeProver<'a> {
         }
         Some(id)
     }
+}
+
+// -- backward-demodulation term helpers ----------------------------------------
+
+/// Reverse-index / bucket key of a possible redex node: compound →
+/// head symbol id (op heads by tag, the same key space `DemodIndex`
+/// buckets on); bare symbol leaf → its id.  `None` for shapes no
+/// indexed demodulator left side can take (variables, literals,
+/// variable-headed compounds).  Arity is deliberately NOT part of the
+/// key — the reverse index trades a few false candidates for one
+/// bucket per symbol; the match walk verifies.
+fn bwd_term_key(t: &Term) -> Option<u64> {
+    match t {
+        Term::App(elems) => match elems.first() {
+            Some(Term::Sym(s)) => Some(s.id()),
+            Some(Term::Op(op)) => Some(u64::from(super::super::units::op_tag(op))),
+            _ => None,
+        },
+        Term::Sym(s) => Some(s.id()),
+        _ => None,
+    }
+}
+
+/// Collect the DISTINCT `bwd_term_key`s of `t`'s proper subterm nodes —
+/// the same nodes `find_demod_redex` visits (children of every `App`,
+/// heads skipped, the top-level atom itself excluded: demodulation
+/// never rewrites a whole literal atom).
+fn bwd_collect_keys(t: &Term, is_top: bool, keys: &mut SmallVec<[u64; 8]>) {
+    if let Term::App(elems) = t {
+        for e in elems.iter().skip(1) {
+            bwd_collect_keys(e, false, keys);
+        }
+    }
+    if is_top {
+        return;
+    }
+    if let Some(k) = bwd_term_key(t) {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+}
+
+/// O(1) head-shape gate between a demodulator's left side and a target
+/// node — the single-rule twin of `DemodIndex::possibly_matches` (a
+/// one-way match demands head + length agree exactly, so a mismatch
+/// here is an algebraic refutation, never a lost rewrite).
+fn bwd_head_compatible(l: &Term, t: &Term) -> bool {
+    match (l, t) {
+        (Term::App(a), Term::App(b)) => {
+            a.len() == b.len()
+                && match (a.first(), b.first()) {
+                    (Some(Term::Sym(x)), Some(Term::Sym(y))) => x.id() == y.id(),
+                    (Some(Term::Op(x)), Some(Term::Op(y))) => {
+                        super::super::units::op_tag(x) == super::super::units::op_tag(y)
+                    }
+                    _ => false,
+                }
+        }
+        (Term::Sym(x), Term::Sym(y)) => x.id() == y.id(),
+        _ => false,
+    }
+}
+
+/// First redex of the SINGLE demodulator `d` in `t` — the restricted
+/// twin of `find_demod_redex`: identical traversal (children first,
+/// heads skipped, top excluded, variables excluded), identical
+/// slot-shift discipline (`d`'s slots lifted above the target's), but
+/// exactly one candidate rule.  Returns the redex path and the
+/// instantiated replacement.
+fn bwd_find_redex(
+    d: &super::super::units::Demod,
+    t: &Term,
+    off: u64,
+) -> Option<(Vec<usize>, Term)> {
+    fn walk(
+        d: &super::super::units::Demod,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+    ) -> Option<(Vec<usize>, Term)> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if let Some(hit) = walk(d, e, path, off) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if path.is_empty() || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        if !bwd_head_compatible(&d.l, t) {
+            return None;
+        }
+        let l2 = shift_slots(&d.l, off);
+        let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+        if match_one_way(&l2, t, &mut s) {
+            // r's variables ⊆ l's (KBO variable condition), so the
+            // match bound everything r mentions — orientation decided
+            // once at registration holds for every instance.
+            let rr = apply(&shift_slots(&d.r, off), &s);
+            return Some((path.clone(), rr));
+        }
+        None
+    }
+    let mut path = Vec::new();
+    walk(d, t, &mut path, off)
+}
+
+/// Fixpoint-rewrite `t` with the single demodulator `d` (the backward
+/// pass's per-literal engine; mirrors `demodulate`'s loop, including
+/// the per-term rewrite cap).  Returns the number of rewrites applied.
+fn bwd_demodulate_term(d: &super::super::units::Demod, t: &mut Term, cap: u64) -> u64 {
+    let mut rewrites = 0u64;
+    while rewrites < cap {
+        let off = max_slot(t).map_or(0, |m| m + 1);
+        let Some((path, rr)) = bwd_find_redex(d, t, off) else { break };
+        *t = replace(t, &path, &rr);
+        rewrites += 1;
+    }
+    rewrites
 }

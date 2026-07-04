@@ -640,7 +640,7 @@ impl ProverLayer {
                     contradiction_proofs.push(steps);
                 }
             }
-            let raw = format!(
+            let mut raw = format!(
                 "native: {:?} after {} given-clause steps; {} clauses, {} resolvents \
                  ({} decoded), {} oracle discharges, {} unit subsumed, {} clause subsumed, \
                  {} demodulated, {} forward-closed, {} bg-completed{}\n\
@@ -709,6 +709,17 @@ impl ProverLayer {
                 prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
                 prover.stats.proof_tag_oracle,
                 prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
+            // Backward-demodulation line only when the knob is on: the
+            // default-path SIGMA_STATS output stays byte-identical.
+            if prover.opts.strategy.bwd_demod {
+                raw.push_str(&format!(
+                    "\nbwd-demod: {} triggered, {} clauses_rewritten, {} retired, \
+                     {} cap_hits",
+                    prover.stats.bwd_demod_triggered,
+                    prover.stats.bwd_demod_clauses_rewritten,
+                    prover.stats.bwd_demod_retired,
+                    prover.stats.bwd_demod_cap_hits));
+            }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }

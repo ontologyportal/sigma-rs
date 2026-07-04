@@ -124,11 +124,19 @@ impl<'a> NativeProver<'a> {
                 self.units.add_unit(
                     id, lits[0].pos, lits[0].atom, nv,
                     &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
-                self.index_demodulator(id);
+                // Re-registration of an already-active equation: no
+                // backward pass (that ran at its original activation).
+                let _ = self.index_demodulator(id);
             }
         }
         if self.opts.strategy.superposition {
             self.rebuild_superposition_index();
+        }
+        // The backward-demod reverse index must shrink to the kept
+        // clauses too — masked clauses may not be resurrected by a
+        // later equation's backward pass.
+        if self.opts.strategy.bwd_demod {
+            self.rebuild_bwd_index();
         }
     }
 }
