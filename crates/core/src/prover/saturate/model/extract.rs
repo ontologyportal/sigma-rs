@@ -258,6 +258,82 @@ pub(crate) fn schema_rules(
     out
 }
 
+// ---------------------------------------------------------------------------
+// Denial constraints (negatives package, sub-milestone B).
+// ---------------------------------------------------------------------------
+//
+// SUMO/Cyc declare class DISJOINTNESS — `(disjoint A B)`, and pairwise over
+// the tails of `(partition C P1 … Pn)` / `(disjointDecomposition C P1 … Pn)` —
+// rather than writing the first-order `∀x.¬(instance x A ∧ instance x B)`.
+// Extracted here as ⊥-rules ("denials"): integrity constraints the chase uses
+// to REFUTE a ground atom (`ModelProgram::refutes`).  Open-world sound:
+// KB ⊨ ¬(instance x C) iff KB ∪ {(instance x C)} is inconsistent, and a
+// denial-pair hit inside the model's closure is exactly that inconsistency
+// for the Horn+denial fragment — no Clark completion, no CWA.
+//
+// This mirrors how the taxonomy oracle's `DisjointSets::build` reads the
+// declarations (recognized `disjoint`/`partition` role ids, plus the
+// hash-named `disjointDecomposition`, whose row-variable defining axiom has
+// no recognizer).  `exhaustiveDecomposition` is NOT disjoint — excluded.
+
+/// One extracted denial constraint: the (normalized `min ≤ max`) class pair
+/// declared disjoint, and the declaring root sentence — the axiom a
+/// refutation cites as its final step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Denial {
+    pub classes: (SymbolId, SymbolId),
+    pub sid:     SentenceId,
+}
+
+/// Scan the store for disjointness declarations under the recognized role
+/// symbols and flatten them to pairwise [`Denial`]s.  First declaration of a
+/// pair wins (matching the oracle's `src.entry().or_insert` behavior).
+pub(crate) fn collect_denials(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<Denial> {
+    let norm = |a: SymbolId, b: SymbolId| if a <= b { (a, b) } else { (b, a) };
+    let mut seen: std::collections::HashSet<(SymbolId, SymbolId)> =
+        std::collections::HashSet::new();
+    let mut out: Vec<Denial> = Vec::new();
+    let mut push = |a: SymbolId, b: SymbolId, sid: SentenceId, out: &mut Vec<Denial>| {
+        if a != b && seen.insert(norm(a, b)) {
+            out.push(Denial { classes: norm(a, b), sid });
+        }
+    };
+
+    // (disjoint A B)
+    for sid in syn.by_head_id(&roles.disjoint) {
+        if let Some((a, b)) = binary_syms(syn, sid) {
+            push(a, b, sid, &mut out);
+        }
+    }
+    // (partition C P1 … Pn) / (disjointDecomposition C P1 … Pn): the tail
+    // members are pairwise disjoint.
+    let dd = crate::types::Symbol::hash_name("disjointDecomposition");
+    let mut heads = vec![roles.partition];
+    if dd != roles.partition {
+        heads.push(dd);
+    }
+    for head in heads {
+        for sid in syn.by_head_id(&head) {
+            let Some(s) = syn.sentence(sid) else { continue };
+            let parts: Vec<SymbolId> = s
+                .elements
+                .iter()
+                .skip(2)
+                .filter_map(|e| match e {
+                    Element::Symbol(sym) => Some(sym.id()),
+                    _ => None,
+                })
+                .collect();
+            for i in 0..parts.len() {
+                for j in (i + 1)..parts.len() {
+                    push(parts[i], parts[j], sid, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Derive the relations that bear an algebraic role from an *evaluated* model,
 /// rather than reading declarations directly.  A relation `R` is transitive
 /// iff `(R, TransitiveRelation)` is in the **instance closure** — which already

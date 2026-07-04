@@ -502,12 +502,20 @@ impl<'a> NativeProver<'a> {
         // Hard wall-clock cap on model materialization across all goal atoms,
         // so a slow/zero-value model build (e.g. a dense OpenCyc cone that
         // emits nothing) can never eat the prover's time budget — it bails and
-        // resolution proceeds.
-        let deadline = Instant::now() + std::time::Duration::from_millis(800);
+        // resolution proceeds.  `SIGMA_MODEL_MS` overrides the default 800ms
+        // (diagnosis / experimentation on dense KBs; gated path only).
+        let model_ms: u64 = std::env::var("SIGMA_MODEL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(800);
+        let deadline = Instant::now() + std::time::Duration::from_millis(model_ms);
         let mut to_emit: Vec<(SymbolId, Vec<SymbolId>, Vec<SentenceId>)> = Vec::new();
         let mut model_stats = super::super::model::ModelStats::default();
         for (rel, args) in &patterns {
-            let dargs = self.bridge_dargs(args);
+            let Some(dargs) = self.bridge_dargs(args, &mut model_stats) else {
+                self.stats.model_atoms_rejected += 1;
+                continue;
+            };
             let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
             if let Some((rows, prov)) = answered {
                 self.stats.model_atoms_answered += 1;
@@ -520,6 +528,75 @@ impl<'a> NativeProver<'a> {
                 }
             } else {
                 self.stats.model_atoms_unanswered += 1;
+            }
+        }
+        // NEGATIVE decisions (sub-milestone B): denial-constraint refutation
+        // of ground `instance`-shaped atoms the negated conjecture carries
+        // POSITIVELY (the goal asks to prove `¬(instance x C)`).  Mirrors the
+        // oracle path's `refutes_instance` consumption in `make`: emit a
+        // negative ground unit `~(instance x C)` whose `fact_parents` are the
+        // full citation chain (instance derivation + subclass chains + the
+        // denial declaration), tagged `model_refute`.  It resolves against
+        // the positive conjecture literal, collapsing the goal — exactly the
+        // verdict the oracle gives, but chased through the generic model.
+        // `refutes` only reports when both closure queries materialized
+        // fully within budget (no mid-chain bail), so the decision is sound.
+        let mut to_refute: Vec<(Term, super::super::model::ModelRefutation)> = Vec::new();
+        if !mp.denials.is_empty() {
+            let mut seen_refute: HashSet<AtomId> = HashSet::new();
+            for c in &self.clauses {
+                if c.tier != CONJECTURE {
+                    continue;
+                }
+                for l in &c.lits {
+                    if !l.pos {
+                        continue; // only atoms the negated conjecture holds positively
+                    }
+                    if !seen_refute.insert(l.atom) {
+                        continue;
+                    }
+                    let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else {
+                        continue;
+                    };
+                    let Some((rel, args)) = lit_pattern(&t) else { continue };
+                    if rel != mp.roles.instance || args.len() != 2 {
+                        continue; // instance-shaped ground atoms only
+                    }
+                    let (Some(x), Some(cc)) = (sym_of(&args[0]), sym_of(&args[1])) else {
+                        continue;
+                    };
+                    let Some(r) =
+                        mp.refutes(rel, &[x, cc], Some(deadline), &mut model_stats)
+                    else {
+                        continue;
+                    };
+                    if trace {
+                        // Cross-check against the taxonomy oracle (ground
+                        // truth for disjointness refutations) — any
+                        // disagreement is a soundness flag to investigate.
+                        let oracle_agrees = self.oracle.refutes_instance(rel, x, cc, None);
+                        let chain: Vec<String> = r
+                            .cited
+                            .iter()
+                            .map(|sid| {
+                                self.layer
+                                    .atoms
+                                    .term_of(*sid, self.syn())
+                                    .map(|ct| term_kif(&ct, self.syn()))
+                                    .unwrap_or_else(|| format!("sid:{sid}"))
+                            })
+                            .collect();
+                        eprintln!(
+                            "MODEL-REFUTE ~{} via member {} ⊓ ancestor {} oracle_refutes={} chain:\n    {}",
+                            term_kif(&t, self.syn()),
+                            self.syn().sym_name(r.member).map(|s| s.to_string()).unwrap_or_default(),
+                            self.syn().sym_name(r.goal_ancestor).map(|s| s.to_string()).unwrap_or_default(),
+                            oracle_agrees,
+                            chain.join("\n    "),
+                        );
+                    }
+                    to_refute.push((t, r));
+                }
             }
         }
         self.merge_model_stats(&model_stats);
@@ -557,37 +634,67 @@ impl<'a> NativeProver<'a> {
                 self.activate(id);
             }
         }
+
+        // Emit each denial refutation as a negative ground unit — the same
+        // shape the oracle's `refutes_instance` discharge leaves behind: the
+        // unit resolves against the positive conjecture literal, and its
+        // `fact_parents` carry the full citation chain (leaf facts, chain
+        // rules, denial declaration last).
+        let mut emitted_neg = 0usize;
+        for (t, r) in to_refute {
+            if let Some(id) =
+                self.make(vec![(false, t)], Vec::new(), "model_refute", SUPPORT, None, true)
+            {
+                self.clauses[id as usize].fact_parents.extend(r.cited);
+                self.activate(id);
+                if self.push(Some(id)).is_some() {
+                    emitted_neg += 1;
+                }
+            }
+        }
         if trace {
-            eprintln!("MODEL: {emitted} positive units emitted over {} goal relations", goal_preds.len());
+            eprintln!(
+                "MODEL: {emitted} positive / {emitted_neg} refutation units emitted over {} goal relations",
+                goal_preds.len(),
+            );
         }
     }
 
     /// Bridge one conjecture atom's argument terms to model-side
-    /// [`DTerm`](super::super::model::DTerm)s: bare symbols become constants,
-    /// everything else collapses to the wildcard `DTerm::Var(0)`.  The
-    /// collapse LOSES a constraint when the argument is a compound term
-    /// or a variable that co-occurs in another position (the join can no
-    /// longer enforce the co-reference) — both are counted into the
-    /// `model_arg_collapsed_*` stats.
-    fn bridge_dargs(&mut self, args: &[Term]) -> Vec<super::super::model::DTerm> {
-        args.iter()
-            .map(|t| match t {
-                Term::Sym(s) => super::super::model::DTerm::Const(s.id()),
+    /// [`DTerm`](super::super::model::DTerm)s, FAITHFULLY: bare symbols
+    /// become constants, and each distinct goal variable becomes its own
+    /// `DTerm::Var(n)` — the SAME variable in two seats maps to the SAME
+    /// index, so `ModelProgram::answer`'s row filter enforces the
+    /// co-reference (goal `p(X, X)` cannot match tuple `(a, b)`).
+    ///
+    /// A compound (function) term or literal argument has no `DTerm`
+    /// representation; wildcarding it would over-approximate the goal's
+    /// instances — sound while answers were positive-emit-only, UNSOUND
+    /// once they feed negative decisions.  Such atoms are REJECTED
+    /// (`None`), counted into `ModelStats::bridge_rejected_atoms` and the
+    /// prover's `model_arg_collapsed_compound` counter.
+    fn bridge_dargs(
+        &mut self,
+        args: &[Term],
+        ms:   &mut super::super::model::ModelStats,
+    ) -> Option<Vec<super::super::model::DTerm>> {
+        let mut var_ix: HashMap<SymbolId, u32> = HashMap::new();
+        let mut out = Vec::with_capacity(args.len());
+        for t in args {
+            match t {
+                Term::Sym(s) => out.push(super::super::model::DTerm::Const(s.id())),
                 Term::Var(v) => {
-                    let repeats = args.iter()
-                        .filter(|o| matches!(o, Term::Var(ov) if ov == v))
-                        .count();
-                    if repeats > 1 {
-                        self.stats.model_arg_collapsed_repeated_var += 1;
-                    }
-                    super::super::model::DTerm::Var(0)
+                    let next = var_ix.len() as u32;
+                    out.push(super::super::model::DTerm::Var(*var_ix.entry(*v).or_insert(next)));
                 }
                 _ => {
                     self.stats.model_arg_collapsed_compound += 1;
-                    super::super::model::DTerm::Var(0)
+                    ms.bridge_rejected_atoms += 1;
+                    return None;
                 }
-            })
-            .collect()
+            }
+        }
+        Some(out)
     }
 
     /// Fold one discharge pass's [`ModelStats`](super::super::model::ModelStats)
@@ -720,11 +827,22 @@ impl<'a> NativeProver<'a> {
                     if r != rel {
                         continue;
                     }
+                    // Seed-only bridging: each non-constant seat gets its OWN
+                    // fresh variable (pure per-position wildcard).  This is
+                    // deliberately NOT the faithful `bridge_dargs` — the rows
+                    // only SEED the generator fact map, and `match_args` in
+                    // the join re-enforces compound shapes and repeated
+                    // variables against the real pattern, so wildcard seeds
+                    // stay sound while keeping the demand as wide as before.
+                    // (A shared `Var(0)` here would now *enforce equality*
+                    // across those seats under the answer filter, silently
+                    // narrowing the seeded facts.)
                     let dargs: Vec<super::super::model::DTerm> = args
                         .iter()
-                        .map(|a| match a {
+                        .enumerate()
+                        .map(|(i, a)| match a {
                             Term::Sym(s) => super::super::model::DTerm::Const(s.id()),
-                            _ => super::super::model::DTerm::Var(0),
+                            _ => super::super::model::DTerm::Var(i as u32),
                         })
                         .collect();
                     let mut model_stats = super::super::model::ModelStats::default();
@@ -1503,4 +1621,60 @@ fn is_theory_rel(
         || rel == roles.disjoint
         || rel == roles.partition
         || tids.is_temporal(rel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::model::{DTerm, ModelStats};
+    use super::super::super::ProverLayer;
+    use super::super::NativeProver;
+    use super::*;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+
+    // Milestone A: the conjecture-atom → model-goal bridge is faithful.
+    // Repeated goal variables share one DTerm index (so `answer` can enforce
+    // the co-reference), distinct variables stay distinct, and a compound
+    // argument REJECTS the atom instead of wildcarding it.
+    #[test]
+    fn bridge_dargs_faithful_vars_and_compound_reject() {
+        let layer = ProverLayer::new(kif_layer("(p a b)"));
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+        let mut ms = ModelStats::default();
+
+        let x = Term::Var(Symbol::hash_name("?X"));
+        let y = Term::Var(Symbol::hash_name("?Y"));
+        let a = Term::Sym(Symbol::from("a"));
+
+        // p(X, X): one variable, one index — used twice.
+        let d = prover
+            .bridge_dargs(&[x.clone(), x.clone()], &mut ms)
+            .expect("symbol/var args bridge");
+        assert_eq!(d[0], d[1], "same goal variable must share an index");
+
+        // p(X, Y): distinct variables, distinct indices.
+        let d = prover
+            .bridge_dargs(&[x.clone(), y.clone()], &mut ms)
+            .expect("symbol/var args bridge");
+        assert_ne!(d[0], d[1], "distinct goal variables must not be conflated");
+
+        // p(a, X): constants become Const.
+        let d = prover
+            .bridge_dargs(&[a.clone(), x.clone()], &mut ms)
+            .expect("symbol/var args bridge");
+        assert_eq!(d[0], DTerm::Const(a_id()), "bare symbol maps to Const");
+        assert!(matches!(d[1], DTerm::Var(_)));
+
+        // p(f(X)): compound argument — atom rejected and counted.
+        let f = Term::App(vec![Term::Sym(Symbol::from("f")), x.clone()]);
+        assert!(
+            prover.bridge_dargs(&[f], &mut ms).is_none(),
+            "compound arg must reject the atom for model discharge"
+        );
+        assert_eq!(ms.bridge_rejected_atoms, 1, "rejection is counted");
+    }
+
+    fn a_id() -> SymbolId {
+        Symbol::hash_name("a")
+    }
 }

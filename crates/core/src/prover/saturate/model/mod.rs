@@ -53,6 +53,10 @@ pub(crate) struct ModelProgram {
     /// Recognized role symbols (dialect-agnostic) — for the Level-2 derivation
     /// of the inherited transitive/symmetric set over the evaluated model.
     pub roles:    crate::semantics::roles::TaxonomyRoles,
+    /// Extracted denial constraints (disjointness declarations flattened to
+    /// pairwise ⊥-rules) — the integrity constraints [`refutes`](Self::refutes)
+    /// chases.  Empty on a KB with no disjointness.
+    pub denials:  Vec<extract::Denial>,
 }
 
 impl ModelProgram {
@@ -87,8 +91,9 @@ impl ModelProgram {
         let monotone = cluster::positive_program(&program);
         let complete: HashSet<Pred> =
             clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
+        let denials = extract::collect_denials(syn, &roles);
 
-        ModelProgram { program, clusters, monotone, complete, roles }
+        ModelProgram { program, clusters, monotone, complete, roles, denials }
     }
 
     /// The sound positive model: the monotone fragment evaluated, then closed
@@ -173,7 +178,33 @@ impl ModelProgram {
         deadline: Option<std::time::Instant>,
         stats:    &mut ModelStats,
     ) -> Option<(Vec<Tuple>, Provenance)> {
-        const BUDGET: usize = 250_000;
+        // Positive-path policy: an unsafe rule in the cone FAILS FAST
+        // (`ModelError::Unsafe`), the long-standing behavior — on full SUMO
+        // the `instance` cone always contains a few, and burning the whole
+        // per-prove deadline evaluating a cone that then overflows anyway
+        // would tax every SIGMA_MODEL prove for nothing.  The denial chase
+        // (`refutes`) opts into the sound unsafe-rule drop instead.
+        self.answer_stats_impl(rel, args, deadline, stats, false)
+    }
+
+    /// [`answer_stats`] with the unsafe-rule policy explicit — see there.
+    fn answer_stats_impl(
+        &self,
+        rel:         Pred,
+        args:        &[DTerm],
+        deadline:    Option<std::time::Instant>,
+        stats:       &mut ModelStats,
+        drop_unsafe: bool,
+    ) -> Option<(Vec<Tuple>, Provenance)> {
+        // Per-evaluation tuple budget.  `SIGMA_MODEL_BUDGET` overrides the
+        // default (diagnosis / experimentation on dense KBs — full SUMO's
+        // `instance` cone materializes past the default and bails; the real
+        // fix is built-in transitive closure, which stops materializing the
+        // dense closure altogether).  Gated path only.
+        let budget: usize = std::env::var("SIGMA_MODEL_BUDGET")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(250_000);
         // Magic restricts *facts*, but the naive evaluator still processes
         // every rule in the cone each round.  When the cone is the whole
         // program — OpenCyc `genls` depends transitively on ~everything, so its
@@ -190,14 +221,27 @@ impl ModelProgram {
         let mut goal = HashSet::new();
         goal.insert(rel);
         let cone = cluster::dependency_cone(&self.monotone, &goal);
-        let scoped = cluster::scope_program(&self.monotone, &cone);
+        let mut scoped = cluster::scope_program(&self.monotone, &cone);
+        // Denial-chase policy (`drop_unsafe`): drop UNSAFE rules (a head /
+        // negated variable unbound by any positive body literal) from the
+        // cone instead of letting one such rule poison the whole evaluation
+        // (`validate_safe` fails the entire program — on full SUMO the
+        // `instance` cone always contains a few).  Sound for the monotone
+        // fragment: removing a rule only SHRINKS the least model, so
+        // positive answers stay entailed and `refutes` only under-refutes,
+        // never over-refutes.
+        if drop_unsafe {
+            let n_rules = scoped.rules.len();
+            scoped.rules.retain(rule_is_safe);
+            stats.unsafe_rules_dropped += (n_rules - scoped.rules.len()) as u32;
+        }
         let cone_facts: usize = scoped.edb.values().map(|s| s.len()).sum();
         if scoped.rules.len() > MAX_CONE_RULES || cone_facts > MAX_CONE_FACTS {
             stats.budget_overflows += 1;
             return None;
         }
         let rewritten = magic::magic_rewrite(&scoped, rel, args);
-        let (model, prov) = match rewritten.evaluate_within(BUDGET, deadline) {
+        let (model, prov) = match rewritten.evaluate_within(budget, deadline) {
             Ok(mp) => mp,
             Err(ModelError::Unsafe) => {
                 stats.unsafe_bails += 1;
@@ -221,15 +265,17 @@ impl ModelProgram {
             stats.undefined_relation += 1;
             return None;
         };
-        // Tuples matching the conjecture's bound (constant) positions.
+        // Tuples matching the conjecture's bound (constant) positions AND
+        // consistent at repeated-variable positions: the same goal variable
+        // in two seats requires equal values there (goal `p(X, X)` must not
+        // match tuple `(a, b)`).  Constants and variables share one binding
+        // check via `unify` — an over-approximating wildcard here would be
+        // unsound the moment answers feed a NEGATIVE decision.
         let ans: Vec<Tuple> = rows
             .iter()
             .filter(|row| {
-                row.len() == args.len()
-                    && args.iter().zip(row.iter()).all(|(a, v)| match a {
-                        DTerm::Const(c) => c == v,
-                        DTerm::Var(_) => true,
-                    })
+                let mut binding: HashMap<u32, SymbolId> = HashMap::new();
+                unify(args, row, &mut binding).is_some()
             })
             .cloned()
             .collect();
@@ -243,6 +289,119 @@ impl ModelProgram {
     pub(crate) fn cite(&self, prov: &Provenance, pred: Pred, t: &Tuple) -> Vec<SentenceId> {
         prov.cite(pred, t)
     }
+
+    /// Denial-constraint refutation of one ground `instance`-shaped atom
+    /// (sub-milestone B): `(instance x C)` is REFUTED when the model entails
+    /// `(instance x D)` for some `D` forming a denial pair with `C` or one of
+    /// `C`'s ancestors in the model's subclass closure.
+    ///
+    /// SOUNDNESS (open-world): `KB ⊨ ¬A` iff `KB ∪ {A}` is inconsistent; for
+    /// the Horn+denial fragment that inconsistency is exactly a chase hit —
+    /// a derived membership meeting a disjointness declaration.  Denials are
+    /// integrity constraints, not closed-world assumptions, so no Clark
+    /// completion is involved.  Both closure queries run through the same
+    /// budgeted, magic-scoped cone machinery as [`answer`](Self::answer)
+    /// (demand-seeded on `x` and on `C` respectively); a budget/deadline
+    /// bail ANYWHERE returns `None` — a refutation is only reported when the
+    /// tuple's class chains materialized fully inside the model's cone.
+    ///
+    /// The membership set is checked directly against the denial pairs: with
+    /// the KB's own instance/subclass bridge rule in the cone the set is
+    /// upward-closed, which subsumes climbing the member-side chain (the
+    /// oracle's ancestor×ancestor walk).  Without a bridge rule the model is
+    /// simply weaker — it under-refutes, never over-refutes.
+    ///
+    /// Returns the refutation with its KB citation chain: the instance
+    /// derivation (EDB leaves first, then rules — [`Provenance::cite`]), the
+    /// goal-side subclass chain, and the denial declaration LAST.
+    pub(crate) fn refutes(
+        &self,
+        rel:      Pred,
+        tuple:    &[SymbolId],
+        deadline: Option<std::time::Instant>,
+        stats:    &mut ModelStats,
+    ) -> Option<ModelRefutation> {
+        if self.denials.is_empty() || rel != self.roles.instance || tuple.len() != 2 {
+            return None;
+        }
+        let (x, c) = (tuple[0], tuple[1]);
+        let norm = |a: SymbolId, b: SymbolId| if a <= b { (a, b) } else { (b, a) };
+        let pairs: HashMap<(SymbolId, SymbolId), SentenceId> =
+            self.denials.iter().map(|d| (d.classes, d.sid)).collect();
+
+        // The model's instance closure of x (magic-scoped on x).  `Some` ⇒
+        // the demanded cone materialized fully within budget.  Unsafe rules
+        // are dropped from the cone (the sound under-approximation) rather
+        // than failing the evaluation — see `answer_stats_impl`.
+        let (inst_rows, prov_i) = self.answer_stats_impl(
+            self.roles.instance,
+            &[DTerm::Const(x), DTerm::Var(0)],
+            deadline,
+            stats,
+            true,
+        )?;
+        if inst_rows.is_empty() {
+            return None;
+        }
+
+        // Ancestors of the GOAL class C in the model's subclass closure
+        // (magic-scoped on C).  An undefined subclass relation means "no
+        // chains" (anc = {C}); a bail on a DEFINED one aborts the refutation.
+        let sub_defined = self.monotone.edb.contains_key(&self.roles.subclass)
+            || self.monotone.rules.iter().any(|r| r.head.pred == self.roles.subclass);
+        let mut anc_c: Vec<SymbolId> = vec![c];
+        let mut prov_c: Option<Provenance> = None;
+        if sub_defined {
+            let (rows, prov) = self.answer_stats_impl(
+                self.roles.subclass,
+                &[DTerm::Const(c), DTerm::Var(0)],
+                deadline,
+                stats,
+                true,
+            )?;
+            anc_c.extend(rows.iter().filter(|r| r.len() == 2).map(|r| r[1]));
+            prov_c = Some(prov);
+        }
+
+        // Chase: a model-entailed membership meets a denial pair.
+        for row in &inst_rows {
+            if row.len() != 2 {
+                continue;
+            }
+            let d = row[1];
+            for &a_c in &anc_c {
+                let Some(&decl) = pairs.get(&norm(d, a_c)) else { continue };
+                // Citation: instance-derivation chain (leaves, then rules) …
+                let mut cited = prov_i.cite(self.roles.instance, &vec![x, d]);
+                // … the goal-side subclass chain C ⊑ … ⊑ a_c …
+                if a_c != c {
+                    if let Some(pc) = prov_c.as_ref() {
+                        cited.extend(pc.cite(self.roles.subclass, &vec![c, a_c]));
+                    }
+                }
+                // … and the denial declaration LAST (the referee).
+                cited.push(decl);
+                let mut seen: HashSet<SentenceId> = HashSet::new();
+                cited.retain(|s| seen.insert(*s));
+                return Some(ModelRefutation { member: d, goal_ancestor: a_c, cited });
+            }
+        }
+        None
+    }
+}
+
+/// One denial-constraint refutation of a ground `(instance x C)` atom — see
+/// [`ModelProgram::refutes`].
+#[derive(Debug, Clone)]
+pub(crate) struct ModelRefutation {
+    /// The model-entailed class of `x` that met a denial pair.
+    pub member:        SymbolId,
+    /// The goal-side class the pair was hit through: `C` itself or the
+    /// ancestor `C ⊑ goal_ancestor` reached in the subclass closure.
+    pub goal_ancestor: SymbolId,
+    /// KB citation chain: instance-derivation chain (EDB leaves first, then
+    /// rules), goal-side subclass chain, denial declaration last.
+    pub cited:         Vec<SentenceId>,
 }
 
 /// SIGMA_STATS instrumentation only (Part 1): why `ModelProgram::answer`
@@ -262,6 +421,15 @@ pub(crate) struct ModelStats {
     pub(crate) budget_overflows: u32,
     pub(crate) undefined_relation: u32,
     pub(crate) answered: u32,
+    /// Goal atoms REJECTED for model discharge because an argument was a
+    /// compound (function) term or literal — not representable as a
+    /// `DTerm`, so the bridge refuses the atom rather than wildcarding it
+    /// (an over-approximation that would be unsound for negative
+    /// decisions).  Counted by the prover-side bridge (`bridge_dargs`).
+    pub(crate) bridge_rejected_atoms: u32,
+    /// Unsafe rules dropped from a demanded cone before evaluation (the
+    /// sound under-approximation in `answer_stats` — see the filter there).
+    pub(crate) unsafe_rules_dropped: u32,
 }
 
 /// A predicate is identified by its relation-name symbol.
@@ -452,37 +620,11 @@ impl Program {
     /// Safety: every head variable and every negated-literal variable must
     /// appear in some positive body literal (range restriction).
     fn validate_safe(&self) -> Result<(), ModelError> {
-        for r in &self.rules {
-            let mut pos_vars: HashSet<u32> = HashSet::new();
-            for l in &r.body {
-                if !l.negated {
-                    for a in &l.atom.args {
-                        if let DTerm::Var(v) = a {
-                            pos_vars.insert(*v);
-                        }
-                    }
-                }
-            }
-            for a in &r.head.args {
-                if let DTerm::Var(v) = a {
-                    if !pos_vars.contains(v) {
-                        return Err(ModelError::Unsafe);
-                    }
-                }
-            }
-            for l in &r.body {
-                if l.negated {
-                    for a in &l.atom.args {
-                        if let DTerm::Var(v) = a {
-                            if !pos_vars.contains(v) {
-                                return Err(ModelError::Unsafe);
-                            }
-                        }
-                    }
-                }
-            }
+        if self.rules.iter().all(rule_is_safe) {
+            Ok(())
+        } else {
+            Err(ModelError::Unsafe)
         }
-        Ok(())
     }
 
     /// Assign each predicate a stratum number: `level(head) >= level(b)` for a
@@ -527,6 +669,42 @@ impl Program {
         }
         Err(ModelError::Unstratifiable)
     }
+}
+
+/// One rule's range-restriction (safety) check: every head variable and
+/// every negated-literal variable appears in some positive body literal.
+/// Used both by [`Program::validate_safe`] (whole-program gate) and by the
+/// cone machinery's unsafe-rule filter in [`ModelProgram::answer_stats`].
+fn rule_is_safe(r: &Rule) -> bool {
+    let mut pos_vars: HashSet<u32> = HashSet::new();
+    for l in &r.body {
+        if !l.negated {
+            for a in &l.atom.args {
+                if let DTerm::Var(v) = a {
+                    pos_vars.insert(*v);
+                }
+            }
+        }
+    }
+    for a in &r.head.args {
+        if let DTerm::Var(v) = a {
+            if !pos_vars.contains(v) {
+                return false;
+            }
+        }
+    }
+    for l in &r.body {
+        if l.negated {
+            for a in &l.atom.args {
+                if let DTerm::Var(v) = a {
+                    if !pos_vars.contains(v) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
 }
 
 // (The naive recursive `join_body` was retired when `evaluate_budgeted` moved
@@ -840,6 +1018,215 @@ mod tests {
         assert_eq!(prov.cite(s("edge"), &vec![s("a"), s("b")]), vec![f1]);
         // An unknown fact cites nothing.
         assert!(prov.cite(s("reach"), &vec![s("c"), s("a")]).is_empty());
+    }
+
+    // -- Milestone A (negatives package): faithful goal-variable bridging. --
+    // A repeated goal variable constrains the answer: `p(X, X)` matches only
+    // tuples with equal seats, never `(a, b)`.  Distinct variables stay
+    // independent wildcards.
+    #[test]
+    fn answer_repeated_var_goal_requires_equal_values() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let sem = kif_layer("(p a b)\n(p c c)");
+        let mp = ModelProgram::build(&sem.syntactic);
+
+        // p(X, X): only the diagonal tuple.
+        let rows = mp
+            .answer(s("p"), &[DTerm::Var(0), DTerm::Var(0)], None)
+            .expect("p is stored");
+        assert_eq!(rows, vec![vec![s("c"), s("c")]], "p(X, X) must not match (a, b)");
+
+        // p(X, Y): both tuples.
+        let mut rows = mp
+            .answer(s("p"), &[DTerm::Var(0), DTerm::Var(1)], None)
+            .expect("p is stored");
+        rows.sort();
+        let mut want = vec![vec![s("a"), s("b")], vec![s("c"), s("c")]];
+        want.sort();
+        assert_eq!(rows, want, "distinct variables stay independent");
+
+        // Constant + repeated-var mix: p(c, X) hits the diagonal row.
+        let rows = mp
+            .answer(s("p"), &[DTerm::Const(s("c")), DTerm::Var(0)], None)
+            .expect("p is stored");
+        assert_eq!(rows, vec![vec![s("c"), s("c")]]);
+    }
+
+    // -- Milestone B (negatives package): denial constraints → refutation. --
+
+    // Pairwise flattening of partition tails into denial pairs.
+    #[test]
+    fn collect_denials_flattens_partition_pairwise() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let sem = kif_layer(
+            "(partition Animal DomesticAnimal WildAnimal FeralAnimal)\n\
+             (disjoint Rock Cloud)",
+        );
+        let mp = ModelProgram::build(&sem.syntactic);
+        let norm = |a: SymbolId, b: SymbolId| if a <= b { (a, b) } else { (b, a) };
+        let pairs: HashSet<(SymbolId, SymbolId)> =
+            mp.denials.iter().map(|d| d.classes).collect();
+        assert_eq!(pairs.len(), 4, "3 partition pairs + 1 disjoint pair");
+        for (a, b) in [
+            ("DomesticAnimal", "WildAnimal"),
+            ("DomesticAnimal", "FeralAnimal"),
+            ("WildAnimal", "FeralAnimal"),
+            ("Rock", "Cloud"),
+        ] {
+            assert!(pairs.contains(&norm(s(a), s(b))), "missing pair {a}/{b}");
+        }
+        // Every denial cites its declaring root.
+        for d in &mp.denials {
+            assert!(sem.syntactic.sentence(d.sid).is_some(), "denial sid resolvable");
+        }
+    }
+
+    // A partition-derived denial refutes an instance atom whose membership is
+    // TWO subclass hops away, and the citation chain carries every step:
+    // the anchoring instance fact, both member-side subclass edges, the
+    // goal-side subclass edge, a chain rule, and the partition declaration
+    // LAST.  A class pair with no denial between them does NOT refute.
+    #[test]
+    fn partition_denial_refutes_two_hop_instance_with_citations() {
+        use crate::semantics::caches::test_support::kif_layer;
+        use crate::types::{Element, OpKind};
+        let kif = "\
+            (instance subclass TransitiveRelation)\n\
+            (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
+            (partition Animal DomesticAnimal WildAnimal)\n\
+            (subclass Dog DomesticAnimal)\n\
+            (subclass Poodle Dog)\n\
+            (instance Rex Poodle)\n\
+            (subclass Wolf WildAnimal)\n";
+        let sem = kif_layer(kif);
+        let syn = &sem.syntactic;
+        let mp = ModelProgram::build(syn);
+
+        // Locate the citable roots.
+        let find2 = |head: &str, a: &str, b: &str| -> SentenceId {
+            syn.by_head_id(&s(head))
+                .into_iter()
+                .find(|sid| {
+                    syn.sentence(*sid).is_some_and(|sent| {
+                        sent.elements.len() == 3
+                            && matches!(&sent.elements[1], Element::Symbol(x) if x.id() == s(a))
+                            && matches!(&sent.elements[2], Element::Symbol(y) if y.id() == s(b))
+                    })
+                })
+                .expect("fixture root present")
+        };
+        let f_rex     = find2("instance", "Rex", "Poodle");
+        let f_poodle  = find2("subclass", "Poodle", "Dog");
+        let f_dog     = find2("subclass", "Dog", "DomesticAnimal");
+        let f_wolf    = find2("subclass", "Wolf", "WildAnimal");
+        let f_part    = syn
+            .by_head_id(&s("partition"))
+            .into_iter()
+            .next()
+            .expect("partition root");
+        let f_bridge  = syn
+            .root_sids()
+            .into_iter()
+            .find(|sid| syn.sentence(*sid).is_some_and(|x| x.op() == Some(&OpKind::Implies)))
+            .expect("bridge rule root");
+
+        // (instance Rex Wolf) is REFUTED: Rex ⊑… DomesticAnimal (2 hops),
+        // Wolf ⊑ WildAnimal, and partition makes those disjoint.
+        let mut stats = ModelStats::default();
+        let r = mp
+            .refutes(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats)
+            .expect("denial refutes (instance Rex Wolf)");
+        assert_eq!(r.member, s("DomesticAnimal"), "clashing membership");
+        assert_eq!(r.goal_ancestor, s("WildAnimal"), "goal-side ancestor");
+
+        // Full citation chain: every leaf edge + a chain rule + the denial.
+        for (sid, what) in [
+            (f_rex, "instance Rex Poodle"),
+            (f_poodle, "subclass Poodle Dog"),
+            (f_dog, "subclass Dog DomesticAnimal"),
+            (f_wolf, "subclass Wolf WildAnimal"),
+            (f_part, "partition declaration"),
+        ] {
+            assert!(r.cited.contains(&sid), "citation chain missing {what}: {:?}", r.cited);
+        }
+        // The chain climbed through a rule (the bridge, or the derived
+        // subclass-transitivity schema citing its declaration).
+        let f_trans = syn
+            .by_head_id(&s("instance"))
+            .into_iter()
+            .find(|sid| {
+                syn.sentence(*sid).is_some_and(|sent| {
+                    sent.elements.len() == 3
+                        && matches!(&sent.elements[1], Element::Symbol(x) if x.id() == s("subclass"))
+                })
+            })
+            .expect("transitivity declaration root");
+        assert!(
+            r.cited.contains(&f_bridge) || r.cited.contains(&f_trans),
+            "chain rule cited: {:?}",
+            r.cited
+        );
+        // The denial declaration is the LAST step (the referee), and the
+        // chain starts from a leaf fact.
+        assert_eq!(r.cited.last(), Some(&f_part), "denial axiom last");
+        assert_ne!(r.cited.first(), Some(&f_part));
+
+        // No denial between Rex's classes and Dog / an unknown class: no
+        // refutation (and membership of a class ON Rex's own chain never
+        // refutes).
+        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Dog")], None, &mut stats).is_none());
+        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Cat")], None, &mut stats).is_none());
+        // Non-instance relations are never refuted here.
+        assert!(mp.refutes(s("subclass"), &[s("Dog"), s("Wolf")], None, &mut stats).is_none());
+    }
+
+    // Cross-check: on a fixture where BOTH engines see the same information
+    // (stored taxonomy edges + explicit bridge/transitivity axioms + the
+    // disjointness declarations), `ModelProgram::refutes` must agree with the
+    // taxonomy oracle's `refutes_instance` — the ground truth — on EVERY
+    // (individual, class) atom.  Non-vacuous: the grid contains several real
+    // refutations (asserted below), so agreement is exercised both ways.
+    #[test]
+    fn refutes_agrees_with_taxonomy_oracle_on_shared_taxonomy() {
+        use super::super::oracle::SemanticOracle;
+        use crate::semantics::caches::test_support::kif_layer;
+        use crate::semantics::types::Scope;
+        let kif = "\
+            (instance subclass TransitiveRelation)\n\
+            (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
+            (partition Animal DomesticAnimal WildAnimal)\n\
+            (disjoint Bird Fish)\n\
+            (subclass Dog DomesticAnimal)\n\
+            (subclass Poodle Dog)\n\
+            (subclass Wolf WildAnimal)\n\
+            (subclass Bird Animal)\n\
+            (subclass Fish Animal)\n\
+            (subclass Canary Bird)\n\
+            (instance Rex Poodle)\n\
+            (instance Tweety Canary)\n\
+            (instance Nemo Fish)\n";
+        let sem = kif_layer(kif);
+        let mp = ModelProgram::build(&sem.syntactic);
+        let oracle = SemanticOracle::new(&sem, Scope::Base);
+
+        let individuals = ["Rex", "Tweety", "Nemo"];
+        let classes = [
+            "Animal", "DomesticAnimal", "WildAnimal", "Dog", "Poodle", "Wolf",
+            "Bird", "Fish", "Canary",
+        ];
+        let mut refuted = 0usize;
+        for x in individuals {
+            for c in classes {
+                let o = oracle.refutes_instance(s("instance"), s(x), s(c), None);
+                let mut stats = ModelStats::default();
+                let m = mp
+                    .refutes(s("instance"), &[s(x), s(c)], None, &mut stats)
+                    .is_some();
+                assert_eq!(o, m, "oracle/model disagreement on (instance {x} {c})");
+                refuted += usize::from(m);
+            }
+        }
+        assert!(refuted >= 5, "cross-check must be non-vacuous, got {refuted} refutations");
     }
 
     // Unsafe rule (head var not bound by a positive body literal) is rejected.
