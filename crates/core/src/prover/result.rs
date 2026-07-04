@@ -45,9 +45,13 @@ pub struct ProverTimings {
 pub struct ProverResult {
     /// `Some(true)` when a Saturated verdict ran with NO capacity
     /// discards (depth / width / literal-count caps): the saturation
-    /// genuinely exhausted the loaded theory.  `Some(false)` when caps
-    /// dropped clauses (the verdict means "no proof found", not
-    /// "countermodel exists").  `None` for non-saturation outcomes.
+    /// genuinely exhausted the loaded theory.  Under
+    /// `Strategy.strict_saturation` the bar rises to refutation-
+    /// completeness proper (full saturation over the whole theory, no
+    /// generation cap hit, complete equality calculus when equality is
+    /// present).  `Some(false)` when any of that failed (the verdict
+    /// means "no proof found", not "countermodel exists").  `None` for
+    /// non-saturation outcomes.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub complete_saturation: Option<bool>,
     /// Given-clause steps the native saturation loop executed —

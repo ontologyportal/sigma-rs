@@ -131,11 +131,29 @@ impl ModelProgram {
     /// makes a dense relation (OpenCyc `genls`) affordable — derivation is
     /// restricted to the facts reachable from the conjecture's constants, not
     /// the whole relation.  Budgeted; `None` ⇒ bail to resolution.
+    ///
+    /// Thin wrapper over [`answer_stats`](Self::answer_stats) that discards
+    /// the bail-reason breakdown — unchanged signature/behavior for existing
+    /// callers.
     pub(crate) fn answer(
         &self,
         rel:      Pred,
         args:     &[DTerm],
         deadline: Option<std::time::Instant>,
+    ) -> Option<Vec<Tuple>> {
+        let mut stats = ModelStats::default();
+        self.answer_stats(rel, args, deadline, &mut stats)
+    }
+
+    /// As [`answer`](Self::answer), but records WHY a bail happened (or that
+    /// an answer was produced) into `stats` — SIGMA_STATS instrumentation
+    /// only, zero behavior change vs `answer`.
+    pub(crate) fn answer_stats(
+        &self,
+        rel:      Pred,
+        args:     &[DTerm],
+        deadline: Option<std::time::Instant>,
+        stats:    &mut ModelStats,
     ) -> Option<Vec<Tuple>> {
         const BUDGET: usize = 250_000;
         // Magic restricts *facts*, but the naive evaluator still processes
@@ -157,11 +175,34 @@ impl ModelProgram {
         let scoped = cluster::scope_program(&self.monotone, &cone);
         let cone_facts: usize = scoped.edb.values().map(|s| s.len()).sum();
         if scoped.rules.len() > MAX_CONE_RULES || cone_facts > MAX_CONE_FACTS {
+            stats.budget_overflows += 1;
             return None;
         }
         let rewritten = magic::magic_rewrite(&scoped, rel, args);
-        let model = rewritten.evaluate_within(BUDGET, deadline).ok()?;
-        let rows = model.get(&rel)?;
+        let model = match rewritten.evaluate_within(BUDGET, deadline) {
+            Ok(m) => m,
+            Err(ModelError::Unsafe) => {
+                stats.unsafe_bails += 1;
+                return None;
+            }
+            Err(ModelError::Unstratifiable) => {
+                stats.unstratifiable_bails += 1;
+                return None;
+            }
+            Err(ModelError::Overflow) => {
+                // Deadline vs tuple-budget overflow share one variant (see
+                // `model/seminaive.rs`'s `over_deadline` bail sites) — counted
+                // together here rather than threading a second return
+                // channel through `evaluate_within` for this instrumentation
+                // pass.
+                stats.budget_overflows += 1;
+                return None;
+            }
+        };
+        let Some(rows) = model.get(&rel) else {
+            stats.undefined_relation += 1;
+            return None;
+        };
         // Tuples matching the conjecture's bound (constant) positions.
         let ans: Vec<Tuple> = rows
             .iter()
@@ -174,8 +215,28 @@ impl ModelProgram {
             })
             .cloned()
             .collect();
+        stats.answered += 1;
         Some(ans)
     }
+}
+
+/// SIGMA_STATS instrumentation only (Part 1): why `ModelProgram::answer`
+/// bailed to `None`, or that it produced an answer — surfaced to callers via
+/// [`ModelProgram::answer_stats`] so the prover's per-run counters
+/// (`ProverStats::model_*`) can report where model-discharge time is spent.
+/// Zero behavior change: `answer` itself still returns `Option<Vec<Tuple>>`
+/// unchanged; this is purely an additional out-parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ModelStats {
+    pub(crate) unsafe_bails: u32,
+    pub(crate) unstratifiable_bails: u32,
+    /// Tuple-budget overflow (either the cone-size pre-check or the
+    /// evaluator's own `ModelError::Overflow`) AND wall-clock-deadline
+    /// overflow, combined — see the note on `evaluate_within`'s single
+    /// `Overflow` variant covering both.
+    pub(crate) budget_overflows: u32,
+    pub(crate) undefined_relation: u32,
+    pub(crate) answered: u32,
 }
 
 /// A predicate is identified by its relation-name symbol.

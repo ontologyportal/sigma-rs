@@ -120,6 +120,13 @@ impl CommonProverOpts for NativeOpts {
     fn timeout(&self) -> u64 { self.time_limit_secs }
     fn set_timeout(&mut self, secs: u64) { self.time_limit_secs = secs; }
     fn set_session(&mut self, session: Option<String>) { self.session = session; }
+    /// Standalone TPTP problem: swap in the complete-calculus,
+    /// full-saturation strategy ([`Strategy::tptp`]) — set-of-support
+    /// tiering can't prove axiom-case-split Theorems, and an incomplete
+    /// calculus must not certify "no" on saturation.
+    fn set_tptp_problem(&mut self) {
+        self.strategy = Strategy::tptp();
+    }
 }
 
 impl NativeOpts {
@@ -211,6 +218,18 @@ pub(crate) struct ProverStats {
     pub(crate) subsumed: u64,
     pub(crate) discarded_deep: u64,
     pub(crate) discarded_long: u64,
+    /// Some clause carried an equality literal — the "problem contains
+    /// equality" signal for strict saturation verdicts.  Only tracked
+    /// when `Strategy.strict_saturation` (sticky bit, one scan per make).
+    pub(crate) saw_equality: bool,
+    /// Superposition generation truncated by `para_cap` — inferences
+    /// were never made, so a later saturation is not refutation-complete.
+    pub(crate) gen_capped: u64,
+    /// Maximal positive equality literals the superposition indexes had
+    /// to skip because KBO could not orient them — the calculus only
+    /// superposes FROM oriented equations, so each is a completeness
+    /// loss strict saturation must know about.
+    pub(crate) unorientable_eqs: u64,
     pub(crate) forward_closed: u64,
     /// Oriented equations produced by Phase-6 background completion.
     pub(crate) bg_completed: u64,
@@ -265,6 +284,65 @@ pub(crate) struct ProverStats {
     /// Antisymmetry / irreflexivity / inverse-pair sightings (registered
     /// for future consumers; no behavior change yet).
     pub(crate) mined_other: u64,
+
+    // -- model-discharge path counters (SIGMA_STATS instrumentation only;
+    //    zero behavior change — see discharge_models / discharge_model_joins
+    //    / lit_pattern).  All zero unless SIGMA_MODEL is set.
+    /// Conjecture atoms seen while scanning for goal patterns, summed across
+    /// `discharge_models` + `discharge_model_joins`.
+    pub(crate) model_atoms_seen: u64,
+    /// Atoms rejected by `lit_pattern` (non-flat / no-args / non-`App` head)
+    /// while scanning conjecture literals for goal patterns.
+    pub(crate) model_atoms_rejected: u64,
+    /// Goal argument positions collapsed to `DTerm::Var(0)` at the
+    /// prover-to-model bridge because the argument is a compound term (not
+    /// a bare `Term::Sym`).
+    pub(crate) model_arg_collapsed_compound: u64,
+    /// Goal argument positions collapsed to `DTerm::Var(0)` at the bridge
+    /// because the same source variable appears in more than one argument
+    /// position (repeated-variable collapse -- `DTerm::Var(0)` cannot
+    /// distinguish them, so the join loses the co-reference constraint).
+    pub(crate) model_arg_collapsed_repeated_var: u64,
+    /// Conjecture atoms `discharge_models`/`discharge_model_joins` obtained
+    /// at least one answer/witness for.
+    pub(crate) model_atoms_answered: u64,
+    /// Conjecture atoms that were dispatched to `ModelProgram::answer` but
+    /// came back with no rows (or the call bailed) -- no witness found.
+    pub(crate) model_atoms_unanswered: u64,
+    /// `ModelProgram::answer` bail reasons, summed across both discharge
+    /// passes (see `model::ModelStats`).
+    pub(crate) model_unsafe_bails: u64,
+    pub(crate) model_unstratifiable_bails: u64,
+    /// Tuple-budget AND wall-clock-deadline overflows, combined -- the
+    /// evaluator's `ModelError::Overflow` does not distinguish them (see
+    /// `model/seminaive.rs`); splitting would need a second return channel
+    /// through `evaluate_within`, not attempted here.
+    pub(crate) model_budget_or_deadline_overflows: u64,
+    pub(crate) model_undefined_relation: u64,
+
+    // -- forward-demodulation duplicate-hit probe (Part 2; only active when
+    //    Strategy.demod is on).
+    /// Calls into `demodulate()` that were eligible to attempt a rewrite
+    /// (demod on, at least one active unit equation) -- one per literal
+    /// visited in `make`.
+    pub(crate) demod_rewrite_attempts: u64,
+    /// Of those, how many actually rewrote the literal (n >= 1 subterm
+    /// rewrites applied) -- a clause-level count, NOT a subterm-rewrite
+    /// count (that is `demod_rewrites` above).
+    pub(crate) demod_rewrites_applied: u64,
+    /// Of the clauses whose literals were rewritten by demod, how many
+    /// ended up being exact duplicates of an already-known clause (probed
+    /// via the same `ClauseKey`/`self.seen` dedup path `push()` uses).
+    /// Measures the potential payoff of a rewrite-delta pre-probe.
+    pub(crate) demod_dup_hits: u64,
+
+    // -- proof-DAG discharge-rule reach (counted once per completed proof
+    //    extraction, at refutation time).
+    pub(crate) proof_tag_model: u64,
+    pub(crate) proof_tag_model_join: u64,
+    pub(crate) proof_tag_join: u64,
+    pub(crate) proof_tag_event_calculus: u64,
+    pub(crate) proof_tag_oracle: u64,
 }
 
 /// A frozen background problem base: everything `ask_native_once`
@@ -1163,8 +1241,10 @@ impl<'a> NativeProver<'a> {
             }
             for l in &c.lits {
                 if let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) {
-                    if let Some(p) = lit_pattern(&t) {
-                        patterns.push(p);
+                    self.stats.model_atoms_seen += 1;
+                    match lit_pattern(&t) {
+                        Some(p) => patterns.push(p),
+                        None => self.stats.model_atoms_rejected += 1,
                     }
                 }
             }
@@ -1195,17 +1275,20 @@ impl<'a> NativeProver<'a> {
         // resolution proceeds.
         let deadline = Instant::now() + std::time::Duration::from_millis(800);
         let mut to_emit: Vec<(SymbolId, Vec<SymbolId>)> = Vec::new();
+        let mut model_stats = super::model::ModelStats::default();
         for (rel, args) in &patterns {
-            let dargs: Vec<super::model::DTerm> = args.iter().map(|t| match t {
-                Term::Sym(s) => super::model::DTerm::Const(s.id()),
-                _ => super::model::DTerm::Var(0),
-            }).collect();
-            if let Some(rows) = mp.answer(*rel, &dargs, Some(deadline)) {
+            let dargs = self.bridge_dargs(args);
+            let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
+            if let Some(rows) = answered {
+                self.stats.model_atoms_answered += 1;
                 for row in rows {
                     to_emit.push((*rel, row));
                 }
+            } else {
+                self.stats.model_atoms_unanswered += 1;
             }
         }
+        self.merge_model_stats(&model_stats);
 
         let mut emitted = 0usize;
         for (rel, row) in to_emit {
@@ -1233,6 +1316,44 @@ impl<'a> NativeProver<'a> {
         if trace {
             eprintln!("MODEL: {emitted} positive units emitted over {} goal relations", goal_preds.len());
         }
+    }
+
+    /// Bridge one conjecture atom's argument terms to model-side
+    /// [`DTerm`](super::model::DTerm)s: bare symbols become constants,
+    /// everything else collapses to the wildcard `DTerm::Var(0)`.  The
+    /// collapse LOSES a constraint when the argument is a compound term
+    /// or a variable that co-occurs in another position (the join can no
+    /// longer enforce the co-reference) — both are counted into the
+    /// `model_arg_collapsed_*` stats.
+    fn bridge_dargs(&mut self, args: &[Term]) -> Vec<super::model::DTerm> {
+        args.iter()
+            .map(|t| match t {
+                Term::Sym(s) => super::model::DTerm::Const(s.id()),
+                Term::Var(v) => {
+                    let repeats = args.iter()
+                        .filter(|o| matches!(o, Term::Var(ov) if ov == v))
+                        .count();
+                    if repeats > 1 {
+                        self.stats.model_arg_collapsed_repeated_var += 1;
+                    }
+                    super::model::DTerm::Var(0)
+                }
+                _ => {
+                    self.stats.model_arg_collapsed_compound += 1;
+                    super::model::DTerm::Var(0)
+                }
+            })
+            .collect()
+    }
+
+    /// Fold one discharge pass's [`ModelStats`](super::model::ModelStats)
+    /// bail-reason breakdown into the prover's per-run counters (the
+    /// `answered` count is tracked per-atom by the caller instead).
+    fn merge_model_stats(&mut self, ms: &super::model::ModelStats) {
+        self.stats.model_unsafe_bails += u64::from(ms.unsafe_bails);
+        self.stats.model_unstratifiable_bails += u64::from(ms.unstratifiable_bails);
+        self.stats.model_budget_or_deadline_overflows += u64::from(ms.budget_overflows);
+        self.stats.model_undefined_relation += u64::from(ms.undefined_relation);
     }
 
     /// Conjunctive-query goal discharge over the inductive model (gated
@@ -2653,6 +2774,14 @@ impl<'a> NativeProver<'a> {
             parents.extend(demod_used);
         }
 
+        // Equality-presence signal for strict saturation verdicts: once
+        // equality is in play, a saturation without a complete equality
+        // calculus cannot honestly claim "no".  Sticky bit, only paid
+        // for on the strict path.
+        if self.opts.strategy.strict_saturation && !self.stats.saw_equality {
+            self.stats.saw_equality = lits.iter().any(|(_, t)| is_equality_atom(t));
+        }
+
         // Symmetric-argument orientation: a GROUND argument pair of a
         // symmetric relation sorts into one canonical order (the same
         // blank-key order `orient_equality` uses), so `(R b a)` and
@@ -3193,8 +3322,15 @@ impl<'a> NativeProver<'a> {
                     sub_atom, &info);
             }
             // Maximal positive equality oriented s ≻ t → the "from" set.
-            if l.pos && self.equality_oriented(&t).is_some() {
-                self.active_eqns.push((id, li as u8));
+            if l.pos && is_equality_atom(&t) {
+                if self.equality_oriented(&t).is_some() {
+                    self.active_eqns.push((id, li as u8));
+                } else {
+                    // KBO can't orient it (e.g. `X = agatha`,
+                    // commutativity): the "from" index skips it — a
+                    // completeness loss strict saturation must count.
+                    self.stats.unorientable_eqs += 1;
+                }
             }
         }
     }
@@ -3338,7 +3474,7 @@ impl<'a> NativeProver<'a> {
                     }
                     self.push(made);
                     n += 1;
-                    if n >= cap { return None; }
+                    if n >= cap { self.stats.gen_capped += 1; return None; }
                 }
             }
         }
@@ -3366,7 +3502,7 @@ impl<'a> NativeProver<'a> {
                 }
                 self.push(made);
                 n += 1;
-                if n >= cap { return None; }
+                if n >= cap { self.stats.gen_capped += 1; return None; }
             }
         }
         None
@@ -3390,6 +3526,17 @@ impl<'a> NativeProver<'a> {
                     continue;
                 }
                 if self.seen.insert(key) {
+                    // Full-saturation regime: background clauses also
+                    // compete for given selection (axiom×axiom inference).
+                    // Classic set-of-support only indexes them as passive
+                    // partners — structurally unable to refute problems
+                    // whose proof needs case analysis among the axioms.
+                    if self.opts.strategy.full_saturation {
+                        let (w, n) = (self.clauses[id as usize].weight, self.seq);
+                        self.seq += 1;
+                        self.h_weight.push(Reverse((w, n, id)));
+                        self.h_age.push(Reverse((n, id)));
+                    }
                     self.activate(id);
                 }
             }
@@ -4251,6 +4398,16 @@ impl<'a> NativeProver<'a> {
     /// unit-dischargeable (cheap precheck for re-simplification).
     fn stale(&self, id: u32) -> bool {
         let c = &self.clauses[id as usize];
+        // A positive unit equality is the SOURCE of its own oracle
+        // union-find entry (registered at make time): re-simplifying it
+        // against that closure at pop time just collapses it to `x = x`,
+        // destroying the one clause the superposition calculus needs to
+        // superpose FROM and to index for future targets.  Keep it
+        // intact while the superposition channel is on.
+        let own_eq_source = self.opts.strategy.superposition
+            && c.lits.len() == 1
+            && c.lits[0].pos
+            && self.ground_equality(c.lits[0].atom).is_some();
         for (i, l) in c.lits.iter().enumerate() {
             if self.layer.atom_info(l.atom).is_ground() {
                 if self.units.ground_unit(l.pos, l.atom).is_some()
@@ -4261,8 +4418,10 @@ impl<'a> NativeProver<'a> {
                 if let Some((rel, x, y)) = term_binary_ids(&c.terms[i].1) {
                     if self.oracle.holds(rel, x, y, None) { return true; }
                 }
-                if let Some((_, _, ka, kb)) = self.ground_equality(l.atom) {
-                    if self.oracle.equal_holds(ka, kb, None) { return true; }
+                if !own_eq_source {
+                    if let Some((_, _, ka, kb)) = self.ground_equality(l.atom) {
+                        if self.oracle.equal_holds(ka, kb, None) { return true; }
+                    }
                 }
             }
         }
@@ -4418,6 +4577,18 @@ impl<'a> NativeProver<'a> {
             let given_max = self.clauses[given as usize].max_mask;
             let sel: Vec<usize> = if lits.len() == 1 {
                 vec![0]
+            } else if self.opts.strategy.full_saturation {
+                // Full-saturation regime: EVERY (ordering-eligible) literal
+                // resolves.  Single-literal selection below is a
+                // goal-directed heuristic that is NOT refutation-complete —
+                // it can permanently starve the one resolution a case-
+                // analysis proof needs (PUZ001+1: the case-split clause's
+                // `¬lives` literal loses the pick to an equality literal
+                // whose only resolvent is a tautology).  Literals without
+                // partners cost one empty index probe.
+                (0..lits.len())
+                    .filter(|&i| !ordered || (given_max >> i) & 1 == 1)
+                    .collect()
             } else {
                 // Literal selection (Strategy.lit_select): 0 = fewest index
                 // candidates (default, most goal-directed), 1 = most, 2 =
@@ -4611,6 +4782,12 @@ fn term_size(t: &Term) -> usize {
         Term::App(elems) => elems.iter().map(term_size).sum(),
         _ => 1,
     }
+}
+
+/// Is `t` an equality atom `(equal s u)` (any polarity, any sides)?
+fn is_equality_atom(t: &Term) -> bool {
+    matches!(t, Term::App(elems)
+        if elems.len() == 3 && matches!(elems[0], Term::Op(OpKind::Equal)))
 }
 
 /// `(rel, x, y)` ids for a symbol-triple ground binary atom term.

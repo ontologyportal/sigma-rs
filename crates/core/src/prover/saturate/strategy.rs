@@ -182,6 +182,32 @@ pub struct Strategy {
     /// same ids the recognizer recovers).
     pub recognize_roles: bool,
 
+    // -- saturation regime ----------------------------------------------------
+
+    /// Full-saturation regime: background (KB axiom) clauses enter the
+    /// passive queue as given-clause candidates too, so axiom×axiom
+    /// inference happens.  OFF by default = classic set-of-support
+    /// (background is indexed but never given) — the right search shape
+    /// against a huge satisfiable KB (SUMO), but structurally unable to
+    /// prove problems whose refutation needs inference among the axioms
+    /// themselves (PUZ001+1's killer-identity case analysis: the negated
+    /// conjecture unifies with nothing until the axioms have reasoned
+    /// among themselves).  Standalone TPTP problems run with this ON.
+    /// Incompatible with background-snapshot reuse (the frozen base
+    /// excludes queue state), which is force-disabled while this is on.
+    pub full_saturation: bool,
+    /// Honest saturation verdicts: report a `Saturated` run as
+    /// "disproved" ONLY when the run was genuinely refutation-complete —
+    /// full saturation (no set-of-support tiering) over the WHOLE
+    /// theory, no clause lost to capacity caps, no generation cap hit,
+    /// and a complete equality calculus (superposition + eq_factoring,
+    /// every indexed equation orientable) whenever the problem contains
+    /// equality literals.  Anything less surfaces as Unknown ("no proof
+    /// found"), never as a confident "no".  OFF by default: the
+    /// KIF/SUMO path keeps its historical "saturation under SOS ⇒
+    /// strong no" reading (its expected-no tests depend on it).
+    pub strict_saturation: bool,
+
     // -- selection pipeline (read by `ask_native`, not the loop) -------------
 
     /// Liu & Xu structural rescue: after SInE, pull goal-near axioms
@@ -248,6 +274,8 @@ impl Strategy {
             bg_completion: false,
             bg_completion_budget: 256,
             recognize_roles: false,
+            full_saturation: false,
+            strict_saturation: false,
             // OFF by default: a controlled A/B over a 1285-problem TPTP
             // cross-section (2026-06-13) showed the first-cut forward
             // demodulator costs ~50 problems (7%) at an 8s timeout — it
@@ -283,6 +311,26 @@ impl Strategy {
         if on("SIGMA_HEADFILTER") { s.head_filter = true; }
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
         s
+    }
+
+    /// The complete-calculus configuration for standalone TPTP problems
+    /// (`.p` / `.tptp`): full saturation (no set-of-support tiering —
+    /// axiom×axiom inference is on), ordered superposition + equality
+    /// factoring (the complete equality calculus), forward subsumption
+    /// (the flooding floor full saturation needs), and strict (honest)
+    /// saturation verdicts.  `demod` stays OFF — measured regression on
+    /// the TPTP cross-section (see `base()`).  The KIF/SUMO path keeps
+    /// `base()` untouched.
+    pub fn tptp() -> Self {
+        Self {
+            full_saturation:   true,
+            strict_saturation: true,
+            superposition:     true,
+            eq_factoring:      true,
+            subsumption:       true,
+            ..Self::base()
+        }
+        .named("tptp-complete")
     }
 
     /// Builder-style rename, for portfolio lane labels.
@@ -394,6 +442,10 @@ impl Strategy {
             // Correctness/portability feature, not a search lever — kept
             // out of the sweep genome (and a no-op on SUMO anyway).
             recognize_roles: false,
+            // Problem-regime knobs (SOS vs full saturation, verdict
+            // honesty), not search levers — the caller's path picks them.
+            full_saturation: false,
+            strict_saturation: false,
             liu_rescue: r.chance(85),
             liu_rounds: r.pick(&[1, 1, 1, 2]) as usize,
             liu_top_k: r.pick(&[16, 32, 64, 128]) as usize,

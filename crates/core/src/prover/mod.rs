@@ -192,6 +192,14 @@ pub trait CommonProverOpts {
     /// force-included hypotheses).  `kb.ask` calls this so the engine reasons in
     /// the same session its conjecture's support was staged under.
     fn set_session(&mut self, session: Option<String>);
+    /// Reconfigure for a standalone TPTP problem (`.p` / `.tptp`).  The native
+    /// backend swaps in its complete-calculus, full-saturation strategy: the
+    /// KIF path's set-of-support tiering is structurally unable to prove
+    /// problems whose refutation needs axiom×axiom inference, and its
+    /// incomplete equality calculus must not report saturation as a confident
+    /// "no".  Default: no-op — the external backends already run complete
+    /// calculi.
+    fn set_tptp_problem(&mut self) {}
 }
 
 /// A parsed, normalized conjecture: the interned conjecture roots plus the SInE

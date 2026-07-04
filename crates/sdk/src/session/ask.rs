@@ -109,6 +109,13 @@ impl<L: ProvingLayer> Session<L> {
         if !pin_timeout {
             prover_opts.set_timeout(tc.timeout as u64);
         }
+        // A standalone TPTP problem (`.p` / `.tptp`) runs under the backend's
+        // complete-calculus configuration (native: full saturation +
+        // superposition with strict, honest saturation verdicts).  `.tq` KIF
+        // tests keep the backend's configured strategy.
+        if matches!(Parser::from_filename(&tc.file_name), Some(Parser::Tptp { .. })) {
+            prover_opts.set_tptp_problem();
+        }
 
         let name = tc.file_name.to_string();
         let expected = tc.expected_proof.unwrap_or(true);

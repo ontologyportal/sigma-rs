@@ -236,6 +236,7 @@ impl ProverLayer {
         let input_gen = t0.elapsed();
         let t1 = Instant::now();
         let opts_profile = opts.profile;
+        let strict_saturation = opts.strategy.strict_saturation;
 
         // Frozen-background key: a fingerprint of EVERYTHING that
         // shapes the pre-pass + background load.  The conjecture is
@@ -250,7 +251,13 @@ impl ProverLayer {
         // factor: it bakes conjecture-dependent weights into background
         // clauses at FRESH-load time but not at delta-extension time,
         // and mixing the two within one base would be inconsistent.
-        let snap_enabled = opts.strategy.bg_snapshot && !opts.strategy.goal_dist;
+        // Full saturation also disables snapshots: the frozen base excludes
+        // passive-queue state, so a rehydrated background would silently
+        // lose its given-candidate entries (and `freeze` asserts the queues
+        // are empty).
+        let snap_enabled = opts.strategy.bg_snapshot
+            && !opts.strategy.goal_dist
+            && !opts.strategy.full_saturation;
         let snap_key = {
             use xxhash_rust::xxh64::xxh64;
             let mix = |sid: u64| xxh64(&sid.to_be_bytes(), 0x5AFE_BA5E);
@@ -468,11 +475,32 @@ impl ProverLayer {
                 _ => false,
             };
             // A saturation is COMPLETE only if no capacity cap dropped
-            // a clause along the way (input or derived).
+            // a clause along the way (input or derived).  Under strict
+            // saturation (the TPTP problem path) the bar is refutation-
+            // completeness itself: additionally require full saturation
+            // (no set-of-support tiering — axiom×axiom inference ran)
+            // over the WHOLE theory (SInE didn't drop axioms), no
+            // generation cap hit, and a complete equality calculus
+            // (superposition + eq_factoring, every indexed equation
+            // orientable) whenever the problem contains equality.
             let complete_saturation = match verdict {
-                RunVerdict::Saturated => Some(
-                    prover.stats.discarded_long == 0
-                        && prover.stats.discarded_deep == 0),
+                RunVerdict::Saturated => {
+                    let no_drops = prover.stats.discarded_long == 0
+                        && prover.stats.discarded_deep == 0;
+                    Some(no_drops && (!strict_saturation || {
+                        let st = &prover.opts.strategy;
+                        let eq_ok = !prover.stats.saw_equality
+                            || (st.superposition
+                                && st.eq_factoring
+                                && prover.stats.unorientable_eqs == 0);
+                        let whole_theory = selected.len()
+                            >= self.semantic.syntactic.root_sids().len();
+                        st.full_saturation
+                            && eq_ok
+                            && prover.stats.gen_capped == 0
+                            && whole_theory
+                    }))
+                }
                 _ => None,
             };
             let proof = match verdict {
@@ -560,11 +588,16 @@ impl ProverLayer {
 
         // Status mapping.  A refutation whose proof never touches the
         // negated conjecture means the selected axioms alone derive ⊥ —
-        // vacuous → Inconsistent (kb/prove.rs's rule).  Saturation
-        // under set-of-support: no refutation exists from this support
-        // set → report Disproved with the Saturation marker (same shape
-        // as Vampire's CounterSatisfiable mapping; the strategy's caps
-        // make this a strong signal, not a certificate).
+        // vacuous → Inconsistent (kb/prove.rs's rule).  Saturation:
+        // under the legacy KIF path (strict off), no refutation from
+        // this support set → report Disproved with the Saturation
+        // marker (same shape as Vampire's CounterSatisfiable mapping;
+        // the strategy's caps make this a strong signal, not a
+        // certificate).  Under strict saturation (the TPTP path),
+        // Disproved is a CERTIFICATE: it requires the run to have been
+        // genuinely refutation-complete (`complete_saturation`), else
+        // the honest verdict is Unknown — still `Saturation`-flagged so
+        // the autoscale loop widens rather than giving up.
         let (status, termination) = match verdict {
             RunVerdict::Refutation(_) => {
                 if conjecture_used {
@@ -573,6 +606,8 @@ impl ProverLayer {
                     (ProverStatus::Inconsistent, None)
                 }
             }
+            RunVerdict::Saturated if strict_saturation && complete_saturation != Some(true) =>
+                (ProverStatus::Unknown, Some(TerminationReason::Saturation)),
             RunVerdict::Saturated =>
                 (ProverStatus::Disproved, Some(TerminationReason::Saturation)),
             RunVerdict::StepsExhausted =>
