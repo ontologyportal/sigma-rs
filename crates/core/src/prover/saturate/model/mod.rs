@@ -1,21 +1,23 @@
 // crates/core/src/saturate/model/mod.rs
 //
-// The ontology model-builder — Phase 0-2 (scaffold + kernel + reproduction).
+// The ontology model-builder.
 //
 // This is the generic engine the bespoke oracles (taxonomy closure, Horn
 // rule-join, inertial event calculus) are special cases of: a runtime,
 // semi-naive evaluator for **stratified Datalog with negation** over tuples of
 // `SymbolId`.  Given a logic program (rules + EDB ground facts) extracted from
 // the axioms, it computes the program's perfect model — the materialized
-// relations — which the prover will (Phase 5+) consult to decide ground
-// literals and retrieve entailed background units.
+// relations — which the prover consults (`discharge_models`/
+// `discharge_model_joins`) to decide ground literals and retrieve entailed
+// background units.
 //
-// See docs/model-builder-implementation.md for the full plan.  This module is
-// the standalone engine; it is NOT yet wired into the prover (zero call sites,
-// so the saturation path is byte-identical).  Phase 2's claim — that ONE
-// engine reproduces all three bespoke oracles — is proven by the cross-check
-// tests below (notably `ec_kernel_matches_simulate`, which asserts the kernel
-// computes exactly the state `eventcalc::simulate` does).
+// See docs/model-builder-implementation.md for the full plan.  The event
+// calculus is no longer a parity cross-check: `narrative_to_program` +
+// `Program::evaluate` is the SOLE evaluation path `discharge_event_calculus`
+// (in `prover/discharge.rs`) uses — the bespoke `eventcalc::simulate`
+// forward-simulator it once validated against has been retired.
+// `ec_kernel_holds_grid` (below) is the golden-grid regression that replaced
+// that parity test.
 
 use std::collections::{HashMap, HashSet};
 
@@ -764,9 +766,10 @@ fn pid(name: &str) -> Pred {
 }
 
 /// Encode an inertial DEC narrative ([`super::eventcalc::Narrative`]) as a
-/// stratified Datalog(¬) program.  This is the hand-authored Phase-2 stand-in
-/// for the Phase-3 automatic extractor; evaluating it reproduces exactly the
-/// state [`super::eventcalc::simulate`] computes (see the cross-check test).
+/// stratified Datalog(¬) program — the SOLE evaluation path for
+/// `discharge_event_calculus` (the bespoke `simulate` forward-simulator this
+/// once cross-checked against has been retired; see `ec_kernel_holds_grid`
+/// for the golden-grid regression that replaced the parity test).
 ///
 /// The program (stratified: EDB < {initiates,terminates,initiated,terminated}
 /// < holdsAt):
@@ -779,6 +782,13 @@ fn pid(name: &str) -> Pred {
 ///   holdsAt(F,T1)     :- succ(T,T1), holdsAt(F,T), not terminated(F,T)
 ///   holdsAt(F,t0)     :- (EDB, from the initial state)
 /// ```
+///
+/// `succ` is the narrative's OWN order-axiom-derived chain (`n.succ`) when
+/// the KB carried one (timeline honesty); falls back to adjacency over
+/// `n.times` (already lexically ranked by `parse_narrative` in that case)
+/// only when no order axioms were found.  EDB facts are recorded with their
+/// source sid (`fact_src`) so the grid reconstruction can cite real KB
+/// provenance for positive cells.
 pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
     let happens = pid("happens");
     let initiates = pid("initiates");
@@ -794,26 +804,42 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
     for &t in &n.times {
         p.fact(time, vec![t]);
     }
-    for w in n.times.windows(2) {
-        p.fact(succ, vec![w[0], w[1]]);
+    match &n.succ {
+        Some(edges) => {
+            for (&from, &to) in edges {
+                p.fact(succ, vec![from, to]);
+            }
+        }
+        None => {
+            for w in n.times.windows(2) {
+                p.fact(succ, vec![w[0], w[1]]);
+            }
+        }
     }
     for (&t, evs) in &n.happens {
         for &e in evs {
-            p.fact(happens, vec![e, t]);
+            match n.happens_sid {
+                Some(sid) => p.fact_src(happens, vec![e, t], sid),
+                None => p.fact(happens, vec![e, t]),
+            }
         }
     }
     if let Some(&t0) = n.times.first() {
         for (&f, &val) in &n.initial {
             if val {
-                p.fact(holds, vec![f, t0]);
+                match n.initial_sid.get(&(f, t0)) {
+                    Some(&sid) => p.fact_src(holds, vec![f, t0], sid),
+                    None => p.fact(holds, vec![f, t0]),
+                }
             }
         }
     }
 
     // One rule per effect, with the concurrent-event guards.  `time(T)` binds
     // the time variable (safety); `happens(p,T)` is a positive guard,
-    // `not happens(n,T)` a negative one.  T is variable 0.
-    let effect_rule = |head_pred: Pred, e: &super::eventcalc::Effect| -> Rule {
+    // `not happens(n,T)` a negative one.  T is variable 0.  Each rule cites
+    // the narrative's only-if root that defined its relation, for provenance.
+    let effect_rule = |head_pred: Pred, e: &super::eventcalc::Effect, rule_sid: Option<SentenceId>| -> Rule {
         let mut body = vec![Literal {
             atom: Atom { pred: time, args: vec![DTerm::Var(0)] },
             negated: false,
@@ -836,32 +862,38 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
                 args: vec![DTerm::Const(e.event), DTerm::Const(e.fluent), DTerm::Var(0)],
             },
             body,
-            sid: None,
+            sid: rule_sid,
         }
     };
     for e in &n.initiates {
-        p.rules.push(effect_rule(initiates, e));
+        p.rules.push(effect_rule(initiates, e, n.initiates_sid));
     }
     for e in &n.terminates {
-        p.rules.push(effect_rule(terminates, e));
+        p.rules.push(effect_rule(terminates, e, n.terminates_sid));
     }
 
     // initiated(F,T) :- happens(E,T), initiates(E,F,T)   (E=0, F=1, T=2)
-    p.rule(
-        Atom { pred: initiated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
-        vec![
+    // Cites `initiates_sid` — the same only-if root the `initiates` facts
+    // above already resolve through, so this bridge rule adds no NEW leaf,
+    // just the connecting step; `happens_sid` is picked up transitively
+    // through the `happens` EDB fact's own `fact_src`.
+    p.rules.push(Rule {
+        head: Atom { pred: initiated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
+        body: vec![
             Literal { atom: Atom { pred: happens, args: vec![DTerm::Var(0), DTerm::Var(2)] }, negated: false },
             Literal { atom: Atom { pred: initiates, args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)] }, negated: false },
         ],
-    );
+        sid: n.initiates_sid,
+    });
     // terminated(F,T) :- happens(E,T), terminates(E,F,T)
-    p.rule(
-        Atom { pred: terminated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
-        vec![
+    p.rules.push(Rule {
+        head: Atom { pred: terminated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
+        body: vec![
             Literal { atom: Atom { pred: happens, args: vec![DTerm::Var(0), DTerm::Var(2)] }, negated: false },
             Literal { atom: Atom { pred: terminates, args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)] }, negated: false },
         ],
-    );
+        sid: n.terminates_sid,
+    });
     // holdsAt(F,T1) :- succ(T,T1), initiated(F,T)         (F=0, T=1, T1=2)
     p.rule(
         Atom { pred: holds, args: vec![DTerm::Var(0), DTerm::Var(2)] },
@@ -1239,10 +1271,20 @@ mod tests {
         assert_eq!(p.evaluate(), Err(ModelError::Unsafe));
     }
 
-    // -- (c) THE go/no-go cross-check: the Datalog kernel reproduces exactly --
-    //        what `eventcalc::simulate` computes for the spinning narrative.
+    // -- (c) Golden-grid regression for the CSR001+2 spinning narrative. -----
+    //
+    // Replaces the former `ec_kernel_matches_simulate` byte-parity
+    // cross-check (the bespoke `eventcalc::simulate` forward-simulator it
+    // compared against has been retired — the kernel is now the ONLY
+    // evaluation path `discharge_event_calculus` uses).  The 12 expected
+    // cells below were captured from that cross-check's last passing run
+    // (kernel == simulate, both computing DEC6/7/10/11 inertia over
+    // happens: push@n0, pull@n1, {pull,push}@n2 — see the retired test's
+    // docstring in git history for the by-hand derivation), so this test
+    // still pins the exact same invariant, just without the now-deleted
+    // engine as a witness.
     #[test]
-    fn ec_kernel_matches_simulate() {
+    fn ec_kernel_holds_grid() {
         let (n0, n1, n2, n3) = (s("n0"), s("n1"), s("n2"), s("n3"));
         let (push, pull) = (s("push"), s("pull"));
         let (fwd, bwd, spin) = (s("forwards"), s("backwards"), s("spinning"));
@@ -1270,31 +1312,78 @@ mod tests {
             terminates,
             initial: HashMap::new(),
             initial_at: Vec::new(),
+            initial_sid: HashMap::new(),
+            happens_sid: None,
+            initiates_sid: None,
+            terminates_sid: None,
+            succ: None,
         };
 
-        let sim = eventcalc::simulate(&nar);
         let prog = narrative_to_program(&nar);
         let model = prog.evaluate().expect("spinning narrative is stratified");
         let holds_rel = model.get(&pid("holdsAt")).cloned().unwrap_or_default();
 
-        // Byte-for-byte equivalence over the (fluent, time) grid: the kernel's
-        // holdsAt relation is true exactly where simulate's complete state is.
-        let times = [n0, n1, n2, n3];
-        let fluents = [fwd, bwd, spin];
-        for &f in &fluents {
-            for &t in &times {
-                let sim_true = sim.get(&(f, t)).copied().unwrap_or(false);
-                let kernel_true = holds_rel.contains(&vec![f, t]);
-                assert_eq!(
-                    sim_true, kernel_true,
-                    "mismatch at fluent/time cell"
-                );
-            }
+        // The golden grid: every (fluent, time) cell, captured from the
+        // narrative's DEC6/7/10/11 semantics (initiated ∨ (held ∧
+        // ¬terminated)) — literal expected values, no simulator involved.
+        let golden: [((SymbolId, SymbolId), bool); 12] = [
+            ((fwd, n0), false), ((fwd, n1), true),  ((fwd, n2), false), ((fwd, n3), false),
+            ((bwd, n0), false), ((bwd, n1), false), ((bwd, n2), true),  ((bwd, n3), false),
+            ((spin, n0), false), ((spin, n1), false), ((spin, n2), false), ((spin, n3), true),
+        ];
+        for &((f, t), expected) in &golden {
+            let actual = holds_rel.contains(&vec![f, t]);
+            assert_eq!(actual, expected, "golden-grid mismatch at fluent/time cell");
         }
-        // And the key CSR conjecture cells, explicitly.
+        // And the key CSR conjecture cells, explicitly (the family this
+        // narrative backs: CSR015-023+1).
         assert!(!holds_rel.contains(&vec![spin, n1])); // ¬spinning@n1 (CSR017)
         assert!(!holds_rel.contains(&vec![spin, n2])); // ¬spinning@n2 (CSR020)
         assert!(holds_rel.contains(&vec![spin, n3]));  //  spinning@n3
         assert!(holds_rel.contains(&vec![fwd, n1]));   //  forwards@n1
+    }
+
+    // `succ` EDB honesty: when the narrative carries a derived order chain,
+    // the kernel program's `succ` facts are read from THAT chain, not
+    // synthesized from `times.windows(2)` adjacency.  A deliberately
+    // OUT-OF-LEXICAL-ORDER `times` vector proves the
+    // distinction: if the kernel used adjacency it would wire the wrong
+    // successor and the grid would come out wrong.
+    #[test]
+    fn ec_kernel_uses_narrative_succ_when_present() {
+        let (n0, n1, n2) = (s("n0"), s("n1"), s("n2"));
+        let (ev, fl) = (s("ev"), s("fl"));
+        let mut happens = HashMap::new();
+        happens.insert(n0, vec![ev]);
+        let initiates = vec![
+            Effect { event: ev, fluent: fl, pos_concurrent: vec![], neg_concurrent: vec![] },
+        ];
+        let mut succ = HashMap::new();
+        succ.insert(n0, n1);
+        succ.insert(n1, n2);
+        let nar = Narrative {
+            // Deliberately NOT in n0,n1,n2 adjacency order — `times` is only
+            // used for the `time(T)` EDB and initial-state anchor here;
+            // `succ` alone drives the transition wiring.
+            times: vec![n0, n2, n1],
+            happens,
+            initiates,
+            terminates: Vec::new(),
+            initial: HashMap::new(),
+            initial_at: Vec::new(),
+            initial_sid: HashMap::new(),
+            happens_sid: None,
+            initiates_sid: None,
+            terminates_sid: None,
+            succ: Some(succ),
+        };
+        let prog = narrative_to_program(&nar);
+        let model = prog.evaluate().expect("stratified");
+        let holds_rel = model.get(&pid("holdsAt")).cloned().unwrap_or_default();
+        // ev@n0 initiates fl; succ(n0,n1) ⇒ fl holds at n1; succ(n1,n2) ⇒
+        // fl still holds at n2 (inertia, nothing terminates it).
+        assert!(holds_rel.contains(&vec![fl, n1]), "fl must hold at n1 via the derived succ edge");
+        assert!(holds_rel.contains(&vec![fl, n2]), "fl must persist to n2 via inertia over the derived succ chain");
+        assert!(!holds_rel.contains(&vec![fl, n0]), "fl must not hold at n0 (initiated only at the n0->n1 step)");
     }
 }

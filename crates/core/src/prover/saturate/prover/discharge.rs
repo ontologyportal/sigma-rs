@@ -361,12 +361,23 @@ impl<'a> NativeProver<'a> {
     /// (DEC1–DEC12) plus a per-problem narrative defining
     /// `happens`/`initiates`/`terminates` by `<=>` enumeration.  Ordinary
     /// resolution explodes on the `~∃Event` inertia conditions, so instead we
-    /// read the narrative into effect tables, forward-simulate the complete
-    /// fluent state over the ground timeline, and emit each `(fluent, time)`
-    /// as a ground `holdsAt` / `~holdsAt` unit.  Those units resolve directly
-    /// against the (negated) conjecture — a decision procedure standing in for
-    /// the frame-axiom search.  Complete-state (DEC7 negative inertia) means
-    /// negative `holdsAt` queries are decided too.
+    /// read the narrative into effect tables, run it through the GENERIC
+    /// Datalog(¬) model kernel (`narrative_to_program` → `Program::evaluate`
+    /// → perfect model — the same engine `discharge_models`/
+    /// `discharge_model_joins` use for the ontology), reconstruct the
+    /// complete fluent×time grid over the model's `holdsAt` relation, and
+    /// emit each `(fluent, time)` as a ground `holdsAt` / `~holdsAt` unit.
+    /// Those units resolve directly against the (negated) conjecture — a
+    /// decision procedure standing in for the frame-axiom search.
+    /// Complete-state (closed-world: a grid cell absent from the model's
+    /// `holdsAt` relation is false) means negative `holdsAt` queries are
+    /// decided too, matching DEC7 negative inertia.
+    ///
+    /// The bespoke forward simulator (`eventcalc::simulate`) this once
+    /// cross-checked against has been retired — the kernel path is now the
+    /// ONLY path (formerly gated behind `SIGMA_EC_MODEL`, which no longer
+    /// exists); see `model::tests::ec_kernel_holds_grid` for the golden-grid
+    /// regression that replaced the parity cross-check.
     pub(crate) fn discharge_event_calculus(&mut self) {
         if std::env::var_os("SIGMA_EC").is_none() {
             return;
@@ -376,49 +387,48 @@ impl<'a> NativeProver<'a> {
             return;
         };
         let holds_at = Symbol::from("holdsAt");
-        // The complete fluent state. Default path: the bespoke forward
-        // simulator. `SIGMA_EC_MODEL` routes the SAME narrative through the
-        // generic Datalog(¬) model kernel instead (`narrative_to_program` →
-        // perfect model), to validate end-to-end that the generic engine
-        // solves what the bespoke oracle solves. Emission below is shared, so
-        // any difference is purely in how the state is computed.
-        let state: HashMap<(SymbolId, SymbolId), bool> =
-            if std::env::var_os("SIGMA_EC_MODEL").is_some() {
-                let prog = super::super::model::narrative_to_program(&nar);
-                let Ok(model) = prog.evaluate() else {
-                    if trace { eprintln!("EC[model]: program not stratified/safe — bailing"); }
-                    return;
-                };
-                let rel = model.get(&holds_at.id()).cloned().unwrap_or_default();
-                // Reconstruct complete state over the fluent×time grid
-                // (closed-world: a cell absent from the relation is false).
-                let fluents: HashSet<SymbolId> = nar.initiates.iter()
-                    .chain(nar.terminates.iter())
-                    .map(|e| e.fluent)
-                    .chain(nar.initial.keys().copied())
-                    .collect();
-                let mut st = HashMap::new();
-                for &f in &fluents {
-                    for &t in &nar.times {
-                        st.insert((f, t), rel.contains(&vec![f, t]));
-                    }
-                }
-                if trace { eprintln!("EC[model]: kernel perfect model, {} state cells", st.len()); }
-                st
-            } else {
-                super::super::eventcalc::simulate(&nar)
-            };
+        let holds_pred = holds_at.id();
+        let prog = super::super::model::narrative_to_program(&nar);
+        let Ok((model, prov)) = prog.evaluate_within(usize::MAX, None) else {
+            if trace { eprintln!("EC: program not stratified/safe — bailing"); }
+            return;
+        };
+        let rel = model.get(&holds_pred).cloned().unwrap_or_default();
+        // Reconstruct complete state over the fluent×time grid (closed-world:
+        // a cell absent from the relation is false).
+        let fluents: HashSet<SymbolId> = nar.initiates.iter()
+            .chain(nar.terminates.iter())
+            .map(|e| e.fluent)
+            .chain(nar.initial.keys().copied())
+            .collect();
+        let mut state: HashMap<(SymbolId, SymbolId), bool> = HashMap::new();
+        for &f in &fluents {
+            for &t in &nar.times {
+                state.insert((f, t), rel.contains(&vec![f, t]));
+            }
+        }
         if trace {
             eprintln!(
-                "EC: {} times, {} initiates, {} terminates, {} state cells",
+                "EC: {} times, {} initiates, {} terminates, {} state cells (kernel)",
                 nar.times.len(), nar.initiates.len(), nar.terminates.len(), state.len(),
             );
         }
-        // Emit each simulated state cell as a ground `holdsAt` / `~holdsAt`
-        // unit.  Each is BOTH queued for selection (`push`) and indexed as a
-        // resolution / unit-simplification partner (`activate`) — so the
-        // complementary conjecture literal is discharged whichever clause the
-        // given-clause loop reaches first.
+        // Provenance: a positive cell cites the model's real derivation
+        // (EDB leaves + rule sids `prov.cite` reconstructs — the
+        // `happens`/`initiates`/`terminates` facts and the effect rules that
+        // produced it).  A NEGATIVE cell is a closed-world absence — no
+        // derivation to walk — so it cites the narrative's defining
+        // only-if roots instead (the axioms whose completeness licenses the
+        // closed-world assumption).
+        let neg_parents: Vec<SentenceId> = [nar.happens_sid, nar.initiates_sid, nar.terminates_sid]
+            .into_iter()
+            .flatten()
+            .collect();
+        // Emit each state cell as a ground `holdsAt` / `~holdsAt` unit.  Each
+        // is BOTH queued for selection (`push`) and indexed as a resolution /
+        // unit-simplification partner (`activate`) — so the complementary
+        // conjecture literal is discharged whichever clause the given-clause
+        // loop reaches first.
         let mut pushed = 0usize;
         for (&(fluent, time), &holds) in &state {
             let (Some(fl), Some(t)) = (names.get(&fluent), names.get(&time)) else {
@@ -429,9 +439,15 @@ impl<'a> NativeProver<'a> {
                 Term::Sym(fl.clone()),
                 Term::Sym(t.clone()),
             ]);
+            let fact_parents = if holds {
+                prov.cite(holds_pred, &vec![fluent, time])
+            } else {
+                neg_parents.clone()
+            };
             if let Some(id) =
                 self.make(vec![(holds, atom)], Vec::new(), "event_calculus", SUPPORT, None, true)
             {
+                self.clauses[id as usize].fact_parents.extend(fact_parents);
                 if self.push(Some(id)).is_some() {
                     pushed += 1;
                 }
