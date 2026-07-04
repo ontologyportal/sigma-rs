@@ -48,10 +48,24 @@ pub(crate) struct ModelProgram {
     /// the home for heavily-shared relations (taxonomy) that SCC tainting drops.
     pub monotone: Program,
     /// Predicates eligible for NEGATIVE/complete decisions.  Slice-1 cut: those
-    /// living in a stratifiable cluster.  (The full definitional-completeness
-    /// gate — comparing against non-Horn axioms the extractor skipped — refines
-    /// this later; positive decisions never need it.)
+    /// living in a stratifiable cluster.  Kept with its historical semantics
+    /// (stratifiability only — condition (b) of certification); the full
+    /// definitional-completeness gate it was waiting for is [`certified`]
+    /// below, which refines this set.
     pub complete: HashSet<Pred>,
+    /// COMPLETION-CERTIFIED relations (the Clark-completion gate): relations
+    /// whose extracted rules are PROVABLY their only definition in the KB —
+    /// (a) no skipped root could derive their atoms, (b) they live in a
+    /// stratifiable cluster, (c) their rule bodies reach only certified /
+    /// EDB-closed relations (fixpoint), (d) they are not oracle-owned
+    /// taxonomy role relations nor reified as terms elsewhere (a derived
+    /// role membership could enrich their definition at Level 2).  For a
+    /// certified `R`, model-ABSENCE of a ground tuple is a sound negative
+    /// answer under Clark completion — see [`complete_absent`](Self::complete_absent).
+    pub certified: HashSet<Pred>,
+    /// Build-time breakdown of why candidate relations were refused
+    /// certification (SIGMA_STATS `certification_blocked_by`).
+    pub cert_blocked: CertBlocked,
     /// Recognized role symbols (dialect-agnostic) — for the Level-2 derivation
     /// of the inherited transitive/symmetric set over the evaluated model.
     pub roles:    crate::semantics::roles::TaxonomyRoles,
@@ -75,7 +89,8 @@ impl ModelProgram {
     pub(crate) fn build(syn: &SyntacticLayer) -> Self {
         use crate::semantics::roles::TaxonomyRoles;
 
-        let mut program = extract::extract_horn_program(syn);
+        let ex = extract::extract_horn_program_full(syn);
+        let mut program = ex.program;
         let roles = TaxonomyRoles::recognize(syn, syn.root_sids());
         // NOTE: clause-signature recognition (`recognize`) is validated as a
         // dialect-robust role recognizer, but using its bridges to *override*
@@ -95,7 +110,22 @@ impl ModelProgram {
             clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
         let denials = extract::collect_denials(syn, &roles);
 
-        ModelProgram { program, clusters, monotone, complete, roles, denials }
+        // The Clark-completion certification (conditions (a)–(d); see the
+        // `certified` field doc and `certify` itself).  Role relations are
+        // the oracle's Complete coverage — never double-owned here.
+        let role_syms: HashSet<Pred> = [
+            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
+            roles.symmetric, roles.domain, roles.range, roles.disjoint,
+            roles.partition,
+        ]
+        .into_iter()
+        .collect();
+        let (certified, cert_blocked) =
+            certify(&program, &complete, &ex.skipped_heads, ex.wildcard_skip, &role_syms);
+
+        ModelProgram {
+            program, clusters, monotone, complete, certified, cert_blocked, roles, denials,
+        }
     }
 
     /// The sound positive model: the monotone fragment evaluated, then closed
@@ -390,6 +420,206 @@ impl ModelProgram {
         }
         None
     }
+
+    /// Clark-completion NEGATIVE decision for one ground atom of a
+    /// [`certified`](Self::certified) relation: evaluate `rel`'s dependency
+    /// cone in the FULL program (negation included — the monotone fragment
+    /// under-derives, which is sound for positives and a lie for absence)
+    /// and, when the evaluation completes with NO bail and the tuple is
+    /// ABSENT, return the completion citation — every defining rule sid in
+    /// the cone (the axioms whose provable exhaustiveness licenses the
+    /// closed-world step; the absence itself has no sentence to cite).
+    ///
+    /// `None` when: `rel` is not certified, the tuple is present, or ANY
+    /// budget / deadline / safety / stratification bail occurred — an
+    /// incomplete evaluation licenses nothing.  No magic rewrite (magic
+    /// narrows derivations toward the goal's constants: sound for positive
+    /// answers, unsound for absence) and no unsafe-rule dropping (dropping
+    /// shrinks the model, also unsound for absence).
+    pub(crate) fn complete_absent(
+        &self,
+        rel:      Pred,
+        tuple:    &[SymbolId],
+        deadline: Option<std::time::Instant>,
+        stats:    &mut ModelStats,
+    ) -> Option<Vec<SentenceId>> {
+        if !self.certified.contains(&rel) {
+            return None;
+        }
+        let budget: usize = std::env::var("SIGMA_MODEL_BUDGET")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(250_000);
+        const MAX_CONE_RULES: usize = 50_000;
+        const MAX_CONE_FACTS: usize = 200_000;
+
+        let mut goal = HashSet::new();
+        goal.insert(rel);
+        let cone = cluster::dependency_cone(&self.program, &goal);
+        let scoped = cluster::scope_program(&self.program, &cone);
+        let cone_facts: usize = scoped.edb.values().map(|s| s.len()).sum();
+        if scoped.rules.len() > MAX_CONE_RULES || cone_facts > MAX_CONE_FACTS {
+            stats.budget_overflows += 1;
+            return None;
+        }
+        let (model, _prov) = match scoped.evaluate_within(budget, deadline) {
+            Ok(mp) => mp,
+            Err(ModelError::Unsafe) => {
+                stats.unsafe_bails += 1;
+                return None;
+            }
+            Err(ModelError::Unstratifiable) => {
+                stats.unstratifiable_bails += 1;
+                return None;
+            }
+            Err(ModelError::Overflow) => {
+                stats.budget_overflows += 1;
+                return None;
+            }
+        };
+        if model.get(&rel).is_some_and(|rows| rows.contains(&tuple.to_vec())) {
+            return None; // present — no negative to give
+        }
+        // The completion citation: every defining rule sid of the cone,
+        // first-appearance order, deduped.
+        let mut cited: Vec<SentenceId> = Vec::new();
+        let mut seen: HashSet<SentenceId> = HashSet::new();
+        for r in &scoped.rules {
+            if let Some(sid) = r.sid {
+                if seen.insert(sid) {
+                    cited.push(sid);
+                }
+            }
+        }
+        stats.answered += 1;
+        Some(cited)
+    }
+}
+
+/// Build-time breakdown of why candidate relations were refused completion
+/// certification — the `certification_blocked_by` counters (SIGMA_STATS).
+/// One relation is counted under exactly one reason, checked in the order
+/// role → skipped-head → unstratifiable, with the body-chain fixpoint
+/// shrink counted last.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CertBlocked {
+    /// (a) the relation heads a root the extractor skipped (its definition
+    /// escapes the program) — or a skipped predicate-variable root poisoned
+    /// certification wholesale (every candidate lands here).
+    pub(crate) skipped_head: u32,
+    /// (b) the relation is not in any stratifiable cluster.
+    pub(crate) unstratifiable: u32,
+    /// (c) decertified by the body fixpoint: some rule chain from the
+    /// relation reaches an uncertified relation.
+    pub(crate) body_chain: u32,
+    /// (d) a recognized taxonomy role relation (the oracle's Complete
+    /// coverage — no double ownership), or a relation REIFIED as a term
+    /// elsewhere in the program (a derived role membership — e.g.
+    /// hierarchy-inherited transitivity — could enrich its definition
+    /// beyond the build-time cone).
+    pub(crate) role: u32,
+}
+
+/// The Clark-completion certification predicate (see the
+/// [`ModelProgram::certified`] field doc for the conditions).  Exposed as a
+/// free function over an arbitrary program so the event-calculus narrative
+/// program can be certified too (its skipped set is empty: `parse_narrative`
+/// consumed the defining only-if roots wholesale).
+///
+/// `cluster_preds` is the union of stratifiable-cluster predicates
+/// (condition (b) — [`ModelProgram::complete`]'s historical semantics);
+/// `skipped_heads` / `wildcard_skip` come from extraction (condition (a));
+/// `role_syms` are the oracle-owned role relations (condition (d)).
+/// Condition (c) is the shrink fixpoint at the end.  Everything errs toward
+/// NOT certifying.
+pub(crate) fn certify(
+    program:       &Program,
+    cluster_preds: &HashSet<Pred>,
+    skipped_heads: &HashSet<Pred>,
+    wildcard_skip: bool,
+    role_syms:     &HashSet<Pred>,
+) -> (HashSet<Pred>, CertBlocked) {
+    let mut blocked = CertBlocked::default();
+
+    // Candidate universe: every predicate the program mentions.
+    let mut universe: HashSet<Pred> = HashSet::new();
+    for r in &program.rules {
+        universe.insert(r.head.pred);
+        for l in &r.body {
+            universe.insert(l.atom.pred);
+        }
+    }
+    for p in program.edb.keys() {
+        universe.insert(*p);
+    }
+
+    // A skipped predicate-variable root could derive atoms of ANY relation:
+    // nothing is certifiable.
+    if wildcard_skip {
+        blocked.skipped_head = universe.len() as u32;
+        return (HashSet::new(), blocked);
+    }
+
+    // Relations REIFIED as terms: symbols in argument position of any EDB
+    // tuple or any rule-atom constant.  A ground model tuple can only carry
+    // constants that appear somewhere as terms (Datalog invents nothing),
+    // so a relation NOT in this set can never acquire a derived role
+    // membership (`(instance R TransitiveRelation)` via the hierarchy) that
+    // would add rules outside the build-time cone.
+    let mut reified: HashSet<Pred> = HashSet::new();
+    for rows in program.edb.values() {
+        for t in rows {
+            reified.extend(t.iter().copied());
+        }
+    }
+    for r in &program.rules {
+        for a in std::iter::once(&r.head).chain(r.body.iter().map(|l| &l.atom)) {
+            for arg in &a.args {
+                if let DTerm::Const(c) = arg {
+                    reified.insert(*c);
+                }
+            }
+        }
+    }
+
+    let mut certified: HashSet<Pred> = HashSet::new();
+    for &p in &universe {
+        if role_syms.contains(&p) || reified.contains(&p) {
+            blocked.role += 1;
+        } else if skipped_heads.contains(&p) {
+            blocked.skipped_head += 1;
+        } else if !cluster_preds.contains(&p) {
+            blocked.unstratifiable += 1;
+        } else {
+            certified.insert(p);
+        }
+    }
+
+    // (c) shrink fixpoint: a certified relation whose rules' bodies (either
+    // polarity — the perfect model needs the negated relation complete too)
+    // reference an uncertified relation is decertified, until stable.
+    loop {
+        let drop: Vec<Pred> = certified
+            .iter()
+            .copied()
+            .filter(|&p| {
+                program
+                    .rules
+                    .iter()
+                    .filter(|r| r.head.pred == p)
+                    .any(|r| r.body.iter().any(|l| !certified.contains(&l.atom.pred)))
+            })
+            .collect();
+        if drop.is_empty() {
+            break;
+        }
+        for p in drop {
+            certified.remove(&p);
+            blocked.body_chain += 1;
+        }
+    }
+
+    (certified, blocked)
 }
 
 /// One denial-constraint refutation of a ground `(instance x C)` atom — see
@@ -1386,5 +1616,239 @@ mod tests {
         assert!(holds_rel.contains(&vec![fl, n1]), "fl must hold at n1 via the derived succ edge");
         assert!(holds_rel.contains(&vec![fl, n2]), "fl must persist to n2 via inertia over the derived succ chain");
         assert!(!holds_rel.contains(&vec![fl, n0]), "fl must not hold at n0 (initiated only at the n0->n1 step)");
+    }
+
+    // -- Clark-completion certifier -------------------------------------------
+
+    // (i) A fully-extracted 2-rule KB certifies its relations, and an ABSENT
+    // tuple yields the completion decision citing EVERY defining rule sid of
+    // the goal's cone; a PRESENT tuple and an uncertified relation yield
+    // nothing.
+    #[test]
+    fn certified_absence_yields_negative_with_all_defining_sids() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let kif = "\
+            (=> (and (parent ?X ?Y) (parent ?Y ?Z)) (grandparent ?X ?Z))\n\
+            (=> (adoptedBy ?Y ?X) (parent ?X ?Y))\n\
+            (parent Alice Bob)\n\
+            (parent Bob Carol)\n\
+            (adoptedBy Dave Carol)\n";
+        let sem = kif_layer(kif);
+        let mp = ModelProgram::build(&sem.syntactic);
+
+        for r in ["grandparent", "parent", "adoptedBy"] {
+            assert!(mp.certified.contains(&s(r)), "{r} must certify: {:?}", mp.cert_blocked);
+        }
+
+        // grandparent(Alice, Dave) is absent (Alice's chain ends at Carol;
+        // Dave is Carol's child): certified absence, citing BOTH rule roots
+        // — the grandparent rule and the parent-via-adoption rule.
+        let mut stats = ModelStats::default();
+        let cited = mp
+            .complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats)
+            .expect("certified absence must decide the negative");
+        let rule_sids: Vec<SentenceId> =
+            mp.program.rules.iter().filter_map(|r| r.sid).collect();
+        assert_eq!(rule_sids.len(), 2, "two extracted rules define the cone");
+        for sid in &rule_sids {
+            assert!(cited.contains(sid), "completion citation missing a defining rule sid");
+        }
+        assert_eq!(cited.len(), 2, "nothing beyond the defining rules is cited");
+        assert_eq!(stats.answered, 1);
+
+        // Present tuples decide nothing (both are model-derived).
+        assert!(mp
+            .complete_absent(s("grandparent"), &[s("Alice"), s("Carol")], None, &mut stats)
+            .is_none());
+        assert!(mp
+            .complete_absent(s("grandparent"), &[s("Bob"), s("Dave")], None, &mut stats)
+            .is_none());
+        // An uncertified (unknown) relation decides nothing.
+        assert!(mp
+            .complete_absent(s("instance"), &[s("Alice"), s("Dave")], None, &mut stats)
+            .is_none());
+    }
+
+    // (ii) The SAME KB plus one extra sentence the extractor must SKIP
+    // (compound argument in the consequent) whose consequent head is
+    // `grandparent` ⇒ grandparent is NOT certified and decides nothing;
+    // relations untouched by the skip stay certified.
+    #[test]
+    fn skipped_consequent_head_blocks_certification() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let kif = "\
+            (=> (and (parent ?X ?Y) (parent ?Y ?Z)) (grandparent ?X ?Z))\n\
+            (=> (adoptedBy ?Y ?X) (parent ?X ?Y))\n\
+            (parent Alice Bob)\n\
+            (parent Bob Carol)\n\
+            (adoptedBy Dave Carol)\n\
+            (=> (relative ?X ?Y) (grandparent ?X (MotherFn ?Y)))\n";
+        let sem = kif_layer(kif);
+        let mp = ModelProgram::build(&sem.syntactic);
+
+        assert!(
+            !mp.certified.contains(&s("grandparent")),
+            "a skipped potential definition must block certification"
+        );
+        assert!(mp.cert_blocked.skipped_head >= 1, "{:?}", mp.cert_blocked);
+        // The untouched relations keep their certification.
+        assert!(mp.certified.contains(&s("parent")));
+        assert!(mp.certified.contains(&s("adoptedBy")));
+
+        let mut stats = ModelStats::default();
+        assert!(
+            mp.complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats)
+                .is_none(),
+            "no negative may be decided for a blocked relation"
+        );
+    }
+
+    // (iii) A body reference to an UNCERTIFIED relation decertifies the
+    // referring relation — and the shrink propagates along rule chains —
+    // while an independent clean chain stays certified.
+    #[test]
+    fn uncertified_body_relation_decertifies_by_fixpoint() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let kif = "\
+            (=> (r ?X) (q ?X))\n\
+            (=> (q ?X) (top ?X))\n\
+            (r a)\n\
+            (=> (s ?X) (r (FooFn ?X)))\n\
+            (=> (u ?X) (v ?X))\n\
+            (u b)\n";
+        let sem = kif_layer(kif);
+        let mp = ModelProgram::build(&sem.syntactic);
+
+        assert!(!mp.certified.contains(&s("r")), "skipped-head block on r");
+        assert!(!mp.certified.contains(&s("q")), "one-step body chain decertifies q");
+        assert!(!mp.certified.contains(&s("top")), "two-step body chain decertifies top");
+        assert!(mp.cert_blocked.body_chain >= 2, "{:?}", mp.cert_blocked);
+        // The clean chain is untouched by the shrink.
+        assert!(mp.certified.contains(&s("u")));
+        assert!(mp.certified.contains(&s("v")));
+    }
+
+    // (iv) Recognized taxonomy role relations NEVER certify — they are the
+    // oracle's Complete coverage (no double ownership) — even when their
+    // cluster is stratifiable and nothing was skipped.
+    #[test]
+    fn taxonomy_role_relations_never_certify() {
+        use crate::semantics::caches::test_support::kif_layer;
+        let kif = "\
+            (subclass Dog Animal)\n\
+            (instance Rex Dog)\n\
+            (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n";
+        let sem = kif_layer(kif);
+        let mp = ModelProgram::build(&sem.syntactic);
+
+        assert!(!mp.certified.contains(&mp.roles.instance), "instance is oracle-owned");
+        assert!(!mp.certified.contains(&mp.roles.subclass), "subclass is oracle-owned");
+        assert!(mp.cert_blocked.role >= 2, "{:?}", mp.cert_blocked);
+
+        let mut stats = ModelStats::default();
+        // Neither the entailed nor the un-entailed instance atom is decided.
+        assert!(mp
+            .complete_absent(s("instance"), &[s("Rex"), s("Animal")], None, &mut stats)
+            .is_none());
+        assert!(mp
+            .complete_absent(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats)
+            .is_none());
+    }
+
+    // (v) EC narrative predicates: the spinning-narrative PROGRAM (whose
+    // defining only-if roots `parse_narrative` consumed wholesale — the
+    // skipped set is empty) certifies holdsAt/initiated/terminated, and the
+    // certifier's negative decisions agree with the kernel grid's negative
+    // cells on every fluent×time cell.  (In the prover, `discharge_event_calculus`
+    // already emits those negatives — the KB-level ModelProgram sees the
+    // <=>-split `(=> holdsAt-head (or …))` roots as SKIPPED, so no double
+    // emission; any residual duplicate dedups through `make` like any other.)
+    #[test]
+    fn ec_narrative_program_certifies_and_negatives_agree_with_grid() {
+        let (n0, n1, n2, n3) = (s("n0"), s("n1"), s("n2"), s("n3"));
+        let (push, pull) = (s("push"), s("pull"));
+        let (fwd, bwd, spin) = (s("forwards"), s("backwards"), s("spinning"));
+        let mut happens = HashMap::new();
+        happens.insert(n0, vec![push]);
+        happens.insert(n1, vec![pull]);
+        happens.insert(n2, vec![pull, push]);
+        let initiates = vec![
+            Effect { event: push, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
+            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
+            Effect { event: pull, fluent: spin, pos_concurrent: vec![push], neg_concurrent: vec![] },
+        ];
+        let terminates = vec![
+            Effect { event: push, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
+            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
+            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
+            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
+            Effect { event: push, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![pull] },
+            Effect { event: pull, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![push] },
+        ];
+        let nar = Narrative {
+            times: vec![n0, n1, n2, n3],
+            happens,
+            initiates,
+            terminates,
+            initial: HashMap::new(),
+            initial_at: Vec::new(),
+            initial_sid: HashMap::new(),
+            happens_sid: None,
+            initiates_sid: None,
+            terminates_sid: None,
+            succ: None,
+        };
+
+        let prog = narrative_to_program(&nar);
+        let clusters = cluster::partition(&prog);
+        let complete: HashSet<Pred> =
+            clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
+        let roles = crate::semantics::roles::TaxonomyRoles::default();
+        let role_syms: HashSet<Pred> = [
+            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
+            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
+        ]
+        .into_iter()
+        .collect();
+        let (certified, cert_blocked) =
+            certify(&prog, &complete, &HashSet::new(), false, &role_syms);
+        for p in ["holdsAt", "initiated", "terminated", "initiates", "terminates"] {
+            assert!(
+                certified.contains(&pid(p)),
+                "{p} must certify on the narrative program: {cert_blocked:?}"
+            );
+        }
+
+        // Wrap into a ModelProgram so `complete_absent` runs the exact
+        // machinery the discharge pass uses.
+        let mp = ModelProgram {
+            monotone: cluster::positive_program(&prog),
+            program: prog.clone(),
+            clusters,
+            complete,
+            certified,
+            cert_blocked,
+            roles,
+            denials: Vec::new(),
+        };
+        let model = prog.evaluate().expect("spinning narrative is stratified");
+        let holds_rel = model.get(&pid("holdsAt")).cloned().unwrap_or_default();
+
+        // The same golden grid as `ec_kernel_holds_grid`.
+        let golden: [((SymbolId, SymbolId), bool); 12] = [
+            ((fwd, n0), false), ((fwd, n1), true),  ((fwd, n2), false), ((fwd, n3), false),
+            ((bwd, n0), false), ((bwd, n1), false), ((bwd, n2), true),  ((bwd, n3), false),
+            ((spin, n0), false), ((spin, n1), false), ((spin, n2), false), ((spin, n3), true),
+        ];
+        let mut stats = ModelStats::default();
+        for &((f, t), expected) in &golden {
+            assert_eq!(holds_rel.contains(&vec![f, t]), expected, "grid cell");
+            let neg = mp.complete_absent(pid("holdsAt"), &[f, t], None, &mut stats);
+            assert_eq!(
+                neg.is_some(),
+                !expected,
+                "certifier negative must agree with the kernel grid on every cell"
+            );
+        }
     }
 }

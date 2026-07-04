@@ -472,8 +472,25 @@ impl<'a> NativeProver<'a> {
         if std::env::var_os("SIGMA_MODEL").is_none() {
             return;
         }
+        self.discharge_models_forced();
+    }
+
+    /// The body of [`discharge_models`](Self::discharge_models) without the
+    /// `SIGMA_MODEL` env gate — direct entry for tests (env mutation is
+    /// process-global and races parallel tests).  Production callers go
+    /// through the gated wrapper above.
+    pub(crate) fn discharge_models_forced(&mut self) {
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
         let mp = self.layer.model_program();
+
+        // Certification bookkeeping (SIGMA_STATS): the registry's build-time
+        // certified set and blocked-reason breakdown, recorded once per run.
+        self.stats.model_certified_relations = mp.certified.len() as u64;
+        self.stats.model_cert_blocked_skipped_head = u64::from(mp.cert_blocked.skipped_head);
+        self.stats.model_cert_blocked_unstratifiable =
+            u64::from(mp.cert_blocked.unstratifiable);
+        self.stats.model_cert_blocked_body_chain = u64::from(mp.cert_blocked.body_chain);
+        self.stats.model_cert_blocked_role = u64::from(mp.cert_blocked.role);
 
         // The conjecture's atom patterns (relation + argument terms).  Read
         // from `lits` (slot-form `terms` can be empty for already-simplified
@@ -500,7 +517,12 @@ impl<'a> NativeProver<'a> {
         // Cheap skip: does the program define/store any goal relation?
         let defines = mp.monotone.rules.iter().any(|r| goal_preds.contains(&r.head.pred))
             || mp.monotone.edb.keys().any(|p| goal_preds.contains(p));
-        if !defines {
+        // Clark-completion negatives can apply even when the MONOTONE
+        // fragment defines no goal relation (a certified relation may be
+        // defined only through negation-carrying rules), so the early bail
+        // also checks for a certified goal relation.
+        let has_certified_goal = goal_preds.iter().any(|r| mp.certified.contains(r));
+        if !defines && !has_certified_goal {
             return;
         }
         if trace {
@@ -525,23 +547,25 @@ impl<'a> NativeProver<'a> {
         let deadline = Instant::now() + std::time::Duration::from_millis(model_ms);
         let mut to_emit: Vec<(SymbolId, Vec<SymbolId>, Vec<SentenceId>)> = Vec::new();
         let mut model_stats = super::super::model::ModelStats::default();
-        for (rel, args) in &patterns {
-            let Some(dargs) = self.bridge_dargs(args, &mut model_stats) else {
-                self.stats.model_atoms_rejected += 1;
-                continue;
-            };
-            let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
-            if let Some((rows, prov)) = answered {
-                self.stats.model_atoms_answered += 1;
-                for row in rows {
-                    // The KB sentences (EDB facts, then rules) this answer's
-                    // derivation used — cited on the emitted unit below, the
-                    // same way oracle witness sids are.
-                    let cited = mp.cite(&prov, *rel, &row);
-                    to_emit.push((*rel, row, cited));
+        if defines {
+            for (rel, args) in &patterns {
+                let Some(dargs) = self.bridge_dargs(args, &mut model_stats) else {
+                    self.stats.model_atoms_rejected += 1;
+                    continue;
+                };
+                let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
+                if let Some((rows, prov)) = answered {
+                    self.stats.model_atoms_answered += 1;
+                    for row in rows {
+                        // The KB sentences (EDB facts, then rules) this answer's
+                        // derivation used — cited on the emitted unit below, the
+                        // same way oracle witness sids are.
+                        let cited = mp.cite(&prov, *rel, &row);
+                        to_emit.push((*rel, row, cited));
+                    }
+                } else {
+                    self.stats.model_atoms_unanswered += 1;
                 }
-            } else {
-                self.stats.model_atoms_unanswered += 1;
             }
         }
         // NEGATIVE decisions (sub-milestone B): denial-constraint refutation
@@ -613,6 +637,72 @@ impl<'a> NativeProver<'a> {
                 }
             }
         }
+
+        // COMPLETE (Clark-certified) negative decisions: for a
+        // conjecture-tier ground flat atom `R(args)` that the NEGATED
+        // conjecture holds POSITIVELY (the original conjecture asked to
+        // prove `¬R(args)` — the same polarity reading as the denial path
+        // above) with `R` COMPLETION-CERTIFIED: evaluate R's full cone
+        // (`complete_absent` — no magic, no unsafe-rule dropping); if the
+        // tuple is ABSENT and the evaluation completed without ANY bail,
+        // the Clark completion of R's certified definition licenses the
+        // negative.  Emitted below as a negative ground unit tagged
+        // `model_complete`, `fact_parents` = every defining rule sid of
+        // R's cone (the completion citation).  Denial refutations never
+        // overlap (they cover only `instance`, a role — never certified);
+        // EC-emitted negatives dedup through `make` like any duplicate.
+        // SEMANTICS GUARD: a certified negative is licensed by the Clark
+        // COMPLETION of R's definition, which is an assumption ON TOP of
+        // the KB unless the only-if axioms are literally present (the EC
+        // case).  That is the right semantics for KIF/SUMO query answering
+        // (SigmaKEE's closed-world reading) but NOT for classical-verdict
+        // regimes: under `strict_saturation` (the TPTP path, where a
+        // confident verdict must be a classical entailment) emission is
+        // disabled until certification also verifies the completion axioms
+        // exist in the KB (condition (e), future work).
+        let cwa_ok = !self.opts.strategy.strict_saturation;
+        let mut to_complete: Vec<(Term, Vec<SentenceId>)> = Vec::new();
+        if has_certified_goal && cwa_ok {
+            let mut seen_complete: HashSet<AtomId> = HashSet::new();
+            for c in &self.clauses {
+                if c.tier != CONJECTURE {
+                    continue;
+                }
+                for l in &c.lits {
+                    if !l.pos {
+                        continue; // only atoms the negated conjecture holds positively
+                    }
+                    if !seen_complete.insert(l.atom) {
+                        continue;
+                    }
+                    let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else {
+                        continue;
+                    };
+                    let Some((rel, args)) = lit_pattern(&t) else { continue };
+                    if !mp.certified.contains(&rel) {
+                        continue;
+                    }
+                    // Ground flat atoms only: every argument a bare symbol.
+                    let Some(tuple) = args.iter().map(sym_of).collect::<Option<Vec<SymbolId>>>()
+                    else {
+                        continue;
+                    };
+                    let Some(cited) =
+                        mp.complete_absent(rel, &tuple, Some(deadline), &mut model_stats)
+                    else {
+                        continue;
+                    };
+                    if trace {
+                        eprintln!(
+                            "MODEL-COMPLETE ~{} (certified absence; {} defining rule sids cited)",
+                            term_kif(&t, self.syn()),
+                            cited.len(),
+                        );
+                    }
+                    to_complete.push((t, cited));
+                }
+            }
+        }
         self.merge_model_stats(&model_stats);
 
         let mut emitted = 0usize;
@@ -666,9 +756,28 @@ impl<'a> NativeProver<'a> {
                 }
             }
         }
+
+        // Emit each certified-completion negative the same way: a negative
+        // ground unit resolving against the positive conjecture literal,
+        // its `fact_parents` the completion citation (every defining rule
+        // sid of the relation's cone).
+        let mut emitted_complete = 0usize;
+        for (t, cited) in to_complete {
+            if let Some(id) =
+                self.make(vec![(false, t)], Vec::new(), "model_complete", SUPPORT, None, true)
+            {
+                self.clauses[id as usize].fact_parents.extend(cited);
+                self.activate(id);
+                if self.push(Some(id)).is_some() {
+                    emitted_complete += 1;
+                }
+                self.stats.model_complete_negatives_emitted += 1;
+            }
+        }
         if trace {
             eprintln!(
-                "MODEL: {emitted} positive / {emitted_neg} refutation units emitted over {} goal relations",
+                "MODEL: {emitted} positive / {emitted_neg} refutation / {emitted_complete} \
+                 completion-negative units emitted over {} goal relations",
                 goal_preds.len(),
             );
         }
@@ -1737,5 +1846,77 @@ mod tests {
 
     fn a_id() -> SymbolId {
         Symbol::hash_name("a")
+    }
+
+    // Clark-completion negatives end to end (env-free entry:
+    // `discharge_models_forced` bypasses only the SIGMA_MODEL gate).  The
+    // goal `(not (grandparent Alice Dave))` is NOT classically entailed
+    // (open world) — plain saturation can only saturate — but every
+    // definition of `grandparent`'s cone extracted cleanly, so the
+    // certifier decides the absence: a `model_complete` unit is emitted
+    // whose `fact_parents` cite BOTH defining rule roots, and the run
+    // closes with a refutation.
+    #[test]
+    fn model_complete_negative_closes_certified_absence_goal() {
+        use crate::parse::OpKind;
+        use super::super::super::clausify::clausify_sentence;
+        use super::super::RunVerdict;
+
+        let kif = "\
+            (=> (and (parent ?X ?Y) (parent ?Y ?Z)) (grandparent ?X ?Z))\n\
+            (=> (adoptedBy ?Y ?X) (parent ?X ?Y))\n\
+            (parent Alice Bob)\n\
+            (parent Bob Carol)\n\
+            (adoptedBy Dave Carol)\n\
+            (not (grandparent Alice Dave))\n";
+        let layer = ProverLayer::new(kif_layer(kif));
+        let syn = &layer.semantic.syntactic;
+        let goal = syn
+            .root_sids()
+            .into_iter()
+            .find(|sid| syn.sentence(*sid).is_some_and(|s| s.op() == Some(&OpKind::Not)))
+            .expect("goal root stored");
+        let rule_sids: Vec<SentenceId> = syn
+            .root_sids()
+            .into_iter()
+            .filter(|sid| {
+                syn.sentence(*sid).is_some_and(|s| s.op() == Some(&OpKind::Implies))
+            })
+            .collect();
+        assert_eq!(rule_sids.len(), 2, "two defining rule roots");
+
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+        // Negated conjecture of `(not (grandparent Alice Dave))`: the
+        // positive unit `grandparent(Alice, Dave)` at CONJECTURE tier.
+        let sent = layer.semantic.syntactic.sentence(goal).expect("goal sentence");
+        let clauses = clausify_sentence(
+            &layer.semantic.syntactic, &layer.atoms, &sent, goal, true);
+        assert!(!clauses.is_empty(), "conjecture clausifies");
+        prover.add_conjecture_clauses(&clauses);
+
+        prover.discharge_models_forced();
+
+        // The completion negative was emitted, citing every defining rule
+        // sid of the goal relation's cone.
+        let unit = prover
+            .clauses
+            .iter()
+            .find(|c| c.rule == "model_complete")
+            .expect("model_complete unit emitted");
+        for sid in &rule_sids {
+            assert!(
+                unit.fact_parents.contains(sid),
+                "completion citation must carry every defining rule sid: {:?}",
+                unit.fact_parents,
+            );
+        }
+
+        // And the loop refutes: the emitted `~grandparent(Alice, Dave)`
+        // resolves against the positive conjecture literal.
+        let (verdict, _steps) = prover.run();
+        assert!(
+            matches!(verdict, RunVerdict::Refutation(_)),
+            "certified negative must close the goal, got {verdict:?}"
+        );
     }
 }

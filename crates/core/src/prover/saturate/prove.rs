@@ -632,6 +632,8 @@ impl ProverLayer {
                  {} arg collapsed (compound), {} arg collapsed (repeated-var), \
                  {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
                  {} budget-or-deadline-overflow / {} undefined-relation\n\
+                 model-complete: {} certified relations, {} negatives emitted, \
+                 blocked: {} skipped-head / {} unstratifiable / {} body-chain / {} role\n\
                  demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
                  {} scans_performed, {} scans_skipped_by_prefilter\n\
                  proof-DAG reach: {} model, {} model_join, {} rule_join, \
@@ -672,6 +674,12 @@ impl ProverLayer {
                 prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
                 prover.stats.model_budget_or_deadline_overflows,
                 prover.stats.model_undefined_relation,
+                prover.stats.model_certified_relations,
+                prover.stats.model_complete_negatives_emitted,
+                prover.stats.model_cert_blocked_skipped_head,
+                prover.stats.model_cert_blocked_unstratifiable,
+                prover.stats.model_cert_blocked_body_chain,
+                prover.stats.model_cert_blocked_role,
                 prover.stats.demod_rewrite_attempts, prover.stats.demod_rewrites_applied,
                 prover.stats.demod_dup_hits,
                 prover.stats.demod_scans_performed,

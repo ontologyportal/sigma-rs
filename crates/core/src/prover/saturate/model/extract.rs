@@ -28,7 +28,7 @@
 // NOTE: written under a tooling outage and not yet compiled/tested — the build
 // + reproduction tests are the Phase-3 gate and run before this is relied on.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::semantics::roles::TaxonomyRoles;
 use crate::syntactic::SyntacticLayer;
@@ -187,6 +187,32 @@ fn horn_rule_of_or(
     }
 }
 
+/// Everything one extraction scan recovers: the Horn program, the clausal
+/// arm's skip statistics, and the SKIPPED-HEAD bookkeeping the completion
+/// certifier (`super::certify`) consumes.  A relation appearing in
+/// `skipped_heads` has a potential definition the program did NOT capture,
+/// so model-absence says nothing about it — it must never be
+/// completion-certified.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Extraction {
+    pub(crate) program: Program,
+    pub(crate) stats:   ExtractStats,
+    /// Relations a SKIPPED root might still derive atoms of:
+    ///   * skipped `(=> ant con)` → the head positions of `con`'s subtree
+    ///     (just `con`'s head when it is a flat atom);
+    ///   * skipped `(or …)` → every positive literal's head (a negated
+    ///     flat-atom disjunct derives nothing positively);
+    ///   * skipped `(not <flat atom>)` → nothing (a denial);
+    ///   * every OTHER skipped shape (`<=>`, quantified, `and`-roots,
+    ///     non-Datalog facts, malformed) → EVERY symbol in head position
+    ///     anywhere in the sentence — erring toward NOT certifying.
+    pub(crate) skipped_heads: HashSet<SymbolId>,
+    /// A skipped root had a VARIABLE in head position (a predicate-variable
+    /// shape like `(?REL a b)`): such a root could derive atoms of ANY
+    /// relation, so certification must be refused wholesale.
+    pub(crate) wildcard_skip: bool,
+}
+
 /// Extract the Horn / definite fragment of the stored axioms as a Datalog(¬)
 /// program: implication-shaped roots become rules, ground symbol atoms become
 /// EDB facts, and (Milestone C) clausal `(or …)` roots with exactly one
@@ -200,59 +226,59 @@ fn horn_rule_of_or(
 /// structure beyond the implicit top-level `forall` already stripped at
 /// ingest) are skipped — they remain for resolution.
 pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
-    let (p, _) = extract_horn_program_stats(syn);
-    p
+    extract_horn_program_full(syn).program
 }
 
 /// As [`extract_horn_program`], but also returns the [`ExtractStats`]
 /// breakdown of the clausal arm's skip reasons (SIGMA_STATS-style
 /// instrumentation; zero effect on the returned program).
 pub(crate) fn extract_horn_program_stats(syn: &SyntacticLayer) -> (Program, ExtractStats) {
-    let mut p = Program::default();
-    let mut stats = ExtractStats::default();
+    let ex = extract_horn_program_full(syn);
+    (ex.program, ex.stats)
+}
+
+/// The full extraction: program + stats + the skipped-head set for the
+/// completion certifier.  See [`Extraction`].
+pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
+    let mut ex = Extraction::default();
 
     for root in syn.root_sids() {
         let Some(s) = syn.sentence(root) else { continue };
         match s.op() {
             // Rule: (=> ant con)
             Some(&OpKind::Implies) if s.elements.len() == 3 => {
-                let (Some(ant_id), Some(con_id)) = (sub(&s.elements[1]), sub(&s.elements[2]))
-                    else { continue };
-                let (Some(ant), Some(con)) = (syn.sentence(ant_id), syn.sentence(con_id))
-                    else { continue };
-
-                // Head must be a (positive) symbol-headed atom.
-                if con.op().is_some() {
-                    continue; // disjunctive / negative / equality head: not definite
-                }
-                let mut vars: HashMap<SymbolId, u32> = HashMap::new();
-
-                // Body literals (process first so positive body vars index low).
-                let body_ids: Vec<SentenceId> = if ant.op() == Some(&OpKind::And) {
-                    ant.elements[1..].iter().filter_map(sub).collect()
-                } else {
-                    vec![ant_id]
-                };
-                let mut body = Vec::with_capacity(body_ids.len());
-                let mut ok = true;
-                for bid in body_ids {
-                    match literal_of(syn, bid, &mut vars) {
-                        Some(l) => body.push(l),
-                        None => { ok = false; break; }
+                match implies_rule(syn, root, &s) {
+                    Some(rule) => ex.program.rules.push(rule),
+                    None => {
+                        // Certification bookkeeping (a): this skipped root
+                        // could derive atoms of its consequent — collect the
+                        // consequent subtree's head positions (for a flat
+                        // atom that is exactly its head; for a complex
+                        // consequent, everything head-positioned inside it).
+                        match sub(&s.elements[2]) {
+                            Some(cid) => {
+                                ex.wildcard_skip |=
+                                    collect_head_positions(syn, cid, &mut ex.skipped_heads);
+                            }
+                            None => {
+                                ex.wildcard_skip |=
+                                    collect_head_positions(syn, root, &mut ex.skipped_heads);
+                            }
+                        }
                     }
                 }
-                if !ok {
-                    continue;
-                }
-                let Some((head, _)) = atom_of(&con, &mut vars) else { continue };
-                p.rules.push(Rule { head, body, sid: Some(root) });
             }
             // Clause: (or l1 … lk) — CNF input / clausified FOF.  Exactly one
             // positive symbol-headed literal ⇒ a Horn rule (see
             // `horn_rule_of_or`); all-negative or ≥2-positive are skipped.
             Some(&OpKind::Or) if s.elements.len() >= 2 => {
-                if let Some(rule) = horn_rule_of_or(syn, root, &s, &mut stats) {
-                    p.rules.push(rule);
+                match horn_rule_of_or(syn, root, &s, &mut ex.stats) {
+                    Some(rule) => ex.program.rules.push(rule),
+                    None => {
+                        // Certification bookkeeping (a): every POSITIVE
+                        // disjunct's head could be derived by this clause.
+                        collect_or_positive_heads(syn, root, &s, &mut ex);
+                    }
                 }
             }
             // A single-literal negative clause `(not (rel c1 … ck))` — ground
@@ -263,26 +289,180 @@ pub(crate) fn extract_horn_program_stats(syn: &SyntacticLayer) -> (Program, Extr
             // facts in Datalog(¬)) and not a rule — a denial/goal shape.
             // Left for resolution.
             Some(&OpKind::Not) if s.elements.len() == 2 => {
-                stats.negative_unit_skipped += 1;
+                ex.stats.negative_unit_skipped += 1;
+                // A negated FLAT atom derives nothing positively (a pure
+                // denial).  Any more complex inner shape could (classically
+                // `¬(p ⇒ q) ⊨ p`) — conservative collection.
+                match sub(&s.elements[1]).and_then(|i| syn.sentence(i)) {
+                    Some(inner) if inner.op().is_none() && inner.head_symbol().is_some() => {}
+                    _ => {
+                        ex.wildcard_skip |=
+                            collect_head_positions(syn, root, &mut ex.skipped_heads);
+                    }
+                }
             }
             // Fact: a ground symbol-headed atom.
             None => {
                 let mut vars = HashMap::new();
-                if let Some((atom, true)) = atom_of(&s, &mut vars) {
-                    let tuple: Vec<SymbolId> = atom.args.iter().filter_map(|a| match a {
-                        DTerm::Const(c) => Some(*c),
-                        DTerm::Var(_) => None,
-                    }).collect();
-                    if tuple.len() == atom.args.len() {
-                        p.fact_src(atom.pred, tuple, root);
+                match atom_of(&s, &mut vars) {
+                    Some((atom, true)) => {
+                        let tuple: Vec<SymbolId> = atom.args.iter().filter_map(|a| match a {
+                            DTerm::Const(c) => Some(*c),
+                            DTerm::Var(_) => None,
+                        }).collect();
+                        if tuple.len() == atom.args.len() {
+                            ex.program.fact_src(atom.pred, tuple, root);
+                        } else {
+                            // Unreachable when ground, but stay conservative.
+                            if let Some(h) = s.head_symbol() {
+                                ex.skipped_heads.insert(h);
+                            }
+                        }
                     }
+                    // A non-ground atom root (`(p ?X)` asserts p of
+                    // everything) or one with a compound / literal argument
+                    // the model cannot represent: p's definition escapes
+                    // the program — certification bookkeeping (a).
+                    _ => match s.head_symbol() {
+                        Some(h) => { ex.skipped_heads.insert(h); }
+                        None => {
+                            ex.wildcard_skip |=
+                                collect_head_positions(syn, root, &mut ex.skipped_heads);
+                        }
+                    },
                 }
             }
-            _ => {}
+            // Every other root shape (`<=>`, quantified, `and`-roots,
+            // malformed operator arities): nothing is extracted, and the
+            // sentence could derive atoms of anything head-positioned in it
+            // — conservative collection (certification bookkeeping (a)).
+            _ => {
+                ex.wildcard_skip |= collect_head_positions(syn, root, &mut ex.skipped_heads);
+            }
         }
     }
 
-    (p, stats)
+    ex
+}
+
+/// The `(=> ant con)` extraction arm of [`extract_horn_program_full`],
+/// factored out so a failed extraction (`None`) can funnel into the
+/// skipped-head bookkeeping.  Byte-identical logic to the historical
+/// inline arm.
+fn implies_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<Rule> {
+    let (ant_id, con_id) = (sub(&s.elements[1])?, sub(&s.elements[2])?);
+    let (ant, con) = (syn.sentence(ant_id)?, syn.sentence(con_id)?);
+
+    // Head must be a (positive) symbol-headed atom.
+    if con.op().is_some() {
+        return None; // disjunctive / negative / equality head: not definite
+    }
+    let mut vars: HashMap<SymbolId, u32> = HashMap::new();
+
+    // Body literals (process first so positive body vars index low).
+    let body_ids: Vec<SentenceId> = if ant.op() == Some(&OpKind::And) {
+        ant.elements[1..].iter().filter_map(sub).collect()
+    } else {
+        vec![ant_id]
+    };
+    let mut body = Vec::with_capacity(body_ids.len());
+    for bid in body_ids {
+        body.push(literal_of(syn, bid, &mut vars)?);
+    }
+    let (head, _) = atom_of(&con, &mut vars)?;
+    Some(Rule { head, body, sid: Some(root) })
+}
+
+/// Skipped-`(or …)` head bookkeeping: collect the head of every POSITIVE
+/// disjunct (a negated flat-atom disjunct derives nothing positively).
+/// Falls back to whole-root [`collect_head_positions`] on any disjunct
+/// whose shape is not a (possibly negated) flat symbol-headed atom.
+fn collect_or_positive_heads(
+    syn:  &SyntacticLayer,
+    root: SentenceId,
+    s:    &Sentence,
+    ex:   &mut Extraction,
+) {
+    for el in &s.elements[1..] {
+        match el {
+            Element::Sub(lid) => {
+                let Some(lit) = syn.sentence(*lid) else {
+                    ex.wildcard_skip |=
+                        collect_head_positions(syn, root, &mut ex.skipped_heads);
+                    return;
+                };
+                if lit.op() == Some(&OpKind::Not) && lit.elements.len() == 2 {
+                    // Negative disjunct: nothing derivable — unless the
+                    // negated body is itself complex.
+                    match sub(&lit.elements[1]).and_then(|i| syn.sentence(i)) {
+                        Some(inner) if inner.op().is_none()
+                            && inner.head_symbol().is_some() => {}
+                        _ => {
+                            ex.wildcard_skip |=
+                                collect_head_positions(syn, *lid, &mut ex.skipped_heads);
+                        }
+                    }
+                } else if let Some(h) = lit.head_symbol() {
+                    ex.skipped_heads.insert(h); // positive literal's head
+                } else {
+                    ex.wildcard_skip |=
+                        collect_head_positions(syn, *lid, &mut ex.skipped_heads);
+                }
+            }
+            // A bare-symbol disjunct is a positive nullary atom.
+            Element::Symbol(sym) => { ex.skipped_heads.insert(sym.id()); }
+            // Variable / literal / operator disjuncts: unrecognizable —
+            // whole-root conservative collection.
+            _ => {
+                ex.wildcard_skip |=
+                    collect_head_positions(syn, root, &mut ex.skipped_heads);
+                return;
+            }
+        }
+    }
+}
+
+/// Walk a sentence subtree collecting every symbol in HEAD position (the
+/// predicate seat of any sub-sentence) — the conservative potential-head
+/// set for a skipped root of unrecognized shape.  Quantifier variable
+/// lists (`(forall (?X ?Y) …)`) are NOT descended into — they are binder
+/// syntax, not applied atoms.  Returns `true` when a real head position
+/// holds a VARIABLE (a predicate-variable application like `(?REL a b)`):
+/// such a sentence could derive atoms of ANY relation, and the caller
+/// must poison certification wholesale.
+fn collect_head_positions(
+    syn:  &SyntacticLayer,
+    root: SentenceId,
+    out:  &mut HashSet<SymbolId>,
+) -> bool {
+    let mut var_head = false;
+    let mut seen: HashSet<SentenceId> = HashSet::new();
+    let mut stack: Vec<SentenceId> = vec![root];
+    while let Some(sid) = stack.pop() {
+        if !seen.insert(sid) {
+            continue;
+        }
+        let Some(s) = syn.sentence(sid) else { continue };
+        match s.elements.first() {
+            Some(Element::Symbol(sym)) => { out.insert(sym.id()); }
+            Some(Element::Variable { .. }) => var_head = true,
+            _ => {}
+        }
+        // Skip a quantifier's variable-list element (elements[1]).
+        let skip_from = match s.op() {
+            Some(&OpKind::ForAll) | Some(&OpKind::Exists) => 2,
+            _ => 0,
+        };
+        for (i, el) in s.elements.iter().enumerate() {
+            if i < skip_from && i == 1 {
+                continue;
+            }
+            if let Element::Sub(sub_id) = el {
+                stack.push(*sub_id);
+            }
+        }
+    }
+    var_head
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +872,91 @@ mod tests {
 
         // At least one ground fact from the unit clauses (`lives(agatha)`).
         assert!(p.edb.get(&s("lives")).is_some_and(|rows| rows.contains(&vec![s("agatha")])));
+    }
+
+    // -- Certification bookkeeping: the skipped-head set -------------------
+
+    // A skipped non-Horn or-clause collects EVERY positive literal's head —
+    // and only those (a negated flat-atom disjunct derives nothing
+    // positively).
+    #[test]
+    fn skipped_or_root_collects_positive_heads_only() {
+        let sem = tptp_layer(
+            "cnf(butler_hates_poor, axiom, \
+                ( ~ lives(X) | richer(X,agatha) | hates(butler,X) ) ).\n",
+            "skip_heads.p",
+        );
+        let ex = extract_horn_program_full(&sem.syntactic);
+        assert!(ex.skipped_heads.contains(&s("richer")));
+        assert!(ex.skipped_heads.contains(&s("hates")));
+        assert!(
+            !ex.skipped_heads.contains(&s("lives")),
+            "a negated disjunct derives nothing positively"
+        );
+        assert!(!ex.wildcard_skip);
+    }
+
+    // An all-negative (denial-shaped) clause and a ground negative unit
+    // collect NO skipped heads; a fully-extracted KB collects none either.
+    #[test]
+    fn denial_shapes_and_extracted_roots_collect_no_heads() {
+        let sem = tptp_layer(
+            "cnf(different_hates, axiom, ( ~ hates(agatha,X) | ~ hates(charles,X) ) ).\n\
+             cnf(killer_hates_victim, axiom, ( ~ killed(X,Y) | hates(X,Y) ) ).\n\
+             cnf(fact1, axiom, killed(agatha,agatha) ).\n\
+             cnf(not_rich, axiom, ~ richer(agatha,butler) ).\n",
+            "no_skip_heads.p",
+        );
+        let ex = extract_horn_program_full(&sem.syntactic);
+        assert!(
+            ex.skipped_heads.is_empty(),
+            "nothing derivable escaped extraction: {:?}",
+            ex.skipped_heads
+        );
+        assert!(!ex.wildcard_skip);
+        assert_eq!(ex.stats.or_rules, 1, "the Horn clause still extracts");
+    }
+
+    // A skipped `(=> ant con)` collects the consequent's head (a compound
+    // argument blocked the head atom), NOT the antecedent relations.
+    #[test]
+    fn skipped_implies_collects_consequent_head_only() {
+        let kif = "(=> (relative ?X ?Y) (grandparent ?X (MotherFn ?Y)))\n";
+        let sem = kif_layer(kif);
+        let ex = extract_horn_program_full(&sem.syntactic);
+        assert!(ex.skipped_heads.contains(&s("grandparent")));
+        assert!(
+            !ex.skipped_heads.contains(&s("relative")),
+            "an antecedent-only relation is not derivable from this root"
+        );
+        assert!(ex.program.rules.is_empty());
+    }
+
+    // A fact root the EDB cannot represent (a literal argument) collects
+    // its own head — the relation's extension escapes the program.
+    #[test]
+    fn non_datalog_fact_root_collects_its_head() {
+        let sem = kif_layer("(age Bob 40)\n(parent Alice Bob)\n");
+        let ex = extract_horn_program_full(&sem.syntactic);
+        assert!(ex.skipped_heads.contains(&s("age")));
+        assert!(!ex.skipped_heads.contains(&s("parent")), "the clean fact extracted");
+        assert!(ex.program.edb.contains_key(&s("parent")));
+        assert!(!ex.program.edb.contains_key(&s("age")));
+    }
+
+    // An unrecognized root shape (an `exists` root) conservatively collects
+    // every symbol in head position — and the quantifier's variable LIST is
+    // binder syntax, not a predicate-variable application, so it must NOT
+    // trip the wildcard poison.
+    #[test]
+    fn quantified_root_collects_heads_without_wildcard_poison() {
+        let sem = kif_layer("(exists (?X) (secretFriend ?X Bob))\n");
+        let ex = extract_horn_program_full(&sem.syntactic);
+        assert!(ex.skipped_heads.contains(&s("secretFriend")));
+        assert!(
+            !ex.wildcard_skip,
+            "a quantifier variable list is not a predicate-variable head"
+        );
     }
 
     // -- KIF suite regression guard: the new or-arm must not fire on the

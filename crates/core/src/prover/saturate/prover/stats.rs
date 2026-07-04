@@ -119,6 +119,19 @@ pub(crate) struct ProverStats {
     /// through `evaluate_within`, not attempted here.
     pub(crate) model_budget_or_deadline_overflows: u64,
     pub(crate) model_undefined_relation: u64,
+    /// Relations COMPLETION-CERTIFIED by the model registry (a KB-level
+    /// property recorded once per run when SIGMA_MODEL is on, not a
+    /// counter — see `ModelProgram::certified`).
+    pub(crate) model_certified_relations: u64,
+    /// Negative ground units emitted by the Clark-completion discharge
+    /// (rule tag `model_complete`).
+    pub(crate) model_complete_negatives_emitted: u64,
+    /// Certification refusals by reason, copied from the registry's
+    /// build-time `CertBlocked` breakdown when SIGMA_MODEL is on.
+    pub(crate) model_cert_blocked_skipped_head: u64,
+    pub(crate) model_cert_blocked_unstratifiable: u64,
+    pub(crate) model_cert_blocked_body_chain: u64,
+    pub(crate) model_cert_blocked_role: u64,
 
     // -- forward-demodulation duplicate-hit probe (Part 2; only active when
     //    Strategy.demod is on).
