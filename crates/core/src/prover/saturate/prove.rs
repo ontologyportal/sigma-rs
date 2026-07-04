@@ -720,6 +720,13 @@ impl ProverLayer {
                     prover.stats.bwd_demod_retired,
                     prover.stats.bwd_demod_cap_hits));
             }
+            // Rigid-conflict (EGD inconsistency) line only when one occurred:
+            // default-path SIGMA_STATS output stays byte-identical.
+            if prover.stats.model_rigid_conflicts > 0 {
+                raw.push_str(&format!(
+                    "\nmodel-egd: {} rigid_conflicts (evaluation aborted Inconsistent)",
+                    prover.stats.model_rigid_conflicts));
+            }
             // Subsumption feature-vector prefilter line only when
             // subsumption is on (KIF default has it off): default-path
             // SIGMA_STATS output stays byte-identical.

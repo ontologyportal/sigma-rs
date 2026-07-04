@@ -113,7 +113,18 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
     }
     let mut clusters = Vec::new();
     for (_, cpreds) in by_root {
-        let mut program = Program::default();
+        let mut program = Program {
+            egds: prog.egds.iter().filter(|e| cpreds.contains(&e.rel)).cloned().collect(),
+            builtin_transitive: prog
+                .builtin_transitive
+                .iter()
+                .filter(|(r, _)| cpreds.contains(r))
+                .map(|(r, s)| (*r, *s))
+                .collect(),
+            rigid: prog.rigid.clone(),
+            instance_pred: prog.instance_pred,
+            ..Program::default()
+        };
         for (p, facts) in &prog.edb {
             if cpreds.contains(p) {
                 program.edb.insert(*p, facts.clone());
@@ -162,9 +173,23 @@ pub(crate) fn dependency_cone(prog: &Program, seed: &HashSet<Pred>) -> HashSet<P
 
 /// Restrict a program to a predicate set: keep rules whose head is in `preds`
 /// (their bodies are guaranteed in-set when `preds` is a dependency cone) and
-/// EDB facts for in-set predicates.
+/// EDB facts for in-set predicates.  EGDs / builtin-closure markings follow
+/// their relation into the scope; the rigid set and instance-pred anchor are
+/// copied wholesale (an out-of-scope `instance` relation simply leaves
+/// guarded EGDs unable to verify — they under-fire, soundly).
 pub(crate) fn scope_program(prog: &Program, preds: &HashSet<Pred>) -> Program {
-    let mut p = Program::default();
+    let mut p = Program {
+        egds: prog.egds.iter().filter(|e| preds.contains(&e.rel)).cloned().collect(),
+        builtin_transitive: prog
+            .builtin_transitive
+            .iter()
+            .filter(|(r, _)| preds.contains(r))
+            .map(|(r, s)| (*r, *s))
+            .collect(),
+        rigid: prog.rigid.clone(),
+        instance_pred: prog.instance_pred,
+        ..Program::default()
+    };
     for (pred, facts) in &prog.edb {
         if preds.contains(pred) {
             p.edb.insert(*pred, facts.clone());
@@ -198,6 +223,10 @@ pub(crate) fn positive_program(prog: &Program) -> Program {
         rules:    Vec::new(),
         edb:      prog.edb.clone(),
         edb_sids: prog.edb_sids.clone(),
+        egds:     prog.egds.clone(),
+        builtin_transitive: prog.builtin_transitive.clone(),
+        rigid:    prog.rigid.clone(),
+        instance_pred: prog.instance_pred,
     };
     for r in &prog.rules {
         if r.body.iter().all(|l| !l.negated) {

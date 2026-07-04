@@ -44,6 +44,7 @@ fn head_of(layer: &ProverLayer, lit: &PLit) -> String {
 #[test]
 fn model_registry_builds_and_caches() {
     use crate::types::Symbol;
+    use super::model::DTerm;
     // `(instance subclass TransitiveRelation)` licenses subclass
     // transitivity by DERIVATION (no conventional seed).
     let kif = "(subclass RoadVehicle LandVehicle)\n\
@@ -67,10 +68,25 @@ fn model_registry_builds_and_caches() {
     let has = |p: &str, a: &str, b: &str|
         m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));
     assert!(has("instance", "Bus1", "Vehicle"), "instance closure climbs subclass");
-    assert!(has("subclass", "RoadVehicle", "Vehicle"), "subclass transitive (DERIVED from declaration)");
+    // Task #32 Part 2: `subclass` is transitive by DERIVATION, so it becomes
+    // a BUILT-IN closure — the model materializes only its BASE edges (the
+    // `instance` assertion above proves the closure still RESOLVES through
+    // the built-in BFS inside the bridge rule), and the demand-scoped answer
+    // path closes goal literals over it.
+    let sub = Symbol::hash_name("subclass");
+    assert!(
+        !has("subclass", "RoadVehicle", "Vehicle"),
+        "builtin subclass closure is not materialized"
+    );
+    let rows = mp
+        .answer(sub, &[DTerm::Const(Symbol::hash_name("RoadVehicle")), DTerm::Var(0)], None)
+        .expect("subclass answers");
+    assert!(
+        rows.contains(&tuple("RoadVehicle", "Vehicle")),
+        "goal-side builtin closure answers the transitive pair: {rows:?}"
+    );
 
     // The taxonomy predicates are clustered together.
-    let sub = Symbol::hash_name("subclass");
     assert!(mp.clusters.iter().any(|c| c.preds.contains(&sub)), "subclass clustered");
 }
 

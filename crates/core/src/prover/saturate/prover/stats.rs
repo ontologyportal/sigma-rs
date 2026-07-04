@@ -147,6 +147,10 @@ pub(crate) struct ProverStats {
     pub(crate) model_cert_blocked_unstratifiable: u64,
     pub(crate) model_cert_blocked_body_chain: u64,
     pub(crate) model_cert_blocked_role: u64,
+    /// Model evaluations aborted by `ModelError::Inconsistent`: an EGD
+    /// forced a union of two distinct rigid (numeric-literal) symbols.
+    /// Printed in SIGMA_STATS only when nonzero (default output unchanged).
+    pub(crate) model_rigid_conflicts: u64,
 
     // -- forward-demodulation duplicate-hit probe (Part 2; only active when
     //    Strategy.demod is on).

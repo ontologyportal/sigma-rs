@@ -655,6 +655,278 @@ pub(crate) fn collect_denials(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Ve
     out
 }
 
+// ---------------------------------------------------------------------------
+// EGDs — equality-generating dependencies (task #32, seminaive package).
+// ---------------------------------------------------------------------------
+//
+// A binary FD-style uniqueness constraint on a relation: `R`'s `val_pos`
+// argument is functionally determined by its `key_pos` argument.  Mined from
+// the same two axiom families the prover's FD congruence recognizes
+// (`mine_fd_relations` in `prover/mod.rs` — shape logic mirrored here, not
+// imported: extraction works on stored ROOTS, the miner on clauses, and the
+// layer direction forbids the import):
+//
+//   1. uniqueness clauses, both stored shapes:
+//        `(=> (and (R u v1) (R u v2) [guards…]) (equal v1 v2))`
+//        `(or (not (R u v1)) (not (R u v2)) [(not guard)…] (equal v1 v2))`
+//      where guards are instance-typing conjuncts `(instance x C)` over the
+//      key / equated variables ONLY (anything else skips the sentence);
+//   2. `(instance R SingleValuedRelation)` declarations — arg1 determines
+//      arg2, unguarded.
+//
+// The kernel fires an EGD when two stored tuples share the key value with
+// distinct value reps: it UNIONS the two values in the evaluation's equality
+// classes (`seminaive::EqClasses`), recording the justification edge.
+
+/// One mined EGD.  `key_pos` / `val_pos` are 0-based positions into the
+/// model [`Tuple`] (the argument vector — note the spec text's `key_pos=1,
+/// val_pos=2` figures are the 1-based FdDecl argument-numbering convention;
+/// tuples here carry no relation seat, so the same positions are 0/1).
+///
+/// DESIGN DELTA (soundness): the spec's `Egd` had no guard fields and said
+/// to IGNORE instance-typing guards.  Ignoring a guard applies the FD to
+/// keys/values outside the guarded class — merges the KB does not entail
+/// (TQG14's `part` axiom guarded by `AtomicNucleus` would merge parts of
+/// arbitrary wholes).  Instead the guards are KEPT and enforced at fire
+/// time against the store's current `instance` facts — an
+/// under-approximation of the instance closure, so the EGD can only
+/// under-fire (sound).  Guards over any variable other than key/v1/v2
+/// still skip the sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Egd {
+    pub rel:        super::Pred,
+    pub key_pos:    u8,
+    pub val_pos:    u8,
+    /// Instance-typing guards on the KEY variable (classes it must belong to).
+    pub key_guards: Vec<SymbolId>,
+    /// Instance-typing guards on the equated VALUE variables (the axiom
+    /// constrains both symmetrically; asymmetric guards skip the sentence).
+    pub val_guards: Vec<SymbolId>,
+    /// The declaring root — the uniqueness clause / `SingleValuedRelation`
+    /// declaration a merge cites.
+    pub sid:        Option<SentenceId>,
+}
+
+/// One (possibly negated) literal of a candidate uniqueness sentence,
+/// classified: a binary same-relation atom over two variables, an
+/// instance-typing guard, or the positive `(equal v1 v2)` head.
+enum UniqLit {
+    /// `(R ?x ?y)` — (rel, arg1 var, arg2 var).
+    Rel(SymbolId, SymbolId, SymbolId),
+    /// `(instance ?x C)` — (var, class).
+    Guard(SymbolId, SymbolId),
+    /// `(equal ?a ?b)` — (a, b).
+    Equal(SymbolId, SymbolId),
+}
+
+/// Classify one flat sentence as a [`UniqLit`] body atom (rel atom or
+/// instance guard).  `None` for any other shape.
+fn uniq_body_atom(s: &Sentence, instance: SymbolId) -> Option<UniqLit> {
+    if s.elements.len() != 3 {
+        return None;
+    }
+    let Some(Element::Symbol(h)) = s.elements.first() else { return None };
+    match (&s.elements[1], &s.elements[2]) {
+        (Element::Variable { id: x, .. }, Element::Symbol(class)) if h.id() == instance => {
+            Some(UniqLit::Guard(*x, class.id()))
+        }
+        (Element::Variable { id: x, .. }, Element::Variable { id: y, .. }) => {
+            Some(UniqLit::Rel(h.id(), *x, *y))
+        }
+        _ => None,
+    }
+}
+
+/// Classify a flat sentence as the positive equality head `(equal ?a ?b)`.
+fn uniq_equal(s: &Sentence) -> Option<UniqLit> {
+    if s.elements.len() != 3 || !matches!(s.elements.first(), Some(Element::Op(OpKind::Equal))) {
+        return None;
+    }
+    let (Element::Variable { id: a, .. }, Element::Variable { id: b, .. }) =
+        (&s.elements[1], &s.elements[2]) else { return None };
+    (a != b).then_some(UniqLit::Equal(*a, *b))
+}
+
+/// Orient a classified uniqueness sentence into an [`Egd`]: exactly two
+/// same-relation binary atoms sharing a key variable at one position with
+/// the equated pair at the other, guards only over key / equated variables,
+/// and symmetric guard sets on the two equated sides.  Mirrors
+/// `mine_fd_relations`' orientation logic exactly.
+fn orient_egd(lits: Vec<UniqLit>, root: SentenceId) -> Option<Egd> {
+    let mut rel_atoms: Vec<(SymbolId, SymbolId, SymbolId)> = Vec::new();
+    let mut guards: Vec<(SymbolId, SymbolId)> = Vec::new();
+    let mut eq: Option<(SymbolId, SymbolId)> = None;
+    for l in lits {
+        match l {
+            UniqLit::Rel(r, x, y) => rel_atoms.push((r, x, y)),
+            UniqLit::Guard(v, c) => guards.push((v, c)),
+            UniqLit::Equal(a, b) => {
+                if eq.is_some() {
+                    return None; // two equality heads: not this shape
+                }
+                eq = Some((a, b));
+            }
+        }
+    }
+    let (va, vb) = eq?;
+    if rel_atoms.len() != 2 || rel_atoms[0].0 != rel_atoms[1].0 {
+        return None;
+    }
+    let rel = rel_atoms[0].0;
+    let ((_, x1, y1), (_, x2, y2)) = (rel_atoms[0], rel_atoms[1]);
+    let (key_pos, val_pos, key_var) = if x1 == x2 && [y1, y2].contains(&va) && [y1, y2].contains(&vb) {
+        (0u8, 1u8, x1)
+    } else if y1 == y2 && [x1, x2].contains(&va) && [x1, x2].contains(&vb) {
+        (1u8, 0u8, y1)
+    } else {
+        return None;
+    };
+    let key_guards: Vec<SymbolId> =
+        guards.iter().filter(|(v, _)| *v == key_var).map(|(_, c)| *c).collect();
+    let val_guards_a: Vec<SymbolId> =
+        guards.iter().filter(|(v, _)| *v == va).map(|(_, c)| *c).collect();
+    let val_guards_b: Vec<SymbolId> =
+        guards.iter().filter(|(v, _)| *v == vb).map(|(_, c)| *c).collect();
+    // Sound only when both equated sides carry the SAME guard set.
+    let mut ga = val_guards_a.clone();
+    ga.sort_unstable();
+    let mut gb = val_guards_b;
+    gb.sort_unstable();
+    if ga != gb {
+        return None;
+    }
+    // Guards on unrelated variables make the axiom more restrictive than
+    // this check — skip the sentence.
+    if guards.iter().any(|(v, _)| *v != key_var && *v != va && *v != vb) {
+        return None;
+    }
+    Some(Egd { rel, key_pos, val_pos, key_guards, val_guards: val_guards_a, sid: Some(root) })
+}
+
+/// Scan the store for EGD-shaped axioms (see the module note above):
+/// uniqueness clauses in both stored shapes, plus
+/// `(instance R SingleValuedRelation)` declarations.
+pub(crate) fn collect_egds(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<Egd> {
+    let mut out: Vec<Egd> = Vec::new();
+    let single_valued = crate::types::Symbol::hash_name("SingleValuedRelation");
+
+    // -- Declaration form (keyed like the miner: arg1 determines arg2).
+    for sid in syn.by_head_id(&roles.instance) {
+        if let Some((r, c)) = binary_syms(syn, sid) {
+            if c == single_valued {
+                out.push(Egd {
+                    rel: r, key_pos: 0, val_pos: 1,
+                    key_guards: Vec::new(), val_guards: Vec::new(),
+                    sid: Some(sid),
+                });
+            }
+        }
+    }
+
+    // -- Uniqueness-clause forms.
+    for root in syn.root_sids() {
+        let Some(s) = syn.sentence(root) else { continue };
+        let lits: Option<Vec<UniqLit>> = match s.op() {
+            // (=> (and B1 … Bn) (equal v1 v2))
+            Some(&OpKind::Implies) if s.elements.len() == 3 => (|| {
+                let ant = syn.sentence(sub(&s.elements[1])?)?;
+                let con = syn.sentence(sub(&s.elements[2])?)?;
+                let head = uniq_equal(&con)?;
+                let body_ids: Vec<SentenceId> = if ant.op() == Some(&OpKind::And) {
+                    ant.elements[1..].iter().filter_map(sub).collect()
+                } else {
+                    vec![sub(&s.elements[1])?]
+                };
+                let mut lits = Vec::with_capacity(body_ids.len() + 1);
+                for bid in body_ids {
+                    let bs = syn.sentence(bid)?;
+                    lits.push(uniq_body_atom(&bs, roles.instance)?);
+                }
+                lits.push(head);
+                Some(lits)
+            })(),
+            // (or (not B1) … (not Bn) (equal v1 v2))
+            Some(&OpKind::Or) if s.elements.len() >= 3 => (|| {
+                let mut lits = Vec::with_capacity(s.elements.len() - 1);
+                for el in &s.elements[1..] {
+                    let lid = sub(el)?;
+                    let lit = syn.sentence(lid)?;
+                    if lit.op() == Some(&OpKind::Not) && lit.elements.len() == 2 {
+                        let inner = syn.sentence(sub(&lit.elements[1])?)?;
+                        lits.push(uniq_body_atom(&inner, roles.instance)?);
+                    } else {
+                        lits.push(uniq_equal(&lit)?);
+                    }
+                }
+                Some(lits)
+            })(),
+            _ => None,
+        };
+        // Mirror the miner's literal-count window (2 rel atoms + guards + eq).
+        if let Some(lits) = lits {
+            if (3..=8).contains(&lits.len()) {
+                if let Some(egd) = orient_egd(lits, root) {
+                    out.push(egd);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The KIF numeric-literal shape at the symbol level (mirrors
+/// `parse::kif::tokenizer::is_numeric`, which is private to the tokenizer):
+/// optional leading `-`, ASCII digits, at most one `.`.
+pub(crate) fn symbol_is_numeric(name: &str) -> bool {
+    let s = name.strip_prefix('-').unwrap_or(name);
+    if s.is_empty() {
+        return false;
+    }
+    let mut has_dot = false;
+    for ch in s.chars() {
+        if ch == '.' {
+            if has_dot {
+                return false;
+            }
+            has_dot = true;
+        } else if !ch.is_ascii_digit() {
+            return false;
+        }
+    }
+    true
+}
+
+/// RIGID symbols of a program: constants whose interned name is a numeric
+/// literal.  Two distinct rigid symbols denote distinct values, so an EGD
+/// union over them is an inconsistency (`ModelError::Inconsistent`), never a
+/// merge.  (Numeric tokens normally parse to `Element::Literal` and never
+/// enter the model at all — this catches dialects/fixtures that intern
+/// numeric-shaped names as symbols.)
+pub(crate) fn collect_rigid(
+    program: &Program,
+    syn:     &SyntacticLayer,
+) -> crate::prover::saturate::hash64::Set64<SymbolId> {
+    let mut universe: HashSet<SymbolId> = HashSet::new();
+    for rows in program.edb.values() {
+        for t in rows {
+            universe.extend(t.iter().copied());
+        }
+    }
+    for r in &program.rules {
+        for a in std::iter::once(&r.head).chain(r.body.iter().map(|l| &l.atom)) {
+            for arg in &a.args {
+                if let DTerm::Const(c) = arg {
+                    universe.insert(*c);
+                }
+            }
+        }
+    }
+    universe
+        .into_iter()
+        .filter(|id| syn.sym_name(*id).is_some_and(|s| symbol_is_numeric(&s.name())))
+        .collect()
+}
+
 /// Derive the relations that bear an algebraic role from an *evaluated* model,
 /// rather than reading declarations directly.  A relation `R` is transitive
 /// iff `(R, TransitiveRelation)` is in the **instance closure** — which already

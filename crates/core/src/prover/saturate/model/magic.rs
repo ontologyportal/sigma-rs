@@ -71,6 +71,12 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
         rules:    Vec::new(),
         edb:      prog.edb.clone(),
         edb_sids: prog.edb_sids.clone(),
+        // EGDs / builtin closures / rigid symbols ride along unchanged: the
+        // magic rewrite narrows DEMAND, not the constraint semantics.
+        egds:     prog.egds.clone(),
+        builtin_transitive: prog.builtin_transitive.clone(),
+        rigid:    prog.rigid.clone(),
+        instance_pred: prog.instance_pred,
     };
 
     // Seed: the demanded bound tuple from the conjecture's constants.
@@ -88,9 +94,13 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
     let mut processed: HashSet<(Pred, u64)> = HashSet::new();
     let mut work: Vec<(Pred, u64)> = vec![(goal_rel, goal_mask)];
 
+    let mtrace = std::env::var_os("SIGMA_MAGIC_TRACE").is_some();
     while let Some((p, pmask)) = work.pop() {
         if !idb.contains(&p) || !processed.insert((p, pmask)) {
             continue;
+        }
+        if mtrace {
+            eprintln!("MAGIC {:#x} = magic({p:#x}, {pmask:#b})", magic_pred(p, pmask));
         }
         for rule in prog.rules.iter().filter(|r| r.head.pred == p) {
             // Bound variables from the head's bound positions.
@@ -104,18 +114,97 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
             }
             let magic_head = Atom { pred: magic_pred(p, pmask), args: bound_args(&rule.head.args, pmask) };
 
-            // Adorned rule: head :- magic_head, body…
+            // BOUND-FIRST SIPS: order the body greedily so each placed
+            // literal has as many bound seats as possible given the head's
+            // bound positions + everything placed before it (reordering a
+            // conjunction is semantics-free).  The old left-to-right SIPS
+            // adorned a literal with an ALL-FREE mask whenever a rule merely
+            // LISTED an unrelated literal first — e.g. Merge.kif's bridge
+            // `(=> (and (subclass ?X ?Y) (instance ?Z ?X)) (instance ?Z ?Y))`
+            // demanded `subclass` (and, through sibling rules, `instance`)
+            // wholesale, materializing the full dense closure the built-in
+            // transitive relations exist to avoid.  A negated literal is
+            // only placed once ALL its variables are bound (safety); an
+            // unsafe leftover keeps source order for the validator to catch.
+            let order: Vec<usize> = {
+                let mut placed: Vec<usize> = Vec::with_capacity(rule.body.len());
+                let mut remaining: Vec<usize> = (0..rule.body.len()).collect();
+                let mut b = bound.clone();
+                while !remaining.is_empty() {
+                    // Score = (all-seats-bound?, #bound seats, NOT a
+                    // right-only-bound builtin, smaller extension, source
+                    // order).  The builtin penalty matters: a builtin
+                    // transitive literal bound only on the RIGHT enumerates
+                    // the seed's DESCENDANT cone (huge for a top class),
+                    // while its sibling literal usually binds the shared
+                    // variable from a far smaller set first — e.g. the
+                    // bridge `instance(Z,y) :- subclass(X,y), instance(Z,X)`
+                    // under a ground goal must probe `instance(subj, X)`
+                    // BEFORE `subclass(X, anc)`, or the demand explodes to
+                    // subj × descendants(anc).
+                    let score = |li: usize| -> Option<(bool, usize, bool, std::cmp::Reverse<usize>)> {
+                        let lit = &rule.body[li];
+                        let seat_bound: Vec<bool> = lit
+                            .atom
+                            .args
+                            .iter()
+                            .map(|a| match a {
+                                DTerm::Const(_) => true,
+                                DTerm::Var(v) => b.contains(v),
+                            })
+                            .collect();
+                        let n = seat_bound.iter().filter(|x| **x).count();
+                        if lit.negated && n < lit.atom.args.len() {
+                            return None; // negated: only when fully bound
+                        }
+                        let builtin_right_only = prog.builtin_transitive.contains_key(&lit.atom.pred)
+                            && seat_bound.len() == 2
+                            && !seat_bound[0]
+                            && seat_bound[1];
+                        // Extension estimate: EDB size for extensional
+                        // relations; an IDB relation's extension is unknown
+                        // and potentially huge — never prefer it on size
+                        // (an empty-EDB derived relation placed first would
+                        // be demanded with an all-free adornment, deriving
+                        // it wholesale).
+                        let ext = if idb.contains(&lit.atom.pred) {
+                            usize::MAX
+                        } else {
+                            prog.edb.get(&lit.atom.pred).map_or(usize::MAX, HashSet::len)
+                        };
+                        Some((n == seat_bound.len(), n, !builtin_right_only, std::cmp::Reverse(ext)))
+                    };
+                    let pick = remaining
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(ri, &li)| score(li).map(|sc| (sc, std::cmp::Reverse(li), ri)))
+                        .max()
+                        .map(|(_, _, ri)| ri)
+                        .unwrap_or(0); // only unsafe negated left: source order
+                    let li = remaining.remove(pick);
+                    for a in &rule.body[li].atom.args {
+                        if let DTerm::Var(v) = a {
+                            b.insert(*v);
+                        }
+                    }
+                    placed.push(li);
+                }
+                placed
+            };
+
+            // Adorned rule: head :- magic_head, body (in SIPS order)…
             let mut new_body = Vec::with_capacity(rule.body.len() + 1);
             new_body.push(Literal { atom: magic_head.clone(), negated: false });
 
-            // Left-to-right SIPS: each IDB body literal gets a magic rule from
-            // the head's magic plus the preceding body literals (prefix).
-            for (j, lit) in rule.body.iter().enumerate() {
+            // Each IDB body literal gets a magic rule from the head's magic
+            // plus the literals PLACED before it (the SIPS prefix).
+            for (j, &li) in order.iter().enumerate() {
+                let lit = &rule.body[li];
                 if !lit.negated && idb.contains(&lit.atom.pred) {
                     let qmask = adornment(&lit.atom.args, &bound);
                     let mut mbody = Vec::with_capacity(j + 1);
                     mbody.push(Literal { atom: magic_head.clone(), negated: false });
-                    mbody.extend(rule.body[..j].iter().cloned());
+                    mbody.extend(order[..j].iter().map(|&pi| rule.body[pi].clone()));
                     // Magic rules are demand bookkeeping, not entailment
                     // steps — they carry no citation of their own (their
                     // matched prefix facts still cite through `parents`).

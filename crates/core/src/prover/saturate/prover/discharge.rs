@@ -828,6 +828,7 @@ impl<'a> NativeProver<'a> {
         self.stats.model_unstratifiable_bails += u64::from(ms.unstratifiable_bails);
         self.stats.model_budget_or_deadline_overflows += u64::from(ms.budget_overflows);
         self.stats.model_undefined_relation += u64::from(ms.undefined_relation);
+        self.stats.model_rigid_conflicts += u64::from(ms.rigid_conflicts);
     }
 
     /// Conjunctive-query goal discharge over the inductive model (gated
