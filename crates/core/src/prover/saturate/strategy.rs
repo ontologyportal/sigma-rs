@@ -236,6 +236,25 @@ pub struct Strategy {
     /// problem base.  `SIGMA_NO_BG_SNAPSHOT` turns it off globally.
     /// Forced off while `goal_dist` is on (see there).
     pub bg_snapshot: bool,
+
+    // -- semantic guidance (E/Vampire-style) ---------------------------------
+
+    /// Semantic clause selection: score each passive clause by the
+    /// fraction of its ground, model-checkable literals that are FALSE
+    /// in the KB's positive model (a clause whose literals are false in
+    /// a model of the background theory is closer to a conflict — the
+    /// classic saturation-prover "avoid true clauses" guidance).  Used
+    /// ONLY as a secondary tie-break within the existing weight/age
+    /// queue discipline — it can reorder the search but never widen or
+    /// narrow it, so it cannot make the prover unsound.  OFF by default;
+    /// `SIGMA_GUIDE=1` opts in globally (see [`Self::from_env`]).  The
+    /// model is built once per run, at [`super::prover::NativeProver::run`]
+    /// start, from [`crate::saturate::caches::model_registry`]'s
+    /// KB-lifetime [`crate::saturate::model::ModelProgram`]; a budget bail
+    /// (`positive_model` returns `None`) disables guidance for the run
+    /// (counted in `ProverStats::guide_disabled_bail`), never treated as
+    /// a hard error.
+    pub semantic_guide: bool,
 }
 
 impl Strategy {
@@ -295,6 +314,7 @@ impl Strategy {
             defcomp_per_sym: 8,
             head_filter: false,
             bg_snapshot: true,
+            semantic_guide: false,
         }
     }
 
@@ -310,6 +330,7 @@ impl Strategy {
         if on("SIGMA_NO_LIU")    { s.liu_rescue = false; s.def_completion = false; }
         if on("SIGMA_HEADFILTER") { s.head_filter = true; }
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
+        if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         s.demod = Self::demod_env_override(s.demod);
         s
     }
@@ -404,9 +425,15 @@ impl Strategy {
                 // A different (non-identity) KBO symbol precedence — the
                 // highest-impact single-axis lever per the sweep notes.
                 prec_seed: 0xA5A5_1234,
-                ..base
+                ..base.clone()
             }
             .named("tptp-precseed"),
+            // `semantic_guide` deliberately has NO lane: measured on the
+            // 100-problem TPTP slice it scored zero clauses (the Horn
+            // extractor sees no `(=> …)` roots in CNF/disjunctive TPTP
+            // input, so the model is empty there) and won zero verdicts —
+            // a slot would only dilute the working lanes' budget.  Revisit
+            // once extraction mines Horn structure from CNF clauses.
         ]
     }
 
@@ -526,6 +553,9 @@ impl Strategy {
             defcomp_per_sym: r.pick(&[4, 8, 16]) as usize,
             head_filter: r.chance(15),
             bg_snapshot: true,
+            // Cheap, reorder-only guidance; sample it like the other
+            // search-shaping switches once the tie-break has proven out.
+            semantic_guide: r.chance(20),
         }
     }
 

@@ -1892,6 +1892,40 @@ fn native_stack_smoke() {
             "schema off must mine nothing: {}", off.raw_output);
     }
 
+    // Semantic clause-selection guidance (Strategy.semantic_guide): the
+    // model sees Dog ⊆ Animal and Fido ∈ Dog, so a clause carrying the
+    // model-FALSE ground literal `(instance Fido Cat)` should be scored
+    // (a non-neutral literal exists — `instance` IS modeled — and the
+    // fact is absent).  Off by default: the identical query with the
+    // knob off must score nothing.
+    #[test]
+    fn semantic_guide_scores_model_false_literals() {
+        let kif = "(subclass Dog Animal)\n\
+                    (instance Fido Dog)\n\
+                    (instance subclass TransitiveRelation)\n\
+                    (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
+                    (=> (instance ?X Cat) (meows ?X))";
+
+        let mut kb_on = kb_from(kif);
+        let mut opts_on = fast();
+        opts_on.strategy = crate::saturate::strategy::Strategy::base();
+        opts_on.strategy.semantic_guide = true;
+        let on = kb_on.ask_query("(meows Fido)", None, SineParams::default(), opts_on);
+        // Not entailed (Fido is a Dog, not a Cat) — guidance only reorders,
+        // so the verdict is unchanged from the off case below.
+        assert_eq!(on.status, ProverStatus::Disproved, "guide on: {}", on.raw_output);
+        assert!(!on.raw_output.contains("0 guided_clauses_scored"),
+            "guide on must score at least one clause: {}", on.raw_output);
+        assert!(on.raw_output.contains("0 guide_disabled_bail"),
+            "a tiny KB's model build must not bail: {}", on.raw_output);
+
+        let mut kb_off = kb_from(kif);
+        let off = kb_off.ask_query("(meows Fido)", None, SineParams::default(), fast());
+        assert_eq!(off.status, ProverStatus::Disproved, "guide off: {}", off.raw_output);
+        assert!(off.raw_output.contains("0 guided_clauses_scored"),
+            "guide off must score nothing: {}", off.raw_output);
+    }
+
     // The portfolio seam end to end: `ask_native` is `&self`, so
     // differently-configured lanes run CONCURRENTLY against one shared
     // KB (scoped threads — requires KnowledgeBase<ProverLayer>: Sync).

@@ -225,7 +225,13 @@ pub(crate) struct NativeProver<'a> {
     units: UnitStores,
     /// Ground positive support units — the forward closure's seeds.
     support_seeds: Vec<(AtomId, u32)>,
-    h_weight: BinaryHeap<Reverse<(u64, u64, u32)>>,
+    /// `(weight, guide_key, seq, id)` — `guide_key` is the semantic-guide
+    /// tie-break (0 when `Strategy.semantic_guide` is off: an inert third
+    /// column, so the ordering is byte-identical to the pre-guidance
+    /// two-column key whenever the knob is off).  Ties within `weight`
+    /// resolve by `guide_key` (lower = more model-false literals = picked
+    /// sooner), then by `seq` (age) as before.
+    h_weight: BinaryHeap<Reverse<(u64, u64, u64, u32)>>,
     h_age: BinaryHeap<Reverse<(u64, u32)>>,
     popped: Set64<u32>,
     /// Equality-class key → renderable Term for every constant the
@@ -296,6 +302,16 @@ pub(crate) struct NativeProver<'a> {
     demods: super::units::DemodIndex,
     seq: u64,
     tick: u64,
+    /// Semantic clause-selection guidance (`Strategy.semantic_guide`):
+    /// the KB's positive model, built ONCE at `run()` start.  `None`
+    /// covers two cases the scorer treats identically (neutral, no
+    /// tie-break) — guidance is off, or the one-shot build bailed
+    /// (`ModelProgram::positive_model` hit its materialization budget);
+    /// [`Self::guide_disabled`] distinguishes the latter for stats.
+    guide_model: Option<super::model::Model>,
+    /// Set once `run()` has attempted the guide-model build (regardless
+    /// of outcome) — guards against rebuilding on every `push`.
+    guide_attempted: bool,
     pub(crate) stats: ProverStats,
 }
 
@@ -337,6 +353,8 @@ impl<'a> NativeProver<'a> {
             demods: super::units::DemodIndex::default(),
             seq: 0,
             tick: 0,
+            guide_model: None,
+            guide_attempted: false,
             stats: ProverStats::default(),
         }
     }
@@ -606,6 +624,106 @@ impl<'a> NativeProver<'a> {
         1 + self.opts.strategy.goal_dist_w * (total - hits) / total
     }
 
+    // -- semantic clause-selection guidance (Strategy.semantic_guide) -------
+
+    /// Build the run's guide model exactly once (called at [`Self::run`]
+    /// start).  A no-op when the strategy knob is off; otherwise pulls the
+    /// KB-lifetime [`super::model::ModelProgram`] registry entry and
+    /// materializes its positive model, respecting that model's own
+    /// materialization budget.  A bail (`positive_model` → `None`, e.g. the
+    /// budget was exceeded) disables guidance for the rest of THIS run —
+    /// every clause then scores neutral, exactly as if the knob were off —
+    /// and is counted once in `stats.guide_disabled_bail`.  Cheap to call
+    /// when already attempted (`guide_attempted` guards the rebuild).
+    pub(crate) fn ensure_guide_model(&mut self) {
+        if self.guide_attempted || !self.opts.strategy.semantic_guide {
+            return;
+        }
+        self.guide_attempted = true;
+        let mp = self.layer.model_program();
+        match mp.positive_model() {
+            Some((model, _prov)) => self.guide_model = Some(model),
+            None => {
+                self.guide_model = None;
+                self.stats.guide_disabled_bail += 1;
+            }
+        }
+    }
+
+    /// Decode a ground literal's atom into `(relation, args)` when it is a
+    /// FLAT application (`(rel a1 a2 …)` with every argument a bare ground
+    /// symbol) — the only shape the guide model's tuples can be compared
+    /// against.  `None` for non-ground atoms, compound arguments, and
+    /// non-`App`/propositional atoms: those are exactly the "unmodeled"
+    /// literals the scoring treats as neutral.
+    fn guide_lit_pattern(t: &Term) -> Option<(SymbolId, Vec<SymbolId>)> {
+        let Term::App(elems) = t else { return None };
+        let Term::Sym(rel) = elems.first()? else { return None };
+        let mut args = Vec::with_capacity(elems.len() - 1);
+        for e in &elems[1..] {
+            match e {
+                Term::Sym(s) => args.push(s.id()),
+                _ => return None, // variable or compound: unmodeled
+            }
+        }
+        Some((rel.id(), args))
+    }
+
+    /// Whether one literal is FALSE in the guide model: the positive
+    /// literal's tuple is ABSENT from the relation, or the negative
+    /// literal's tuple is PRESENT.  `None` when the literal is neutral
+    /// (non-ground, non-flat, or the relation is not in the model at all —
+    /// an unmodeled predicate is neither confirmed nor refuted, so it must
+    /// not count toward either side of the fraction).
+    fn guide_lit_false(&self, pos: bool, atom: AtomId) -> Option<bool> {
+        let model = self.guide_model.as_ref()?;
+        if !self.layer.atom_info(atom).is_ground() {
+            return None;
+        }
+        let t = slot_atom(&self.layer.atoms, self.syn(), atom, 0)?;
+        let (rel, args) = Self::guide_lit_pattern(&t)?;
+        let tuples = model.get(&rel)?; // relation absent from the model: neutral
+        let present = tuples.contains(&args);
+        Some(pos != present)
+    }
+
+    /// Semantic guidance score for a clause's canonical literals: the
+    /// fraction (scaled to `0..=GUIDE_SCALE`) of its non-neutral literals
+    /// that are false in the guide model — 0 = every checkable literal is
+    /// TRUE in the model (far from a conflict), `GUIDE_SCALE` = every
+    /// checkable literal is FALSE (every literal simultaneously
+    /// contradicts the model, the classic "closest to empty" heuristic).
+    /// All-neutral clauses (nothing modeled) score `GUIDE_SCALE / 2` —
+    /// exactly in the middle, so they neither win nor lose the tie-break
+    /// against a clause the model does speak to.  `0` (the "off" value,
+    /// also the all-neutral floor half-point folds to under integer
+    /// division) when the knob is off or the model bailed.
+    pub(crate) fn guide_score(&mut self, lits: &[PLit]) -> u64 {
+        const GUIDE_SCALE: u64 = 1000;
+        if !self.opts.strategy.semantic_guide {
+            return 0;
+        }
+        self.ensure_guide_model();
+        if self.guide_model.is_none() {
+            return 0;
+        }
+        let (mut false_n, mut total) = (0u64, 0u64);
+        for l in lits {
+            if let Some(is_false) = self.guide_lit_false(l.pos, l.atom) {
+                total += 1;
+                if is_false { false_n += 1; }
+            }
+        }
+        if total == 0 {
+            return GUIDE_SCALE / 2;
+        }
+        self.stats.guided_clauses_scored += 1;
+        // Score HIGH = more model-false literals; the pick queue wants
+        // LOW keys first (BinaryHeap<Reverse<..>>), so invert here once
+        // rather than at every call site.
+        GUIDE_SCALE - (GUIDE_SCALE * false_n / total)
+    }
+
     /// Whether any active ordered inference needs per-clause maximality.
     #[inline]
     fn needs_maximality(&self) -> bool {
@@ -769,7 +887,14 @@ impl<'a> NativeProver<'a> {
         self.seen.insert(c.key);
         let (w, n) = (c.weight, self.seq);
         self.seq += 1;
-        self.h_weight.push(Reverse((w, n, id)));
+        // Semantic-guide tie-break: 0 (inert, first-in-key-order) when the
+        // knob is off, so the heap ordering is byte-identical to the
+        // pre-guidance behavior — this can only be observed as a
+        // REORDERING among clauses that already tie on `weight`, never a
+        // change to which clause wins on weight alone.
+        let lits = c.lits.clone();
+        let g = self.guide_score(&lits);
+        self.h_weight.push(Reverse((w, g, n, id)));
         self.h_age.push(Reverse((n, id)));
         Some(id)
     }
@@ -784,7 +909,7 @@ impl<'a> NativeProver<'a> {
                     if self.popped.insert(id) { return Some(id); }
                 }
             } else {
-                while let Some(Reverse((_, _, id))) = self.h_weight.pop() {
+                while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
                     if self.popped.insert(id) { return Some(id); }
                 }
             }
@@ -1059,7 +1184,9 @@ impl<'a> NativeProver<'a> {
                     if self.opts.strategy.full_saturation {
                         let (w, n) = (self.clauses[id as usize].weight, self.seq);
                         self.seq += 1;
-                        self.h_weight.push(Reverse((w, n, id)));
+                        let lits = self.clauses[id as usize].lits.clone();
+                        let g = self.guide_score(&lits);
+                        self.h_weight.push(Reverse((w, g, n, id)));
                         self.h_age.push(Reverse((n, id)));
                     }
                     self.activate(id);
@@ -1684,6 +1811,15 @@ impl<'a> NativeProver<'a> {
         if self.opts.step {
             stepdbg::force_on();
         }
+        // Semantic clause-selection guidance: build the run's positive
+        // model exactly once, up front (before any given-clause is
+        // scored).  A no-op when `Strategy.semantic_guide` is off; a
+        // budget bail disables guidance for the rest of this run (see
+        // `ensure_guide_model`).  Clauses already queued by background
+        // loading (`add_background_root`'s full-saturation path, which
+        // runs before `run()`) were scored via `guide_score`'s own lazy
+        // call to this same method, so they are not left stale.
+        self.ensure_guide_model();
         self.discharge_horn_joins();
         self.discharge_event_calculus();
         self.discharge_models();

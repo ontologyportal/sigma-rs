@@ -154,4 +154,16 @@ pub(crate) struct ProverStats {
     pub(crate) proof_tag_join: u64,
     pub(crate) proof_tag_event_calculus: u64,
     pub(crate) proof_tag_oracle: u64,
+
+    // -- semantic clause-selection guidance (Strategy.semantic_guide;
+    //    see `NativeProver::guide_score` / `push`).  Zero unless the
+    //    strategy knob (or `SIGMA_GUIDE=1`) is on.
+    /// Passive clauses whose guide score was computed (a non-neutral
+    /// literal was found and scored against the positive model).
+    pub(crate) guided_clauses_scored: u64,
+    /// Guidance requested but the one-time model build bailed
+    /// (`ModelProgram::positive_model` returned `None`, e.g. the
+    /// materialization budget was exceeded) — guidance silently
+    /// disabled for the rest of the run.
+    pub(crate) guide_disabled_bail: u64,
 }

@@ -631,7 +631,8 @@ impl ProverLayer {
                  demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
                  {} scans_performed, {} scans_skipped_by_prefilter\n\
                  proof-DAG reach: {} model, {} model_join, {} rule_join, \
-                 {} event_calculus, {} oracle",
+                 {} event_calculus, {} oracle\n\
+                 guide: {} guided_clauses_scored, {} guide_disabled_bail",
                 verdict, steps, prover.clauses.len(), prover.stats.resolvents,
                 prover.stats.decoded_resolutions,
                 prover.stats.oracle_discharges, prover.stats.unit_subsumed,
@@ -673,7 +674,8 @@ impl ProverLayer {
                 prover.stats.demod_scans_skipped_by_prefilter,
                 prover.stats.proof_tag_model, prover.stats.proof_tag_model_join,
                 prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
-                prover.stats.proof_tag_oracle);
+                prover.stats.proof_tag_oracle,
+                prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }
