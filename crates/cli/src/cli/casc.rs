@@ -145,7 +145,34 @@ fn discover_problems(path: &Path) -> Result<Vec<PathBuf>, String> {
                 continue;
             }
             let p = PathBuf::from(line);
-            out.push(if p.is_absolute() { p } else { base.join(p) });
+            // Resolution order for relative entries: the list file's own
+            // directory (shell-manifest convention), then `$TPTP/Problems/`
+            // and `$TPTP/` (TPTP-corpus convention — index files list
+            // problems as `DOM/DOM123+1.p`).  First existing wins; a path
+            // that resolves nowhere is kept as the list-dir join so the
+            // per-problem error names something sensible.
+            let resolved = if p.is_absolute() {
+                p
+            } else {
+                let local = base.join(&p);
+                if local.is_file() {
+                    local
+                } else if let Some(tptp) = std::env::var_os("TPTP") {
+                    let root = PathBuf::from(tptp);
+                    let under_problems = root.join("Problems").join(&p);
+                    let under_root = root.join(&p);
+                    if under_problems.is_file() {
+                        under_problems
+                    } else if under_root.is_file() {
+                        under_root
+                    } else {
+                        local
+                    }
+                } else {
+                    local
+                }
+            };
+            out.push(resolved);
         }
         Ok(out)
     } else {
