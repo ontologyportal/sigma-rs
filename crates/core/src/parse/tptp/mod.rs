@@ -8,5 +8,5 @@ pub mod parser;
 pub mod syntax;
 pub(crate) mod dis;
 
-pub(crate) use tokenizer::{tokenize};
+pub(crate) use tokenizer::{tokenize, tokenize_with_meta};
 pub use parser::parse;

@@ -18,6 +18,8 @@
 // Narrow have fired the sweet spot is bracketed (`lo`/`hi`) and subsequent
 // steps bisect between them; before that, Widen doubles and Narrow halves.
 
+use std::time::Instant;
+
 use crate::prover::{ProverResult, ProverStatus, TerminationReason};
 use crate::syntactic::sine::{default_budget, SineParams};
 
@@ -76,16 +78,21 @@ pub(crate) struct ScalePlanner {
     hi:                 Option<usize>,
     consecutive_widens: usize,
     time_runs_used:     usize,
-    /// Remaining wall-clock budget in seconds (only meaningful when
-    /// `cfg.total_timeout > 0`).
-    time_left:          i64,
+    /// Remaining wall-clock budget in **fractional** seconds (only
+    /// meaningful when `cfg.total_timeout > 0`).  Kept as a float (not the
+    /// legacy whole-second counter) so a handful of sub-second-but-nonzero
+    /// iterations can't silently accumulate into a multi-second overrun —
+    /// the caller is expected to feed back the attempt's *actual measured
+    /// wall-clock time* (see [`drive`]'s `Instant`-based timing), not a
+    /// backend-reported, second-truncated duration.
+    time_left:          f64,
 }
 
 impl ScalePlanner {
     pub(crate) fn new(start_budget: usize, cfg: ScaleConfig) -> Self {
         Self {
             budget: start_budget.max(cfg.min_budget),
-            time_left: cfg.total_timeout as i64,
+            time_left: cfg.total_timeout as f64,
             lo: None,
             hi: None,
             consecutive_widens: 0,
@@ -97,16 +104,36 @@ impl ScalePlanner {
     /// The budget to select at for the next prove attempt.
     pub(crate) fn budget(&self) -> usize { self.budget }
 
-    /// Per-run timeout slice (seconds) for the next attempt.  `0` means
-    /// unbounded (no total timeout configured).  The remaining time is
-    /// divided over the remaining full-length-run budget so a run that
-    /// finishes early donates its leftover to later runs.
+    /// Remaining wall-clock budget (fractional seconds); only meaningful
+    /// when `cfg.total_timeout > 0`.
+    pub(crate) fn time_left(&self) -> f64 { self.time_left }
+
+    /// `true` once the total wall-clock budget is exhausted (always `false`
+    /// when `cfg.total_timeout == 0`, i.e. no cap configured).  The `drive`
+    /// loop checks this BEFORE starting each iteration — not just after —
+    /// so a retry never starts once the deadline has already passed.
+    pub(crate) fn deadline_exceeded(&self) -> bool {
+        self.cfg.total_timeout != 0 && self.time_left <= 0.0
+    }
+
+    /// Per-run timeout slice (seconds, rounded up so a fractional remainder
+    /// still gets a full second rather than being truncated to `0` and
+    /// silently going unbounded) for the next attempt.  `0` means unbounded
+    /// (no total timeout configured).  The remaining time is divided over
+    /// the remaining full-length-run budget so a run that finishes early
+    /// donates its leftover to later runs.  Never exceeds the whole
+    /// remaining budget, so the LAST slice a caller sees is always the hard
+    /// ceiling on that attempt, not merely a planning suggestion.
     pub(crate) fn slice(&self) -> u32 {
         if self.cfg.total_timeout == 0 {
             return 0;
         }
-        let runs_left = self.cfg.max_time_runs.saturating_sub(self.time_runs_used).max(1) as i64;
-        (self.time_left / runs_left).max(1) as u32
+        if self.time_left <= 0.0 {
+            return 0; // caller must check `deadline_exceeded` before this is reachable
+        }
+        let runs_left = self.cfg.max_time_runs.saturating_sub(self.time_runs_used).max(1) as f64;
+        let per_run = (self.time_left / runs_left).min(self.time_left);
+        per_run.ceil().max(1.0) as u32
     }
 
     /// Record an iteration's outcome and advance the search.  Returns `true`
@@ -114,7 +141,12 @@ impl ScalePlanner {
     /// if it should stop and return the best result so far.
     ///
     /// `act` must be `Widen` or `Narrow` (the caller returns directly on
-    /// `Done`).  `elapsed_secs` is the prover's wall-clock time.
+    /// `Done`).  `elapsed_secs` is the attempt's ACTUAL measured wall-clock
+    /// time (fractional seconds) — the caller times the `attempt()` call
+    /// itself with an `Instant`, rather than trusting a backend-reported
+    /// duration, so a per-run timeout enforced at coarser-than-second
+    /// granularity inside the engine can't quietly eat into the next
+    /// iteration's budget unaccounted for.
     ///
     /// `reached_ceiling` is `true` when the raw SInE selection was *smaller*
     /// than the requested budget — the fixed point, so widening can add
@@ -127,10 +159,10 @@ impl ScalePlanner {
         act:             ScaleAct,
         reached_ceiling: bool,
         reached_floor:   bool,
-        elapsed_secs:    i64,
+        elapsed_secs:    f64,
     ) -> bool {
-        self.time_left -= elapsed_secs.max(0);
-        let timed_out = self.cfg.total_timeout != 0 && self.time_left <= 0;
+        self.time_left -= elapsed_secs.max(0.0);
+        let timed_out = self.deadline_exceeded();
         match act {
             ScaleAct::Done => false,
             ScaleAct::Widen => {
@@ -206,23 +238,44 @@ where
     // normally stop us long before this).
     let max_iters = cfg.max_disproofs + cfg.max_time_runs + 8;
     let mut best: Option<ProverResult> = None;
+    let trace = std::env::var_os("SIGMA_SCALE_TRACE").is_some();
 
     for _ in 0..max_iters {
+        // Check the deadline BEFORE starting another attempt — a per-run
+        // slice can overrun its own budget (the engine's internal time
+        // check runs at coarser-than-second granularity), so bookkeeping
+        // that only reacted to `ScalePlanner::step`'s post-hoc tally could
+        // still launch one more multi-second run after the total budget was
+        // already spent.  This is what bounds total wall time to `N` (the
+        // `--timeout` budget) rather than `N` per iteration.
+        if planner.deadline_exceeded() {
+            break;
+        }
         let budget  = planner.budget();
         let per_run = planner.slice();
 
         let params = SineParams {
             auto_budget: Some(budget), autoscale: false, select_all: false, ..base
         };
+        // Measure the attempt's ACTUAL wall-clock time ourselves (not the
+        // backend-reported `result.timings.prover_run`, which is truncated
+        // to whole seconds and can undercount by just under 1s per
+        // iteration — the source of the old "4x timeout" overrun).
+        let t0 = Instant::now();
         let (result, raw_selected) = attempt(params, per_run);
+        let elapsed = t0.elapsed().as_secs_f64();
 
         // Selection smaller than the budget ⇒ reachable fixed point hit
         // (can't widen further); larger ⇒ strict tolerance-1.0 floor hit
         // (can't narrow further).
         let reached_ceiling = raw_selected < budget;
         let reached_floor   = raw_selected > budget;
-        let elapsed = result.timings.prover_run.as_secs() as i64;
         let act = classify(result.status, remap(result.status, result.termination));
+        if trace {
+            eprintln!("SCALE-TRACE: budget={budget} per_run={per_run} raw_selected={raw_selected} \
+                status={:?} term={:?} elapsed={elapsed:.3}s act={:?} time_left={:.3}s",
+                result.status, result.termination, act, planner.time_left());
+        }
 
         // Definitive verdict (or nothing useful to scale): return as-is.
         if matches!(act, ScaleAct::Done) {
@@ -264,33 +317,33 @@ mod tests {
     fn widen_doubles_until_ceiling() {
         let mut p = ScalePlanner::new(100, cfg(0));
         assert_eq!(p.budget(), 100);
-        assert!(p.step(ScaleAct::Widen, false, false, 0));   // not at ceiling → grow
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // not at ceiling → grow
         assert_eq!(p.budget(), 200);
-        assert!(p.step(ScaleAct::Widen, false, false, 0));
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));
         assert_eq!(p.budget(), 400);
         // Ceiling reached → stop.
-        assert!(!p.step(ScaleAct::Widen, true, false, 0));
+        assert!(!p.step(ScaleAct::Widen, true, false, 0.0));
     }
 
     #[test]
     fn widen_gives_up_after_max_disproofs() {
         let mut p = ScalePlanner::new(100, cfg(0));
         // 4 consecutive widens (max_disproofs=4): the 4th returns false.
-        assert!(p.step(ScaleAct::Widen, false, false, 0));   // 1
-        assert!(p.step(ScaleAct::Widen, false, false, 0));   // 2
-        assert!(p.step(ScaleAct::Widen, false, false, 0));   // 3
-        assert!(!p.step(ScaleAct::Widen, false, false, 0));  // 4 → give up
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 1
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 2
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 3
+        assert!(!p.step(ScaleAct::Widen, false, false, 0.0));  // 4 → give up
     }
 
     #[test]
     fn narrow_halves_to_min_budget() {
         let mut p = ScalePlanner::new(256, cfg(0));
-        assert!(p.step(ScaleAct::Narrow, false, false, 0));  // 256 -> 128
+        assert!(p.step(ScaleAct::Narrow, false, false, 0.0));  // 256 -> 128
         assert_eq!(p.budget(), 128);
         // 128 -> 64 (min); at min the *next* narrow stops.
-        assert!(p.step(ScaleAct::Narrow, false, false, 0));
+        assert!(p.step(ScaleAct::Narrow, false, false, 0.0));
         assert_eq!(p.budget(), 64);
-        assert!(!p.step(ScaleAct::Narrow, false, false, 0));
+        assert!(!p.step(ScaleAct::Narrow, false, false, 0.0));
     }
 
     #[test]
@@ -299,23 +352,23 @@ mod tests {
         // we're at the tolerance-1.0 floor), narrowing further is futile.
         let mut p = ScalePlanner::new(1000, cfg(0));
         // First narrow drops the budget but the set still shrank (not floor).
-        assert!(p.step(ScaleAct::Narrow, false, false, 0));
+        assert!(p.step(ScaleAct::Narrow, false, false, 0.0));
         assert_eq!(p.budget(), 500);
         // Now the strict floor is hit (raw > budget) → stop, no wasted rerun.
-        assert!(!p.step(ScaleAct::Narrow, false, true, 0));
+        assert!(!p.step(ScaleAct::Narrow, false, true, 0.0));
     }
 
     #[test]
     fn widen_then_narrow_brackets_and_bisects() {
         let mut p = ScalePlanner::new(1000, cfg(0));
         // Under-selected at 1000 → widen toward 2000 (lo=1000).
-        assert!(p.step(ScaleAct::Widen, false, false, 0));
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));
         assert_eq!(p.budget(), 2000);
         // Over-selected at 2000 → narrow; bracket (1000, 2000) → bisect to 1500.
-        assert!(p.step(ScaleAct::Narrow, false, false, 0));
+        assert!(p.step(ScaleAct::Narrow, false, false, 0.0));
         assert_eq!(p.budget(), 1500);
         // Under at 1500 → bisect (1500, 2000) → 1750.
-        assert!(p.step(ScaleAct::Widen, false, false, 0));
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));
         assert_eq!(p.budget(), 1750);
     }
 
@@ -325,11 +378,11 @@ mod tests {
         let mut p = ScalePlanner::new(4096, cfg(40));
         assert_eq!(p.slice(), 10);
         // Each narrow consumes a run; after max_time_runs narrows we stop.
-        assert!(p.step(ScaleAct::Narrow, false, false, 10));  // run 1, 30s left, 3 runs
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 1, 30s left, 3 runs
         assert_eq!(p.slice(), 10);                     // 30/3
-        assert!(p.step(ScaleAct::Narrow, false, false, 10));  // run 2
-        assert!(p.step(ScaleAct::Narrow, false, false, 10));  // run 3
-        assert!(!p.step(ScaleAct::Narrow, false, false, 10)); // run 4 → max_time_runs reached
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 2
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 3
+        assert!(!p.step(ScaleAct::Narrow, false, false, 10.0)); // run 4 → max_time_runs reached
     }
 
     #[test]
@@ -338,7 +391,7 @@ mod tests {
         // slice for a later narrow still reflects the full remaining time.
         let mut p = ScalePlanner::new(100, cfg(40));
         assert_eq!(p.slice(), 10);
-        assert!(p.step(ScaleAct::Widen, false, false, 0));    // fast, no time/run used
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0));    // fast, no time/run used
         assert_eq!(p.slice(), 10);                     // still 40/4
     }
 
@@ -346,6 +399,42 @@ mod tests {
     fn time_exhaustion_stops_widen() {
         let mut p = ScalePlanner::new(100, cfg(10));
         // A widen that eats all 10s leaves no time → stop.
-        assert!(!p.step(ScaleAct::Widen, false, false, 10));
+        assert!(!p.step(ScaleAct::Widen, false, false, 10.0));
+    }
+
+    // -- Sub-second precision / hard deadline (the "4x timeout" fix) --------
+
+    #[test]
+    fn fractional_elapsed_is_not_truncated() {
+        // Four iterations at 2.6s actual each (what `.as_secs()` used to
+        // floor to 2s, undercounting by 0.6s/iter) must exhaust a 10s total
+        // budget in FOUR runs, not five+ — 4 * 2.6 = 10.4 > 10.
+        let mut p = ScalePlanner::new(1000, cfg(10));
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 7.4s left
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 4.8s left
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 2.2s left
+        // A 4th 2.6s run overdraws the remaining 2.2s → deadline exceeded.
+        assert!(!p.step(ScaleAct::Narrow, false, false, 2.6));
+        assert!(p.deadline_exceeded());
+    }
+
+    #[test]
+    fn deadline_exceeded_is_checked_before_slice_underflows() {
+        // Once the budget is spent, `deadline_exceeded()` must read true
+        // (the `drive` loop's pre-iteration check) and `slice()` must not
+        // panic or return a bogus large value.
+        let mut p = ScalePlanner::new(100, cfg(5));
+        assert!(!p.step(ScaleAct::Widen, false, false, 5.5)); // overdraws 5s budget
+        assert!(p.deadline_exceeded());
+        assert_eq!(p.slice(), 0);
+    }
+
+    #[test]
+    fn slice_rounds_up_so_no_budget_is_dropped() {
+        // 10s over 4 runs = 2.5s/run exactly; a naive floor would waste
+        // 0.5s/run (2s * 4 = 8s used, 2s silently never spent). Ceiling
+        // keeps every run's slice able to cover its fair share.
+        let p = ScalePlanner::new(1000, cfg(10));
+        assert_eq!(p.slice(), 3); // ceil(10.0 / 4) = 3
     }
 }

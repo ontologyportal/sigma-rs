@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
-use sigmakee_rs_sdk::{Session, Source, TestCaseOutcome, TestOutcome};
+use sigmakee_rs_sdk::{ExpectedOutcome, Session, Source, SzsStatus, TestCaseOutcome, TestOutcome};
 
 use crate::cli::proof::print_proof;
 use crate::style::*;
@@ -41,6 +41,8 @@ where
 
     let total = test_sources.len();
     let mut passed = 0usize;
+    let mut informational = 0usize;
+    let mut false_verdicts = 0usize;
     let mut all_passed = true;
     let t_all = Instant::now();
 
@@ -57,10 +59,11 @@ where
         let t_case = Instant::now();
         match case.test(src, Some(opts.clone())) {
             Ok(outcome) => {
-                if render_case(&outcome, t_case.elapsed(), &manager, case.kb()) {
-                    passed += 1;
-                } else {
-                    all_passed = false;
+                match render_case(&outcome, t_case.elapsed(), &manager, case.kb()) {
+                    CaseVerdict::Passed        => passed += 1,
+                    CaseVerdict::Informational => informational += 1,
+                    CaseVerdict::FalseVerdict  => { false_verdicts += 1; all_passed = false; }
+                    CaseVerdict::Failed        => all_passed = false,
                 }
             }
             Err(errs) => {
@@ -71,9 +74,29 @@ where
         }
     }
 
-    println!("\nTest Summary: {passed} / {total} passed  (tests {:.2}s)",
-        t_all.elapsed().as_secs_f64());
+    let graded = total - informational;
+    print!("\nTest Summary: {passed} / {graded} passed");
+    if informational > 0 {
+        print!("  ({informational} informational, not graded)");
+    }
+    if false_verdicts > 0 {
+        print!("  {color_bright_red}{false_verdicts} FALSE VERDICT{}{color_reset}",
+            if false_verdicts == 1 { "" } else { "S" });
+    }
+    println!("  (tests {:.2}s)", t_all.elapsed().as_secs_f64());
     all_passed
+}
+
+/// What one rendered case counted as, for the suite-level summary tally.
+enum CaseVerdict {
+    Passed,
+    Failed,
+    /// A confident, wrong claim (see [`TestOutcome::FalseVerdict`]) — always
+    /// counted as a suite failure, but tallied separately so it stands out
+    /// from an ordinary timeout/give-up `Failed`.
+    FalseVerdict,
+    /// `Open`/`Unknown` header (or no header) — reported, not graded.
+    Informational,
 }
 
 /// Walk `paths`, collecting one `(label, Source)` per discovered test file
@@ -111,23 +134,24 @@ fn push_if_test(p: PathBuf, out: &mut Vec<(String, Source)>) {
     }
 }
 
-/// Print one case's verdict (+ optional `--proof` / `--prose`), returning
-/// whether it counts as a pass.  Rendered against the fork's KB, so proof
-/// citations resolve to the test's own axioms.
+/// Print one case's verdict (+ optional `--proof` / `--prose`) and its `%
+/// SZS status` line, returning the suite-tally bucket it counts as.
+/// Rendered against the fork's KB, so proof citations resolve to the test's
+/// own axioms.
 fn render_case<L>(
     oc:      &TestCaseOutcome,
     elapsed: Duration,
     manager: &KBManager,
     kb:      &KnowledgeBase<L>,
-) -> bool
+) -> CaseVerdict
 where
     L: ProvingLayer,
 {
     let note = format!("(total {:.2}s)", elapsed.as_secs_f64());
-    let passed = match &oc.outcome {
+    let verdict = match &oc.outcome {
         TestOutcome::Passed => {
             println!("  {color_bright_green}PASSED{color_reset}  {note}");
-            true
+            CaseVerdict::Passed
         }
         TestOutcome::Incomplete { inferred, missing } => {
             // The query was proven; only the answer-set enumeration was partial.
@@ -135,7 +159,7 @@ where
             println!("    the query was proven but only some answers were inferred");
             println!("    inferred: {}", inferred.join(", "));
             println!("    missing:  {}", missing.join(", "));
-            true
+            CaseVerdict::Passed
         }
         TestOutcome::Failed { expected, got, status } => {
             println!("  {color_bright_red}FAILED{color_reset}  {note}");
@@ -143,9 +167,23 @@ where
                 if *expected { "yes" } else { "no" },
                 if *got      { "yes" } else { "no" },
                 reason_tag(*status));
-            false
+            CaseVerdict::Failed
+        }
+        TestOutcome::FalseVerdict { expected, status } => {
+            // Distinct from FAILED: the prover didn't run out of budget, it
+            // made a CONFIDENT claim that contradicts the file's own `%
+            // Status` header — the harness's most serious finding.
+            println!("  {color_bright_red}{style_bold}FALSE VERDICT{style_reset}{color_reset}  {note}");
+            println!("    expected: {expected:?}, got: {status:?} ({})", reason_tag(*status));
+            CaseVerdict::FalseVerdict
+        }
+        TestOutcome::Informational => {
+            println!("  {color_bright_cyan}INFO{color_reset}      {note}");
+            println!("    no graded expectation (Open/Unknown status, or none) — reporting only");
+            CaseVerdict::Informational
         }
     };
+    println!("  % SZS status {} for {}", oc.szs, basename(&oc.name));
 
     let format = manager.proof.as_str();
     if format != "none" && !oc.result.proof_kif.is_empty() {
@@ -156,7 +194,16 @@ where
         let report = kb.render_proof_prose(None, &oc.result.proof_kif, "EnglishLanguage");
         println!("\n    {style_bold}Proof (prose):{style_reset}\n\n{}", report.rendered);
     }
-    passed
+    verdict
+}
+
+/// The bare file-stem SZS convention prints (`PUZ001+1`, not the full path
+/// or extension).
+fn basename(name: &str) -> String {
+    std::path::Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// Short, lowercase tag describing why the prover landed on its verdict —
