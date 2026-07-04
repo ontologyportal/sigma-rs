@@ -1319,6 +1319,16 @@ impl<'a> NativeProver<'a> {
         // computed when an ordered rule needs it; otherwise all-maximal
         // (no restriction) so the unordered default pays nothing.
         let max_mask = self.maximal_literals(&clause.lits);
+        // Subsumption feature-vector (fvi.rs): computed unconditionally
+        // (cheap — one pass over already-resolved literals, same memoized
+        // KBO/atom info the queue weight above just used) so the arena
+        // record is always ready to serve as a `forward_subsumed`
+        // candidate subsumer without a special first-use path.
+        let layer = self.layer;
+        let fv = super::fvi::ClauseFv::compute(
+            &clause.lits, self.kbo(),
+            |a| layer.atom_info(a), &self.layer.atoms, self.syn(),
+        );
         let id = self.clauses.len() as u32;
         self.clauses.push(ClauseRec {
             id,
@@ -1335,6 +1345,7 @@ impl<'a> NativeProver<'a> {
             activated: false,
             retired: false,
             max_mask,
+            fv,
             notes,
         });
         // Backward-demodulation reverse index: every arena clause is

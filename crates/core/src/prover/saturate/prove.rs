@@ -720,6 +720,16 @@ impl ProverLayer {
                     prover.stats.bwd_demod_retired,
                     prover.stats.bwd_demod_cap_hits));
             }
+            // Subsumption feature-vector prefilter line only when
+            // subsumption is on (KIF default has it off): default-path
+            // SIGMA_STATS output stays byte-identical.
+            if prover.opts.strategy.subsumption {
+                raw.push_str(&format!(
+                    "\nsubs-fvi: {} checks_attempted, {} rejected_by_fv, {} full_checks",
+                    prover.stats.subs_checks_attempted,
+                    prover.stats.subs_rejected_by_fv,
+                    prover.stats.subs_full_checks));
+            }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }

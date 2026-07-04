@@ -16,6 +16,21 @@ pub(crate) struct ProverStats {
     pub(crate) demod_rewrites: u64,
     /// New clauses dropped by forward (multi-literal) subsumption.
     pub(crate) subsumed: u64,
+    /// `forward_subsumed` candidate probes attempted: one per active,
+    /// non-retired, length-compatible candidate the literal index
+    /// returned as a possible subsumer of the new clause (retired
+    /// clauses and outright-too-long subsumers are filtered before this
+    /// count, same as `clause_subsumes` would reject them for free) —
+    /// the feature-vector prefilter's denominator.
+    pub(crate) subs_checks_attempted: u64,
+    /// Of those, how many were REJECTED by the feature-vector prefilter
+    /// (`fvi::ClauseFv::le`) before the expensive `clause_subsumes` call
+    /// — the prefilter's payoff.
+    pub(crate) subs_rejected_by_fv: u64,
+    /// Of those, how many passed the prefilter and were handed to the
+    /// exact `clause_subsumes` check (paired with `subs_rejected_by_fv`;
+    /// `subs_checks_attempted == subs_rejected_by_fv + subs_full_checks`).
+    pub(crate) subs_full_checks: u64,
     pub(crate) discarded_deep: u64,
     pub(crate) discarded_long: u64,
     /// Some clause carried an equality literal — the "problem contains

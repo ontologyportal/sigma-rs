@@ -40,11 +40,13 @@ use super::units::UnitStores;
 
 mod discharge;
 mod forward;
+mod fvi;
 mod make;
 mod schema_apply;
 mod snapshot;
 mod stats;
 
+pub(crate) use fvi::ClauseFv;
 pub(crate) use snapshot::ProverSnapshot;
 pub(crate) use stats::ProverStats;
 
@@ -182,6 +184,14 @@ pub(crate) struct ClauseRec {
     /// maximality is not needed (the unordered default), so consumers can
     /// AND against it unconditionally.
     pub(crate) max_mask: u64,
+    /// Feature-vector subsumption prefilter channels (E-style FVI, v1):
+    /// #lits / #pos / #neg / term-size / KBO-weight, computed once here
+    /// and reused by every `forward_subsumed` probe this clause
+    /// participates in as a candidate subsumer.  Always computed (cheap
+    /// — one pass over already-resolved literals); only CONSULTED when
+    /// `Strategy.subsumption` is on.  See `fvi.rs` (including why a raw
+    /// distinct-variable-count channel is deliberately NOT one of them).
+    pub(crate) fv: ClauseFv,
     /// Human-readable justifications (oracle discharges, unit refutations).
     pub(crate) notes: Vec<String>,
 }
@@ -786,8 +796,11 @@ impl<'a> NativeProver<'a> {
     /// (`lits`/`terms`), or `None`.  Candidates are found via the literal
     /// index — every literal of a subsumer is a generalization of one of
     /// ours, so a subsumer must have at least one literal the index
-    /// returns for ours — then verified exactly by [`clause_subsumes`].
-    /// Gated by `Strategy.subsumption`.
+    /// returns for ours — then refuted by the feature-vector prefilter
+    /// (`fvi::ClauseFv::le`, O(1): #lits/#pos/#neg/size/KBO-weight all
+    /// monotone under matching, so a channel violation soundly rules out
+    /// subsumption) before falling back to the expensive exact check,
+    /// [`clause_subsumes`].  Gated by `Strategy.subsumption`.
     fn forward_subsumed(&mut self, lits: &[PLit], terms: &[(bool, Term)]) -> Option<u32> {
         if !self.opts.strategy.subsumption || lits.is_empty() {
             return None;
@@ -801,12 +814,38 @@ impl<'a> NativeProver<'a> {
                 cand.insert(at.clause);
             }
         }
+        let d_fv = ClauseFv::compute(lits, self.kbo(), &src, &self.layer.atoms, self.syn());
         for cid in cand {
             let c = &self.clauses[cid as usize];
             if c.retired {
                 continue; // a retired clause must not delete its own replacement
             }
-            if c.lits.len() <= terms.len() && clause_subsumes(&c.terms, terms) {
+            if c.lits.len() > terms.len() {
+                continue;
+            }
+            // Every candidate reaching here is a genuine subsumption
+            // ATTEMPT (retired/length-mismatched candidates are filtered
+            // above without ever being "attempted" — `clause_subsumes`
+            // itself would reject a longer subsumer just as cheaply, so
+            // counting them would inflate the denominator without
+            // reflecting the prefilter's actual workload).
+            self.stats.subs_checks_attempted += 1;
+            if !c.fv.le(&d_fv) {
+                self.stats.subs_rejected_by_fv += 1;
+                // Soundness cross-check (debug builds / tests only, zero
+                // cost in release): the prefilter must never reject a
+                // pair `clause_subsumes` would have accepted.
+                #[cfg(any(test, debug_assertions))]
+                debug_assert!(
+                    !clause_subsumes(&c.terms, terms),
+                    "FV prefilter rejected {:?} but clause_subsumes({:?}, {:?}) \
+                     would have accepted it (fv {:?} vs {:?})",
+                    cid, c.terms, terms, c.fv, d_fv,
+                );
+                continue;
+            }
+            self.stats.subs_full_checks += 1;
+            if clause_subsumes(&c.terms, terms) {
                 return Some(cid);
             }
         }
