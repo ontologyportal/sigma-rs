@@ -160,11 +160,23 @@ impl ProverLayer {
             })
         });
 
-        let lane_name = lanes[winner].name.as_str();
-        ctx.debug(format!("portfolio: lane {winner} ({lane_name}) reported the final verdict"));
-        result.raw_output = format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
-        if std::env::var_os("SIGMA_STATS").is_some() {
-            eprintln!("PORTFOLIO winning lane: {lane_name}");
+        if crate::prover::scale::is_schedule_final(&result) {
+            let lane_name = lanes[winner].name.as_str();
+            ctx.debug(format!(
+                "portfolio: lane {winner} ({lane_name}) reported the final verdict"
+            ));
+            result.raw_output =
+                format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
+            if std::env::var_os("SIGMA_STATS").is_some() {
+                eprintln!("PORTFOLIO winning lane: {lane_name}");
+            }
+        } else {
+            ctx.debug(format!(
+                "portfolio: no conclusive verdict across {} lanes", lanes.len()
+            ));
+            if std::env::var_os("SIGMA_STATS").is_some() {
+                eprintln!("PORTFOLIO exhausted {} lanes", lanes.len());
+            }
         }
         result
     }
@@ -260,7 +272,16 @@ impl ProverLayer {
             self.definitional_completion(
                 &conjecture_clauses, &goal_frontier, &mut selected, &opts.strategy, ctx);
         }
-        let selected = selected;
+        // Deterministic clause-registration order: `selected` is a HashSet
+        // whose RandomState iteration order otherwise seeds the given-clause
+        // heap's `seq` tie-breaker — the documented source of run-to-run
+        // nondeterminism.  SentenceIds are content hashes, so sorting gives
+        // a stable, KB-content-determined order.
+        let selected: Vec<SentenceId> = {
+            let mut v: Vec<SentenceId> = selected.into_iter().collect();
+            v.sort_unstable();
+            v
+        };
 
         // Goal-targeted disjointness activation.  The disjointness oracle
         // only discharges inequality / disjoint goals; activating it for a
@@ -406,7 +427,7 @@ impl ProverLayer {
                         if s.loaded_roots.len() == selected.len()
                             && selected.iter().all(|r| s.loaded_roots.contains(r)));
                     if !exact {
-                        p.retain_background(&selected);
+                        p.retain_background(&selected.iter().copied().collect());
                     }
                     p
                 }

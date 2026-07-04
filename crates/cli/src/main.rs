@@ -76,6 +76,19 @@ fn main_worker() {
         process::exit(if run_config(&manager, cfg, loaded) { 0 } else { 1 });
     }
 
+    // CASC batch mode needs no `sumokbname` / base KB at all — every problem
+    // builds its own fresh, self-contained `Session` internally (see
+    // `run_casc`), so it routes before `validate()`'s "a default KB is
+    // required" check, exactly like `Config` above.  Without this, `sumo
+    // casc` would be unusable without `-c` even though it never touches the
+    // configured ontology.
+    #[cfg(feature = "ask")]
+    if matches!(cli.command, Cmd::Casc { .. }) {
+        let Cmd::Casc { path, timeout, jobs } = cli.command else { unreachable!() };
+        let ok = sigmakee::cli::run_casc(&manager, path, timeout, jobs);
+        process::exit(if ok { 0 } else { 1 });
+    }
+
     if let Err(e) = manager.validate() {
         log::error!("config error: {e}");
         process::exit(2);
