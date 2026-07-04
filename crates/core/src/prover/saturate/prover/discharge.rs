@@ -922,7 +922,7 @@ impl<'a> NativeProver<'a> {
         // model-derived conjunct (per-evaluation state — never cached on the
         // registry).
         let mut provs: Vec<super::super::model::Provenance> = Vec::new();
-        let full_model = match mp.positive_model() {
+        let full_model = match mp.positive_model(Some(deadline)) {
             Some((m, p)) => {
                 provs.push(p);
                 Some(m)

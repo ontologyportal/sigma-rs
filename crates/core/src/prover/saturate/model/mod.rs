@@ -159,14 +159,70 @@ impl ModelProgram {
     /// hierarchy-inherited declarations) get their transitivity rule and the
     /// model is re-evaluated to a fixpoint.  No conventional seeding, so every
     /// emitted fact is entailed by the KB's own axioms.
-    pub(crate) fn positive_model(&self) -> Option<(Model, Provenance)> {
+    ///
+    /// UNSAFE-RULE POLICY: a KB the size of full SUMO reliably carries a
+    /// handful of not-range-restricted extracted rules — genuine ontology
+    /// typos (a stray/mistyped consequent variable never bound by the
+    /// antecedent, e.g. `(=> (categoryID ?STRING ?CAT) (represents ?STRING
+    /// ?USER))`), not extractor or engine bugs.  `validate_safe` fails the
+    /// WHOLE monotone program on any single such rule; before this fix that
+    /// meant a full-SUMO KB's `positive_model()` returned `None`
+    /// unconditionally, disabling every consumer (`ensure_guide_model`'s
+    /// `SIGMA_GUIDE`, the model-join discharge's full-model fast path) even
+    /// on a trivial goal.  Mirrors [`answer_cone_impl`](Self::answer_cone_impl)'s
+    /// existing `drop_unsafe` policy: drop the unsafe rules before
+    /// evaluating rather than letting one poison the whole model.  Sound —
+    /// removing a rule only SHRINKS the least model, so every fact this
+    /// still emits stays entailed by the KB's own axioms.
+    ///
+    /// `deadline`: whole-KB monotone evaluation (unlike the demand-scoped
+    /// `answer_stats` cone) has no SInE-style scoping, so on a KB the size of
+    /// full SUMO (1918+ rules) it can take tens of seconds — and the
+    /// re-evaluate-to-fixpoint loop (closing newly-discovered transitive
+    /// relations) can run it several times over.  A deadline here caps that
+    /// cost the same way `answer_cone_impl` already caps the demand-scoped
+    /// path: past it, bail to `None` (guidance/full-model consumers degrade
+    /// gracefully — see their call sites) rather than blocking the run.
+    /// `None` ⇒ unbounded (existing behavior, e.g. the unit test below).
+    pub(crate) fn positive_model(&self, deadline: Option<std::time::Instant>) -> Option<(Model, Provenance)> {
         // Materialization budget — bail (→ resolution) rather than blow up on a
         // large un-scoped KB.  Demand scoping (SInE, slice 4) is the real fix;
         // this keeps slice 2 from regressing problems resolution already solves.
         const BUDGET: usize = 250_000;
         let mut work = self.monotone.clone();
+        let n_rules = work.rules.len();
+        work.rules.retain(rule_is_safe);
+        let trace = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
+        if trace && work.rules.len() != n_rules {
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] positive_model: dropped {} / {} unsafe rule(s) \
+                 before evaluation (sound under-approximation)",
+                n_rules - work.rules.len(), n_rules
+            );
+        }
         let mut known: HashSet<Pred> = work.builtin_transitive.keys().copied().collect();
-        let (mut model, mut prov) = work.evaluate_within(BUDGET, None).ok()?;
+        let t0 = std::time::Instant::now();
+        let (mut model, mut prov) = match work.evaluate_within(BUDGET, deadline) {
+            Ok(mp) => mp,
+            Err(e) => {
+                if trace {
+                    eprintln!(
+                        "[SIGMA_MODEL_TRACE] positive_model: initial evaluate_within bailed: {e:?} \
+                         (monotone rules={}, edb preds={}) after {:?}",
+                        work.rules.len(), work.edb.len(), t0.elapsed()
+                    );
+                }
+                return None;
+            }
+        };
+        if trace {
+            let n: usize = model.values().map(|s| s.len()).sum();
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] positive_model: initial evaluate_within OK, {} tuples \
+                 across {} preds, took {:?}",
+                n, model.len(), t0.elapsed()
+            );
+        }
         loop {
             let trans = extract::transitive_members(&model, &self.roles);
             let fresh: Vec<Pred> = trans.into_iter().filter(|r| known.insert(*r)).collect();
@@ -187,7 +243,28 @@ impl ModelProgram {
                 let sids = prov.cite(self.roles.instance, &membership);
                 work.builtin_transitive.insert(r, sids.first().copied());
             }
-            (model, prov) = work.evaluate_within(BUDGET, None).ok()?;
+            let t1 = std::time::Instant::now();
+            (model, prov) = match work.evaluate_within(BUDGET, deadline) {
+                Ok(mp) => mp,
+                Err(e) => {
+                    if trace {
+                        eprintln!(
+                            "[SIGMA_MODEL_TRACE] positive_model: re-evaluate after closing {} \
+                             transitive relation(s) bailed: {e:?} after {:?}",
+                            fresh.len(), t1.elapsed()
+                        );
+                    }
+                    return None;
+                }
+            };
+            if trace {
+                let n: usize = model.values().map(|s| s.len()).sum();
+                eprintln!(
+                    "[SIGMA_MODEL_TRACE] positive_model: re-evaluate after closing {} transitive \
+                     relation(s) OK, {} tuples across {} preds, took {:?}",
+                    fresh.len(), n, model.len(), t1.elapsed()
+                );
+            }
         }
         Some((model, prov))
     }
@@ -468,8 +545,10 @@ impl ModelProgram {
 
     /// The equality-class representative of `s` under one evaluation's
     /// equality state.  Per-evaluation, like [`Provenance`] itself — never
-    /// cached on the registry.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// cached on the registry.  Used to canonicalize probe constants before
+    /// a model lookup so a query using the KB's own (pre-merge) symbols
+    /// still matches tuples the evaluation stored under their EGD
+    /// representative (see `NativeProver::model_true_negative`).
     pub(crate) fn eq_rep(&self, prov: &Provenance, s: SymbolId) -> SymbolId {
         prov.eq.find(s)
     }
@@ -1254,8 +1333,9 @@ impl Program {
 
 /// One rule's range-restriction (safety) check: every head variable and
 /// every negated-literal variable appears in some positive body literal.
-/// Used both by [`Program::validate_safe`] (whole-program gate) and by the
-/// cone machinery's unsafe-rule filter in [`ModelProgram::answer_stats`].
+/// Used by [`Program::validate_safe`] (whole-program gate) and by the
+/// unsafe-rule filter in both [`ModelProgram::answer_stats`] (demand-scoped
+/// cone) and [`ModelProgram::positive_model`] (whole-KB monotone fragment).
 fn rule_is_safe(r: &Rule) -> bool {
     let mut pos_vars: HashSet<u32> = HashSet::new();
     for l in &r.body {

@@ -330,15 +330,17 @@ pub(crate) struct NativeProver<'a> {
     bwd_index: Map64<u64, Vec<u32>>,
     seq: u64,
     tick: u64,
-    /// Semantic clause-selection guidance (`Strategy.semantic_guide`):
-    /// the KB's positive model, built ONCE at `run()` start.  `None`
-    /// covers two cases the scorer treats identically (neutral, no
-    /// tie-break) — guidance is off, or the one-shot build bailed
-    /// (`ModelProgram::positive_model` hit its materialization budget);
-    /// [`Self::guide_disabled`] distinguishes the latter for stats.
-    guide_model: Option<super::model::Model>,
-    /// Set once `run()` has attempted the guide-model build (regardless
-    /// of outcome) — guards against rebuilding on every `push`.
+    /// Semantic clause-selection guidance (`Strategy.semantic_guide`) AND
+    /// the `SIGMA_MODEL` in-loop simplification in `make` (`model_true_negative`):
+    /// the KB's positive model + its evaluation `Provenance` (needed to
+    /// `cite` a deletion's supporting KB sentences), built ONCE at `run()`
+    /// start / first demand and shared by both consumers.  `None` covers
+    /// two cases both treat identically (neutral / no-op) — the knob is
+    /// off, or the one-shot build bailed (`ModelProgram::positive_model`
+    /// hit its materialization budget or deadline).
+    guide_model: Option<(super::model::Model, super::model::Provenance)>,
+    /// Set once the guide-model build has been attempted (regardless of
+    /// outcome) — guards against rebuilding on every `push` / `make`.
     guide_attempted: bool,
     pub(crate) stats: ProverStats,
 }
@@ -664,19 +666,73 @@ impl<'a> NativeProver<'a> {
     /// start).  A no-op when the strategy knob is off; otherwise pulls the
     /// KB-lifetime [`super::model::ModelProgram`] registry entry and
     /// materializes its positive model, respecting that model's own
-    /// materialization budget.  A bail (`positive_model` → `None`, e.g. the
-    /// budget was exceeded) disables guidance for the rest of THIS run —
-    /// every clause then scores neutral, exactly as if the knob were off —
-    /// and is counted once in `stats.guide_disabled_bail`.  Cheap to call
-    /// when already attempted (`guide_attempted` guards the rebuild).
+    /// materialization budget AND a wall-clock deadline (below) — a bail
+    /// (`positive_model` → `None`, e.g. the tuple budget or the deadline was
+    /// exceeded) disables guidance for the rest of THIS run — every clause
+    /// then scores neutral, exactly as if the knob were off — and is
+    /// counted once in `stats.guide_disabled_bail`.  Cheap to call when
+    /// already attempted (`guide_attempted` guards the rebuild).
     pub(crate) fn ensure_guide_model(&mut self) {
         if self.guide_attempted || !self.opts.strategy.semantic_guide {
             return;
         }
         self.guide_attempted = true;
         let mp = self.layer.model_program();
-        match mp.positive_model() {
-            Some((model, _prov)) => self.guide_model = Some(model),
+        if std::env::var_os("SIGMA_MODEL_TRACE").is_some() {
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] ensure_guide_model: monotone.rules={} monotone.edb_preds={} \
+                 program.rules={} clusters={}",
+                mp.monotone.rules.len(), mp.monotone.edb.len(),
+                mp.program.rules.len(), mp.clusters.len()
+            );
+        }
+        // Whole-KB monotone evaluation has no SInE-style scoping, so on a KB
+        // the size of full SUMO it can take tens of seconds — guidance is a
+        // heuristic tie-break, not required for soundness or completeness,
+        // so it must never eat a large slice of the run's own time budget.
+        // Cap it at a fixed few seconds (mirrors `discharge_model_joins`'s
+        // 1500ms full-model cap), further capped by the run's own timeout
+        // when that is smaller (and left unbounded only when the run itself
+        // is unbounded, i.e. `time_limit_secs == 0`, e.g. interactive step
+        // mode — `positive_model` is still bounded by its own tuple budget).
+        const GUIDE_MODEL_BUDGET_SECS: u64 = 5;
+        let cap_secs = if self.opts.time_limit_secs > 0 {
+            self.opts.time_limit_secs.min(GUIDE_MODEL_BUDGET_SECS)
+        } else {
+            GUIDE_MODEL_BUDGET_SECS
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(cap_secs);
+        match mp.positive_model(Some(deadline)) {
+            Some((model, prov)) => self.guide_model = Some((model, prov)),
+            None => {
+                self.guide_model = None;
+                self.stats.guide_disabled_bail += 1;
+            }
+        }
+    }
+
+    /// Ensure the shared positive model is materialized for THIS run,
+    /// regardless of which consumer demands it first (`Strategy.semantic_guide`
+    /// scoring, or `SIGMA_MODEL`'s in-loop `make` simplification) — same
+    /// one-shot budget/deadline discipline as [`Self::ensure_guide_model`],
+    /// just without that method's knob gate.  Idempotent: `guide_attempted`
+    /// guards the rebuild, so whichever consumer runs first pays the build
+    /// cost and the other reuses it for free.
+    pub(crate) fn ensure_model_for_simplification(&mut self) {
+        if self.guide_attempted {
+            return;
+        }
+        self.guide_attempted = true;
+        let mp = self.layer.model_program();
+        const MODEL_BUDGET_SECS: u64 = 5;
+        let cap_secs = if self.opts.time_limit_secs > 0 {
+            self.opts.time_limit_secs.min(MODEL_BUDGET_SECS)
+        } else {
+            MODEL_BUDGET_SECS
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(cap_secs);
+        match mp.positive_model(Some(deadline)) {
+            Some((model, prov)) => self.guide_model = Some((model, prov)),
             None => {
                 self.guide_model = None;
                 self.stats.guide_disabled_bail += 1;
@@ -710,7 +766,7 @@ impl<'a> NativeProver<'a> {
     /// an unmodeled predicate is neither confirmed nor refuted, so it must
     /// not count toward either side of the fraction).
     fn guide_lit_false(&self, pos: bool, atom: AtomId) -> Option<bool> {
-        let model = self.guide_model.as_ref()?;
+        let (model, _prov) = self.guide_model.as_ref()?;
         if !self.layer.atom_info(atom).is_ground() {
             return None;
         }

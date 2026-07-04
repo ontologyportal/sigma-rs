@@ -151,6 +151,12 @@ pub(crate) struct ProverStats {
     /// forced a union of two distinct rigid (numeric-literal) symbols.
     /// Printed in SIGMA_STATS only when nonzero (default output unchanged).
     pub(crate) model_rigid_conflicts: u64,
+    /// Ground flat NEGATIVE literals `¬R(args)` deleted in `make` because
+    /// the shared positive model (`SIGMA_MODEL`) already contains `R(args)`
+    /// — the model-sourced mirror of the oracle's `oracle.holds` deletion
+    /// just above it (see `model_true_negative`).  Zero unless `SIGMA_MODEL`
+    /// is set.
+    pub(crate) model_literals_deleted: u64,
 
     // -- forward-demodulation duplicate-hit probe (Part 2; only active when
     //    Strategy.demod is on).

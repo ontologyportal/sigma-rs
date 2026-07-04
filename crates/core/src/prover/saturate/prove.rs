@@ -652,7 +652,8 @@ impl ProverLayer {
                  model-discharge: {} atoms seen, {} rejected (lit_pattern), \
                  {} arg collapsed (compound), {} arg collapsed (repeated-var), \
                  {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
-                 {} budget-or-deadline-overflow / {} undefined-relation\n\
+                 {} budget-or-deadline-overflow / {} undefined-relation, \
+                 {} model_literals_deleted\n\
                  model-complete: {} certified relations, {} negatives emitted, \
                  blocked: {} skipped-head / {} unstratifiable / {} body-chain / {} role\n\
                  demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
@@ -695,6 +696,7 @@ impl ProverLayer {
                 prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
                 prover.stats.model_budget_or_deadline_overflows,
                 prover.stats.model_undefined_relation,
+                prover.stats.model_literals_deleted,
                 prover.stats.model_certified_relations,
                 prover.stats.model_complete_negatives_emitted,
                 prover.stats.model_cert_blocked_skipped_head,

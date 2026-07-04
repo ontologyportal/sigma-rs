@@ -63,7 +63,7 @@ fn model_registry_builds_and_caches() {
     assert!(Arc::ptr_eq(&mp, &mp2), "registry is cached for the KB's life");
 
     // The sound positive model (monotone + KB-derived transitivity).
-    let (m, _prov) = mp.positive_model().expect("positive model evaluates");
+    let (m, _prov) = mp.positive_model(None).expect("positive model evaluates");
     let tuple = |a: &str, b: &str| vec![Symbol::hash_name(a), Symbol::hash_name(b)];
     let has = |p: &str, a: &str, b: &str|
         m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));

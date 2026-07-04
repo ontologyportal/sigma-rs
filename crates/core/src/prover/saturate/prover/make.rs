@@ -788,6 +788,72 @@ impl<'a> NativeProver<'a> {
         Some((ta, tb, ka, kb))
     }
 
+    /// The `SIGMA_MODEL` mirror of the oracle's `oracle.holds` deletion
+    /// (just above this method's only call site): `Some(sids)` when `t` is
+    /// a ground FLAT negative-literal atom `¬R(args)` whose positive
+    /// counterpart `R(args)` the shared positive model already contains —
+    /// the literal is entailed FALSE (unit resolution against a virtual
+    /// entailed unit, identical soundness argument to the oracle's own
+    /// binary-relation check just above), so it is deleted from the
+    /// clause.  `sids` is the KB citation for that model fact (via
+    /// [`super::model::ModelProgram::cite`]), extended onto `fact_parents`
+    /// exactly like an oracle witness would be.
+    ///
+    /// A ground unit `R(args)` that IS present in the model is left
+    /// alone here — it is a POSITIVE literal (this method only ever sees
+    /// `!*pos`), and a positive unit clause is index content the search
+    /// consumes directly, mirroring the oracle rule's own comment at its
+    /// `oracle.holds` positive-arm no-op (units are never oracle-deleted,
+    /// only negatives are).
+    ///
+    /// Gates: `SIGMA_MODEL` must be set (env, matching `discharge_models`'s
+    /// gate — this is the same opt-in feature, just a different discharge
+    /// point); the model must already be materialized OR materializes here
+    /// lazily, once per run, under the same budget/deadline discipline as
+    /// `ensure_guide_model` (`ensure_model_for_simplification`); and
+    /// `tier` must not be `CONJECTURE` — a negated existential conjecture's
+    /// goal literal must survive for the search to prove it positively
+    /// (the same paraconsistent guard the oracle disjointness check
+    /// documents just above: an inconsistent KB can have an atom both
+    /// model-true and independently the thing being asked about).
+    ///
+    /// Probe constants are canonicalized through the evaluation's EGD
+    /// equality classes (`ModelProgram::eq_rep`) before the lookup, so a
+    /// merge the model's own evaluation discovered is honored the same
+    /// way the model's OWN tuples are already stored in canonical form.
+    fn model_true_negative(&mut self, t: &Term, tier: u8) -> Option<Vec<SentenceId>> {
+        if std::env::var_os("SIGMA_MODEL").is_none() {
+            return None;
+        }
+        self.model_true_negative_forced(t, tier)
+    }
+
+    /// [`model_true_negative`](Self::model_true_negative) without the
+    /// `SIGMA_MODEL` env gate — direct entry for tests (env mutation is
+    /// process-global and races parallel tests; mirrors
+    /// `discharge_models`/`discharge_models_forced`'s split).
+    fn model_true_negative_forced(&mut self, t: &Term, tier: u8) -> Option<Vec<SentenceId>> {
+        if tier == CONJECTURE {
+            return None;
+        }
+        // Cheap shape check BEFORE materializing anything: only a ground
+        // flat atom is a candidate, so a non-flat / non-ground literal
+        // never pays the (idempotent, but still a hash lookup) ensure call.
+        let (rel, args) = Self::guide_lit_pattern(t)?;
+        self.ensure_model_for_simplification();
+        let mp = self.layer.model_program();
+        let (model, prov) = self.guide_model.as_ref()?;
+        let tuples = model.get(&rel)?; // relation absent from the model: no decision
+        // EGD-canonicalize the probe constants the same way the model's OWN
+        // tuples are stored — an evaluation that merged two symbols via an
+        // EGD stores facts under their shared representative.
+        let canon_args: Vec<SymbolId> = args.iter().map(|&a| mp.eq_rep(prov, a)).collect();
+        if !tuples.contains(&canon_args) {
+            return None;
+        }
+        Some(mp.cite(prov, rel, &canon_args))
+    }
+
     /// Build a clause from raw slot-form literals: arithmetic
     /// normalization, oracle discharge, depth cap, unit
     /// subsumption/simplification, learned-unit feedback, canonical
@@ -1101,6 +1167,23 @@ impl<'a> NativeProver<'a> {
                         self.stats.oracle_subsumed += 1;
                         return None;
                     }
+                }
+            }
+            // Model-sourced mirror of the oracle deletion just above:
+            // ¬R(args) is FALSE (deleted) when the shared positive model
+            // (SIGMA_MODEL) already contains R(args).  See
+            // `model_true_negative` for the soundness argument and the
+            // CONJECTURE-tier guard.
+            if !*pos {
+                if let Some(sids) = self.model_true_negative(t, tier) {
+                    self.stats.model_literals_deleted += 1;
+                    if self.want_notes() {
+                        notes.push(format!(
+                            "(not {}) -- model: entailed true",
+                            term_kif(t, self.syn())));
+                    }
+                    fact_parents.extend(sids);
+                    continue;
                 }
             }
             kept.push((*pos, t.clone()));
@@ -1486,4 +1569,86 @@ fn bwd_demodulate_term(d: &super::super::units::Demod, t: &mut Term, cap: u64) -
         rewrites += 1;
     }
     rewrites
+}
+
+#[cfg(test)]
+mod model_true_negative_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{CONJECTURE, SUPPORT, Term};
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    // `mammal(Fido)` is Horn-derivable from `(instance Fido Dog)` +
+    // `(=> (instance ?X Dog) (mammal ?X))` — the monotone model contains it.
+    // A derived (non-CONJECTURE) clause carrying the negative literal
+    // `(not (mammal Fido))` must have that literal DELETED, citing the
+    // defining rule's sid in `fact_parents` (env-free entry point: the
+    // `_forced` bypass `make()` itself calls through the `SIGMA_MODEL`
+    // gate — see that gate's own doc for why tests avoid the env var).
+    #[test]
+    fn model_true_negative_forced_deletes_and_cites_on_non_conjecture_tier() {
+        let kif = "\
+            (instance Fido Dog)\n\
+            (=> (instance ?X Dog) (mammal ?X))\n";
+        let layer = ProverLayer::new(kif_layer(kif));
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+
+        let rule_sid = layer.semantic.syntactic.root_sids().into_iter()
+            .find(|sid| {
+                layer.semantic.syntactic.sentence(*sid)
+                    .is_some_and(|s| s.op() == Some(&crate::parse::OpKind::Implies))
+            })
+            .expect("the (=> (instance ?X Dog) (mammal ?X)) root is stored");
+
+        let not_mammal_fido = Term::App(vec![
+            Term::Sym(Symbol::from("mammal")),
+            Term::Sym(Symbol::from("Fido")),
+        ]);
+
+        let sids = prover
+            .model_true_negative_forced(&not_mammal_fido, SUPPORT)
+            .expect("mammal(Fido) is in the positive model: the negative literal is deleted");
+        assert!(
+            sids.contains(&rule_sid),
+            "citation must include the defining rule's sid: {sids:?}"
+        );
+        assert_eq!(prover.guide_attempted, true, "the shared model was materialized on demand");
+
+        // CONJECTURE tier: the paraconsistent guard — never delete from a
+        // conjecture-tier clause this way, even though the model still
+        // entails the same fact (mirrors the oracle disjointness guard
+        // just above `model_true_negative`'s call site in `make`).
+        assert!(
+            prover.model_true_negative_forced(&not_mammal_fido, CONJECTURE).is_none(),
+            "a CONJECTURE-tier clause must NOT be simplified via the model"
+        );
+    }
+
+    // A positive ground unit that IS in the model is left alone by this
+    // path — `model_true_negative[_forced]` only ever inspects NEGATIVE
+    // literals (`make`'s call site guards with `if !*pos`); confirm the
+    // helper itself does not special-case a bare positive atom term (it
+    // has no polarity of its own to check, so this documents the
+    // call-site contract rather than a behavior of the helper).
+    #[test]
+    fn model_true_negative_forced_no_op_when_atom_not_in_model() {
+        let kif = "\
+            (instance Fido Dog)\n\
+            (=> (instance ?X Dog) (mammal ?X))\n";
+        let layer = ProverLayer::new(kif_layer(kif));
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+
+        // `(not (mammal Rex))` — Rex is never asserted a Dog, so the model
+        // does not contain `mammal(Rex)`: no deletion.
+        let not_mammal_rex = Term::App(vec![
+            Term::Sym(Symbol::from("mammal")),
+            Term::Sym(Symbol::from("Rex")),
+        ]);
+        assert!(
+            prover.model_true_negative_forced(&not_mammal_rex, SUPPORT).is_none(),
+            "mammal(Rex) is not entailed: nothing to delete"
+        );
+    }
 }
