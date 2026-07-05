@@ -4,7 +4,8 @@
 //! Reuses the exact same machinery `sumo test` already uses for a `.p` /
 //! `.tptp` file: `Session::<ProverLayer>::test` gives each problem its own
 //! fresh, self-contained KB (native backend, TPTP regime auto-detected from
-//! the file extension — full saturation + the 5-lane strategy portfolio),
+//! the file extension — full saturation + the budget-adaptive strategy
+//! portfolio; see `Strategy::tptp_lanes` / `adaptive_lane_count`),
 //! and reports the SZS status the same way. This module only adds the batch
 //! plumbing: corpus discovery, `--jobs` parallelism (one fresh `Session` per
 //! problem per worker thread — no shared, mutated KB, so this is safe), and

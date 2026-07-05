@@ -228,7 +228,7 @@ pub enum Cmd {
 
     /// CASC-style batch run: prove every TPTP problem under a directory (or
     /// listed one-per-line in a plain file) on the native backend with the
-    /// TPTP regime (full saturation + the 5-lane strategy portfolio), and
+    /// TPTP regime (full saturation + the budget-adaptive strategy portfolio), and
     /// report SZS status per problem plus a final summary.
     ///
     /// Each problem gets its own fresh, self-contained `Session` (no shared

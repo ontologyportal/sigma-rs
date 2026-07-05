@@ -144,6 +144,13 @@ impl CommonProverOpts for NativeOpts {
     /// calculus must not certify "no" on saturation.
     fn set_tptp_problem(&mut self) {
         self.strategy = Strategy::tptp();
+        // The step cap is a KIF-ask liveness guard, tuned for sub-second
+        // interactive queries.  Under the TPTP regime the wall-clock budget
+        // is already a hard ceiling (scale.rs deadlines), so a 4000-step cap
+        // just surrenders paid-for time: the rescued ALG family exhausts it
+        // in 2-4s of a 24s lane slice (measured, wide-lane experiment).
+        // Effectively unbounded here; the clock governs.
+        self.max_steps = 1_000_000;
     }
 }
 

@@ -81,6 +81,25 @@ pub struct Strategy {
     /// Term-width cap (leaf count) for derived clauses.  Depth alone
     /// does not bound SUMO's recursive list machinery.
     pub max_term_size: usize,
+    /// Override for the derived-clause LITERAL-count cap
+    /// (`NativeOpts::max_lits`, which lives outside `Strategy` because it
+    /// is also the historical KIF/SUMO-path default rather than a pure
+    /// search-shaping knob). `None` (the default, every existing lane)
+    /// leaves `NativeOpts::max_lits` exactly as the caller set it —
+    /// byte-identical to today. `Some(n)` is consumed ONLY at
+    /// portfolio-lane-build time (`run_portfolio_schedule`), which
+    /// overwrites the lane's `NativeOpts.max_lits` with `n` — so a lane
+    /// can widen the literal-count ceiling on DERIVED resolvents without
+    /// touching `push_input`'s separate (already-generous,
+    /// `full_saturation`-only) input-width backstop. Measured motivation
+    /// (task: TPTP `tptp-wide` lane): under the TPTP regime derived
+    /// clauses over 8 literals are dropped into `discarded_long` even
+    /// though whole clauses now load at input time (the definitional-CNF
+    /// rescue + input-width-backstop work) — some ALG-family problems
+    /// (ALG027+1, ALG106+1) run genuine searches that lose wide
+    /// resolvents this way and finish GaveUp/Timeout rather than
+    /// StepsExhausted-honest.
+    pub derived_width_cap: Option<u8>,
     /// Paramodulants generated per given clause.
     pub para_cap: usize,
     /// Max demodulation rewrites applied to a single term in `make`
@@ -291,6 +310,7 @@ impl Strategy {
             lit_select: 0,
             max_depth: 5,
             max_term_size: 64,
+            derived_width_cap: None,
             para_cap: 200,
             demod_cap: 64,
             bwd_demod_cap: 10_000,
@@ -469,6 +489,16 @@ impl Strategy {
                 ..base.clone()
             }
             .named("tptp-precseed"),
+            // `derived_width_cap` (the "tptp-wide" lane) deliberately has NO
+            // slot: measured twice on the rescued ALG family at 60s — first
+            // masked by the 4000-step surrender (every lane exhausted
+            // `max_steps` in 2-4s of its slice), then again AFTER
+            // `set_tptp_problem` lifted the step cap — it converted zero
+            // verdicts either time; wide derived clauses alone are not the
+            // binding constraint (searches now run their full budget and
+            // time out).  The `derived_width_cap` mechanism stays (the clean
+            // seam for cap experiments and future tuned schedules); a lane
+            // earns its slot back through the planned sweep, not by hand.
             // `semantic_guide` deliberately has NO lane: measured on the
             // 100-problem TPTP slice it scored zero clauses (the Horn
             // extractor sees no `(=> …)` roots in CNF/disjunctive TPTP
@@ -554,6 +584,9 @@ impl Strategy {
             lit_select: r.pick(&[0, 0, 0, 1, 2]) as u8,
             max_depth: r.pick(&[4, 5, 6, 7]) as u8,
             max_term_size: r.pick(&[48, 64, 96, 128]) as usize,
+            // Not in the sweep genome yet (no RNG draw): a fresh knob,
+            // measured via the dedicated `tptp-wide` lane first.
+            derived_width_cap: None,
             para_cap: r.pick(&[50, 100, 200, 400, 800]) as usize,
             demod_cap: r.pick(&[32, 64, 128, 256]),
             // Not in the sweep genome yet (a literal, no RNG draw — the
@@ -742,5 +775,38 @@ mod tests {
     #[test]
     fn tptp_lanes_first_is_plain_tptp() {
         assert_eq!(Strategy::tptp_lanes()[0], Strategy::tptp());
+    }
+
+    #[test]
+    fn tptp_lanes_ordering_prefix_is_stable() {
+        // Lane names/order must stay exactly as before under any
+        // lane-count truncation (`run_portfolio_schedule`'s
+        // `adaptive_lane_count` slices this Vec directly).
+        let lanes = Strategy::tptp_lanes();
+        let names: Vec<&str> = lanes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "tptp-complete",
+                "tptp-demod",
+                "tptp-goaldist",
+                "tptp-litselect",
+                "tptp-precseed",
+            ]
+        );
+    }
+
+    #[test]
+    fn derived_width_cap_mechanism_survives_without_a_lane() {
+        // The tptp-wide LANE was measured out (zero conversions even after
+        // the step-cap lift), but the mechanism is the seam future tuned
+        // schedules use: a Strategy carrying the cap must round-trip and
+        // differ from tptp() in exactly that field.
+        let complete = Strategy::tptp();
+        let wide = Strategy { derived_width_cap: Some(32), ..complete.clone() };
+        assert_eq!(wide.derived_width_cap, Some(32));
+        let reset = Strategy { derived_width_cap: None, ..wide };
+        assert_eq!(reset, complete);
+        assert!(Strategy::tptp_lanes().iter().all(|l| l.derived_width_cap.is_none()));
     }
 }

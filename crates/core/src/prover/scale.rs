@@ -327,12 +327,18 @@ where
 /// `tptp-complete`, i.e. behaves like `SIGMA_NO_PORTFOLIO=1` but without
 /// having to set the env var); `15..=40s` → 3 lanes (`tptp-complete` +
 /// `tptp-demod` + `tptp-goaldist`, the two lanes measured to carry most of the
-/// non-first-lane win rate); `> 40s` → all 5 (the full schedule, unchanged
-/// from before this task). `total_timeout == 0` (unbounded — no `--timeout`
+/// non-first-lane win rate); `> 40s` → all lanes (the full schedule — 5 at
+/// task #33, now 6 with `tptp-wide`'s wider derived-clause literal cap
+/// added; see [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]).
+/// A lane this cheap to try (only ONE knob differs from `tptp-complete`)
+/// only earns a slot in the budget-rich bucket — the `< 15s` and `15..=40s`
+/// buckets are unchanged by its addition, since both are already tuned
+/// against how thin a slice the FIRST few lanes can afford, not how many
+/// total lanes exist. `total_timeout == 0` (unbounded — no `--timeout`
 /// given) has no budget to be tight on, so it gets the full schedule too.
 ///
-/// `SIGMA_ALL_LANES=1` forces 5 lanes regardless of budget, for A/B'ing this
-/// function's bucketing against the unconditional old behavior.
+/// `SIGMA_ALL_LANES=1` forces every lane regardless of budget, for A/B'ing
+/// this function's bucketing against the unconditional old behavior.
 pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize {
     if std::env::var_os("SIGMA_ALL_LANES").is_some() {
         return all_lanes;
@@ -757,6 +763,31 @@ mod tests {
         assert_eq!(adaptive_lane_count(100, 2), 2);
         assert_eq!(adaptive_lane_count(20, 2), 2);
         assert_eq!(adaptive_lane_count(1, 0), 0);
+    }
+
+    // -- lane-count parameterization: the `> 40s` bucket returns whatever
+    //    the schedule supplies; the `< 15s` and
+    //    `15..=40s` buckets are unaffected by the schedule growing a lane.
+
+    #[test]
+    fn adaptive_lane_count_over_40s_includes_the_wide_lane() {
+        // Real call shape: `run_portfolio_schedule` passes
+        // `Strategy::tptp_lanes().len()` — parameterized, not hardcoded.
+        assert_eq!(adaptive_lane_count(41, 6), 6);
+        assert_eq!(adaptive_lane_count(41, 5), 5);
+        assert_eq!(adaptive_lane_count(100, 6), 6);
+        assert_eq!(adaptive_lane_count(0, 6), 6); // unbounded timeout, same rule
+    }
+
+    #[test]
+    fn adaptive_lane_count_under_15s_and_15_to_40s_unchanged_by_sixth_lane() {
+        // The tight-budget buckets don't scale with `all_lanes` — they cap
+        // at 1 and 3 respectively regardless of how many lanes exist, so
+        // adding `tptp-wide` must not change either bucket's answer.
+        assert_eq!(adaptive_lane_count(10, 6), 1);
+        assert_eq!(adaptive_lane_count(14, 6), 1);
+        assert_eq!(adaptive_lane_count(15, 6), 3);
+        assert_eq!(adaptive_lane_count(40, 6), 3);
     }
 
     #[test]

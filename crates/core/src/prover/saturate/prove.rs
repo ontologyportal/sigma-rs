@@ -18,6 +18,19 @@ use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
 use super::theory::TheoryOracle;
 
+/// The one `NativeOpts` field a portfolio lane's `Strategy` can override:
+/// `max_lits` (the derived-clause literal-count ceiling) lives on
+/// `NativeOpts`, not `Strategy`, because it doubles as the historical
+/// KIF/SUMO-path default rather than a pure search-shaping knob (see
+/// `NativeOpts::max_lits`'s doc). `Strategy::derived_width_cap` is the
+/// portfolio-only escape hatch: `None` (every lane except `tptp-wide`)
+/// returns `base_max_lits` unchanged — byte-identical to before this knob
+/// existed; `Some(n)` overrides it for that lane only. Consumed exactly
+/// once, here, at lane-build time in `run_portfolio_schedule`.
+pub(super) fn lane_max_lits(lane: &Strategy, base_max_lits: usize) -> usize {
+    lane.derived_width_cap.map(usize::from).unwrap_or(base_max_lits)
+}
+
 impl ProverLayer {
     /// Intern the conjecture into the prover-local atom table (content-addressed,
     /// tag-free → sweep-safe; no shared-store churn/rollback, plan D5) and
@@ -157,7 +170,11 @@ impl ProverLayer {
         let selection = opts.selection;
 
         let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {
-            let lane_opts = NativeOpts { strategy: lanes[idx].clone(), ..opts.clone() };
+            let lane_opts = NativeOpts {
+                strategy: lanes[idx].clone(),
+                max_lits: lane_max_lits(&lanes[idx], opts.max_lits),
+                ..opts.clone()
+            };
             let cfg = ScaleConfig {
                 factor:        scale_factor(),
                 max_disproofs: scale_max_disproofs(),

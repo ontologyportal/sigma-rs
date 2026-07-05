@@ -2259,6 +2259,31 @@ fn native_stack_smoke() {
         }
     }
 
+    // `lane_max_lits` is the ONLY seam `run_portfolio_schedule` uses to let
+    // a lane's `Strategy` override `NativeOpts::max_lits` (a field that
+    // lives outside `Strategy` — see `derived_width_cap`'s doc). Every
+    // lane except `tptp-wide` must leave the caller's `max_lits` untouched;
+    // `tptp-wide` must widen it to exactly 32 regardless of the caller's
+    // base value.
+    #[test]
+    fn wide_lane_overrides_max_lits_others_pass_through() {
+        use crate::saturate::strategy::Strategy;
+        use super::prove::lane_max_lits;
+
+        // No shipping lane overrides the cap (the tptp-wide LANE was
+        // measured out); every lane must pass the caller's max_lits
+        // through unchanged.
+        for lane in Strategy::tptp_lanes() {
+            assert_eq!(lane_max_lits(&lane, 8), 8,
+                "{}: must pass the caller's max_lits through unchanged", lane.name);
+        }
+        // The MECHANISM stays: a strategy carrying the cap overrides,
+        // independent of the caller's base.
+        assert_eq!(lane_max_lits(&Strategy::tptp(), 20), 20);
+        let wide = Strategy { derived_width_cap: Some(32), ..Strategy::tptp() };
+        assert_eq!(lane_max_lits(&wide, 20), 32);
+    }
+
     // The cooperative cancel flag: a pre-raised flag stops the run at
     // the first loop check (Timeout verdict), the portfolio runner's
     // kill-the-losers mechanism.
