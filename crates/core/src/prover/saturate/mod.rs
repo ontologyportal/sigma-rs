@@ -56,7 +56,7 @@ use clause::{AtomTable, PClause};
 use caches::clause_store::ClauseStore;
 use caches::model_registry::ModelRegistry;
 
-pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, AtomInfos};
+pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, term_atom_info, AtomInfos};
 
 /// The native-prover top layer.  Owns the semantic stack plus the
 /// prover-local clause state; the residue index and given-clause loop

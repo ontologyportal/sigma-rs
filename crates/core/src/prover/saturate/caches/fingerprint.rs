@@ -296,6 +296,112 @@ impl AtomInfos {
     }
 }
 
+/// TRANSIENT [`AtomInfo`] of a SLOT-form atom term, computed from the
+/// tree alone — no `AtomTable` residency, no [`AtomInfos`] memo entry,
+/// and (deliberately) no decode phone-book registration.  Field-for-
+/// field equal to `AtomInfos::info(intern_slot_atom(t))` (property test
+/// in `prover/make.rs`; live debug twin in `forward_subsumed`).
+///
+/// This is the hash-before-intern query side: a not-yet-accepted
+/// clause's literals are probed against the index / feature-vector /
+/// bloom channels with THIS info, and only an accepted clause interns
+/// its atoms and warms the shared memos (the phone book then registers
+/// its coins on the atom's first memoized compute — decode residual
+/// coins are always partner-seat coins, and partners are accepted
+/// clauses, so no decode ever depends on a dead clause's registration).
+///
+/// A non-`App` term is treated as the single-element sentence
+/// `intern_atom` would wrap it into (canonicalized literal terms are
+/// always `App`-wrapped, so this arm is defensive parity).
+pub(crate) fn term_atom_info(t: &Term) -> AtomInfo {
+    let one;
+    let elems: &[Term] = match t {
+        Term::App(e) => e,
+        other => {
+            one = [other.clone()];
+            &one
+        }
+    };
+    let n = elems.len();
+    let mut mask = 0u64;
+    let mut residue = arity_tag(n);
+    let mut s3 = 0u64;
+    let mut coins: SmallVec<[u64; 6]> = SmallVec::with_capacity(n);
+    let mut depth = 0u8;
+    let mut size = 0u16;
+    let mut leaf_sig = 0u64;
+    for (i, el) in elems.iter().enumerate() {
+        let m = term_seat_meta(el);
+        depth = depth.max(m.depth);
+        size = size.saturating_add(m.size);
+        leaf_sig |= m.leaf_sig;
+        if i >= MAX_SEATS || !m.ground {
+            if !m.ground && i < MAX_SEATS {
+                mask |= 1u64 << i;
+            }
+            coins.push(0);
+        } else {
+            let c = coin(i, m.key);
+            residue ^= c;
+            s3 ^= crate::gf64::cube(c);
+            coins.push(c);
+            // NO `dict` entry — transient by design (see above).
+        }
+    }
+    AtomInfo {
+        arity: n.min(255) as u8,
+        mask,
+        base_residue: residue,
+        seat_coins: coins,
+        s3,
+        depth: depth.saturating_add(1),
+        size,
+        leaf_sig,
+    }
+}
+
+/// [`AtomInfos::seat_meta`]'s slot-`Term` twin — same keys, same leaf
+/// bits, same groundness/depth/size semantics, seat by seat.
+fn term_seat_meta(el: &Term) -> SeatMeta {
+    let leaf_bit = |key: u64| 1u64 << (key & 63);
+    match el {
+        Term::Var(_) => SeatMeta { ground: false, depth: 0, size: 1, key: 0, leaf_sig: 0 },
+        Term::Sym(s) => {
+            let key = xxh64(&s.id().to_be_bytes(), u64::from(b'S'));
+            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key) }
+        }
+        Term::Lit(Literal::Str(v)) => {
+            let key = xxh64(v.as_bytes(), u64::from(b'T'));
+            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key) }
+        }
+        Term::Lit(Literal::Number(v)) => {
+            let key = xxh64(v.as_bytes(), u64::from(b'N'));
+            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key) }
+        }
+        Term::Op(op) => SeatMeta {
+            ground: true,
+            depth: 0,
+            size: 1,
+            key: xxh64(&[op_byte(op)], u64::from(b'O')),
+            leaf_sig: 0,
+        },
+        Term::App(_) => {
+            let info = term_atom_info(el);
+            let ground = info.is_ground();
+            SeatMeta {
+                ground,
+                depth: info.depth,
+                size: info.size,
+                // The subterm's identity IS its would-be content hash —
+                // the id `Element::Sub` would carry after interning.
+                // Only meaningful (and only computed) when ground.
+                key: if ground { super::super::clause::slot_atom_content_id(el) } else { 0 },
+                leaf_sig: info.leaf_sig,
+            }
+        }
+    }
+}
+
 /// Coin a slot-`Term` leaf at `seat` exactly as [`AtomInfos::seat_meta`]
 /// coins the matching `Element` — the bridge that lets un-interned
 /// derived terms participate in THE KEY EQUATION.  `None` for

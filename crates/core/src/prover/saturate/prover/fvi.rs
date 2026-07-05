@@ -132,6 +132,52 @@ impl ClauseFv {
         ])
     }
 
+    /// [`Self::compute`] fed from PRE-ACCEPT transient data
+    /// (hash-before-intern): per-literal `AtomInfo`s computed from the
+    /// slot terms (`term_atom_info`) and weights from the tree walk /
+    /// ground-facts memo — no `AtomTable` residency needed, no memo
+    /// side effects beyond the (content-addressed, value-identical)
+    /// ground-facts entries the eager path also wrote.  Byte-equal to
+    /// `compute` on the interned counterpart (debug twin at the
+    /// `forward_subsumed` call site; property test in `make.rs`).
+    pub(crate) fn compute_from_terms(
+        lits: &[PLit],
+        terms: &[(bool, Term)],
+        infos: &[AtomInfo],
+        kbo: &KboOrdering,
+        ground_weights: Option<&TermFactsTable>,
+    ) -> Self {
+        debug_assert_eq!(lits.len(), terms.len());
+        debug_assert_eq!(lits.len(), infos.len());
+        let mut n_lits = 0u32;
+        let mut n_pos = 0u32;
+        let mut n_neg = 0u32;
+        let mut size = 0u64;
+        let mut weight = 0u64;
+        for ((l, (_, t)), info) in lits.iter().zip(terms).zip(infos) {
+            n_lits += 1;
+            if l.pos { n_pos += 1; } else { n_neg += 1; }
+            // Mirrors `compute`'s ground-weight arm: the facts walk only
+            // answers for truly ground terms (`compute`'s
+            // `facts_for_atom` bails the same way on the mask-blind
+            // "ground" of a >MAX_SEATS seat), and the fallback is the
+            // same leaf-weight fold `KboOrdering::info` runs.
+            let w = ground_weights
+                .filter(|_| info.is_ground())
+                .and_then(|tbl| tbl.ground_facts(t, kbo))
+                .map(|f| f.kbo_weight);
+            weight = weight.saturating_add(w.unwrap_or_else(|| kbo.term_weight(t)));
+            size = size.saturating_add(u64::from(info.size));
+        }
+        Self([
+            sat_u16(n_lits as u64),
+            sat_u16(n_pos as u64),
+            sat_u16(n_neg as u64),
+            sat_u16(size),
+            sat_u16(weight),
+        ])
+    }
+
     /// Pointwise `<=`: necessary condition for `self` to subsume a
     /// clause with feature vector `other`.  `false` here is a SOUND,
     /// cheap rejection; `true` means "still possible," not "subsumes."
@@ -226,6 +272,28 @@ impl ClauseBlooms {
         let mut glit = 0u64;
         for (l, (_, t)) in lits.iter().zip(terms) {
             leaf |= atom_info(l.atom).leaf_sig;
+            if t.is_ground() {
+                glit |= glit_bit(l.pos, l.atom);
+            }
+        }
+        Self { leaf, glit }
+    }
+
+    /// [`Self::compute`] with the per-atom infos supplied directly
+    /// (the hash-before-intern query side: transient infos computed
+    /// from the slot terms, no residency).  Same bit derivation —
+    /// `leaf_sig` from the info, groundness from the term.
+    pub(crate) fn compute_from_infos(
+        lits: &[PLit],
+        terms: &[(bool, Term)],
+        infos: &[AtomInfo],
+    ) -> Self {
+        debug_assert_eq!(lits.len(), terms.len());
+        debug_assert_eq!(lits.len(), infos.len());
+        let mut leaf = 0u64;
+        let mut glit = 0u64;
+        for ((l, (_, t)), info) in lits.iter().zip(terms).zip(infos) {
+            leaf |= info.leaf_sig;
             if t.is_ground() {
                 glit |= glit_bit(l.pos, l.atom);
             }

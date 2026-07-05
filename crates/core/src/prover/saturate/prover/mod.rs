@@ -202,6 +202,15 @@ pub(crate) struct ClauseRec {
     pub(crate) notes: Vec<String>,
 }
 
+/// A reusable one-way-match scratch: substitution buffer (all-`None`
+/// between uses) plus binding trail (empty between uses).  Rollback via
+/// the trail re-establishes both invariants — clear-don't-free.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct MatchScratch {
+    pub(super) s:     Subst,
+    pub(super) trail: Vec<usize>,
+}
+
 /// The given literal's decode-relevant facts, hoisted out of the
 /// per-partner loop (see `decode_given_shape`).
 struct DecodeShape {
@@ -328,6 +337,19 @@ pub(crate) struct NativeProver<'a> {
     /// `vec![None; n]` per attempt was ~45% of prover CPU (allocator
     /// traffic).  Each site clears exactly the slot range it used.
     scratch: Subst,
+    /// Reusable binding trail for the open-unit match loop in `make`
+    /// (pairs with `scratch`; rollback restores the all-`None`
+    /// invariant without the per-attempt `Vec` the old internal trail
+    /// allocated — LAT282+1 ran 3.84M attempts through that path).
+    match_trail: Vec<usize>,
+    /// Reusable substitution + trail for the demod walk's candidate
+    /// matcher (`vec![None; off+nslots+1]` per candidate per node was
+    /// most of the RNG-family rewrite churn).  `mem::take`n around the
+    /// demod fixpoint so the walk can borrow it beside `&mut self`.
+    demod_scratch: MatchScratch,
+    /// Reusable buffers for the exact subsumption check
+    /// (`clause_subsumes_in`) — see [`SubsScratch`].
+    subs_scratch: SubsScratch,
     /// Rule-mined antisymmetric / irreflexive relations and inverse
     /// pairs (schema channel) — recognized and recorded; runtime
     /// consumers land separately (antisymmetry → pending equalities,
@@ -419,6 +441,9 @@ impl<'a> NativeProver<'a> {
             has_compound_eqs: false,
             has_conjecture: false,
             scratch: Vec::new(),
+            match_trail: Vec::new(),
+            demod_scratch: MatchScratch::default(),
+            subs_scratch: SubsScratch::default(),
             antisym_mined: Map64::default(),
             irrefl_mined: Map64::default(),
             inverse_mined: Vec::new(),
@@ -909,23 +934,62 @@ impl<'a> NativeProver<'a> {
         }
         let layer = self.layer;
         let src = move |a| layer.atom_info(a);
+        // TRANSIENT query-side atom infos, computed from the slot terms
+        // (hash-before-intern): the candidate clause's atoms are not
+        // (yet) resident in the AtomTable — most candidates die right
+        // here, and the accepted ones intern immediately after this
+        // check.  Field-for-field equal to the memoized infos the old
+        // path read (`AtomInfos::info`), minus the memo/phone-book side
+        // effects; the index side (`src`) still resolves through the
+        // layer memo — only the query side is transient.
+        let tinfos: smallvec::SmallVec<[super::AtomInfo; 4]> =
+            terms.iter().map(|(_, t)| super::term_atom_info(t)).collect();
+        #[cfg(any(test, debug_assertions))]
+        for (l, (_, t)) in lits.iter().zip(terms) {
+            // Twin (debug builds only): the transient info must be
+            // byte-equal to the memoized one for the interned atom, and
+            // the hash-only id must be the intern id.  (This twin DOES
+            // intern — acceptable in debug, like the KBO fast-path twins.)
+            let id = self.layer.atoms.intern_slot_atom(t);
+            debug_assert_eq!(id, l.atom, "hash-only atom id diverged from intern for {t:?}");
+            debug_assert_eq!(
+                super::term_atom_info(t),
+                *self.layer.atom_info(l.atom),
+                "transient AtomInfo diverged from AtomInfos::compute for {t:?}",
+            );
+        }
         let mut cand: Set64<u32> = Set64::default();
-        for l in lits {
-            let info = self.layer.atom_info(l.atom);
-            for at in self.idx.probe(l.pos, &info, &src) {
+        for (l, info) in lits.iter().zip(&tinfos) {
+            for at in self.idx.probe(l.pos, info, &src) {
                 cand.insert(at.clause);
             }
         }
-        let d_fv = ClauseFv::compute(
-            lits, self.kbo(), &src, &self.layer.atoms, self.syn(),
+        let d_fv = ClauseFv::compute_from_terms(
+            lits, terms, &tinfos, self.kbo(),
             self.opts.strategy.demod.then_some(&self.layer.term_facts),
         );
+        #[cfg(any(test, debug_assertions))]
+        debug_assert_eq!(
+            d_fv,
+            ClauseFv::compute(
+                lits, self.kbo(), &src, &self.layer.atoms, self.syn(),
+                self.opts.strategy.demod.then_some(&self.layer.term_facts),
+            ),
+            "transient feature vector diverged from the memoized compute",
+        );
         // Bloom prefilter words for the candidate (the D side), computed
-        // once per probe from the same memoized per-atom data the stored
-        // C-side words used at clause birth — identical bit derivation
-        // on both sides is what licenses the subset tests (see
-        // `fvi::ClauseBlooms` for the per-channel soundness arguments).
-        let d_blooms = ClauseBlooms::compute(lits, terms, &src);
+        // once per probe from the same per-atom data (transiently) the
+        // stored C-side words used at clause birth — identical bit
+        // derivation on both sides is what licenses the subset tests
+        // (see `fvi::ClauseBlooms` for the per-channel soundness
+        // arguments).
+        let d_blooms = ClauseBlooms::compute_from_infos(lits, terms, &tinfos);
+        #[cfg(any(test, debug_assertions))]
+        debug_assert_eq!(
+            d_blooms,
+            ClauseBlooms::compute(lits, terms, &src),
+            "transient bloom words diverged from the memoized compute",
+        );
         for cid in cand {
             let c = &self.clauses[cid as usize];
             if c.retired {
@@ -994,7 +1058,14 @@ impl<'a> NativeProver<'a> {
                 continue;
             }
             self.stats.subs_full_checks += 1;
-            if clause_subsumes(&c.terms, terms) {
+            let hit = clause_subsumes_in(&c.terms, terms, &mut self.subs_scratch);
+            #[cfg(any(test, debug_assertions))]
+            debug_assert_eq!(
+                hit,
+                clause_subsumes(&c.terms, terms),
+                "scratch subsumption diverged from the reference for {cid}",
+            );
+            if hit {
                 return Some(cid);
             }
         }
@@ -2796,6 +2867,80 @@ fn clause_subsumes(sub: &[(bool, Term)], sup: &[(bool, Term)]) -> bool {
     subsume_rec(sub, sup, 0, &mut subst, &mut used)
 }
 
+/// Reusable buffers for [`clause_subsumes_in`] — prover-owned, shared
+/// across every candidate of every `forward_subsumed` probe.  The
+/// profile showed the per-candidate setup (BTreeSet slot scan, fresh
+/// `Subst`, fresh `used`, and a `subst.clone()` per literal-assignment
+/// attempt) as roughly half the subsumption bucket's allocator traffic.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SubsScratch {
+    subst: Subst,
+    used:  Vec<bool>,
+    trail: Vec<usize>,
+}
+
+/// [`clause_subsumes`] on reusable scratch: identical verdicts (debug
+/// twin at the `forward_subsumed` call site + twin test below), zero
+/// per-candidate allocation once the buffers are warm.  Backtracking is
+/// trail-based — a failed branch rolls back exactly its own bindings —
+/// instead of the reference's clone/restore of the whole substitution.
+fn clause_subsumes_in(
+    sub: &[(bool, Term)],
+    sup: &[(bool, Term)],
+    scr: &mut SubsScratch,
+) -> bool {
+    if sub.len() > sup.len() {
+        return false;
+    }
+    let nslots = sub.iter().map(|(_, t)| term_slots_end(t)).max().unwrap_or(0);
+    if scr.subst.len() < nslots {
+        scr.subst.resize(nslots, None);
+    }
+    scr.used.clear();
+    scr.used.resize(sup.len(), false);
+    debug_assert!(scr.trail.is_empty());
+    debug_assert!(scr.subst.iter().all(Option::is_none));
+    let hit = subsume_rec_in(sub, sup, 0, scr);
+    // Restore the all-`None` invariant (on failure the recursion already
+    // rolled everything back and the trail is empty).
+    for &slot in &scr.trail {
+        scr.subst[slot] = None;
+    }
+    scr.trail.clear();
+    hit
+}
+
+fn subsume_rec_in(
+    sub: &[(bool, Term)],
+    sup: &[(bool, Term)],
+    i: usize,
+    scr: &mut SubsScratch,
+) -> bool {
+    if i == sub.len() {
+        return true;
+    }
+    let (sp, pat) = &sub[i];
+    for j in 0..sup.len() {
+        let (tp, tgt) = &sup[j];
+        if scr.used[j] || sp != tp {
+            continue;
+        }
+        let mark = scr.trail.len();
+        if super::unify::match_one_way_off(pat, 0, tgt, &mut scr.subst, &mut scr.trail) {
+            scr.used[j] = true;
+            if subsume_rec_in(sub, sup, i + 1, scr) {
+                return true;
+            }
+            scr.used[j] = false;
+            for &slot in &scr.trail[mark..] {
+                scr.subst[slot] = None;
+            }
+            scr.trail.truncate(mark);
+        }
+    }
+    false
+}
+
 fn subsume_rec(
     sub: &[(bool, Term)],
     sup: &[(bool, Term)],
@@ -2866,6 +3011,32 @@ fn replace(t: &Term, path: &[usize], new: &Term) -> Term {
     Term::App(out)
 }
 
+/// [`replace`] for OWNED trees, in place: navigate to `path` and drop
+/// `new` in — no sibling/ancestor cloning, no rebuild, `new` is moved.
+/// Same resulting tree as `replace` (twin test below); a path that
+/// dead-ends in a non-`App` leaves `t` unchanged, mirroring `replace`'s
+/// `t.clone()` arm.  The demod fixpoint's per-step full-tree
+/// clone+drop churn (RNG044+1: 58% of CPU in rewrite machinery) was
+/// exactly `*t = replace(t, ..)`.
+fn replace_in_place(t: &mut Term, path: &[usize], new: Term) {
+    let mut cur = t;
+    for &p in path {
+        let Term::App(elems) = cur else { return };
+        cur = &mut elems[p];
+    }
+    *cur = new;
+}
+
+/// Largest slot index in `t` plus one — allocation-free `nslots` for
+/// the subsumption scratch (the old path built a `BTreeSet` per call).
+fn term_slots_end(t: &Term) -> usize {
+    match t {
+        Term::Var(v) => *v as usize + 1,
+        Term::App(elems) => elems.iter().map(term_slots_end).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// Evaluate ground arithmetic function terms bottom-up
 /// (`(AdditionFn 2 3)` → `5`) — the prototype's `arith_norm`.
 /// In-place arithmetic folding.  The overwhelmingly common case is "no
@@ -2926,7 +3097,7 @@ fn witnesses_kif(why: &[Witness], syn: &crate::syntactic::SyntacticLayer) -> Str
 
 #[cfg(test)]
 mod subsumption_tests {
-    use super::{clause_subsumes, Term};
+    use super::{clause_subsumes, clause_subsumes_in, replace, replace_in_place, SubsScratch, Term};
     use crate::types::Symbol;
 
     fn s(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
@@ -2969,5 +3140,58 @@ mod subsumption_tests {
         let sub = vec![(true, app(vec![s("p"), v(0)]))];
         let sup = vec![(false, app(vec![s("p"), s("a")]))];
         assert!(!clause_subsumes(&sub, &sup));
+    }
+
+    // The scratch-based exact check must agree with the reference on a
+    // matrix of pairs — including backtracking cases where an early
+    // literal assignment must be undone (the trail-rollback path) —
+    // and must leave the scratch invariants intact between calls.
+    #[test]
+    fn clause_subsumes_in_agrees_with_reference_and_keeps_scratch_clean() {
+        let pairs: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
+            (vec![(true, app(vec![s("p"), v(0)]))],
+             vec![(true, app(vec![s("p"), s("a")]))]),
+            (vec![(true, app(vec![s("p"), s("a")]))],
+             vec![(true, app(vec![s("p"), v(0)]))]),
+            (vec![(true, app(vec![s("p"), v(0), v(0)]))],
+             vec![(true, app(vec![s("p"), s("a"), s("b")]))]),
+            (vec![(true, app(vec![s("p"), v(0), v(0)]))],
+             vec![(true, app(vec![s("p"), s("a"), s("a")]))]),
+            // Backtracking: (p ?0) must first try (p a), fail the SECOND
+            // literal under ?0=a, back off, and succeed with ?0=b.
+            (vec![(true, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), v(0)]))],
+             vec![(true, app(vec![s("p"), s("a")])), (true, app(vec![s("p"), s("b")])),
+                  (true, app(vec![s("q"), s("b")]))]),
+            (vec![(false, app(vec![s("q"), v(1)])), (true, app(vec![s("p"), v(1)]))],
+             vec![(false, app(vec![s("q"), s("a")])), (true, app(vec![s("p"), s("a")])),
+                  (true, app(vec![s("r"), s("b")]))]),
+            (vec![(true, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), v(0)]))],
+             vec![(true, app(vec![s("p"), s("a")]))]),
+        ];
+        let mut scr = SubsScratch::default();
+        for (sub, sup) in pairs {
+            let reference = clause_subsumes(&sub, &sup);
+            let scratch = clause_subsumes_in(&sub, &sup, &mut scr);
+            assert_eq!(reference, scratch, "verdict diverged for {sub:?} vs {sup:?}");
+            assert!(scr.trail.is_empty(), "trail must drain between calls");
+            assert!(scr.subst.iter().all(Option::is_none), "subst must reset between calls");
+        }
+    }
+
+    // In-place replace is the allocating `replace`'s twin, path by path.
+    #[test]
+    fn replace_in_place_matches_replace() {
+        let tree = app(vec![
+            s("f"),
+            app(vec![s("g"), s("a"), app(vec![s("h"), v(3)])]),
+            s("c"),
+        ]);
+        let new = app(vec![s("k"), s("z")]);
+        for path in [vec![], vec![1], vec![2], vec![1, 2], vec![1, 2, 1]] {
+            let reference = replace(&tree, &path, &new);
+            let mut in_place = tree.clone();
+            replace_in_place(&mut in_place, &path, new.clone());
+            assert_eq!(in_place, reference, "diverged at path {path:?}");
+        }
     }
 }

@@ -162,6 +162,33 @@ fn shape_of_sentence(
     Some(LitShape { pos, head, args })
 }
 
+/// [`shape_of_sentence`]'s slot-term twin: the same shape, read off the
+/// SLOT-form literal term (canonical variables already carry their slot
+/// numbers there, so `canonical_slot` is the identity map).  `None` for
+/// exactly the literals the sentence reader rejects — wrong arity,
+/// compound or literal-valued arguments, non-`Equal` operator heads.
+fn shape_of_term(pos: bool, t: &Term) -> Option<LitShape> {
+    let Term::App(elems) = t else { return None };
+    if elems.len() != 3 {
+        return None;
+    }
+    let head = match &elems[0] {
+        Term::Sym(s) => HeadK::Sym(s.clone()),
+        Term::Op(OpKind::Equal) => HeadK::Eq,
+        Term::Var(v) => HeadK::Var(u32::try_from(*v).ok()?),
+        _ => return None,
+    };
+    let mut args: SmallVec<[ArgK; 2]> = SmallVec::new();
+    for el in &elems[1..] {
+        args.push(match el {
+            Term::Var(v) => ArgK::Slot(u32::try_from(*v).ok()?),
+            Term::Sym(s) => ArgK::Sym(s.id()),
+            _ => return None,
+        });
+    }
+    Some(LitShape { pos, head, args })
+}
+
 // -- the fingerprint ----------------------------------------------------------------
 
 /// Skeleton coin for one literal: everything EXCEPT the symbol-head
@@ -564,6 +591,31 @@ impl SchemaTable {
         for l in lits {
             shapes.push(shape_of_sentence(l.pos, l.atom, atoms, syn)?);
         }
+        self.probe_shapes(shapes)
+    }
+
+    /// [`Self::probe`] fed from SLOT-form literal terms instead of
+    /// resident atom sentences (hash-before-intern: `make` probes
+    /// clauses whose atoms may never be interned).  The shape reader
+    /// was the only part that touched the table; same shapes, same
+    /// verdicts (twin test below).
+    pub(crate) fn probe_terms(
+        &self,
+        lits:  &[PLit],
+        terms: &[(bool, Term)],
+    ) -> Option<SchemaHit> {
+        if lits.is_empty() || lits.len() > 4 {
+            return None;
+        }
+        let mut shapes: SmallVec<[LitShape; 4]> = SmallVec::new();
+        for (l, (_, t)) in lits.iter().zip(terms) {
+            shapes.push(shape_of_term(l.pos, t)?);
+        }
+        self.probe_shapes(shapes)
+    }
+
+    /// The shared probe tail: fingerprint → table hit → verify.
+    fn probe_shapes(&self, shapes: SmallVec<[LitShape; 4]>) -> Option<SchemaHit> {
         let fp = fingerprint(&shapes);
 
         // Two distinct symbol heads on a 2-literal clause: the inverse
@@ -622,6 +674,64 @@ mod tests {
 
     fn rel_name(hit: &SchemaHit) -> String {
         hit.rel.as_ref().expect("hit carries a relation").name().to_string()
+    }
+
+    // Hash-before-intern twin: the term-shape probe (`probe_terms`, fed
+    // from slot-form terms) must agree with the sentence-shape probe on
+    // every fixture in this module's family — hits AND misses, kind and
+    // relation identity included.
+    #[test]
+    fn probe_terms_agrees_with_sentence_probe_on_the_fixture_family() {
+        use super::super::unify::slot_atom;
+        let fixtures = [
+            "(=> (connectedTo ?A ?B) (connectedTo ?B ?A))",
+            "(=> (and (above ?X ?Y) (above ?Y ?Z)) (above ?X ?Z))",
+            "(=> (and (above ?Y ?Z) (above ?X ?Y)) (above ?X ?Z))",
+            "(=> (and (larger ?A ?B) (larger ?B ?A)) (equal ?A ?B))",
+            "(=> (before ?A ?B) (not (before ?B ?A)))",
+            "(not (properPart ?X ?X))",
+            "(=> (husband ?H ?W) (wife ?W ?H))",
+            "(=> (instance ?R SymmetricRelation) (=> (?R ?A ?B) (?R ?B ?A)))",
+            "(=> (and (instance ?R TransitiveRelation) (?R ?X ?Y) (?R ?Y ?Z)) (?R ?X ?Z))",
+            "(=> (and (equal ?A ?B) (parent ?A ?C)) (parent ?B ?C))",
+            // Near-misses / non-schema shapes must MISS through both readers.
+            "(=> (parent ?A ?B) (ancestor ?A ?B))",
+            "(instance dummy Entity)",
+            "(=> (and (larger ?A ?B) (larger ?B ?C)) (equal ?A ?C))",
+        ];
+        for kif in fixtures {
+            let layer = ProverLayer::new(kif_layer(kif));
+            let roots = layer.semantic.syntactic.file_root_sids("base");
+            assert_eq!(roots.len(), 1, "fixture must hold exactly one root: {kif}");
+            let cls = layer.clauses_for(roots[0]);
+            for pc in cls.iter() {
+                let syn = &layer.semantic.syntactic;
+                let by_sentence = layer.schema.probe(&pc.lits, &layer.atoms, syn);
+                let terms: Vec<(bool, Term)> = pc
+                    .lits
+                    .iter()
+                    .map(|l| (l.pos, slot_atom(&layer.atoms, syn, l.atom, 0).expect("liftable")))
+                    .collect();
+                let by_terms = layer.schema.probe_terms(&pc.lits, &terms);
+                match (&by_sentence, &by_terms) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => {
+                        assert_eq!(a.kind, b.kind, "kind diverged for {kif}");
+                        assert_eq!(
+                            a.rel.as_ref().map(|s| s.id()),
+                            b.rel.as_ref().map(|s| s.id()),
+                            "rel diverged for {kif}",
+                        );
+                        assert_eq!(
+                            a.rel2.as_ref().map(|s| s.id()),
+                            b.rel2.as_ref().map(|s| s.id()),
+                            "rel2 diverged for {kif}",
+                        );
+                    }
+                    _ => panic!("probe divergence for {kif}: {by_sentence:?} vs {by_terms:?}"),
+                }
+            }
+        }
     }
 
     #[test]

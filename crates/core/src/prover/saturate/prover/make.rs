@@ -13,20 +13,24 @@ use smallvec::SmallVec;
 use crate::parse::OpKind;
 use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 
-use super::super::canon::{blank_key, canonical_clause};
-use super::super::clause::{AtomId, PClause, Term};
+use super::super::canon::{blank_key, canonical_clause_hashed};
+use super::super::clause::{atom_content_id, AtomId, PClause, Term};
 use super::super::hash64::Set64;
 use super::super::kbo::KboCmp;
 use super::super::oracle::Witness;
 use super::super::theory::TheoryOracle;
-use super::super::unify::{apply, match_one_way, shift_slots, slot_atom, Subst};
+use super::super::unify::{apply, apply_off, match_one_way, match_one_way_off, shift_slots, slot_atom, Subst};
 use super::{
     arith_norm, classify_seats, eq_key, eq_sides,
-    is_equality_atom, lit_kif, max_slot, replace, stepdbg, term_binary_ids,
+    is_equality_atom, lit_kif, max_slot, replace_in_place, stepdbg, term_binary_ids,
     term_depth, term_ground_equality_sides, term_head_key, term_kif, term_size,
-    term_skolem_apps, witnesses_kif, ClauseRec, NativeProver, BACKGROUND, CONJECTURE,
-    MATCH_TARGET_OFF, SUPPORT,
+    term_skolem_apps, witnesses_kif, ClauseRec, MatchScratch, NativeProver, BACKGROUND,
+    CONJECTURE, MATCH_TARGET_OFF, SUPPORT,
 };
+// The per-step reference engine (debug twins) still splices with the
+// allocating `replace` — deliberately untouched.
+#[cfg(any(test, debug_assertions))]
+use super::replace;
 
 /// Verdict of the ground-equality decision procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +98,10 @@ impl<'a> NativeProver<'a> {
                     && t.is_ground()
                     && term_size(t) <= self.opts.strategy.max_term_size
                 {
-                    let key = self.layer.atoms.intern_atom(t);
+                    // Hash-only: `eq_rep` is key-space, and the class
+                    // representative splices from `eq_terms` — the
+                    // probed term never needs table residency.
+                    let key = atom_content_id(t);
                     let rep = self.oracle.eq_rep(key);
                     if rep != key {
                         if let Some(r) = self.eq_terms.get(&rep) {
@@ -169,6 +176,10 @@ impl<'a> NativeProver<'a> {
 
         let mut rewrites = 0u64;
         let mut used_here: Vec<u32> = Vec::new();
+        // Reusable match scratch for the whole fixpoint (taken off the
+        // prover so the walk can borrow it beside `&mut self`; the old
+        // path allocated a fresh substitution per candidate per node).
+        let mut scr = std::mem::take(&mut self.demod_scratch);
         loop {
             if rewrites >= demod_cap {
                 break;
@@ -177,15 +188,20 @@ impl<'a> NativeProver<'a> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites) else {
+            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites, &mut scr)
+            else {
                 break;
             };
-            *t = replace(t, &step.path, &step.term);
             rewrites += step.used.len() as u64;
             used_here.extend_from_slice(&step.used);
+            // Splice IN PLACE, by move — no sibling cloning, no
+            // rebuild, and the NF-memo's owned term is consumed
+            // directly instead of cloned a second time.
+            replace_in_place(t, &step.path, step.term);
             // The term changed; restart the scan from the top (a
             // rewrite can expose new redexes / new `off`).
         }
+        self.demod_scratch = scr;
 
         #[cfg(any(test, debug_assertions))]
         {
@@ -204,9 +220,15 @@ impl<'a> NativeProver<'a> {
     /// One batched step of the fused demod walk: the first redex (or
     /// ground-subtree normalization batch) in leftmost-innermost order,
     /// spending at most `budget` rewrites.  `None` ⇔ `atom` is normal.
-    fn find_demod_step(&mut self, atom: &Term, off: u64, budget: u64) -> Option<DemodStep> {
+    fn find_demod_step(
+        &mut self,
+        atom: &Term,
+        off: u64,
+        budget: u64,
+        scr: &mut MatchScratch,
+    ) -> Option<DemodStep> {
         let mut path = Vec::new();
-        self.demod_walk(atom, &mut path, off, budget, true)
+        self.demod_walk(atom, &mut path, off, budget, true, scr)
     }
 
     /// The fused traversal behind [`Self::find_demod_step`]: children
@@ -229,6 +251,7 @@ impl<'a> NativeProver<'a> {
         off: u64,
         budget: u64,
         top_excluded: bool,
+        scr: &mut MatchScratch,
     ) -> Option<DemodStep> {
         if let Term::App(elems) = t {
             for (i, e) in elems.iter().enumerate().skip(1) {
@@ -238,7 +261,7 @@ impl<'a> NativeProver<'a> {
                         self.layer.term_facts.ground_key_facts(e, &self.layer.kbo)
                     {
                         // Ground maximal compound subtree: intercept.
-                        match self.ground_subtree_step(e, key, &facts, path, off, budget) {
+                        match self.ground_subtree_step(e, key, &facts, path, off, budget, scr) {
                             GroundOutcome::Clean => {
                                 path.pop();
                                 continue;
@@ -249,7 +272,7 @@ impl<'a> NativeProver<'a> {
                 }
                 // Open compound, or a leaf: ordinary recursion (a leaf
                 // recursion just falls through to its own node probe).
-                if let Some(hit) = self.demod_walk(e, path, off, budget, false) {
+                if let Some(hit) = self.demod_walk(e, path, off, budget, false, scr) {
                     return Some(hit);
                 }
                 path.pop();
@@ -263,17 +286,28 @@ impl<'a> NativeProver<'a> {
             return None;
         }
         self.stats.demod_scans_performed += 1;
-        // Only now — having passed the O(1) shape check — clone the
-        // subterm and build the match probe.
-        let sub = t.clone();
-        let cands = self.demods.candidates(&sub)?;
+        let cands = self.demods.candidates(t)?;
         for d in cands {
-            let l2 = shift_slots(&d.l, off);
-            let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-            if match_one_way(&l2, &sub, &mut s) {
+            // Virtual rename-apart + reusable scratch: the old path
+            // materialized `shift_slots(&d.l, off)` and a fresh
+            // substitution PER CANDIDATE PER NODE (the make/unify
+            // profile bucket's open-unit-style churn, on the demod
+            // side).  `match_one_way_off` interprets the pattern's
+            // slots at `off` directly; bindings roll back via the
+            // trail, so the buffer stays all-`None` between attempts.
+            let need = (off + u64::from(d.nslots)) as usize + 1;
+            if scr.s.len() < need {
+                scr.s.resize(need, None);
+            }
+            debug_assert!(scr.trail.is_empty());
+            if match_one_way_off(&d.l, off, t, &mut scr.s, &mut scr.trail) {
                 // r's variables ⊆ l's (KBO variable condition), so
                 // the match bound everything r mentions.
-                let rr = apply(&shift_slots(&d.r, off), &s);
+                let rr = apply_off(&d.r, off, &scr.s);
+                for &slot in &scr.trail {
+                    scr.s[slot] = None;
+                }
+                scr.trail.clear();
                 return Some(DemodStep {
                     path: path.clone(),
                     term: rr,
@@ -296,6 +330,7 @@ impl<'a> NativeProver<'a> {
         path: &[usize],
         off: u64,
         budget: u64,
+        scr: &mut MatchScratch,
     ) -> GroundOutcome {
         // Part 3.2 — whole-subtree pruning: every possible redex root in
         // `g` keys a bucket by one of `g`'s own symbol/op keys, and
@@ -367,7 +402,7 @@ impl<'a> NativeProver<'a> {
         // Miss: normalize `g` in place (same leftmost-innermost strategy,
         // recursively riding this very machinery for its own ground
         // sub-subtrees), bounded by the remaining rewrite budget.
-        let (nf, used, complete) = self.normalize_ground(g, off, budget);
+        let (nf, used, complete) = self.normalize_ground(g, off, budget, scr);
         if complete {
             if used.is_empty() {
                 self.nf_memo.insert(key, super::super::terms::NfEntry {
@@ -410,6 +445,7 @@ impl<'a> NativeProver<'a> {
         g: &Term,
         off: u64,
         budget: u64,
+        scr: &mut MatchScratch,
     ) -> (Term, SmallVec<[u32; 4]>, bool) {
         let mut cur = g.clone();
         let mut used: SmallVec<[u32; 4]> = SmallVec::new();
@@ -419,10 +455,10 @@ impl<'a> NativeProver<'a> {
                 return (cur, used, false);
             }
             let mut path = Vec::new();
-            match self.demod_walk(&cur, &mut path, off, budget - spent, false) {
+            match self.demod_walk(&cur, &mut path, off, budget - spent, false, scr) {
                 Some(step) => {
-                    cur = replace(&cur, &step.path, &step.term);
                     used.extend_from_slice(&step.used);
+                    replace_in_place(&mut cur, &step.path, step.term);
                 }
                 None => return (cur, used, true),
             }
@@ -807,7 +843,9 @@ impl<'a> NativeProver<'a> {
         if self.lists_done.len() >= 64 {
             return;
         }
-        let key = self.layer.atoms.intern_atom(t);
+        // Hash-only dedup key; the synthesized units carry the Term
+        // itself, so the list term needs no residency here.
+        let key = atom_content_id(t);
         if !self.lists_done.insert(key) {
             return;
         }
@@ -908,15 +946,16 @@ impl<'a> NativeProver<'a> {
     }
 
     /// Equality-class key of any GROUND term: leaf keys from `eq_key`,
-    /// compounds by content hash (interning into the prover-local
-    /// AtomTable — the same id `Element::Sub` carries, so store-side
-    /// and prover-side spellings of one subterm share a class).
+    /// compounds by content hash (hash-only — the same id
+    /// `Element::Sub` carries, so store-side and prover-side spellings
+    /// of one subterm share a class; the union-find and `eq_terms` both
+    /// work in pure key space, so no residency is needed).
     fn term_eq_key(&self, t: &Term) -> Option<u64> {
         if let Some(k) = eq_key(t) {
             return Some(k);
         }
         match t {
-            Term::App(_) if t.is_ground() => Some(self.layer.atoms.intern_atom(t)),
+            Term::App(_) if t.is_ground() => Some(atom_content_id(t)),
             _ => None,
         }
     }
@@ -1504,13 +1543,26 @@ impl<'a> NativeProver<'a> {
         }
 
         // Unit subsumption / simplification against the active units.
+        // The whole pass runs on one reusable match scratch (buffer +
+        // trail, taken off the prover): the old path allocated a trail
+        // per match attempt — LAT282+1 pushed 3.84M attempts through
+        // here.  `unit_subsumed_by` distinguishes "clause dies" from
+        // the per-literal continue/keep outcomes so the scratch is
+        // restored on every exit.
         let mut kept: Vec<(bool, Term)> = Vec::with_capacity(lits.len());
-        for (pos, t) in &lits {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut trail = std::mem::take(&mut self.match_trail);
+        let mut unit_subsumed = false;
+        'lits: for (pos, t) in &lits {
             if t.is_ground() {
-                let atom = self.layer.atoms.intern_atom(t);
+                // Hash-only probe: the ground-unit table is keyed by
+                // atom id; a dying literal never needs residency (the
+                // surviving clause interns at the accept point below).
+                let atom = atom_content_id(t);
                 if self.units.ground_unit(*pos, atom).is_some() {
                     self.stats.unit_subsumed += 1;
-                    return None; // subsumed by an active unit
+                    unit_subsumed = true;
+                    break 'lits; // subsumed by an active unit
                 }
                 if let Some(cid) = self.units.ground_unit(!*pos, atom) {
                     self.stats.unit_simplified += 1;
@@ -1539,14 +1591,23 @@ impl<'a> NativeProver<'a> {
                         self.stats.open_match_attempts += 1;
                         let tgt = target.get_or_insert_with(|| shift_slots(t, MATCH_TARGET_OFF));
                         let n = u.nvars as usize + 1;
-                        let mut s = self.take_scratch(n);
-                        let hit = match_one_way(&u.pattern, tgt, &mut s);
-                        self.put_scratch(s, n);
+                        if scratch.len() < n {
+                            scratch.resize(n, None);
+                        }
+                        let hit = match_one_way_off(&u.pattern, 0, tgt, &mut scratch, &mut trail);
+                        // Restore the all-`None` invariant (a failed
+                        // match already rolled back and left the trail
+                        // empty — this is then a no-op).
+                        for &slot in &trail {
+                            scratch[slot] = None;
+                        }
+                        trail.clear();
                         if hit {
                             self.stats.open_match_hits += 1;
                             if same_pol == *pos {
                                 self.stats.unit_subsumed += 1;
-                                return None;
+                                unit_subsumed = true;
+                                break 'lits;
                             }
                             self.stats.unit_simplified += 1;
                             if self.want_notes() {
@@ -1563,6 +1624,11 @@ impl<'a> NativeProver<'a> {
                 if dropped { continue; }
             }
             kept.push((*pos, t.clone()));
+        }
+        self.scratch = scratch;
+        self.match_trail = trail;
+        if unit_subsumed {
+            return None;
         }
         let lits = kept;
 
@@ -1607,7 +1673,17 @@ impl<'a> NativeProver<'a> {
             None
         };
 
-        let clause = canonical_clause(lits, &self.layer.atoms);
+        // Hash-before-intern canonicalization: atom ids are computed by
+        // the shared content-hash byte scheme WITHOUT touching the atom
+        // table, and the slot-form terms are built in the same walk
+        // (the eager path interned every literal and then lifted it
+        // back out via `slot_atom` — two more tree rebuilds).  The
+        // table is only written at the ACCEPT point below, after the
+        // dedup-probe/tautology/schema/subsumption gates have had their
+        // chance to kill the clause; the dying majority never allocates
+        // a `Sentence` or probes the `DashMap` at all.
+        let (clause, terms) = canonical_clause_hashed(lits);
+        debug_assert_eq!(terms.len(), clause.lits.len());
 
         // Duplicate-hit probe (Part 2, continued): of the clauses demod
         // actually rewrote, how many collapse onto an already-known clause's
@@ -1644,9 +1720,10 @@ impl<'a> NativeProver<'a> {
             && clause.nvars >= 1
             && clause.lits.len() <= 4
         {
-            if let Some(hit) =
-                self.layer.schema.probe(&clause.lits, &self.layer.atoms, self.syn())
-            {
+            // Term-shape probe (pre-accept: atoms not resident).  Same
+            // shapes, same verdicts as the sentence reader — twin test
+            // in `schema.rs`.
+            if let Some(hit) = self.layer.schema.probe_terms(&clause.lits, &terms) {
                 self.stats.schema_hits += 1;
                 if self.apply_schema_hit(&hit, source) {
                     self.stats.schema_absorbed += 1;
@@ -1655,22 +1732,29 @@ impl<'a> NativeProver<'a> {
             }
         }
 
-        // Slot-form terms, lifted once (canonical vars → dense slots).
-        let terms: Vec<(bool, Term)> = clause
-            .lits
-            .iter()
-            .filter_map(|l| {
-                slot_atom(&self.layer.atoms, self.syn(), l.atom, 0).map(|t| (l.pos, t))
-            })
-            .collect();
-        debug_assert_eq!(terms.len(), clause.lits.len());
-
         // Forward subsumption: an active clause already covers this one
         // ⇒ it is redundant, drop it (the flooding floor).  The new
         // clause is not yet in the arena, so no self-subsumption.
         if let Some(_by) = self.forward_subsumed(&clause.lits, &terms) {
             self.stats.subsumed += 1;
             return None;
+        }
+
+        // ---- ACCEPT ----------------------------------------------------
+        // The clause enters the arena: intern its atoms NOW (the single
+        // deferred-residency point).  From here on the record is built
+        // exactly as before — same ids (debug-asserted against the
+        // hash-only ids), same memoized infos, same indexes — so an
+        // arena clause is byte-identical to the eager path's, and
+        // cross-thread visibility (the layer-shared AtomTable) starts
+        // at the same moment the clause itself becomes reachable.
+        for (l, (_, t)) in clause.lits.iter().zip(&terms) {
+            let id = self.layer.atoms.intern_slot_atom(t);
+            debug_assert_eq!(
+                id, l.atom,
+                "accept-point intern id diverged from the hash-only atom id for {t:?}",
+            );
+            let _ = id;
         }
 
         let size: u64 = terms.iter().map(|(_, t)| term_size(t) as u64).sum();
@@ -1868,10 +1952,134 @@ fn bwd_demodulate_term(d: &super::super::units::Demod, t: &mut Term, cap: u64) -
     while rewrites < cap {
         let off = max_slot(t).map_or(0, |m| m + 1);
         let Some((path, rr)) = bwd_find_redex(d, t, off) else { break };
-        *t = replace(t, &path, &rr);
+        replace_in_place(t, &path, rr);
         rewrites += 1;
     }
     rewrites
+}
+
+#[cfg(test)]
+mod hash_before_intern_tests {
+    use super::super::super::canon::{canonical_clause, canonical_clause_hashed};
+    use super::super::super::clause::{atom_content_id, slot_atom_content_id, AtomTable, Term};
+    use super::super::super::kbo::KboOrdering;
+    use super::super::super::term_atom_info;
+    use super::super::super::unify::slot_atom;
+    use crate::parse::OpKind;
+    use crate::syntactic::SyntacticLayer;
+    use crate::types::{Literal, Symbol};
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn num(v: &str) -> Term { Term::Lit(Literal::Number(v.to_string())) }
+    fn strv(v: &str) -> Term { Term::Lit(Literal::Str(v.to_string())) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn var(v: u64) -> Term { Term::Var(v) }
+    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+
+    /// The literal-list fixture family: every shape the canonicalizer
+    /// meets — shared variables across literals (first-occurrence
+    /// rename order), nested open and ground compounds, equality
+    /// orientation, ops, numeric/string literals, bare-symbol atoms,
+    /// duplicate literals, and slot ids far above dense range (raw
+    /// resolution offsets).
+    fn fixtures() -> Vec<Vec<(bool, Term)>> {
+        vec![
+            vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![(true, sym("propositional"))],
+            vec![(false, var(7))],
+            vec![
+                (false, app(vec![sym("q"), var(4100), sym("a")])),
+                (true, app(vec![sym("p"), var(4100), var(9)])),
+            ],
+            vec![
+                (true, eq(app(vec![sym("f"), var(3)]), var(3))),
+                (false, app(vec![sym("r"), app(vec![sym("g"), var(3), sym("c")])])),
+            ],
+            vec![(true, eq(sym("b"), sym("a")))], // orients
+            vec![(true, eq(app(vec![sym("f"), sym("z")]), app(vec![sym("f"), sym("a")])))],
+            vec![
+                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
+                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
+            ],
+            vec![
+                (false, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), var(5)])])])),
+                (true, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), sym("k")])])])),
+            ],
+            vec![(true, app(vec![var(2), var(1), var(2)]))], // predicate-variable head
+        ]
+    }
+
+    // The headline hash-before-intern property: the deferred
+    // canonicalization must produce EXACTLY the eager path's clause
+    // (key, atom ids, nvars) and EXACTLY the slot terms `slot_atom`
+    // would lift after interning.
+    #[test]
+    fn hashed_canonicalization_matches_eager_intern_and_lift() {
+        for lits in fixtures() {
+            let atoms = AtomTable::default();
+            let syn = SyntacticLayer::default();
+            let eager = canonical_clause(lits.clone(), &atoms);
+            let (hashed, terms) = canonical_clause_hashed(lits);
+            assert_eq!(hashed.key, eager.key, "clause key diverged");
+            assert_eq!(hashed.lits, eager.lits, "canonical literals diverged");
+            assert_eq!(hashed.nvars, eager.nvars, "nvars diverged");
+            assert_eq!(terms.len(), eager.lits.len());
+            for (l, (pos, t)) in eager.lits.iter().zip(&terms) {
+                assert_eq!(l.pos, *pos);
+                let lifted = slot_atom(&atoms, &syn, l.atom, 0).expect("interned by eager path");
+                assert_eq!(*t, lifted, "slot term diverged from the slot_atom lift");
+                // The accept-point intern reproduces the id (and the
+                // stored sentence, by content addressing).
+                assert_eq!(atoms.intern_slot_atom(t), l.atom, "intern_slot_atom id diverged");
+                assert_eq!(slot_atom_content_id(t), l.atom, "slot hash-only id diverged");
+            }
+        }
+    }
+
+    // `atom_content_id` == `intern_atom` for arbitrary (raw-variable)
+    // terms — the pre-canonicalization ground-probe keyspace.
+    #[test]
+    fn atom_content_id_matches_intern_atom() {
+        let atoms = AtomTable::default();
+        let terms = vec![
+            sym("bare"),
+            num("42"),
+            app(vec![sym("f"), sym("a")]),
+            app(vec![sym("g"), app(vec![sym("f"), num("2")]), strv("x")]),
+            app(vec![sym("h"), var(3), app(vec![sym("f"), var(4100)])]),
+            eq(app(vec![sym("f"), sym("a")]), sym("b")),
+            var(12),
+        ];
+        for t in terms {
+            assert_eq!(atom_content_id(&t), atoms.intern_atom(&t), "id diverged for {t:?}");
+        }
+    }
+
+    // The transient AtomInfo must be field-for-field the memoized
+    // compute's output, and the transient KBO weight the memoized
+    // weight — for every literal of every fixture clause.
+    #[test]
+    fn transient_info_and_weight_match_memoized_computes() {
+        use super::super::super::AtomInfos;
+        for lits in fixtures() {
+            let atoms = AtomTable::default();
+            let syn = SyntacticLayer::default();
+            let infos = AtomInfos::default();
+            let kbo = KboOrdering::new();
+            let eager = canonical_clause(lits.clone(), &atoms);
+            let (_, terms) = canonical_clause_hashed(lits);
+            for (l, (_, t)) in eager.lits.iter().zip(&terms) {
+                let transient = term_atom_info(t);
+                let memoized = infos.info(l.atom, &atoms, &syn);
+                assert_eq!(transient, *memoized, "AtomInfo diverged for {t:?}");
+                assert_eq!(
+                    kbo.term_weight(t),
+                    kbo.info(l.atom, &atoms, &syn).weight,
+                    "KBO weight diverged for {t:?}",
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

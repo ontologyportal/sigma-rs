@@ -187,6 +187,23 @@ impl KboOrdering {
         }
     }
 
+    /// The KBO weight of a SLOT-form atom term, computed transiently
+    /// from the tree — equals `self.info(id).weight` for the interned
+    /// counterpart (same leaf-weight table, same saturating fold in the
+    /// same traversal order; property-tested in `prover/make.rs`).
+    /// The hash-before-intern feature-vector path reads OPEN literals'
+    /// weights through this instead of `info` (which would need the
+    /// atom resident to resolve).
+    pub(crate) fn term_weight(&self, t: &super::clause::Term) -> u64 {
+        use super::clause::Term;
+        match t {
+            Term::App(elems) => elems
+                .iter()
+                .fold(0u64, |w, e| w.saturating_add(self.term_weight(e))),
+            leaf => self.term_leaf_weight(leaf),
+        }
+    }
+
     /// [`Self::term_leaf_weight`]'s store-side twin, over [`Element`]s.
     #[inline]
     pub(crate) fn element_leaf_weight(&self, el: &Element) -> u64 {
