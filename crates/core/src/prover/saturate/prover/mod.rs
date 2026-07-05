@@ -926,8 +926,9 @@ impl<'a> NativeProver<'a> {
     /// returns for ours — then refuted by the feature-vector prefilter
     /// (`fvi::ClauseFv::le`, O(1): #lits/#pos/#neg/size/KBO-weight all
     /// monotone under matching, so a channel violation soundly rules out
-    /// subsumption) before falling back to the expensive exact check,
-    /// [`clause_subsumes`].  Gated by `Strategy.subsumption`.
+    /// subsumption) and the per-literal Key-Equation counting filter
+    /// ([`keq_unpartnered`]) before falling back to the expensive exact
+    /// check, [`clause_subsumes`].  Gated by `Strategy.subsumption`.
     fn forward_subsumed(&mut self, lits: &[PLit], terms: &[(bool, Term)]) -> Option<u32> {
         if !self.opts.strategy.subsumption || lits.is_empty() {
             return None;
@@ -1054,6 +1055,32 @@ impl<'a> NativeProver<'a> {
                     "FV prefilter rejected {:?} but clause_subsumes({:?}, {:?}) \
                      would have accepted it (fv {:?} vs {:?})",
                     cid, c.terms, terms, c.fv, d_fv,
+                );
+                continue;
+            }
+            // Channel: per-literal Key-Equation counting filter — every
+            // literal of C must have at least one Key-Equation-compatible
+            // literal in D, or C cannot subsume D (see `keq_unpartnered`
+            // for the soundness argument).  C-side per-literal infos are
+            // resident layer memos (C is an accepted, active clause);
+            // D-side infos are the SAME transient `tinfos` the bloom/FV
+            // channels above already used — nothing is recomputed.
+            let c_infos: SmallVec<[std::sync::Arc<AtomInfo>; 4]> =
+                c.lits.iter().map(|l| layer.atom_info(l.atom)).collect();
+            let mut pair_tests = 0u64;
+            let keq_rejected =
+                keq_unpartnered(&c.lits, &c_infos, lits, &tinfos, &mut pair_tests);
+            self.stats.keq_pair_tests += pair_tests;
+            if keq_rejected {
+                self.stats.subs_rejected_by_keq += 1;
+                // MANDATORY debug twin: a Key-Equation rejection must
+                // agree with the reference matcher.
+                #[cfg(any(test, debug_assertions))]
+                debug_assert!(
+                    !clause_subsumes(&c.terms, terms),
+                    "Key-Equation counting filter rejected {:?} but \
+                     clause_subsumes({:?}, {:?}) would have accepted it",
+                    cid, c.terms, terms,
                 );
                 continue;
             }
@@ -2853,6 +2880,95 @@ fn positions(atom: &Term) -> Vec<(Vec<usize>, Term)> {
 /// `sub`'s slots only (no rename-apart needed).  Backtracking over the
 /// literal assignment; clauses are small, so the per-attempt subst clone
 /// is cheap.
+/// Per-literal Key-Equation counting filter for forward subsumption:
+/// `true` when some literal of the candidate subsumer `C` has NO
+/// Key-Equation-compatible partner literal in the new clause `D` — a
+/// SOUND rejection of "C subsumes D" (the exact matcher would have said
+/// no); `false` says nothing (the full check still verifies).
+///
+/// SOUNDNESS (necessary condition): if C subsumes D, each literal `c`
+/// of C maps under the (single, clause-wide) matching substitution σ to
+/// an IDENTICAL literal `d ∈ D` of the same polarity (`cσ = d`
+/// syntactically — that is what the one-way matcher establishes,
+/// literal by literal).  σ only ever replaces variables, so it does not
+/// alter `c`'s ground seats: `d` agrees with `c` on every ground seat
+/// of `c`, coin for coin (coin keys are pure content functions, and a
+/// ground compound seat's key is its content hash — identical content,
+/// identical coin).  Whatever σ wrote into `c`'s masked seats is
+/// removed from `d`'s fingerprint by `residue_under`:
+/// `AtomInfo::mask` masks every non-ground seat WHOLE — a bare variable
+/// or a compound containing one sets the whole seat's bit and
+/// contributes a zero coin (see `fingerprint.rs::{compute, seat_meta}`;
+/// the same semantics on the transient D side via `term_atom_info`,
+/// property-tested in `make.rs` and debug-twinned at the
+/// `forward_subsumed` call site) — so no partial-seat content survives
+/// under a masked bit on either side.  Seats ≥ `MAX_SEATS` carry no
+/// coin and no mask bit on either side (skipped alike; selectivity
+/// loss only).  Hence NECESSARILY, for `d = cσ`:
+///
+///   polarity(c) == polarity(d),  arity(c) == arity(d),  and
+///   d.info.residue_under(c.info.mask) == c.info.base_residue
+///
+/// — both sides reduce to `arity_tag(n) ⊕ XOR{coins of c's ground
+/// seats}`: `d`'s ground coins at `c`'s ground seats are identical, its
+/// content at `c`'s masked seats is XOR-ed off (if ground in `d`) or
+/// was never coined (if still open in `d` — zero coin, skipped by the
+/// `!self.mask` guard).  This is exactly the unit-store KEY EQUATION
+/// applied per pair, O(popcount(mask)) per test via `seat_coins`.  So a
+/// literal of C with NO compatible partner among D's literals refutes
+/// subsumption outright.  Equal-arity literals always have equal REAL
+/// arity when identical, so the saturated-`u8` arity gate never falsely
+/// rejects, and a differing real arity behind an equal saturated one is
+/// caught by the `arity_tag` mixed into the residues.
+///
+/// The converse is NOT checked (per-literal partners need not be
+/// simultaneously realizable by one σ, and two C literals may claim the
+/// same D literal) — that is the full matcher's job; false passes cost
+/// one redundant `clause_subsumes_in` call, never a wrong answer.
+///
+/// The C-literal scan starts at the most-ground literal (fewest masked
+/// seats → most coins pinned → highest chance of having no partner) and
+/// takes the rest in clause order; each partner scan over D stops at
+/// the first compatible literal.  `pair_tests` counts every inner-scan
+/// step (the `keq_pair_tests` stat).
+fn keq_unpartnered(
+    c_lits: &[PLit],
+    c_infos: &[std::sync::Arc<AtomInfo>],
+    d_lits: &[PLit],
+    d_infos: &[AtomInfo],
+    pair_tests: &mut u64,
+) -> bool {
+    debug_assert_eq!(c_lits.len(), c_infos.len());
+    debug_assert_eq!(d_lits.len(), d_infos.len());
+    // Most-selective-first: argmin popcount(mask), ties to the first
+    // occurrence (`min_by_key` keeps the earliest minimum) — cheap and
+    // deterministic; the remaining literals follow in clause order.
+    let first = c_infos
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, info)| info.mask.count_ones())
+        .map_or(0, |(i, _)| i);
+    let order = std::iter::once(first).chain((0..c_lits.len()).filter(|&i| i != first));
+    for ci in order {
+        let (cl, cinfo) = (&c_lits[ci], &*c_infos[ci]);
+        let mut partnered = false;
+        for (dl, dinfo) in d_lits.iter().zip(d_infos) {
+            *pair_tests += 1;
+            if dl.pos == cl.pos
+                && dinfo.arity == cinfo.arity
+                && dinfo.residue_under(cinfo.mask) == cinfo.base_residue
+            {
+                partnered = true;
+                break;
+            }
+        }
+        if !partnered {
+            return true;
+        }
+    }
+    false
+}
+
 fn clause_subsumes(sub: &[(bool, Term)], sup: &[(bool, Term)]) -> bool {
     if sub.len() > sup.len() {
         return false;

@@ -24,8 +24,9 @@ pub(crate) struct ProverStats {
     /// the prefilter chain's denominator.  Invariant:
     /// `subs_checks_attempted == subs_rejected_by_bloom_leaf +
     /// subs_rejected_by_bloom_glit + subs_rejected_by_fv +
-    /// subs_full_checks` (the channels run in that order; each
-    /// rejection is attributed to the FIRST channel that fired).
+    /// subs_rejected_by_keq + subs_full_checks` (the channels run in
+    /// that order; each rejection is attributed to the FIRST channel
+    /// that fired).
     pub(crate) subs_checks_attempted: u64,
     /// Of those, how many were REJECTED by the leaf-bloom channel
     /// (`fvi::ClauseBlooms::leaf` subset test — one AND per candidate,
@@ -45,6 +46,19 @@ pub(crate) struct ProverStats {
     /// (`fvi::ClauseFv::le`) before the expensive `clause_subsumes` call
     /// — the prefilter's payoff.
     pub(crate) subs_rejected_by_fv: u64,
+    /// Of those, how many were REJECTED by the per-literal Key-Equation
+    /// counting filter (`keq_unpartnered`): some literal of the
+    /// candidate subsumer has NO Key-Equation-compatible literal in the
+    /// new clause (same polarity + same arity + residue match), having
+    /// passed both blooms and the FV channels.
+    pub(crate) subs_rejected_by_keq: u64,
+    /// (candidate-subsumer literal, new-clause literal) compatibility
+    /// tests evaluated inside the Key-Equation counting filter — every
+    /// inner-scan step counts, including the cheap polarity/arity
+    /// gates; each partner scan stops at its first compatible literal.
+    /// The channel's workload numerator (each test is
+    /// O(popcount(mask)) at worst).
+    pub(crate) keq_pair_tests: u64,
     /// Of those, how many passed every prefilter channel and were handed
     /// to the exact `clause_subsumes` check (see the sum invariant on
     /// `subs_checks_attempted`).

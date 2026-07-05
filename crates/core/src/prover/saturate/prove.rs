@@ -792,12 +792,15 @@ impl ProverLayer {
                 raw.push_str(&format!(
                     "\nsubs-fvi: {} checks_attempted, {} rejected_by_bloom_leaf, \
                      {} rejected_by_bloom_glit ({} glit_applicable), \
-                     {} rejected_by_fv, {} full_checks",
+                     {} rejected_by_fv, {} rejected_by_keq ({} keq_pair_tests), \
+                     {} full_checks",
                     prover.stats.subs_checks_attempted,
                     prover.stats.subs_rejected_by_bloom_leaf,
                     prover.stats.subs_rejected_by_bloom_glit,
                     prover.stats.subs_glit_applicable,
                     prover.stats.subs_rejected_by_fv,
+                    prover.stats.subs_rejected_by_keq,
+                    prover.stats.keq_pair_tests,
                     prover.stats.subs_full_checks));
             }
             // Decode fast-path cause profile (Step-2; always printed —

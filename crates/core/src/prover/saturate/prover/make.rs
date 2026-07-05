@@ -2489,6 +2489,179 @@ mod bloom_subsumption_tests {
 }
 
 #[cfg(test)]
+mod keq_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // Soundness half: a GENUINELY subsuming pair must sail through the
+    // Key-Equation counting filter (it is a necessary-condition filter)
+    // and reach the exact check.  The keq debug twin runs live in every
+    // test build, so a misfire would abort here.
+    #[test]
+    fn subsuming_pair_passes_the_keq_filter_and_reaches_the_full_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = ¬(q a) ∨ (p ?0).
+        let c = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
+        let made = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is forward-subsumed by C");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        // The keq filter may not reject a genuine subsumption
+        // (soundness), and it DID run (the pair reached it: both blooms
+        // and FV passed).
+        assert_eq!(p.stats.subs_rejected_by_keq, 0);
+        assert!(p.stats.keq_pair_tests > 0, "the filter actually scanned pairs");
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Rejection half, with the exact reason pinned: every earlier
+    // channel passes (asserted as fixture preconditions), and the keq
+    // filter alone rejects — C's open literal (q a ?0) has no
+    // Key-Equation-compatible partner in D: the only same-polarity,
+    // same-arity literal (q b a) disagrees on the ground seat 1
+    // (`a` vs `b`), which the residue comparison sees because seat 1 is
+    // NOT masked in C's literal.
+    #[test]
+    fn keq_rejects_subsumer_whose_open_literal_has_no_compatible_partner() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q a ?0) — both literals open, so the
+        // ground-literal bloom is inapplicable by construction.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p a) ∨ (q b a) — C's (p ?0) makes it an index candidate,
+        // but (q a ?0) matches neither literal: (p a) has the wrong
+        // arity, (q b a) the wrong ground seat-1 content.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Fixture preconditions: the pair genuinely reaches the keq
+        // channel, i.e. every earlier channel passes.  C's leaves
+        // {p, q, a} all occur in D, so the leaf subset holds bit-wise
+        // unconditionally; C has no ground literal, so glit is
+        // inapplicable; and the FV channels agree pointwise.
+        let (cb, db) = (p.clauses[c as usize].blooms, p.clauses[d as usize].blooms);
+        assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
+        assert_eq!(cb.glit, 0, "fixture: no ground literal in C");
+        assert!(
+            p.clauses[c as usize].fv.le(&p.clauses[d as usize].fv),
+            "fixture: the FV channels must not reject this pair",
+        );
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_glit_applicable, 0);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_rejected_by_keq, 1, "the keq filter fired");
+        assert!(p.stats.keq_pair_tests > 0);
+        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+    }
+
+    // The sum invariant on live traffic: a mixed batch of candidate
+    // subsumers and probes drives every channel (leaf / fv / keq /
+    // full), and each attempted check is attributed to EXACTLY ONE
+    // outcome.  The keq + FV debug twins verify every individual
+    // rejection against the reference matcher along the way.
+    #[test]
+    fn keq_sum_invariant_holds_on_live_traffic() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        let actives = vec![
+            // (p ?0) ∨ (q c): leaf-rejects against probes without `c`.
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("c")])),
+            ],
+            // (p ?0) ∨ (q a ?0): keq-rejects against (p a) ∨ (q b a).
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
+            ],
+            // ¬(q a) ∨ (p ?0): subsumes ¬(q a) ∨ (p b); fv-rejects
+            // (polarity counts) against all-positive probes.
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+        ];
+        for lits in actives {
+            let id = p.make(lits, vec![], "test", SUPPORT, None, true).expect("kept");
+            p.activate(id);
+        }
+        let probes = vec![
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b"), sym("a")])),
+            ],
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b")])),
+            ],
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+        ];
+        for lits in probes {
+            let _ = p.make(lits, vec![], "test", SUPPORT, None, true);
+        }
+        let s = &p.stats;
+        assert!(s.subs_checks_attempted > 0, "traffic actually flowed");
+        assert!(s.subs_rejected_by_keq >= 1, "the keq channel fired at least once");
+        assert!(s.subs_full_checks >= 1, "at least one pair reached the exact check");
+        assert_eq!(
+            s.subs_checks_attempted,
+            s.subs_rejected_by_bloom_leaf
+                + s.subs_rejected_by_bloom_glit
+                + s.subs_rejected_by_fv
+                + s.subs_rejected_by_keq
+                + s.subs_full_checks,
+            "every attempted check is attributed to exactly one channel",
+        );
+    }
+}
+
+#[cfg(test)]
 mod verified_dedup_tests {
     use super::super::NativeProver;
     use super::super::super::ProverLayer;
