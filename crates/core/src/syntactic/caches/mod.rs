@@ -26,3 +26,7 @@ pub(crate) mod sine_index;
 // Toggleable compute caches — disabled by default (transparent getters).
 pub(crate) mod sentence_symbols;
 pub(crate) mod sentence_vars;
+
+// Lazy compute cache, ENABLED by default (content-addressed facts can
+// never go stale; reactive eviction is memory hygiene).
+pub(crate) mod term_facts;

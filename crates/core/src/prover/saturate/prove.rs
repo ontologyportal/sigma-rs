@@ -753,6 +753,20 @@ impl ProverLayer {
                      verdicts withheld (GaveUp)",
                     conj.dropped, conj_lossy, failed_roots));
             }
+            // Ground-term identity line (NF memo + subtree bloom prune)
+            // only when demod is on: the default-path SIGMA_STATS output
+            // stays byte-identical with demod off.
+            if prover.opts.strategy.demod {
+                raw.push_str(&format!(
+                    "\nnf-memo: {} probes, {} hits_unchanged, {} hits_rewritten, \
+                     {} misses, {} stale_discards; bloom: {} subtrees_pruned",
+                    prover.stats.nf_probes,
+                    prover.stats.nf_hits_unchanged,
+                    prover.stats.nf_hits_rewritten,
+                    prover.stats.nf_misses,
+                    prover.stats.nf_stale_discards,
+                    prover.stats.bloom_subtrees_pruned));
+            }
             // Backward-demodulation line only when the knob is on: the
             // default-path SIGMA_STATS output stays byte-identical.
             if prover.opts.strategy.bwd_demod {

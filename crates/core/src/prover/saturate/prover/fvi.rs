@@ -63,6 +63,7 @@ use super::super::clause::{AtomId, AtomTable, PLit};
 #[cfg(test)]
 use super::super::clause::Term;
 use super::super::kbo::KboOrdering;
+use super::super::terms::TermFactsTable;
 use super::super::AtomInfo;
 
 /// Number of feature channels.
@@ -83,12 +84,21 @@ impl ClauseFv {
     /// SAME per-atom memos the rest of the prover already warms
     /// (`AtomInfos::info` / `KboOrdering::info`), via the two injected
     /// lookups — this function never re-walks a `Term` tree.
+    ///
+    /// `ground_weights` (Part 3.3 of the ground-term identity design,
+    /// passed only under `Strategy.demod`): a GROUND literal's weight is
+    /// read from the layer-shared ground-term facts memo instead of the
+    /// per-`KboOrdering` memo — the same value (weights are
+    /// `prec_seed`-independent; debug-asserted), but the layer table
+    /// stays warm across prec-seeded portfolio lanes whose fresh
+    /// `KboOrdering` memos start cold.
     pub(crate) fn compute(
         lits: &[PLit],
         kbo: &KboOrdering,
         atom_info: impl Fn(AtomId) -> Arc<AtomInfo>,
         atoms: &AtomTable,
         syn: &SyntacticLayer,
+        ground_weights: Option<&TermFactsTable>,
     ) -> Self {
         let mut n_lits = 0u32;
         let mut n_pos = 0u32;
@@ -98,8 +108,22 @@ impl ClauseFv {
         for l in lits {
             n_lits += 1;
             if l.pos { n_pos += 1; } else { n_neg += 1; }
-            weight = weight.saturating_add(kbo.info(l.atom, atoms, syn).weight);
-            size = size.saturating_add(u64::from(atom_info(l.atom).size));
+            let info = atom_info(l.atom);
+            let w = ground_weights
+                .filter(|_| info.is_ground())
+                .and_then(|tbl| tbl.facts_for_atom(l.atom, atoms, syn, kbo))
+                .map(|f| f.kbo_weight);
+            #[cfg(any(test, debug_assertions))]
+            if let Some(w) = w {
+                debug_assert_eq!(
+                    w, kbo.info(l.atom, atoms, syn).weight,
+                    "ground facts weight diverged from the KBO memo for atom {:#x}",
+                    l.atom,
+                );
+            }
+            weight = weight
+                .saturating_add(w.unwrap_or_else(|| kbo.info(l.atom, atoms, syn).weight));
+            size = size.saturating_add(u64::from(info.size));
         }
         Self([
             sat_u16(n_lits as u64),

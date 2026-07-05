@@ -28,6 +28,7 @@ use caches::residue_index::ResidueCache;
 use caches::occurrences::OccurrenceIndex;
 use caches::sentence_symbols::SentenceSymbols;
 use caches::sentence_vars::SentenceVars;
+use caches::term_facts::TermFactsCache;
 use caches::session::SessionCache;
 use caches::sine_index::SineCache;
 use caches::sentences::SentenceCache;
@@ -86,6 +87,10 @@ pub(crate) struct SyntacticLayer {
     /// Compute cache listing all variables inside a sentence (recursive).
     /// Memoization and persistence disabled by default.
     pub(crate) sentence_vars:       Cache<SentenceVars>,
+    /// Lazy per-sid structural term facts (ground / size / depth /
+    /// symbol Bloom), content-addressed and reactive on `RootRemoved`.
+    /// See [`caches::term_facts`].
+    pub(crate) term_facts:          Cache<TermFactsCache>,
     /// Synthetic SentenceId → origin root.
     pub(crate) synthetic_origin:    HashMap<SentenceId, SentenceId>,
 
@@ -178,6 +183,7 @@ impl SyntacticLayer {
             axiom_index:         EagerMap::new(cfg, AxiomIndex),
             sentence_symbols:    Cache::new(cfg, SentenceSymbols),
             sentence_vars:       Cache::new(cfg, SentenceVars),
+            term_facts:          Cache::new(cfg, TermFactsCache),
             synthetic_origin:    HashMap::new(),
             sine:                Eager::new(cfg, SineCache),
             config:              cfg.clone(),
@@ -258,6 +264,7 @@ impl Layer for SyntacticLayer {
             bind(&self.residue,     self),
             bind(&self.axiom_index, self),
             bind(&self.sine,        self),
+            bind(&self.term_facts,  self),
         ]
     }
 

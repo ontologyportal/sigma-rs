@@ -346,15 +346,39 @@ pub(crate) struct DemodIndex {
     app: Map64<(u64, u8), Vec<Demod>>,
     leaf: Map64<u64, Vec<Demod>>,
     len: usize,
+    /// OR of `1 << (lhs bucket key % 64)` over every registered
+    /// demodulator — same bit derivation as the ground-term facts'
+    /// `sym_bloom` (`syntactic::caches::term_facts::bloom_bit_*`), so
+    /// `subtree_bloom & head_bits == 0` PROVES no node anywhere in that
+    /// subtree can be a redex root (a redex root's bucket key is one of
+    /// the subtree's own symbol/op keys, and the bloom is a superset of
+    /// those).  Bits are never retired per rule (superset-sound: stale
+    /// bits only prune less); reset with the index.
+    head_bits: u64,
+    /// Bumped on every registration and on an index rebuild (`clear`).
+    /// Retirement does NOT bump — a retired demodulator's rewrites stay
+    /// sound, and the rule set only GROWS within a generation, so a
+    /// normal form recorded at generation g is complete exactly at g.
+    generation: u32,
 }
 
 impl DemodIndex {
     pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
 
+    /// The registered-lhs head-bit mask (see field docs).
+    #[inline]
+    pub(crate) fn head_bits(&self) -> u64 { self.head_bits }
+
+    /// The current demodulator-set generation (see field docs).
+    #[inline]
+    pub(crate) fn generation(&self) -> u32 { self.generation }
+
     pub(crate) fn clear(&mut self) {
         self.app = Map64::default();
         self.leaf = Map64::default();
         self.len = 0;
+        self.head_bits = 0;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Register the oriented demodulator `l → r` (caller has already
@@ -377,6 +401,7 @@ impl DemodIndex {
                     _ => return None,
                 };
                 let ar = elems.len().min(255) as u8;
+                self.head_bits |= 1u64 << (key & 63);
                 self.app
                     .entry((key, ar))
                     .or_default()
@@ -384,11 +409,13 @@ impl DemodIndex {
             }
             Term::Sym(s) => {
                 let id = s.id();
+                self.head_bits |= 1u64 << (id & 63);
                 self.leaf.entry(id).or_default().push(d.clone());
             }
             _ => return None,
         }
         self.len += 1;
+        self.generation = self.generation.wrapping_add(1);
         Some(d)
     }
 
@@ -421,10 +448,11 @@ impl DemodIndex {
     /// derivation as `candidates` but without materializing the slice —
     /// callers use it to skip cloning/probing a subterm *before* paying
     /// for either.  Per-NODE, not per-subtree: a negative head key here
-    /// says nothing about a deeper subterm's head key (see module docs
-    /// on why whole-subtree pruning needs a per-term symbol fingerprint
-    /// the current `Term` representation does not cache), so callers
-    /// must still recurse into children even when this returns `false`.
+    /// says nothing about a deeper subterm's head key, so callers must
+    /// still recurse into children even when this returns `false`.
+    /// (Whole-SUBTREE pruning exists separately for GROUND subtrees via
+    /// the `sym_bloom` ∩ [`Self::head_bits`] test — see
+    /// `saturate::terms` and the demod walk in `prover/make.rs`.)
     pub(crate) fn possibly_matches(&self, t: &Term) -> bool {
         match t {
             Term::App(elems) => {

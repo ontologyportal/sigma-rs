@@ -22,6 +22,7 @@ pub(crate) mod canon;
 pub(crate) mod caches;
 pub(crate) mod hash64;
 pub(crate) mod kbo;
+pub(crate) mod terms;
 pub(crate) mod index;
 pub(crate) mod unify;
 pub(crate) mod units;
@@ -98,6 +99,13 @@ pub struct ProverLayer {
     /// [`kbo`].
     pub(crate) kbo: kbo::KboOrdering,
 
+    /// Ground-term facts memo (size / depth / symbol Bloom / KBO
+    /// weight), keyed by content hash — the prover-side tier of the
+    /// two-tier ground-term identity design.  Content-addressed and
+    /// pure, so layer-shared across runs like `atom_infos` beside it.
+    /// Only ever consulted while `Strategy.demod` is on.  See [`terms`].
+    pub(crate) term_facts: terms::TermFactsTable,
+
     /// Frozen background problem bases, keyed by a fingerprint of
     /// everything that shaped them (scope, selection, session content,
     /// conjecture, whole-KB root set, make-affecting opts).  A hit
@@ -127,6 +135,7 @@ impl ProverLayer {
             atom_infos:   AtomInfos::default(),
             schema,
             kbo:          kbo::KboOrdering::new(),
+            term_facts:   terms::TermFactsTable::default(),
             bg_snapshots: dashmap::DashMap::new(),
         }
     }

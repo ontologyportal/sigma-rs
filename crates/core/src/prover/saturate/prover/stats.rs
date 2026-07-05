@@ -185,6 +185,32 @@ pub(crate) struct ProverStats {
     /// reduction ratio).
     pub(crate) demod_scans_performed: u64,
 
+    // -- ground-term identity: whole-subtree bloom pruning + NF memo
+    //    (Parts 3.2/4 of the two-tier design; all zero unless
+    //    Strategy.demod is on — the machinery never runs otherwise).
+    /// Ground maximal subtrees whose entire descent was skipped because
+    /// their symbol bloom shares no bit with the registered demodulator
+    /// head-bit mask (`DemodIndex::head_bits`) — a proof of redex
+    /// absence, twin-checked in debug builds.
+    pub(crate) bloom_subtrees_pruned: u64,
+    /// NF-memo probes: one per ground maximal subtree the demod walk
+    /// enters that survives the bloom prune.
+    pub(crate) nf_probes: u64,
+    /// Probes answered "already in normal form" — the whole subtree is
+    /// skipped, no redex search.
+    pub(crate) nf_hits_unchanged: u64,
+    /// Probes answered with a cached normal form — spliced in (one
+    /// clone), no redex search; rewrite/citation accounting replayed
+    /// from the entry.
+    pub(crate) nf_hits_rewritten: u64,
+    /// Probes with no usable entry (absent, stale generation, or too
+    /// little demod-cap budget left to splice the whole normal form).
+    pub(crate) nf_misses: u64,
+    /// Entries discarded on probe because their generation predates the
+    /// current demodulator set (a new registration can enable further
+    /// rewrites, so an older recorded NF is no longer known-normal).
+    pub(crate) nf_stale_discards: u64,
+
     // -- backward demodulation (Strategy.bwd_demod; see
     //    NativeProver::backward_demodulate).  All zero unless the knob
     //    (or SIGMA_BWD_DEMOD=1) is on.

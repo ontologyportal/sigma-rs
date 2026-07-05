@@ -328,6 +328,16 @@ pub(crate) struct NativeProver<'a> {
     /// clauses) are tolerated and re-checked by the pass.  Rebuilt from
     /// the arena on snapshot hydrate, like the other derived indexes.
     bwd_index: Map64<u64, Vec<u32>>,
+    /// Normal-form memo (the ground-term identity Part-4 core): for a
+    /// GROUND maximal subtree keyed by content hash, the recorded demod
+    /// outcome at a given demodulator generation — unchanged (skip the
+    /// whole subtree) or a cached normal form (splice, replaying the
+    /// recorded rewrite citations/count).  Shares rewrite work ACROSS
+    /// clauses: the recurring normal forms that dominate equational
+    /// traffic are found+built once per generation.  Per-run (validity
+    /// is generation-scoped, and generations are per-`DemodIndex`);
+    /// never populated unless `Strategy.demod` is on.
+    nf_memo: Map64<super::terms::TermKey, super::terms::NfEntry>,
     seq: u64,
     tick: u64,
     /// Semantic clause-selection guidance (`Strategy.semantic_guide`) AND
@@ -382,6 +392,7 @@ impl<'a> NativeProver<'a> {
             conj_sig: 0,
             demods: super::units::DemodIndex::default(),
             bwd_index: Map64::default(),
+            nf_memo: Map64::default(),
             seq: 0,
             tick: 0,
             guide_model: None,
@@ -870,7 +881,10 @@ impl<'a> NativeProver<'a> {
                 cand.insert(at.clause);
             }
         }
-        let d_fv = ClauseFv::compute(lits, self.kbo(), &src, &self.layer.atoms, self.syn());
+        let d_fv = ClauseFv::compute(
+            lits, self.kbo(), &src, &self.layer.atoms, self.syn(),
+            self.opts.strategy.demod.then_some(&self.layer.term_facts),
+        );
         for cid in cand {
             let c = &self.clauses[cid as usize];
             if c.retired {
@@ -1130,12 +1144,51 @@ impl<'a> NativeProver<'a> {
     /// If `t` is an equality atom `(equal s u)` whose sides are KBO-
     /// comparable with a strictly larger side, return `(s, u)` ORIENTED
     /// so the first is the larger — else `None` (unorientable / non-eq).
+    ///
+    /// GROUND fast path (Part 3.3, active only under `Strategy.demod`):
+    /// two ground sides with different KBO weights orient on the weight
+    /// alone (variable condition vacuous) — read from the layer's
+    /// ground-term facts memo, skipping both interns.  This sits on the
+    /// superposition hot path (`superpose` re-orients the "from"
+    /// equation per inference).  Debug twin asserts agreement with the
+    /// full compare.
     fn equality_oriented(&self, t: &Term) -> Option<(Term, Term)> {
         let Term::App(elems) = t else { return None };
         if elems.len() != 3 || !matches!(elems[0], Term::Op(OpKind::Equal)) {
             return None;
         }
         let (a, b) = (&elems[1], &elems[2]);
+        if self.opts.strategy.demod {
+            if let (Some(fa), Some(fb)) = (
+                self.layer.term_facts.ground_facts(a, &self.layer.kbo),
+                self.layer.term_facts.ground_facts(b, &self.layer.kbo),
+            ) {
+                if fa.kbo_weight != fb.kbo_weight {
+                    let fast = if fa.kbo_weight > fb.kbo_weight {
+                        Some((a.clone(), b.clone()))
+                    } else {
+                        Some((b.clone(), a.clone()))
+                    };
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        let ai = self.layer.atoms.intern_atom(a);
+                        let bi = self.layer.atoms.intern_atom(b);
+                        let full = match self.kbo().compare(ai, bi, &self.layer.atoms, self.syn()) {
+                            super::kbo::KboCmp::Greater => Some((a.clone(), b.clone())),
+                            super::kbo::KboCmp::Less => Some((b.clone(), a.clone())),
+                            _ => None,
+                        };
+                        debug_assert_eq!(
+                            fast, full,
+                            "ground weight fast path diverged from KBO compare \
+                             ({} vs {}) for {t:?}",
+                            fa.kbo_weight, fb.kbo_weight,
+                        );
+                    }
+                    return fast;
+                }
+            }
+        }
         let ai = self.layer.atoms.intern_atom(a);
         let bi = self.layer.atoms.intern_atom(b);
         match self.kbo().compare(ai, bi, &self.layer.atoms, self.syn()) {

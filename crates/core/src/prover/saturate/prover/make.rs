@@ -39,6 +39,27 @@ enum EqDecision {
     Unknown,
 }
 
+/// One batched rewrite step the fused demod walk found: replace the
+/// subterm at `path` with `term`, citing `used` — one demodulator
+/// clause id per underlying rewrite, in application order (a plain
+/// redex carries exactly one; an NF-memo splice carries the recorded
+/// sequence).
+struct DemodStep {
+    path: Vec<usize>,
+    term: Term,
+    used: SmallVec<[u32; 4]>,
+}
+
+/// What a ground-subtree interception concluded (see
+/// `NativeProver::ground_subtree_step`).
+enum GroundOutcome {
+    /// The subtree is redex-free (bloom-pruned, memo-unchanged, or
+    /// normalized to itself) — skip it and continue the walk.
+    Clean,
+    /// A batched rewrite step to apply at the subtree's position.
+    Step(DemodStep),
+}
+
 impl<'a> NativeProver<'a> {
     /// Rewrite every ground constant in `t` to its equality-class
     /// representative, IN PLACE — touched nodes are replaced, untouched
@@ -95,11 +116,36 @@ impl<'a> NativeProver<'a> {
     /// sound (equals for equals).  Unlike `paramodulants` (which UNIFIES
     /// and keeps the parent), this MATCHES one-way (binds the rule's
     /// variables only) and the rewritten clause replaces the original —
-    /// a simplification.  Per subterm position, candidates come from one
-    /// head-shape hash probe instead of a scan of every active equation
-    /// (the scan was the measured TPTP regression that kept `demod`
-    /// off — see `strategy.rs`).  Demodulator clause ids are pushed to
-    /// `used` for the proof DAG.
+    /// a simplification.  Demodulator clause ids are pushed to `used`
+    /// for the proof DAG, one per rewrite, in application order.
+    ///
+    /// The walk ([`Self::demod_walk`]) is fused with THREE shortcuts,
+    /// none of which may change the outcome (whole-run twin below):
+    ///
+    ///   1. per-node SYMBOL-SIGNATURE prefilter
+    ///      (`DemodIndex::possibly_matches`, O(1) per visited node);
+    ///   2. whole-subtree Bloom pruning for GROUND maximal subtrees —
+    ///      `sym_bloom ∩ head_bits == 0` proves the subtree redex-free
+    ///      (Part 3.2 of the ground-term identity design);
+    ///   3. the normal-form memo (`nf_memo`, Part 4): a ground maximal
+    ///      subtree already normalized this demodulator GENERATION is
+    ///      skipped (unchanged) or spliced (cached NF, one clone) with
+    ///      its recorded rewrites replayed into `used` and the cap —
+    ///      sharing rewrite work across clauses.
+    ///
+    /// SOUNDNESS OF BATCHING (why the memo is outcome-invariant): the
+    /// fixpoint's restart-from-top scan is leftmost-INNERMOST — after a
+    /// rewrite inside a ground subtree G, everything left of G is
+    /// unchanged and still redex-free, and G's ancestors are only
+    /// tested after G's own nodes — so the reference run fully
+    /// normalizes G (a context-independent, `off`-independent process:
+    /// matching binds rule variables only, and replacements are ground)
+    /// before it ever leaves G.  Splicing NF(G) with its recorded
+    /// rewrite sequence is therefore byte-identical to replaying those
+    /// steps one at a time, including `demod_cap` accounting (a splice
+    /// only happens when its whole rewrite count fits the remaining
+    /// budget; otherwise the walk falls back to per-step normalization,
+    /// which stops exactly where the reference would).
     fn demodulate(&mut self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
         if !self.opts.strategy.demod || self.demods.is_empty() {
             return 0;
@@ -108,8 +154,22 @@ impl<'a> NativeProver<'a> {
         // (KBO already guarantees termination); bounds pathological
         // fan-out on huge clauses.  Parameterized (default 64).
         let demod_cap = self.opts.strategy.demod_cap.max(1);
+
+        // Whole-fixpoint reference twin (debug/test builds only, zero
+        // release cost): the fused walk must be a pure shortcut — final
+        // term, citation sequence, and rewrite count all byte-identical
+        // to the plain per-step, unprefiltered fixpoint.
+        #[cfg(any(test, debug_assertions))]
+        let reference = {
+            let mut rt = t.clone();
+            let mut rused: Vec<u32> = Vec::new();
+            let rn = self.demodulate_reference(&mut rt, &mut rused, demod_cap);
+            (rt, rused, rn)
+        };
+
         let mut rewrites = 0u64;
-        'fixpoint: loop {
+        let mut used_here: Vec<u32> = Vec::new();
+        loop {
             if rewrites >= demod_cap {
                 break;
             }
@@ -117,146 +177,331 @@ impl<'a> NativeProver<'a> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            let hit = self.find_demod_redex(t, off);
-            // Soundness cross-check (debug builds / tests only, zero cost
-            // in release): the prefilter must never change WHAT
-            // `demodulate` finds, only how cheaply it finds it.  Re-walk
-            // with the prefilter bypassed and require byte-identical
-            // results (same redex, or both `None`).
+            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites) else {
+                break;
+            };
+            *t = replace(t, &step.path, &step.term);
+            rewrites += step.used.len() as u64;
+            used_here.extend_from_slice(&step.used);
+            // The term changed; restart the scan from the top (a
+            // rewrite can expose new redexes / new `off`).
+        }
+
+        #[cfg(any(test, debug_assertions))]
+        {
+            let (rt, rused, rn) = reference;
+            debug_assert!(
+                *t == rt && used_here == rused && rewrites == rn,
+                "memoized demodulate diverged from the per-step reference:\n  \
+                 memo: {} rewrites, used {:?}, term {:?}\n  ref:  {} rewrites, used {:?}, term {:?}",
+                rewrites, used_here, t, rn, rused, rt,
+            );
+        }
+        used.extend_from_slice(&used_here);
+        rewrites
+    }
+
+    /// One batched step of the fused demod walk: the first redex (or
+    /// ground-subtree normalization batch) in leftmost-innermost order,
+    /// spending at most `budget` rewrites.  `None` ⇔ `atom` is normal.
+    fn find_demod_step(&mut self, atom: &Term, off: u64, budget: u64) -> Option<DemodStep> {
+        let mut path = Vec::new();
+        self.demod_walk(atom, &mut path, off, budget, true)
+    }
+
+    /// The fused traversal behind [`Self::find_demod_step`]: children
+    /// first (heads skipped), then the node itself — `positions`' order.
+    /// `top_excluded` guards the root node's own probe (the literal atom
+    /// is never rewritten whole; a ground subtree root IS testable).
+    ///
+    /// At each ground COMPOUND child seat the walk computes the child's
+    /// content key + facts in one bottom-up pass
+    /// (`TermFactsTable::ground_key_facts` — the same 64-bit keyspace as
+    /// the atom table / sentence store) and intercepts the descent:
+    /// bloom-prune, NF-memo probe, or in-place normalization that
+    /// records the subtree's normal form for the next clause carrying
+    /// it.  Everything else follows the classic per-node path with the
+    /// `possibly_matches` prefilter and its scan counters.
+    fn demod_walk(
+        &mut self,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+        budget: u64,
+        top_excluded: bool,
+    ) -> Option<DemodStep> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if matches!(e, Term::App(_)) {
+                    if let Some((key, facts)) =
+                        self.layer.term_facts.ground_key_facts(e, &self.layer.kbo)
+                    {
+                        // Ground maximal compound subtree: intercept.
+                        match self.ground_subtree_step(e, key, &facts, path, off, budget) {
+                            GroundOutcome::Clean => {
+                                path.pop();
+                                continue;
+                            }
+                            GroundOutcome::Step(s) => return Some(s),
+                        }
+                    }
+                }
+                // Open compound, or a leaf: ordinary recursion (a leaf
+                // recursion just falls through to its own node probe).
+                if let Some(hit) = self.demod_walk(e, path, off, budget, false) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if (top_excluded && path.is_empty()) || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        if !self.demods.possibly_matches(t) {
+            self.stats.demod_scans_skipped_by_prefilter += 1;
+            return None;
+        }
+        self.stats.demod_scans_performed += 1;
+        // Only now — having passed the O(1) shape check — clone the
+        // subterm and build the match probe.
+        let sub = t.clone();
+        let cands = self.demods.candidates(&sub)?;
+        for d in cands {
+            let l2 = shift_slots(&d.l, off);
+            let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+            if match_one_way(&l2, &sub, &mut s) {
+                // r's variables ⊆ l's (KBO variable condition), so
+                // the match bound everything r mentions.
+                let rr = apply(&shift_slots(&d.r, off), &s);
+                return Some(DemodStep {
+                    path: path.clone(),
+                    term: rr,
+                    used: SmallVec::from_slice(&[d.clause]),
+                });
+            }
+        }
+        None
+    }
+
+    /// Handle one GROUND maximal compound subtree `g` (content key
+    /// `key`, facts `facts`) the walk entered at `path`: bloom prune →
+    /// NF-memo probe → normalize-and-record.  See `demodulate`'s docs
+    /// for the outcome-invariance argument.
+    fn ground_subtree_step(
+        &mut self,
+        g: &Term,
+        key: super::super::terms::TermKey,
+        facts: &super::super::terms::PTermFacts,
+        path: &[usize],
+        off: u64,
+        budget: u64,
+    ) -> GroundOutcome {
+        // Part 3.2 — whole-subtree pruning: every possible redex root in
+        // `g` keys a bucket by one of `g`'s own symbol/op keys, and
+        // `sym_bloom` is a superset of those bits, so an empty
+        // intersection with the registered head bits is a PROOF of redex
+        // absence anywhere in the subtree.
+        if facts.sym_bloom & self.demods.head_bits() == 0 {
+            self.stats.bloom_subtrees_pruned += 1;
+            // MANDATORY debug twin (established discipline): a pruned
+            // subtree is also searched by the unpruned reference walk
+            // and asserted redex-free.
             #[cfg(any(test, debug_assertions))]
+            debug_assert!(
+                self.subtree_redex_unfiltered(g, off).is_none(),
+                "bloom prune claimed redex-free, but the reference walk \
+                 found a redex in {g:?} (head_bits {:#x}, bloom {:#x})",
+                self.demods.head_bits(), facts.sym_bloom,
+            );
+            return GroundOutcome::Clean;
+        }
+
+        // Part 4 — the normal-form memo.
+        let gen = self.demods.generation();
+        self.stats.nf_probes += 1;
+        enum Probe {
+            Unchanged,
+            Rewritten(Term, SmallVec<[u32; 4]>),
+            Miss,
+        }
+        let probe = match self.nf_memo.get(&key) {
+            Some(e) if e.gen == gen => {
+                if e.used.is_empty() {
+                    Probe::Unchanged
+                } else if (e.used.len() as u64) <= budget {
+                    Probe::Rewritten(
+                        e.term.clone().expect("a changed NF entry carries its term"),
+                        e.used.clone(),
+                    )
+                } else {
+                    // Not enough demod-cap budget to splice the whole
+                    // NF: fall back to per-step normalization, which
+                    // stops exactly where the reference fixpoint would.
+                    Probe::Miss
+                }
+            }
+            Some(_) => {
+                // Stale generation: a newer demodulator may rewrite
+                // further — discard lazily and recompute.
+                self.stats.nf_stale_discards += 1;
+                self.nf_memo.remove(&key);
+                Probe::Miss
+            }
+            None => Probe::Miss,
+        };
+        match probe {
+            Probe::Unchanged => {
+                self.stats.nf_hits_unchanged += 1;
+                return GroundOutcome::Clean;
+            }
+            Probe::Rewritten(term, used) => {
+                self.stats.nf_hits_rewritten += 1;
+                return GroundOutcome::Step(DemodStep { path: path.to_vec(), term, used });
+            }
+            Probe::Miss => {
+                self.stats.nf_misses += 1;
+            }
+        }
+
+        // Miss: normalize `g` in place (same leftmost-innermost strategy,
+        // recursively riding this very machinery for its own ground
+        // sub-subtrees), bounded by the remaining rewrite budget.
+        let (nf, used, complete) = self.normalize_ground(g, off, budget);
+        if complete {
+            if used.is_empty() {
+                self.nf_memo.insert(key, super::super::terms::NfEntry {
+                    gen, used: SmallVec::new(), term: None,
+                });
+                return GroundOutcome::Clean;
+            }
+            // Record the outcome under the ORIGINAL key, and the normal
+            // form's own key as "unchanged" — the fixpoint restart
+            // re-probes the spliced subtree on the very next pass.
+            if let Some((nf_key, _)) =
+                self.layer.term_facts.ground_key_facts(&nf, &self.layer.kbo)
             {
-                let reference = self.find_demod_redex_unfiltered(t, off);
-                debug_assert_eq!(
-                    hit, reference,
-                    "SYMBOL-SIGNATURE prefilter changed demodulate's result \
-                     (prefiltered {:?} vs unfiltered {:?}) for term {:?}",
-                    hit, reference, t,
-                );
+                self.nf_memo.insert(nf_key, super::super::terms::NfEntry {
+                    gen, used: SmallVec::new(), term: None,
+                });
             }
-            if let Some((path, rr, clause)) = hit {
-                *t = replace(t, &path, &rr);
-                used.push(clause);
-                rewrites += 1;
-                // The term changed; restart the scan from the top (a
-                // rewrite can expose new redexes / new `off`).
-                continue 'fixpoint;
+            self.nf_memo.insert(key, super::super::terms::NfEntry {
+                gen, used: used.clone(), term: Some(nf.clone()),
+            });
+        }
+        if used.is_empty() {
+            GroundOutcome::Clean
+        } else {
+            GroundOutcome::Step(DemodStep { path: path.to_vec(), term: nf, used })
+        }
+    }
+
+    /// Fully normalize a GROUND subtree with the fixpoint strategy the
+    /// literal-level loop uses (restart from the subtree top after each
+    /// step; the subtree ROOT is testable — only the literal atom is
+    /// excluded).  Rewrites inside a ground subtree are context- and
+    /// `off`-independent, so this reproduces exactly the segment of the
+    /// reference fixpoint that runs while the leftmost redex lies in
+    /// this subtree.  Returns `(normal-or-partial form, citations in
+    /// application order, completed?)` — `completed == false` iff the
+    /// budget ran out first (the result is then NOT recorded).
+    fn normalize_ground(
+        &mut self,
+        g: &Term,
+        off: u64,
+        budget: u64,
+    ) -> (Term, SmallVec<[u32; 4]>, bool) {
+        let mut cur = g.clone();
+        let mut used: SmallVec<[u32; 4]> = SmallVec::new();
+        loop {
+            let spent = used.len() as u64;
+            if spent >= budget {
+                return (cur, used, false);
             }
-            break;
+            let mut path = Vec::new();
+            match self.demod_walk(&cur, &mut path, off, budget - spent, false) {
+                Some(step) => {
+                    cur = replace(&cur, &step.path, &step.term);
+                    used.extend_from_slice(&step.used);
+                }
+                None => return (cur, used, true),
+            }
+        }
+    }
+
+    /// Plain per-step, unprefiltered demodulation fixpoint — the
+    /// reference engine for the whole-run twin in [`Self::demodulate`]
+    /// (debug/test builds only; compiled out of release, so it costs
+    /// nothing in the timed gates).
+    #[cfg(any(test, debug_assertions))]
+    fn demodulate_reference(&self, t: &mut Term, used: &mut Vec<u32>, cap: u64) -> u64 {
+        let mut rewrites = 0u64;
+        loop {
+            if rewrites >= cap {
+                break;
+            }
+            let off = max_slot(t).map_or(0, |m| m + 1);
+            let Some((path, rr, clause)) = self.find_demod_redex_unfiltered(t, off) else {
+                break;
+            };
+            *t = replace(t, &path, &rr);
+            used.push(clause);
+            rewrites += 1;
         }
         rewrites
     }
 
-    /// One pass over `t`'s non-variable subterm positions (heads
-    /// skipped, same traversal `positions` performs) looking for the
-    /// first demodulation redex, returning its path, replacement, and
-    /// owning clause.  Fused with the SYMBOL-SIGNATURE prefilter: each
-    /// visited node's head key is checked against the index's bucket
-    /// set (`DemodIndex::possibly_matches`, O(1)) BEFORE the subterm is
-    /// cloned or a match probe is built — a subterm whose head shape has
-    /// no indexed demodulator can never produce a match, so the clone
-    /// (`sub`), the `shift_slots`/`Subst` allocation, and the match walk
-    /// are all skipped outright for it.
-    ///
-    /// Per-NODE, not per-subtree: a parent's head key says nothing about
-    /// its children's (a rewrite site can sit arbitrarily deep under an
-    /// unrelated head), so a negative prefilter on a node still recurses
-    /// into its children — it only skips THAT node's own probe.  `Term`
-    /// carries no per-term symbol-set fingerprint to cache (checked:
-    /// the `gf64`/schema fingerprints in `schema.rs` key ATOM shapes for
-    /// the schema/open-unit indexes, not a generic per-subterm symbol
-    /// multiset), so subtree-level pruning is not soundly available
-    /// here — see the module docs on `DemodIndex::possibly_matches`.
-    ///
-    /// Counts every visited node into `self.stats.demod_scans_skipped_
-    /// by_prefilter` (prefilter said no) or `self.stats.demod_scans_
-    /// performed` (passed the prefilter, handed to the candidate loop),
-    /// so `demodulate`'s behavior is externally observable without
-    /// changing what it returns.
-    fn find_demod_redex(&mut self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
-        fn walk(
-            this: &mut NativeProver<'_>,
-            t: &Term,
-            path: &mut Vec<usize>,
-            off: u64,
-        ) -> Option<(Vec<usize>, Term, u32)> {
-            if let Term::App(elems) = t {
-                for (i, e) in elems.iter().enumerate().skip(1) {
-                    path.push(i);
-                    if let Some(hit) = walk(this, e, path, off) {
-                        return Some(hit);
-                    }
-                    path.pop();
-                }
-            }
-            if path.is_empty() || matches!(t, Term::Var(_)) {
-                return None;
-            }
-            if !this.demods.possibly_matches(t) {
-                this.stats.demod_scans_skipped_by_prefilter += 1;
-                return None;
-            }
-            this.stats.demod_scans_performed += 1;
-            // Only now — having passed the O(1) shape check — clone the
-            // subterm and build the match probe.
-            let sub = t.clone();
-            let cands = this.demods.candidates(&sub)?;
-            for d in cands {
-                let l2 = shift_slots(&d.l, off);
-                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-                if match_one_way(&l2, &sub, &mut s) {
-                    // r's variables ⊆ l's (KBO variable condition), so
-                    // the match bound everything r mentions.
-                    let rr = apply(&shift_slots(&d.r, off), &s);
-                    return Some((path.clone(), rr, d.clause));
-                }
-            }
-            None
-        }
-        let mut path = Vec::new();
-        walk(self, atom, &mut path, off)
-    }
-
-    /// Reference (unprefiltered) twin of [`Self::find_demod_redex`]:
-    /// identical traversal and match logic, but every visited node is
-    /// unconditionally handed to `self.demods.candidates` — no
-    /// `possibly_matches` gate, no stats bump.  Exists ONLY for the
-    /// `debug_assert_eq!` cross-check in `demodulate` (debug/test builds)
-    /// that proves the prefilter is a pure performance change: compiled
-    /// out of release builds, so it costs nothing in the timed gates.
+    /// Reference (unprefiltered, unmemoized) single-redex search:
+    /// identical traversal and match logic to [`Self::demod_walk`], but
+    /// every visited node is unconditionally handed to
+    /// `self.demods.candidates` — no prefilter, no bloom, no memo, no
+    /// stats.  Exists ONLY for the debug twins.
     #[cfg(any(test, debug_assertions))]
     fn find_demod_redex_unfiltered(&self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
-        fn walk(
-            this: &NativeProver<'_>,
-            t: &Term,
-            path: &mut Vec<usize>,
-            off: u64,
-        ) -> Option<(Vec<usize>, Term, u32)> {
-            if let Term::App(elems) = t {
-                for (i, e) in elems.iter().enumerate().skip(1) {
-                    path.push(i);
-                    if let Some(hit) = walk(this, e, path, off) {
-                        return Some(hit);
-                    }
-                    path.pop();
-                }
-            }
-            if path.is_empty() || matches!(t, Term::Var(_)) {
-                return None;
-            }
-            let sub = t.clone();
-            let cands = this.demods.candidates(&sub)?;
-            for d in cands {
-                let l2 = shift_slots(&d.l, off);
-                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-                if match_one_way(&l2, &sub, &mut s) {
-                    let rr = apply(&shift_slots(&d.r, off), &s);
-                    return Some((path.clone(), rr, d.clause));
-                }
-            }
-            None
-        }
         let mut path = Vec::new();
-        walk(self, atom, &mut path, off)
+        self.unfiltered_walk(atom, &mut path, off, true)
+    }
+
+    /// The bloom-prune twin's subtree probe: the same reference search,
+    /// but with the subtree ROOT testable (it sits at a non-empty path
+    /// in its literal).
+    #[cfg(any(test, debug_assertions))]
+    fn subtree_redex_unfiltered(&self, g: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
+        let mut path = Vec::new();
+        self.unfiltered_walk(g, &mut path, off, false)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    fn unfiltered_walk(
+        &self,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+        top_excluded: bool,
+    ) -> Option<(Vec<usize>, Term, u32)> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if let Some(hit) = self.unfiltered_walk(e, path, off, top_excluded) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if (top_excluded && path.is_empty()) || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        let sub = t.clone();
+        let cands = self.demods.candidates(&sub)?;
+        for d in cands {
+            let l2 = shift_slots(&d.l, off);
+            let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+            if match_one_way(&l2, &sub, &mut s) {
+                let rr = apply(&shift_slots(&d.r, off), &s);
+                return Some((path.clone(), rr, d.clause));
+            }
+        }
+        None
     }
 
     /// Register clause `id` as a forward demodulator if it is a positive
@@ -445,7 +690,42 @@ impl<'a> NativeProver<'a> {
     /// substitution, so the single check licenses rewriting every
     /// matched instance.  Both sides intern (content-addressed, cheap)
     /// and the comparison is memoized.
+    ///
+    /// GROUND fast path (Part 3.3 of the ground-term identity design,
+    /// active only under `Strategy.demod`): for two ground sides the
+    /// KBO variable condition is vacuous, so a WEIGHT difference alone
+    /// decides the comparison — read from the layer's ground-term facts
+    /// memo, skipping both interns and the structural compare.  Weights
+    /// are `prec_seed`-independent (see `saturate::terms`), so the
+    /// layer-shared memo serves every lane; the debug twin asserts
+    /// agreement with the full memoized compare.
     fn demod_oriented(&self, l: &Term, r: &Term) -> bool {
+        if self.opts.strategy.demod {
+            if let (Some(fl), Some(fr)) = (
+                self.layer.term_facts.ground_facts(l, &self.layer.kbo),
+                self.layer.term_facts.ground_facts(r, &self.layer.kbo),
+            ) {
+                if fl.kbo_weight != fr.kbo_weight {
+                    let fast = fl.kbo_weight > fr.kbo_weight;
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        let la = self.layer.atoms.intern_atom(l);
+                        let ra = self.layer.atoms.intern_atom(r);
+                        let full = matches!(
+                            self.kbo().compare(la, ra, &self.layer.atoms, self.syn()),
+                            KboCmp::Greater
+                        );
+                        debug_assert_eq!(
+                            fast, full,
+                            "ground weight fast path diverged from KBO compare \
+                             for {l:?} ({}) vs {r:?} ({})",
+                            fl.kbo_weight, fr.kbo_weight,
+                        );
+                    }
+                    return fast;
+                }
+            }
+        }
         let la = self.layer.atoms.intern_atom(l);
         let ra = self.layer.atoms.intern_atom(r);
         matches!(
@@ -771,9 +1051,20 @@ impl<'a> NativeProver<'a> {
                     Some((t, k))
                 }
                 // A ground sub-sentence: its sid IS its content hash —
-                // the compound's equality key.  Lift to a Term for the
-                // registry (renderable representative).
+                // the compound's equality key.  Groundness is read from
+                // the memoized per-atom info first (Part 3.1: the id is
+                // at hand, so the common OPEN subterm skips the
+                // `term_of` lift+alloc entirely).  The memo's mask only
+                // covers the first `MAX_SEATS` seats, so "memo says
+                // ground" is a SUPERSET of truly-ground — a fast reject
+                // is always right, but an accept is confirmed exactly
+                // on the lifted term (cheap: no alloc, early-exit; the
+                // lift itself already walked the tree).  Lift to a Term
+                // for the registry (renderable representative).
                 Element::Sub(sid) => {
+                    if !self.layer.atom_info(*sid).is_ground() {
+                        return None;
+                    }
                     let t = self.layer.atoms.term_of(*sid, self.syn())?;
                     t.is_ground().then_some((t, *sid))
                 }
@@ -1411,6 +1702,7 @@ impl<'a> NativeProver<'a> {
         let fv = super::fvi::ClauseFv::compute(
             &clause.lits, self.kbo(),
             |a| layer.atom_info(a), &self.layer.atoms, self.syn(),
+            self.opts.strategy.demod.then_some(&layer.term_facts),
         );
         let id = self.clauses.len() as u32;
         self.clauses.push(ClauseRec {
@@ -1650,5 +1942,161 @@ mod model_true_negative_tests {
             prover.model_true_negative_forced(&not_mammal_rex, SUPPORT).is_none(),
             "mammal(Rex) is not entailed: nothing to delete"
         );
+    }
+}
+
+#[cfg(test)]
+mod ground_term_identity_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, BACKGROUND, SUPPORT};
+    use crate::parse::OpKind;
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+
+    fn demod_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.demod = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    /// Register + activate the non-ground demodulator `(equal (head ?0) ?0)`
+    /// (KBO-orients left-to-right; non-ground so the equality ORACLE
+    /// ignores it and forward demodulation alone is exercised).
+    fn add_rule(p: &mut NativeProver<'_>, head: &str) -> u32 {
+        let id = p
+            .make(
+                vec![(true, eq(app(vec![sym(head), Term::Var(0)]), Term::Var(0)))],
+                vec![], "input", BACKGROUND, None, false,
+            )
+            .expect("rule clause made");
+        p.activate(id);
+        id
+    }
+
+    // Every debug twin (whole-run demodulate reference, bloom
+    // redex-free check, weight fast-path vs full KBO) runs live inside
+    // these tests — a pass certifies zero twin violations on the paths
+    // exercised.
+    #[test]
+    fn bloom_prunes_nf_memo_records_and_replays_across_clauses() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = demod_prover(&layer);
+        let rule = add_rule(&mut p, "shrink"); // (shrink ?0) → ?0
+
+        // Fixture subtrees (all ground):
+        //   inert   — carries no bit of `shrink` ⇒ bloom-pruned whole;
+        //   noredex — CONTAINS `shrink`, but at arity 3 (no bucket) ⇒
+        //             bloom passes, memo records "unchanged";
+        //   redex   — (wrap2 (shrink c)) ⇒ normalizes to (wrap2 c).
+        let inert = app(vec![sym("boxCar"), sym("axle"), sym("wheel")]);
+        let noredex = app(vec![sym("wrap"), app(vec![sym("shrink"), sym("a"), sym("b")])]);
+        let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
+
+        // Precondition (deterministic — content-hash bits): the inert
+        // subtree's bloom really misses the rule's head bit.
+        let shrink_bit = 1u64 << (Symbol::hash_name("shrink") & 63);
+        let (_, inert_facts) = layer.term_facts.ground_key_facts(&inert, &layer.kbo)
+            .expect("inert fixture is ground");
+        assert_eq!(inert_facts.sym_bloom & shrink_bit, 0,
+            "fixture names must not collide with the rule head bit");
+
+        // Clause 1: all three subtrees under one literal.
+        let lit = app(vec![sym("p"), inert.clone(), noredex.clone(), redex.clone()]);
+        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+            .expect("clause kept");
+        let expect = app(vec![
+            sym("p"), inert.clone(), noredex.clone(),
+            app(vec![sym("wrap2"), sym("c")]),
+        ]);
+        assert_eq!(p.clauses[id as usize].terms[0].1, expect, "demod normalized the redex");
+        assert!(p.clauses[id as usize].parents.contains(&rule), "demodulator cited");
+        assert!(p.stats.bloom_subtrees_pruned >= 1, "inert subtree bloom-pruned");
+        assert!(p.stats.nf_probes >= 2, "noredex + redex probed");
+        assert!(p.stats.nf_misses >= 2, "first sighting misses");
+        assert!(p.stats.nf_hits_unchanged >= 1,
+            "the restarted fixpoint re-probes recorded unchanged entries");
+        assert_eq!(p.stats.nf_hits_rewritten, 0, "nothing to replay yet");
+
+        // Clause 2: the same redex subtree in a different literal —
+        // the recorded normal form is spliced without a redex search.
+        let lit2 = app(vec![sym("q"), noredex.clone(), redex.clone()]);
+        let id2 = p.make(vec![(false, lit2)], vec![], "test", SUPPORT, None, true)
+            .expect("clause kept");
+        assert_eq!(
+            p.clauses[id2 as usize].terms[0].1,
+            app(vec![sym("q"), noredex.clone(), app(vec![sym("wrap2"), sym("c")])]),
+        );
+        assert!(p.stats.nf_hits_rewritten >= 1, "cached NF spliced");
+        assert!(p.clauses[id2 as usize].parents.contains(&rule),
+            "the splice replays the demodulator citation");
+        assert_eq!(p.stats.nf_stale_discards, 0, "no generation change yet");
+    }
+
+    // The Part-4 gate test: registering a NEW demodulator bumps the
+    // generation, so previously recorded normal forms are discarded and
+    // recomputed under the enlarged rule set.
+    #[test]
+    fn new_demodulator_invalidates_recorded_normal_forms() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = demod_prover(&layer);
+        let r1 = add_rule(&mut p, "shrink"); // (shrink ?0) → ?0
+
+        let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
+        let lit = app(vec![sym("p"), redex.clone()]);
+        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+            .expect("kept");
+        assert_eq!(
+            p.clauses[id as usize].terms[0].1,
+            app(vec![sym("p"), app(vec![sym("wrap2"), sym("c")])]),
+            "under rule 1 alone the NF is (wrap2 c)",
+        );
+
+        // A second rule that rewrites the RECORDED normal form further:
+        // (wrap2 ?0) → ?0.  Its registration bumps the generation.
+        let r2 = add_rule(&mut p, "wrap2");
+        let stale_before = p.stats.nf_stale_discards;
+
+        let lit3 = app(vec![sym("r"), redex.clone()]);
+        let id3 = p.make(vec![(false, lit3)], vec![], "test", SUPPORT, None, true)
+            .expect("kept");
+        assert_eq!(
+            p.clauses[id3 as usize].terms[0].1,
+            app(vec![sym("r"), sym("c")]),
+            "the stale NF was discarded and the subtree renormalized to c",
+        );
+        assert!(p.stats.nf_stale_discards > stale_before,
+            "the old-generation entry was lazily discarded");
+        let parents = &p.clauses[id3 as usize].parents;
+        assert!(parents.contains(&r1) && parents.contains(&r2),
+            "both demodulators cited on the renormalized clause");
+    }
+
+    // Part 3.3: the ground weight fast path must agree with the full
+    // KBO compare (its debug twin asserts this on every use; here we
+    // also pin the observable orientation outcomes).
+    #[test]
+    fn ground_weight_fast_path_orients_like_full_kbo() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let p = demod_prover(&layer);
+        // Heavier ground left side: (f (g a)) vs b — weight 3 vs 1.
+        let heavy = app(vec![sym("f"), app(vec![sym("g"), sym("a")])]);
+        let light = sym("b");
+        assert!(p.demod_oriented(&heavy, &light));
+        assert!(!p.demod_oriented(&light, &heavy));
+        // Equal weights fall through to the structural path (still a
+        // decision, just not via the fast path): distinct constants.
+        let ca = sym("ca");
+        let cb = sym("cb");
+        // Either orientation may win on precedence, but exactly one does.
+        assert_ne!(p.demod_oriented(&ca, &cb), p.demod_oriented(&cb, &ca));
     }
 }

@@ -25,45 +25,86 @@ const TAG_OP:  u8 = b'O';
 
 /// Content hash of a sentence's element list — its `SentenceId`.
 pub(super) fn content_hash(elements: &[Element]) -> SentenceId {
-    let mut h = Xxh64::new(SEED);
-    h.update(&(elements.len() as u32).to_be_bytes());
+    let mut h = ElementHasher::new(elements.len());
     for el in elements {
-        emit_element(&mut h, el);
+        h.element(el);
     }
-    h.digest()
+    h.finish()
 }
 
-fn emit_element(h: &mut Xxh64, el: &Element) {
-    match el {
-        Element::Symbol(sym) => {
-            h.update(&[TAG_SYM]);
-            h.update(&sym.id().to_be_bytes());
-        }
-        Element::Variable { id, is_row, .. } => {
-            h.update(&[if *is_row { TAG_ROW } else { TAG_VAR }]);
-            h.update(&id.to_be_bytes());
-        }
-        Element::Literal(lit) => match lit {
-            Literal::Str(s) => {
-                h.update(&[TAG_STR]);
-                h.update(s.as_bytes());
-                h.update(&[0]); // terminator: guards "ab"+"c" vs "a"+"bc"
+/// Incremental view of [`content_hash`]'s byte scheme, one emit per element.
+///
+/// This is THE single definition of the content-address byte layout: both the
+/// sentence store (`content_hash` above, via [`Self::element`]) and the
+/// prover's derived-term key computation (`saturate::terms`, via the typed
+/// emitters) drive the same hasher, so a derived ground `Term` hashes to
+/// exactly the id `AtomTable::intern_atom` / the store would assign the same
+/// content — one shared 64-bit keyspace across tiers.
+pub(crate) struct ElementHasher(Xxh64);
 
+impl ElementHasher {
+    /// Start a hash for an element list of length `len` (the length is part
+    /// of the content, mixed in first).
+    pub(crate) fn new(len: usize) -> Self {
+        let mut h = Xxh64::new(SEED);
+        h.update(&(len as u32).to_be_bytes());
+        Self(h)
+    }
+
+    /// A ground symbol, by its content id.
+    pub(crate) fn symbol(&mut self, id: u64) {
+        self.0.update(&[TAG_SYM]);
+        self.0.update(&id.to_be_bytes());
+    }
+
+    /// A variable, by its scope-qualified symbol id.
+    pub(crate) fn variable(&mut self, id: u64, is_row: bool) {
+        self.0.update(&[if is_row { TAG_ROW } else { TAG_VAR }]);
+        self.0.update(&id.to_be_bytes());
+    }
+
+    /// A string or numeric literal.
+    pub(crate) fn literal(&mut self, lit: &Literal) {
+        match lit {
+            Literal::Str(s) => {
+                self.0.update(&[TAG_STR]);
+                self.0.update(s.as_bytes());
+                self.0.update(&[0]); // terminator: guards "ab"+"c" vs "a"+"bc"
             }
             Literal::Number(n) => {
-                h.update(&[TAG_NUM]);
-                h.update(n.as_bytes());
-                h.update(&[0]);
+                self.0.update(&[TAG_NUM]);
+                self.0.update(n.as_bytes());
+                self.0.update(&[0]);
             }
-        },
-        Element::Sub(sid) => {
-            h.update(&[TAG_SUB]);
-            h.update(&sid.to_be_bytes());
         }
-        Element::Op(op) => {
-            h.update(&[TAG_OP]);
-            h.update(op_byte(op));
+    }
+
+    /// A sub-sentence, by its content id.
+    pub(crate) fn sub(&mut self, sid: SentenceId) {
+        self.0.update(&[TAG_SUB]);
+        self.0.update(&sid.to_be_bytes());
+    }
+
+    /// An operator head.
+    pub(crate) fn op(&mut self, op: &OpKind) {
+        self.0.update(&[TAG_OP]);
+        self.0.update(op_byte(op));
+    }
+
+    /// One whole element (the store-side walk).
+    pub(crate) fn element(&mut self, el: &Element) {
+        match el {
+            Element::Symbol(sym) => self.symbol(sym.id()),
+            Element::Variable { id, is_row, .. } => self.variable(*id, *is_row),
+            Element::Literal(lit) => self.literal(lit),
+            Element::Sub(sid) => self.sub(*sid),
+            Element::Op(op) => self.op(op),
         }
+    }
+
+    /// The finished content hash.
+    pub(crate) fn finish(self) -> SentenceId {
+        self.0.digest()
     }
 }
 
