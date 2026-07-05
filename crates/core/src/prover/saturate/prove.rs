@@ -816,6 +816,19 @@ impl ProverLayer {
                 prover.stats.decode_bail_partner_shape,
                 prover.stats.decode_bail_phonebook_or_collision,
                 prover.stats.decode_bail_other));
+            // Definitional-CNF rescue line only when a rescue actually
+            // ran (process-cumulative — clausification lives inside
+            // cache generation, which has no per-run stats handle):
+            // default-path SIGMA_STATS output stays byte-identical on
+            // problems that clausify losslessly.
+            {
+                let (defcnf_defs, defcnf_roots) = super::clausify::defcnf_counters();
+                if defcnf_roots > 0 {
+                    raw.push_str(&format!(
+                        "\ndefcnf: {defcnf_defs} definitions_introduced, \
+                         {defcnf_roots} roots_rescued"));
+                }
+            }
             // Verified-dedup collision line only when one actually
             // occurred (expected ~never): default-path SIGMA_STATS
             // output stays byte-identical.

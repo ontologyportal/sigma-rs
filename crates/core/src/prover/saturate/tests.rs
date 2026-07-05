@@ -460,6 +460,157 @@ fn conjecture_negation_flips_quantification() {
     assert_eq!(c.nvars, 1, "∃ flips to ∀ under negation — variable stays open");
 }
 
+// -- definitional CNF (Plaisted–Greenbaum) rescue ---------------------------
+
+/// A 4-way disjunction of 4-way conjunctions: naive distribution needs
+/// 4⁴ = 256 clauses > `MAX_CLAUSES_PER_FORMULA` — the primary path
+/// records a loss, the rescue path must not.
+const BLOWUP_OR_OF_ANDS: &str = "
+    (or (and (p A1) (q A1) (r A1) (s A1))
+        (and (p A2) (q A2) (r A2) (s A2))
+        (and (p A3) (q A3) (r A3) (s A3))
+        (and (p A4) (q A4) (r A4) (s A4)))
+";
+
+/// `true` when the literal's atom is headed by a rescue definition
+/// predicate (`df_<root_hex>_<path>`).
+fn is_def_lit(layer: &ProverLayer, lit: &PLit) -> bool {
+    head_of(layer, lit).starts_with("df_")
+}
+
+#[test]
+fn defcnf_rescues_blowup_without_loss() {
+    let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy, "rescued root must count as FULLY loaded (no loss)");
+    // One definition collapses the product to 1·4·4·4 = 64 occurrence
+    // clauses + 4 one-sided definition clauses.
+    assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
+    let defs: std::collections::HashSet<String> = cls.iter()
+        .flat_map(|c| c.lits.iter())
+        .filter(|l| is_def_lit(&layer, l))
+        .map(|l| head_of(&layer, l))
+        .collect();
+    assert_eq!(defs.len(), 1, "smallest fix: exactly one definition, got {defs:?}");
+    assert!(cls.iter().all(|c| c.lits.len() <= 4),
+        "no clause may exceed the pre-definition width");
+    // And the root counts as loaded through the cache path too.
+    assert!(!layer.root_load_failed(roots[0]));
+}
+
+#[test]
+fn defcnf_positive_occurrence_gets_one_sided_definition() {
+    // The defined subformula occurs only POSITIVELY, so only the d→φ
+    // direction may be emitted: a positive `df_` literal appears only in
+    // occurrence clauses (all-positive); the φ→d clauses — a positive
+    // `df_` literal alongside NEGATED body atoms — must be absent.
+    let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy);
+    let mut saw_pos_def = false;
+    let mut saw_neg_def = false;
+    for c in &cls {
+        if c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l)) {
+            saw_pos_def = true;
+            assert!(c.lits.iter().all(|l| l.pos),
+                "one-sided (positive) definition violated: a clause holds a \
+                 positive df_ literal next to a negative literal — the φ→d \
+                 direction leaked in");
+        }
+        if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
+            saw_neg_def = true;
+        }
+    }
+    assert!(saw_pos_def && saw_neg_def, "both occurrence and definition clauses exist");
+}
+
+#[test]
+fn defcnf_negative_occurrence_gets_flipped_one_sided_definition() {
+    // The refutation form of a conjunctive conjecture: 4 disjunctive
+    // roots, negation wraps the rebuilt conjunction — the disjunctions
+    // occur NEGATIVELY, so only the φ→d direction may be emitted (a
+    // negative `df_` literal appears only in all-negative occurrence
+    // clauses; the d→φ clauses — negative `df_` alongside positive body
+    // atoms — must be absent).
+    let (layer, mut roots) = layer_with("
+        (or (p A1) (q A1) (r A1) (s A1))
+        (or (p A2) (q A2) (r A2) (s A2))
+        (or (p A3) (q A3) (r A3) (s A3))
+        (or (p A4) (q A4) (r A4) (s A4))
+    ");
+    assert_eq!(roots.len(), 4);
+    roots.sort_unstable(); // document order is not guaranteed; ids are content hashes
+    let sents: Vec<_> = roots.iter()
+        .map(|r| (layer.semantic.syntactic.sentence(*r).unwrap(), *r))
+        .collect();
+    let (cls, lossy) = super::clausify::clausify_negated_conjunction_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sents);
+    assert!(!lossy, "negated-conjunction rescue must count as fully loaded");
+    assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
+    for c in &cls {
+        if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
+            assert!(c.lits.iter().all(|l| !l.pos),
+                "one-sided (negative) definition violated: the d→φ direction \
+                 leaked in");
+        }
+    }
+}
+
+#[test]
+fn defcnf_both_polarity_occurrence_gets_two_sided_definition() {
+    // Under `<=>` the blow-up side occurs at BOTH polarities: the
+    // definition must carry both directions (d→φ and φ→d).
+    let kif = format!("(<=> (bigfla C) {BLOWUP_OR_OF_ANDS})");
+    let (layer, roots) = layer_with(&kif);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy);
+    // d→φ clauses: negative df_ literal + positive body atom.
+    let d_implies_body = cls.iter().any(|c|
+        c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l))
+            && c.lits.iter().any(|l| l.pos && !is_def_lit(&layer, l)));
+    // φ→d clauses: positive df_ literal + negative body atoms.
+    let body_implies_d = cls.iter().any(|c|
+        c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l))
+            && c.lits.iter().any(|l| !l.pos && !is_def_lit(&layer, l)));
+    assert!(d_implies_body, "both-polarity occurrence must emit the d→φ side");
+    assert!(body_implies_d, "both-polarity occurrence must emit the φ→d side");
+}
+
+#[test]
+fn defcnf_is_deterministic_and_idempotent() {
+    // Same input in two fresh layers → byte-identical clause sets
+    // (definition names are (root, path)-derived, never counter-ordered);
+    // evict + regenerate in one layer → same again.
+    let (la, ra) = layer_with(BLOWUP_OR_OF_ANDS);
+    let (lb, rb) = layer_with(BLOWUP_OR_OF_ANDS);
+    assert_eq!(ra[0], rb[0], "content-addressed roots agree");
+    let a = la.clauses_for(ra[0]);
+    let b = lb.clauses_for(rb[0]);
+    assert_eq!(*a, *b, "two layers over the same input must clausify identically");
+    la.clause_store.clear();
+    let a2 = la.clauses_for(ra[0]);
+    assert_eq!(*a, *a2, "evict + regenerate must reproduce identical clauses");
+}
+
+#[test]
+fn defcnf_leaves_lossless_roots_untouched() {
+    // A formula comfortably inside the caps must produce zero
+    // definitions — the rescue path is strictly additive.
+    let (layer, roots) = layer_with("
+        (or (and (p A1) (q A1)) (and (p A2) (q A2)))
+    ");
+    let cls = layer.clauses_for(roots[0]);
+    assert_eq!(cls.len(), 4, "2·2 distribution, no rescue");
+    assert!(cls.iter().flat_map(|c| c.lits.iter())
+        .all(|l| !is_def_lit(&layer, l)), "no df_ symbols on the lossless path");
+}
+
 // -- residue index / unify / units (phase 3) -------------------------------
 
 /// All (pos, AtomId) literals of every clause of every root in `kif`.
@@ -2153,20 +2304,30 @@ fn native_stack_smoke() {
             "the stored numeral clause clausifies to one usable clause");
     }
 
-    // Input-completeness gate: an input root that CANNOT be loaded (here: a
-    // formula whose CNF blows the distribution guard, so it clausifies to
-    // nothing) must poison any confident Satisfiable/Disproved verdict under
-    // the strict TPTP regime — the missing formula could be the one that
-    // closes the refutation.  The run must come back Unknown (SZS GaveUp)
-    // with a loud "failed to load" reason, never a certified countermodel.
+    // Input-completeness gate: an input root that CANNOT be loaded must
+    // poison any confident Satisfiable/Disproved verdict under the strict
+    // TPTP regime — the missing formula could be the one that closes the
+    // refutation.  The run must come back Unknown (SZS GaveUp) with a loud
+    // "failed to load" reason, never a certified countermodel.
+    //
+    // A plain multiplicative CNF blow-up no longer works as the unloadable
+    // fixture — the definitional-CNF rescue path now loads those in full
+    // (see the `defcnf_*` tests above).  What definitions can NEVER
+    // compress is a purely ADDITIVE clause count (one clause per conjunct),
+    // so the fixture pushes a conjunction past the rescue path's own
+    // `DEFCNF_MAX_CLAUSES_PER_FORMULA` insanity guard: the rescue is
+    // attempted, bails, and the loss must still be reported.
     #[test]
     fn input_load_failure_withholds_satisfiable() {
-        // 8 (and pᵢ qᵢ) disjuncts → 2^8 = 256 clauses > MAX_CLAUSES_PER_FORMULA.
-        let mut blowup = String::from("(or");
-        for i in 0..8 {
-            blowup.push_str(&format!(" (and (p{i} A) (q{i} A))"));
+        // (or (p0 A) (and (q A) ×66000)) — the disjunction trips the
+        // primary distribution guard, and the 66000-conjunct body exceeds
+        // the rescue cap (65536).  The repeated `(q A)` keeps the store
+        // cheap (content-addressed: one subsentence, 66000 references).
+        let mut blowup = String::from("(or (p0 A) (and");
+        for _ in 0..66_000 {
+            blowup.push_str(" (q A)");
         }
-        blowup.push(')');
+        blowup.push_str("))");
 
         // Control: without the failing root, strict saturation certifies the
         // countermodel (Disproved) — proving the gate assertion below bites.
