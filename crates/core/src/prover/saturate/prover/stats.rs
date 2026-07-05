@@ -79,6 +79,41 @@ pub(crate) struct ProverStats {
     /// Resolutions whose bindings were extracted algebraically from the
     /// power-sum residual (no unification walk).
     pub(crate) decoded_resolutions: u64,
+
+    // -- decode fast-path cause profile (Step-2 instrumentation only;
+    //    zero behavior change).  Counted EXCLUSIVELY in the batch
+    //    section of the resolve loop — each (given-literal, partner)
+    //    pair exactly once: per pair for partner/tail causes, bulk
+    //    (candidate-set size) for given-shape causes.  Scalar decode
+    //    reruns (batch-anomaly fallbacks through `resolve`, and the
+    //    goal-directed discharge paths) never count.  Invariant:
+    //    `decode_attempts == decode_bindings_extracted +
+    //    decode_bail_nested_var + decode_bail_too_many_open +
+    //    decode_bail_partner_shape + decode_bail_phonebook_or_collision
+    //    + decode_bail_other`.  All zero when `Strategy.decode` is off.
+    /// Pairs that entered the decode machinery — the cause denominator.
+    pub(crate) decode_attempts: u64,
+    /// Pairs whose bindings were fully extracted algebraically (the
+    /// resolvent was built with no unification walk) — the batch-scoped
+    /// slice of `decoded_resolutions`.
+    pub(crate) decode_bindings_extracted: u64,
+    /// Given-shape bail: an open seat holds a compound containing a
+    /// variable — THE decision counter for the homomorphic
+    /// path-weighted sketch extension (bulk-attributed).
+    pub(crate) decode_bail_nested_var: u64,
+    /// Given-shape bail: more than 2 open seats (the quadratic sketch
+    /// solver's limit; bulk-attributed).
+    pub(crate) decode_bail_too_many_open: u64,
+    /// Partner-side bail: not a ground unit of matching arity.
+    pub(crate) decode_bail_partner_shape: u64,
+    /// Decode-tail bail: the residual sketch failed to decode
+    /// (`Decoded::Fail`) or a decoded coin was missing from the phone
+    /// book — both collision-flavored.
+    pub(crate) decode_bail_phonebook_or_collision: u64,
+    /// Everything else: non-`App` given literal / out-of-range seat
+    /// (bulk-attributed) plus decode-tail seat/binding mismatches.
+    pub(crate) decode_bail_other: u64,
+
     // -- candidate-verification profile (attempts vs successes per site,
     //    plus how many attempts had a ground candidate — the decode
     //    fast-path's entry condition).  Sized for ranking where the

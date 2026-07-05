@@ -214,6 +214,23 @@ struct DecodeShape {
     g_tier: u8,
 }
 
+/// Why the algebraic decode fast path was NOT applicable for a given
+/// literal (stats-only — see `decode_given_shape_cause`; the partner-
+/// side and decode-tail causes are counted directly at their sites).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecodeBail {
+    /// `Strategy.decode` is off — not decode traffic at all (never
+    /// counted; the `decode:` stats line stays all-zero).
+    Off,
+    /// More than 2 open seats (the quadratic sketch solver's limit).
+    TooManyOpen,
+    /// An open seat holds a compound containing a variable — decoding
+    /// would need per-path (homomorphic) sketches, not seat coins.
+    NestedVar,
+    /// Non-`App` given literal / out-of-range seat (defensive).
+    Other,
+}
+
 /// Why `run` stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunVerdict {
@@ -1696,20 +1713,34 @@ impl<'a> NativeProver<'a> {
     /// literal (it is partner-independent): ≤2 open seats, each a
     /// bare variable.  `None` ⇒ every partner takes the general path.
     fn decode_given_shape(&self, given: u32, gi: usize) -> Option<DecodeShape> {
+        self.decode_given_shape_cause(given, gi).ok()
+    }
+
+    /// [`Self::decode_given_shape`] with the BAIL CAUSE surfaced —
+    /// stats-only instrumentation (Step-2 decode profile): the batch
+    /// section of the resolve loop bulk-attributes an ineligible
+    /// literal's whole candidate set to the one shape cause.  Identical
+    /// checks in identical order; `Err` maps exactly onto the old
+    /// `None`s.
+    fn decode_given_shape_cause(
+        &self,
+        given: u32,
+        gi: usize,
+    ) -> Result<DecodeShape, DecodeBail> {
         // A/B kill switch for benchmarking the algebraic fast path
         // (`SIGMA_NO_DECODE` via `Strategy::default`, or per lane).
         if !self.opts.strategy.decode {
-            return None;
+            return Err(DecodeBail::Off);
         }
         let g = &self.clauses[given as usize];
         let gi_info = self.layer.atom_info(g.lits[gi].atom);
         let m = gi_info.mask.count_ones();
         if m > 2 {
-            return None;
+            return Err(DecodeBail::TooManyOpen);
         }
         // Every open seat must be a simple variable in the pattern term
         // (a compound-with-variable seat needs real unification).
-        let Term::App(p_elems) = &g.terms[gi].1 else { return None };
+        let Term::App(p_elems) = &g.terms[gi].1 else { return Err(DecodeBail::Other) };
         let mut open_slots: SmallVec<[(u8, u64); 2]> = SmallVec::new(); // (seat, slot)
         let mut bits = gi_info.mask;
         while bits != 0 {
@@ -1717,10 +1748,15 @@ impl<'a> NativeProver<'a> {
             bits &= bits - 1;
             match p_elems.get(seat) {
                 Some(Term::Var(slot)) => open_slots.push((seat as u8, *slot)),
-                _ => return None,
+                // An open (= non-ground) seat holding a COMPOUND: the
+                // subterm contains a variable somewhere below the seat
+                // surface — THE decision counter for a homomorphic
+                // (path-weighted) sketch extension.
+                Some(Term::App(_)) => return Err(DecodeBail::NestedVar),
+                _ => return Err(DecodeBail::Other),
             }
         }
-        Some(DecodeShape {
+        Ok(DecodeShape {
             m,
             open_slots,
             base_residue: gi_info.base_residue,
@@ -1759,6 +1795,13 @@ impl<'a> NativeProver<'a> {
     /// build the resolvent.  `None` ⇒ anomaly (collision, unknown
     /// coin, seat mismatch) — the caller falls back to general
     /// unification, which reaches the same verdict the slow way.
+    ///
+    /// `count`: attribute this pair's outcome to the Step-2 decode
+    /// cause counters.  `true` ONLY from the batch section of the
+    /// resolve loop (which counts each pair exactly once); the scalar
+    /// rerun a batch anomaly triggers through `resolve` →
+    /// `resolve_decoded` passes `false`, so a fallback pair is never
+    /// double-counted (it deterministically re-reaches the same bail).
     fn resolve_from_decoded(
         &mut self,
         given: u32,
@@ -1766,13 +1809,18 @@ impl<'a> NativeProver<'a> {
         partner: u32,
         shape: &DecodeShape,
         decoded: crate::gf64::Decoded,
+        count: bool,
     ) -> Option<Option<u32>> {
         use crate::gf64::Decoded;
         let coins: SmallVec<[u64; 2]> = match decoded {
             Decoded::None => SmallVec::new(),
             Decoded::One(c) => SmallVec::from_slice(&[c]),
             Decoded::Two(a, b) => SmallVec::from_slice(&[a, b]),
-            Decoded::Fail => return None,
+            Decoded::Fail => {
+                // The residual sketch itself failed to decode.
+                if count { self.stats.decode_bail_phonebook_or_collision += 1; }
+                return None;
+            }
         };
 
         // Phone book: each coin must name exactly one expected open seat.
@@ -1780,11 +1828,19 @@ impl<'a> NativeProver<'a> {
         let mut s: Subst = vec![None; shape.g_nvars as usize + 1];
         let mut seen_seats: SmallVec<[u8; 2]> = SmallVec::new();
         for c in coins {
-            let (seat, term) = self.layer.atom_infos.coin_term(c, &self.layer.atoms, syn)?;
+            let Some((seat, term)) =
+                self.layer.atom_infos.coin_term(c, &self.layer.atoms, syn)
+            else {
+                // Unknown coin — not in the phone book (collision).
+                if count { self.stats.decode_bail_phonebook_or_collision += 1; }
+                return None;
+            };
             let Some(&(_, slot)) = shape.open_slots.iter().find(|(st, _)| *st == seat) else {
+                if count { self.stats.decode_bail_other += 1; }
                 return None; // decoded a seat the pattern didn't open
             };
             if seen_seats.contains(&seat) {
+                if count { self.stats.decode_bail_other += 1; }
                 return None;
             }
             seen_seats.push(seat);
@@ -1792,11 +1848,15 @@ impl<'a> NativeProver<'a> {
                 None => s[slot as usize] = Some(term),
                 // Repeated variable: both seats must decode equal fillers.
                 Some(prev) if *prev == term => {}
-                Some(_) => return None, // genuinely no resolvent — but let
-                                        // unify reach the same verdict
+                Some(_) => {
+                    if count { self.stats.decode_bail_other += 1; }
+                    return None; // genuinely no resolvent — but let
+                                 // unify reach the same verdict
+                }
             }
         }
         if seen_seats.len() != shape.open_slots.len() {
+            if count { self.stats.decode_bail_other += 1; }
             return None; // every open seat must receive exactly one binding
         }
 
@@ -1811,11 +1871,17 @@ impl<'a> NativeProver<'a> {
             .collect();
         self.stats.resolvents += 1;
         self.stats.decoded_resolutions += 1;
+        if count { self.stats.decode_bindings_extracted += 1; }
         let tier = shape.g_tier.min(self.clauses[partner as usize].tier);
         Some(self.make(lits, vec![given, partner], "resolve", tier, None, true))
     }
 
     /// Scalar composition of the three pieces — `resolve`'s fast path.
+    /// Never counts decode causes (`count = false`): every pair the
+    /// saturation loop routes here was already counted by the batch
+    /// section (anomaly fallbacks re-reach the same bail), and the
+    /// goal-directed discharge paths (`discharge.rs`) are outside the
+    /// resolve-loop traffic the decode profile measures.
     fn resolve_decoded(
         &mut self,
         given: u32,
@@ -1826,7 +1892,7 @@ impl<'a> NativeProver<'a> {
         let shape = self.decode_given_shape(given, gi)?;
         let residual = self.partner_residual(&shape, partner, pi)?;
         let decoded = crate::gf64::decode(residual, shape.m);
-        self.resolve_from_decoded(given, gi, partner, &shape, decoded)
+        self.resolve_from_decoded(given, gi, partner, &shape, decoded, false)
     }
 
     /// Factor pairs of same-polarity unifiable literals.
@@ -2400,59 +2466,95 @@ impl<'a> NativeProver<'a> {
                 // solves at volume — see gf64::decode_batch).  Decode
                 // anomalies and non-eligible partners take the general
                 // unification path, exactly as the scalar fast path.
-                if let Some(shape) = self.decode_given_shape(given, gi) {
-                    let mut eligible: Vec<EntryRef> = Vec::new();
-                    let mut residuals: Vec<crate::gf64::Sketch> = Vec::new();
-                    let mut general: Vec<EntryRef> = Vec::new();
-                    for at in cands {
-                        match self.partner_residual(&shape, at.clause, at.lit as usize) {
-                            Some(r) => { eligible.push(at); residuals.push(r); }
-                            None => general.push(at),
-                        }
-                    }
-                    let mut decoded = Vec::new();
-                    crate::gf64::decode_batch(&residuals, shape.m, &mut decoded);
-                    for (at, dec) in eligible.into_iter().zip(decoded) {
-                        let r = match self.resolve_from_decoded(
-                            given, gi, at.clause, &shape, dec)
-                        {
-                            Some(r) => r,
-                            None => self.resolve(given, gi, at.clause, at.lit as usize),
-                        };
-                        if let Some(rid) = r {
-                            if self.clauses[rid as usize].lits.is_empty() {
-                                if let Some(e) = self.reportable_refutation(rid) {
-                                    return (RunVerdict::Refutation(e), steps);
+                //
+                // Decode cause counters (Step-2 profile, stats-only):
+                // this section is the ONE place each (literal, partner)
+                // pair is counted — per pair for partner/tail causes,
+                // bulk (`cands.len()`) for given-shape causes, since an
+                // ineligible literal falls EVERY candidate through to
+                // ordinary unification.  The scalar reruns inside
+                // `resolve` never count (see `resolve_decoded`).
+                match self.decode_given_shape_cause(given, gi) {
+                    Ok(shape) => {
+                        let mut eligible: Vec<EntryRef> = Vec::new();
+                        let mut residuals: Vec<crate::gf64::Sketch> = Vec::new();
+                        let mut general: Vec<EntryRef> = Vec::new();
+                        for at in cands {
+                            self.stats.decode_attempts += 1;
+                            match self.partner_residual(&shape, at.clause, at.lit as usize) {
+                                Some(r) => { eligible.push(at); residuals.push(r); }
+                                None => {
+                                    // Non-ground / non-unit / arity-
+                                    // mismatched partner.
+                                    self.stats.decode_bail_partner_shape += 1;
+                                    general.push(at);
                                 }
-                                continue;
                             }
                         }
-                        self.push(r);
-                    }
-                    for at in general {
-                        let r = self.resolve(given, gi, at.clause, at.lit as usize);
-                        if let Some(rid) = r {
-                            if self.clauses[rid as usize].lits.is_empty() {
-                                if let Some(e) = self.reportable_refutation(rid) {
-                                    return (RunVerdict::Refutation(e), steps);
+                        let mut decoded = Vec::new();
+                        crate::gf64::decode_batch(&residuals, shape.m, &mut decoded);
+                        for (at, dec) in eligible.into_iter().zip(decoded) {
+                            let r = match self.resolve_from_decoded(
+                                given, gi, at.clause, &shape, dec, true)
+                            {
+                                Some(r) => r,
+                                None => self.resolve(given, gi, at.clause, at.lit as usize),
+                            };
+                            if let Some(rid) = r {
+                                if self.clauses[rid as usize].lits.is_empty() {
+                                    if let Some(e) = self.reportable_refutation(rid) {
+                                        return (RunVerdict::Refutation(e), steps);
+                                    }
+                                    continue;
                                 }
-                                continue;
+                            }
+                            self.push(r);
+                        }
+                        for at in general {
+                            let r = self.resolve(given, gi, at.clause, at.lit as usize);
+                            if let Some(rid) = r {
+                                if self.clauses[rid as usize].lits.is_empty() {
+                                    if let Some(e) = self.reportable_refutation(rid) {
+                                        return (RunVerdict::Refutation(e), steps);
+                                    }
+                                    continue;
+                                }
+                            }
+                            self.push(r);
+                        }
+                    }
+                    Err(cause) => {
+                        // Bulk attribution: every candidate pair of this
+                        // literal falls through to ordinary unification
+                        // because of the GIVEN side's shape.
+                        let n = cands.len() as u64;
+                        match cause {
+                            DecodeBail::Off => {} // knob off: no decode traffic
+                            DecodeBail::NestedVar => {
+                                self.stats.decode_attempts += n;
+                                self.stats.decode_bail_nested_var += n;
+                            }
+                            DecodeBail::TooManyOpen => {
+                                self.stats.decode_attempts += n;
+                                self.stats.decode_bail_too_many_open += n;
+                            }
+                            DecodeBail::Other => {
+                                self.stats.decode_attempts += n;
+                                self.stats.decode_bail_other += n;
                             }
                         }
-                        self.push(r);
-                    }
-                } else {
-                    for at in cands {
-                        let r = self.resolve(given, gi, at.clause, at.lit as usize);
-                        if let Some(rid) = r {
-                            if self.clauses[rid as usize].lits.is_empty() {
-                                if let Some(e) = self.reportable_refutation(rid) {
-                                    return (RunVerdict::Refutation(e), steps);
+                        for at in cands {
+                            let r = self.resolve(given, gi, at.clause, at.lit as usize);
+                            if let Some(rid) = r {
+                                if self.clauses[rid as usize].lits.is_empty() {
+                                    if let Some(e) = self.reportable_refutation(rid) {
+                                        return (RunVerdict::Refutation(e), steps);
+                                    }
+                                    continue;
                                 }
-                                continue;
                             }
+                            self.push(r);
                         }
-                        self.push(r);
                     }
                 }
             }

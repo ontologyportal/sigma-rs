@@ -800,6 +800,19 @@ impl ProverLayer {
                     prover.stats.subs_rejected_by_fv,
                     prover.stats.subs_full_checks));
             }
+            // Decode fast-path cause profile (Step-2; always printed —
+            // the ONE new line in a SIGMA_STATS capture diff.  All-zero
+            // when `Strategy.decode` is off).
+            raw.push_str(&format!(
+                "\ndecode: {} attempts, {} bindings_extracted, bails: {} nested_var / \
+                 {} too_many_open / {} partner_shape / {} phonebook_or_collision / {} other",
+                prover.stats.decode_attempts,
+                prover.stats.decode_bindings_extracted,
+                prover.stats.decode_bail_nested_var,
+                prover.stats.decode_bail_too_many_open,
+                prover.stats.decode_bail_partner_shape,
+                prover.stats.decode_bail_phonebook_or_collision,
+                prover.stats.decode_bail_other));
             // Verified-dedup collision line only when one actually
             // occurred (expected ~never): default-path SIGMA_STATS
             // output stays byte-identical.
