@@ -2350,6 +2350,71 @@ fn native_stack_smoke() {
             "the skip reason must be LOUD: {}", res.raw_output);
     }
 
+    // A KIF disjunction of `n` distinct unit atoms — clausifies to ONE
+    // flat clause of exactly `n` literals (no distribution, no defCNF),
+    // so the fixture's width is the clause's width.
+    fn wide_disjunction(n: usize) -> String {
+        let mut s = String::from("(or");
+        for i in 0..n {
+            s.push_str(&format!(" (p{i} A)"));
+        }
+        s.push(')');
+        s
+    }
+
+    // INPUT clauses are never width-discarded under the TPTP
+    // full-saturation regime: a 12-literal input (over the `max_lits: 8`
+    // search-shaping cap, under the 512 backstop) loads whole, so a
+    // clean saturation is a COMPLETE one — the honesty gate may certify
+    // the countermodel instead of withholding it over a discard the
+    // regime no longer performs.
+    #[test]
+    fn full_saturation_keeps_wide_input_and_certifies() {
+        let kb = kb_from(&wide_disjunction(12));
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_eq!(res.complete_saturation, Some(true),
+            "a wide INPUT clause must load whole under full_saturation \
+             (no discarded_long poisoning): {}", res.raw_output);
+        assert_eq!(res.status, ProverStatus::Disproved,
+            "with all inputs loaded the saturation is a certificate: {}",
+            res.raw_output);
+    }
+
+    // The KIF/SUMO path (full_saturation off) is untouched: the same
+    // 12-literal input is still discarded by the `max_lits` shaping cap,
+    // and the discard still flows into the honesty accounting
+    // (complete_saturation = false), exactly as before.
+    #[test]
+    fn kif_path_still_discards_wide_input_with_accounting() {
+        let kb = kb_from(&wide_disjunction(12));
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), fast());
+        assert_eq!(res.complete_saturation, Some(false),
+            "the KIF path keeps the max_lits input discard, and the \
+             discard must stay accounted: {}", res.raw_output);
+        // Legacy mapping: non-strict saturation still reports Disproved
+        // (a strong signal, not a certificate).
+        assert_eq!(res.status, ProverStatus::Disproved, "raw: {}", res.raw_output);
+    }
+
+    // The backstop: even under full_saturation a pathologically wide
+    // input (over INPUT_WIDTH_BACKSTOP = 512) is discarded — and that
+    // discard flows into `discarded_long`, so the honesty gate keeps
+    // withholding the countermodel.
+    #[test]
+    fn full_saturation_backstop_discard_withholds_certificate() {
+        let kb = kb_from(&wide_disjunction(520));
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_ne!(res.complete_saturation, Some(true),
+            "an over-backstop input discard must poison completeness: {}",
+            res.raw_output);
+        assert_eq!(res.status, ProverStatus::Unknown,
+            "no certificate over a lossy load: {}", res.raw_output);
+    }
+
     // The caller-side gate helper: a Disproved result with input losses is
     // demoted to Unknown/GaveUp; a Proved result stands (a missing input can
     // hide a refutation, never fabricate one).

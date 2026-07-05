@@ -54,6 +54,13 @@ pub(crate) use stats::ProverStats;
 pub(crate) const CONJECTURE: u8 = 0;
 pub(crate) const SUPPORT: u8 = 1;
 pub(crate) const BACKGROUND: u8 = 2;
+/// Backstop width for INPUT clauses under the TPTP full-saturation
+/// regime (see [`NativeProver::input_width_cap`]): inputs are never
+/// search-shaped by `max_lits` there, but a genuinely pathological
+/// clause still has a ceiling.  Anything over it flows into
+/// `discarded_long`, so the honesty gate keeps treating the load as
+/// lossy.
+const INPUT_WIDTH_BACKSTOP: usize = 512;
 // Search-shaping tunables (queue ratios, generation caps, forward
 // closure, channel switches) live in [`Strategy`] — one serializable
 // struct per portfolio lane, threaded in through `NativeOpts`.
@@ -1260,10 +1267,46 @@ impl<'a> NativeProver<'a> {
     /// Queue a made clause for given selection.  `None` (redundant) and
     /// already-seen/over-long clauses are dropped.
     pub(crate) fn push(&mut self, id: Option<u32>) -> Option<u32> {
+        self.push_capped(id, self.opts.max_lits)
+    }
+
+    /// Load-time `push` for INPUT clauses (SUPPORT hypotheses and the
+    /// negated CONJECTURE, including their definitional-CNF products):
+    /// identical dedup + queueing, but the width discard uses
+    /// [`Self::input_width_cap`], so under the TPTP full-saturation
+    /// regime inputs load whole instead of being shaped like derived
+    /// clauses.
+    pub(crate) fn push_input(&mut self, id: Option<u32>) -> Option<u32> {
+        let cap = self.input_width_cap();
+        self.push_capped(id, cap)
+    }
+
+    /// Width cap for INPUT clauses (BACKGROUND / SUPPORT / CONJECTURE
+    /// roots as loaded).  `max_lits` is a SEARCH-SHAPING cap: on the
+    /// KIF/SUMO path dropping an over-wide clause is an acceptable
+    /// trade (the honesty gate withholds countermodel claims).  Under
+    /// `Strategy.full_saturation` (the TPTP problem regime) it is
+    /// strictly a loss: the discard silently makes the loaded theory
+    /// incomplete, which both forfeits inferences a proof may need AND
+    /// forces `complete_saturation` to withhold verdicts from every
+    /// later saturation.  So there inputs load whole, with only the
+    /// generous [`INPUT_WIDTH_BACKSTOP`] guarding pathological widths
+    /// (an over-backstop discard still counts into `discarded_long`,
+    /// keeping the honesty accounting truthful).  Derived-clause caps
+    /// are untouched — that is search shaping, not input fidelity.
+    fn input_width_cap(&self) -> usize {
+        if self.opts.strategy.full_saturation {
+            INPUT_WIDTH_BACKSTOP.max(self.opts.max_lits)
+        } else {
+            self.opts.max_lits
+        }
+    }
+
+    fn push_capped(&mut self, id: Option<u32>, max_lits: usize) -> Option<u32> {
         let id = id?;
         let key = self.clauses[id as usize].key;
         if self.seen_duplicate(key, id) { return None; }
-        if self.clauses[id as usize].lits.len() > self.opts.max_lits {
+        if self.clauses[id as usize].lits.len() > max_lits {
             self.stats.discarded_long += 1;
             return None;
         }
@@ -1621,10 +1664,14 @@ impl<'a> NativeProver<'a> {
             let Some(terms) = self.pclause_terms(pc) else { continue };
             if let Some(id) = self.make(terms, vec![], "axiom", BACKGROUND, Some(root), false) {
                 let key = self.clauses[id as usize].key;
-                if self.clauses[id as usize].lits.len() > self.opts.max_lits {
-                    // An INPUT clause over the literal cap never enters
+                if self.clauses[id as usize].lits.len() > self.input_width_cap() {
+                    // An INPUT clause over the width cap never enters
                     // the index: the loaded theory is incomplete, and a
                     // later saturation must not be read as a model.
+                    // Under `full_saturation` the cap is the generous
+                    // backstop (inputs load whole — see
+                    // `input_width_cap`), so this only fires on
+                    // pathological widths there.
                     self.stats.discarded_long += 1;
                     continue;
                 }
@@ -1669,7 +1716,7 @@ impl<'a> NativeProver<'a> {
             // (the inputs alone are contradictory — e.g. `p` and
             // `(not p)` both asserted) queues too, so `run` pops it and
             // reports the refutation instead of indexing nothing.
-            self.push(Some(id));
+            self.push_input(Some(id));
         } else if self.seen_insert(key, id) {
             let l = self.clauses[id as usize].lits[0];
             if l.pos && self.layer.atom_info(l.atom).is_ground() {
@@ -1698,7 +1745,7 @@ impl<'a> NativeProver<'a> {
         for pc in clauses {
             let Some(terms) = self.pclause_terms(pc) else { continue };
             let id = self.make(terms, vec![], "negated_conjecture", CONJECTURE, None, false);
-            self.push(id);
+            self.push_input(id);
         }
     }
 
