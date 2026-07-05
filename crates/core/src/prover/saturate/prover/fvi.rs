@@ -59,9 +59,7 @@ use std::sync::Arc;
 
 use crate::syntactic::SyntacticLayer;
 
-use super::super::clause::{AtomId, AtomTable, PLit};
-#[cfg(test)]
-use super::super::clause::Term;
+use super::super::clause::{AtomId, AtomTable, PLit, Term};
 use super::super::kbo::KboOrdering;
 use super::super::terms::TermFactsTable;
 use super::super::AtomInfo;
@@ -146,6 +144,94 @@ impl ClauseFv {
 #[inline]
 fn sat_u16(v: u64) -> u16 {
     v.min(u64::from(u16::MAX)) as u16
+}
+
+/// One Bloom bit per GROUND literal for [`ClauseBlooms::glit`], keyed by
+/// the literal's canonical atom id (already a uniform 64-bit content
+/// hash — same trust model as every `hash64` key) with polarity mixed
+/// into the bit index: `atom ^ pos` flips the low index bit, so the
+/// positive and negative literal over one atom land on sibling bits —
+/// free polarity selectivity.  Mirrors `fingerprint.rs`'s house style
+/// (`leaf_bit = 1 << (key & 63)`).  Both sides of every probe MUST use
+/// this one function — the subset test is only sound if C-side and
+/// D-side bits are derived identically.
+#[inline]
+pub(crate) fn glit_bit(pos: bool, atom: AtomId) -> u64 {
+    1u64 << ((atom ^ u64::from(pos)) & 63)
+}
+
+/// Bloom-filter subsumption prefilter words: two 64-bit signatures per
+/// clause, computed once at clause birth from the SAME memoized
+/// per-atom data (`AtomInfos::info`) every probe's other side uses.
+/// Stored beside [`ClauseFv`] on `ClauseRec` and consulted by
+/// `forward_subsumed` BEFORE the feature-vector channels — each test is
+/// one AND + compare, cheaper than the five `u16` comparisons.
+///
+/// Like the feature vector, both words are NECESSARY-condition filters:
+/// a violated subset test soundly REJECTS "C subsumes D" (the exact
+/// check would have said no); a passed test says nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ClauseBlooms {
+    /// OR of `AtomInfo::leaf_sig` over the clause's literal atoms: one
+    /// content-keyed bit per GROUND LEAF anywhere in the clause — head
+    /// symbols, argument symbols / string / numeric literals,
+    /// recursively through compound seats, INCLUDING ground leaves
+    /// under open (variable-containing) compounds; variables and
+    /// operator leaves (`Equal`) contribute nothing (see
+    /// `fingerprint.rs::seat_meta`, which fixes those semantics for
+    /// both sides of every probe).
+    ///
+    /// SOUNDNESS (leaf channel): if C subsumes D there is a σ with
+    /// Cσ's literals a sub-multiset of D's.  Substitution only ever
+    /// replaces VARIABLES, so every ground leaf of C survives verbatim
+    /// into Cσ: ground-leaves(C) ⊆ ground-leaves(Cσ) ⊆
+    /// ground-leaves(D).  `leaf_sig` is a superset signature of exactly
+    /// those leaves, with bit derivation shared through the layer's
+    /// `AtomInfos` memo — so leaf-subset implies bit-subset, and
+    /// `leaf(C) & !leaf(D) == 0` is NECESSARY for subsumption.
+    /// A set difference (`!= 0`) is therefore a sound rejection.
+    pub(crate) leaf: u64,
+    /// OR of [`glit_bit`] over the clause's FULLY GROUND literals
+    /// (groundness decided exactly on the slot-form term — see
+    /// [`Self::compute`] for why not `AtomInfo::is_ground`).  `0` when
+    /// the clause has no ground literals — the channel is then
+    /// inapplicable and the subset test passes vacuously.
+    ///
+    /// SOUNDNESS (ground-literal channel): a fully ground literal L of
+    /// C is its own σ-image, so if C subsumes D then L appears VERBATIM
+    /// among D's literals (same polarity, same canonical atom).  A
+    /// verbatim-appearing ground literal is one of D's ground literals,
+    /// so its `glit_bit` is set in D's word.  Hence every bit of C's
+    /// word must appear in D's: `glit(C) & !glit(D) == 0` is NECESSARY;
+    /// `!= 0` rejects soundly.
+    pub(crate) glit: u64,
+}
+
+impl ClauseBlooms {
+    /// Computed from the canonical literal list plus the parallel
+    /// slot-form terms (`lits[i]` ↔ `terms[i]` — the invariant `make`
+    /// establishes and debug-asserts).  Groundness for the `glit` word
+    /// is decided on the TERM (`Term::is_ground`, exact) rather than
+    /// `AtomInfo::is_ground`, whose seat mask silently treats seats
+    /// ≥ `MAX_SEATS` as ground — a fine approximation for retrieval
+    /// heuristics, but a (however astronomically rare) soundness hole
+    /// for a rejection channel.
+    pub(crate) fn compute(
+        lits: &[PLit],
+        terms: &[(bool, Term)],
+        atom_info: impl Fn(AtomId) -> Arc<AtomInfo>,
+    ) -> Self {
+        debug_assert_eq!(lits.len(), terms.len());
+        let mut leaf = 0u64;
+        let mut glit = 0u64;
+        for (l, (_, t)) in lits.iter().zip(terms) {
+            leaf |= atom_info(l.atom).leaf_sig;
+            if t.is_ground() {
+                glit |= glit_bit(l.pos, l.atom);
+            }
+        }
+        Self { leaf, glit }
+    }
 }
 
 /// Test-only: build a `ClauseFv` directly from slot-form terms (the

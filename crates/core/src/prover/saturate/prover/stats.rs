@@ -21,16 +21,44 @@ pub(crate) struct ProverStats {
     /// returned as a possible subsumer of the new clause (retired
     /// clauses and outright-too-long subsumers are filtered before this
     /// count, same as `clause_subsumes` would reject them for free) —
-    /// the feature-vector prefilter's denominator.
+    /// the prefilter chain's denominator.  Invariant:
+    /// `subs_checks_attempted == subs_rejected_by_bloom_leaf +
+    /// subs_rejected_by_bloom_glit + subs_rejected_by_fv +
+    /// subs_full_checks` (the channels run in that order; each
+    /// rejection is attributed to the FIRST channel that fired).
     pub(crate) subs_checks_attempted: u64,
+    /// Of those, how many were REJECTED by the leaf-bloom channel
+    /// (`fvi::ClauseBlooms::leaf` subset test — one AND per candidate,
+    /// the cheapest channel, so it runs first).
+    pub(crate) subs_rejected_by_bloom_leaf: u64,
+    /// Of those, how many were REJECTED by the ground-literal-bloom
+    /// channel (`fvi::ClauseBlooms::glit` subset test), having passed
+    /// the leaf bloom.
+    pub(crate) subs_rejected_by_bloom_glit: u64,
+    /// Attempted checks where the ground-literal channel could act at
+    /// all: the candidate subsumer has at least one FULLY GROUND
+    /// literal (`glit != 0`) and the check reached that channel — the
+    /// channel's applicability denominator (a clause with no ground
+    /// literals passes it vacuously).
+    pub(crate) subs_glit_applicable: u64,
     /// Of those, how many were REJECTED by the feature-vector prefilter
     /// (`fvi::ClauseFv::le`) before the expensive `clause_subsumes` call
     /// — the prefilter's payoff.
     pub(crate) subs_rejected_by_fv: u64,
-    /// Of those, how many passed the prefilter and were handed to the
-    /// exact `clause_subsumes` check (paired with `subs_rejected_by_fv`;
-    /// `subs_checks_attempted == subs_rejected_by_fv + subs_full_checks`).
+    /// Of those, how many passed every prefilter channel and were handed
+    /// to the exact `clause_subsumes` check (see the sum invariant on
+    /// `subs_checks_attempted`).
     pub(crate) subs_full_checks: u64,
+    /// TRUE `ClauseKey` collisions detected by the verified dedup
+    /// (`NativeProver::seen_duplicate*` / `seen_insert`): a `seen` key
+    /// hit whose first-accepted clause has DIFFERENT canonical literals
+    /// than the probing clause.  The probing clause is ACCEPTED (never
+    /// dropped — dropping a non-duplicate on a bare 64-bit key match
+    /// would be a completeness hole); the map keeps the FIRST id, so
+    /// later collision-mates simply bypass dedup, which is sound (dedup
+    /// is an optimization, re-processing is never wrong).  Expected
+    /// ~never; a nonzero count prints its own SIGMA_STATS line.
+    pub(crate) dedup_collisions_detected: u64,
     pub(crate) discarded_deep: u64,
     pub(crate) discarded_long: u64,
     /// Some clause carried an equality literal — the "problem contains

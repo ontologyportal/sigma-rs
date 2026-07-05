@@ -790,10 +790,24 @@ impl ProverLayer {
             // SIGMA_STATS output stays byte-identical.
             if prover.opts.strategy.subsumption {
                 raw.push_str(&format!(
-                    "\nsubs-fvi: {} checks_attempted, {} rejected_by_fv, {} full_checks",
+                    "\nsubs-fvi: {} checks_attempted, {} rejected_by_bloom_leaf, \
+                     {} rejected_by_bloom_glit ({} glit_applicable), \
+                     {} rejected_by_fv, {} full_checks",
                     prover.stats.subs_checks_attempted,
+                    prover.stats.subs_rejected_by_bloom_leaf,
+                    prover.stats.subs_rejected_by_bloom_glit,
+                    prover.stats.subs_glit_applicable,
                     prover.stats.subs_rejected_by_fv,
                     prover.stats.subs_full_checks));
+            }
+            // Verified-dedup collision line only when one actually
+            // occurred (expected ~never): default-path SIGMA_STATS
+            // output stays byte-identical.
+            if prover.stats.dedup_collisions_detected > 0 {
+                raw.push_str(&format!(
+                    "\ndedup: {} true ClauseKey collision(s) detected — colliding \
+                     clauses accepted, never dropped",
+                    prover.stats.dedup_collisions_detected));
             }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");

@@ -332,7 +332,7 @@ impl<'a> NativeProver<'a> {
                 {
                     self.clauses[id as usize].fact_parents.extend(fact_sids);
                     let key = self.clauses[id as usize].key;
-                    if self.seen.insert(key) {
+                    if self.seen_insert(key, id) {
                         if let Some((rel, args)) = head_for_fact {
                             facts.entry(rel).or_default().push(JoinFact {
                                 args,

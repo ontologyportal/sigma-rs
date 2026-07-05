@@ -30,7 +30,9 @@ pub(crate) struct ProverSnapshot {
     /// rebuilds them from the arena for any subset of these).
     pub(crate) loaded_roots: std::collections::HashSet<SentenceId>,
     pub(super) clauses: Vec<ClauseRec>,
-    pub(super) seen: Set64<ClauseKey>,
+    /// Verified dedup map (key → first-accepted clause id) — see the
+    /// field docs on `NativeProver::seen`.
+    pub(super) seen: Map64<ClauseKey, u32>,
     pub(super) idx: LiteralIndex,
     pub(super) units: UnitStores,
     pub(super) support_seeds: Vec<(AtomId, u32)>,
@@ -96,7 +98,7 @@ impl<'a> NativeProver<'a> {
         self.idx = LiteralIndex::default();
         self.units = UnitStores::default();
         self.demods.clear();
-        self.seen = Set64::default();
+        self.seen = Map64::default();
         self.support_seeds.clear();
         let n = self.clauses.len() as u32;
         let layer = self.layer;
@@ -114,7 +116,9 @@ impl<'a> NativeProver<'a> {
             if !kept {
                 continue;
             }
-            self.seen.insert(key);
+            // Rebuild in arena (id) order, keeping the FIRST id per key —
+            // the same first-accepted discipline `seen_record` maintains.
+            self.seen.entry(key).or_insert(id);
             let lits = self.clauses[id as usize].lits.clone();
             for (i, l) in lits.iter().enumerate() {
                 self.idx.add(EntryRef { clause: id, lit: i as u8 }, l.pos, l.atom, &src);

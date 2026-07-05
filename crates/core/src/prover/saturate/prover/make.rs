@@ -656,7 +656,7 @@ impl<'a> NativeProver<'a> {
                 // queued as given.
                 let nkey = self.clauses[nid as usize].key;
                 if self.clauses[nid as usize].lits.len() <= self.opts.max_lits
-                    && self.seen.insert(nkey)
+                    && self.seen_insert(nkey, nid)
                 {
                     self.activate(nid);
                 }
@@ -773,7 +773,7 @@ impl<'a> NativeProver<'a> {
             {
                 let key = self.clauses[id as usize].key;
                 if self.clauses[id as usize].lits.len() <= self.opts.max_lits
-                    && self.seen.insert(key)
+                    && self.seen_insert(key, id)
                 {
                     self.activate(id);
                 }
@@ -841,7 +841,7 @@ impl<'a> NativeProver<'a> {
                 vec![(true, term)], Vec::new(), "list_theory", BACKGROUND, None, true);
             let Some(id) = made else { continue };
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -864,7 +864,7 @@ impl<'a> NativeProver<'a> {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -885,7 +885,7 @@ impl<'a> NativeProver<'a> {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -1612,10 +1612,13 @@ impl<'a> NativeProver<'a> {
         // Duplicate-hit probe (Part 2, continued): of the clauses demod
         // actually rewrote, how many collapse onto an already-known clause's
         // key right here — i.e. would dedup away via the same
-        // `self.seen`/`ClauseKey` path `push()` uses later.  Read-only probe:
-        // `push()` still does the real (insert-and-check) dedup itself, so
-        // this changes no behavior, only counts.
-        if demod_eligible && was_demodulated && self.seen.contains(&clause.key) {
+        // `self.seen`/`ClauseKey` path `push()` uses later.  Read-only probe
+        // (verified like every `seen` consumer — a true key collision counts
+        // as a collision, not a dup hit): `push()` still does the real
+        // dedup itself, so this changes no behavior, only counts.
+        if demod_eligible && was_demodulated
+            && self.seen_duplicate_lits(clause.key, &clause.lits)
+        {
             self.stats.demod_dup_hits += 1;
         }
 
@@ -1704,6 +1707,13 @@ impl<'a> NativeProver<'a> {
             |a| layer.atom_info(a), &self.layer.atoms, self.syn(),
             self.opts.strategy.demod.then_some(&layer.term_facts),
         );
+        // Bloom subsumption prefilter words (fvi.rs), same discipline as
+        // `fv`: computed unconditionally at birth from the already-warm
+        // `AtomInfos` memo (one OR per literal), so the arena record can
+        // serve as a `forward_subsumed` candidate subsumer immediately.
+        let blooms = super::fvi::ClauseBlooms::compute(
+            &clause.lits, &terms, |a| layer.atom_info(a),
+        );
         let id = self.clauses.len() as u32;
         self.clauses.push(ClauseRec {
             id,
@@ -1721,6 +1731,7 @@ impl<'a> NativeProver<'a> {
             retired: false,
             max_mask,
             fv,
+            blooms,
             notes,
         });
         // Backward-demodulation reverse index: every arena clause is
@@ -2098,5 +2109,254 @@ mod ground_term_identity_tests {
         let cb = sym("cb");
         // Either orientation may win on precedence, but exactly one does.
         assert_ne!(p.demod_oriented(&ca, &cb), p.demod_oriented(&cb, &ca));
+    }
+}
+
+#[cfg(test)]
+mod bloom_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // A GENUINELY subsuming pair must sail through both bloom channels
+    // (they are necessary-condition filters) and get dropped by the
+    // exact check — the positive soundness half.  The debug twins run
+    // live in every test build, so a bloom misfire would abort here.
+    #[test]
+    fn subsuming_pair_passes_blooms_and_is_dropped_by_the_exact_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = ¬(q a) ∨ (p ?0)  — one ground literal, one open literal.
+        let c = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
+        let made = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is forward-subsumed by C");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        // NEITHER bloom may reject a genuine subsumption (soundness).
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        // C has a ground literal, so the glit channel was applicable.
+        assert_eq!(p.stats.subs_glit_applicable, 1);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Leaf-bloom rejection: the candidate subsumer carries a ground
+    // leaf (`c`) the new clause never mentions — the subset test fails
+    // before the FV channels or the exact matcher run.
+    #[test]
+    fn leaf_bloom_rejects_subsumer_with_a_foreign_ground_leaf() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q c) — active candidate subsumer.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("c")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p a) ∨ (q b) — C's (p ?0) makes it an index candidate,
+        // but (q c) has no counterpart in D.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Precondition (deterministic content-hash bits): C really has
+        // a leaf bit outside D's word — i.e. this pair exercises the
+        // leaf channel, not a later one.  If a name reshuffle ever
+        // collides the bits, fail loudly here rather than silently
+        // testing nothing.
+        let c_leaf = p.clauses[c as usize].blooms.leaf;
+        let d_leaf = p.clauses[d as usize].blooms.leaf;
+        assert_ne!(c_leaf & !d_leaf, 0, "fixture: leaf bit of `c` must miss D");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 1, "leaf channel fired first");
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+    }
+
+    // Ground-literal-bloom rejection: every ground leaf of C appears in
+    // D (leaf channel passes), but C's fully ground literal `(q c)` is
+    // not among D's literals — its polarity-mixed atom bit is missing
+    // from D's glit word.
+    #[test]
+    fn glit_bloom_rejects_subsumer_whose_ground_literal_is_missing_from_d() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (q c) ∨ (p ?0).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("q"), sym("c")])),
+                (true, app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p (f q c)) ∨ (r a): the leaves q and c DO occur in D
+        // (under a compound — leaf_sig counts those), so the leaf
+        // channel passes; but the literal (q c) itself is absent.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), app(vec![sym("f"), sym("q"), sym("c")])])),
+                (true, app(vec![sym("r"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Preconditions: leaf channel really passes, glit really differs.
+        let (cb, db) = (p.clauses[c as usize].blooms, p.clauses[d as usize].blooms);
+        assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
+        assert_ne!(cb.glit & !db.glit, 0, "fixture: C's ground-literal bit misses D");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_glit_applicable, 1, "C has a ground literal");
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 1);
+        assert_eq!(p.stats.subs_full_checks, 0);
+    }
+
+    // A subsumer with NO ground literals has glit == 0: the channel is
+    // inapplicable (vacuous pass) and must not count as applicable.
+    #[test]
+    fn glit_channel_is_inapplicable_for_all_open_subsumers() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q ?0) — no ground literal.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        assert_eq!(p.clauses[c as usize].blooms.glit, 0, "no ground literals");
+        // D = (p a) ∨ (q a): subsumed via {?0 ↦ a}.
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is subsumed");
+        assert_eq!(p.stats.subs_glit_applicable, 0, "channel never applicable");
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+}
+
+#[cfg(test)]
+mod verified_dedup_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn base_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let opts = NativeOpts { strategy: Strategy::base(), ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // The unchanged happy path: a genuine α-duplicate (same canonical
+    // literals, same key) still dedups at push, with zero collisions.
+    #[test]
+    fn genuine_duplicate_still_drops_at_push() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let a2 = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        assert_eq!(p.clauses[a as usize].key, p.clauses[a2 as usize].key);
+        assert!(p.push(Some(a)).is_some(), "first copy queues");
+        assert!(p.push(Some(a2)).is_none(), "verified duplicate drops");
+        assert_eq!(p.stats.dedup_collisions_detected, 0);
+    }
+
+    // The verify branch: a SYNTHETIC map entry (b's key → a's id, two
+    // structurally different clauses — no need to forge an xxh
+    // collision) must be detected as a true collision, COUNTED, and the
+    // colliding clause ACCEPTED; the map keeps the first id.
+    #[test]
+    fn true_collision_is_counted_and_the_clause_is_accepted_not_dropped() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let bkey = p.clauses[b as usize].key;
+        // Inject the collision: b's key already "seen" — by a clause
+        // with different canonical literals.
+        p.seen.insert(bkey, a);
+        assert!(p.push(Some(b)).is_some(),
+            "a colliding non-duplicate must be ACCEPTED, not silently dropped");
+        assert_eq!(p.stats.dedup_collisions_detected, 1);
+        assert_eq!(p.seen.get(&bkey), Some(&a), "the map keeps the FIRST id");
+        // Collision-mates bypass dedup from then on (documented, sound):
+        // a re-push probes the same stored mismatch again.
+        assert!(p.push(Some(b)).is_some());
+        assert_eq!(p.stats.dedup_collisions_detected, 2);
+    }
+
+    // The insert-guard form (`seen_insert`) — used by the activate-
+    // without-push sites — takes the same verify branch.
+    #[test]
+    fn seen_insert_guard_verifies_and_counts_collisions() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let akey = p.clauses[a as usize].key;
+        assert!(p.seen_insert(akey, a), "first sighting records");
+        assert!(!p.seen_insert(akey, a), "same clause again: verified duplicate");
+        // b under a's key: structural mismatch ⇒ collision ⇒ NEW.
+        assert!(p.seen_insert(akey, b), "collision-mate counts as new");
+        assert_eq!(p.stats.dedup_collisions_detected, 1);
+        assert_eq!(p.seen.get(&akey), Some(&a), "first id stays");
     }
 }

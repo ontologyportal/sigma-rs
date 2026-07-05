@@ -46,7 +46,7 @@ mod schema_apply;
 mod snapshot;
 mod stats;
 
-pub(crate) use fvi::ClauseFv;
+pub(crate) use fvi::{ClauseBlooms, ClauseFv};
 pub(crate) use snapshot::ProverSnapshot;
 pub(crate) use stats::ProverStats;
 
@@ -192,6 +192,12 @@ pub(crate) struct ClauseRec {
     /// `Strategy.subsumption` is on.  See `fvi.rs` (including why a raw
     /// distinct-variable-count channel is deliberately NOT one of them).
     pub(crate) fv: ClauseFv,
+    /// Bloom subsumption prefilter words (leaf signature + ground-
+    /// literal signature), computed once here from the same memoized
+    /// per-atom data (`AtomInfos`) and consulted by `forward_subsumed`
+    /// BEFORE the feature-vector channels.  See `fvi::ClauseBlooms` for
+    /// the per-channel soundness arguments.
+    pub(crate) blooms: ClauseBlooms,
     /// Human-readable justifications (oracle discharges, unit refutations).
     pub(crate) notes: Vec<String>,
 }
@@ -231,7 +237,19 @@ pub(crate) struct NativeProver<'a> {
     /// precedence); `None` ⇒ use the shared, warm `layer.kbo` unchanged.
     prec: Option<super::kbo::KboOrdering>,
     pub(crate) clauses: Vec<ClauseRec>,
-    seen: Set64<ClauseKey>,
+    /// Verified dedup map: `ClauseKey` → id of the FIRST clause accepted
+    /// under that key.  A `ClauseKey` is a bare 64-bit content hash, so
+    /// a key hit alone must never be trusted to DROP a clause — a
+    /// collision between two genuinely different clauses would silently
+    /// discard a non-duplicate (a completeness hole).  Every consumer
+    /// goes through [`Self::seen_duplicate`] / [`Self::seen_insert`] /
+    /// [`Self::seen_duplicate_lits`], which structurally verify the
+    /// canonical literal lists on a key hit; a mismatch (true collision)
+    /// is counted in `stats.dedup_collisions_detected` and the probing
+    /// clause is ACCEPTED.  The map keeps the first id — subsequent
+    /// collision-mates simply bypass dedup entirely, which is sound
+    /// (dedup is an optimization; re-processing is never wrong).
+    seen: Map64<ClauseKey, u32>,
     idx: LiteralIndex,
     /// Subterm-position index of active clauses' maximal literals — the
     /// superposition "into" targets (probe with an equation lhs).  Empty
@@ -366,7 +384,7 @@ impl<'a> NativeProver<'a> {
             opts,
             prec,
             clauses: Vec::new(),
-            seen: Set64::default(),
+            seen: Map64::default(),
             idx: LiteralIndex::default(),
             term_idx: super::index::TermIndex::default(),
             active_eqns: Vec::new(),
@@ -885,6 +903,12 @@ impl<'a> NativeProver<'a> {
             lits, self.kbo(), &src, &self.layer.atoms, self.syn(),
             self.opts.strategy.demod.then_some(&self.layer.term_facts),
         );
+        // Bloom prefilter words for the candidate (the D side), computed
+        // once per probe from the same memoized per-atom data the stored
+        // C-side words used at clause birth — identical bit derivation
+        // on both sides is what licenses the subset tests (see
+        // `fvi::ClauseBlooms` for the per-channel soundness arguments).
+        let d_blooms = ClauseBlooms::compute(lits, terms, &src);
         for cid in cand {
             let c = &self.clauses[cid as usize];
             if c.retired {
@@ -900,6 +924,44 @@ impl<'a> NativeProver<'a> {
             // counting them would inflate the denominator without
             // reflecting the prefilter's actual workload).
             self.stats.subs_checks_attempted += 1;
+            // Channel: leaf bloom (one AND + compare — cheapest, runs
+            // first).  C's ground leaves survive any substitution and
+            // Cσ's literals sit among D's, so every leaf bit of C must
+            // appear in D; a missing bit soundly refutes subsumption.
+            if c.blooms.leaf & !d_blooms.leaf != 0 {
+                self.stats.subs_rejected_by_bloom_leaf += 1;
+                // Debug twin (house discipline): a bloom rejection must
+                // agree with the exact check.
+                #[cfg(any(test, debug_assertions))]
+                debug_assert!(
+                    !clause_subsumes(&c.terms, terms),
+                    "leaf bloom rejected {:?} but clause_subsumes({:?}, {:?}) \
+                     would have accepted it (blooms {:#x} vs {:#x})",
+                    cid, c.terms, terms, c.blooms.leaf, d_blooms.leaf,
+                );
+                continue;
+            }
+            // Channel: ground-literal bloom.  Every FULLY GROUND literal
+            // of C is its own σ-image and must appear verbatim in D, so
+            // its polarity-mixed atom bit must be set in D's word.
+            // `glit == 0` (no ground literals) passes vacuously — the
+            // applicability counter tracks how often the channel can
+            // act at all.
+            if c.blooms.glit != 0 {
+                self.stats.subs_glit_applicable += 1;
+                if c.blooms.glit & !d_blooms.glit != 0 {
+                    self.stats.subs_rejected_by_bloom_glit += 1;
+                    #[cfg(any(test, debug_assertions))]
+                    debug_assert!(
+                        !clause_subsumes(&c.terms, terms),
+                        "ground-literal bloom rejected {:?} but \
+                         clause_subsumes({:?}, {:?}) would have accepted it \
+                         (blooms {:#x} vs {:#x})",
+                        cid, c.terms, terms, c.blooms.glit, d_blooms.glit,
+                    );
+                    continue;
+                }
+            }
             if !c.fv.le(&d_fv) {
                 self.stats.subs_rejected_by_fv += 1;
                 // Soundness cross-check (debug builds / tests only, zero
@@ -1008,19 +1070,90 @@ impl<'a> NativeProver<'a> {
     }
 
 
+    // -- verified dedup -----------------------------------------------------------
+    //
+    // `seen` maps a 64-bit `ClauseKey` to the FIRST clause id accepted
+    // under it.  All three accessors verify a key hit STRUCTURALLY
+    // (canonical literal lists — `ClauseKey` is a hash of exactly that
+    // sequence, so equal lits ⇔ genuinely α-equivalent clauses) before
+    // reporting "duplicate".  A key hit with different literals is a
+    // TRUE collision: counted, and the probing clause is ACCEPTED —
+    // dropping it on a naked 64-bit match would silently lose a
+    // non-duplicate clause (a completeness risk).  The map keeps the
+    // first id, so collision-mates bypass dedup from then on (sound:
+    // dedup only saves work, duplicates are never wrong to re-process).
+
+    /// Probe only (no insert): is the arena clause `id` a structurally
+    /// verified duplicate of the first clause accepted under `key`?
+    fn seen_duplicate(&mut self, key: ClauseKey, id: u32) -> bool {
+        let Some(&first) = self.seen.get(&key) else { return false };
+        if self.clauses[first as usize].lits == self.clauses[id as usize].lits {
+            true
+        } else {
+            self.stats.dedup_collisions_detected += 1;
+            false
+        }
+    }
+
+    /// Probe only, literal-list form — for candidates that are not (or
+    /// not yet) in the arena, e.g. the demod duplicate-hit stats probe
+    /// in `make`.
+    pub(super) fn seen_duplicate_lits(&mut self, key: ClauseKey, lits: &[PLit]) -> bool {
+        let Some(&first) = self.seen.get(&key) else { return false };
+        if self.clauses[first as usize].lits.as_slice() == lits {
+            true
+        } else {
+            self.stats.dedup_collisions_detected += 1;
+            false
+        }
+    }
+
+    /// Record `key → id`, keeping the FIRST id on an occupied entry.
+    /// No verification and no collision counting: the caller has
+    /// already probed via [`Self::seen_duplicate`], where a collision
+    /// was counted — this split keeps probe-then-record sites (like
+    /// `push`) from double-counting one event.
+    fn seen_record(&mut self, key: ClauseKey, id: u32) {
+        self.seen.entry(key).or_insert(id);
+    }
+
+    /// Insert-guard form (the old `if self.seen.insert(key)` idiom):
+    /// `true` when the clause counts as NEW — first sighting of the key
+    /// (recorded), or a verified TRUE collision (counted; accepted; the
+    /// first id stays).  `false` = structurally verified duplicate.
+    pub(super) fn seen_insert(&mut self, key: ClauseKey, id: u32) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.seen.entry(key) {
+            Entry::Vacant(e) => {
+                e.insert(id);
+                true
+            }
+            Entry::Occupied(e) => {
+                let first = *e.get();
+                if self.clauses[first as usize].lits == self.clauses[id as usize].lits {
+                    false
+                } else {
+                    self.stats.dedup_collisions_detected += 1;
+                    true
+                }
+            }
+        }
+    }
+
     // -- queue ------------------------------------------------------------------
 
     /// Queue a made clause for given selection.  `None` (redundant) and
     /// already-seen/over-long clauses are dropped.
     pub(crate) fn push(&mut self, id: Option<u32>) -> Option<u32> {
         let id = id?;
-        let c = &self.clauses[id as usize];
-        if self.seen.contains(&c.key) { return None; }
-        if c.lits.len() > self.opts.max_lits {
+        let key = self.clauses[id as usize].key;
+        if self.seen_duplicate(key, id) { return None; }
+        if self.clauses[id as usize].lits.len() > self.opts.max_lits {
             self.stats.discarded_long += 1;
             return None;
         }
-        self.seen.insert(c.key);
+        self.seen_record(key, id);
+        let c = &self.clauses[id as usize];
         let (w, n) = (c.weight, self.seq);
         self.seq += 1;
         // Semantic-guide tie-break: 0 (inert, first-in-key-order) when the
@@ -1380,7 +1513,7 @@ impl<'a> NativeProver<'a> {
                     self.stats.discarded_long += 1;
                     continue;
                 }
-                if self.seen.insert(key) {
+                if self.seen_insert(key, id) {
                     // Full-saturation regime: background clauses also
                     // compete for given selection (axiom×axiom inference).
                     // Classic set-of-support only indexes them as passive
@@ -1422,7 +1555,7 @@ impl<'a> NativeProver<'a> {
             // `(not p)` both asserted) queues too, so `run` pops it and
             // reports the refutation instead of indexing nothing.
             self.push(Some(id));
-        } else if self.seen.insert(key) {
+        } else if self.seen_insert(key, id) {
             let l = self.clauses[id as usize].lits[0];
             if l.pos && self.layer.atom_info(l.atom).is_ground() {
                 self.support_seeds.push((l.atom, id));

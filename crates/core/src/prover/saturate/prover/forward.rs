@@ -80,7 +80,7 @@ impl<'a> NativeProver<'a> {
                     let Some(nid) = self.superpose(eid, 0, p, 0, &path) else { continue };
                     // Keep only genuinely new oriented unit equations.
                     let key = self.clauses[nid as usize].key;
-                    if self.is_unit_equation_unactivated(nid) && self.seen.insert(key) {
+                    if self.is_unit_equation_unactivated(nid) && self.seen_insert(key, nid) {
                         self.activate(nid);
                         frontier.push(nid);
                         produced += 1;
@@ -199,7 +199,7 @@ impl<'a> NativeProver<'a> {
                                 continue;
                             }
                             let key = self.clauses[cid as usize].key;
-                            if !self.seen.insert(key) { continue; }
+                            if !self.seen_insert(key, cid) { continue; }
                             self.activate(cid);
                             // Only UNIT conclusions re-seed the unit-driven
                             // next round; a derived disjunction can't.
