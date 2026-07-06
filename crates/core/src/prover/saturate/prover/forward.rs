@@ -21,7 +21,7 @@ impl<'a> NativeProver<'a> {
     fn is_unit_equation(&self, id: u32) -> bool {
         let c = &self.clauses[id as usize];
         c.activated
-            && !c.retired
+            && !self.is_retired(id)
             && c.terms.len() == 1
             && c.terms[0].0
             && self.equality_oriented(&c.terms[0].1).is_some()
@@ -139,7 +139,7 @@ impl<'a> NativeProver<'a> {
                     let (c_id, c_i) = (at.clause, at.lit as usize);
                     let (c_terms, c_nvars, c_npos) = {
                         let c = &self.clauses[c_id as usize];
-                        if c.retired { continue; } // superseded by bwd-demod replacement
+                        if self.is_retired(c_id) { continue; } // superseded by bwd-demod replacement
                         if c.lits.len() > fc_max_premise_lits || c.lits[c_i].pos { continue; }
                         (c.terms.clone(), c.nvars,
                          c.terms.iter().filter(|(p, _)| *p).count())
@@ -247,7 +247,7 @@ impl<'a> NativeProver<'a> {
                         let mut branch = 0usize;
                         for cand in cands {
                             let uc = &self.clauses[cand.clause as usize];
-                            if uc.lits.len() != 1 || uc.retired { continue; }
+                            if uc.lits.len() != 1 || self.is_retired(cand.clause) { continue; }
                             // Two-way unification binds the unit's vars
                             // too, so (unlike the one-way matches) the
                             // substitution must cover its slot range.

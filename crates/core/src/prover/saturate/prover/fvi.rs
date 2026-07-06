@@ -302,6 +302,38 @@ impl ClauseBlooms {
     }
 }
 
+/// Packed per-clause record for `forward_subsumed`'s candidate scan —
+/// the ONLY home of a clause's bloom words + feature vector + literal
+/// count (moved off `ClauseRec`, not mirrored).  The scan gathers
+/// candidates by id from the literal index, and with these four small
+/// fields packed into one 32-byte record the whole
+/// cheapest-first filter chain (length → leaf bloom → glit bloom → FV)
+/// reads ONE cache line per candidate instead of pointer-chasing into
+/// the ~200-byte `ClauseRec` (measured: candidate iteration was the
+/// remaining forward-subsumption cost after the filters landed).
+/// Lives in `NativeProver::subs`, indexed by clause id in lockstep with
+/// the arena (`subs.len() == clauses.len()`, debug-asserted at every
+/// write site).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SubsRec {
+    /// Bloom prefilter words (leaf + ground-literal channels).
+    pub(crate) blooms: ClauseBlooms,
+    /// Feature-vector channels (#lits/#pos/#neg/size/KBO-weight).
+    pub(crate) fv: ClauseFv,
+    /// Exact literal count (`lits.len()`), NOT the saturated `fv[0]`
+    /// channel — the `c.lits.len() > d.len()` pre-attempt filter must
+    /// stay exact for clauses wider than `u16::MAX` literals (byte-
+    /// identity discipline; width is practically capped far below, but
+    /// the filter gates a stats counter, so no approximation here).
+    pub(crate) nlits: u32,
+}
+
+/// The packing IS the point: two records per cache line (16 blooms +
+/// 10 fv + 4 nlits, padded to 32).  If a field addition ever grows
+/// this past 32 bytes, reconsider the layout instead of silently
+/// spilling into a second line per candidate.
+const _: () = assert!(std::mem::size_of::<SubsRec>() == 32);
+
 /// Test-only: build a `ClauseFv` directly from slot-form terms (the
 /// working-tree shape used by `clause_subsumes`/the subsumption unit
 /// tests), for exercising monotonicity without standing up a full

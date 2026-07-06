@@ -16,7 +16,7 @@ use super::super::index::{EntryRef, LiteralIndex};
 use super::super::oracle::OracleSnapshot;
 use super::super::theory::TheoryOracle;
 use super::super::units::UnitStores;
-use super::{ClauseRec, NativeProver};
+use super::{ClauseRec, NativeProver, SubsRec};
 
 /// A frozen background problem base: everything `ask_native_once`
 /// computes BEFORE support/conjecture loading, detached from the
@@ -30,6 +30,14 @@ pub(crate) struct ProverSnapshot {
     /// rebuilds them from the arena for any subset of these).
     pub(crate) loaded_roots: std::collections::HashSet<SentenceId>,
     pub(super) clauses: Vec<ClauseRec>,
+    /// SoA twins of `clauses` (subsumption-scan records + retirement
+    /// bitmap) — frozen verbatim, in lockstep with the arena.  The
+    /// records are birth-computed values (not reconstructible without
+    /// re-running the fv/bloom computes), and retirement is genuine
+    /// run state: background activation CAN backward-demodulate before
+    /// the freeze point.
+    pub(super) subs: Vec<SubsRec>,
+    pub(super) retired_bits: Vec<u64>,
     /// Verified dedup map (key → first-accepted clause id) — see the
     /// field docs on `NativeProver::seen`.
     pub(super) seen: Map64<ClauseKey, u32>,
@@ -64,6 +72,8 @@ impl<'a> NativeProver<'a> {
         ProverSnapshot {
             loaded_roots: self.bg_roots.clone(),
             clauses: self.clauses.clone(),
+            subs: self.subs.clone(),
+            retired_bits: self.retired_bits.clone(),
             seen: self.seen.clone(),
             idx: self.idx.clone(),
             units: self.units.clone(),

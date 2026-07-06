@@ -46,7 +46,7 @@ mod schema_apply;
 mod snapshot;
 mod stats;
 
-pub(crate) use fvi::{ClauseBlooms, ClauseFv};
+pub(crate) use fvi::{ClauseBlooms, ClauseFv, SubsRec};
 pub(crate) use snapshot::ProverSnapshot;
 pub(crate) use stats::ProverStats;
 
@@ -185,36 +185,20 @@ pub(crate) struct ClauseRec {
     pub(crate) tier: u8,
     pub(crate) weight: u64,
     pub(crate) activated: bool,
-    /// Retired by backward demodulation: a newer oriented unit equation
-    /// rewrote this clause and its simplified replacement (parents =
-    /// {this, the equation}) took over.  The record stays in the arena
-    /// (proof-DAG references remain valid, and stale index entries are
-    /// tolerated by re-checking), but the clause is skipped on given
-    /// selection and filtered from partner retrieval.  Always `false`
-    /// unless `Strategy.bwd_demod` is on.
-    pub(crate) retired: bool,
     /// Bit `i` set ⇔ literal `i` is maximal under the KBO literal
     /// ordering (the ordered-inference eligibility set).  All-ones when
     /// maximality is not needed (the unordered default), so consumers can
     /// AND against it unconditionally.
     pub(crate) max_mask: u64,
-    /// Feature-vector subsumption prefilter channels (E-style FVI, v1):
-    /// #lits / #pos / #neg / term-size / KBO-weight, computed once here
-    /// and reused by every `forward_subsumed` probe this clause
-    /// participates in as a candidate subsumer.  Always computed (cheap
-    /// — one pass over already-resolved literals); only CONSULTED when
-    /// `Strategy.subsumption` is on.  See `fvi.rs` (including why a raw
-    /// distinct-variable-count channel is deliberately NOT one of them).
-    pub(crate) fv: ClauseFv,
-    /// Bloom subsumption prefilter words (leaf signature + ground-
-    /// literal signature), computed once here from the same memoized
-    /// per-atom data (`AtomInfos`) and consulted by `forward_subsumed`
-    /// BEFORE the feature-vector channels.  See `fvi::ClauseBlooms` for
-    /// the per-channel soundness arguments.
-    pub(crate) blooms: ClauseBlooms,
     /// Human-readable justifications (oracle discharges, unit refutations).
     pub(crate) notes: Vec<String>,
 }
+// NOTE (SoA): the subsumption-scan fields (feature vector, bloom words,
+// literal count) and the retirement flag deliberately do NOT live here —
+// they moved to the id-indexed parallel arrays `NativeProver::subs` /
+// `NativeProver::retired_bits` so the hot candidate scans read dense
+// 32-byte records / bitmap words instead of pointer-chasing this large
+// struct.  See `fvi::SubsRec` and `NativeProver::is_retired`.
 
 /// A reusable one-way-match scratch: substitution buffer (all-`None`
 /// between uses) plus binding trail (empty between uses).  Rollback via
@@ -277,6 +261,27 @@ pub(crate) struct NativeProver<'a> {
     /// precedence); `None` ⇒ use the shared, warm `layer.kbo` unchanged.
     prec: Option<super::kbo::KboOrdering>,
     pub(crate) clauses: Vec<ClauseRec>,
+    /// SoA twin of `clauses` (same indexing, same length — the arena
+    /// lockstep invariant, debug-asserted at every write site): the
+    /// packed 32-byte subsumption-scan record per clause.  These fields
+    /// MOVED here from `ClauseRec` (single source of truth, no dual
+    /// maintenance) so `forward_subsumed`'s candidate loop touches one
+    /// dense array line per candidate instead of gathering four small
+    /// fields from the large arena struct.  See `fvi::SubsRec`.
+    pub(crate) subs: Vec<SubsRec>,
+    /// Retirement bitmap (bit `id` of word `id / 64`): set by backward
+    /// demodulation when a newer oriented unit equation rewrote clause
+    /// `id` and its simplified replacement took over.  The arena record
+    /// stays (proof-DAG references remain valid, stale index entries
+    /// are tolerated by re-checking), but the clause is skipped on
+    /// given selection and filtered from partner retrieval.  MOVED off
+    /// `ClauseRec` (it was a bool there) — every candidate loop
+    /// (subsumption, resolution partners, superposition, demod) now
+    /// reads a dense, mostly-L1-resident bitmap via
+    /// [`Self::is_retired`] instead of dereferencing the arena.  Sized
+    /// in lockstep with `clauses` (`(len + 63) / 64` words).  All-zero
+    /// unless `Strategy.bwd_demod` is on.
+    retired_bits: Vec<u64>,
     /// Verified dedup map: `ClauseKey` → id of the FIRST clause accepted
     /// under that key.  A `ClauseKey` is a bare 64-bit content hash, so
     /// a key hit alone must never be trusted to DROP a clause — a
@@ -437,6 +442,8 @@ impl<'a> NativeProver<'a> {
             opts,
             prec,
             clauses: Vec::new(),
+            subs: Vec::new(),
+            retired_bits: Vec::new(),
             seen: Map64::default(),
             idx: LiteralIndex::default(),
             term_idx: super::index::TermIndex::default(),
@@ -489,6 +496,13 @@ impl<'a> NativeProver<'a> {
         p.oracle = SemanticOracle::from_snapshot(&layer.semantic, scope, &snap.oracle);
         p.bg_roots = snap.loaded_roots.clone();
         p.clauses = snap.clauses.clone();
+        p.subs = snap.subs.clone();
+        p.retired_bits = snap.retired_bits.clone();
+        debug_assert_eq!(p.subs.len(), p.clauses.len(), "SoA/arena lockstep (hydrate)");
+        debug_assert_eq!(
+            p.retired_bits.len(), p.clauses.len().div_ceil(64),
+            "retired bitmap/arena lockstep (hydrate)",
+        );
         p.seen = snap.seen.clone();
         p.idx = snap.idx.clone();
         p.units = snap.units.clone();
@@ -537,6 +551,21 @@ impl<'a> NativeProver<'a> {
 
     /// The owning layer (proof extraction resolves atoms through it).
     pub(crate) fn layer(&self) -> &'a ProverLayer { self.layer }
+
+    /// Whether clause `id` was retired by backward demodulation — one
+    /// bitmap-word read (the SoA home of the former `ClauseRec.retired`
+    /// bool; see the `retired_bits` field docs).
+    #[inline]
+    pub(crate) fn is_retired(&self, id: u32) -> bool {
+        (self.retired_bits[(id >> 6) as usize] >> (id & 63)) & 1 != 0
+    }
+
+    /// Retire clause `id` (backward demodulation only — retirement is
+    /// permanent for the run; see `retired_bits`).
+    #[inline]
+    pub(super) fn set_retired(&mut self, id: u32) {
+        self.retired_bits[(id >> 6) as usize] |= 1u64 << (id & 63);
+    }
 
     /// Borrow the reusable substitution buffer, sized to at least `n`
     /// all-`None` slots.  Return it with [`Self::put_scratch`], which
@@ -1005,12 +1034,20 @@ impl<'a> NativeProver<'a> {
             ClauseBlooms::compute(lits, terms, &src),
             "transient bloom words diverged from the memoized compute",
         );
+        // Candidate scan: every per-candidate filter below (retired bit,
+        // length, both blooms, FV) reads ONLY the dense SoA twins
+        // (`retired_bits` + `subs` — one bitmap word + one packed
+        // 32-byte record per candidate); the big arena `ClauseRec` is
+        // first touched by the rare survivors that reach the keq / exact
+        // channels.  Filter ORDER and semantics are byte-identical to
+        // the pre-SoA loop.
+        debug_assert_eq!(self.subs.len(), self.clauses.len(), "SoA/arena lockstep");
         for cid in cand {
-            let c = &self.clauses[cid as usize];
-            if c.retired {
+            if self.is_retired(cid) {
                 continue; // a retired clause must not delete its own replacement
             }
-            if c.lits.len() > terms.len() {
+            let rec = self.subs[cid as usize];
+            if rec.nlits as usize > terms.len() {
                 continue;
             }
             // Every candidate reaching here is a genuine subsumption
@@ -1024,16 +1061,17 @@ impl<'a> NativeProver<'a> {
             // first).  C's ground leaves survive any substitution and
             // Cσ's literals sit among D's, so every leaf bit of C must
             // appear in D; a missing bit soundly refutes subsumption.
-            if c.blooms.leaf & !d_blooms.leaf != 0 {
+            if rec.blooms.leaf & !d_blooms.leaf != 0 {
                 self.stats.subs_rejected_by_bloom_leaf += 1;
                 // Debug twin (house discipline): a bloom rejection must
                 // agree with the exact check.
                 #[cfg(any(test, debug_assertions))]
                 debug_assert!(
-                    !clause_subsumes(&c.terms, terms),
+                    !clause_subsumes(&self.clauses[cid as usize].terms, terms),
                     "leaf bloom rejected {:?} but clause_subsumes({:?}, {:?}) \
                      would have accepted it (blooms {:#x} vs {:#x})",
-                    cid, c.terms, terms, c.blooms.leaf, d_blooms.leaf,
+                    cid, self.clauses[cid as usize].terms, terms,
+                    rec.blooms.leaf, d_blooms.leaf,
                 );
                 continue;
             }
@@ -1043,35 +1081,40 @@ impl<'a> NativeProver<'a> {
             // `glit == 0` (no ground literals) passes vacuously — the
             // applicability counter tracks how often the channel can
             // act at all.
-            if c.blooms.glit != 0 {
+            if rec.blooms.glit != 0 {
                 self.stats.subs_glit_applicable += 1;
-                if c.blooms.glit & !d_blooms.glit != 0 {
+                if rec.blooms.glit & !d_blooms.glit != 0 {
                     self.stats.subs_rejected_by_bloom_glit += 1;
                     #[cfg(any(test, debug_assertions))]
                     debug_assert!(
-                        !clause_subsumes(&c.terms, terms),
+                        !clause_subsumes(&self.clauses[cid as usize].terms, terms),
                         "ground-literal bloom rejected {:?} but \
                          clause_subsumes({:?}, {:?}) would have accepted it \
                          (blooms {:#x} vs {:#x})",
-                        cid, c.terms, terms, c.blooms.glit, d_blooms.glit,
+                        cid, self.clauses[cid as usize].terms, terms,
+                        rec.blooms.glit, d_blooms.glit,
                     );
                     continue;
                 }
             }
-            if !c.fv.le(&d_fv) {
+            if !rec.fv.le(&d_fv) {
                 self.stats.subs_rejected_by_fv += 1;
                 // Soundness cross-check (debug builds / tests only, zero
                 // cost in release): the prefilter must never reject a
                 // pair `clause_subsumes` would have accepted.
                 #[cfg(any(test, debug_assertions))]
                 debug_assert!(
-                    !clause_subsumes(&c.terms, terms),
+                    !clause_subsumes(&self.clauses[cid as usize].terms, terms),
                     "FV prefilter rejected {:?} but clause_subsumes({:?}, {:?}) \
                      would have accepted it (fv {:?} vs {:?})",
-                    cid, c.terms, terms, c.fv, d_fv,
+                    cid, self.clauses[cid as usize].terms, terms, rec.fv, d_fv,
                 );
                 continue;
             }
+            // Blooms + FV passed — NOW touch the arena record (the rare
+            // path: most candidates died on the packed record above).
+            let c = &self.clauses[cid as usize];
+            debug_assert_eq!(c.lits.len(), rec.nlits as usize, "SoA nlits lockstep");
             // Channel: per-literal Key-Equation counting filter — every
             // literal of C must have at least one Key-Equation-compatible
             // literal in D, or C cannot subsume D (see `keq_unpartnered`
@@ -1344,14 +1387,14 @@ impl<'a> NativeProver<'a> {
             if from_age {
                 while let Some(Reverse((_, id))) = self.h_age.pop() {
                     if self.popped.insert(id) {
-                        if self.clauses[id as usize].retired { continue; }
+                        if self.is_retired(id) { continue; }
                         return Some(id);
                     }
                 }
             } else {
                 while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
                     if self.popped.insert(id) {
-                        if self.clauses[id as usize].retired { continue; }
+                        if self.is_retired(id) { continue; }
                         return Some(id);
                     }
                 }
@@ -1607,7 +1650,7 @@ impl<'a> NativeProver<'a> {
             .active_eqns
             .iter()
             .copied()
-            .filter(|&(c, _)| !self.clauses[c as usize].retired)
+            .filter(|&(c, _)| !self.is_retired(c))
             .collect();
         for (li, (_, atom)) in g_terms.iter().enumerate() {
             if li >= 64 || (g_max >> li) & 1 == 0 { continue; }
@@ -1640,7 +1683,7 @@ impl<'a> NativeProver<'a> {
             let src = move |a| layer.atom_info(a);
             let targets = self.term_idx.probe(&qi, &src);
             for tp in targets {
-                if self.clauses[tp.clause as usize].retired {
+                if self.is_retired(tp.clause) {
                     continue; // superseded by its backward-demod replacement
                 }
                 let path: Vec<usize> = tp.path.iter().map(|&p| p as usize).collect();
@@ -2211,7 +2254,7 @@ impl<'a> NativeProver<'a> {
         let mut n = 0;
         for (eq_cid, l, r) in &equals {
             if matches!(l, Term::Var(_)) { continue; }
-            if self.clauses[*eq_cid as usize].retired { continue; }
+            if self.is_retired(*eq_cid) { continue; }
             let off = nvars as u64 + 1;
             let l2 = shift_slots(l, off);
             let r2 = shift_slots(r, off);
@@ -2600,7 +2643,7 @@ impl<'a> NativeProver<'a> {
                 }
                 // Retired (backward-demodulated) clauses no longer
                 // partner — their simplified replacements do.
-                cands.retain(|at| !self.clauses[at.clause as usize].retired);
+                cands.retain(|at| !self.is_retired(at.clause));
                 // Ordered resolution: the partner literal must be maximal
                 // in its own clause too.
                 let cands: Vec<EntryRef> = if ordered {

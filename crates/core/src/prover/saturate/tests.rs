@@ -176,7 +176,7 @@ fn backward_demod_rewrites_and_retires_active_clause() {
         .find(|c| c.rule == "axiom" && prover.dbg_lits(c.id) == vec![(true, "(p (FnF A))".to_string())])
         .expect("original fact clause")
         .id;
-    assert!(prover.clauses[orig as usize].retired, "original must be retired");
+    assert!(prover.is_retired(orig), "original must be retired");
     let repl = prover
         .clauses
         .iter()
@@ -187,7 +187,7 @@ fn backward_demod_rewrites_and_retires_active_clause() {
         repl.parents.contains(&orig),
         "replacement cites the original as parent"
     );
-    assert!(!repl.retired);
+    assert!(!prover.is_retired(repl.id));
 }
 
 /// Orientation decided at registration is respected under instance:
@@ -249,7 +249,7 @@ fn backward_demod_cap_honored() {
     let retired: Vec<&str> = prover
         .clauses
         .iter()
-        .filter(|c| c.retired)
+        .filter(|c| prover.is_retired(c.id))
         .map(|c| c.rule)
         .collect();
     assert_eq!(retired, vec!["axiom"], "exactly one original retired");

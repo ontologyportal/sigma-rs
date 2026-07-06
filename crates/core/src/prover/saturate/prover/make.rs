@@ -604,8 +604,7 @@ impl<'a> NativeProver<'a> {
         self.bwd_index = super::super::hash64::Map64::default();
         let n = self.clauses.len() as u32;
         for id in 0..n {
-            let c = &self.clauses[id as usize];
-            if c.activated && !c.retired {
+            if self.clauses[id as usize].activated && !self.is_retired(id) {
                 self.bwd_index_clause(id);
             }
         }
@@ -656,7 +655,7 @@ impl<'a> NativeProver<'a> {
             checks += 1;
             let (terms, tier) = {
                 let c = &self.clauses[cid as usize];
-                if c.retired || c.lits.is_empty() {
+                if self.is_retired(cid) || c.lits.is_empty() {
                     continue;
                 }
                 // Mirror forward demod's tier guard (`demod_eligible` in
@@ -682,7 +681,7 @@ impl<'a> NativeProver<'a> {
             // Retire the original FIRST: it must not forward-subsume
             // (or otherwise interact with) its own replacement inside
             // `make`.  Its content lives on in replacement + equation.
-            self.clauses[cid as usize].retired = true;
+            self.set_retired(cid);
             self.stats.bwd_demod_retired += 1;
             let made = self.make(lits, vec![cid, demod_id], "bwd_demod", tier, None, true);
             let Some(nid) = made else { continue };
@@ -1799,6 +1798,17 @@ impl<'a> NativeProver<'a> {
             &clause.lits, &terms, |a| layer.atom_info(a),
         );
         let id = self.clauses.len() as u32;
+        // SoA twin first (`subs` + retirement bitmap grow in lockstep
+        // with the arena — the scan-side invariant `forward_subsumed`
+        // relies on).  `nlits` is the exact literal count; see
+        // `fvi::SubsRec` on why it is not the saturated `fv[0]`.
+        debug_assert!(u32::try_from(clause.lits.len()).is_ok());
+        self.subs.push(super::fvi::SubsRec {
+            blooms,
+            fv,
+            nlits: clause.lits.len() as u32,
+        });
+        self.retired_bits.resize((id as usize + 1).div_ceil(64), 0);
         self.clauses.push(ClauseRec {
             id,
             lits: clause.lits,
@@ -1812,12 +1822,14 @@ impl<'a> NativeProver<'a> {
             tier,
             weight: base * self.opts.strategy.tier_weight[tier as usize] * dist,
             activated: false,
-            retired: false,
             max_mask,
-            fv,
-            blooms,
             notes,
         });
+        debug_assert_eq!(self.subs.len(), self.clauses.len(), "SoA/arena lockstep");
+        debug_assert_eq!(
+            self.retired_bits.len(), self.clauses.len().div_ceil(64),
+            "retired bitmap/arena lockstep",
+        );
         // Backward-demodulation reverse index: every arena clause is
         // findable by the head keys of its subterm nodes, so a LATER
         // oriented equation can re-normalize it (active or passive).
@@ -2408,8 +2420,8 @@ mod bloom_subsumption_tests {
         // leaf channel, not a later one.  If a name reshuffle ever
         // collides the bits, fail loudly here rather than silently
         // testing nothing.
-        let c_leaf = p.clauses[c as usize].blooms.leaf;
-        let d_leaf = p.clauses[d as usize].blooms.leaf;
+        let c_leaf = p.subs[c as usize].blooms.leaf;
+        let d_leaf = p.subs[d as usize].blooms.leaf;
         assert_ne!(c_leaf & !d_leaf, 0, "fixture: leaf bit of `c` must miss D");
         assert_eq!(p.stats.subs_checks_attempted, 1);
         assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 1, "leaf channel fired first");
@@ -2446,7 +2458,7 @@ mod bloom_subsumption_tests {
             vec![], "test", SUPPORT, None, true,
         ).expect("NOT subsumed — kept");
         // Preconditions: leaf channel really passes, glit really differs.
-        let (cb, db) = (p.clauses[c as usize].blooms, p.clauses[d as usize].blooms);
+        let (cb, db) = (p.subs[c as usize].blooms, p.subs[d as usize].blooms);
         assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
         assert_ne!(cb.glit & !db.glit, 0, "fixture: C's ground-literal bit misses D");
         assert_eq!(p.stats.subs_checks_attempted, 1);
@@ -2471,7 +2483,7 @@ mod bloom_subsumption_tests {
             vec![], "test", SUPPORT, None, true,
         ).expect("kept");
         p.activate(c);
-        assert_eq!(p.clauses[c as usize].blooms.glit, 0, "no ground literals");
+        assert_eq!(p.subs[c as usize].blooms.glit, 0, "no ground literals");
         // D = (p a) ∨ (q a): subsumed via {?0 ↦ a}.
         let made = p.make(
             vec![
@@ -2580,11 +2592,11 @@ mod keq_subsumption_tests {
         // {p, q, a} all occur in D, so the leaf subset holds bit-wise
         // unconditionally; C has no ground literal, so glit is
         // inapplicable; and the FV channels agree pointwise.
-        let (cb, db) = (p.clauses[c as usize].blooms, p.clauses[d as usize].blooms);
+        let (cb, db) = (p.subs[c as usize].blooms, p.subs[d as usize].blooms);
         assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
         assert_eq!(cb.glit, 0, "fixture: no ground literal in C");
         assert!(
-            p.clauses[c as usize].fv.le(&p.clauses[d as usize].fv),
+            p.subs[c as usize].fv.le(&p.subs[d as usize].fv),
             "fixture: the FV channels must not reject this pair",
         );
         assert_eq!(p.stats.subs_checks_attempted, 1);
@@ -2658,6 +2670,68 @@ mod keq_subsumption_tests {
                 + s.subs_full_checks,
             "every attempted check is attributed to exactly one channel",
         );
+    }
+
+    // SoA lockstep property: after live mixed traffic (accepted actives,
+    // rejected probes, dedup paths), the id-indexed scan arrays must
+    // agree with the arena — same length, and every packed record equal
+    // to a fresh recompute from the arena clause's literals.  This is
+    // the invariant `forward_subsumed` trusts INSTEAD of reading
+    // `ClauseRec` (the fields moved, they are not mirrored) — a drifted
+    // record would silently mis-filter, so it gets its own gate.
+    #[test]
+    fn soa_scan_arrays_stay_in_lockstep_with_the_arena() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        let mk = |names: &[(&str, bool)]| -> Vec<(bool, Term)> {
+            names.iter()
+                .map(|(n, ground)| {
+                    let arg = if *ground { sym("a") } else { Term::Var(0) };
+                    (true, app(vec![sym(n), arg]))
+                })
+                .collect()
+        };
+        // Actives with a spread of shapes (ground / open, unit / wide).
+        for lits in [
+            mk(&[("p", false)]),
+            mk(&[("q", true)]),
+            mk(&[("p", false), ("q", true)]),
+            mk(&[("r", true), ("s", false), ("t", true)]),
+        ] {
+            if let Some(id) = p.make(lits, vec![], "test", SUPPORT, None, true) {
+                p.activate(id);
+            }
+        }
+        // Probes: some die to forward subsumption, some are accepted.
+        for lits in [
+            mk(&[("p", true)]),
+            mk(&[("q", true), ("p", true)]),
+            mk(&[("u", true)]),
+        ] {
+            let _ = p.make(lits, vec![], "test", SUPPORT, None, true);
+        }
+        assert!(!p.clauses.is_empty(), "traffic actually flowed");
+        assert_eq!(p.subs.len(), p.clauses.len(), "subs/arena lockstep");
+        assert_eq!(
+            p.retired_bits.len(),
+            p.clauses.len().div_ceil(64),
+            "retired bitmap sized to the arena",
+        );
+        for c in &p.clauses {
+            let rec = p.subs[c.id as usize];
+            assert_eq!(rec.nlits as usize, c.lits.len(), "clause {}", c.id);
+            let fv = super::super::fvi::ClauseFv::compute(
+                &c.lits, p.kbo(),
+                |a| layer.atom_info(a), &layer.atoms, &layer.semantic.syntactic,
+                p.opts.strategy.demod.then_some(&layer.term_facts),
+            );
+            assert_eq!(rec.fv, fv, "fv recompute drifted for clause {}", c.id);
+            let blooms = super::super::fvi::ClauseBlooms::compute(
+                &c.lits, &c.terms, |a| layer.atom_info(a),
+            );
+            assert_eq!(rec.blooms, blooms, "bloom recompute drifted for clause {}", c.id);
+            assert!(!p.is_retired(c.id), "no retirement without bwd_demod");
+        }
     }
 }
 

@@ -26,6 +26,16 @@ use sigmakee_rs_sdk::prover::external::backends::{
 use sigmakee_rs_sdk::{Prover, Session};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 
+/// `alloc-mi`: mimalloc as the process-global allocator.  Post-de-alloc
+/// profiles still attribute 15-30% of equational-grind CPU to
+/// malloc/free/bzero; this is the A/B knob for measuring whether a
+/// faster allocator recovers it.  Declared in the BIN crate root so the
+/// one-per-artifact `#[global_allocator]` covers the whole `sumo`
+/// binary without touching library crates or their test harnesses.
+#[cfg(feature = "alloc-mi")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // Heavy ontologies blow past the 8 MB main-thread stack; run on a 64 MB worker.
     let handle = std::thread::Builder::new()
