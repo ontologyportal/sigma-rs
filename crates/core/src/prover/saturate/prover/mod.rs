@@ -665,6 +665,13 @@ impl<'a> NativeProver<'a> {
     pub(crate) fn new(layer: &'a ProverLayer, scope: Scope, opts: NativeOpts) -> Self {
         let prec = (opts.strategy.prec_seed != 0)
             .then(|| super::kbo::KboOrdering::with_prec_seed(opts.strategy.prec_seed));
+        // Anchor the wall deadline at CONSTRUCTION: the attempt's budget
+        // covers loading too — mega-CNF postings registration can dwarf
+        // the search budget (SWV536-1.010: minutes of registration before
+        // `run()` ever anchored).  `run()` and `add_conjecture_clauses`
+        // respect an existing anchor (set-if-None).
+        let run_deadline = (!opts.step && opts.time_limit_secs > 0)
+            .then(|| Instant::now() + std::time::Duration::from_secs(opts.time_limit_secs));
         Self {
             layer,
             scope,
@@ -717,7 +724,7 @@ impl<'a> NativeProver<'a> {
             tick: 0,
             guide_model: None,
             guide_attempted: false,
-            run_deadline: None,
+            run_deadline,
             stats: ProverStats::default(),
         }
     }
@@ -2148,7 +2155,7 @@ impl<'a> NativeProver<'a> {
     /// a single iteration, and one mega-clause iteration can otherwise
     /// run minutes past the budget.
     #[inline]
-    fn out_of_time(&self) -> bool {
+    pub(super) fn out_of_time(&self) -> bool {
         self.opts.cancelled()
             || self.run_deadline.is_some_and(|d| Instant::now() >= d)
     }
@@ -2492,6 +2499,18 @@ impl<'a> NativeProver<'a> {
     /// oracle first — they are assumptions of this refutation.
     pub(crate) fn add_conjecture_clauses(&mut self, clauses: &[super::clause::PClause]) {
         self.has_conjecture = true;
+        // Loading itself can exhaust the wall budget on mega-CNF inputs
+        // (postings registration walks every subterm of every accepted
+        // clause — SWV536-1.010 spent minutes here, past every generation
+        // -stage poll).  Anchor the deadline at load start so the
+        // registration poll in `bwd_index_clause` bites during loading;
+        // `run()` keeps this anchor when set, bounding the WHOLE attempt
+        // by one budget instead of load+run each getting a fresh one.
+        if self.run_deadline.is_none() && !self.opts.step && self.opts.time_limit_secs > 0 {
+            self.run_deadline = Some(
+                Instant::now() + std::time::Duration::from_secs(self.opts.time_limit_secs),
+            );
+        }
         // No source clause id yet — `make` below re-registers each unit
         // with its clause id (add_unit upgrades None → Some).
         for pc in clauses {
@@ -3279,8 +3298,14 @@ impl<'a> NativeProver<'a> {
         // `resolve`/`superpose` too and needs materialized results.
         self.defer_active = self.opts.strategy.deferred_passive;
         let t0 = Instant::now();
-        self.run_deadline = (!self.opts.step && self.opts.time_limit_secs > 0)
-            .then(|| t0 + std::time::Duration::from_secs(self.opts.time_limit_secs));
+        // Keep a load-time anchor when one exists (see
+        // `add_conjecture_clauses`): the attempt's budget covers load AND
+        // search.  Fast-load paths reach here with `None` and anchor now,
+        // exactly as before.
+        if self.run_deadline.is_none() {
+            self.run_deadline = (!self.opts.step && self.opts.time_limit_secs > 0)
+                .then(|| t0 + std::time::Duration::from_secs(self.opts.time_limit_secs));
+        }
         let mut steps = 0usize;
         while steps < self.opts.max_steps {
             // In interactive single-step mode the wall clock is meaningless

@@ -592,6 +592,29 @@ impl<'a> NativeProver<'a> {
     /// unchanged (phase-1 retrieval intact) but the ~2% row-registration
     /// tax is not paid.
     pub(super) fn bwd_index_clause(&mut self, id: u32) {
+        // Deadline poll: a mega-CNF load's registration walks can dwarf
+        // the whole wall budget (SWV536-1.010: minutes spent here at
+        // conjecture load, past every generation-stage poll).  Postings
+        // are a backward-demod INDEX — skipping past the deadline costs
+        // missed backward rewrites on the skipped clauses, never
+        // soundness — so bail once out of time and count it.
+        if self.out_of_time() {
+            self.stats.bwd_postings_deadline_skips += 1;
+            return;
+        }
+        // Size cap: registration clones the path bytes per posted node,
+        // so one mega-clause costs O(size × depth) — SWV536-1.010's
+        // conjecture spent MINUTES in a single walk, un-poll-able without
+        // risking partial (and, on the unverified ground path, unsound)
+        // index state.  Skip whole clauses over the cap: they merely miss
+        // backward rewrites.  Size channel is the already-computed FV
+        // (saturating u16, so genuinely huge clauses read u16::MAX and
+        // are caught too).
+        const BWD_INDEX_SIZE_CAP: u16 = 4096;
+        if self.subs[id as usize].fv.0[3] > BWD_INDEX_SIZE_CAP {
+            self.stats.bwd_postings_size_skips += 1;
+            return;
+        }
         self.bwd_postings.register_clause(
             id,
             &self.clauses[id as usize].terms,

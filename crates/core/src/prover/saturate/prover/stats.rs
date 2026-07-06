@@ -352,6 +352,13 @@ pub(crate) struct ProverStats {
     pub(crate) bwd_bucket_scanned: u64,
     /// Posting compactions run (dead fraction crossed the threshold).
     pub(crate) bwd_postings_compactions: u64,
+    /// Clauses whose postings registration was skipped because the wall
+    /// deadline had already passed (mega-CNF load guard; skipped clauses
+    /// just miss backward rewrites — an index gap, never unsoundness).
+    pub(crate) bwd_postings_deadline_skips: u64,
+    /// Clauses skipped by the registration size cap (path-clone cost is
+    /// O(size × depth); one mega-clause can dwarf the wall budget).
+    pub(crate) bwd_postings_size_skips: u64,
 
     // -- phase-2 decode chain (k-channel Vandermonde rows; see
     //    prover/rows.rs).  All zero unless bwd_demod is on AND an
