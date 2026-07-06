@@ -864,6 +864,29 @@ impl ProverLayer {
                         prover.stats.ej_full_checks_saved));
                 }
             }
+            // Deferred-passive discipline line only when the knob is
+            // on: the default-path SIGMA_STATS output stays
+            // byte-identical.
+            if prover.opts.strategy.deferred_passive {
+                let s = &prover.stats;
+                raw.push_str(&format!(
+                    "\ndeferred: {} recipes_queued, {} prequeue_deduped, \
+                     {} materialized, {} act_dedup_hits, {} act_subsumed, \
+                     {} act_rejected_other, {} act_over_cap, \
+                     {} cap_fallbacks; weight-drift: \
+                     {}/{} exact, avg |drift| {}",
+                    s.recipes_queued,
+                    s.recipes_prequeue_deduped,
+                    s.recipes_materialized,
+                    s.act_dedup_hits,
+                    s.act_subsumed,
+                    s.act_rejected_other,
+                    s.act_over_cap,
+                    s.deferred_cap_fallbacks,
+                    s.composed_weight_exact,
+                    s.composed_weight_samples,
+                    s.composed_weight_drift_sum / s.composed_weight_samples.max(1)));
+            }
             // Decode fast-path cause profile (Step-2; always printed —
             // the ONE new line in a SIGMA_STATS capture diff.  All-zero
             // when `Strategy.decode` is off).

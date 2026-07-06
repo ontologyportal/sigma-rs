@@ -76,6 +76,12 @@ const MATCH_TARGET_OFF: u64 = 4096;
 /// substitution vector must span `JOIN_UNIT_OFF + 256`.  Premise slots
 /// stay below 258 (canonical cap + shift), well under it.
 const JOIN_UNIT_OFF: u64 = 512;
+/// High-bit tag distinguishing RECIPE queue entries from clause ids in
+/// the shared passive heaps (`Strategy.deferred_passive`).  Sound
+/// because a clause arena of 2^31 records is physically impossible
+/// (each `ClauseRec` is >100 bytes); `push_recipe` debug-asserts the
+/// recipe arena side too.
+const RECIPE_TAG: u32 = 1 << 31;
 
 /// The native prover layer's single consolidated params struct — the shared
 /// cross-backend inputs (SInE `selection`, `session`, wall-clock budget) folded
@@ -212,6 +218,160 @@ pub(crate) struct MatchScratch {
     pub(super) trail: Vec<usize>,
 }
 
+/// A deferred inference (`Strategy.deferred_passive`): everything
+/// needed to re-run the SAME construction the eager path would have
+/// run, at selection time instead of generation time.  Parents are
+/// safe to reference forever — the clause arena is append-only and
+/// retirement is a bitmap; records never move or free.
+#[derive(Debug, Clone)]
+struct Recipe {
+    /// `[given, partner]` for resolution; `[e_cid, t_cid]` for
+    /// superposition.
+    parents: [u32; 2],
+    rule: RecipeRule,
+    /// The unifier, snapshotted as its bound (absolute-slot → fragment)
+    /// entries — fragments are stored exactly as `unify_off` left them
+    /// (bound-side fragments already shifted to absolute slot space),
+    /// so rebuilding a `Subst` from this and re-running `apply` /
+    /// `apply_off` reproduces the eager conclusion byte-for-byte.
+    binding: SmallVec<[(u32, Term); 4]>,
+    /// `min(parent tiers)` — frozen at creation (tiers never change).
+    tier: u8,
+    /// COMPOSED queue weight: the same clause-weight formula `make`
+    /// uses, computed on the RAW conclusion's scalars without building
+    /// a single term (see [`compose_term`]).  Exact whenever `make`
+    /// would not simplify the conclusion; an upper-ish bound otherwise
+    /// (duplicate-literal merges and `make`'s literal deletions are
+    /// unknowable without materializing — documented approximation,
+    /// drift measured in `stats.composed_weight_drift_sum`).
+    weight: u64,
+}
+
+#[derive(Debug, Clone)]
+enum RecipeRule {
+    /// Binary resolution `given[gi] × partner[pi]`.  `sym` carries the
+    /// symmetric-swap relation when the unifier came from the
+    /// resolution-modulo-symmetry retry (cited at materialization
+    /// exactly as the eager path cites it).  `decoded` distinguishes
+    /// the algebraic fast path's construction (given literals only, no
+    /// duplicate-literal pass — the partner is a ground unit) from the
+    /// general path's, so replay is bit-faithful to whichever path
+    /// deferred it.
+    Resolve { gi: u16, pi: u16, sym: Option<SymbolId>, decoded: bool },
+    /// Ordered superposition: equation clause's literal `e_li` rewrites
+    /// target clause's literal `t_li` at `path`.  The equation's KBO
+    /// orientation is recomputed at materialization (deterministic:
+    /// memoized content-keyed compares, per-run precedence).
+    Superpose { e_li: u16, t_li: u16, path: SmallVec<[u16; 8]> },
+}
+
+/// The pre-queue dedup key for a recipe: (rule tag, parents, packed
+/// aux) folded through a splitmix64-style avalanche so the result is
+/// UNIFORM — the contract `Set64`'s pass-through hasher (and
+/// hashbrown's low-bits bucketing) requires.  See `recipe_seen`.
+#[inline]
+fn recipe_key(tag: u8, a: u32, b: u32, aux: u64) -> u64 {
+    #[inline]
+    fn mix64(mut z: u64) -> u64 {
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    mix64(mix64(u64::from(tag) << 62 ^ (u64::from(a) << 32) ^ u64::from(b)) ^ aux)
+}
+
+/// Accumulator for [`compose_term`]: the composed clause scalars,
+/// gathered WITHOUT building any term.
+#[derive(Default)]
+struct ComposeAcc {
+    /// `term_size` of the substituted conclusion (leaf count) —
+    /// EXACTLY additive under substitution.
+    size: u64,
+    /// `term_skolem_apps` of the substituted conclusion — additive the
+    /// same way.
+    skolems: u64,
+    /// Distinct UNBOUND absolute slots seen — the conclusion's `nvars`.
+    vars: SmallVec<[u64; 16]>,
+}
+
+/// Walk `t` (viewed at slot offset `off`) under substitution `s`,
+/// accumulating the scalars `apply_off(t, off, s)` WOULD have — same
+/// walk-off semantics (bound fragments are absolute, so recursing into
+/// one resets the offset to 0), no allocation.  This is where the
+/// deferred-passive discipline earns: the eager path pays a full tree
+/// construction + `make` per conclusion just to learn these numbers
+/// for queue ordering.
+fn compose_term(t: &Term, off: u64, s: &Subst, acc: &mut ComposeAcc) {
+    match t {
+        Term::Var(v) => {
+            let slot = *v + off;
+            match s.get(slot as usize).and_then(Option::as_ref) {
+                Some(bound) => compose_term(bound, 0, s, acc),
+                None => {
+                    acc.size += 1;
+                    if !acc.vars.contains(&slot) {
+                        acc.vars.push(slot);
+                    }
+                }
+            }
+        }
+        Term::App(elems) => {
+            // Mirrors `term_skolem_apps`: the App's own head-skolem
+            // count PLUS every element (the head `Sym` recursion adds
+            // its own 1 again — the established double count).
+            if matches!(elems.first(),
+                Some(Term::Sym(sy)) if sy.name().starts_with("sk_"))
+            {
+                acc.skolems += 1;
+            }
+            for e in elems {
+                compose_term(e, off, s, acc);
+            }
+        }
+        Term::Sym(sy) => {
+            acc.size += 1;
+            if sy.name().starts_with("sk_") {
+                acc.skolems += 1;
+            }
+        }
+        _ => acc.size += 1,
+    }
+}
+
+/// [`compose_term`] for the superposition target literal: compose `t`
+/// (at offset `off`) with its subterm at `path` REPLACED by `repl`
+/// (viewed at `repl_off`) — the scalars of
+/// `apply(&replace(t, path, &shift_slots(repl, repl_off)), s)` without
+/// building either tree.
+fn compose_term_at(
+    t: &Term, off: u64,
+    path: &[u16],
+    repl: &Term, repl_off: u64,
+    s: &Subst,
+    acc: &mut ComposeAcc,
+) {
+    let Some((&step, rest)) = path.split_first() else {
+        compose_term(repl, repl_off, s, acc);
+        return;
+    };
+    let Term::App(elems) = t else {
+        // Path into a non-App can't happen for a path produced by
+        // `positions` on this literal; degrade to the unreplaced walk.
+        compose_term(t, off, s, acc);
+        return;
+    };
+    if matches!(elems.first(), Some(Term::Sym(sy)) if sy.name().starts_with("sk_")) {
+        acc.skolems += 1;
+    }
+    for (i, e) in elems.iter().enumerate() {
+        if i == step as usize {
+            compose_term_at(e, off, rest, repl, repl_off, s, acc);
+        } else {
+            compose_term(e, off, s, acc);
+        }
+    }
+}
+
 /// The given literal's decode-relevant facts, hoisted out of the
 /// per-partner loop (see `decode_given_shape`).
 struct DecodeShape {
@@ -319,6 +479,32 @@ pub(crate) struct NativeProver<'a> {
     h_weight: BinaryHeap<Reverse<(u64, u64, u64, u32)>>,
     h_age: BinaryHeap<Reverse<(u64, u32)>>,
     popped: Set64<u32>,
+    /// Deferred-inference arena (`Strategy.deferred_passive`): recipes
+    /// share the passive heaps with made clauses via `RECIPE_TAG`-bit
+    /// ids indexing here.  `take()`n at materialization (entries are
+    /// popped at most once — both heap copies dedup through `popped`
+    /// like clause ids).  Always empty when the knob is off.
+    recipes: Vec<Option<Recipe>>,
+    /// Approximate pre-queue dedup for recipes: an avalanche-mixed
+    /// 64-bit key over (rule tag, parents, packed aux) — drops exact
+    /// re-derivations (e.g. the same superposition reached from both
+    /// the "into" and "from" directions) before they queue.  Exact
+    /// dedup still happens at materialization, so a false miss is
+    /// never unsound; a 64-bit collision falsely dropping a DISTINCT
+    /// derivation is ~2^-64 per pair — negligible against the caps
+    /// that already shape the search.  Keys MUST be pre-mixed
+    /// ([`recipe_key`]): `Set64`'s pass-through hasher is only sound
+    /// for uniform keys, and the raw fields here are small sequential
+    /// integers (measured: the unmixed tuple key clustered ~every
+    /// entry into a handful of buckets — `insert` was 88% of a
+    /// RNG044+1 run's CPU).
+    recipe_seen: Set64<u64>,
+    /// Recipes may be created ONLY inside `run()`'s given-clause loop:
+    /// the load-time paths (background/support/conjecture), the forward
+    /// closure, and the goal-directed discharge passes all run through
+    /// `resolve`/`superpose` too and need materialized results.  Set
+    /// by `run()` after its discharge prologue; false everywhere else.
+    defer_active: bool,
     /// Equality-class key → renderable Term for every constant the
     /// equality machinery has touched (symbols INCLUDING prover-local
     /// skolems, numeric literals).  Backs `normalize_eq`'s
@@ -488,6 +674,9 @@ impl<'a> NativeProver<'a> {
             h_weight: BinaryHeap::new(),
             h_age: BinaryHeap::new(),
             popped: Set64::default(),
+            recipes: Vec::new(),
+            recipe_seen: Set64::default(),
+            defer_active: false,
             eq_terms: Map64::default(),
             input_contradiction_ids: Vec::new(),
             audit: false,
@@ -806,6 +995,17 @@ impl<'a> NativeProver<'a> {
         let mut sig = 0u64;
         for l in lits {
             sig |= self.layer.atom_info(l.atom).leaf_sig;
+        }
+        self.goal_distance_factor_sig(sig, tier)
+    }
+
+    /// [`Self::goal_distance_factor`] on a pre-ORed leaf signature —
+    /// the recipe path's entry (a recipe has no canonical literals to
+    /// scan; it passes its parents' combined sigs, a conservative
+    /// superset of the conclusion's).
+    fn goal_distance_factor_sig(&self, sig: u64, tier: u8) -> u64 {
+        if !self.opts.strategy.goal_dist || self.conj_sig == 0 || tier == CONJECTURE {
+            return 1;
         }
         if sig == 0 {
             return 1;
@@ -1482,7 +1682,278 @@ impl<'a> NativeProver<'a> {
         Some(id)
     }
 
+    /// Whether the deferred-passive discipline applies to the current
+    /// inference: the knob is on AND we are inside `run()`'s
+    /// given-clause loop (see `defer_active`).
+    #[inline]
+    fn defer_recipes(&self) -> bool {
+        self.opts.strategy.deferred_passive && self.defer_active
+    }
+
+    /// Whether the recipe budget (`Strategy::deferred_cap`) has a free
+    /// slot.  Live recipes = queued − materialized (the pre-queue dedup
+    /// rejects BEFORE `recipes_queued` counts, so deduped pushes never
+    /// occupy a slot; materialization is the only decrement — `take()`n
+    /// arena entries free their binding fragments).  At the cap, new
+    /// products fall back to the EAGER path (see the deferral sites) —
+    /// counted in `deferred_cap_fallbacks`, never dropped.
+    #[inline]
+    fn recipe_slot_available(&self) -> bool {
+        self.stats.recipes_queued - self.stats.recipes_materialized
+            < u64::from(self.opts.strategy.deferred_cap)
+    }
+
+    /// The semantic-guide tie-break column for a recipe queue entry.
+    /// A recipe has no canonical literals to score, so it takes the
+    /// all-neutral half-point `guide_score` gives unmodeled clauses
+    /// (`GUIDE_SCALE / 2`); 0 (the inert value) when the knob is off,
+    /// so knob-off heap keys stay byte-identical.
+    #[inline]
+    fn recipe_guide_key(&self) -> u64 {
+        if self.opts.strategy.semantic_guide { 500 } else { 0 }
+    }
+
+    /// OR of both parents' literal leaf signatures — the conservative
+    /// goal-distance profile for a recipe (a conclusion's leaves are a
+    /// subset of its parents': bindings come from unifying two parent
+    /// literals).  Only called when `goal_dist` is live.
+    fn parents_leaf_sig(&self, a: u32, b: u32) -> u64 {
+        let mut sig = 0u64;
+        for &cid in &[a, b] {
+            for l in &self.clauses[cid as usize].lits {
+                sig |= self.layer.atom_info(l.atom).leaf_sig;
+            }
+        }
+        sig
+    }
+
+    /// The composed queue weight for a recipe — the SAME clause-weight
+    /// formula `make` applies to a materialized clause (`cw_*` genome ×
+    /// tier weight × goal-distance factor), fed the composed scalars.
+    fn recipe_weight(&self, acc: &ComposeAcc, nlits: u64, tier: u8, sig: u64) -> u64 {
+        let st = &self.opts.strategy;
+        let base = (st.cw_lits * nlits
+            + st.cw_size * acc.size
+            + st.cw_vars * acc.vars.len() as u64)
+            .max(1)
+            * (1 + st.cw_skolem * acc.skolems);
+        base * st.tier_weight[tier as usize] * self.goal_distance_factor_sig(sig, tier)
+    }
+
+    /// Snapshot the bound entries of a unifier — the replayable binding
+    /// fragment a [`Recipe`] stores.
+    fn snapshot_binding(s: &Subst, n: usize) -> SmallVec<[(u32, Term); 4]> {
+        let mut out: SmallVec<[(u32, Term); 4]> = SmallVec::new();
+        for (slot, b) in s.iter().enumerate().take(n) {
+            if let Some(t) = b {
+                out.push((slot as u32, t.clone()));
+            }
+        }
+        out
+    }
+
+    /// Queue a recipe (deferred inference), unless the approximate
+    /// pre-queue dedup has seen the identical (rule, parents, aux)
+    /// derivation.  Shares the passive heaps with made clauses — the
+    /// composed weight competes under exactly the ordering `push` uses.
+    fn push_recipe(&mut self, recipe: Recipe, key: u64) {
+        if !self.recipe_seen.insert(key) {
+            self.stats.recipes_prequeue_deduped += 1;
+            return;
+        }
+        let idx = self.recipes.len() as u32;
+        debug_assert_eq!(idx & RECIPE_TAG, 0, "recipe arena overflowed the tag bit");
+        let tagged = RECIPE_TAG | idx;
+        let (w, g, n) = (recipe.weight, self.recipe_guide_key(), self.seq);
+        self.seq += 1;
+        self.recipes.push(Some(recipe));
+        self.h_weight.push(Reverse((w, g, n, tagged)));
+        self.h_age.push(Reverse((n, tagged)));
+        self.stats.recipes_queued += 1;
+    }
+
+    /// Materialize a selected recipe: re-run the SAME construction the
+    /// eager path would have run (identical inputs ⇒ identical clause),
+    /// then the FULL `make` pipeline, then the exact dedup + width
+    /// gates `push` would have applied at generation time.  `Some(id)`
+    /// ⇒ the clause becomes the given; `None` ⇒ rejected (counted), the
+    /// caller pops the next passive entry.  Rejection costs exactly
+    /// what the eager path pays for EVERY conclusion, so the worst case
+    /// per entry is today's cost.
+    fn materialize_recipe(&mut self, ridx: u32) -> Option<u32> {
+        let Some(recipe) = self.recipes[ridx as usize].take() else {
+            debug_assert!(false, "recipe {ridx} materialized twice");
+            return None;
+        };
+        self.stats.recipes_materialized += 1;
+        let subs_before = self.stats.subsumed;
+        let made = match recipe.rule {
+            RecipeRule::Resolve { .. } => self.materialize_resolve(&recipe),
+            RecipeRule::Superpose { .. } => self.materialize_superpose(&recipe),
+        };
+        let Some(id) = made else {
+            // `make` rejected it — attribute forward subsumption via
+            // the counter delta; everything else (tautology, oracle /
+            // unit subsumption, caps) folds into `other`.
+            if self.stats.subsumed > subs_before {
+                self.stats.act_subsumed += 1;
+            } else {
+                self.stats.act_rejected_other += 1;
+            }
+            return None;
+        };
+        if self.clauses[id as usize].lits.is_empty() {
+            // A refutation candidate: hand it to `run()`'s empty-given
+            // handling (the eager path checks emptiness before dedup
+            // too — an earlier suppressed empty clause must never
+            // swallow this one as a "duplicate").
+            return Some(id);
+        }
+        // The dedup + width gates `push_capped` runs at generation time.
+        let key = self.clauses[id as usize].key;
+        if self.seen_duplicate(key, id) {
+            self.stats.act_dedup_hits += 1;
+            return None;
+        }
+        if self.clauses[id as usize].lits.len() > self.opts.max_lits {
+            self.stats.discarded_long += 1;
+            self.stats.act_over_cap += 1;
+            return None;
+        }
+        self.seen_record(key, id);
+        // Composed-vs-exact weight drift sample (accepted entries only:
+        // rejects have no meaningful exact weight).
+        let exact = self.clauses[id as usize].weight;
+        self.stats.composed_weight_samples += 1;
+        self.stats.composed_weight_drift_sum += exact.abs_diff(recipe.weight);
+        if exact == recipe.weight {
+            self.stats.composed_weight_exact += 1;
+        }
+        Some(id)
+    }
+
+    /// Replay a deferred binary resolution — the general path's
+    /// construction, or the decoded fast path's (`decoded`), exactly as
+    /// the eager code would have built it.
+    fn materialize_resolve(&mut self, rp: &Recipe) -> Option<u32> {
+        let [given, partner] = rp.parents;
+        let RecipeRule::Resolve { gi, pi, sym, decoded } = rp.rule else {
+            unreachable!("materialize_resolve on a non-resolve recipe")
+        };
+        let (g_nvars, p_nvars) = {
+            let g = &self.clauses[given as usize];
+            let p = &self.clauses[partner as usize];
+            (g.nvars, p.nvars)
+        };
+        let off = u64::from(g_nvars) + 1;
+        let n = (off + u64::from(p_nvars) + 1) as usize;
+        let mut s = self.take_scratch(n);
+        for (slot, t) in &rp.binding {
+            s[*slot as usize] = Some(t.clone());
+        }
+        let out: Vec<(bool, Term)> = {
+            let g = &self.clauses[given as usize];
+            let p = &self.clauses[partner as usize];
+            if decoded {
+                // The decoded path's construction: the given's other
+                // literals under σ; the ground unit partner contributes
+                // nothing (and no duplicate-literal pass ran there).
+                g.terms
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != gi as usize)
+                    .map(|(_, (pos, t))| (*pos, apply(t, &s)))
+                    .collect()
+            } else {
+                let mut new: Vec<(bool, Term)> =
+                    Vec::with_capacity(g.terms.len() + p.terms.len() - 2);
+                for (k, (pos, t)) in g.terms.iter().enumerate() {
+                    if k != gi as usize { new.push((*pos, apply(t, &s))); }
+                }
+                for (k, (pos, t)) in p.terms.iter().enumerate() {
+                    if k != pi as usize { new.push((*pos, apply_off(t, off, &s))); }
+                }
+                // Drop duplicate literals (the eager path's pass).
+                let mut out: Vec<(bool, Term)> = Vec::with_capacity(new.len());
+                for (pos, t) in new {
+                    if !out.iter().any(|(p2, u)| *p2 == pos && *u == t) {
+                        out.push((pos, t));
+                    }
+                }
+                out
+            }
+        };
+        self.put_scratch(s, n);
+        let rule = if sym.is_some() { "resolve_sym" } else { "resolve" };
+        let made = self.make(out, vec![given, partner], rule, rp.tier, None, true);
+        if let (Some(id), Some(rel)) = (made, sym) {
+            self.stats.sym_resolutions += 1;
+            if let Some(sid) = self.oracle.symmetric_source(rel) {
+                self.clauses[id as usize].fact_parents.push(sid);
+            }
+        }
+        made
+    }
+
+    /// Replay a deferred superposition.  The equation's orientation is
+    /// recomputed (deterministic — memoized content-keyed KBO under
+    /// this run's fixed precedence), the stored unifier is rebuilt, and
+    /// the conclusion is constructed exactly as `superpose` builds it.
+    fn materialize_superpose(&mut self, rp: &Recipe) -> Option<u32> {
+        let [e_cid, t_cid] = rp.parents;
+        let RecipeRule::Superpose { e_li, t_li, ref path } = rp.rule else {
+            unreachable!("materialize_superpose on a non-superpose recipe")
+        };
+        let (e_terms, e_tier) = {
+            let c = &self.clauses[e_cid as usize];
+            (c.terms.clone(), c.tier)
+        };
+        let (_s, t) = self.equality_oriented(&e_terms[e_li as usize].1)?;
+        let (t_terms, t_nvars, t_tier) = {
+            let c = &self.clauses[t_cid as usize];
+            (c.terms.clone(), c.nvars, c.tier)
+        };
+        let off = u64::from(t_nvars) + 1;
+        let t2 = shift_slots(&t, off);
+        let max_slot = rp.binding.iter().map(|(sl, _)| *sl).max().unwrap_or(0);
+        let mut subst: Subst = vec![None; max_slot as usize + 1];
+        for (slot, b) in &rp.binding {
+            subst[*slot as usize] = Some(b.clone());
+        }
+        let path: Vec<usize> = path.iter().map(|&p| p as usize).collect();
+        let mut lits: Vec<(bool, Term)> =
+            Vec::with_capacity(e_terms.len() + t_terms.len());
+        for (k, (pos, term)) in e_terms.iter().enumerate() {
+            if k == e_li as usize { continue; }
+            lits.push((*pos, apply(&shift_slots(term, off), &subst)));
+        }
+        for (k, (pos, term)) in t_terms.iter().enumerate() {
+            let rewritten =
+                if k == t_li as usize { replace(term, &path, &t2) } else { term.clone() };
+            lits.push((*pos, apply(&rewritten, &subst)));
+        }
+        debug_assert_eq!(e_tier.min(t_tier), rp.tier, "recipe tier drifted");
+        self.make(lits, vec![e_cid, t_cid], "superpos", rp.tier, None, true)
+    }
+
     fn pop_given(&mut self) -> Option<u32> {
+        loop {
+            let id = self.pop_queue_entry()?;
+            if id & RECIPE_TAG == 0 {
+                return Some(id);
+            }
+            // A recipe entry: materialize it into the given clause; a
+            // rejection (duplicate / subsumed / over-cap — counted in
+            // `materialize_recipe`) pops the next passive entry.
+            if let Some(mid) = self.materialize_recipe(id & !RECIPE_TAG) {
+                return Some(mid);
+            }
+        }
+    }
+
+    /// One raw pop from the passive heaps (clause id or tagged recipe
+    /// id) — the pre-deferred `pop_given` body.
+    fn pop_queue_entry(&mut self) -> Option<u32> {
         self.tick += 1;
         let prefer_age = self.tick % self.opts.strategy.pick_ratio.max(1) == 0;
         for pass in 0..2 {
@@ -1490,17 +1961,19 @@ impl<'a> NativeProver<'a> {
             // Retired (backward-demodulated) clauses are lazily skipped
             // here — cheaper than deleting heap entries, and marking
             // them popped keeps the other heap's copy dead too.
+            // (Recipe entries skip the retirement probe: the bitmap is
+            // indexed by CLAUSE id, and recipes retire nothing.)
             if from_age {
                 while let Some(Reverse((_, id))) = self.h_age.pop() {
                     if self.popped.insert(id) {
-                        if self.is_retired(id) { continue; }
+                        if id & RECIPE_TAG == 0 && self.is_retired(id) { continue; }
                         return Some(id);
                     }
                 }
             } else {
                 while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
                     if self.popped.insert(id) {
-                        if self.is_retired(id) { continue; }
+                        if id & RECIPE_TAG == 0 && self.is_retired(id) { continue; }
                         return Some(id);
                     }
                 }
@@ -1710,6 +2183,62 @@ impl<'a> NativeProver<'a> {
 
         // σ = mgu(s, u).
         if !unify(&s2, &u, &mut subst) { return None; }
+
+        // Deferred-passive discipline: queue a recipe instead of
+        // building the conclusion + running `make`.  Conjecture-tier
+        // products stay eager (the goal line's progress — including
+        // empty-clause detection — must not sit deferred in the queue).
+        // At the recipe budget (`Strategy::deferred_cap`) the product
+        // falls through to the EAGER construction below instead —
+        // counted, never dropped.
+        let tier = e_tier.min(t_tier);
+        if self.defer_recipes() && tier != CONJECTURE && !self.recipe_slot_available() {
+            self.stats.deferred_cap_fallbacks += 1;
+        } else if self.defer_recipes() && tier != CONJECTURE {
+            // Composed scalars of the raw conclusion, no terms built.
+            let mut acc = ComposeAcc::default();
+            for (k, (_, term)) in e_terms.iter().enumerate() {
+                if k == e_li { continue; }
+                compose_term(term, off, &subst, &mut acc);
+            }
+            let path16: SmallVec<[u16; 8]> =
+                t_path.iter().map(|&p| p as u16).collect();
+            for (k, (_, term)) in t_terms.iter().enumerate() {
+                if k == t_li {
+                    compose_term_at(term, 0, &path16, &t, off, &subst, &mut acc);
+                } else {
+                    compose_term(term, 0, &subst, &mut acc);
+                }
+            }
+            let nlits = (e_terms.len() - 1 + t_terms.len()) as u64;
+            let sig = if self.opts.strategy.goal_dist && self.conj_sig != 0 {
+                self.parents_leaf_sig(e_cid, t_cid)
+            } else {
+                0
+            };
+            let weight = self.recipe_weight(&acc, nlits, tier, sig);
+            let binding = Self::snapshot_binding(&subst, subst.len());
+            // Aux key: literal indexes + a fold of the path (the same
+            // (e,t,path) inference is reachable from both superposition
+            // directions — this is exactly the re-derivation the
+            // pre-queue dedup exists to drop).
+            let aux = ((e_li as u64) << 56)
+                | ((t_li as u64) << 48)
+                | (path16.iter().fold(0u64, |h, &p| {
+                    h.wrapping_mul(0x0000_0100_0000_01B3) ^ u64::from(p)
+                }) & 0x0000_FFFF_FFFF_FFFF);
+            self.push_recipe(
+                Recipe {
+                    parents: [e_cid, t_cid],
+                    rule: RecipeRule::Superpose { e_li: e_li as u16, t_li: t_li as u16, path: path16 },
+                    binding,
+                    tier,
+                    weight,
+                },
+                recipe_key(1, e_cid, t_cid, aux),
+            );
+            return None;
+        }
 
         // Resolvent: rest of E (renamed, σ) ∨ T with its `u` subterm
         // replaced by `t` (renamed, σ).
@@ -1935,8 +2464,15 @@ impl<'a> NativeProver<'a> {
         }
         let off = g_nvars as u64 + 1;
         let n = (off + u64::from(p_nvars) + 1) as usize;
+        // The recipe-budget probe is hoisted out of the borrow block
+        // below (`stats` needs `&mut self` there); nothing between here
+        // and `push_recipe` can change the live-recipe count.
+        let defer_armed = self.defer_recipes();
+        let defer_slot = defer_armed && self.recipe_slot_available();
+        let mut cap_fallback = false;
         let mut s = self.take_scratch(n);
         let mut via_symmetry: Option<SymbolId> = None;
+        let mut deferred: Option<(Recipe, u64)> = None;
         let resolvent: Option<Vec<(bool, Term)>> = {
             let g = &self.clauses[given as usize];
             let p = &self.clauses[partner as usize];
@@ -1961,9 +2497,56 @@ impl<'a> NativeProver<'a> {
                     }
                 }
             }
+            let want_defer = defer_armed
+                && g.terms.len() + p.terms.len() > 2
+                && g.tier.min(p.tier) != CONJECTURE;
             if !matched {
                 None // hash-collision reject
+            } else if want_defer && defer_slot {
+                // Deferred-passive discipline: snapshot the unifier and
+                // the composed scalars; construction + `make` run at
+                // selection.  Unit×unit resolvents (the raw empty
+                // clause) and conjecture-tier products stay eager —
+                // refutation detection must not sit deferred in the
+                // queue.
+                let tier = g.tier.min(p.tier);
+                let mut acc = ComposeAcc::default();
+                for (k, (_, t)) in g.terms.iter().enumerate() {
+                    if k != gi { compose_term(t, 0, &s, &mut acc); }
+                }
+                for (k, (_, t)) in p.terms.iter().enumerate() {
+                    if k != pi { compose_term(t, off, &s, &mut acc); }
+                }
+                let nlits = (g.terms.len() + p.terms.len() - 2) as u64;
+                let sig = if self.opts.strategy.goal_dist && self.conj_sig != 0 {
+                    self.parents_leaf_sig(given, partner)
+                } else {
+                    0
+                };
+                let weight = self.recipe_weight(&acc, nlits, tier, sig);
+                deferred = Some((
+                    Recipe {
+                        parents: [given, partner],
+                        rule: RecipeRule::Resolve {
+                            gi: gi as u16,
+                            pi: pi as u16,
+                            sym: via_symmetry,
+                            decoded: false,
+                        },
+                        binding: Self::snapshot_binding(&s, n),
+                        tier,
+                        weight,
+                    },
+                    recipe_key(0, given, partner, ((gi as u64) << 32) | pi as u64),
+                ));
+                None
             } else {
+                // Reaching here with `want_defer` set means the recipe
+                // budget (`Strategy::deferred_cap`) was exhausted: fall
+                // back to the EAGER path — build + `make` now, exactly
+                // as knob-off.  Never drop the inference (dropping
+                // loses derivations); counted after the borrow block.
+                cap_fallback = want_defer;
                 let mut new: Vec<(bool, Term)> =
                     Vec::with_capacity(g.terms.len() + p.terms.len() - 2);
                 for (k, (pos, t)) in g.terms.iter().enumerate() {
@@ -1983,6 +2566,19 @@ impl<'a> NativeProver<'a> {
             }
         };
         self.put_scratch(s, n);
+        if cap_fallback {
+            self.stats.deferred_cap_fallbacks += 1;
+        }
+        if let Some((recipe, key)) = deferred {
+            // The unification succeeded and the inference exists — the
+            // hit/volume counters advance at creation (so ON-vs-OFF
+            // `resolvents` counts stay comparable); manufacture is
+            // counted separately in `recipes_materialized`.
+            self.stats.resolve_unify_hits += 1;
+            self.stats.resolvents += 1;
+            self.push_recipe(recipe, key);
+            return None;
+        }
         let Some(out) = resolvent else { return None };
         self.stats.resolve_unify_hits += 1;
         self.stats.resolvents += 1;
@@ -2161,6 +2757,59 @@ impl<'a> NativeProver<'a> {
             return None; // every open seat must receive exactly one binding
         }
 
+        // Deferred-passive discipline: same gates as the general path —
+        // the decoded bindings ARE the unifier fragment, so the recipe
+        // replays without any decode machinery.  At the recipe budget
+        // (`Strategy::deferred_cap`) the product falls through to the
+        // EAGER construction below instead — counted, never dropped.
+        let tier = shape.g_tier.min(self.clauses[partner as usize].tier);
+        if self.defer_recipes()
+            && self.clauses[given as usize].terms.len() > 1
+            && tier != CONJECTURE
+            && !self.recipe_slot_available()
+        {
+            self.stats.deferred_cap_fallbacks += 1;
+        } else if self.defer_recipes()
+            && self.clauses[given as usize].terms.len() > 1
+            && tier != CONJECTURE
+        {
+            let g = &self.clauses[given as usize];
+            let mut acc = ComposeAcc::default();
+            for (k, (_, t)) in g.terms.iter().enumerate() {
+                if k != gi { compose_term(t, 0, &s, &mut acc); }
+            }
+            let nlits = (g.terms.len() - 1) as u64;
+            let sig = if self.opts.strategy.goal_dist && self.conj_sig != 0 {
+                self.parents_leaf_sig(given, partner)
+            } else {
+                0
+            };
+            let weight = self.recipe_weight(&acc, nlits, tier, sig);
+            let binding = Self::snapshot_binding(&s, s.len());
+            self.stats.resolvents += 1;
+            self.stats.decoded_resolutions += 1;
+            if count { self.stats.decode_bindings_extracted += 1; }
+            self.push_recipe(
+                Recipe {
+                    parents: [given, partner],
+                    rule: RecipeRule::Resolve {
+                        gi: gi as u16,
+                        pi: 0,
+                        sym: None,
+                        decoded: true,
+                    },
+                    binding,
+                    tier,
+                    weight,
+                },
+                // Same key space as the general path: the decoded fast
+                // path and general unification of the same (given, gi,
+                // partner, pi=0) pair are the SAME inference.
+                recipe_key(0, given, partner, (gi as u64) << 32),
+            );
+            return Some(None);
+        }
+
         // Build the resolvent: the given's other literals under σ; the
         // unit partner contributes nothing.
         let lits: Vec<(bool, Term)> = self.clauses[given as usize]
@@ -2173,7 +2822,6 @@ impl<'a> NativeProver<'a> {
         self.stats.resolvents += 1;
         self.stats.decoded_resolutions += 1;
         if count { self.stats.decode_bindings_extracted += 1; }
-        let tier = shape.g_tier.min(self.clauses[partner as usize].tier);
         Some(self.make(lits, vec![given, partner], "resolve", tier, None, true))
     }
 
@@ -2526,11 +3174,17 @@ impl<'a> NativeProver<'a> {
         // runs before `run()`) were scored via `guide_score`'s own lazy
         // call to this same method, so they are not left stale.
         self.ensure_guide_model();
+        self.defer_active = false;
         self.discharge_horn_joins();
         self.discharge_event_calculus();
         self.discharge_models();
         self.discharge_model_joins();
         self.discharge_backward();
+        // Deferred-passive discipline: recipes may be created only from
+        // here on — the discharge prologue above (and every load-time /
+        // forward-closure path, which runs before `run()`) drives
+        // `resolve`/`superpose` too and needs materialized results.
+        self.defer_active = self.opts.strategy.deferred_passive;
         let t0 = Instant::now();
         let mut steps = 0usize;
         while steps < self.opts.max_steps {
@@ -3527,5 +4181,435 @@ mod subsumption_tests {
             replace_in_place(&mut in_place, &path, new.clone());
             assert_eq!(in_place, reference, "diverged at path {path:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod deferred_tests {
+    use super::*;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::types::Symbol;
+
+    fn s(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn v(n: u64) -> Term { Term::Var(n) }
+    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+
+    fn prover(layer: &ProverLayer, deferred: bool, superposition: bool) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.deferred_passive = deferred;
+        strategy.superposition = superposition;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        let mut p = NativeProver::new(layer, Scope::Base, opts);
+        // Tests drive `resolve`/`superpose` directly (no `run()` loop),
+        // so arm the in-loop gate by hand.
+        p.defer_active = deferred;
+        p
+    }
+
+    fn add(p: &mut NativeProver<'_>, lits: Vec<(bool, Term)>) -> u32 {
+        p.make(lits, vec![], "hypothesis", SUPPORT, None, false)
+            .expect("input clause made")
+    }
+
+    /// Index of the literal whose atom is an `App` headed by `head`
+    /// with the given polarity (canonicalization may reorder literals).
+    fn lit_idx(p: &NativeProver<'_>, id: u32, pos: bool, head: &str) -> usize {
+        p.clauses[id as usize]
+            .terms
+            .iter()
+            .position(|(lp, t)| {
+                *lp == pos
+                    && matches!(t, Term::App(elems)
+                        if matches!(&elems[0], Term::Sym(sy) if &*sy.name() == head))
+            })
+            .expect("literal present")
+    }
+
+    /// The full roundtrip contract: a deferred recipe, once selected,
+    /// materializes into EXACTLY the clause the eager path builds —
+    /// same canonical literals, terms, key, nvars, and queue weight —
+    /// and the composed (recipe) weight matches the exact weight when
+    /// `make` does not simplify the conclusion.
+    #[test]
+    fn resolve_recipe_materializes_eager_identical_clause() {
+        // Fixture pairs: (given lits, partner lits, gi head, pi head).
+        // Covers the general-unification path (2-lit partner blocks the
+        // decode fast path), a skolem-bearing conclusion (the skolem
+        // weight factor), and a ground-unit partner (the decoded path).
+        let fixtures: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
+            (
+                vec![(false, app(vec![s("p"), v(0), s("b")])), (true, app(vec![s("q"), v(0)]))],
+                vec![(true, app(vec![s("p"), s("a"), s("b")])), (true, app(vec![s("r"), s("c")]))],
+            ),
+            (
+                vec![
+                    (false, app(vec![s("p"), v(0), s("b")])),
+                    (true, app(vec![s("q"), app(vec![s("sk_w"), v(0)])])),
+                ],
+                vec![(true, app(vec![s("p"), s("a"), s("b")])), (true, app(vec![s("r"), s("c")]))],
+            ),
+            (
+                vec![(false, app(vec![s("p"), v(0), s("b")])), (true, app(vec![s("q"), v(0)]))],
+                vec![(true, app(vec![s("p"), s("a"), s("b")]))],
+            ),
+        ];
+        for (g_lits, p_lits) in fixtures {
+            let layer = ProverLayer::new(kif_layer(""));
+
+            let mut eager = prover(&layer, false, false);
+            let ge = add(&mut eager, g_lits.clone());
+            let pe = add(&mut eager, p_lits.clone());
+            let gi = lit_idx(&eager, ge, false, "p");
+            let pi = lit_idx(&eager, pe, true, "p");
+            let eid = eager.resolve(ge, gi, pe, pi).expect("eager resolvent");
+
+            let mut defer = prover(&layer, true, false);
+            let gd = add(&mut defer, g_lits.clone());
+            let pd = add(&mut defer, p_lits.clone());
+            let gi_d = lit_idx(&defer, gd, false, "p");
+            let pi_d = lit_idx(&defer, pd, true, "p");
+            assert_eq!(
+                defer.resolve(gd, gi_d, pd, pi_d), None,
+                "knob on: resolve defers instead of materializing",
+            );
+            assert_eq!(defer.stats.recipes_queued, 1);
+            let composed = defer.recipes[0].as_ref().expect("recipe queued").weight;
+            let mid = defer.pop_given().expect("recipe materializes on selection");
+            assert_eq!(defer.stats.recipes_materialized, 1);
+
+            let e = &eager.clauses[eid as usize];
+            let m = &defer.clauses[mid as usize];
+            assert_eq!(e.lits, m.lits, "canonical literals diverged");
+            assert_eq!(e.terms, m.terms, "slot terms diverged");
+            assert_eq!(e.key, m.key, "clause key diverged");
+            assert_eq!(e.nvars, m.nvars, "nvars diverged");
+            assert_eq!(e.weight, m.weight, "queue weight diverged");
+            assert_eq!(e.rule, m.rule, "rule tag diverged");
+            assert_eq!(
+                composed, e.weight,
+                "composed weight must be exact when make does not simplify",
+            );
+            assert_eq!(defer.stats.composed_weight_exact, 1);
+            assert_eq!(defer.stats.composed_weight_drift_sum, 0);
+        }
+    }
+
+    #[test]
+    fn superpose_recipe_materializes_eager_identical_clause() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let e_lits = vec![(true, eq(app(vec![s("f"), v(0)]), v(0)))];
+        let t_lits = vec![(true, app(vec![s("h"), app(vec![s("f"), s("a")])]))];
+
+        let mut eager = prover(&layer, false, true);
+        let ee = add(&mut eager, e_lits.clone());
+        let te = add(&mut eager, t_lits.clone());
+        let eid = eager.superpose(ee, 0, te, 0, &[1]).expect("eager superposition");
+
+        let mut defer = prover(&layer, true, true);
+        let ed = add(&mut defer, e_lits);
+        let td = add(&mut defer, t_lits);
+        assert_eq!(defer.superpose(ed, 0, td, 0, &[1]), None, "knob on: superpose defers");
+        assert_eq!(defer.stats.recipes_queued, 1);
+        let composed = defer.recipes[0].as_ref().expect("recipe queued").weight;
+        let mid = defer.pop_given().expect("recipe materializes on selection");
+
+        let e = &eager.clauses[eid as usize];
+        let m = &defer.clauses[mid as usize];
+        assert_eq!(e.lits, m.lits, "canonical literals diverged");
+        assert_eq!(e.terms, m.terms, "slot terms diverged");
+        assert_eq!(e.key, m.key, "clause key diverged");
+        assert_eq!(e.weight, m.weight, "queue weight diverged");
+        assert_eq!(composed, e.weight, "composed weight exact on unsimplified conclusion");
+        assert_eq!(defer.stats.composed_weight_exact, 1);
+    }
+
+    /// Composed facts are computed on the RAW conclusion: a duplicate-
+    /// literal merge (the eager path's pre-`make` pass) makes the
+    /// composed weight a strict over-estimate — the drift is measured,
+    /// and the materialized clause still matches the eager one exactly.
+    #[test]
+    fn composed_weight_overestimates_on_literal_merge() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let g_lits = vec![(false, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), s("b")]))];
+        let p_lits = vec![(true, app(vec![s("p"), s("b")])), (true, app(vec![s("q"), s("b")]))];
+
+        let mut eager = prover(&layer, false, false);
+        let ge = add(&mut eager, g_lits.clone());
+        let pe = add(&mut eager, p_lits.clone());
+        let eid = eager
+            .resolve(ge, lit_idx(&eager, ge, false, "p"), pe, lit_idx(&eager, pe, true, "p"))
+            .expect("eager resolvent");
+        assert_eq!(eager.clauses[eid as usize].lits.len(), 1, "merged to a unit");
+
+        let mut defer = prover(&layer, true, false);
+        let gd = add(&mut defer, g_lits);
+        let pd = add(&mut defer, p_lits);
+        assert_eq!(
+            defer.resolve(gd, lit_idx(&defer, gd, false, "p"), pd, lit_idx(&defer, pd, true, "p")),
+            None,
+        );
+        let composed = defer.recipes[0].as_ref().expect("recipe").weight;
+        let mid = defer.pop_given().expect("materialized");
+        let m = &defer.clauses[mid as usize];
+        assert_eq!(eager.clauses[eid as usize].lits, m.lits);
+        assert_eq!(eager.clauses[eid as usize].key, m.key);
+        assert!(
+            composed > m.weight,
+            "raw-conclusion composed weight ({composed}) over-estimates the merged \
+             clause's exact weight ({})",
+            m.weight,
+        );
+        assert_eq!(defer.stats.composed_weight_samples, 1);
+        assert_eq!(defer.stats.composed_weight_exact, 0);
+        assert_eq!(defer.stats.composed_weight_drift_sum, composed - m.weight);
+    }
+
+    /// Activation rejects: an exact duplicate is dropped at
+    /// materialization (counted), and the queue pops the next entry.
+    #[test]
+    fn duplicate_recipe_rejected_at_materialization() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover(&layer, true, false);
+        let g = add(&mut p, vec![
+            (false, app(vec![s("p"), v(0), s("b")])),
+            (true, app(vec![s("q"), v(0)])),
+        ]);
+        let pt = add(&mut p, vec![
+            (true, app(vec![s("p"), s("a"), s("b")])),
+            (true, app(vec![s("r"), s("c")])),
+        ]);
+        // Pre-accept the exact resolvent through the eager queue path,
+        // so `seen` holds its key (what `push` records at generation).
+        let dup = p
+            .make(
+                vec![(true, app(vec![s("q"), s("a")])), (true, app(vec![s("r"), s("c")]))],
+                vec![], "hypothesis", SUPPORT, None, false,
+            )
+            .expect("made");
+        p.push(Some(dup));
+        let gi = lit_idx(&p, g, false, "p");
+        let pi = lit_idx(&p, pt, true, "p");
+        assert_eq!(p.resolve(g, gi, pt, pi), None, "deferred");
+        // First pop: the pre-accepted clause (earlier seq wins the tie).
+        assert_eq!(p.pop_given(), Some(dup));
+        // Second pop: the recipe materializes into an exact duplicate —
+        // rejected, counted, queue exhausted.
+        assert_eq!(p.pop_given(), None);
+        assert_eq!(p.stats.recipes_materialized, 1);
+        assert_eq!(p.stats.act_dedup_hits, 1);
+        assert_eq!(p.stats.composed_weight_samples, 0, "rejects are not weight-sampled");
+    }
+
+    /// `make`-level rejects (tautology here) are counted as
+    /// `act_rejected_other` and the pop loop moves on.
+    #[test]
+    fn tautology_recipe_rejected_by_make_at_materialization() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover(&layer, true, false);
+        let g = add(&mut p, vec![
+            (false, app(vec![s("p"), s("a")])),
+            (true, app(vec![s("q"), s("c")])),
+        ]);
+        let pt = add(&mut p, vec![
+            (true, app(vec![s("p"), s("a")])),
+            (false, app(vec![s("q"), s("c")])),
+        ]);
+        let gi = lit_idx(&p, g, false, "p");
+        let pi = lit_idx(&p, pt, true, "p");
+        assert_eq!(p.resolve(g, gi, pt, pi), None, "deferred");
+        assert_eq!(p.stats.recipes_queued, 1);
+        assert_eq!(p.pop_given(), None, "tautology rejected; queue exhausted");
+        assert_eq!(p.stats.recipes_materialized, 1);
+        assert_eq!(p.stats.act_rejected_other, 1);
+        assert_eq!(p.stats.act_dedup_hits, 0);
+    }
+
+    /// The approximate pre-queue dedup drops an exact re-derivation
+    /// (same rule, parents, aux) before it queues.
+    #[test]
+    fn prequeue_dedup_drops_rederivation() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover(&layer, true, false);
+        let g = add(&mut p, vec![
+            (false, app(vec![s("p"), v(0), s("b")])),
+            (true, app(vec![s("q"), v(0)])),
+        ]);
+        let pt = add(&mut p, vec![
+            (true, app(vec![s("p"), s("a"), s("b")])),
+            (true, app(vec![s("r"), s("c")])),
+        ]);
+        let gi = lit_idx(&p, g, false, "p");
+        let pi = lit_idx(&p, pt, true, "p");
+        assert_eq!(p.resolve(g, gi, pt, pi), None);
+        assert_eq!(p.resolve(g, gi, pt, pi), None);
+        assert_eq!(p.stats.recipes_queued, 1, "second derivation dropped pre-queue");
+        assert_eq!(p.stats.recipes_prequeue_deduped, 1);
+    }
+
+    /// Unit×unit resolution (the raw empty clause) stays EAGER even
+    /// with the knob on — refutation detection never sits deferred.
+    #[test]
+    fn unit_unit_refutation_stays_eager() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover(&layer, true, false);
+        let g = add(&mut p, vec![(false, app(vec![s("p"), s("a")]))]);
+        let pt = add(&mut p, vec![(true, app(vec![s("p"), s("a")]))]);
+        let empty = p.resolve(g, 0, pt, 0).expect("eager empty clause");
+        assert!(p.clauses[empty as usize].lits.is_empty());
+        assert_eq!(p.stats.recipes_queued, 0);
+    }
+
+    /// Like [`prover`] but with an explicit recipe budget
+    /// (`Strategy::deferred_cap`).
+    fn prover_capped(layer: &ProverLayer, cap: u32) -> NativeProver<'_> {
+        let mut p = prover(layer, true, false);
+        p.opts.strategy.deferred_cap = cap;
+        p
+    }
+
+    /// The Part-A cap contract: with the recipe budget exhausted
+    /// (`deferred_cap = 0`), every product falls back to the EAGER path
+    /// — built + `make`d at generation time — and the clause set
+    /// produced is IDENTICAL to the uncapped run's (which defers, then
+    /// materializes on selection) and to the knob-off eager run's.
+    /// Nothing is dropped; the fallbacks are counted.
+    #[test]
+    fn cap_forced_eager_fallback_produces_identical_clause_set_to_uncapped() {
+        let g_lits = vec![
+            (false, app(vec![s("p"), v(0), s("b")])),
+            (true, app(vec![s("q"), v(0)])),
+        ];
+        let p1_lits = vec![
+            (true, app(vec![s("p"), s("a"), s("b")])),
+            (true, app(vec![s("r"), s("c")])),
+        ];
+        let p2_lits = vec![
+            (true, app(vec![s("p"), s("d"), s("b")])),
+            (true, app(vec![s("w"), s("d")])),
+        ];
+
+        // Drive the same two resolutions on each prover; return the
+        // derived clause ids.
+        let drive = |p: &mut NativeProver<'_>| -> Vec<Option<u32>> {
+            let g = add(p, g_lits.clone());
+            let p1 = add(p, p1_lits.clone());
+            let p2 = add(p, p2_lits.clone());
+            let gi = lit_idx(p, g, false, "p");
+            let r1 = p.resolve(g, gi, p1, lit_idx(p, p1, true, "p"));
+            let r2 = p.resolve(g, gi, p2, lit_idx(p, p2, true, "p"));
+            vec![r1, r2]
+        };
+
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut eager = prover(&layer, false, false);
+        let e_ids: Vec<u32> = drive(&mut eager).into_iter().map(|r| r.unwrap()).collect();
+
+        let mut capped = prover_capped(&layer, 0);
+        let c_ids: Vec<u32> = drive(&mut capped)
+            .into_iter()
+            .map(|r| r.expect("cap-forced fallback materializes eagerly"))
+            .collect();
+        assert_eq!(capped.stats.recipes_queued, 0, "no slot ⇒ nothing defers");
+        assert_eq!(capped.stats.deferred_cap_fallbacks, 2);
+
+        let mut uncapped = prover(&layer, true, false);
+        assert_eq!(drive(&mut uncapped), vec![None, None], "uncapped defers");
+        assert_eq!(uncapped.stats.recipes_queued, 2);
+        assert_eq!(uncapped.stats.deferred_cap_fallbacks, 0);
+        let u_ids: Vec<u32> = (0..2).map(|_| uncapped.pop_given().unwrap()).collect();
+
+        // Same arena shape eager-vs-capped (same construction order)…
+        assert_eq!(eager.clauses.len(), capped.clauses.len());
+        for (e, c) in e_ids.iter().zip(&c_ids) {
+            let (e, c) = (&eager.clauses[*e as usize], &capped.clauses[*c as usize]);
+            assert_eq!(e.lits, c.lits, "capped fallback diverged from eager");
+            assert_eq!(e.terms, c.terms);
+            assert_eq!(e.key, c.key);
+            assert_eq!(e.weight, c.weight);
+        }
+        // …and the SET of derived clauses matches the uncapped run
+        // (selection order may permute materializations).
+        let keys = |p: &NativeProver<'_>, ids: &[u32]| {
+            let mut ks: Vec<_> = ids.iter().map(|i| p.clauses[*i as usize].key).collect();
+            ks.sort_unstable_by_key(|k| format!("{k:?}"));
+            ks
+        };
+        assert_eq!(keys(&eager, &e_ids), keys(&uncapped, &u_ids));
+    }
+
+    /// Live-recipe accounting: materialization frees its slot, so
+    /// deferral RESUMES once the queue drains below the cap.
+    #[test]
+    fn cap_slot_frees_on_materialization_and_deferral_resumes() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover_capped(&layer, 1);
+        let g = add(&mut p, vec![
+            (false, app(vec![s("p"), v(0), s("b")])),
+            (true, app(vec![s("q"), v(0)])),
+        ]);
+        let partners: Vec<u32> = ["a", "d", "e"]
+            .iter()
+            .map(|c| {
+                add(&mut p, vec![
+                    (true, app(vec![s("p"), s(c), s("b")])),
+                    (true, app(vec![s("r"), s(c)])),
+                ])
+            })
+            .collect();
+        let gi = lit_idx(&p, g, false, "p");
+
+        // Slot free ⇒ defers.
+        assert_eq!(p.resolve(g, gi, partners[0], lit_idx(&p, partners[0], true, "p")), None);
+        assert_eq!(p.stats.recipes_queued, 1);
+        // At the cap ⇒ eager fallback.
+        assert!(p.resolve(g, gi, partners[1], lit_idx(&p, partners[1], true, "p")).is_some());
+        assert_eq!(p.stats.deferred_cap_fallbacks, 1);
+        assert_eq!(p.stats.recipes_queued, 1);
+        // Materializing the queued recipe frees its slot…
+        assert!(p.pop_given().is_some());
+        assert_eq!(p.stats.recipes_materialized, 1);
+        // …so the next product defers again.
+        assert_eq!(p.resolve(g, gi, partners[2], lit_idx(&p, partners[2], true, "p")), None);
+        assert_eq!(p.stats.recipes_queued, 2);
+        assert_eq!(p.stats.deferred_cap_fallbacks, 1);
+    }
+
+    /// The default cap's arithmetic stands on the measured per-recipe
+    /// footprint; the arena-slot term of that arithmetic is pinned here
+    /// so a `Recipe` growing a field re-opens the sizing discussion.
+    #[test]
+    fn recipe_footprint_is_within_the_cap_arithmetic() {
+        assert!(
+            std::mem::size_of::<Option<Recipe>>() <= 240,
+            "Option<Recipe> grew past the documented arena-slot budget: {} B \
+             (the deferred_cap default in Strategy::base() was sized against \
+             240 B slots + measured binding-heap spill — re-measure before \
+             raising this)",
+            std::mem::size_of::<Option<Recipe>>(),
+        );
+    }
+
+    /// Knob off: the discipline is entirely absent — resolve builds and
+    /// `make`s immediately, no recipe state is touched.
+    #[test]
+    fn knob_off_is_inert() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = prover(&layer, false, false);
+        p.defer_active = true; // even with the loop gate armed
+        let g = add(&mut p, vec![
+            (false, app(vec![s("p"), v(0), s("b")])),
+            (true, app(vec![s("q"), v(0)])),
+        ]);
+        let pt = add(&mut p, vec![
+            (true, app(vec![s("p"), s("a"), s("b")])),
+            (true, app(vec![s("r"), s("c")])),
+        ]);
+        let gi = lit_idx(&p, g, false, "p");
+        let pi = lit_idx(&p, pt, true, "p");
+        assert!(p.resolve(g, gi, pt, pi).is_some(), "eager resolvent");
+        assert!(p.recipes.is_empty());
+        assert_eq!(p.stats.recipes_queued, 0);
+        assert_eq!(p.stats.recipes_materialized, 0);
     }
 }

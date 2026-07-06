@@ -389,6 +389,55 @@ pub(crate) struct ProverStats {
     pub(crate) proof_tag_event_calculus: u64,
     pub(crate) proof_tag_oracle: u64,
 
+    // -- deferred-passive discipline (Strategy.deferred_passive; see
+    //    `NativeProver::push_recipe` / `materialize_recipe`).  All zero
+    //    unless the knob (or `SIGMA_DEFERRED_PASSIVE=1`) is on.
+    //    Invariant: recipes_materialized == act_dedup_hits +
+    //    act_subsumed + act_rejected_other + act_over_cap + (recipes
+    //    that became the given clause, = composed_weight_samples +
+    //    empty-clause materializations).
+    /// Recipes pushed into the passive queue (deferred resolution /
+    /// superposition products) — each replaces one eager `make` call.
+    pub(crate) recipes_queued: u64,
+    /// Recipe pushes dropped by the approximate pre-queue dedup — an
+    /// identical (rule, parents, aux) derivation was already queued.
+    pub(crate) recipes_prequeue_deduped: u64,
+    /// Recipes selected from the queue and MATERIALIZED (conclusion
+    /// built + full `make` pipeline run).  The manufacture volume the
+    /// discipline actually paid for; `recipes_queued -
+    /// recipes_materialized` recipes were never built at all.
+    pub(crate) recipes_materialized: u64,
+    /// Materialized recipes rejected as exact duplicates of an
+    /// already-accepted clause (the `seen`/`ClauseKey` verified-dedup
+    /// probe `push` would have run at generation time).
+    pub(crate) act_dedup_hits: u64,
+    /// Materialized recipes rejected by forward subsumption inside
+    /// `make` (attributed via the `subsumed` counter delta across the
+    /// materializing call).
+    pub(crate) act_subsumed: u64,
+    /// Materialized recipes `make` rejected for any other reason
+    /// (tautology, oracle-subsumed, unit-subsumed, depth/size caps).
+    pub(crate) act_rejected_other: u64,
+    /// Materialized recipes accepted by `make` but over the derived
+    /// width cap (`max_lits`) — the `push_capped` discard, also counted
+    /// into `discarded_long` exactly as the eager path would.
+    pub(crate) act_over_cap: u64,
+    /// Products that WOULD have deferred but the live-recipe budget
+    /// (`Strategy::deferred_cap`) was exhausted, so they took the EAGER
+    /// path instead (built + `make`d at generation time, exactly as
+    /// knob-off).  A memory-safety valve, not a loss: no inference is
+    /// dropped.
+    pub(crate) deferred_cap_fallbacks: u64,
+    /// Composed-vs-exact weight drift sample, over ACCEPTED
+    /// materializations: sum of |exact - composed| queue weights…
+    pub(crate) composed_weight_drift_sum: u64,
+    /// …the number sampled…
+    pub(crate) composed_weight_samples: u64,
+    /// …and how many of those matched exactly (the composed scalars are
+    /// exact on the RAW conclusion; drift measures `make`'s
+    /// simplifications — demod/oracle/unit literal drops and merges).
+    pub(crate) composed_weight_exact: u64,
+
     // -- semantic clause-selection guidance (Strategy.semantic_guide;
     //    see `NativeProver::guide_score` / `push`).  Zero unless the
     //    strategy knob (or `SIGMA_GUIDE=1`) is on.

@@ -328,13 +328,15 @@ where
 /// having to set the env var); `15..=40s` → 3 lanes (`tptp-complete` +
 /// `tptp-demod` + `tptp-goaldist`, the two lanes measured to carry most of the
 /// non-first-lane win rate); `> 40s` → all lanes (the full schedule — 5 at
-/// task #33, now 6 with `tptp-wide`'s wider derived-clause literal cap
-/// added; see [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]).
-/// A lane this cheap to try (only ONE knob differs from `tptp-complete`)
-/// only earns a slot in the budget-rich bucket — the `< 15s` and `15..=40s`
-/// buckets are unchanged by its addition, since both are already tuned
-/// against how thin a slice the FIRST few lanes can afford, not how many
-/// total lanes exist. `total_timeout == 0` (unbounded — no `--timeout`
+/// task #33, briefly 6 with `tptp-wide` until that lane was measured out,
+/// now 6 again with the `tptp-deferred` structural lane; see
+/// [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]).
+/// A new lane only earns a slot in the budget-rich bucket — the `< 15s` and
+/// `15..=40s` buckets are unchanged by its addition, since both are already
+/// tuned against how thin a slice the FIRST few lanes can afford, not how
+/// many total lanes exist (`tptp-deferred` sits at index 3, BEHIND the
+/// mid-bucket trio, precisely so those buckets keep their measured
+/// composition). `total_timeout == 0` (unbounded — no `--timeout`
 /// given) has no budget to be tight on, so it gets the full schedule too.
 ///
 /// `SIGMA_ALL_LANES=1` forces every lane regardless of budget, for A/B'ing
@@ -723,12 +725,20 @@ mod tests {
 
     // -- adaptive_lane_count (budget-adaptive portfolio width, task #33) ----
     //
-    // These never touch `SIGMA_ALL_LANES` (only the dedicated override test
-    // below does, and it cleans up after itself) so they're safe to run
-    // concurrently with everything else in this module.
+    // `adaptive_lane_count` reads the process-global `SIGMA_ALL_LANES`,
+    // and the dedicated override test below SETS it — every test whose
+    // expectations depend on the var being UNSET must serialize against
+    // that test (measured flake: the override test raced the `< 15s`
+    // bucket assertions).  Same convention as strategy.rs's
+    // `LANE_ENV_LOCK`.
+    static ALL_LANES_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn all_lanes_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ALL_LANES_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn adaptive_lane_count_under_15s_is_single_lane() {
+        let _env = all_lanes_env_guard();
         assert_eq!(adaptive_lane_count(1, 5), 1);
         assert_eq!(adaptive_lane_count(10, 5), 1);
         assert_eq!(adaptive_lane_count(14, 5), 1);
@@ -736,6 +746,7 @@ mod tests {
 
     #[test]
     fn adaptive_lane_count_15_to_40s_is_three_lanes() {
+        let _env = all_lanes_env_guard();
         assert_eq!(adaptive_lane_count(15, 5), 3);
         assert_eq!(adaptive_lane_count(20, 5), 3);
         assert_eq!(adaptive_lane_count(40, 5), 3);
@@ -758,6 +769,7 @@ mod tests {
 
     #[test]
     fn adaptive_lane_count_never_exceeds_available_lanes() {
+        let _env = all_lanes_env_guard();
         // A caller with fewer than 5 strategies configured (e.g. a future
         // trimmed schedule) must not get a count that indexes past the end.
         assert_eq!(adaptive_lane_count(100, 2), 2);
@@ -770,9 +782,10 @@ mod tests {
     //    `15..=40s` buckets are unaffected by the schedule growing a lane.
 
     #[test]
-    fn adaptive_lane_count_over_40s_includes_the_wide_lane() {
+    fn adaptive_lane_count_over_40s_includes_the_deferred_lane() {
         // Real call shape: `run_portfolio_schedule` passes
-        // `Strategy::tptp_lanes().len()` — parameterized, not hardcoded.
+        // `Strategy::tptp_lanes().len()` (6 with `tptp-deferred`) —
+        // parameterized, not hardcoded.
         assert_eq!(adaptive_lane_count(41, 6), 6);
         assert_eq!(adaptive_lane_count(41, 5), 5);
         assert_eq!(adaptive_lane_count(100, 6), 6);
@@ -781,9 +794,11 @@ mod tests {
 
     #[test]
     fn adaptive_lane_count_under_15s_and_15_to_40s_unchanged_by_sixth_lane() {
+        let _env = all_lanes_env_guard();
         // The tight-budget buckets don't scale with `all_lanes` — they cap
         // at 1 and 3 respectively regardless of how many lanes exist, so
-        // adding `tptp-wide` must not change either bucket's answer.
+        // adding `tptp-deferred` (index 3, behind the mid-bucket trio)
+        // must not change either bucket's answer.
         assert_eq!(adaptive_lane_count(10, 6), 1);
         assert_eq!(adaptive_lane_count(14, 6), 1);
         assert_eq!(adaptive_lane_count(15, 6), 3);
@@ -792,11 +807,13 @@ mod tests {
 
     #[test]
     fn adaptive_lane_count_sigma_all_lanes_forces_full_schedule() {
+        let _env = all_lanes_env_guard();
         // SIGMA_ALL_LANES=1 is the A/B escape hatch: force the pre-task-#33
         // unconditional 5-lane behavior regardless of budget.  Mutates a
-        // process-global env var — scoped narrowly and cleaned up
-        // immediately after the assertions so it can't leak into any other
-        // test in this binary.
+        // process-global env var — scoped narrowly (under the env lock,
+        // which every unset-expecting test above also takes) and cleaned
+        // up immediately after the assertions so it can't leak into any
+        // other test in this binary.
         std::env::set_var("SIGMA_ALL_LANES", "1");
         let result = std::panic::catch_unwind(|| {
             assert_eq!(adaptive_lane_count(1, 5), 5);
