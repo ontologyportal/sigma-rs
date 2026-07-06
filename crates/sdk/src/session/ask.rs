@@ -319,6 +319,42 @@ impl<L: ProvingLayer> Session<L> {
     }
 }
 
+/// Doxastic queries (contexts-as-sessions, native backend only): reason
+/// INSIDE an agent's belief context via a projected prover run — the full
+/// calculus over the agent's asserted belief contents, not just the outer
+/// K-distribution schemata.  GUARDRAIL: read-only; the projection never
+/// asserts inner conclusions back into the KB — verdicts and proofs
+/// return to the caller only.
+#[cfg(feature = "native-prover")]
+impl Session<sigmakee_rs_core::ProverLayer> {
+    /// Prove `query_kif` inside `agent`'s belief context (`believes`):
+    /// `Proved` — the agent's asserted beliefs entail the query under
+    /// full consequence closure; `Disproved` (saturation) — the inner
+    /// CounterSatisfiable analogue; `Inconsistent` — the belief base
+    /// itself is contradictory; `Unknown`/`Timeout` — budget.  Cited
+    /// proof steps ride in `proof_kif` when `opts.want_proof` is set.
+    pub fn doxastic_ask(
+        &self,
+        agent:     &str,
+        query_kif: &str,
+        opts:      Option<sigmakee_rs_core::NativeOpts>,
+    ) -> SdkResult<ProverResult> {
+        Ok(self.kb.doxastic_ask(agent, query_kif, opts.unwrap_or_default()))
+    }
+
+    /// Is `agent`'s belief base consistent under full consequence
+    /// closure?  `Consistent` / `Inconsistent` (cited contradiction
+    /// transcripts in `contradiction_proofs`) / `Unknown`-`Timeout`.
+    /// An empty belief base is trivially `Consistent`.
+    pub fn doxastic_consistent(
+        &self,
+        agent: &str,
+        opts:  Option<sigmakee_rs_core::NativeOpts>,
+    ) -> SdkResult<ProverResult> {
+        Ok(self.kb.doxastic_consistent(agent, opts.unwrap_or_default()))
+    }
+}
+
 impl<L: ProvingLayer> OpenSession<'_, L> {
     fn session_mut(&mut self) -> &mut Session<L> {
         return &mut self.session;

@@ -2596,3 +2596,425 @@ fn native_stack_smoke() {
                 tc.input_formulas, errors.len(), tc.unaccounted_inputs, query_stmts);
         }
     }
+
+    // Input-loss census (env-gated, skips when unset): load each KIF file
+    // in `SIGMA_LOSS_CENSUS` (comma-separated paths) into a fresh native
+    // KB and report how many roots FAIL to clausify (`root_load_failed`)
+    // — the input-completeness audit trail.  `SIGMA_LOSS_VERBOSE=1` also
+    // prints each failing root.  `cargo test … input_loss_census --
+    // --nocapture` with the env set.
+    #[test]
+    fn input_loss_census() {
+        let Some(list) = std::env::var_os("SIGMA_LOSS_CENSUS") else {
+            eprintln!("SIGMA_LOSS_CENSUS unset — skipping input-loss census");
+            return;
+        };
+        let verbose = std::env::var_os("SIGMA_LOSS_VERBOSE").is_some();
+        for path in list.to_string_lossy().split(',').filter(|p| !p.is_empty()) {
+            let text = std::fs::read_to_string(path).expect("read census file");
+            let mut kb = KnowledgeBase::new_native();
+            let r = kb.reload_kif(&text, &std::path::PathBuf::from(path), "load");
+            if !r.ok {
+                println!("{path}\tINGEST_ERROR");
+                continue;
+            }
+            let _ = kb.make_session_axiomatic("load");
+            let layer = kb.prover();
+            let syn = kb.store_for_testing();
+            let roots = syn.root_sids();
+            let failed: Vec<SentenceId> = roots.iter().copied()
+                .filter(|sid| layer.root_load_failed(*sid))
+                .collect();
+            println!("{path}\t{} roots\t{} load-failed", roots.len(), failed.len());
+            if verbose {
+                for sid in failed {
+                    println!("  {}", crate::syntactic::display::sentence_to_plain_kif(sid, syn));
+                }
+            }
+        }
+    }
+
+    // -- step 0: structured quoting of embedded formulas (clausify.rs) --------
+    //
+    // A connective/quantifier in ARGUMENT position lifts as a quoted term:
+    // reserved `_q` constructor symbols, binders alpha-normalized to
+    // quote-scoped bound constants `qb<n>`.  The kernel sees ordinary FO
+    // terms; top-level clausification is untouched.
+
+    /// Render an interned atom back to a KIF-ish string (subterms resolved
+    /// through the prover-local table; variables blanked to `?`), for
+    /// structural asserts on quoted shapes.
+    fn atom_kif(layer: &ProverLayer, atom: SentenceId) -> String {
+        fn go(layer: &ProverLayer, sid: SentenceId, out: &mut String) {
+            let s = layer.atoms.resolve(sid, &layer.semantic.syntactic).expect("atom resolvable");
+            out.push('(');
+            for (i, el) in s.elements.iter().enumerate() {
+                if i > 0 { out.push(' '); }
+                match el {
+                    Element::Symbol(sym)     => out.push_str(&sym.name()),
+                    Element::Variable { .. } => out.push('?'),
+                    Element::Op(op)          => out.push_str(op.name()),
+                    Element::Literal(l)      => { use std::fmt::Write; let _ = write!(out, "{l:?}"); }
+                    Element::Sub(sub)        => go(layer, *sub, out),
+                }
+            }
+            out.push(')');
+        }
+        let mut s = String::new();
+        go(layer, atom, &mut s);
+        s
+    }
+
+    #[test]
+    fn quotes_embedded_connectives_in_argument_position() {
+        for (kif, expect) in [
+            ("(believes John (and (p A) (q B)))", "(believes John (and_q (p A) (q B)))"),
+            ("(believes John (or (p A) (q B)))",  "(believes John (or_q (p A) (q B)))"),
+            ("(believes John (not (p A)))",       "(believes John (not_q (p A)))"),
+            ("(believes John (=> (p A) (q B)))",  "(believes John (impl_q (p A) (q B)))"),
+            ("(believes John (<=> (p A) (q B)))", "(believes John (iff_q (p A) (q B)))"),
+        ] {
+            let (layer, cls) = clauses_of(kif);
+            assert_eq!(cls.len(), 1, "{kif}");
+            let c = &cls[0];
+            assert!(c.is_unit() && c.lits[0].pos, "{kif}");
+            assert_eq!(atom_kif(&layer, c.lits[0].atom), expect, "{kif}");
+            assert_eq!(c.nvars, 0, "ground quote must stay ground: {kif}");
+        }
+    }
+
+    #[test]
+    fn atomic_embedded_formulas_lift_unchanged() {
+        // No connective — no quoting: byte-identical to the pre-quote lift.
+        let (layer, cls) = clauses_of("(believes John (shape Earth Flat))");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (shape Earth Flat))");
+        // Embedded equality keeps its atom shape (`equal` is not a connective).
+        let (layer, cls) = clauses_of("(believes John (equal A B))");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (equal A B))");
+    }
+
+    #[test]
+    fn quotes_embedded_quantifiers_with_alpha_normalized_binders() {
+        let (layer, cls) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (forall_q (qb0) (loves qb0 Mary)))");
+        assert_eq!(cls[0].nvars, 0, "bound occurrences are constants, not variables");
+
+        let (layer, cls) = clauses_of("(believes John (exists (?X ?Y) (loves ?X ?Y)))");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (exists_q (qb0 qb1) (loves qb0 qb1)))");
+
+        // Nested quantifiers number by first occurrence; shadowing rebinds.
+        let (layer, cls) = clauses_of(
+            "(believes John (forall (?X) (and (p ?X) (exists (?X) (q ?X)))))");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (forall_q (qb0) (and_q (p qb0) (exists_q (qb1) (q qb1)))))");
+    }
+
+    #[test]
+    fn alpha_variant_quotes_intern_identically() {
+        // Content-hash atom ids are layer-independent: alpha-variant quotes
+        // from two different fixtures must produce the same interned atom
+        // and the same canonical clause key.
+        let (_l1, c1) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
+        let (_l2, c2) = clauses_of("(believes John (forall (?Other) (loves ?Other Mary)))");
+        assert_eq!(c1[0].lits[0].atom, c2[0].lits[0].atom, "alpha-variants dedup");
+        assert_eq!(c1[0].key, c2[0].key);
+    }
+
+    #[test]
+    fn quote_free_variables_stay_clause_variables() {
+        // A context variable inside the quote stays a REAL variable —
+        // implicit universal closure picks it up at clause level.
+        let (layer, cls) = clauses_of("(believes John (loves ?X Mary))");
+        assert_eq!(cls[0].nvars, 1, "free variable universally closed");
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (loves ? Mary))");
+
+        // Mixed: quote-bound ?Y is a constant, context-free ?X a variable.
+        let (layer, cls) = clauses_of("(believes John (forall (?Y) (loves ?X ?Y)))");
+        assert_eq!(cls[0].nvars, 1);
+        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
+            "(believes John (forall_q (qb0) (loves ? qb0)))");
+
+        // A top-level binder threads into the quote as a shared variable
+        // across BOTH literal positions of the rule clause.
+        let (layer, cls) = clauses_of(
+            "(=> (instance ?X Human) (believes ?X (forall (?Y) (loves ?Y ?X))))");
+        assert_eq!(cls.len(), 1);
+        assert_eq!(cls[0].nvars, 1, "outer variable shared through the quote");
+        let pos = cls[0].lits.iter().find(|l| l.pos).expect("conclusion literal");
+        assert_eq!(atom_kif(&layer, pos.atom),
+            "(believes ? (forall_q (qb0) (loves qb0 ?)))");
+    }
+
+    #[test]
+    fn quoted_binders_resist_capture() {
+        let mut kb = kb_from("(believes John (forall (?X) (loves ?X Mary)))");
+        // The alpha-variant IS the same quote — proves.
+        let yes = kb.ask_query("(believes John (forall (?W) (loves ?W Mary)))",
+            None, SineParams::default(), fast());
+        assert_eq!(yes.status, ProverStatus::Proved, "raw: {}", yes.raw_output);
+        // Capture attempt: unifying would need qb0 := Mary INSIDE the quote —
+        // impossible, bound occurrences are constants.
+        let no = kb.ask_query("(believes John (forall (?Z) (loves ?Z ?Z)))",
+            None, SineParams::default(), fast());
+        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+        // Nor does the quoted universal instantiate to a plain belief.
+        let no2 = kb.ask_query("(believes John (loves Bob Mary))",
+            None, SineParams::default(), fast());
+        assert_ne!(no2.status, ProverStatus::Proved, "raw: {}", no2.raw_output);
+    }
+
+    #[test]
+    fn quoted_compound_binds_through_predicate_variable_rules() {
+        let mut kb = kb_from(
+            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))\n\
+             (=> (believes John ?P) (interested John ?P))");
+        let asked = kb.ask_query(
+            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))",
+            None, SineParams::default(), fast());
+        assert_eq!(asked.status, ProverStatus::Proved, "raw: {}", asked.raw_output);
+        // The whole quote binds through ?P.
+        let derived = kb.ask_query(
+            "(interested John (and (shape Earth Flat) (orbits Earth Sun)))",
+            None, SineParams::default(), fast());
+        assert_eq!(derived.status, ProverStatus::Proved, "raw: {}", derived.raw_output);
+    }
+
+    // -- part A: modal K-distribution schemata over quote constructors --------
+    //
+    // Native parity with the THF lane's K-axiom fragment: conjunction
+    // distribution for `knows`/`believes`, injected at problem assembly
+    // ONLY under the computed-declaration guard (argument-2 domain is
+    // Formula or a descendant) — the guard the THF assembler skips.
+
+    #[test]
+    fn modal_k_distributes_believed_conjunction() {
+        // Formula domain declared → the K schema injects; each conjunct
+        // of a believed conjunction becomes derivable.
+        let mut kb = kb_from(
+            "(domain believes 2 Formula)\n\
+             (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
+        let a = kb.ask_query("(believes John (shape Earth Flat))",
+            None, SineParams::default(), fast());
+        assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
+        let b = kb.ask_query("(believes John (orbits Earth Sun))",
+            None, SineParams::default(), fast());
+        assert_eq!(b.status, ProverStatus::Proved, "raw: {}", b.raw_output);
+        // Control: a conjunct John never believed stays underivable.
+        let no = kb.ask_query("(believes John (shape Earth Round))",
+            None, SineParams::default(), fast());
+        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+    }
+
+    #[test]
+    fn modal_k_requires_declared_formula_domain() {
+        // No Formula domain declaration → NO injection: the THF chip's
+        // bug class (it injects on the relation NAME alone), tested
+        // natively — same KB as above minus the `domain` axiom.
+        let mut kb = kb_from(
+            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))");
+        let no = kb.ask_query("(believes John (shape Earth Flat))",
+            None, SineParams::default(), fast());
+        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+    }
+
+    #[test]
+    fn modal_k_accepts_formula_descendant_domain_for_knows() {
+        // A Formula DESCENDANT class qualifies too (the ho_signatures
+        // `is_formula_class` rule), and `knows` gets the same schema.
+        let mut kb = kb_from(
+            "(subclass EpistemicFormula Formula)\n\
+             (domain knows 2 EpistemicFormula)\n\
+             (knows Alice (and (p A) (q B)))");
+        let a = kb.ask_query("(knows Alice (p A))",
+            None, SineParams::default(), fast());
+        assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
+        let no = kb.ask_query("(knows Alice (r C))",
+            None, SineParams::default(), fast());
+        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+    }
+
+    #[test]
+    fn modal_k_strategy_off_switch_disables_injection() {
+        // The `Strategy.modal_k` knob (env: SIGMA_NO_MODAL_K) gates the
+        // whole mechanism.
+        let mut kb = kb_from(
+            "(domain believes 2 Formula)\n\
+             (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
+        let mut opts = fast();
+        opts.strategy.modal_k = false;
+        let no = kb.ask_query("(believes John (shape Earth Flat))",
+            None, SineParams::default(), opts);
+        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+    }
+
+    // -- part B: KappaFn per-instance comprehension (clausify.rs) -------------
+    //
+    // `(KappaFn ?V φ)` in term position lifts to a quoted class term
+    // `(kappa_q qb<n> <quoted body>)` and emits BOTH comprehension
+    // directions as auxiliary clauses on the same root, built by the
+    // unquote-with-substitution primitive (`unquote_form`).
+
+    #[test]
+    fn kappa_lifts_to_quoted_class_term_with_comprehension() {
+        let (layer, cls) = clauses_of(
+            "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))");
+        // 1 fact + 2 elimination clauses + 1 introduction clause.
+        assert_eq!(cls.len(), 4, "clauses: {}", cls.len());
+        let fact = cls.iter().find(|c| c.is_unit()).expect("kappa fact unit");
+        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
+            "(instance Rex (kappa_q qb0 (and_q (instance qb0 Dog) (attribute qb0 Brown))))");
+        assert_eq!(fact.nvars, 0, "ground kappa term stays ground");
+        // Elimination: instance in the class term ⊢ each conjunct, with a
+        // REAL variable where the binder was (the unquote substitution).
+        let pos_atoms: Vec<String> = cls.iter()
+            .filter(|c| c.lits.len() == 2)
+            .filter_map(|c| c.lits.iter().find(|l| l.pos))
+            .map(|l| atom_kif(&layer, l.atom))
+            .collect();
+        assert!(pos_atoms.contains(&"(instance ? Dog)".to_string()), "{pos_atoms:?}");
+        assert!(pos_atoms.contains(&"(attribute ? Brown)".to_string()), "{pos_atoms:?}");
+        // Introduction: both body literals negated, class membership
+        // concluded.
+        let intro = cls.iter().find(|c| c.lits.len() == 3).expect("introduction clause");
+        assert_eq!(intro.lits.iter().filter(|l| !l.pos).count(), 2);
+        let concl = intro.lits.iter().find(|l| l.pos).expect("positive conclusion");
+        assert!(atom_kif(&layer, concl.atom).starts_with("(instance ? (kappa_q qb0"),
+            "{}", atom_kif(&layer, concl.atom));
+    }
+
+    #[test]
+    fn kappa_alpha_variants_intern_identically() {
+        let (_l1, c1) = clauses_of("(instance Rex (KappaFn ?X (p ?X)))");
+        let (_l2, c2) = clauses_of("(instance Rex (KappaFn ?Wholly (p ?Wholly)))");
+        let f1 = c1.iter().find(|c| c.is_unit()).unwrap();
+        let f2 = c2.iter().find(|c| c.is_unit()).unwrap();
+        assert_eq!(f1.lits[0].atom, f2.lits[0].atom, "alpha-variant kappa terms dedup");
+    }
+
+    #[test]
+    fn unquote_roundtrip_rebinds_quantifiers_to_real_variables() {
+        // Quote-then-unquote = the original body up to binder renaming: a
+        // quantifier INSIDE the kappa body comes back as a real bound
+        // variable (here: implicit-universal after the implication
+        // lowers), not a qb constant.
+        let (layer, cls) = clauses_of(
+            "(instance Rex (KappaFn ?X (forall (?Z) (loves ?X ?Z))))");
+        let fact = cls.iter().find(|c| c.is_unit()).unwrap();
+        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
+            "(instance Rex (kappa_q qb0 (forall_q (qb1) (loves qb0 qb1))))");
+        // Elimination direction: ¬instance(?I, k) ∨ loves(?I, ?Z') — TWO
+        // real variables, no qb constants at assertion level.
+        let elim = cls.iter()
+            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
+                |l| l.pos && atom_kif(&layer, l.atom) == "(loves ? ?)"))
+            .expect("elimination clause with unquoted quantifier body");
+        assert_eq!(elim.nvars, 2, "binder AND rebound quantifier are real variables");
+        // Introduction direction: the universal body under negation
+        // skolemizes — ¬loves(?I, sk(?I)) ∨ instance(?I, k).
+        let intro = cls.iter()
+            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
+                |l| l.pos && atom_kif(&layer, l.atom).starts_with("(instance ? (kappa_q")))
+            .expect("introduction clause");
+        let neg = intro.lits.iter().find(|l| !l.pos).unwrap();
+        assert!(atom_kif(&layer, neg.atom).contains("(sk_"),
+            "universal body skolemizes in the introduction direction: {}",
+            atom_kif(&layer, neg.atom));
+    }
+
+    #[test]
+    fn unquote_is_one_level_only_nested_quotes_stay_quoted() {
+        // A quote nested inside an ATOM of the kappa body survives the
+        // unquote as a quoted term — `and_q` intact at assertion level.
+        let (layer, cls) = clauses_of(
+            "(instance Rex (KappaFn ?X (believes ?X (and (p A) (q B)))))");
+        let elim_pos: Vec<String> = cls.iter()
+            .filter(|c| c.lits.len() == 2)
+            .filter_map(|c| c.lits.iter().find(|l| l.pos))
+            .map(|l| atom_kif(&layer, l.atom))
+            .collect();
+        assert!(elim_pos.contains(&"(believes ? (and_q (p A) (q B)))".to_string()),
+            "one-level unquote keeps the nested quote: {elim_pos:?}");
+    }
+
+    #[test]
+    fn unquote_renumbers_nested_quote_scopes_from_qb0() {
+        // In the kterm the nested quote's binder shares the kappa scope's
+        // counter (qb1); once the kappa level is unquoted, the nested
+        // quote is a maximal scope again and must number from qb0 — the
+        // exact term a direct assertion of the body would lift to.
+        let (layer, cls) = clauses_of(
+            "(instance Rex (KappaFn ?X (believes ?X (forall (?Z) (p ?Z)))))");
+        let fact = cls.iter().find(|c| c.is_unit()).unwrap();
+        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
+            "(instance Rex (kappa_q qb0 (believes qb0 (forall_q (qb1) (p qb1)))))");
+        let elim_pos: Vec<String> = cls.iter()
+            .filter(|c| c.lits.len() == 2)
+            .filter_map(|c| c.lits.iter().find(|l| l.pos))
+            .map(|l| atom_kif(&layer, l.atom))
+            .collect();
+        assert!(elim_pos.contains(&"(believes ? (forall_q (qb0) (p qb0)))".to_string()),
+            "nested scope renumbered to qb0: {elim_pos:?}");
+    }
+
+    #[test]
+    fn kappa_free_variables_thread_through_comprehension() {
+        // An outer-context free variable inside the kappa body stays ONE
+        // shared real variable across the class term and the unquoted
+        // body — 2 clause variables total (?I and ?Y), not 3.
+        let (layer, cls) = clauses_of(
+            "(instance Rex (KappaFn ?X (and (p ?X ?Y) (q ?Y))))");
+        let elim = cls.iter()
+            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
+                |l| l.pos && atom_kif(&layer, l.atom) == "(p ? ?)"))
+            .expect("elimination clause for the p-conjunct");
+        assert_eq!(elim.nvars, 2,
+            "free ?Y threads back as the SAME variable it is in the kterm");
+        let neg = elim.lits.iter().find(|l| !l.pos).unwrap();
+        assert_eq!(atom_kif(&layer, neg.atom),
+            "(instance ? (kappa_q qb0 (and_q (p qb0 ?) (q ?))))");
+    }
+
+    #[test]
+    fn malformed_kappa_bails_to_the_lossy_path() {
+        // Non-variable binder → the whole root drops as LOSSY (documented
+        // bail — never a wrong encoding).
+        let (layer, roots) = layer_with("(instance Rex (KappaFn (FooFn ?X) (p ?X)))");
+        assert!(layer.clauses_for(roots[0]).is_empty(), "malformed kappa loads nothing");
+        assert!(layer.root_load_failed(roots[0]), "counted as input loss");
+        // Arity ≠ 3 → same bail.
+        let (layer, roots) = layer_with("(instance Rex (KappaFn ?X))");
+        assert!(layer.clauses_for(roots[0]).is_empty());
+        assert!(layer.root_load_failed(roots[0]));
+    }
+
+    #[test]
+    fn kappa_comprehension_proves_both_directions() {
+        let mut kb = kb_from(
+            "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))\n\
+             (instance Fido Dog)\n\
+             (attribute Fido Brown)\n\
+             (instance Buddy Dog)");
+        // Elimination: membership in the class term yields each property.
+        let e1 = kb.ask_query("(instance Rex Dog)", None, SineParams::default(), fast());
+        assert_eq!(e1.status, ProverStatus::Proved, "raw: {}", e1.raw_output);
+        let e2 = kb.ask_query("(attribute Rex Brown)", None, SineParams::default(), fast());
+        assert_eq!(e2.status, ProverStatus::Proved, "raw: {}", e2.raw_output);
+        // Introduction: both properties yield membership — asked with the
+        // SAME KappaFn expression (quote dedup makes the terms identical).
+        let i1 = kb.ask_query(
+            "(instance Fido (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
+            None, SineParams::default(), fast());
+        assert_eq!(i1.status, ProverStatus::Proved, "raw: {}", i1.raw_output);
+        // Controls: Buddy lacks Brown; Rex gains nothing beyond the body.
+        let c1 = kb.ask_query(
+            "(instance Buddy (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
+            None, SineParams::default(), fast());
+        assert_ne!(c1.status, ProverStatus::Proved, "raw: {}", c1.raw_output);
+        let c2 = kb.ask_query("(instance Rex Cat)", None, SineParams::default(), fast());
+        assert_ne!(c2.status, ProverStatus::Proved, "raw: {}", c2.raw_output);
+    }

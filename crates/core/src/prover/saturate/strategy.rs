@@ -255,6 +255,17 @@ pub struct Strategy {
     /// OFF — and a provable no-op on SUMO (the names resolve to the
     /// same ids the recognizer recovers).
     pub recognize_roles: bool,
+    /// Modal K-distribution schemata over quote constructors (native
+    /// HO-parity, part A): at problem assembly, inject conjunction
+    /// distribution for the attitude relations `knows`/`believes` —
+    /// `(=> (rel ?A (and_q ?P ?Q)) (and (rel ?A ?P) (rel ?A ?Q)))` —
+    /// when the KB's taxonomy declares the relation's argument-2 domain
+    /// as `Formula` (or a descendant) AND the relation occurs in the
+    /// problem (`prove.rs`'s `modal_k_qualifying`).  Parity with the THF
+    /// lane's K-axiom fragment; the schemata only REARRANGE quoted
+    /// structure, never unquote.  `SIGMA_NO_MODAL_K=1` turns it off
+    /// globally.
+    pub modal_k: bool,
 
     // -- saturation regime ----------------------------------------------------
 
@@ -424,6 +435,7 @@ impl Strategy {
             bg_completion: false,
             bg_completion_budget: 256,
             recognize_roles: false,
+            modal_k: true,
             full_saturation: false,
             strict_saturation: false,
             // OFF by default: a controlled A/B over a 1285-problem TPTP
@@ -489,6 +501,7 @@ impl Strategy {
         if on("SIGMA_HEADFILTER") { s.head_filter = true; }
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
+        if on("SIGMA_NO_MODAL_K") { s.modal_k = false; }
         s.demod = Self::demod_env_override(s.demod);
         s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
         s.subs_join = Self::subs_join_env_override(s.subs_join);
@@ -881,6 +894,9 @@ impl Strategy {
             // Correctness/portability feature, not a search lever — kept
             // out of the sweep genome (and a no-op on SUMO anyway).
             recognize_roles: false,
+            // Correctness/parity feature (attitude-relation K schemata),
+            // not a search lever — kept out of the sweep genome.
+            modal_k: true,
             // Problem-regime knobs (SOS vs full saturation, verdict
             // honesty), not search levers — the caller's path picks them.
             full_saturation: false,

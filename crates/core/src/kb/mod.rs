@@ -30,6 +30,7 @@ pub mod store;
 pub mod semantics;
 pub mod sine;
 pub mod dis;
+pub mod doxastic;
 pub mod session_tags;
 pub(crate) mod assemble;
 #[cfg(feature = "ask")]

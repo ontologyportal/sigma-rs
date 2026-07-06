@@ -36,6 +36,7 @@ pub(crate) mod proof;
 pub(crate) mod schema;
 mod prove;
 mod consistency;
+mod doxastic;
 pub mod strategy;
 
 #[cfg(test)]

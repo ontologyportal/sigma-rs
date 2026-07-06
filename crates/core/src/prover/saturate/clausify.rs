@@ -46,6 +46,23 @@ pub(crate) const MAX_LITS_PER_CLAUSE: usize = 32;
 /// it abandons the rescue and keeps the original lossy result.
 pub(crate) const DEFCNF_MAX_CLAUSES_PER_FORMULA: usize = 65_536;
 
+/// The KappaFn class former, KIF `(KappaFn ?V φ)` — recognized by NAME,
+/// mirroring `trans/caches/ho_signatures.rs`'s `KAPPA_FN` (kept as a
+/// separate const: the trans module is a different feature axis).
+pub(crate) const KAPPA_FN: &str = "KappaFn";
+
+/// The reserved quote constructor a lifted KappaFn class term is built
+/// from: `(kappa_q qb<n> <quoted body>)` — binder discipline exactly as
+/// `forall_q`, except the binder is a single bound-constant (KappaFn
+/// binds exactly one variable), not a varlist.
+pub(crate) const KAPPA_CTOR: &str = "kappa_q";
+
+/// Comprehension-emission cap per root, mirroring defCNF's per-root cap
+/// discipline: beyond it further KappaFn terms still LIFT structurally
+/// (the class term loads) but carry no comprehension units — recorded as
+/// input LOSS so the completeness gate withholds countermodel verdicts.
+pub(crate) const MAX_KAPPA_COMPREHENSIONS_PER_ROOT: u32 = 8;
+
 /// Lifted first-order formula.  Connectives mirror [`OpKind`]; quantifier
 /// variables are scope-qualified symbol ids exactly as stored.
 #[derive(Debug, Clone)]
@@ -62,38 +79,67 @@ pub(crate) enum Form {
 
 // -- Lift: stored Sentence -> Form/Term ---------------------------------------
 
+/// Per-root lift context (KappaFn comprehension, HO-parity part B):
+/// collects the per-instance comprehension units minted while lifting,
+/// numbered deterministically per root.
+pub(crate) struct LiftCtx {
+    root:    SentenceId,
+    /// Comprehension units in traversal (mint) order — lowered alongside
+    /// the root's main formula by `clausify_form` under the SAME per-root
+    /// skolem context (the defCNF auxiliary-clause pattern: deterministic
+    /// order ⇒ deterministic names, byte-identical re-clausification).
+    units:   Vec<Form>,
+    /// Next kappa sequence number within this root (names the fresh
+    /// instance/binder variables deterministically).
+    kappa_n: u32,
+    /// Comprehension was SKIPPED for a kappa term because the per-root
+    /// cap was hit — input loss the completeness gate must see.
+    capped:  bool,
+}
+
+impl LiftCtx {
+    fn new(root: SentenceId) -> Self {
+        LiftCtx { root, units: Vec::new(), kappa_n: 0, capped: false }
+    }
+}
+
 /// Lift a stored sentence into a [`Form`], resolving nested sub-sentences
 /// through the store.  Returns `None` for shapes the clausifier cannot
-/// handle (malformed quantifiers, unresolvable subterms) — the caller
-/// skips the formula rather than guessing.
-pub(crate) fn lift_form(syn: &SyntacticLayer, atoms: &AtomTable, sent: &Sentence) -> Option<Form> {
+/// handle (malformed quantifiers, malformed KappaFn, unresolvable
+/// subterms) — the caller skips the formula rather than guessing.
+pub(crate) fn lift_form(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    sent:  &Sentence,
+    lctx:  &mut LiftCtx,
+) -> Option<Form> {
     let op = match sent.elements.first() {
         Some(Element::Op(op)) if *op != OpKind::Equal => op.clone(),
         // Symbol- or variable-headed (incl. predicate variables) and
         // equality sentences are atoms.
-        _ => return Some(Form::Atom(lift_term_of(syn, atoms, sent)?)),
+        _ => return Some(Form::Atom(lift_term_of(syn, atoms, sent, lctx)?)),
     };
     let mut args = sent.elements.iter().skip(1);
     match op {
         OpKind::And | OpKind::Or => {
             let mut fs = Vec::with_capacity(sent.elements.len() - 1);
             for el in args {
-                fs.push(lift_subform(syn, atoms, el)?);
+                fs.push(lift_subform(syn, atoms, el, lctx)?);
             }
             Some(if op == OpKind::And { Form::And(fs) } else { Form::Or(fs) })
         }
         OpKind::Not => {
-            let f = lift_subform(syn, atoms, args.next()?)?;
+            let f = lift_subform(syn, atoms, args.next()?, lctx)?;
             Some(Form::Not(Box::new(f)))
         }
         OpKind::Implies => {
-            let a = lift_subform(syn, atoms, args.next()?)?;
-            let b = lift_subform(syn, atoms, args.next()?)?;
+            let a = lift_subform(syn, atoms, args.next()?, lctx)?;
+            let b = lift_subform(syn, atoms, args.next()?, lctx)?;
             Some(Form::Implies(Box::new(a), Box::new(b)))
         }
         OpKind::Iff => {
-            let a = lift_subform(syn, atoms, args.next()?)?;
-            let b = lift_subform(syn, atoms, args.next()?)?;
+            let a = lift_subform(syn, atoms, args.next()?, lctx)?;
+            let b = lift_subform(syn, atoms, args.next()?, lctx)?;
             Some(Form::Iff(Box::new(a), Box::new(b)))
         }
         OpKind::ForAll | OpKind::Exists => {
@@ -106,7 +152,7 @@ pub(crate) fn lift_form(syn: &SyntacticLayer, atoms: &AtomTable, sent: &Sentence
                 let Element::Variable { id, .. } = el else { return None };
                 vars.push(*id);
             }
-            let body = lift_subform(syn, atoms, args.next()?)?;
+            let body = lift_subform(syn, atoms, args.next()?, lctx)?;
             Some(if op == OpKind::ForAll {
                 Form::ForAll(vars, Box::new(body))
             } else {
@@ -117,9 +163,14 @@ pub(crate) fn lift_form(syn: &SyntacticLayer, atoms: &AtomTable, sent: &Sentence
     }
 }
 
-fn lift_subform(syn: &SyntacticLayer, atoms: &AtomTable, el: &Element) -> Option<Form> {
+fn lift_subform(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    el:    &Element,
+    lctx:  &mut LiftCtx,
+) -> Option<Form> {
     match el {
-        Element::Sub(sid) => lift_form(syn, atoms, atoms.resolve(*sid, syn)?.as_ref()),
+        Element::Sub(sid) => lift_form(syn, atoms, atoms.resolve(*sid, syn)?.as_ref(), lctx),
         // A bare symbol/variable in formula position is a propositional
         // atom (rare but legal).
         Element::Symbol(s) => Some(Form::Atom(Term::App(vec![Term::Sym(s.0.clone())]))),
@@ -129,22 +180,609 @@ fn lift_subform(syn: &SyntacticLayer, atoms: &AtomTable, el: &Element) -> Option
 }
 
 /// Lift a sentence in *term/atom* position into a [`Term::App`].
-fn lift_term_of(syn: &SyntacticLayer, atoms: &AtomTable, sent: &Sentence) -> Option<Term> {
+fn lift_term_of(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    sent:  &Sentence,
+    lctx:  &mut LiftCtx,
+) -> Option<Term> {
     let mut elems = Vec::with_capacity(sent.elements.len());
     for el in sent.elements.iter() {
-        elems.push(lift_term_el(syn, atoms, el)?);
+        elems.push(lift_term_el(syn, atoms, el, lctx)?);
     }
     Some(Term::App(elems))
 }
 
-fn lift_term_el(syn: &SyntacticLayer, atoms: &AtomTable, el: &Element) -> Option<Term> {
+fn lift_term_el(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    el:    &Element,
+    lctx:  &mut LiftCtx,
+) -> Option<Term> {
     Some(match el {
         Element::Symbol(s)           => Term::Sym(s.0.clone()),
         Element::Variable { id, .. } => Term::Var(*id),
         Element::Literal(l)          => Term::Lit(l.clone()),
         Element::Op(op)              => Term::Op(op.clone()),
-        Element::Sub(sid)            => lift_term_of(syn, atoms, atoms.resolve(*sid, syn)?.as_ref())?,
+        Element::Sub(sid)            => {
+            let sent = atoms.resolve(*sid, syn)?;
+            match kappa_shape(sent.as_ref()) {
+                KappaShape::Kappa { binder, body } => {
+                    // `(KappaFn ?V φ)` in plain term position: opens its
+                    // own quote scope (a maximal quote, like any other
+                    // formula-shaped argument) AND emits its per-instance
+                    // comprehension units (`emit = true`).
+                    lift_kappa_term(
+                        syn, atoms, binder, body, &mut QuoteEnv::default(), lctx, true)?
+                }
+                KappaShape::Malformed => {
+                    // Documented bail: a malformed KappaFn (arity ≠ 3 or
+                    // non-variable binder) drops the whole root through
+                    // the existing LOSSY path — counted — rather than
+                    // loading a wrong encoding.
+                    KAPPA_MALFORMED_BAILS.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                KappaShape::NotKappa => {
+                    if is_formula_shaped(sent.as_ref()) {
+                        // An embedded connective/quantifier in ARGUMENT
+                        // position (e.g. `(believes John (and P Q))`):
+                        // lift as a structured QUOTE — reserved
+                        // constructor symbols, binders alpha-normalized
+                        // to quote-scoped bound constants.  Each maximal
+                        // formula-shaped argument opens its own quote
+                        // scope (`QuoteEnv::default`).
+                        lift_quote_sentence(
+                            syn, atoms, sent.as_ref(), &mut QuoteEnv::default(), lctx)?
+                    } else {
+                        lift_term_of(syn, atoms, sent.as_ref(), lctx)?
+                    }
+                }
+            }
+        }
     })
+}
+
+// -- Structured quoting of embedded formulas (argument position) ---------------
+//
+// A formula appearing in ARGUMENT position under a predicate — e.g.
+// `(believes John (and P Q))` or `(holdsDuring T (forall (?X) ...))` —
+// is QUOTED: the prover sees an ordinary first-order term built from
+// reserved constructor symbols, never a connective the calculus would
+// interpret.  Design (docs/plans/doxastic-contexts.md, step 0):
+//
+//   * Connectives map to reserved function symbols `and_q` / `or_q` /
+//     `not_q` / `impl_q` / `iff_q`; quantifiers to `forall_q` /
+//     `exists_q`.  Like skolem (`sk_…`) and defCNF (`df_…`) names these
+//     are minted as plain `Symbol`s, so their ids are the deterministic
+//     content hashes of the names — stable across runs and KBs.
+//   * Binder alpha-normalization: variables bound INSIDE the quote are
+//     replaced by canonical bound-CONSTANTS `qb0`, `qb1`, … numbered by
+//     first occurrence within the quote (the varlist is traversed first,
+//     so binder order is the occurrence order).  Alpha-variant quotes
+//     therefore lift to byte-identical terms (one interned atom), and
+//     unification can never capture into a quoted scope — bound
+//     occurrences are constants, not variables.
+//   * FREE variables of the embedding context stay real variables, so
+//     rules like `(=> (believes J ?P) …)` bind whole quotes through `?P`
+//     and `(believes J (loves ?X Mary))` keeps `?X` linked to the
+//     enclosing scope.
+//   * Equality is NOT a connective here: an embedded `(= a b)` keeps its
+//     atom shape (`Op(Equal)`-headed app), exactly as before.
+//
+// This applies ONLY in term/argument position — top-level formula
+// structure clausifies exactly as always (`lift_form` above).  The
+// saturation kernel is untouched: quotes are ordinary FO terms.
+
+/// `true` when a stored sentence is formula-shaped for quoting purposes:
+/// headed by a logical connective or quantifier (equality excluded — an
+/// equality in argument position keeps its atom shape).
+fn is_formula_shaped(sent: &Sentence) -> bool {
+    matches!(sent.elements.first(), Some(Element::Op(op)) if *op != OpKind::Equal)
+}
+
+/// The reserved quote-constructor symbol for a connective/quantifier.
+pub(crate) fn quote_ctor_name(op: &OpKind) -> Option<&'static str> {
+    Some(match op {
+        OpKind::And     => "and_q",
+        OpKind::Or      => "or_q",
+        OpKind::Not     => "not_q",
+        OpKind::Implies => "impl_q",
+        OpKind::Iff     => "iff_q",
+        OpKind::ForAll  => "forall_q",
+        OpKind::Exists  => "exists_q",
+        OpKind::Equal   => return None,
+    })
+}
+
+/// The canonical bound-constant for quote binder slot `n` (`qb0`, `qb1`, …).
+fn quote_bound_sym(n: u32) -> Symbol {
+    Symbol::from(format!("qb{n}"))
+}
+
+/// Per-quote binder environment: a stack of binder frames (shadowing) and
+/// the first-occurrence counter for bound-constant numbering.  Scoped to
+/// one maximal quote — a fresh quote (a different formula-shaped
+/// argument) numbers from `qb0` again, which is exactly what makes
+/// alpha-variants intern identically.
+#[derive(Default)]
+struct QuoteEnv {
+    frames: Vec<Vec<(SymbolId, u32)>>,
+    next:   u32,
+}
+
+impl QuoteEnv {
+    fn lookup(&self, id: SymbolId) -> Option<u32> {
+        self.frames.iter().rev().find_map(|f| {
+            f.iter().find(|(v, _)| *v == id).map(|(_, n)| *n)
+        })
+    }
+}
+
+/// Lift a formula-shaped stored sentence in argument position into a
+/// quoted [`Term`].  Returns `None` for malformed quantifier shapes
+/// (non-variable varlist entries, missing body) — a documented bail: the
+/// axiom then drops as lossy rather than loading a wrong encoding.
+fn lift_quote_sentence(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    sent:  &Sentence,
+    env:   &mut QuoteEnv,
+    lctx:  &mut LiftCtx,
+) -> Option<Term> {
+    let op = match sent.elements.first() {
+        Some(Element::Op(op)) if *op != OpKind::Equal => op.clone(),
+        // Atomic (symbol/variable/equality-headed) sentence inside the
+        // quote: an ordinary application, with binder substitution.
+        _ => {
+            let mut elems = Vec::with_capacity(sent.elements.len());
+            for el in sent.elements.iter() {
+                elems.push(lift_quote_el(syn, atoms, el, env, lctx)?);
+            }
+            return Some(Term::App(elems));
+        }
+    };
+    let ctor = Term::Sym(Symbol::from(quote_ctor_name(&op)?));
+    match op {
+        OpKind::ForAll | OpKind::Exists => {
+            // Shape: (forall (?X ?Y) body) — mirror `lift_form`'s
+            // recognizer, bail on anything else.
+            if sent.elements.len() != 3 { return None; }
+            let Some(Element::Sub(vl_sid)) = sent.elements.get(1) else { return None };
+            let vl = atoms.resolve(*vl_sid, syn)?;
+            let mut frame = Vec::with_capacity(vl.elements.len());
+            let mut vl_elems = Vec::with_capacity(vl.elements.len());
+            for el in vl.elements.iter() {
+                let Element::Variable { id, .. } = el else { return None };
+                // Rebinding the same name within ONE varlist keeps the
+                // first slot (degenerate source; lookup finds it either
+                // way).  Shadowing across NESTED quantifiers works via
+                // the frame stack.
+                let n = env.next;
+                env.next += 1;
+                frame.push((*id, n));
+                vl_elems.push(Term::Sym(quote_bound_sym(n)));
+            }
+            env.frames.push(frame);
+            let body = lift_quote_el(syn, atoms, &sent.elements[2], env, lctx);
+            env.frames.pop();
+            Some(Term::App(vec![ctor, Term::App(vl_elems), body?]))
+        }
+        _ => {
+            let mut elems = Vec::with_capacity(sent.elements.len());
+            elems.push(ctor);
+            for el in sent.elements.iter().skip(1) {
+                elems.push(lift_quote_el(syn, atoms, el, env, lctx)?);
+            }
+            Some(Term::App(elems))
+        }
+    }
+}
+
+/// One element inside a quote: bound variables become bound constants,
+/// free variables stay variables, nested sub-sentences recurse under the
+/// same quote environment.
+fn lift_quote_el(
+    syn:   &SyntacticLayer,
+    atoms: &AtomTable,
+    el:    &Element,
+    env:   &mut QuoteEnv,
+    lctx:  &mut LiftCtx,
+) -> Option<Term> {
+    Some(match el {
+        Element::Symbol(s)  => Term::Sym(s.0.clone()),
+        Element::Variable { id, .. } => match env.lookup(*id) {
+            Some(n) => Term::Sym(quote_bound_sym(n)),
+            None    => Term::Var(*id),
+        },
+        Element::Literal(l) => Term::Lit(l.clone()),
+        Element::Op(op)     => Term::Op(op.clone()),
+        Element::Sub(sid)   => {
+            let sent = atoms.resolve(*sid, syn)?;
+            match kappa_shape(sent.as_ref()) {
+                KappaShape::Kappa { binder, body } => {
+                    // A KappaFn NESTED inside an enclosing quote: same
+                    // env (binder numbering continues — exactly the
+                    // shared-scope rule nested quantifiers follow), and
+                    // NO comprehension (`emit = false`): quoted content
+                    // is mentioned, not asserted — emitting here would
+                    // bridge through an unasserted context.
+                    lift_kappa_term(syn, atoms, binder, body, env, lctx, false)?
+                }
+                KappaShape::Malformed => {
+                    KAPPA_MALFORMED_BAILS.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+                KappaShape::NotKappa => {
+                    lift_quote_sentence(syn, atoms, sent.as_ref(), env, lctx)?
+                }
+            }
+        }
+    })
+}
+
+// -- KappaFn per-instance comprehension (native HO-parity, part B) --------------
+//
+// KIF's `(KappaFn ?V φ)` denotes "the class of ?V such that φ" — a term.
+// It lifts as a quoted class term `(kappa_q qb<n> <quoted body>)`, same
+// binder discipline as `forall_q` (alpha-normalized bound-constants, so
+// alpha-variant kappa terms intern identically and the SAME KappaFn
+// expression asked as a query denotes the SAME term — quote dedup).
+//
+// The MEANING of the class term is supplied by PER-INSTANCE comprehension,
+// emitted as auxiliary clauses attached to the same root (the defCNF
+// auxiliary-clause pattern):
+//
+//   (=> (instance ?X <kterm>) body[?V := ?X])     — elimination
+//   (=> body[?V := ?X] (instance ?X <kterm>))     — introduction
+//
+// where `body[?V := ?X]` comes from `unquote_form`, the
+// unquote-with-substitution primitive: the INVERSE of the quote walk,
+// one level deep.
+//
+// GUARDRAIL (Montague's paradox — non-negotiable): every quote-to-
+// assertion bridge here is PER-INSTANCE — comprehension for one SPECIFIC
+// KappaFn term met at clausification time, whose unquoted body is a
+// FIXED formula skeleton.  There is deliberately NO general rule of the
+// shape "for all quoted ?P: holds(?P) implies <?P unquoted>" — that
+// schema reproduces Montague's paradox, and this module must never grow
+// one.
+
+/// Process-cumulative part-B counters, surfaced by `SIGMA_STATS`
+/// (prove.rs) when nonzero — same regime as `defcnf_counters`.
+static KAPPA_COMPREHENSIONS:  AtomicU64 = AtomicU64::new(0);
+static KAPPA_MALFORMED_BAILS: AtomicU64 = AtomicU64::new(0);
+
+/// (comprehensions_emitted, malformed_bails) — process-cumulative.
+pub(crate) fn kappa_counters() -> (u64, u64) {
+    (KAPPA_COMPREHENSIONS.load(Ordering::Relaxed),
+     KAPPA_MALFORMED_BAILS.load(Ordering::Relaxed))
+}
+
+/// Recognizer for `(KappaFn ?V φ)` sub-sentences.
+enum KappaShape<'a> {
+    /// Not KappaFn-headed at all.
+    NotKappa,
+    /// KappaFn-headed but not the binder shape — arity ≠ 3 or a
+    /// non-variable binder.  Documented bail: the root drops as LOSSY
+    /// (counted), never loads a wrong encoding.
+    Malformed,
+    /// Well-formed: the binder variable and the body element.
+    Kappa { binder: SymbolId, body: &'a Element },
+}
+
+fn kappa_shape(sent: &Sentence) -> KappaShape<'_> {
+    let Some(Element::Symbol(h)) = sent.elements.first() else { return KappaShape::NotKappa };
+    if &*h.name() != KAPPA_FN {
+        return KappaShape::NotKappa;
+    }
+    if sent.elements.len() != 3 {
+        return KappaShape::Malformed;
+    }
+    let Element::Variable { id, .. } = &sent.elements[1] else { return KappaShape::Malformed };
+    KappaShape::Kappa { binder: *id, body: &sent.elements[2] }
+}
+
+/// Lift a well-formed `(KappaFn ?V body)` into `(kappa_q qb<n> <quoted
+/// body>)` under `env` (the binder gets the next bound-constant slot,
+/// exactly like a `forall_q` binder), and — when `emit` (plain term
+/// position only) — mint the per-instance comprehension units into
+/// `lctx`, capped per root.
+fn lift_kappa_term(
+    syn:    &SyntacticLayer,
+    atoms:  &AtomTable,
+    binder: SymbolId,
+    body:   &Element,
+    env:    &mut QuoteEnv,
+    lctx:   &mut LiftCtx,
+    emit:   bool,
+) -> Option<Term> {
+    let n = env.next;
+    env.next += 1;
+    env.frames.push(vec![(binder, n)]);
+    let body_t = lift_quote_el(syn, atoms, body, env, lctx);
+    env.frames.pop();
+    let body_t = body_t?;
+    let kterm = Term::App(vec![
+        Term::Sym(Symbol::from(KAPPA_CTOR)),
+        Term::Sym(quote_bound_sym(n)),
+        body_t.clone(),
+    ]);
+    if !emit {
+        return Some(kterm);
+    }
+    if lctx.kappa_n >= MAX_KAPPA_COMPREHENSIONS_PER_ROOT {
+        // Cap discipline (mirrors defCNF's per-root caps): the class
+        // term still loads, its comprehension does not — input LOSS.
+        lctx.capped = true;
+        return Some(kterm);
+    }
+    let k = lctx.kappa_n;
+    lctx.kappa_n += 1;
+
+    // The fresh instance variable ?X of `body[?V := ?X]`: deterministic
+    // per (root, kappa sequence) — same reserved-name id space (and the
+    // same 2^-64 collision argument) as `SkolemCtx::fresh_var`.
+    let iv = Symbol::hash_name(&format!("?ki{k}__{:x}", lctx.root));
+    let mut sub: HashMap<SymbolId, Term> = HashMap::new();
+    sub.insert(quote_bound_sym(n).id(), Term::Var(iv));
+    // Fresh real variables for quantifier binders unquoted along the way,
+    // numbered in traversal order — deterministic.
+    let root = lctx.root;
+    let mut fresh_n: u32 = 0;
+    let mut fresh = move || {
+        let id = Symbol::hash_name(&format!("?kq{fresh_n}_{k}__{root:x}"));
+        fresh_n += 1;
+        id
+    };
+    // Unquote ONE level: the kappa's own quote scope becomes assertion-
+    // level formula structure; quotes nested inside atoms stay quoted.
+    // `None` (a term shape the walker never produces) → treat the root
+    // like a malformed kappa: documented lossy bail, counted.
+    let Some(body_form) = unquote_form(&body_t, &mut sub, &mut fresh) else {
+        KAPPA_MALFORMED_BAILS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+
+    // PER-INSTANCE comprehension — the guardrail-compliant bridge shape:
+    // both directions for THIS kappa term only; `body_form` is a fixed
+    // formula skeleton fixed here at clausification time, never a
+    // quantified quote variable, so no general truth/unquote bridge
+    // (Montague) can arise from these units.
+    let inst_atom = Form::Atom(Term::App(vec![
+        Term::Sym(Symbol::from("instance")),
+        Term::Var(iv),
+        kterm.clone(),
+    ]));
+    lctx.units.push(Form::Implies(
+        Box::new(inst_atom.clone()), Box::new(body_form.clone())));
+    lctx.units.push(Form::Implies(
+        Box::new(body_form), Box::new(inst_atom)));
+    KAPPA_COMPREHENSIONS.fetch_add(1, Ordering::Relaxed);
+    Some(kterm)
+}
+
+/// The reverse of [`quote_ctor_name`]: which connective a reserved quote
+/// constructor symbol encodes.
+fn unquote_op(h: &Symbol) -> Option<OpKind> {
+    Some(match &*h.name() {
+        "and_q"    => OpKind::And,
+        "or_q"     => OpKind::Or,
+        "not_q"    => OpKind::Not,
+        "impl_q"   => OpKind::Implies,
+        "iff_q"    => OpKind::Iff,
+        "forall_q" => OpKind::ForAll,
+        "exists_q" => OpKind::Exists,
+        _ => return None,
+    })
+}
+
+/// THE unquote-with-substitution primitive (part B): rebuild assertion-
+/// level [`Form`] structure from a quoted term — the inverse of the quote
+/// walk (`lift_quote_sentence`), ONE quote level deep:
+///
+///   * Quote constructors at FORMULA level invert to their connectives;
+///     `forall_q`/`exists_q` rebind their `qb` bound-constants to fresh
+///     REAL variables (`fresh`, traversal order — "up to binder renaming").
+///   * Anything else is an ATOM: kept verbatim as a term with `sub`
+///     applied throughout — free-variable threading (a real variable
+///     captured at quote time threads back as itself) and the kappa-binder
+///     instantiation both happen here.  Quote constructors nested INSIDE
+///     atom arguments (a `believes`-style nested quote) therefore stay
+///     quoted — their scopes are re-canonicalized to number from `qb0`
+///     again (`renumber_nested_scopes`), which is exactly what a direct
+///     assertion of the unquoted formula would produce (quote dedup).
+///
+/// `sub` may gain entries as quantifiers are unquoted; `qb` slot numbers
+/// are unique within one quote scope (the walker's counter never reuses a
+/// slot), so entries never need scoping/restoring.  `None` = a shape the
+/// quote walker never produces (defensive; callers bail the root as
+/// lossy).
+///
+/// GUARDRAIL (Montague): this primitive is only ever invoked on the
+/// per-instance comprehension path for a SPECIFIC kappa term met at
+/// clausification time — never as a rule over quantified quote variables.
+fn unquote_form<F: FnMut() -> SymbolId>(
+    t:     &Term,
+    sub:   &mut HashMap<SymbolId, Term>,
+    fresh: &mut F,
+) -> Option<Form> {
+    if let Term::App(elems) = t {
+        if let Some(Term::Sym(h)) = elems.first() {
+            match unquote_op(h) {
+                Some(op @ (OpKind::And | OpKind::Or)) => {
+                    if elems.len() < 2 { return None; }
+                    let mut fs = Vec::with_capacity(elems.len() - 1);
+                    for e in &elems[1..] {
+                        fs.push(unquote_form(e, sub, fresh)?);
+                    }
+                    return Some(if op == OpKind::And { Form::And(fs) } else { Form::Or(fs) });
+                }
+                Some(OpKind::Not) => {
+                    if elems.len() != 2 { return None; }
+                    return Some(Form::Not(Box::new(unquote_form(&elems[1], sub, fresh)?)));
+                }
+                Some(op @ (OpKind::Implies | OpKind::Iff)) => {
+                    if elems.len() != 3 { return None; }
+                    let a = Box::new(unquote_form(&elems[1], sub, fresh)?);
+                    let b = Box::new(unquote_form(&elems[2], sub, fresh)?);
+                    return Some(if op == OpKind::Implies {
+                        Form::Implies(a, b)
+                    } else {
+                        Form::Iff(a, b)
+                    });
+                }
+                Some(op @ (OpKind::ForAll | OpKind::Exists)) => {
+                    if elems.len() != 3 { return None; }
+                    let Term::App(vl) = &elems[1] else { return None };
+                    let mut vars = Vec::with_capacity(vl.len());
+                    for b in vl {
+                        let Term::Sym(qb) = b else { return None };
+                        let v = fresh();
+                        sub.insert(qb.id(), Term::Var(v));
+                        vars.push(v);
+                    }
+                    let body = Box::new(unquote_form(&elems[2], sub, fresh)?);
+                    return Some(if op == OpKind::ForAll {
+                        Form::ForAll(vars, body)
+                    } else {
+                        Form::Exists(vars, body)
+                    });
+                }
+                Some(OpKind::Equal) | None => {} // an atom — fall through
+            }
+        }
+    }
+    // ATOM level: substitute throughout (nested quotes included — the
+    // free-variable rule), re-canonicalize nested quote scopes, and wrap
+    // bare symbols/variables exactly like `lift_subform` does.
+    let t2 = renumber_nested_scopes(&subst_qb(t, sub));
+    Some(Form::Atom(match t2 {
+        t2 @ Term::App(_) => t2,
+        other => Term::App(vec![other]),
+    }))
+}
+
+/// Replace quote bound-constants per `sub` throughout a term (nested
+/// quotes included).  The inverse-direction sibling of `subst` (which
+/// maps variables); everything else copies verbatim.
+fn subst_qb(t: &Term, sub: &HashMap<SymbolId, Term>) -> Term {
+    match t {
+        Term::Sym(s) => sub.get(&s.id()).cloned().unwrap_or_else(|| t.clone()),
+        Term::App(elems) => Term::App(elems.iter().map(|e| subst_qb(e, sub)).collect()),
+        _ => t.clone(),
+    }
+}
+
+/// `true` when the term is a quote-scope head: a quote-constructor (or
+/// `kappa_q`) application — i.e. a maximal nested quote when found in
+/// atom-argument position.
+fn is_scope_head(t: &Term) -> bool {
+    matches!(t, Term::App(es) if matches!(es.first(),
+        Some(Term::Sym(h)) if unquote_op(h).is_some() || &*h.name() == KAPPA_CTOR))
+}
+
+/// `Some(n)` when `name` is a quote bound-constant `qb<n>`.
+fn qb_slot(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix("qb")?;
+    if digits.is_empty() { return None; }
+    digits.parse::<u32>().ok()
+}
+
+/// Re-canonicalize the MAXIMAL nested quote scopes inside an unquoted
+/// atom: their binders were numbered by the ENCLOSING scope's shared
+/// counter at quote time; once the enclosing level is unquoted they are
+/// standalone scopes again and must number from `qb0` by first occurrence
+/// — byte-identical to what a direct assertion of the unquoted formula
+/// would lift to, preserving quote dedup.  (Binders of the UNQUOTED
+/// levels were already substituted away to real variables, so every `qb`
+/// remaining inside a nested scope belongs to that scope.)
+fn renumber_nested_scopes(t: &Term) -> Term {
+    match t {
+        Term::App(es) => Term::App(es.iter().map(|e| {
+            if is_scope_head(e) { renumber_scope(e) } else { renumber_nested_scopes(e) }
+        }).collect()),
+        _ => t.clone(),
+    }
+}
+
+fn renumber_scope(t: &Term) -> Term {
+    let mut order: Vec<(SymbolId, u32)> = Vec::new();
+    collect_qb_syms(t, &mut order);
+    // First-occurrence order over the scope's term equals the walker's
+    // numbering order (each quantifier's varlist precedes its body), so
+    // position i renumbers to `qb<i>`; skip already-canonical slots.
+    let map: HashMap<SymbolId, Term> = order.iter().enumerate()
+        .filter(|(i, (_, slot))| *slot != *i as u32)
+        .map(|(i, (id, _))| (*id, Term::Sym(quote_bound_sym(i as u32))))
+        .collect();
+    if map.is_empty() { t.clone() } else { subst_qb(t, &map) }
+}
+
+/// Quote bound-constants of `t` in first-occurrence order, with their
+/// current slot numbers.
+fn collect_qb_syms(t: &Term, out: &mut Vec<(SymbolId, u32)>) {
+    match t {
+        Term::Sym(s) => {
+            if let Some(slot) = qb_slot(&s.name()) {
+                if !out.iter().any(|(id, _)| *id == s.id()) {
+                    out.push((s.id(), slot));
+                }
+            }
+        }
+        Term::App(es) => {
+            for e in es {
+                collect_qb_syms(e, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+// -- Modal K-distribution schemata (native HO-parity, part A) -------------------
+//
+// SUMO's `knows`/`believes` are idealized (consequence-closed) attitudes;
+// over QUOTED contents an uninterpreted attitude relation cannot even
+// distribute over conjunction — `believes(a, and_q(p, q)) ⊢ believes(a, p)`
+// is invalid without an axiom, because `and_q(p, q)` is just a term.  The
+// K-distribution schema, stated over the quote constructor,
+//
+//   (=> (rel ?A (and_q ?P ?Q)) (and (rel ?A ?P) (rel ?A ?Q)))
+//
+// restores exactly the fragment the THF translation lane injects
+// (`trans/lower_thf.rs`'s K-axiom chip) — parity scope only: conjunction
+// distribution for `knows`/`believes`, nothing else (no D, no deductive
+// closure, no iff).
+//
+// GUARDRAIL (Montague's paradox — non-negotiable): these schemata only
+// REARRANGE quoted structure.  `?P`/`?Q` bind whole quotes and land back
+// in argument position of the SAME attitude relation; nothing is ever
+// unquoted to assertion level, so no general truth/unquote bridge over
+// quantified quote variables exists here.
+//
+// Whether to inject is decided per problem at assembly time
+// (`prove.rs`'s `modal_k_qualifying`): only when the KB's taxonomy
+// actually DECLARES the relation's argument-2 domain as `Formula` (or a
+// Formula descendant), and only when the relation occurs in the problem.
+
+/// The two K-distribution clauses for attitude relation `rel`:
+///   `¬rel(?A, and_q(?P, ?Q)) ∨ rel(?A, ?P)`
+///   `¬rel(?A, and_q(?P, ?Q)) ∨ rel(?A, ?Q)`
+/// Deterministic: fixed synthetic variable ids (hashed reserved names,
+/// same id space as `SkolemCtx::fresh_var`), canonicalized through the
+/// ordinary clause pipeline.
+pub(crate) fn modal_k_clauses(rel: &str, atoms: &AtomTable) -> Vec<PClause> {
+    let a = Term::Var(Symbol::hash_name("?A__modal_k"));
+    let p = Term::Var(Symbol::hash_name("?P__modal_k"));
+    let q = Term::Var(Symbol::hash_name("?Q__modal_k"));
+    let att = |x: Term| Term::App(vec![Term::Sym(Symbol::from(rel)), a.clone(), x]);
+    let and_q = quote_ctor_name(&OpKind::And).expect("And always has a quote ctor");
+    let conj = att(Term::App(vec![Term::Sym(Symbol::from(and_q)), p.clone(), q.clone()]));
+    let raw = vec![
+        vec![(false, conj.clone()), (true, att(p))],
+        vec![(false, conj), (true, att(q))],
+    ];
+    filter_canonicalize(raw, atoms).0
 }
 
 // -- elim / NNF ----------------------------------------------------------------
@@ -409,22 +1047,30 @@ pub(crate) fn clausify_sentence_lossy(
     root:   SentenceId,
     negate: bool,
 ) -> (Vec<PClause>, bool) {
-    let Some(lifted) = lift_form(syn, atoms, sent) else { return (Vec::new(), true) };
+    let mut lctx = LiftCtx::new(root);
+    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (Vec::new(), true) };
     let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
-    let (out, lossy) = clausify_form(f, atoms, root);
+    let units = std::mem::take(&mut lctx.units);
+    let (out, lossy) = clausify_form(f, units, atoms, root);
     if !lossy {
         // STRICTLY ADDITIVE trigger: a losslessly-clausified root takes
         // exactly the path it always took — the rescue below runs only
-        // where the primary path just recorded a capacity loss.
-        return (out, false);
+        // where the primary path just recorded a capacity loss.  (A
+        // capped kappa comprehension is loss the rescue cannot repair —
+        // the clauses themselves loaded fine, so no rescue either.)
+        return (out, lctx.capped);
     }
     // Definitional-CNF rescue.  Re-lift (the store is immutable under
-    // this call, so this reproduces the same tree the primary attempt
-    // consumed) and retry with Plaisted–Greenbaum definitions; on any
-    // rescue bail, the primary path's lossy result stands unchanged.
-    let Some(lifted) = lift_form(syn, atoms, sent) else { return (out, true) };
+    // this call, so this reproduces the same tree — and the same kappa
+    // units — the primary attempt consumed) and retry with
+    // Plaisted–Greenbaum definitions; on any rescue bail, the primary
+    // path's lossy result stands unchanged.
+    let mut lctx = LiftCtx::new(root);
+    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (out, true) };
     let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
-    defcnf_rescue(f, atoms, root).unwrap_or((out, true))
+    defcnf_rescue(f, &lctx.units, atoms, root)
+        .map(|(o, l)| (o, l || lctx.capped))
+        .unwrap_or((out, true))
 }
 
 /// Clausify the NEGATED conjunction of several stored roots — the
@@ -445,35 +1091,64 @@ pub(crate) fn clausify_negated_conjunction_lossy(
     sents: &[(std::sync::Arc<Sentence>, SentenceId)],
 ) -> (Vec<PClause>, bool) {
     let Some(root) = sents.first().map(|(_, sid)| *sid) else { return (Vec::new(), false) };
-    let lift_conj = || -> Option<Form> {
+    // Kappa comprehension units mint across ALL conjuncts into one
+    // context (they attach to the shared skolem root), and are NOT
+    // negated below: they are definitional axioms of the class terms the
+    // conjecture mentions, not part of the goal.
+    let lift_conj = |lctx: &mut LiftCtx| -> Option<Form> {
         let mut parts = Vec::with_capacity(sents.len());
         for (sent, _) in sents {
-            parts.push(lift_form(syn, atoms, sent)?);
+            parts.push(lift_form(syn, atoms, sent, lctx)?);
         }
         let conj = if parts.len() == 1 { parts.pop().unwrap() } else { Form::And(parts) };
         Some(Form::Not(Box::new(conj)))
     };
-    let Some(f) = lift_conj() else { return (Vec::new(), true) };
-    let (out, lossy) = clausify_form(f, atoms, root);
+    let mut lctx = LiftCtx::new(root);
+    let Some(f) = lift_conj(&mut lctx) else { return (Vec::new(), true) };
+    let units = std::mem::take(&mut lctx.units);
+    let (out, lossy) = clausify_form(f, units, atoms, root);
     if !lossy {
-        return (out, false);
+        return (out, lctx.capped);
     }
     // Same rescue as `clausify_sentence_lossy` — a lift failure was
     // already returned above, so a lossy result here is a capacity loss
     // the definitional path may be able to repair.
-    let Some(f) = lift_conj() else { return (out, true) };
-    defcnf_rescue(f, atoms, root).unwrap_or((out, true))
+    let mut lctx = LiftCtx::new(root);
+    let Some(f) = lift_conj(&mut lctx) else { return (out, true) };
+    defcnf_rescue(f, &lctx.units, atoms, root)
+        .map(|(o, l)| (o, l || lctx.capped))
+        .unwrap_or((out, true))
 }
 
 /// The shared pipeline below the negation decision: NNF, universal
 /// closure of free variables, skolemization, distribution, dedup.
 /// The second return is the LOSS flag (see [`clausify_sentence_lossy`]).
-fn clausify_form(f: Form, atoms: &AtomTable, root: SentenceId) -> (Vec<PClause>, bool) {
+///
+/// `kunits` are the KappaFn comprehension units minted while lifting
+/// this root: lowered under the SAME per-root skolem context, in mint
+/// order after the main formula (the defCNF auxiliary-clause pattern —
+/// deterministic order ⇒ deterministic names).  A unit that blows the
+/// distribution cap drops ALONE, recorded as loss; the main formula's
+/// blow-up still fails the whole root (rescue path).
+fn clausify_form(
+    f:      Form,
+    kunits: Vec<Form>,
+    atoms:  &AtomTable,
+    root:   SentenceId,
+) -> (Vec<PClause>, bool) {
     let mut ctx = SkolemCtx { root, fresh_n: 0, sk_n: 0 };
-    let Some(raw) = lower_form(f, &mut ctx, MAX_CLAUSES_PER_FORMULA) else {
+    let Some(mut raw) = lower_form(f, &mut ctx, MAX_CLAUSES_PER_FORMULA) else {
         return (Vec::new(), true);
     };
-    filter_canonicalize(raw, atoms)
+    let mut lossy = false;
+    for u in kunits {
+        match lower_form(u, &mut ctx, MAX_CLAUSES_PER_FORMULA) {
+            Some(r) => raw.extend(r),
+            None    => lossy = true,
+        }
+    }
+    let (out, l2) = filter_canonicalize(raw, atoms);
+    (out, lossy || l2)
 }
 
 /// NNF, implicit universal closure of free variables, skolemization
@@ -1046,7 +1721,19 @@ fn fix_multiplicative(
 /// the rescue-path distribution cap) — the caller keeps the primary
 /// path's lossy result, so this path is strictly additive: it can only
 /// turn a lossy load into a lossless one, never perturb a lossless load.
-fn defcnf_rescue(f: Form, atoms: &AtomTable, root: SentenceId) -> Option<(Vec<PClause>, bool)> {
+///
+/// `kunits` (KappaFn comprehension units, re-minted by the caller's
+/// re-lift) are lowered with the PRIMARY-path caps and filtered
+/// separately at the end: their capacity losses are honest input loss —
+/// they would have failed the primary path identically — not estimator
+/// defects, so they ride the returned LOSS flag instead of tripping the
+/// rescue-width assert.
+fn defcnf_rescue(
+    f:      Form,
+    kunits: &[Form],
+    atoms:  &AtomTable,
+    root:   SentenceId,
+) -> Option<(Vec<PClause>, bool)> {
     let mut dc = DefCtx::new(root);
     let mut path = Vec::new();
     let main = pg(f, Pol::Pos, RESCUE_BUDGET, &mut path, &mut dc)?;
@@ -1055,14 +1742,14 @@ fn defcnf_rescue(f: Form, atoms: &AtomTable, root: SentenceId) -> Option<(Vec<PC
     // One skolem context across every unit: distinct existentials in
     // distinct units must never share a skolem symbol.  Unit order is
     // deterministic (main first, then definitions in introduction
-    // order), so the names are too.
+    // order, then kappa units in mint order), so the names are too.
     let mut ctx = SkolemCtx { root, fresh_n: 0, sk_n: 0 };
     let mut raw = lower_form(main, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?;
     for unit in dc.units {
         raw.extend(lower_form(unit, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?);
     }
 
-    let (out, lossy) = filter_canonicalize(raw, atoms);
+    let (mut out, lossy) = filter_canonicalize(raw, atoms);
     if lossy {
         // The estimator guarantees width ≤ MAX_LITS_PER_CLAUSE; reaching
         // this means an estimator defect — fall back to the honest lossy
@@ -1070,7 +1757,19 @@ fn defcnf_rescue(f: Form, atoms: &AtomTable, root: SentenceId) -> Option<(Vec<PC
         debug_assert!(false, "defcnf rescue produced an over-cap clause");
         return None;
     }
+
+    let mut klossy = false;
+    let mut kraw = Vec::new();
+    for u in kunits {
+        match lower_form(u.clone(), &mut ctx, MAX_CLAUSES_PER_FORMULA) {
+            Some(r) => kraw.extend(r),
+            None    => klossy = true,
+        }
+    }
+    let (kout, kl2) = filter_canonicalize(kraw, atoms);
+    out.extend(kout);
+
     DEFCNF_ROOTS_RESCUED.fetch_add(1, Ordering::Relaxed);
     DEFCNF_DEFINITIONS_INTRODUCED.fetch_add(dc.n_defs, Ordering::Relaxed);
-    Some((out, false))
+    Some((out, klossy || kl2))
 }

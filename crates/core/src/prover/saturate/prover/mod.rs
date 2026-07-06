@@ -2380,6 +2380,46 @@ impl<'a> NativeProver<'a> {
         }
     }
 
+    /// Add SYNTHESIZED axiom clauses (problem-assembly injection — the
+    /// modal K-distribution schemata) as BACKGROUND inputs: exactly
+    /// [`Self::add_background_root`]'s indexing discipline, minus the
+    /// root bookkeeping — there is no stored root, so the clauses cite
+    /// `rule` in proofs (like `subrel_schema`) instead of a source
+    /// formula.  Called AFTER any frozen-background snapshot is taken /
+    /// rehydrated (see prove.rs), so snapshots never contain injected
+    /// clauses and rehydration can never silently drop them.
+    pub(crate) fn add_injected_clauses(
+        &mut self,
+        clauses: &[super::clause::PClause],
+        rule:    &'static str,
+    ) {
+        for pc in clauses {
+            let Some(terms) = self.pclause_terms(pc) else { continue };
+            if let Some(id) = self.make(terms, vec![], rule, BACKGROUND, None, false) {
+                let key = self.clauses[id as usize].key;
+                if self.clauses[id as usize].lits.len() > self.input_width_cap() {
+                    self.stats.discarded_long += 1;
+                    continue;
+                }
+                if self.seen_insert(key, id) {
+                    // Same regime split as `add_background_root`: under
+                    // full saturation the injected axioms compete for
+                    // given selection too; classic set-of-support only
+                    // indexes them as passive partners.
+                    if self.opts.strategy.full_saturation {
+                        let (w, n) = (self.clauses[id as usize].weight, self.seq);
+                        self.seq += 1;
+                        let lits = self.clauses[id as usize].lits.clone();
+                        let g = self.guide_score(&lits);
+                        self.h_weight.push(Reverse((w, g, n, id)));
+                        self.h_age.push(Reverse((n, id)));
+                    }
+                    self.activate(id);
+                }
+            }
+        }
+    }
+
     /// Add a stored root's clauses as SUPPORT (problem hypotheses):
     /// rules into the passive queue, units activated + seeded.
     pub(crate) fn add_support_root(&mut self, root: SentenceId) {

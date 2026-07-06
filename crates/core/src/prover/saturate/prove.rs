@@ -376,6 +376,17 @@ impl ProverLayer {
             .map(|s| Scope::Session(session_id(s)))
             .unwrap_or(Scope::Base);
 
+        // Modal K-distribution injection (native HO-parity, part A): which
+        // attitude relations qualify for THIS problem.  Decided here (needs
+        // the final sorted selection + the scope); the clauses themselves
+        // load after snapshot freeze/rehydrate below, so frozen background
+        // bases never contain them.
+        let modal_k_rels: Vec<&'static str> = if opts.strategy.modal_k {
+            self.modal_k_qualifying(scope, &selected, &seed)
+        } else {
+            Vec::new()
+        };
+
         let input_gen = t0.elapsed();
         let t1 = Instant::now();
         let opts_profile = opts.profile;
@@ -595,6 +606,17 @@ impl ProverLayer {
             }
             {
                 profile_span!(ctx, "ask.load_support_conjecture");
+                // Part-A injection: K-distribution schemata for the
+                // qualifying attitude relations.  GUARDRAIL (Montague):
+                // these axioms only REARRANGE quoted structure — ?P/?Q
+                // stay in argument position under the same attitude
+                // relation; nothing is ever unquoted, so no general
+                // truth/unquote bridge over quotes is introduced here.
+                // See `clausify::modal_k_clauses`.
+                for rel in &modal_k_rels {
+                    let cls = super::clausify::modal_k_clauses(rel, &self.atoms);
+                    prover.add_injected_clauses(&cls, "modal_k");
+                }
                 for sid in &session_sids {
                     prover.add_support_root(*sid);
                 }
@@ -913,6 +935,17 @@ impl ProverLayer {
                          {defcnf_roots} roots_rescued"));
                 }
             }
+            // KappaFn comprehension line only when a kappa term was
+            // actually met (process-cumulative, like defcnf above):
+            // kappa-free problems keep byte-identical SIGMA_STATS output.
+            {
+                let (kappa_comp, kappa_bails) = super::clausify::kappa_counters();
+                if kappa_comp > 0 || kappa_bails > 0 {
+                    raw.push_str(&format!(
+                        "\nkappa: {kappa_comp} comprehensions_emitted, \
+                         {kappa_bails} malformed_bails"));
+                }
+            }
             // Verified-dedup collision line only when one actually
             // occurred (expected ~never): default-path SIGMA_STATS
             // output stays byte-identical.
@@ -1004,6 +1037,56 @@ impl ProverLayer {
                             sent.elements.first(), Some(Element::Op(OpKind::Equal))))
             })
         })
+    }
+
+    /// Part-A injection guard: the attitude relations qualifying for
+    /// modal K-distribution on THIS problem — exactly `knows`/`believes`
+    /// (THF-lane parity scope), and only when
+    ///
+    ///   (a) the KB's taxonomy DECLARES the relation's argument-2 domain
+    ///       as `Formula` (or a Formula descendant) — the computed-
+    ///       declaration guard the THF chip's `ho_signatures` cache
+    ///       encodes but the THF assembler's injection skips (a filed
+    ///       bug: it keys on the declared NAME only); here the domain
+    ///       check is enforced from day one — and
+    ///   (b) the relation actually occurs in the selected axioms /
+    ///       conjecture / session seed, so unrelated problems carry no
+    ///       dead weight.
+    ///
+    /// `selected` must be sorted (binary search).
+    fn modal_k_qualifying(
+        &self,
+        scope:    Scope,
+        selected: &[SentenceId],
+        seed:     &HashSet<SymbolId>,
+    ) -> Vec<&'static str> {
+        use crate::semantics::types::RelationDomain;
+        let syn = &self.semantic.syntactic;
+        let Some(formula) = syn.sym_id("Formula") else { return Vec::new() };
+        let mut out = Vec::new();
+        for rel in ["knows", "believes"] {
+            let Some(sym) = syn.sym_id(rel) else { continue };
+            // (a) declared Formula domain at argument 2.
+            let arg2_is_formula = matches!(
+                self.semantic.domain_scoped(sym, scope).get(1),
+                Some(RelationDomain::Domain(cls))
+                    if *cls == formula
+                        || self.semantic.has_ancestor_scoped(*cls, formula, scope));
+            if !arg2_is_formula {
+                continue;
+            }
+            // (b) occurrence in the problem.
+            let occurs = seed.contains(&sym)
+                || syn.sine_current(|idx| {
+                    idx.axioms_of_symbol(sym)
+                        .iter()
+                        .any(|&(_, aid)| selected.binary_search(&aid).is_ok())
+                });
+            if occurs {
+                out.push(rel);
+            }
+        }
+        out
     }
 
     /// Polarity-aware definitional completion of a selection.  A predicate in a
