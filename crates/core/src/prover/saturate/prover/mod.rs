@@ -649,6 +649,15 @@ pub(crate) struct NativeProver<'a> {
     /// Set once the guide-model build has been attempted (regardless of
     /// outcome) — guards against rebuilding on every `push` / `make`.
     guide_attempted: bool,
+    /// This run's wall-clock deadline, set at the top of [`Self::run`]
+    /// (same anchor as the loop-top check).  Generation stages poll it
+    /// via [`Self::out_of_time`] so ONE given clause's inference burst
+    /// cannot overrun the budget between loop-top checks — a mega-term
+    /// clause (SWV536-1.010: a single 354K-position ground literal)
+    /// otherwise spends minutes inside a single `superposition_inferences`
+    /// call, every `superpose` attempt deep-cloning the whole clause.
+    /// `None` = unbounded (no time limit, or interactive step mode).
+    run_deadline: Option<Instant>,
     pub(crate) stats: ProverStats,
 }
 
@@ -708,6 +717,7 @@ impl<'a> NativeProver<'a> {
             tick: 0,
             guide_model: None,
             guide_attempted: false,
+            run_deadline: None,
             stats: ProverStats::default(),
         }
     }
@@ -2132,6 +2142,17 @@ impl<'a> NativeProver<'a> {
         }
     }
 
+    /// `true` once this run's wall-clock budget is spent or the caller's
+    /// cancel flag is raised (see `run_deadline`).  Polled inside the
+    /// generation stages: the loop-top deadline check alone cannot bound
+    /// a single iteration, and one mega-clause iteration can otherwise
+    /// run minutes past the budget.
+    #[inline]
+    fn out_of_time(&self) -> bool {
+        self.opts.cancelled()
+            || self.run_deadline.is_some_and(|d| Instant::now() >= d)
+    }
+
     /// One ordered-superposition inference: rewrite clause `t_cid`'s
     /// literal `t_li` at the non-variable subterm position `t_path`
     /// using equation clause `e_cid`'s maximal positive equality at
@@ -2291,6 +2312,15 @@ impl<'a> NativeProver<'a> {
             if li >= 64 || (g_max >> li) & 1 == 0 { continue; }
             for (path, _sub) in positions(atom) {
                 for &(e_cid, e_li) in &eqns {
+                    // Wall-clock poll per attempt: each `superpose` deep-
+                    // clones the target clause, so a mega-term clause makes
+                    // this loop the budget's blind spot.  Truncation is
+                    // counted as `gen_capped` (same completeness semantics:
+                    // inferences were never made).
+                    if self.out_of_time() {
+                        self.stats.gen_capped += 1;
+                        return None;
+                    }
                     let made = self.superpose(e_cid, e_li as usize, given, li, &path);
                     if let Some(cid) = made {
                         if self.clauses[cid as usize].lits.is_empty() {
@@ -2320,6 +2350,12 @@ impl<'a> NativeProver<'a> {
             for tp in targets {
                 if self.is_retired(tp.clause) {
                     continue; // superseded by its backward-demod replacement
+                }
+                // Same wall-clock poll as the "into" direction: a mega-term
+                // ACTIVE clause makes every rewrite of it just as unbounded.
+                if self.out_of_time() {
+                    self.stats.gen_capped += 1;
+                    return None;
                 }
                 let path: Vec<usize> = tp.path.iter().map(|&p| p as usize).collect();
                 let made = self.superpose(given, li, tp.clause, tp.lit as usize, &path);
@@ -2485,6 +2521,14 @@ impl<'a> NativeProver<'a> {
 
     /// Binary resolution on complementary eligible literals.
     fn resolve(&mut self, given: u32, gi: usize, partner: u32, pi: usize) -> Option<u32> {
+        // Wall-clock poll: the candidate loops in `run` call this once per
+        // partner, and a single attempt against a mega-term clause is a
+        // whole-clause unify walk — past the deadline each remaining
+        // candidate must degrade to this cheap bail (the loop-top check
+        // then reports TimedOut before anything is popped).
+        if self.out_of_time() {
+            return None;
+        }
         // Algebraic fast path: when the partner is a ground unit fact and
         // the given literal's open seats are simple variables, the
         // bindings decode straight out of the two atoms' power-sum
@@ -3046,6 +3090,7 @@ impl<'a> NativeProver<'a> {
         };
         let equals = self.units.equals.clone();
         let mut n = 0;
+        let mut polls = 0u32;
         for (eq_cid, l, r) in &equals {
             if matches!(l, Term::Var(_)) { continue; }
             if self.is_retired(*eq_cid) { continue; }
@@ -3058,6 +3103,14 @@ impl<'a> NativeProver<'a> {
             let max_slot = eq_slots.iter().max().copied().unwrap_or(off);
             for (li, (_, atom)) in terms.iter().enumerate() {
                 for (path, sub) in positions(atom) {
+                    // Failing unifies never tick `n`, so `para_cap` alone
+                    // does not bound this walk over a mega-term clause —
+                    // poll the wall clock every 64 positions.
+                    polls += 1;
+                    if polls & 63 == 0 && self.out_of_time() {
+                        self.stats.gen_capped += 1;
+                        return None;
+                    }
                     let mut s: Subst = vec![None; (max_slot + 1) as usize];
                     if !unify(&l2, &sub, &mut s) { continue; }
                     let lits: Vec<(bool, Term)> = terms
@@ -3226,6 +3279,8 @@ impl<'a> NativeProver<'a> {
         // `resolve`/`superpose` too and needs materialized results.
         self.defer_active = self.opts.strategy.deferred_passive;
         let t0 = Instant::now();
+        self.run_deadline = (!self.opts.step && self.opts.time_limit_secs > 0)
+            .then(|| t0 + std::time::Duration::from_secs(self.opts.time_limit_secs));
         let mut steps = 0usize;
         while steps < self.opts.max_steps {
             // In interactive single-step mode the wall clock is meaningless
@@ -3334,6 +3389,15 @@ impl<'a> NativeProver<'a> {
                 }
             }
             if let Some(t) = t_mech { self.stats.t_paramod += t.elapsed(); }
+
+            // A mega-clause iteration can spend the whole remaining budget
+            // inside one generation stage; the loop-top check alone would
+            // let the rest of this iteration (resolution, activation) run
+            // long past the deadline.  Re-check at the stage boundary so
+            // the budget stays a hard ceiling.
+            if self.out_of_time() {
+                return (RunVerdict::TimedOut, steps);
+            }
 
             // Equality factoring: the completeness corner that lets two
             // positive equality literals merge (`s≈t ∨ s≈t'` ⇒ the
@@ -3554,6 +3618,13 @@ impl<'a> NativeProver<'a> {
                 }
             }
             if let Some(t) = t_mech { self.stats.t_resolve += t.elapsed(); }
+            // Activation indexes every subterm position of the given
+            // clause (superposition targets) — seconds of work for a
+            // mega-term clause, and pointless once the budget is spent:
+            // the arena is abandoned on TimedOut.
+            if self.out_of_time() {
+                return (RunVerdict::TimedOut, steps);
+            }
             self.activate(given);
         }
         (RunVerdict::StepsExhausted, steps)
