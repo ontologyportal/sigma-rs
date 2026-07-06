@@ -240,10 +240,12 @@ impl<'a> NativeProver<'a> {
                                 }
                             }
                         }
-                        // Join against active positive units via the index.
+                        // Join against active positive units via the index
+                        // (unifiability relation — the join binds both sides).
                         let qa = self.layer.atoms.intern_atom(&a);
                         let q_info = self.layer.atom_info(qa);
-                        let cands = self.idx.probe(true, &q_info, &src);
+                        let cands = self.idx.probe_rel(
+                            true, &q_info, &src, super::super::index::SeatRel::Unifiable);
                         let mut branch = 0usize;
                         for cand in cands {
                             let uc = &self.clauses[cand.clause as usize];

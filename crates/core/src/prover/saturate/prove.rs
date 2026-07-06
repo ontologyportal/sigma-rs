@@ -789,11 +789,38 @@ impl ProverLayer {
             if prover.opts.strategy.bwd_demod {
                 raw.push_str(&format!(
                     "\nbwd-demod: {} triggered, {} clauses_rewritten, {} retired, \
-                     {} cap_hits",
+                     {} cap_hits, {} term_rewrites; postings: {} queries, \
+                     {} hits, {} bucket_scanned, {} compactions",
                     prover.stats.bwd_demod_triggered,
                     prover.stats.bwd_demod_clauses_rewritten,
                     prover.stats.bwd_demod_retired,
-                    prover.stats.bwd_demod_cap_hits));
+                    prover.stats.bwd_demod_cap_hits,
+                    prover.stats.bwd_demod_term_rewrites,
+                    prover.stats.bwd_postings_queries,
+                    prover.stats.bwd_postings_hits,
+                    prover.stats.bwd_bucket_scanned,
+                    prover.stats.bwd_postings_compactions));
+                // Phase-2 decode chain, its OWN line, printed ONLY when
+                // `Strategy.subterm_rows` is on (the same convention as
+                // the subs-ej sub-line under subs_join): off (the
+                // default) the chain never runs, so the line is
+                // suppressed and the default-path SIGMA_STATS output
+                // stays byte-identical to a frozen build modulo this
+                // dropped line.  A pure counter line — byte-identity
+                // diffs drop it; the bwd-demod line above stays
+                // byte-identical across the phase.
+                if prover.opts.strategy.subterm_rows {
+                    raw.push_str(&format!(
+                        "\nbwd-decode: {} swept, {} rej_surplus, {} rej_probe, \
+                         {} rej_binding, {} fallbacks, {} trivial, {} verify_calls",
+                        prover.stats.bwd_decode_swept,
+                        prover.stats.bwd_decode_rej_surplus,
+                        prover.stats.bwd_decode_rej_probe,
+                        prover.stats.bwd_decode_rej_binding,
+                        prover.stats.bwd_decode_fallbacks,
+                        prover.stats.bwd_decode_trivial,
+                        prover.stats.bwd_verify_calls));
+                }
             }
             // Rigid-conflict (EGD inconsistency) line only when one occurred:
             // default-path SIGMA_STATS output stays byte-identical.
@@ -819,6 +846,23 @@ impl ProverLayer {
                     prover.stats.subs_rejected_by_keq,
                     prover.stats.keq_pair_tests,
                     prover.stats.subs_full_checks));
+                // Phase-2b equality-join channel, its OWN line (a pure
+                // counter line — byte-identity diffs drop it; the
+                // subs-fvi line above keeps its exact format, with only
+                // `full_checks` legitimately moving when the channel
+                // diverts rejections ahead of the exact check).
+                if prover.opts.strategy.subs_join {
+                    raw.push_str(&format!(
+                        "\nsubs-ej: {} candidates, {} pairs_decoded, \
+                         {} rej_no_partner, {} rej_join, {} skipped_unusable, \
+                         {} full_checks_saved",
+                        prover.stats.ej_candidates,
+                        prover.stats.ej_pairs_decoded,
+                        prover.stats.ej_rej_no_partner,
+                        prover.stats.ej_rej_join,
+                        prover.stats.ej_skipped_unusable,
+                        prover.stats.ej_full_checks_saved));
+                }
             }
             // Decode fast-path cause profile (Step-2; always printed —
             // the ONE new line in a SIGMA_STATS capture diff.  All-zero

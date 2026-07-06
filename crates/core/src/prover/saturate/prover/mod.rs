@@ -39,9 +39,12 @@ use super::unify::{apply, apply_off, match_one_way, shift_slots, slot_atom, unif
 use super::units::UnitStores;
 
 mod discharge;
+mod ej;
 mod forward;
 mod fvi;
 mod make;
+mod postings;
+mod rows;
 mod schema_apply;
 mod snapshot;
 mod stats;
@@ -369,6 +372,21 @@ pub(crate) struct NativeProver<'a> {
     /// Reusable buffers for the exact subsumption check
     /// (`clause_subsumes_in`) — see [`SubsScratch`].
     subs_scratch: SubsScratch,
+    /// Lazily compiled per-clause literal decode plans for the
+    /// subsumption equality-join channel (`Strategy.subs_join`; see
+    /// `ej.rs`).  Indexed by clause id in arena order; `None` until the
+    /// clause FIRST survives to the ej stage of a `forward_subsumed`
+    /// probe — most clauses never do, so compiling lazily (instead of
+    /// at accept, as 2a registered rows) avoids the flagged 2a
+    /// registration tax.  Compiled once, reused forever (clause terms
+    /// are immutable; retirement never invalidates content).
+    ej_plans: Vec<Option<Box<ej::ClausePlans>>>,
+    /// Reusable scratch for the equality-join channel: the new
+    /// clause's transient subterm row table (built at most once per
+    /// `forward_subsumed` call, by the first candidate reaching the ej
+    /// stage), the decode binding table + trail, and the per-variable
+    /// possibility sets.
+    ej_scratch: ej::EjScratch,
     /// Rule-mined antisymmetric / irreflexive relations and inverse
     /// pairs (schema channel) — recognized and recorded; runtime
     /// consumers land separately (antisymmetry → pending equalities,
@@ -395,15 +413,32 @@ pub(crate) struct NativeProver<'a> {
     /// hydration rebuilds it from the arena like the superposition
     /// indexes.
     demods: super::units::DemodIndex,
-    /// Backward-demodulation reverse index: subterm head key → ids of
-    /// clauses that contain a node with that head shape (i.e. the only
-    /// clauses that could hold an `l`-redex for a demodulator whose left
-    /// side carries that key).  Maintained per made clause ONLY while
+    /// Backward-demodulation subterm-occurrence postings
+    /// ([`postings::SubtermPostings`]): exact ground-key postings plus
+    /// (head, len) buckets over every rewritable subterm occurrence of
+    /// every arena clause.  Maintained per made clause ONLY while
     /// `Strategy.bwd_demod` is on (empty and cost-free otherwise);
-    /// entries are never pruned — stale ids (retired / superseded
-    /// clauses) are tolerated and re-checked by the pass.  Rebuilt from
-    /// the arena on snapshot hydrate, like the other derived indexes.
-    bwd_index: Map64<u64, Vec<u32>>,
+    /// retirement is lazy (queries re-check `ClauseRec.retired`) with
+    /// counter-driven compaction.  Rebuilt from the arena on snapshot
+    /// hydrate, like the other derived indexes.  The phase-2a k-channel
+    /// ROWS inside it (content-keyed row table + per-bucket row column)
+    /// are populated only when `Strategy.subterm_rows` is ALSO on — off
+    /// (the default) the postings are identical but the ~2%
+    /// row-registration tax is skipped and the decode chain that would
+    /// read the rows never runs.
+    bwd_postings: postings::SubtermPostings,
+    /// Reusable candidate-clause buffer for the backward-demod pass
+    /// (zero per-query allocation once warm).
+    bwd_cand_scratch: Vec<u32>,
+    /// Reusable compiled decode plan for the backward-demod pass (the
+    /// phase-2 k-channel chain, [`rows::PatternPlan`]) — compiled once
+    /// per open-lhs pass; node storage amortizes across queries.
+    bwd_plan: rows::PatternPlan,
+    /// Reusable decode binding table (pattern slot → decoded key) plus
+    /// its rollback trail.  Cleared per CANDIDATE via the trail —
+    /// decoded blank keys are never joined across candidate clauses.
+    bwd_bind_scratch: Vec<Option<u64>>,
+    bwd_bind_trail: Vec<u32>,
     /// Normal-form memo (the ground-term identity Part-4 core): for a
     /// GROUND maximal subtree keyed by content hash, the recorded demod
     /// outcome at a given demodulator generation — unchanged (skip the
@@ -465,6 +500,8 @@ impl<'a> NativeProver<'a> {
             match_trail: Vec::new(),
             demod_scratch: MatchScratch::default(),
             subs_scratch: SubsScratch::default(),
+            ej_plans: Vec::new(),
+            ej_scratch: ej::EjScratch::default(),
             antisym_mined: Map64::default(),
             irrefl_mined: Map64::default(),
             inverse_mined: Vec::new(),
@@ -472,7 +509,11 @@ impl<'a> NativeProver<'a> {
             sym_swap_memo: Map64::default(),
             conj_sig: 0,
             demods: super::units::DemodIndex::default(),
-            bwd_index: Map64::default(),
+            bwd_postings: postings::SubtermPostings::default(),
+            bwd_cand_scratch: Vec::new(),
+            bwd_plan: rows::PatternPlan::default(),
+            bwd_bind_scratch: Vec::new(),
+            bwd_bind_trail: Vec::new(),
             nf_memo: Map64::default(),
             seq: 0,
             tick: 0,
@@ -525,10 +566,10 @@ impl<'a> NativeProver<'a> {
         // Same for the demodulator index: orientation depends on THIS
         // run's KBO (`prec_seed`), which the snapshot key excludes.
         p.rebuild_demod_index();
-        // And the backward-demodulation reverse index (maintained at
-        // `make` time, which the hydrated clauses never went through).
+        // And the backward-demodulation postings (maintained at `make`
+        // time, which the hydrated clauses never went through).
         if p.opts.strategy.bwd_demod {
-            p.rebuild_bwd_index();
+            p.rebuild_bwd_postings();
         }
         p
     }
@@ -976,6 +1017,13 @@ impl<'a> NativeProver<'a> {
         if !self.opts.strategy.subsumption || lits.is_empty() {
             return None;
         }
+        if self.opts.strategy.subs_join {
+            // The equality-join channel's transient row table (the new
+            // clause's subterm rows) is call-scoped: mark it stale
+            // here; the FIRST candidate reaching the ej stage rebuilds
+            // it, later candidates of this probe reuse it (see ej.rs).
+            self.ej_scratch.mark_stale();
+        }
         let layer = self.layer;
         let src = move |a| layer.atom_info(a);
         // TRANSIENT query-side atom infos, computed from the slot terms
@@ -1004,7 +1052,12 @@ impl<'a> NativeProver<'a> {
         }
         let mut cand: Set64<u32> = Set64::default();
         for (l, info) in lits.iter().zip(&tinfos) {
-            for at in self.idx.probe(l.pos, info, &src) {
+            // MatchStored: the stored literal is the (candidate
+            // subsumer's) PATTERN; if C subsumes D, every C-literal
+            // one-way matches some D-literal, so C still surfaces on
+            // that literal's probe — the direction-strict seat filter
+            // only drops candidates the exact matcher would refuse.
+            for at in self.idx.probe_rel(l.pos, info, &src, super::index::SeatRel::MatchStored) {
                 cand.insert(at.clause);
             }
         }
@@ -1141,7 +1194,19 @@ impl<'a> NativeProver<'a> {
                 );
                 continue;
             }
+            // Channel: cross-literal equality join on the phase-2a
+            // channel rows (`Strategy.subs_join`; see `ej.rs`) —
+            // strictly between keq and the exact check.  A `true` here
+            // is a sound rejection (necessary-condition machinery,
+            // twin-verified against the reference matcher in
+            // debug/test builds); `false` says nothing.
+            if self.opts.strategy.subs_join
+                && self.ej_reject(cid, lits, &tinfos, terms, &c_infos)
+            {
+                continue;
+            }
             self.stats.subs_full_checks += 1;
+            let c = &self.clauses[cid as usize];
             let hit = clause_subsumes_in(&c.terms, terms, &mut self.subs_scratch);
             #[cfg(any(test, debug_assertions))]
             debug_assert_eq!(
@@ -1154,6 +1219,47 @@ impl<'a> NativeProver<'a> {
             }
         }
         None
+    }
+
+    /// The equality-join prefilter for ONE candidate subsumer (see
+    /// `ej.rs`): lazily compiles + memoizes the candidate's per-literal
+    /// decode plans, lazily builds the new clause's transient row
+    /// table (at most once per `forward_subsumed` call), and runs the
+    /// zero-partner + per-variable semi-join rules.  `true` = REJECT —
+    /// the exact check would have failed (twin-verified in debug/test
+    /// builds at every rejection site).
+    fn ej_reject(
+        &mut self,
+        cid: u32,
+        d_lits: &[PLit],
+        d_infos: &[AtomInfo],
+        d_terms: &[(bool, Term)],
+        c_infos: &[std::sync::Arc<AtomInfo>],
+    ) -> bool {
+        if self.ej_plans.len() < self.clauses.len() {
+            self.ej_plans.resize_with(self.clauses.len(), || None);
+        }
+        if self.ej_plans[cid as usize].is_none() {
+            let plans = ej::compile_clause_plans(
+                &self.clauses[cid as usize].terms,
+                &self.layer.term_facts,
+                self.kbo(),
+            );
+            self.ej_plans[cid as usize] = Some(Box::new(plans));
+        }
+        let plans = self.ej_plans[cid as usize].as_deref().expect("compiled above");
+        let c = &self.clauses[cid as usize];
+        ej::filter(
+            plans,
+            &c.lits,
+            c_infos,
+            &c.terms,
+            d_lits,
+            d_infos,
+            d_terms,
+            &mut self.ej_scratch,
+            &mut self.stats,
+        )
     }
 
     /// The argument-swapped form of a symmetric-relation literal, with
@@ -3051,10 +3157,7 @@ fn keq_unpartnered(
         let mut partnered = false;
         for (dl, dinfo) in d_lits.iter().zip(d_infos) {
             *pair_tests += 1;
-            if dl.pos == cl.pos
-                && dinfo.arity == cinfo.arity
-                && dinfo.residue_under(cinfo.mask) == cinfo.base_residue
-            {
+            if keq_lit_compatible(cl, cinfo, dl, dinfo) {
                 partnered = true;
                 break;
             }
@@ -3064,6 +3167,24 @@ fn keq_unpartnered(
         }
     }
     false
+}
+
+/// One (C-literal, D-literal) Key-Equation compatibility test — the
+/// per-pair NECESSARY condition for `cσ = d` that [`keq_unpartnered`]
+/// counts partners with (see its docs for the full soundness
+/// argument).  The seat-shape conjunct is the phase-0
+/// matching-direction strengthening: `cσ = d` also forces every rigid
+/// seat CLASS of `c` onto `d` (a masked-but-concrete-headed seat keeps
+/// its head and length under σ; a bare-variable `d` seat can never be
+/// a rigid `c` seat's image) — see `AtomInfo::seats_match_onto`.
+/// Shared verbatim by the equality-join channel's partner enumeration
+/// (`ej::filter`) so the two chains can never drift.
+#[inline]
+fn keq_lit_compatible(cl: &PLit, cinfo: &AtomInfo, dl: &PLit, dinfo: &AtomInfo) -> bool {
+    dl.pos == cl.pos
+        && dinfo.arity == cinfo.arity
+        && dinfo.residue_under(cinfo.mask) == cinfo.base_residue
+        && cinfo.seats_match_onto(dinfo)
 }
 
 fn clause_subsumes(sub: &[(bool, Term)], sup: &[(bool, Term)]) -> bool {

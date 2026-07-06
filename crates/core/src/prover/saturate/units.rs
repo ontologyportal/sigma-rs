@@ -197,6 +197,17 @@ impl UnitStores {
     /// the whole group; leaf coins at the remaining closed seats form
     /// the residue key (one hash probe); a target COMPOUND under a
     /// closed seat degrades that group to a scan (match verifies).
+    ///
+    /// PHASE-0 AUDIT NOTE (item 2): this path already applies the
+    /// ASYMMETRIC matching-direction table — shape coins on the
+    /// pattern side (`shaped` seats demand an exactly-shaped target
+    /// compound), target `SeatK::Var` killing groups whose pattern
+    /// seat is closed.  Remaining known slack, deliberately left for a
+    /// measured pass: a target COMPOUND under a pattern-CLOSED seat
+    /// falls back to a whole-group scan (`scan_all`), though a ground
+    /// target compound could residue-key on its content coin and an
+    /// OPEN target compound refutes every closed pattern seat
+    /// outright (one-way matching never binds target variables).
     pub(crate) fn open_candidates(
         &self,
         pos:   bool,

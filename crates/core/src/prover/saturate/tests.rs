@@ -667,6 +667,103 @@ fn key_equation_holds_for_matching_atoms() {
     assert_ne!(fc_info.residue_under(p_info.mask), p_info.base_residue);
 }
 
+// Phase-0 seat-shape channel: the A/B class distinction the plain mask
+// collapses.  `(p (f ?X))` vs `(p (g a))` passes the union-mask residue
+// (the open seat vanishes on both sides) but is not unifiable — the
+// shape words catch the rigid-head clash; a bare variable (Schulz's A
+// class) stays a true wildcard.
+#[test]
+fn seat_shapes_distinguish_bare_var_from_open_compound() {
+    use super::clause::Term;
+    use super::term_atom_info;
+    use crate::types::Symbol;
+
+    let s = |n: &str| Term::Sym(Symbol::from(n));
+    let app = |v: Vec<Term>| Term::App(v);
+
+    let p_fx = term_atom_info(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
+    let p_ga = term_atom_info(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
+    let p_fa = term_atom_info(&app(vec![s("p"), app(vec![s("f"), s("a")])]));
+    let p_y  = term_atom_info(&app(vec![s("p"), Term::Var(0)]));
+    let p_a  = term_atom_info(&app(vec![s("p"), s("a")]));
+
+    // The residue channel alone cannot separate (p (f ?X)) from
+    // (p (g a)): under the union mask the argument seat vanishes.
+    let u = p_fx.mask | p_ga.mask;
+    assert_eq!(p_ga.residue_under(u), p_fx.residue_under(u),
+        "precondition: residues agree under the union mask");
+
+    // Unifiability: rigid head clash rejected; wildcard and same-head
+    // survive; a ground leaf never unifies with an open compound.
+    assert!(!p_fx.seats_unifiable_with(&p_ga), "f(X) vs g(a): head clash");
+    assert!(p_fx.seats_unifiable_with(&p_y), "f(X) vs bare var: wildcard");
+    assert!(p_fx.seats_unifiable_with(&p_fa), "f(X) vs f(a): same shape");
+    assert!(!p_fx.seats_unifiable_with(&p_a), "f(X) vs leaf a: never");
+
+    // Matching direction is stricter: a rigid pattern seat refutes a
+    // bare-variable instance seat (unifiability tolerates it).
+    assert!(!p_fx.seats_match_onto(&p_y), "pattern f(X) cannot match a var");
+    assert!(p_fx.seats_match_onto(&p_fa), "pattern f(X) matches f(a)");
+    assert!(!p_a.seats_match_onto(&p_y), "ground pattern seat cannot match a var");
+    assert!(p_y.seats_match_onto(&p_a), "var pattern seat matches anything");
+
+    // Arity-3 swap tolerance (resolution's symmetric retry): direct
+    // seats clash, crossed seats agree.
+    let r_fg = term_atom_info(&app(vec![
+        s("r"),
+        app(vec![s("f"), Term::Var(0)]),
+        app(vec![s("g"), Term::Var(1)]),
+    ]));
+    let r_gf = term_atom_info(&app(vec![
+        s("r"),
+        app(vec![s("g"), s("a")]),
+        app(vec![s("f"), s("b")]),
+    ]));
+    assert!(!r_fg.seats_unifiable_with(&r_gf), "direct comparison clashes");
+    assert!(r_fg.seats_unifiable_mod_swap(&r_gf), "crossed comparison passes");
+}
+
+// The filtered probe is a pure prefilter: it keeps every truly
+// unifiable stored literal and drops a residue-coincident candidate
+// whose open-compound seat clashes on head shape.
+#[test]
+fn probe_rel_unifiable_drops_head_clashed_open_compounds() {
+    use super::clause::Term;
+    use super::index::{EntryRef, LiteralIndex, SeatRel};
+    use crate::types::Symbol;
+
+    let (layer, _) = layer_with("(instance a Thing)");
+    let s = |n: &str| Term::Sym(Symbol::from(n));
+    let app = |v: Vec<Term>| Term::App(v);
+
+    let p_ga = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
+    let p_fb = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), s("b")])]));
+    let l = &layer;
+    let src = |a| l.atom_info(a);
+
+    let mut idx = LiteralIndex::default();
+    idx.add(EntryRef { clause: 0, lit: 0 }, true, p_ga, &src);
+    idx.add(EntryRef { clause: 1, lit: 0 }, true, p_fb, &src);
+
+    let q = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
+    let qinfo = layer.atom_info(q);
+
+    // Raw probe: both stored atoms share the query's residue under the
+    // union mask (the argument seat is open on the query side).
+    let raw: Vec<u32> = idx.probe(true, &qinfo, &src).iter().map(|e| e.clause).collect();
+    assert!(raw.contains(&0) && raw.contains(&1), "raw residue superset: {raw:?}");
+
+    // Filtered: the g-headed candidate is a sound rejection; the
+    // truly unifiable f-headed one survives.
+    let filtered: Vec<u32> = idx
+        .probe_rel(true, &qinfo, &src, SeatRel::Unifiable)
+        .iter()
+        .map(|e| e.clause)
+        .collect();
+    assert!(!filtered.contains(&0), "g-headed candidate dropped: {filtered:?}");
+    assert!(filtered.contains(&1), "unifiable candidate kept: {filtered:?}");
+}
+
 #[test]
 fn probe_returns_exactly_the_unifiable_set_after_verify() {
     use super::index::{EntryRef, LiteralIndex};

@@ -146,11 +146,11 @@ impl<'a> NativeProver<'a> {
         if self.opts.strategy.superposition {
             self.rebuild_superposition_index();
         }
-        // The backward-demod reverse index must shrink to the kept
-        // clauses too — masked clauses may not be resurrected by a
-        // later equation's backward pass.
+        // The backward-demod postings are rebuilt from the arena too
+        // (same activation condition as before the mask — occurrence
+        // postings are derived state, never frozen).
         if self.opts.strategy.bwd_demod {
-            self.rebuild_bwd_index();
+            self.rebuild_bwd_postings();
         }
     }
 }

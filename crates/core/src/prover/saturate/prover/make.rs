@@ -580,28 +580,33 @@ impl<'a> NativeProver<'a> {
 
     // -- backward demodulation (Strategy.bwd_demod) --------------------------
 
-    /// Record clause `id` in the backward-demodulation reverse index:
-    /// one bucket per DISTINCT head key among its literals' proper
-    /// subterm nodes — exactly the nodes `find_demod_redex`'s traversal
-    /// would visit, so a demodulator `l → r` can reach every clause
-    /// that could contain an `l`-redex through the single bucket of
-    /// `l`'s head key.  Only called while `Strategy.bwd_demod` is on.
+    /// Record every rewritable subterm occurrence of clause `id` in the
+    /// backward-demodulation postings — exactly the nodes
+    /// `find_demod_redex`'s traversal would visit, at occurrence grain
+    /// (clause, literal, path), so a demodulator `l → r` reaches the
+    /// instances of `l` through one exact-key probe (ground `l`) or one
+    /// (head, len) bucket (open `l`).  Only called while
+    /// `Strategy.bwd_demod` is on.  `Strategy.subterm_rows` additionally
+    /// gates the phase-2a k-channel row computation/storage the decode
+    /// chain consumes — off (the default) the postings themselves are
+    /// unchanged (phase-1 retrieval intact) but the ~2% row-registration
+    /// tax is not paid.
     pub(super) fn bwd_index_clause(&mut self, id: u32) {
-        let mut keys: SmallVec<[u64; 8]> = SmallVec::new();
-        for (_, t) in &self.clauses[id as usize].terms {
-            bwd_collect_keys(t, true, &mut keys);
-        }
-        for k in keys {
-            self.bwd_index.entry(k).or_default().push(id);
-        }
+        self.bwd_postings.register_clause(
+            id,
+            &self.clauses[id as usize].terms,
+            &self.layer.term_facts,
+            &self.layer.kbo,
+            self.opts.strategy.subterm_rows,
+        );
     }
 
-    /// Rebuild the backward-demodulation reverse index from the
-    /// activated arena — the hydrate-path peer of `rebuild_demod_index`
-    /// (`bwd_index` is maintained at `make` time, which hydrated
-    /// clauses never went through in this prover instance).
-    pub(super) fn rebuild_bwd_index(&mut self) {
-        self.bwd_index = super::super::hash64::Map64::default();
+    /// Rebuild the backward-demodulation postings from the activated
+    /// arena — the hydrate-path peer of `rebuild_demod_index` (the
+    /// postings are maintained at `make` time, which hydrated clauses
+    /// never went through in this prover instance).
+    pub(super) fn rebuild_bwd_postings(&mut self) {
+        self.bwd_postings = super::postings::SubtermPostings::default();
         let n = self.clauses.len() as u32;
         for id in 0..n {
             if self.clauses[id as usize].activated && !self.is_retired(id) {
@@ -613,10 +618,20 @@ impl<'a> NativeProver<'a> {
     /// Backward demodulation (interreduction): the NEWLY activated
     /// oriented unit equation `d` (`l → r`, owned by clause `demod_id`)
     /// rewrites the EXISTING active/passive clauses that contain an
-    /// `l`-redex.  Candidates come from the head-key reverse index
-    /// (one bucket probe — a clause can only hold an `l`-redex if `l`'s
-    /// head key occurs among its subterm nodes); each is re-checked
-    /// (stale/retired entries tolerated) and rewritten with THIS ONE
+    /// `l`-redex.  Candidates come from the subterm-occurrence postings:
+    ///
+    ///   * ground `l` — ONE exact-key probe; every posting is a
+    ///     content-equal occurrence (a guaranteed redex, modulo the
+    ///     2⁻⁶⁴ key accident the rewrite pass re-verifies anyway);
+    ///   * open `l` — the (head, len) bucket, each occurrence gated by
+    ///     the phase-0 seat prefilter in MATCHING mode
+    ///     (`postings::seat_prefilter_match`) and then VERIFIED at the
+    ///     exact occurrence with `match_one_way_off` on the reusable
+    ///     demod scratch, so a candidate clause is only ever walked
+    ///     when it provably contains a redex.
+    ///
+    /// Verified candidate clauses are deduped and processed in
+    /// ascending id order (deterministic), each rewritten with THIS ONE
     /// rule only.  A rewritten clause is rebuilt through `make` (so
     /// forward demod, oracle discharge, subsumption, dedup and proof
     /// bookkeeping all run; parents = {original, equation}, rule tag
@@ -634,20 +649,177 @@ impl<'a> NativeProver<'a> {
         demod_id: u32,
         d: &super::super::units::Demod,
     ) {
+        use super::postings::{ground_lhs_key, head_lhs_key, seat_prefilter_match};
+
         self.stats.bwd_demod_triggered += 1;
-        let Some(key) = bwd_term_key(&d.l) else { return };
-        let candidates: Vec<u32> = match self.bwd_index.get(&key) {
-            Some(v) => v.clone(),
-            None => return,
-        };
+        // Counter-driven compaction (deterministic: a pure function of
+        // the registration/retirement sequence) — sweep retired
+        // clauses' postings once the dead fraction crosses the
+        // threshold, following the DemodIndex generation discipline
+        // (retirement never invalidates, it only de-optimizes).
+        if self.bwd_postings.should_compact() {
+            let mut po = std::mem::take(&mut self.bwd_postings);
+            po.compact(|c| self.is_retired(c));
+            self.bwd_postings = po;
+            self.stats.bwd_postings_compactions += 1;
+        }
+
+        self.stats.bwd_postings_queries += 1;
+        let mut candidates = std::mem::take(&mut self.bwd_cand_scratch);
+        candidates.clear();
+        if d.l.is_ground() {
+            // Exact-key retrieval: postings are content-equal
+            // occurrences — every live one is a redex.
+            if let Some(key) = ground_lhs_key(&d.l, &self.layer.term_facts, &self.layer.kbo) {
+                for p in self.bwd_postings.exact_postings(key) {
+                    if p.clause == demod_id || self.is_retired(p.clause) {
+                        continue;
+                    }
+                    self.stats.bwd_postings_hits += 1;
+                    candidates.push(p.clause);
+                }
+            }
+        } else if let Some((h, ar)) = head_lhs_key(&d.l) {
+            // Head-bucket retrieval + seat prefilter + decode chain +
+            // exact verify at the posted occurrence.  The pattern's
+            // slots are shifted above the occurrence clause's canonical
+            // slot range (0..nvars) virtually, via `match_one_way_off`.
+            let mut scr = std::mem::take(&mut self.demod_scratch);
+            let mut plan = std::mem::take(&mut self.bwd_plan);
+            let mut bind = std::mem::take(&mut self.bwd_bind_scratch);
+            let mut btrail = std::mem::take(&mut self.bwd_bind_trail);
+            let (bucket, brows) = self.bwd_postings.head_postings(h, ar);
+            self.stats.bwd_bucket_scanned += bucket.len() as u64;
+            // The phase-2a k-channel decode chain runs ONLY when
+            // `Strategy.subterm_rows` is on (its `brows` column is empty
+            // otherwise — see `SubtermPostings::walk`).  Off (the
+            // default) `chain` stays false and every candidate falls
+            // through to the phase-1 seat prefilter + `match_one_way_off`
+            // verify directly — a derivation-neutral no-op, since the
+            // chain was only ever a NECESSARY-condition prefilter in
+            // front of that same verify.  Compile the lhs into the decode
+            // plan ONCE per pass (skipped for an empty bucket — nothing
+            // to filter).
+            let mut chain = false;
+            if self.opts.strategy.subterm_rows && !bucket.is_empty() {
+                super::rows::compile_into(&mut plan, &d.l, &self.layer.term_facts, &self.layer.kbo);
+                if plan.fallback_any {
+                    self.stats.bwd_decode_fallbacks += 1;
+                }
+                if plan.trivial() {
+                    self.stats.bwd_decode_trivial += 1;
+                }
+                chain = plan.active();
+                if chain {
+                    bind.clear();
+                    bind.resize(d.nslots as usize, None);
+                    debug_assert!(btrail.is_empty());
+                }
+            }
+            for (bi, p) in bucket.iter().enumerate() {
+                let c = &self.clauses[p.clause as usize];
+                if p.clause == demod_id || self.is_retired(p.clause) {
+                    continue;
+                }
+                let Some(occ) =
+                    subterm_at_bytes(&c.terms[p.lit as usize].1, self.bwd_postings.path(p))
+                else {
+                    debug_assert!(false, "posting path must resolve in an unretired clause");
+                    continue;
+                };
+                // Cheapest-first: the depth-1 seat prefilter runs before
+                // any row fetch or field arithmetic.
+                if !seat_prefilter_match(&d.l, occ) {
+                    continue;
+                }
+                if chain {
+                    // Decode chain: solve the per-level systems, check
+                    // the surplus rows, probe decoded keys, enforce
+                    // repeated-variable bindings — a sound prefilter in
+                    // front of the UNCHANGED structural verify below.
+                    // Bindings are rolled back per candidate: decoded
+                    // blank keys are never joined across clauses.
+                    self.stats.bwd_decode_swept += 1;
+                    let verdict =
+                        plan.eval(&brows[bi], self.bwd_postings.row_table(), &mut bind, &mut btrail);
+                    for &s in &btrail {
+                        bind[s as usize] = None;
+                    }
+                    btrail.clear();
+                    if verdict.is_err() {
+                        // Debug twin: a chain rejection must be one the
+                        // structural verify agrees with — the chain is a
+                        // NECESSARY-condition prefilter, never a filter
+                        // of true matches.
+                        #[cfg(any(test, debug_assertions))]
+                        {
+                            let off = u64::from(c.nvars);
+                            let need = (off + u64::from(d.nslots)) as usize + 1;
+                            if scr.s.len() < need {
+                                scr.s.resize(need, None);
+                            }
+                            debug_assert!(
+                                !match_one_way_off(&d.l, off, occ, &mut scr.s, &mut scr.trail),
+                                "decode chain rejected a true match: lhs {:?} vs occ {occ:?}",
+                                d.l,
+                            );
+                            for &slot in &scr.trail {
+                                scr.s[slot] = None;
+                            }
+                            scr.trail.clear();
+                        }
+                    }
+                    match verdict {
+                        Ok(()) => {}
+                        Err(super::rows::Reject::Surplus) => {
+                            self.stats.bwd_decode_rej_surplus += 1;
+                            continue;
+                        }
+                        Err(super::rows::Reject::Probe) => {
+                            self.stats.bwd_decode_rej_probe += 1;
+                            continue;
+                        }
+                        Err(super::rows::Reject::Binding) => {
+                            self.stats.bwd_decode_rej_binding += 1;
+                            continue;
+                        }
+                    }
+                }
+                let off = u64::from(c.nvars);
+                let need = (off + u64::from(d.nslots)) as usize + 1;
+                if scr.s.len() < need {
+                    scr.s.resize(need, None);
+                }
+                debug_assert!(scr.trail.is_empty());
+                self.stats.bwd_verify_calls += 1;
+                if match_one_way_off(&d.l, off, occ, &mut scr.s, &mut scr.trail) {
+                    for &slot in &scr.trail {
+                        scr.s[slot] = None;
+                    }
+                    scr.trail.clear();
+                    self.stats.bwd_postings_hits += 1;
+                    candidates.push(p.clause);
+                }
+            }
+            self.demod_scratch = scr;
+            self.bwd_plan = plan;
+            self.bwd_bind_scratch = bind;
+            self.bwd_bind_trail = btrail;
+        } else {
+            // Unindexable lhs shape: `DemodIndex::add` would have
+            // dropped it, so `d` can't reach here — defensive no-op.
+            self.bwd_cand_scratch = candidates;
+            return;
+        }
+        // Deterministic processing order; occurrence hits collapse to
+        // one entry per clause (the per-clause fixpoint rewrites every
+        // redex in the clause anyway).
+        candidates.sort_unstable();
+        candidates.dedup();
         let cap = self.opts.strategy.bwd_demod_cap.max(1);
         let term_cap = self.opts.strategy.demod_cap.max(1);
         let mut checks = 0usize;
-        for cid in candidates {
-            // Never rewrite the demodulator clause with itself.
-            if cid == demod_id {
-                continue;
-            }
+        for &cid in &candidates {
             if checks >= cap {
                 self.stats.bwd_demod_cap_hits += 1;
                 break;
@@ -655,6 +827,9 @@ impl<'a> NativeProver<'a> {
             checks += 1;
             let (terms, tier) = {
                 let c = &self.clauses[cid as usize];
+                // Re-check retirement: an earlier iteration of THIS pass
+                // may have retired a candidate (its replacement carries
+                // the rewrite).
                 if self.is_retired(cid) || c.lits.is_empty() {
                     continue;
                 }
@@ -670,8 +845,10 @@ impl<'a> NativeProver<'a> {
             let mut lits = terms;
             let mut rewrote = false;
             for (_, t) in lits.iter_mut() {
-                if bwd_demodulate_term(d, t, term_cap) > 0 {
+                let n = bwd_demodulate_term(d, t, term_cap);
+                if n > 0 {
                     rewrote = true;
+                    self.stats.bwd_demod_term_rewrites += n;
                 }
             }
             if !rewrote {
@@ -682,6 +859,7 @@ impl<'a> NativeProver<'a> {
             // (or otherwise interact with) its own replacement inside
             // `make`.  Its content lives on in replacement + equation.
             self.set_retired(cid);
+            self.bwd_postings.retire(cid);
             self.stats.bwd_demod_retired += 1;
             let made = self.make(lits, vec![cid, demod_id], "bwd_demod", tier, None, true);
             let Some(nid) = made else { continue };
@@ -702,6 +880,8 @@ impl<'a> NativeProver<'a> {
                 self.push(Some(nid));
             }
         }
+        candidates.clear();
+        self.bwd_cand_scratch = candidates;
     }
 
     // -- (forward) demodulator index rebuilds ---------------------------------
@@ -1830,10 +2010,11 @@ impl<'a> NativeProver<'a> {
             self.retired_bits.len(), self.clauses.len().div_ceil(64),
             "retired bitmap/arena lockstep",
         );
-        // Backward-demodulation reverse index: every arena clause is
-        // findable by the head keys of its subterm nodes, so a LATER
-        // oriented equation can re-normalize it (active or passive).
-        // Zero cost unless the knob is on.
+        // Backward-demodulation postings: every arena clause's
+        // rewritable subterm occurrences are findable by exact ground
+        // key / (head, len) bucket, so a LATER oriented equation can
+        // re-normalize it (active or passive).  Zero cost unless the
+        // knob is on.
         if self.opts.strategy.bwd_demod {
             self.bwd_index_clause(id);
         }
@@ -1849,43 +2030,15 @@ impl<'a> NativeProver<'a> {
 
 // -- backward-demodulation term helpers ----------------------------------------
 
-/// Reverse-index / bucket key of a possible redex node: compound →
-/// head symbol id (op heads by tag, the same key space `DemodIndex`
-/// buckets on); bare symbol leaf → its id.  `None` for shapes no
-/// indexed demodulator left side can take (variables, literals,
-/// variable-headed compounds).  Arity is deliberately NOT part of the
-/// key — the reverse index trades a few false candidates for one
-/// bucket per symbol; the match walk verifies.
-fn bwd_term_key(t: &Term) -> Option<u64> {
-    match t {
-        Term::App(elems) => match elems.first() {
-            Some(Term::Sym(s)) => Some(s.id()),
-            Some(Term::Op(op)) => Some(u64::from(super::super::units::op_tag(op))),
-            _ => None,
-        },
-        Term::Sym(s) => Some(s.id()),
-        _ => None,
+/// [`super::subterm_at`] over a byte path (the postings' interned path
+/// form — one argument index per step).
+fn subterm_at_bytes<'t>(t: &'t Term, path: &[u8]) -> Option<&'t Term> {
+    let mut cur = t;
+    for &step in path {
+        let Term::App(elems) = cur else { return None };
+        cur = elems.get(step as usize)?;
     }
-}
-
-/// Collect the DISTINCT `bwd_term_key`s of `t`'s proper subterm nodes —
-/// the same nodes `find_demod_redex` visits (children of every `App`,
-/// heads skipped, the top-level atom itself excluded: demodulation
-/// never rewrites a whole literal atom).
-fn bwd_collect_keys(t: &Term, is_top: bool, keys: &mut SmallVec<[u64; 8]>) {
-    if let Term::App(elems) = t {
-        for e in elems.iter().skip(1) {
-            bwd_collect_keys(e, false, keys);
-        }
-    }
-    if is_top {
-        return;
-    }
-    if let Some(k) = bwd_term_key(t) {
-        if !keys.contains(&k) {
-            keys.push(k);
-        }
-    }
+    Some(cur)
 }
 
 /// O(1) head-shape gate between a demodulator's left side and a target
@@ -2667,6 +2820,7 @@ mod keq_subsumption_tests {
                 + s.subs_rejected_by_bloom_glit
                 + s.subs_rejected_by_fv
                 + s.subs_rejected_by_keq
+                + s.ej_full_checks_saved
                 + s.subs_full_checks,
             "every attempted check is attributed to exactly one channel",
         );
@@ -2732,6 +2886,266 @@ mod keq_subsumption_tests {
             assert_eq!(rec.blooms, blooms, "bloom recompute drifted for clause {}", c.id);
             assert!(!p.is_retired(c.id), "no retirement without bwd_demod");
         }
+    }
+}
+
+#[cfg(test)]
+mod ej_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn var(s: u64) -> Term { Term::Var(s) }
+
+    /// Subsumption + the equality-join channel, EXPLICITLY on (immune
+    /// to default flips of the `subs_join` knob).
+    fn ej_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        strategy.subs_join = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // THE new power: per-literal partners exist (keq passes), but the
+    // shared variable ?0 decodes to `a` in one literal and `b` in the
+    // other — the cross-literal equality join must reject BEFORE the
+    // exact check.  (The mandatory rejection twin re-runs the
+    // reference matcher live in every test build.)
+    #[test]
+    fn join_rejects_shared_variable_disagreement() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (p ?0 k) ∨ (q ?0 m) — both literals ground-anchored
+        // (Active plans), ?0 shared and joinable.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a k) ∨ (q b m): literal-wise partnered, jointly
+        // unsatisfiable (?0 ↦ a vs ?0 ↦ b).
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "NOT subsumed — the exact check would agree");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq cannot see the disagreement");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_join, 1, "the equality join fired");
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.ej_full_checks_saved, 1);
+        assert_eq!(p.stats.subs_full_checks, 0, "the exact check never ran");
+    }
+
+    // Multiset discipline: a C-literal may partner MULTIPLE D-literals
+    // and the possibility sets must UNION over all of them (injective
+    // partnering is clause_subsumes_in's job, not the join's).  Here
+    // both C literals partner both D literals; a greedy/injective join
+    // would mis-reject, the union semi-join must pass — and the pair
+    // genuinely subsumes.
+    #[test]
+    fn multiset_non_injective_partnering_is_not_rejected() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (p ?0 ?1) ∨ (p ?1 ?0)  (two Trivial plans — their whole
+        // channel value IS the join keys they decode).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), var(1)])),
+                (true, app(vec![sym("p"), var(1), var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a b) ∨ (p b a) — subsumed via {?0 ↦ a, ?1 ↦ b}.
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("b")])),
+                (true, app(vec![sym("p"), sym("b"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "genuinely subsumed — the join must not block it");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_join, 0);
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check decided");
+    }
+
+    // Cap overflow ⇒ unknown, never a constraint: ?0's set from the
+    // (p ?0) literal would hold 9 distinct keys (> EJ_KEY_CAP = 8), so
+    // that literal contributes ⊤ and the join may NOT reject — even
+    // though an unbounded set ({a1..a9} ∩ {b} = ∅) would have.
+    #[test]
+    fn cap_overflow_treated_as_unknown_not_reject() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0)])),
+                (true, app(vec![sym("q"), var(0), sym("c")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a1) ∨ … ∨ (p a9) ∨ (q b c).
+        let mut d_lits: Vec<(bool, Term)> = (1..=9)
+            .map(|i| (true, app(vec![sym("p"), sym(&format!("a{i}"))])))
+            .collect();
+        d_lits.push((true, app(vec![sym("q"), sym("b"), sym("c")])));
+        let made = p.make(d_lits, vec![], "test", SUPPORT, None, true);
+        assert!(made.is_some(), "not subsumed (no (p b) in D) — exact check decides");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_pairs_decoded, 10, "9 p-partners + 1 q-partner");
+        assert_eq!(
+            p.stats.ej_rej_join, 0,
+            "cap overflow must degrade to ⊤ (skip), never to a rejection",
+        );
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Conservatism rule (c): a variable occurring in an UNUSABLE-plan
+    // literal (v = 4 ⇒ root fallback) is barred from the join, so the
+    // {a} vs {b} disagreement between the two usable literals may NOT
+    // be exploited — the candidate passes through to the exact check.
+    #[test]
+    fn unusable_plan_literal_contributes_nothing() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (f ?0 ?1 ?2 ?3) ∨ (p ?0 k) ∨ (q ?0 m).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("f"), sym("w"), sym("x"), sym("y"), sym("z")])),
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "not subsumed — but only the exact check may say so");
+        assert_eq!(p.stats.ej_candidates, 1, "the Active literals still ran");
+        assert_eq!(
+            p.stats.ej_rej_join, 0,
+            "?0 occurs in the fallback literal — its join constraint is barred",
+        );
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check decided");
+    }
+
+    // Zero-survivor rule: keq counts (p a b) as a residue-compatible
+    // partner of (p ?0 ?0) (both seats masked), but the decode's
+    // collapsed-repeat system refutes it — no partner survives, the
+    // candidate dies before the exact check.
+    #[test]
+    fn zero_partner_literal_rejects_before_full_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        let c = p.make(
+            vec![(true, app(vec![sym("p"), var(0), var(0)]))],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![(true, app(vec![sym("p"), sym("a"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "(p ?0 ?0) does not subsume (p a b)");
+        assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq passes this pair");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_no_partner, 1, "the decode refuted every partner");
+        assert_eq!(p.stats.ej_full_checks_saved, 1);
+        assert_eq!(p.stats.subs_full_checks, 0);
+    }
+
+    // A candidate whose every literal is unusable is SKIPPED (counted),
+    // never rejected — and genuine subsumption still goes through via
+    // the exact check.
+    #[test]
+    fn all_unusable_candidate_is_skipped_not_rejected() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (f ?0 ?1 ?2 ?3) ∨ (g ?0 ?1 ?2 ?3): v = 4 at both roots ⇒
+        // root fallback ⇒ unusable (two literals, so the probe goes
+        // through CLAUSE subsumption, not the unit-store channel).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                (true, app(vec![sym("g"), var(0), var(1), var(2), var(3)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("f"), sym("a"), sym("b"), sym("c"), sym("d")])),
+                (true, app(vec![sym("g"), sym("a"), sym("b"), sym("c"), sym("d")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "genuinely subsumed via the exact check");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.ej_skipped_unusable, 1);
+        assert_eq!(p.stats.ej_candidates, 0, "nothing runnable — never evaluated");
+        assert_eq!(p.stats.ej_full_checks_saved, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // The channel is a pure prefilter: with the knob OFF the funnel
+    // must behave exactly as before (no ej counters move, the exact
+    // check decides), on the same traffic as the join-rejection test.
+    #[test]
+    fn knob_off_leaves_the_funnel_untouched() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        strategy.subs_join = false;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        let mut p = NativeProver::new(&layer, Scope::Base, opts);
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some());
+        assert_eq!(p.stats.ej_candidates, 0);
+        assert_eq!(p.stats.ej_pairs_decoded, 0);
+        assert_eq!(p.stats.ej_full_checks_saved, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check carried it alone");
     }
 }
 

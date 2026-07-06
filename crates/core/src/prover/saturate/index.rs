@@ -70,6 +70,48 @@ impl Located for TermPos {
 /// or arity) into `gkey`.
 type ViewKey = (u64, u64, u64); // (gkey, Mp, U)
 
+/// Which retrieval RELATION a probe serves — the phase-0 direction
+/// parameter (audit item 2).  The residue algebra itself is one
+/// symmetric necessary condition (union-mask agreement) that is valid
+/// for both relations; the SEAT-SHAPE channel
+/// ([`AtomInfo::seat_shapes`]) has a different compatibility table per
+/// relation, and the matching direction is strictly stricter (a rigid
+/// pattern seat refutes a bare-variable candidate seat, which
+/// unifiability tolerates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeatRel {
+    /// No seat-shape filtering — byte-compatible with the historical
+    /// probe.  Used by [`ResidueTable::count`] (candidate COUNTS feed
+    /// the literal-selection heuristic: filtering them would move
+    /// selection choices, not just prune verification work) and by
+    /// legacy/test entry points.
+    Any,
+    /// Query and stored atom need only be UNIFIABLE (rename-apart,
+    /// variables wildcard on both sides), tolerating the crossed
+    /// comparison on arity-3 atoms — see
+    /// [`AtomInfo::seats_unifiable_mod_swap`].
+    Unifiable,
+    /// The STORED atom is a PATTERN that must one-way match the query
+    /// (forward subsumption's discovery direction: a subsumer literal
+    /// σ-maps onto the probing clause's literal) — see
+    /// [`AtomInfo::seats_match_onto`].
+    MatchStored,
+}
+
+impl SeatRel {
+    /// Does entry `e` (a stored atom's info) stay a candidate for
+    /// query `q` under this relation?  `true` never rejects a real
+    /// partner (necessary conditions only); `false` is sound pruning.
+    #[inline]
+    fn keeps(self, q: &AtomInfo, e: &AtomInfo) -> bool {
+        match self {
+            SeatRel::Any => true,
+            SeatRel::Unifiable => q.seats_unifiable_mod_swap(e),
+            SeatRel::MatchStored => e.seats_match_onto(q),
+        }
+    }
+}
+
 /// Resolve an atom's [`AtomInfo`] — the index is representation-agnostic;
 /// the prover supplies a closure over its `AtomInfos`/`AtomTable`/store.
 pub(crate) trait InfoSource {
@@ -162,8 +204,11 @@ impl<L: Clone + Located> ResidueTable<L> {
     /// All entries in group `gkey` possibly unifiable with query atom `q`:
     /// one O(1) probe per (stored-mask, union-view).  A *superset* of the
     /// unifiable set (64-bit collisions and seat-64 overflow only widen
-    /// it) — callers verify with real unification.
-    fn probe(&mut self, gkey: u64, q: &AtomInfo, src: &impl InfoSource) -> Vec<L> {
+    /// it) — callers verify with real unification.  `rel` adds the
+    /// phase-0 seat-shape channel per RETURNED entry (still a pure
+    /// prefilter: every rejection is a sound refutation of the exact
+    /// check the caller would have run).
+    fn probe(&mut self, gkey: u64, q: &AtomInfo, src: &impl InfoSource, rel: SeatRel) -> Vec<L> {
         let mut out = Vec::new();
         let masks: Vec<u64> = match self.groups.get(&gkey) {
             Some(g) => g.keys().copied().collect(),
@@ -174,7 +219,15 @@ impl<L: Clone + Located> ResidueTable<L> {
             let rq = q.residue_under(u);
             if let Some(tbl) = self.view(gkey, mp, u, src) {
                 if let Some(entries) = tbl.get(&rq) {
-                    out.extend(entries.iter().map(|e| e.at.clone()));
+                    match rel {
+                        SeatRel::Any => out.extend(entries.iter().map(|e| e.at.clone())),
+                        rel => out.extend(
+                            entries
+                                .iter()
+                                .filter(|e| rel.keeps(q, &src.info(e.atom)))
+                                .map(|e| e.at.clone()),
+                        ),
+                    }
                 }
             }
         }
@@ -187,9 +240,14 @@ impl<L: Clone + Located> ResidueTable<L> {
 
     /// Candidate count in group `gkey` — the same probes as [`Self::probe`]
     /// without materializing entries (exact: retired entries excluded).
+    /// DELIBERATELY unfiltered ([`SeatRel::Any`]): counts drive the
+    /// literal-SELECTION heuristic, so a stronger count filter would
+    /// move which literal resolves — a search change, not a pruning of
+    /// verification work.  Counts therefore stay an upper bound on the
+    /// (possibly seat-filtered) retrieval.
     fn count(&mut self, gkey: u64, q: &AtomInfo, src: &impl InfoSource) -> usize {
         if !self.retired.is_empty() {
-            return self.probe(gkey, q, src).len();
+            return self.probe(gkey, q, src, SeatRel::Any).len();
         }
         let masks: Vec<u64> = match self.groups.get(&gkey) {
             Some(g) => g.keys().copied().collect(),
@@ -228,18 +286,30 @@ impl LiteralIndex {
         self.t.add(Self::gkey(pos, info.arity), at, atom, &info);
     }
 
-    /// Indexed literals of polarity `pos` possibly unifiable with `q`.
+    /// Indexed literals of polarity `pos` possibly unifiable with `q`
+    /// (no seat-shape filtering — the historical probe; tests and any
+    /// caller that needs the raw residue superset use this).
     pub(crate) fn probe(
         &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
     ) -> Vec<EntryRef> {
-        self.t.probe(Self::gkey(pos, q.arity), q, src)
+        self.t.probe(Self::gkey(pos, q.arity), q, src, SeatRel::Any)
     }
 
-    /// Candidates with the *opposite* polarity — resolution partners.
+    /// [`Self::probe`] under an explicit retrieval relation — the
+    /// phase-0 seat-shape channel (see [`SeatRel`]).
+    pub(crate) fn probe_rel(
+        &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource, rel: SeatRel,
+    ) -> Vec<EntryRef> {
+        self.t.probe(Self::gkey(pos, q.arity), q, src, rel)
+    }
+
+    /// Candidates with the *opposite* polarity — resolution partners
+    /// (unifiability relation, swap-tolerant: see
+    /// [`AtomInfo::seats_unifiable_mod_swap`]).
     pub(crate) fn complementary(
         &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
     ) -> Vec<EntryRef> {
-        self.probe(!pos, q, src)
+        self.probe_rel(!pos, q, src, SeatRel::Unifiable)
     }
 
     /// Complementary candidate count (the fewest-candidates heuristic).
@@ -283,8 +353,16 @@ impl TermIndex {
     }
 
     /// Subterm positions possibly unifiable with query term `q`.
+    ///
+    /// PHASE-0 NOTE: deliberately NOT seat-shape filtered.  The one
+    /// consumer (`superposition_inferences`' "from" direction) counts
+    /// every probed target toward `para_cap`, so pruning here would
+    /// change the generation accounting (which real inferences fit
+    /// under the cap) — a search change, not a pure prefilter.  Wire
+    /// [`SeatRel::Unifiable`] through once the cap counts productive
+    /// inferences only.
     pub(crate) fn probe(&mut self, q: &AtomInfo, src: &impl InfoSource) -> Vec<TermPos> {
-        self.t.probe(u64::from(q.arity), q, src)
+        self.t.probe(u64::from(q.arity), q, src, SeatRel::Any)
     }
 
     /// Tombstone a clause — its subterm positions no longer surface as

@@ -169,11 +169,14 @@ pub struct Strategy {
     /// (rule tag `bwd_demod`) and the original is RETIRED (skipped on
     /// pop, filtered from partner retrieval), so the clause sets stay
     /// interreduced instead of drowning in unreduced copies.  Candidates
-    /// come from a head-key → clause-ids reverse index maintained per
-    /// made clause while this is on; the pass is bounded by
-    /// [`Self::bwd_demod_cap`].  `SIGMA_BWD_DEMOD=1` forces it on
-    /// (same A/B convention as `SIGMA_DEMOD`).  Pair with `demod` — on
-    /// its own the new clauses are not kept in normal form.
+    /// come from the subterm-occurrence postings (exact ground keys +
+    /// (head, len) buckets, maintained per made clause while this is
+    /// on); the pass is bounded by [`Self::bwd_demod_cap`].  Default ON
+    /// under the TPTP regime ([`Self::tptp`]); `SIGMA_NO_BWD_DEMOD=1`
+    /// forces it off and `SIGMA_BWD_DEMOD=1` forces it on (the off
+    /// switch wins — same A/B convention as `SIGMA_DEMOD`, extended
+    /// with an off direction now that a default is true).  Pair with
+    /// `demod` — on its own the new clauses are not kept in normal form.
     pub bwd_demod: bool,
     /// Ordered resolution: restrict binary resolution to KBO-maximal
     /// literals.  The ordered refinement (still complete) and the
@@ -187,6 +190,41 @@ pub struct Strategy {
     /// eliminator that complements unit subsumption — the flooding floor
     /// the superposition calculus stands on.
     pub subsumption: bool,
+    /// Cross-literal equality-join subsumption prefilter (phase 2b of
+    /// the subterm-index milestone; see `prover/ej.rs`): after the keq
+    /// counting filter passes a candidate subsumer, decode its planned
+    /// literals against their keq-feasible partner literals via the
+    /// phase-2a channel rows, rejecting candidates with a
+    /// zero-survivor literal or an empty per-variable decoded-key
+    /// intersection across literals sharing a variable.  A pure
+    /// necessary-condition prefilter in front of `clause_subsumes_in`
+    /// — derivations are identical with it on or off; only the
+    /// full-check count and wall time move.  Only meaningful with
+    /// [`Self::subsumption`] on.  `SIGMA_NO_SUBS_JOIN=1` forces it
+    /// off, `SIGMA_SUBS_JOIN=1` forces it on (off wins) — the same
+    /// two-directional A/B convention as `SIGMA_BWD_DEMOD`.
+    pub subs_join: bool,
+    /// The phase-2a k-channel Vandermonde ROWS (see `prover/rows.rs`):
+    /// compute and STORE a 4-word GF(2^64) presence/decode row for every
+    /// walked subterm at clause-accept time (the content-keyed row table
+    /// + the per-bucket lockstep row column in `SubtermPostings`), and
+    /// run the decode-chain prefilter it backs in front of the open-lhs
+    /// backward-demodulation verify.  OFF by default: measured negative
+    /// on BOTH consumers — the backward-demod decode chain (2a) charged a
+    /// ~2% per-accept row-registration tax for a <1ms filter payoff, and
+    /// the subsumption equality-join (2b, [`Self::subs_join`]) ended up
+    /// using TRANSIENT rows only (it never reads the stored table).  With
+    /// this off the postings themselves (exact ground keys + (head, len)
+    /// head buckets — phase 1) are UNAFFECTED and backward demodulation
+    /// runs identically via the seat prefilter + `match_one_way_off`;
+    /// only the row computation/storage and the decode chain are skipped,
+    /// so a default build pays zero row tax.  `SIGMA_SUBTERM_ROWS=1`
+    /// forces it ON, `SIGMA_NO_SUBTERM_ROWS=1` forces it OFF (off wins) —
+    /// the same two-directional A/B convention as `SIGMA_BWD_DEMOD` /
+    /// [`Self::subs_join`].  Derivation-neutral: the decode chain is a
+    /// NECESSARY-condition prefilter in front of the unchanged structural
+    /// verify, so the backward-demod derivations are identical either way.
+    pub subterm_rows: bool,
     /// Ordered superposition: the complete equality calculus (replaces the
     /// SOS-gated unit-paramodulation stand-in).  Implies the maximality
     /// machinery and the subterm-index population.  OFF by default until
@@ -326,6 +364,26 @@ impl Strategy {
             decode: true,
             ordered_resolution: false,
             subsumption: false,
+            // OFF by default: measured 2026-07-05 at 60s (TPTP regime,
+            // portfolio off) the channel rejects 97-99% of keq-passing
+            // candidates before the exact check (GRP618+1: 5.15M -> 127k
+            // full checks; LAT282+1: 11.97M -> 39k) yet given-clause
+            // throughput consistently LOSES ~1% (2411->2388, 3843->3798,
+            // 2398->2369) — the exact checks it removes were already
+            // cheap fast-fail matches (~2% of CPU), and the decode +
+            // transient-row machinery costs slightly more than it saves.
+            // `SIGMA_SUBS_JOIN=1` is the on-switch for re-measurement on
+            // corpora where `clause_subsumes_in` backtracking actually
+            // bites (wide clauses, many equal-atom literals).
+            subs_join: false,
+            // OFF by default: the k-channel row machinery (phase 2a) was
+            // measured negative on both consumers (see the field doc) —
+            // the ~2% per-accept registration tax bought a <1ms
+            // backward-demod filter, and the subsumption equality-join
+            // uses transient rows only.  Off ⇒ zero row tax; phase 1's
+            // postings + backward demodulation are unaffected.
+            // `SIGMA_SUBTERM_ROWS=1` re-enables it for measurement.
+            subterm_rows: false,
             superposition: false,
             eq_factoring: false,
             bg_completion: false,
@@ -343,10 +401,14 @@ impl Strategy {
             // is indifferent.  Re-default once the demodulator set is
             // indexed; kept as a portfolio knob meanwhile.
             demod: false,
-            // OFF by default, like `demod` (its prerequisite in spirit):
-            // interreduction only pays where the equational rewrite
-            // engine is on.  Rides the `tptp-demod` portfolio lane.
-            bwd_demod: false,
+            // ON by default since the posting-indexed retrieval landed
+            // (exact ground keys + (head, len) buckets + seat
+            // prefilter): a backward pass now touches only verified
+            // redex holders, and the KIF/SUMO regression gate stayed
+            // green with it on.  `SIGMA_NO_BWD_DEMOD=1` is the off
+            // switch; pairs with `demod` for the full interreduction
+            // discipline (see the field docs).
+            bwd_demod: true,
             liu_rescue: true,
             liu_rounds: 1,
             liu_top_k: 32,
@@ -375,6 +437,8 @@ impl Strategy {
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         s.demod = Self::demod_env_override(s.demod);
         s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
+        s.subs_join = Self::subs_join_env_override(s.subs_join);
+        s.subterm_rows = Self::subterm_rows_env_override(s.subterm_rows);
         s
     }
 
@@ -389,11 +453,52 @@ impl Strategy {
         if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
     }
 
-    /// `SIGMA_BWD_DEMOD=1` forces backward demodulation on — the exact
-    /// peer of [`Self::demod_env_override`], shared by `from_env()` and
-    /// `tptp()` so the A/B override works on both paths.
+    /// `SIGMA_NO_BWD_DEMOD=1` forces backward demodulation OFF,
+    /// `SIGMA_BWD_DEMOD=1` forces it ON (off wins when both are set) —
+    /// the two-directional peer of [`Self::demod_env_override`], shared
+    /// by `from_env()` and `tptp()` so the A/B override works on both
+    /// paths.  The off direction exists because `tptp()` now defaults
+    /// the knob TRUE (posting-indexed retrieval landed).
     fn bwd_demod_env_override(default: bool) -> bool {
-        if std::env::var_os("SIGMA_BWD_DEMOD").is_some() { true } else { default }
+        if std::env::var_os("SIGMA_NO_BWD_DEMOD").is_some() {
+            false
+        } else if std::env::var_os("SIGMA_BWD_DEMOD").is_some() {
+            true
+        } else {
+            default
+        }
+    }
+
+    /// `SIGMA_NO_SUBS_JOIN=1` forces the subsumption equality-join
+    /// channel OFF, `SIGMA_SUBS_JOIN=1` forces it ON (off wins when
+    /// both are set) — the two-directional A/B peer of
+    /// [`Self::bwd_demod_env_override`], shared by `from_env()` and
+    /// `tptp()` so the override works on both paths.
+    fn subs_join_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_NO_SUBS_JOIN").is_some() {
+            false
+        } else if std::env::var_os("SIGMA_SUBS_JOIN").is_some() {
+            true
+        } else {
+            default
+        }
+    }
+
+    /// `SIGMA_NO_SUBTERM_ROWS=1` forces the k-channel row machinery
+    /// (phase-2a rows + the decode-chain prefilter) OFF,
+    /// `SIGMA_SUBTERM_ROWS=1` forces it ON (off wins when both are set) —
+    /// the two-directional A/B peer of [`Self::subs_join_env_override`],
+    /// shared by `from_env()` and `tptp()` so the override works on both
+    /// paths (the TPTP regime is where backward demodulation — and so the
+    /// decode chain — actually runs).
+    fn subterm_rows_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_NO_SUBTERM_ROWS").is_some() {
+            false
+        } else if std::env::var_os("SIGMA_SUBTERM_ROWS").is_some() {
+            true
+        } else {
+            default
+        }
     }
 
     /// The complete-calculus configuration for standalone TPTP problems
@@ -414,7 +519,20 @@ impl Strategy {
             eq_factoring:      true,
             subsumption:       true,
             demod:             Self::demod_env_override(false),
-            bwd_demod:         Self::bwd_demod_env_override(false),
+            // ON by default under the TPTP regime: retrieval is now
+            // posting-indexed (exact ground keys + (head, len) buckets
+            // + seat prefilter), so a backward pass touches only
+            // verified redex holders instead of scanning bucket
+            // clauses.  `SIGMA_NO_BWD_DEMOD=1` is the off switch.
+            bwd_demod:         Self::bwd_demod_env_override(true),
+            // The equality-join channel's A/B override must reach the
+            // TPTP path too (its regime is where subsumption — and so
+            // the channel — actually runs).
+            subs_join:         Self::subs_join_env_override(Self::base().subs_join),
+            // The k-channel row machinery's A/B override must reach the
+            // TPTP path too (its regime is where backward demodulation —
+            // and so the decode chain — actually runs).
+            subterm_rows:      Self::subterm_rows_env_override(Self::base().subterm_rows),
             // Same A/B convention as demod: `SIGMA_GUIDE=1` lets the
             // semantic-guide tie-break be measured on the TPTP path too
             // (`from_env()` is not consulted here, so without this the
@@ -614,6 +732,13 @@ impl Strategy {
             // until the full ordered calculus lands.
             ordered_resolution: r.chance(15),
             subsumption: r.chance(20),
+            // Not in the sweep genome (no RNG draw — existing seeds'
+            // sample streams shift only via fields that DO draw): a
+            // pure prefilter, measured via its env A/B instead.
+            subs_join: Strategy::base().subs_join,
+            // Not in the sweep genome (no RNG draw): the row machinery
+            // was measured net-negative, kept switchable via its env A/B.
+            subterm_rows: Strategy::base().subterm_rows,
             superposition: r.chance(10),
             eq_factoring: r.chance(10),
             bg_completion: r.chance(10),

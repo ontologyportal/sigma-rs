@@ -24,9 +24,10 @@ pub(crate) struct ProverStats {
     /// the prefilter chain's denominator.  Invariant:
     /// `subs_checks_attempted == subs_rejected_by_bloom_leaf +
     /// subs_rejected_by_bloom_glit + subs_rejected_by_fv +
-    /// subs_rejected_by_keq + subs_full_checks` (the channels run in
-    /// that order; each rejection is attributed to the FIRST channel
-    /// that fired).
+    /// subs_rejected_by_keq + ej_full_checks_saved + subs_full_checks`
+    /// (the channels run in that order; each rejection is attributed
+    /// to the FIRST channel that fired; the ej term is zero unless
+    /// `Strategy.subs_join` is on).
     pub(crate) subs_checks_attempted: u64,
     /// Of those, how many were REJECTED by the leaf-bloom channel
     /// (`fvi::ClauseBlooms::leaf` subset test — one AND per candidate,
@@ -61,8 +62,37 @@ pub(crate) struct ProverStats {
     pub(crate) keq_pair_tests: u64,
     /// Of those, how many passed every prefilter channel and were handed
     /// to the exact `clause_subsumes` check (see the sum invariant on
-    /// `subs_checks_attempted`).
+    /// `subs_checks_attempted`; with `Strategy.subs_join` on, the
+    /// equality-join channel sits between keq and here, so the
+    /// invariant gains an `+ ej_full_checks_saved` term).
     pub(crate) subs_full_checks: u64,
+
+    // -- phase-2b subsumption equality-join channel (`Strategy.subs_join`;
+    //    see prover/ej.rs).  All zero unless subsumption AND subs_join
+    //    are on.  Invariants: ej_full_checks_saved == ej_rej_no_partner
+    //    + ej_rej_join; every keq-passing candidate is either counted in
+    //    ej_candidates or ej_skipped_unusable (or neither only when the
+    //    knob is off).
+    /// keq-passing candidates the channel actually evaluated (>= 1
+    /// runnable literal: Active, or Trivial with a joinable variable).
+    pub(crate) ej_candidates: u64,
+    /// (planned C-literal, keq-feasible D-literal) pairs decoded — the
+    /// channel's workload numerator (each is a delta + v×v solve +
+    /// surplus checks + probes, a few clmuls).
+    pub(crate) ej_pairs_decoded: u64,
+    /// Candidates rejected because some planned literal had ZERO
+    /// surviving partners (keq counted >= 1; the decode refuted all).
+    pub(crate) ej_rej_no_partner: u64,
+    /// Candidates rejected by an empty per-variable decoded-key
+    /// intersection across the literals sharing that variable.
+    pub(crate) ej_rej_join: u64,
+    /// keq-passing candidates the channel could do nothing with (no
+    /// runnable literal — all plans ground/unusable/trivial-unshared).
+    pub(crate) ej_skipped_unusable: u64,
+    /// Exact `clause_subsumes_in` calls avoided — the channel's payoff
+    /// (== ej_rej_no_partner + ej_rej_join, split out so the headline
+    /// number reads directly off the stats line).
+    pub(crate) ej_full_checks_saved: u64,
     /// TRUE `ClauseKey` collisions detected by the verified dedup
     /// (`NativeProver::seen_duplicate*` / `seen_insert`): a `seen` key
     /// hit whose first-accepted clause has DIFFERENT canonical literals
@@ -305,6 +335,51 @@ pub(crate) struct ProverStats {
     /// remaining candidates were left unsimplified (sound; just less
     /// interreduced).
     pub(crate) bwd_demod_cap_hits: u64,
+    /// Individual redex rewrites applied across all backward passes
+    /// (per-occurrence grain; `bwd_demod_clauses_rewritten` is the
+    /// per-clause roll-up).
+    pub(crate) bwd_demod_term_rewrites: u64,
+    /// Posting-index queries — one per backward pass that reached
+    /// retrieval.
+    pub(crate) bwd_postings_queries: u64,
+    /// Verified occurrence hits the postings returned: exact-key
+    /// postings on live clauses (ground lhs), or bucket occurrences
+    /// that survived the seat prefilter AND the `match_one_way_off`
+    /// verify (open lhs).
+    pub(crate) bwd_postings_hits: u64,
+    /// Total (head, len)-bucket entries scanned by open-lhs queries —
+    /// the bucket-scan-length counter (watch for hot wide buckets).
+    pub(crate) bwd_bucket_scanned: u64,
+    /// Posting compactions run (dead fraction crossed the threshold).
+    pub(crate) bwd_postings_compactions: u64,
+
+    // -- phase-2 decode chain (k-channel Vandermonde rows; see
+    //    prover/rows.rs).  All zero unless bwd_demod is on AND an
+    //    open-lhs pass compiled an ACTIVE (non-trivial, non-fallback)
+    //    plan.  Invariant: bwd_decode_swept == bwd_decode_rej_surplus +
+    //    bwd_decode_rej_probe + bwd_decode_rej_binding + (survivors
+    //    handed to the verify).
+    /// Seat-prefilter survivors that entered the decode chain.
+    pub(crate) bwd_decode_swept: u64,
+    /// Rejected by a surplus check row on purely structural content.
+    pub(crate) bwd_decode_rej_surplus: u64,
+    /// Rejected because a decoded key is not a registered term.
+    pub(crate) bwd_decode_rej_probe: u64,
+    /// Rejected through the binding table: a check involving a bound
+    /// variable's substituted key failed (cross-level repeats), or a
+    /// decoded key contradicted an existing binding.
+    pub(crate) bwd_decode_rej_binding: u64,
+    /// Open-lhs passes whose compiled plan contained >= 1 fallback node
+    /// (v >= 4, rank-deficient collapse, or unindexable subpattern).
+    pub(crate) bwd_decode_fallbacks: u64,
+    /// Open-lhs passes whose plan was TRIVIAL (depth-1, all-fresh
+    /// distinct variables — nothing the seat prefilter didn't already
+    /// check), so the chain was skipped as pure overhead.
+    pub(crate) bwd_decode_trivial: u64,
+    /// `match_one_way_off` verify calls made by the open-lhs bwd path —
+    /// the decode chain's payoff denominator (phase-1 verify calls ==
+    /// bwd_verify_calls + the three reject counters).
+    pub(crate) bwd_verify_calls: u64,
 
     // -- proof-DAG discharge-rule reach (counted once per completed proof
     //    extraction, at refutation time).
