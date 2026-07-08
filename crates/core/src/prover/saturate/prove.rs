@@ -16,6 +16,7 @@ use super::clause::{AtomId, PClause};
 use super::clausify::clausify_negated_conjunction;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
+use super::theory::TheoryOracle;
 
 impl ProverLayer {
     /// Intern the conjecture into the prover-local atom table (content-addressed,
@@ -71,6 +72,18 @@ impl ProverLayer {
             return self.prove_one_driver(&conj, selection, total_timeout, &opts, ctx).0;
         }
 
+        // TPTP regime (standalone `.p`/`.tptp` problem — `set_tptp_problem`
+        // swapped in `Strategy::tptp()`, the only source of
+        // `full_saturation`): a CASC-style strategy schedule stands in for
+        // the budget-widening retry, which is a no-op here (see
+        // `run_portfolio_schedule`'s doc).  `SIGMA_NO_PORTFOLIO=1` forces the
+        // single-lane path for A/B measurement.  The KIF/SUMO path
+        // (`full_saturation` off) is completely unaffected — same `drive`
+        // call as before.
+        if opts.strategy.full_saturation && std::env::var_os("SIGMA_NO_PORTFOLIO").is_none() {
+            return self.run_portfolio_schedule(&conj, total_timeout, &opts, ctx);
+        }
+
         // Prover-feedback autoscaling — the same shared planner the trait
         // `prove` uses, driven here directly so the path stays `&self`.
         use crate::prover::scale::{drive, ScaleConfig};
@@ -84,14 +97,76 @@ impl ProverLayer {
             min_budget:    scale_min_budget(),
             total_timeout,
         };
-        // Native step-exhaustion narrows (mirrors the trait `remap`).
-        let remap = |_status: ProverStatus, term: Option<TerminationReason>| match term {
-            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
-            other => other,
-        };
-        drive(selection, cfg, remap, |params, slice| {
+        drive(selection, cfg, Self::remap_native, |params, slice| {
             self.prove_one_driver(&conj, params, slice, &opts, ctx)
         })
+    }
+
+    /// Native step-exhaustion (`GaveUp`) narrows like a timeout, not widens —
+    /// the search space was too big, the wrong gradient for the planner to
+    /// read as prover-incompleteness. Shared by the plain autoscale loop
+    /// above and each lane of [`run_portfolio_schedule`] (mirrors the trait
+    /// `ProvingLayer::remap` override for `ProverLayer`).
+    fn remap_native(
+        _status: ProverStatus,
+        term:    Option<TerminationReason>,
+    ) -> Option<TerminationReason> {
+        match term {
+            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
+            other => other,
+        }
+    }
+
+    /// CASC-style strategy schedule for a standalone TPTP problem: race
+    /// [`Strategy::tptp_lanes`](super::strategy::Strategy::tptp_lanes) in
+    /// order, each over its own slice of `total_timeout` (see
+    /// [`crate::prover::scale::drive_portfolio`] for the split / carry-forward
+    /// rule). Every lane still runs the ordinary budget-autoscaling `drive`
+    /// loop internally — full saturation means that loop mostly just
+    /// re-confirms the same search, but it costs nothing to leave it wired in
+    /// (a lane that somehow doesn't reach the ceiling on its first shot still
+    /// benefits). A verdict of Proved/Inconsistent, or a CONFIDENT
+    /// Disproved/Consistent, from any lane ends the schedule immediately;
+    /// otherwise the best-ranked (never worse-than-first) result across every
+    /// lane is returned. The winning lane's name is prepended to
+    /// `raw_output` so `SIGMA_STATS`/verbose output can show which lane
+    /// solved it.
+    pub(super) fn run_portfolio_schedule(
+        &self,
+        conj:          &Conjecture,
+        total_timeout: u32,
+        opts:          &NativeOpts,
+        ctx:           &crate::ProveCtx,
+    ) -> ProverResult {
+        use crate::prover::scale::{drive, drive_portfolio, ScaleConfig};
+        use crate::syntactic::sine::{
+            scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
+        };
+
+        let lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        let selection = opts.selection;
+
+        let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {
+            let lane_opts = NativeOpts { strategy: lanes[idx].clone(), ..opts.clone() };
+            let cfg = ScaleConfig {
+                factor:        scale_factor(),
+                max_disproofs: scale_max_disproofs(),
+                max_time_runs: scale_max_time_runs(),
+                min_budget:    scale_min_budget(),
+                total_timeout: slice,
+            };
+            drive(selection, cfg, Self::remap_native, |params, per_run| {
+                self.prove_one_driver(conj, params, per_run, &lane_opts, ctx)
+            })
+        });
+
+        let lane_name = lanes[winner].name.as_str();
+        ctx.debug(format!("portfolio: lane {winner} ({lane_name}) reported the final verdict"));
+        result.raw_output = format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
+        if std::env::var_os("SIGMA_STATS").is_some() {
+            eprintln!("PORTFOLIO winning lane: {lane_name}");
+        }
+        result
     }
 
     pub(super) fn prove_one_driver(
@@ -420,13 +495,16 @@ impl ProverLayer {
                     // meaning axioms whose semantics the oracle now supplies
                     // (recognized during the pre-pass above) — loading them
                     // would re-introduce the resolution flood the oracle is
-                    // meant to replace.  Empty unless the decomposition
-                    // opt-in is active, so the default path is unchanged.
+                    // meant to replace.  The license comes from the oracle's
+                    // `coverage()` claim (same contents as the old
+                    // `decomposition_meaning_axioms` list).  Empty unless the
+                    // decomposition opt-in is active, so the default path is
+                    // unchanged.
                     let omit: HashSet<SentenceId> = prover
                         .oracle
-                        .decomposition_meaning_axioms()
-                        .iter()
-                        .copied()
+                        .coverage()
+                        .omitted_axioms
+                        .into_iter()
                         .collect();
                     for sid in &selected {
                         if omit.contains(sid) {
@@ -474,6 +552,20 @@ impl ProverLayer {
                 RunVerdict::Refutation(empty) => prover.conjecture_rooted(empty),
                 _ => false,
             };
+            // Proof-DAG discharge-rule reach (SIGMA_STATS instrumentation
+            // only): at refutation, count how many clauses in the FOUND
+            // proof actually came from a model/oracle discharge mechanism —
+            // cheap (a DFS over already-built clause parents, no proof
+            // rendering), so always computed at refutation regardless of
+            // `want_proof`.
+            if let RunVerdict::Refutation(empty) = verdict {
+                let tags = crate::saturate::proof::count_proof_tags(&prover, empty);
+                prover.stats.proof_tag_model += tags.model;
+                prover.stats.proof_tag_model_join += tags.model_join;
+                prover.stats.proof_tag_join += tags.join;
+                prover.stats.proof_tag_event_calculus += tags.event_calculus;
+                prover.stats.proof_tag_oracle += tags.oracle;
+            }
             // A saturation is COMPLETE only if no capacity cap dropped
             // a clause along the way (input or derived).  Under strict
             // saturation (the TPTP problem path) the bar is refutation-
@@ -535,7 +627,18 @@ impl ProverLayer {
                  fc-join {}/{} ({} ground cand), open-match {}/{} ({} prefiltered), \
                  factor {}/{} ({} prefiltered)\n\
                  schema: {} hits, {} absorbed, {} sym-oriented, {} sym-resolutions, \
-                 mined {} sym / {} trans / {} other",
+                 mined {} sym / {} trans / {} other\n\
+                 model-discharge: {} atoms seen, {} rejected (lit_pattern), \
+                 {} arg collapsed (compound), {} arg collapsed (repeated-var), \
+                 {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
+                 {} budget-or-deadline-overflow / {} undefined-relation\n\
+                 model-complete: {} certified relations, {} negatives emitted, \
+                 blocked: {} skipped-head / {} unstratifiable / {} body-chain / {} role\n\
+                 demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
+                 {} scans_performed, {} scans_skipped_by_prefilter\n\
+                 proof-DAG reach: {} model, {} model_join, {} rule_join, \
+                 {} event_calculus, {} oracle\n\
+                 guide: {} guided_clauses_scored, {} guide_disabled_bail",
                 verdict, steps, prover.clauses.len(), prover.stats.resolvents,
                 prover.stats.decoded_resolutions,
                 prover.stats.oracle_discharges, prover.stats.unit_subsumed,
@@ -563,7 +666,28 @@ impl ProverLayer {
                 prover.stats.schema_hits, prover.stats.schema_absorbed,
                 prover.stats.sym_oriented, prover.stats.sym_resolutions,
                 prover.stats.mined_symmetric, prover.stats.mined_transitive,
-                prover.stats.mined_other);
+                prover.stats.mined_other,
+                prover.stats.model_atoms_seen, prover.stats.model_atoms_rejected,
+                prover.stats.model_arg_collapsed_compound,
+                prover.stats.model_arg_collapsed_repeated_var,
+                prover.stats.model_atoms_answered, prover.stats.model_atoms_unanswered,
+                prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
+                prover.stats.model_budget_or_deadline_overflows,
+                prover.stats.model_undefined_relation,
+                prover.stats.model_certified_relations,
+                prover.stats.model_complete_negatives_emitted,
+                prover.stats.model_cert_blocked_skipped_head,
+                prover.stats.model_cert_blocked_unstratifiable,
+                prover.stats.model_cert_blocked_body_chain,
+                prover.stats.model_cert_blocked_role,
+                prover.stats.demod_rewrite_attempts, prover.stats.demod_rewrites_applied,
+                prover.stats.demod_dup_hits,
+                prover.stats.demod_scans_performed,
+                prover.stats.demod_scans_skipped_by_prefilter,
+                prover.stats.proof_tag_model, prover.stats.proof_tag_model_join,
+                prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
+                prover.stats.proof_tag_oracle,
+                prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }

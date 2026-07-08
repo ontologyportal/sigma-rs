@@ -7,6 +7,8 @@ use std::fmt::Display;
 
 use super::error::TptpParseError;
 use super::super::Span;
+use super::super::doc::MetaNode;
+use super::super::ast::AstNode;
 
 /// TPTP multi-character connective tokens.
 ///
@@ -168,6 +170,11 @@ pub struct Tokenizer<'src> {
     line:    u32,
     col:     u32,
     src_len: usize,
+    /// Header pragma comments recognized while skipping `%`-comments (today:
+    /// `% Status : <word>`) — the side-channel that lets the SZS expected
+    /// outcome ride out of the tokenizer alongside the token stream, without
+    /// giving line comments a token of their own.
+    metas:   Vec<MetaNode>,
 }
 
 impl<'src> Tokenizer<'src> {
@@ -181,6 +188,7 @@ impl<'src> Tokenizer<'src> {
             line: 1,
             col: 1,
             src_len: src.len(),
+            metas: Vec::new(),
         }
     }
 
@@ -222,13 +230,33 @@ impl<'src> Tokenizer<'src> {
     // ── Comment skipping ──────────────────────────────────────────
 
     /// Skip a `%`-style line comment (TPTP) — identical to KIF `;` comments.
-    fn skip_line_comment(&mut self) {
+    /// `start` is the comment's opening `%` position, so a recognized header
+    /// pragma (`% Status : Theorem`) gets a span covering the whole line.
+    fn skip_line_comment(&mut self, start: Span) {
+        let mut text = String::new();
         while let Some(ch) = self.peek() {
             self.advance();
             if ch == '\n' {
                 break;
             }
+            text.push(ch);
         }
+        self.record_status_pragma(&text, start);
+    }
+
+    /// Recognize a `Status : <word>` TPTP header pragma inside one `%`
+    /// comment's text (the leading `%` is already stripped) and, if found,
+    /// push a `status` [`MetaNode`] onto the side channel — the SDK's SZS
+    /// grading path reads this back off the parsed document.
+    fn record_status_pragma(&mut self, text: &str, span: Span) {
+        let Some(rest) = text.trim_start().strip_prefix("Status") else { return };
+        let Some(word) = rest.trim_start().strip_prefix(':') else { return };
+        let Some(status) = word.split_whitespace().next() else { return };
+        self.metas.push(MetaNode {
+            key:  "status".into(),
+            args: vec![AstNode::Symbol { name: status.to_string(), span: span.clone() }],
+            span,
+        });
     }
 
     /// Skip a `/* … */` block comment (TPTP extension).
@@ -428,7 +456,7 @@ impl<'src> Tokenizer<'src> {
         match ch {
             // ── Comments ──────────────────────────────────────────
             '%' => {
-                self.skip_line_comment();
+                self.skip_line_comment(self.seal(start.clone()));
                 self.next_token()
             }
             '/' if self.peek() == Some('*') => {
@@ -646,6 +674,17 @@ fn is_numeric_str(s: &str) -> bool {
 /// Returns the tokens and any errors. Errors do not abort tokenization; they
 /// accumulate so the caller can report multiple problems at once.
 pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, TptpParseError)>) {
+    let (tokens, errors, _metas) = tokenize_with_meta(src, file);
+    (tokens, errors)
+}
+
+/// Like [`tokenize`], but also returns header pragma [`MetaNode`]s recognized
+/// while skipping `%`-comments (today: `% Status : <word>`) — the TPTP
+/// document parser folds these into its `Vec<DocItem>` output alongside the
+/// parsed statements.
+pub fn tokenize_with_meta(src: &str, file: &str)
+    -> (Vec<Token>, Vec<(Span, TptpParseError)>, Vec<MetaNode>)
+{
     let mut tok = Tokenizer::new(src, file);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -666,7 +705,7 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, TptpParseError
         )
     );
 
-    (tokens, errors)
+    (tokens, errors, tok.metas)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -905,5 +944,24 @@ mod tests {
         let (tokens, _) = tokenize("<=>", "test");
         assert_eq!(tokens[0].span.offset,     0);
         assert_eq!(tokens[0].span.end_offset, 3);
+    }
+
+    // ── Status pragma capture ─────────────────────────────────────
+
+    #[test]
+    fn captures_status_pragma_from_header_comment() {
+        let src = "% File     : PUZ001+1\n% Status   : Theorem\nfof(a, axiom, p).\n";
+        let (_, errors, metas) = tokenize_with_meta(src, "test");
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+        assert_eq!(metas.len(), 1, "exactly one status pragma recognized");
+        assert_eq!(metas[0].key, "status");
+        assert!(matches!(&metas[0].args[0], AstNode::Symbol { name, .. } if name == "Theorem"));
+    }
+
+    #[test]
+    fn ignores_ordinary_comments_without_status() {
+        let src = "% just a regular comment\nfof(a, axiom, p).\n";
+        let (_, _, metas) = tokenize_with_meta(src, "test");
+        assert!(metas.is_empty());
     }
 }

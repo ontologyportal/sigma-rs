@@ -50,7 +50,7 @@ impl Parser {
                 (doc, wrap_error(errors))
             },
             Parser::Tptp { options} => {
-                let (tokens, tok_err) = tptp::tokenize(&inp, file);
+                let (tokens, tok_err, metas) = tptp::tokenize_with_meta(&inp, file);
                 let (mut ast, parse_err) = tptp::parse(tokens, file, options.clone());
                 let mut errors = tok_err;
                 errors.extend(parse_err);
@@ -61,9 +61,12 @@ impl Parser {
                 for node in &mut ast {
                     macros::decode_tptp_literals(node, self);
                 }
-                let doc: Vec<DocItem> = ast.into_iter().map(|ast| {
-                    DocItem::Stmt(ast)
-                }).collect();
+                // Header pragmas (`% Status : Theorem`) recognized by the
+                // tokenizer ride in as `DocItem::Meta` alongside the parsed
+                // statements — the SDK's SZS grading path reads the `status`
+                // key back off the document.
+                let mut doc: Vec<DocItem> = metas.into_iter().map(DocItem::Meta).collect();
+                doc.extend(ast.into_iter().map(DocItem::Stmt));
                 (doc, wrap_error(errors))
             },
             Parser::Tq => {
@@ -139,7 +142,38 @@ impl Parser {
 
 fn wrap_error<E: ParseError + 'static>(err: Vec<(Span, E)>) -> Vec<(Span, Box<dyn ParseError>)> {
     err.into_iter()
-        .map(|(span, e)| { 
-            (span, Box::new(e) as Box<dyn ParseError>) 
+        .map(|(span, e)| {
+            (span, Box::new(e) as Box<dyn ParseError>)
         }).collect::<Vec<(Span, Box<dyn ParseError>)>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A TPTP problem's `% Status : <word>` header pragma must surface as a
+    // `DocItem::Meta` (key "status") in the parsed document — the SDK's SZS
+    // grading path (`Session::test`) reads it back off here rather than
+    // re-parsing the raw file text itself.
+    #[test]
+    fn tptp_status_header_becomes_a_meta_docitem() {
+        let src = "\
+            % File     : MINI001+1\n\
+            % Status   : Theorem\n\
+            fof(a1, axiom, p).\n\
+            fof(g, conjecture, p).\n";
+        let opts = TptpParseOptions { keep_conjectures: true, ..TptpParseOptions::none() };
+        let (doc, errors) = Parser::Tptp { options: Some(opts) }.parse(src, "mini");
+        assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+        let metas: Vec<&crate::parse::doc::MetaNode> =
+            doc.iter().filter_map(DocItem::as_meta).collect();
+        assert_eq!(metas.len(), 1, "exactly one status meta expected: {doc:?}");
+        assert_eq!(metas[0].key, "status");
+        assert!(
+            matches!(&metas[0].args[0], AstNode::Symbol { name, .. } if name == "Theorem"),
+            "expected Symbol(\"Theorem\"), got {:?}", metas[0].args[0]
+        );
+        // The two `fof` statements still parse as ordinary Stmt items.
+        assert_eq!(doc.iter().filter(|d| d.as_stmt().is_some()).count(), 2);
+    }
 }

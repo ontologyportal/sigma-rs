@@ -111,12 +111,36 @@ pub trait ProvingLayer: TopLayer {
         term
     }
 
+    /// Hook for a backend-specific STRATEGY schedule in place of the plain
+    /// budget-autoscaling loop (see [`crate::prover::scale::drive_portfolio`]).
+    /// Default: `None` (no portfolio) — [`prove`](Self::prove) falls through
+    /// to its ordinary single-shot / `drive` behavior, so every backend
+    /// without an override (the external/`ExternalProverLayer` path, and the
+    /// native path outside the TPTP regime) is completely unaffected. The
+    /// native backend overrides this to race
+    /// [`Strategy::tptp_lanes`](crate::prover::saturate::strategy::Strategy::tptp_lanes)
+    /// when `opts` is configured for a standalone TPTP problem
+    /// (`full_saturation` — see `set_tptp_problem`) and
+    /// `SIGMA_NO_PORTFOLIO` isn't set.  Only called when
+    /// `opts.selection().autoscaling()` is true (same gate as the plain
+    /// autoscale loop).
+    fn try_portfolio(
+        &self,
+        _prepared:      &Conjecture,
+        _total_timeout: u32,
+        _opts:          &Self::Opts,
+        _ctx:           &crate::ProveCtx,
+    ) -> Option<result::ProverResult> {
+        None
+    }
 
     /// Prove `conjecture` under `opts`.  Backend-agnostic: warm up, prepare
-    /// once, then run either a single shot (fixed scope / `--no-autoscale`) or
-    /// the shared prover-feedback autoscaling loop.  The selection seed and
-    /// total budget come off `opts` via [`CommonProverOpts`].  **Not meant to be
-    /// overridden.**
+    /// once, then run either a single shot (fixed scope / `--no-autoscale`),
+    /// a backend's strategy-schedule portfolio ([`try_portfolio`](Self::try_portfolio),
+    /// when it opts in), or the shared prover-feedback autoscaling loop.  The
+    /// selection seed and total budget come off `opts` via
+    /// [`CommonProverOpts`].  **Not meant to be overridden** — backends hook
+    /// in via `try_portfolio` instead.
     fn prove(
         &self,
         conjecture: Vec<crate::AstNode>,
@@ -132,6 +156,8 @@ pub trait ProvingLayer: TopLayer {
         let total_timeout = opts.timeout().min(u64::from(u32::MAX)) as u32;
         let result = if !selection.autoscaling() {
             self.prove_once(&prepared, selection, total_timeout, opts, ctx).0
+        } else if let Some(r) = self.try_portfolio(&prepared, total_timeout, opts, ctx) {
+            r
         } else {
             use crate::prover::scale::{drive, ScaleConfig};
             use crate::syntactic::sine::{

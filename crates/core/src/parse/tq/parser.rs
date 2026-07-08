@@ -42,6 +42,20 @@ pub struct TestCase {
     /// Hypotheses, each `Annotated { role: Hypothesis, … }`.
     pub axioms: Vec<AstNode>,
     pub extra_files: Vec<String>,
+    /// The TPTP `% Status : <word>` header pragma, verbatim (`Theorem` /
+    /// `Unsatisfiable` / `Satisfiable` / `CounterSatisfiable` / `Open` /
+    /// `Unknown` / …), when the source carried a `status` [`MetaNode`].
+    /// `None` for `.tq` sources (no such directive) and TPTP files with no
+    /// recognized header.
+    pub expected_status: Option<String>,
+    /// `true` iff the query came from a proper (positive) `conjecture` role —
+    /// a TPTP FOF `conjecture`, or a `.tq` `(query …)` directive (also
+    /// annotated `Conjecture`) — as opposed to a CNF `negated_conjecture`
+    /// (re-wrapped by [`renegate`]) or no conjecture at all.  Distinguishes
+    /// the SZS naming convention a caller should use for the outcome:
+    /// proper-conjecture reports `Theorem`/`CounterSatisfiable`; CNF /
+    /// no-conjecture reports `Unsatisfiable`/`Satisfiable`.
+    pub has_fof_conjecture: bool,
 }
 
 impl TestCase {
@@ -85,12 +99,17 @@ impl TestCase {
             expected_proof:  None,
             axioms:          Vec::new(),
             extra_files:     Vec::new(),
+            expected_status: None,
+            has_fof_conjecture: false,
         };
         let mut leftover: Vec<DocItem> = Vec::new();
         for item in items {
             match item {
                 DocItem::Stmt(node) => match node.role() {
-                    Some(Role::Conjecture)        => tc.query = Some(node.clone()),
+                    Some(Role::Conjecture) => {
+                        tc.query = Some(node.clone());
+                        tc.has_fof_conjecture = true;
+                    }
                     Some(Role::NegatedConjecture) => tc.query = Some(renegate(node, file_name)),
                     Some(Role::Hypothesis)        => tc.axioms.push(node.clone()),
                     // Background theory (`axiom`, `plain`, `definition`, …) is
@@ -166,6 +185,14 @@ impl TestCase {
                     other                        => other.to_string(),
                 };
                 self.extra_files.push(fname);
+            },
+            // The TPTP `% Status : <word>` header pragma (see the tokenizer's
+            // `record_status_pragma`) — first match wins, mirroring the
+            // TPTP convention of one `Status` line per problem file.
+            "status" => if self.expected_status.is_none() {
+                if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
+                    self.expected_status = Some(name.clone());
+                }
             },
             _ => {}
         }

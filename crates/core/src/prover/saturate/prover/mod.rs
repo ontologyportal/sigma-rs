@@ -16,7 +16,7 @@
 // reappear in resolvents, and stay indexed as passive partners).
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use std::time::Instant;
 
 use smallvec::SmallVec;
@@ -28,16 +28,25 @@ use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 use crate::SineParams;
 
 use super::ProverLayer;
-use super::canon::{blank_key, canonical_clause};
 use super::clause::{AtomId, ClauseKey, PClause, PLit, Term};
 use super::AtomInfo;
 use super::index::{EntryRef, LiteralIndex};
 use super::oracle::{SemanticOracle, Witness};
+use super::theory::TheoryOracle;
 use super::hash64::{Map64, Set64};
-use super::schema::{SchemaHit, SchemaKind};
 use super::strategy::Strategy;
 use super::unify::{apply, apply_off, match_one_way, shift_slots, slot_atom, unify, unify_off, Subst};
 use super::units::UnitStores;
+
+mod discharge;
+mod forward;
+mod make;
+mod schema_apply;
+mod snapshot;
+mod stats;
+
+pub(crate) use snapshot::ProverSnapshot;
+pub(crate) use stats::ProverStats;
 
 // Clause lineage tiers (queue priority: conjecture line first).
 pub(crate) const CONJECTURE: u8 = 0;
@@ -169,17 +178,6 @@ pub(crate) struct ClauseRec {
     pub(crate) notes: Vec<String>,
 }
 
-/// Verdict of the ground-equality decision procedure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EqDecision {
-    /// Provably equal (closure / identical / equal numeric values).
-    Entailed,
-    /// Provably UNEQUAL (distinct numeric literal values only).
-    Refuted,
-    /// Neither provable — ordinary search decides.
-    Unknown,
-}
-
 /// The given literal's decode-relevant facts, hoisted out of the
 /// per-partner loop (see `decode_given_shape`).
 struct DecodeShape {
@@ -205,174 +203,6 @@ pub(crate) enum RunVerdict {
     TimedOut,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct ProverStats {
-    pub(crate) resolvents: u64,
-    pub(crate) oracle_discharges: u64,
-    pub(crate) oracle_subsumed: u64,
-    pub(crate) unit_subsumed: u64,
-    pub(crate) unit_simplified: u64,
-    /// Subterm rewrites performed by forward demodulation.
-    pub(crate) demod_rewrites: u64,
-    /// New clauses dropped by forward (multi-literal) subsumption.
-    pub(crate) subsumed: u64,
-    pub(crate) discarded_deep: u64,
-    pub(crate) discarded_long: u64,
-    /// Some clause carried an equality literal — the "problem contains
-    /// equality" signal for strict saturation verdicts.  Only tracked
-    /// when `Strategy.strict_saturation` (sticky bit, one scan per make).
-    pub(crate) saw_equality: bool,
-    /// Superposition generation truncated by `para_cap` — inferences
-    /// were never made, so a later saturation is not refutation-complete.
-    pub(crate) gen_capped: u64,
-    /// Maximal positive equality literals the superposition indexes had
-    /// to skip because KBO could not orient them — the calculus only
-    /// superposes FROM oriented equations, so each is a completeness
-    /// loss strict saturation must know about.
-    pub(crate) unorientable_eqs: u64,
-    pub(crate) forward_closed: u64,
-    /// Oriented equations produced by Phase-6 background completion.
-    pub(crate) bg_completed: u64,
-    /// Resolutions whose bindings were extracted algebraically from the
-    /// power-sum residual (no unification walk).
-    pub(crate) decoded_resolutions: u64,
-    // -- candidate-verification profile (attempts vs successes per site,
-    //    plus how many attempts had a ground candidate — the decode
-    //    fast-path's entry condition).  Sized for ranking where the
-    //    algebraic calculus could take more load.
-    pub(crate) resolve_unify_attempts: u64,
-    pub(crate) resolve_unify_hits: u64,
-    pub(crate) resolve_ground_partner: u64,
-    pub(crate) fc_unify_attempts: u64,
-    pub(crate) fc_unify_hits: u64,
-    pub(crate) fc_ground_candidate: u64,
-    pub(crate) open_match_attempts: u64,
-    pub(crate) open_match_hits: u64,
-    /// Candidates refuted by THE KEY EQUATION before the match walk.
-    pub(crate) open_match_prefiltered: u64,
-    pub(crate) factor_attempts: u64,
-    pub(crate) factor_hits: u64,
-    /// Pairs refuted by per-seat coin comparison before unification.
-    pub(crate) factor_prefiltered: u64,
-    // -- saturation-loop mechanism timing (populated when opts.profile;
-    //    one Instant pair per mechanism per given-clause step).
-    pub(crate) t_resimplify: std::time::Duration,
-    pub(crate) t_factors: std::time::Duration,
-    pub(crate) t_eq_resolve: std::time::Duration,
-    pub(crate) t_paramod: std::time::Duration,
-    pub(crate) t_resolve: std::time::Duration,
-    /// Empty clauses whose lineage never touches the negated
-    /// conjecture: the INPUTS are contradictory (SUMO is, in places —
-    /// e.g. Merge's species-inheritance axiom vs the Man/Woman
-    /// partition).  Logged and skipped under the paraconsistent
-    /// set-of-support discipline, never exploited.
-    pub(crate) input_contradictions: u64,
-    // -- schema channel (theory-rule shape recognition; see schema.rs).
-    /// Probe hits (verified — not raw table matches).
-    pub(crate) schema_hits: u64,
-    /// Clauses absorbed outright (symmetry rules + the symmetry
-    /// metaschema; their inferential role is fully replaced).
-    pub(crate) schema_absorbed: u64,
-    /// Ground symmetric-relation literals whose arguments were swapped
-    /// into canonical order.
-    pub(crate) sym_oriented: u64,
-    /// Resolutions that succeeded through the symmetric argument-swap
-    /// retry (`resolve_sym` steps).
-    pub(crate) sym_resolutions: u64,
-    pub(crate) mined_symmetric: u64,
-    pub(crate) mined_transitive: u64,
-    /// Antisymmetry / irreflexivity / inverse-pair sightings (registered
-    /// for future consumers; no behavior change yet).
-    pub(crate) mined_other: u64,
-
-    // -- model-discharge path counters (SIGMA_STATS instrumentation only;
-    //    zero behavior change — see discharge_models / discharge_model_joins
-    //    / lit_pattern).  All zero unless SIGMA_MODEL is set.
-    /// Conjecture atoms seen while scanning for goal patterns, summed across
-    /// `discharge_models` + `discharge_model_joins`.
-    pub(crate) model_atoms_seen: u64,
-    /// Atoms rejected by `lit_pattern` (non-flat / no-args / non-`App` head)
-    /// while scanning conjecture literals for goal patterns.
-    pub(crate) model_atoms_rejected: u64,
-    /// Goal argument positions collapsed to `DTerm::Var(0)` at the
-    /// prover-to-model bridge because the argument is a compound term (not
-    /// a bare `Term::Sym`).
-    pub(crate) model_arg_collapsed_compound: u64,
-    /// Goal argument positions collapsed to `DTerm::Var(0)` at the bridge
-    /// because the same source variable appears in more than one argument
-    /// position (repeated-variable collapse -- `DTerm::Var(0)` cannot
-    /// distinguish them, so the join loses the co-reference constraint).
-    pub(crate) model_arg_collapsed_repeated_var: u64,
-    /// Conjecture atoms `discharge_models`/`discharge_model_joins` obtained
-    /// at least one answer/witness for.
-    pub(crate) model_atoms_answered: u64,
-    /// Conjecture atoms that were dispatched to `ModelProgram::answer` but
-    /// came back with no rows (or the call bailed) -- no witness found.
-    pub(crate) model_atoms_unanswered: u64,
-    /// `ModelProgram::answer` bail reasons, summed across both discharge
-    /// passes (see `model::ModelStats`).
-    pub(crate) model_unsafe_bails: u64,
-    pub(crate) model_unstratifiable_bails: u64,
-    /// Tuple-budget AND wall-clock-deadline overflows, combined -- the
-    /// evaluator's `ModelError::Overflow` does not distinguish them (see
-    /// `model/seminaive.rs`); splitting would need a second return channel
-    /// through `evaluate_within`, not attempted here.
-    pub(crate) model_budget_or_deadline_overflows: u64,
-    pub(crate) model_undefined_relation: u64,
-
-    // -- forward-demodulation duplicate-hit probe (Part 2; only active when
-    //    Strategy.demod is on).
-    /// Calls into `demodulate()` that were eligible to attempt a rewrite
-    /// (demod on, at least one active unit equation) -- one per literal
-    /// visited in `make`.
-    pub(crate) demod_rewrite_attempts: u64,
-    /// Of those, how many actually rewrote the literal (n >= 1 subterm
-    /// rewrites applied) -- a clause-level count, NOT a subterm-rewrite
-    /// count (that is `demod_rewrites` above).
-    pub(crate) demod_rewrites_applied: u64,
-    /// Of the clauses whose literals were rewritten by demod, how many
-    /// ended up being exact duplicates of an already-known clause (probed
-    /// via the same `ClauseKey`/`self.seen` dedup path `push()` uses).
-    /// Measures the potential payoff of a rewrite-delta pre-probe.
-    pub(crate) demod_dup_hits: u64,
-
-    // -- proof-DAG discharge-rule reach (counted once per completed proof
-    //    extraction, at refutation time).
-    pub(crate) proof_tag_model: u64,
-    pub(crate) proof_tag_model_join: u64,
-    pub(crate) proof_tag_join: u64,
-    pub(crate) proof_tag_event_calculus: u64,
-    pub(crate) proof_tag_oracle: u64,
-}
-
-/// A frozen background problem base: everything `ask_native_once`
-/// computes BEFORE support/conjecture loading, detached from the
-/// layer borrow so it can live in `ProverLayer::bg_snapshots`.
-/// Rehydration is a deep clone — a few ms against the ~60 ms+ of
-/// pre-pass + clause-pipeline + indexing it replaces.
-#[derive(Debug, Clone)]
-pub(crate) struct ProverSnapshot {
-    /// Roots whose pre-pass + clauses are IN THE ARENA (indexes may
-    /// cover a subset after a narrowed rehydration — `retain_background`
-    /// rebuilds them from the arena for any subset of these).
-    pub(crate) loaded_roots: std::collections::HashSet<SentenceId>,
-    clauses: Vec<ClauseRec>,
-    seen: Set64<ClauseKey>,
-    idx: LiteralIndex,
-    units: UnitStores,
-    support_seeds: Vec<(AtomId, u32)>,
-    eq_terms: Map64<u64, Term>,
-    lists_done: Set64<u64>,
-    pending_list_units: Vec<Term>,
-    has_compound_eqs: bool,
-    antisym_mined: Map64<SymbolId, Option<SentenceId>>,
-    irrefl_mined: Map64<SymbolId, Option<SentenceId>>,
-    inverse_mined: Vec<(SymbolId, SymbolId, Option<SentenceId>)>,
-    sym_swap_memo: Map64<AtomId, (u64, Option<AtomId>)>,
-    seq: u64,
-    tick: u64,
-    oracle: super::oracle::OracleSnapshot,
-}
 
 pub(crate) struct NativeProver<'a> {
     layer: &'a ProverLayer,
@@ -396,7 +226,13 @@ pub(crate) struct NativeProver<'a> {
     units: UnitStores,
     /// Ground positive support units — the forward closure's seeds.
     support_seeds: Vec<(AtomId, u32)>,
-    h_weight: BinaryHeap<Reverse<(u64, u64, u32)>>,
+    /// `(weight, guide_key, seq, id)` — `guide_key` is the semantic-guide
+    /// tie-break (0 when `Strategy.semantic_guide` is off: an inert third
+    /// column, so the ordering is byte-identical to the pre-guidance
+    /// two-column key whenever the knob is off).  Ties within `weight`
+    /// resolve by `guide_key` (lower = more model-false literals = picked
+    /// sooner), then by `seq` (age) as before.
+    h_weight: BinaryHeap<Reverse<(u64, u64, u64, u32)>>,
     h_age: BinaryHeap<Reverse<(u64, u32)>>,
     popped: Set64<u32>,
     /// Equality-class key → renderable Term for every constant the
@@ -457,8 +293,26 @@ pub(crate) struct NativeProver<'a> {
     /// every queued clause is scored against.  0 = no conjecture
     /// (consistency audits) ⇒ the distance factor is inert.
     conj_sig: u64,
+    /// Forward-demodulation index: KBO-oriented positive unit equations,
+    /// registered at ACTIVATION (given-clause processing / background
+    /// load) and bucketed by their left side's head shape — see
+    /// [`super::units::DemodIndex`].  Not snapshotted (orientation is
+    /// KBO-dependent and `bg_fingerprint` excludes `prec_seed`);
+    /// hydration rebuilds it from the arena like the superposition
+    /// indexes.
+    demods: super::units::DemodIndex,
     seq: u64,
     tick: u64,
+    /// Semantic clause-selection guidance (`Strategy.semantic_guide`):
+    /// the KB's positive model, built ONCE at `run()` start.  `None`
+    /// covers two cases the scorer treats identically (neutral, no
+    /// tie-break) — guidance is off, or the one-shot build bailed
+    /// (`ModelProgram::positive_model` hit its materialization budget);
+    /// [`Self::guide_disabled`] distinguishes the latter for stats.
+    guide_model: Option<super::model::Model>,
+    /// Set once `run()` has attempted the guide-model build (regardless
+    /// of outcome) — guards against rebuilding on every `push`.
+    guide_attempted: bool,
     pub(crate) stats: ProverStats,
 }
 
@@ -497,41 +351,12 @@ impl<'a> NativeProver<'a> {
             bg_roots: std::collections::HashSet::new(),
             sym_swap_memo: Map64::default(),
             conj_sig: 0,
+            demods: super::units::DemodIndex::default(),
             seq: 0,
             tick: 0,
+            guide_model: None,
+            guide_attempted: false,
             stats: ProverStats::default(),
-        }
-    }
-
-    /// Capture the prover's owned state after BACKGROUND loading —
-    /// clause arena, indexes, dedup set, oracle products of the input
-    /// pre-pass — for reuse by later runs over an identical problem
-    /// base (see `ProverLayer::bg_snapshots`).  Must be taken BEFORE
-    /// support/conjecture loading: the queue is asserted empty (the
-    /// background tier is pre-activated, never queued).
-    pub(crate) fn freeze(&self) -> ProverSnapshot {
-        debug_assert!(
-            self.h_weight.is_empty() && self.h_age.is_empty(),
-            "freeze must precede support/conjecture loading"
-        );
-        ProverSnapshot {
-            loaded_roots: self.bg_roots.clone(),
-            clauses: self.clauses.clone(),
-            seen: self.seen.clone(),
-            idx: self.idx.clone(),
-            units: self.units.clone(),
-            support_seeds: self.support_seeds.clone(),
-            eq_terms: self.eq_terms.clone(),
-            lists_done: self.lists_done.clone(),
-            pending_list_units: self.pending_list_units.clone(),
-            has_compound_eqs: self.has_compound_eqs,
-            antisym_mined: self.antisym_mined.clone(),
-            irrefl_mined: self.irrefl_mined.clone(),
-            inverse_mined: self.inverse_mined.clone(),
-            sym_swap_memo: self.sym_swap_memo.clone(),
-            seq: self.seq,
-            tick: self.tick,
-            oracle: self.oracle.snapshot(),
         }
     }
 
@@ -568,57 +393,10 @@ impl<'a> NativeProver<'a> {
         if p.opts.strategy.superposition {
             p.rebuild_superposition_index();
         }
+        // Same for the demodulator index: orientation depends on THIS
+        // run's KBO (`prec_seed`), which the snapshot key excludes.
+        p.rebuild_demod_index();
         p
-    }
-
-    /// Re-derive the retrieval surfaces (literal index, unit stores,
-    /// dedup set) for a SUBSET of the frozen background — the
-    /// contraction half of cross-slice reuse.  Clauses from roots
-    /// outside `keep` stay in the arena (ids are stable, so parent /
-    /// proof references keep working) but vanish from every probe, so
-    /// they can never be resolution partners — exactly a narrower
-    /// slice's search space.  The ORACLE deliberately keeps the
-    /// superset's theory (equalities / FD / closures contributed by
-    /// masked axioms): every discharge still cites real KB axioms, so
-    /// narrowing stays sound — it is a search heuristic, not a
-    /// semantic restriction.  Synthesized theory clauses (subrel
-    /// schema, `source == None`) are always kept.
-    pub(crate) fn retain_background(&mut self, keep: &std::collections::HashSet<SentenceId>) {
-        self.idx = LiteralIndex::default();
-        self.units = UnitStores::default();
-        self.seen = Set64::default();
-        self.support_seeds.clear();
-        let n = self.clauses.len() as u32;
-        let layer = self.layer;
-        let src = move |a| layer.atom_info(a);
-        for id in 0..n {
-            let (kept, key) = {
-                let c = &self.clauses[id as usize];
-                let kept = c.activated
-                    && match c.source {
-                        Some(sid) => keep.contains(&sid),
-                        None => true,
-                    };
-                (kept, c.key)
-            };
-            if !kept {
-                continue;
-            }
-            self.seen.insert(key);
-            let lits = self.clauses[id as usize].lits.clone();
-            for (i, l) in lits.iter().enumerate() {
-                self.idx.add(EntryRef { clause: id, lit: i as u8 }, l.pos, l.atom, &src);
-            }
-            if lits.len() == 1 {
-                let nv = self.clauses[id as usize].nvars;
-                self.units.add_unit(
-                    id, lits[0].pos, lits[0].atom, nv,
-                    &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
-            }
-        }
-        if self.opts.strategy.superposition {
-            self.rebuild_superposition_index();
-        }
     }
 
     /// Test-only retrieval probe: is `(pos, atom)` an active ground
@@ -667,1331 +445,6 @@ impl<'a> NativeProver<'a> {
         self.opts.want_proof || self.audit
     }
 
-    /// Rewrite every ground constant in `t` to its equality-class
-    /// representative, IN PLACE — touched nodes are replaced, untouched
-    /// subtrees are never rebuilt, and the no-equalities case (most
-    /// runs, most literals) is a single branch.
-    fn normalize_eq(&self, t: &mut Term) {
-        if !self.oracle.has_equalities() {
-            return;
-        }
-        self.normalize_eq_rec(t);
-    }
-
-    fn normalize_eq_rec(&self, t: &mut Term) {
-        match t {
-            Term::Sym(_) | Term::Lit(Literal::Number(_)) => {
-                let Some(key) = eq_key(t) else { return };
-                let rep = self.oracle.eq_rep(key);
-                if rep == key {
-                    return;
-                }
-                if let Some(r) = self.eq_terms.get(&rep) {
-                    *t = r.clone();
-                } else if let Some(sym) = self.syn().sym_name(rep) {
-                    *t = Term::Sym(sym);
-                }
-            }
-            Term::App(elems) => {
-                for e in elems.iter_mut() {
-                    self.normalize_eq_rec(e);
-                }
-                if self.has_compound_eqs
-                    && t.is_ground()
-                    && term_size(t) <= self.opts.strategy.max_term_size
-                {
-                    let key = self.layer.atoms.intern_atom(t);
-                    let rep = self.oracle.eq_rep(key);
-                    if rep != key {
-                        if let Some(r) = self.eq_terms.get(&rep) {
-                            *t = r.clone();
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Forward demodulation: rewrite `t` to KBO normal form using the
-    /// active unit equations, oriented by the reduction ordering.  For a
-    /// unit `(equal l r)` we rewrite a subterm matching `l` to `r` ONLY
-    /// when `l >_kbo r` — so every rewrite is strictly downhill in a
-    /// well-founded order (it terminates) and sound (equals for equals).
-    /// Unlike `paramodulants` (which UNIFIES and keeps the parent), this
-    /// MATCHES one-way (binds the rule's variables only) and the
-    /// rewritten clause replaces the original — a simplification.
-    /// Demodulator clause ids are pushed to `used` for the proof DAG.
-    fn demodulate(&self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
-        if !self.opts.strategy.demod || self.units.equals.is_empty() {
-            return 0;
-        }
-        // Cap total rewrites per term — a guard, not the terminator
-        // (KBO already guarantees termination); bounds pathological
-        // fan-out on huge clauses.  Parameterized (default 64).
-        let demod_cap = self.opts.strategy.demod_cap.max(1);
-        let mut rewrites = 0u64;
-        'fixpoint: loop {
-            if rewrites >= demod_cap {
-                break;
-            }
-            // Shift the demodulator's slots clear of the target's, so
-            // one-way matching never confuses a rule variable with a
-            // target variable (mirrors `paramodulants`' offset trick).
-            let off = max_slot(t).map_or(0, |m| m + 1);
-            for (cid, l, r) in self.units.equals.iter() {
-                // A bare-variable left side rewrites everything — never a
-                // sound demodulator; skip (it is also never KBO-greater).
-                if matches!(l, Term::Var(_)) {
-                    continue;
-                }
-                if !self.demod_oriented(l, r) {
-                    continue;
-                }
-                let l2 = shift_slots(l, off);
-                let r2 = shift_slots(r, off);
-                let nslots = max_slot(&l2).unwrap_or(off) + 1;
-                for (path, sub) in positions(t) {
-                    let mut s: Subst = vec![None; nslots as usize];
-                    if match_one_way(&l2, &sub, &mut s) {
-                        let rr = apply(&r2, &s);
-                        *t = replace(t, &path, &rr);
-                        used.push(*cid);
-                        rewrites += 1;
-                        // The term changed; restart the scan from the top
-                        // (a rewrite can expose new redexes / new `off`).
-                        continue 'fixpoint;
-                    }
-                }
-            }
-            break;
-        }
-        rewrites
-    }
-
-    /// Whether `(equal l r)` is a sound left-to-right demodulator: `l`
-    /// strictly greater than `r` in the layer's KBO.  Stable under
-    /// substitution, so the single check licenses rewriting every
-    /// matched instance.  Both sides intern (content-addressed, cheap)
-    /// and the comparison is memoized.
-    fn demod_oriented(&self, l: &Term, r: &Term) -> bool {
-        let la = self.layer.atoms.intern_atom(l);
-        let ra = self.layer.atoms.intern_atom(r);
-        matches!(
-            self.kbo().compare(la, ra, &self.layer.atoms, self.syn()),
-            super::kbo::KboCmp::Greater
-        )
-    }
-
-    /// Synthesize the concrete subrelation rule `(=> (R ?x ?y) (S ?x ?y))`
-    /// for every `(subrelation R S)` ground fact in `clauses`, adding it
-    /// as an activated BACKGROUND clause.  This is the first-order
-    /// instantiation of SUMO's second-order subrelation schema for the
-    /// relations actually present: it lets resolution chain subrelation
-    /// inheritance directly (binding open `(part ?N ?A)` literals from
-    /// `(component ?N ?A)` facts) instead of branching through the
-    /// predicate-variable seat-0 bucket, which otherwise explodes.
-    pub(crate) fn synthesize_subrelation_rules(&mut self, clauses: &[PClause]) {
-        let subrel = self.oracle.roles().subrelation;
-        let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
-        for c in clauses {
-            if c.lits.len() != 1 || !c.lits[0].pos {
-                continue;
-            }
-            let Some(sent) = self.layer.atoms.resolve(c.lits[0].atom, self.syn()) else { continue };
-            if sent.elements.len() != 3 {
-                continue;
-            }
-            match (sent.elements.first(), &sent.elements[1], &sent.elements[2]) {
-                (Some(Element::Symbol(h)), Element::Symbol(r), Element::Symbol(s))
-                    if h.id() == subrel && r.id() != s.id() =>
-                {
-                    pairs.push((r.0.clone(), s.0.clone()));
-                }
-                _ => {}
-            }
-        }
-        for (r, s) in pairs {
-            if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
-                eprintln!("SUBREL-SCHEMA {} -> {}", r.name(), s.name());
-            }
-            let body = Term::App(vec![Term::Sym(r), Term::Var(0), Term::Var(1)]);
-            let head = Term::App(vec![Term::Sym(s), Term::Var(0), Term::Var(1)]);
-            if let Some(id) =
-                self.make(vec![(false, body), (true, head)], vec![], "subrel_schema", BACKGROUND, None, false)
-            {
-                let key = self.clauses[id as usize].key;
-                if self.clauses[id as usize].lits.len() <= self.opts.max_lits
-                    && self.seen.insert(key)
-                {
-                    self.activate(id);
-                }
-            }
-        }
-    }
-
-    /// Event-oracle (fix B): discharge multi-premise Horn rules by an
-    /// indexed nested-loop JOIN over ground facts, emitting only the
-    /// satisfied head unit.  Theory body literals (taxonomy / temporal)
-    /// are decided through the oracle rather than resolved against the
-    /// generative axioms that produce their facts — so a rule body over
-    /// high-frequency relations (`instance`/`agent`/`temporalPart`)
-    /// becomes a bounded ground join instead of a saturating cascade.
-    ///
-    /// Only "conclusion" rules run: the head relation must have no ground
-    /// facts of its own and not be a theory relation — this selects
-    /// derived-only heads (`breaksLaw`, `goesToJail`) and excludes SUMO's
-    /// generative rules (whose heads are `instance`/attributes/…).  A
-    /// bounded fixpoint feeds each emitted head back as a fact so chained
-    /// rules (`breaksLaw ⇒ goesToJail`) fire on later rounds.
-    ///
-    /// Gated by `SIGMA_RULE_JOIN`; a no-op when unset (default off, so the
-    /// saturation baseline is byte-identical).
-    pub(crate) fn discharge_horn_joins(&mut self) {
-        if std::env::var_os("SIGMA_RULE_JOIN").is_none() {
-            return;
-        }
-        let roles = self.oracle.roles();
-        let tids = super::temporal::TemporalRelIds::standard();
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-
-        // Conclusion rules from the clause set: one positive head + ≥1
-        // negative body literal, all symbol-headed, the head a non-theory
-        // relation with NO ground facts of its own (so SUMO's generative
-        // rules — heads over `instance`/attributes/… — are excluded).
-        // Ground facts come from the STORE (the whole KB), not the
-        // SInE-selected clause set — the join is a semantic discharge and
-        // must see facts the search heuristic dropped.
-        struct JoinRule {
-            /// The Horn-rule clause id — a proof-DAG parent of every head
-            /// the rule discharges (renders as "by axiom …").
-            id:   u32,
-            body: Vec<(SymbolId, Vec<Term>)>,
-            head: Term,
-        }
-        // A conjunctive-query goal: the all-negative negated conjecture
-        // `¬R1 ∨ … ∨ ¬Rn` of `∃X⃗.(R1 ∧ … ∧ Rn)`.  `lits` are the (positive)
-        // atom terms; a binding satisfying all of them against ground facts
-        // makes every Ri true, and emitting those ground atoms collapses
-        // the clause to empty (the query is answered).
-        struct JoinQuery {
-            lits: Vec<Term>,
-        }
-        let mut rules: Vec<JoinRule> = Vec::new();
-        let mut queries: Vec<JoinQuery> = Vec::new();
-        let mut needed: HashSet<SymbolId> = HashSet::new();
-        for c in &self.clauses {
-            let mut head: Option<&Term> = None;
-            let mut two_pos = false;
-            for (pos, t) in &c.terms {
-                if *pos {
-                    if head.is_some() {
-                        two_pos = true;
-                        break;
-                    }
-                    head = Some(t);
-                }
-            }
-            if two_pos {
-                continue;
-            }
-            let Some(head) = head else { continue };
-            if !c.terms.iter().any(|(p, _)| !*p) {
-                continue; // no body
-            }
-            let rule_id = c.id;
-            let Some((head_rel, _)) = lit_pattern(head) else { continue };
-            if is_theory_rel(head_rel, &roles, &tids) {
-                continue;
-            }
-            if !self.syn().by_head_id(&head_rel).is_empty() {
-                continue; // head relation has asserted facts ⇒ generative, skip
-            }
-            let mut body: Vec<(SymbolId, Vec<Term>)> = Vec::new();
-            let mut ok = true;
-            for (p, t) in &c.terms {
-                if *p {
-                    continue;
-                }
-                match lit_pattern(t) {
-                    Some((r, a)) => {
-                        if !is_theory_rel(r, &roles, &tids) {
-                            needed.insert(r);
-                        }
-                        body.push((r, a));
-                    }
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                if trace {
-                    eprintln!(
-                        "RULE-JOIN rule head={} ({} body lits)",
-                        term_kif(head, self.syn()),
-                        body.len(),
-                    );
-                }
-                rules.push(JoinRule { id: rule_id, body, head: head.clone() });
-            }
-        }
-
-        // Conjunctive-query goals: an all-negative conjecture clause is the
-        // negated `∃X⃗.(R1∧…∧Rn)` — discharge it as a join over ground facts.
-        for c in &self.clauses {
-            if c.tier != CONJECTURE || c.terms.is_empty() {
-                continue;
-            }
-            if c.terms.iter().any(|(p, _)| *p) {
-                continue; // all-negative only (a pure query, no head)
-            }
-            let mut lits: Vec<Term> = Vec::with_capacity(c.terms.len());
-            let mut ok = true;
-            for (_p, t) in &c.terms {
-                match lit_pattern(t) {
-                    Some((r, _)) => {
-                        if !is_theory_rel(r, &roles, &tids) {
-                            needed.insert(r);
-                        }
-                        lits.push(t.clone());
-                    }
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok && !lits.is_empty() {
-                if trace {
-                    let desc: Vec<String> = lits.iter().filter_map(|t| {
-                        lit_pattern(t).map(|(r, a)| format!(
-                            "{}/{}{}",
-                            term_kif(t, self.syn()).split_whitespace().next().unwrap_or("?")
-                                .trim_start_matches('('),
-                            a.len(),
-                            if is_theory_rel(r, &roles, &tids) { "[theory]" }
-                            else if self.syn().by_head_id(&r).is_empty() { "[nofacts]" }
-                            else { "[facts]" },
-                        ))
-                    }).collect();
-                    eprintln!("RULE-JOIN query [{}]", desc.join(", "));
-                }
-                queries.push(JoinQuery { lits });
-            }
-        }
-
-        if rules.is_empty() && queries.is_empty() {
-            return;
-        }
-
-        // Pull ground facts for every non-theory body relation directly
-        // from the store (the join's generators).
-        let mut facts: HashMap<SymbolId, Vec<JoinFact>> = HashMap::new();
-        for rel in needed {
-            let f = self.store_facts(rel);
-            if !f.is_empty() {
-                facts.insert(rel, f);
-            }
-        }
-        // A "genuine" query is ground-answerable: every conjunct is a
-        // theory relation (oracle-decided) or has ground facts.  When one
-        // is present the problem is a database-style QA query, and the
-        // conclusion-rule pass is irrelevant noise that floods the search
-        // — suppress it.  (A Horn-chain goal like `¬goesToJail` is also an
-        // all-negative clause, but its relation has NO facts, so it is NOT
-        // genuine and rule mode stays on — keeping the jail proof intact.)
-        let suppress_rules = queries.iter().any(|q| {
-            q.lits.iter().all(|lit| match lit_pattern(lit) {
-                Some((r, _)) => is_theory_rel(r, &roles, &tids) || facts.contains_key(&r),
-                None => false,
-            })
-        });
-        if trace {
-            eprintln!(
-                "RULE-JOIN scan: {} generator relations, {} ground facts, {} conclusion rules, \
-                 {} queries, suppress_rules={}",
-                facts.len(),
-                facts.values().map(Vec::len).sum::<usize>(),
-                rules.len(),
-                queries.len(),
-                suppress_rules,
-            );
-        }
-
-        // Bounded fixpoint: emit satisfied heads, feed them back as facts
-        // so chained conclusion rules fire on the next round.
-        let mut emitted: HashSet<AtomId> = HashSet::new();
-        let mut budget = 4096usize;
-        for _round in 0..64 {
-            // Rebuild the seat index from the current facts (rule mode may
-            // have fed emitted heads back as facts last round).
-            let seat_idx = build_seat_index(&facts);
-            // (head, fact_parent sids, clause-parent ids) for each
-            // satisfied head this round — collected with only `&self`
-            // before the mutating emit pass below.
-            let mut produced: Vec<(Term, Vec<SentenceId>, Vec<u32>)> = Vec::new();
-            for r in rules.iter().take(if suppress_rules { 0 } else { rules.len() }) {
-                let mut sols: Vec<HashMap<SymbolId, Term>> = Vec::new();
-                self.join_rec(
-                    &r.body,
-                    &(0..r.body.len()).collect::<Vec<_>>(),
-                    &HashMap::new(),
-                    &facts,
-                    &seat_idx,
-                    &roles,
-                    &tids,
-                    &mut sols,
-                    &mut budget,
-                );
-                for sol in sols {
-                    let h = subst(&r.head, &sol);
-                    if !h.is_ground() {
-                        continue;
-                    }
-                    let (fact_sids, mut cparents) = self.collect_provenance(&r.body, &sol, &facts);
-                    cparents.insert(0, r.id); // the rule itself
-                    produced.push((h, fact_sids, cparents));
-                }
-            }
-            // Conjunctive-query goals: one satisfying binding answers the
-            // query — emit the ground instance of every conjunct as a
-            // positive unit, which resolves against the all-negative goal
-            // clause to the empty clause.
-            for q in &queries {
-                let body: Vec<(SymbolId, Vec<Term>)> =
-                    q.lits.iter().filter_map(lit_pattern).collect();
-                if body.len() != q.lits.len() {
-                    continue;
-                }
-                let mut sols: Vec<HashMap<SymbolId, Term>> = Vec::new();
-                self.join_rec(
-                    &body,
-                    &(0..body.len()).collect::<Vec<_>>(),
-                    &HashMap::new(),
-                    &facts,
-                    &seat_idx,
-                    &roles,
-                    &tids,
-                    &mut sols,
-                    &mut budget,
-                );
-                if let Some(sol) = sols.first() {
-                    let (fact_sids, _) = self.collect_provenance(&body, sol, &facts);
-                    for lit in &q.lits {
-                        let g = subst(lit, sol);
-                        if g.is_ground() {
-                            // Resolution against the negated goal supplies
-                            // the conjecture lineage; no clause parent here.
-                            produced.push((g, fact_sids.clone(), Vec::new()));
-                        }
-                    }
-                }
-            }
-            let mut progress = false;
-            for (h, fact_sids, cparents) in produced {
-                let aid = self.layer.atoms.intern_atom(&h);
-                if !emitted.insert(aid) {
-                    continue;
-                }
-                if trace {
-                    eprintln!("RULE-JOIN emit {}", term_kif(&h, self.syn()));
-                }
-                let head_for_fact = lit_pattern(&h);
-                if let Some(id) =
-                    self.make(vec![(true, h)], cparents, "rule_join", SUPPORT, None, true)
-                {
-                    self.clauses[id as usize].fact_parents.extend(fact_sids);
-                    let key = self.clauses[id as usize].key;
-                    if self.seen.insert(key) {
-                        if let Some((rel, args)) = head_for_fact {
-                            facts.entry(rel).or_default().push(JoinFact {
-                                args,
-                                src: FactSrc::Emitted(id),
-                            });
-                        }
-                        self.activate(id);
-                        self.push(Some(id));
-                        progress = true;
-                    }
-                }
-            }
-            if !progress {
-                break;
-            }
-        }
-    }
-
-    /// Discrete Event Calculus discharge (gated `SIGMA_EC`; a no-op when
-    /// unset, and a no-op on any KB without a DEC narrative — so SUMO and
-    /// every non-EC corpus are unaffected).
-    ///
-    /// The CSR event-calculus problems load the standard DEC frame axioms
-    /// (DEC1–DEC12) plus a per-problem narrative defining
-    /// `happens`/`initiates`/`terminates` by `<=>` enumeration.  Ordinary
-    /// resolution explodes on the `~∃Event` inertia conditions, so instead we
-    /// read the narrative into effect tables, forward-simulate the complete
-    /// fluent state over the ground timeline, and emit each `(fluent, time)`
-    /// as a ground `holdsAt` / `~holdsAt` unit.  Those units resolve directly
-    /// against the (negated) conjecture — a decision procedure standing in for
-    /// the frame-axiom search.  Complete-state (DEC7 negative inertia) means
-    /// negative `holdsAt` queries are decided too.
-    pub(crate) fn discharge_event_calculus(&mut self) {
-        if std::env::var_os("SIGMA_EC").is_none() {
-            return;
-        }
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let Some((nar, names)) = super::eventcalc::parse_narrative(self.syn()) else {
-            return;
-        };
-        let holds_at = Symbol::from("holdsAt");
-        // The complete fluent state. Default path: the bespoke forward
-        // simulator. `SIGMA_EC_MODEL` routes the SAME narrative through the
-        // generic Datalog(¬) model kernel instead (`narrative_to_program` →
-        // perfect model), to validate end-to-end that the generic engine
-        // solves what the bespoke oracle solves. Emission below is shared, so
-        // any difference is purely in how the state is computed.
-        let state: HashMap<(SymbolId, SymbolId), bool> =
-            if std::env::var_os("SIGMA_EC_MODEL").is_some() {
-                let prog = super::model::narrative_to_program(&nar);
-                let Ok(model) = prog.evaluate() else {
-                    if trace { eprintln!("EC[model]: program not stratified/safe — bailing"); }
-                    return;
-                };
-                let rel = model.get(&holds_at.id()).cloned().unwrap_or_default();
-                // Reconstruct complete state over the fluent×time grid
-                // (closed-world: a cell absent from the relation is false).
-                let fluents: HashSet<SymbolId> = nar.initiates.iter()
-                    .chain(nar.terminates.iter())
-                    .map(|e| e.fluent)
-                    .chain(nar.initial.keys().copied())
-                    .collect();
-                let mut st = HashMap::new();
-                for &f in &fluents {
-                    for &t in &nar.times {
-                        st.insert((f, t), rel.contains(&vec![f, t]));
-                    }
-                }
-                if trace { eprintln!("EC[model]: kernel perfect model, {} state cells", st.len()); }
-                st
-            } else {
-                super::eventcalc::simulate(&nar)
-            };
-        if trace {
-            eprintln!(
-                "EC: {} times, {} initiates, {} terminates, {} state cells",
-                nar.times.len(), nar.initiates.len(), nar.terminates.len(), state.len(),
-            );
-        }
-        // Emit each simulated state cell as a ground `holdsAt` / `~holdsAt`
-        // unit.  Each is BOTH queued for selection (`push`) and indexed as a
-        // resolution / unit-simplification partner (`activate`) — so the
-        // complementary conjecture literal is discharged whichever clause the
-        // given-clause loop reaches first.
-        let mut pushed = 0usize;
-        for (&(fluent, time), &holds) in &state {
-            let (Some(fl), Some(t)) = (names.get(&fluent), names.get(&time)) else {
-                continue;
-            };
-            let atom = Term::App(vec![
-                Term::Sym(holds_at.clone()),
-                Term::Sym(fl.clone()),
-                Term::Sym(t.clone()),
-            ]);
-            if let Some(id) =
-                self.make(vec![(holds, atom)], Vec::new(), "event_calculus", SUPPORT, None, true)
-            {
-                if self.push(Some(id)).is_some() {
-                    pushed += 1;
-                }
-                self.activate(id);
-            }
-        }
-        if trace {
-            eprintln!("EC: {} state cells → {} pushed/activated", state.len(), pushed);
-        }
-    }
-
-    /// Generic inductive-definition model discharge (Phase 5, slice 2; gated
-    /// `SIGMA_MODEL`, default-off — runs ALONGSIDE the bespoke oracles for
-    /// the parity diff).  Consults the KB-lifetime model registry: evaluates
-    /// the **monotone** (negation-free) fragment — a sound positive model for
-    /// every predicate — and emits the entailed ground facts that match the
-    /// conjecture's atoms, which resolve against the (negated) goal.
-    ///
-    /// Positive-only here (monotone is a sound under-approximation); negative /
-    /// complete decisions from stratifiable clusters are a later slice.  No-op
-    /// when the conjecture's relations aren't defined in the program — so SUMO
-    /// non-taxonomy queries pay only a cheap miss.
-    pub(crate) fn discharge_models(&mut self) {
-        if std::env::var_os("SIGMA_MODEL").is_none() {
-            return;
-        }
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let mp = self.layer.model_program();
-
-        // The conjecture's atom patterns (relation + argument terms).  Read
-        // from `lits` (slot-form `terms` can be empty for already-simplified
-        // clauses); resolve each atom to a term.
-        let mut patterns: Vec<(SymbolId, Vec<Term>)> = Vec::new();
-        for c in &self.clauses {
-            if c.tier != CONJECTURE {
-                continue;
-            }
-            for l in &c.lits {
-                if let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) {
-                    self.stats.model_atoms_seen += 1;
-                    match lit_pattern(&t) {
-                        Some(p) => patterns.push(p),
-                        None => self.stats.model_atoms_rejected += 1,
-                    }
-                }
-            }
-        }
-        if patterns.is_empty() {
-            return;
-        }
-        let goal_preds: HashSet<SymbolId> = patterns.iter().map(|(r, _)| *r).collect();
-        // Cheap skip: does the program define/store any goal relation?
-        let defines = mp.monotone.rules.iter().any(|r| goal_preds.contains(&r.head.pred))
-            || mp.monotone.edb.keys().any(|p| goal_preds.contains(p));
-        if !defines {
-            return;
-        }
-        if trace {
-            let prog_facts: usize = mp.monotone.edb.values().map(|s| s.len()).sum();
-            eprintln!("MODEL: program {} monotone rules, {prog_facts} edb facts; {} goal atoms",
-                mp.monotone.rules.len(), patterns.len());
-        }
-        // Per conjecture atom: demand-scope (dependency cone) + magic-set
-        // rewrite on the atom's CONSTANTS (slice 4b), evaluate the demanded
-        // slice, and collect the entailed answers.  This keeps a dense relation
-        // (OpenCyc `genls`) affordable — only the facts reachable from the
-        // conjecture's constants are derived.
-        // Hard wall-clock cap on model materialization across all goal atoms,
-        // so a slow/zero-value model build (e.g. a dense OpenCyc cone that
-        // emits nothing) can never eat the prover's time budget — it bails and
-        // resolution proceeds.
-        let deadline = Instant::now() + std::time::Duration::from_millis(800);
-        let mut to_emit: Vec<(SymbolId, Vec<SymbolId>)> = Vec::new();
-        let mut model_stats = super::model::ModelStats::default();
-        for (rel, args) in &patterns {
-            let dargs = self.bridge_dargs(args);
-            let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
-            if let Some(rows) = answered {
-                self.stats.model_atoms_answered += 1;
-                for row in rows {
-                    to_emit.push((*rel, row));
-                }
-            } else {
-                self.stats.model_atoms_unanswered += 1;
-            }
-        }
-        self.merge_model_stats(&model_stats);
-
-        let mut emitted = 0usize;
-        for (rel, row) in to_emit {
-            let Some(relname) = self.syn().sym_name(rel) else { continue };
-            let mut elems = vec![Term::Sym(relname)];
-            let mut ok = true;
-            for v in &row {
-                match self.syn().sym_name(*v) {
-                    Some(s) => elems.push(Term::Sym(s)),
-                    None => { ok = false; break; }
-                }
-            }
-            if !ok {
-                continue;
-            }
-            if let Some(id) =
-                self.make(vec![(true, Term::App(elems))], Vec::new(), "model", SUPPORT, None, true)
-            {
-                if self.push(Some(id)).is_some() {
-                    emitted += 1;
-                }
-                self.activate(id);
-            }
-        }
-        if trace {
-            eprintln!("MODEL: {emitted} positive units emitted over {} goal relations", goal_preds.len());
-        }
-    }
-
-    /// Bridge one conjecture atom's argument terms to model-side
-    /// [`DTerm`](super::model::DTerm)s: bare symbols become constants,
-    /// everything else collapses to the wildcard `DTerm::Var(0)`.  The
-    /// collapse LOSES a constraint when the argument is a compound term
-    /// or a variable that co-occurs in another position (the join can no
-    /// longer enforce the co-reference) — both are counted into the
-    /// `model_arg_collapsed_*` stats.
-    fn bridge_dargs(&mut self, args: &[Term]) -> Vec<super::model::DTerm> {
-        args.iter()
-            .map(|t| match t {
-                Term::Sym(s) => super::model::DTerm::Const(s.id()),
-                Term::Var(v) => {
-                    let repeats = args.iter()
-                        .filter(|o| matches!(o, Term::Var(ov) if ov == v))
-                        .count();
-                    if repeats > 1 {
-                        self.stats.model_arg_collapsed_repeated_var += 1;
-                    }
-                    super::model::DTerm::Var(0)
-                }
-                _ => {
-                    self.stats.model_arg_collapsed_compound += 1;
-                    super::model::DTerm::Var(0)
-                }
-            })
-            .collect()
-    }
-
-    /// Fold one discharge pass's [`ModelStats`](super::model::ModelStats)
-    /// bail-reason breakdown into the prover's per-run counters (the
-    /// `answered` count is tracked per-atom by the caller instead).
-    fn merge_model_stats(&mut self, ms: &super::model::ModelStats) {
-        self.stats.model_unsafe_bails += u64::from(ms.unsafe_bails);
-        self.stats.model_unstratifiable_bails += u64::from(ms.unstratifiable_bails);
-        self.stats.model_budget_or_deadline_overflows += u64::from(ms.budget_overflows);
-        self.stats.model_undefined_relation += u64::from(ms.undefined_relation);
-    }
-
-    /// Conjunctive-query goal discharge over the inductive model (gated
-    /// `SIGMA_MODEL`).  The per-atom [`discharge_models`] emits each
-    /// conjecture atom's model answers as *isolated* units and leaves the
-    /// cross-atom JOIN to resolution — which explodes on the large
-    /// existential conjunctive queries of the CSR QA family (`∃X⃗.(R1∧…∧Rn)`
-    /// with 8–10 shared variables): saturation has to reconstruct the join by
-    /// hand.  This pass instead evaluates the whole conjunction as one indexed
-    /// join ([`join_rec`]) over `store ∪ model-derived` facts, and on the
-    /// first satisfying binding emits the ground conjuncts — collapsing the
-    /// all-negative goal clause to empty without the resolution blow-up.
-    ///
-    /// Sound: each emitted unit is a ground instance entailed by the
-    /// (monotone, under-approximating) model or the store; the binding is a
-    /// real witness for the existential.  A no-op unless the conjecture is an
-    /// all-negative conjunction of ≥2 model-/store-defined relations, so
-    /// non-QA queries pay only a cheap miss.  Runs AFTER `discharge_models`,
-    /// so the bespoke per-atom path (which already closes e.g. CSR116+5) is
-    /// untouched; this only adds closures it was missing.
-    pub(crate) fn discharge_model_joins(&mut self) {
-        if std::env::var_os("SIGMA_MODEL").is_none() {
-            return;
-        }
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let roles = self.oracle.roles();
-        let tids = super::temporal::TemporalRelIds::standard();
-        let mp = self.layer.model_program();
-
-        // 1) Conjunctive-query goals: all-negative conjecture clauses with ≥2
-        //    literals.  Read atom terms from `lits` (slot-form `terms` can be
-        //    empty for already-simplified clauses — the same reason
-        //    discharge_models reads lits, and why the store-only RULE_JOIN
-        //    misses these conjectures entirely).
-        let mut queries: Vec<Vec<Term>> = Vec::new();
-        let mut needed: HashSet<SymbolId> = HashSet::new();
-        for c in &self.clauses {
-            if c.tier != CONJECTURE || c.lits.len() < 2 {
-                continue;
-            }
-            if c.lits.iter().any(|l| l.pos) {
-                continue; // a pure query is all-negative (no positive head)
-            }
-            let mut lits: Vec<Term> = Vec::with_capacity(c.lits.len());
-            let mut ok = true;
-            for l in &c.lits {
-                match slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) {
-                    Some(t) if lit_pattern(&t).is_some() => lits.push(t),
-                    _ => { ok = false; break; }
-                }
-            }
-            if ok && lits.len() >= 2 {
-                for t in &lits {
-                    if let Some((r, _)) = lit_pattern(t) {
-                        needed.insert(r);
-                    }
-                }
-                queries.push(lits);
-            }
-        }
-        if queries.is_empty() {
-            return;
-        }
-
-        // 2) Generator facts per body relation: store atoms PLUS model-derived
-        //    tuples.  The join's variables connect conjuncts, so a fact
-        //    demanded for one conjunct (e.g. the derived `subr(_, rprs_0)`
-        //    closure) becomes reachable through another conjunct's binding.
-        //    Two materialization strategies, in order of cost:
-        //      a) the FULL positive model (IDB closure + transitivity) — exact,
-        //         but bails on a dense KB (e.g. a big transitive `sub`);
-        //      b) per-atom demand-scoped `mp.answer`, magic-set-seeded on each
-        //         conjunct's *constants* — bounded even when (a) blows up, and
-        //         it is what materializes a constant-seeded IDB slice like
-        //         `subr(_, rprs_0)`.
-        //    We union both: (a) when it fits, (b) always (cheap, demand-scoped).
-        //    Theory relations are oracle-decided, never enumerated.
-        let deadline = Instant::now() + std::time::Duration::from_millis(1500);
-        const MAX_FACTS_PER_REL: usize = 50_000;
-        let full_model = mp.positive_model();
-        let mut facts: HashMap<SymbolId, Vec<JoinFact>> = HashMap::new();
-        for &rel in &needed {
-            if is_theory_rel(rel, &roles, &tids) {
-                continue;
-            }
-            let mut f = self.store_facts(rel);
-            let mut push_row = |f: &mut Vec<JoinFact>, row: &[SymbolId]| {
-                if f.len() >= MAX_FACTS_PER_REL {
-                    return;
-                }
-                let aargs: Vec<Term> = row
-                    .iter()
-                    .filter_map(|v| self.syn().sym_name(*v).map(Term::Sym))
-                    .collect();
-                if aargs.len() == row.len() && !f.iter().any(|jf| jf.args == aargs) {
-                    f.push(JoinFact { args: aargs, src: FactSrc::Model });
-                }
-            };
-            // (a) full model, when it materialized.
-            if let Some(model) = full_model.as_ref().and_then(|m| m.get(&rel)) {
-                for row in model {
-                    push_row(&mut f, row);
-                }
-            }
-            // (b) per-atom demand-scoped answers, seeded on the conjuncts'
-            //     constants — derives constant-bound IDB slices the full model
-            //     bailed on.
-            for lits in &queries {
-                for t in lits {
-                    let Some((r, args)) = lit_pattern(t) else { continue };
-                    if r != rel {
-                        continue;
-                    }
-                    let dargs: Vec<super::model::DTerm> = args
-                        .iter()
-                        .map(|a| match a {
-                            Term::Sym(s) => super::model::DTerm::Const(s.id()),
-                            _ => super::model::DTerm::Var(0),
-                        })
-                        .collect();
-                    if let Some(rows) = mp.answer(rel, &dargs, Some(deadline)) {
-                        for row in &rows {
-                            push_row(&mut f, row);
-                        }
-                    }
-                }
-            }
-            if !f.is_empty() {
-                facts.insert(rel, f);
-            }
-        }
-        if facts.is_empty() {
-            return;
-        }
-        if trace {
-            eprintln!(
-                "MODEL-JOIN: {} queries, {} generator relations, {} facts",
-                queries.len(),
-                facts.len(),
-                facts.values().map(Vec::len).sum::<usize>(),
-            );
-        }
-
-        // 3) Join each query; on the first satisfying binding, collect the
-        //    ground conjuncts to emit.
-        let seat_idx = build_seat_index(&facts);
-        let mut budget = 200_000usize;
-        let mut produced: Vec<(Term, Vec<SentenceId>)> = Vec::new();
-        for lits in &queries {
-            let body: Vec<(SymbolId, Vec<Term>)> =
-                lits.iter().filter_map(lit_pattern).collect();
-            if body.len() != lits.len() {
-                continue;
-            }
-            let mut sols: Vec<HashMap<SymbolId, Term>> = Vec::new();
-            self.join_rec(
-                &body,
-                &(0..body.len()).collect::<Vec<_>>(),
-                &HashMap::new(),
-                &facts,
-                &seat_idx,
-                &roles,
-                &tids,
-                &mut sols,
-                &mut budget,
-            );
-            if let Some(sol) = sols.first() {
-                let (fact_sids, _) = self.collect_provenance(&body, sol, &facts);
-                for lit in lits {
-                    let g = subst(lit, sol);
-                    if g.is_ground() {
-                        produced.push((g, fact_sids.clone()));
-                    }
-                }
-                if trace {
-                    eprintln!("MODEL-JOIN: query of {} atoms satisfied", lits.len());
-                }
-            }
-        }
-        drop(mp);
-
-        // 4) Emit the witness conjuncts as positive units — each resolves a
-        //    literal of the all-negative goal clause, collapsing it to empty.
-        let mut emitted = 0usize;
-        let mut seen_emit: HashSet<AtomId> = HashSet::new();
-        for (h, fact_sids) in produced {
-            let aid = self.layer.atoms.intern_atom(&h);
-            if !seen_emit.insert(aid) {
-                continue;
-            }
-            if let Some(id) =
-                self.make(vec![(true, h)], Vec::new(), "model_join", SUPPORT, None, true)
-            {
-                self.clauses[id as usize].fact_parents.extend(fact_sids);
-                self.activate(id);
-                if self.push(Some(id)).is_some() {
-                    emitted += 1;
-                }
-            }
-        }
-        if trace {
-            eprintln!("MODEL-JOIN: {emitted} witness units emitted");
-        }
-    }
-
-    /// Goal-directed backward chaining / connection search (gated
-    /// `SIGMA_BACKWARD`, default-off).  The forward given-clause loop is
-    /// blind to *which* axioms lead to the goal; on a constant-rich
-    /// conjecture over a 10k-axiom theory it floods.  This pass instead
-    /// drives **from** the negated conjecture: select a goal literal, find an
-    /// axiom whose head literal structurally matches it, resolve, and recurse
-    /// on the axiom's body — iterative-deepening DFS, most-constrained literal
-    /// first (sideways information passing).  Every step is a real `resolve`
-    /// (sound binary resolution), so a derived empty clause is a genuine
-    /// refutation; on success the empty clause is pushed and the normal loop
-    /// reports it.  Handles existential/Skolem rule heads naturally — matching
-    /// a goal atom against an existential conclusion just unifies the goal
-    /// term with the head's Skolem term.  Definite-clause (Horn) focused: only
-    /// negative goal literals are expanded, so a resolvent that gains a
-    /// positive literal (non-definite partner) is not pursued — a prototype
-    /// limitation, not unsoundness.
-    pub(crate) fn discharge_backward(&mut self) {
-        if std::env::var_os("SIGMA_BACKWARD").is_none() {
-            return;
-        }
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-
-        // Goal clauses: all-negative conjecture clauses (the negated `∃`).
-        let goals: Vec<u32> = self
-            .clauses
-            .iter()
-            .filter(|c| {
-                c.tier == CONJECTURE && !c.terms.is_empty() && c.terms.iter().all(|(p, _)| !*p)
-            })
-            .map(|c| c.id)
-            .collect();
-        if goals.is_empty() {
-            return;
-        }
-
-        // Head/conclusion index: predicate → positive-literal occurrences
-        // across ALL loaded clauses (axiom heads + ground unit facts).  Built
-        // once; resolvents are never added (we chain the goal against axioms,
-        // not against derived clauses).
-        let mut head_index: HashMap<SymbolId, Vec<(u32, usize)>> = HashMap::new();
-        for c in &self.clauses {
-            for (i, (pos, t)) in c.terms.iter().enumerate() {
-                if *pos {
-                    if let Some((p, _)) = lit_pattern(t) {
-                        head_index.entry(p).or_default().push((c.id, i));
-                    }
-                }
-            }
-        }
-        if trace {
-            let total: usize = head_index.values().map(Vec::len).sum();
-            eprintln!(
-                "BACKWARD: {} goal clause(s), {} clauses, {} head predicates, {} positive-head occurrences",
-                goals.len(),
-                self.clauses.len(),
-                head_index.len(),
-                total,
-            );
-            // Per goal-literal candidate counts (where the search would branch
-            // or die) — the diagnostic for an unreachable conjunct.
-            for &g in &goals {
-                for (pos, t) in &self.clauses[g as usize].terms {
-                    if *pos {
-                        continue;
-                    }
-                    if let Some((pred, gargs)) = lit_pattern(t) {
-                        let n = head_index
-                            .get(&pred)
-                            .map(|v| {
-                                v.iter()
-                                    .filter(|&&(cid, pi)| {
-                                        lit_pattern(&self.clauses[cid as usize].terms[pi].1)
-                                            .is_some_and(|(_, pa)| {
-                                                structurally_compatible(&gargs, &pa)
-                                            })
-                                    })
-                                    .count()
-                            })
-                            .unwrap_or(0);
-                        eprintln!(
-                            "BACKWARD:   goal lit {}/{} -> {} candidate head(s)",
-                            self.syn().sym_name(pred).map(|s| s.to_string()).unwrap_or_default(),
-                            gargs.len(),
-                            n,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Depth bounds resolution STEPS along one DFS path.  A goal with N
-        // literals needs ≥N resolutions just to discharge each against a fact,
-        // plus the rule-chain depth — so the bound scales with the goal width,
-        // not the (small) proof depth.  Single deep DFS, node-budgeted (cheaper
-        // than iterative deepening, which re-materializes resolvents each round).
-        // Best-effort: bounded by a wall-clock deadline (each DFS node
-        // materializes a real resolvent, so the node count is a poor bound)
-        // plus a node backstop.  Returns promptly either way.
-        let ms: u64 = std::env::var("SIGMA_BACKWARD_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(800);
-        let deadline = Instant::now() + std::time::Duration::from_millis(ms);
-        let mut budget = std::env::var("SIGMA_BACKWARD_NODES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(200_000usize);
-        for &g in &goals {
-            let width = self.clauses[g as usize].terms.len() as u32;
-            let max_depth = width.saturating_mul(2).saturating_add(16).min(64);
-            if self.backward_dfs(g, max_depth, &head_index, &mut budget, deadline) {
-                if trace {
-                    eprintln!("BACKWARD: refutation found (depth budget {max_depth})");
-                }
-                return; // empty clause pushed; the loop reports it
-            }
-            if budget == 0 {
-                if trace {
-                    eprintln!("BACKWARD: node budget exhausted");
-                }
-                return;
-            }
-        }
-        if trace {
-            eprintln!("BACKWARD: no refutation found");
-        }
-    }
-
-    /// One depth-bounded backward step (see [`discharge_backward`]).  Returns
-    /// `true` iff an empty clause was derived (and pushed) on this branch.
-    fn backward_dfs(
-        &mut self,
-        goal0: u32,
-        depth0: u32,
-        head_index: &HashMap<SymbolId, Vec<(u32, usize)>>,
-        budget: &mut usize,
-        deadline: Instant,
-    ) -> bool {
-        let empty: Vec<(u32, usize)> = Vec::new();
-        // Forced-move PROPAGATION loop: a goal literal with exactly one
-        // structurally-compatible head is forced (no choice), so commit to it
-        // without a backtrack point — this is the connection calculus's
-        // reduction step and collapses the wide goal (each ground-fact-only
-        // literal, once its variables are bound by a sibling, becomes
-        // single-candidate and discharges deterministically).
-        let mut goal = goal0;
-        let mut depth = depth0;
-        loop {
-            if self.clauses[goal as usize].terms.is_empty() {
-                self.push(Some(goal)); // the empty clause — refutation
-                return true;
-            }
-            if depth == 0 || *budget == 0 || Instant::now() >= deadline {
-                return false;
-            }
-
-            // Candidate heads for every negative (goal) literal.
-            let goal_terms = self.clauses[goal as usize].terms.clone();
-            let mut lit_cands: Vec<(usize, Vec<(u32, usize)>)> = Vec::new();
-            for (gi, (pos, t)) in goal_terms.iter().enumerate() {
-                if *pos {
-                    continue; // definite-clause focus: expand negative literals
-                }
-                let Some((pred, gargs)) = lit_pattern(t) else { continue };
-                let mut cands: Vec<(u32, usize)> = Vec::new();
-                for &(cid, pi) in head_index.get(&pred).unwrap_or(&empty) {
-                    if cid == goal {
-                        continue;
-                    }
-                    if let Some((_, pa)) = lit_pattern(&self.clauses[cid as usize].terms[pi].1) {
-                        if structurally_compatible(&gargs, &pa) {
-                            cands.push((cid, pi));
-                        }
-                    }
-                }
-                if cands.is_empty() {
-                    return false; // unsatisfiable goal literal → dead branch
-                }
-                lit_cands.push((gi, cands));
-            }
-            if lit_cands.is_empty() {
-                return false; // only positive literals left (non-definite)
-            }
-
-            // Forced move (single candidate): commit and re-loop, no branching.
-            if let Some((gi, cands)) = lit_cands.iter().find(|(_, c)| c.len() == 1) {
-                let (partner, pi) = cands[0];
-                *budget -= 1;
-                match self.resolve(goal, *gi, partner, pi) {
-                    Some(r) => {
-                        goal = r;
-                        depth -= 1;
-                        continue;
-                    }
-                    None => return false, // the only option didn't unify → dead
-                }
-            }
-
-            // Otherwise branch on the most-constrained literal, trying
-            // ground-unit-clause partners (leaf closures) before rule partners.
-            let (gi, mut cands) = lit_cands
-                .into_iter()
-                .min_by_key(|(_, c)| c.len())
-                .unwrap();
-            cands.sort_by_key(|&(cid, _)| usize::from(self.clauses[cid as usize].terms.len() > 1));
-            for (partner, pi) in cands {
-                if *budget == 0 || Instant::now() >= deadline {
-                    return false;
-                }
-                *budget -= 1;
-                if let Some(r) = self.resolve(goal, gi, partner, pi) {
-                    if self.backward_dfs(r, depth - 1, head_index, budget, deadline) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-    }
-
-    /// Re-walk a satisfied rule body under its complete binding to gather
-    /// proof provenance: store facts and oracle witnesses become
-    /// `fact_parents` (cited axiom steps); previously-emitted heads become
-    /// clause parents (so chained `rule_join` steps form a connected DAG).
-    fn collect_provenance(
-        &self,
-        body:    &[(SymbolId, Vec<Term>)],
-        binding: &HashMap<SymbolId, Term>,
-        facts:   &HashMap<SymbolId, Vec<JoinFact>>,
-    ) -> (Vec<SentenceId>, Vec<u32>) {
-        let mut fact_sids: Vec<SentenceId> = Vec::new();
-        let mut cparents:  Vec<u32> = Vec::new();
-        for (rel, args) in body {
-            let sargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
-            // A directly-matched generator fact (store or emitted head).
-            if let Some(jf) = facts
-                .get(rel)
-                .and_then(|v| v.iter().find(|jf| jf.args == sargs))
-            {
-                match jf.src {
-                    FactSrc::Store(sid) => fact_sids.push(sid),
-                    FactSrc::Emitted(cid) => cparents.push(cid),
-                    FactSrc::Model => {} // model-derived: no citable store sid
-                }
-                continue;
-            }
-            // Otherwise a binary literal the oracle decided (taxonomy /
-            // subrelation / transitive): cite its witness facts.
-            if sargs.len() == 2 {
-                if let (Some(x), Some(y)) = (sym_of(&sargs[0]), sym_of(&sargs[1])) {
-                    let mut why: Vec<Witness> = Vec::new();
-                    if self.oracle.holds(*rel, x, y, Some(&mut why)) {
-                        fact_sids.extend(why.iter().filter_map(|w| w.sid));
-                    }
-                }
-            }
-        }
-        fact_sids.sort_unstable();
-        fact_sids.dedup();
-        cparents.sort_unstable();
-        cparents.dedup();
-        (fact_sids, cparents)
-    }
-
-    /// Ground argument tuples of every `(rel …)` atom asserted in the
-    /// store (base ∪ session), regardless of SInE selection — the join's
-    /// generator facts.  Only all-leaf (symbol / literal) argument lists
-    /// are returned; atoms with variable, operator, or compound arguments
-    /// are skipped (a generator must bind variables to ground fillers).
-    fn store_facts(&self, rel: SymbolId) -> Vec<JoinFact> {
-        let mut out = Vec::new();
-        for sid in self.syn().by_head_id(&rel) {
-            let Some(s) = self.syn().sentence(sid) else { continue };
-            if s.elements.len() < 2 {
-                continue;
-            }
-            let mut args = Vec::with_capacity(s.elements.len() - 1);
-            let mut ok = true;
-            for el in &s.elements[1..] {
-                match el {
-                    Element::Symbol(sym) => args.push(Term::Sym(sym.0.clone())),
-                    Element::Literal(l) => args.push(Term::Lit(l.clone())),
-                    _ => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if ok {
-                out.push(JoinFact { args, src: FactSrc::Store(sid) });
-            }
-        }
-        out
-    }
-
-    /// Recursive ground-fact join over a Horn rule body.  At each step:
-    /// discharge any fully-ground literal (a check, no branching) via the
-    /// oracle / fact membership; otherwise expand the most selective
-    /// non-theory generator literal over its candidate facts.  Open
-    /// theory literals are never enumerated (the join bails on a branch
-    /// that leaves only those) — best-effort, escalating the rest to
-    /// ordinary resolution.
-    #[allow(clippy::too_many_arguments)]
-    fn join_rec(
-        &self,
-        body: &[(SymbolId, Vec<Term>)],
-        pending: &[usize],
-        binding: &HashMap<SymbolId, Term>,
-        facts: &HashMap<SymbolId, Vec<JoinFact>>,
-        seat_idx: &SeatIndex,
-        roles: &crate::semantics::roles::TaxonomyRoles,
-        tids: &super::temporal::TemporalRelIds,
-        out: &mut Vec<HashMap<SymbolId, Term>>,
-        budget: &mut usize,
-    ) {
-        if *budget == 0 {
-            return;
-        }
-        if pending.is_empty() {
-            *budget -= 1;
-            out.push(binding.clone());
-            return;
-        }
-        // 1) Fully-ground literal under the current binding: a check.
-        for &li in pending {
-            let (rel, args) = &body[li];
-            let sargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
-            if sargs.iter().all(Term::is_ground) {
-                if !self.ground_lit_holds(*rel, &sargs, facts) {
-                    return; // dead branch
-                }
-                let rest: Vec<usize> = pending.iter().copied().filter(|&x| x != li).collect();
-                self.join_rec(body, &rest, binding, facts, seat_idx, roles, tids, out, budget);
-                return;
-            }
-        }
-        // 2) Expand the most selective generator GIVEN the current binding.
-        //    Narrow each candidate conjunct's facts via the seat index on
-        //    its already-bound seats (sideways information passing), and
-        //    pick the conjunct with the fewest candidates — so the join
-        //    follows the constrained path instead of materializing a
-        //    cross-product.  A bound seat with no matching fact (count 0)
-        //    makes the whole branch dead.  `None` candidate set ⇒ no seat
-        //    bound yet ⇒ full scan of the relation.
-        let mut pick: Option<(usize, Option<Vec<u32>>, usize)> = None;
-        for &li in pending {
-            let (rel, args) = &body[li];
-            if is_theory_rel(*rel, roles, tids) {
-                continue;
-            }
-            let Some(rel_facts) = facts.get(rel) else { continue };
-            let mut narrowed: Option<&Vec<u32>> = None;
-            let mut dead = false;
-            for (seat, a) in args.iter().enumerate() {
-                if let Some(k) = seat_key(&subst(a, binding)) {
-                    match seat_idx.get(&(*rel, seat as u8, k)) {
-                        Some(list) => {
-                            if narrowed.map_or(true, |c| list.len() < c.len()) {
-                                narrowed = Some(list);
-                            }
-                        }
-                        None => {
-                            dead = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            let count = if dead { 0 } else { narrowed.map_or(rel_facts.len(), |c| c.len()) };
-            if pick.as_ref().map_or(true, |(_, _, bn)| count < *bn) {
-                let cands = if dead { Some(Vec::new()) } else { narrowed.cloned() };
-                pick = Some((li, cands, count));
-            }
-        }
-        let Some((li, cand_idxs, _)) = pick else { return }; // only open theory lits left
-        let (rel, args) = &body[li];
-        let rest: Vec<usize> = pending.iter().copied().filter(|&x| x != li).collect();
-        let pargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
-        let Some(rel_facts) = facts.get(rel) else { return };
-        // Iterate either the index-narrowed candidates or the full relation.
-        match cand_idxs {
-            Some(idxs) => {
-                for &fi in &idxs {
-                    let jf = &rel_facts[fi as usize];
-                    let mut b2 = binding.clone();
-                    if match_args(&pargs, &jf.args, &mut b2) {
-                        self.join_rec(body, &rest, &b2, facts, seat_idx, roles, tids, out, budget);
-                        if *budget == 0 {
-                            return;
-                        }
-                    }
-                }
-            }
-            None => {
-                for jf in rel_facts {
-                    let mut b2 = binding.clone();
-                    if match_args(&pargs, &jf.args, &mut b2) {
-                        self.join_rec(body, &rest, &b2, facts, seat_idx, roles, tids, out, budget);
-                        if *budget == 0 {
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Decide a fully-ground body literal.  Generator facts (store atoms
-    /// + previously-emitted heads) are consulted first by exact match —
-    /// this is what lets a chained rule see an earlier round's head.
-    /// Binary atoms then fall through to the oracle (taxonomy, temporal,
-    /// subrelation-inherited and transitive edges).
-    fn ground_lit_holds(
-        &self,
-        rel: SymbolId,
-        args: &[Term],
-        facts: &HashMap<SymbolId, Vec<JoinFact>>,
-    ) -> bool {
-        if facts.get(&rel).is_some_and(|v| {
-            v.iter().any(|jf| {
-                jf.args.len() == args.len() && jf.args.iter().zip(args).all(|(a, b)| a == b)
-            })
-        }) {
-            return true;
-        }
-        if args.len() == 2 {
-            if let (Some(x), Some(y)) = (sym_of(&args[0]), sym_of(&args[1])) {
-                return self.oracle.holds(rel, x, y, None);
-            }
-        }
-        false
-    }
-
     /// Shape-recognize the taxonomy roles (`Strategy.recognize_roles`)
     /// and install them on BOTH the semantic layer (so `tax_edges` /
     /// `parents_of` / `trans_reach` reclassify the renamed vocabulary)
@@ -2015,7 +468,7 @@ impl<'a> NativeProver<'a> {
                 roles.disjoint, roles.partition,
             );
         }
-        self.oracle.set_roles(roles, &self.layer.semantic);
+        self.oracle.set_roles(roles);
     }
 
     /// Recognize functional-dependency axioms among `clauses` and
@@ -2137,108 +590,6 @@ impl<'a> NativeProver<'a> {
         }
     }
 
-    /// Schema-channel pre-pass: probe every input clause of a root
-    /// against the pattern table and register what it states (mined
-    /// symmetric / transitive / antisymmetric / irreflexive relations,
-    /// inverse pairs).  Registration only — absorption happens when the
-    /// same clause flows through `make`, which re-probes.  Running this
-    /// over ALL roots before any clause is made means orientation and
-    /// the oracle closures are active from the first input clause.
-    pub(crate) fn mine_schema(&mut self, clauses: &[PClause], root: SentenceId) {
-        if !self.opts.strategy.schema {
-            return;
-        }
-        for pc in clauses {
-            if pc.lits.len() > 4 || pc.nvars == 0 {
-                continue;
-            }
-            if let Some(hit) = self.layer.schema.probe(&pc.lits, &self.layer.atoms, self.syn()) {
-                self.apply_schema_hit(&hit, Some(root));
-            }
-        }
-    }
-
-    /// Act on a verified schema hit: register with the matching theory
-    /// registry, and say whether the clause should be ABSORBED (dropped
-    /// — its inferential role fully replaced).  Absorption is earned
-    /// per pattern:
-    ///
-    /// * Symmetry rule + symmetry metaschema: YES.  Ground orientation
-    ///   collapses both argument orders to one canonical form; the
-    ///   symmetric retrieval retry (`resolve`) and the oracle's
-    ///   reversed-edge check cover open literals and stored facts.
-    /// * Transitivity (rule AND metaschema): NO.  The oracle closure
-    ///   discharges ground transitive queries, but saturation still
-    ///   needs the clause to ENUMERATE compositions into open goals
-    ///   (`¬R(a,?z)` has no closure analogue) — absorbing it would be
-    ///   an enumeration-completeness hole.  Registration alone buys the
-    ///   ground discharges.
-    /// * Antisymmetry / irreflexivity / inverse: NO — recognized and
-    ///   recorded; their consumers land separately.
-    fn apply_schema_hit(&mut self, hit: &SchemaHit, source: Option<SentenceId>) -> bool {
-        let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        match hit.kind {
-            SchemaKind::Symmetry => {
-                let Some(rel) = &hit.rel else { return false };
-                if trace {
-                    eprintln!("SCHEMA symmetric {}", rel.name());
-                }
-                self.stats.mined_symmetric += 1;
-                self.oracle.register_symmetric(rel.id(), source);
-                true
-            }
-            SchemaKind::SymMetaschema => {
-                if trace {
-                    eprintln!("SCHEMA symmetry-metaschema absorbed");
-                }
-                true
-            }
-            SchemaKind::EqSubstitution => {
-                // Substitution of equals is what paramodulation and the
-                // ground-equality congruence closure (normalize_eq,
-                // compound equality keys, FD pipeline) already do; the
-                // axiomatic spelling only multiplies every equality
-                // unit by every R-fact.  Absorb.
-                if trace {
-                    let name = hit.rel.as_ref().map(|r| r.name().to_string());
-                    eprintln!("SCHEMA eq-substitution absorbed ({name:?})");
-                }
-                true
-            }
-            SchemaKind::Transitivity => {
-                let Some(rel) = &hit.rel else { return false };
-                if trace {
-                    eprintln!("SCHEMA transitive {}", rel.name());
-                }
-                self.stats.mined_transitive += 1;
-                self.oracle.register_transitive(rel.id(), source);
-                false
-            }
-            SchemaKind::TransMetaschema => false,
-            SchemaKind::Antisymmetry => {
-                if let Some(rel) = &hit.rel {
-                    self.stats.mined_other += 1;
-                    self.antisym_mined.entry(rel.id()).or_insert(source);
-                }
-                false
-            }
-            SchemaKind::Irreflexivity => {
-                if let Some(rel) = &hit.rel {
-                    self.stats.mined_other += 1;
-                    self.irrefl_mined.entry(rel.id()).or_insert(source);
-                }
-                false
-            }
-            SchemaKind::Inverse => {
-                if let (Some(r1), Some(r2)) = (&hit.rel, &hit.rel2) {
-                    self.stats.mined_other += 1;
-                    self.inverse_mined.push((r1.id(), r2.id(), source));
-                }
-                false
-            }
-        }
-    }
-
     /// Install the conjecture's leaf-signature profile (called BEFORE
     /// background loading, so every input clause is scored too).
     /// Liu & Xu's premise-selection insight, transplanted to the queue:
@@ -2272,6 +623,106 @@ impl<'a> NativeProver<'a> {
         let total = u64::from(sig.count_ones());
         let hits = u64::from((sig & self.conj_sig).count_ones());
         1 + self.opts.strategy.goal_dist_w * (total - hits) / total
+    }
+
+    // -- semantic clause-selection guidance (Strategy.semantic_guide) -------
+
+    /// Build the run's guide model exactly once (called at [`Self::run`]
+    /// start).  A no-op when the strategy knob is off; otherwise pulls the
+    /// KB-lifetime [`super::model::ModelProgram`] registry entry and
+    /// materializes its positive model, respecting that model's own
+    /// materialization budget.  A bail (`positive_model` → `None`, e.g. the
+    /// budget was exceeded) disables guidance for the rest of THIS run —
+    /// every clause then scores neutral, exactly as if the knob were off —
+    /// and is counted once in `stats.guide_disabled_bail`.  Cheap to call
+    /// when already attempted (`guide_attempted` guards the rebuild).
+    pub(crate) fn ensure_guide_model(&mut self) {
+        if self.guide_attempted || !self.opts.strategy.semantic_guide {
+            return;
+        }
+        self.guide_attempted = true;
+        let mp = self.layer.model_program();
+        match mp.positive_model() {
+            Some((model, _prov)) => self.guide_model = Some(model),
+            None => {
+                self.guide_model = None;
+                self.stats.guide_disabled_bail += 1;
+            }
+        }
+    }
+
+    /// Decode a ground literal's atom into `(relation, args)` when it is a
+    /// FLAT application (`(rel a1 a2 …)` with every argument a bare ground
+    /// symbol) — the only shape the guide model's tuples can be compared
+    /// against.  `None` for non-ground atoms, compound arguments, and
+    /// non-`App`/propositional atoms: those are exactly the "unmodeled"
+    /// literals the scoring treats as neutral.
+    fn guide_lit_pattern(t: &Term) -> Option<(SymbolId, Vec<SymbolId>)> {
+        let Term::App(elems) = t else { return None };
+        let Term::Sym(rel) = elems.first()? else { return None };
+        let mut args = Vec::with_capacity(elems.len() - 1);
+        for e in &elems[1..] {
+            match e {
+                Term::Sym(s) => args.push(s.id()),
+                _ => return None, // variable or compound: unmodeled
+            }
+        }
+        Some((rel.id(), args))
+    }
+
+    /// Whether one literal is FALSE in the guide model: the positive
+    /// literal's tuple is ABSENT from the relation, or the negative
+    /// literal's tuple is PRESENT.  `None` when the literal is neutral
+    /// (non-ground, non-flat, or the relation is not in the model at all —
+    /// an unmodeled predicate is neither confirmed nor refuted, so it must
+    /// not count toward either side of the fraction).
+    fn guide_lit_false(&self, pos: bool, atom: AtomId) -> Option<bool> {
+        let model = self.guide_model.as_ref()?;
+        if !self.layer.atom_info(atom).is_ground() {
+            return None;
+        }
+        let t = slot_atom(&self.layer.atoms, self.syn(), atom, 0)?;
+        let (rel, args) = Self::guide_lit_pattern(&t)?;
+        let tuples = model.get(&rel)?; // relation absent from the model: neutral
+        let present = tuples.contains(&args);
+        Some(pos != present)
+    }
+
+    /// Semantic guidance score for a clause's canonical literals: the
+    /// fraction (scaled to `0..=GUIDE_SCALE`) of its non-neutral literals
+    /// that are false in the guide model — 0 = every checkable literal is
+    /// TRUE in the model (far from a conflict), `GUIDE_SCALE` = every
+    /// checkable literal is FALSE (every literal simultaneously
+    /// contradicts the model, the classic "closest to empty" heuristic).
+    /// All-neutral clauses (nothing modeled) score `GUIDE_SCALE / 2` —
+    /// exactly in the middle, so they neither win nor lose the tie-break
+    /// against a clause the model does speak to.  `0` (the "off" value,
+    /// also the all-neutral floor half-point folds to under integer
+    /// division) when the knob is off or the model bailed.
+    pub(crate) fn guide_score(&mut self, lits: &[PLit]) -> u64 {
+        const GUIDE_SCALE: u64 = 1000;
+        if !self.opts.strategy.semantic_guide {
+            return 0;
+        }
+        self.ensure_guide_model();
+        if self.guide_model.is_none() {
+            return 0;
+        }
+        let (mut false_n, mut total) = (0u64, 0u64);
+        for l in lits {
+            if let Some(is_false) = self.guide_lit_false(l.pos, l.atom) {
+                total += 1;
+                if is_false { false_n += 1; }
+            }
+        }
+        if total == 0 {
+            return GUIDE_SCALE / 2;
+        }
+        self.stats.guided_clauses_scored += 1;
+        // Score HIGH = more model-false literals; the pick queue wants
+        // LOW keys first (BinaryHeap<Reverse<..>>), so invert here once
+        // rather than at every call site.
+        GUIDE_SCALE - (GUIDE_SCALE * false_n / total)
     }
 
     /// Whether any active ordered inference needs per-clause maximality.
@@ -2392,292 +843,6 @@ impl<'a> NativeProver<'a> {
         swapped.map(|id| self.layer.atom_info(id))
     }
 
-    /// Queue theory units for every NEW ground `(ListFn …)` subterm of
-    /// `t`: `(inList mᵢ L)` and `(equal mᵢ (ListOrderFn L i))` (1-based,
-    /// SUMO's ListOrderFn convention).
-    fn collect_ground_lists(&mut self, t: &Term) {
-        let Term::App(elems) = t else { return };
-        for el in elems {
-            self.collect_ground_lists(el);
-        }
-        if !matches!(elems.first(), Some(Term::Sym(h)) if &*h.name() == "ListFn") {
-            return;
-        }
-        if elems.len() < 2 || elems.len() > 16 || !t.is_ground() {
-            return;
-        }
-        // LEAF members only: a ground list of compounds (nested lists,
-        // function terms) is the signature of SUMO's generative list
-        // machinery — synthesizing its extension feeds the loop that
-        // grows new lists forever.
-        if elems.iter().skip(1).any(|m| matches!(m, Term::App(_))) {
-            return;
-        }
-        // Global cap: list theory is for the handful of lists a
-        // problem mentions, not a list-universe enumeration.
-        if self.lists_done.len() >= 64 {
-            return;
-        }
-        let key = self.layer.atoms.intern_atom(t);
-        if !self.lists_done.insert(key) {
-            return;
-        }
-        let in_list = crate::types::Symbol::from("inList");
-        let order_fn = crate::types::Symbol::from("ListOrderFn");
-        for (i, m) in elems.iter().enumerate().skip(1) {
-            self.pending_list_units.push(Term::App(vec![
-                Term::Sym(in_list.clone()), m.clone(), t.clone(),
-            ]));
-            self.pending_list_units.push(Term::App(vec![
-                Term::Op(OpKind::Equal),
-                m.clone(),
-                Term::App(vec![
-                    Term::Sym(order_fn.clone()),
-                    t.clone(),
-                    Term::Lit(Literal::Number(i.to_string())),
-                ]),
-            ]));
-        }
-    }
-
-    /// Surface FD-derived equalities as activated `(equal a b)` unit
-    /// clauses, with the deriving clauses + uniqueness axiom as proof
-    /// parents — so they resolve and paramodulate like any equality
-    /// and the transcript shows where they came from.
-    pub(crate) fn drain_fd_equalities(&mut self) {
-        // Ground-list theory units → activated background facts.
-        let list_units = std::mem::take(&mut self.pending_list_units);
-        for term in list_units {
-            let made = self.make(
-                vec![(true, term)], Vec::new(), "list_theory", BACKGROUND, None, true);
-            let Some(id) = made else { continue };
-            let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
-                self.activate(id);
-                self.push(Some(id));
-            }
-        }
-        // Exhaustiveness-derived positive facts → activated units.
-        for (rel, x, y, just) in self.oracle.take_pending_facts() {
-            let term_of = |key: u64| -> Option<Term> {
-                self.eq_terms.get(&key).cloned()
-                    .or_else(|| self.syn().sym_name(key).map(Term::Sym))
-            };
-            let (Some(tr), Some(tx), Some(ty)) = (term_of(rel), term_of(x), term_of(y))
-            else { continue };
-            let term = Term::App(vec![tr, tx, ty]);
-            let made = self.make(
-                vec![(true, term)], just.clause_parents.clone(),
-                "exhaustive", SUPPORT, None, true);
-            let Some(id) = made else { continue };
-            self.clauses[id as usize].fact_parents.extend(just.fact_sids.iter().copied());
-            if let Some(ax) = just.axiom {
-                self.clauses[id as usize].fact_parents.push(ax);
-            }
-            let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
-                self.activate(id);
-                self.push(Some(id));
-            }
-        }
-        for (a, b, just) in self.oracle.take_pending_eq() {
-            let term_of = |key: u64| -> Option<Term> {
-                self.eq_terms.get(&key).cloned()
-                    .or_else(|| self.syn().sym_name(key).map(Term::Sym))
-            };
-            let (Some(ta), Some(tb)) = (term_of(a), term_of(b)) else { continue };
-            let term = Term::App(vec![Term::Op(OpKind::Equal), ta, tb]);
-            let made = self.make(
-                vec![(true, term)], just.clause_parents.clone(),
-                "fd_congruence", SUPPORT, None, true);
-            let Some(id) = made else { continue };
-            self.clauses[id as usize].fact_parents.extend(just.fact_sids.iter().copied());
-            if let Some(ax) = just.axiom {
-                self.clauses[id as usize].fact_parents.push(ax);
-            }
-            let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
-                self.activate(id);
-                self.push(Some(id));
-            }
-        }
-    }
-
-    /// Congruence-closure pre-pass: union every ground `(equal a b)`
-    /// unit in `clauses` into the oracle's equality closure, so the
-    /// later `make` of every clause normalizes against the complete
-    /// closure.  Must run before any non-equality clause is added.
-    pub(crate) fn register_equalities(&mut self, clauses: &[PClause]) {
-        for c in clauses {
-            if c.lits.len() != 1 || !c.lits[0].pos {
-                continue;
-            }
-            if let Some((ta, tb, ka, kb)) = self.ground_equality(c.lits[0].atom) {
-                self.register_equality(ta, tb, ka, kb);
-            }
-        }
-    }
-
-    /// Equality-class key of any GROUND term: leaf keys from `eq_key`,
-    /// compounds by content hash (interning into the prover-local
-    /// AtomTable — the same id `Element::Sub` carries, so store-side
-    /// and prover-side spellings of one subterm share a class).
-    fn term_eq_key(&self, t: &Term) -> Option<u64> {
-        if let Some(k) = eq_key(t) {
-            return Some(k);
-        }
-        match t {
-            Term::App(_) if t.is_ground() => Some(self.layer.atoms.intern_atom(t)),
-            _ => None,
-        }
-    }
-
-    /// Union one ground equality, remembering renderable terms for both
-    /// keys and preferring a NUMERIC literal as the class root (so
-    /// `normalize_eq` rewrites symbols TO numbers, keeping arithmetic
-    /// comparisons decidable downstream).
-    fn register_equality(&mut self, ta: Term, tb: Term, ka: u64, kb: u64) {
-        if matches!(ta, Term::App(_)) || matches!(tb, Term::App(_)) {
-            self.has_compound_eqs = true;
-        }
-        self.eq_terms.entry(ka).or_insert(ta);
-        self.eq_terms.entry(kb).or_insert(tb);
-        // Root preference: number > symbol > compound.  Rewriting
-        // TOWARD numbers keeps comparisons decidable; rewriting toward
-        // symbols keeps terms from GROWING (a compound root would make
-        // normalize_eq inflate every occurrence of the symbol into the
-        // compound — and a compound containing a ground list regrows
-        // new lists forever).
-        fn rank(t: &Term) -> u8 {
-            match t {
-                Term::Lit(Literal::Number(_)) => 0,
-                Term::Sym(_) | Term::Lit(_) | Term::Op(_) => 1,
-                Term::Var(_) | Term::App(_) => 2,
-            }
-        }
-        let (ra, rb) = (rank(&self.eq_terms[&ka]), rank(&self.eq_terms[&kb]));
-        let (root, child) = match ra.cmp(&rb) {
-            std::cmp::Ordering::Less => (ka, kb),
-            std::cmp::Ordering::Greater => (kb, ka),
-            std::cmp::Ordering::Equal => {
-                self.oracle.add_equality(ka, kb);
-                return;
-            }
-        };
-        self.oracle.add_equality_rooted(root, child);
-    }
-
-    /// Whether `t` is a symbol-headed relation atom the oracle can prove
-    /// ill-sorted (an argument disjoint from its declared domain).
-    fn atom_ill_sorted(&self, t: &Term) -> bool {
-        let Term::App(elems) = t else { return false };
-        let Some(Term::Sym(rel)) = elems.first() else { return false };
-        let args: Vec<Option<SymbolId>> = elems
-            .iter()
-            .skip(1)
-            .map(|e| match e {
-                Term::Sym(s) => Some(s.id()),
-                _ => None,
-            })
-            .collect();
-        self.oracle.ill_sorted(rel.id(), &args)
-    }
-
-    /// For a ground `(equal l r)` atom term, whether the oracle entails
-    /// it — symbol equality through reflexivity / equality-class /
-    /// subclass antisymmetry (with witnesses), compound equality
-    /// structurally (content-addressed).  `None` if `t` is not a ground
-    /// equality atom.
-    fn ground_equality_holds(&self, t: &Term) -> Option<(EqDecision, Vec<Witness>, Vec<u32>)> {
-        let Term::App(elems) = t else { return None };
-        if elems.len() != 3 || !matches!(elems[0], Term::Op(OpKind::Equal)) {
-            return None;
-        }
-        let (l, r) = (&elems[1], &elems[2]);
-        if !l.is_ground() || !r.is_ground() {
-            return None;
-        }
-        // Numeric literals decide OUTRIGHT, both ways: equal canonical
-        // values are entailed, different values are REFUTED (literal
-        // semantics — there is no model where 1 = 2).  Symbols never
-        // get the refuted arm (no unique-names assumption for them).
-        if let (Term::Lit(Literal::Number(a)), Term::Lit(Literal::Number(b))) = (l, r) {
-            if let (Some(x), Some(y)) =
-                (crate::numeric::parse_num(a), crate::numeric::parse_num(b))
-            {
-                let d = if x == y { EqDecision::Entailed } else { EqDecision::Refuted };
-                return Some((d, Vec::new(), Vec::new()));
-            }
-        }
-        match (self.term_eq_key(l), self.term_eq_key(r)) {
-            (Some(ka), Some(kb)) => {
-                let mut why = Vec::new();
-                if self.oracle.equal_holds(ka, kb, Some(&mut why)) {
-                    // Deriving clauses from the equality proof forest
-                    // (FD-congruence merges) become proof-DAG parents.
-                    let clause_parents = self.oracle.eq_explain(ka, kb).1;
-                    Some((EqDecision::Entailed, why, clause_parents))
-                } else {
-                    Some((EqDecision::Unknown, Vec::new(), Vec::new()))
-                }
-            }
-            _ => {
-                let d = if l == r { EqDecision::Entailed } else { EqDecision::Unknown };
-                Some((d, Vec::new(), Vec::new()))
-            }
-        }
-    }
-
-    /// Decide a ground arithmetic comparison literal
-    /// (`(greaterThan -100.0 0.0)` → `Some(false)`); `None` when the
-    /// term isn't a comparison over two numeric literals.
-    fn ground_compare(t: &Term) -> Option<bool> {
-        let Term::App(elems) = t else { return None };
-        if elems.len() != 3 { return None; }
-        let (Term::Sym(p), Term::Lit(Literal::Number(a)), Term::Lit(Literal::Number(b))) =
-            (&elems[0], &elems[1], &elems[2]) else { return None };
-        let (x, y) = (crate::numeric::parse_num(a)?, crate::numeric::parse_num(b)?);
-        crate::numeric::eval_compare(&p.name(), x, y)
-    }
-
-    /// `(a, b)` iff `atom` is a ground `(equal a b)` over two symbols.
-    fn ground_equality(&self, atom: AtomId) -> Option<(Term, Term, u64, u64)> {
-        let s = self.layer.atoms.resolve(atom, self.syn())?;
-        if s.elements.len() != 3 {
-            return None;
-        }
-        if !matches!(s.elements.first(), Some(Element::Op(OpKind::Equal))) {
-            return None;
-        }
-        let lift = |el: &Element| -> Option<(Term, u64)> {
-            match el {
-                Element::Symbol(sym) => {
-                    let t = Term::Sym(sym.0.clone());
-                    let k = eq_key(&t)?;
-                    Some((t, k))
-                }
-                Element::Literal(l @ Literal::Number(_)) => {
-                    let t = Term::Lit(l.clone());
-                    let k = eq_key(&t)?;
-                    Some((t, k))
-                }
-                // A ground sub-sentence: its sid IS its content hash —
-                // the compound's equality key.  Lift to a Term for the
-                // registry (renderable representative).
-                Element::Sub(sid) => {
-                    let t = self.layer.atoms.term_of(*sid, self.syn())?;
-                    t.is_ground().then_some((t, *sid))
-                }
-                _ => None,
-            }
-        };
-        let (ta, ka) = lift(&s.elements[1])?;
-        let (tb, kb) = lift(&s.elements[2])?;
-        if ka == kb {
-            return None;
-        }
-        Some((ta, tb, ka, kb))
-    }
 
     // -- make: simplify + canonicalize + register ------------------------------
 
@@ -2708,528 +873,6 @@ impl<'a> NativeProver<'a> {
     }
 
 
-    /// Build a clause from raw slot-form literals: arithmetic
-    /// normalization, oracle discharge, depth cap, unit
-    /// subsumption/simplification, learned-unit feedback, canonical
-    /// dedup, tier weighting.  `None` = redundant/discarded.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn make(
-        &mut self,
-        lits:    Vec<(bool, Term)>,
-        parents: Vec<u32>,
-        rule:    &'static str,
-        tier:    u8,
-        source:  Option<SentenceId>,
-        derived: bool,
-    ) -> Option<u32> {
-        // Interactive single-step: show the proposed derivation (the "match")
-        // — rule, parent clauses, and the literals about to be built — and
-        // block before we normalize/register it.  Only INFERENCES pause
-        // (`derived`); the initial axiom/conjecture load (derived = false) is
-        // not a match and would otherwise flood the prompt before the loop.
-        if derived && stepdbg::enabled() {
-            let body = format!(
-                "rule = {rule}   tier = {tier}   derived = {derived}\n  \
-                 conclusion: {}\n  from parents:\n{}",
-                self.dbg_lits_kif(&lits),
-                if parents.is_empty() {
-                    "    (none — input/oracle unit)".to_string()
-                } else {
-                    parents
-                        .iter()
-                        .map(|p| format!("    [{p}] {}", self.dbg_clause_kif(*p)))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                },
-            );
-            stepdbg::pause("MAKE", &body);
-        }
-
-        let mut fact_parents: Vec<SentenceId> = Vec::new();
-        let mut notes: Vec<String> = Vec::new();
-        let mut parents = parents;
-
-        // Arithmetic normalization, then ground-equality normalization:
-        // every ground constant collapses to its equality-class
-        // representative, so `equal` constants become one symbol.
-        // Both are in-place: the (overwhelmingly common) untouched
-        // literal costs a walk, not a rebuild.
-        let mut lits = lits;
-        let mut demod_used: Vec<u32> = Vec::new();
-        for (_, t) in lits.iter_mut() {
-            arith_norm(t);
-            self.normalize_eq(t);
-            // Forward demodulation: rewrite to KBO normal form with the
-            // active oriented unit equations (a simplification — the
-            // normalized literal replaces the original).
-            let n = self.demodulate(t, &mut demod_used);
-            self.stats.demod_rewrites += n;
-        }
-        if !demod_used.is_empty() {
-            demod_used.sort_unstable();
-            demod_used.dedup();
-            if self.want_notes() {
-                notes.push(format!("demodulated by {} unit equation(s)", demod_used.len()));
-            }
-            parents.extend(demod_used);
-        }
-
-        // Equality-presence signal for strict saturation verdicts: once
-        // equality is in play, a saturation without a complete equality
-        // calculus cannot honestly claim "no".  Sticky bit, only paid
-        // for on the strict path.
-        if self.opts.strategy.strict_saturation && !self.stats.saw_equality {
-            self.stats.saw_equality = lits.iter().any(|(_, t)| is_equality_atom(t));
-        }
-
-        // Symmetric-argument orientation: a GROUND argument pair of a
-        // symmetric relation sorts into one canonical order (the same
-        // blank-key order `orient_equality` uses), so `(R b a)` and
-        // `(R a b)` collapse to one literal — the metaschema's mirrored
-        // resolvents die at dedup instead of multiplying.  Ground pairs
-        // only: orienting OPEN literals is unstable under substitution
-        // (the oriented pattern's instances may orient the other way);
-        // open-literal completeness is covered by the symmetric
-        // retrieval retry in `resolve` instead.  Top-level atoms only —
-        // never inside argument subterms, where embedded formulas
-        // (PropositionalAttitude contexts) are referentially opaque.
-        if self.opts.strategy.schema {
-            let mut oriented: SmallVec<[SymbolId; 2]> = SmallVec::new();
-            for (_, t) in lits.iter_mut() {
-                let Term::App(elems) = t else { continue };
-                if elems.len() != 3 || elems[1] == elems[2] {
-                    continue;
-                }
-                let Term::Sym(h) = &elems[0] else { continue };
-                if !elems[1].is_ground() || !elems[2].is_ground() {
-                    continue;
-                }
-                let rel = h.id();
-                if !self.oracle.is_symmetric(rel) {
-                    continue;
-                }
-                if blank_key(&elems[1]) > blank_key(&elems[2]) {
-                    elems.swap(1, 2);
-                    self.stats.sym_oriented += 1;
-                    if !oriented.contains(&rel) {
-                        oriented.push(rel);
-                    }
-                }
-            }
-            for rel in oriented {
-                if let Some(sid) = self.oracle.symmetric_source(rel) {
-                    fact_parents.push(sid);
-                }
-                if self.want_notes() {
-                    let name = self
-                        .syn()
-                        .sym_name(rel)
-                        .map(|s| s.name().to_string())
-                        .unwrap_or_else(|| format!("{rel:#x}"));
-                    notes.push(format!("oriented symmetric {name} arguments"));
-                }
-            }
-        }
-
-        // Sorted-relation filter: a ground relation atom whose argument
-        // is provably disjoint from the position's declared domain is
-        // ill-sorted (false in SUMO's typed reading).  An ill-sorted
-        // positive literal drops (false ∨ C ≡ C); an ill-sorted negative
-        // literal is vacuously true → the clause is a tautology; dropping
-        // all positives leaves a vacuous clause.  All three → discard.
-        // INPUT clauses (axioms / hypotheses / the conjecture) are
-        // exempt: asserted facts are ground truth, and SUMO itself
-        // violates its own domain declarations (Merge asserts
-        // `component` over nuclei while declaring component's domains
-        // CorpuscularObject ⊥ Substance).  Silently deleting an input
-        // changes the problem; the filter exists to stop DERIVED
-        // ill-sorted fabrications.
-        if derived && self.oracle.has_disjointness() {
-            let mut filtered = Vec::with_capacity(lits.len());
-            let mut dropped_positive = false;
-            for (pos, t) in &lits {
-                if self.atom_ill_sorted(t) {
-                    if !*pos {
-                        return None; // (not ill-sorted) ≡ tautology
-                    }
-                    dropped_positive = true;
-                    continue;
-                }
-                filtered.push((*pos, t.clone()));
-            }
-            if dropped_positive && filtered.is_empty() {
-                return None; // vacuous: only ill-sorted positives
-            }
-            lits = filtered;
-        }
-
-        // Theory propagation: discharge ground binary literals against
-        // the oracle.  An entailed-FALSE negative literal is deleted
-        // (unit resolution with a virtual entailed unit); a clause with
-        // an entailed-TRUE positive literal is redundant (oracle-
-        // subsumed) — except unit facts, which stay as index content.
-        let mut kept: Vec<(bool, Term)> = Vec::with_capacity(lits.len());
-        for (pos, t) in &lits {
-            // Ground arithmetic comparisons decide outright: a FALSE
-            // literal drops (unit resolution against arithmetic), a
-            // TRUE literal satisfies the clause (redundant).
-            if let Some(truth) = Self::ground_compare(t) {
-                if truth != *pos {
-                    self.stats.oracle_discharges += 1;
-                    if self.want_notes() {
-                        notes.push(format!(
-                            "{} -- arithmetic", lit_kif(*pos, t, self.syn())));
-                    }
-                    continue;
-                }
-                self.stats.oracle_subsumed += 1;
-                return None;
-            }
-            if let Some((decision, why, eq_clauses)) = self.ground_equality_holds(t) {
-                match decision {
-                    EqDecision::Entailed => {
-                        if !*pos {
-                            self.stats.oracle_discharges += 1;
-                            if self.want_notes() {
-                                notes.push(format!(
-                                    "(not {}) -- oracle: {}",
-                                    term_kif(t, self.syn()),
-                                    if why.is_empty() { "x = x".to_string() }
-                                    else { witnesses_kif(&why, self.syn()) }));
-                            }
-                            for w in &why {
-                                if let Some(sid) = w.sid { fact_parents.push(sid); }
-                            }
-                            parents.extend(eq_clauses);
-                            continue;
-                        }
-                        if lits.len() > 1 {
-                            self.stats.oracle_subsumed += 1;
-                            return None;
-                        }
-                    }
-                    EqDecision::Refuted => {
-                        // Mirror image: a FALSE positive equality drops
-                        // (1 ≠ 2 by literal semantics); a satisfied
-                        // negative one makes the clause redundant.
-                        if *pos {
-                            self.stats.oracle_discharges += 1;
-                            if self.want_notes() {
-                                notes.push(format!(
-                                    "{} -- numeric disequality",
-                                    term_kif(t, self.syn())));
-                            }
-                            continue;
-                        }
-                        if lits.len() > 1 {
-                            self.stats.oracle_subsumed += 1;
-                            return None;
-                        }
-                    }
-                    EqDecision::Unknown => {}
-                }
-                kept.push((*pos, t.clone()));
-                continue;
-            }
-            if let Some((rel, x, y)) = term_binary_ids(t) {
-                // Disjointness refutation: `(instance x C)` is provably
-                // FALSE when a known class of x is provably disjoint
-                // from C (partition / disjoint declarations).  A FALSE
-                // positive drops; a satisfied negative literal makes
-                // the clause redundant.
-                let mut why_r: Vec<Witness> = Vec::new();
-                if self.oracle.refutes_instance(rel, x, y, Some(&mut why_r)) {
-                    if *pos {
-                        self.stats.oracle_discharges += 1;
-                        if self.want_notes() {
-                            notes.push(format!(
-                                "{} -- oracle refutes: {}",
-                                term_kif(t, self.syn()),
-                                witnesses_kif(&why_r, self.syn())));
-                        }
-                        for w in &why_r {
-                            if let Some(sid) = w.sid { fact_parents.push(sid); }
-                        }
-                        continue;
-                    }
-                    // A satisfied NEGATIVE literal makes the clause
-                    // redundant — but never discard a CONJECTURE
-                    // clause this way: in an inconsistent KB the same
-                    // atom can be both refuted (disjointness) and
-                    // derivable (rules), and the goal literal must
-                    // stay for the search to prove positively (the
-                    // paraconsistent reading every other prover gives
-                    // these tests).
-                    if tier != CONJECTURE {
-                        self.stats.oracle_subsumed += 1;
-                        return None;
-                    }
-                }
-                // Memoized witness-free check first; the witness walk
-                // (uncached) runs only for entailed atoms.
-                if self.oracle.holds(rel, x, y, None) {
-                    let mut why: Vec<Witness> = Vec::new();
-                    let _ = self.oracle.holds(rel, x, y, Some(&mut why));
-                    if !*pos {
-                        self.stats.oracle_discharges += 1;
-                        if self.want_notes() {
-                            notes.push(format!(
-                                "(not {}) -- oracle: {}",
-                                term_kif(t, self.syn()),
-                                witnesses_kif(&why, self.syn())));
-                        }
-                        for w in &why {
-                            // Stored facts cite their sid; learned units
-                            // cite the deriving clause so the unit's own
-                            // derivation chain stays in the proof DAG.
-                            if let Some(sid) = w.sid {
-                                fact_parents.push(sid);
-                            } else if let Some(cid) =
-                                self.oracle.learned_src(w.rel, w.x, w.y)
-                            {
-                                parents.push(cid);
-                            }
-                        }
-                        continue;
-                    }
-                    if lits.len() > 1 {
-                        self.stats.oracle_subsumed += 1;
-                        return None;
-                    }
-                }
-            }
-            kept.push((*pos, t.clone()));
-        }
-        let lits = kept;
-
-        // Ground-list theory: the first sighting of each ground
-        // `(ListFn …)` term synthesizes its extension — membership and
-        // positional facts — as pending units (drained outside make).
-        // SUMO's list axioms quantify over these; saturation cannot
-        // enumerate a ground list's members without them.
-        for (_, t) in &lits {
-            self.collect_ground_lists(t);
-        }
-
-        // Depth AND size caps for derived clauses.  Depth alone is not
-        // enough: substitution duplicates subterms, and SUMO's
-        // recursive list machinery can grow term WIDTH without bound
-        // (a 52 GB / 7-hour intern_atom death spiral at full-config
-        // scale found this the hard way).
-        if derived && lits.iter().any(|(_, t)| {
-            term_depth(t) > self.opts.strategy.max_depth
-                || term_size(t) > self.opts.strategy.max_term_size
-        }) {
-            self.stats.discarded_deep += 1;
-            return None;
-        }
-
-        // Unit subsumption / simplification against the active units.
-        let mut kept: Vec<(bool, Term)> = Vec::with_capacity(lits.len());
-        for (pos, t) in &lits {
-            if t.is_ground() {
-                let atom = self.layer.atoms.intern_atom(t);
-                if self.units.ground_unit(*pos, atom).is_some() {
-                    self.stats.unit_subsumed += 1;
-                    return None; // subsumed by an active unit
-                }
-                if let Some(cid) = self.units.ground_unit(!*pos, atom) {
-                    self.stats.unit_simplified += 1;
-                    if self.want_notes() {
-                        notes.push(format!(
-                            "{} -- refuted by unit clause {}",
-                            lit_kif(*pos, t, self.syn()), cid));
-                    }
-                    parents.push(cid);
-                    continue;
-                }
-            }
-            // Open units, reached through the mask/residue index — THE
-            // KEY EQUATION routes the target to exactly the patterns
-            // whose ground seats agree with its coins (the flat
-            // same-head scan went superlinear on deep searches).
-            if let Some((h, ar)) = term_head_key(t) {
-                // The shifted match target is built LAZILY: most
-                // literals have zero open-unit candidates, and the
-                // shift is a full tree clone.
-                let mut target: Option<Term> = None;
-                let (n_elems, seats) = classify_seats(t);
-                let mut dropped = false;
-                'pol: for same_pol in [*pos, !*pos] {
-                    for u in self.units.open_candidates(same_pol, h, ar, n_elems, &seats) {
-                        self.stats.open_match_attempts += 1;
-                        let tgt = target.get_or_insert_with(|| shift_slots(t, MATCH_TARGET_OFF));
-                        let n = u.nvars as usize + 1;
-                        let mut s = self.take_scratch(n);
-                        let hit = match_one_way(&u.pattern, tgt, &mut s);
-                        self.put_scratch(s, n);
-                        if hit {
-                            self.stats.open_match_hits += 1;
-                            if same_pol == *pos {
-                                self.stats.unit_subsumed += 1;
-                                return None;
-                            }
-                            self.stats.unit_simplified += 1;
-                            if self.want_notes() {
-                                notes.push(format!(
-                                    "{} -- refuted by unit clause {}",
-                                    lit_kif(*pos, t, self.syn()), u.clause));
-                            }
-                            parents.push(u.clause);
-                            dropped = true;
-                            break 'pol;
-                        }
-                    }
-                }
-                if dropped { continue; }
-            }
-            kept.push((*pos, t.clone()));
-        }
-        let lits = kept;
-
-        // Any resulting ground positive unit extends the oracle: a binary
-        // relation edge feeds the closure; a ground `(equal a b)` feeds
-        // the equality union-find (helps later derivations — already-made
-        // clauses are normalized by the input pre-pass).  The edge is
-        // registered AFTER the clause is pushed (below) so the learned
-        // entry can carry this clause's id as its proof-DAG source.
-        let unit_edge = if lits.len() == 1 && lits[0].0 {
-            if let Some((rel, x, y)) = term_binary_ids(&lits[0].1) {
-                // Remember the constants: FD-derived equalities over
-                // prover-local skolems must be re-buildable as terms
-                // (the store's symbol cache has never seen them).
-                if let Term::App(elems) = &lits[0].1 {
-                    for el in elems {
-                        if let Some(k) = eq_key(el) {
-                            self.eq_terms.entry(k).or_insert_with(|| el.clone());
-                        }
-                    }
-                }
-                Some((rel, x, y))
-            } else {
-                if let Some((l, r)) = term_ground_equality_sides(&lits[0].1) {
-                    if let (Some(ka), Some(kb)) = (self.term_eq_key(l), self.term_eq_key(r)) {
-                        if ka != kb {
-                            let (l, r) = (l.clone(), r.clone());
-                            self.register_equality(l, r, ka, kb);
-                        }
-                    }
-                }
-                None
-            }
-        } else {
-            None
-        };
-        // Negative ground units feed the oracle's exclusion store
-        // (exhaustiveness case-elimination).
-        let neg_unit_edge = if lits.len() == 1 && !lits[0].0 {
-            term_binary_ids(&lits[0].1)
-        } else {
-            None
-        };
-
-        let clause = canonical_clause(lits, &self.layer.atoms);
-
-        // Tautology check on the canonical literals.
-        let pos_atoms: Set64<AtomId> =
-            clause.lits.iter().filter(|l| l.pos).map(|l| l.atom).collect();
-        if clause.lits.iter().any(|l| !l.pos && pos_atoms.contains(&l.atom)) {
-            return None;
-        }
-
-        // Schema channel: theory-rule shapes register with their
-        // oracle registries, and the fully-replaced ones (symmetry
-        // rule / symmetry metaschema) are absorbed outright.  This
-        // catches DERIVED instances too — the metaschema resolving
-        // against `(instance R SymmetricRelation)` births exactly the
-        // per-R symmetry rule, which dies here at birth.  Never for
-        // CONJECTURE-tier clauses: a negated existential conjecture
-        // (`exists x y. R(x,y) ∧ ¬R(y,x)`) IS the symmetry shape, and
-        // absorbing it would erase the goal (and break vacuity
-        // detection, which requires a negated_conjecture proof step).
-        if self.opts.strategy.schema
-            && tier != CONJECTURE
-            && clause.nvars >= 1
-            && clause.lits.len() <= 4
-        {
-            if let Some(hit) =
-                self.layer.schema.probe(&clause.lits, &self.layer.atoms, self.syn())
-            {
-                self.stats.schema_hits += 1;
-                if self.apply_schema_hit(&hit, source) {
-                    self.stats.schema_absorbed += 1;
-                    return None;
-                }
-            }
-        }
-
-        // Slot-form terms, lifted once (canonical vars → dense slots).
-        let terms: Vec<(bool, Term)> = clause
-            .lits
-            .iter()
-            .filter_map(|l| {
-                slot_atom(&self.layer.atoms, self.syn(), l.atom, 0).map(|t| (l.pos, t))
-            })
-            .collect();
-        debug_assert_eq!(terms.len(), clause.lits.len());
-
-        // Forward subsumption: an active clause already covers this one
-        // ⇒ it is redundant, drop it (the flooding floor).  The new
-        // clause is not yet in the arena, so no self-subsumption.
-        if let Some(_by) = self.forward_subsumed(&clause.lits, &terms) {
-            self.stats.subsumed += 1;
-            return None;
-        }
-
-        let size: u64 = terms.iter().map(|(_, t)| term_size(t) as u64).sum();
-        // Generative-existential throttle: every skolem-function
-        // application multiplies the clause's weight, so self-feeding
-        // chains (sk1(sk0(x))…) sink in the queue instead of flooding
-        // it.  One skolem (an ordinary existential witness) costs a
-        // factor of 2 — mild; nested chains grow superlinearly.
-        let skolems: u64 = terms.iter().map(|(_, t)| term_skolem_apps(t)).sum();
-        // Parameterized clause-weight function (the selection genome).
-        // Defaults (cw_lits=1, cw_size=1, cw_vars=2, cw_skolem=1) reproduce
-        // the historical `(#lits + size + 2·#vars)·(1 + skolems)`.
-        let st = &self.opts.strategy;
-        let base = (st.cw_lits * clause.lits.len() as u64
-            + st.cw_size * size
-            + st.cw_vars * u64::from(clause.nvars))
-            .max(1)
-            * (1 + st.cw_skolem * skolems);
-        // Conjecture-distance factor: structurally goal-near clauses
-        // keep their base weight; goal-far ones sink (×1..×1+W).
-        let dist = self.goal_distance_factor(&clause.lits, tier);
-        // KBO-maximal literals (ordered-inference eligibility).  Only
-        // computed when an ordered rule needs it; otherwise all-maximal
-        // (no restriction) so the unordered default pays nothing.
-        let max_mask = self.maximal_literals(&clause.lits);
-        let id = self.clauses.len() as u32;
-        self.clauses.push(ClauseRec {
-            id,
-            lits: clause.lits,
-            terms,
-            nvars: clause.nvars,
-            key: clause.key,
-            parents,
-            fact_parents,
-            source,
-            rule,
-            tier,
-            weight: base * self.opts.strategy.tier_weight[tier as usize] * dist,
-            activated: false,
-            max_mask,
-            notes,
-        });
-        if let Some((rel, x, y)) = unit_edge {
-            self.oracle.add_unit(rel, x, y, Some(id));
-        }
-        if let Some((rel, x, y)) = neg_unit_edge {
-            self.oracle.add_neg_unit(rel, x, y, Some(id));
-        }
-        Some(id)
-    }
-
     // -- queue ------------------------------------------------------------------
 
     /// Queue a made clause for given selection.  `None` (redundant) and
@@ -3245,7 +888,14 @@ impl<'a> NativeProver<'a> {
         self.seen.insert(c.key);
         let (w, n) = (c.weight, self.seq);
         self.seq += 1;
-        self.h_weight.push(Reverse((w, n, id)));
+        // Semantic-guide tie-break: 0 (inert, first-in-key-order) when the
+        // knob is off, so the heap ordering is byte-identical to the
+        // pre-guidance behavior — this can only be observed as a
+        // REORDERING among clauses that already tie on `weight`, never a
+        // change to which clause wins on weight alone.
+        let lits = c.lits.clone();
+        let g = self.guide_score(&lits);
+        self.h_weight.push(Reverse((w, g, n, id)));
         self.h_age.push(Reverse((n, id)));
         Some(id)
     }
@@ -3260,7 +910,7 @@ impl<'a> NativeProver<'a> {
                     if self.popped.insert(id) { return Some(id); }
                 }
             } else {
-                while let Some(Reverse((_, _, id))) = self.h_weight.pop() {
+                while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
                     if self.popped.insert(id) { return Some(id); }
                 }
             }
@@ -3284,6 +934,7 @@ impl<'a> NativeProver<'a> {
             self.units.add_unit(
                 id, lits[0].pos, lits[0].atom, nv,
                 &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
+            self.index_demodulator(id);
         }
         if self.opts.strategy.superposition {
             self.index_superposition(id);
@@ -3534,7 +1185,9 @@ impl<'a> NativeProver<'a> {
                     if self.opts.strategy.full_saturation {
                         let (w, n) = (self.clauses[id as usize].weight, self.seq);
                         self.seq += 1;
-                        self.h_weight.push(Reverse((w, n, id)));
+                        let lits = self.clauses[id as usize].lits.clone();
+                        let g = self.guide_score(&lits);
+                        self.h_weight.push(Reverse((w, g, n, id)));
                         self.h_age.push(Reverse((n, id)));
                     }
                     self.activate(id);
@@ -3602,92 +1255,6 @@ impl<'a> NativeProver<'a> {
             .iter()
             .map(|l| slot_atom(&self.layer.atoms, self.syn(), l.atom, 0).map(|t| (l.pos, t)))
             .collect()
-    }
-
-    /// Is clause `id` an activated, KBO-orientable positive unit equality
-    /// — i.e. a demodulator that completion can superpose with?
-    fn is_unit_equation(&self, id: u32) -> bool {
-        let c = &self.clauses[id as usize];
-        c.activated
-            && c.terms.len() == 1
-            && c.terms[0].0
-            && self.equality_oriented(&c.terms[0].1).is_some()
-    }
-
-    /// The activated unit-equation clause ids, in arena (deterministic)
-    /// order — completion's working set.
-    fn unit_equation_ids(&self) -> Vec<u32> {
-        (0..self.clauses.len() as u32)
-            .filter(|&id| self.is_unit_equation(id))
-            .collect()
-    }
-
-    /// Phase 6 — bounded background completion (Knuth–Bendix-style).  Run
-    /// ONCE before the main loop: superpose the active unit equations
-    /// against each other, keeping every *new* oriented unit equation as a
-    /// demodulator, to a hard budget (completion can diverge; the budget
-    /// is the terminator).  The payoff is that proof-time equational
-    /// rewriting becomes cheap one-way demodulation against this richer,
-    /// closer-to-confluent rule set instead of repeated live superposition.
-    /// Sound: every product is `superpose`'d from two equational parents,
-    /// so it is an equational consequence of the background.  Gated by
-    /// `Strategy.bg_completion`; deterministic for a fixed input.
-    pub(crate) fn complete_background(&mut self) {
-        if !self.opts.strategy.bg_completion {
-            return;
-        }
-        let budget = self.opts.strategy.bg_completion_budget.max(1);
-        let mut produced = 0usize;
-        let mut attempts = 0usize;
-        let hard = budget.saturating_mul(16); // attempt backstop
-        // LIFO frontier of equation ids still to superpose against the set;
-        // newly derived equations join it (the closure's fixpoint engine).
-        let mut frontier: Vec<u32> = self.unit_equation_ids();
-        while let Some(eid) = frontier.pop() {
-            if produced >= budget || attempts >= hard {
-                break;
-            }
-            if !self.is_unit_equation(eid) {
-                continue;
-            }
-            // `eid`'s oriented larger side rewrites the partners' subterms.
-            let partners = self.unit_equation_ids();
-            'partners: for p in partners {
-                if p == eid {
-                    continue;
-                }
-                let Some(p_atom) =
-                    slot_atom(&self.layer.atoms, self.syn(), self.clauses[p as usize].lits[0].atom, 0)
-                else { continue };
-                for (path, _sub) in positions(&p_atom) {
-                    attempts += 1;
-                    if attempts >= hard {
-                        break 'partners;
-                    }
-                    let Some(nid) = self.superpose(eid, 0, p, 0, &path) else { continue };
-                    // Keep only genuinely new oriented unit equations.
-                    let key = self.clauses[nid as usize].key;
-                    if self.is_unit_equation_unactivated(nid) && self.seen.insert(key) {
-                        self.activate(nid);
-                        frontier.push(nid);
-                        produced += 1;
-                        if produced >= budget {
-                            break 'partners;
-                        }
-                    }
-                }
-            }
-        }
-        self.stats.bg_completed = produced as u64;
-    }
-
-    /// Like `is_unit_equation` but for a freshly `make`'d (not-yet
-    /// activated) clause — completion's acceptance test for a product.
-    fn is_unit_equation_unactivated(&self, id: u32) -> bool {
-        let c = &self.clauses[id as usize];
-        c.terms.len() == 1
-            && c.terms[0].0
-            && self.equality_oriented(&c.terms[0].1).is_some()
     }
 
     // -- inference rules -----------------------------------------------------------
@@ -4127,193 +1694,6 @@ impl<'a> NativeProver<'a> {
         None
     }
 
-    // -- forward closure -------------------------------------------------------------
-
-    /// Bounded hyperresolution: support units × background clauses,
-    /// joining all remaining negative literals against active positive
-    /// units (or the oracle).  Only FLAT ground unit conclusions are
-    /// kept — the problem-specific forward closure, without flooding.
-    pub(crate) fn forward_close(&mut self) -> usize {
-        let fc_start = Instant::now();
-        // Copied out: the loop below borrows `self` mutably.
-        let st = &self.opts.strategy;
-        let (fc_rounds, fc_max_premise_lits, fc_flat_depth, fc_fanout, fc_cap, fc_branch, fc_max_pos) = (
-            st.fc_rounds, st.fc_max_premise_lits, st.fc_flat_depth,
-            st.fc_fanout, st.fc_cap, st.fc_branch, st.fc_max_pos.max(1),
-        );
-        let instance = self.oracle.roles().instance;
-        let mut units: Vec<(AtomId, u32)> = self
-            .support_seeds
-            .clone()
-            .into_iter()
-            .filter(|(a, _)| {
-                self.layer.atoms.resolve(*a, self.syn())
-                    .and_then(|s| s.head_symbol()) != Some(instance)
-            })
-            .collect();
-        let mut total = 0usize;
-        for _ in 0..fc_rounds {
-            let mut nxt: Vec<(AtomId, u32)> = Vec::new();
-            'units: for (u_atom, u_cid) in &units {
-                let u_info = self.layer.atom_info(*u_atom);
-                let layer = self.layer;
-                let src = move |a| layer.atom_info(a);
-                let candidates = self.idx.complementary(true, &u_info, &src);
-                let Some(u_term) = slot_atom(&self.layer.atoms, self.syn(), *u_atom, 0)
-                else { continue };
-                for at in candidates {
-                    let (c_id, c_i) = (at.clause, at.lit as usize);
-                    let (c_terms, c_nvars, c_npos) = {
-                        let c = &self.clauses[c_id as usize];
-                        if c.lits.len() > fc_max_premise_lits || c.lits[c_i].pos { continue; }
-                        (c.terms.clone(), c.nvars,
-                         c.terms.iter().filter(|(p, _)| *p).count())
-                    };
-                    if c_npos < 1 || c_npos > fc_max_pos { continue; }
-                    let off = 1u64; // unit is ground: no slots of its own
-                    let mut s: Subst = vec![None; (off + u64::from(c_nvars) + 1) as usize];
-                    let p_lit = shift_slots(&c_terms[c_i].1, off);
-                    self.stats.fc_unify_attempts += 1;
-                    self.stats.fc_ground_candidate += 1; // seed unit is ground by construction
-                    if !unify(&p_lit, &u_term, &mut s) { continue; }
-                    self.stats.fc_unify_hits += 1;
-                    let negs: Vec<Term> = c_terms.iter().enumerate()
-                        .filter(|(k, (p, _))| *k != c_i && !*p)
-                        .map(|(_, (_, t))| shift_slots(t, off))
-                        .collect();
-                    // ALL positive heads (a unit for a Horn rule; a short
-                    // disjunction for a multi-conclusion rule) — the
-                    // conclusion is their σ-applied disjunction.
-                    let pos_terms: Vec<Term> = c_terms.iter()
-                        .filter(|(p, _)| *p)
-                        .map(|(_, t)| shift_slots(t, off))
-                        .collect();
-
-                    let mut got = 0usize;
-                    let mut stack: Vec<(usize, Subst, Vec<SentenceId>, Vec<u32>, Vec<String>)> =
-                        vec![(0, s, Vec::new(), Vec::new(), Vec::new())];
-                    while let Some((k, s2, facts, used, jnotes)) = stack.pop() {
-                        if k == negs.len() {
-                            // The conclusion is the disjunction of all
-                            // positive heads, σ-applied — every head must be
-                            // a flat ground atom (the anti-flooding contract).
-                            let atoms: Vec<Term> =
-                                pos_terms.iter().map(|t| apply(t, &s2)).collect();
-                            if atoms.iter().any(|a| {
-                                !a.is_ground() || term_depth(a) > fc_flat_depth
-                            }) {
-                                continue;
-                            }
-                            let mut parents = vec![c_id, *u_cid];
-                            parents.extend(used.iter().copied());
-                            let lits: Vec<(bool, Term)> =
-                                atoms.into_iter().map(|a| (true, a)).collect();
-                            let made =
-                                self.make(lits, parents, "hyper", SUPPORT, None, true);
-                            let Some(cid) = made else { continue };
-                            self.clauses[cid as usize].fact_parents.extend(facts.iter().copied());
-                            self.clauses[cid as usize].notes.extend(jnotes.iter().cloned());
-                            if self.clauses[cid as usize].lits.is_empty() {
-                                // The joined conclusion was refuted
-                                // outright (arithmetic / oracle
-                                // discharge).  Queue it only if it is
-                                // a reportable refutation.
-                                if let Some(e) = self.reportable_refutation(cid) {
-                                    self.push(Some(e));
-                                }
-                                continue;
-                            }
-                            let key = self.clauses[cid as usize].key;
-                            if !self.seen.insert(key) { continue; }
-                            self.activate(cid);
-                            // Only UNIT conclusions re-seed the unit-driven
-                            // next round; a derived disjunction can't.
-                            if self.clauses[cid as usize].lits.len() == 1 {
-                                let new_atom = self.clauses[cid as usize].lits[0].atom;
-                                nxt.push((new_atom, cid));
-                            }
-                            total += 1;
-                            got += 1;
-                            if got >= fc_fanout || total >= fc_cap { break; }
-                            continue;
-                        }
-                        let a = apply(&negs[k], &s2);
-                        // Oracle discharge of a ground joined literal.
-                        if a.is_ground() {
-                            if let Some((rel, x, y)) = term_binary_ids(&a) {
-                                if self.oracle.holds(rel, x, y, None) {
-                                    let mut why: Vec<Witness> = Vec::new();
-                                    let _ = self.oracle.holds(rel, x, y, Some(&mut why));
-                                    let mut facts2 = facts.clone();
-                                    let mut used2  = used.clone();
-                                    for w in &why {
-                                        if let Some(sid) = w.sid {
-                                            facts2.push(sid);
-                                        } else if let Some(cid) =
-                                            self.oracle.learned_src(w.rel, w.x, w.y)
-                                        {
-                                            used2.push(cid);
-                                        }
-                                    }
-                                    let mut jn = jnotes.clone();
-                                    jn.push(format!(
-                                        "(not {}) -- oracle: {}",
-                                        term_kif(&a, self.syn()),
-                                        witnesses_kif(&why, self.syn())));
-                                    stack.push((k + 1, s2.clone(), facts2, used2, jn));
-                                    continue;
-                                }
-                            }
-                        }
-                        // Join against active positive units via the index.
-                        let qa = self.layer.atoms.intern_atom(&a);
-                        let q_info = self.layer.atom_info(qa);
-                        let cands = self.idx.probe(true, &q_info, &src);
-                        let mut branch = 0usize;
-                        for cand in cands {
-                            let uc = &self.clauses[cand.clause as usize];
-                            if uc.lits.len() != 1 { continue; }
-                            // Two-way unification binds the unit's vars
-                            // too, so (unlike the one-way matches) the
-                            // substitution must cover its slot range.
-                            let Some(u2) = slot_atom(
-                                &self.layer.atoms, self.syn(), uc.lits[0].atom,
-                                JOIN_UNIT_OFF as u32)
-                            else { continue };
-                            let mut s3 = s2.clone();
-                            s3.resize((JOIN_UNIT_OFF + 257) as usize, None);
-                            self.stats.fc_unify_attempts += 1;
-                            if uc.nvars == 0 { self.stats.fc_ground_candidate += 1; }
-                            if unify(&a, &u2, &mut s3) {
-                                self.stats.fc_unify_hits += 1;
-                                let mut used2 = used.clone();
-                                used2.push(cand.clause);
-                                stack.push((k + 1, s3, facts.clone(), used2, jnotes.clone()));
-                                branch += 1;
-                                if branch >= fc_branch { break; }
-                            }
-                        }
-                    }
-                    if total >= fc_cap { break 'units; }
-                }
-            }
-            self.stats.forward_closed = total as u64;
-            units = nxt;
-            if units.is_empty() || total >= fc_cap { break; }
-            // Wall-clock insurance: fc has its own caps, but theory
-            // feedback (lists, FD, exhaustiveness) can make rounds
-            // expensive at full-KB scale.
-            if self.opts.cancelled()
-                || (!self.opts.step
-                    && self.opts.time_limit_secs > 0
-                    && fc_start.elapsed().as_secs() >= self.opts.time_limit_secs.div_ceil(4))
-            {
-                break;
-            }
-        }
-        total
-    }
-
     // -- main loop ----------------------------------------------------------------
 
     /// Diagnostic histogram of the clause arena: count by (rule,
@@ -4432,6 +1812,15 @@ impl<'a> NativeProver<'a> {
         if self.opts.step {
             stepdbg::force_on();
         }
+        // Semantic clause-selection guidance: build the run's positive
+        // model exactly once, up front (before any given-clause is
+        // scored).  A no-op when `Strategy.semantic_guide` is off; a
+        // budget bail disables guidance for the rest of this run (see
+        // `ensure_guide_model`).  Clauses already queued by background
+        // loading (`add_background_root`'s full-saturation path, which
+        // runs before `run()`) were scored via `guide_score`'s own lazy
+        // call to this same method, so they are not left stale.
+        self.ensure_guide_model();
         self.discharge_horn_joins();
         self.discharge_event_calculus();
         self.discharge_models();
@@ -4800,38 +2189,6 @@ fn term_binary_ids(t: &Term) -> Option<(SymbolId, SymbolId, SymbolId)> {
     Some((rel.id(), x.id(), y.id()))
 }
 
-/// Lift a symbol-headed atom into `(relation id, argument terms)`.
-/// `None` for variable / operator / non-`App` heads (the join only
-/// dispatches on named relations).
-fn lit_pattern(t: &Term) -> Option<(SymbolId, Vec<Term>)> {
-    let Term::App(elems) = t else { return None };
-    if elems.len() < 2 { return None; }
-    let Term::Sym(h) = &elems[0] else { return None };
-    Some((h.id(), elems[1..].to_vec()))
-}
-
-/// The symbol id of a bare-symbol term (`None` for variables, literals,
-/// compounds).
-/// Structural compatibility of two atoms' argument lists for backward
-/// chaining: same arity, and no position where BOTH sides are distinct
-/// ground leaves (symbols/literals).  This is a cheap, sound over-approximation
-/// of unifiability — it rejects only pairs that provably cannot unify because
-/// two constants clash in the same seat (the "match by structure, not variable
-/// identity" prefilter).  A variable or compound on either side is always
-/// compatible here; real unification (`resolve`) makes the final decision.
-fn structurally_compatible(a: &[Term], b: &[Term]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).all(|(x, y)| match (x, y) {
-        (Term::Sym(p), Term::Sym(q)) => p.id() == q.id(),
-        (Term::Lit(p), Term::Lit(q)) => p == q,
-        // a symbol vs a literal (both ground, different kinds) cannot unify
-        (Term::Sym(_), Term::Lit(_)) | (Term::Lit(_), Term::Sym(_)) => false,
-        _ => true, // a var or compound on either side: leave it to unification
-    })
-}
-
 /// Interactive single-step debugger (gated `SIGMA_STEP`).  Pauses the prover at
 /// each given-clause selection and each `make` (derived clause / match), prints
 /// a human-readable view, and blocks on stdin so the search can be watched step
@@ -4908,137 +2265,6 @@ mod stepdbg {
             }
         }
     }
-}
-
-fn sym_of(t: &Term) -> Option<SymbolId> {
-    match t {
-        Term::Sym(s) => Some(s.id()),
-        _ => None,
-    }
-}
-
-/// Apply a ground binding (variable id → ground term) to a term.
-fn subst(t: &Term, b: &HashMap<SymbolId, Term>) -> Term {
-    match t {
-        Term::Var(id) => b.get(id).cloned().unwrap_or_else(|| t.clone()),
-        Term::App(es) => Term::App(es.iter().map(|e| subst(e, b)).collect()),
-        other => other.clone(),
-    }
-}
-
-/// One-way match of a (possibly open) pattern term against a ground fact
-/// term, extending the binding in place.  Pattern variables bind to the
-/// fact's subterm; ground pattern positions must be structurally equal.
-fn match_term(p: &Term, f: &Term, b: &mut HashMap<SymbolId, Term>) -> bool {
-    match p {
-        Term::Var(id) => match b.get(id) {
-            Some(existing) => existing == f,
-            None => {
-                b.insert(*id, f.clone());
-                true
-            }
-        },
-        Term::App(pe) => match f {
-            Term::App(fe) if pe.len() == fe.len() => {
-                for (pp, ff) in pe.iter().zip(fe) {
-                    if !match_term(pp, ff, b) {
-                        return false;
-                    }
-                }
-                true
-            }
-            _ => false,
-        },
-        other => other == f,
-    }
-}
-
-/// Match an argument vector against a ground fact tuple.
-fn match_args(pat: &[Term], fact: &[Term], b: &mut HashMap<SymbolId, Term>) -> bool {
-    if pat.len() != fact.len() {
-        return false;
-    }
-    for (p, f) in pat.iter().zip(fact) {
-        if !match_term(p, f, b) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Where a ground fact used by the join came from — its proof
-/// provenance.  Store facts cite their sentence (file:line); emitted
-/// heads cite the prior `rule_join` clause that derived them (so chained
-/// rules render as a connected DAG).
-#[derive(Clone, Copy)]
-enum FactSrc {
-    Store(SentenceId),
-    Emitted(u32),
-    /// Derived by the inductive model (semi-naive evaluation), not a single
-    /// stored atom — carries no citable sentence id (the per-atom model path
-    /// likewise emits model units without fact parents).
-    Model,
-}
-
-/// A ground fact in the join's generator map, with its provenance.
-#[derive(Clone)]
-struct JoinFact {
-    args: Vec<Term>,
-    src:  FactSrc,
-}
-
-/// Seat index over the join's fact map: `(relation, seat, value) →
-/// indices into facts[relation]`.  Lets a generator with already-bound
-/// seats retrieve only the matching facts (an index join) and rank
-/// conjuncts by selectivity GIVEN the current binding, instead of
-/// scanning every fact of the relation — collapses many-conjunct joins.
-type SeatIndex = HashMap<(SymbolId, u8, u64), Vec<u32>>;
-
-/// Hashable key for a ground leaf term (symbol id).  Only symbols are
-/// indexed; literal-valued seats fall back to scan (rare in the
-/// fact-query KBs, whose arguments are constants).
-fn seat_key(t: &Term) -> Option<u64> {
-    match t {
-        Term::Sym(s) => Some(s.id()),
-        _ => None,
-    }
-}
-
-/// Build the seat index from the current fact map.
-fn build_seat_index(facts: &HashMap<SymbolId, Vec<JoinFact>>) -> SeatIndex {
-    let mut idx: SeatIndex = HashMap::new();
-    for (rel, vec) in facts {
-        for (fi, jf) in vec.iter().enumerate() {
-            for (seat, a) in jf.args.iter().enumerate() {
-                if let Some(k) = seat_key(a) {
-                    idx.entry((*rel, seat as u8, k)).or_default().push(fi as u32);
-                }
-            }
-        }
-    }
-    idx
-}
-
-/// Whether `rel` is a theory relation the oracle decides semantically
-/// (taxonomy / shape-recognized roles / temporal point-network).  Such
-/// relations are CHECKED through `holds` when a body literal is ground
-/// but are never ENUMERATED as a join generator — the generative axioms
-/// behind their facts are exactly what the join is starving.
-fn is_theory_rel(
-    rel: SymbolId,
-    roles: &crate::semantics::roles::TaxonomyRoles,
-    tids: &super::temporal::TemporalRelIds,
-) -> bool {
-    rel == roles.instance
-        || rel == roles.subclass
-        || rel == roles.subrelation
-        || rel == roles.transitive
-        || rel == roles.symmetric
-        || rel == roles.domain
-        || rel == roles.range
-        || rel == roles.disjoint
-        || rel == roles.partition
-        || tids.is_temporal(rel)
 }
 
 /// `(a, b)` iff `t` is a ground `(equal a b)` over two distinct symbols.

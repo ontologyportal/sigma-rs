@@ -1,22 +1,27 @@
 // crates/core/src/saturate/eventcalc.rs
 //
-// Discrete Event Calculus (DEC) forward-simulation for the oracle.
+// Discrete Event Calculus (DEC) narrative RECOGNIZER for the oracle.
 //
 // The CSR event-calculus problems load the standard DEC axiomatization
 // (CSR001+0.ax: DEC1–DEC12) plus a per-problem narrative that defines
 // `happens`/`initiates`/`terminates` by `<=>` enumeration.  Ordinary
 // resolution explodes on the frame axioms (the `~∃Event` inertia
 // conditions over a discrete-time chain), so instead we read the
-// narrative into effect tables and FORWARD-SIMULATE the fluent state
-// over the ground time points — a decision procedure that answers
-// `holdsAt(F,T)` (and its negation) by lookup.
+// narrative into effect tables (`parse_narrative`, below) which
+// `discharge_event_calculus` (in `prover/discharge.rs`) feeds to the
+// GENERIC Datalog(¬) model kernel (`model::narrative_to_program` →
+// `Program::evaluate`) — a decision procedure that answers `holdsAt(F,T)`
+// (and its negation) by lookup over the kernel's perfect model.
 //
-// This module is the simulation ENGINE (pure, over parsed tables).  This
-// first phase models the inertial fragment (DEC6/7/10/11): no
-// `trajectory` (continuous change) and no `releases` (non-inertial
-// fluents) — the spinning / forwards / backwards narrative (CSR001+2).
-// The water-tank narrative (trajectory + release + state-dependent
-// `happens`) is a later phase.
+// This module is the PARSER + soundness-gate ONLY: it recovers the
+// narrative's tables from the stored KB and bails (`None`) on any feature
+// outside the inertial fragment it models (DEC6/7/10/11): no `trajectory`
+// (continuous change) and no `releases` (non-inertial fluents) — the
+// spinning / forwards / backwards narrative (CSR001+2) is in-fragment; the
+// water-tank narrative (trajectory + release + state-dependent `happens`)
+// bails to ordinary resolution.  The bespoke forward-simulation engine this
+// module once also contained (`simulate`) has been retired — the kernel is
+// the sole evaluator now.
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,15 +46,6 @@ pub(crate) struct Effect {
     pub neg_concurrent: Vec<SymbolId>,
 }
 
-impl Effect {
-    /// Does this rule's concurrent-event guard hold given the set of
-    /// events happening at the rule's time?
-    fn guard_holds(&self, events_at_t: &[SymbolId]) -> bool {
-        self.pos_concurrent.iter().all(|e| events_at_t.contains(e))
-            && self.neg_concurrent.iter().all(|e| !events_at_t.contains(e))
-    }
-}
-
 /// A parsed DEC narrative over the inertial fragment.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Narrative {
@@ -61,57 +57,29 @@ pub(crate) struct Narrative {
     pub terminates: Vec<Effect>,
     /// Fluent → whether it holds at `times[0]` (default: false).
     pub initial:    HashMap<Fluent, bool>,
-    /// Raw `(fluent, time, holds)` rows from ground `holdsAt` hypotheses,
-    /// resolved into `initial` (those at `times[0]`) once the timeline is
-    /// ordered.
-    pub initial_at: Vec<(Fluent, SymbolId, bool)>,
-}
-
-impl Narrative {
-    /// All fluents the narrative reasons about (initial state ∪ every
-    /// effect rule's fluent).
-    fn fluents(&self) -> HashSet<Fluent> {
-        let mut fs: HashSet<Fluent> = self.initial.keys().copied().collect();
-        for e in self.initiates.iter().chain(self.terminates.iter()) {
-            fs.insert(e.fluent);
-        }
-        fs
-    }
-}
-
-/// Forward-simulate the narrative, returning the complete fluent state
-/// `(fluent, time) → holds`.  Inertial DEC: a fluent holds at `T+1` iff
-/// it is initiated at `T`, or it held at `T` and was not terminated at
-/// `T` (DEC6/7/10/11).  Complete-state, so both `holdsAt` and `~holdsAt`
-/// are decided.
-pub(crate) fn simulate(n: &Narrative) -> HashMap<(Fluent, SymbolId), bool> {
-    let mut state: HashMap<(Fluent, SymbolId), bool> = HashMap::new();
-    let fluents = n.fluents();
-    let Some(&t0) = n.times.first() else { return state };
-
-    // Initial state at times[0].
-    for &f in &fluents {
-        let holds = n.initial.get(&f).copied().unwrap_or(false);
-        state.insert((f, t0), holds);
-    }
-
-    let empty: Vec<SymbolId> = Vec::new();
-    for w in n.times.windows(2) {
-        let (t, t1) = (w[0], w[1]);
-        let events = n.happens.get(&t).unwrap_or(&empty);
-        for &f in &fluents {
-            let initiated = n.initiates.iter().any(|e| {
-                e.fluent == f && events.contains(&e.event) && e.guard_holds(events)
-            });
-            let terminated = n.terminates.iter().any(|e| {
-                e.fluent == f && events.contains(&e.event) && e.guard_holds(events)
-            });
-            let held = state.get(&(f, t)).copied().unwrap_or(false);
-            let next = initiated || (held && !terminated);
-            state.insert((f, t1), next);
-        }
-    }
-    state
+    /// Raw `(fluent, time, holds, sid)` rows from ground `holdsAt`
+    /// hypotheses, resolved into `initial` (those at `times[0]`) once the
+    /// timeline is ordered.  `sid` is the hypothesis sentence itself — the
+    /// fact_parent for an emitted `holdsAt` unit whose initial value it set.
+    pub initial_at: Vec<(Fluent, SymbolId, bool, SentenceId)>,
+    /// `(fluent, time) → hypothesis sid`, resolved from `initial_at`
+    /// (populated alongside `initial`) — provenance for the initial-state
+    /// cells the grid reconstruction emits.
+    pub initial_sid: HashMap<(Fluent, SymbolId), SentenceId>,
+    /// The KB sentence defining `happens` (the only-if root
+    /// `(=> (happens E T) (or …))`) — cited on every emitted `holdsAt`
+    /// unit whose derivation passed through a `happens` fact/absence.
+    pub happens_sid:    Option<SentenceId>,
+    /// The KB sentence defining `initiates` (ditto, for `initiates`).
+    pub initiates_sid:  Option<SentenceId>,
+    /// The KB sentence defining `terminates` (ditto, for `terminates`).
+    pub terminates_sid: Option<SentenceId>,
+    /// `time → immediate successor`, derived from the KB's own `plus`/`less`
+    /// order axioms (see [`order_succ_edge`] / [`order_chain`]) rather than
+    /// assumed from the lexical `nK` suffix.  `None` when no complete order
+    /// chain was found in the KB — the caller falls back to the lexical rank
+    /// in that case.
+    pub succ: Option<HashMap<SymbolId, SymbolId>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +241,12 @@ pub(crate) fn parse_narrative(
     let mut found_effect = false;
     let mut unsafe_narrative = false;
     let mut time_syms: HashSet<Symbol> = HashSet::new();
+    // time → (immediate successor, defining sid), harvested from the KB's
+    // own order axioms (see `order_succ_edge`) — the timeline-honesty
+    // signal that lets `succ` be derived instead of assumed.  A `HashMap`
+    // keeps only the first edge found per predecessor (the CSR chain
+    // declares each exactly once).
+    let mut succ_edges: HashMap<SymbolId, (SymbolId, SentenceId)> = HashMap::new();
 
     let note = |s: &Symbol, names: &mut HashMap<SymbolId, Symbol>| {
         names.insert(s.id(), s.clone());
@@ -286,6 +260,22 @@ pub(crate) fn parse_narrative(
         // timeline extends past the last event (the final transition needs a
         // successor time to land on) and covers every conjecture's time.
         collect_time_syms(syn, &s, &mut time_syms, &mut names);
+
+        // ---- Order axioms: `succ` EDB honesty from the KB's own order axioms. ----
+        // `(=> (less_or_equal ?X nK) (less ?X nJ))` / `(=> (less ?X nJ)
+        // (less_or_equal ?X nK))` — the `<=>` between "at most nK" and
+        // "before nJ" the CSR `less1..less9` chain encodes — pins nJ as
+        // nK's immediate successor directly from the two ground constants
+        // in the axiom, no inference needed.  A ground `(equal (plus T n1)
+        // T1)` successor fact is the other shape the KB carries (the
+        // `plus0_1`/`plus1_1`/… table) and is read the same way.  Checked
+        // BEFORE the narrative-definition branch below (which `continue`s
+        // unconditionally for every `Implies`-headed root) since a `less`
+        // chain root is itself an `Implies` root that would otherwise never
+        // reach this check.
+        if let Some(edge) = order_succ_edge(syn, &s) {
+            succ_edges.entry(edge.0).or_insert((edge.1, sid));
+        }
 
         // ---- Root A: (=> (HEAD vars…) (or d…)) — a narrative definition. ----
         if s.op() == Some(&OpKind::Implies) && s.elements.len() == 3 {
@@ -342,6 +332,7 @@ pub(crate) fn parse_narrative(
                     time_syms.insert(t.clone());
                     nar.happens.entry(t.id()).or_default().push(ev.id());
                     found_happens = true;
+                    nar.happens_sid.get_or_insert(sid);
                 } else {
                     let (Some(ev), Some(fl)) = (d.event, d.fluent) else { continue };
                     note(&ev, &mut names); note(&fl, &mut names);
@@ -351,7 +342,13 @@ pub(crate) fn parse_narrative(
                         pos_concurrent: d.pos_concurrent.iter().map(|s| s.id()).collect(),
                         neg_concurrent: d.neg_concurrent.iter().map(|s| s.id()).collect(),
                     };
-                    if is_init { nar.initiates.push(eff); } else { nar.terminates.push(eff); }
+                    if is_init {
+                        nar.initiates.push(eff);
+                        nar.initiates_sid.get_or_insert(sid);
+                    } else {
+                        nar.terminates.push(eff);
+                        nar.terminates_sid.get_or_insert(sid);
+                    }
                     found_effect = true;
                 }
             }
@@ -377,7 +374,7 @@ pub(crate) fn parse_narrative(
                 time_syms.insert(t.clone());
                 // Record the initial value keyed by (fluent,time); resolved
                 // against `times[0]` once the timeline is known.
-                nar.initial_at.push((fl.id(), t.id(), !neg));
+                nar.initial_at.push((fl.id(), t.id(), !neg, sid));
             }
         }
     }
@@ -387,22 +384,146 @@ pub(crate) fn parse_narrative(
         return None;
     }
 
-    // Timeline: every time constant seen, ordered by the numeric suffix of its
-    // name (`n0 < n1 < … < nK`).  Falls back to insertion via the names map.
+    // Timeline: every time constant seen.  Ordered by the KB's OWN order
+    // axioms when they cover every harvested time constant in one chain
+    // (timeline honesty, derived from the KB's own order axioms); falls back to the lexical `nK` suffix
+    // rank only when no such chain is derivable (traced below).
     let mut times: Vec<Symbol> = time_syms.into_iter().collect();
-    times.sort_by_key(|s| time_rank(&s.name()));
+    let time_ids: HashSet<SymbolId> = times.iter().map(Symbol::id).collect();
+    let chain = order_chain(&succ_edges, &time_ids);
+    let used_order_axioms = chain.is_some();
+    if let Some(ordered) = &chain {
+        let pos: HashMap<SymbolId, usize> =
+            ordered.iter().enumerate().map(|(i, &t)| (t, i)).collect();
+        times.sort_by_key(|s| pos.get(&s.id()).copied().unwrap_or(usize::MAX));
+        nar.succ = Some(
+            succ_edges
+                .iter()
+                .filter(|(from, (to, _))| time_ids.contains(from) && time_ids.contains(to))
+                .map(|(&from, &(to, _))| (from, to))
+                .collect(),
+        );
+    } else {
+        times.sort_by_key(|s| time_rank(&s.name()));
+    }
+    if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
+        eprintln!(
+            "EC[parse]: timeline order {} ({} order-axiom edge(s) covering {} time points)",
+            if used_order_axioms { "AXIOM-DERIVED" } else { "LEXICAL FALLBACK" },
+            succ_edges.len(),
+            time_ids.len(),
+        );
+    }
     nar.times = times.iter().map(|s| s.id()).collect();
 
     // Resolve the initial state to `times[0]`.
     if let Some(&t0) = nar.times.first() {
-        for &(fl, t, val) in &nar.initial_at {
+        for &(fl, t, val, isid) in &nar.initial_at {
             if t == t0 {
                 nar.initial.insert(fl, val);
+                nar.initial_sid.insert((fl, t), isid);
             }
         }
     }
 
     Some((nar, names))
+}
+
+/// Does `edges` (predecessor → (successor, sid)) form ONE unbroken chain
+/// covering exactly `wanted`?  Walks from the unique node with no incoming
+/// edge; `None` if the coverage is incomplete, branches, or cycles — the
+/// caller falls back to the lexical rank in that case (never a partial /
+/// unsound order).
+fn order_chain(
+    edges:  &HashMap<SymbolId, (SymbolId, SentenceId)>,
+    wanted: &HashSet<SymbolId>,
+) -> Option<Vec<SymbolId>> {
+    if wanted.is_empty() {
+        return None;
+    }
+    let relevant: HashMap<SymbolId, SymbolId> = edges
+        .iter()
+        .filter(|(from, (to, _))| wanted.contains(from) && wanted.contains(to))
+        .map(|(&from, &(to, _))| (from, to))
+        .collect();
+    if relevant.len() + 1 != wanted.len() {
+        return None; // not a single chain spanning every time point
+    }
+    let succs: HashSet<SymbolId> = relevant.values().copied().collect();
+    let mut roots = wanted.iter().copied().filter(|t| !succs.contains(t));
+    let (Some(root), None) = (roots.next(), roots.next()) else { return None }; // need exactly one root
+    let mut ordered = vec![root];
+    let mut seen: HashSet<SymbolId> = [root].into_iter().collect();
+    let mut cur = root;
+    while let Some(&next) = relevant.get(&cur) {
+        if !seen.insert(next) {
+            return None; // cycle
+        }
+        ordered.push(next);
+        cur = next;
+    }
+    (ordered.len() == wanted.len()).then_some(ordered)
+}
+
+/// Recognize one order-axiom root as a `(predecessor, successor)` `succ`
+/// edge, when it directly names two ground time constants:
+///
+/// * `(=> (less_or_equal ?X A) (less ?X B))` or its converse
+///   `(=> (less ?X B) (less_or_equal ?X A))` — the CSR `less1..less9` chain
+///   (`A` is `X`'s bound, `B` is `A`'s immediate successor).
+/// * `(equal (plus A n1) B)` or `(equal (plus n1 A) B)` — a ground
+///   unit-successor fact from the `plus` table (symmetric, so either
+///   argument order is read).
+///
+/// Anything else (a non-unit `plus` fact, a variable-only `less` root, …)
+/// yields `None` — this is a targeted recognizer for the two literal shapes
+/// the task's order axioms carry, not a general arithmetic evaluator.
+fn order_succ_edge(syn: &SyntacticLayer, s: &Sentence) -> Option<(SymbolId, SymbolId)> {
+    // `(equal (plus A n1) B)` / `(equal (plus n1 A) B)` — ground unit step.
+    if s.op() == Some(&OpKind::Equal) && s.elements.len() == 3 {
+        if let Some(rhs) = sym_of(&s.elements[2]) {
+            if let Some(lhs_sid) = sub_id(&s.elements[1]) {
+                if let Some(lhs) = syn.sentence(lhs_sid) {
+                    if lhs.head_symbol_name().is_some_and(|h| &*h.name() == "plus")
+                        && lhs.elements.len() == 3
+                    {
+                        let (a, b) = (sym_of(&lhs.elements[1]), sym_of(&lhs.elements[2]));
+                        let is_one = |s: &Option<Symbol>| s.as_ref().is_some_and(|s| &*s.name() == "n1");
+                        if is_one(&b) { if let Some(a) = a { return Some((a.id(), rhs.id())); } }
+                        if is_one(&a) { if let Some(b) = b { return Some((b.id(), rhs.id())); } }
+                    }
+                }
+            }
+        }
+        return None;
+    }
+    // `(=> (less_or_equal ?X A) (less ?X B))` / `(=> (less ?X B) (less_or_equal ?X A))`.
+    if s.op() == Some(&OpKind::Implies) && s.elements.len() == 3 {
+        let (Some(ant_sid), Some(con_sid)) = (sub_id(&s.elements[1]), sub_id(&s.elements[2]))
+            else { return None };
+        let (Some(ant), Some(con)) = (syn.sentence(ant_sid), syn.sentence(con_sid)) else { return None };
+        let names = |a: &Sentence| a.head_symbol_name().map(|h| h.name().to_string());
+        let (an, cn) = (names(&ant), names(&con));
+        let le_lt = an.as_deref() == Some("less_or_equal") && cn.as_deref() == Some("less");
+        let lt_le = an.as_deref() == Some("less") && cn.as_deref() == Some("less_or_equal");
+        if !(le_lt || lt_le) {
+            return None;
+        }
+        let (le, lt) = if le_lt { (&ant, &con) } else { (&con, &ant) };
+        if le.elements.len() != 3 || lt.elements.len() != 3 {
+            return None;
+        }
+        // Both atoms must share the SAME variable in the first argument
+        // (the `?X` bound by the enclosing `<=>`) — otherwise this isn't
+        // the chain shape.
+        let (Some(v1), Some(v2)) = (var_id(&le.elements[1]), var_id(&lt.elements[1])) else { return None };
+        if v1 != v2 {
+            return None;
+        }
+        let (Some(a), Some(b)) = (sym_of(&le.elements[2]), sym_of(&lt.elements[2])) else { return None };
+        return Some((a.id(), b.id()));
+    }
+    None
 }
 
 /// Recursively collect every time-constant symbol (`n` followed by digits)
@@ -452,56 +573,103 @@ mod tests {
 
     fn s(name: &str) -> SymbolId { Symbol::hash_name(name) }
 
-    /// The CSR001+2 spinning/forwards/backwards narrative:
-    ///   happens: push@n0, pull@n1, {pull,push}@n2
-    ///   push initiates forwards if ¬pull;  pull initiates backwards if ¬push;
-    ///   pull initiates spinning if push (concurrent push+pull ⇒ spinning)
-    ///   + the matching terminations.
-    /// Initial: nothing holds.
-    #[test]
-    fn spinning_narrative_simulates() {
-        let (n0, n1, n2, n3) = (s("n0"), s("n1"), s("n2"), s("n3"));
-        let (push, pull) = (s("push"), s("pull"));
-        let (fwd, bwd, spin) = (s("forwards"), s("backwards"), s("spinning"));
-        let mut happens = HashMap::new();
-        happens.insert(n0, vec![push]);
-        happens.insert(n1, vec![pull]);
-        happens.insert(n2, vec![pull, push]); // concurrent
-        let initiates = vec![
-            Effect { event: push, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![push], neg_concurrent: vec![] },
-        ];
-        let terminates = vec![
-            Effect { event: push, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: push, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![push] },
-        ];
-        let n = Narrative {
-            times: vec![n0, n1, n2, n3],
-            happens,
-            initiates,
-            terminates,
-            initial: HashMap::new(), // all false at n0
-            initial_at: Vec::new(),
-        };
-        let st = simulate(&n);
-        let h = |f: SymbolId, t: SymbolId| st.get(&(f, t)).copied().unwrap_or(false);
+    // -- order_chain: the succ-EDB honesty fallback logic --------
 
-        // n0→n1: push (alone) ⇒ forwards on, backwards/spinning off.
-        assert!(h(fwd, n1));
-        assert!(!h(bwd, n1));
-        assert!(!h(spin, n1)); // the CSR017 conjecture: ¬spinning@n1
-        // n1→n2: pull (alone) ⇒ backwards on, forwards/spinning off.
-        assert!(h(bwd, n2));
-        assert!(!h(fwd, n2));
-        assert!(!h(spin, n2)); // CSR020: ¬spinning@n2
-        // n2→n3: concurrent push+pull ⇒ spinning on, forwards/backwards off.
-        assert!(h(spin, n3));
-        assert!(!h(fwd, n3));
-        assert!(!h(bwd, n3));
+    #[test]
+    fn order_chain_complete_sequence_is_derived() {
+        let (n0, n1, n2, n3) = (s("n0"), s("n1"), s("n2"), s("n3"));
+        let mut edges = HashMap::new();
+        edges.insert(n0, (n1, 1));
+        edges.insert(n1, (n2, 2));
+        edges.insert(n2, (n3, 3));
+        let wanted: HashSet<SymbolId> = [n0, n1, n2, n3].into_iter().collect();
+        assert_eq!(order_chain(&edges, &wanted), Some(vec![n0, n1, n2, n3]));
+    }
+
+    #[test]
+    fn order_chain_missing_edge_falls_back() {
+        let (n0, n1, n2) = (s("n0"), s("n1"), s("n2"));
+        let mut edges = HashMap::new();
+        edges.insert(n0, (n1, 1)); // n1 -> n2 missing
+        let wanted: HashSet<SymbolId> = [n0, n1, n2].into_iter().collect();
+        assert_eq!(order_chain(&edges, &wanted), None);
+    }
+
+    #[test]
+    fn order_chain_cycle_falls_back() {
+        let (n0, n1) = (s("n0"), s("n1"));
+        let mut edges = HashMap::new();
+        edges.insert(n0, (n1, 1));
+        edges.insert(n1, (n0, 2)); // cycle: 2 edges, 2 nodes -> len+1 check fails
+        let wanted: HashSet<SymbolId> = [n0, n1].into_iter().collect();
+        assert_eq!(order_chain(&edges, &wanted), None);
+    }
+
+    #[test]
+    fn order_chain_no_edges_falls_back() {
+        let wanted: HashSet<SymbolId> = [s("n0"), s("n1")].into_iter().collect();
+        assert_eq!(order_chain(&HashMap::new(), &wanted), None);
+    }
+
+    // -- order_succ_edge: recognizing the two literal order-axiom shapes ---
+
+    #[test]
+    fn order_succ_edge_less_or_equal_then_less() {
+        let mut store = SyntacticLayer::default();
+        // (=> (less_or_equal ?X n0) (less ?X n1))
+        store.load_kif("(=> (less_or_equal ?X n0) (less ?X n1))", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), Some((s("n0"), s("n1"))));
+    }
+
+    #[test]
+    fn order_succ_edge_less_then_less_or_equal_converse() {
+        let mut store = SyntacticLayer::default();
+        // (=> (less ?X n1) (less_or_equal ?X n0)) — the other <=> direction.
+        store.load_kif("(=> (less ?X n1) (less_or_equal ?X n0))", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), Some((s("n0"), s("n1"))));
+    }
+
+    #[test]
+    fn order_succ_edge_ground_plus_unit_step() {
+        let mut store = SyntacticLayer::default();
+        store.load_kif("(equal (plus n0 n1) n1)", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), Some((s("n0"), s("n1"))));
+    }
+
+    #[test]
+    fn order_succ_edge_ground_plus_symmetric_arg_order() {
+        let mut store = SyntacticLayer::default();
+        store.load_kif("(equal (plus n1 n2) n3)", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), Some((s("n2"), s("n3"))));
+    }
+
+    #[test]
+    fn order_succ_edge_non_unit_plus_is_not_a_succ_edge() {
+        let mut store = SyntacticLayer::default();
+        // plus(n1,n1)=n2 — a real fact but neither argument is n1's *unit*
+        // step target in the sense the recognizer needs disambiguated;
+        // still: one argument IS n1, so this DOES read as n1 -> n2. Use a
+        // genuinely non-unit pair instead: plus(n2,n3)=n5 has no n1 operand.
+        store.load_kif("(equal (plus n2 n3) n5)", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), None);
+    }
+
+    #[test]
+    fn order_succ_edge_unrelated_root_is_none() {
+        let mut store = SyntacticLayer::default();
+        store.load_kif("(happens push n0)", "t");
+        let sid = *store.root_sids().first().unwrap();
+        let sent = store.sentence(sid).unwrap();
+        assert_eq!(order_succ_edge(&store, &sent), None);
     }
 }

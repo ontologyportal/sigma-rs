@@ -62,7 +62,7 @@ fn model_registry_builds_and_caches() {
     assert!(Arc::ptr_eq(&mp, &mp2), "registry is cached for the KB's life");
 
     // The sound positive model (monotone + KB-derived transitivity).
-    let m = mp.positive_model().expect("positive model evaluates");
+    let (m, _prov) = mp.positive_model().expect("positive model evaluates");
     let tuple = |a: &str, b: &str| vec![Symbol::hash_name(a), Symbol::hash_name(b)];
     let has = |p: &str, a: &str, b: &str|
         m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));
@@ -721,6 +721,7 @@ fn equality_units_register_both_orientations() {
 #[test]
 fn oracle_instance_chain_with_witnesses() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -754,6 +755,7 @@ fn oracle_instance_chain_with_witnesses() {
 #[test]
 fn oracle_subclass_and_reflexivity() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -785,6 +787,7 @@ fn oracle_subclass_and_reflexivity() {
 #[test]
 fn oracle_mined_rule_edge_discharges_with_rule_witness() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("
@@ -814,6 +817,7 @@ fn oracle_mined_rule_edge_discharges_with_rule_witness() {
 #[test]
 fn oracle_transitive_reachability_with_chain_witnesses() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -844,6 +848,7 @@ fn oracle_transitive_reachability_with_chain_witnesses() {
 #[test]
 fn oracle_learned_units_extend_the_closure() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
     let (layer, _) = layer_with("
@@ -871,6 +876,7 @@ fn oracle_learned_units_extend_the_closure() {
 #[test]
 fn oracle_respects_session_scope() {
     use super::oracle::SemanticOracle;
+    use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
     use crate::syntactic::caches::session::session_id;
 
@@ -1067,7 +1073,9 @@ fn native_stack_smoke() {
                 eprintln!("transitive-derivation fixpoint converged after {pass} passes");
                 break;
             }
-            for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh) {
+            let fresh_pairs: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+                fresh.iter().map(|&r| (r, None)).collect();
+            for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh_pairs) {
                 if allow.contains(&r.head.pred)
                     && r.body.iter().all(|l| allow.contains(&l.atom.pred)) {
                     tax.rules.push(r);
@@ -1122,7 +1130,8 @@ fn native_stack_smoke() {
         // schema rules folded in.  This reproduces the taxonomy closure with no
         // allowlist and no manual cluster.
         let mut mono = cluster::positive_program(&prog);
-        let known_vec: Vec<crate::SymbolId> = known.iter().copied().collect();
+        let known_vec: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+            known.iter().map(|&r| (r, None)).collect();
         for r in extract::schema_rules(&decls, &known_vec) {
             mono.rules.push(r);
         }
@@ -1732,6 +1741,67 @@ fn native_stack_smoke() {
             "demod off must perform no rewrites: {}", res.raw_output);
     }
 
+    // SYMBOL-SIGNATURE prefilter (`DemodIndex::possibly_matches`): a
+    // clause whose literal has TWO subterm positions — one under a head
+    // symbol with no indexed demodulator (`nemesis`, must be SKIPPED by
+    // the O(1) bucket check before any clone/match probe) nested inside
+    // one that IS indexed (`sideKick`, must still be tried and rewrite)
+    // — demodulates to exactly the same normal form the un-prefiltered
+    // walk would produce, and both counters move: the `nemesis` node is
+    // counted as `scans_skipped_by_prefilter`, the `sideKick` node as
+    // `scans_performed`.  Guards against the prefilter accidentally
+    // pruning a whole subtree (unsound here — see `find_demod_redex`'s
+    // docs on why only per-node, not per-subtree, skipping is safe
+    // without a cached per-term symbol fingerprint).
+    #[test]
+    fn demod_prefilter_skips_unindexed_head_but_still_rewrites_indexed_one() {
+        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+        let mut opts = fast();
+        opts.strategy = crate::saturate::strategy::Strategy::base();
+        opts.strategy.demod = true;
+        opts.want_proof = true;
+        let res = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
+            SineParams::default(), opts);
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 demodulated"),
+            "demodulation must fire: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 scans_performed"),
+            "the sideKick node must reach the candidate loop: {}", res.raw_output);
+        assert!(!res.raw_output.contains("0 scans_skipped_by_prefilter"),
+            "the nemesis node must be pruned by the prefilter: {}", res.raw_output);
+    }
+
+    // Same fixture with the prefilter's own knob-equivalent (there isn't
+    // one — the prefilter is unconditional whenever demod is on) turned
+    // into a direct behavior-parity check: prefiltered and reference
+    // (would-be-unfiltered) demodulation must reach the identical
+    // rewritten literal.  Exercised via the debug-only cross-check in
+    // `NativeProver::demodulate` (`cfg(test)` `debug_assert_eq!` against
+    // a reference walk with the prefilter forced off) — this test just
+    // needs to drive that code path with a mixed clause and confirm the
+    // run doesn't panic while still proving.
+    #[test]
+    fn demod_prefilter_matches_unfiltered_reference_on_mixed_clause() {
+        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+        assert!(kb.tell("(trusts Jimmy (allyOf (sideKick Clark)))", "h").ok);
+        let mut opts = fast();
+        opts.strategy = crate::saturate::strategy::Strategy::base();
+        opts.strategy.demod = true;
+        opts.want_proof = true;
+        // Two independent goals, each forcing demodulation through a
+        // different mix of indexed/unindexed subterm heads; the
+        // debug_assert_eq! reference check in `demodulate` runs on
+        // every literal touched by either query.
+        let res1 = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
+            SineParams::default(), opts.clone());
+        assert_eq!(res1.status, ProverStatus::Proved, "raw: {}", res1.raw_output);
+        let res2 = kb.ask_query("(trusts Jimmy (allyOf Clark))", Some("h"),
+            SineParams::default(), opts);
+        assert_eq!(res2.status, ProverStatus::Proved, "raw: {}", res2.raw_output);
+    }
+
     // Ordered resolution (superposition prerequisite) restricts binary
     // resolution to KBO-maximal literals — a complete refinement, so a
     // provable goal stays provable.
@@ -1826,6 +1896,40 @@ fn native_stack_smoke() {
         assert_eq!(off.status, ProverStatus::Proved, "schema off: {}", off.raw_output);
         assert!(off.raw_output.contains("mined 0 sym"),
             "schema off must mine nothing: {}", off.raw_output);
+    }
+
+    // Semantic clause-selection guidance (Strategy.semantic_guide): the
+    // model sees Dog ⊆ Animal and Fido ∈ Dog, so a clause carrying the
+    // model-FALSE ground literal `(instance Fido Cat)` should be scored
+    // (a non-neutral literal exists — `instance` IS modeled — and the
+    // fact is absent).  Off by default: the identical query with the
+    // knob off must score nothing.
+    #[test]
+    fn semantic_guide_scores_model_false_literals() {
+        let kif = "(subclass Dog Animal)\n\
+                    (instance Fido Dog)\n\
+                    (instance subclass TransitiveRelation)\n\
+                    (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
+                    (=> (instance ?X Cat) (meows ?X))";
+
+        let mut kb_on = kb_from(kif);
+        let mut opts_on = fast();
+        opts_on.strategy = crate::saturate::strategy::Strategy::base();
+        opts_on.strategy.semantic_guide = true;
+        let on = kb_on.ask_query("(meows Fido)", None, SineParams::default(), opts_on);
+        // Not entailed (Fido is a Dog, not a Cat) — guidance only reorders,
+        // so the verdict is unchanged from the off case below.
+        assert_eq!(on.status, ProverStatus::Disproved, "guide on: {}", on.raw_output);
+        assert!(!on.raw_output.contains("0 guided_clauses_scored"),
+            "guide on must score at least one clause: {}", on.raw_output);
+        assert!(on.raw_output.contains("0 guide_disabled_bail"),
+            "a tiny KB's model build must not bail: {}", on.raw_output);
+
+        let mut kb_off = kb_from(kif);
+        let off = kb_off.ask_query("(meows Fido)", None, SineParams::default(), fast());
+        assert_eq!(off.status, ProverStatus::Disproved, "guide off: {}", off.raw_output);
+        assert!(off.raw_output.contains("0 guided_clauses_scored"),
+            "guide off must score nothing: {}", off.raw_output);
     }
 
     // The portfolio seam end to end: `ask_native` is `&self`, so

@@ -14,8 +14,8 @@
 // * [`Strategy::default`] — the shipping defaults WITH the historical
 //   env-var overrides applied (`SIGMA_NO_SCHEMA`, `SIGMA_GOALDIST`,
 //   `SIGMA_NO_LIU`, `SIGMA_HEADFILTER`, `SIGMA_NO_BG_SNAPSHOT`,
-//   `SIGMA_NO_DECODE`).  Every existing caller goes through this, so
-//   the A/B kill switches keep working exactly as before.
+//   `SIGMA_NO_DECODE`, `SIGMA_DEMOD`).  Every existing caller goes through
+//   this, so the A/B kill switches keep working exactly as before.
 // * [`Strategy::base`] — the pure shipping defaults, no env reads.
 //   Portfolio members derive from this so a stray env var can't skew
 //   one lane of a benchmark.
@@ -236,6 +236,25 @@ pub struct Strategy {
     /// problem base.  `SIGMA_NO_BG_SNAPSHOT` turns it off globally.
     /// Forced off while `goal_dist` is on (see there).
     pub bg_snapshot: bool,
+
+    // -- semantic guidance (E/Vampire-style) ---------------------------------
+
+    /// Semantic clause selection: score each passive clause by the
+    /// fraction of its ground, model-checkable literals that are FALSE
+    /// in the KB's positive model (a clause whose literals are false in
+    /// a model of the background theory is closer to a conflict — the
+    /// classic saturation-prover "avoid true clauses" guidance).  Used
+    /// ONLY as a secondary tie-break within the existing weight/age
+    /// queue discipline — it can reorder the search but never widen or
+    /// narrow it, so it cannot make the prover unsound.  OFF by default;
+    /// `SIGMA_GUIDE=1` opts in globally (see [`Self::from_env`]).  The
+    /// model is built once per run, at [`super::prover::NativeProver::run`]
+    /// start, from [`crate::saturate::caches::model_registry`]'s
+    /// KB-lifetime [`crate::saturate::model::ModelProgram`]; a budget bail
+    /// (`positive_model` returns `None`) disables guidance for the run
+    /// (counted in `ProverStats::guide_disabled_bail`), never treated as
+    /// a hard error.
+    pub semantic_guide: bool,
 }
 
 impl Strategy {
@@ -295,6 +314,7 @@ impl Strategy {
             defcomp_per_sym: 8,
             head_filter: false,
             bg_snapshot: true,
+            semantic_guide: false,
         }
     }
 
@@ -310,7 +330,20 @@ impl Strategy {
         if on("SIGMA_NO_LIU")    { s.liu_rescue = false; s.def_completion = false; }
         if on("SIGMA_HEADFILTER") { s.head_filter = true; }
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
+        if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
+        s.demod = Self::demod_env_override(s.demod);
         s
+    }
+
+    /// `SIGMA_DEMOD=1` forces demod on regardless of a strategy's own
+    /// default — not a "historical" kill switch like the others in
+    /// `from_env()` (demod shipped OFF from the start; see `base()`'s note
+    /// on the measured TPTP regression), but added in the same style: an
+    /// opt-in override for A/B measurement, shared by both `from_env()` and
+    /// `tptp()` so the override works on the TPTP path too (`tptp()` builds
+    /// from `base()` directly and does not otherwise read the environment).
+    fn demod_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
     }
 
     /// The complete-calculus configuration for standalone TPTP problems
@@ -318,9 +351,11 @@ impl Strategy {
     /// axiom×axiom inference is on), ordered superposition + equality
     /// factoring (the complete equality calculus), forward subsumption
     /// (the flooding floor full saturation needs), and strict (honest)
-    /// saturation verdicts.  `demod` stays OFF — measured regression on
-    /// the TPTP cross-section (see `base()`).  The KIF/SUMO path keeps
-    /// `base()` untouched.
+    /// saturation verdicts.  `demod` stays OFF by default — measured
+    /// regression on the TPTP cross-section (see `base()`) — but still
+    /// honors `SIGMA_DEMOD=1` (see [`Self::demod_env_override`]) so it can
+    /// be A/B'd on this path too.  Otherwise the KIF/SUMO path's `base()`
+    /// is untouched.
     pub fn tptp() -> Self {
         Self {
             full_saturation:   true,
@@ -328,6 +363,12 @@ impl Strategy {
             superposition:     true,
             eq_factoring:      true,
             subsumption:       true,
+            demod:             Self::demod_env_override(false),
+            // Same A/B convention as demod: `SIGMA_GUIDE=1` lets the
+            // semantic-guide tie-break be measured on the TPTP path too
+            // (`from_env()` is not consulted here, so without this the
+            // knob was unreachable for standalone `.p` runs).
+            semantic_guide:    std::env::var_os("SIGMA_GUIDE").is_some(),
             ..Self::base()
         }
         .named("tptp-complete")
@@ -337,6 +378,68 @@ impl Strategy {
     pub fn named(mut self, name: &str) -> Self {
         self.name = name.into();
         self
+    }
+
+    /// The TPTP-regime strategy schedule: a small, named set of lanes, each a
+    /// single-axis delta on [`Self::tptp`], for [`crate::prover::scale`]'s
+    /// portfolio driver to race in sequence over slices of the total
+    /// wall-clock budget.  Single-strategy native runs solve a fraction of
+    /// what Vampire's `--mode casc` schedule finds on the same TPTP
+    /// cross-section; retrying the identical strategy with a widened axiom
+    /// budget is a no-op here (TPTP problems already run `full_saturation` —
+    /// every axiom is in from the first attempt, there is nothing left to
+    /// widen into), so the only lever standing in for "try a different
+    /// search shape" is the strategy itself.
+    ///
+    /// Ordered by (measured) standalone hit rate: the shipping complete
+    /// calculus first, then the classic complementary axes — a rewrite
+    /// engine, conjecture-directed weighting, an alternate literal-selection
+    /// rule, and a different KBO symbol precedence (sweep memory: precedence
+    /// flips are one of the highest-impact single-axis levers).  Each lane
+    /// keeps `full_saturation` / `strict_saturation` / `superposition` /
+    /// `eq_factoring` / `subsumption` on — only ONE knob moves per lane, so a
+    /// win or loss is attributable.
+    pub fn tptp_lanes() -> Vec<Strategy> {
+        let base = Strategy::tptp();
+        vec![
+            base.clone().named("tptp-complete"),
+            Strategy {
+                demod: true,
+                ..base.clone()
+            }
+            .named("tptp-demod"),
+            Strategy {
+                goal_dist: true,
+                // `goal_dist` forces bg_snapshot off on the KIF path (the
+                // factor bakes conjecture-dependent weights into background
+                // clauses); TPTP problems don't share snapshots across
+                // conjectures anyway, but keep the invariant explicit here
+                // too so this lane can't accidentally violate it.
+                bg_snapshot: false,
+                ..base.clone()
+            }
+            .named("tptp-goaldist"),
+            Strategy {
+                // 1 = most index candidates (vs. the default 0 = fewest) —
+                // the complementary literal-selection rule.
+                lit_select: 1,
+                ..base.clone()
+            }
+            .named("tptp-litselect"),
+            Strategy {
+                // A different (non-identity) KBO symbol precedence — the
+                // highest-impact single-axis lever per the sweep notes.
+                prec_seed: 0xA5A5_1234,
+                ..base.clone()
+            }
+            .named("tptp-precseed"),
+            // `semantic_guide` deliberately has NO lane: measured on the
+            // 100-problem TPTP slice it scored zero clauses (the Horn
+            // extractor sees no `(=> …)` roots in CNF/disjunctive TPTP
+            // input, so the model is empty there) and won zero verdicts —
+            // a slot would only dilute the working lanes' budget.  Revisit
+            // once extraction mines Horn structure from CNF clauses.
+        ]
     }
 
     /// Fingerprint of the fields that shape the FROZEN BACKGROUND —
@@ -455,6 +558,9 @@ impl Strategy {
             defcomp_per_sym: r.pick(&[4, 8, 16]) as usize,
             head_filter: r.chance(15),
             bg_snapshot: true,
+            // Cheap, reorder-only guidance; sample it like the other
+            // search-shaping switches once the tie-break has proven out.
+            semantic_guide: r.chance(20),
         }
     }
 
@@ -562,5 +668,36 @@ mod tests {
                 assert_ne!(a, b, "{} duplicates {}", a.name, b.name);
             }
         }
+    }
+
+    #[test]
+    fn tptp_lanes_are_distinct_and_named() {
+        let lanes = Strategy::tptp_lanes();
+        assert_eq!(lanes.len(), 5);
+        for (i, a) in lanes.iter().enumerate() {
+            assert!(!a.name.is_empty());
+            for b in &lanes[i + 1..] {
+                assert_ne!(a, b, "{} duplicates {}", a.name, b.name);
+            }
+        }
+    }
+
+    #[test]
+    fn tptp_lanes_keep_the_complete_calculus_on() {
+        // Every lane must stay within the TPTP-regime contract (full
+        // saturation + strict/honest verdicts + the complete equality
+        // calculus) — only the search-shaping knob named by the lane moves.
+        for s in Strategy::tptp_lanes() {
+            assert!(s.full_saturation, "{}: full_saturation dropped", s.name);
+            assert!(s.strict_saturation, "{}: strict_saturation dropped", s.name);
+            assert!(s.superposition, "{}: superposition dropped", s.name);
+            assert!(s.eq_factoring, "{}: eq_factoring dropped", s.name);
+            assert!(s.subsumption, "{}: subsumption dropped", s.name);
+        }
+    }
+
+    #[test]
+    fn tptp_lanes_first_is_plain_tptp() {
+        assert_eq!(Strategy::tptp_lanes()[0], Strategy::tptp());
     }
 }

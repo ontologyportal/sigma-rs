@@ -22,9 +22,18 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use smallvec::SmallVec;
+
 use crate::types::SymbolId;
 
-use super::{ground_atom, unify, Atom, DTerm, Literal, Model, ModelError, Pred, Program, Tuple};
+use super::{
+    ground_atom, unify, Atom, DTerm, Derivation, Literal, Model, ModelError, Pred, Program,
+    Provenance, Tuple,
+};
+
+/// The ground tuples a rule firing's positive body literals matched — the
+/// emitted head's first-parent provenance (see [`Derivation`]).
+type Parents = SmallVec<[(Pred, Tuple); 4]>;
 
 /// One relation: its tuples, a membership set, and a per-position value index.
 #[derive(Default)]
@@ -104,10 +113,18 @@ impl Store {
     }
 }
 
-/// Evaluate one rule body, emitting head tuples.  `driver` forces one body
-/// literal to range over a delta tuple slice (semi-naive); `None` ranges all
-/// literals over the full store (the round-0 / exhaustive pass).
-fn fire(body: &[Literal], head: &Atom, driver: Option<(usize, &[Tuple])>, store: &Store, out: &mut Vec<Tuple>) {
+/// Evaluate one rule body, emitting head tuples together with the ground
+/// tuples the positive body literals matched (the head's first-parent
+/// provenance trail).  `driver` forces one body literal to range over a delta
+/// tuple slice (semi-naive); `None` ranges all literals over the full store
+/// (the round-0 / exhaustive pass).
+fn fire(
+    body:   &[Literal],
+    head:   &Atom,
+    driver: Option<(usize, &[Tuple])>,
+    store:  &Store,
+    out:    &mut Vec<(Tuple, Parents)>,
+) {
     let driver_idx = driver.map(|(d, _)| d);
     // Order: driver first (small), then the other positive literals (so each
     // is reached with bound positions for the index), then negated filters.
@@ -126,7 +143,8 @@ fn fire(body: &[Literal], head: &Atom, driver: Option<(usize, &[Tuple])>, store:
         }
     }
     let mut binding: HashMap<u32, SymbolId> = HashMap::new();
-    join_rec(body, &order, 0, driver, store, &mut binding, head, out);
+    let mut trail: Vec<(Pred, Tuple)> = Vec::with_capacity(body.len());
+    join_rec(body, &order, 0, driver, store, &mut binding, &mut trail, head, out);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -137,21 +155,30 @@ fn join_rec(
     driver:  Option<(usize, &[Tuple])>,
     store:   &Store,
     binding: &mut HashMap<u32, SymbolId>,
+    trail:   &mut Vec<(Pred, Tuple)>,
     head:    &Atom,
-    out:     &mut Vec<Tuple>,
+    out:     &mut Vec<(Tuple, Parents)>,
 ) {
     if oi == order.len() {
         if let Some(t) = ground_atom(head, binding) {
-            out.push(t);
+            // Skip tuples the store already holds: `run`'s insert would
+            // discard them anyway (the store is not mutated while a `fire`
+            // is in flight), and re-derivations vastly outnumber first
+            // derivations on dense programs — this keeps the provenance
+            // trail snapshot off the re-derivation flood.
+            if !store.contains(head.pred, &t) {
+                out.push((t, trail.iter().cloned().collect()));
+            }
         }
         return;
     }
     let li = order[oi];
     let lit = &body[li];
     if lit.negated {
+        // Negated literals contribute no parents (they cite absence).
         if let Some(t) = ground_atom(&lit.atom, binding) {
             if !store.contains(lit.atom.pred, &t) {
-                join_rec(body, order, oi + 1, driver, store, binding, head, out);
+                join_rec(body, order, oi + 1, driver, store, binding, trail, head, out);
             }
         }
         return;
@@ -162,7 +189,9 @@ fn join_rec(
     };
     for tup in &cands {
         if let Some(undo) = unify(&lit.atom.args, tup, binding) {
-            join_rec(body, order, oi + 1, driver, store, binding, head, out);
+            trail.push((lit.atom.pred, tup.clone()));
+            join_rec(body, order, oi + 1, driver, store, binding, trail, head, out);
+            trail.pop();
             for v in undo {
                 binding.remove(&v);
             }
@@ -172,19 +201,27 @@ fn join_rec(
 
 /// Run the program to its perfect model, stratum by stratum, semi-naively.
 /// `strata` is the precomputed stratification; bails with `Overflow` past
-/// `max_tuples`.
+/// `max_tuples`.  Returns the model together with its [`Provenance`]: each
+/// derived fact's FIRST derivation (deriving rule index into `prog.rules` +
+/// the ground tuples its positive body literals matched), plus the program's
+/// rule/EDB source sentences — everything `Provenance::cite` needs.
 pub(super) fn run(
     prog:      &Program,
     strata:    &[Vec<Pred>],
     max_tuples: usize,
     deadline:  Option<Instant>,
-) -> Result<Model, ModelError> {
+) -> Result<(Model, Provenance), ModelError> {
     let mut store = Store::default();
     for (p, facts) in &prog.edb {
         for t in facts {
             store.insert(*p, t.clone());
         }
     }
+    let mut prov = Provenance {
+        rule_sids: prog.rules.iter().map(|r| r.sid).collect(),
+        edb_sids:  prog.edb_sids.clone(),
+        derived:   HashMap::new(),
+    };
     let mut total = store.len();
     // Check the wall-clock deadline cheaply (once per derived batch, not per
     // tuple); `Overflow` doubles as the bail signal.
@@ -192,8 +229,15 @@ pub(super) fn run(
 
     for stratum in strata {
         let in_stratum: HashSet<Pred> = stratum.iter().copied().collect();
-        let srules: Vec<&super::Rule> =
-            prog.rules.iter().filter(|r| in_stratum.contains(&r.head.pred)).collect();
+        // Carry each rule's ORIGINAL index (provenance records it, and it
+        // must refer to `prog.rules`, not the filtered slice).
+        let srules: Vec<(u32, &super::Rule)> = prog
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| in_stratum.contains(&r.head.pred))
+            .map(|(i, r)| (i as u32, r))
+            .collect();
         if srules.is_empty() {
             continue;
         }
@@ -201,14 +245,18 @@ pub(super) fn run(
         // Round 0: full evaluation over the store (EDB + lower strata + this
         // stratum's EDB), seeding the delta.
         let mut delta: HashMap<Pred, Vec<Tuple>> = HashMap::new();
-        for r in &srules {
+        for (ri, r) in &srules {
             if over_deadline(deadline) {
                 return Err(ModelError::Overflow);
             }
-            let mut out = Vec::new();
+            let mut out: Vec<(Tuple, Parents)> = Vec::new();
             fire(&r.body, &r.head, None, &store, &mut out);
-            for t in out {
+            for (t, parents) in out {
                 if store.insert(r.head.pred, t.clone()) {
+                    // First insertion only — the recorded parents are this
+                    // fact's one canonical derivation.
+                    prov.derived
+                        .insert((r.head.pred, t.clone()), Derivation { rule: *ri, parents });
                     delta.entry(r.head.pred).or_default().push(t);
                     total += 1;
                     if total > max_tuples {
@@ -222,7 +270,7 @@ pub(super) fn run(
         // body literal driven by its delta.
         while delta.values().any(|v| !v.is_empty()) {
             let mut next: HashMap<Pred, Vec<Tuple>> = HashMap::new();
-            for r in &srules {
+            for (ri, r) in &srules {
                 if over_deadline(deadline) {
                     return Err(ModelError::Overflow);
                 }
@@ -235,10 +283,12 @@ pub(super) fn run(
                         continue;
                     }
                     let drv = drv.clone();
-                    let mut out = Vec::new();
+                    let mut out: Vec<(Tuple, Parents)> = Vec::new();
                     fire(&r.body, &r.head, Some((i, &drv)), &store, &mut out);
-                    for t in out {
+                    for (t, parents) in out {
                         if store.insert(r.head.pred, t.clone()) {
+                            prov.derived
+                                .insert((r.head.pred, t.clone()), Derivation { rule: *ri, parents });
                             next.entry(r.head.pred).or_default().push(t);
                             total += 1;
                             if total > max_tuples {
@@ -257,5 +307,5 @@ pub(super) fn run(
     for r in &prog.rules {
         model.entry(r.head.pred).or_default();
     }
-    Ok(model)
+    Ok((model, prov))
 }

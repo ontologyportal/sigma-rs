@@ -673,6 +673,45 @@ mod tests {
     }
 
     #[test]
+    fn orientation_is_stable_under_instantiation() {
+        // The demodulator contract: a registration-time `l ≻ r` licenses
+        // rewriting EVERY matched instance `lσ → rσ` without re-comparing,
+        // because KBO is stable under substitution.  Exercise it on the
+        // two shapes registration sees:
+        let atoms = AtomTable::default();
+        let syn = syn();
+        let kbo = KboOrdering::new();
+
+        // (1) f(g(x)) ≻ g(x); instance σ = {x → h(h(c))}.
+        let l = app(vec![sym("f"), app(vec![sym("g"), var("x")])]);
+        let r = app(vec![sym("g"), var("x")]);
+        assert_eq!(
+            kbo.compare(atom(&atoms, &l), atom(&atoms, &r), &atoms, &syn),
+            KboCmp::Greater);
+        let big = app(vec![sym("h"), app(vec![sym("h"), sym("c")])]);
+        let li = app(vec![sym("f"), app(vec![sym("g"), big.clone()])]);
+        let ri = app(vec![sym("g"), big.clone()]);
+        assert_eq!(
+            kbo.compare(atom(&atoms, &li), atom(&atoms, &ri), &atoms, &syn),
+            KboCmp::Greater);
+
+        // (2) The duplicated-variable case — where a naive "weight of the
+        // pattern" argument would go wrong if stability failed: f(x,x) ≻
+        // g(x) (weight 3 > 2, x-count 2 ≥ 1).  Under σ = {x → h(h(c))}
+        // the left side's weight grows TWICE as fast — still greater.
+        let l2 = app(vec![sym("f"), var("x"), var("x")]);
+        let r2 = app(vec![sym("g"), var("x")]);
+        assert_eq!(
+            kbo.compare(atom(&atoms, &l2), atom(&atoms, &r2), &atoms, &syn),
+            KboCmp::Greater);
+        let l2i = app(vec![sym("f"), big.clone(), big.clone()]);
+        let r2i = app(vec![sym("g"), big]);
+        assert_eq!(
+            kbo.compare(atom(&atoms, &l2i), atom(&atoms, &r2i), &atoms, &syn),
+            KboCmp::Greater);
+    }
+
+    #[test]
     fn identical_atoms_are_equal_and_memo_is_stable() {
         let atoms = AtomTable::default();
         let syn = syn();

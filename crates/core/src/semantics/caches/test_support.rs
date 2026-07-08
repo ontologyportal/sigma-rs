@@ -35,3 +35,36 @@ pub(crate) fn kif_layer(kif_str: &str) -> SemanticLayer {
 
 /// A `SemanticLayer` over [`BASE`].
 pub(crate) fn base_layer() -> SemanticLayer { kif_layer(BASE) }
+
+/// Build a `SemanticLayer` by ingesting `text` (tagged `file`) through the
+/// TPTP parser (CNF `cnf(...)` / FOF `fof(...)`), driving the same
+/// `SourceAdded` cascade `load_kif`/`load_kif_assert` use for KIF but with
+/// `Parser::Tptp` — the `.p`/`.tptp` dialect and options `Parser::from_filename`
+/// selects for those extensions.  Used by tests that need to inspect
+/// post-ingest root-sentence shapes for TPTP input (e.g. clausal `(or …)`
+/// roots), which are NOT reachable through `kif_layer`.
+pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
+    use crate::cache::events::Event;
+    use crate::layer::Layer;
+    use crate::parse::{Parser, TptpParseOptions};
+    use crate::types::{FileOrigin, SourceFile};
+
+    let mut store = SyntacticLayer::default();
+    let source = SourceFile {
+        parser: Parser::Tptp { options: Some(TptpParseOptions {
+            formulas_only: false, keep_conjectures: true, ..TptpParseOptions::default()
+        }) },
+        name: file.to_owned(),
+        path: std::path::PathBuf::from(file),
+        origin: FileOrigin::Local,
+        contents: text.to_owned(),
+        prebuilt: None,
+    };
+    let _ = store.cascade(vec![Event::SourceAdded {
+        session: std::sync::Arc::new(file.to_owned()),
+        file:    source,
+        staged:  false,
+    }]);
+    let _ = store.cascade(vec![Event::SessionAxiomatized { session: file.to_owned() }]);
+    SemanticLayer::new(store)
+}
