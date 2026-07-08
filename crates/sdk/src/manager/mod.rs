@@ -509,6 +509,23 @@ impl KBManager {
         self.kbs.get(self.selected_kb?)
     }
 
+    /// Drop the selected KB's config-declared constituents, keeping the KB
+    /// itself selected (so [`db_path`](Self::db_path) and the like still see
+    /// its name) but excluding its ontology files from
+    /// [`current_sources_owned`](Self::current_sources_owned). No-op when no
+    /// KB is selected.
+    ///
+    /// Consumers that read config.xml for its *preferences* without opting
+    /// into loading the whole configured ontology (e.g. the CLI without
+    /// `-c`) call this before [`add_cli_sources`](Self::add_cli_sources), so
+    /// only explicitly-supplied `-f`/`-d`/`--git` sources end up in the
+    /// ingest list.
+    pub fn clear_kb_constituents(&mut self) {
+        if let Some(idx) = self.selected_kb {
+            self.kbs[idx].constituents.clear();
+        }
+    }
+
     /// Filesystem path of the selected KB's LMDB store: `<edit_dir>/<kb
     /// name>.lmdb` (the KB name is used verbatim — case-sensitive).  `None` when
     /// no KB is selected.  Resolve [`edit_dir`](Self) first via

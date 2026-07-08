@@ -1,8 +1,8 @@
 // crates/cli/src/cli/config_cmd.rs
 //
-// `sumo config` — print the resolved `KBManager` configuration (from config.xml
-// when loaded with `-c`, else built-in defaults) and how each option maps to
-// its CLI flag.
+// `sumo config` — print the resolved `KBManager` configuration (from
+// config.xml when found and `--no-config` wasn't passed, else built-in
+// defaults) and how each option maps to its CLI flag.
 //
 // The option table `KBManager::options()` is the single source of truth that
 // ties every option to its CLI flag(s) and its serde `json_paths`.  We
@@ -21,8 +21,8 @@ use crate::style::*;
 /// Entry point for `sumo config`.
 ///
 /// `config_path` is the config.xml the CLI resolved (if any); `loaded` is
-/// whether it was actually parsed into `manager` (i.e. `-c` was passed and a
-/// file was found).
+/// whether it was actually parsed into `manager` (i.e. `--no-config` wasn't
+/// passed and a file was found).
 pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: bool) -> bool {
     let doc = match serde_json::to_value(manager) {
         Ok(v) => v,
@@ -34,7 +34,7 @@ pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: boo
             println!("{style_bold}Config:{style_reset} {color_bright_green}{}{color_reset}", p.display()),
         (Some(p), false) =>
             println!("{style_bold}Config:{style_reset} {color_bright_yellow}found but not loaded{color_reset} \
-                      — {} (pass -c to load; showing built-in defaults)", p.display()),
+                      — {} (--no-config was passed; showing built-in defaults)", p.display()),
         (None, _) =>
             println!("{style_bold}Config:{style_reset} built-in defaults (no config.xml found)"),
     }
@@ -61,12 +61,15 @@ fn is_prover(o: &OptionMeta) -> bool {
         || matches!(o.field, "vampire" | "vampire_hol" | "eprover" | "backend")
 }
 
-/// Print the configured knowledge bases + their constituents — the config.xml
-/// `<kb>` sections.  These are NOT CLI flags (you can't add a whole KB from the
-/// command line); the active one is selected by `--sumokbname`.
+/// Print the configured knowledge bases + their *effective* constituent list
+/// — the config.xml `<kb>` sections, but only populated when `-c` was passed
+/// (otherwise empty: config.xml's ontology doesn't auto-load), plus any
+/// `-f`/`-d`/`--git` sources merged in.  These aren't CLI flags themselves
+/// (you can't add a whole KB from the command line); the active one is
+/// selected by `--sumokbname`.
 fn print_kbs(manager: &KBManager) {
     println!("\n{style_bold}Knowledge bases{style_reset}  \
-              {color_bright_black}(config.xml <kb> sections — not CLI flags; active set by --sumokbname){color_reset}");
+              {color_bright_black}(config.xml <kb> sections, effective after -c/-f/-d/--git — active set by --sumokbname){color_reset}");
     if manager.kbs.is_empty() {
         println!("  {color_bright_black}(none configured){color_reset}");
         return;

@@ -31,7 +31,7 @@ pub mod serve;
 
 pub use args::{Cli, KbArgs, Cmd};
 pub use load::{run_load, run_load_warm, run_flush};
-pub use update::run_update;
+pub use update::{run_update, maybe_notify_update};
 pub use validate::run_validate;
 pub use translate::run_translate;
 pub use man::run_man;

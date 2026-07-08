@@ -60,7 +60,7 @@ pub(crate) fn expand_tilde(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
         std::env::var_os("HOME").map(PathBuf::from)

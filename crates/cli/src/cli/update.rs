@@ -199,6 +199,85 @@ fn recommend_rebuild(latest: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Startup notice: cached, non-blocking "a newer version exists" check
+// ---------------------------------------------------------------------------
+
+/// Re-check upstream at most this often; a cached result older than this is
+/// refreshed in the background rather than reused.
+const UPDATE_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// Last known "latest release" snapshot, persisted across runs so the
+/// startup notice never has to wait on the network.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UpdateCache {
+    checked_at: u64,
+    latest: String,
+}
+
+fn update_cache_path() -> Option<std::path::PathBuf> {
+    Some(crate::config::home_dir()?.join(".sigmakee").join("update-check.json"))
+}
+
+fn read_update_cache(path: &std::path::Path) -> Option<UpdateCache> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+fn write_update_cache(path: &std::path::Path, cache: &UpdateCache) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string(cache) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Best-effort "a newer version is available" notice, meant to run once near
+/// CLI startup on every invocation.
+///
+/// Prints an info line (to stderr) if the *cached* result of a prior check
+/// shows a newer release than this binary — reading that cache is a plain
+/// file read, so it never adds latency to the current command. If the cache
+/// is missing or older than [`UPDATE_CHECK_INTERVAL_SECS`], a fresh check is
+/// kicked off on a detached background thread and written back to the cache
+/// for the *next* invocation to see; the current command never waits on it.
+/// Any I/O or network failure is swallowed — this must never slow down or
+/// fail a run.
+pub fn maybe_notify_update() {
+    let Some(path) = update_cache_path() else { return };
+    let cached = read_update_cache(&path);
+
+    if let Some(c) = &cached {
+        if is_newer(&c.latest, CLI_VERSION) {
+            eprintln!(
+                "{color_bright_yellow}info:{color_reset} a newer version of sumo is available: \
+                 {} → {}  (run `sumo update` to upgrade)",
+                CLI_VERSION, c.latest,
+            );
+        }
+    }
+
+    let stale = cached
+        .map(|c| now_secs().saturating_sub(c.checked_at) > UPDATE_CHECK_INTERVAL_SECS)
+        .unwrap_or(true);
+    if !stale {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        if let Ok(latest) = query_latest_release() {
+            write_update_cache(&path, &UpdateCache { checked_at: now_secs(), latest: latest.version });
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Upstream query helpers
 // ---------------------------------------------------------------------------
 

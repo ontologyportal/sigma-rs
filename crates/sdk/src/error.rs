@@ -157,21 +157,29 @@ mod tests {
 impl SdkError {
     /// Whether a given SDK error is a hard error that should abort processing
     pub fn is_err(&self) -> bool {
+        self.severity() == Severity::Error
+    }
+
+    /// The severity this error should be reported at. Only [`SdkError::Kb`]
+    /// can carry a non-`Error` severity (it forwards the wrapped
+    /// [`Diagnostic`](sigmakee_rs_core::Diagnostic)'s own severity); every
+    /// other variant is an infrastructural failure and is always `Error`.
+    pub fn severity(&self) -> Severity {
         match self {
-            SdkError::Kb(diagnostic) => diagnostic.severity == Severity::Error,
-            SdkError::Io { .. } => true,
-            SdkError::DirRead { .. } => true,
-            SdkError::Config(_) => true,
-            SdkError::Persist(_) => true,
-            SdkError::VampireNotFound(_) => true,
-            SdkError::Prover(_) => true,
-            SdkError::TempDir(_, _) => true,
-            SdkError::Git(_) => true,
-            SdkError::Http(_) => true,
-            SdkError::Input(_) => true,
-            SdkError::Unsupported => true,
-            SdkError::MultipleProblems => true,
-            SdkError::NoProblem => true
+            SdkError::Kb(diagnostic) => diagnostic.severity,
+            SdkError::Io { .. } => Severity::Error,
+            SdkError::DirRead { .. } => Severity::Error,
+            SdkError::Config(_) => Severity::Error,
+            SdkError::Persist(_) => Severity::Error,
+            SdkError::VampireNotFound(_) => Severity::Error,
+            SdkError::Prover(_) => Severity::Error,
+            SdkError::TempDir(_, _) => Severity::Error,
+            SdkError::Git(_) => Severity::Error,
+            SdkError::Http(_) => Severity::Error,
+            SdkError::Input(_) => Severity::Error,
+            SdkError::Unsupported => Severity::Error,
+            SdkError::MultipleProblems => Severity::Error,
+            SdkError::NoProblem => Severity::Error
         }
     }
 }

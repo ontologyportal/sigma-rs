@@ -49,13 +49,25 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", global = true)]
     pub config: Option<PathBuf>,
 
-    /// Whether to use the system's sigma config.xml to configure the runtime
-    #[arg(short = 'c', global = true)]
-    pub enable_config: bool,
+    /// Skip config.xml entirely: every `KBManager` setting comes from its
+    /// CLI-flag/hardcoded default instead of the on-disk config. Without this,
+    /// config.xml is always read from `--config` / `$SIGMA_HOME` / the default
+    /// location (when present) for its *preferences* (sumokbname, editDir,
+    /// prover settings, …) — no `-c` needed for that.
+    #[arg(long = "no-config", global = true)]
+    pub no_config: bool,
 
-    /// Knowledge base name from config.xml to load.
-    /// Requires -c (config mode) to be active.
-    #[arg(long, value_name = "NAME", global = true, requires = "enable_config")]
+    /// Also load the active KB's constituent files declared in config.xml
+    /// (its `<kb>` section) into the session — the equivalent of passing
+    /// `-f`/`-d` for each one. Config.xml's *preferences* (sumokbname,
+    /// editDir, thoroughness, …) apply regardless of this flag; it only
+    /// controls whether the ontology's files themselves get ingested.
+    #[arg(short = 'c', global = true)]
+    pub load_kb: bool,
+
+    /// Knowledge base name from config.xml to select (drives the LMDB path
+    /// and, with `-c`, which constituents load). Ignored under `--no-config`.
+    #[arg(long, value_name = "NAME", global = true)]
     pub kb: Option<String>,
 
     /// Warning control (mimics GCC).
@@ -312,15 +324,16 @@ pub enum Cmd {
     ///                           and `.p` problems run against it;
     ///   * a directory         — every `*.kif.tq` inside it.
     ///
-    /// When no path is supplied and `-c` is active, the test directory is
-    /// read from `config.xml`'s `inferenceTestDir` preference.  `.p`/`.ax`
-    /// require the native backend.
+    /// When no path is supplied, the test directory is read from
+    /// config.xml's `inferenceTestDir` preference (loaded whenever
+    /// config.xml is, independent of `-c`).  `.p`/`.ax` require the native
+    /// backend.
     #[cfg(feature = "ask")]
     Test {
         /// Path(s) to `.kif.tq` / `.p` / `.tptp` / `.ax` files or
         /// directories.  Multiple arguments and shell-expanded globs are
-        /// accepted.  Optional when `-c` is active — defaults to the
-        /// `inferenceTestDir` preference in config.xml.
+        /// accepted.  Optional — defaults to the `inferenceTestDir`
+        /// preference in config.xml when present.
         #[arg(value_name = "PATH", num_args = 0..)]
         paths: Vec<PathBuf>,
 
@@ -532,7 +545,8 @@ pub enum Cmd {
         check: bool,
     },
 
-    /// Print the resolved KBManager configuration (from config.xml when loaded
-    /// with `-c`, else built-in defaults) and how each option maps to its CLI flag.
+    /// Print the resolved KBManager configuration (from config.xml when found
+    /// and `--no-config` wasn't passed, else built-in defaults) and how each
+    /// option maps to its CLI flag.
     Config {},
 }

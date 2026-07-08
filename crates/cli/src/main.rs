@@ -7,7 +7,8 @@ use sigmakee::style::*;
 use sigmakee::cli::{Cli, Cmd};
 use sigmakee::cli::{
     run_flush, run_load, run_load_warm, run_validate,
-    run_translate, run_man, run_search, run_update, run_config
+    run_translate, run_man, run_search, run_update, run_config,
+    maybe_notify_update,
 };
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_test, run_audit};
@@ -53,9 +54,19 @@ fn main_worker() {
     let (cli, arg_matches) = sigmakee::cli::args_project::parse();
     sigmakee::style::set_ugly(cli.ugly);
 
+    // Best-effort "a newer version exists" notice — cached, never blocks on
+    // the network (see `maybe_notify_update`). Skipped under `-q` and for
+    // `sumo update` itself, which already reports this explicitly.
+    if !cli.quiet && !matches!(cli.command, Cmd::Update { .. }) {
+        maybe_notify_update();
+    }
+
     let profile = cli.profile;
     let t_profile = std::time::Instant::now();
     sigmakee::progress::init(profile);
+
+    let is_load = matches!(cli.command, Cmd::Load { .. });
+    let mut ingest_stats = IngestStats::default();
 
     let mut manager = build_manager(&cli);
 
@@ -73,6 +84,14 @@ fn main_worker() {
 
     apply_global_overrides(&cli, &mut manager);
 
+    // Without `-c`, config.xml's *preferences* still apply (sumokbname,
+    // editDir, prover settings, …), but its `<kb>` constituent list doesn't
+    // auto-load — only explicitly-supplied `-f`/`-d`/`--git` sources
+    // (added next) get ingested.
+    if !cli.load_kb {
+        manager.clear_kb_constituents();
+    }
+
     if let Err(e) = manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone()) {
         log::error!("error: {e}");
         process::exit(2);
@@ -82,7 +101,7 @@ fn main_worker() {
     // the dump; it needs no KB or session.
     if matches!(cli.command, Cmd::Config { .. }) {
         let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
-        let loaded = cli.enable_config && cfg.is_some();
+        let loaded = !cli.no_config && cfg.is_some();
         process::exit(if run_config(&manager, cfg, loaded) { 0 } else { 1 });
     }
 
@@ -90,8 +109,8 @@ fn main_worker() {
     // builds its own fresh, self-contained `Session` internally (see
     // `run_casc`), so it routes before `validate()`'s "a default KB is
     // required" check, exactly like `Config` above.  Without this, `sumo
-    // casc` would be unusable without `-c` even though it never touches the
-    // configured ontology.
+    // casc` would be unusable without a `sumokbname` configured, even though
+    // it never touches the configured ontology.
     #[cfg(feature = "ask")]
     if matches!(cli.command, Cmd::Casc { .. }) {
         let Cmd::Casc { path, timeout, jobs } = cli.command else { unreachable!() };
@@ -102,10 +121,10 @@ fn main_worker() {
     // `sumo test` over exclusively self-contained TPTP inputs (`.p` /
     // `.tptp` / `.ax`) likewise needs no configured base KB — each problem
     // runs on its own fresh Session (same machinery as `casc`).  Skipping
-    // `validate()` here is what lets TPTP benchmarking run without `-c`,
-    // i.e. without ingesting the whole configured ontology underneath every
-    // problem.  A mixed invocation (any `.kif.tq` / directory path) still
-    // requires the base KB and validates as before.
+    // `validate()` here is what lets TPTP benchmarking run without a
+    // configured `sumokbname`, i.e. without ingesting the whole configured
+    // ontology underneath every problem.  A mixed invocation (any `.kif.tq`
+    // / directory path) still requires the base KB and validates as before.
     let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
         if !paths.is_empty() && paths.iter().all(|p| {
             let s = p.to_string_lossy();
@@ -150,7 +169,7 @@ fn main_worker() {
         if manager.real_numbers == Some(true) {
             kb.set_reals_only(true);
         }
-        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile)
+        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile, &mut ingest_stats)
     } else {
         match manager.default_backend.as_str() {
             "native" => {
@@ -159,7 +178,7 @@ fn main_worker() {
                     || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
                     KnowledgeBase::new_native,
                 );
-                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile)
+                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, &mut ingest_stats)
             }
             // e / eprover / subprocess / embedded → external layer.
             _ => {
@@ -193,9 +212,10 @@ fn main_worker() {
                     session.kb().set_reals_only(true);
                 }
                 if matches!(cli.command, Cmd::Load { .. }) {
+                    ingest_constituents(&mut session, &manager, &mut ingest_stats);
                     run_load_warm(session, manager)
                 } else {
-                    dispatch(session, manager, cli.command, &arg_matches, sink, profile)
+                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, &mut ingest_stats)
                 }
             }
         }
@@ -216,7 +236,46 @@ fn main_worker() {
             }
         }
     }
+
+    if is_load {
+        report_load(ok, db.as_deref(), &ingest_stats);
+    }
+
     process::exit(if ok { 0 } else { 1 });
+}
+
+/// Running totals of diagnostics seen across every source ingested during
+/// this invocation, kept so the end-of-run `load` report can summarize them
+/// without re-walking `manager.current_sources_owned()`.
+#[derive(Default)]
+struct IngestStats {
+    sources:  usize,
+    errors:   usize,
+    warnings: usize,
+    infos:    usize,
+    hints:    usize,
+}
+
+/// Print the final success/failure line for `sumo load`. Always names the DB
+/// path and the ingest diagnostic counts so a failure (or a load that limped
+/// through with warnings) is legible without re-running with more logging.
+fn report_load(ok: bool, db: Option<&std::path::Path>, stats: &IngestStats) {
+    let where_ = db.map(|p| p.display().to_string()).unwrap_or_else(|| "<in-memory, no --db>".to_string());
+    let counts = format!(
+        "{} source{} ingested, {} error{}, {} warning{}",
+        stats.sources,  if stats.sources  == 1 { "" } else { "s" },
+        stats.errors,   if stats.errors   == 1 { "" } else { "s" },
+        stats.warnings, if stats.warnings == 1 { "" } else { "s" },
+    );
+    if ok {
+        eprintln!(
+            "{color_bright_green}{style_bold}load succeeded{style_reset}{color_reset} — DB: {where_} ({counts})"
+        );
+    } else {
+        eprintln!(
+            "{color_bright_red}{style_bold}load failed{style_reset}{color_reset} — DB: {where_} ({counts})"
+        );
+    }
 }
 
 /// Open the persisted KB (exiting with a logged error on failure) or build a
@@ -245,6 +304,7 @@ fn dispatch<L: ProvingLayer>(
     arg_matches: &clap::ArgMatches,
     sink: Option<DynSink>,
     _profile: bool,
+    stats: &mut IngestStats,
 ) -> bool
 where
     L::Opts: ProverOptsFor,
@@ -252,7 +312,7 @@ where
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }
-    ingest_constituents(&mut session, &manager);
+    ingest_constituents(&mut session, &manager, stats);
 
     match cmd {
         Cmd::Load { flush: _ } =>
@@ -318,11 +378,12 @@ fn dispatch_translation(
     cmd:         Cmd,
     sink:        Option<DynSink>,
     _profile:    bool,
+    stats:       &mut IngestStats,
 ) -> bool {
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }
-    ingest_constituents(&mut session, &manager);
+    ingest_constituents(&mut session, &manager, stats);
 
     match cmd {
         Cmd::Translate { formula, show_numbers, show_kif, test, full_kb, keep: _ } => {
@@ -339,20 +400,34 @@ fn dispatch_translation(
 }
 
 /// Ingest the manager's selected constituents into `session` (core dedups
-/// unchanged files).
-fn ingest_constituents<L: TopLayer>(session: &mut Session<L>, manager: &KBManager) {
+/// unchanged files), tallying diagnostics by severity into `stats` for the
+/// end-of-run report.
+fn ingest_constituents<L: TopLayer>(session: &mut Session<L>, manager: &KBManager, stats: &mut IngestStats) {
     for src in manager.current_sources_owned() {
+        stats.sources += 1;
         for e in session.ingest(src, false) {
-            log::error!("ingest: {e}");
+            match e.severity() {
+                sigmakee_rs_sdk::Severity::Error   => { stats.errors   += 1; log::error!("ingest: {e}"); }
+                sigmakee_rs_sdk::Severity::Warning => { stats.warnings += 1; log::warn!("ingest: {e}"); }
+                sigmakee_rs_sdk::Severity::Info    => { stats.infos    += 1; log::info!("ingest: {e}"); }
+                sigmakee_rs_sdk::Severity::Hint    => { stats.hints    += 1; log::debug!("ingest: {e}"); }
+            }
         }
     }
 }
 
 // -- helpers -----------------------------------------------------------------
 
-/// Build the KBManager from `-c`/`--config`, or defaults.
+/// Build the KBManager from config.xml's preferences, or defaults.
+///
+/// Config.xml is read whenever `--no-config` is absent: an explicit
+/// `--config` path must resolve (fatal otherwise), but the implicit default
+/// location (`$SIGMA_HOME` / `~/.sigmakee/KBs/config.xml`) is optional — no
+/// file there just means built-in defaults. This is independent of `-c`,
+/// which only decides whether the active KB's *constituent files* get
+/// ingested (see `ingest_constituents`'s callers).
 fn build_manager(cli: &Cli) -> KBManager {
-    if !cli.enable_config {
+    if cli.no_config {
         return KBManager::default();
     }
     match sigmakee::config::resolve_config_path(cli.config.as_deref()) {
@@ -360,11 +435,14 @@ fn build_manager(cli: &Cli) -> KBManager {
             Ok(m) => m,
             Err(e) => { eprintln!("Error parsing config.xml: {e}"); process::exit(2); }
         },
-        None => {
+        None if cli.config.is_some() => {
             eprintln!("Could not locate config.xml from `--config {}`",
                 cli.config.as_deref().map(|p| p.display().to_string()).unwrap_or_default());
             process::exit(2);
         }
+        // No explicit `--config` and no config.xml at the default location:
+        // fall back to built-in defaults rather than failing outright.
+        None => KBManager::default(),
     }
 }
 
@@ -436,3 +514,15 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
     }
 }
 
+
+#[cfg(test)]
+mod report_load_tests {
+    use super::*;
+
+    #[test]
+    fn report_load_formats_without_panicking() {
+        let stats = IngestStats { sources: 3, errors: 1, warnings: 2, infos: 0, hints: 0 };
+        report_load(true, Some(std::path::Path::new("/tmp/x.lmdb")), &stats);
+        report_load(false, None, &stats);
+    }
+}
