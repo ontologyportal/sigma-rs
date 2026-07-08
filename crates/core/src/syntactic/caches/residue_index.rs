@@ -254,12 +254,19 @@ impl ResidueIndex {
         p_coins: &[u64],
         out: &mut Vec<SentenceId>,
     ) {
-        let masks: Vec<u64> = self
+        // Sorted: `groups` is a `HashMap` (RandomState), and its key
+        // iteration order otherwise leaks into `out`'s cross-mask ordering
+        // — this index backs `by_head_id`/`by_head_arg1_ids`, which the
+        // native prover's oracle and discharge paths consult directly, so
+        // an unsorted mask order is a source of run-to-run search
+        // nondeterminism despite every entry being content-addressed.
+        let mut masks: Vec<u64> = self
             .groups
             .keys()
             .filter(|(a, _)| *a == arity)
             .map(|(_, m)| *m)
             .collect();
+        masks.sort_unstable();
         for mp in masks {
             let u = mp | p_mask;
             // Pattern residue under U: XOR off its coins at seats U opens
@@ -289,7 +296,16 @@ impl ResidueIndex {
         }
         let mut tbl: HashMap<u64, Bucket> = HashMap::new();
         if let Some(base) = self.groups.get(&(arity, mp)) {
-            for bucket in base.values() {
+            // Sorted by source fingerprint: `base` is a `HashMap`
+            // (RandomState); the union mask can fold several distinct
+            // fingerprints onto the same re-keyed slot, so an unsorted
+            // walk would make the re-keyed bucket's element order (and
+            // hence downstream `by_head_id`/probe results) depend on
+            // process-local hash seeding instead of KB content.
+            let mut keys: Vec<u64> = base.keys().copied().collect();
+            keys.sort_unstable();
+            for k in keys {
+                let bucket = &base[&k];
                 for sid in bucket {
                     let info = &self.roots[sid];
                     tbl.entry(rekey(info, u)).or_default().push(*sid);

@@ -21,6 +21,8 @@ pub mod audit;
 #[cfg(feature = "ask")]
 pub mod proof;
 #[cfg(feature = "ask")]
+pub mod casc;
+#[cfg(feature = "ask")]
 #[cfg(feature = "sweep")]
 pub mod sweep;
 
@@ -45,6 +47,8 @@ pub use sweep::run_sweep;
 pub use test::run_test;
 #[cfg(feature = "ask")]
 pub use audit::run_audit;
+#[cfg(feature = "ask")]
+pub use casc::run_casc;
 
 #[cfg(feature = "server")]
 pub use serve::run_serve;

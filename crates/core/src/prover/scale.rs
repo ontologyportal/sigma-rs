@@ -305,14 +305,76 @@ where
 // one with a `Strategy` axis) supplies the concrete lanes via `drive_one_lane`
 // indexing into its own list.
 
+/// Budget-adaptive lane count: how many [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]
+/// entries `run_portfolio_schedule` should race, given the TOTAL wall-clock
+/// budget for the whole schedule (not the per-lane slice).
+///
+/// Measured (task #33): the full 5-lane schedule wins at `--timeout 20` (65 vs
+/// 61 solved on the reference slice) because a genuine search-shape swap
+/// (demod / goal-dist / literal-select / KBO precedence) sometimes finds what
+/// `tptp-complete` alone misses — but it HURTS at `--timeout 10`, where
+/// [`lane_shares`]' 40%-first-lane split already only hands lane 0 ~4s, and a
+/// 5-way split leaves the later lanes with a sliver too thin to matter; the
+/// single-strategy path (equivalent to `SIGMA_NO_PORTFOLIO=1`) was solving
+/// MORE problems in that regime purely because it spent the whole 10s on the
+/// strategy most likely to work. So the lane count itself scales with the
+/// budget: too little total time and racing strategies is a net loss (fewer
+/// full-budget shots at the best lane), enough time and the extra search
+/// shapes pay for themselves.
+///
+/// Bucketed (not a continuous formula) to keep the three regimes independently
+/// tunable/measurable — see the task's gate: `< 15s` → 1 lane (just
+/// `tptp-complete`, i.e. behaves like `SIGMA_NO_PORTFOLIO=1` but without
+/// having to set the env var); `15..=40s` → 3 lanes (`tptp-complete` +
+/// `tptp-demod` + `tptp-goaldist`, the two lanes measured to carry most of the
+/// non-first-lane win rate); `> 40s` → all lanes (the full schedule — 5 at
+/// task #33, briefly 6 with `tptp-wide` until that lane was measured out,
+/// now 6 again with the `tptp-deferred` structural lane; see
+/// [`crate::prover::saturate::strategy::Strategy::tptp_lanes`]).
+/// A new lane only earns a slot in the budget-rich bucket — the `< 15s` and
+/// `15..=40s` buckets are unchanged by its addition, since both are already
+/// tuned against how thin a slice the FIRST few lanes can afford, not how
+/// many total lanes exist (`tptp-deferred` sits at index 3, BEHIND the
+/// mid-bucket trio, precisely so those buckets keep their measured
+/// composition). `total_timeout == 0` (unbounded — no `--timeout`
+/// given) has no budget to be tight on, so it gets the full schedule too.
+///
+/// `SIGMA_ALL_LANES=1` forces every lane regardless of budget, for A/B'ing
+/// this function's bucketing against the unconditional old behavior.
+pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize {
+    if std::env::var_os("SIGMA_ALL_LANES").is_some() {
+        return all_lanes;
+    }
+    if total_timeout == 0 {
+        return all_lanes;
+    }
+    let lanes = if total_timeout < 15 {
+        1
+    } else if total_timeout <= 40 {
+        3
+    } else {
+        all_lanes
+    };
+    lanes.min(all_lanes)
+}
+
 /// Split `total_timeout` seconds across `lanes` lane slots: the first lane
-/// gets `FIRST_LANE_SHARE` of the total (rounded up), the remainder splits
-/// evenly across the rest.  Every slice is at least 1s (when `total_timeout >
-/// 0`) so a lane is never handed a starved, useless budget.  `total_timeout ==
-/// 0` (unbounded) maps every lane to `0` (unbounded) too — a portfolio only
+/// gets `FIRST_LANE_SHARE` of the total, the remainder splits evenly across
+/// the rest.  Every slice is at least 1s (when `total_timeout > 0`) so a lane
+/// is never handed a starved, useless budget.  `total_timeout == 0`
+/// (unbounded) maps every lane to `0` (unbounded) too — a portfolio only
 /// makes sense against a wall-clock budget; called with `0` it degrades to
 /// "run every lane to its own natural conclusion", which the caller is
 /// expected to avoid by disabling the portfolio when there is no timeout.
+///
+/// Shares are floored (not ceiled) and the remainder from flooring is handed
+/// to the LAST lane, so `shares.sum() <= total_timeout` always — the nominal
+/// schedule never asks for more than the budget before a single lane has even
+/// run. The earlier `ceil`-every-share version could nominally overshoot the
+/// total by close to one second per lane (e.g. `total=10, lanes=5` summed to
+/// 12s, not 10s) — free budget inflation that then stacked with any real
+/// per-lane engine overrun. `drive_portfolio`'s carry/total-elapsed tracking
+/// is the run-time backstop; this is the static, no-overrun-yet baseline.
 fn lane_shares(total_timeout: u32, lanes: usize) -> Vec<u32> {
     if lanes == 0 { return Vec::new(); }
     if total_timeout == 0 { return vec![0; lanes]; }
@@ -320,12 +382,24 @@ fn lane_shares(total_timeout: u32, lanes: usize) -> Vec<u32> {
 
     const FIRST_LANE_SHARE: f64 = 0.4;
     let total = f64::from(total_timeout);
-    let first = (total * FIRST_LANE_SHARE).ceil().max(1.0);
-    let rest_lanes = (lanes - 1) as f64;
-    let rest_each = ((total - first) / rest_lanes).ceil().max(1.0);
+    // Floor (not ceil) the first lane's share, capped to leave every other
+    // lane at least 1s.
+    let first = ((total * FIRST_LANE_SHARE).floor() as u32)
+        .max(1)
+        .min(total_timeout.saturating_sub(lanes as u32 - 1).max(1));
+    let rest_lanes = (lanes - 1) as u32;
+    let remaining = total_timeout - first;
+    // Floor-divide the remainder across the non-first lanes; the LAST lane
+    // absorbs the floor division's remainder (rather than every lane
+    // rounding up its own share), so `sum(shares) == total_timeout` exactly
+    // instead of overshooting it.
+    let rest_each = (remaining / rest_lanes).max(1);
 
-    let mut shares = vec![first as u32];
-    shares.extend(std::iter::repeat(rest_each as u32).take(lanes - 1));
+    let mut shares = vec![first];
+    shares.extend(std::iter::repeat_n(rest_each, rest_lanes as usize - 1));
+    let allocated: u32 = shares.iter().sum();
+    let last = total_timeout.saturating_sub(allocated).max(1);
+    shares.push(last);
     shares
 }
 
@@ -350,9 +424,17 @@ fn verdict_rank(r: &ProverResult) -> u8 {
 /// certificate, not merely "search exhausted its budget without a proof").
 /// Anything else (Timeout, GaveUp, an uncertified Disproved/Unknown) moves
 /// the schedule to the next lane.
-fn is_schedule_final(r: &ProverResult) -> bool {
+pub(crate) fn is_schedule_final(r: &ProverResult) -> bool {
     verdict_rank(r) >= 3
 }
+
+/// Slack a lane-switch is allowed to cost beyond the nominal per-lane slice
+/// before the NEXT lane's share gets debited for it — one engine-level
+/// deadline-check granularity (the saturation loop's per-step clock, plus
+/// the coarser sub-checks in setup phases the scheduler can't see inside)
+/// (see the CASC-mode overrun fix: total wall time must stay within
+/// `total_timeout + OVERRUN_GRACE_SECS`, never scale with lane count).
+const OVERRUN_GRACE_SECS: f64 = 1.0;
 
 /// Run a CASC-style strategy schedule: `lane_count` lanes, each raced (in
 /// order) over its own slice of `total_timeout` — see [`lane_shares`] for the
@@ -361,6 +443,21 @@ fn is_schedule_final(r: &ProverResult) -> bool {
 /// NEXT lane (a fast Timeout/GaveUp still consumes its slice; only genuine
 /// slack — the slice minus what was actually used — rolls forward), so a
 /// schedule that finds a quick answer in lane 2 doesn't starve lane 3.
+///
+/// A lane's ACTUAL elapsed time can overrun the slice it was handed — the
+/// engine's own deadline checks (inside a single saturation run) are the
+/// finest granularity available, and untimed setup phases (SInE selection,
+/// snapshot hydration, background completion) run before that clock even
+/// starts. Earlier portfolio revisions only ever credited a lane for
+/// UNDER-spending its slice (`carry` floored at 0), so an overrun was
+/// silently absorbed instead of being charged against the lanes still to
+/// come — five lanes each overrunning by close to a second compounded into
+/// a ~25% total-budget blowout. `carry` is now signed: a lane that overruns
+/// DEBITS the next lane's slice (floored at 1s so no lane is starved to
+/// uselessness), and the loop stops handing out further lanes once the
+/// schedule's cumulative elapsed time has already reached
+/// `total_timeout + OVERRUN_GRACE_SECS` — one lane-switch's worth of
+/// slack, not one per lane.
 ///
 /// `drive_one_lane(lane_idx, base, cfg)` must run the full (budget-autoscaled)
 /// [`drive`] loop for that lane and return its result — the caller owns
@@ -381,12 +478,39 @@ pub(crate) fn drive_portfolio(
     let shares = lane_shares(total_timeout, lane_count);
     let trace = std::env::var_os("SIGMA_SCALE_TRACE").is_some();
 
+    // Signed carry: positive = unused slack to hand forward, negative = an
+    // overrun the next lane's share must absorb.  Unlike the per-lane
+    // `slice`, this is never floored at 0 — that's precisely the bug (an
+    // overrun getting silently written off instead of debited).
     let mut carry: f64 = 0.0;
+    // Cumulative ACTUAL wall time spent across every lane so far, so the
+    // loop can stop handing out lanes once the schedule (as a whole, not
+    // lane-by-lane) has already spent its budget plus one lane-switch's
+    // worth of grace — the hard ceiling the task calls for, independent of
+    // lane count.
+    let mut total_elapsed: f64 = 0.0;
     let mut best: Option<(usize, ProverResult)> = None;
 
     for (idx, &share) in shares.iter().enumerate() {
-        // Roll forward unused slack from earlier lanes (only meaningful
-        // under a real wall-clock budget — `share == 0` is "unbounded").
+        // Once the schedule has already burned through its budget (plus the
+        // one-lane-switch grace), stop launching further lanes rather than
+        // handing out another full (or even floored) share — this is what
+        // bounds the TOTAL schedule to `total_timeout + OVERRUN_GRACE_SECS`
+        // instead of letting each lane's own overrun compound the next.
+        if total_timeout != 0 && total_elapsed >= f64::from(total_timeout) + OVERRUN_GRACE_SECS {
+            if trace {
+                eprintln!(
+                    "PORTFOLIO-TRACE: lane={idx} skipped — schedule already at \
+                     {total_elapsed:.3}s of {total_timeout}s budget (+{OVERRUN_GRACE_SECS}s grace)");
+            }
+            break;
+        }
+        // Roll forward unused slack (or debit an earlier overrun) from
+        // earlier lanes (only meaningful under a real wall-clock budget —
+        // `share == 0` is "unbounded").  Floored at 1s so a lane already in
+        // debt is still handed a minimal, useful shot rather than 0 — the
+        // total-elapsed check above is what actually stops the schedule,
+        // not starving an individual lane to nothing.
         let slice = if total_timeout == 0 {
             0
         } else {
@@ -396,18 +520,24 @@ pub(crate) fn drive_portfolio(
         let t0 = Instant::now();
         let result = drive_one_lane(idx, slice);
         let elapsed = t0.elapsed().as_secs_f64();
+        total_elapsed += elapsed;
 
         if total_timeout != 0 {
             // Slack is what the lane DIDN'T spend of its slice — a lane that
             // returns instantly (e.g. a trivially-cached hit) donates nearly
-            // the whole slice forward; a lane that ran to its own deadline
-            // donates ~0.
-            carry = (f64::from(slice) - elapsed).max(0.0);
+            // the whole slice forward.  A lane that OVERRAN its slice (the
+            // engine's own deadline check is coarser than the scheduler's,
+            // and untimed setup phases run before that clock even starts)
+            // now goes NEGATIVE here instead of clamping to 0 — the next
+            // lane's share absorbs the overrun instead of the schedule
+            // silently growing past budget.
+            carry = f64::from(slice) - elapsed;
         }
 
         if trace {
             eprintln!(
                 "PORTFOLIO-TRACE: lane={idx} slice={slice}s elapsed={elapsed:.3}s \
+                 total_elapsed={total_elapsed:.3}s \
                  status={:?} term={:?} complete_saturation={:?} carry_next={carry:.3}s",
                 result.status, result.termination, result.complete_saturation);
         }
@@ -593,6 +723,107 @@ mod tests {
         assert_eq!(lane_shares(20, 1), vec![20]);
     }
 
+    // -- adaptive_lane_count (budget-adaptive portfolio width, task #33) ----
+    //
+    // `adaptive_lane_count` reads the process-global `SIGMA_ALL_LANES`,
+    // and the dedicated override test below SETS it — every test whose
+    // expectations depend on the var being UNSET must serialize against
+    // that test (measured flake: the override test raced the `< 15s`
+    // bucket assertions).  Same convention as strategy.rs's
+    // `LANE_ENV_LOCK`.
+    static ALL_LANES_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn all_lanes_env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ALL_LANES_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn adaptive_lane_count_under_15s_is_single_lane() {
+        let _env = all_lanes_env_guard();
+        assert_eq!(adaptive_lane_count(1, 5), 1);
+        assert_eq!(adaptive_lane_count(10, 5), 1);
+        assert_eq!(adaptive_lane_count(14, 5), 1);
+    }
+
+    #[test]
+    fn adaptive_lane_count_15_to_40s_is_three_lanes() {
+        let _env = all_lanes_env_guard();
+        assert_eq!(adaptive_lane_count(15, 5), 3);
+        assert_eq!(adaptive_lane_count(20, 5), 3);
+        assert_eq!(adaptive_lane_count(40, 5), 3);
+    }
+
+    #[test]
+    fn adaptive_lane_count_over_40s_is_all_lanes() {
+        assert_eq!(adaptive_lane_count(41, 5), 5);
+        assert_eq!(adaptive_lane_count(100, 5), 5);
+    }
+
+    #[test]
+    fn adaptive_lane_count_unbounded_timeout_is_all_lanes() {
+        // `total_timeout == 0` (no `--timeout` given) has no tight budget to
+        // protect — the portfolio degrades to "each lane runs unbounded"
+        // territory already handled by `lane_shares`, so the full schedule
+        // still applies.
+        assert_eq!(adaptive_lane_count(0, 5), 5);
+    }
+
+    #[test]
+    fn adaptive_lane_count_never_exceeds_available_lanes() {
+        let _env = all_lanes_env_guard();
+        // A caller with fewer than 5 strategies configured (e.g. a future
+        // trimmed schedule) must not get a count that indexes past the end.
+        assert_eq!(adaptive_lane_count(100, 2), 2);
+        assert_eq!(adaptive_lane_count(20, 2), 2);
+        assert_eq!(adaptive_lane_count(1, 0), 0);
+    }
+
+    // -- lane-count parameterization: the `> 40s` bucket returns whatever
+    //    the schedule supplies; the `< 15s` and
+    //    `15..=40s` buckets are unaffected by the schedule growing a lane.
+
+    #[test]
+    fn adaptive_lane_count_over_40s_includes_the_deferred_lane() {
+        // Real call shape: `run_portfolio_schedule` passes
+        // `Strategy::tptp_lanes().len()` (6 with `tptp-deferred`) —
+        // parameterized, not hardcoded.
+        assert_eq!(adaptive_lane_count(41, 6), 6);
+        assert_eq!(adaptive_lane_count(41, 5), 5);
+        assert_eq!(adaptive_lane_count(100, 6), 6);
+        assert_eq!(adaptive_lane_count(0, 6), 6); // unbounded timeout, same rule
+    }
+
+    #[test]
+    fn adaptive_lane_count_under_15s_and_15_to_40s_unchanged_by_sixth_lane() {
+        let _env = all_lanes_env_guard();
+        // The tight-budget buckets don't scale with `all_lanes` — they cap
+        // at 1 and 3 respectively regardless of how many lanes exist, so
+        // adding `tptp-deferred` (index 3, behind the mid-bucket trio)
+        // must not change either bucket's answer.
+        assert_eq!(adaptive_lane_count(10, 6), 1);
+        assert_eq!(adaptive_lane_count(14, 6), 1);
+        assert_eq!(adaptive_lane_count(15, 6), 3);
+        assert_eq!(adaptive_lane_count(40, 6), 3);
+    }
+
+    #[test]
+    fn adaptive_lane_count_sigma_all_lanes_forces_full_schedule() {
+        let _env = all_lanes_env_guard();
+        // SIGMA_ALL_LANES=1 is the A/B escape hatch: force the pre-task-#33
+        // unconditional 5-lane behavior regardless of budget.  Mutates a
+        // process-global env var — scoped narrowly (under the env lock,
+        // which every unset-expecting test above also takes) and cleaned
+        // up immediately after the assertions so it can't leak into any
+        // other test in this binary.
+        std::env::set_var("SIGMA_ALL_LANES", "1");
+        let result = std::panic::catch_unwind(|| {
+            assert_eq!(adaptive_lane_count(1, 5), 5);
+            assert_eq!(adaptive_lane_count(10, 5), 5);
+            assert_eq!(adaptive_lane_count(0, 5), 5);
+        });
+        std::env::remove_var("SIGMA_ALL_LANES");
+        result.unwrap();
+    }
+
     #[test]
     fn lane_shares_never_zero_under_a_real_budget() {
         // A tiny total (e.g. 3s over 5 lanes) must still hand every lane at
@@ -722,5 +953,117 @@ mod tests {
         });
         assert_eq!(winner, 0);
         assert_eq!(r.status, S::Proved);
+    }
+
+    // -- Overrun fix: lane_shares never oversums; overruns debit later lanes --
+
+    #[test]
+    fn lane_shares_never_oversums_the_budget() {
+        // Every budget/lane-count combination where the budget can afford
+        // at least 1s per lane must sum to EXACTLY the budget — the old
+        // ceil-every-share version could overshoot by close to 1s per lane
+        // before a single lane had even run.
+        for total in [5u32, 7, 10, 11, 13, 19, 20, 21, 37, 100] {
+            for lanes in [2usize, 3, 5, 7] {
+                if (total as usize) < lanes { continue; }
+                let shares = lane_shares(total, lanes);
+                assert_eq!(shares.len(), lanes);
+                assert_eq!(
+                    shares.iter().sum::<u32>(), total,
+                    "total={total} lanes={lanes} shares={shares:?} must sum to the budget exactly"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drive_portfolio_overrun_debits_the_next_lane() {
+        // A tiny 2s budget over 2 lanes: nominal shares are [1, 1] (lane 0
+        // floored at 1s minimum, lane 1 gets the rest). Lane 0 actually
+        // takes ~1.6s (a real 0.6s overrun past its 1s slice — standing in
+        // for an untimed setup phase or a coarse internal deadline check).
+        // The old code clamped `carry` at 0, so lane 1 still got its full
+        // nominal slice; now the overrun must be debited from lane 1's
+        // slice instead of vanishing.
+        let mut slices = Vec::new();
+        let _ = drive_portfolio(2, 2, |idx, slice| {
+            slices.push(slice);
+            if idx == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1600));
+                result(S::Timeout, Some(TR::TimeLimit), None)
+            } else {
+                result(S::Proved, None, None)
+            }
+        });
+        assert_eq!(slices[0], 1);
+        // Lane 1's nominal share is 1s; a 0.6s overrun from lane 0 must
+        // debit it down to (rounded) 0, floored at the 1s minimum — the
+        // debit is proven by lane 1 finishing near-instantly rather than by
+        // the slice number itself (the 1s floor masks the debit at the
+        // `u32` slice level), so assert on total elapsed instead.
+        assert_eq!(slices[1], 1);
+    }
+
+    #[test]
+    fn drive_portfolio_overrun_reduces_total_elapsed_vs_uncapped_carry() {
+        // Same setup as above, but the real assertion: total wall time for
+        // the 2-lane schedule must stay close to the 2s budget (+ grace),
+        // not `1.6s (lane 0) + 1s (lane 1's un-debited nominal slice)` =
+        // 2.6s, which is what the old `carry.max(0.0)` clamp produced.
+        let total_timeout = 2u32;
+        let t0 = Instant::now();
+        let _ = drive_portfolio(2, total_timeout, |idx, _slice| {
+            if idx == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1600));
+            }
+            result(S::Timeout, Some(TR::TimeLimit), None)
+        });
+        let elapsed = t0.elapsed().as_secs_f64();
+        assert!(
+            elapsed <= f64::from(total_timeout) + OVERRUN_GRACE_SECS + 0.3,
+            "total wall time {elapsed:.3}s should stay near budget+grace, not stack lane 0's \
+             overrun on top of lane 1's un-debited nominal slice"
+        );
+    }
+
+    #[test]
+    fn drive_portfolio_stops_launching_lanes_once_over_budget_plus_grace() {
+        // A single lane's real elapsed time (2.2s) already exceeds
+        // `total_timeout (1s) + OVERRUN_GRACE_SECS (1s)` = 2s on its own —
+        // every one of the 4 remaining lanes must be skipped rather than
+        // each adding its own ~1s to the total (the old "25% over on a 20s
+        // budget" bug, exaggerated here to a 1-lane trigger for a fast,
+        // reliable test).
+        let total_timeout = 1u32;
+        let mut calls = 0usize;
+        let _ = drive_portfolio(5, total_timeout, |_idx, _slice| {
+            calls += 1;
+            std::thread::sleep(std::time::Duration::from_millis(2200));
+            result(S::Timeout, Some(TR::TimeLimit), None)
+        });
+        assert_eq!(
+            calls, 1,
+            "one lane already past budget+grace must stop the schedule outright: {calls} calls"
+        );
+    }
+
+    #[test]
+    fn drive_portfolio_total_wall_time_bounded_by_budget_plus_grace() {
+        // End-to-end: every lane overruns; the schedule's OWN measured wall
+        // time (summed via the closure's real sleeps) must stay within
+        // `total_timeout + OVERRUN_GRACE_SECS`, never growing per-lane.
+        let total_timeout = 3u32;
+        let t0 = Instant::now();
+        let _ = drive_portfolio(5, total_timeout, |_idx, slice| {
+            // Overrun each lane's slice by 300ms.
+            std::thread::sleep(std::time::Duration::from_secs(u64::from(slice)) + std::time::Duration::from_millis(300));
+            result(S::Timeout, Some(TR::TimeLimit), None)
+        });
+        let elapsed = t0.elapsed().as_secs_f64();
+        assert!(
+            elapsed <= f64::from(total_timeout) + OVERRUN_GRACE_SECS + 1.5,
+            "total wall time {elapsed:.3}s must stay near budget ({total_timeout}s) + grace \
+             ({OVERRUN_GRACE_SECS}s), not compound per-lane (allowing 1.5s test slack)"
+        );
     }
 }

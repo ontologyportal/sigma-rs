@@ -212,6 +212,57 @@ pub(crate) fn match_one_way(p: &Term, t: &Term, s: &mut Subst) -> bool {
     }
 }
 
+/// One-way match with a VIRTUAL pattern slot offset and a CALLER-OWNED
+/// trail — byte-equivalent to `match_one_way(&shift_slots(p, poff), t, s)`
+/// without materializing the shifted pattern tree (the demod walk built
+/// one clone of the rule's left side per candidate per node) and without
+/// the per-call trail allocation (the open-unit / subsumption hot loops
+/// run millions of attempts per problem).
+///
+/// Contract: on FAILURE `s` is rolled back to its entry state and
+/// `trail` is truncated back to its entry length (so a reused scratch
+/// buffer needs no cleanup); on SUCCESS the bindings stay in `s` and
+/// their slots are appended to `trail` — the caller restores the
+/// all-`None` invariant by `s[slot] = None` over the appended range.
+pub(crate) fn match_one_way_off(
+    p: &Term,
+    poff: u64,
+    t: &Term,
+    s: &mut Subst,
+    trail: &mut Vec<usize>,
+) -> bool {
+    let mark = trail.len();
+    if match_off_inner(p, poff, t, s, trail) {
+        true
+    } else {
+        for &slot in &trail[mark..] {
+            s[slot] = None;
+        }
+        trail.truncate(mark);
+        false
+    }
+}
+
+fn match_off_inner(p: &Term, poff: u64, t: &Term, s: &mut Subst, trail: &mut Vec<usize>) -> bool {
+    if let Term::Var(v) = p {
+        let slot = (*v + poff) as usize;
+        return match &s[slot] {
+            Some(bound) => bound == t,
+            None => {
+                s[slot] = Some(t.clone());
+                trail.push(slot);
+                true
+            }
+        };
+    }
+    match (p, t) {
+        (Term::App(xs), Term::App(ys)) if xs.len() == ys.len() => {
+            xs.iter().zip(ys).all(|(x, y)| match_off_inner(x, poff, y, s, trail))
+        }
+        _ => p == t,
+    }
+}
+
 fn match_inner(p: &Term, t: &Term, s: &mut Subst, trail: &mut Vec<usize>) -> bool {
     if let Term::Var(v) = p {
         let slot = *v as usize;
@@ -249,4 +300,58 @@ pub(crate) fn term_slots(t: &Term, out: &mut std::collections::BTreeSet<u64>) {
 #[allow(dead_code)] // exercised by the prover loop in the next phase
 pub(crate) fn slot_var_id(k: u32) -> SymbolId {
     super::canon::canonical_var(k as usize)
+}
+
+#[cfg(test)]
+mod match_off_tests {
+    use super::*;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn var(v: u64) -> Term { Term::Var(v) }
+
+    // `match_one_way_off(p, off, t, ..)` must agree with the reference
+    // composition `match_one_way(&shift_slots(p, off), t, ..)` — result
+    // AND final substitution — across hits, misses, repeated-variable
+    // consistency, and partial-bind rollback.
+    #[test]
+    fn match_off_agrees_with_shifted_reference() {
+        let cases: Vec<(Term, u64, Term)> = vec![
+            (app(vec![sym("f"), var(0)]), 3, app(vec![sym("f"), sym("a")])),
+            (app(vec![sym("f"), var(0), var(0)]), 2, app(vec![sym("f"), sym("a"), sym("a")])),
+            (app(vec![sym("f"), var(0), var(0)]), 2, app(vec![sym("f"), sym("a"), sym("b")])),
+            // Partial bind then structural failure: rollback exercised.
+            (
+                app(vec![sym("f"), var(0), sym("z")]),
+                5,
+                app(vec![sym("f"), app(vec![sym("g"), sym("a")]), sym("y")]),
+            ),
+            // Pattern var binds a target VARIABLE (open target).
+            (app(vec![sym("f"), var(1)]), 4, app(vec![sym("f"), var(0)])),
+            // Ground pattern, exact / mismatching targets.
+            (app(vec![sym("f"), sym("a")]), 7, app(vec![sym("f"), sym("a")])),
+            (app(vec![sym("f"), sym("a")]), 7, app(vec![sym("f"), sym("b")])),
+            // Arity mismatch.
+            (app(vec![sym("f"), var(0)]), 1, app(vec![sym("f"), sym("a"), sym("b")])),
+        ];
+        for (p, off, t) in cases {
+            let n = 16usize;
+            let mut s_ref: Subst = vec![None; n];
+            let mut s_off: Subst = vec![None; n];
+            let mut trail: Vec<usize> = Vec::new();
+            let r_ref = match_one_way(&shift_slots(&p, off), &t, &mut s_ref);
+            let r_off = match_one_way_off(&p, off, &t, &mut s_off, &mut trail);
+            assert_eq!(r_ref, r_off, "verdict diverged for {p:?} @{off} vs {t:?}");
+            assert_eq!(s_ref, s_off, "bindings diverged for {p:?} @{off} vs {t:?}");
+            if r_off {
+                // Trail rollback restores the all-None invariant.
+                for &slot in &trail { s_off[slot] = None; }
+                assert!(s_off.iter().all(Option::is_none), "trail missed a binding");
+            } else {
+                assert!(trail.is_empty(), "failed match must leave the trail empty");
+                assert!(s_off.iter().all(Option::is_none), "failed match must roll back");
+            }
+        }
+    }
 }

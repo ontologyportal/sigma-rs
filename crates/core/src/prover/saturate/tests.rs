@@ -44,6 +44,7 @@ fn head_of(layer: &ProverLayer, lit: &PLit) -> String {
 #[test]
 fn model_registry_builds_and_caches() {
     use crate::types::Symbol;
+    use super::model::DTerm;
     // `(instance subclass TransitiveRelation)` licenses subclass
     // transitivity by DERIVATION (no conventional seed).
     let kif = "(subclass RoadVehicle LandVehicle)\n\
@@ -62,15 +63,30 @@ fn model_registry_builds_and_caches() {
     assert!(Arc::ptr_eq(&mp, &mp2), "registry is cached for the KB's life");
 
     // The sound positive model (monotone + KB-derived transitivity).
-    let (m, _prov) = mp.positive_model().expect("positive model evaluates");
+    let (m, _prov) = mp.positive_model(None).expect("positive model evaluates");
     let tuple = |a: &str, b: &str| vec![Symbol::hash_name(a), Symbol::hash_name(b)];
     let has = |p: &str, a: &str, b: &str|
         m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));
     assert!(has("instance", "Bus1", "Vehicle"), "instance closure climbs subclass");
-    assert!(has("subclass", "RoadVehicle", "Vehicle"), "subclass transitive (DERIVED from declaration)");
+    // Task #32 Part 2: `subclass` is transitive by DERIVATION, so it becomes
+    // a BUILT-IN closure — the model materializes only its BASE edges (the
+    // `instance` assertion above proves the closure still RESOLVES through
+    // the built-in BFS inside the bridge rule), and the demand-scoped answer
+    // path closes goal literals over it.
+    let sub = Symbol::hash_name("subclass");
+    assert!(
+        !has("subclass", "RoadVehicle", "Vehicle"),
+        "builtin subclass closure is not materialized"
+    );
+    let rows = mp
+        .answer(sub, &[DTerm::Const(Symbol::hash_name("RoadVehicle")), DTerm::Var(0)], None)
+        .expect("subclass answers");
+    assert!(
+        rows.contains(&tuple("RoadVehicle", "Vehicle")),
+        "goal-side builtin closure answers the transitive pair: {rows:?}"
+    );
 
     // The taxonomy predicates are clustered together.
-    let sub = Symbol::hash_name("subclass");
     assert!(mp.clusters.iter().any(|c| c.preds.contains(&sub)), "subclass clustered");
 }
 
@@ -107,6 +123,136 @@ fn retain_background_masks_excluded_roots() {
     assert!(narrow.test_ground_unit(true, q_atom), "delta-loaded root probeable");
     let refrozen = narrow.freeze();
     assert_eq!(refrozen.loaded_roots.len(), 2, "coverage = union after extend");
+}
+
+// -- backward demodulation (Strategy.bwd_demod) ----------------------------
+
+/// The root in `roots` whose first clause's first literal has head
+/// symbol `head` (equations report `"Equal"` via `head_of`'s Op arm).
+fn root_by_head(layer: &ProverLayer, roots: &[SentenceId], head: &str) -> SentenceId {
+    *roots
+        .iter()
+        .find(|r| {
+            let cls = layer.clauses_for(**r);
+            cls.first().is_some_and(|c| head_of(layer, &c.lits[0]) == head)
+        })
+        .unwrap_or_else(|| panic!("no root with head {head}"))
+}
+
+fn bwd_opts() -> NativeOpts {
+    let mut opts = NativeOpts::default();
+    opts.strategy.demod = true;
+    opts.strategy.bwd_demod = true;
+    opts
+}
+
+/// Activating a new oriented GROUND equation rewrites an existing
+/// active clause containing its redex, retires the original, and
+/// replaces it with the simplified clause (parents = original +
+/// equation, rule tag `bwd_demod`).
+#[test]
+fn backward_demod_rewrites_and_retires_active_clause() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF A) B)");
+    assert_eq!(roots.len(), 2);
+    let fact = root_by_head(&layer, &roots, "p");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut prover = NativeProver::new(&layer, Scope::Base, bwd_opts());
+    prover.add_background_root(fact); // p(FnF A) activates first
+    prover.add_background_root(eq);   // the equation lands SECOND
+
+    assert!(prover.stats.bwd_demod_triggered >= 1, "pass must have run");
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1);
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    assert_eq!(prover.stats.bwd_demod_cap_hits, 0);
+
+    // The original is retired; the replacement carries the rewrite.
+    let orig = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "axiom" && prover.dbg_lits(c.id) == vec![(true, "(p (FnF A))".to_string())])
+        .expect("original fact clause")
+        .id;
+    assert!(prover.is_retired(orig), "original must be retired");
+    let repl = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "bwd_demod")
+        .expect("replacement clause");
+    assert_eq!(prover.dbg_lits(repl.id), vec![(true, "(p B)".to_string())]);
+    assert!(
+        repl.parents.contains(&orig),
+        "replacement cites the original as parent"
+    );
+    assert!(!prover.is_retired(repl.id));
+}
+
+/// Orientation decided at registration is respected under instance:
+/// the NON-ground demodulator `(FnF ?X) → ?X` (KBO-oriented once)
+/// rewrites the ground instance `(FnF A)` inside an existing clause.
+#[test]
+fn backward_demod_orientation_under_instance() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF ?X) ?X)");
+    assert_eq!(roots.len(), 2);
+    let fact = root_by_head(&layer, &roots, "p");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut prover = NativeProver::new(&layer, Scope::Base, bwd_opts());
+    prover.add_background_root(fact);
+    prover.add_background_root(eq);
+
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1);
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    let repl = prover
+        .clauses
+        .iter()
+        .find(|c| c.rule == "bwd_demod")
+        .expect("replacement clause");
+    assert_eq!(
+        prover.dbg_lits(repl.id),
+        vec![(true, "(p A)".to_string())],
+        "instance rewritten under the registration-time orientation"
+    );
+}
+
+/// `bwd_demod_cap` bounds candidate checks per pass: with two
+/// rewritable clauses and cap = 1, exactly one is rewritten/retired and
+/// the truncation is counted — the second stays as it was (sound:
+/// interreduction is optional).
+#[test]
+fn backward_demod_cap_honored() {
+    use crate::semantics::types::Scope;
+    use super::prover::NativeProver;
+
+    let (layer, roots) = layer_with("(p (FnG A))\n(q (FnG A))\n(equal (FnG ?X) ?X)");
+    assert_eq!(roots.len(), 3);
+    let p = root_by_head(&layer, &roots, "p");
+    let q = root_by_head(&layer, &roots, "q");
+    let eq = root_by_head(&layer, &roots, "Equal");
+
+    let mut opts = bwd_opts();
+    opts.strategy.bwd_demod_cap = 1;
+    let mut prover = NativeProver::new(&layer, Scope::Base, opts);
+    prover.add_background_root(p);
+    prover.add_background_root(q);
+    prover.add_background_root(eq);
+
+    assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1, "cap = 1 check");
+    assert_eq!(prover.stats.bwd_demod_retired, 1);
+    assert_eq!(prover.stats.bwd_demod_cap_hits, 1, "truncation counted");
+    let retired: Vec<&str> = prover
+        .clauses
+        .iter()
+        .filter(|c| prover.is_retired(c.id))
+        .map(|c| c.rule)
+        .collect();
+    assert_eq!(retired, vec!["axiom"], "exactly one original retired");
 }
 
 // -- conjecture-distance factor (Liu & Xu via leaf signatures) ------------
@@ -314,6 +460,157 @@ fn conjecture_negation_flips_quantification() {
     assert_eq!(c.nvars, 1, "∃ flips to ∀ under negation — variable stays open");
 }
 
+// -- definitional CNF (Plaisted–Greenbaum) rescue ---------------------------
+
+/// A 4-way disjunction of 4-way conjunctions: naive distribution needs
+/// 4⁴ = 256 clauses > `MAX_CLAUSES_PER_FORMULA` — the primary path
+/// records a loss, the rescue path must not.
+const BLOWUP_OR_OF_ANDS: &str = "
+    (or (and (p A1) (q A1) (r A1) (s A1))
+        (and (p A2) (q A2) (r A2) (s A2))
+        (and (p A3) (q A3) (r A3) (s A3))
+        (and (p A4) (q A4) (r A4) (s A4)))
+";
+
+/// `true` when the literal's atom is headed by a rescue definition
+/// predicate (`df_<root_hex>_<path>`).
+fn is_def_lit(layer: &ProverLayer, lit: &PLit) -> bool {
+    head_of(layer, lit).starts_with("df_")
+}
+
+#[test]
+fn defcnf_rescues_blowup_without_loss() {
+    let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy, "rescued root must count as FULLY loaded (no loss)");
+    // One definition collapses the product to 1·4·4·4 = 64 occurrence
+    // clauses + 4 one-sided definition clauses.
+    assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
+    let defs: std::collections::HashSet<String> = cls.iter()
+        .flat_map(|c| c.lits.iter())
+        .filter(|l| is_def_lit(&layer, l))
+        .map(|l| head_of(&layer, l))
+        .collect();
+    assert_eq!(defs.len(), 1, "smallest fix: exactly one definition, got {defs:?}");
+    assert!(cls.iter().all(|c| c.lits.len() <= 4),
+        "no clause may exceed the pre-definition width");
+    // And the root counts as loaded through the cache path too.
+    assert!(!layer.root_load_failed(roots[0]));
+}
+
+#[test]
+fn defcnf_positive_occurrence_gets_one_sided_definition() {
+    // The defined subformula occurs only POSITIVELY, so only the d→φ
+    // direction may be emitted: a positive `df_` literal appears only in
+    // occurrence clauses (all-positive); the φ→d clauses — a positive
+    // `df_` literal alongside NEGATED body atoms — must be absent.
+    let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy);
+    let mut saw_pos_def = false;
+    let mut saw_neg_def = false;
+    for c in &cls {
+        if c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l)) {
+            saw_pos_def = true;
+            assert!(c.lits.iter().all(|l| l.pos),
+                "one-sided (positive) definition violated: a clause holds a \
+                 positive df_ literal next to a negative literal — the φ→d \
+                 direction leaked in");
+        }
+        if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
+            saw_neg_def = true;
+        }
+    }
+    assert!(saw_pos_def && saw_neg_def, "both occurrence and definition clauses exist");
+}
+
+#[test]
+fn defcnf_negative_occurrence_gets_flipped_one_sided_definition() {
+    // The refutation form of a conjunctive conjecture: 4 disjunctive
+    // roots, negation wraps the rebuilt conjunction — the disjunctions
+    // occur NEGATIVELY, so only the φ→d direction may be emitted (a
+    // negative `df_` literal appears only in all-negative occurrence
+    // clauses; the d→φ clauses — negative `df_` alongside positive body
+    // atoms — must be absent).
+    let (layer, mut roots) = layer_with("
+        (or (p A1) (q A1) (r A1) (s A1))
+        (or (p A2) (q A2) (r A2) (s A2))
+        (or (p A3) (q A3) (r A3) (s A3))
+        (or (p A4) (q A4) (r A4) (s A4))
+    ");
+    assert_eq!(roots.len(), 4);
+    roots.sort_unstable(); // document order is not guaranteed; ids are content hashes
+    let sents: Vec<_> = roots.iter()
+        .map(|r| (layer.semantic.syntactic.sentence(*r).unwrap(), *r))
+        .collect();
+    let (cls, lossy) = super::clausify::clausify_negated_conjunction_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sents);
+    assert!(!lossy, "negated-conjunction rescue must count as fully loaded");
+    assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
+    for c in &cls {
+        if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
+            assert!(c.lits.iter().all(|l| !l.pos),
+                "one-sided (negative) definition violated: the d→φ direction \
+                 leaked in");
+        }
+    }
+}
+
+#[test]
+fn defcnf_both_polarity_occurrence_gets_two_sided_definition() {
+    // Under `<=>` the blow-up side occurs at BOTH polarities: the
+    // definition must carry both directions (d→φ and φ→d).
+    let kif = format!("(<=> (bigfla C) {BLOWUP_OR_OF_ANDS})");
+    let (layer, roots) = layer_with(&kif);
+    let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
+    let (cls, lossy) = super::clausify::clausify_sentence_lossy(
+        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+    assert!(!lossy);
+    // d→φ clauses: negative df_ literal + positive body atom.
+    let d_implies_body = cls.iter().any(|c|
+        c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l))
+            && c.lits.iter().any(|l| l.pos && !is_def_lit(&layer, l)));
+    // φ→d clauses: positive df_ literal + negative body atoms.
+    let body_implies_d = cls.iter().any(|c|
+        c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l))
+            && c.lits.iter().any(|l| !l.pos && !is_def_lit(&layer, l)));
+    assert!(d_implies_body, "both-polarity occurrence must emit the d→φ side");
+    assert!(body_implies_d, "both-polarity occurrence must emit the φ→d side");
+}
+
+#[test]
+fn defcnf_is_deterministic_and_idempotent() {
+    // Same input in two fresh layers → byte-identical clause sets
+    // (definition names are (root, path)-derived, never counter-ordered);
+    // evict + regenerate in one layer → same again.
+    let (la, ra) = layer_with(BLOWUP_OR_OF_ANDS);
+    let (lb, rb) = layer_with(BLOWUP_OR_OF_ANDS);
+    assert_eq!(ra[0], rb[0], "content-addressed roots agree");
+    let a = la.clauses_for(ra[0]);
+    let b = lb.clauses_for(rb[0]);
+    assert_eq!(*a, *b, "two layers over the same input must clausify identically");
+    la.clause_store.clear();
+    let a2 = la.clauses_for(ra[0]);
+    assert_eq!(*a, *a2, "evict + regenerate must reproduce identical clauses");
+}
+
+#[test]
+fn defcnf_leaves_lossless_roots_untouched() {
+    // A formula comfortably inside the caps must produce zero
+    // definitions — the rescue path is strictly additive.
+    let (layer, roots) = layer_with("
+        (or (and (p A1) (q A1)) (and (p A2) (q A2)))
+    ");
+    let cls = layer.clauses_for(roots[0]);
+    assert_eq!(cls.len(), 4, "2·2 distribution, no rescue");
+    assert!(cls.iter().flat_map(|c| c.lits.iter())
+        .all(|l| !is_def_lit(&layer, l)), "no df_ symbols on the lossless path");
+}
+
 // -- residue index / unify / units (phase 3) -------------------------------
 
 /// All (pos, AtomId) literals of every clause of every root in `kif`.
@@ -368,6 +665,103 @@ fn key_equation_holds_for_matching_atoms() {
     assert_eq!(fb_info.residue_under(p_info.mask), p_info.base_residue);
     // …and the non-matching atom (different seat-2 coin) does not.
     assert_ne!(fc_info.residue_under(p_info.mask), p_info.base_residue);
+}
+
+// Phase-0 seat-shape channel: the A/B class distinction the plain mask
+// collapses.  `(p (f ?X))` vs `(p (g a))` passes the union-mask residue
+// (the open seat vanishes on both sides) but is not unifiable — the
+// shape words catch the rigid-head clash; a bare variable (Schulz's A
+// class) stays a true wildcard.
+#[test]
+fn seat_shapes_distinguish_bare_var_from_open_compound() {
+    use super::clause::Term;
+    use super::term_atom_info;
+    use crate::types::Symbol;
+
+    let s = |n: &str| Term::Sym(Symbol::from(n));
+    let app = |v: Vec<Term>| Term::App(v);
+
+    let p_fx = term_atom_info(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
+    let p_ga = term_atom_info(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
+    let p_fa = term_atom_info(&app(vec![s("p"), app(vec![s("f"), s("a")])]));
+    let p_y  = term_atom_info(&app(vec![s("p"), Term::Var(0)]));
+    let p_a  = term_atom_info(&app(vec![s("p"), s("a")]));
+
+    // The residue channel alone cannot separate (p (f ?X)) from
+    // (p (g a)): under the union mask the argument seat vanishes.
+    let u = p_fx.mask | p_ga.mask;
+    assert_eq!(p_ga.residue_under(u), p_fx.residue_under(u),
+        "precondition: residues agree under the union mask");
+
+    // Unifiability: rigid head clash rejected; wildcard and same-head
+    // survive; a ground leaf never unifies with an open compound.
+    assert!(!p_fx.seats_unifiable_with(&p_ga), "f(X) vs g(a): head clash");
+    assert!(p_fx.seats_unifiable_with(&p_y), "f(X) vs bare var: wildcard");
+    assert!(p_fx.seats_unifiable_with(&p_fa), "f(X) vs f(a): same shape");
+    assert!(!p_fx.seats_unifiable_with(&p_a), "f(X) vs leaf a: never");
+
+    // Matching direction is stricter: a rigid pattern seat refutes a
+    // bare-variable instance seat (unifiability tolerates it).
+    assert!(!p_fx.seats_match_onto(&p_y), "pattern f(X) cannot match a var");
+    assert!(p_fx.seats_match_onto(&p_fa), "pattern f(X) matches f(a)");
+    assert!(!p_a.seats_match_onto(&p_y), "ground pattern seat cannot match a var");
+    assert!(p_y.seats_match_onto(&p_a), "var pattern seat matches anything");
+
+    // Arity-3 swap tolerance (resolution's symmetric retry): direct
+    // seats clash, crossed seats agree.
+    let r_fg = term_atom_info(&app(vec![
+        s("r"),
+        app(vec![s("f"), Term::Var(0)]),
+        app(vec![s("g"), Term::Var(1)]),
+    ]));
+    let r_gf = term_atom_info(&app(vec![
+        s("r"),
+        app(vec![s("g"), s("a")]),
+        app(vec![s("f"), s("b")]),
+    ]));
+    assert!(!r_fg.seats_unifiable_with(&r_gf), "direct comparison clashes");
+    assert!(r_fg.seats_unifiable_mod_swap(&r_gf), "crossed comparison passes");
+}
+
+// The filtered probe is a pure prefilter: it keeps every truly
+// unifiable stored literal and drops a residue-coincident candidate
+// whose open-compound seat clashes on head shape.
+#[test]
+fn probe_rel_unifiable_drops_head_clashed_open_compounds() {
+    use super::clause::Term;
+    use super::index::{EntryRef, LiteralIndex, SeatRel};
+    use crate::types::Symbol;
+
+    let (layer, _) = layer_with("(instance a Thing)");
+    let s = |n: &str| Term::Sym(Symbol::from(n));
+    let app = |v: Vec<Term>| Term::App(v);
+
+    let p_ga = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
+    let p_fb = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), s("b")])]));
+    let l = &layer;
+    let src = |a| l.atom_info(a);
+
+    let mut idx = LiteralIndex::default();
+    idx.add(EntryRef { clause: 0, lit: 0 }, true, p_ga, &src);
+    idx.add(EntryRef { clause: 1, lit: 0 }, true, p_fb, &src);
+
+    let q = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
+    let qinfo = layer.atom_info(q);
+
+    // Raw probe: both stored atoms share the query's residue under the
+    // union mask (the argument seat is open on the query side).
+    let raw: Vec<u32> = idx.probe(true, &qinfo, &src).iter().map(|e| e.clause).collect();
+    assert!(raw.contains(&0) && raw.contains(&1), "raw residue superset: {raw:?}");
+
+    // Filtered: the g-headed candidate is a sound rejection; the
+    // truly unifiable f-headed one survives.
+    let filtered: Vec<u32> = idx
+        .probe_rel(true, &qinfo, &src, SeatRel::Unifiable)
+        .iter()
+        .map(|e| e.clause)
+        .collect();
+    assert!(!filtered.contains(&0), "g-headed candidate dropped: {filtered:?}");
+    assert!(filtered.contains(&1), "unifiable candidate kept: {filtered:?}");
 }
 
 #[test]
@@ -1962,6 +2356,31 @@ fn native_stack_smoke() {
         }
     }
 
+    // `lane_max_lits` is the ONLY seam `run_portfolio_schedule` uses to let
+    // a lane's `Strategy` override `NativeOpts::max_lits` (a field that
+    // lives outside `Strategy` — see `derived_width_cap`'s doc). Every
+    // lane except `tptp-wide` must leave the caller's `max_lits` untouched;
+    // `tptp-wide` must widen it to exactly 32 regardless of the caller's
+    // base value.
+    #[test]
+    fn wide_lane_overrides_max_lits_others_pass_through() {
+        use crate::saturate::strategy::Strategy;
+        use super::prove::lane_max_lits;
+
+        // No shipping lane overrides the cap (the tptp-wide LANE was
+        // measured out); every lane must pass the caller's max_lits
+        // through unchanged.
+        for lane in Strategy::tptp_lanes() {
+            assert_eq!(lane_max_lits(&lane, 8), 8,
+                "{}: must pass the caller's max_lits through unchanged", lane.name);
+        }
+        // The MECHANISM stays: a strategy carrying the cap overrides,
+        // independent of the caller's base.
+        assert_eq!(lane_max_lits(&Strategy::tptp(), 20), 20);
+        let wide = Strategy { derived_width_cap: Some(32), ..Strategy::tptp() };
+        assert_eq!(lane_max_lits(&wide, 20), 32);
+    }
+
     // The cooperative cancel flag: a pre-raised flag stops the run at
     // the first loop check (Timeout verdict), the portfolio runner's
     // kill-the-losers mechanism.
@@ -1981,4 +2400,199 @@ fn native_stack_smoke() {
             SineParams { autoscale: false, ..SineParams::default() }, opts);
         assert_eq!(res.status, ProverStatus::Timeout,
             "pre-raised cancel must stop the loop: {}", res.raw_output);
+    }
+
+    // -- input-completeness gate ----------------------------------------------
+
+    // A TPTP numeral constant survives the whole ingest path: the TPTP
+    // parse produces a stored root sentence, and that root clausifies to a
+    // usable clause (numerals intern as ordinary constant symbols).
+    #[test]
+    fn tptp_numeral_constant_round_trips_to_store() {
+        let mut kb = KnowledgeBase::new_native();
+        let src = crate::types::SourceFile {
+            parser:   crate::Parser::Tptp { options: None },
+            name:     "num.p".into(),
+            path:     std::path::PathBuf::from("num.p"),
+            origin:   crate::FileOrigin::Local,
+            contents: "cnf(c1, axiom, p(1)).\n".into(),
+            prebuilt: None,
+        };
+        let r = kb.load(src, "load");
+        assert!(r.ok, "TPTP numeral ingest failed: {:?}", r.diagnostics);
+        let roots = kb.store_for_testing().file_root_sids("num.p");
+        assert_eq!(roots.len(), 1, "numeral clause stored as exactly one root");
+        assert_eq!(kb.prover().clauses_for(roots[0]).len(), 1,
+            "the stored numeral clause clausifies to one usable clause");
+    }
+
+    // Input-completeness gate: an input root that CANNOT be loaded must
+    // poison any confident Satisfiable/Disproved verdict under the strict
+    // TPTP regime — the missing formula could be the one that closes the
+    // refutation.  The run must come back Unknown (SZS GaveUp) with a loud
+    // "failed to load" reason, never a certified countermodel.
+    //
+    // A plain multiplicative CNF blow-up no longer works as the unloadable
+    // fixture — the definitional-CNF rescue path now loads those in full
+    // (see the `defcnf_*` tests above).  What definitions can NEVER
+    // compress is a purely ADDITIVE clause count (one clause per conjunct),
+    // so the fixture pushes a conjunction past the rescue path's own
+    // `DEFCNF_MAX_CLAUSES_PER_FORMULA` insanity guard: the rescue is
+    // attempted, bails, and the loss must still be reported.
+    #[test]
+    fn input_load_failure_withholds_satisfiable() {
+        // (or (p0 A) (and (q A) ×66000)) — the disjunction trips the
+        // primary distribution guard, and the 66000-conjunct body exceeds
+        // the rescue cap (65536).  The repeated `(q A)` keeps the store
+        // cheap (content-addressed: one subsentence, 66000 references).
+        let mut blowup = String::from("(or (p0 A) (and");
+        for _ in 0..66_000 {
+            blowup.push_str(" (q A)");
+        }
+        blowup.push_str("))");
+
+        // Control: without the failing root, strict saturation certifies the
+        // countermodel (Disproved) — proving the gate assertion below bites.
+        let kb = kb_from("(r A)");
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts.clone());
+        assert_eq!(res.status, ProverStatus::Disproved,
+            "control must certify the countermodel: {}", res.raw_output);
+        assert_eq!(res.complete_saturation, Some(true), "control is complete");
+
+        // Gate: the same problem plus an unloadable input root.
+        let kb = kb_from(&format!("(r A)\n{blowup}"));
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_ne!(res.status, ProverStatus::Disproved,
+            "an input load failure must withhold Satisfiable: {}", res.raw_output);
+        assert_eq!(res.status, ProverStatus::Unknown, "raw: {}", res.raw_output);
+        assert_ne!(res.complete_saturation, Some(true));
+        assert!(res.raw_output.contains("failed to load"),
+            "the skip reason must be LOUD: {}", res.raw_output);
+    }
+
+    // A KIF disjunction of `n` distinct unit atoms — clausifies to ONE
+    // flat clause of exactly `n` literals (no distribution, no defCNF),
+    // so the fixture's width is the clause's width.
+    fn wide_disjunction(n: usize) -> String {
+        let mut s = String::from("(or");
+        for i in 0..n {
+            s.push_str(&format!(" (p{i} A)"));
+        }
+        s.push(')');
+        s
+    }
+
+    // INPUT clauses are never width-discarded under the TPTP
+    // full-saturation regime: a 12-literal input (over the `max_lits: 8`
+    // search-shaping cap, under the 512 backstop) loads whole, so a
+    // clean saturation is a COMPLETE one — the honesty gate may certify
+    // the countermodel instead of withholding it over a discard the
+    // regime no longer performs.
+    #[test]
+    fn full_saturation_keeps_wide_input_and_certifies() {
+        let kb = kb_from(&wide_disjunction(12));
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_eq!(res.complete_saturation, Some(true),
+            "a wide INPUT clause must load whole under full_saturation \
+             (no discarded_long poisoning): {}", res.raw_output);
+        assert_eq!(res.status, ProverStatus::Disproved,
+            "with all inputs loaded the saturation is a certificate: {}",
+            res.raw_output);
+    }
+
+    // The KIF/SUMO path (full_saturation off) is untouched: the same
+    // 12-literal input is still discarded by the `max_lits` shaping cap,
+    // and the discard still flows into the honesty accounting
+    // (complete_saturation = false), exactly as before.
+    #[test]
+    fn kif_path_still_discards_wide_input_with_accounting() {
+        let kb = kb_from(&wide_disjunction(12));
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), fast());
+        assert_eq!(res.complete_saturation, Some(false),
+            "the KIF path keeps the max_lits input discard, and the \
+             discard must stay accounted: {}", res.raw_output);
+        // Legacy mapping: non-strict saturation still reports Disproved
+        // (a strong signal, not a certificate).
+        assert_eq!(res.status, ProverStatus::Disproved, "raw: {}", res.raw_output);
+    }
+
+    // The backstop: even under full_saturation a pathologically wide
+    // input (over INPUT_WIDTH_BACKSTOP = 512) is discarded — and that
+    // discard flows into `discarded_long`, so the honesty gate keeps
+    // withholding the countermodel.
+    #[test]
+    fn full_saturation_backstop_discard_withholds_certificate() {
+        let kb = kb_from(&wide_disjunction(520));
+        let mut opts = fast();
+        opts.strategy = super::strategy::Strategy::tptp();
+        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+        assert_ne!(res.complete_saturation, Some(true),
+            "an over-backstop input discard must poison completeness: {}",
+            res.raw_output);
+        assert_eq!(res.status, ProverStatus::Unknown,
+            "no certificate over a lossy load: {}", res.raw_output);
+    }
+
+    // The caller-side gate helper: a Disproved result with input losses is
+    // demoted to Unknown/GaveUp; a Proved result stands (a missing input can
+    // hide a refutation, never fabricate one).
+    #[test]
+    fn withhold_countermodel_demotes_only_confident_nos() {
+        use crate::prover::ProverResult;
+
+        let mut no = ProverResult {
+            status: ProverStatus::Disproved,
+            complete_saturation: Some(true),
+            ..Default::default()
+        };
+        no.withhold_countermodel(2, "test");
+        assert_eq!(no.status, ProverStatus::Unknown);
+        assert_eq!(no.termination, Some(TerminationReason::GaveUp));
+        assert_eq!(no.complete_saturation, Some(false));
+        assert!(no.raw_output.contains("2 input formula(s) failed to load"));
+
+        let mut yes = ProverResult { status: ProverStatus::Proved, ..Default::default() };
+        yes.withhold_countermodel(2, "test");
+        assert_eq!(yes.status, ProverStatus::Proved, "Proved stands");
+
+        let mut clean = ProverResult { status: ProverStatus::Disproved, ..Default::default() };
+        clean.withhold_countermodel(0, "test");
+        assert_eq!(clean.status, ProverStatus::Disproved, "no losses → untouched");
+    }
+
+    // Parse-coverage probe (env-gated, skips when unset): for each TPTP
+    // problem path in `SIGMA_TPTP_LIST` (one per line), parse with
+    // `TestCase::from_tptp` and print
+    //   `<path>\t<parsed stmts>\t<parse errors>\t<unaccounted>`
+    // — the input-completeness audit trail.  `cargo test … tptp_parse_coverage
+    //  -- --nocapture` with the env set.
+    #[test]
+    fn tptp_parse_coverage_probe() {
+        let Some(list) = std::env::var_os("SIGMA_TPTP_LIST") else {
+            eprintln!("SIGMA_TPTP_LIST unset — skipping parse-coverage probe");
+            return;
+        };
+        let list = std::fs::read_to_string(&list).expect("read SIGMA_TPTP_LIST");
+        for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                println!("{path}\tREAD_ERROR\t-\t-");
+                continue;
+            };
+            // Blank `include(…)` directives exactly like the SDK's include
+            // resolver does for the problem's own text (the probe audits the
+            // file's OWN statements; included axioms are separate files).
+            let text: String = text.lines()
+                .map(|l| if l.trim_start().starts_with("include(") { "" } else { l })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (tc, background, errors) = crate::TestCase::from_tptp(&text, path);
+            let query_stmts = tc.input_formulas
+                - background.len() - tc.axioms.len() - tc.unaccounted_inputs;
+            println!("{path}\t{}\t{}\t{}\t{}",
+                tc.input_formulas, errors.len(), tc.unaccounted_inputs, query_stmts);
+        }
     }

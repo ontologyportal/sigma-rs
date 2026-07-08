@@ -197,6 +197,17 @@ impl UnitStores {
     /// the whole group; leaf coins at the remaining closed seats form
     /// the residue key (one hash probe); a target COMPOUND under a
     /// closed seat degrades that group to a scan (match verifies).
+    ///
+    /// PHASE-0 AUDIT NOTE (item 2): this path already applies the
+    /// ASYMMETRIC matching-direction table — shape coins on the
+    /// pattern side (`shaped` seats demand an exactly-shaped target
+    /// compound), target `SeatK::Var` killing groups whose pattern
+    /// seat is closed.  Remaining known slack, deliberately left for a
+    /// measured pass: a target COMPOUND under a pattern-CLOSED seat
+    /// falls back to a whole-group scan (`scan_all`), though a ground
+    /// target compound could residue-key on its content coin and an
+    /// OPEN target compound refutes every closed pattern seat
+    /// outright (one-way matching never binds target variables).
     pub(crate) fn open_candidates(
         &self,
         pos:   bool,
@@ -346,45 +357,77 @@ pub(crate) struct DemodIndex {
     app: Map64<(u64, u8), Vec<Demod>>,
     leaf: Map64<u64, Vec<Demod>>,
     len: usize,
+    /// OR of `1 << (lhs bucket key % 64)` over every registered
+    /// demodulator — same bit derivation as the ground-term facts'
+    /// `sym_bloom` (`syntactic::caches::term_facts::bloom_bit_*`), so
+    /// `subtree_bloom & head_bits == 0` PROVES no node anywhere in that
+    /// subtree can be a redex root (a redex root's bucket key is one of
+    /// the subtree's own symbol/op keys, and the bloom is a superset of
+    /// those).  Bits are never retired per rule (superset-sound: stale
+    /// bits only prune less); reset with the index.
+    head_bits: u64,
+    /// Bumped on every registration and on an index rebuild (`clear`).
+    /// Retirement does NOT bump — a retired demodulator's rewrites stay
+    /// sound, and the rule set only GROWS within a generation, so a
+    /// normal form recorded at generation g is complete exactly at g.
+    generation: u32,
 }
 
 impl DemodIndex {
     pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
 
+    /// The registered-lhs head-bit mask (see field docs).
+    #[inline]
+    pub(crate) fn head_bits(&self) -> u64 { self.head_bits }
+
+    /// The current demodulator-set generation (see field docs).
+    #[inline]
+    pub(crate) fn generation(&self) -> u32 { self.generation }
+
     pub(crate) fn clear(&mut self) {
         self.app = Map64::default();
         self.leaf = Map64::default();
         self.len = 0;
+        self.head_bits = 0;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Register the oriented demodulator `l → r` (caller has already
     /// verified `l >ₖ r`).  Unindexable left-side shapes are dropped.
-    pub(crate) fn add(&mut self, clause: u32, l: Term, r: Term) {
+    /// Returns a copy of the registered demodulator (`None` when the
+    /// shape was dropped) — the backward-demodulation trigger rewrites
+    /// the existing clause sets with exactly this one rule.
+    pub(crate) fn add(&mut self, clause: u32, l: Term, r: Term) -> Option<Demod> {
         let mut slots = std::collections::BTreeSet::new();
         term_slots(&l, &mut slots);
         let nslots = slots.iter().max().map_or(0, |m| *m as u32 + 1);
-        match &l {
+        let d = Demod { clause, l, r, nslots };
+        match &d.l {
             Term::App(elems) => {
                 let key = match elems.first() {
                     Some(Term::Sym(s)) => s.id(),
                     Some(Term::Op(op)) => u64::from(op_tag(op)),
                     // Variable-headed pattern: not bucketable (it would
                     // have to probe on every arity match) — skip.
-                    _ => return,
+                    _ => return None,
                 };
                 let ar = elems.len().min(255) as u8;
+                self.head_bits |= 1u64 << (key & 63);
                 self.app
                     .entry((key, ar))
                     .or_default()
-                    .push(Demod { clause, l, r, nslots });
+                    .push(d.clone());
             }
             Term::Sym(s) => {
                 let id = s.id();
-                self.leaf.entry(id).or_default().push(Demod { clause, l, r, nslots });
+                self.head_bits |= 1u64 << (id & 63);
+                self.leaf.entry(id).or_default().push(d.clone());
             }
-            _ => return,
+            _ => return None,
         }
         self.len += 1;
+        self.generation = self.generation.wrapping_add(1);
+        Some(d)
     }
 
     /// Demodulators whose left side could match `t`, by top shape —
@@ -416,10 +459,11 @@ impl DemodIndex {
     /// derivation as `candidates` but without materializing the slice —
     /// callers use it to skip cloning/probing a subterm *before* paying
     /// for either.  Per-NODE, not per-subtree: a negative head key here
-    /// says nothing about a deeper subterm's head key (see module docs
-    /// on why whole-subtree pruning needs a per-term symbol fingerprint
-    /// the current `Term` representation does not cache), so callers
-    /// must still recurse into children even when this returns `false`.
+    /// says nothing about a deeper subterm's head key, so callers must
+    /// still recurse into children even when this returns `false`.
+    /// (Whole-SUBTREE pruning exists separately for GROUND subtrees via
+    /// the `sym_bloom` ∩ [`Self::head_bits`] test — see
+    /// `saturate::terms` and the demod walk in `prover/make.rs`.)
     pub(crate) fn possibly_matches(&self, t: &Term) -> bool {
         match t {
             Term::App(elems) => {

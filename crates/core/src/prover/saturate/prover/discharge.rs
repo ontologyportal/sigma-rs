@@ -332,7 +332,7 @@ impl<'a> NativeProver<'a> {
                 {
                     self.clauses[id as usize].fact_parents.extend(fact_sids);
                     let key = self.clauses[id as usize].key;
-                    if self.seen.insert(key) {
+                    if self.seen_insert(key, id) {
                         if let Some((rel, args)) = head_for_fact {
                             facts.entry(rel).or_default().push(JoinFact {
                                 args,
@@ -828,6 +828,7 @@ impl<'a> NativeProver<'a> {
         self.stats.model_unstratifiable_bails += u64::from(ms.unstratifiable_bails);
         self.stats.model_budget_or_deadline_overflows += u64::from(ms.budget_overflows);
         self.stats.model_undefined_relation += u64::from(ms.undefined_relation);
+        self.stats.model_rigid_conflicts += u64::from(ms.rigid_conflicts);
     }
 
     /// Conjunctive-query goal discharge over the inductive model (gated
@@ -921,7 +922,7 @@ impl<'a> NativeProver<'a> {
         // model-derived conjunct (per-evaluation state — never cached on the
         // registry).
         let mut provs: Vec<super::super::model::Provenance> = Vec::new();
-        let full_model = match mp.positive_model() {
+        let full_model = match mp.positive_model(Some(deadline)) {
             Some((m, p)) => {
                 provs.push(p);
                 Some(m)

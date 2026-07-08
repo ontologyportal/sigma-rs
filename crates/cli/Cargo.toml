@@ -22,7 +22,7 @@ path = "src/lib.rs"
 # every `span()` is a no-op, so this flag carries no cost in
 # non-profiling runs. Also enables JSON RPC API used for language
 # server
-default = ["parallel", "integrated-prover"]
+default = ["parallel", "integrated-prover", "alloc-mi"]
 
 # Pure-Rust path with subprocess prover: translate / validate / load
 # PLUS ask / test, running against an external `vampire` binary.
@@ -57,6 +57,16 @@ parallel = ["sigmakee-rs-sdk/parallel", "dep:rayon"]
 # prover
 server = ["ask"]
 
+# mimalloc as the process-global allocator (A/B measurement knob for
+# the native prover's allocator-bound equational grinds).  Lives HERE,
+# in the bin crate, so `#[global_allocator]` covers the whole `sumo`
+# binary while library crates / their test binaries stay on the system
+# allocator (a `#[global_allocator]` may only be declared once per
+# final artifact; declaring it in the bin root is the layering-safe
+# spot).  Default-OFF: build the measurement binary with
+# `--features alloc-mi`.
+alloc-mi = ["dep:mimalloc"]
+
 [dependencies]
 # Direct core dependency ONLY for the un-migrated `sweep` subcommand (see the
 # `sweep` feature); everything else goes through the SDK's re-export surface.
@@ -82,3 +92,5 @@ self_update = { version = "0.44", default-features = false, features = ["rustls"
 rand = "0.10.1"
 tempfile  = "3"
 indicatif = "0.18.4"
+# `alloc-mi` only (see the feature docs above).
+mimalloc = { version = "0.1", optional = true }

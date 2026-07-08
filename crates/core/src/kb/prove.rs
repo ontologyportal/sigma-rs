@@ -31,9 +31,16 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         ), |s| s.to_string());
 
         let Some(query) = tc.query else { return ProverResult::default() };
+        // Hypothesis-staging failures must not stay silent: a hypothesis
+        // that never reached the session could be the one that makes the set
+        // unsatisfiable, so its loss poisons any confident
+        // Disproved/Satisfiable verdict (withheld after the prove below).
+        // Assembly losses recorded by the parser (`unaccounted_inputs`)
+        // ride the same gate.
+        let mut input_failures = tc.unaccounted_inputs;
         if !tc.axioms.is_empty() {
             let p = tc.file_name.clone().into();
-            self.ingest_source(SourceFile {
+            let outcome = self.ingest_source(SourceFile {
                 parser: Parser::Kif,
                 name: tc.file_name,
                 path: p,
@@ -41,6 +48,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
                 contents: String::new(),
                 prebuilt: Some(tc.axioms)
             }, &session, true);
+            input_failures += outcome.errors.len();
         }
 
         let query_tag = crate::kb::session_tags::SESSION_QUERY;
@@ -59,7 +67,12 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         // intern + rollback via `cleanup`), runs the shared scaling loop, and
         // returns.  `ProveCtx` carries this KB's progress sink down to it.
         let ctx = self.prove_ctx();
-        let result = self.layer.prove(vec![query], &opts, &ctx);
+        let mut result = self.layer.prove(vec![query], &opts, &ctx);
+        // Input-completeness gate: staged-hypothesis / assembly losses make
+        // a confident "no" (Disproved/Satisfiable) unsound — demote it to
+        // Unknown/GaveUp with a loud reason.  Proved verdicts stand.
+        result.withhold_countermodel(
+            input_failures, "hypothesis staging / test-case assembly");
 
         // Roll back any session-scoped axioms staged for this ask.
         profile_call!(self, "ask.rollback", {

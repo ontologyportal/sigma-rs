@@ -168,6 +168,53 @@ impl KboOrdering {
         self.sym_weight.get(&s).copied().unwrap_or(self.default_weight).max(self.w0)
     }
 
+    /// The KBO weight of one LEAF slot-form term — the weight-memo hook
+    /// the ground-term facts walk (`saturate::terms`) sums over.  Mirrors
+    /// [`Self::compute`]'s per-element arms exactly: symbol → its table
+    /// weight, literal/operator → the default (≥ `w0`), variable → `w0`
+    /// (unused by the ground-only facts walk, kept for totality).
+    /// Weights are precedence-independent, so every `prec_seed` lane
+    /// reads the same value — the reason the facts table can be
+    /// layer-shared without a per-seed key.
+    #[inline]
+    pub(crate) fn term_leaf_weight(&self, t: &super::clause::Term) -> u64 {
+        use super::clause::Term;
+        match t {
+            Term::Sym(s) => self.weight_of_sym(s.id()),
+            Term::Lit(_) | Term::Op(_) => self.default_weight.max(self.w0),
+            Term::Var(_) => self.w0,
+            Term::App(_) => 0, // compounds sum their children; no own weight
+        }
+    }
+
+    /// The KBO weight of a SLOT-form atom term, computed transiently
+    /// from the tree — equals `self.info(id).weight` for the interned
+    /// counterpart (same leaf-weight table, same saturating fold in the
+    /// same traversal order; property-tested in `prover/make.rs`).
+    /// The hash-before-intern feature-vector path reads OPEN literals'
+    /// weights through this instead of `info` (which would need the
+    /// atom resident to resolve).
+    pub(crate) fn term_weight(&self, t: &super::clause::Term) -> u64 {
+        use super::clause::Term;
+        match t {
+            Term::App(elems) => elems
+                .iter()
+                .fold(0u64, |w, e| w.saturating_add(self.term_weight(e))),
+            leaf => self.term_leaf_weight(leaf),
+        }
+    }
+
+    /// [`Self::term_leaf_weight`]'s store-side twin, over [`Element`]s.
+    #[inline]
+    pub(crate) fn element_leaf_weight(&self, el: &Element) -> u64 {
+        match el {
+            Element::Symbol(s) => self.weight_of_sym(s.id()),
+            Element::Literal(_) | Element::Op(_) => self.default_weight.max(self.w0),
+            Element::Variable { .. } => self.w0,
+            Element::Sub(_) => 0, // compounds sum their children; no own weight
+        }
+    }
+
     /// Precedence key for a leaf/head element, as a `(class, key)` tuple
     /// compared lexicographically.  Distinct constants get distinct keys
     /// (the value is folded in), so precedence is total on ground leaves.

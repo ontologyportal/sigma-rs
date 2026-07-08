@@ -26,6 +26,16 @@ use sigmakee_rs_sdk::prover::external::backends::{
 use sigmakee_rs_sdk::{Prover, Session};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 
+/// `alloc-mi`: mimalloc as the process-global allocator.  Post-de-alloc
+/// profiles still attribute 15-30% of equational-grind CPU to
+/// malloc/free/bzero; this is the A/B knob for measuring whether a
+/// faster allocator recovers it.  Declared in the BIN crate root so the
+/// one-per-artifact `#[global_allocator]` covers the whole `sumo`
+/// binary without touching library crates or their test harnesses.
+#[cfg(feature = "alloc-mi")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // Heavy ontologies blow past the 8 MB main-thread stack; run on a 64 MB worker.
     let handle = std::thread::Builder::new()
@@ -76,9 +86,36 @@ fn main_worker() {
         process::exit(if run_config(&manager, cfg, loaded) { 0 } else { 1 });
     }
 
-    if let Err(e) = manager.validate() {
-        log::error!("config error: {e}");
-        process::exit(2);
+    // CASC batch mode needs no `sumokbname` / base KB at all — every problem
+    // builds its own fresh, self-contained `Session` internally (see
+    // `run_casc`), so it routes before `validate()`'s "a default KB is
+    // required" check, exactly like `Config` above.  Without this, `sumo
+    // casc` would be unusable without `-c` even though it never touches the
+    // configured ontology.
+    #[cfg(feature = "ask")]
+    if matches!(cli.command, Cmd::Casc { .. }) {
+        let Cmd::Casc { path, timeout, jobs } = cli.command else { unreachable!() };
+        let ok = sigmakee::cli::run_casc(&manager, path, timeout, jobs);
+        process::exit(if ok { 0 } else { 1 });
+    }
+
+    // `sumo test` over exclusively self-contained TPTP inputs (`.p` /
+    // `.tptp` / `.ax`) likewise needs no configured base KB — each problem
+    // runs on its own fresh Session (same machinery as `casc`).  Skipping
+    // `validate()` here is what lets TPTP benchmarking run without `-c`,
+    // i.e. without ingesting the whole configured ontology underneath every
+    // problem.  A mixed invocation (any `.kif.tq` / directory path) still
+    // requires the base KB and validates as before.
+    let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
+        if !paths.is_empty() && paths.iter().all(|p| {
+            let s = p.to_string_lossy();
+            s.ends_with(".p") || s.ends_with(".tptp") || s.ends_with(".ax")
+        }));
+    if !tptp_only_test {
+        if let Err(e) = manager.validate() {
+            log::error!("config error: {e}");
+            process::exit(2);
+        }
     }
 
     // Use the LMDB store at `<editDir>/<kb>.lmdb` when it exists and `--no-db`

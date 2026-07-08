@@ -16,7 +16,7 @@ use super::super::index::{EntryRef, LiteralIndex};
 use super::super::oracle::OracleSnapshot;
 use super::super::theory::TheoryOracle;
 use super::super::units::UnitStores;
-use super::{ClauseRec, NativeProver};
+use super::{ClauseRec, NativeProver, SubsRec};
 
 /// A frozen background problem base: everything `ask_native_once`
 /// computes BEFORE support/conjecture loading, detached from the
@@ -30,7 +30,17 @@ pub(crate) struct ProverSnapshot {
     /// rebuilds them from the arena for any subset of these).
     pub(crate) loaded_roots: std::collections::HashSet<SentenceId>,
     pub(super) clauses: Vec<ClauseRec>,
-    pub(super) seen: Set64<ClauseKey>,
+    /// SoA twins of `clauses` (subsumption-scan records + retirement
+    /// bitmap) — frozen verbatim, in lockstep with the arena.  The
+    /// records are birth-computed values (not reconstructible without
+    /// re-running the fv/bloom computes), and retirement is genuine
+    /// run state: background activation CAN backward-demodulate before
+    /// the freeze point.
+    pub(super) subs: Vec<SubsRec>,
+    pub(super) retired_bits: Vec<u64>,
+    /// Verified dedup map (key → first-accepted clause id) — see the
+    /// field docs on `NativeProver::seen`.
+    pub(super) seen: Map64<ClauseKey, u32>,
     pub(super) idx: LiteralIndex,
     pub(super) units: UnitStores,
     pub(super) support_seeds: Vec<(AtomId, u32)>,
@@ -62,6 +72,8 @@ impl<'a> NativeProver<'a> {
         ProverSnapshot {
             loaded_roots: self.bg_roots.clone(),
             clauses: self.clauses.clone(),
+            subs: self.subs.clone(),
+            retired_bits: self.retired_bits.clone(),
             seen: self.seen.clone(),
             idx: self.idx.clone(),
             units: self.units.clone(),
@@ -96,7 +108,7 @@ impl<'a> NativeProver<'a> {
         self.idx = LiteralIndex::default();
         self.units = UnitStores::default();
         self.demods.clear();
-        self.seen = Set64::default();
+        self.seen = Map64::default();
         self.support_seeds.clear();
         let n = self.clauses.len() as u32;
         let layer = self.layer;
@@ -114,7 +126,9 @@ impl<'a> NativeProver<'a> {
             if !kept {
                 continue;
             }
-            self.seen.insert(key);
+            // Rebuild in arena (id) order, keeping the FIRST id per key —
+            // the same first-accepted discipline `seen_record` maintains.
+            self.seen.entry(key).or_insert(id);
             let lits = self.clauses[id as usize].lits.clone();
             for (i, l) in lits.iter().enumerate() {
                 self.idx.add(EntryRef { clause: id, lit: i as u8 }, l.pos, l.atom, &src);
@@ -124,11 +138,19 @@ impl<'a> NativeProver<'a> {
                 self.units.add_unit(
                     id, lits[0].pos, lits[0].atom, nv,
                     &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
-                self.index_demodulator(id);
+                // Re-registration of an already-active equation: no
+                // backward pass (that ran at its original activation).
+                let _ = self.index_demodulator(id);
             }
         }
         if self.opts.strategy.superposition {
             self.rebuild_superposition_index();
+        }
+        // The backward-demod postings are rebuilt from the arena too
+        // (same activation condition as before the mask — occurrence
+        // postings are derived state, never frozen).
+        if self.opts.strategy.bwd_demod {
+            self.rebuild_bwd_postings();
         }
     }
 }

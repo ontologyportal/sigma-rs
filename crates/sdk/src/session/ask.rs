@@ -391,5 +391,7 @@ fn synthetic_case(query: AstNode, hypotheses: Vec<AstNode>) -> TestCase {
         extra_files:     Vec::new(),
         expected_status: None,
         has_fof_conjecture: false,
+        input_formulas:     0,
+        unaccounted_inputs: 0,
     }
 }

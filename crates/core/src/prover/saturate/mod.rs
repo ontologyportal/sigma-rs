@@ -22,6 +22,7 @@ pub(crate) mod canon;
 pub(crate) mod caches;
 pub(crate) mod hash64;
 pub(crate) mod kbo;
+pub(crate) mod terms;
 pub(crate) mod index;
 pub(crate) mod unify;
 pub(crate) mod units;
@@ -55,7 +56,7 @@ use clause::{AtomTable, PClause};
 use caches::clause_store::ClauseStore;
 use caches::model_registry::ModelRegistry;
 
-pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, AtomInfos};
+pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, term_atom_info, AtomInfos};
 
 /// The native-prover top layer.  Owns the semantic stack plus the
 /// prover-local clause state; the residue index and given-clause loop
@@ -98,6 +99,13 @@ pub struct ProverLayer {
     /// [`kbo`].
     pub(crate) kbo: kbo::KboOrdering,
 
+    /// Ground-term facts memo (size / depth / symbol Bloom / KBO
+    /// weight), keyed by content hash — the prover-side tier of the
+    /// two-tier ground-term identity design.  Content-addressed and
+    /// pure, so layer-shared across runs like `atom_infos` beside it.
+    /// Only ever consulted while `Strategy.demod` is on.  See [`terms`].
+    pub(crate) term_facts: terms::TermFactsTable,
+
     /// Frozen background problem bases, keyed by a fingerprint of
     /// everything that shaped them (scope, selection, session content,
     /// conjecture, whole-KB root set, make-affecting opts).  A hit
@@ -127,6 +135,7 @@ impl ProverLayer {
             atom_infos:   AtomInfos::default(),
             schema,
             kbo:          kbo::KboOrdering::new(),
+            term_facts:   terms::TermFactsTable::default(),
             bg_snapshots: dashmap::DashMap::new(),
         }
     }
@@ -140,6 +149,23 @@ impl ProverLayer {
     /// first request, cached until the root is retracted).
     pub(crate) fn clauses_for(&self, root: SentenceId) -> Arc<Vec<PClause>> {
         self.clause_store.get(self, root)
+    }
+
+    /// `true` when `root` FAILED to load as an input: it clausified to
+    /// nothing for a shape/capacity reason (unsupported shape, CNF blow-up,
+    /// over-cap clause) or vanished from the store — as opposed to the sound
+    /// empty results (tautology deletion / dedup).  Cheap: the loss
+    /// re-clausification only runs for roots whose
+    /// [`clauses_for`](Self::clauses_for) came back empty.  Feeds the
+    /// input-completeness gate: a failed input root poisons any confident
+    /// Disproved/Satisfiable verdict.
+    pub(crate) fn root_load_failed(&self, root: SentenceId) -> bool {
+        if !self.clauses_for(root).is_empty() {
+            return false;
+        }
+        let syn = &self.semantic.syntactic;
+        let Some(sent) = syn.sentence(root) else { return true };
+        clausify::clausify_sentence_lossy(syn, &self.atoms, &sent, root, false).1
     }
 }
 

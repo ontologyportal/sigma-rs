@@ -4,6 +4,11 @@ mod element;
 mod literal;
 mod hash;
 
+// The incremental content-hasher is only consumed outside this module by
+// the native prover's derived-term keying (`saturate::terms`).
+#[cfg(feature = "native-prover")]
+pub(crate) use hash::ElementHasher;
+
 pub use element::Element;
 pub use literal::Literal;
 pub use element::{InternedSym, Symbol, SymbolId};

@@ -16,6 +16,93 @@ pub(crate) struct ProverStats {
     pub(crate) demod_rewrites: u64,
     /// New clauses dropped by forward (multi-literal) subsumption.
     pub(crate) subsumed: u64,
+    /// `forward_subsumed` candidate probes attempted: one per active,
+    /// non-retired, length-compatible candidate the literal index
+    /// returned as a possible subsumer of the new clause (retired
+    /// clauses and outright-too-long subsumers are filtered before this
+    /// count, same as `clause_subsumes` would reject them for free) —
+    /// the prefilter chain's denominator.  Invariant:
+    /// `subs_checks_attempted == subs_rejected_by_bloom_leaf +
+    /// subs_rejected_by_bloom_glit + subs_rejected_by_fv +
+    /// subs_rejected_by_keq + ej_full_checks_saved + subs_full_checks`
+    /// (the channels run in that order; each rejection is attributed
+    /// to the FIRST channel that fired; the ej term is zero unless
+    /// `Strategy.subs_join` is on).
+    pub(crate) subs_checks_attempted: u64,
+    /// Of those, how many were REJECTED by the leaf-bloom channel
+    /// (`fvi::ClauseBlooms::leaf` subset test — one AND per candidate,
+    /// the cheapest channel, so it runs first).
+    pub(crate) subs_rejected_by_bloom_leaf: u64,
+    /// Of those, how many were REJECTED by the ground-literal-bloom
+    /// channel (`fvi::ClauseBlooms::glit` subset test), having passed
+    /// the leaf bloom.
+    pub(crate) subs_rejected_by_bloom_glit: u64,
+    /// Attempted checks where the ground-literal channel could act at
+    /// all: the candidate subsumer has at least one FULLY GROUND
+    /// literal (`glit != 0`) and the check reached that channel — the
+    /// channel's applicability denominator (a clause with no ground
+    /// literals passes it vacuously).
+    pub(crate) subs_glit_applicable: u64,
+    /// Of those, how many were REJECTED by the feature-vector prefilter
+    /// (`fvi::ClauseFv::le`) before the expensive `clause_subsumes` call
+    /// — the prefilter's payoff.
+    pub(crate) subs_rejected_by_fv: u64,
+    /// Of those, how many were REJECTED by the per-literal Key-Equation
+    /// counting filter (`keq_unpartnered`): some literal of the
+    /// candidate subsumer has NO Key-Equation-compatible literal in the
+    /// new clause (same polarity + same arity + residue match), having
+    /// passed both blooms and the FV channels.
+    pub(crate) subs_rejected_by_keq: u64,
+    /// (candidate-subsumer literal, new-clause literal) compatibility
+    /// tests evaluated inside the Key-Equation counting filter — every
+    /// inner-scan step counts, including the cheap polarity/arity
+    /// gates; each partner scan stops at its first compatible literal.
+    /// The channel's workload numerator (each test is
+    /// O(popcount(mask)) at worst).
+    pub(crate) keq_pair_tests: u64,
+    /// Of those, how many passed every prefilter channel and were handed
+    /// to the exact `clause_subsumes` check (see the sum invariant on
+    /// `subs_checks_attempted`; with `Strategy.subs_join` on, the
+    /// equality-join channel sits between keq and here, so the
+    /// invariant gains an `+ ej_full_checks_saved` term).
+    pub(crate) subs_full_checks: u64,
+
+    // -- phase-2b subsumption equality-join channel (`Strategy.subs_join`;
+    //    see prover/ej.rs).  All zero unless subsumption AND subs_join
+    //    are on.  Invariants: ej_full_checks_saved == ej_rej_no_partner
+    //    + ej_rej_join; every keq-passing candidate is either counted in
+    //    ej_candidates or ej_skipped_unusable (or neither only when the
+    //    knob is off).
+    /// keq-passing candidates the channel actually evaluated (>= 1
+    /// runnable literal: Active, or Trivial with a joinable variable).
+    pub(crate) ej_candidates: u64,
+    /// (planned C-literal, keq-feasible D-literal) pairs decoded — the
+    /// channel's workload numerator (each is a delta + v×v solve +
+    /// surplus checks + probes, a few clmuls).
+    pub(crate) ej_pairs_decoded: u64,
+    /// Candidates rejected because some planned literal had ZERO
+    /// surviving partners (keq counted >= 1; the decode refuted all).
+    pub(crate) ej_rej_no_partner: u64,
+    /// Candidates rejected by an empty per-variable decoded-key
+    /// intersection across the literals sharing that variable.
+    pub(crate) ej_rej_join: u64,
+    /// keq-passing candidates the channel could do nothing with (no
+    /// runnable literal — all plans ground/unusable/trivial-unshared).
+    pub(crate) ej_skipped_unusable: u64,
+    /// Exact `clause_subsumes_in` calls avoided — the channel's payoff
+    /// (== ej_rej_no_partner + ej_rej_join, split out so the headline
+    /// number reads directly off the stats line).
+    pub(crate) ej_full_checks_saved: u64,
+    /// TRUE `ClauseKey` collisions detected by the verified dedup
+    /// (`NativeProver::seen_duplicate*` / `seen_insert`): a `seen` key
+    /// hit whose first-accepted clause has DIFFERENT canonical literals
+    /// than the probing clause.  The probing clause is ACCEPTED (never
+    /// dropped — dropping a non-duplicate on a bare 64-bit key match
+    /// would be a completeness hole); the map keeps the FIRST id, so
+    /// later collision-mates simply bypass dedup, which is sound (dedup
+    /// is an optimization, re-processing is never wrong).  Expected
+    /// ~never; a nonzero count prints its own SIGMA_STATS line.
+    pub(crate) dedup_collisions_detected: u64,
     pub(crate) discarded_deep: u64,
     pub(crate) discarded_long: u64,
     /// Some clause carried an equality literal — the "problem contains
@@ -36,6 +123,41 @@ pub(crate) struct ProverStats {
     /// Resolutions whose bindings were extracted algebraically from the
     /// power-sum residual (no unification walk).
     pub(crate) decoded_resolutions: u64,
+
+    // -- decode fast-path cause profile (Step-2 instrumentation only;
+    //    zero behavior change).  Counted EXCLUSIVELY in the batch
+    //    section of the resolve loop — each (given-literal, partner)
+    //    pair exactly once: per pair for partner/tail causes, bulk
+    //    (candidate-set size) for given-shape causes.  Scalar decode
+    //    reruns (batch-anomaly fallbacks through `resolve`, and the
+    //    goal-directed discharge paths) never count.  Invariant:
+    //    `decode_attempts == decode_bindings_extracted +
+    //    decode_bail_nested_var + decode_bail_too_many_open +
+    //    decode_bail_partner_shape + decode_bail_phonebook_or_collision
+    //    + decode_bail_other`.  All zero when `Strategy.decode` is off.
+    /// Pairs that entered the decode machinery — the cause denominator.
+    pub(crate) decode_attempts: u64,
+    /// Pairs whose bindings were fully extracted algebraically (the
+    /// resolvent was built with no unification walk) — the batch-scoped
+    /// slice of `decoded_resolutions`.
+    pub(crate) decode_bindings_extracted: u64,
+    /// Given-shape bail: an open seat holds a compound containing a
+    /// variable — THE decision counter for the homomorphic
+    /// path-weighted sketch extension (bulk-attributed).
+    pub(crate) decode_bail_nested_var: u64,
+    /// Given-shape bail: more than 2 open seats (the quadratic sketch
+    /// solver's limit; bulk-attributed).
+    pub(crate) decode_bail_too_many_open: u64,
+    /// Partner-side bail: not a ground unit of matching arity.
+    pub(crate) decode_bail_partner_shape: u64,
+    /// Decode-tail bail: the residual sketch failed to decode
+    /// (`Decoded::Fail`) or a decoded coin was missing from the phone
+    /// book — both collision-flavored.
+    pub(crate) decode_bail_phonebook_or_collision: u64,
+    /// Everything else: non-`App` given literal / out-of-range seat
+    /// (bulk-attributed) plus decode-tail seat/binding mismatches.
+    pub(crate) decode_bail_other: u64,
+
     // -- candidate-verification profile (attempts vs successes per site,
     //    plus how many attempts had a ground candidate — the decode
     //    fast-path's entry condition).  Sized for ranking where the
@@ -132,6 +254,16 @@ pub(crate) struct ProverStats {
     pub(crate) model_cert_blocked_unstratifiable: u64,
     pub(crate) model_cert_blocked_body_chain: u64,
     pub(crate) model_cert_blocked_role: u64,
+    /// Model evaluations aborted by `ModelError::Inconsistent`: an EGD
+    /// forced a union of two distinct rigid (numeric-literal) symbols.
+    /// Printed in SIGMA_STATS only when nonzero (default output unchanged).
+    pub(crate) model_rigid_conflicts: u64,
+    /// Ground flat NEGATIVE literals `¬R(args)` deleted in `make` because
+    /// the shared positive model (`SIGMA_MODEL`) already contains `R(args)`
+    /// — the model-sourced mirror of the oracle's `oracle.holds` deletion
+    /// just above it (see `model_true_negative`).  Zero unless `SIGMA_MODEL`
+    /// is set.
+    pub(crate) model_literals_deleted: u64,
 
     // -- forward-demodulation duplicate-hit probe (Part 2; only active when
     //    Strategy.demod is on).
@@ -160,6 +292,95 @@ pub(crate) struct ProverStats {
     /// reduction ratio).
     pub(crate) demod_scans_performed: u64,
 
+    // -- ground-term identity: whole-subtree bloom pruning + NF memo
+    //    (Parts 3.2/4 of the two-tier design; all zero unless
+    //    Strategy.demod is on — the machinery never runs otherwise).
+    /// Ground maximal subtrees whose entire descent was skipped because
+    /// their symbol bloom shares no bit with the registered demodulator
+    /// head-bit mask (`DemodIndex::head_bits`) — a proof of redex
+    /// absence, twin-checked in debug builds.
+    pub(crate) bloom_subtrees_pruned: u64,
+    /// NF-memo probes: one per ground maximal subtree the demod walk
+    /// enters that survives the bloom prune.
+    pub(crate) nf_probes: u64,
+    /// Probes answered "already in normal form" — the whole subtree is
+    /// skipped, no redex search.
+    pub(crate) nf_hits_unchanged: u64,
+    /// Probes answered with a cached normal form — spliced in (one
+    /// clone), no redex search; rewrite/citation accounting replayed
+    /// from the entry.
+    pub(crate) nf_hits_rewritten: u64,
+    /// Probes with no usable entry (absent, stale generation, or too
+    /// little demod-cap budget left to splice the whole normal form).
+    pub(crate) nf_misses: u64,
+    /// Entries discarded on probe because their generation predates the
+    /// current demodulator set (a new registration can enable further
+    /// rewrites, so an older recorded NF is no longer known-normal).
+    pub(crate) nf_stale_discards: u64,
+
+    // -- backward demodulation (Strategy.bwd_demod; see
+    //    NativeProver::backward_demodulate).  All zero unless the knob
+    //    (or SIGMA_BWD_DEMOD=1) is on.
+    /// Backward passes run — one per newly activated, KBO-oriented unit
+    /// equation the demodulator index accepted.
+    pub(crate) bwd_demod_triggered: u64,
+    /// Existing (active/passive) clauses a backward pass rewrote; each
+    /// spawns a replacement through `make` (rule tag `bwd_demod`).
+    pub(crate) bwd_demod_clauses_rewritten: u64,
+    /// Originals retired after a backward rewrite (tracks
+    /// `bwd_demod_clauses_rewritten` 1:1 — split out so an invariant
+    /// break is visible in the stats line).
+    pub(crate) bwd_demod_retired: u64,
+    /// Backward passes truncated by `Strategy.bwd_demod_cap` — the
+    /// remaining candidates were left unsimplified (sound; just less
+    /// interreduced).
+    pub(crate) bwd_demod_cap_hits: u64,
+    /// Individual redex rewrites applied across all backward passes
+    /// (per-occurrence grain; `bwd_demod_clauses_rewritten` is the
+    /// per-clause roll-up).
+    pub(crate) bwd_demod_term_rewrites: u64,
+    /// Posting-index queries — one per backward pass that reached
+    /// retrieval.
+    pub(crate) bwd_postings_queries: u64,
+    /// Verified occurrence hits the postings returned: exact-key
+    /// postings on live clauses (ground lhs), or bucket occurrences
+    /// that survived the seat prefilter AND the `match_one_way_off`
+    /// verify (open lhs).
+    pub(crate) bwd_postings_hits: u64,
+    /// Total (head, len)-bucket entries scanned by open-lhs queries —
+    /// the bucket-scan-length counter (watch for hot wide buckets).
+    pub(crate) bwd_bucket_scanned: u64,
+    /// Posting compactions run (dead fraction crossed the threshold).
+    pub(crate) bwd_postings_compactions: u64,
+
+    // -- phase-2 decode chain (k-channel Vandermonde rows; see
+    //    prover/rows.rs).  All zero unless bwd_demod is on AND an
+    //    open-lhs pass compiled an ACTIVE (non-trivial, non-fallback)
+    //    plan.  Invariant: bwd_decode_swept == bwd_decode_rej_surplus +
+    //    bwd_decode_rej_probe + bwd_decode_rej_binding + (survivors
+    //    handed to the verify).
+    /// Seat-prefilter survivors that entered the decode chain.
+    pub(crate) bwd_decode_swept: u64,
+    /// Rejected by a surplus check row on purely structural content.
+    pub(crate) bwd_decode_rej_surplus: u64,
+    /// Rejected because a decoded key is not a registered term.
+    pub(crate) bwd_decode_rej_probe: u64,
+    /// Rejected through the binding table: a check involving a bound
+    /// variable's substituted key failed (cross-level repeats), or a
+    /// decoded key contradicted an existing binding.
+    pub(crate) bwd_decode_rej_binding: u64,
+    /// Open-lhs passes whose compiled plan contained >= 1 fallback node
+    /// (v >= 4, rank-deficient collapse, or unindexable subpattern).
+    pub(crate) bwd_decode_fallbacks: u64,
+    /// Open-lhs passes whose plan was TRIVIAL (depth-1, all-fresh
+    /// distinct variables — nothing the seat prefilter didn't already
+    /// check), so the chain was skipped as pure overhead.
+    pub(crate) bwd_decode_trivial: u64,
+    /// `match_one_way_off` verify calls made by the open-lhs bwd path —
+    /// the decode chain's payoff denominator (phase-1 verify calls ==
+    /// bwd_verify_calls + the three reject counters).
+    pub(crate) bwd_verify_calls: u64,
+
     // -- proof-DAG discharge-rule reach (counted once per completed proof
     //    extraction, at refutation time).
     pub(crate) proof_tag_model: u64,
@@ -167,6 +388,55 @@ pub(crate) struct ProverStats {
     pub(crate) proof_tag_join: u64,
     pub(crate) proof_tag_event_calculus: u64,
     pub(crate) proof_tag_oracle: u64,
+
+    // -- deferred-passive discipline (Strategy.deferred_passive; see
+    //    `NativeProver::push_recipe` / `materialize_recipe`).  All zero
+    //    unless the knob (or `SIGMA_DEFERRED_PASSIVE=1`) is on.
+    //    Invariant: recipes_materialized == act_dedup_hits +
+    //    act_subsumed + act_rejected_other + act_over_cap + (recipes
+    //    that became the given clause, = composed_weight_samples +
+    //    empty-clause materializations).
+    /// Recipes pushed into the passive queue (deferred resolution /
+    /// superposition products) — each replaces one eager `make` call.
+    pub(crate) recipes_queued: u64,
+    /// Recipe pushes dropped by the approximate pre-queue dedup — an
+    /// identical (rule, parents, aux) derivation was already queued.
+    pub(crate) recipes_prequeue_deduped: u64,
+    /// Recipes selected from the queue and MATERIALIZED (conclusion
+    /// built + full `make` pipeline run).  The manufacture volume the
+    /// discipline actually paid for; `recipes_queued -
+    /// recipes_materialized` recipes were never built at all.
+    pub(crate) recipes_materialized: u64,
+    /// Materialized recipes rejected as exact duplicates of an
+    /// already-accepted clause (the `seen`/`ClauseKey` verified-dedup
+    /// probe `push` would have run at generation time).
+    pub(crate) act_dedup_hits: u64,
+    /// Materialized recipes rejected by forward subsumption inside
+    /// `make` (attributed via the `subsumed` counter delta across the
+    /// materializing call).
+    pub(crate) act_subsumed: u64,
+    /// Materialized recipes `make` rejected for any other reason
+    /// (tautology, oracle-subsumed, unit-subsumed, depth/size caps).
+    pub(crate) act_rejected_other: u64,
+    /// Materialized recipes accepted by `make` but over the derived
+    /// width cap (`max_lits`) — the `push_capped` discard, also counted
+    /// into `discarded_long` exactly as the eager path would.
+    pub(crate) act_over_cap: u64,
+    /// Products that WOULD have deferred but the live-recipe budget
+    /// (`Strategy::deferred_cap`) was exhausted, so they took the EAGER
+    /// path instead (built + `make`d at generation time, exactly as
+    /// knob-off).  A memory-safety valve, not a loss: no inference is
+    /// dropped.
+    pub(crate) deferred_cap_fallbacks: u64,
+    /// Composed-vs-exact weight drift sample, over ACCEPTED
+    /// materializations: sum of |exact - composed| queue weights…
+    pub(crate) composed_weight_drift_sum: u64,
+    /// …the number sampled…
+    pub(crate) composed_weight_samples: u64,
+    /// …and how many of those matched exactly (the composed scalars are
+    /// exact on the RAW conclusion; drift measures `make`'s
+    /// simplifications — demod/oracle/unit literal drops and merges).
+    pub(crate) composed_weight_exact: u64,
 
     // -- semantic clause-selection guidance (Strategy.semantic_guide;
     //    see `NativeProver::guide_score` / `push`).  Zero unless the

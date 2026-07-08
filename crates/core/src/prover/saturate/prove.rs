@@ -13,10 +13,23 @@ use crate::types::Element;
 
 use super::{ProverLayer, Conjecture};
 use super::clause::{AtomId, PClause};
-use super::clausify::clausify_negated_conjunction;
+use super::clausify::clausify_negated_conjunction_lossy;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
 use super::theory::TheoryOracle;
+
+/// The one `NativeOpts` field a portfolio lane's `Strategy` can override:
+/// `max_lits` (the derived-clause literal-count ceiling) lives on
+/// `NativeOpts`, not `Strategy`, because it doubles as the historical
+/// KIF/SUMO-path default rather than a pure search-shaping knob (see
+/// `NativeOpts::max_lits`'s doc). `Strategy::derived_width_cap` is the
+/// portfolio-only escape hatch: `None` (every lane except `tptp-wide`)
+/// returns `base_max_lits` unchanged — byte-identical to before this knob
+/// existed; `Some(n)` overrides it for that lane only. Consumed exactly
+/// once, here, at lane-build time in `run_portfolio_schedule`.
+pub(super) fn lane_max_lits(lane: &Strategy, base_max_lits: usize) -> usize {
+    lane.derived_width_cap.map(usize::from).unwrap_or(base_max_lits)
+}
 
 impl ProverLayer {
     /// Intern the conjecture into the prover-local atom table (content-addressed,
@@ -53,7 +66,7 @@ impl ProverLayer {
         ctx:         &crate::ProveCtx,
     ) -> ProverResult {
         // Prepare: normalize + seed + intern into the atom table (all `&self`).
-        let normalized = Conjecture::normalize(asts);
+        let (normalized, norm_dropped) = Conjecture::normalize(asts);
         let seed_syms  = Conjecture::seed(&normalized);
         let sents      = self.intern_conjecture_native(&normalized);
         if sents.is_empty() {
@@ -63,7 +76,10 @@ impl ProverLayer {
                 ..Default::default()
             };
         }
-        let conj = Conjecture { sents, seed_syms };
+        // Intern/build failures surface as a shortfall (`intern_conjecture_native`
+        // yields at most one entry per normalized ast, skipping failures).
+        let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
+        let conj = Conjecture { sents, seed_syms, dropped };
 
         let selection     = opts.selection;
         let total_timeout = opts.time_limit_secs.min(u64::from(u32::MAX)) as u32;
@@ -138,16 +154,27 @@ impl ProverLayer {
         opts:          &NativeOpts,
         ctx:           &crate::ProveCtx,
     ) -> ProverResult {
-        use crate::prover::scale::{drive, drive_portfolio, ScaleConfig};
+        use crate::prover::scale::{adaptive_lane_count, drive, drive_portfolio, ScaleConfig};
         use crate::syntactic::sine::{
             scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
         };
 
-        let lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        let all_lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        // Budget-adaptive lane count (task #33): racing all 5 lanes against a
+        // tight total timeout starves every lane after the first — see
+        // `adaptive_lane_count`'s doc for the measured trade-off. Truncating
+        // (not reordering) `all_lanes` keeps the schedule's ordering promise
+        // (`tptp_lanes_first_is_plain_tptp` etc.) intact for any prefix count.
+        let lane_count = adaptive_lane_count(total_timeout, all_lanes.len());
+        let lanes = &all_lanes[..lane_count];
         let selection = opts.selection;
 
         let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {
-            let lane_opts = NativeOpts { strategy: lanes[idx].clone(), ..opts.clone() };
+            let lane_opts = NativeOpts {
+                strategy: lanes[idx].clone(),
+                max_lits: lane_max_lits(&lanes[idx], opts.max_lits),
+                ..opts.clone()
+            };
             let cfg = ScaleConfig {
                 factor:        scale_factor(),
                 max_disproofs: scale_max_disproofs(),
@@ -160,11 +187,23 @@ impl ProverLayer {
             })
         });
 
-        let lane_name = lanes[winner].name.as_str();
-        ctx.debug(format!("portfolio: lane {winner} ({lane_name}) reported the final verdict"));
-        result.raw_output = format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
-        if std::env::var_os("SIGMA_STATS").is_some() {
-            eprintln!("PORTFOLIO winning lane: {lane_name}");
+        if crate::prover::scale::is_schedule_final(&result) {
+            let lane_name = lanes[winner].name.as_str();
+            ctx.debug(format!(
+                "portfolio: lane {winner} ({lane_name}) reported the final verdict"
+            ));
+            result.raw_output =
+                format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
+            if std::env::var_os("SIGMA_STATS").is_some() {
+                eprintln!("PORTFOLIO winning lane: {lane_name}");
+            }
+        } else {
+            ctx.debug(format!(
+                "portfolio: no conclusive verdict across {} lanes", lanes.len()
+            ));
+            if std::env::var_os("SIGMA_STATS").is_some() {
+                eprintln!("PORTFOLIO exhausted {} lanes", lanes.len());
+            }
         }
         result
     }
@@ -238,10 +277,11 @@ impl ProverLayer {
         // split it into several roots: they are ONE conjecture, so the
         // negation must wrap their conjunction (negating each root
         // separately would let one refuted conjunct "prove" the whole
-        // conjunction).
-        let conjecture_clauses: Vec<PClause> = {
+        // conjunction).  `conj_lossy` records goal clauses dropped for
+        // shape/capacity reasons — input loss the completeness gate must see.
+        let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = {
             profile_span!(ctx, "ask.clausify_conjecture");
-            clausify_negated_conjunction(
+            clausify_negated_conjunction_lossy(
                 &self.semantic.syntactic, &self.atoms, conjecture_sents)
         };
 
@@ -260,7 +300,35 @@ impl ProverLayer {
             self.definitional_completion(
                 &conjecture_clauses, &goal_frontier, &mut selected, &opts.strategy, ctx);
         }
-        let selected = selected;
+        // Deterministic clause-registration order: `selected` is a HashSet
+        // whose RandomState iteration order otherwise seeds the given-clause
+        // heap's `seq` tie-breaker — the documented source of run-to-run
+        // nondeterminism.  SentenceIds are content hashes, so sorting gives
+        // a stable, KB-content-determined order.
+        let selected: Vec<SentenceId> = {
+            let mut v: Vec<SentenceId> = selected.into_iter().collect();
+            v.sort_unstable();
+            v
+        };
+
+        // Input-completeness gate (defense in depth): count input formulas
+        // that FAILED to make it into the clause set — conjecture roots
+        // dropped at normalize/intern (`conj.dropped`), goal clauses lost in
+        // clausification (`conj_lossy`), and selected/support roots that
+        // clausified to nothing for a shape/capacity reason
+        // (`root_load_failed`).  Any such loss makes a later "Saturated"
+        // verdict meaningless as a countermodel certificate: the missing
+        // formula could be the very one that closes the refutation.  The
+        // count feeds `complete_saturation` below, which under strict
+        // saturation (the TPTP path) demotes Disproved/Satisfiable to
+        // Unknown/GaveUp — silent drops become verdict-poisoning by
+        // construction.
+        let failed_roots: usize = selected.iter()
+            .chain(session_sids.iter())
+            .filter(|sid| self.root_load_failed(**sid))
+            .count();
+        let input_load_failures =
+            conj.dropped + usize::from(conj_lossy) + failed_roots;
 
         // Goal-targeted disjointness activation.  The disjointness oracle
         // only discharges inequality / disjoint goals; activating it for a
@@ -406,7 +474,7 @@ impl ProverLayer {
                         if s.loaded_roots.len() == selected.len()
                             && selected.iter().all(|r| s.loaded_roots.contains(r)));
                     if !exact {
-                        p.retain_background(&selected);
+                        p.retain_background(&selected.iter().copied().collect());
                     }
                     p
                 }
@@ -578,7 +646,8 @@ impl ProverLayer {
             let complete_saturation = match verdict {
                 RunVerdict::Saturated => {
                     let no_drops = prover.stats.discarded_long == 0
-                        && prover.stats.discarded_deep == 0;
+                        && prover.stats.discarded_deep == 0
+                        && input_load_failures == 0;
                     Some(no_drops && (!strict_saturation || {
                         let st = &prover.opts.strategy;
                         let eq_ok = !prover.stats.saw_equality
@@ -619,7 +688,7 @@ impl ProverLayer {
                     contradiction_proofs.push(steps);
                 }
             }
-            let raw = format!(
+            let mut raw = format!(
                 "native: {:?} after {} given-clause steps; {} clauses, {} resolvents \
                  ({} decoded), {} oracle discharges, {} unit subsumed, {} clause subsumed, \
                  {} demodulated, {} forward-closed, {} bg-completed{}\n\
@@ -631,7 +700,8 @@ impl ProverLayer {
                  model-discharge: {} atoms seen, {} rejected (lit_pattern), \
                  {} arg collapsed (compound), {} arg collapsed (repeated-var), \
                  {} answered, {} unanswered, bails: {} unsafe / {} unstratifiable / \
-                 {} budget-or-deadline-overflow / {} undefined-relation\n\
+                 {} budget-or-deadline-overflow / {} undefined-relation, \
+                 {} model_literals_deleted\n\
                  model-complete: {} certified relations, {} negatives emitted, \
                  blocked: {} skipped-head / {} unstratifiable / {} body-chain / {} role\n\
                  demod-probe: {} rewrite attempts, {} rewrites applied, {} dup hits, \
@@ -674,6 +744,7 @@ impl ProverLayer {
                 prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
                 prover.stats.model_budget_or_deadline_overflows,
                 prover.stats.model_undefined_relation,
+                prover.stats.model_literals_deleted,
                 prover.stats.model_certified_relations,
                 prover.stats.model_complete_negatives_emitted,
                 prover.stats.model_cert_blocked_skipped_head,
@@ -688,6 +759,169 @@ impl ProverLayer {
                 prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
                 prover.stats.proof_tag_oracle,
                 prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
+            // Input-completeness gate: say LOUDLY when input formulas never
+            // made it into the clause set — the line every consumer of a
+            // withheld Satisfiable/Disproved verdict needs to see.
+            if input_load_failures > 0 {
+                raw.push_str(&format!(
+                    "\nWARNING: {input_load_failures} input formula(s) failed to load \
+                     (conjecture roots dropped: {}, goal clausification lossy: {}, \
+                     background/support roots failed: {}) — Satisfiable/countermodel \
+                     verdicts withheld (GaveUp)",
+                    conj.dropped, conj_lossy, failed_roots));
+            }
+            // Ground-term identity line (NF memo + subtree bloom prune)
+            // only when demod is on: the default-path SIGMA_STATS output
+            // stays byte-identical with demod off.
+            if prover.opts.strategy.demod {
+                raw.push_str(&format!(
+                    "\nnf-memo: {} probes, {} hits_unchanged, {} hits_rewritten, \
+                     {} misses, {} stale_discards; bloom: {} subtrees_pruned",
+                    prover.stats.nf_probes,
+                    prover.stats.nf_hits_unchanged,
+                    prover.stats.nf_hits_rewritten,
+                    prover.stats.nf_misses,
+                    prover.stats.nf_stale_discards,
+                    prover.stats.bloom_subtrees_pruned));
+            }
+            // Backward-demodulation line only when the knob is on: the
+            // default-path SIGMA_STATS output stays byte-identical.
+            if prover.opts.strategy.bwd_demod {
+                raw.push_str(&format!(
+                    "\nbwd-demod: {} triggered, {} clauses_rewritten, {} retired, \
+                     {} cap_hits, {} term_rewrites; postings: {} queries, \
+                     {} hits, {} bucket_scanned, {} compactions",
+                    prover.stats.bwd_demod_triggered,
+                    prover.stats.bwd_demod_clauses_rewritten,
+                    prover.stats.bwd_demod_retired,
+                    prover.stats.bwd_demod_cap_hits,
+                    prover.stats.bwd_demod_term_rewrites,
+                    prover.stats.bwd_postings_queries,
+                    prover.stats.bwd_postings_hits,
+                    prover.stats.bwd_bucket_scanned,
+                    prover.stats.bwd_postings_compactions));
+                // Phase-2 decode chain, its OWN line, printed ONLY when
+                // `Strategy.subterm_rows` is on (the same convention as
+                // the subs-ej sub-line under subs_join): off (the
+                // default) the chain never runs, so the line is
+                // suppressed and the default-path SIGMA_STATS output
+                // stays byte-identical to a frozen build modulo this
+                // dropped line.  A pure counter line — byte-identity
+                // diffs drop it; the bwd-demod line above stays
+                // byte-identical across the phase.
+                if prover.opts.strategy.subterm_rows {
+                    raw.push_str(&format!(
+                        "\nbwd-decode: {} swept, {} rej_surplus, {} rej_probe, \
+                         {} rej_binding, {} fallbacks, {} trivial, {} verify_calls",
+                        prover.stats.bwd_decode_swept,
+                        prover.stats.bwd_decode_rej_surplus,
+                        prover.stats.bwd_decode_rej_probe,
+                        prover.stats.bwd_decode_rej_binding,
+                        prover.stats.bwd_decode_fallbacks,
+                        prover.stats.bwd_decode_trivial,
+                        prover.stats.bwd_verify_calls));
+                }
+            }
+            // Rigid-conflict (EGD inconsistency) line only when one occurred:
+            // default-path SIGMA_STATS output stays byte-identical.
+            if prover.stats.model_rigid_conflicts > 0 {
+                raw.push_str(&format!(
+                    "\nmodel-egd: {} rigid_conflicts (evaluation aborted Inconsistent)",
+                    prover.stats.model_rigid_conflicts));
+            }
+            // Subsumption feature-vector prefilter line only when
+            // subsumption is on (KIF default has it off): default-path
+            // SIGMA_STATS output stays byte-identical.
+            if prover.opts.strategy.subsumption {
+                raw.push_str(&format!(
+                    "\nsubs-fvi: {} checks_attempted, {} rejected_by_bloom_leaf, \
+                     {} rejected_by_bloom_glit ({} glit_applicable), \
+                     {} rejected_by_fv, {} rejected_by_keq ({} keq_pair_tests), \
+                     {} full_checks",
+                    prover.stats.subs_checks_attempted,
+                    prover.stats.subs_rejected_by_bloom_leaf,
+                    prover.stats.subs_rejected_by_bloom_glit,
+                    prover.stats.subs_glit_applicable,
+                    prover.stats.subs_rejected_by_fv,
+                    prover.stats.subs_rejected_by_keq,
+                    prover.stats.keq_pair_tests,
+                    prover.stats.subs_full_checks));
+                // Phase-2b equality-join channel, its OWN line (a pure
+                // counter line — byte-identity diffs drop it; the
+                // subs-fvi line above keeps its exact format, with only
+                // `full_checks` legitimately moving when the channel
+                // diverts rejections ahead of the exact check).
+                if prover.opts.strategy.subs_join {
+                    raw.push_str(&format!(
+                        "\nsubs-ej: {} candidates, {} pairs_decoded, \
+                         {} rej_no_partner, {} rej_join, {} skipped_unusable, \
+                         {} full_checks_saved",
+                        prover.stats.ej_candidates,
+                        prover.stats.ej_pairs_decoded,
+                        prover.stats.ej_rej_no_partner,
+                        prover.stats.ej_rej_join,
+                        prover.stats.ej_skipped_unusable,
+                        prover.stats.ej_full_checks_saved));
+                }
+            }
+            // Deferred-passive discipline line only when the knob is
+            // on: the default-path SIGMA_STATS output stays
+            // byte-identical.
+            if prover.opts.strategy.deferred_passive {
+                let s = &prover.stats;
+                raw.push_str(&format!(
+                    "\ndeferred: {} recipes_queued, {} prequeue_deduped, \
+                     {} materialized, {} act_dedup_hits, {} act_subsumed, \
+                     {} act_rejected_other, {} act_over_cap, \
+                     {} cap_fallbacks; weight-drift: \
+                     {}/{} exact, avg |drift| {}",
+                    s.recipes_queued,
+                    s.recipes_prequeue_deduped,
+                    s.recipes_materialized,
+                    s.act_dedup_hits,
+                    s.act_subsumed,
+                    s.act_rejected_other,
+                    s.act_over_cap,
+                    s.deferred_cap_fallbacks,
+                    s.composed_weight_exact,
+                    s.composed_weight_samples,
+                    s.composed_weight_drift_sum / s.composed_weight_samples.max(1)));
+            }
+            // Decode fast-path cause profile (Step-2; always printed —
+            // the ONE new line in a SIGMA_STATS capture diff.  All-zero
+            // when `Strategy.decode` is off).
+            raw.push_str(&format!(
+                "\ndecode: {} attempts, {} bindings_extracted, bails: {} nested_var / \
+                 {} too_many_open / {} partner_shape / {} phonebook_or_collision / {} other",
+                prover.stats.decode_attempts,
+                prover.stats.decode_bindings_extracted,
+                prover.stats.decode_bail_nested_var,
+                prover.stats.decode_bail_too_many_open,
+                prover.stats.decode_bail_partner_shape,
+                prover.stats.decode_bail_phonebook_or_collision,
+                prover.stats.decode_bail_other));
+            // Definitional-CNF rescue line only when a rescue actually
+            // ran (process-cumulative — clausification lives inside
+            // cache generation, which has no per-run stats handle):
+            // default-path SIGMA_STATS output stays byte-identical on
+            // problems that clausify losslessly.
+            {
+                let (defcnf_defs, defcnf_roots) = super::clausify::defcnf_counters();
+                if defcnf_roots > 0 {
+                    raw.push_str(&format!(
+                        "\ndefcnf: {defcnf_defs} definitions_introduced, \
+                         {defcnf_roots} roots_rescued"));
+                }
+            }
+            // Verified-dedup collision line only when one actually
+            // occurred (expected ~never): default-path SIGMA_STATS
+            // output stays byte-identical.
+            if prover.stats.dedup_collisions_detected > 0 {
+                raw.push_str(&format!(
+                    "\ndedup: {} true ClauseKey collision(s) detected — colliding \
+                     clauses accepted, never dropped",
+                    prover.stats.dedup_collisions_detected));
+            }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
             }

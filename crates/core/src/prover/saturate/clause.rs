@@ -137,6 +137,45 @@ impl AtomTable {
         }
     }
 
+    /// Intern a SLOT-form atom (variables as dense slot ints, the
+    /// working shape inference produces): slot `k` maps to the
+    /// canonical variable id `canonical_var(k)`, so the produced
+    /// sentence — and therefore the id — is byte-identical to interning
+    /// the canonically renamed term.  The accept-time twin of the
+    /// hash-only id `canonical_clause_hashed` computed at birth
+    /// (debug-asserted equal at the `make` accept point).
+    pub(crate) fn intern_slot_atom(&self, t: &Term) -> AtomId {
+        let elements: ElementVec = match t {
+            Term::App(elems) => elems.iter().map(|e| self.element_of_slot(e)).collect(),
+            other => std::iter::once(self.element_of_slot(other)).collect(),
+        };
+        let sent = Sentence { parent: Vec::new(), elements };
+        let id = sent.hash();
+        self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        id
+    }
+
+    /// [`Self::element_of`] with the slot → canonical-variable-id
+    /// translation (must stay byte-identical to it, `name` included —
+    /// the stored sentences are the same ones the eager path built).
+    fn element_of_slot(&self, t: &Term) -> Element {
+        match t {
+            Term::Var(slot) => {
+                let id = super::canon::canonical_var_cached(*slot as usize);
+                Element::Variable {
+                    id,
+                    name:      format!("V{:x}", id),
+                    is_row:    false,
+                    var_index: 0,
+                }
+            }
+            Term::Sym(s)   => Element::Symbol(InternedSym(s.clone())),
+            Term::Lit(l)   => Element::Literal(l.clone()),
+            Term::Op(op)   => Element::Op(op.clone()),
+            Term::App(_)   => Element::Sub(self.intern_slot_atom(t)),
+        }
+    }
+
     /// Resolve an atom or subterm id: prover-local table first, then the
     /// shared sentence store (ground atoms that already exist as store
     /// sub-sentences hash identically and need no duplicate copy here).
@@ -175,4 +214,66 @@ impl AtomTable {
     }
 
     pub(crate) fn len(&self) -> usize { self.map.len() }
+}
+
+// -- hash-only content ids (hash-before-intern) --------------------------------
+//
+// The atom id IS the content hash of the canonical sentence form
+// (`Sentence::hash` → `syntactic::sentence::content_hash`), so it is
+// computable by driving the SAME `ElementHasher` byte scheme over the
+// term tree — no `ElementVec` construction, no `Sentence` allocation,
+// no `DashMap` probe.  `make` uses these for every consumer that needs
+// only the ID (dedup keys, unit-table probes, equality-class keys);
+// table insertion is deferred to clause acceptance.
+
+use crate::syntactic::sentence::ElementHasher;
+
+/// The id [`AtomTable::intern_atom`] would assign `t`, hash-only.
+/// Variables hash by their RAW ids, exactly like `element_of` interns
+/// them — use on pre-canonicalization terms (the ground probes) or any
+/// term whose `Var` payload is already the id to store.
+pub(crate) fn atom_content_id(t: &Term) -> AtomId {
+    fn raw(v: SymbolId) -> SymbolId { v }
+    match t {
+        Term::App(elems) => hash_elements(elems, raw),
+        other => {
+            let mut h = ElementHasher::new(1);
+            hash_element(other, &mut h, raw);
+            h.finish()
+        }
+    }
+}
+
+/// The id [`AtomTable::intern_slot_atom`] would assign `t`, hash-only:
+/// slot variables translate to canonical variable ids first.
+pub(crate) fn slot_atom_content_id(t: &Term) -> AtomId {
+    fn vmap(slot: SymbolId) -> SymbolId {
+        crate::prover::saturate::canon::canonical_var_cached(slot as usize)
+    }
+    match t {
+        Term::App(elems) => hash_elements(elems, vmap),
+        other => {
+            let mut h = ElementHasher::new(1);
+            hash_element(other, &mut h, vmap);
+            h.finish()
+        }
+    }
+}
+
+fn hash_elements(elems: &[Term], vmap: fn(SymbolId) -> SymbolId) -> u64 {
+    let mut h = ElementHasher::new(elems.len());
+    for e in elems {
+        hash_element(e, &mut h, vmap);
+    }
+    h.finish()
+}
+
+fn hash_element(t: &Term, h: &mut ElementHasher, vmap: fn(SymbolId) -> SymbolId) {
+    match t {
+        Term::Var(v)   => h.variable(vmap(*v), false),
+        Term::Sym(s)   => h.symbol(s.id()),
+        Term::Lit(l)   => h.literal(l),
+        Term::Op(op)   => h.op(op),
+        Term::App(el)  => h.sub(hash_elements(el, vmap)),
+    }
 }

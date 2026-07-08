@@ -21,6 +21,7 @@ impl<'a> NativeProver<'a> {
     fn is_unit_equation(&self, id: u32) -> bool {
         let c = &self.clauses[id as usize];
         c.activated
+            && !self.is_retired(id)
             && c.terms.len() == 1
             && c.terms[0].0
             && self.equality_oriented(&c.terms[0].1).is_some()
@@ -79,7 +80,7 @@ impl<'a> NativeProver<'a> {
                     let Some(nid) = self.superpose(eid, 0, p, 0, &path) else { continue };
                     // Keep only genuinely new oriented unit equations.
                     let key = self.clauses[nid as usize].key;
-                    if self.is_unit_equation_unactivated(nid) && self.seen.insert(key) {
+                    if self.is_unit_equation_unactivated(nid) && self.seen_insert(key, nid) {
                         self.activate(nid);
                         frontier.push(nid);
                         produced += 1;
@@ -138,6 +139,7 @@ impl<'a> NativeProver<'a> {
                     let (c_id, c_i) = (at.clause, at.lit as usize);
                     let (c_terms, c_nvars, c_npos) = {
                         let c = &self.clauses[c_id as usize];
+                        if self.is_retired(c_id) { continue; } // superseded by bwd-demod replacement
                         if c.lits.len() > fc_max_premise_lits || c.lits[c_i].pos { continue; }
                         (c.terms.clone(), c.nvars,
                          c.terms.iter().filter(|(p, _)| *p).count())
@@ -197,7 +199,7 @@ impl<'a> NativeProver<'a> {
                                 continue;
                             }
                             let key = self.clauses[cid as usize].key;
-                            if !self.seen.insert(key) { continue; }
+                            if !self.seen_insert(key, cid) { continue; }
                             self.activate(cid);
                             // Only UNIT conclusions re-seed the unit-driven
                             // next round; a derived disjunction can't.
@@ -238,14 +240,16 @@ impl<'a> NativeProver<'a> {
                                 }
                             }
                         }
-                        // Join against active positive units via the index.
+                        // Join against active positive units via the index
+                        // (unifiability relation — the join binds both sides).
                         let qa = self.layer.atoms.intern_atom(&a);
                         let q_info = self.layer.atom_info(qa);
-                        let cands = self.idx.probe(true, &q_info, &src);
+                        let cands = self.idx.probe_rel(
+                            true, &q_info, &src, super::super::index::SeatRel::Unifiable);
                         let mut branch = 0usize;
                         for cand in cands {
                             let uc = &self.clauses[cand.clause as usize];
-                            if uc.lits.len() != 1 { continue; }
+                            if uc.lits.len() != 1 || self.is_retired(cand.clause) { continue; }
                             // Two-way unification binds the unit's vars
                             // too, so (unlike the one-way matches) the
                             // substitution must cover its slot range.

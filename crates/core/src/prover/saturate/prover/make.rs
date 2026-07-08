@@ -13,20 +13,24 @@ use smallvec::SmallVec;
 use crate::parse::OpKind;
 use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 
-use super::super::canon::{blank_key, canonical_clause};
-use super::super::clause::{AtomId, PClause, Term};
+use super::super::canon::{blank_key, canonical_clause_hashed};
+use super::super::clause::{atom_content_id, AtomId, PClause, Term};
 use super::super::hash64::Set64;
 use super::super::kbo::KboCmp;
 use super::super::oracle::Witness;
 use super::super::theory::TheoryOracle;
-use super::super::unify::{apply, match_one_way, shift_slots, slot_atom, Subst};
+use super::super::unify::{apply, apply_off, match_one_way, match_one_way_off, shift_slots, slot_atom, Subst};
 use super::{
     arith_norm, classify_seats, eq_key, eq_sides,
-    is_equality_atom, lit_kif, max_slot, replace, stepdbg, term_binary_ids,
+    is_equality_atom, lit_kif, max_slot, replace_in_place, stepdbg, term_binary_ids,
     term_depth, term_ground_equality_sides, term_head_key, term_kif, term_size,
-    term_skolem_apps, witnesses_kif, ClauseRec, NativeProver, BACKGROUND, CONJECTURE,
-    MATCH_TARGET_OFF, SUPPORT,
+    term_skolem_apps, witnesses_kif, ClauseRec, MatchScratch, NativeProver, BACKGROUND,
+    CONJECTURE, MATCH_TARGET_OFF, SUPPORT,
 };
+// The per-step reference engine (debug twins) still splices with the
+// allocating `replace` — deliberately untouched.
+#[cfg(any(test, debug_assertions))]
+use super::replace;
 
 /// Verdict of the ground-equality decision procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,6 +41,27 @@ enum EqDecision {
     Refuted,
     /// Neither provable — ordinary search decides.
     Unknown,
+}
+
+/// One batched rewrite step the fused demod walk found: replace the
+/// subterm at `path` with `term`, citing `used` — one demodulator
+/// clause id per underlying rewrite, in application order (a plain
+/// redex carries exactly one; an NF-memo splice carries the recorded
+/// sequence).
+struct DemodStep {
+    path: Vec<usize>,
+    term: Term,
+    used: SmallVec<[u32; 4]>,
+}
+
+/// What a ground-subtree interception concluded (see
+/// `NativeProver::ground_subtree_step`).
+enum GroundOutcome {
+    /// The subtree is redex-free (bloom-pruned, memo-unchanged, or
+    /// normalized to itself) — skip it and continue the walk.
+    Clean,
+    /// A batched rewrite step to apply at the subtree's position.
+    Step(DemodStep),
 }
 
 impl<'a> NativeProver<'a> {
@@ -73,7 +98,10 @@ impl<'a> NativeProver<'a> {
                     && t.is_ground()
                     && term_size(t) <= self.opts.strategy.max_term_size
                 {
-                    let key = self.layer.atoms.intern_atom(t);
+                    // Hash-only: `eq_rep` is key-space, and the class
+                    // representative splices from `eq_terms` — the
+                    // probed term never needs table residency.
+                    let key = atom_content_id(t);
                     let rep = self.oracle.eq_rep(key);
                     if rep != key {
                         if let Some(r) = self.eq_terms.get(&rep) {
@@ -95,11 +123,36 @@ impl<'a> NativeProver<'a> {
     /// sound (equals for equals).  Unlike `paramodulants` (which UNIFIES
     /// and keeps the parent), this MATCHES one-way (binds the rule's
     /// variables only) and the rewritten clause replaces the original —
-    /// a simplification.  Per subterm position, candidates come from one
-    /// head-shape hash probe instead of a scan of every active equation
-    /// (the scan was the measured TPTP regression that kept `demod`
-    /// off — see `strategy.rs`).  Demodulator clause ids are pushed to
-    /// `used` for the proof DAG.
+    /// a simplification.  Demodulator clause ids are pushed to `used`
+    /// for the proof DAG, one per rewrite, in application order.
+    ///
+    /// The walk ([`Self::demod_walk`]) is fused with THREE shortcuts,
+    /// none of which may change the outcome (whole-run twin below):
+    ///
+    ///   1. per-node SYMBOL-SIGNATURE prefilter
+    ///      (`DemodIndex::possibly_matches`, O(1) per visited node);
+    ///   2. whole-subtree Bloom pruning for GROUND maximal subtrees —
+    ///      `sym_bloom ∩ head_bits == 0` proves the subtree redex-free
+    ///      (Part 3.2 of the ground-term identity design);
+    ///   3. the normal-form memo (`nf_memo`, Part 4): a ground maximal
+    ///      subtree already normalized this demodulator GENERATION is
+    ///      skipped (unchanged) or spliced (cached NF, one clone) with
+    ///      its recorded rewrites replayed into `used` and the cap —
+    ///      sharing rewrite work across clauses.
+    ///
+    /// SOUNDNESS OF BATCHING (why the memo is outcome-invariant): the
+    /// fixpoint's restart-from-top scan is leftmost-INNERMOST — after a
+    /// rewrite inside a ground subtree G, everything left of G is
+    /// unchanged and still redex-free, and G's ancestors are only
+    /// tested after G's own nodes — so the reference run fully
+    /// normalizes G (a context-independent, `off`-independent process:
+    /// matching binds rule variables only, and replacements are ground)
+    /// before it ever leaves G.  Splicing NF(G) with its recorded
+    /// rewrite sequence is therefore byte-identical to replaying those
+    /// steps one at a time, including `demod_cap` accounting (a splice
+    /// only happens when its whole rewrite count fits the remaining
+    /// budget; otherwise the walk falls back to per-step normalization,
+    /// which stops exactly where the reference would).
     fn demodulate(&mut self, t: &mut Term, used: &mut Vec<u32>) -> u64 {
         if !self.opts.strategy.demod || self.demods.is_empty() {
             return 0;
@@ -108,8 +161,26 @@ impl<'a> NativeProver<'a> {
         // (KBO already guarantees termination); bounds pathological
         // fan-out on huge clauses.  Parameterized (default 64).
         let demod_cap = self.opts.strategy.demod_cap.max(1);
+
+        // Whole-fixpoint reference twin (debug/test builds only, zero
+        // release cost): the fused walk must be a pure shortcut — final
+        // term, citation sequence, and rewrite count all byte-identical
+        // to the plain per-step, unprefiltered fixpoint.
+        #[cfg(any(test, debug_assertions))]
+        let reference = {
+            let mut rt = t.clone();
+            let mut rused: Vec<u32> = Vec::new();
+            let rn = self.demodulate_reference(&mut rt, &mut rused, demod_cap);
+            (rt, rused, rn)
+        };
+
         let mut rewrites = 0u64;
-        'fixpoint: loop {
+        let mut used_here: Vec<u32> = Vec::new();
+        // Reusable match scratch for the whole fixpoint (taken off the
+        // prover so the walk can borrow it beside `&mut self`; the old
+        // path allocated a fresh substitution per candidate per node).
+        let mut scr = std::mem::take(&mut self.demod_scratch);
+        loop {
             if rewrites >= demod_cap {
                 break;
             }
@@ -117,146 +188,356 @@ impl<'a> NativeProver<'a> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            let hit = self.find_demod_redex(t, off);
-            // Soundness cross-check (debug builds / tests only, zero cost
-            // in release): the prefilter must never change WHAT
-            // `demodulate` finds, only how cheaply it finds it.  Re-walk
-            // with the prefilter bypassed and require byte-identical
-            // results (same redex, or both `None`).
+            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites, &mut scr)
+            else {
+                break;
+            };
+            rewrites += step.used.len() as u64;
+            used_here.extend_from_slice(&step.used);
+            // Splice IN PLACE, by move — no sibling cloning, no
+            // rebuild, and the NF-memo's owned term is consumed
+            // directly instead of cloned a second time.
+            replace_in_place(t, &step.path, step.term);
+            // The term changed; restart the scan from the top (a
+            // rewrite can expose new redexes / new `off`).
+        }
+        self.demod_scratch = scr;
+
+        #[cfg(any(test, debug_assertions))]
+        {
+            let (rt, rused, rn) = reference;
+            debug_assert!(
+                *t == rt && used_here == rused && rewrites == rn,
+                "memoized demodulate diverged from the per-step reference:\n  \
+                 memo: {} rewrites, used {:?}, term {:?}\n  ref:  {} rewrites, used {:?}, term {:?}",
+                rewrites, used_here, t, rn, rused, rt,
+            );
+        }
+        used.extend_from_slice(&used_here);
+        rewrites
+    }
+
+    /// One batched step of the fused demod walk: the first redex (or
+    /// ground-subtree normalization batch) in leftmost-innermost order,
+    /// spending at most `budget` rewrites.  `None` ⇔ `atom` is normal.
+    fn find_demod_step(
+        &mut self,
+        atom: &Term,
+        off: u64,
+        budget: u64,
+        scr: &mut MatchScratch,
+    ) -> Option<DemodStep> {
+        let mut path = Vec::new();
+        self.demod_walk(atom, &mut path, off, budget, true, scr)
+    }
+
+    /// The fused traversal behind [`Self::find_demod_step`]: children
+    /// first (heads skipped), then the node itself — `positions`' order.
+    /// `top_excluded` guards the root node's own probe (the literal atom
+    /// is never rewritten whole; a ground subtree root IS testable).
+    ///
+    /// At each ground COMPOUND child seat the walk computes the child's
+    /// content key + facts in one bottom-up pass
+    /// (`TermFactsTable::ground_key_facts` — the same 64-bit keyspace as
+    /// the atom table / sentence store) and intercepts the descent:
+    /// bloom-prune, NF-memo probe, or in-place normalization that
+    /// records the subtree's normal form for the next clause carrying
+    /// it.  Everything else follows the classic per-node path with the
+    /// `possibly_matches` prefilter and its scan counters.
+    fn demod_walk(
+        &mut self,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+        budget: u64,
+        top_excluded: bool,
+        scr: &mut MatchScratch,
+    ) -> Option<DemodStep> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if matches!(e, Term::App(_)) {
+                    if let Some((key, facts)) =
+                        self.layer.term_facts.ground_key_facts(e, &self.layer.kbo)
+                    {
+                        // Ground maximal compound subtree: intercept.
+                        match self.ground_subtree_step(e, key, &facts, path, off, budget, scr) {
+                            GroundOutcome::Clean => {
+                                path.pop();
+                                continue;
+                            }
+                            GroundOutcome::Step(s) => return Some(s),
+                        }
+                    }
+                }
+                // Open compound, or a leaf: ordinary recursion (a leaf
+                // recursion just falls through to its own node probe).
+                if let Some(hit) = self.demod_walk(e, path, off, budget, false, scr) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if (top_excluded && path.is_empty()) || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        if !self.demods.possibly_matches(t) {
+            self.stats.demod_scans_skipped_by_prefilter += 1;
+            return None;
+        }
+        self.stats.demod_scans_performed += 1;
+        let cands = self.demods.candidates(t)?;
+        for d in cands {
+            // Virtual rename-apart + reusable scratch: the old path
+            // materialized `shift_slots(&d.l, off)` and a fresh
+            // substitution PER CANDIDATE PER NODE (the make/unify
+            // profile bucket's open-unit-style churn, on the demod
+            // side).  `match_one_way_off` interprets the pattern's
+            // slots at `off` directly; bindings roll back via the
+            // trail, so the buffer stays all-`None` between attempts.
+            let need = (off + u64::from(d.nslots)) as usize + 1;
+            if scr.s.len() < need {
+                scr.s.resize(need, None);
+            }
+            debug_assert!(scr.trail.is_empty());
+            if match_one_way_off(&d.l, off, t, &mut scr.s, &mut scr.trail) {
+                // r's variables ⊆ l's (KBO variable condition), so
+                // the match bound everything r mentions.
+                let rr = apply_off(&d.r, off, &scr.s);
+                for &slot in &scr.trail {
+                    scr.s[slot] = None;
+                }
+                scr.trail.clear();
+                return Some(DemodStep {
+                    path: path.clone(),
+                    term: rr,
+                    used: SmallVec::from_slice(&[d.clause]),
+                });
+            }
+        }
+        None
+    }
+
+    /// Handle one GROUND maximal compound subtree `g` (content key
+    /// `key`, facts `facts`) the walk entered at `path`: bloom prune →
+    /// NF-memo probe → normalize-and-record.  See `demodulate`'s docs
+    /// for the outcome-invariance argument.
+    fn ground_subtree_step(
+        &mut self,
+        g: &Term,
+        key: super::super::terms::TermKey,
+        facts: &super::super::terms::PTermFacts,
+        path: &[usize],
+        off: u64,
+        budget: u64,
+        scr: &mut MatchScratch,
+    ) -> GroundOutcome {
+        // Part 3.2 — whole-subtree pruning: every possible redex root in
+        // `g` keys a bucket by one of `g`'s own symbol/op keys, and
+        // `sym_bloom` is a superset of those bits, so an empty
+        // intersection with the registered head bits is a PROOF of redex
+        // absence anywhere in the subtree.
+        if facts.sym_bloom & self.demods.head_bits() == 0 {
+            self.stats.bloom_subtrees_pruned += 1;
+            // MANDATORY debug twin (established discipline): a pruned
+            // subtree is also searched by the unpruned reference walk
+            // and asserted redex-free.
             #[cfg(any(test, debug_assertions))]
+            debug_assert!(
+                self.subtree_redex_unfiltered(g, off).is_none(),
+                "bloom prune claimed redex-free, but the reference walk \
+                 found a redex in {g:?} (head_bits {:#x}, bloom {:#x})",
+                self.demods.head_bits(), facts.sym_bloom,
+            );
+            return GroundOutcome::Clean;
+        }
+
+        // Part 4 — the normal-form memo.
+        let gen = self.demods.generation();
+        self.stats.nf_probes += 1;
+        enum Probe {
+            Unchanged,
+            Rewritten(Term, SmallVec<[u32; 4]>),
+            Miss,
+        }
+        let probe = match self.nf_memo.get(&key) {
+            Some(e) if e.gen == gen => {
+                if e.used.is_empty() {
+                    Probe::Unchanged
+                } else if (e.used.len() as u64) <= budget {
+                    Probe::Rewritten(
+                        e.term.clone().expect("a changed NF entry carries its term"),
+                        e.used.clone(),
+                    )
+                } else {
+                    // Not enough demod-cap budget to splice the whole
+                    // NF: fall back to per-step normalization, which
+                    // stops exactly where the reference fixpoint would.
+                    Probe::Miss
+                }
+            }
+            Some(_) => {
+                // Stale generation: a newer demodulator may rewrite
+                // further — discard lazily and recompute.
+                self.stats.nf_stale_discards += 1;
+                self.nf_memo.remove(&key);
+                Probe::Miss
+            }
+            None => Probe::Miss,
+        };
+        match probe {
+            Probe::Unchanged => {
+                self.stats.nf_hits_unchanged += 1;
+                return GroundOutcome::Clean;
+            }
+            Probe::Rewritten(term, used) => {
+                self.stats.nf_hits_rewritten += 1;
+                return GroundOutcome::Step(DemodStep { path: path.to_vec(), term, used });
+            }
+            Probe::Miss => {
+                self.stats.nf_misses += 1;
+            }
+        }
+
+        // Miss: normalize `g` in place (same leftmost-innermost strategy,
+        // recursively riding this very machinery for its own ground
+        // sub-subtrees), bounded by the remaining rewrite budget.
+        let (nf, used, complete) = self.normalize_ground(g, off, budget, scr);
+        if complete {
+            if used.is_empty() {
+                self.nf_memo.insert(key, super::super::terms::NfEntry {
+                    gen, used: SmallVec::new(), term: None,
+                });
+                return GroundOutcome::Clean;
+            }
+            // Record the outcome under the ORIGINAL key, and the normal
+            // form's own key as "unchanged" — the fixpoint restart
+            // re-probes the spliced subtree on the very next pass.
+            if let Some((nf_key, _)) =
+                self.layer.term_facts.ground_key_facts(&nf, &self.layer.kbo)
             {
-                let reference = self.find_demod_redex_unfiltered(t, off);
-                debug_assert_eq!(
-                    hit, reference,
-                    "SYMBOL-SIGNATURE prefilter changed demodulate's result \
-                     (prefiltered {:?} vs unfiltered {:?}) for term {:?}",
-                    hit, reference, t,
-                );
+                self.nf_memo.insert(nf_key, super::super::terms::NfEntry {
+                    gen, used: SmallVec::new(), term: None,
+                });
             }
-            if let Some((path, rr, clause)) = hit {
-                *t = replace(t, &path, &rr);
-                used.push(clause);
-                rewrites += 1;
-                // The term changed; restart the scan from the top (a
-                // rewrite can expose new redexes / new `off`).
-                continue 'fixpoint;
+            self.nf_memo.insert(key, super::super::terms::NfEntry {
+                gen, used: used.clone(), term: Some(nf.clone()),
+            });
+        }
+        if used.is_empty() {
+            GroundOutcome::Clean
+        } else {
+            GroundOutcome::Step(DemodStep { path: path.to_vec(), term: nf, used })
+        }
+    }
+
+    /// Fully normalize a GROUND subtree with the fixpoint strategy the
+    /// literal-level loop uses (restart from the subtree top after each
+    /// step; the subtree ROOT is testable — only the literal atom is
+    /// excluded).  Rewrites inside a ground subtree are context- and
+    /// `off`-independent, so this reproduces exactly the segment of the
+    /// reference fixpoint that runs while the leftmost redex lies in
+    /// this subtree.  Returns `(normal-or-partial form, citations in
+    /// application order, completed?)` — `completed == false` iff the
+    /// budget ran out first (the result is then NOT recorded).
+    fn normalize_ground(
+        &mut self,
+        g: &Term,
+        off: u64,
+        budget: u64,
+        scr: &mut MatchScratch,
+    ) -> (Term, SmallVec<[u32; 4]>, bool) {
+        let mut cur = g.clone();
+        let mut used: SmallVec<[u32; 4]> = SmallVec::new();
+        loop {
+            let spent = used.len() as u64;
+            if spent >= budget {
+                return (cur, used, false);
             }
-            break;
+            let mut path = Vec::new();
+            match self.demod_walk(&cur, &mut path, off, budget - spent, false, scr) {
+                Some(step) => {
+                    used.extend_from_slice(&step.used);
+                    replace_in_place(&mut cur, &step.path, step.term);
+                }
+                None => return (cur, used, true),
+            }
+        }
+    }
+
+    /// Plain per-step, unprefiltered demodulation fixpoint — the
+    /// reference engine for the whole-run twin in [`Self::demodulate`]
+    /// (debug/test builds only; compiled out of release, so it costs
+    /// nothing in the timed gates).
+    #[cfg(any(test, debug_assertions))]
+    fn demodulate_reference(&self, t: &mut Term, used: &mut Vec<u32>, cap: u64) -> u64 {
+        let mut rewrites = 0u64;
+        loop {
+            if rewrites >= cap {
+                break;
+            }
+            let off = max_slot(t).map_or(0, |m| m + 1);
+            let Some((path, rr, clause)) = self.find_demod_redex_unfiltered(t, off) else {
+                break;
+            };
+            *t = replace(t, &path, &rr);
+            used.push(clause);
+            rewrites += 1;
         }
         rewrites
     }
 
-    /// One pass over `t`'s non-variable subterm positions (heads
-    /// skipped, same traversal `positions` performs) looking for the
-    /// first demodulation redex, returning its path, replacement, and
-    /// owning clause.  Fused with the SYMBOL-SIGNATURE prefilter: each
-    /// visited node's head key is checked against the index's bucket
-    /// set (`DemodIndex::possibly_matches`, O(1)) BEFORE the subterm is
-    /// cloned or a match probe is built — a subterm whose head shape has
-    /// no indexed demodulator can never produce a match, so the clone
-    /// (`sub`), the `shift_slots`/`Subst` allocation, and the match walk
-    /// are all skipped outright for it.
-    ///
-    /// Per-NODE, not per-subtree: a parent's head key says nothing about
-    /// its children's (a rewrite site can sit arbitrarily deep under an
-    /// unrelated head), so a negative prefilter on a node still recurses
-    /// into its children — it only skips THAT node's own probe.  `Term`
-    /// carries no per-term symbol-set fingerprint to cache (checked:
-    /// the `gf64`/schema fingerprints in `schema.rs` key ATOM shapes for
-    /// the schema/open-unit indexes, not a generic per-subterm symbol
-    /// multiset), so subtree-level pruning is not soundly available
-    /// here — see the module docs on `DemodIndex::possibly_matches`.
-    ///
-    /// Counts every visited node into `self.stats.demod_scans_skipped_
-    /// by_prefilter` (prefilter said no) or `self.stats.demod_scans_
-    /// performed` (passed the prefilter, handed to the candidate loop),
-    /// so `demodulate`'s behavior is externally observable without
-    /// changing what it returns.
-    fn find_demod_redex(&mut self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
-        fn walk(
-            this: &mut NativeProver<'_>,
-            t: &Term,
-            path: &mut Vec<usize>,
-            off: u64,
-        ) -> Option<(Vec<usize>, Term, u32)> {
-            if let Term::App(elems) = t {
-                for (i, e) in elems.iter().enumerate().skip(1) {
-                    path.push(i);
-                    if let Some(hit) = walk(this, e, path, off) {
-                        return Some(hit);
-                    }
-                    path.pop();
-                }
-            }
-            if path.is_empty() || matches!(t, Term::Var(_)) {
-                return None;
-            }
-            if !this.demods.possibly_matches(t) {
-                this.stats.demod_scans_skipped_by_prefilter += 1;
-                return None;
-            }
-            this.stats.demod_scans_performed += 1;
-            // Only now — having passed the O(1) shape check — clone the
-            // subterm and build the match probe.
-            let sub = t.clone();
-            let cands = this.demods.candidates(&sub)?;
-            for d in cands {
-                let l2 = shift_slots(&d.l, off);
-                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-                if match_one_way(&l2, &sub, &mut s) {
-                    // r's variables ⊆ l's (KBO variable condition), so
-                    // the match bound everything r mentions.
-                    let rr = apply(&shift_slots(&d.r, off), &s);
-                    return Some((path.clone(), rr, d.clause));
-                }
-            }
-            None
-        }
-        let mut path = Vec::new();
-        walk(self, atom, &mut path, off)
-    }
-
-    /// Reference (unprefiltered) twin of [`Self::find_demod_redex`]:
-    /// identical traversal and match logic, but every visited node is
-    /// unconditionally handed to `self.demods.candidates` — no
-    /// `possibly_matches` gate, no stats bump.  Exists ONLY for the
-    /// `debug_assert_eq!` cross-check in `demodulate` (debug/test builds)
-    /// that proves the prefilter is a pure performance change: compiled
-    /// out of release builds, so it costs nothing in the timed gates.
+    /// Reference (unprefiltered, unmemoized) single-redex search:
+    /// identical traversal and match logic to [`Self::demod_walk`], but
+    /// every visited node is unconditionally handed to
+    /// `self.demods.candidates` — no prefilter, no bloom, no memo, no
+    /// stats.  Exists ONLY for the debug twins.
     #[cfg(any(test, debug_assertions))]
     fn find_demod_redex_unfiltered(&self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
-        fn walk(
-            this: &NativeProver<'_>,
-            t: &Term,
-            path: &mut Vec<usize>,
-            off: u64,
-        ) -> Option<(Vec<usize>, Term, u32)> {
-            if let Term::App(elems) = t {
-                for (i, e) in elems.iter().enumerate().skip(1) {
-                    path.push(i);
-                    if let Some(hit) = walk(this, e, path, off) {
-                        return Some(hit);
-                    }
-                    path.pop();
-                }
-            }
-            if path.is_empty() || matches!(t, Term::Var(_)) {
-                return None;
-            }
-            let sub = t.clone();
-            let cands = this.demods.candidates(&sub)?;
-            for d in cands {
-                let l2 = shift_slots(&d.l, off);
-                let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
-                if match_one_way(&l2, &sub, &mut s) {
-                    let rr = apply(&shift_slots(&d.r, off), &s);
-                    return Some((path.clone(), rr, d.clause));
-                }
-            }
-            None
-        }
         let mut path = Vec::new();
-        walk(self, atom, &mut path, off)
+        self.unfiltered_walk(atom, &mut path, off, true)
+    }
+
+    /// The bloom-prune twin's subtree probe: the same reference search,
+    /// but with the subtree ROOT testable (it sits at a non-empty path
+    /// in its literal).
+    #[cfg(any(test, debug_assertions))]
+    fn subtree_redex_unfiltered(&self, g: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
+        let mut path = Vec::new();
+        self.unfiltered_walk(g, &mut path, off, false)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    fn unfiltered_walk(
+        &self,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+        top_excluded: bool,
+    ) -> Option<(Vec<usize>, Term, u32)> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if let Some(hit) = self.unfiltered_walk(e, path, off, top_excluded) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if (top_excluded && path.is_empty()) || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        let sub = t.clone();
+        let cands = self.demods.candidates(&sub)?;
+        for d in cands {
+            let l2 = shift_slots(&d.l, off);
+            let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+            if match_one_way(&l2, &sub, &mut s) {
+                let rr = apply(&shift_slots(&d.r, off), &s);
+                return Some((path.clone(), rr, d.clause));
+            }
+        }
+        None
     }
 
     /// Register clause `id` as a forward demodulator if it is a positive
@@ -265,22 +546,24 @@ impl<'a> NativeProver<'a> {
     /// given-clause loop, background completion) — the same moment the
     /// unit stores register it — and from the hydrate/mask rebuilds.
     /// At most one direction can be strictly greater, so at most one
-    /// entry per equation.
-    pub(super) fn index_demodulator(&mut self, id: u32) {
+    /// entry per equation.  Returns the registered demodulator (`None`
+    /// when the clause is not one, or its shape was unindexable) — the
+    /// `activate` caller feeds it to the backward-demodulation pass.
+    pub(super) fn index_demodulator(&mut self, id: u32) -> Option<super::super::units::Demod> {
         let (pos, atom) = {
             let c = &self.clauses[id as usize];
             if c.lits.len() != 1 {
-                return;
+                return None;
             }
             (c.lits[0].pos, c.lits[0].atom)
         };
         if !pos {
-            return;
+            return None;
         }
-        let Some(t) = slot_atom(&self.layer.atoms, self.syn(), atom, 0) else { return };
-        let Some((a, b)) = eq_sides(&t) else { return };
+        let t = slot_atom(&self.layer.atoms, self.syn(), atom, 0)?;
+        let (a, b) = eq_sides(&t)?;
         if a == b {
-            return;
+            return None;
         }
         for (l, r) in [(&a, &b), (&b, &a)] {
             // A bare-variable left side rewrites everything — never a
@@ -289,11 +572,319 @@ impl<'a> NativeProver<'a> {
                 continue;
             }
             if self.demod_oriented(l, r) {
-                self.demods.add(id, l.clone(), r.clone());
-                return;
+                return self.demods.add(id, l.clone(), r.clone());
+            }
+        }
+        None
+    }
+
+    // -- backward demodulation (Strategy.bwd_demod) --------------------------
+
+    /// Record every rewritable subterm occurrence of clause `id` in the
+    /// backward-demodulation postings — exactly the nodes
+    /// `find_demod_redex`'s traversal would visit, at occurrence grain
+    /// (clause, literal, path), so a demodulator `l → r` reaches the
+    /// instances of `l` through one exact-key probe (ground `l`) or one
+    /// (head, len) bucket (open `l`).  Only called while
+    /// `Strategy.bwd_demod` is on.  `Strategy.subterm_rows` additionally
+    /// gates the phase-2a k-channel row computation/storage the decode
+    /// chain consumes — off (the default) the postings themselves are
+    /// unchanged (phase-1 retrieval intact) but the ~2% row-registration
+    /// tax is not paid.
+    pub(super) fn bwd_index_clause(&mut self, id: u32) {
+        self.bwd_postings.register_clause(
+            id,
+            &self.clauses[id as usize].terms,
+            &self.layer.term_facts,
+            &self.layer.kbo,
+            self.opts.strategy.subterm_rows,
+        );
+    }
+
+    /// Rebuild the backward-demodulation postings from the activated
+    /// arena — the hydrate-path peer of `rebuild_demod_index` (the
+    /// postings are maintained at `make` time, which hydrated clauses
+    /// never went through in this prover instance).
+    pub(super) fn rebuild_bwd_postings(&mut self) {
+        self.bwd_postings = super::postings::SubtermPostings::default();
+        let n = self.clauses.len() as u32;
+        for id in 0..n {
+            if self.clauses[id as usize].activated && !self.is_retired(id) {
+                self.bwd_index_clause(id);
             }
         }
     }
+
+    /// Backward demodulation (interreduction): the NEWLY activated
+    /// oriented unit equation `d` (`l → r`, owned by clause `demod_id`)
+    /// rewrites the EXISTING active/passive clauses that contain an
+    /// `l`-redex.  Candidates come from the subterm-occurrence postings:
+    ///
+    ///   * ground `l` — ONE exact-key probe; every posting is a
+    ///     content-equal occurrence (a guaranteed redex, modulo the
+    ///     2⁻⁶⁴ key accident the rewrite pass re-verifies anyway);
+    ///   * open `l` — the (head, len) bucket, each occurrence gated by
+    ///     the phase-0 seat prefilter in MATCHING mode
+    ///     (`postings::seat_prefilter_match`) and then VERIFIED at the
+    ///     exact occurrence with `match_one_way_off` on the reusable
+    ///     demod scratch, so a candidate clause is only ever walked
+    ///     when it provably contains a redex.
+    ///
+    /// Verified candidate clauses are deduped and processed in
+    /// ascending id order (deterministic), each rewritten with THIS ONE
+    /// rule only.  A rewritten clause is rebuilt through `make` (so
+    /// forward demod, oracle discharge, subsumption, dedup and proof
+    /// bookkeeping all run; parents = {original, equation}, rule tag
+    /// `bwd_demod`) and the ORIGINAL IS RETIRED — it stops being
+    /// selected as given or offered as a partner.  Sound: original ⟺
+    /// replacement modulo the equation, which stays active; the
+    /// `bwd_demod_cap` bound merely leaves the tail unsimplified
+    /// (interreduction is optional redundancy elimination).
+    ///
+    /// Guards mirror forward demodulation exactly: CONJECTURE-tier
+    /// clauses are only rewritten under the superposition regime, and
+    /// the demodulator clause never rewrites itself.
+    pub(super) fn backward_demodulate(
+        &mut self,
+        demod_id: u32,
+        d: &super::super::units::Demod,
+    ) {
+        use super::postings::{ground_lhs_key, head_lhs_key, seat_prefilter_match};
+
+        self.stats.bwd_demod_triggered += 1;
+        // Counter-driven compaction (deterministic: a pure function of
+        // the registration/retirement sequence) — sweep retired
+        // clauses' postings once the dead fraction crosses the
+        // threshold, following the DemodIndex generation discipline
+        // (retirement never invalidates, it only de-optimizes).
+        if self.bwd_postings.should_compact() {
+            let mut po = std::mem::take(&mut self.bwd_postings);
+            po.compact(|c| self.is_retired(c));
+            self.bwd_postings = po;
+            self.stats.bwd_postings_compactions += 1;
+        }
+
+        self.stats.bwd_postings_queries += 1;
+        let mut candidates = std::mem::take(&mut self.bwd_cand_scratch);
+        candidates.clear();
+        if d.l.is_ground() {
+            // Exact-key retrieval: postings are content-equal
+            // occurrences — every live one is a redex.
+            if let Some(key) = ground_lhs_key(&d.l, &self.layer.term_facts, &self.layer.kbo) {
+                for p in self.bwd_postings.exact_postings(key) {
+                    if p.clause == demod_id || self.is_retired(p.clause) {
+                        continue;
+                    }
+                    self.stats.bwd_postings_hits += 1;
+                    candidates.push(p.clause);
+                }
+            }
+        } else if let Some((h, ar)) = head_lhs_key(&d.l) {
+            // Head-bucket retrieval + seat prefilter + decode chain +
+            // exact verify at the posted occurrence.  The pattern's
+            // slots are shifted above the occurrence clause's canonical
+            // slot range (0..nvars) virtually, via `match_one_way_off`.
+            let mut scr = std::mem::take(&mut self.demod_scratch);
+            let mut plan = std::mem::take(&mut self.bwd_plan);
+            let mut bind = std::mem::take(&mut self.bwd_bind_scratch);
+            let mut btrail = std::mem::take(&mut self.bwd_bind_trail);
+            let (bucket, brows) = self.bwd_postings.head_postings(h, ar);
+            self.stats.bwd_bucket_scanned += bucket.len() as u64;
+            // The phase-2a k-channel decode chain runs ONLY when
+            // `Strategy.subterm_rows` is on (its `brows` column is empty
+            // otherwise — see `SubtermPostings::walk`).  Off (the
+            // default) `chain` stays false and every candidate falls
+            // through to the phase-1 seat prefilter + `match_one_way_off`
+            // verify directly — a derivation-neutral no-op, since the
+            // chain was only ever a NECESSARY-condition prefilter in
+            // front of that same verify.  Compile the lhs into the decode
+            // plan ONCE per pass (skipped for an empty bucket — nothing
+            // to filter).
+            let mut chain = false;
+            if self.opts.strategy.subterm_rows && !bucket.is_empty() {
+                super::rows::compile_into(&mut plan, &d.l, &self.layer.term_facts, &self.layer.kbo);
+                if plan.fallback_any {
+                    self.stats.bwd_decode_fallbacks += 1;
+                }
+                if plan.trivial() {
+                    self.stats.bwd_decode_trivial += 1;
+                }
+                chain = plan.active();
+                if chain {
+                    bind.clear();
+                    bind.resize(d.nslots as usize, None);
+                    debug_assert!(btrail.is_empty());
+                }
+            }
+            for (bi, p) in bucket.iter().enumerate() {
+                let c = &self.clauses[p.clause as usize];
+                if p.clause == demod_id || self.is_retired(p.clause) {
+                    continue;
+                }
+                let Some(occ) =
+                    subterm_at_bytes(&c.terms[p.lit as usize].1, self.bwd_postings.path(p))
+                else {
+                    debug_assert!(false, "posting path must resolve in an unretired clause");
+                    continue;
+                };
+                // Cheapest-first: the depth-1 seat prefilter runs before
+                // any row fetch or field arithmetic.
+                if !seat_prefilter_match(&d.l, occ) {
+                    continue;
+                }
+                if chain {
+                    // Decode chain: solve the per-level systems, check
+                    // the surplus rows, probe decoded keys, enforce
+                    // repeated-variable bindings — a sound prefilter in
+                    // front of the UNCHANGED structural verify below.
+                    // Bindings are rolled back per candidate: decoded
+                    // blank keys are never joined across clauses.
+                    self.stats.bwd_decode_swept += 1;
+                    let verdict =
+                        plan.eval(&brows[bi], self.bwd_postings.row_table(), &mut bind, &mut btrail);
+                    for &s in &btrail {
+                        bind[s as usize] = None;
+                    }
+                    btrail.clear();
+                    if verdict.is_err() {
+                        // Debug twin: a chain rejection must be one the
+                        // structural verify agrees with — the chain is a
+                        // NECESSARY-condition prefilter, never a filter
+                        // of true matches.
+                        #[cfg(any(test, debug_assertions))]
+                        {
+                            let off = u64::from(c.nvars);
+                            let need = (off + u64::from(d.nslots)) as usize + 1;
+                            if scr.s.len() < need {
+                                scr.s.resize(need, None);
+                            }
+                            debug_assert!(
+                                !match_one_way_off(&d.l, off, occ, &mut scr.s, &mut scr.trail),
+                                "decode chain rejected a true match: lhs {:?} vs occ {occ:?}",
+                                d.l,
+                            );
+                            for &slot in &scr.trail {
+                                scr.s[slot] = None;
+                            }
+                            scr.trail.clear();
+                        }
+                    }
+                    match verdict {
+                        Ok(()) => {}
+                        Err(super::rows::Reject::Surplus) => {
+                            self.stats.bwd_decode_rej_surplus += 1;
+                            continue;
+                        }
+                        Err(super::rows::Reject::Probe) => {
+                            self.stats.bwd_decode_rej_probe += 1;
+                            continue;
+                        }
+                        Err(super::rows::Reject::Binding) => {
+                            self.stats.bwd_decode_rej_binding += 1;
+                            continue;
+                        }
+                    }
+                }
+                let off = u64::from(c.nvars);
+                let need = (off + u64::from(d.nslots)) as usize + 1;
+                if scr.s.len() < need {
+                    scr.s.resize(need, None);
+                }
+                debug_assert!(scr.trail.is_empty());
+                self.stats.bwd_verify_calls += 1;
+                if match_one_way_off(&d.l, off, occ, &mut scr.s, &mut scr.trail) {
+                    for &slot in &scr.trail {
+                        scr.s[slot] = None;
+                    }
+                    scr.trail.clear();
+                    self.stats.bwd_postings_hits += 1;
+                    candidates.push(p.clause);
+                }
+            }
+            self.demod_scratch = scr;
+            self.bwd_plan = plan;
+            self.bwd_bind_scratch = bind;
+            self.bwd_bind_trail = btrail;
+        } else {
+            // Unindexable lhs shape: `DemodIndex::add` would have
+            // dropped it, so `d` can't reach here — defensive no-op.
+            self.bwd_cand_scratch = candidates;
+            return;
+        }
+        // Deterministic processing order; occurrence hits collapse to
+        // one entry per clause (the per-clause fixpoint rewrites every
+        // redex in the clause anyway).
+        candidates.sort_unstable();
+        candidates.dedup();
+        let cap = self.opts.strategy.bwd_demod_cap.max(1);
+        let term_cap = self.opts.strategy.demod_cap.max(1);
+        let mut checks = 0usize;
+        for &cid in &candidates {
+            if checks >= cap {
+                self.stats.bwd_demod_cap_hits += 1;
+                break;
+            }
+            checks += 1;
+            let (terms, tier) = {
+                let c = &self.clauses[cid as usize];
+                // Re-check retirement: an earlier iteration of THIS pass
+                // may have retired a candidate (its replacement carries
+                // the rewrite).
+                if self.is_retired(cid) || c.lits.is_empty() {
+                    continue;
+                }
+                // Mirror forward demod's tier guard (`demod_eligible` in
+                // `make`): the goal line is only rewritten under the
+                // superposition regime, where active facts get
+                // re-normalized too, so goal and fact meet in normal form.
+                if c.tier == CONJECTURE && !self.opts.strategy.superposition {
+                    continue;
+                }
+                (c.terms.clone(), c.tier)
+            };
+            let mut lits = terms;
+            let mut rewrote = false;
+            for (_, t) in lits.iter_mut() {
+                let n = bwd_demodulate_term(d, t, term_cap);
+                if n > 0 {
+                    rewrote = true;
+                    self.stats.bwd_demod_term_rewrites += n;
+                }
+            }
+            if !rewrote {
+                continue;
+            }
+            self.stats.bwd_demod_clauses_rewritten += 1;
+            // Retire the original FIRST: it must not forward-subsume
+            // (or otherwise interact with) its own replacement inside
+            // `make`.  Its content lives on in replacement + equation.
+            self.set_retired(cid);
+            self.bwd_postings.retire(cid);
+            self.stats.bwd_demod_retired += 1;
+            let made = self.make(lits, vec![cid, demod_id], "bwd_demod", tier, None, true);
+            let Some(nid) = made else { continue };
+            if tier == BACKGROUND && !self.opts.strategy.full_saturation {
+                // Mirror `add_background_root`: under set of support the
+                // background tier is indexed as a passive partner, never
+                // queued as given.
+                let nkey = self.clauses[nid as usize].key;
+                if self.clauses[nid as usize].lits.len() <= self.opts.max_lits
+                    && self.seen_insert(nkey, nid)
+                {
+                    self.activate(nid);
+                }
+            } else {
+                // Queue like any derived clause (an empty replacement is
+                // popped and graded by `run`'s reportable-refutation
+                // check, the same path support-load empties take).
+                self.push(Some(nid));
+            }
+        }
+        candidates.clear();
+        self.bwd_cand_scratch = candidates;
+    }
+
+    // -- (forward) demodulator index rebuilds ---------------------------------
 
     /// Rebuild the demodulator index from the activated arena — the
     /// hydrate-path peer of `rebuild_superposition_index` (orientation
@@ -304,7 +895,7 @@ impl<'a> NativeProver<'a> {
         let n = self.clauses.len() as u32;
         for id in 0..n {
             if self.clauses[id as usize].activated {
-                self.index_demodulator(id);
+                let _ = self.index_demodulator(id);
             }
         }
     }
@@ -314,7 +905,42 @@ impl<'a> NativeProver<'a> {
     /// substitution, so the single check licenses rewriting every
     /// matched instance.  Both sides intern (content-addressed, cheap)
     /// and the comparison is memoized.
+    ///
+    /// GROUND fast path (Part 3.3 of the ground-term identity design,
+    /// active only under `Strategy.demod`): for two ground sides the
+    /// KBO variable condition is vacuous, so a WEIGHT difference alone
+    /// decides the comparison — read from the layer's ground-term facts
+    /// memo, skipping both interns and the structural compare.  Weights
+    /// are `prec_seed`-independent (see `saturate::terms`), so the
+    /// layer-shared memo serves every lane; the debug twin asserts
+    /// agreement with the full memoized compare.
     fn demod_oriented(&self, l: &Term, r: &Term) -> bool {
+        if self.opts.strategy.demod {
+            if let (Some(fl), Some(fr)) = (
+                self.layer.term_facts.ground_facts(l, &self.layer.kbo),
+                self.layer.term_facts.ground_facts(r, &self.layer.kbo),
+            ) {
+                if fl.kbo_weight != fr.kbo_weight {
+                    let fast = fl.kbo_weight > fr.kbo_weight;
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        let la = self.layer.atoms.intern_atom(l);
+                        let ra = self.layer.atoms.intern_atom(r);
+                        let full = matches!(
+                            self.kbo().compare(la, ra, &self.layer.atoms, self.syn()),
+                            KboCmp::Greater
+                        );
+                        debug_assert_eq!(
+                            fast, full,
+                            "ground weight fast path diverged from KBO compare \
+                             for {l:?} ({}) vs {r:?} ({})",
+                            fl.kbo_weight, fr.kbo_weight,
+                        );
+                    }
+                    return fast;
+                }
+            }
+        }
         let la = self.layer.atoms.intern_atom(l);
         let ra = self.layer.atoms.intern_atom(r);
         matches!(
@@ -362,7 +988,7 @@ impl<'a> NativeProver<'a> {
             {
                 let key = self.clauses[id as usize].key;
                 if self.clauses[id as usize].lits.len() <= self.opts.max_lits
-                    && self.seen.insert(key)
+                    && self.seen_insert(key, id)
                 {
                     self.activate(id);
                 }
@@ -396,7 +1022,9 @@ impl<'a> NativeProver<'a> {
         if self.lists_done.len() >= 64 {
             return;
         }
-        let key = self.layer.atoms.intern_atom(t);
+        // Hash-only dedup key; the synthesized units carry the Term
+        // itself, so the list term needs no residency here.
+        let key = atom_content_id(t);
         if !self.lists_done.insert(key) {
             return;
         }
@@ -430,7 +1058,7 @@ impl<'a> NativeProver<'a> {
                 vec![(true, term)], Vec::new(), "list_theory", BACKGROUND, None, true);
             let Some(id) = made else { continue };
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -453,7 +1081,7 @@ impl<'a> NativeProver<'a> {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -474,7 +1102,7 @@ impl<'a> NativeProver<'a> {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
             let key = self.clauses[id as usize].key;
-            if self.seen.insert(key) {
+            if self.seen_insert(key, id) {
                 self.activate(id);
                 self.push(Some(id));
             }
@@ -497,15 +1125,16 @@ impl<'a> NativeProver<'a> {
     }
 
     /// Equality-class key of any GROUND term: leaf keys from `eq_key`,
-    /// compounds by content hash (interning into the prover-local
-    /// AtomTable — the same id `Element::Sub` carries, so store-side
-    /// and prover-side spellings of one subterm share a class).
+    /// compounds by content hash (hash-only — the same id
+    /// `Element::Sub` carries, so store-side and prover-side spellings
+    /// of one subterm share a class; the union-find and `eq_terms` both
+    /// work in pure key space, so no residency is needed).
     fn term_eq_key(&self, t: &Term) -> Option<u64> {
         if let Some(k) = eq_key(t) {
             return Some(k);
         }
         match t {
-            Term::App(_) if t.is_ground() => Some(self.layer.atoms.intern_atom(t)),
+            Term::App(_) if t.is_ground() => Some(atom_content_id(t)),
             _ => None,
         }
     }
@@ -640,9 +1269,20 @@ impl<'a> NativeProver<'a> {
                     Some((t, k))
                 }
                 // A ground sub-sentence: its sid IS its content hash —
-                // the compound's equality key.  Lift to a Term for the
-                // registry (renderable representative).
+                // the compound's equality key.  Groundness is read from
+                // the memoized per-atom info first (Part 3.1: the id is
+                // at hand, so the common OPEN subterm skips the
+                // `term_of` lift+alloc entirely).  The memo's mask only
+                // covers the first `MAX_SEATS` seats, so "memo says
+                // ground" is a SUPERSET of truly-ground — a fast reject
+                // is always right, but an accept is confirmed exactly
+                // on the lifted term (cheap: no alloc, early-exit; the
+                // lift itself already walked the tree).  Lift to a Term
+                // for the registry (renderable representative).
                 Element::Sub(sid) => {
+                    if !self.layer.atom_info(*sid).is_ground() {
+                        return None;
+                    }
                     let t = self.layer.atoms.term_of(*sid, self.syn())?;
                     t.is_ground().then_some((t, *sid))
                 }
@@ -655,6 +1295,72 @@ impl<'a> NativeProver<'a> {
             return None;
         }
         Some((ta, tb, ka, kb))
+    }
+
+    /// The `SIGMA_MODEL` mirror of the oracle's `oracle.holds` deletion
+    /// (just above this method's only call site): `Some(sids)` when `t` is
+    /// a ground FLAT negative-literal atom `¬R(args)` whose positive
+    /// counterpart `R(args)` the shared positive model already contains —
+    /// the literal is entailed FALSE (unit resolution against a virtual
+    /// entailed unit, identical soundness argument to the oracle's own
+    /// binary-relation check just above), so it is deleted from the
+    /// clause.  `sids` is the KB citation for that model fact (via
+    /// [`super::model::ModelProgram::cite`]), extended onto `fact_parents`
+    /// exactly like an oracle witness would be.
+    ///
+    /// A ground unit `R(args)` that IS present in the model is left
+    /// alone here — it is a POSITIVE literal (this method only ever sees
+    /// `!*pos`), and a positive unit clause is index content the search
+    /// consumes directly, mirroring the oracle rule's own comment at its
+    /// `oracle.holds` positive-arm no-op (units are never oracle-deleted,
+    /// only negatives are).
+    ///
+    /// Gates: `SIGMA_MODEL` must be set (env, matching `discharge_models`'s
+    /// gate — this is the same opt-in feature, just a different discharge
+    /// point); the model must already be materialized OR materializes here
+    /// lazily, once per run, under the same budget/deadline discipline as
+    /// `ensure_guide_model` (`ensure_model_for_simplification`); and
+    /// `tier` must not be `CONJECTURE` — a negated existential conjecture's
+    /// goal literal must survive for the search to prove it positively
+    /// (the same paraconsistent guard the oracle disjointness check
+    /// documents just above: an inconsistent KB can have an atom both
+    /// model-true and independently the thing being asked about).
+    ///
+    /// Probe constants are canonicalized through the evaluation's EGD
+    /// equality classes (`ModelProgram::eq_rep`) before the lookup, so a
+    /// merge the model's own evaluation discovered is honored the same
+    /// way the model's OWN tuples are already stored in canonical form.
+    fn model_true_negative(&mut self, t: &Term, tier: u8) -> Option<Vec<SentenceId>> {
+        if std::env::var_os("SIGMA_MODEL").is_none() {
+            return None;
+        }
+        self.model_true_negative_forced(t, tier)
+    }
+
+    /// [`model_true_negative`](Self::model_true_negative) without the
+    /// `SIGMA_MODEL` env gate — direct entry for tests (env mutation is
+    /// process-global and races parallel tests; mirrors
+    /// `discharge_models`/`discharge_models_forced`'s split).
+    fn model_true_negative_forced(&mut self, t: &Term, tier: u8) -> Option<Vec<SentenceId>> {
+        if tier == CONJECTURE {
+            return None;
+        }
+        // Cheap shape check BEFORE materializing anything: only a ground
+        // flat atom is a candidate, so a non-flat / non-ground literal
+        // never pays the (idempotent, but still a hash lookup) ensure call.
+        let (rel, args) = Self::guide_lit_pattern(t)?;
+        self.ensure_model_for_simplification();
+        let mp = self.layer.model_program();
+        let (model, prov) = self.guide_model.as_ref()?;
+        let tuples = model.get(&rel)?; // relation absent from the model: no decision
+        // EGD-canonicalize the probe constants the same way the model's OWN
+        // tuples are stored — an evaluation that merged two symbols via an
+        // EGD stores facts under their shared representative.
+        let canon_args: Vec<SymbolId> = args.iter().map(|&a| mp.eq_rep(prov, a)).collect();
+        if !tuples.contains(&canon_args) {
+            return None;
+        }
+        Some(mp.cite(prov, rel, &canon_args))
     }
 
     /// Build a clause from raw slot-form literals: arithmetic
@@ -972,6 +1678,23 @@ impl<'a> NativeProver<'a> {
                     }
                 }
             }
+            // Model-sourced mirror of the oracle deletion just above:
+            // ¬R(args) is FALSE (deleted) when the shared positive model
+            // (SIGMA_MODEL) already contains R(args).  See
+            // `model_true_negative` for the soundness argument and the
+            // CONJECTURE-tier guard.
+            if !*pos {
+                if let Some(sids) = self.model_true_negative(t, tier) {
+                    self.stats.model_literals_deleted += 1;
+                    if self.want_notes() {
+                        notes.push(format!(
+                            "(not {}) -- model: entailed true",
+                            term_kif(t, self.syn())));
+                    }
+                    fact_parents.extend(sids);
+                    continue;
+                }
+            }
             kept.push((*pos, t.clone()));
         }
         let lits = kept;
@@ -999,13 +1722,26 @@ impl<'a> NativeProver<'a> {
         }
 
         // Unit subsumption / simplification against the active units.
+        // The whole pass runs on one reusable match scratch (buffer +
+        // trail, taken off the prover): the old path allocated a trail
+        // per match attempt — LAT282+1 pushed 3.84M attempts through
+        // here.  `unit_subsumed_by` distinguishes "clause dies" from
+        // the per-literal continue/keep outcomes so the scratch is
+        // restored on every exit.
         let mut kept: Vec<(bool, Term)> = Vec::with_capacity(lits.len());
-        for (pos, t) in &lits {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut trail = std::mem::take(&mut self.match_trail);
+        let mut unit_subsumed = false;
+        'lits: for (pos, t) in &lits {
             if t.is_ground() {
-                let atom = self.layer.atoms.intern_atom(t);
+                // Hash-only probe: the ground-unit table is keyed by
+                // atom id; a dying literal never needs residency (the
+                // surviving clause interns at the accept point below).
+                let atom = atom_content_id(t);
                 if self.units.ground_unit(*pos, atom).is_some() {
                     self.stats.unit_subsumed += 1;
-                    return None; // subsumed by an active unit
+                    unit_subsumed = true;
+                    break 'lits; // subsumed by an active unit
                 }
                 if let Some(cid) = self.units.ground_unit(!*pos, atom) {
                     self.stats.unit_simplified += 1;
@@ -1034,14 +1770,23 @@ impl<'a> NativeProver<'a> {
                         self.stats.open_match_attempts += 1;
                         let tgt = target.get_or_insert_with(|| shift_slots(t, MATCH_TARGET_OFF));
                         let n = u.nvars as usize + 1;
-                        let mut s = self.take_scratch(n);
-                        let hit = match_one_way(&u.pattern, tgt, &mut s);
-                        self.put_scratch(s, n);
+                        if scratch.len() < n {
+                            scratch.resize(n, None);
+                        }
+                        let hit = match_one_way_off(&u.pattern, 0, tgt, &mut scratch, &mut trail);
+                        // Restore the all-`None` invariant (a failed
+                        // match already rolled back and left the trail
+                        // empty — this is then a no-op).
+                        for &slot in &trail {
+                            scratch[slot] = None;
+                        }
+                        trail.clear();
                         if hit {
                             self.stats.open_match_hits += 1;
                             if same_pol == *pos {
                                 self.stats.unit_subsumed += 1;
-                                return None;
+                                unit_subsumed = true;
+                                break 'lits;
                             }
                             self.stats.unit_simplified += 1;
                             if self.want_notes() {
@@ -1058,6 +1803,11 @@ impl<'a> NativeProver<'a> {
                 if dropped { continue; }
             }
             kept.push((*pos, t.clone()));
+        }
+        self.scratch = scratch;
+        self.match_trail = trail;
+        if unit_subsumed {
+            return None;
         }
         let lits = kept;
 
@@ -1102,15 +1852,28 @@ impl<'a> NativeProver<'a> {
             None
         };
 
-        let clause = canonical_clause(lits, &self.layer.atoms);
+        // Hash-before-intern canonicalization: atom ids are computed by
+        // the shared content-hash byte scheme WITHOUT touching the atom
+        // table, and the slot-form terms are built in the same walk
+        // (the eager path interned every literal and then lifted it
+        // back out via `slot_atom` — two more tree rebuilds).  The
+        // table is only written at the ACCEPT point below, after the
+        // dedup-probe/tautology/schema/subsumption gates have had their
+        // chance to kill the clause; the dying majority never allocates
+        // a `Sentence` or probes the `DashMap` at all.
+        let (clause, terms) = canonical_clause_hashed(lits);
+        debug_assert_eq!(terms.len(), clause.lits.len());
 
         // Duplicate-hit probe (Part 2, continued): of the clauses demod
         // actually rewrote, how many collapse onto an already-known clause's
         // key right here — i.e. would dedup away via the same
-        // `self.seen`/`ClauseKey` path `push()` uses later.  Read-only probe:
-        // `push()` still does the real (insert-and-check) dedup itself, so
-        // this changes no behavior, only counts.
-        if demod_eligible && was_demodulated && self.seen.contains(&clause.key) {
+        // `self.seen`/`ClauseKey` path `push()` uses later.  Read-only probe
+        // (verified like every `seen` consumer — a true key collision counts
+        // as a collision, not a dup hit): `push()` still does the real
+        // dedup itself, so this changes no behavior, only counts.
+        if demod_eligible && was_demodulated
+            && self.seen_duplicate_lits(clause.key, &clause.lits)
+        {
             self.stats.demod_dup_hits += 1;
         }
 
@@ -1136,9 +1899,10 @@ impl<'a> NativeProver<'a> {
             && clause.nvars >= 1
             && clause.lits.len() <= 4
         {
-            if let Some(hit) =
-                self.layer.schema.probe(&clause.lits, &self.layer.atoms, self.syn())
-            {
+            // Term-shape probe (pre-accept: atoms not resident).  Same
+            // shapes, same verdicts as the sentence reader — twin test
+            // in `schema.rs`.
+            if let Some(hit) = self.layer.schema.probe_terms(&clause.lits, &terms) {
                 self.stats.schema_hits += 1;
                 if self.apply_schema_hit(&hit, source) {
                     self.stats.schema_absorbed += 1;
@@ -1147,22 +1911,29 @@ impl<'a> NativeProver<'a> {
             }
         }
 
-        // Slot-form terms, lifted once (canonical vars → dense slots).
-        let terms: Vec<(bool, Term)> = clause
-            .lits
-            .iter()
-            .filter_map(|l| {
-                slot_atom(&self.layer.atoms, self.syn(), l.atom, 0).map(|t| (l.pos, t))
-            })
-            .collect();
-        debug_assert_eq!(terms.len(), clause.lits.len());
-
         // Forward subsumption: an active clause already covers this one
         // ⇒ it is redundant, drop it (the flooding floor).  The new
         // clause is not yet in the arena, so no self-subsumption.
         if let Some(_by) = self.forward_subsumed(&clause.lits, &terms) {
             self.stats.subsumed += 1;
             return None;
+        }
+
+        // ---- ACCEPT ----------------------------------------------------
+        // The clause enters the arena: intern its atoms NOW (the single
+        // deferred-residency point).  From here on the record is built
+        // exactly as before — same ids (debug-asserted against the
+        // hash-only ids), same memoized infos, same indexes — so an
+        // arena clause is byte-identical to the eager path's, and
+        // cross-thread visibility (the layer-shared AtomTable) starts
+        // at the same moment the clause itself becomes reachable.
+        for (l, (_, t)) in clause.lits.iter().zip(&terms) {
+            let id = self.layer.atoms.intern_slot_atom(t);
+            debug_assert_eq!(
+                id, l.atom,
+                "accept-point intern id diverged from the hash-only atom id for {t:?}",
+            );
+            let _ = id;
         }
 
         let size: u64 = terms.iter().map(|(_, t)| term_size(t) as u64).sum();
@@ -1188,7 +1959,36 @@ impl<'a> NativeProver<'a> {
         // computed when an ordered rule needs it; otherwise all-maximal
         // (no restriction) so the unordered default pays nothing.
         let max_mask = self.maximal_literals(&clause.lits);
+        // Subsumption feature-vector (fvi.rs): computed unconditionally
+        // (cheap — one pass over already-resolved literals, same memoized
+        // KBO/atom info the queue weight above just used) so the arena
+        // record is always ready to serve as a `forward_subsumed`
+        // candidate subsumer without a special first-use path.
+        let layer = self.layer;
+        let fv = super::fvi::ClauseFv::compute(
+            &clause.lits, self.kbo(),
+            |a| layer.atom_info(a), &self.layer.atoms, self.syn(),
+            self.opts.strategy.demod.then_some(&layer.term_facts),
+        );
+        // Bloom subsumption prefilter words (fvi.rs), same discipline as
+        // `fv`: computed unconditionally at birth from the already-warm
+        // `AtomInfos` memo (one OR per literal), so the arena record can
+        // serve as a `forward_subsumed` candidate subsumer immediately.
+        let blooms = super::fvi::ClauseBlooms::compute(
+            &clause.lits, &terms, |a| layer.atom_info(a),
+        );
         let id = self.clauses.len() as u32;
+        // SoA twin first (`subs` + retirement bitmap grow in lockstep
+        // with the arena — the scan-side invariant `forward_subsumed`
+        // relies on).  `nlits` is the exact literal count; see
+        // `fvi::SubsRec` on why it is not the saturated `fv[0]`.
+        debug_assert!(u32::try_from(clause.lits.len()).is_ok());
+        self.subs.push(super::fvi::SubsRec {
+            blooms,
+            fv,
+            nlits: clause.lits.len() as u32,
+        });
+        self.retired_bits.resize((id as usize + 1).div_ceil(64), 0);
         self.clauses.push(ClauseRec {
             id,
             lits: clause.lits,
@@ -1205,6 +2005,19 @@ impl<'a> NativeProver<'a> {
             max_mask,
             notes,
         });
+        debug_assert_eq!(self.subs.len(), self.clauses.len(), "SoA/arena lockstep");
+        debug_assert_eq!(
+            self.retired_bits.len(), self.clauses.len().div_ceil(64),
+            "retired bitmap/arena lockstep",
+        );
+        // Backward-demodulation postings: every arena clause's
+        // rewritable subterm occurrences are findable by exact ground
+        // key / (head, len) bucket, so a LATER oriented equation can
+        // re-normalize it (active or passive).  Zero cost unless the
+        // knob is on.
+        if self.opts.strategy.bwd_demod {
+            self.bwd_index_clause(id);
+        }
         if let Some((rel, x, y)) = unit_edge {
             self.oracle.add_unit(rel, x, y, Some(id));
         }
@@ -1212,5 +2025,1207 @@ impl<'a> NativeProver<'a> {
             self.oracle.add_neg_unit(rel, x, y, Some(id));
         }
         Some(id)
+    }
+}
+
+// -- backward-demodulation term helpers ----------------------------------------
+
+/// [`super::subterm_at`] over a byte path (the postings' interned path
+/// form — one argument index per step).
+fn subterm_at_bytes<'t>(t: &'t Term, path: &[u8]) -> Option<&'t Term> {
+    let mut cur = t;
+    for &step in path {
+        let Term::App(elems) = cur else { return None };
+        cur = elems.get(step as usize)?;
+    }
+    Some(cur)
+}
+
+/// O(1) head-shape gate between a demodulator's left side and a target
+/// node — the single-rule twin of `DemodIndex::possibly_matches` (a
+/// one-way match demands head + length agree exactly, so a mismatch
+/// here is an algebraic refutation, never a lost rewrite).
+fn bwd_head_compatible(l: &Term, t: &Term) -> bool {
+    match (l, t) {
+        (Term::App(a), Term::App(b)) => {
+            a.len() == b.len()
+                && match (a.first(), b.first()) {
+                    (Some(Term::Sym(x)), Some(Term::Sym(y))) => x.id() == y.id(),
+                    (Some(Term::Op(x)), Some(Term::Op(y))) => {
+                        super::super::units::op_tag(x) == super::super::units::op_tag(y)
+                    }
+                    _ => false,
+                }
+        }
+        (Term::Sym(x), Term::Sym(y)) => x.id() == y.id(),
+        _ => false,
+    }
+}
+
+/// First redex of the SINGLE demodulator `d` in `t` — the restricted
+/// twin of `find_demod_redex`: identical traversal (children first,
+/// heads skipped, top excluded, variables excluded), identical
+/// slot-shift discipline (`d`'s slots lifted above the target's), but
+/// exactly one candidate rule.  Returns the redex path and the
+/// instantiated replacement.
+fn bwd_find_redex(
+    d: &super::super::units::Demod,
+    t: &Term,
+    off: u64,
+) -> Option<(Vec<usize>, Term)> {
+    fn walk(
+        d: &super::super::units::Demod,
+        t: &Term,
+        path: &mut Vec<usize>,
+        off: u64,
+    ) -> Option<(Vec<usize>, Term)> {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                if let Some(hit) = walk(d, e, path, off) {
+                    return Some(hit);
+                }
+                path.pop();
+            }
+        }
+        if path.is_empty() || matches!(t, Term::Var(_)) {
+            return None;
+        }
+        if !bwd_head_compatible(&d.l, t) {
+            return None;
+        }
+        let l2 = shift_slots(&d.l, off);
+        let mut s: Subst = vec![None; (off + u64::from(d.nslots)) as usize + 1];
+        if match_one_way(&l2, t, &mut s) {
+            // r's variables ⊆ l's (KBO variable condition), so the
+            // match bound everything r mentions — orientation decided
+            // once at registration holds for every instance.
+            let rr = apply(&shift_slots(&d.r, off), &s);
+            return Some((path.clone(), rr));
+        }
+        None
+    }
+    let mut path = Vec::new();
+    walk(d, t, &mut path, off)
+}
+
+/// Fixpoint-rewrite `t` with the single demodulator `d` (the backward
+/// pass's per-literal engine; mirrors `demodulate`'s loop, including
+/// the per-term rewrite cap).  Returns the number of rewrites applied.
+fn bwd_demodulate_term(d: &super::super::units::Demod, t: &mut Term, cap: u64) -> u64 {
+    let mut rewrites = 0u64;
+    while rewrites < cap {
+        let off = max_slot(t).map_or(0, |m| m + 1);
+        let Some((path, rr)) = bwd_find_redex(d, t, off) else { break };
+        replace_in_place(t, &path, rr);
+        rewrites += 1;
+    }
+    rewrites
+}
+
+#[cfg(test)]
+mod hash_before_intern_tests {
+    use super::super::super::canon::{canonical_clause, canonical_clause_hashed};
+    use super::super::super::clause::{atom_content_id, slot_atom_content_id, AtomTable, Term};
+    use super::super::super::kbo::KboOrdering;
+    use super::super::super::term_atom_info;
+    use super::super::super::unify::slot_atom;
+    use crate::parse::OpKind;
+    use crate::syntactic::SyntacticLayer;
+    use crate::types::{Literal, Symbol};
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn num(v: &str) -> Term { Term::Lit(Literal::Number(v.to_string())) }
+    fn strv(v: &str) -> Term { Term::Lit(Literal::Str(v.to_string())) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn var(v: u64) -> Term { Term::Var(v) }
+    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+
+    /// The literal-list fixture family: every shape the canonicalizer
+    /// meets — shared variables across literals (first-occurrence
+    /// rename order), nested open and ground compounds, equality
+    /// orientation, ops, numeric/string literals, bare-symbol atoms,
+    /// duplicate literals, and slot ids far above dense range (raw
+    /// resolution offsets).
+    fn fixtures() -> Vec<Vec<(bool, Term)>> {
+        vec![
+            vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![(true, sym("propositional"))],
+            vec![(false, var(7))],
+            vec![
+                (false, app(vec![sym("q"), var(4100), sym("a")])),
+                (true, app(vec![sym("p"), var(4100), var(9)])),
+            ],
+            vec![
+                (true, eq(app(vec![sym("f"), var(3)]), var(3))),
+                (false, app(vec![sym("r"), app(vec![sym("g"), var(3), sym("c")])])),
+            ],
+            vec![(true, eq(sym("b"), sym("a")))], // orients
+            vec![(true, eq(app(vec![sym("f"), sym("z")]), app(vec![sym("f"), sym("a")])))],
+            vec![
+                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
+                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
+            ],
+            vec![
+                (false, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), var(5)])])])),
+                (true, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), sym("k")])])])),
+            ],
+            vec![(true, app(vec![var(2), var(1), var(2)]))], // predicate-variable head
+        ]
+    }
+
+    // The headline hash-before-intern property: the deferred
+    // canonicalization must produce EXACTLY the eager path's clause
+    // (key, atom ids, nvars) and EXACTLY the slot terms `slot_atom`
+    // would lift after interning.
+    #[test]
+    fn hashed_canonicalization_matches_eager_intern_and_lift() {
+        for lits in fixtures() {
+            let atoms = AtomTable::default();
+            let syn = SyntacticLayer::default();
+            let eager = canonical_clause(lits.clone(), &atoms);
+            let (hashed, terms) = canonical_clause_hashed(lits);
+            assert_eq!(hashed.key, eager.key, "clause key diverged");
+            assert_eq!(hashed.lits, eager.lits, "canonical literals diverged");
+            assert_eq!(hashed.nvars, eager.nvars, "nvars diverged");
+            assert_eq!(terms.len(), eager.lits.len());
+            for (l, (pos, t)) in eager.lits.iter().zip(&terms) {
+                assert_eq!(l.pos, *pos);
+                let lifted = slot_atom(&atoms, &syn, l.atom, 0).expect("interned by eager path");
+                assert_eq!(*t, lifted, "slot term diverged from the slot_atom lift");
+                // The accept-point intern reproduces the id (and the
+                // stored sentence, by content addressing).
+                assert_eq!(atoms.intern_slot_atom(t), l.atom, "intern_slot_atom id diverged");
+                assert_eq!(slot_atom_content_id(t), l.atom, "slot hash-only id diverged");
+            }
+        }
+    }
+
+    // `atom_content_id` == `intern_atom` for arbitrary (raw-variable)
+    // terms — the pre-canonicalization ground-probe keyspace.
+    #[test]
+    fn atom_content_id_matches_intern_atom() {
+        let atoms = AtomTable::default();
+        let terms = vec![
+            sym("bare"),
+            num("42"),
+            app(vec![sym("f"), sym("a")]),
+            app(vec![sym("g"), app(vec![sym("f"), num("2")]), strv("x")]),
+            app(vec![sym("h"), var(3), app(vec![sym("f"), var(4100)])]),
+            eq(app(vec![sym("f"), sym("a")]), sym("b")),
+            var(12),
+        ];
+        for t in terms {
+            assert_eq!(atom_content_id(&t), atoms.intern_atom(&t), "id diverged for {t:?}");
+        }
+    }
+
+    // The transient AtomInfo must be field-for-field the memoized
+    // compute's output, and the transient KBO weight the memoized
+    // weight — for every literal of every fixture clause.
+    #[test]
+    fn transient_info_and_weight_match_memoized_computes() {
+        use super::super::super::AtomInfos;
+        for lits in fixtures() {
+            let atoms = AtomTable::default();
+            let syn = SyntacticLayer::default();
+            let infos = AtomInfos::default();
+            let kbo = KboOrdering::new();
+            let eager = canonical_clause(lits.clone(), &atoms);
+            let (_, terms) = canonical_clause_hashed(lits);
+            for (l, (_, t)) in eager.lits.iter().zip(&terms) {
+                let transient = term_atom_info(t);
+                let memoized = infos.info(l.atom, &atoms, &syn);
+                assert_eq!(transient, *memoized, "AtomInfo diverged for {t:?}");
+                assert_eq!(
+                    kbo.term_weight(t),
+                    kbo.info(l.atom, &atoms, &syn).weight,
+                    "KBO weight diverged for {t:?}",
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod model_true_negative_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{CONJECTURE, SUPPORT, Term};
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    // `mammal(Fido)` is Horn-derivable from `(instance Fido Dog)` +
+    // `(=> (instance ?X Dog) (mammal ?X))` — the monotone model contains it.
+    // A derived (non-CONJECTURE) clause carrying the negative literal
+    // `(not (mammal Fido))` must have that literal DELETED, citing the
+    // defining rule's sid in `fact_parents` (env-free entry point: the
+    // `_forced` bypass `make()` itself calls through the `SIGMA_MODEL`
+    // gate — see that gate's own doc for why tests avoid the env var).
+    #[test]
+    fn model_true_negative_forced_deletes_and_cites_on_non_conjecture_tier() {
+        let kif = "\
+            (instance Fido Dog)\n\
+            (=> (instance ?X Dog) (mammal ?X))\n";
+        let layer = ProverLayer::new(kif_layer(kif));
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+
+        let rule_sid = layer.semantic.syntactic.root_sids().into_iter()
+            .find(|sid| {
+                layer.semantic.syntactic.sentence(*sid)
+                    .is_some_and(|s| s.op() == Some(&crate::parse::OpKind::Implies))
+            })
+            .expect("the (=> (instance ?X Dog) (mammal ?X)) root is stored");
+
+        let not_mammal_fido = Term::App(vec![
+            Term::Sym(Symbol::from("mammal")),
+            Term::Sym(Symbol::from("Fido")),
+        ]);
+
+        let sids = prover
+            .model_true_negative_forced(&not_mammal_fido, SUPPORT)
+            .expect("mammal(Fido) is in the positive model: the negative literal is deleted");
+        assert!(
+            sids.contains(&rule_sid),
+            "citation must include the defining rule's sid: {sids:?}"
+        );
+        assert_eq!(prover.guide_attempted, true, "the shared model was materialized on demand");
+
+        // CONJECTURE tier: the paraconsistent guard — never delete from a
+        // conjecture-tier clause this way, even though the model still
+        // entails the same fact (mirrors the oracle disjointness guard
+        // just above `model_true_negative`'s call site in `make`).
+        assert!(
+            prover.model_true_negative_forced(&not_mammal_fido, CONJECTURE).is_none(),
+            "a CONJECTURE-tier clause must NOT be simplified via the model"
+        );
+    }
+
+    // A positive ground unit that IS in the model is left alone by this
+    // path — `model_true_negative[_forced]` only ever inspects NEGATIVE
+    // literals (`make`'s call site guards with `if !*pos`); confirm the
+    // helper itself does not special-case a bare positive atom term (it
+    // has no polarity of its own to check, so this documents the
+    // call-site contract rather than a behavior of the helper).
+    #[test]
+    fn model_true_negative_forced_no_op_when_atom_not_in_model() {
+        let kif = "\
+            (instance Fido Dog)\n\
+            (=> (instance ?X Dog) (mammal ?X))\n";
+        let layer = ProverLayer::new(kif_layer(kif));
+        let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
+
+        // `(not (mammal Rex))` — Rex is never asserted a Dog, so the model
+        // does not contain `mammal(Rex)`: no deletion.
+        let not_mammal_rex = Term::App(vec![
+            Term::Sym(Symbol::from("mammal")),
+            Term::Sym(Symbol::from("Rex")),
+        ]);
+        assert!(
+            prover.model_true_negative_forced(&not_mammal_rex, SUPPORT).is_none(),
+            "mammal(Rex) is not entailed: nothing to delete"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ground_term_identity_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, BACKGROUND, SUPPORT};
+    use crate::parse::OpKind;
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+
+    fn demod_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.demod = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    /// Register + activate the non-ground demodulator `(equal (head ?0) ?0)`
+    /// (KBO-orients left-to-right; non-ground so the equality ORACLE
+    /// ignores it and forward demodulation alone is exercised).
+    fn add_rule(p: &mut NativeProver<'_>, head: &str) -> u32 {
+        let id = p
+            .make(
+                vec![(true, eq(app(vec![sym(head), Term::Var(0)]), Term::Var(0)))],
+                vec![], "input", BACKGROUND, None, false,
+            )
+            .expect("rule clause made");
+        p.activate(id);
+        id
+    }
+
+    // Every debug twin (whole-run demodulate reference, bloom
+    // redex-free check, weight fast-path vs full KBO) runs live inside
+    // these tests — a pass certifies zero twin violations on the paths
+    // exercised.
+    #[test]
+    fn bloom_prunes_nf_memo_records_and_replays_across_clauses() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = demod_prover(&layer);
+        let rule = add_rule(&mut p, "shrink"); // (shrink ?0) → ?0
+
+        // Fixture subtrees (all ground):
+        //   inert   — carries no bit of `shrink` ⇒ bloom-pruned whole;
+        //   noredex — CONTAINS `shrink`, but at arity 3 (no bucket) ⇒
+        //             bloom passes, memo records "unchanged";
+        //   redex   — (wrap2 (shrink c)) ⇒ normalizes to (wrap2 c).
+        let inert = app(vec![sym("boxCar"), sym("axle"), sym("wheel")]);
+        let noredex = app(vec![sym("wrap"), app(vec![sym("shrink"), sym("a"), sym("b")])]);
+        let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
+
+        // Precondition (deterministic — content-hash bits): the inert
+        // subtree's bloom really misses the rule's head bit.
+        let shrink_bit = 1u64 << (Symbol::hash_name("shrink") & 63);
+        let (_, inert_facts) = layer.term_facts.ground_key_facts(&inert, &layer.kbo)
+            .expect("inert fixture is ground");
+        assert_eq!(inert_facts.sym_bloom & shrink_bit, 0,
+            "fixture names must not collide with the rule head bit");
+
+        // Clause 1: all three subtrees under one literal.
+        let lit = app(vec![sym("p"), inert.clone(), noredex.clone(), redex.clone()]);
+        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+            .expect("clause kept");
+        let expect = app(vec![
+            sym("p"), inert.clone(), noredex.clone(),
+            app(vec![sym("wrap2"), sym("c")]),
+        ]);
+        assert_eq!(p.clauses[id as usize].terms[0].1, expect, "demod normalized the redex");
+        assert!(p.clauses[id as usize].parents.contains(&rule), "demodulator cited");
+        assert!(p.stats.bloom_subtrees_pruned >= 1, "inert subtree bloom-pruned");
+        assert!(p.stats.nf_probes >= 2, "noredex + redex probed");
+        assert!(p.stats.nf_misses >= 2, "first sighting misses");
+        assert!(p.stats.nf_hits_unchanged >= 1,
+            "the restarted fixpoint re-probes recorded unchanged entries");
+        assert_eq!(p.stats.nf_hits_rewritten, 0, "nothing to replay yet");
+
+        // Clause 2: the same redex subtree in a different literal —
+        // the recorded normal form is spliced without a redex search.
+        let lit2 = app(vec![sym("q"), noredex.clone(), redex.clone()]);
+        let id2 = p.make(vec![(false, lit2)], vec![], "test", SUPPORT, None, true)
+            .expect("clause kept");
+        assert_eq!(
+            p.clauses[id2 as usize].terms[0].1,
+            app(vec![sym("q"), noredex.clone(), app(vec![sym("wrap2"), sym("c")])]),
+        );
+        assert!(p.stats.nf_hits_rewritten >= 1, "cached NF spliced");
+        assert!(p.clauses[id2 as usize].parents.contains(&rule),
+            "the splice replays the demodulator citation");
+        assert_eq!(p.stats.nf_stale_discards, 0, "no generation change yet");
+    }
+
+    // The Part-4 gate test: registering a NEW demodulator bumps the
+    // generation, so previously recorded normal forms are discarded and
+    // recomputed under the enlarged rule set.
+    #[test]
+    fn new_demodulator_invalidates_recorded_normal_forms() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = demod_prover(&layer);
+        let r1 = add_rule(&mut p, "shrink"); // (shrink ?0) → ?0
+
+        let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
+        let lit = app(vec![sym("p"), redex.clone()]);
+        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+            .expect("kept");
+        assert_eq!(
+            p.clauses[id as usize].terms[0].1,
+            app(vec![sym("p"), app(vec![sym("wrap2"), sym("c")])]),
+            "under rule 1 alone the NF is (wrap2 c)",
+        );
+
+        // A second rule that rewrites the RECORDED normal form further:
+        // (wrap2 ?0) → ?0.  Its registration bumps the generation.
+        let r2 = add_rule(&mut p, "wrap2");
+        let stale_before = p.stats.nf_stale_discards;
+
+        let lit3 = app(vec![sym("r"), redex.clone()]);
+        let id3 = p.make(vec![(false, lit3)], vec![], "test", SUPPORT, None, true)
+            .expect("kept");
+        assert_eq!(
+            p.clauses[id3 as usize].terms[0].1,
+            app(vec![sym("r"), sym("c")]),
+            "the stale NF was discarded and the subtree renormalized to c",
+        );
+        assert!(p.stats.nf_stale_discards > stale_before,
+            "the old-generation entry was lazily discarded");
+        let parents = &p.clauses[id3 as usize].parents;
+        assert!(parents.contains(&r1) && parents.contains(&r2),
+            "both demodulators cited on the renormalized clause");
+    }
+
+    // Part 3.3: the ground weight fast path must agree with the full
+    // KBO compare (its debug twin asserts this on every use; here we
+    // also pin the observable orientation outcomes).
+    #[test]
+    fn ground_weight_fast_path_orients_like_full_kbo() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let p = demod_prover(&layer);
+        // Heavier ground left side: (f (g a)) vs b — weight 3 vs 1.
+        let heavy = app(vec![sym("f"), app(vec![sym("g"), sym("a")])]);
+        let light = sym("b");
+        assert!(p.demod_oriented(&heavy, &light));
+        assert!(!p.demod_oriented(&light, &heavy));
+        // Equal weights fall through to the structural path (still a
+        // decision, just not via the fast path): distinct constants.
+        let ca = sym("ca");
+        let cb = sym("cb");
+        // Either orientation may win on precedence, but exactly one does.
+        assert_ne!(p.demod_oriented(&ca, &cb), p.demod_oriented(&cb, &ca));
+    }
+}
+
+#[cfg(test)]
+mod bloom_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // A GENUINELY subsuming pair must sail through both bloom channels
+    // (they are necessary-condition filters) and get dropped by the
+    // exact check — the positive soundness half.  The debug twins run
+    // live in every test build, so a bloom misfire would abort here.
+    #[test]
+    fn subsuming_pair_passes_blooms_and_is_dropped_by_the_exact_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = ¬(q a) ∨ (p ?0)  — one ground literal, one open literal.
+        let c = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
+        let made = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is forward-subsumed by C");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        // NEITHER bloom may reject a genuine subsumption (soundness).
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        // C has a ground literal, so the glit channel was applicable.
+        assert_eq!(p.stats.subs_glit_applicable, 1);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Leaf-bloom rejection: the candidate subsumer carries a ground
+    // leaf (`c`) the new clause never mentions — the subset test fails
+    // before the FV channels or the exact matcher run.
+    #[test]
+    fn leaf_bloom_rejects_subsumer_with_a_foreign_ground_leaf() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q c) — active candidate subsumer.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("c")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p a) ∨ (q b) — C's (p ?0) makes it an index candidate,
+        // but (q c) has no counterpart in D.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Precondition (deterministic content-hash bits): C really has
+        // a leaf bit outside D's word — i.e. this pair exercises the
+        // leaf channel, not a later one.  If a name reshuffle ever
+        // collides the bits, fail loudly here rather than silently
+        // testing nothing.
+        let c_leaf = p.subs[c as usize].blooms.leaf;
+        let d_leaf = p.subs[d as usize].blooms.leaf;
+        assert_ne!(c_leaf & !d_leaf, 0, "fixture: leaf bit of `c` must miss D");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 1, "leaf channel fired first");
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+    }
+
+    // Ground-literal-bloom rejection: every ground leaf of C appears in
+    // D (leaf channel passes), but C's fully ground literal `(q c)` is
+    // not among D's literals — its polarity-mixed atom bit is missing
+    // from D's glit word.
+    #[test]
+    fn glit_bloom_rejects_subsumer_whose_ground_literal_is_missing_from_d() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (q c) ∨ (p ?0).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("q"), sym("c")])),
+                (true, app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p (f q c)) ∨ (r a): the leaves q and c DO occur in D
+        // (under a compound — leaf_sig counts those), so the leaf
+        // channel passes; but the literal (q c) itself is absent.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), app(vec![sym("f"), sym("q"), sym("c")])])),
+                (true, app(vec![sym("r"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Preconditions: leaf channel really passes, glit really differs.
+        let (cb, db) = (p.subs[c as usize].blooms, p.subs[d as usize].blooms);
+        assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
+        assert_ne!(cb.glit & !db.glit, 0, "fixture: C's ground-literal bit misses D");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_glit_applicable, 1, "C has a ground literal");
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 1);
+        assert_eq!(p.stats.subs_full_checks, 0);
+    }
+
+    // A subsumer with NO ground literals has glit == 0: the channel is
+    // inapplicable (vacuous pass) and must not count as applicable.
+    #[test]
+    fn glit_channel_is_inapplicable_for_all_open_subsumers() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q ?0) — no ground literal.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        assert_eq!(p.subs[c as usize].blooms.glit, 0, "no ground literals");
+        // D = (p a) ∨ (q a): subsumed via {?0 ↦ a}.
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is subsumed");
+        assert_eq!(p.stats.subs_glit_applicable, 0, "channel never applicable");
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+}
+
+#[cfg(test)]
+mod keq_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // Soundness half: a GENUINELY subsuming pair must sail through the
+    // Key-Equation counting filter (it is a necessary-condition filter)
+    // and reach the exact check.  The keq debug twin runs live in every
+    // test build, so a misfire would abort here.
+    #[test]
+    fn subsuming_pair_passes_the_keq_filter_and_reaches_the_full_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = ¬(q a) ∨ (p ?0).
+        let c = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
+        let made = p.make(
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "D is forward-subsumed by C");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        // The keq filter may not reject a genuine subsumption
+        // (soundness), and it DID run (the pair reached it: both blooms
+        // and FV passed).
+        assert_eq!(p.stats.subs_rejected_by_keq, 0);
+        assert!(p.stats.keq_pair_tests > 0, "the filter actually scanned pairs");
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Rejection half, with the exact reason pinned: every earlier
+    // channel passes (asserted as fixture preconditions), and the keq
+    // filter alone rejects — C's open literal (q a ?0) has no
+    // Key-Equation-compatible partner in D: the only same-polarity,
+    // same-arity literal (q b a) disagrees on the ground seat 1
+    // (`a` vs `b`), which the residue comparison sees because seat 1 is
+    // NOT masked in C's literal.
+    #[test]
+    fn keq_rejects_subsumer_whose_open_literal_has_no_compatible_partner() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        // C = (p ?0) ∨ (q a ?0) — both literals open, so the
+        // ground-literal bloom is inapplicable by construction.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("kept");
+        p.activate(c);
+        // D = (p a) ∨ (q b a) — C's (p ?0) makes it an index candidate,
+        // but (q a ?0) matches neither literal: (p a) has the wrong
+        // arity, (q b a) the wrong ground seat-1 content.
+        let d = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("NOT subsumed — kept");
+        // Fixture preconditions: the pair genuinely reaches the keq
+        // channel, i.e. every earlier channel passes.  C's leaves
+        // {p, q, a} all occur in D, so the leaf subset holds bit-wise
+        // unconditionally; C has no ground literal, so glit is
+        // inapplicable; and the FV channels agree pointwise.
+        let (cb, db) = (p.subs[c as usize].blooms, p.subs[d as usize].blooms);
+        assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
+        assert_eq!(cb.glit, 0, "fixture: no ground literal in C");
+        assert!(
+            p.subs[c as usize].fv.le(&p.subs[d as usize].fv),
+            "fixture: the FV channels must not reject this pair",
+        );
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
+        assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
+        assert_eq!(p.stats.subs_glit_applicable, 0);
+        assert_eq!(p.stats.subs_rejected_by_fv, 0);
+        assert_eq!(p.stats.subs_rejected_by_keq, 1, "the keq filter fired");
+        assert!(p.stats.keq_pair_tests > 0);
+        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+    }
+
+    // The sum invariant on live traffic: a mixed batch of candidate
+    // subsumers and probes drives every channel (leaf / fv / keq /
+    // full), and each attempted check is attributed to EXACTLY ONE
+    // outcome.  The keq + FV debug twins verify every individual
+    // rejection against the reference matcher along the way.
+    #[test]
+    fn keq_sum_invariant_holds_on_live_traffic() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        let actives = vec![
+            // (p ?0) ∨ (q c): leaf-rejects against probes without `c`.
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("c")])),
+            ],
+            // (p ?0) ∨ (q a ?0): keq-rejects against (p a) ∨ (q b a).
+            vec![
+                (true, app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
+            ],
+            // ¬(q a) ∨ (p ?0): subsumes ¬(q a) ∨ (p b); fv-rejects
+            // (polarity counts) against all-positive probes.
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), Term::Var(0)])),
+            ],
+        ];
+        for lits in actives {
+            let id = p.make(lits, vec![], "test", SUPPORT, None, true).expect("kept");
+            p.activate(id);
+        }
+        let probes = vec![
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b"), sym("a")])),
+            ],
+            vec![
+                (true, app(vec![sym("p"), sym("a")])),
+                (true, app(vec![sym("q"), sym("b")])),
+            ],
+            vec![
+                (false, app(vec![sym("q"), sym("a")])),
+                (true,  app(vec![sym("p"), sym("b")])),
+            ],
+        ];
+        for lits in probes {
+            let _ = p.make(lits, vec![], "test", SUPPORT, None, true);
+        }
+        let s = &p.stats;
+        assert!(s.subs_checks_attempted > 0, "traffic actually flowed");
+        assert!(s.subs_rejected_by_keq >= 1, "the keq channel fired at least once");
+        assert!(s.subs_full_checks >= 1, "at least one pair reached the exact check");
+        assert_eq!(
+            s.subs_checks_attempted,
+            s.subs_rejected_by_bloom_leaf
+                + s.subs_rejected_by_bloom_glit
+                + s.subs_rejected_by_fv
+                + s.subs_rejected_by_keq
+                + s.ej_full_checks_saved
+                + s.subs_full_checks,
+            "every attempted check is attributed to exactly one channel",
+        );
+    }
+
+    // SoA lockstep property: after live mixed traffic (accepted actives,
+    // rejected probes, dedup paths), the id-indexed scan arrays must
+    // agree with the arena — same length, and every packed record equal
+    // to a fresh recompute from the arena clause's literals.  This is
+    // the invariant `forward_subsumed` trusts INSTEAD of reading
+    // `ClauseRec` (the fields moved, they are not mirrored) — a drifted
+    // record would silently mis-filter, so it gets its own gate.
+    #[test]
+    fn soa_scan_arrays_stay_in_lockstep_with_the_arena() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = subs_prover(&layer);
+        let mk = |names: &[(&str, bool)]| -> Vec<(bool, Term)> {
+            names.iter()
+                .map(|(n, ground)| {
+                    let arg = if *ground { sym("a") } else { Term::Var(0) };
+                    (true, app(vec![sym(n), arg]))
+                })
+                .collect()
+        };
+        // Actives with a spread of shapes (ground / open, unit / wide).
+        for lits in [
+            mk(&[("p", false)]),
+            mk(&[("q", true)]),
+            mk(&[("p", false), ("q", true)]),
+            mk(&[("r", true), ("s", false), ("t", true)]),
+        ] {
+            if let Some(id) = p.make(lits, vec![], "test", SUPPORT, None, true) {
+                p.activate(id);
+            }
+        }
+        // Probes: some die to forward subsumption, some are accepted.
+        for lits in [
+            mk(&[("p", true)]),
+            mk(&[("q", true), ("p", true)]),
+            mk(&[("u", true)]),
+        ] {
+            let _ = p.make(lits, vec![], "test", SUPPORT, None, true);
+        }
+        assert!(!p.clauses.is_empty(), "traffic actually flowed");
+        assert_eq!(p.subs.len(), p.clauses.len(), "subs/arena lockstep");
+        assert_eq!(
+            p.retired_bits.len(),
+            p.clauses.len().div_ceil(64),
+            "retired bitmap sized to the arena",
+        );
+        for c in &p.clauses {
+            let rec = p.subs[c.id as usize];
+            assert_eq!(rec.nlits as usize, c.lits.len(), "clause {}", c.id);
+            let fv = super::super::fvi::ClauseFv::compute(
+                &c.lits, p.kbo(),
+                |a| layer.atom_info(a), &layer.atoms, &layer.semantic.syntactic,
+                p.opts.strategy.demod.then_some(&layer.term_facts),
+            );
+            assert_eq!(rec.fv, fv, "fv recompute drifted for clause {}", c.id);
+            let blooms = super::super::fvi::ClauseBlooms::compute(
+                &c.lits, &c.terms, |a| layer.atom_info(a),
+            );
+            assert_eq!(rec.blooms, blooms, "bloom recompute drifted for clause {}", c.id);
+            assert!(!p.is_retired(c.id), "no retirement without bwd_demod");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ej_subsumption_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn var(s: u64) -> Term { Term::Var(s) }
+
+    /// Subsumption + the equality-join channel, EXPLICITLY on (immune
+    /// to default flips of the `subs_join` knob).
+    fn ej_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        strategy.subs_join = true;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // THE new power: per-literal partners exist (keq passes), but the
+    // shared variable ?0 decodes to `a` in one literal and `b` in the
+    // other — the cross-literal equality join must reject BEFORE the
+    // exact check.  (The mandatory rejection twin re-runs the
+    // reference matcher live in every test build.)
+    #[test]
+    fn join_rejects_shared_variable_disagreement() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (p ?0 k) ∨ (q ?0 m) — both literals ground-anchored
+        // (Active plans), ?0 shared and joinable.
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a k) ∨ (q b m): literal-wise partnered, jointly
+        // unsatisfiable (?0 ↦ a vs ?0 ↦ b).
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "NOT subsumed — the exact check would agree");
+        assert_eq!(p.stats.subs_checks_attempted, 1);
+        assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq cannot see the disagreement");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_join, 1, "the equality join fired");
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.ej_full_checks_saved, 1);
+        assert_eq!(p.stats.subs_full_checks, 0, "the exact check never ran");
+    }
+
+    // Multiset discipline: a C-literal may partner MULTIPLE D-literals
+    // and the possibility sets must UNION over all of them (injective
+    // partnering is clause_subsumes_in's job, not the join's).  Here
+    // both C literals partner both D literals; a greedy/injective join
+    // would mis-reject, the union semi-join must pass — and the pair
+    // genuinely subsumes.
+    #[test]
+    fn multiset_non_injective_partnering_is_not_rejected() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (p ?0 ?1) ∨ (p ?1 ?0)  (two Trivial plans — their whole
+        // channel value IS the join keys they decode).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), var(1)])),
+                (true, app(vec![sym("p"), var(1), var(0)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a b) ∨ (p b a) — subsumed via {?0 ↦ a, ?1 ↦ b}.
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("b")])),
+                (true, app(vec![sym("p"), sym("b"), sym("a")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "genuinely subsumed — the join must not block it");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_join, 0);
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check decided");
+    }
+
+    // Cap overflow ⇒ unknown, never a constraint: ?0's set from the
+    // (p ?0) literal would hold 9 distinct keys (> EJ_KEY_CAP = 8), so
+    // that literal contributes ⊤ and the join may NOT reject — even
+    // though an unbounded set ({a1..a9} ∩ {b} = ∅) would have.
+    #[test]
+    fn cap_overflow_treated_as_unknown_not_reject() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0)])),
+                (true, app(vec![sym("q"), var(0), sym("c")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        // D = (p a1) ∨ … ∨ (p a9) ∨ (q b c).
+        let mut d_lits: Vec<(bool, Term)> = (1..=9)
+            .map(|i| (true, app(vec![sym("p"), sym(&format!("a{i}"))])))
+            .collect();
+        d_lits.push((true, app(vec![sym("q"), sym("b"), sym("c")])));
+        let made = p.make(d_lits, vec![], "test", SUPPORT, None, true);
+        assert!(made.is_some(), "not subsumed (no (p b) in D) — exact check decides");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_pairs_decoded, 10, "9 p-partners + 1 q-partner");
+        assert_eq!(
+            p.stats.ej_rej_join, 0,
+            "cap overflow must degrade to ⊤ (skip), never to a rejection",
+        );
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // Conservatism rule (c): a variable occurring in an UNUSABLE-plan
+    // literal (v = 4 ⇒ root fallback) is barred from the join, so the
+    // {a} vs {b} disagreement between the two usable literals may NOT
+    // be exploited — the candidate passes through to the exact check.
+    #[test]
+    fn unusable_plan_literal_contributes_nothing() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (f ?0 ?1 ?2 ?3) ∨ (p ?0 k) ∨ (q ?0 m).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("f"), sym("w"), sym("x"), sym("y"), sym("z")])),
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "not subsumed — but only the exact check may say so");
+        assert_eq!(p.stats.ej_candidates, 1, "the Active literals still ran");
+        assert_eq!(
+            p.stats.ej_rej_join, 0,
+            "?0 occurs in the fallback literal — its join constraint is barred",
+        );
+        assert_eq!(p.stats.ej_rej_no_partner, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check decided");
+    }
+
+    // Zero-survivor rule: keq counts (p a b) as a residue-compatible
+    // partner of (p ?0 ?0) (both seats masked), but the decode's
+    // collapsed-repeat system refutes it — no partner survives, the
+    // candidate dies before the exact check.
+    #[test]
+    fn zero_partner_literal_rejects_before_full_check() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        let c = p.make(
+            vec![(true, app(vec![sym("p"), var(0), var(0)]))],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![(true, app(vec![sym("p"), sym("a"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some(), "(p ?0 ?0) does not subsume (p a b)");
+        assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq passes this pair");
+        assert_eq!(p.stats.ej_candidates, 1);
+        assert_eq!(p.stats.ej_rej_no_partner, 1, "the decode refuted every partner");
+        assert_eq!(p.stats.ej_full_checks_saved, 1);
+        assert_eq!(p.stats.subs_full_checks, 0);
+    }
+
+    // A candidate whose every literal is unusable is SKIPPED (counted),
+    // never rejected — and genuine subsumption still goes through via
+    // the exact check.
+    #[test]
+    fn all_unusable_candidate_is_skipped_not_rejected() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = ej_prover(&layer);
+        // C = (f ?0 ?1 ?2 ?3) ∨ (g ?0 ?1 ?2 ?3): v = 4 at both roots ⇒
+        // root fallback ⇒ unusable (two literals, so the probe goes
+        // through CLAUSE subsumption, not the unit-store channel).
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                (true, app(vec![sym("g"), var(0), var(1), var(2), var(3)])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("f"), sym("a"), sym("b"), sym("c"), sym("d")])),
+                (true, app(vec![sym("g"), sym("a"), sym("b"), sym("c"), sym("d")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_none(), "genuinely subsumed via the exact check");
+        assert_eq!(p.stats.subsumed, 1);
+        assert_eq!(p.stats.ej_skipped_unusable, 1);
+        assert_eq!(p.stats.ej_candidates, 0, "nothing runnable — never evaluated");
+        assert_eq!(p.stats.ej_full_checks_saved, 0);
+        assert_eq!(p.stats.subs_full_checks, 1);
+    }
+
+    // The channel is a pure prefilter: with the knob OFF the funnel
+    // must behave exactly as before (no ej counters move, the exact
+    // check decides), on the same traffic as the join-rejection test.
+    #[test]
+    fn knob_off_leaves_the_funnel_untouched() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut strategy = Strategy::base();
+        strategy.subsumption = true;
+        strategy.subs_join = false;
+        let opts = NativeOpts { strategy, ..Default::default() };
+        let mut p = NativeProver::new(&layer, Scope::Base, opts);
+        let c = p.make(
+            vec![
+                (true, app(vec![sym("p"), var(0), sym("k")])),
+                (true, app(vec![sym("q"), var(0), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        ).expect("subsumer kept");
+        p.activate(c);
+        let made = p.make(
+            vec![
+                (true, app(vec![sym("p"), sym("a"), sym("k")])),
+                (true, app(vec![sym("q"), sym("b"), sym("m")])),
+            ],
+            vec![], "test", SUPPORT, None, true,
+        );
+        assert!(made.is_some());
+        assert_eq!(p.stats.ej_candidates, 0);
+        assert_eq!(p.stats.ej_pairs_decoded, 0);
+        assert_eq!(p.stats.ej_full_checks_saved, 0);
+        assert_eq!(p.stats.subs_full_checks, 1, "the exact check carried it alone");
+    }
+}
+
+#[cfg(test)]
+mod verified_dedup_tests {
+    use super::super::NativeProver;
+    use super::super::super::ProverLayer;
+    use super::{Term, SUPPORT};
+    use crate::prover::saturate::prover::NativeOpts;
+    use crate::prover::saturate::strategy::Strategy;
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+    use crate::types::Symbol;
+
+    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
+    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+
+    fn base_prover(layer: &ProverLayer) -> NativeProver<'_> {
+        let opts = NativeOpts { strategy: Strategy::base(), ..Default::default() };
+        NativeProver::new(layer, Scope::Base, opts)
+    }
+
+    // The unchanged happy path: a genuine α-duplicate (same canonical
+    // literals, same key) still dedups at push, with zero collisions.
+    #[test]
+    fn genuine_duplicate_still_drops_at_push() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let a2 = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        assert_eq!(p.clauses[a as usize].key, p.clauses[a2 as usize].key);
+        assert!(p.push(Some(a)).is_some(), "first copy queues");
+        assert!(p.push(Some(a2)).is_none(), "verified duplicate drops");
+        assert_eq!(p.stats.dedup_collisions_detected, 0);
+    }
+
+    // The verify branch: a SYNTHETIC map entry (b's key → a's id, two
+    // structurally different clauses — no need to forge an xxh
+    // collision) must be detected as a true collision, COUNTED, and the
+    // colliding clause ACCEPTED; the map keeps the first id.
+    #[test]
+    fn true_collision_is_counted_and_the_clause_is_accepted_not_dropped() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let bkey = p.clauses[b as usize].key;
+        // Inject the collision: b's key already "seen" — by a clause
+        // with different canonical literals.
+        p.seen.insert(bkey, a);
+        assert!(p.push(Some(b)).is_some(),
+            "a colliding non-duplicate must be ACCEPTED, not silently dropped");
+        assert_eq!(p.stats.dedup_collisions_detected, 1);
+        assert_eq!(p.seen.get(&bkey), Some(&a), "the map keeps the FIRST id");
+        // Collision-mates bypass dedup from then on (documented, sound):
+        // a re-push probes the same stored mismatch again.
+        assert!(p.push(Some(b)).is_some());
+        assert_eq!(p.stats.dedup_collisions_detected, 2);
+    }
+
+    // The insert-guard form (`seen_insert`) — used by the activate-
+    // without-push sites — takes the same verify branch.
+    #[test]
+    fn seen_insert_guard_verifies_and_counts_collisions() {
+        let layer = ProverLayer::new(kif_layer(""));
+        let mut p = base_prover(&layer);
+        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
+            vec![], "test", SUPPORT, None, true).expect("kept");
+        let akey = p.clauses[a as usize].key;
+        assert!(p.seen_insert(akey, a), "first sighting records");
+        assert!(!p.seen_insert(akey, a), "same clause again: verified duplicate");
+        // b under a's key: structural mismatch ⇒ collision ⇒ NEW.
+        assert!(p.seen_insert(akey, b), "collision-mate counts as new");
+        assert_eq!(p.stats.dedup_collisions_detected, 1);
+        assert_eq!(p.seen.get(&akey), Some(&a), "first id stays");
     }
 }

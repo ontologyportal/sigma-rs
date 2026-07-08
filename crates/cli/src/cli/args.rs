@@ -226,6 +226,39 @@ pub enum Cmd {
         kb: KbArgs,
     },
 
+    /// CASC-style batch run: prove every TPTP problem under a directory (or
+    /// listed one-per-line in a plain file) on the native backend with the
+    /// TPTP regime (full saturation + the budget-adaptive strategy portfolio), and
+    /// report SZS status per problem plus a final summary.
+    ///
+    /// Each problem gets its own fresh, self-contained `Session` (no shared
+    /// base KB, no `-f`/`-d`/`-c` ontology) — exactly the isolation
+    /// `sumo test` already gives standalone `.p`/`.tptp` files, reused here
+    /// via the same `Session::test` machinery (so `include(...)` axiom
+    /// libraries resolve the same way, against `$TPTP` / the problem's own
+    /// directory / its parent).
+    ///
+    /// Output is deliberately unstyled (as if `--ugly` were passed): every
+    /// `% SZS status <STATUS> for <NAME>` line plus the summary block are
+    /// meant to be greppable / diffable against a reference CASC run.
+    #[cfg(feature = "ask")]
+    Casc {
+        /// A directory of `.p`/`.tptp` files, OR a plain-text file listing
+        /// one problem path per line (blank lines and `#`-prefixed comment
+        /// lines are skipped).
+        #[arg(value_name = "DIR_OR_LIST")]
+        path: PathBuf,
+
+        /// Wall-clock budget per problem, in seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 60)]
+        timeout: u32,
+
+        /// Worker threads (problems run in parallel; each gets its own
+        /// fresh KB, so this is safe up to available parallelism).
+        #[arg(long, value_name = "K", default_value_t = 4)]
+        jobs: usize,
+    },
+
     /// Translate KIF formula(s) or a full KB to TPTP.
     ///
     /// Without --db (or with --db pointing to a non-existent path) and with
