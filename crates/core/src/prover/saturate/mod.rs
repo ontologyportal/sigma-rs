@@ -36,6 +36,7 @@ pub(crate) mod proof;
 pub(crate) mod schema;
 mod prove;
 mod consistency;
+mod doxastic;
 pub mod strategy;
 
 #[cfg(test)]
@@ -211,14 +212,16 @@ impl ProvingLayer for ProverLayer {
 
     /// Native step-exhaustion (`GaveUp`) means the search space was too big —
     /// narrow like a timeout, not widen (the planner reads `GaveUp` as
-    /// prover-incompleteness on the TPTP path).
+    /// prover-incompleteness on the TPTP path). `ResourceOut`, not
+    /// `TimeLimit`: `classify` narrows on `(Unknown, ResourceOut)` while
+    /// `(Unknown, TimeLimit)` hits its catch-all and stops the loop.
     fn remap(
         _status: super::result::ProverStatus,
         term:    Option<super::result::TerminationReason>,
     ) -> Option<super::result::TerminationReason> {
         match term {
             Some(super::result::TerminationReason::GaveUp) =>
-                Some(super::result::TerminationReason::TimeLimit),
+                Some(super::result::TerminationReason::ResourceOut),
             other => other,
         }
     }

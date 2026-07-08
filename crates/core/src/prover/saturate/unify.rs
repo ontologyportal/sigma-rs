@@ -10,11 +10,19 @@
 // then just a slot offset, and a substitution is a flat `Vec` indexed
 // by slot — no string tags, no hash-map walk on the hot path.
 
+use smallvec::SmallVec;
+
 use crate::syntactic::SyntacticLayer;
 use crate::types::SymbolId;
 
 use super::canon::canonical_slot;
 use super::clause::{AtomId, AtomTable, Term};
+
+/// Inline-capacity trail for the local-trail entry points: unification
+/// binds a handful of slots per attempt, so 16 inline elements cover
+/// virtually every clause without a heap allocation (the hot loops run
+/// millions of attempts per problem).
+type Trail = SmallVec<[usize; 16]>;
 
 /// A substitution over slot variables: `s[slot]` is the bound term
 /// (itself in slot-variable form), or `None` while unbound.
@@ -110,7 +118,7 @@ pub(crate) fn unify(a: &Term, b: &Term, s: &mut Subst) -> bool {
 /// per run, wasted on every mismatch).  Only fragments actually BOUND
 /// get shifted, at bind time.
 pub(crate) fn unify_off(a: &Term, ao: u64, b: &Term, bo: u64, s: &mut Subst) -> bool {
-    let mut trail: Vec<usize> = Vec::new();
+    let mut trail = Trail::new();
     if unify_off_inner(a, ao, b, bo, s, &mut trail) {
         true
     } else {
@@ -125,7 +133,7 @@ fn unify_off_inner(
     a: &Term, ao: u64,
     b: &Term, bo: u64,
     s: &mut Subst,
-    trail: &mut Vec<usize>,
+    trail: &mut Trail,
 ) -> bool {
     // Bound variables resolve by cloning the bound FRAGMENT (usually a
     // constant or small term) — a borrow into `s` cannot live across
@@ -165,7 +173,7 @@ fn unify_off_inner(
     }
 }
 
-fn bind_off(slot: u64, t: &Term, toff: u64, s: &mut Subst, trail: &mut Vec<usize>) -> bool {
+fn bind_off(slot: u64, t: &Term, toff: u64, s: &mut Subst, trail: &mut Trail) -> bool {
     if occurs_off(slot, t, toff, s) {
         return false;
     }
@@ -201,7 +209,7 @@ pub(crate) fn apply_off(t: &Term, off: u64, s: &Subst) -> Term {
 /// Caller must rename the two apart (disjoint slot ranges).  Rolls `s`
 /// back on failure, like [`unify`].
 pub(crate) fn match_one_way(p: &Term, t: &Term, s: &mut Subst) -> bool {
-    let mut trail: Vec<usize> = Vec::new();
+    let mut trail = Trail::new();
     if match_inner(p, t, s, &mut trail) {
         true
     } else {
@@ -263,7 +271,7 @@ fn match_off_inner(p: &Term, poff: u64, t: &Term, s: &mut Subst, trail: &mut Vec
     }
 }
 
-fn match_inner(p: &Term, t: &Term, s: &mut Subst, trail: &mut Vec<usize>) -> bool {
+fn match_inner(p: &Term, t: &Term, s: &mut Subst, trail: &mut Trail) -> bool {
     if let Term::Var(v) = p {
         let slot = *v as usize;
         return match &s[slot] {

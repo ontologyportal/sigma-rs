@@ -1,7 +1,3 @@
-// crates/core/src/converter/operator.rs
-// 
-// Operator to TPTP implementations
-
 use crate::OpKind;
 use super::symbol::S;
 

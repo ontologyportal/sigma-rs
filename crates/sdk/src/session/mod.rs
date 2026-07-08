@@ -165,6 +165,26 @@ mod tests {
     }
 
     #[test]
+    fn doxastic_ask_closes_belief_context_and_stays_read_only() {
+        let mut s = Session::<ProverLayer>::new(SESSION.to_string());
+        s.ingest(reader("dox.kif",
+            "(domain believes 2 Formula)\n\
+             (believes John (p a))\n\
+             (believes John (=> (p a) (q a)))"), true);
+        // Full closure inside the context: modus ponens over the beliefs.
+        let r = s.doxastic_ask("John", "(q a)", Some(fast())).unwrap();
+        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Proved, "{}", r.raw_output);
+        // Outer control: `(believes John (q a))` is NOT derivable outside
+        // the projection — inner conclusions are never fed back.
+        let outer = s.ask("(believes John (q a))", Some(fast())).unwrap();
+        assert_ne!(outer.status, sigmakee_rs_core::ProverStatus::Proved,
+            "guardrail: outer ask must stay unproven: {}", outer.raw_output);
+        // Consistency surface.
+        let c = s.doxastic_consistent("John", Some(fast())).unwrap();
+        assert_eq!(c.status, sigmakee_rs_core::ProverStatus::Consistent, "{}", c.raw_output);
+    }
+
+    #[test]
     fn tell_accumulates_hypotheses_then_ask() {
         // No base axioms — the chained hypotheses alone must discharge the goal.
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());

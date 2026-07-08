@@ -105,14 +105,13 @@ impl EagerMap<SymbolCache> {
 }
 
 impl SyntacticLayer {
-    /// Determine if a symbol exists in the [`SyntacticLayer`] by its ID
+    /// Whether `id` is a known symbol.
     pub(crate) fn has_symbol(&self, id: SymbolId) -> bool { self.symbols.has_symbol(id) }
 
-    /// Fetch the [`SymbolId`] for a given symbol name string, returns [`None`] if not found
+    /// The id for `name`, if it has been interned.
     pub(crate) fn sym_id(&self, name: &str) -> Option<SymbolId> { self.symbols.sym_id(name) }
 
-    /// Fetch the symbol name for a given [`SymbolId`], returns [`None`] if the ID does not
-    /// exist
+    /// The name of `id`, if interned.
     pub(crate) fn sym_name(&self, id: SymbolId) -> Option<Symbol> { self.symbols.sym_name(id) }
 
     /// Whether a given [`SymbolId`] is a CNF-generated Skolem symbol.

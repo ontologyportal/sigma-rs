@@ -33,7 +33,6 @@ impl CacheBehavior for IsInstance {
         &[crate::cache::events::EventKind::TaxonomyChanged]
     }
 
-    // `is_instance` is the negation of `is_class`, so it reads that cache.
     fn reads(&self) -> &'static [&'static str] {
         &["semantic::is_class"]
     }

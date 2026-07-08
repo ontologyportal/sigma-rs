@@ -76,6 +76,12 @@ impl Symbol {
     pub fn name(&self) -> Arc<str> {
         self.0.clone()
     }
+
+    /// Borrow the name — no refcount traffic.  Prefer this in hot paths:
+    /// `name()` pays an atomic inc/dec pair per call.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 // ---------------------------------------------------------------------------

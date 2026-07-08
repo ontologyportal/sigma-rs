@@ -37,7 +37,6 @@ pub enum Parser {
 impl Parser {
     /// Perform full parsing on a file input
     pub fn parse(&self, inp: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn ParseError>)>) {
-        // Parse
         let (ast, errors) = match self {
             Parser::Kif => {
                 let (tokens, tok_err) = kif::tokenize(&inp, file);

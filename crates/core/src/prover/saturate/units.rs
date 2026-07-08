@@ -1,4 +1,4 @@
-// crates/core/src/saturate/units.rs
+// crates/core/src/prover/saturate/units.rs
 //
 // Active unit-clause stores (prototype Prover state): the O(1)
 // subsumption/simplification machinery the `make` step rides.
@@ -224,11 +224,18 @@ impl UnitStores {
             let mut key = super::arity_tag(n_elems);
             let mut scan_all = false;
             for (i, sk) in seats.iter().enumerate() {
-                if (mp >> i) & 1 == 1 {
+                // Seats ≥ 64 are implicitly MASKED on the build side
+                // (`AtomInfo.mask` — coin 0, no residue contribution, no
+                // shape bit), so mirror that here: treat them as pattern-
+                // open and unshaped.  Without the `i < 64` guard the
+                // shifts overflow (debug panic, `i & 63` misread in
+                // release).  Over-inclusion is sound — the exact one-way
+                // match re-verifies every candidate.
+                if i >= 64 || (mp >> i) & 1 == 1 {
                     // Pattern-open seat.  If the group SHAPES it, the
                     // target must be a compound with that exact
                     // (head, len) — anything else can't match.
-                    if (shaped >> i) & 1 == 1 {
+                    if i < 64 && (shaped >> i) & 1 == 1 {
                         match sk {
                             SeatK::Compound(Some(c)) => key ^= c,
                             _ => continue 'group,

@@ -105,6 +105,12 @@ pub(crate) struct ProverStats {
     pub(crate) dedup_collisions_detected: u64,
     pub(crate) discarded_deep: u64,
     pub(crate) discarded_long: u64,
+    /// Load-path clauses whose slot-lift failed (`pclause_terms` returned
+    /// `None`: more than `MAX_CANON_SLOTS` distinct variables).  The clause
+    /// IS in the store, so `root_load_failed` reads the root as loaded —
+    /// without this counter the loss is invisible and `complete_saturation`
+    /// would certify a saturation over a silently weakened theory.
+    pub(crate) slot_lift_failures: u64,
     /// Some clause carried an equality literal — the "problem contains
     /// equality" signal for strict saturation verdicts.  Only tracked
     /// when `Strategy.strict_saturation` (sticky bit, one scan per make).
@@ -352,6 +358,13 @@ pub(crate) struct ProverStats {
     pub(crate) bwd_bucket_scanned: u64,
     /// Posting compactions run (dead fraction crossed the threshold).
     pub(crate) bwd_postings_compactions: u64,
+    /// Clauses whose postings registration was skipped because the wall
+    /// deadline had already passed (mega-CNF load guard; skipped clauses
+    /// just miss backward rewrites — an index gap, never unsoundness).
+    pub(crate) bwd_postings_deadline_skips: u64,
+    /// Clauses skipped by the registration size cap (path-clone cost is
+    /// O(size × depth); one mega-clause can dwarf the wall budget).
+    pub(crate) bwd_postings_size_skips: u64,
 
     // -- phase-2 decode chain (k-channel Vandermonde rows; see
     //    prover/rows.rs).  All zero unless bwd_demod is on AND an

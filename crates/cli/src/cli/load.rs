@@ -14,9 +14,8 @@ use sigmakee_rs_sdk::{Session};
 /// 
 /// This variant is for layers which perform TPTP translation. It will
 /// warm the translation cache and persist that
-pub fn run_load_warm<L>(mut session: Session<L>, manager: KBManager) -> bool 
+pub fn run_load_warm<L>(mut session: Session<L>, manager: KBManager) -> bool
 where L: HasTranslation {
-    // Warm translation cache with an unused TPTP translation
     if let Err(e) = session.translate(manager.into()) {
         log::error!("Error warming session translation cache: {}", e);
         log::error!("Aborting KB loading");
@@ -39,7 +38,6 @@ where L: HasTranslation {
 /// This variant is for layers which do not have translation capacity. 
 /// No cache warming is necessary
 pub fn run_load<L>(session: Session<L>, _manager: KBManager) -> bool where L : TopLayer {
-    // Warm translation cache with an unused TPTP translation
     if let Err(err) = session.persist() {
         log::error!("Failed to save KB to disk: {}", err);
         false

@@ -120,7 +120,10 @@ impl ProverLayer {
 
     /// Native step-exhaustion (`GaveUp`) narrows like a timeout, not widens —
     /// the search space was too big, the wrong gradient for the planner to
-    /// read as prover-incompleteness. Shared by the plain autoscale loop
+    /// read as prover-incompleteness. Remapped to `ResourceOut`, NOT
+    /// `TimeLimit`: `classify` narrows on `(Unknown, ResourceOut)`, while
+    /// `(Unknown, TimeLimit)` falls to its catch-all and would stop the loop
+    /// without the Narrow retry. Shared by the plain autoscale loop
     /// above and each lane of [`run_portfolio_schedule`] (mirrors the trait
     /// `ProvingLayer::remap` override for `ProverLayer`).
     fn remap_native(
@@ -128,7 +131,7 @@ impl ProverLayer {
         term:    Option<TerminationReason>,
     ) -> Option<TerminationReason> {
         match term {
-            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
+            Some(TerminationReason::GaveUp) => Some(TerminationReason::ResourceOut),
             other => other,
         }
     }
@@ -376,6 +379,17 @@ impl ProverLayer {
             .map(|s| Scope::Session(session_id(s)))
             .unwrap_or(Scope::Base);
 
+        // Modal K-distribution injection (native HO-parity, part A): which
+        // attitude relations qualify for THIS problem.  Decided here (needs
+        // the final sorted selection + the scope); the clauses themselves
+        // load after snapshot freeze/rehydrate below, so frozen background
+        // bases never contain them.
+        let modal_k_rels: Vec<&'static str> = if opts.strategy.modal_k {
+            self.modal_k_qualifying(scope, &selected, &seed)
+        } else {
+            Vec::new()
+        };
+
         let input_gen = t0.elapsed();
         let t1 = Instant::now();
         let opts_profile = opts.profile;
@@ -595,6 +609,17 @@ impl ProverLayer {
             }
             {
                 profile_span!(ctx, "ask.load_support_conjecture");
+                // Part-A injection: K-distribution schemata for the
+                // qualifying attitude relations.  GUARDRAIL (Montague):
+                // these axioms only REARRANGE quoted structure — ?P/?Q
+                // stay in argument position under the same attitude
+                // relation; nothing is ever unquoted, so no general
+                // truth/unquote bridge over quotes is introduced here.
+                // See `clausify::modal_k_clauses`.
+                for rel in &modal_k_rels {
+                    let cls = super::clausify::modal_k_clauses(rel, &self.atoms);
+                    prover.add_injected_clauses(&cls, "modal_k");
+                }
                 for sid in &session_sids {
                     prover.add_support_root(*sid);
                 }
@@ -645,8 +670,15 @@ impl ProverLayer {
             // orientable) whenever the problem contains equality.
             let complete_saturation = match verdict {
                 RunVerdict::Saturated => {
+                    // `slot_lift_failures`: a stored clause that never made
+                    // it into the run (root still reads as loaded).
+                    // `input_contradictions`: a suppressed axiom-only empty
+                    // clause — the theory is UNSAT, so a saturation over
+                    // the SOS remainder is meaningless as a countermodel.
                     let no_drops = prover.stats.discarded_long == 0
                         && prover.stats.discarded_deep == 0
+                        && prover.stats.slot_lift_failures == 0
+                        && prover.stats.input_contradictions == 0
                         && input_load_failures == 0;
                     Some(no_drops && (!strict_saturation || {
                         let st = &prover.opts.strategy;
@@ -656,9 +688,16 @@ impl ProverLayer {
                                 && prover.stats.unorientable_eqs == 0);
                         let whole_theory = selected.len()
                             >= self.semantic.syntactic.root_sids().len();
+                        // Schema absorption replaces the absorbed axiom at
+                        // inference level ONLY for binary resolution (the
+                        // swap retry in `resolve`); factoring and the unit
+                        // open-match channel have no symmetric handling, so
+                        // a saturation after any absorption is not
+                        // refutation-complete and must not certify.
                         st.full_saturation
                             && eq_ok
                             && prover.stats.gen_capped == 0
+                            && prover.stats.schema_absorbed == 0
                             && whole_theory
                     }))
                 }
@@ -763,12 +802,20 @@ impl ProverLayer {
             // made it into the clause set — the line every consumer of a
             // withheld Satisfiable/Disproved verdict needs to see.
             if input_load_failures > 0 {
+                // Truthful per mode: strict withholds the verdict outright;
+                // the legacy KIF path still REPORTS Disproved (a heuristic
+                // signal, not a certificate — see the verdict mapping), so
+                // the warning must not claim it was withheld there.
                 raw.push_str(&format!(
                     "\nWARNING: {input_load_failures} input formula(s) failed to load \
                      (conjecture roots dropped: {}, goal clausification lossy: {}, \
-                     background/support roots failed: {}) — Satisfiable/countermodel \
-                     verdicts withheld (GaveUp)",
-                    conj.dropped, conj_lossy, failed_roots));
+                     background/support roots failed: {}) — {}",
+                    conj.dropped, conj_lossy, failed_roots,
+                    if strict_saturation {
+                        "Satisfiable/countermodel verdicts withheld (GaveUp)"
+                    } else {
+                        "Saturated verdicts are heuristic (loaded theory incomplete)"
+                    }));
             }
             // Ground-term identity line (NF memo + subtree bloom prune)
             // only when demod is on: the default-path SIGMA_STATS output
@@ -913,6 +960,17 @@ impl ProverLayer {
                          {defcnf_roots} roots_rescued"));
                 }
             }
+            // KappaFn comprehension line only when a kappa term was
+            // actually met (process-cumulative, like defcnf above):
+            // kappa-free problems keep byte-identical SIGMA_STATS output.
+            {
+                let (kappa_comp, kappa_bails) = super::clausify::kappa_counters();
+                if kappa_comp > 0 || kappa_bails > 0 {
+                    raw.push_str(&format!(
+                        "\nkappa: {kappa_comp} comprehensions_emitted, \
+                         {kappa_bails} malformed_bails"));
+                }
+            }
             // Verified-dedup collision line only when one actually
             // occurred (expected ~never): default-path SIGMA_STATS
             // output stays byte-identical.
@@ -944,35 +1002,22 @@ impl ProverLayer {
         let prover_run = t1.elapsed();
 
 
-        // Status mapping.  A refutation whose proof never touches the
-        // negated conjecture means the selected axioms alone derive ⊥ —
-        // vacuous → Inconsistent (kb/prove.rs's rule).  Saturation:
-        // under the legacy KIF path (strict off), no refutation from
-        // this support set → report Disproved with the Saturation
-        // marker (same shape as Vampire's CounterSatisfiable mapping;
-        // the strategy's caps make this a strong signal, not a
-        // certificate).  Under strict saturation (the TPTP path),
-        // Disproved is a CERTIFICATE: it requires the run to have been
-        // genuinely refutation-complete (`complete_saturation`), else
-        // the honest verdict is Unknown — still `Saturation`-flagged so
-        // the autoscale loop widens rather than giving up.
-        let (status, termination) = match verdict {
-            RunVerdict::Refutation(_) => {
-                if conjecture_used {
-                    (ProverStatus::Proved, None)
-                } else {
-                    (ProverStatus::Inconsistent, None)
-                }
-            }
-            RunVerdict::Saturated if strict_saturation && complete_saturation != Some(true) =>
-                (ProverStatus::Unknown, Some(TerminationReason::Saturation)),
-            RunVerdict::Saturated =>
-                (ProverStatus::Disproved, Some(TerminationReason::Saturation)),
-            RunVerdict::StepsExhausted =>
-                (ProverStatus::Unknown, Some(TerminationReason::GaveUp)),
-            RunVerdict::TimedOut =>
-                (ProverStatus::Timeout, Some(TerminationReason::TimeLimit)),
-        };
+        // Status mapping — the shared ladder (`map_verdict`).  A
+        // refutation whose proof never touches the negated conjecture
+        // means the selected axioms alone derive ⊥ — vacuous →
+        // Inconsistent (kb/prove.rs's rule).  Saturation: under the
+        // legacy KIF path (strict off), no refutation from this support
+        // set → report Disproved with the Saturation marker (same shape
+        // as Vampire's CounterSatisfiable mapping; the strategy's caps
+        // make this a strong signal, not a certificate).  Under strict
+        // saturation (the TPTP path), Disproved is a CERTIFICATE: it
+        // requires the run to have been genuinely refutation-complete
+        // (`complete_saturation`), else the honest verdict is Unknown —
+        // still `Saturation`-flagged so the autoscale loop widens rather
+        // than giving up.
+        let (status, termination) = super::prover::map_verdict(
+            verdict, conjecture_used, strict_saturation, complete_saturation,
+            super::prover::VerdictMode::Ask);
 
         let mut result = ProverResult {
             status,
@@ -1004,6 +1049,56 @@ impl ProverLayer {
                             sent.elements.first(), Some(Element::Op(OpKind::Equal))))
             })
         })
+    }
+
+    /// Part-A injection guard: the attitude relations qualifying for
+    /// modal K-distribution on THIS problem — exactly `knows`/`believes`
+    /// (THF-lane parity scope), and only when
+    ///
+    ///   (a) the KB's taxonomy DECLARES the relation's argument-2 domain
+    ///       as `Formula` (or a Formula descendant) — the computed-
+    ///       declaration guard the THF chip's `ho_signatures` cache
+    ///       encodes but the THF assembler's injection skips (a filed
+    ///       bug: it keys on the declared NAME only); here the domain
+    ///       check is enforced from day one — and
+    ///   (b) the relation actually occurs in the selected axioms /
+    ///       conjecture / session seed, so unrelated problems carry no
+    ///       dead weight.
+    ///
+    /// `selected` must be sorted (binary search).
+    fn modal_k_qualifying(
+        &self,
+        scope:    Scope,
+        selected: &[SentenceId],
+        seed:     &HashSet<SymbolId>,
+    ) -> Vec<&'static str> {
+        use crate::semantics::types::RelationDomain;
+        let syn = &self.semantic.syntactic;
+        let Some(formula) = syn.sym_id("Formula") else { return Vec::new() };
+        let mut out = Vec::new();
+        for rel in ["knows", "believes"] {
+            let Some(sym) = syn.sym_id(rel) else { continue };
+            // (a) declared Formula domain at argument 2.
+            let arg2_is_formula = matches!(
+                self.semantic.domain_scoped(sym, scope).get(1),
+                Some(RelationDomain::Domain(cls))
+                    if *cls == formula
+                        || self.semantic.has_ancestor_scoped(*cls, formula, scope));
+            if !arg2_is_formula {
+                continue;
+            }
+            // (b) occurrence in the problem.
+            let occurs = seed.contains(&sym)
+                || syn.sine_current(|idx| {
+                    idx.axioms_of_symbol(sym)
+                        .iter()
+                        .any(|&(_, aid)| selected.binary_search(&aid).is_ok())
+                });
+            if occurs {
+                out.push(rel);
+            }
+        }
+        out
     }
 
     /// Polarity-aware definitional completion of a selection.  A predicate in a

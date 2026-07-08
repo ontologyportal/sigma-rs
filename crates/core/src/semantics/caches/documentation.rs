@@ -109,10 +109,6 @@ fn doc_symbols(parent: &SemanticLayer, sid: SentenceId) -> Vec<SymbolId> {
     }).collect()
 }
 
-// ---------------------------------------------------------------------------
-// Shared doc-relation scan
-// ---------------------------------------------------------------------------
-
 /// Scan head-indexed root sentences for a documentation-style relation,
 /// collecting `(language, text)` entries describing `target`.
 ///

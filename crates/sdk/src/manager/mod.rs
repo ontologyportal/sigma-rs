@@ -265,11 +265,19 @@ impl ExternalProverConfig {
 pub trait ProverOptsFor: Sized {
     /// Build this options struct from the manager's configured prover defaults.
     fn from_manager(manager: &KBManager) -> Self;
+
+    /// Whether a run with these options retains a proof transcript when the
+    /// prover finds one.  External provers always emit their proof into the
+    /// output we parse; the native prover only records one when `want_proof`
+    /// is set.  Lets the CLI distinguish "no proof was recorded" from "no
+    /// proof exists" when deciding what to print for an empty `proof_kif`.
+    fn records_proof(&self) -> bool { true }
 }
 
 #[cfg(feature = "native-prover")]
 impl ProverOptsFor for sigmakee_rs_core::NativeOpts {
     fn from_manager(manager: &KBManager) -> Self { manager.native_opts() }
+    fn records_proof(&self) -> bool { self.want_proof }
 }
 
 #[cfg(feature = "ask")]

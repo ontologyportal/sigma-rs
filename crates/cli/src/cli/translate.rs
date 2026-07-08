@@ -26,7 +26,6 @@ pub fn run_translate<L>(
 ) -> bool 
 where 
     L: HasTranslation + TopLayer {
-    // Handle translating a test file
     if let Some(test_file) = test {
         let test_source = Source::Local(vec![test_file]);
         let prover_opts = manager.external_prover.to_prover_opts();
@@ -51,8 +50,6 @@ where
         return true;
     }
 
-    // Translate either a singular formula or a full file
-
     // Stdin auto-detect: `read_stdin` internally checks `is_terminal()`
     // and returns None when stdin is a TTY, so this is safe when run
     // interactively.  Pipes (`cat foo.kif | sumo translate`) are
@@ -66,7 +63,6 @@ where
 
     match formula {
         Some(text) => {
-            // Build the Source            
             match session.translate_formula(&text, opts.lang) {
                 Ok(s) => {print!("{}", s); true},
                 Err(e) => {

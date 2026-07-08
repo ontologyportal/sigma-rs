@@ -232,8 +232,15 @@ fn happens_event(syn: &SyntacticLayer, sid: SentenceId) -> Option<Symbol> {
 /// plus a `SymbolId → Symbol` map for every constant (so the prover can
 /// rebuild `holdsAt` terms).  `None` when no DEC narrative is present (so the
 /// discharge is a no-op on SUMO and every non-EC corpus).
+///
+/// `scope` restricts the harvest to the asking scope (base + that
+/// session's overlay): `root_sids` spans EVERY session's transients, and
+/// merging another session's events would let the closed-world grid
+/// assert `holdsAt`/`~holdsAt` units from a narrative the asker never
+/// stated (same visibility rule as `store_facts`).
 pub(crate) fn parse_narrative(
-    syn: &SyntacticLayer,
+    syn:   &SyntacticLayer,
+    scope: crate::semantics::types::Scope,
 ) -> Option<(Narrative, HashMap<SymbolId, Symbol>)> {
     let mut nar = Narrative::default();
     let mut names: HashMap<SymbolId, Symbol> = HashMap::new();
@@ -253,6 +260,16 @@ pub(crate) fn parse_narrative(
     };
 
     for sid in syn.root_sids() {
+        // Scope filter (see the fn doc): only base sentences and the
+        // asking session's own overlay feed the narrative.
+        let owners = syn.sessions.sessions_of(sid);
+        let visible = owners.is_empty()
+            || syn.sessions.is_axiom(sid)
+            || matches!(scope,
+                crate::semantics::types::Scope::Session(id) if owners.contains(&id));
+        if !visible {
+            continue;
+        }
         let Some(s) = syn.sentence(sid) else { continue };
 
         // Harvest every time constant (`n0`, `n1`, …) anywhere in the root —
@@ -423,6 +440,16 @@ pub(crate) fn parse_narrative(
                 nar.initial.insert(fl, val);
                 nar.initial_sid.insert((fl, t), isid);
             }
+        }
+        // A `holdsAt` hypothesis at any LATER time is a constraint the
+        // DEC model never consumes — the closed-world grid fills that
+        // cell purely from event effects and can then assert the
+        // NEGATION of an explicit KB fact as a support unit (a wrong
+        // Proved for `(not (holdsAt F t))`).  Such narratives are not
+        // pure inertial narratives; bail and let the generic saturation
+        // path handle them soundly.
+        if nar.initial_at.iter().any(|&(_, t, _, _)| t != t0) {
+            return None;
         }
     }
 
