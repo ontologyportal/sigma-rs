@@ -42,7 +42,7 @@ $ git submodule update --recursive --init
 Finally, compile everything:
 
 ```bash
-cargo build --release
+cargo build --release --bin sumo
 ```
 
 The executable is located in `target/release/sumo`. You can link it to your PATh using:
