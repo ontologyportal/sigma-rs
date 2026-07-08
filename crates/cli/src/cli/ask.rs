@@ -36,6 +36,9 @@ where
     // The progress sink was already installed by `dispatch`.  Derive the prover
     // opts (selection / timeout / proof dialect) from the configured manager.
     let opts = <L::Opts as ProverOptsFor>::from_manager(manager);
+    // Consulted below when `proof_kif` comes back empty: did we even ask the
+    // prover to record a proof?  (Native: only with `--want-proof true`.)
+    let proof_recorded = opts.records_proof();
     let open = tell.iter().try_fold(session.open_session(), |s, t| s.tell(t));
     let open = match open {
         Ok(o)  => o,
@@ -84,9 +87,26 @@ where
     let format = manager.proof.as_str();
     if format != "none" {
         if format != "tptp" && result.proof_kif.is_empty() {
-            println!(
-                "(no proof exists: verdict {:?} — the prover found no refutation)",
-                result.status);
+            // Say WHY there are no steps to render, per verdict.  Proved and
+            // Inconsistent mean a refutation WAS found — a proof exists, we
+            // just don't have a transcript.  Disproved and Consistent are
+            // saturation certificates — no refutation exists, so there is
+            // genuinely nothing to render.
+            let note = match result.status {
+                ProverStatus::Proved | ProverStatus::Inconsistent if !proof_recorded =>
+                    "(proof not recorded — rerun with --want-proof true to render it)",
+                ProverStatus::Proved | ProverStatus::Inconsistent =>
+                    "(proof found, but the prover returned no renderable transcript)",
+                ProverStatus::Disproved | ProverStatus::Consistent =>
+                    "(no proof exists: the prover saturated without finding a refutation)",
+                ProverStatus::Timeout =>
+                    "(no proof: the prover timed out before finding a refutation)",
+                ProverStatus::InputError =>
+                    "(no proof: the prover rejected the input before running)",
+                ProverStatus::Unknown =>
+                    "(no proof: the prover found no refutation)",
+            };
+            println!("{}", note);
         } else {
             println!("\n{style_bold}Conjecture:{style_reset} {}", conjecture.trim());
             print_proof(session.kb(), &result, format);

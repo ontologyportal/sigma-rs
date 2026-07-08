@@ -95,25 +95,21 @@ pub(crate) fn compute_sort_scoped(
 ) -> Result<Sort, TranslationError> {
     use crate::types::ClassInference;
     match parent.semantic.infer_class_scoped(sym, scope) {
-        // If only a single class is found
         ClassInference::Single(class_id) => {
             Ok(parent.numeric_sort_of_class(class_id).unwrap_or(Sort::Individual))
         },
-        // Multiple class candidates were found for the item
         ClassInference::Multiple(class_ids) => {
             let (numeric_sort_classes, other_classes) : (Vec<_>, Vec<_>) =
                 class_ids.iter().partition(|&id| parent.numeric_sort_of_class(*id).is_some());
             if numeric_sort_classes.len() == 0 {
-                // If no numeric sorts - then its an individual
                 Ok(Sort::Individual)
             } else {
-                // Now check if all the non numeric sorts are just super
-                // classes of the numeric classes
-                // Collect the numeric sorts into a HashSet to remove duplicates
+                // All non-numeric classes must be superclasses of the numeric
+                // ones for this to resolve; dedupe the numeric sorts and take
+                // the most specific.
                 let numeric_sorts: HashSet<Sort> = HashSet::from_iter(numeric_sort_classes
                     .iter()
                     .map(|c: &&SymbolId| parent.numeric_sort_of_class(**c).unwrap()));
-                // If there are multiple numeric sorts, get the MOST specific
                 let sort = numeric_sorts.into_iter().max().unwrap();
 
                 if other_classes.iter().all(|id|
@@ -121,7 +117,6 @@ pub(crate) fn compute_sort_scoped(
                         a.is_some() && a.unwrap().get(id).is_some())) {
                     Ok(sort)
                 } else {
-                    // No, so its an ambiguous sort
                     Err(TranslationError::AmbiguousSort { sym, sorts: vec![Sort::Individual, sort] })
                 }
             }

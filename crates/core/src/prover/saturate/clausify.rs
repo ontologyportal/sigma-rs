@@ -891,6 +891,14 @@ struct SkolemCtx {
     /// re-clausifying the same root is idempotent and two roots can
     /// never share a skolem.
     root:    SentenceId,
+    /// Goal-mode (negated conjecture) clausification.  SentenceIds are
+    /// content hashes, so a conjecture CONTAINING a KB axiom (a
+    /// conjunction whose first conjunct is content-identical to it)
+    /// clausifies under the SAME root as the axiom — without a namespace
+    /// split, the axiom's existential witness and the goal's
+    /// counterexample witness both mint `sk_<root>_0` and a resolution
+    /// between them fabricates a refutation (a false Proved).
+    goal:    bool,
     fresh_n: u64,
     sk_n:    u64,
 }
@@ -905,10 +913,15 @@ impl SkolemCtx {
         id
     }
 
-    /// The next skolem head symbol: `sk_<root_hex>_<n>` — starts with the
-    /// `sk_` prefix `is_skolem_name` recognises (cnf/skolem.rs).
+    /// The next skolem head symbol: `sk_<root_hex>_<n>` (axiom mode) or
+    /// `sk_g<root_hex>_<n>` (goal mode — see the `goal` field; both start
+    /// with the `sk_` prefix `is_skolem_name` recognises, cnf/skolem.rs).
     fn skolem_sym(&mut self) -> Symbol {
-        let name = format!("sk_{:x}_{}", self.root, self.sk_n);
+        let name = if self.goal {
+            format!("sk_g{:x}_{}", self.root, self.sk_n)
+        } else {
+            format!("sk_{:x}_{}", self.root, self.sk_n)
+        };
         self.sk_n += 1;
         Symbol::from(name)
     }
@@ -1051,7 +1064,9 @@ pub(crate) fn clausify_sentence_lossy(
     let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (Vec::new(), true) };
     let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
     let units = std::mem::take(&mut lctx.units);
-    let (out, lossy) = clausify_form(f, units, atoms, root);
+    // `negate` doubles as the skolem-namespace mode: goal skolems must
+    // never collide with the axiom skolems of a content-identical root.
+    let (out, lossy) = clausify_form(f, units, atoms, root, negate);
     if !lossy {
         // STRICTLY ADDITIVE trigger: a losslessly-clausified root takes
         // exactly the path it always took — the rescue below runs only
@@ -1068,7 +1083,7 @@ pub(crate) fn clausify_sentence_lossy(
     let mut lctx = LiftCtx::new(root);
     let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (out, true) };
     let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
-    defcnf_rescue(f, &lctx.units, atoms, root)
+    defcnf_rescue(f, &lctx.units, atoms, root, negate)
         .map(|(o, l)| (o, l || lctx.capped))
         .unwrap_or((out, true))
 }
@@ -1106,7 +1121,9 @@ pub(crate) fn clausify_negated_conjunction_lossy(
     let mut lctx = LiftCtx::new(root);
     let Some(f) = lift_conj(&mut lctx) else { return (Vec::new(), true) };
     let units = std::mem::take(&mut lctx.units);
-    let (out, lossy) = clausify_form(f, units, atoms, root);
+    // Always goal mode: the root is the FIRST conjunct's content sid,
+    // which a loaded KB axiom can share — the namespaces must not.
+    let (out, lossy) = clausify_form(f, units, atoms, root, true);
     if !lossy {
         return (out, lctx.capped);
     }
@@ -1115,7 +1132,7 @@ pub(crate) fn clausify_negated_conjunction_lossy(
     // the definitional path may be able to repair.
     let mut lctx = LiftCtx::new(root);
     let Some(f) = lift_conj(&mut lctx) else { return (out, true) };
-    defcnf_rescue(f, &lctx.units, atoms, root)
+    defcnf_rescue(f, &lctx.units, atoms, root, true)
         .map(|(o, l)| (o, l || lctx.capped))
         .unwrap_or((out, true))
 }
@@ -1135,8 +1152,9 @@ fn clausify_form(
     kunits: Vec<Form>,
     atoms:  &AtomTable,
     root:   SentenceId,
+    goal:   bool,
 ) -> (Vec<PClause>, bool) {
-    let mut ctx = SkolemCtx { root, fresh_n: 0, sk_n: 0 };
+    let mut ctx = SkolemCtx { root, goal, fresh_n: 0, sk_n: 0 };
     let Some(mut raw) = lower_form(f, &mut ctx, MAX_CLAUSES_PER_FORMULA) else {
         return (Vec::new(), true);
     };
@@ -1403,6 +1421,10 @@ enum Seg {
 /// deterministic introduction order) plus the naming context.
 struct DefCtx {
     root:   SentenceId,
+    /// Goal-mode namespace split — same rule as [`SkolemCtx::goal`]: an
+    /// axiom and a conjecture sharing a content root must never share a
+    /// definitional predicate.
+    goal:   bool,
     units:  Vec<Form>,
     n_defs: u64,
     /// Defensive path-collision net — paths are unique by construction
@@ -1414,14 +1436,19 @@ struct DefCtx {
 }
 
 impl DefCtx {
-    fn new(root: SentenceId) -> Self {
-        DefCtx { root, units: Vec::new(), n_defs: 0, used: std::collections::HashSet::new() }
+    fn new(root: SentenceId, goal: bool) -> Self {
+        DefCtx { root, goal, units: Vec::new(), n_defs: 0, used: std::collections::HashSet::new() }
     }
 
-    /// `df_<root_hex>_<path>` — deterministic, root-scoped, path-derived.
+    /// `df_<root_hex>_<path>` (axiom) / `df_g<root_hex>_<path>` (goal) —
+    /// deterministic, root-scoped, path-derived.
     fn fresh_name(&mut self, path: &[Seg]) -> String {
         use std::fmt::Write;
-        let mut name = format!("df_{:x}_", self.root);
+        let mut name = if self.goal {
+            format!("df_g{:x}_", self.root)
+        } else {
+            format!("df_{:x}_", self.root)
+        };
         for (i, seg) in path.iter().enumerate() {
             if i > 0 { name.push('_'); }
             match seg {
@@ -1733,8 +1760,9 @@ fn defcnf_rescue(
     kunits: &[Form],
     atoms:  &AtomTable,
     root:   SentenceId,
+    goal:   bool,
 ) -> Option<(Vec<PClause>, bool)> {
-    let mut dc = DefCtx::new(root);
+    let mut dc = DefCtx::new(root, goal);
     let mut path = Vec::new();
     let main = pg(f, Pol::Pos, RESCUE_BUDGET, &mut path, &mut dc)?;
     debug_assert!(path.is_empty());
@@ -1743,7 +1771,7 @@ fn defcnf_rescue(
     // distinct units must never share a skolem symbol.  Unit order is
     // deterministic (main first, then definitions in introduction
     // order, then kappa units in mint order), so the names are too.
-    let mut ctx = SkolemCtx { root, fresh_n: 0, sk_n: 0 };
+    let mut ctx = SkolemCtx { root, goal, fresh_n: 0, sk_n: 0 };
     let mut raw = lower_form(main, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?;
     for unit in dc.units {
         raw.extend(lower_form(unit, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?);

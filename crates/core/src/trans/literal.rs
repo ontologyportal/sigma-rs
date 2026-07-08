@@ -1,7 +1,3 @@
-// crates/core/src/converter/literal.rs
-// 
-// Literal to TPTP implementations
-
 use crate::Literal;
 
 impl Literal {

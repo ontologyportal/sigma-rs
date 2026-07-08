@@ -13,7 +13,7 @@ use super::super::clause::{AtomId, Term};
 use super::super::oracle::Witness;
 use super::super::theory::TheoryOracle;
 use super::super::unify::{apply, shift_slots, slot_atom, unify, Subst};
-use super::{positions, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver, JOIN_UNIT_OFF, SUPPORT};
+use super::{positions_paths, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver, JOIN_UNIT_OFF, SUPPORT};
 
 impl<'a> NativeProver<'a> {
     /// Is clause `id` an activated, KBO-orientable positive unit equality
@@ -56,7 +56,7 @@ impl<'a> NativeProver<'a> {
         // LIFO frontier of equation ids still to superpose against the set;
         // newly derived equations join it (the closure's fixpoint engine).
         let mut frontier: Vec<u32> = self.unit_equation_ids();
-        while let Some(eid) = frontier.pop() {
+        'closure: while let Some(eid) = frontier.pop() {
             if produced >= budget || attempts >= hard {
                 break;
             }
@@ -72,12 +72,23 @@ impl<'a> NativeProver<'a> {
                 let Some(p_atom) =
                     slot_atom(&self.layer.atoms, self.syn(), self.clauses[p as usize].lits[0].atom, 0)
                 else { continue };
-                for (path, _sub) in positions(&p_atom) {
+                for path in positions_paths(&p_atom) {
                     attempts += 1;
                     if attempts >= hard {
                         break 'partners;
                     }
                     let Some(nid) = self.superpose(eid, 0, p, 0, &path) else { continue };
+                    // An EMPTY product is a refutation of the background
+                    // equations themselves (make can collapse the single
+                    // literal: false ground equality, unit simplification).
+                    // Queue it so `run` pops and reports it — silently
+                    // failing the unit-equation test below would LOSE the
+                    // refutation (the sibling sites in `forward_close` and
+                    // `superposition_inferences` have the same check).
+                    if self.clauses[nid as usize].lits.is_empty() {
+                        self.push_input(Some(nid));
+                        break 'closure;
+                    }
                     // Keep only genuinely new oriented unit equations.
                     let key = self.clauses[nid as usize].key;
                     if self.is_unit_equation_unactivated(nid) && self.seen_insert(key, nid) {

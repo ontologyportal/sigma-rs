@@ -50,10 +50,12 @@ fn adornment(args: &[DTerm], bound: &HashSet<u32>) -> u64 {
 }
 
 /// The args at the bound positions — the key a magic predicate carries.
+/// Positions ≥ 64 read as unbound (mirrors `adornment`'s `.take(64)` —
+/// an unguarded `1 << i` overflows on 65+-ary relations).
 fn bound_args(args: &[DTerm], mask: u64) -> Vec<DTerm> {
     args.iter()
         .enumerate()
-        .filter(|(i, _)| mask & (1 << i) != 0)
+        .filter(|(i, _)| *i < 64 && mask & (1 << i) != 0)
         .map(|(_, a)| a.clone())
         .collect()
 }
@@ -83,7 +85,7 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
     let seed: Vec<SymbolId> = goal_args
         .iter()
         .enumerate()
-        .filter(|(i, _)| goal_mask & (1 << i) != 0)
+        .filter(|(i, _)| *i < 64 && goal_mask & (1 << i) != 0)
         .filter_map(|(_, a)| match a {
             DTerm::Const(c) => Some(*c),
             DTerm::Var(_) => None,
@@ -105,7 +107,7 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
         for rule in prog.rules.iter().filter(|r| r.head.pred == p) {
             // Bound variables from the head's bound positions.
             let mut bound: HashSet<u32> = HashSet::new();
-            for (i, a) in rule.head.args.iter().enumerate() {
+            for (i, a) in rule.head.args.iter().enumerate().take(64) {
                 if pmask & (1 << i) != 0 {
                     if let DTerm::Var(v) = a {
                         bound.insert(*v);

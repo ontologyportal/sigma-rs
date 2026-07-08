@@ -320,7 +320,7 @@ fn compose_term(t: &Term, off: u64, s: &Subst, acc: &mut ComposeAcc) {
             // count PLUS every element (the head `Sym` recursion adds
             // its own 1 again — the established double count).
             if matches!(elems.first(),
-                Some(Term::Sym(sy)) if sy.name().starts_with("sk_"))
+                Some(Term::Sym(sy)) if sy.as_str().starts_with("sk_"))
             {
                 acc.skolems += 1;
             }
@@ -330,7 +330,7 @@ fn compose_term(t: &Term, off: u64, s: &Subst, acc: &mut ComposeAcc) {
         }
         Term::Sym(sy) => {
             acc.size += 1;
-            if sy.name().starts_with("sk_") {
+            if sy.as_str().starts_with("sk_") {
                 acc.skolems += 1;
             }
         }
@@ -360,7 +360,7 @@ fn compose_term_at(
         compose_term(t, off, s, acc);
         return;
     };
-    if matches!(elems.first(), Some(Term::Sym(sy)) if sy.name().starts_with("sk_")) {
+    if matches!(elems.first(), Some(Term::Sym(sy)) if sy.as_str().starts_with("sk_")) {
         acc.skolems += 1;
     }
     for (i, e) in elems.iter().enumerate() {
@@ -412,6 +412,51 @@ pub(crate) enum RunVerdict {
     StepsExhausted,
     /// Wall-clock budget exhausted.
     TimedOut,
+}
+
+/// How a driver consumes a [`RunVerdict`]: `Ask` maps saturation onto the
+/// Disproved family, `Consistency` onto Consistent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VerdictMode { Ask, Consistency }
+
+/// The one `RunVerdict` → `(ProverStatus, TerminationReason)` ladder,
+/// shared by `prove_one_driver`, `check_consistency_driver`, and
+/// `doxastic_project`.  The three used to carry hand-copied ladders that
+/// drifted: consistency certified Consistent with no completeness gate at
+/// all, and the doxastic ask arm ignored the `complete_saturation` it had
+/// itself computed.
+///
+/// - Refutation: conjecture-rooted → Proved; otherwise the inputs alone
+///   derive ⊥ → Inconsistent (both modes).
+/// - Saturated + `Ask`: under strict saturation Disproved is a CERTIFICATE
+///   and requires `complete_saturation`; the legacy KIF path reports
+///   Disproved as a heuristic signal (unchanged behavior).
+/// - Saturated + `Consistency`: Consistent is inherently a certificate —
+///   ALWAYS gated on `complete_saturation`, strict or not.
+pub(crate) fn map_verdict(
+    verdict:             RunVerdict,
+    conjecture_used:     bool,
+    strict_saturation:   bool,
+    complete_saturation: Option<bool>,
+    mode:                VerdictMode,
+) -> (crate::prover::ProverStatus, Option<crate::prover::TerminationReason>) {
+    use crate::prover::{ProverStatus as S, TerminationReason as TR};
+    match verdict {
+        RunVerdict::Refutation(_) if conjecture_used => (S::Proved, None),
+        RunVerdict::Refutation(_) => (S::Inconsistent, None),
+        RunVerdict::Saturated => match mode {
+            VerdictMode::Ask if strict_saturation && complete_saturation != Some(true) =>
+                (S::Unknown, Some(TR::Saturation)),
+            VerdictMode::Ask =>
+                (S::Disproved, Some(TR::Saturation)),
+            VerdictMode::Consistency if complete_saturation != Some(true) =>
+                (S::Unknown, Some(TR::GaveUp)),
+            VerdictMode::Consistency =>
+                (S::Consistent, Some(TR::Saturation)),
+        },
+        RunVerdict::StepsExhausted => (S::Unknown, Some(TR::GaveUp)),
+        RunVerdict::TimedOut => (S::Timeout, Some(TR::TimeLimit)),
+    }
 }
 
 
@@ -812,6 +857,12 @@ impl<'a> NativeProver<'a> {
     #[inline]
     pub(super) fn set_retired(&mut self, id: u32) {
         self.retired_bits[(id >> 6) as usize] |= 1u64 << (id & 63);
+        // Tombstone the literal index too: `count_complementary` feeds the
+        // fewest-candidates literal selection, and counting retired
+        // partners lets a literal whose partners are ALL retired win the
+        // selection and then produce zero resolvents (the retrieval side
+        // filters retired ids after selection — the count must agree).
+        self.idx.retire(id);
     }
 
     /// Borrow the reusable substitution buffer, sized to at least `n`
@@ -1961,7 +2012,15 @@ impl<'a> NativeProver<'a> {
             }
             // A recipe entry: materialize it into the given clause; a
             // rejection (duplicate / subsumed / over-cap — counted in
-            // `materialize_recipe`) pops the next passive entry.
+            // `materialize_recipe`) pops the next passive entry.  Each
+            // rejection replays a full make pipeline, so a deep backlog
+            // of rejecting recipes can grind for minutes inside ONE
+            // `run()` iteration — poll the anchored deadline between
+            // materializations.  The caller re-checks `out_of_time` on a
+            // `None`, grading this bail TimedOut rather than Saturated.
+            if self.out_of_time() {
+                return None;
+            }
             if let Some(mid) = self.materialize_recipe(id & !RECIPE_TAG) {
                 return Some(mid);
             }
@@ -2176,41 +2235,42 @@ impl<'a> NativeProver<'a> {
         t_cid: u32, t_li: usize,
         t_path: &[usize],
     ) -> Option<u32> {
-        // The "from" equation, oriented so the first side is KBO-larger.
-        let (e_terms, e_tier) = {
-            let c = &self.clauses[e_cid as usize];
-            (c.terms.clone(), c.tier)
-        };
-        let (s, t) = self.equality_oriented(&e_terms[e_li].1)?;
-
-        // The "into" clause and its rewrite target `u` — never a variable
-        // (superposition into variables is unsound for completeness and
-        // explosive).
-        let (t_terms, t_nvars, t_tier) = {
+        // Orient the "from" equation and locate the rewrite target `u`
+        // BEFORE cloning anything clause-sized: most attempts die at the
+        // mgu below, and the old path paid two full term-vector clones
+        // plus two shifted trees per failure.  Up front only the two
+        // oriented equation sides and the target subterm are cloned.
+        let e_tier = self.clauses[e_cid as usize].tier;
+        let (t_nvars, t_tier) = {
             let c = &self.clauses[t_cid as usize];
-            (c.terms.clone(), c.nvars, c.tier)
+            (c.nvars, c.tier)
         };
-        let u = subterm_at(&t_terms[t_li].1, t_path)?.clone();
+        let (s, t) = self.equality_oriented(&self.clauses[e_cid as usize].terms[e_li].1)?;
+
+        // The rewrite target `u` — never a variable (superposition into
+        // variables is unsound for completeness and explosive).
+        let u = subterm_at(&self.clauses[t_cid as usize].terms[t_li].1, t_path)?.clone();
         if matches!(u, Term::Var(_)) { return None; }
 
-        // Rename the equation apart from the target: shift its slots
-        // above the target's variable range.
+        // Rename-apart is VIRTUAL (`unify_off`): the equation's slots
+        // ride at `off`, nothing is shifted before the mgu succeeds.
+        // Slots are DENSE per clause (canonical renumbering: target
+        // 0..=t_nvars, equation off..=off+e_nvars), so the table size is
+        // arithmetic — same convention as `resolve` — with no
+        // per-attempt slot-collection walk over every literal.
         let off = u64::from(t_nvars) + 1;
-        let s2 = shift_slots(&s, off);
-        let t2 = shift_slots(&t, off);
-
-        // Size a substitution table covering both clauses' slot ranges.
-        let mut slots = std::collections::BTreeSet::new();
-        super::unify::term_slots(&s2, &mut slots);
-        super::unify::term_slots(&t2, &mut slots);
-        for (_, term) in &t_terms {
-            super::unify::term_slots(term, &mut slots);
-        }
-        let max_slot = slots.iter().max().copied().unwrap_or(off);
-        let mut subst: Subst = vec![None; (max_slot + 1) as usize];
+        let e_nvars = self.clauses[e_cid as usize].nvars;
+        let mut subst: Subst = vec![None; (off + u64::from(e_nvars) + 1) as usize];
 
         // σ = mgu(s, u).
-        if !unify(&s2, &u, &mut subst) { return None; }
+        if !unify_off(&s, off, &u, 0, &mut subst) { return None; }
+
+        // The mgu holds — NOW materialize the copies the construction
+        // below consumes (bindings from `unify_off` are absolute, byte-
+        // identical to unifying against a pre-shifted equation side).
+        let e_terms = self.clauses[e_cid as usize].terms.clone();
+        let t_terms = self.clauses[t_cid as usize].terms.clone();
+        let t2 = shift_slots(&t, off);
 
         // Deferred-passive discipline: queue a recipe instead of
         // building the conclusion + running `make`.  Conjecture-tier
@@ -2317,13 +2377,12 @@ impl<'a> NativeProver<'a> {
             .collect();
         for (li, (_, atom)) in g_terms.iter().enumerate() {
             if li >= 64 || (g_max >> li) & 1 == 0 { continue; }
-            for (path, _sub) in positions(atom) {
+            for path in positions_paths(atom) {
                 for &(e_cid, e_li) in &eqns {
-                    // Wall-clock poll per attempt: each `superpose` deep-
-                    // clones the target clause, so a mega-term clause makes
-                    // this loop the budget's blind spot.  Truncation is
-                    // counted as `gen_capped` (same completeness semantics:
-                    // inferences were never made).
+                    // Wall-clock poll per attempt: a mega-term clause
+                    // makes this loop the budget's blind spot.
+                    // Truncation is counted as `gen_capped` (same
+                    // completeness semantics: inferences were never made).
                     if self.out_of_time() {
                         self.stats.gen_capped += 1;
                         return None;
@@ -2389,7 +2448,14 @@ impl<'a> NativeProver<'a> {
     pub(crate) fn add_background_root(&mut self, root: SentenceId) {
         self.bg_roots.insert(root);
         for pc in self.layer.clauses_for(root).iter() {
-            let Some(terms) = self.pclause_terms(pc) else { continue };
+            let Some(terms) = self.pclause_terms(pc) else {
+                // Slot-lift failure (>MAX_CANON_SLOTS distinct variables):
+                // the clause is stored, so `root_load_failed` still reads
+                // the root as loaded — count the loss or
+                // `complete_saturation` certifies a weakened theory.
+                self.stats.slot_lift_failures += 1;
+                continue;
+            };
             if let Some(id) = self.make(terms, vec![], "axiom", BACKGROUND, Some(root), false) {
                 let key = self.clauses[id as usize].key;
                 if self.clauses[id as usize].lits.len() > self.input_width_cap() {
@@ -2437,7 +2503,14 @@ impl<'a> NativeProver<'a> {
         rule:    &'static str,
     ) {
         for pc in clauses {
-            let Some(terms) = self.pclause_terms(pc) else { continue };
+            let Some(terms) = self.pclause_terms(pc) else {
+                // Slot-lift failure (>MAX_CANON_SLOTS distinct variables):
+                // the clause is stored, so `root_load_failed` still reads
+                // the root as loaded — count the loss or
+                // `complete_saturation` certifies a weakened theory.
+                self.stats.slot_lift_failures += 1;
+                continue;
+            };
             if let Some(id) = self.make(terms, vec![], rule, BACKGROUND, None, false) {
                 let key = self.clauses[id as usize].key;
                 if self.clauses[id as usize].lits.len() > self.input_width_cap() {
@@ -2467,7 +2540,14 @@ impl<'a> NativeProver<'a> {
     /// rules into the passive queue, units activated + seeded.
     pub(crate) fn add_support_root(&mut self, root: SentenceId) {
         for pc in self.layer.clauses_for(root).iter() {
-            let Some(terms) = self.pclause_terms(pc) else { continue };
+            let Some(terms) = self.pclause_terms(pc) else {
+                // Slot-lift failure (>MAX_CANON_SLOTS distinct variables):
+                // the clause is stored, so `root_load_failed` still reads
+                // the root as loaded — count the loss or
+                // `complete_saturation` certifies a weakened theory.
+                self.stats.slot_lift_failures += 1;
+                continue;
+            };
             if let Some(id) = self.make(terms, vec![], "hypothesis", SUPPORT, Some(root), false) {
                 self.add_support_clause(id);
             }
@@ -2523,7 +2603,14 @@ impl<'a> NativeProver<'a> {
             }
         }
         for pc in clauses {
-            let Some(terms) = self.pclause_terms(pc) else { continue };
+            let Some(terms) = self.pclause_terms(pc) else {
+                // Slot-lift failure (>MAX_CANON_SLOTS distinct variables):
+                // the clause is stored, so `root_load_failed` still reads
+                // the root as loaded — count the loss or
+                // `complete_saturation` certifies a weakened theory.
+                self.stats.slot_lift_failures += 1;
+                continue;
+            };
             let id = self.make(terms, vec![], "negated_conjecture", CONJECTURE, None, false);
             self.push_input(id);
         }
@@ -2962,6 +3049,14 @@ impl<'a> NativeProver<'a> {
             for j in (i + 1)..terms.len() {
                 if terms[i].0 != terms[j].0 { continue; }
                 self.stats.factor_attempts += 1;
+                // lits² unify/make attempts with no output cap — poll the
+                // wall clock like `paramodulants`; the truncation counts
+                // into `gen_capped` so strict saturation never certifies
+                // over the skipped inferences.
+                if self.stats.factor_attempts & 63 == 0 && self.out_of_time() {
+                    self.stats.gen_capped += 1;
+                    return out;
+                }
                 // Coin-level refutation: a seat ground in BOTH literals
                 // with different coins (= different content) admits no
                 // unifier; arity mismatch likewise.  Seats open on
@@ -3064,6 +3159,7 @@ impl<'a> NativeProver<'a> {
             (c.terms.clone(), c.nvars, c.tier, c.max_mask)
         };
         let mut out = Vec::new();
+        let mut polls = 0u32;
         for i in 0..terms.len() {
             // `s ≈ t` must be a positive, eligible (maximal) equality.
             if !terms[i].0 || (i < 64 && (max_mask >> i) & 1 == 0) { continue; }
@@ -3078,6 +3174,16 @@ impl<'a> NativeProver<'a> {
                         continue;
                     }
                     for (u, v) in [(&aj, &bj), (&bj, &aj)] {
+                        // Up to 4·lits² eager `make`s per given with no
+                        // output cap (unlike para_cap'd superposition) —
+                        // poll the wall clock like `paramodulants`, and
+                        // count the truncation so strict saturation never
+                        // certifies over the skipped inferences.
+                        polls += 1;
+                        if polls & 63 == 0 && self.out_of_time() {
+                            self.stats.gen_capped += 1;
+                            return out;
+                        }
                         let mut sub: Subst = vec![None; nvars as usize + 1];
                         if !unify(s, u, &mut sub) { continue; }
                         // Build (s ≈ v ∨ t ≉ v ∨ rest)σ.
@@ -3277,6 +3383,19 @@ impl<'a> NativeProver<'a> {
         if self.opts.step {
             stepdbg::force_on();
         }
+        // Anchor the wall deadline BEFORE the discharge prologue: the
+        // horn-join / model / event-calculus passes below can be the
+        // expensive part of an attempt, and their internal polls read
+        // `run_deadline` — anchoring after them would leave the prologue
+        // unbounded.  Keep a load-time anchor when one exists (see
+        // `add_conjecture_clauses`): the attempt's budget covers load AND
+        // search.  Fast-load paths reach here with `None` and anchor now,
+        // exactly as before.
+        let t0 = Instant::now();
+        if self.run_deadline.is_none() {
+            self.run_deadline = (!self.opts.step && self.opts.time_limit_secs > 0)
+                .then(|| t0 + std::time::Duration::from_secs(self.opts.time_limit_secs));
+        }
         // Semantic clause-selection guidance: build the run's positive
         // model exactly once, up front (before any given-clause is
         // scored).  A no-op when `Strategy.semantic_guide` is off; a
@@ -3297,25 +3416,16 @@ impl<'a> NativeProver<'a> {
         // forward-closure path, which runs before `run()`) drives
         // `resolve`/`superpose` too and needs materialized results.
         self.defer_active = self.opts.strategy.deferred_passive;
-        let t0 = Instant::now();
-        // Keep a load-time anchor when one exists (see
-        // `add_conjecture_clauses`): the attempt's budget covers load AND
-        // search.  Fast-load paths reach here with `None` and anchor now,
-        // exactly as before.
-        if self.run_deadline.is_none() {
-            self.run_deadline = (!self.opts.step && self.opts.time_limit_secs > 0)
-                .then(|| t0 + std::time::Duration::from_secs(self.opts.time_limit_secs));
-        }
         let mut steps = 0usize;
         while steps < self.opts.max_steps {
             // In interactive single-step mode the wall clock is meaningless
             // (the user is paused at a prompt), so ignore the time limit —
-            // only explicit cancellation (`q`) stops the run.
-            if self.opts.cancelled()
-                || (!self.opts.step
-                    && self.opts.time_limit_secs > 0
-                    && t0.elapsed().as_secs() >= self.opts.time_limit_secs)
-            {
+            // only explicit cancellation (`q`) stops the run.  Polls the
+            // ANCHORED `run_deadline` (construction / load start), not
+            // `t0`: measuring from `run()` start would grant a slow load
+            // a second full budget on every `continue` path that skips
+            // the stage polls (redundant given, suppressed empty).
+            if self.out_of_time() {
                 return (RunVerdict::TimedOut, steps);
             }
             // FD congruence may have queued derived equalities (from
@@ -3323,6 +3433,12 @@ impl<'a> NativeProver<'a> {
             // before selecting the next given.
             self.drain_fd_equalities();
             let Some(mut given) = self.pop_given() else {
+                // `pop_given` also returns None on a mid-materialization
+                // deadline bail — that must grade as TimedOut, never as
+                // the Saturated certificate.
+                if self.out_of_time() {
+                    return (RunVerdict::TimedOut, steps);
+                }
                 return (RunVerdict::Saturated, steps);
             };
             let prof = self.opts.profile;
@@ -3534,10 +3650,14 @@ impl<'a> NativeProver<'a> {
                 // partner — their simplified replacements do.
                 cands.retain(|at| !self.is_retired(at.clause));
                 // Ordered resolution: the partner literal must be maximal
-                // in its own clause too.
+                // in its own clause too.  Literals ≥ 64 have no mask bit
+                // and are always eligible (the same convention as every
+                // other `max_mask` consumer) — without the guard the
+                // shift overflows on 65+-literal partners.
                 let cands: Vec<EntryRef> = if ordered {
                     cands.into_iter()
-                        .filter(|at| (self.clauses[at.clause as usize].max_mask >> at.lit) & 1 == 1)
+                        .filter(|at| at.lit as usize >= 64
+                            || (self.clauses[at.clause as usize].max_mask >> at.lit) & 1 == 1)
                         .collect()
                 } else {
                     cands
@@ -3692,10 +3812,10 @@ fn term_skolem_apps(t: &Term) -> u64 {
     match t {
         Term::App(elems) => {
             let own = matches!(elems.first(),
-                Some(Term::Sym(s)) if s.name().starts_with("sk_")) as u64;
+                Some(Term::Sym(s)) if s.as_str().starts_with("sk_")) as u64;
             own + elems.iter().map(term_skolem_apps).sum::<u64>()
         }
-        Term::Sym(s) if s.name().starts_with("sk_") => 1,
+        Term::Sym(s) if s.as_str().starts_with("sk_") => 1,
         _ => 0,
     }
 }
@@ -3862,6 +3982,28 @@ fn positions(atom: &Term) -> Vec<(Vec<usize>, Term)> {
     }
     let mut out = Vec::new();
     walk(atom, Vec::new(), &mut out);
+    out
+}
+
+/// [`positions`] without the subterm clones, for callers that only need
+/// the paths (`superpose` re-derives the subterm itself): one shared
+/// path buffer, snapshotted per emitted position — no tree clone per
+/// node of every maximal literal of every given clause.
+fn positions_paths(atom: &Term) -> Vec<Vec<usize>> {
+    fn walk(t: &Term, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if let Term::App(elems) = t {
+            for (i, e) in elems.iter().enumerate().skip(1) {
+                path.push(i);
+                walk(e, path, out);
+                path.pop();
+            }
+        }
+        if !path.is_empty() && !matches!(t, Term::Var(_)) {
+            out.push(path.clone());
+        }
+    }
+    let mut out = Vec::new();
+    walk(atom, &mut Vec::new(), &mut out);
     out
 }
 

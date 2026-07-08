@@ -38,6 +38,19 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         // Assembly losses recorded by the parser (`unaccounted_inputs`)
         // ride the same gate.
         let mut input_failures = tc.unaccounted_inputs;
+        // Mirror of the staged source below, kept for the rollback: the
+        // source cache reconciles per source name, so the truncate must
+        // target EXACTLY the source the hypotheses were ingested under —
+        // truncating anything else removes nothing and the hypotheses
+        // leak into the store for every later ask.
+        let staged: Option<SourceFile> = (!tc.axioms.is_empty()).then(|| SourceFile {
+            parser: Parser::Kif,
+            name: tc.file_name.clone(),
+            path: tc.file_name.clone().into(),
+            origin: crate::FileOrigin::Local,
+            contents: String::new(),
+            prebuilt: None,
+        });
         if !tc.axioms.is_empty() {
             let p = tc.file_name.clone().into();
             let outcome = self.ingest_source(SourceFile {
@@ -74,9 +87,17 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         result.withhold_countermodel(
             input_failures, "hypothesis staging / test-case assembly");
 
-        // Roll back any session-scoped axioms staged for this ask.
+        // Roll back any session-scoped axioms staged for this ask.  The
+        // '__query__' truncate covers the external layer's conjecture tag
+        // (usually already cleaned by its own `cleanup` — harmless no-op);
+        // the staged HYPOTHESES live under `tc.file_name` and need their
+        // own truncate, or they persist in the store and feed every later
+        // ask's session support and every whole-store scan.
         profile_call!(self, "ask.rollback", {
             let _ = self.ingest_source(SourceFile::truncate(PathBuf::from(query_tag)), &session, true);
+            if let Some(src) = staged {
+                let _ = self.ingest_source(src, &session, true);
+            }
         });
 
         result

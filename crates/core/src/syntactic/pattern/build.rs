@@ -8,10 +8,6 @@ use super::super::SyntacticLayer;
 use super::matcher::PatternMatcher;
 use super::types::{MatchKey, PatternElement, SentencePattern};
 
-// ---------------------------------------------------------------------------
-// KIF → SentencePattern constructor
-// ---------------------------------------------------------------------------
-
 /// Error returned by [`SyntacticLayer::pattern_from_kif`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PatternFromKifError {
@@ -61,8 +57,7 @@ fn sentence_to_pattern(
     for elem in &elements {
         let pat = match elem {
             Element::Symbol(sym) => {
-                // Verify the symbol exists in `real`; a pattern referencing an
-                // unknown symbol could never match.
+                // A pattern referencing an unknown symbol could never match.
                 let name = sym.name();
                 if real.sym_id(&name).is_none() {
                     return Err(name.to_string());

@@ -1,7 +1,3 @@
-// crates/core/src/converter/symbol.rs
-// 
-// Symbol to TPTP implementations
-
 use crate::types::InternedSym;
 
 /// SUMO TPTP prefix. All TPTP symbols generated from a SUMO
@@ -11,7 +7,6 @@ pub(super) const S: &str = "s__";
 /// symbol is, in fact, a SUMO relation turned into a term
 pub(super) const M: &str = "__m";
 
-/// Get legal TPTP symbol name
 fn tptp_name(name: &str) -> String {
     name.replace('.', "_").replace('-', "_")
 }

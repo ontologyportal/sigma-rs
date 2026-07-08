@@ -112,7 +112,6 @@ fn rule_name(rule: ProofRule) -> &'static str {
 pub(crate) fn native_proof_to_ir_steps(proof: &Proof) -> Vec<IrProofStep> {
     proof.steps().iter().enumerate().map(|(i, step)| {
         let tptp_formula = step.conclusion().to_tptp();
-        // Wrap bare formula in a full TPTP clause for the parser.
         let tptp_wrapped = format!("fof(anon, plain, {}).\n", tptp_formula);
         let formula = crate::trans::ir::parse_tptp(&tptp_wrapped)
             .ok()

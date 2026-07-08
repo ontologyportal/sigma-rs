@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use crate::prover::{ProverResult, ProverStatus, TerminationReason};
+use crate::prover::{ProverResult, ProverStatus};
 use crate::progress::ProveCtx;
 use crate::semantics::types::Scope;
 use crate::syntactic::caches::session::session_id;
@@ -123,28 +123,51 @@ impl ProverLayer {
         }
 
         let found = contradiction_proofs.len();
-        let raw = format!(
+
+        // Load-completeness gate: `Consistent` is a certificate over the
+        // axioms that actually ENTERED the run.  A root that failed
+        // clausification, or a clause dropped by a width/depth/slot cap,
+        // could be the one carrying the contradiction — with any such loss
+        // the honest saturation verdict is Unknown, never Consistent.
+        // (Contradictions among the loaded clauses are handled by
+        // `found` — the run is in audit mode, so they are collected in
+        // `input_contradiction_ids`, not suppressed.)
+        let failed_roots = selected.iter().chain(session_sids.iter())
+            .filter(|s| self.root_load_failed(**s)).count();
+        let complete_saturation = match verdict {
+            RunVerdict::Saturated => Some(
+                failed_roots == 0
+                    && prover.stats.discarded_long == 0
+                    && prover.stats.discarded_deep == 0
+                    && prover.stats.slot_lift_failures == 0),
+            _ => None,
+        };
+
+        let mut raw = format!(
             "native consistency: {:?} after {} steps over {} axioms (+{} session); \
              {} distinct contradiction(s) ({} total occurrences)",
             verdict, steps, selected.len(), session_sids.len(),
             found, prover.stats.input_contradictions);
+        if found == 0 && complete_saturation == Some(false) {
+            raw.push_str(&format!(
+                "; WARNING: Consistent withheld — load incomplete \
+                 (roots failed: {failed_roots}, long: {}, deep: {}, slot: {})",
+                prover.stats.discarded_long, prover.stats.discarded_deep,
+                prover.stats.slot_lift_failures));
+        }
 
         let (status, termination) = if found > 0 {
             (ProverStatus::Inconsistent, None)
         } else {
-            match verdict {
-                RunVerdict::Saturated =>
-                    (ProverStatus::Consistent, Some(TerminationReason::Saturation)),
-                RunVerdict::TimedOut =>
-                    (ProverStatus::Timeout, Some(TerminationReason::TimeLimit)),
-                _ =>
-                    (ProverStatus::Unknown, Some(TerminationReason::GaveUp)),
-            }
+            super::prover::map_verdict(
+                verdict, false, false, complete_saturation,
+                super::prover::VerdictMode::Consistency)
         };
 
         ProverResult {
             status,
             termination,
+            complete_saturation,
             raw_output: raw,
             // Keep `proof_kif` populated for single-verdict consumers.
             proof_kif: contradiction_proofs.first().cloned().unwrap_or_default(),

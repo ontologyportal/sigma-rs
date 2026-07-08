@@ -237,12 +237,32 @@ pub(crate) fn extract_horn_program_stats(syn: &SyntacticLayer) -> (Program, Extr
     (ex.program, ex.stats)
 }
 
+/// Base-scope visibility for whole-KB extraction: `root_sids` and
+/// `by_head_id` span every session's transient sentences, but everything
+/// extracted in this module is cached once (`ModelRegistry`) and consulted
+/// by every asking scope — only base sentences (no session owners, or
+/// promoted axioms) may contribute, or one session's staged facts/rules
+/// become model support in another session's proof.
+fn base_visible(syn: &SyntacticLayer, sid: SentenceId) -> bool {
+    let owners = syn.sessions.sessions_of(sid);
+    owners.is_empty() || syn.sessions.is_axiom(sid)
+}
+
 /// The full extraction: program + stats + the skipped-head set for the
 /// completion certifier.  See [`Extraction`].
 pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
     let mut ex = Extraction::default();
 
     for root in syn.root_sids() {
+        // Base-only: `root_sids` spans every session's transient
+        // sentences, but the extracted program is cached whole-KB
+        // (`ModelRegistry`) and consulted by every asking scope — a
+        // session-staged fact or rule must not become model support in
+        // another session's proof.  Session facts still reach the prover
+        // through its support roots and the scope-filtered `store_facts`.
+        if !base_visible(syn, root) {
+            continue;
+        }
         let Some(s) = syn.sentence(root) else { continue };
         match s.op() {
             // Rule: (=> ant con)
@@ -812,6 +832,9 @@ pub(crate) fn collect_egds(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<E
 
     // -- Declaration form (keyed like the miner: arg1 determines arg2).
     for sid in syn.by_head_id(&roles.instance) {
+        if !base_visible(syn, sid) {
+            continue; // a session-staged FD must not merge terms elsewhere
+        }
         if let Some((r, c)) = binary_syms(syn, sid) {
             if c == single_valued {
                 out.push(Egd {
@@ -825,6 +848,9 @@ pub(crate) fn collect_egds(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<E
 
     // -- Uniqueness-clause forms.
     for root in syn.root_sids() {
+        if !base_visible(syn, root) {
+            continue; // same base-only rule as the program extraction
+        }
         let Some(s) = syn.sentence(root) else { continue };
         let lits: Option<Vec<UniqLit>> = match s.op() {
             // (=> (and B1 … Bn) (equal v1 v2))

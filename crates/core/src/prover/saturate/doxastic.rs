@@ -208,43 +208,39 @@ impl ProverLayer {
             _ => Vec::new(),
         };
 
-        let (status, termination) = if is_ask {
-            match verdict {
-                RunVerdict::Refutation(_) if conjecture_used =>
-                    (ProverStatus::Proved, None),
-                // A refutation the conjecture never touched: the belief
-                // base alone derives ⊥ (kb/prove.rs's vacuity rule).
-                RunVerdict::Refutation(_) =>
-                    (ProverStatus::Inconsistent, None),
-                RunVerdict::Saturated =>
-                    (ProverStatus::Disproved, Some(TerminationReason::Saturation)),
-                RunVerdict::StepsExhausted =>
-                    (ProverStatus::Unknown, Some(TerminationReason::GaveUp)),
-                RunVerdict::TimedOut =>
-                    (ProverStatus::Timeout, Some(TerminationReason::TimeLimit)),
-            }
-        } else if found > 0 {
-            (ProverStatus::Inconsistent, None)
-        } else {
-            match verdict {
-                RunVerdict::Saturated =>
-                    (ProverStatus::Consistent, Some(TerminationReason::Saturation)),
-                RunVerdict::TimedOut =>
-                    (ProverStatus::Timeout, Some(TerminationReason::TimeLimit)),
-                _ =>
-                    (ProverStatus::Unknown, Some(TerminationReason::GaveUp)),
-            }
-        };
-
         // A saturation verdict is complete only if no capacity cap
         // dropped a clause (mirrors `prove_one_driver`'s gate; the
         // strict-saturation regime is a TPTP-path concern, not this one).
+        // `slot_lift_failures`: a stored clause that never entered the
+        // run.  `input_contradictions`: only meaningful on the ask path —
+        // the consistency arm runs in audit mode where contradictions are
+        // COLLECTED (`found`), not suppressed, so the ask-path term uses
+        // the suppressed count and the consistency arm relies on `found`.
         let complete_saturation = match verdict {
             RunVerdict::Saturated => Some(
                 prover.stats.discarded_long == 0
                     && prover.stats.discarded_deep == 0
+                    && prover.stats.slot_lift_failures == 0
+                    && (!is_ask || prover.stats.input_contradictions == 0)
                     && input_load_failures == 0),
             _ => None,
+        };
+
+        // Shared ladder (`map_verdict`): the ask arm mirrors
+        // `prove_one_driver` exactly (Disproved gated only under strict
+        // saturation); the consistency arm ALWAYS gates Consistent on
+        // `complete_saturation` — it is a certificate.
+        let (status, termination) = if is_ask {
+            super::prover::map_verdict(
+                verdict, conjecture_used,
+                prover.opts.strategy.strict_saturation, complete_saturation,
+                super::prover::VerdictMode::Ask)
+        } else if found > 0 {
+            (ProverStatus::Inconsistent, None)
+        } else {
+            super::prover::map_verdict(
+                verdict, false, false, complete_saturation,
+                super::prover::VerdictMode::Consistency)
         };
 
         let raw = format!(

@@ -109,7 +109,7 @@ impl<'a> NativeProver<'a> {
             if cov.owns(head_rel) {
                 continue;
             }
-            if !self.syn().by_head_id(&head_rel).is_empty() {
+            if self.head_has_visible_fact(head_rel) {
                 continue; // head relation has asserted facts ⇒ generative, skip
             }
             let mut body: Vec<(SymbolId, Vec<Term>)> = Vec::new();
@@ -177,7 +177,7 @@ impl<'a> NativeProver<'a> {
                                 .trim_start_matches('('),
                             a.len(),
                             if cov.owns(r) { "[theory]" }
-                            else if self.syn().by_head_id(&r).is_empty() { "[nofacts]" }
+                            else if !self.head_has_visible_fact(r) { "[nofacts]" }
                             else { "[facts]" },
                         ))
                     }).collect();
@@ -381,7 +381,8 @@ impl<'a> NativeProver<'a> {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let Some((nar, names)) = super::super::eventcalc::parse_narrative(self.syn()) else {
+        let Some((nar, names)) =
+            super::super::eventcalc::parse_narrative(self.syn(), self.scope) else {
             return;
         };
         let holds_at = Symbol::from("holdsAt");
@@ -1378,6 +1379,27 @@ impl<'a> NativeProver<'a> {
     /// generator facts.  Only all-leaf (symbol / literal) argument lists
     /// are returned; atoms with variable, operator, or compound arguments
     /// are skipped (a generator must bind variables to ground fillers).
+    /// Whether `rel` has at least one asserted fact VISIBLE to the asking
+    /// scope — the scope-filtered form of `by_head_id(..).is_empty()`.
+    /// The raw head index spans base AND every session's transients; an
+    /// out-of-scope fact must not re-classify a rule head as generative
+    /// for this scope (that would silently disable the whole join pass
+    /// for a fact the asking session can never see).
+    fn head_has_visible_fact(&self, rel: SymbolId) -> bool {
+        let sessions = &self.syn().sessions;
+        for sid in self.syn().by_head_id(&rel) {
+            let owners = sessions.sessions_of(sid);
+            if owners.is_empty()
+                || sessions.is_axiom(sid)
+                || matches!(self.scope,
+                    crate::semantics::types::Scope::Session(id) if owners.contains(&id))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     fn store_facts(&self, rel: SymbolId) -> Vec<JoinFact> {
         let sessions = &self.syn().sessions;
         let mut out = Vec::new();
@@ -1436,6 +1458,17 @@ impl<'a> NativeProver<'a> {
         budget: &mut usize,
     ) {
         if *budget == 0 {
+            return;
+        }
+        // Wall/cancel poll: the budget alone does not bound the search —
+        // it is only decremented on EMITTED solutions, so a zero-solution
+        // cross-product over wide relations recurses freely.  This pass
+        // runs in `run()`'s prologue where the loop-top poll can't help;
+        // draining the budget aborts the whole pass cheaply (every
+        // ancestor frame sees 0), and the anchored deadline keeps the
+        // attempt's one budget covering it.
+        if self.out_of_time() {
+            *budget = 0;
             return;
         }
         if pending.is_empty() {
@@ -1567,8 +1600,6 @@ fn lit_pattern(t: &Term) -> Option<(SymbolId, Vec<Term>)> {
     Some((h.id(), elems[1..].to_vec()))
 }
 
-/// The symbol id of a bare-symbol term (`None` for variables, literals,
-/// compounds).
 /// Structural compatibility of two atoms' argument lists for backward
 /// chaining: same arity, and no position where BOTH sides are distinct
 /// ground leaves (symbols/literals).  This is a cheap, sound over-approximation
@@ -1589,6 +1620,8 @@ fn structurally_compatible(a: &[Term], b: &[Term]) -> bool {
     })
 }
 
+/// The symbol id of a bare-symbol term (`None` for variables, literals,
+/// compounds).
 fn sym_of(t: &Term) -> Option<SymbolId> {
     match t {
         Term::Sym(s) => Some(s.id()),

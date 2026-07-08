@@ -897,10 +897,18 @@ impl<'a> NativeProver<'a> {
                     self.activate(nid);
                 }
             } else {
-                // Queue like any derived clause (an empty replacement is
-                // popped and graded by `run`'s reportable-refutation
-                // check, the same path support-load empties take).
-                self.push(Some(nid));
+                // Queue the replacement under the INPUT width cap, not the
+                // derived cap: rewriting never adds literals, so a
+                // replacement is exactly as wide as the original the input
+                // cap already admitted — under full saturation a 9+-lit
+                // input axiom's replacement would otherwise die on
+                // `max_lits` AFTER the original was retired, deleting the
+                // axiom's content from the search.  Derived originals are
+                // ≤ `max_lits` wide, so the wider cap never over-admits.
+                // (An empty replacement is popped and graded by `run`'s
+                // reportable-refutation check, the same path support-load
+                // empties take.)
+                self.push_capped(Some(nid), self.input_width_cap());
             }
         }
         candidates.clear();

@@ -1,4 +1,4 @@
-// crates/core/src/kb/scale.rs
+// crates/core/src/prover/scale.rs
 //
 // Pure decision logic for the prover-feedback autoscaling loop driven by
 // `KnowledgeBase::run_scaling` (see `kb::prove`).

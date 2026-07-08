@@ -115,7 +115,6 @@ impl WasmKnowledgeBase {
     /// Returns the raw string output from the hook.
     #[wasm_bindgen]
     pub fn ask(&mut self, query_kif: &str, ask_hook: &js_sys::Function) -> Result<JsValue, JsValue> {
-        // Parse the query into a temporary session.
         let query_tag = "__query__";
         let tell_result = self.inner.tell(query_kif, query_tag);
         if !tell_result.ok {
@@ -130,11 +129,9 @@ impl WasmKnowledgeBase {
             return Err(JsValue::from_str("No query sentence parsed"));
         }
 
-        // Build KB axioms as TPTP.
         let kb_opts  = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
         let mut tptp = self.inner.to_tptp(&kb_opts, None);
 
-        // Append the conjecture(s).
         let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
         for (i, &sid) in query_sids.iter().enumerate() {
             let conj = self.inner.format_sentence_tptp(sid, &q_opts);
@@ -143,7 +140,6 @@ impl WasmKnowledgeBase {
 
         self.inner.flush_session(query_tag);
 
-        // Delegate to the JS hook.
         let tptp_js = JsValue::from_str(&tptp);
         ask_hook.call1(&JsValue::NULL, &tptp_js)
             .map_err(|e| JsValue::from_str(&format!("ask_hook threw: {:?}", e)))

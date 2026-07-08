@@ -120,7 +120,10 @@ impl ProverLayer {
 
     /// Native step-exhaustion (`GaveUp`) narrows like a timeout, not widens —
     /// the search space was too big, the wrong gradient for the planner to
-    /// read as prover-incompleteness. Shared by the plain autoscale loop
+    /// read as prover-incompleteness. Remapped to `ResourceOut`, NOT
+    /// `TimeLimit`: `classify` narrows on `(Unknown, ResourceOut)`, while
+    /// `(Unknown, TimeLimit)` falls to its catch-all and would stop the loop
+    /// without the Narrow retry. Shared by the plain autoscale loop
     /// above and each lane of [`run_portfolio_schedule`] (mirrors the trait
     /// `ProvingLayer::remap` override for `ProverLayer`).
     fn remap_native(
@@ -128,7 +131,7 @@ impl ProverLayer {
         term:    Option<TerminationReason>,
     ) -> Option<TerminationReason> {
         match term {
-            Some(TerminationReason::GaveUp) => Some(TerminationReason::TimeLimit),
+            Some(TerminationReason::GaveUp) => Some(TerminationReason::ResourceOut),
             other => other,
         }
     }
@@ -667,8 +670,15 @@ impl ProverLayer {
             // orientable) whenever the problem contains equality.
             let complete_saturation = match verdict {
                 RunVerdict::Saturated => {
+                    // `slot_lift_failures`: a stored clause that never made
+                    // it into the run (root still reads as loaded).
+                    // `input_contradictions`: a suppressed axiom-only empty
+                    // clause — the theory is UNSAT, so a saturation over
+                    // the SOS remainder is meaningless as a countermodel.
                     let no_drops = prover.stats.discarded_long == 0
                         && prover.stats.discarded_deep == 0
+                        && prover.stats.slot_lift_failures == 0
+                        && prover.stats.input_contradictions == 0
                         && input_load_failures == 0;
                     Some(no_drops && (!strict_saturation || {
                         let st = &prover.opts.strategy;
@@ -678,9 +688,16 @@ impl ProverLayer {
                                 && prover.stats.unorientable_eqs == 0);
                         let whole_theory = selected.len()
                             >= self.semantic.syntactic.root_sids().len();
+                        // Schema absorption replaces the absorbed axiom at
+                        // inference level ONLY for binary resolution (the
+                        // swap retry in `resolve`); factoring and the unit
+                        // open-match channel have no symmetric handling, so
+                        // a saturation after any absorption is not
+                        // refutation-complete and must not certify.
                         st.full_saturation
                             && eq_ok
                             && prover.stats.gen_capped == 0
+                            && prover.stats.schema_absorbed == 0
                             && whole_theory
                     }))
                 }
@@ -785,12 +802,20 @@ impl ProverLayer {
             // made it into the clause set — the line every consumer of a
             // withheld Satisfiable/Disproved verdict needs to see.
             if input_load_failures > 0 {
+                // Truthful per mode: strict withholds the verdict outright;
+                // the legacy KIF path still REPORTS Disproved (a heuristic
+                // signal, not a certificate — see the verdict mapping), so
+                // the warning must not claim it was withheld there.
                 raw.push_str(&format!(
                     "\nWARNING: {input_load_failures} input formula(s) failed to load \
                      (conjecture roots dropped: {}, goal clausification lossy: {}, \
-                     background/support roots failed: {}) — Satisfiable/countermodel \
-                     verdicts withheld (GaveUp)",
-                    conj.dropped, conj_lossy, failed_roots));
+                     background/support roots failed: {}) — {}",
+                    conj.dropped, conj_lossy, failed_roots,
+                    if strict_saturation {
+                        "Satisfiable/countermodel verdicts withheld (GaveUp)"
+                    } else {
+                        "Saturated verdicts are heuristic (loaded theory incomplete)"
+                    }));
             }
             // Ground-term identity line (NF memo + subtree bloom prune)
             // only when demod is on: the default-path SIGMA_STATS output
@@ -977,35 +1002,22 @@ impl ProverLayer {
         let prover_run = t1.elapsed();
 
 
-        // Status mapping.  A refutation whose proof never touches the
-        // negated conjecture means the selected axioms alone derive ⊥ —
-        // vacuous → Inconsistent (kb/prove.rs's rule).  Saturation:
-        // under the legacy KIF path (strict off), no refutation from
-        // this support set → report Disproved with the Saturation
-        // marker (same shape as Vampire's CounterSatisfiable mapping;
-        // the strategy's caps make this a strong signal, not a
-        // certificate).  Under strict saturation (the TPTP path),
-        // Disproved is a CERTIFICATE: it requires the run to have been
-        // genuinely refutation-complete (`complete_saturation`), else
-        // the honest verdict is Unknown — still `Saturation`-flagged so
-        // the autoscale loop widens rather than giving up.
-        let (status, termination) = match verdict {
-            RunVerdict::Refutation(_) => {
-                if conjecture_used {
-                    (ProverStatus::Proved, None)
-                } else {
-                    (ProverStatus::Inconsistent, None)
-                }
-            }
-            RunVerdict::Saturated if strict_saturation && complete_saturation != Some(true) =>
-                (ProverStatus::Unknown, Some(TerminationReason::Saturation)),
-            RunVerdict::Saturated =>
-                (ProverStatus::Disproved, Some(TerminationReason::Saturation)),
-            RunVerdict::StepsExhausted =>
-                (ProverStatus::Unknown, Some(TerminationReason::GaveUp)),
-            RunVerdict::TimedOut =>
-                (ProverStatus::Timeout, Some(TerminationReason::TimeLimit)),
-        };
+        // Status mapping — the shared ladder (`map_verdict`).  A
+        // refutation whose proof never touches the negated conjecture
+        // means the selected axioms alone derive ⊥ — vacuous →
+        // Inconsistent (kb/prove.rs's rule).  Saturation: under the
+        // legacy KIF path (strict off), no refutation from this support
+        // set → report Disproved with the Saturation marker (same shape
+        // as Vampire's CounterSatisfiable mapping; the strategy's caps
+        // make this a strong signal, not a certificate).  Under strict
+        // saturation (the TPTP path), Disproved is a CERTIFICATE: it
+        // requires the run to have been genuinely refutation-complete
+        // (`complete_saturation`), else the honest verdict is Unknown —
+        // still `Saturation`-flagged so the autoscale loop widens rather
+        // than giving up.
+        let (status, termination) = super::prover::map_verdict(
+            verdict, conjecture_used, strict_saturation, complete_saturation,
+            super::prover::VerdictMode::Ask);
 
         let mut result = ProverResult {
             status,
