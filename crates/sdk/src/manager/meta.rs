@@ -287,9 +287,6 @@ const OPTIONS: &[OptionMeta] = &[
     OptionMeta { field: "vampire", json_paths: &["vampire"], long: "vampire", short: None,
         env: Some("SIGMA_VAMPIRE"), scope: Scope::Subsystems(PROVERS), kind: Kind::Path,
         help: "Path to the Vampire executable (default: 'vampire' on PATH)." },
-    OptionMeta { field: "vampire_hol", json_paths: &["vampire_hol"], long: "vampire-hol", short: None,
-        env: None, scope: Scope::Subsystems(PROVERS), kind: Kind::Path,
-        help: "Path to the Vampire HOL solver binary." },
     OptionMeta { field: "eprover", json_paths: &["eprover"], long: "eprover", short: None,
         env: Some("SIGMA_EPROVER"), scope: Scope::Subsystems(PROVERS), kind: Kind::Path,
         help: "Path to the E prover executable." },
@@ -392,7 +389,7 @@ mod tests {
             .flat_map(|o| o.json_paths.iter().copied())
             .collect();
         for key in obj.keys() {
-            if matches!(key.as_str(), "kbs" | "native_prover" | "external_prover") {
+            if matches!(key.as_str(), "kbs" | "native_prover" | "external_prover" | "unknown_preferences") {
                 continue; // collections + nested configs handled via nested paths
             }
             assert!(covered.contains(key.as_str()),

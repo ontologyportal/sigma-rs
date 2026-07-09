@@ -43,10 +43,12 @@ pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: boo
     let opts = KBManager::options();
     group("Global flags",
         opts.iter().filter(|o| matches!(o.scope, Scope::Global)), &doc);
-    group("Prover options (CLI flags)",
-        opts.iter().filter(|o| matches!(o.scope, Scope::Subsystems(_)) && is_prover(o)), &doc);
+    group("Native prover options (NativeProverConfig)",
+        opts.iter().filter(|o| prover_category(o) == Some(ProverCategory::Native)), &doc);
+    group("External prover options (ExternalProverConfig)",
+        opts.iter().filter(|o| prover_category(o) == Some(ProverCategory::External)), &doc);
     group("Other subcommand flags",
-        opts.iter().filter(|o| matches!(o.scope, Scope::Subsystems(_)) && !is_prover(o)), &doc);
+        opts.iter().filter(|o| matches!(o.scope, Scope::Subsystems(_)) && prover_category(o).is_none()), &doc);
     print_kbs(manager);
     group("Config-file only (no CLI flag)",
         opts.iter().filter(|o| matches!(o.scope, Scope::ConfigOnly)), &doc);
@@ -54,13 +56,29 @@ pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: boo
     true
 }
 
-/// Entry point for `sumo config --<setting> value ...` — patch just the given
-/// settings and persist the whole (regenerated) config.xml.  Loads `target`
-/// leniently if it exists (an in-progress edit needn't already satisfy
-/// [`KBManager::validate`] — e.g. the very first `sumo config --edit-dir ...`
-/// on a brand-new file has no `sumokbname` yet), else starts from built-in
-/// defaults.
-pub fn run_config_write(target: &Path, overrides: Vec<(&OptionMeta, serde_json::Value)>) -> bool {
+/// A single-KB constituent edit requested via `sumo config --kb NAME
+/// -f/-d/--exclude ...` — see [`run_config_write`].
+pub struct ConstituentEdit {
+    pub kb: String,
+    pub add_files: Vec<PathBuf>,
+    pub add_dirs: Vec<PathBuf>,
+    pub remove: Vec<PathBuf>,
+    /// `--declare`: skip the existence check on `add_files`/`add_dirs`.
+    pub declare: bool,
+}
+
+/// Entry point for `sumo config --<setting> value ...` and/or `sumo config
+/// --kb NAME -f/-d/--exclude ...` — patch the given settings
+/// and/or one KB's constituent list, and persist the whole (regenerated)
+/// config.xml.  Loads `target` leniently if it exists (an in-progress edit
+/// needn't already satisfy [`KBManager::validate`] — e.g. the very first
+/// `sumo config --edit-dir ...` on a brand-new file has no `sumokbname`
+/// yet), else starts from built-in defaults.
+pub fn run_config_write(
+    target: &Path,
+    overrides: Vec<(&OptionMeta, serde_json::Value)>,
+    constituents: Option<ConstituentEdit>,
+) -> bool {
     let mut manager = if target.exists() {
         match KBManager::from_config_xml_path_lenient(target) {
             Ok(m) => m,
@@ -79,6 +97,30 @@ pub fn run_config_write(target: &Path, overrides: Vec<(&OptionMeta, serde_json::
             (o.long, old, fmt_value(v))
         })
         .collect();
+
+    let mut constituent_summary: Vec<String> = Vec::new();
+    if let Some(edit) = constituents {
+        let before_count = manager.kbs.iter().find(|kb| kb.name() == edit.kb)
+            .map(|kb| kb.constituents().len()).unwrap_or(0);
+        if !edit.add_files.is_empty() || !edit.add_dirs.is_empty() {
+            if let Err(e) = manager.add_constituents_to_kb(&edit.kb, edit.add_files, edit.add_dirs, !edit.declare) {
+                log::error!("config: {e}");
+                return false;
+            }
+        }
+        if !edit.remove.is_empty() {
+            match manager.remove_constituents_from_kb(&edit.kb, edit.remove) {
+                Ok(n) => constituent_summary.push(format!("removed {n} constituent(s) from `{}`", edit.kb)),
+                Err(e) => { log::error!("config: {e}"); return false; }
+            }
+        }
+        let after_count = manager.kbs.iter().find(|kb| kb.name() == edit.kb)
+            .map(|kb| kb.constituents().len()).unwrap_or(0);
+        if after_count > before_count {
+            constituent_summary.push(format!(
+                "added {} constituent(s) to `{}`", after_count - before_count, edit.kb));
+        }
+    }
 
     if let Err(e) = manager.apply_overrides(overrides) {
         log::error!("config: {e}");
@@ -101,14 +143,35 @@ pub fn run_config_write(target: &Path, overrides: Vec<(&OptionMeta, serde_json::
     for (flag, old, new) in changed {
         println!("  {color_bright_cyan}--{flag}{color_reset}  {color_bright_black}{old}{color_reset} → {color_bright_green}{new}{color_reset}");
     }
+    for line in constituent_summary {
+        println!("  {color_bright_cyan}{line}{color_reset}");
+    }
     true
 }
 
-/// A prover-tuning or prover-binary option (native/external prover config, or a
-/// solver path/backend selector).
-fn is_prover(o: &OptionMeta) -> bool {
-    o.json_paths.iter().any(|p| p.starts_with("native_prover") || p.starts_with("external_prover"))
-        || matches!(o.field, "vampire" | "vampire_hol" | "eprover" | "backend")
+/// Which prover backend an option tunes, if any. Splits by the actual Rust
+/// config struct it targets (`NativeProverConfig` / `ExternalProverConfig`)
+/// rather than lumping every prover-adjacent flag into one bucket; binary
+/// paths (`vampire`, `eprover`, …) and the backend selector are folded into
+/// External since that's what they configure/select among. Shared between
+/// the read-only dump ([`run_config`]) and the interactive editor
+/// (`config_tui.rs`) so the two stay in sync.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProverCategory {
+    Native,
+    External,
+}
+
+pub(crate) fn prover_category(o: &OptionMeta) -> Option<ProverCategory> {
+    if o.json_paths.iter().any(|p| p.starts_with("native_prover")) {
+        return Some(ProverCategory::Native);
+    }
+    if o.json_paths.iter().any(|p| p.starts_with("external_prover"))
+        || matches!(o.field, "vampire" | "eprover" | "leo" | "backend")
+    {
+        return Some(ProverCategory::External);
+    }
+    None
 }
 
 /// Print the configured knowledge bases + their *effective* constituent list
@@ -137,7 +200,7 @@ fn print_kbs(manager: &KBManager) {
         for c in kb.constituents() {
             match c {
                 Constituent::Named(p) =>
-                    println!("      {}  {color_bright_black}[named → kbDir]{color_reset}", p.display()),
+                    println!("      {}  {color_bright_black}[relative → kbDir]{color_reset}", p.display()),
                 Constituent::Source(s) =>
                     println!("      {}  {color_bright_black}[pinned]{color_reset}", render_source(s)),
             }

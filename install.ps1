@@ -133,17 +133,37 @@ function New-Config {
     }
 }
 
+# Declare a starter "SUMO" <kb> (Merge.kif + the usual base ontology files)
+# in config.xml. The files themselves aren't downloaded by this installer —
+# `sumo --git <repo> --branch <name> load` (or a manual clone into kbDir) is
+# what actually fetches them — so `--declare` skips the usual existence
+# check `sumo config --kb NAME -f ...` would otherwise enforce. Idempotent:
+# re-adding an already-declared constituent is a no-op (`add_constituents_to_kb`
+# dedups), and it never touches an already-set sumokbname.
+function Add-SumoKb {
+    $ConfigPath = Join-Path $SigmaHome 'KBs\config.xml'
+    if (-not (Test-Path $ConfigPath)) { return }
+
+    & $SumoExe config --kb SUMO --declare `
+        -f english_format.kif -f domainEnglishFormat.kif -f Merge.kif -f Mid-level-ontology.kif `
+        *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Warn 'could not declare the starter SUMO <kb> in config.xml (this sumo build may predate --declare support)'
+    }
+}
+
 function Main {
     $Tag = Resolve-Tag
     Install-Binary -Tag $Tag
     Set-SumoEnvironment
     New-Config
+    Add-SumoKb
 
     Write-Host ''
     Info "Done. Installed: $(& $SumoExe --version)"
     Info 'Open a new terminal for SIGMA_HOME/PATH to take effect there (this session already has them).'
-    Info 'config.xml has no <kb> configured yet — see README.md''s Quick start'
-    Info 'for loading an ontology (e.g. `sumo --git <repo> --branch <name> load`).'
+    Info 'config.xml declares a SUMO KB but hasn''t fetched its files yet — see'
+    Info 'README.md''s Quick start for loading it (e.g. `sumo --git <repo> --branch <name> load`).'
 }
 
 try {

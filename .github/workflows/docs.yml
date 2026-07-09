@@ -49,10 +49,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # vampire-sys / vampire-prover live as submodules; the
-          # `integrated-prover` feature won't build without them.
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
 

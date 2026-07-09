@@ -38,7 +38,7 @@ pub use validate::run_validate;
 pub use translate::run_translate;
 pub use man::run_man;
 pub use search::run_search;
-pub use config_cmd::{run_config, run_config_write};
+pub use config_cmd::{run_config, run_config_write, ConstituentEdit};
 pub use config_tui::run_config_tui;
 pub use check::{run_check, maybe_notify_stale_local, maybe_notify_stale_git};
 

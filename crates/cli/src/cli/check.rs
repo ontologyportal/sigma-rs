@@ -76,17 +76,14 @@ fn short(sha: &str) -> &str {
     sha.get(..8).unwrap_or(sha)
 }
 
-// ---------------------------------------------------------------------------
-// Passive notices: cheap, automatic, run after every command that opens a
-// KB (skipped for `load`/`check`, which already report freshness
-// explicitly). Local is a synchronous stat/hash pass — no network, so it's
-// cheap enough to run inline on every invocation. Git needs a network round
-// trip, so it follows the exact cached + background-refresh pattern as
-// `maybe_notify_update` (see `update.rs`): a per-command notice only ever
-// reads a cache file (instant); a stale/missing cache kicks off a detached
-// background thread that refreshes it for the *next* invocation, never
-// blocking the current one.
-// ---------------------------------------------------------------------------
+// Passive notices: run after every command that opens a KB (skipped for
+// `load`/`check`, which already report freshness explicitly). Local is a
+// synchronous stat/hash pass — no network, cheap enough to run inline. Git
+// needs a network round trip, so it follows the same cached +
+// background-refresh pattern as `maybe_notify_update` (see `update.rs`): a
+// per-command notice only ever reads a cache file (instant); a stale/missing
+// cache kicks off a detached background thread that refreshes it for the
+// next invocation.
 
 /// Cheap "some local sources changed on disk" notice — a `stat()`/hash per
 /// tracked local file, no network. Call after ingest, once per command.

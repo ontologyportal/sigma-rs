@@ -9,8 +9,8 @@
 #
 #   * full-matrix: Linux-only canonical test lane exercising
 #                 `--all-features` over the whole workspace -- pulls
-#                 in vampire-sys / vampire-lib via submodules and
-#                 requires CMake.  Runs on every push / PR.
+#                 in vampire-sys / vampire-lib via Cargo's git dependency
+#                 and requires CMake.  Runs on every push / PR.
 #
 #   * cli-build:  cross-OS matrix building (and on non-Windows,
 #                 testing) the `sigmakee` CLI with integrated-prover.
@@ -87,8 +87,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -142,8 +140,6 @@ jobs:
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    label: win32-x64,       test: false }
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: dtolnay/rust-toolchain@stable
         with:

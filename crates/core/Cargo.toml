@@ -76,10 +76,17 @@ winnow = "0.7"
 # `default-features = false` keeps the C++ backend off; the
 # `integrated-prover` feature adds it.  `serde` turns on the IR
 # derives so the Phase D axiom cache can bincode the whole problem.
-vampire-prover = { path = "../vampire-rs/vampire", default-features = false }
+#
+# Pulled directly from the fork's git history (pinned `rev`, not the
+# `crates/vampire-rs` submodule) — `rev` is the exact commit the submodule
+# was checked out at when this switch was made, so it's a zero-behavior-change
+# migration. Cargo fetches vampire-sys/vampire-lib (a nested submodule inside
+# this repo) automatically. Bump `rev` deliberately when you want to pick up
+# upstream changes (e.g. moving to `tff-support`).
+vampire-prover = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670d5ddec82594aa9019029e7ea8961acc8c8", default-features = false }
 
 # Direct vampire-sys access for the clausify path (integrated-prover only).
-vampire-sys = { path = "../vampire-rs/vampire-sys", optional = true }
+vampire-sys = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670d5ddec82594aa9019029e7ea8961acc8c8", optional = true }
 
 [dev-dependencies]
 env_logger = "0.11"

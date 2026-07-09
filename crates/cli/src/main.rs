@@ -8,7 +8,7 @@ use sigmakee::cli::{Cli, Cmd};
 use sigmakee::cli::{
     run_flush, run_load, run_load_warm, run_validate,
     run_translate, run_man, run_search, run_update, run_config, run_config_write,
-    run_config_tui, run_check,
+    run_config_tui, run_check, ConstituentEdit,
     maybe_notify_update,
 };
 use sigmakee::cli::args_project;
@@ -22,10 +22,11 @@ use sigmakee_rs_sdk::{
     ExternalProverLayer, ProvingLayer, TranslationLayer, TopLayer
 };
 use sigmakee_rs_sdk::prover::external::backends::{
-    EproverRunner, 
+    EproverRunner,
     VampireRunner,
-    IntegratedVampireRunner
 };
+#[cfg(feature = "integrated-prover")]
+use sigmakee_rs_sdk::prover::external::backends::IntegratedVampireRunner;
 use sigmakee_rs_sdk::{Prover, Session};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 
@@ -94,9 +95,17 @@ fn main_worker() {
         manager.clear_kb_constituents();
     }
 
-    if let Err(e) = manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone()) {
-        log::error!("error: {e}");
-        process::exit(2);
+    // `sumo config --kb NAME -f/-d ...` repurposes `-f`/`-d` to mean
+    // "constituent to persist" (see the `Cmd::Config` dispatch below), not
+    // "transient source to ingest this run" — skip the generic merge here so
+    // an existing KB's `-f` doesn't get existence-checked/ingested twice
+    // under a completely different (and stricter, non-`--declare`-aware)
+    // code path before `Cmd::Config` ever runs.
+    if !matches!(cli.command, Cmd::Config { .. }) {
+        if let Err(e) = manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone()) {
+            log::error!("error: {e}");
+            process::exit(2);
+        }
     }
 
     // Handle `config` before `validate` so a misconfigured path still shows in
@@ -109,11 +118,25 @@ fn main_worker() {
     // existing non-interactive uses of `sumo config` keep working.
     if matches!(cli.command, Cmd::Config { .. }) {
         let overrides = args_project::config_overrides(&arg_matches);
-        let ok = if !overrides.is_empty() {
+        // `--kb NAME` together with `-f`/`-d`/`--exclude` edits that one
+        // KB's constituent list instead of (or alongside) the scalar
+        // `--<setting>` overrides above.
+        let constituent_edit = match &cli.kb {
+            Some(name) if !cli.files.is_empty() || !cli.dirs.is_empty() || !cli.exclude.is_empty() =>
+                Some(ConstituentEdit {
+                    kb:        name.clone(),
+                    add_files: cli.files.clone(),
+                    add_dirs:  cli.dirs.clone(),
+                    remove:    cli.exclude.clone(),
+                    declare:   cli.declare,
+                }),
+            _ => None,
+        };
+        let ok = if !overrides.is_empty() || constituent_edit.is_some() {
             let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
                 .or_else(sigmakee::config::default_config_write_path)
                 .unwrap_or_else(|| { log::error!("config: could not resolve $HOME to locate config.xml"); process::exit(2); });
-            run_config_write(&target, overrides)
+            run_config_write(&target, overrides, constituent_edit)
         } else if std::io::stdout().is_terminal() && !sigmakee::style::is_ugly() {
             let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
                 .or_else(sigmakee::config::default_config_write_path)
@@ -577,8 +600,13 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
             });
             Prover::Eprover(EproverRunner { eprover_path: path, tptp_dump_path: keep })
         }
-        "embedded"      => Prover::VampireIntegrated(IntegratedVampireRunner),
-        _ /* subprocess */ => {
+        #[cfg(feature = "integrated-prover")]
+        "embedded" => Prover::VampireIntegrated(IntegratedVampireRunner),
+        _ /* subprocess (or "embedded" without the integrated-prover feature) */ => {
+            #[cfg(not(feature = "integrated-prover"))]
+            if manager.default_backend == "embedded" {
+                log::warn!("'embedded' backend requires the integrated-prover feature; falling back to 'subprocess'");
+            }
             let path = manager.resolve_vampire().unwrap_or_else(|e| {
                 log::warn!("{e}; falling back to 'vampire' on PATH");
                 PathBuf::from("vampire")

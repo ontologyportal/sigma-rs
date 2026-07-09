@@ -29,15 +29,16 @@ pub const METHOD: &str = "sumo/setActiveFiles";
 /// Apply a `sumo/setActiveFiles` notification.
 ///
 /// Computes a symmetric difference against the KB's currently-loaded files,
-/// then applies adds / removes via [`sigmakee_rs_sdk::IngestOp`]. Returns the
-/// files that were added and those that were removed so callers can republish
-/// diagnostics for each.
+/// then applies adds / removes directly via [`sigmakee_rs_core::KnowledgeBase::load`].
+/// Returns the files that were added and those that were removed so callers
+/// can republish diagnostics for each.
 pub fn handle_set_active_files(
     state:  &GlobalState,
     params: SetActiveFilesParams,
 ) -> SetActiveFilesReport {
     use std::collections::HashSet;
-    use sigmakee_rs_sdk::{IngestOp, SdkError};
+    use std::path::PathBuf;
+    use sigmakee_rs_core::{FileOrigin, LocalProvenance, Severity, SourceFile};
 
     let requested: HashSet<String> = params.files.into_iter().collect();
 
@@ -77,40 +78,42 @@ pub fn handle_set_active_files(
         to_add
     };
 
-    // `IngestOp::run` aborts on the first failure, so drive it file-by-file
-    // rather than as one batch — a single bad-read file must not take down
-    // the whole set.
+    // Drive ingestion file-by-file rather than as one batch — a single
+    // bad-read file must not take down the whole set.
     for tag in files_to_ingest {
-        let op_result = IngestOp::new(&mut *kb).add_file(&tag).run();
-        match op_result {
-            Ok(ingest_report) => {
-                for s in &ingest_report.sources {
-                    if !s.semantic_warnings.is_empty() {
-                        log::warn!(target: "sumo_lsp::kb",
-                            "setActiveFiles: '{}' surfaced {} semantic warning(s)",
-                            s.tag, s.semantic_warnings.len());
-                    }
-                }
-                report.added.push(tag);
-            }
-            Err(SdkError::Io { source, .. }) => {
+        let contents = match std::fs::read_to_string(&tag) {
+            Ok(c) => c,
+            Err(e) => {
                 log::warn!(target: "sumo_lsp::kb",
-                    "setActiveFiles: cannot read '{}': {}", tag, source);
-                report.failed.push((tag, source.to_string()));
+                    "setActiveFiles: cannot read '{}': {}", tag, e);
+                report.failed.push((tag, e.to_string()));
+                continue;
             }
-            Err(SdkError::Kb(e)) => {
-                // Parse failures land here. Record the file as added anyway so
-                // diagnostics get republished and the editor sees the squiggle.
-                log::warn!(target: "sumo_lsp::kb",
-                    "setActiveFiles: load '{}' surfaced KB error: {}", tag, e);
-                report.added.push(tag);
-            }
-            Err(other) => {
-                log::warn!(target: "sumo_lsp::kb",
-                    "setActiveFiles: ingest of '{}' failed: {}", tag, other);
-                report.failed.push((tag, other.to_string()));
-            }
+        };
+        let Some(src) = SourceFile::from_file(
+            PathBuf::from(&tag), contents, FileOrigin::Local(LocalProvenance::UNKNOWN),
+        ) else {
+            log::warn!(target: "sumo_lsp::kb",
+                "setActiveFiles: cannot determine a parser for '{}'", tag);
+            report.failed.push((tag, "no parser could be determined for this file".to_string()));
+            continue;
+        };
+
+        let result = kb.load(src, &tag);
+        let warnings = result.diagnostics.iter()
+            .filter(|d| matches!(d.severity, Severity::Warning))
+            .count();
+        if warnings > 0 {
+            log::warn!(target: "sumo_lsp::kb",
+                "setActiveFiles: '{}' surfaced {} semantic warning(s)", tag, warnings);
         }
+        // Parse failures (`!result.ok`) are recorded as added anyway so
+        // diagnostics get republished and the editor sees the squiggle.
+        if !result.ok {
+            log::warn!(target: "sumo_lsp::kb",
+                "setActiveFiles: load '{}' surfaced parse-level diagnostics", tag);
+        }
+        report.added.push(tag);
     }
 
     drop(kb);

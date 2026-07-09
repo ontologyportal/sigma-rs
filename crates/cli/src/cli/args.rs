@@ -103,6 +103,21 @@ pub struct Cli {
     #[arg(long = "branch", value_name = "NAME", global = true)]
     pub branch: Option<String>,
 
+    /// Exclude (remove) a constituent from the KB named by `--kb` (matched
+    /// by the exact path shown in `sumo config`'s "Knowledge bases"
+    /// listing). Only meaningful with `sumo config --kb NAME`; no effect
+    /// elsewhere.
+    #[arg(long = "exclude", value_name = "PATH", global = true)]
+    pub exclude: Vec<PathBuf>,
+
+    /// With `sumo config --kb NAME -f/-d ...`: skip the usual existence
+    /// check and add the constituent(s) by name alone (classified by path
+    /// shape only). For declaring a KB's expected files before they're
+    /// actually fetched — e.g. seeding a starter `<kb>` ahead of `sumo
+    /// --git ... load`. No effect elsewhere.
+    #[arg(long = "declare", global = true)]
+    pub declare: bool,
+
     /// Path to the LMDB database directory.
     /// Defaults to `./sumo.lmdb` in the current working directory.
     #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]
@@ -571,6 +586,14 @@ pub enum Cmd {
     /// Print the resolved KBManager configuration (from config.xml when found
     /// and `--no-config` wasn't passed, else built-in defaults) and how each
     /// option maps to its CLI flag.
+    ///
+    /// `--kb NAME` together with `-f`/`-d`/`--exclude` edits that KB's
+    /// constituent list in config.xml instead (creating the KB if it
+    /// doesn't exist yet): `sumo config --kb SUMO -f Merge.kif` adds a
+    /// constituent, `sumo config --kb SUMO --exclude Merge.kif` removes
+    /// one. Add `--declare` to skip the existence check (declare a
+    /// constituent before it's actually fetched). Only one KB may be
+    /// edited per invocation.
     Config {},
 
     /// Check whether the currently-configured sources have changed since

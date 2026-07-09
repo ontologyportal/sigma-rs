@@ -27,7 +27,7 @@ use crate::{SdkError, SdkResult, Source};
 /// and constituent membership.
 ///
 /// Field names are the canonical Rust form of the legacy `config.xml`
-/// `<preference>` keys (e.g. `graphviz_dir` ⇔ `graphVizDir`, `tptp` ⇔ `TPTP`);
+/// `<preference>` keys (e.g. `graphviz_dir` ⇔ `graphDir`, `tptp` ⇔ `TPTP`);
 /// see [`KBManager::from_config_xml`].  Preferences in the XML with no matching
 /// field are ignored.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -106,8 +106,6 @@ pub struct KBManager {
     pub real_numbers: Option<bool>,
     /// The path to the vampire binary
     pub vampire: PathBuf,
-    /// The path to the vampire HOL solver binary
-    pub vampire_hol: PathBuf,
     /// The various KBs associated with the system
     pub kbs: Vec<KB>,
     /// Default options for the native saturation prover (from a
@@ -116,6 +114,12 @@ pub struct KBManager {
     /// Default options for the external (subprocess) prover (from a
     /// `<prover type="external">` section).
     pub external_prover: ExternalProverConfig,
+    /// Top-level `<preference name=".." value="..">` entries [`parse_config_xml_lenient`](Self::parse_config_xml_lenient)
+    /// read but that don't map to any known field above — e.g. a legacy or
+    /// third-party key. Round-tripped verbatim by [`to_config_xml`](Self::to_config_xml)
+    /// so `sumo config --<setting> ...` (a full regenerate) doesn't silently
+    /// drop preferences this build doesn't recognize.
+    pub unknown_preferences: HashMap<String, String>,
     /// The currently selected KB
     #[serde(skip)]
     selected_kb: Option<usize>
@@ -151,10 +155,10 @@ impl Default for KBManager {
             tptp_lang:          "fof".into(),
             real_numbers:       None,
             vampire:            PathBuf::new(),
-            vampire_hol:        PathBuf::new(),
             kbs:                Vec::new(),
             native_prover:      NativeProverConfig::default(),
             external_prover:    ExternalProverConfig::default(),
+            unknown_preferences: HashMap::new(),
             selected_kb:        None
         }
     }
@@ -379,34 +383,34 @@ impl KBManager {
 
         let mut m = KBManager::default();
         let get = |k: &str| prefs.get(k).map(String::as_str);
+        use pref_keys::*;
 
-        if let Some(v) = get("baseDir")          { m.base_dir = PathBuf::from(v); }
-        if let Some(v) = get("cache")            { m.cache = parse_bool(v); }
-        if let Some(v) = get("defaultBackend")   { m.default_backend = v.to_string(); }
-        if let Some(v) = get("disableSelection") { m.disable_selection = parse_bool(v); }
-        if let Some(v) = get("editDir")          { m.edit_dir = PathBuf::from(v); }
-        if let Some(v) = get("eprover")          { m.eprover = PathBuf::from(v); }
-        if let Some(v) = get("graphVizDir")      { m.graphviz_dir = PathBuf::from(v); }
-        if let Some(v) = get("holdsPrefix")      { m.holds_prefix = parse_bool(v); }
-        if let Some(v) = get("inferenceTestDir") { m.inference_test_dir = PathBuf::from(v); }
-        if let Some(v) = get("kbDir")            { m.kb_dir = PathBuf::from(v); }
-        if let Some(v) = get("language")         { m.language = v.to_string(); }
-        if let Some(v) = get("leoExecutable")    { m.leo_executable = PathBuf::from(v); }
-        if let Some(v) = get("limit")            { if let Ok(n) = v.parse() { m.limit = n; } }
-        if let Some(v) = get("logDir")           { m.log_dir = PathBuf::from(v); }
-        if let Some(v) = get("logLevel")         { m.log_level = parse_severity(v); }
-        if let Some(v) = get("ollamaHost")       { m.ollama_host = v.to_string(); }
-        if let Some(v) = get("proof")            { m.proof = v.to_string(); }
-        if let Some(v) = get("prose")            { m.prose = parse_bool(v); }
-        if let Some(v) = get("realNumbers")      { m.real_numbers = Some(parse_bool(v)); }
-        if let Some(v) = get("showKif")          { m.show_kif = parse_bool(v); }
-        if let Some(v) = get("sumokbname")       { m.sumokbname = v.to_string(); }
-        if let Some(v) = get("systemsDir")       { m.systems_dir = PathBuf::from(v); }
-        if let Some(v) = get("thoroughness")     { if let Ok(f) = v.parse() { m.thoroughness = f; } }
-        if let Some(v) = get("TPTP")             { m.tptp = parse_bool(v); }
-        if let Some(v) = get("tptpLang")         { m.tptp_lang = v.to_string(); }
-        if let Some(v) = get("vampire")          { m.vampire = PathBuf::from(v); }
-        if let Some(v) = get("vampire_hol")      { m.vampire_hol = PathBuf::from(v); }
+        if let Some(v) = get(BASE_DIR)           { m.base_dir = PathBuf::from(v); }
+        if let Some(v) = get(CACHE)              { m.cache = parse_bool(v); }
+        if let Some(v) = get(DEFAULT_BACKEND)    { m.default_backend = v.to_string(); }
+        if let Some(v) = get(DISABLE_SELECTION)  { m.disable_selection = parse_bool(v); }
+        if let Some(v) = get(EDIT_DIR)           { m.edit_dir = PathBuf::from(v); }
+        if let Some(v) = get(EPROVER)            { m.eprover = PathBuf::from(v); }
+        if let Some(v) = get(GRAPHVIZ_DIR)       { m.graphviz_dir = PathBuf::from(v); }
+        if let Some(v) = get(HOLDS_PREFIX)       { m.holds_prefix = parse_bool(v); }
+        if let Some(v) = get(INFERENCE_TEST_DIR) { m.inference_test_dir = PathBuf::from(v); }
+        if let Some(v) = get(KB_DIR)             { m.kb_dir = PathBuf::from(v); }
+        if let Some(v) = get(LANGUAGE)           { m.language = v.to_string(); }
+        if let Some(v) = get(LEO_EXECUTABLE)     { m.leo_executable = PathBuf::from(v); }
+        if let Some(v) = get(LIMIT)              { if let Ok(n) = v.parse() { m.limit = n; } }
+        if let Some(v) = get(LOG_DIR)            { m.log_dir = PathBuf::from(v); }
+        if let Some(v) = get(LOG_LEVEL)          { m.log_level = parse_severity(v); }
+        if let Some(v) = get(OLLAMA_HOST)        { m.ollama_host = v.to_string(); }
+        if let Some(v) = get(PROOF)              { m.proof = v.to_string(); }
+        if let Some(v) = get(PROSE)              { m.prose = parse_bool(v); }
+        if let Some(v) = get(REAL_NUMBERS)       { m.real_numbers = Some(parse_bool(v)); }
+        if let Some(v) = get(SHOW_KIF)           { m.show_kif = parse_bool(v); }
+        if let Some(v) = get(SUMOKBNAME)         { m.sumokbname = v.to_string(); }
+        if let Some(v) = get(SYSTEMS_DIR)        { m.systems_dir = PathBuf::from(v); }
+        if let Some(v) = get(THOROUGHNESS)       { if let Ok(f) = v.parse() { m.thoroughness = f; } }
+        if let Some(v) = get(TPTP)               { m.tptp = parse_bool(v); }
+        if let Some(v) = get(TPTP_LANG)          { m.tptp_lang = v.to_string(); }
+        if let Some(v) = get(VAMPIRE)            { m.vampire = PathBuf::from(v); }
         m.kbs = kbs;
 
         // Classify constituents now that baseDir/kbDir are known: clean
@@ -428,7 +432,7 @@ impl KBManager {
         // `<preference name="error" value="all">` both feed the token list;
         // `from_tokens` resolves "all" → All, codes → Codes, empty → None.
         let mut warn_tokens = errors;
-        if let Some(v) = get("error") { warn_tokens.push(v.to_string()); }
+        if let Some(v) = get(ERROR) { warn_tokens.push(v.to_string()); }
         m.elevate_warnings = ElevateWarnings::from_tokens(warn_tokens);
 
         // `<prover type="native|external">` sections.  Unknown types are ignored.
@@ -439,6 +443,14 @@ impl KBManager {
                 _          => {}
             }
         }
+
+        // Any top-level preference not consumed by a `get(..)` call above
+        // (or by "error", handled separately just above) is preserved
+        // verbatim so `to_config_xml` can round-trip it — see
+        // `unknown_preferences`'s doc comment.
+        m.unknown_preferences = prefs.into_iter()
+            .filter(|(k, _)| !KNOWN_PREFERENCES.contains(&k.as_str()))
+            .collect();
 
         Ok(m)
     }
@@ -593,6 +605,122 @@ impl KBManager {
         }
         Ok(())
     }
+
+    /// Persistently create an empty KB named `kb_name` — a no-op if it
+    /// already exists. Decoupled from [`add_constituents_to_kb`](Self::add_constituents_to_kb)
+    /// (which also creates on demand, but requires at least one file) so a
+    /// caller — e.g. the `sumo config` TUI's "new KB" action — can create a
+    /// KB before it has any constituents. Adopts `kb_name` as
+    /// [`sumokbname`](Self) when this is the first KB on an otherwise-empty
+    /// manager, same policy as `add_constituents_to_kb`.
+    pub fn create_kb(&mut self, kb_name: &str) {
+        if self.kbs.iter().any(|k| k.name == kb_name) {
+            return;
+        }
+        self.kbs.push(KB { name: kb_name.to_string(), constituents: Vec::new() });
+        if self.sumokbname.trim().is_empty() {
+            self.sumokbname = kb_name.to_string();
+        }
+    }
+
+    /// Persistently add `files`/`dirs` as constituents of the KB named
+    /// `kb_name`, creating it (empty) first if it doesn't already exist —
+    /// the mutation behind `sumo config --kb NAME -f FILE -d DIR`. Unlike
+    /// [`add_cli_sources`](Self::add_cli_sources) (transient, in-memory-only,
+    /// always pins), each path is classified via [`is_named`]: a
+    /// clean-relative path that actually resolves under [`kb_dir`](Self) is
+    /// stored as [`Constituent::Named`] (portable — re-rooted at load time);
+    /// anything else (absolute, `..`-bearing, or relative-but-not-under-kbDir)
+    /// is canonicalized and pinned as [`Constituent::Source`]. Additive: a
+    /// path already present (by resolved identity) is skipped, not
+    /// duplicated. If this is the first KB ever added to an otherwise-empty
+    /// manager, it's also adopted as [`sumokbname`](Self) so the result isn't
+    /// left in the "no default KB" state — an already-set `sumokbname` is
+    /// never overridden.
+    ///
+    /// `verify_exists = false` (`sumo config --kb NAME --declare -f ...`)
+    /// skips every existence check and classifies by path shape alone
+    /// (clean-relative → `Named`, else pinned as given, uncanonicalized) —
+    /// for declaring constituents ahead of actually fetching them (e.g. an
+    /// installer seeding a starter KB before the ontology is cloned).
+    pub fn add_constituents_to_kb(
+        &mut self, kb_name: &str, files: Vec<PathBuf>, dirs: Vec<PathBuf>, verify_exists: bool,
+    ) -> SdkResult<()> {
+        // Classify (and existence-check) every path FIRST, before mutating
+        // anything — a rejected path must leave the manager untouched (no
+        // half-created KB), matching `add_cli_sources`'s all-or-nothing shape.
+        let (base, kbd) = (self.base_dir.clone(), self.kb_dir.clone());
+        let mut candidates = Vec::with_capacity(files.len() + dirs.len());
+        for p in files.into_iter().chain(dirs) {
+            if !verify_exists {
+                candidates.push(if is_named(&p) {
+                    Constituent::Named(p)
+                } else {
+                    Constituent::Source(Source::Local(vec![p]))
+                });
+                continue;
+            }
+            // A clean-relative path that resolves under kbDir is portable —
+            // store it as `Named` so it re-roots at load time. Otherwise fall
+            // back to existence as given (CWD-relative or absolute) and pin
+            // it to that resolved, canonical location.
+            if is_named(&p) && resolve_constituent(&p, &base, &kbd).exists() {
+                candidates.push(Constituent::Named(p));
+            } else if p.exists() {
+                candidates.push(Constituent::Source(Source::Local(vec![p.canonicalize().unwrap_or(p)])));
+            } else {
+                return Err(SdkError::Config(format!(
+                    "source path not found: `{}` (checked as given, and under kbDir `{}`)",
+                    p.display(), kbd.display())));
+            }
+        }
+
+        self.create_kb(kb_name);
+        let idx = self.kbs.iter().position(|k| k.name == kb_name).expect("just created");
+
+        for candidate in candidates {
+            let already_present = self.kbs[idx].constituents.iter()
+                .any(|c| constituent_path(c) == constituent_path(&candidate));
+            if !already_present {
+                self.kbs[idx].constituents.push(candidate);
+            }
+        }
+        Ok(())
+    }
+
+    /// Persistently remove constituents of the KB named `kb_name` whose
+    /// stored path exactly matches one of `paths` — the mutation behind
+    /// `sumo config --kb NAME --exclude PATH`. Matches the path as actually
+    /// stored (a `Named` constituent's relative name, or a pinned
+    /// constituent's canonicalized absolute form); pass the same value shown
+    /// in `sumo config`'s "Knowledge bases" listing. Returns how many
+    /// constituents were removed (0 if none matched). `Err` only when
+    /// `kb_name` itself doesn't exist.
+    pub fn remove_constituents_from_kb(&mut self, kb_name: &str, paths: Vec<PathBuf>) -> SdkResult<usize> {
+        let idx = self.kbs.iter().position(|k| k.name == kb_name)
+            .ok_or_else(|| SdkError::Config(format!("no such KB: `{kb_name}`")))?;
+        let before = self.kbs[idx].constituents.len();
+        self.kbs[idx].constituents.retain(|c| {
+            match constituent_path(c) {
+                Some(p) => !paths.iter().any(|rp| rp == p),
+                None => true,
+            }
+        });
+        Ok(before - self.kbs[idx].constituents.len())
+    }
+}
+
+/// The single filesystem path a constituent's identity boils down to, for
+/// dedup/removal comparisons — `None` for a multi-path or non-local pinned
+/// source (can't happen for anything [`add_constituents_to_kb`](KBManager::add_constituents_to_kb)
+/// itself produces, but existing config.xml-parsed constituents are always
+/// single-path anyway).
+fn constituent_path(c: &Constituent) -> Option<&Path> {
+    match c {
+        Constituent::Named(p) => Some(p),
+        Constituent::Source(Source::Local(paths)) if paths.len() == 1 => Some(&paths[0]),
+        _ => None,
+    }
 }
 
 /// A KB constituent — one member file, modeled so its *identity* (a name) is
@@ -730,6 +858,60 @@ impl ElevateWarnings {
 }
 
 // -- config.xml parsing ------------------------------------------------------
+
+/// The literal `<preference name="..">` key for every top-level [`KBManager`]
+/// field — the single source of truth both [`parse_config_xml_lenient`](KBManager::parse_config_xml_lenient)
+/// (`get(pref_keys::X)`) and `write.rs`'s writer (`pref(w, pref_keys::X,
+/// ..)`) read from, so renaming a key only means changing it here.
+/// [`KNOWN_PREFERENCES`] is generated from this same list.
+pub(crate) mod pref_keys {
+    pub const BASE_DIR:            &str = "baseDir";
+    pub const CACHE:               &str = "cache";
+    pub const DEFAULT_BACKEND:     &str = "defaultBackend";
+    pub const DISABLE_SELECTION:   &str = "disableSelection";
+    pub const EDIT_DIR:            &str = "editDir";
+    pub const EPROVER:             &str = "eproverExec";
+    pub const GRAPHVIZ_DIR:        &str = "graphDir";
+    pub const HOLDS_PREFIX:        &str = "holdsPrefix";
+    pub const INFERENCE_TEST_DIR:  &str = "inferenceTestDir";
+    pub const KB_DIR:              &str = "kbDir";
+    pub const LANGUAGE:            &str = "language";
+    pub const LEO_EXECUTABLE:      &str = "leoExec";
+    pub const LIMIT:               &str = "limit";
+    pub const LOG_DIR:             &str = "logDir";
+    pub const LOG_LEVEL:           &str = "logLevel";
+    pub const OLLAMA_HOST:         &str = "ollamaHost";
+    pub const PROOF:               &str = "proof";
+    pub const PROSE:               &str = "prose";
+    pub const REAL_NUMBERS:        &str = "realNumbers";
+    pub const SHOW_KIF:            &str = "showKif";
+    pub const SUMOKBNAME:          &str = "sumokbname";
+    pub const SYSTEMS_DIR:         &str = "systemsDir";
+    pub const THOROUGHNESS:        &str = "thoroughness";
+    pub const TPTP:                &str = "TPTP";
+    pub const TPTP_LANG:           &str = "tptpLang";
+    pub const VAMPIRE:             &str = "vampireExec";
+    /// Warning-elevation policy (`-W all` / `ElevateWarnings::All`), not a
+    /// `KBManager` field directly, but still a "known" top-level key.
+    pub const ERROR:               &str = "error";
+
+    /// Every key above, for the `unknown_preferences` classification —
+    /// generated (not hand-duplicated) so it can't drift from the constants.
+    pub const ALL: &[&str] = &[
+        BASE_DIR, CACHE, DEFAULT_BACKEND, DISABLE_SELECTION, EDIT_DIR, EPROVER,
+        GRAPHVIZ_DIR, HOLDS_PREFIX, INFERENCE_TEST_DIR, KB_DIR, LANGUAGE, LEO_EXECUTABLE,
+        LIMIT, LOG_DIR, LOG_LEVEL, OLLAMA_HOST, PROOF, PROSE, REAL_NUMBERS, SHOW_KIF,
+        SUMOKBNAME, SYSTEMS_DIR, THOROUGHNESS, TPTP, TPTP_LANG, VAMPIRE,
+        ERROR,
+    ];
+}
+
+/// Every top-level `<preference name="..">` key [`parse_config_xml_lenient`](KBManager::parse_config_xml_lenient)
+/// maps to a known [`KBManager`] field (including `"error"`, consumed by the
+/// warning-elevation policy). Anything else lands in
+/// [`unknown_preferences`](KBManager::unknown_preferences) instead of being
+/// silently dropped.
+const KNOWN_PREFERENCES: &[&str] = pref_keys::ALL;
 
 /// One `<prover type="..">` section: its `type` plus its `<preference>` map.
 type ProverSection = (String, HashMap<String, String>);
@@ -981,13 +1163,13 @@ mod tests {
   <preference name="baseDir" value="/home/u/.sigmakee"/>
   <preference name="cache" value="yes"/>
   <preference name="editDir" value="/home/u/sumo"/>
-  <preference name="graphVizDir" value="/usr/bin"/>
+  <preference name="graphDir" value="/usr/bin"/>
   <preference name="holdsPrefix" value="no"/>
   <preference name="kbDir" value="/home/u/sumo"/>
   <preference name="logLevel" value="warning"/>
   <preference name="sumokbname" value="SUMO"/>
   <preference name="TPTP" value="yes"/>
-  <preference name="vampire" value="/usr/local/bin/vampire"/>
+  <preference name="vampireExec" value="/usr/local/bin/vampire"/>
   <preference name="ollamaHost" value="http://127.0.0.1:11434"/>
   <preference name="someUnknownOption" value="ignore me"/>
   <kb name="SUMO">
@@ -1003,7 +1185,7 @@ mod tests {
         assert_eq!(m.base_dir, PathBuf::from("/home/u/.sigmakee"));
         // `edit_dir` is resolved by `validate()` (the configured /home/u/sumo
         // doesn't exist here → CWD); see `validate_resolves_edit_dir`.
-        assert_eq!(m.graphviz_dir, PathBuf::from("/usr/bin")); // graphVizDir
+        assert_eq!(m.graphviz_dir, PathBuf::from("/usr/bin")); // graphDir
         assert_eq!(m.kb_dir, PathBuf::from("/home/u/sumo"));
         assert_eq!(m.sumokbname, "SUMO");
         assert_eq!(m.vampire, PathBuf::from("/usr/local/bin/vampire"));
@@ -1048,6 +1230,27 @@ mod tests {
         // regenerated form uses different formatting entirely.
         assert_eq!(reparsed.sumokbname, "SUMO");
         assert_eq!(reparsed.kbs[0].constituents().len(), 3);
+    }
+
+    #[test]
+    fn unknown_preferences_survive_a_regenerate() {
+        // SAMPLE has `adminBrowserLimit` and `someUnknownOption` — neither
+        // maps to a KBManager field, so they used to be silently dropped by
+        // `to_config_xml`. They must now round-trip via `unknown_preferences`.
+        let m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
+        assert_eq!(m.unknown_preferences.get("adminBrowserLimit").map(String::as_str), Some("200"));
+        assert_eq!(m.unknown_preferences.get("someUnknownOption").map(String::as_str), Some("ignore me"));
+
+        // A `sumo config --<setting> ...` regenerate must not lose them.
+        let xml = m.to_config_xml();
+        assert!(xml.contains(r#"<preference name="adminBrowserLimit" value="200"/>"#));
+        assert!(xml.contains(r#"<preference name="someUnknownOption" value="ignore me"/>"#));
+        let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
+        assert_eq!(reparsed.unknown_preferences, m.unknown_preferences);
+
+        // A known field is never miscategorized as unknown.
+        assert!(!m.unknown_preferences.contains_key("sumokbname"));
+        assert!(!m.unknown_preferences.contains_key("vampireExec"));
     }
 
     #[test]
@@ -1147,6 +1350,136 @@ mod tests {
     fn add_cli_sources_rejects_a_missing_local_path() {
         let mut m = kb_with("K");
         let err = m.add_cli_sources(vec!["/no/such/file.kif".into()], vec![], None).unwrap_err();
+        assert!(matches!(err, SdkError::Config(_)));
+    }
+
+    #[test]
+    fn create_kb_is_idempotent_and_adopts_sumokbname_once() {
+        let mut m = KBManager::default();
+        m.create_kb("SUMO");
+        assert_eq!(m.kbs.len(), 1);
+        assert_eq!(m.kbs[0].name(), "SUMO");
+        assert!(m.kbs[0].constituents().is_empty());
+        assert_eq!(m.sumokbname, "SUMO");
+
+        // Re-creating the same name is a no-op (no duplicate KB).
+        m.create_kb("SUMO");
+        assert_eq!(m.kbs.len(), 1);
+
+        // A second, different KB doesn't steal the already-set default.
+        m.create_kb("OTHER");
+        assert_eq!(m.kbs.len(), 2);
+        assert_eq!(m.sumokbname, "SUMO");
+    }
+
+    #[test]
+    fn add_constituents_to_kb_creates_kb_and_adopts_sumokbname() {
+        let dir = std::env::temp_dir().join("sdk_add_constituents_create");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.kif");
+        std::fs::write(&f, "").unwrap();
+
+        let mut m = KBManager::default();
+        assert!(m.sumokbname.is_empty());
+        m.add_constituents_to_kb("NEW", vec![f.clone()], vec![], true).unwrap();
+        assert_eq!(m.kbs.len(), 1);
+        assert_eq!(m.kbs[0].name(), "NEW");
+        assert_eq!(m.kbs[0].constituents().len(), 1);
+        // First KB on an empty manager is adopted as the default.
+        assert_eq!(m.sumokbname, "NEW");
+
+        // A second `add_constituents_to_kb` on a DIFFERENT kb must not steal
+        // the already-set default.
+        m.add_constituents_to_kb("OTHER", vec![f.clone()], vec![], true).unwrap();
+        assert_eq!(m.sumokbname, "NEW");
+    }
+
+    #[test]
+    fn add_constituents_to_kb_classifies_named_vs_pinned_by_kbdir() {
+        // Classification resolves the relative path against `kb_dir`
+        // directly (not the process CWD), so this needs no `set_current_dir`
+        // (unsafe to do in a parallel test run anyway).
+        let root = std::env::temp_dir().join("sdk_add_constituents_classify");
+        let kbd  = root.join("kbdir");
+        std::fs::create_dir_all(&kbd).unwrap();
+        std::fs::write(kbd.join("InKbDir.kif"), "").unwrap();
+        let outside = root.join("Outside.kif");
+        std::fs::write(&outside, "").unwrap();
+
+        let mut m = KBManager::default();
+        m.kb_dir = kbd.clone();
+
+        // A clean-relative name that resolves under kbDir → Named.
+        m.add_constituents_to_kb("K", vec![PathBuf::from("InKbDir.kif")], vec![], true).unwrap();
+        // An absolute path outside kbDir → pinned, regardless of kbDir.
+        m.add_constituents_to_kb("K", vec![outside.clone()], vec![], true).unwrap();
+
+        let kb = &m.kbs[0];
+        assert!(matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("InKbDir.kif")));
+        assert!(matches!(&kb.constituents()[1], Constituent::Source(Source::Local(p)) if p[0] == outside.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn add_constituents_to_kb_is_additive_and_deduplicates() {
+        let dir = std::env::temp_dir().join("sdk_add_constituents_dedup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.kif");
+        std::fs::write(&f, "").unwrap();
+
+        let mut m = KBManager::default();
+        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true).unwrap();
+        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true).unwrap();
+        assert_eq!(m.kbs[0].constituents().len(), 1, "re-adding the same path is a no-op");
+    }
+
+    #[test]
+    fn add_constituents_to_kb_rejects_a_missing_path() {
+        let mut m = KBManager::default();
+        let err = m.add_constituents_to_kb("K", vec!["/no/such/file.kif".into()], vec![], true).unwrap_err();
+        assert!(matches!(err, SdkError::Config(_)));
+        assert!(m.kbs.is_empty(), "KB is not created on a failed add");
+    }
+
+    #[test]
+    fn add_constituents_to_kb_declare_mode_skips_existence_check() {
+        // verify_exists = false: nonexistent bare relative names are still
+        // accepted and classified purely by shape (Named for clean-relative).
+        let mut m = KBManager::default();
+        m.add_constituents_to_kb(
+            "SUMO",
+            vec!["Merge.kif".into(), "Mid-level-ontology.kif".into()],
+            vec![],
+            false,
+        ).unwrap();
+        assert_eq!(m.sumokbname, "SUMO");
+        let kb = &m.kbs[0];
+        assert_eq!(kb.constituents().len(), 2);
+        assert!(matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("Merge.kif")));
+        assert!(matches!(&kb.constituents()[1], Constituent::Named(p) if p == Path::new("Mid-level-ontology.kif")));
+    }
+
+    #[test]
+    fn remove_constituents_from_kb_removes_matching_paths_only() {
+        let dir = std::env::temp_dir().join("sdk_remove_constituents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.kif");
+        let b = dir.join("b.kif");
+        std::fs::write(&a, "").unwrap();
+        std::fs::write(&b, "").unwrap();
+
+        let mut m = KBManager::default();
+        m.add_constituents_to_kb("K", vec![a.clone(), b.clone()], vec![], true).unwrap();
+        assert_eq!(m.kbs[0].constituents().len(), 2);
+
+        let removed = m.remove_constituents_from_kb("K", vec![a.canonicalize().unwrap()]).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(m.kbs[0].constituents().len(), 1);
+    }
+
+    #[test]
+    fn remove_constituents_from_kb_errors_on_unknown_kb() {
+        let mut m = KBManager::default();
+        let err = m.remove_constituents_from_kb("NOPE", vec!["x.kif".into()]).unwrap_err();
         assert!(matches!(err, SdkError::Config(_)));
     }
 

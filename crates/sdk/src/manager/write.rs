@@ -5,14 +5,14 @@
 // value on `self` is emitted in a canonical form; comments, formatting, and
 // element order from any original hand-edited file are not preserved. Key
 // names/casing mirror `parse_config_xml_lenient` exactly (same irregulars:
-// `TPTP`, `vampire_hol`, `realNumbers`), so a round trip through
+// `TPTP`, `realNumbers`), so a round trip through
 // `to_config_xml` → `parse_config_xml_lenient` is value-lossless.
 
 use quick_xml::events::{BytesDecl, Event};
 use quick_xml::writer::Writer;
 use serde_json::Value;
 
-use super::{Constituent, ElevateWarnings, KBManager, Source, KB};
+use super::{pref_keys::*, Constituent, ElevateWarnings, KBManager, Source, KB};
 
 impl KBManager {
     /// Serialize this manager back to a `config.xml` document.
@@ -56,41 +56,49 @@ fn yn(b: bool) -> &'static str {
 }
 
 fn write_preferences(w: &mut W, m: &KBManager) {
-    pref(w, "baseDir", &m.base_dir.display().to_string());
-    pref(w, "cache", yn(m.cache));
-    pref(w, "defaultBackend", &m.default_backend);
-    pref(w, "disableSelection", yn(m.disable_selection));
-    pref(w, "editDir", &m.edit_dir.display().to_string());
-    pref(w, "eprover", &m.eprover.display().to_string());
-    pref(w, "graphVizDir", &m.graphviz_dir.display().to_string());
-    pref(w, "holdsPrefix", yn(m.holds_prefix));
-    pref(w, "inferenceTestDir", &m.inference_test_dir.display().to_string());
-    pref(w, "kbDir", &m.kb_dir.display().to_string());
-    pref(w, "language", &m.language);
-    pref(w, "leoExecutable", &m.leo_executable.display().to_string());
-    pref(w, "limit", &m.limit.to_string());
-    pref(w, "logDir", &m.log_dir.display().to_string());
-    pref(w, "logLevel", super::severity_str(m.log_level));
-    pref(w, "ollamaHost", &m.ollama_host);
-    pref(w, "proof", &m.proof);
-    pref(w, "prose", yn(m.prose));
+    pref(w, BASE_DIR, &m.base_dir.display().to_string());
+    pref(w, CACHE, yn(m.cache));
+    pref(w, DEFAULT_BACKEND, &m.default_backend);
+    pref(w, DISABLE_SELECTION, yn(m.disable_selection));
+    pref(w, EDIT_DIR, &m.edit_dir.display().to_string());
+    pref(w, EPROVER, &m.eprover.display().to_string());
+    pref(w, GRAPHVIZ_DIR, &m.graphviz_dir.display().to_string());
+    pref(w, HOLDS_PREFIX, yn(m.holds_prefix));
+    pref(w, INFERENCE_TEST_DIR, &m.inference_test_dir.display().to_string());
+    pref(w, KB_DIR, &m.kb_dir.display().to_string());
+    pref(w, LANGUAGE, &m.language);
+    pref(w, LEO_EXECUTABLE, &m.leo_executable.display().to_string());
+    pref(w, LIMIT, &m.limit.to_string());
+    pref(w, LOG_DIR, &m.log_dir.display().to_string());
+    pref(w, LOG_LEVEL, super::severity_str(m.log_level));
+    pref(w, OLLAMA_HOST, &m.ollama_host);
+    pref(w, PROOF, &m.proof);
+    pref(w, PROSE, yn(m.prose));
     if let Some(rn) = m.real_numbers {
-        pref(w, "realNumbers", yn(rn));
+        pref(w, REAL_NUMBERS, yn(rn));
     }
-    pref(w, "showKif", yn(m.show_kif));
-    pref(w, "sumokbname", &m.sumokbname);
-    pref(w, "systemsDir", &m.systems_dir.display().to_string());
-    pref(w, "thoroughness", &m.thoroughness.to_string());
-    pref(w, "TPTP", yn(m.tptp));
-    pref(w, "tptpLang", &m.tptp_lang);
-    pref(w, "vampire", &m.vampire.display().to_string());
-    pref(w, "vampire_hol", &m.vampire_hol.display().to_string());
+    pref(w, SHOW_KIF, yn(m.show_kif));
+    pref(w, SUMOKBNAME, &m.sumokbname);
+    pref(w, SYSTEMS_DIR, &m.systems_dir.display().to_string());
+    pref(w, THOROUGHNESS, &m.thoroughness.to_string());
+    pref(w, TPTP, yn(m.tptp));
+    pref(w, TPTP_LANG, &m.tptp_lang);
+    pref(w, VAMPIRE, &m.vampire.display().to_string());
+
+    // Preferences this build doesn't recognize — round-tripped verbatim
+    // (see `KBManager::unknown_preferences`) rather than dropped. Sorted for
+    // deterministic output.
+    let mut unknown: Vec<(&String, &String)> = m.unknown_preferences.iter().collect();
+    unknown.sort_by_key(|(k, _)| k.as_str());
+    for (k, v) in unknown {
+        pref(w, k, v);
+    }
 }
 
 fn write_error_elevation(w: &mut W, ew: &ElevateWarnings) {
     match ew {
         ElevateWarnings::None => {}
-        ElevateWarnings::All => pref(w, "error", "all"),
+        ElevateWarnings::All => pref(w, ERROR, "all"),
         ElevateWarnings::Codes(codes) => {
             for c in codes {
                 w.create_element("error")

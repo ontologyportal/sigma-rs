@@ -174,6 +174,20 @@ generate_config() {
   fi
 }
 
+# Declare a starter "SUMO" <kb> (Merge.kif + the usual base ontology files)
+# in config.xml. The files themselves aren't downloaded by this installer —
+# `sumo --git <repo> --branch <name> load` (or a manual clone into kbDir) is
+# what actually fetches them — so `--declare` skips the usual existence
+# check `sumo config --kb NAME -f ...` would otherwise enforce. Idempotent:
+# re-adding an already-declared constituent is a no-op (`add_constituents_to_kb`
+# dedups), and it never touches an already-set sumokbname.
+declare_sumo_kb() {
+  [ -f "$SIGMA_HOME/KBs/config.xml" ] || return 0
+  "$BIN_DIR/sumo" config --kb SUMO --declare \
+    -f english_format.kif -f domainEnglishFormat.kif -f Merge.kif -f Mid-level-ontology.kif \
+    >/dev/null || warn "could not declare the starter SUMO <kb> in config.xml (this sumo build may predate --declare support)"
+}
+
 main() {
   local label tag
   label="$(detect_label)"
@@ -183,12 +197,13 @@ main() {
   write_env_file
   update_shell_rc
   generate_config
+  declare_sumo_kb
 
   echo
   info "Done. Installed: $("$BIN_DIR/sumo" --version)"
   info "Restart your shell, or run:  source \"$ENV_FILE\""
-  info "config.xml has no <kb> configured yet — see README.md's Quick start"
-  info "for loading an ontology (e.g. \`sumo --git <repo> --branch <name> load\`)."
+  info "config.xml declares a SUMO KB but hasn't fetched its files yet — see"
+  info "README.md's Quick start for loading it (e.g. \`sumo --git <repo> --branch <name> load\`)."
 }
 
 main "$@"

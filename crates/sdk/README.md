@@ -58,7 +58,7 @@ if let Some(view) = manpage_view(&kb, "Animal") {
 | `persist` | ✓ | `LoadOp`, LMDB-backed `KnowledgeBase::open` |
 | `ask` | ✓ | `AskOp`, `TestOp`, prover-related re-exports |
 | `parallel` | ✓ | rayon-backed parallel hot paths inside `sigmakee-rs-core` |
-| `integrated-prover` |   | Embedded Vampire C++ backend; implies `ask`.  Requires CMake + the `vampire-sys` submodule at build time. |
+| `integrated-prover` |   | Embedded Vampire C++ backend; implies `ask`.  Requires CMake (`vampire-sys` is fetched as an ordinary git dependency at build time). |
 
 ## Documentation
 

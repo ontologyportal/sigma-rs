@@ -67,13 +67,8 @@ When clone this repository:
 git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
 ```
 
-Then initialize the git submodules:
-
-```bash
-$ git submodule update --recursive --init
-```
-
-Finally, compile everything:
+Compile everything (Cargo fetches the Vampire C++ bindings directly from
+their git repo as an ordinary dependency, no submodule init needed):
 
 ```bash
 cargo build --release --bin sumo
@@ -98,7 +93,6 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 | `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
 | `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) |
 | `crates/xtask` (`xtask`) | Dev-only build / release automation tasks |
-| `crates/vampire-rs` | Vendored Vampire prover bindings (git submodule) |
 
 ---
 

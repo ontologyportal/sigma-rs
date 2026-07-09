@@ -11,10 +11,10 @@
 #   * win32-x64      (windows-latest,   x86_64 MSVC)
 #
 # Unlike `sumo-lsp`, the `sumo` binary pulls in the full KB stack
-# including the vampire-sys C++ backend via CMake, so every job
-# checks out submodules recursively and the Linux job installs
-# `cmake` / `build-essential` explicitly.  macOS + Windows runners
-# ship with CMake preinstalled.
+# including the vampire-sys C++ backend via CMake (fetched by Cargo as an
+# ordinary git dependency, no submodule checkout needed), and the Linux
+# job installs `cmake` / `build-essential` explicitly.  macOS + Windows
+# runners ship with CMake preinstalled.
 #
 # Windows is the one exception: vampire-sys's embedded C++ FFI build
 # doesn't currently compile under MSVC, so the win32-x64 job builds
@@ -82,8 +82,6 @@ jobs:
             bin:     sumo.exe
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive   # vampire-rs + vampire-lib + z3/cadical/viras
 
       - uses: dtolnay/rust-toolchain@stable
         with:
