@@ -1,6 +1,8 @@
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use regex::Regex;
 use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use sigmakee_rs_sdk::{ExpectedOutcome, Session, Source, SzsStatus, TestCaseOutcome, TestOutcome};
@@ -15,11 +17,16 @@ use crate::style::*;
 /// it, so one test's ingested + promoted axioms can never leak into the next.
 /// [`Session::test`] does the rest: split the conjecture from the background
 /// theory, promote that background, prove, and grade against the expectation.
+///
+/// `branch` mirrors `--branch`: which branch a git-shaped PATH resolves
+/// against when it doesn't carry its own (a bare repo URL can't, since the
+/// syntax is `<repo>#<path-in-repo>` — no room for a third field).
 pub fn run_test<L>(
     session: Session<L>,
     manager: KBManager,
-    paths:   Vec<PathBuf>,
+    paths:   Vec<String>,
     keep:    Option<PathBuf>,
+    branch:  Option<&str>,
 ) -> bool
 where
     L: ProvingLayer,
@@ -28,7 +35,7 @@ where
     log::debug!("run_test(paths={:?})", paths);
     let _ = keep;
 
-    let test_sources = match discover_test_sources(&paths) {
+    let test_sources = match discover_test_sources(&paths, branch) {
         Ok(s) => s,
         Err(()) => return false,
     };
@@ -99,26 +106,69 @@ enum CaseVerdict {
     Informational,
 }
 
-/// Walk `paths`, collecting one `(label, Source)` per discovered test file
-/// (`.kif.tq` / `.p` / `.tptp`).  Linked `.ax` libraries and `include(...)`
-/// directives are resolved downstream (by the loaded base KB and
-/// [`Source::read`]), not here.
-fn discover_test_sources(paths: &[PathBuf]) -> Result<Vec<(String, Source)>, ()> {
+/// A git remote reference: `git@host:path`, `git://…`/`ssh://…`, or an
+/// `https://` URL ending in `.git` (optionally with its own `#fragment`,
+/// handled the same as the bare-prefix forms by [`parse_git_arg`]). Checked
+/// *before* [`HTTP_RE`] — a `.git`-suffixed `https://` URL would otherwise
+/// also match that.
+static GIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:git@[^/:]+:.+|(?:git|ssh)://\S+|https?://\S+\.git(?:#\S*)?)$").unwrap()
+});
+
+/// A plain `http(s)://` URL — fetched directly as one test file.
+static HTTP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^https?://\S+$").unwrap());
+
+/// Split a git-shaped PATH into `(repo uri, in-repo path)`. The `#<path>`
+/// fragment is required: unlike a local directory, there's no way to list
+/// "every test file in this repo" without a full clone, so a bare repo URL
+/// with nothing to fetch is a clear error rather than a silent no-op.
+fn parse_git_arg(raw: &str) -> Result<(String, PathBuf), String> {
+    match raw.split_once('#') {
+        Some((uri, path)) if !path.is_empty() => Ok((uri.to_string(), PathBuf::from(path))),
+        _ => Err(format!(
+            "git test source `{raw}` needs a `#<path-in-repo>` fragment, e.g. `{raw}#Problems/PUZ001+1.p`"
+        )),
+    }
+}
+
+/// Classify and resolve each of `paths`, collecting one `(label, Source)` per
+/// discovered test file (`.kif.tq` / `.p` / `.tptp`). Linked `.ax` libraries
+/// and `include(...)` directives are resolved downstream (by the loaded base
+/// KB and [`Source::read`]), not here.
+///
+/// Each PATH is either a local file/directory (today's behavior — a
+/// directory is walked non-recursively, one test case per recognized file),
+/// a git reference (`<repo>#<path>`, sparse-fetching exactly that one file
+/// as one test case — `branch` selects which branch when the reference
+/// doesn't carry its own), or a plain URL (fetched directly as one test
+/// case). See [`GIT_RE`]/[`HTTP_RE`] for the exact shapes recognized.
+fn discover_test_sources(paths: &[String], branch: Option<&str>) -> Result<Vec<(String, Source)>, ()> {
     let mut out: Vec<(String, Source)> = Vec::new();
-    for path in paths {
-        if path.is_dir() {
-            let entries = std::fs::read_dir(path).map_err(|e| {
-                log::error!("failed to read directory {}: {e}", path.display());
-            })?;
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_file() { push_if_test(p, &mut out); }
-            }
-        } else if path.is_file() {
-            push_if_test(path.clone(), &mut out);
+    for raw in paths {
+        if GIT_RE.is_match(raw) {
+            let (uri, path) = parse_git_arg(raw).map_err(|e| log::error!("{e}"))?;
+            push_if_test_labeled(raw.clone(), path, |p| {
+                Source::Git { uri, paths: vec![p], branch: branch.map(str::to_string) }
+            }, &mut out);
+        } else if HTTP_RE.is_match(raw) {
+            let uri = raw.parse().map_err(|e| log::error!("invalid URL `{raw}`: {e}"))?;
+            push_if_test_labeled(raw.clone(), PathBuf::from(raw), |_| Source::Http { uri }, &mut out);
         } else {
-            log::error!("path not found: {}", path.display());
-            return Err(());
+            let path = PathBuf::from(raw);
+            if path.is_dir() {
+                let entries = std::fs::read_dir(&path).map_err(|e| {
+                    log::error!("failed to read directory {}: {e}", path.display());
+                })?;
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() { push_if_test(p, &mut out); }
+                }
+            } else if path.is_file() {
+                push_if_test(path, &mut out);
+            } else {
+                log::error!("path not found: {}", path.display());
+                return Err(());
+            }
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -131,6 +181,26 @@ fn push_if_test(p: PathBuf, out: &mut Vec<(String, Source)>) {
         .map_or(false, |parser| parser.is_test());
     if is_test {
         out.push((p.display().to_string(), Source::Local(vec![p])));
+    }
+}
+
+/// Like [`push_if_test`], but for a remote (git/http) reference: the
+/// recognized-extension gate is the same (checked against `path`, the
+/// in-repo path or URL — whichever carries the file's name/extension), but
+/// the `Source` itself is built by the caller (`build`) since it isn't a
+/// plain local path.
+fn push_if_test_labeled(
+    label: String,
+    path:  PathBuf,
+    build: impl FnOnce(PathBuf) -> Source,
+    out:   &mut Vec<(String, Source)>,
+) {
+    let is_test = Parser::from_filename(&path.to_string_lossy())
+        .map_or(false, |parser| parser.is_test());
+    if is_test {
+        out.push((label, build(path)));
+    } else {
+        log::error!("`{label}` is not a recognized test file (.kif.tq / .p / .tptp)");
     }
 }
 
@@ -218,5 +288,89 @@ fn reason_tag(status: ProverStatus) -> &'static str {
         ProverStatus::Timeout      => "timeout",
         ProverStatus::InputError   => "input error",
         ProverStatus::Unknown      => "gave up",
+    }
+}
+
+#[cfg(test)]
+mod source_classification_tests {
+    use super::*;
+
+    #[test]
+    fn git_re_matches_ssh_shorthand_and_schemes() {
+        assert!(GIT_RE.is_match("git@github.com:o/r.git#Problems/P.p"));
+        assert!(GIT_RE.is_match("git://example.com/o/r#P.p"));
+        assert!(GIT_RE.is_match("ssh://git@example.com/o/r#P.p"));
+        assert!(GIT_RE.is_match("https://github.com/o/r.git#Problems/P.p"));
+        assert!(GIT_RE.is_match("https://github.com/o/r.git")); // fragment optional to MATCH; required to parse
+    }
+
+    #[test]
+    fn git_re_does_not_match_plain_urls_or_local_paths() {
+        assert!(!GIT_RE.is_match("https://example.com/Merge.kif"));
+        assert!(!GIT_RE.is_match("Problems/PUZ001+1.p"));
+        assert!(!GIT_RE.is_match("/abs/Problems/PUZ001+1.p"));
+    }
+
+    #[test]
+    fn http_re_matches_plain_urls_only() {
+        assert!(HTTP_RE.is_match("https://example.com/Merge.kif"));
+        assert!(HTTP_RE.is_match("http://example.com/x.p"));
+        assert!(!HTTP_RE.is_match("Problems/PUZ001+1.p"));
+    }
+
+    #[test]
+    fn git_checked_before_http_for_dot_git_urls() {
+        // A `.git`-suffixed https URL must classify as git, not a plain
+        // HTTP fetch — discover_test_sources checks GIT_RE first for
+        // exactly this reason.
+        let s = "https://github.com/o/r.git#Problems/P.p";
+        assert!(GIT_RE.is_match(s));
+    }
+
+    #[test]
+    fn parse_git_arg_splits_uri_and_path() {
+        let (uri, path) = parse_git_arg("https://github.com/o/r.git#Problems/P.p").unwrap();
+        assert_eq!(uri, "https://github.com/o/r.git");
+        assert_eq!(path, PathBuf::from("Problems/P.p"));
+    }
+
+    #[test]
+    fn parse_git_arg_requires_a_nonempty_fragment() {
+        assert!(parse_git_arg("https://github.com/o/r.git").is_err());
+        assert!(parse_git_arg("https://github.com/o/r.git#").is_err());
+    }
+
+    #[test]
+    fn discover_test_sources_classifies_git_http_and_local() {
+        let dir = std::env::temp_dir().join(format!("sumo-test-classify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("case.p");
+        std::fs::write(&local, "fof(a,axiom,p(a)).").unwrap();
+
+        let paths = vec![
+            "https://github.com/o/r.git#Problems/P.p".to_string(),
+            "https://example.com/Merge.p".to_string(),
+            local.to_string_lossy().to_string(),
+        ];
+        let sources = discover_test_sources(&paths, Some("dev")).unwrap();
+        assert_eq!(sources.len(), 3);
+
+        assert!(matches!(
+            &sources.iter().find(|(l, _)| l.starts_with("https://github.com")).unwrap().1,
+            Source::Git { uri, paths, branch }
+                if uri == "https://github.com/o/r.git"
+                && paths == &[PathBuf::from("Problems/P.p")]
+                && branch.as_deref() == Some("dev")
+        ));
+        assert!(matches!(
+            &sources.iter().find(|(l, _)| l.starts_with("https://example.com")).unwrap().1,
+            Source::Http { .. }
+        ));
+        assert!(matches!(
+            &sources.iter().find(|(l, _)| l.contains("case.p")).unwrap().1,
+            Source::Local(_)
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,7 +10,7 @@
 use crate::style::*;
 use sigmakee_rs_sdk::AstKif;
 
-use sigmakee_rs_sdk::{AxiomSourceIndex, KifProofStep, KnowledgeBase, ProverResult, RenderReport};
+use sigmakee_rs_sdk::{emit_proof, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport};
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
 
@@ -54,16 +54,43 @@ fn print_proof_impl(
 ) {
     match format {
         "tptp" => {
-            if result.proof_tptp.is_empty() {
+            if !result.proof_tptp.is_empty() {
+                println!("\n{style_bold}Proof (TPTP):{style_reset}");
+                print!("{}", result.proof_tptp);
+                if !result.proof_tptp.ends_with('\n') {
+                    println!();
+                }
+                return;
+            }
+            // Subprocess backends stash Vampire/E's verbatim transcript in
+            // `proof_tptp`; the native `ProverLayer` and embedded FFI Vampire
+            // backend have no such transcript but still carry a parsed
+            // `proof_kif` — reconstruct TPTP text from it via the same
+            // dialect-emission seam `solve_tptp` uses.
+            if result.proof_kif.is_empty() {
                 println!(
                     "\n{style_bold}Proof (TPTP):{style_reset} (none — Vampire did not emit a proof section)"
                 );
                 return;
             }
+            let emitted = emit_proof(&result.proof_kif, "problem", Emitter::Tptp(result.proof_tptp_lang));
             println!("\n{style_bold}Proof (TPTP):{style_reset}");
-            print!("{}", result.proof_tptp);
-            if !result.proof_tptp.ends_with('\n') {
+            print!("{}", emitted.text);
+            if !emitted.text.ends_with('\n') {
                 println!();
+            }
+            if !emitted.is_complete() {
+                eprintln!(
+                    "{color_bright_yellow}warning:{color_reset} {} proof step(s) could not be represented in TPTP:",
+                    emitted.dropped.len(),
+                );
+                for d in &emitted.dropped {
+                    eprintln!(
+                        "  - {}: {}",
+                        d.name.as_deref().unwrap_or("<unnamed>"),
+                        d.reason,
+                    );
+                }
             }
         }
         "kif" => {

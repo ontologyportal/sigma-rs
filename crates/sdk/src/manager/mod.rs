@@ -6,6 +6,7 @@
 // `<preference name=.. value=..>` plus `<kb>`/`<constituent>` elements).
 
 mod sources;
+mod write;
 // Clap-agnostic option metadata — projects KBManager into a CLI parser.
 pub mod meta;
 
@@ -362,6 +363,18 @@ impl KBManager {
     /// [`validate`](Self::validate) — `sumokbname` is required and must name one
     /// of the parsed `<kb>`s.
     pub fn from_config_xml(xml: &str) -> SdkResult<Self> {
+        let mut m = Self::parse_config_xml_lenient(xml)?;
+        m.validate()?;
+        let default_kb = m.sumokbname.clone();
+        m.set_current_kb(&default_kb);
+        Ok(m)
+    }
+
+    /// Like [`from_config_xml`](Self::from_config_xml), but skips
+    /// [`validate`](Self::validate) and KB selection — for editing tools
+    /// (`sumo config`) that must load a possibly-incomplete config.xml (e.g.
+    /// no `sumokbname` set yet) without failing outright.
+    pub fn parse_config_xml_lenient(xml: &str) -> SdkResult<Self> {
         let (prefs, kbs, provers, errors) = parse_config_xml(xml)?;
 
         let mut m = KBManager::default();
@@ -385,6 +398,7 @@ impl KBManager {
         if let Some(v) = get("ollamaHost")       { m.ollama_host = v.to_string(); }
         if let Some(v) = get("proof")            { m.proof = v.to_string(); }
         if let Some(v) = get("prose")            { m.prose = parse_bool(v); }
+        if let Some(v) = get("realNumbers")      { m.real_numbers = Some(parse_bool(v)); }
         if let Some(v) = get("showKif")          { m.show_kif = parse_bool(v); }
         if let Some(v) = get("sumokbname")       { m.sumokbname = v.to_string(); }
         if let Some(v) = get("systemsDir")       { m.systems_dir = PathBuf::from(v); }
@@ -426,11 +440,6 @@ impl KBManager {
             }
         }
 
-        m.validate()?;
-
-        let default_kb = m.sumokbname.clone();
-        m.set_current_kb(&default_kb);
-
         Ok(m)
     }
 
@@ -440,6 +449,15 @@ impl KBManager {
         let xml = std::fs::read_to_string(path)
             .map_err(|source| SdkError::Io { path: path.to_path_buf(), source })?;
         Self::from_config_xml(&xml)
+    }
+
+    /// Read a `config.xml` from disk with [`parse_config_xml_lenient`](Self::parse_config_xml_lenient)
+    /// (no `validate()`) — for editing tools.
+    pub fn from_config_xml_path_lenient(path: impl AsRef<Path>) -> SdkResult<Self> {
+        let path = path.as_ref();
+        let xml = std::fs::read_to_string(path)
+            .map_err(|source| SdkError::Io { path: path.to_path_buf(), source })?;
+        Self::parse_config_xml_lenient(&xml)
     }
 
     /// Enforce the configuration's required invariants and normalize paths:
@@ -481,7 +499,7 @@ impl KBManager {
         // re-roots `Named` constituents to remote `Source::Git`, which this
         // local check skips.
         if let Some(kb) = self.current_kb() {
-            for src in kb.resolve(&self.base_dir, &self.kb_dir, None) {
+            for src in kb.resolve(&self.base_dir, &self.kb_dir, None, None) {
                 if let Source::Local(paths) = src {
                     for p in &paths {
                         if !p.exists() {
@@ -625,7 +643,9 @@ impl KB {
     /// * With `git`: every `Named` collapses into a single [`Source::Git`]
     ///   (their names as in-repo paths); pinned `Source` constituents still pass
     ///   through verbatim — absolute / `..` paths are *omitted from the swap*.
-    pub fn resolve(&self, base_dir: &Path, kb_dir: &Path, git: Option<&str>) -> Vec<Source> {
+    ///   `branch` is only meaningful here: `None` defers to the remote's own
+    ///   default branch, `Some(name)` pins it (see [`Source::Git`]).
+    pub fn resolve(&self, base_dir: &Path, kb_dir: &Path, git: Option<&str>, branch: Option<&str>) -> Vec<Source> {
         #[cfg(feature = "git")]
         if let Some(uri) = git {
             let mut named: Vec<PathBuf> = Vec::new();
@@ -637,11 +657,14 @@ impl KB {
                 }
             }
             if !named.is_empty() {
-                out.insert(0, Source::Git { uri: uri.to_string(), paths: named });
+                out.insert(0, Source::Git {
+                    uri: uri.to_string(), paths: named, branch: branch.map(str::to_string),
+                });
             }
             return out;
         }
         let _ = git; // unused when the `git` feature is off
+        let _ = branch;
         self.constituents
             .iter()
             .filter_map(|c| match c {
@@ -912,7 +935,7 @@ fn severity_str(s: LevelFilter) -> &'static str {
         LevelFilter::Warn    => "warning",
         LevelFilter::Info    => "info",
         LevelFilter::Debug   => "debug",
-        LevelFilter::Trace   => "tracd",
+        LevelFilter::Trace   => "trace",
         LevelFilter::Off     => "none",
     }
 }
@@ -1004,6 +1027,67 @@ mod tests {
         assert_eq!(m.leo_executable, PathBuf::default());
     }
 
+    /// `KB`/`Constituent` compare shallow (see `impl PartialEq for KB` —
+    /// only name + constituent *count*), so a round-trip check needs the
+    /// full JSON structural comparison rather than `assert_eq!` on the
+    /// `KBManager`s themselves to actually catch a constituent-path bug.
+    fn assert_structurally_eq(a: &KBManager, b: &KBManager) {
+        assert_eq!(
+            serde_json::to_value(a).unwrap(),
+            serde_json::to_value(b).unwrap(),
+        );
+    }
+
+    #[test]
+    fn to_config_xml_round_trips_the_sample_fixture() {
+        let m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
+        let xml = m.to_config_xml();
+        let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
+        assert_structurally_eq(&m, &reparsed);
+        // Spot-check the values a byte-for-byte diff would hide: the
+        // regenerated form uses different formatting entirely.
+        assert_eq!(reparsed.sumokbname, "SUMO");
+        assert_eq!(reparsed.kbs[0].constituents().len(), 3);
+    }
+
+    #[test]
+    fn to_config_xml_after_apply_overrides_round_trips() {
+        let mut m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
+        let opts = KBManager::options();
+        let by = |id: &str| opts.iter().find(|o| o.field == id).unwrap();
+        m.apply_overrides([
+            (by("thoroughness"), serde_json::json!(0.5)),
+            (by("backend"),      serde_json::json!("subprocess")),
+        ]).unwrap();
+
+        let xml = m.to_config_xml();
+        let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
+        assert_structurally_eq(&m, &reparsed);
+        assert!((reparsed.thoroughness - 0.5).abs() < 1e-6);
+        assert_eq!(reparsed.default_backend, "subprocess");
+        // Untouched fields survive the regenerate unchanged.
+        assert_eq!(reparsed.sumokbname, "SUMO");
+        assert_eq!(reparsed.vampire, PathBuf::from("/usr/local/bin/vampire"));
+    }
+
+    #[test]
+    fn severity_str_trace_round_trips() {
+        // Regression: `severity_str` had a `"tracd"` typo that silently lost
+        // Trace on a config.xml round trip.
+        assert_eq!(severity_str(LevelFilter::Trace), "trace");
+        assert_eq!(parse_severity("trace"), LevelFilter::Trace);
+    }
+
+    #[test]
+    fn real_numbers_round_trips() {
+        for value in [Some(true), Some(false), None] {
+            let mut m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
+            m.real_numbers = value;
+            let reparsed = KBManager::parse_config_xml_lenient(&m.to_config_xml()).unwrap();
+            assert_eq!(reparsed.real_numbers, value, "real_numbers = {value:?}");
+        }
+    }
+
     fn kb_with(name: &str) -> KBManager {
         let mut m = KBManager::default();
         m.sumokbname = name.into();
@@ -1092,12 +1176,12 @@ mod tests {
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])), // pinned absolute
         ]);
         // kbDir absolute → kbDir/name; baseDir ignored.
-        let abs = kb.resolve(Path::new("/base"), Path::new("/sumo"), None);
+        let abs = kb.resolve(Path::new("/base"), Path::new("/sumo"), None, None);
         assert_eq!(local_one(&abs[0]), Path::new("/sumo/Merge.kif"));
         assert_eq!(local_one(&abs[1]), Path::new("/sumo/development/Muscles.kif"));
         assert_eq!(local_one(&abs[2]), Path::new("/abs/Other.kif"));
         // kbDir relative → baseDir/kbDir/name.
-        let rel = kb.resolve(Path::new("/base"), Path::new("kbs"), None);
+        let rel = kb.resolve(Path::new("/base"), Path::new("kbs"), None, None);
         assert_eq!(local_one(&rel[0]), Path::new("/base/kbs/Merge.kif"));
         assert_eq!(local_one(&rel[2]), Path::new("/abs/Other.kif")); // pinned ignores roots
     }
@@ -1111,16 +1195,24 @@ mod tests {
             Constituent::Named("development/Muscles.kif".into()),
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])),
         ]);
-        let srcs = kb.resolve(Path::new("/base"), Path::new("/sumo"), Some("https://example/repo"));
+        let srcs = kb.resolve(Path::new("/base"), Path::new("/sumo"), Some("https://example/repo"), None);
         match &srcs[0] {
-            Source::Git { uri, paths } => {
+            Source::Git { uri, paths, branch } => {
                 assert_eq!(uri, "https://example/repo");
                 assert_eq!(paths, &[PathBuf::from("Merge.kif"), PathBuf::from("development/Muscles.kif")]);
+                assert_eq!(branch, &None, "no branch pinned defers to the remote's default");
             }
             other => panic!("expected Git, got {other:?}"),
         }
         // The absolute constituent is OMITTED from the swap.
         assert_eq!(local_one(&srcs[1]), Path::new("/abs/Other.kif"));
+
+        // A pinned branch reaches `Source::Git` unmodified.
+        let pinned = kb.resolve(Path::new("/base"), Path::new("/sumo"), Some("https://example/repo"), Some("dev"));
+        match &pinned[0] {
+            Source::Git { branch, .. } => assert_eq!(branch.as_deref(), Some("dev")),
+            other => panic!("expected Git, got {other:?}"),
+        }
     }
 
     // -- wholesale swap of the kbDir base: only Named follow ----------------
@@ -1130,8 +1222,8 @@ mod tests {
             Constituent::Named("Merge.kif".into()),
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])),
         ]);
-        let a = kb.resolve(Path::new("/base"), Path::new("/sumo"),  None);
-        let b = kb.resolve(Path::new("/base"), Path::new("/other"), None);
+        let a = kb.resolve(Path::new("/base"), Path::new("/sumo"),  None, None);
+        let b = kb.resolve(Path::new("/base"), Path::new("/other"), None, None);
         assert_eq!(local_one(&a[0]), Path::new("/sumo/Merge.kif"));
         assert_eq!(local_one(&b[0]), Path::new("/other/Merge.kif")); // Named follows kbDir
         assert_eq!(local_one(&a[1]), Path::new("/abs/Other.kif"));
@@ -1401,6 +1493,7 @@ mod tests {
         m.kbs[0].constituents.push(Constituent::Source(Source::Git {
             uri: "https://example/repo".into(),
             paths: vec!["Merge.kif".into()],
+            branch: None,
         }));
         assert!(m.validate().is_ok());
     }
@@ -1411,7 +1504,7 @@ mod tests {
         let kb = m.current_kb().expect("a default KB is selected");
         assert_eq!(kb.name, "SUMO", "selection defaults to sumokbname");
         // `sources()` returns the selected KB's constituents.
-        assert_eq!(m.resolve_sources(None).len(), 3);
+        assert_eq!(m.resolve_sources(None, None).len(), 3);
     }
 
     #[test]

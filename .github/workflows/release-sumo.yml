@@ -4,8 +4,8 @@
 # binary for five target triples in parallel and uploads the
 # stripped archives to the corresponding GitHub release:
 #
-#   * darwin-arm64   (macos-14,         Apple Silicon)
-#   * darwin-x64     (macos-13,         Intel)
+#   * darwin-arm64   (macos-15,         Apple Silicon)
+#   * darwin-x64     (macos-15-intel,   Intel)
 #   * linux-x64-gnu  (ubuntu-latest,    x86_64 glibc)
 #   * linux-arm64-gnu (ubuntu-24.04-arm, native arm64 runner)
 #   * win32-x64      (windows-latest,   x86_64 MSVC)
@@ -16,10 +16,18 @@
 # `cmake` / `build-essential` explicitly.  macOS + Windows runners
 # ship with CMake preinstalled.
 #
-# `fail-fast: false` so a Windows-specific C++-build hiccup doesn't
+# Windows is the one exception: vampire-sys's embedded C++ FFI build
+# doesn't currently compile under MSVC, so the win32-x64 job builds
+# with `--features ask` instead of `integrated-prover` (native
+# in-process prover + external subprocess `vampire`/`e` on PATH still
+# work; only the embedded/FFI `--backend embedded` option is
+# unavailable on that platform). See the "no integrated-prover on
+# Windows" build step below.
+#
+# `fail-fast: false` so a platform-specific build hiccup doesn't
 # cancel the proven-good platforms.  The `ci.yml::cli-build` job
 # already validates each platform's build on every push, so a
-# release-time surprise is unlikely — but a stuck Windows run
+# release-time surprise is unlikely — but a stuck run on one platform
 # shouldn't starve the other four artifacts.
 #
 # This workflow does NOT publish to crates.io; distribution is
@@ -48,12 +56,12 @@ jobs:
       matrix:
         include:
           - target:  aarch64-apple-darwin
-            os:      macos-14
+            os:      macos-15
             archive: tar.gz
             label:   darwin-arm64
             bin:     sumo
           - target:  x86_64-apple-darwin
-            os:      macos-13
+            os:      macos-15-intel
             archive: tar.gz
             label:   darwin-x64
             bin:     sumo
@@ -99,10 +107,23 @@ jobs:
         # release commit so `sumo update` can show useful
         # provenance even when the binary is run far from a
         # checkout.
+        if: matrix.os != 'windows-latest'
         env:
           SUMO_BUILD_KIND:   release
           SUMO_BUILD_COMMIT: ${{ github.sha }}
         run: cargo build -p sigmakee --release --target ${{ matrix.target }} --features integrated-prover
+
+      - name: Build sumo CLI (release, --target, no integrated-prover on Windows)
+        # vampire-sys's embedded C++ FFI build doesn't currently compile
+        # under MSVC — ship the pure-Rust `ask` build instead (still fully
+        # functional: native in-process prover + external subprocess
+        # `vampire`/`e` on PATH via `--backend subprocess`/`e`; only the
+        # embedded/FFI `--backend embedded` option is unavailable).
+        if: matrix.os == 'windows-latest'
+        env:
+          SUMO_BUILD_KIND:   release
+          SUMO_BUILD_COMMIT: ${{ github.sha }}
+        run: cargo build -p sigmakee --release --target ${{ matrix.target }} --no-default-features --features ask,parallel,alloc-mi
 
       - name: Strip binary (Unix)
         if: matrix.archive == 'tar.gz'

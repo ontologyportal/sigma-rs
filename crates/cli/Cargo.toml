@@ -82,6 +82,10 @@ env_logger                 = "0.11"
 quick-xml = { version = "0.40.1", features = ["serialize", "overlapped-lists"] }
 minus = { version = "5", features = ["static_output", "search"] }
 crossterm                  = "0.29"
+ratatui                    = { version = "0.29", default-features = false, features = ["crossterm"] }
+# `sumo test` classifies each PATH argument (local file/dir vs. a git/http
+# reference) by shape.
+regex                      = "1"
 # `sumo update` self-replaces from the latest GitHub release when the
 # binary was built by the official release CI.  Source builds use the
 # crate solely to query the GitHub releases API for the latest tag.

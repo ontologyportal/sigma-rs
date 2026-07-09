@@ -47,7 +47,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
             parser: Parser::Kif,
             name: tc.file_name.clone(),
             path: tc.file_name.clone().into(),
-            origin: crate::FileOrigin::Local,
+            origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
             contents: String::new(),
             prebuilt: None,
         });
@@ -57,7 +57,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
                 parser: Parser::Kif,
                 name: tc.file_name,
                 path: p,
-                origin: crate::FileOrigin::Local,
+                origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
                 contents: String::new(),
                 prebuilt: Some(tc.axioms)
             }, &session, true);

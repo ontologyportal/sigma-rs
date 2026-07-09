@@ -207,12 +207,14 @@ impl EagerMapBehavior for SourceCache {
         SourceSideSnapshot {
             file_hashes: side.file_hashes.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
             references:  side.references.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
+            origins:     side.origins.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
         }
     }
 
     fn restore_side(&self, side: &SourceSide, snap: SourceSideSnapshot) {
         for (k, v) in snap.file_hashes { side.file_hashes.insert(k, v); }
         for (k, v) in snap.references  { side.references.insert(k, v); }
+        for (k, v) in snap.origins     { side.origins.insert(k, v); }
     }
 
     fn react(
@@ -245,6 +247,12 @@ impl EagerMapBehavior for SourceCache {
                     if matches!(file.origin, crate::types::FileOrigin::Inline) {
                         side.mark_inline(&file_key);
                     }
+                    // Baseline for a later "has this changed since I loaded
+                    // it" check — replaced on every re-ingest, including a
+                    // staged truncate, which is fine: a truncated source's
+                    // membership goes empty too, so a stale/unknown baseline
+                    // for it is inert.
+                    side.set_origin(&file_key, file.origin.clone());
                     let mut out = Vec::new();
                     let nodes: Vec<AstNode> = if file.prebuilt.is_none() {
                         // -- Outside the lock: parse + fingerprint + dedup ----------
@@ -410,6 +418,14 @@ impl SyntacticLayer {
     /// The content fingerprints a file contributed (its formulas).
     pub(crate) fn file_fingerprints(&self, file: &str) -> Vec<u64> {
         self.source.side().file_hashes.get(file).map(|set| set.iter().copied().collect()).unwrap_or_default()
+    }
+
+    /// The provenance recorded at `file`'s most recent ingest (its
+    /// mtime/content-hash or branch/commit at that time), if any — the
+    /// baseline a later freshness check compares the current file/repo state
+    /// against.
+    pub(crate) fn file_origin(&self, file: &str) -> Option<crate::types::FileOrigin> {
+        self.source.side().origin_of(file)
     }
 
     /// The root sentence ids a file produced — its fingerprints resolved through

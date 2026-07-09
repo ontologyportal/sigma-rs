@@ -36,6 +36,18 @@ pub fn resolve_config_path(
     None
 }
 
+/// Where a new config.xml should be created when no `--config` was given and
+/// nothing exists yet at any of [`resolve_config_path`]'s locations (that
+/// function is existence-gated for the *read* path; this mirrors its
+/// `SIGMA_HOME`/`~/.sigmakee` fallback without the `.exists()` check, for the
+/// *write* path — `sumo config` creating a config.xml for the first time).
+pub fn default_config_write_path() -> Option<PathBuf> {
+    if let Ok(sigma_home) = std::env::var("SIGMA_HOME") {
+        return Some(PathBuf::from(sigma_home).join("KBs").join("config.xml"));
+    }
+    home_dir().map(|home| home.join(".sigmakee").join("KBs").join("config.xml"))
+}
+
 /// Replace a leading `~/` with `$HOME`.  Leaves other paths untouched,
 /// matches the behaviour of typical shells when they *do* perform tilde
 /// expansion.  Intentionally does not handle `~user/` (that requires a

@@ -11,10 +11,12 @@ impl KBManager {
     /// ingestion.  `git = Some(uri)` re-roots the `Named` constituents to that
     /// repo (a wholesale swap); `None` resolves them locally against
     /// `base_dir`/`kb_dir`.  Pinned (absolute / `..`) constituents stay local
-    /// either way.  See [`KB::resolve`](super::KB::resolve).
-    pub fn resolve_sources(&self, git: Option<&str>) -> Vec<Source> {
+    /// either way.  `branch` is only meaningful with `git = Some(..)`: `None`
+    /// defers to the remote's own default branch, `Some(name)` pins it.  See
+    /// [`KB::resolve`](super::KB::resolve).
+    pub fn resolve_sources(&self, git: Option<&str>, branch: Option<&str>) -> Vec<Source> {
         self.current_kb()
-            .map(|kb| kb.resolve(&self.base_dir, &self.kb_dir, git))
+            .map(|kb| kb.resolve(&self.base_dir, &self.kb_dir, git, branch))
             .unwrap_or_default()
     }
 
@@ -23,6 +25,6 @@ impl KBManager {
     /// explicitly through [`resolve_sources`](Self::resolve_sources) when a
     /// repo swap is wanted.
     pub fn current_sources_owned(&self) -> Vec<Source> {
-        self.resolve_sources(None)
+        self.resolve_sources(None, None)
     }
 }

@@ -47,7 +47,7 @@ pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
     use crate::cache::events::Event;
     use crate::layer::Layer;
     use crate::parse::{Parser, TptpParseOptions};
-    use crate::types::{FileOrigin, SourceFile};
+    use crate::types::{FileOrigin, LocalProvenance, SourceFile};
 
     let mut store = SyntacticLayer::default();
     let source = SourceFile {
@@ -56,7 +56,7 @@ pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
         }) },
         name: file.to_owned(),
         path: std::path::PathBuf::from(file),
-        origin: FileOrigin::Local,
+        origin: FileOrigin::Local(LocalProvenance::UNKNOWN),
         contents: text.to_owned(),
         prebuilt: None,
     };

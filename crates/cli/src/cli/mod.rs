@@ -7,6 +7,8 @@ pub mod translate;
 pub mod man;
 pub mod search;
 pub mod config_cmd;
+pub mod config_tui;
+pub mod check;
 pub mod args_project;
 
 // Ask + test + debug depend on sigmakee-rs-core's prover API, which is only
@@ -36,7 +38,9 @@ pub use validate::run_validate;
 pub use translate::run_translate;
 pub use man::run_man;
 pub use search::run_search;
-pub use config_cmd::run_config;
+pub use config_cmd::{run_config, run_config_write};
+pub use config_tui::run_config_tui;
+pub use check::{run_check, maybe_notify_stale_local, maybe_notify_stale_git};
 
 #[cfg(feature = "ask")]
 pub use ask::run_ask;

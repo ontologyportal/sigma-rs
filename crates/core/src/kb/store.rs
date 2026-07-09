@@ -171,4 +171,13 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     pub fn iter_files(&self) -> Vec<String> {
         self.layer.semantic().syntactic.source_files()
     }
+
+    /// The provenance recorded when `file` was last ingested (its
+    /// mtime/content-hash for a local file, or branch/commit for a git
+    /// source), if any. This is a baseline snapshot from ingest time, not a
+    /// live check — compare it against a freshly computed provenance to tell
+    /// whether the source has changed since.
+    pub fn file_origin(&self, file: &str) -> Option<crate::FileOrigin> {
+        self.layer.semantic().syntactic.file_origin(file)
+    }
 }

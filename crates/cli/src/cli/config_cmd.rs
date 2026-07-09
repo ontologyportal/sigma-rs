@@ -10,7 +10,7 @@
 // against it — the same view `KBManager::apply_overrides` patches — so the
 // printed value is exactly what the runtime would use.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sigmakee_rs_sdk::Source;
 use sigmakee_rs_sdk::manager::{Constituent, KBManager};
@@ -51,6 +51,56 @@ pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: boo
     group("Config-file only (no CLI flag)",
         opts.iter().filter(|o| matches!(o.scope, Scope::ConfigOnly)), &doc);
 
+    true
+}
+
+/// Entry point for `sumo config --<setting> value ...` — patch just the given
+/// settings and persist the whole (regenerated) config.xml.  Loads `target`
+/// leniently if it exists (an in-progress edit needn't already satisfy
+/// [`KBManager::validate`] — e.g. the very first `sumo config --edit-dir ...`
+/// on a brand-new file has no `sumokbname` yet), else starts from built-in
+/// defaults.
+pub fn run_config_write(target: &Path, overrides: Vec<(&OptionMeta, serde_json::Value)>) -> bool {
+    let mut manager = if target.exists() {
+        match KBManager::from_config_xml_path_lenient(target) {
+            Ok(m) => m,
+            Err(e) => { log::error!("config: cannot parse {}: {e}", target.display()); return false; }
+        }
+    } else {
+        KBManager::default()
+    };
+
+    // Snapshot "before" values for the confirmation summary.
+    let before = serde_json::to_value(&manager).unwrap_or_default();
+    let changed: Vec<(&str, String, String)> = overrides.iter()
+        .map(|(o, v)| {
+            let old = o.json_paths.first().and_then(|p| resolve(&before, p))
+                .map(fmt_value).unwrap_or_else(|| "—".to_string());
+            (o.long, old, fmt_value(v))
+        })
+        .collect();
+
+    if let Err(e) = manager.apply_overrides(overrides) {
+        log::error!("config: {e}");
+        return false;
+    }
+
+    let xml = manager.to_config_xml();
+    if let Some(dir) = target.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            log::error!("config: cannot create {}: {e}", dir.display());
+            return false;
+        }
+    }
+    if let Err(e) = std::fs::write(target, &xml) {
+        log::error!("config: cannot write {}: {e}", target.display());
+        return false;
+    }
+
+    println!("{style_bold}Wrote config:{style_reset} {color_bright_green}{}{color_reset}", target.display());
+    for (flag, old, new) in changed {
+        println!("  {color_bright_cyan}--{flag}{color_reset}  {color_bright_black}{old}{color_reset} → {color_bright_green}{new}{color_reset}");
+    }
     true
 }
 

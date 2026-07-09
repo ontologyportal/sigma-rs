@@ -5,22 +5,62 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use git2::{FetchOptions, ObjectType, RemoteCallbacks, Repository, Tree};
+use git2::{Direction, FetchOptions, ObjectType, Remote, RemoteCallbacks, Repository, Tree};
 // use indicatif::{ProgressBar, ProgressStyle};
+use sigmakee_rs_core::GitProvenance;
 use tempfile::TempDir;
 
 use crate::SdkError;
+
+/// Ask `url` what `branch` currently points to, without cloning or fetching
+/// any objects — just the ref advertisement from the initial handshake
+/// (`git ls-remote` territory). Cheap enough to run for a freshness check
+/// without the cost of [`fetch_repo_sparse`]'s full blob transfer.
+///
+/// `branch`, when given, is looked up verbatim. `None` resolves the remote's
+/// own default branch first, same as [`fetch_repo_sparse`].
+pub fn remote_branch_head(url: &str, branch: Option<&str>) -> Result<GitProvenance, SdkError> {
+    let mut remote = Remote::create_detached(url).map_err(SdkError::Git)?;
+    let branch = match branch {
+        Some(b) => b.to_string(),
+        None => resolve_default_branch(&mut remote, url)?,
+    };
+
+    remote.connect(Direction::Fetch).map_err(SdkError::Git)?;
+    let heads = remote.list().map_err(SdkError::Git)?;
+    let wanted = format!("refs/heads/{branch}");
+    let commit = heads.iter()
+        .find(|h| h.name() == wanted)
+        .map(|h| h.oid().to_string());
+    let _ = remote.disconnect();
+
+    let commit = commit.ok_or_else(|| SdkError::Config(format!(
+        "branch '{branch}' not found on {url}")))?;
+    Ok(GitProvenance { uri: url.to_string(), branch, commit })
+}
 
 /// Fetch `url` at depth=1 into a fresh temporary directory, then write
 /// only the paths listed in `sparse_paths` to the working tree.
 ///
 /// git2 / libgit2 does not support `--filter=blob:none`, so all blobs
-/// at HEAD are transferred.  The sparse selection happens after the
-/// fetch: only requested files and directories are written to disk.
+/// at the fetched branch's tip are transferred.  The sparse selection
+/// happens after the fetch: only requested files and directories are
+/// written to disk.
 ///
 /// `sparse_paths` are repo-relative paths (e.g. `"Merge.kif"`,
 /// `"KBs/"`) exactly as the user supplied them.
-pub fn fetch_repo_sparse(url: &str, sparse_paths: &[String]) -> Result<(TempDir, PathBuf), SdkError> {
+///
+/// `branch`, when given, is fetched verbatim — never second-guessed. `None`
+/// resolves the remote's own default branch (the same branch a bare
+/// `git clone` would check out), queried from the remote itself rather than
+/// assumed. The returned [`GitProvenance`] records whichever branch was
+/// actually used plus the commit SHA it resolved to, so a later freshness
+/// check has an honest baseline to compare against.
+pub fn fetch_repo_sparse(
+    url: &str,
+    sparse_paths: &[String],
+    branch: Option<&str>,
+) -> Result<(TempDir, PathBuf, GitProvenance), SdkError> {
     let tmp = TempDir::new().map_err(|e| {
         SdkError::TempDir(PathBuf::new(), e)
     })?;
@@ -34,6 +74,11 @@ pub fn fetch_repo_sparse(url: &str, sparse_paths: &[String]) -> Result<(TempDir,
         SdkError::Git(e)
     })?;
 
+    let branch = match branch {
+        Some(b) => b.to_string(),
+        None => resolve_default_branch(&mut remote, url)?,
+    };
+
     let callbacks = RemoteCallbacks::new();
     // callbacks.transfer_progress(move |stats| {
     //     bar2.set_length(stats.total_objects() as u64);
@@ -45,10 +90,12 @@ pub fn fetch_repo_sparse(url: &str, sparse_paths: &[String]) -> Result<(TempDir,
     fetch_opts.remote_callbacks(callbacks);
     fetch_opts.depth(1);
 
-    // Fetch HEAD into a stable local ref so we can peel it to a commit.
+    // Fetch the resolved branch into a stable local ref so we can peel it to
+    // a commit.
+    let local_ref = format!("refs/remotes/origin/{branch}");
     remote
         .fetch(
-            &["HEAD:refs/remotes/origin/HEAD"],
+            &[format!("refs/heads/{branch}:{local_ref}")],
             Some(&mut fetch_opts),
             None,
         )
@@ -59,7 +106,7 @@ pub fn fetch_repo_sparse(url: &str, sparse_paths: &[String]) -> Result<(TempDir,
     // bar.finish_and_clear();
 
     let reference = repo
-        .find_reference("refs/remotes/origin/HEAD")
+        .find_reference(&local_ref)
         .map_err(|e| {
             SdkError::Git(e)
         })?;
@@ -72,8 +119,24 @@ pub fn fetch_repo_sparse(url: &str, sparse_paths: &[String]) -> Result<(TempDir,
 
     checkout_paths(&repo, &tree, dest, sparse_paths)?;
 
+    let provenance = GitProvenance { uri: url.to_string(), branch, commit: commit.id().to_string() };
     let root = dest.to_path_buf();
-    Ok((tmp, root))
+    Ok((tmp, root, provenance))
+}
+
+/// Ask the remote which branch it considers its default (what a bare
+/// `git clone` would check out), stripping the `refs/heads/` prefix.
+fn resolve_default_branch(remote: &mut git2::Remote<'_>, url: &str) -> Result<String, SdkError> {
+    remote.connect(Direction::Fetch).map_err(SdkError::Git)?;
+    let default = remote.default_branch().map_err(SdkError::Git)?;
+    let _ = remote.disconnect();
+    default
+        .as_str()
+        .ok()
+        .and_then(|s| s.strip_prefix("refs/heads/"))
+        .map(str::to_string)
+        .ok_or_else(|| SdkError::Config(format!(
+            "could not resolve a default branch for {url}")))
 }
 
 /// Write each requested path from the git tree to `dest`.

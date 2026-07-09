@@ -6,19 +6,53 @@ KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb)
 
 ## Install
 
-The plan is to ultimately place this on crates.io so a user with Rust installed would just have to run:
+### From Official Release Channel
+
+Using the official GitHub release channel is best for those who **DO NOT** wish to 
+customize their installation of `sigmakee-rs`. After installing via this channel, you 
+will not have to rerun this command to get updates (hopefully).
+
+#### UNIX (macOS Intel/ARM64 + Linux arm64 + Linux amd64)
 
 ```bash
-cargo install sigmakee
+curl -fsSL https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.sh | bash
 ```
 
-Today, there are two installation options:
+#### Windows
 
-1. Use Github releases to install a native binary. Rust statically links all their dependencies
-so you do not need to install anything other than copying the binary to your machine. Choose your
-correct architecture (`amd64`, `aarch64`, etc).
+```powershell
+irm https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.ps1 | iex
+```
 
-2. Compile from source. 
+**Warning: The windows build does NOT include the embedded Vampire prover build due to
+preexisting compilation errors. This is future work**
+
+### Build from source
+
+Only use this method if you intend on modifying your build. You will be responsible for maintaining provenance over your updates.
+
+The quickest way to get started is the install script — it downloads the latest release for your
+platform, adds `sumo` to your `PATH`, sets `SIGMA_HOME`, and generates a starter `config.xml`:
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.ps1 | iex
+```
+
+Today, there are three installation options:
+
+1. Run the install script above (recommended).
+
+2. Use Github releases to install a native binary yourself. Rust statically links all their
+dependencies so you do not need to install anything other than copying the binary to your machine.
+Choose your correct architecture (`amd64`, `aarch64`, etc).
+
+3. Compile from source. 
 
 To compile from source, first install Rust:
 

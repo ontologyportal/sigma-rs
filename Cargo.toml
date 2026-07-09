@@ -1,9 +1,9 @@
 [workspace]
-members  = ["crates/core", "crates/sdk", "crates/wasm", "crates/cli", "crates/lsp", "crates/xtask"]
+members  = ["crates/core", "crates/sdk", "crates/wasm", "crates/cli", "crates/lsp"]
 resolver = "2"
 
 [workspace.package]
-version     = "2.0.0"
+version     = "2.0.1"
 edition     = "2021"
 authors     = ["Theodore Kim", "Adam Pease"]
 license     = "GPL-3.0"

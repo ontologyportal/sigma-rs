@@ -44,7 +44,7 @@ const SUBCOMMANDS: &[(&str, Subsystem)] = &[
 pub fn parse() -> (Cli, ArgMatches) {
     let derived = Cli::command();
     let declared = collect_longs(&derived);
-    let matches = augment(derived, &declared).get_matches();
+    let matches = augment_config(augment(derived, &declared)).get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     (cli, matches)
 }
@@ -188,6 +188,50 @@ fn subsystem_of(name: &str) -> Option<Subsystem> {
     SUBCOMMANDS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
 }
 
+/// Project *every* non-global option onto the `config` subcommand — `sumo
+/// config` is a config editor, not scoped to one subsystem's needs, so it
+/// exposes the whole table. `Scope::Global` options need no extra work here:
+/// [`augment`]'s `global(true)` registration already reaches every
+/// subcommand, `config` included. `Scope::ConfigOnly` options, by contrast,
+/// have no flag anywhere else — `config` is the *only* place they surface.
+fn augment_config(mut cmd: Command) -> Command {
+    let Some(sc_ref) = cmd.find_subcommand("config") else { return cmd }; // feature-gated off
+    let local: HashSet<String> = shallow_longs(sc_ref);
+    cmd = cmd.mut_subcommand("config", |sc| {
+        let mut sc = sc;
+        for o in KBManager::options() {
+            if !matches!(o.scope, Scope::Global) && !local.contains(o.long) {
+                sc = sc.arg(arg_of(o));
+            }
+        }
+        sc
+    });
+    cmd
+}
+
+/// The user-supplied `sumo config` flags, ready for `KBManager::apply_overrides`
+/// — unfiltered by [`Subsystem`] (mirrors [`augment_config`]'s unfiltered
+/// registration), so every table option is a candidate regardless of which
+/// other subcommand(s) it's normally scoped to.
+///
+/// `Scope::Global` options still need the same collision check `augment`
+/// applies: one of them (`warning`) is hand-declared elsewhere (as `suppress`,
+/// backing `-W`/`--warning`) and so was never registered under its own
+/// `field` id — calling `ArgMatches::value_source` for an unregistered id
+/// panics, not just misses. `Scope::Subsystems`/`ConfigOnly` options need no
+/// such check: `augment_config` registers all of them unconditionally (there
+/// being nothing hand-declared on the empty `Cmd::Config {}` to collide
+/// with).
+pub fn config_overrides(matches: &ArgMatches) -> Vec<(&'static OptionMeta, serde_json::Value)> {
+    let Some(("config", sub_m)) = matches.subcommand() else { return Vec::new() };
+    let whole_tree = collect_longs(&Cli::command());
+    KBManager::options()
+        .iter()
+        .filter(|o| !matches!(o.scope, Scope::Global) || !whole_tree.contains(o.long))
+        .filter_map(|o| extract(o, sub_m).map(|v| (o, v)))
+        .collect()
+}
+
 #[cfg(all(test, feature = "ask"))]
 mod tests {
     use super::*;
@@ -196,6 +240,14 @@ mod tests {
         let derived = Cli::command();
         let declared = collect_longs(&derived);
         augment(derived, &declared)
+            .try_get_matches_from(argv)
+            .expect("argv should parse with the projected flags")
+    }
+
+    fn config_matches_for(argv: &[&str]) -> ArgMatches {
+        let derived = Cli::command();
+        let declared = collect_longs(&derived);
+        augment_config(augment(derived, &declared))
             .try_get_matches_from(argv)
             .expect("argv should parse with the projected flags")
     }
@@ -223,5 +275,42 @@ mod tests {
         let m = matches_for(&["sumo", "ask", "(instance Rex Animal)"]);
         assert!(overrides(&m).iter().all(|(o, _)| o.field != "max_steps"),
             "an absent flag must not produce an override");
+    }
+
+    #[test]
+    fn config_exposes_a_subsystem_scoped_option_unfiltered() {
+        // `--thoroughness` is normally Audit-only, but `sumo config` exposes
+        // every non-global option regardless of subsystem.
+        let m = config_matches_for(&["sumo", "config", "--thoroughness", "0.5"]);
+        let ov = config_overrides(&m);
+        let hit = ov.iter().find(|(o, _)| o.field == "thoroughness")
+            .expect("thoroughness should be extracted as a config override");
+        assert_eq!(hit.1, serde_json::json!(0.5));
+    }
+
+    #[test]
+    fn config_ignores_the_hand_declared_warning_flag_without_panicking() {
+        // Regression: `warning`'s OptionMeta id ("warning") differs from its
+        // hand-declared clap arg id ("suppress", backing `-W`/`--warning`),
+        // so `config_overrides` iterating the whole table unconditionally
+        // used to panic in `ArgMatches::value_source("warning")` — that id
+        // was never registered anywhere. `-W` still parses (through
+        // `suppress`); it just produces no config-write override.
+        let m = config_matches_for(&["sumo", "config", "-W", "E005", "--thoroughness", "0.5"]);
+        let ov = config_overrides(&m); // must not panic
+        assert!(ov.iter().all(|(o, _)| o.field != "warning"));
+        assert!(ov.iter().any(|(o, _)| o.field == "thoroughness"));
+    }
+
+    #[test]
+    fn config_only_option_is_reachable_via_config_but_nowhere_else() {
+        // `graphviz_dir` has Scope::ConfigOnly — no flag on any other
+        // subcommand, but `sumo config` is specifically where it should
+        // surface (otherwise it could never be set at all).
+        let m = config_matches_for(&["sumo", "config", "--graphviz-dir", "/tmp/gv"]);
+        let ov = config_overrides(&m);
+        let hit = ov.iter().find(|(o, _)| o.field == "graphviz_dir")
+            .expect("graphviz_dir should be extracted as a config override");
+        assert_eq!(hit.1, serde_json::json!("/tmp/gv"));
     }
 }

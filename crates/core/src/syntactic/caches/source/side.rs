@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
+use crate::types::FileOrigin;
 use crate::Span;
 
 /// Companion state for the `syntactic::source` store.
@@ -19,6 +20,12 @@ pub(crate) struct SourceSide {
     /// unique `__inline(N)__` id); distinct tells never reconcile against each
     /// other.
     pub(super) file_hashes: DashMap<String, HashSet<u64>>,
+    /// Provenance recorded at the most recent ingest of each source key — its
+    /// mtime/content-hash (`Local`) or branch/commit (`Git`) at that time.
+    /// Overwritten on every re-ingest; this is a freshness *baseline*, not a
+    /// history. Consulted by a later "has this changed since I loaded it"
+    /// check (`sumo check`), not by ingest itself.
+    pub(super) origins: DashMap<String, FileOrigin>,
     /// Every occurrence's span, keyed by fingerprint.  `len()` is the cross-source
     /// reference count.  A formula is gone from the KB exactly when its set
     /// becomes empty.
@@ -60,6 +67,17 @@ impl SourceSide {
     /// Mark a source key as inline-origin (a `tell`).
     pub(crate) fn mark_inline(&self, source_key: &str) {
         self.inline_sources.insert(source_key.to_string());
+    }
+
+    /// Record `source_key`'s provenance as of this ingest, replacing whatever
+    /// was recorded before (a baseline, not a history).
+    pub(crate) fn set_origin(&self, source_key: &str, origin: FileOrigin) {
+        self.origins.insert(source_key.to_string(), origin);
+    }
+
+    /// The provenance recorded at `source_key`'s most recent ingest, if any.
+    pub(crate) fn origin_of(&self, source_key: &str) -> Option<FileOrigin> {
+        self.origins.get(source_key).map(|o| o.clone())
     }
 
     /// Whether `source_key` is an inline (`tell`) source.
@@ -120,4 +138,8 @@ impl SourceSide {
 pub(crate) struct SourceSideSnapshot {
     pub(super) file_hashes: HashMap<String, HashSet<u64>>,
     pub(super) references:  HashMap<u64, HashSet<Span>>,
+    /// `#[serde(default)]` so a store persisted before this field existed
+    /// restores cleanly (empty — the next ingest repopulates it).
+    #[serde(default)]
+    pub(super) origins:     HashMap<String, FileOrigin>,
 }

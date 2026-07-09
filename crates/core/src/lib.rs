@@ -84,7 +84,7 @@ pub use types::{
     Element, Literal, Sentence,
     Occurrence, OccurrenceKind,
     OpKind,
-    SourceFile, FileOrigin,
+    SourceFile, FileOrigin, GitProvenance, LocalProvenance, hash_file_contents,
 };
 
 pub use semantics::types::{TaxDirection, TaxRelation};

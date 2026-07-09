@@ -2414,7 +2414,7 @@ fn native_stack_smoke() {
             parser:   crate::Parser::Tptp { options: None },
             name:     "num.p".into(),
             path:     std::path::PathBuf::from("num.p"),
-            origin:   crate::FileOrigin::Local,
+            origin:   crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
             contents: "cnf(c1, axiom, p(1)).\n".into(),
             prebuilt: None,
         };

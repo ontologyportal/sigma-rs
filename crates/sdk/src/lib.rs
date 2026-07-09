@@ -79,6 +79,7 @@ compile_error!(
 );
 
 pub mod error;
+pub mod freshness;
 pub mod session;
 pub mod source;
 pub mod manager;
@@ -86,6 +87,10 @@ pub mod manager;
 // -- Re-exports (crate root) -------------------------------------------------
 
 pub use error::{SdkError, SdkResult};
+pub use freshness::{
+    check_freshness, check_local_freshness, check_git_freshness,
+    snapshot_git_tracked, check_git_tracked, Freshness, FreshnessReport,
+};
 pub use session::man::{
     parse_doc_spans, view_from_manpage, DocBlock, DocSpan, ManPageView,
     ReferenceSet, SignatureView,
@@ -142,5 +147,14 @@ pub use sigmakee_rs_core::prover::ProverRunner;
 pub use sigmakee_rs_core::{
     Binding, KifProofStep, NativeOpts, ProverResult, ProverStatus, SineParams, TestCase,
 };
+
+// Proof-emission dialect seam — lets callers (e.g. the `--proof tptp` CLI
+// path) reconstruct a TPTP transcript from `proof_kif` when a backend has no
+// verbatim prover transcript of its own (native `ProverLayer`, embedded FFI
+// Vampire).
+#[cfg(feature = "native-prover")]
+pub use sigmakee_rs_core::Emitter;
+#[cfg(feature = "native-prover")]
+pub use sigmakee_rs_core::prover::proof::emit_proof;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::prover::ProverTimings;

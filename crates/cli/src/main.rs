@@ -1,15 +1,17 @@
 //! sumo-parser command-line interface.
 use std::path::PathBuf;
 use std::process;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use sigmakee::style::*;
 
 use sigmakee::cli::{Cli, Cmd};
 use sigmakee::cli::{
     run_flush, run_load, run_load_warm, run_validate,
-    run_translate, run_man, run_search, run_update, run_config,
+    run_translate, run_man, run_search, run_update, run_config, run_config_write,
+    run_config_tui, run_check,
     maybe_notify_update,
 };
+use sigmakee::cli::args_project;
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_test, run_audit};
 #[cfg(feature = "server")]
@@ -99,10 +101,30 @@ fn main_worker() {
 
     // Handle `config` before `validate` so a misconfigured path still shows in
     // the dump; it needs no KB or session.
+    //
+    // Three modes: any `--<setting> value` flag supplied → patch just those
+    // settings and persist (works anywhere, scripts included); no flags and
+    // stdout is a real terminal → the interactive editor; no flags and not a
+    // terminal (piped/redirected/CI) → today's read-only dump, unchanged, so
+    // existing non-interactive uses of `sumo config` keep working.
     if matches!(cli.command, Cmd::Config { .. }) {
-        let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
-        let loaded = !cli.no_config && cfg.is_some();
-        process::exit(if run_config(&manager, cfg, loaded) { 0 } else { 1 });
+        let overrides = args_project::config_overrides(&arg_matches);
+        let ok = if !overrides.is_empty() {
+            let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
+                .or_else(sigmakee::config::default_config_write_path)
+                .unwrap_or_else(|| { log::error!("config: could not resolve $HOME to locate config.xml"); process::exit(2); });
+            run_config_write(&target, overrides)
+        } else if std::io::stdout().is_terminal() && !sigmakee::style::is_ugly() {
+            let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
+                .or_else(sigmakee::config::default_config_write_path)
+                .unwrap_or_else(|| { log::error!("config: could not resolve $HOME to locate config.xml"); process::exit(2); });
+            run_config_tui(&target)
+        } else {
+            let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
+            let loaded = !cli.no_config && cfg.is_some();
+            run_config(&manager, cfg, loaded)
+        };
+        process::exit(if ok { 0 } else { 1 });
     }
 
     // CASC batch mode needs no `sumokbname` / base KB at all — every problem
@@ -127,8 +149,10 @@ fn main_worker() {
     // / directory path) still requires the base KB and validates as before.
     let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
         if !paths.is_empty() && paths.iter().all(|p| {
-            let s = p.to_string_lossy();
-            s.ends_with(".p") || s.ends_with(".tptp") || s.ends_with(".ax")
+            // Extension check on the whole argument — works unchanged for a
+            // git/http reference too (e.g. `repo.git#Axioms/T.ax` or
+            // `https://…/PUZ001+1.p` both end with the right suffix).
+            p.ends_with(".p") || p.ends_with(".tptp") || p.ends_with(".ax")
         }));
     if !tptp_only_test {
         if let Err(e) = manager.validate() {
@@ -138,13 +162,33 @@ fn main_worker() {
     }
 
     // Use the LMDB store at `<editDir>/<kb>.lmdb` when it exists and `--no-db`
-    // wasn't passed; otherwise build fresh in memory.
+    // wasn't passed; otherwise build fresh in memory. `load` is the exception:
+    // its whole job is to create/refresh that store, so it always opens (and
+    // thereby creates, via `LmdbEnv::open`'s create-if-missing) the path even
+    // on a first run where nothing exists there yet. Without this, a
+    // brand-new `load` would silently build its KB in memory, `persist()`
+    // would no-op (no attached `db` env to snapshot into), and the reported
+    // "load succeeded" would be a lie — no store ever hits disk.
     let sink: Option<DynSink> = sigmakee::progress::global_sink();
     let db = manager.db_path();
-    let use_db = !cli.no_db && db.as_ref().is_some_and(|p| p.exists());
+    let use_db = !cli.no_db && db.is_some() && (is_load || db.as_ref().is_some_and(|p| p.exists()));
     // Flush before rebuild so the store can be recreated.
     if matches!(cli.command, Cmd::Load { flush } if flush == true && db.is_some()) {
         run_flush(&manager);
+    }
+
+    // `sumo check` is read-only and layer-agnostic (it only needs
+    // `KnowledgeBase::file_origin`, available on every `TopLayer`), so it
+    // opens the persisted store directly instead of going through the
+    // ingest/dispatch machinery below — no constituents get (re-)loaded.
+    if matches!(cli.command, Cmd::Check { .. }) {
+        let kb = if use_db {
+            Some(KnowledgeBase::<TranslationLayer>::open(db.as_deref().unwrap(), sink.clone())
+                .unwrap_or_else(|d| { log::error!("failed to open DB: {d}"); process::exit(1); }))
+        } else {
+            None
+        };
+        process::exit(if run_check(kb) { 0 } else { 1 });
     }
 
     let session_name = cli.session;
@@ -169,7 +213,7 @@ fn main_worker() {
         if manager.real_numbers == Some(true) {
             kb.set_reals_only(true);
         }
-        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile, &mut ingest_stats)
+        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
     } else {
         match manager.default_backend.as_str() {
             "native" => {
@@ -178,7 +222,7 @@ fn main_worker() {
                     || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
                     KnowledgeBase::new_native,
                 );
-                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, &mut ingest_stats)
+                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
             }
             // e / eprover / subprocess / embedded → external layer.
             _ => {
@@ -212,10 +256,10 @@ fn main_worker() {
                     session.kb().set_reals_only(true);
                 }
                 if matches!(cli.command, Cmd::Load { .. }) {
-                    ingest_constituents(&mut session, &manager, &mut ingest_stats);
+                    ingest_constituents(&mut session, &manager, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats);
                     run_load_warm(session, manager)
                 } else {
-                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, &mut ingest_stats)
+                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
                 }
             }
         }
@@ -304,6 +348,8 @@ fn dispatch<L: ProvingLayer>(
     arg_matches: &clap::ArgMatches,
     sink: Option<DynSink>,
     _profile: bool,
+    git: Option<&str>,
+    branch: Option<&str>,
     stats: &mut IngestStats,
 ) -> bool
 where
@@ -312,7 +358,13 @@ where
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }
-    ingest_constituents(&mut session, &manager, stats);
+    ingest_constituents(&mut session, &manager, git, branch, stats);
+    // Skipped for `load`: everything was just re-recorded, so a
+    // freshness check right after would trivially say "unchanged."
+    if !matches!(cmd, Cmd::Load { .. }) {
+        sigmakee::cli::maybe_notify_stale_local(&session);
+        sigmakee::cli::maybe_notify_stale_git(&session);
+    }
 
     match cmd {
         Cmd::Load { flush: _ } =>
@@ -336,7 +388,7 @@ where
                 manager.native_prover.time_limit_secs = 0;
                 manager.external_prover.timeout_secs  = 0;
             }
-            run_test(session, manager, paths, keep)
+            run_test(session, manager, paths, keep, branch)
         }
 
         #[cfg(feature = "ask")]
@@ -378,12 +430,16 @@ fn dispatch_translation(
     cmd:         Cmd,
     sink:        Option<DynSink>,
     _profile:    bool,
+    git:         Option<&str>,
+    branch:      Option<&str>,
     stats:       &mut IngestStats,
 ) -> bool {
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }
-    ingest_constituents(&mut session, &manager, stats);
+    ingest_constituents(&mut session, &manager, git, branch, stats);
+    sigmakee::cli::maybe_notify_stale_local(&session);
+    sigmakee::cli::maybe_notify_stale_git(&session);
 
     match cmd {
         Cmd::Translate { formula, show_numbers, show_kif, test, full_kb, keep: _ } => {
@@ -401,9 +457,13 @@ fn dispatch_translation(
 
 /// Ingest the manager's selected constituents into `session` (core dedups
 /// unchanged files), tallying diagnostics by severity into `stats` for the
-/// end-of-run report.
-fn ingest_constituents<L: TopLayer>(session: &mut Session<L>, manager: &KBManager, stats: &mut IngestStats) {
-    for src in manager.current_sources_owned() {
+/// end-of-run report. `git`/`branch` mirror `--git`/`--branch`: `git = Some`
+/// re-roots the constituents onto that repo (see
+/// `KBManager::resolve_sources`); `branch` only matters alongside it.
+fn ingest_constituents<L: TopLayer>(
+    session: &mut Session<L>, manager: &KBManager, git: Option<&str>, branch: Option<&str>, stats: &mut IngestStats,
+) {
+    for src in manager.resolve_sources(git, branch) {
         stats.sources += 1;
         for e in session.ingest(src, false) {
             match e.severity() {
@@ -433,9 +493,23 @@ fn build_manager(cli: &Cli) -> KBManager {
     match sigmakee::config::resolve_config_path(cli.config.as_deref()) {
         Some(path) => match KBManager::from_config_xml_path(path) {
             Ok(m) => m,
-            Err(e) => { eprintln!("Error parsing config.xml: {e}"); process::exit(2); }
+            Err(e) => {
+                // `sumo config` loads (leniently) and writes config.xml
+                // itself — an explicit `--config` naming a file that doesn't
+                // exist yet is the normal "create a new one" case there, not
+                // a fatal error; the manager built here is discarded in
+                // favor of that command's own load.
+                if matches!(cli.command, Cmd::Config { .. }) {
+                    return KBManager::default();
+                }
+                eprintln!("Error parsing config.xml: {e}");
+                process::exit(2);
+            }
         },
         None if cli.config.is_some() => {
+            if matches!(cli.command, Cmd::Config { .. }) {
+                return KBManager::default();
+            }
             eprintln!("Could not locate config.xml from `--config {}`",
                 cli.config.as_deref().map(|p| p.display().to_string()).unwrap_or_default());
             process::exit(2);

@@ -94,6 +94,15 @@ pub struct Cli {
     #[arg(long = "git", value_name = "URL", global = true)]
     pub git: Option<String>,
 
+    /// Branch to fetch a git source at — either `--git`'s repo, or (on
+    /// `sumo test`) a `<repo>#<path>` PATH argument that doesn't carry its
+    /// own. Defaults to the remote's own default branch (resolved from the
+    /// remote itself, same as a bare `git clone`) when omitted. No longer
+    /// `requires = "git"`: it has a second, independent meaning now, so
+    /// `sumo test repo.git#Problems/P.p --branch dev` (no `--git`) is valid.
+    #[arg(long = "branch", value_name = "NAME", global = true)]
+    pub branch: Option<String>,
+
     /// Path to the LMDB database directory.
     /// Defaults to `./sumo.lmdb` in the current working directory.
     #[arg(long, value_name = "DIR", default_value = "./sumo.lmdb", global = true)]
@@ -309,8 +318,19 @@ pub enum Cmd {
         keep: Option<PathBuf>,
     },
 
-    /// Run proof problems with the native prover.  The handling of each
-    /// PATH is chosen by extension:
+    /// Run proof problems with the native prover.  Each PATH is classified
+    /// by shape, then handled by extension:
+    ///
+    ///   * a local file/directory — the existing behavior (see below);
+    ///   * a `git@`/`git://`/`ssh://` reference, or an `https://…\.git`
+    ///     one, with a required `#<path-in-repo>` fragment — sparse-fetches
+    ///     that one file from the repo (`--branch` selects the branch;
+    ///     defaults to the remote's own default) as one test case;
+    ///   * any other `http(s)://` URL — fetches that one file directly as
+    ///     one test case.
+    ///
+    /// Extension-based handling (local, or the single file a git/http
+    /// source resolves to):
     ///
     ///   * `.kif.tq`           — a KIF test query, run against the loaded
     ///                           base KB (`-f`/`-d`, plus any `.ax` below);
@@ -322,7 +342,9 @@ pub enum Cmd {
     ///   * `.ax`               — a TPTP axiom library; ingested to POPULATE
     ///                           the KB (no conjecture), so the `.kif.tq`
     ///                           and `.p` problems run against it;
-    ///   * a directory         — every `*.kif.tq` inside it.
+    ///   * a directory         — every `*.kif.tq` inside it (local only —
+    ///                           there's no "list files" over git/http, so
+    ///                           a git/http source names one file).
     ///
     /// When no path is supplied, the test directory is read from
     /// config.xml's `inferenceTestDir` preference (loaded whenever
@@ -331,11 +353,12 @@ pub enum Cmd {
     #[cfg(feature = "ask")]
     Test {
         /// Path(s) to `.kif.tq` / `.p` / `.tptp` / `.ax` files or
-        /// directories.  Multiple arguments and shell-expanded globs are
-        /// accepted.  Optional — defaults to the `inferenceTestDir`
-        /// preference in config.xml when present.
+        /// directories — local, or a git/http reference (see above).
+        /// Multiple arguments and shell-expanded globs are accepted.
+        /// Optional — defaults to the `inferenceTestDir` preference in
+        /// config.xml when present.
         #[arg(value_name = "PATH", num_args = 0..)]
-        paths: Vec<PathBuf>,
+        paths: Vec<String>,
 
         #[command(flatten)]
         kb: KbArgs,
@@ -549,4 +572,10 @@ pub enum Cmd {
     /// and `--no-config` wasn't passed, else built-in defaults) and how each
     /// option maps to its CLI flag.
     Config {},
+
+    /// Check whether the currently-configured sources have changed since
+    /// they were last loaded — a local file's mtime/content, or a git
+    /// source's branch tip. Read-only: reports what's stale, doesn't reload
+    /// anything (`sumo -c load` / `sumo --git ... load` does that).
+    Check {},
 }

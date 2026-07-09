@@ -296,11 +296,14 @@ fn query_latest_release() -> Result<LatestRelease, String> {
         .fetch()
         .map_err(|e| format!("failed to fetch release list: {}", e))?;
 
+    // The repo also publishes releases for other packages (e.g. `sumo-lsp`)
+    // under their own tag prefixes; only `sigmakee-v*` tags are this CLI's
+    // release stream.
     let latest = list
         .iter()
-        .filter(|r| r.version.starts_with(TAG_PREFIX) || !r.version.is_empty())
+        .filter(|r| r.version.starts_with(TAG_PREFIX))
         .max_by(|a, b| cmp_semver(&a.version, &b.version))
-        .ok_or_else(|| "no releases found".to_string())?;
+        .ok_or_else(|| "no sigmakee releases found".to_string())?;
 
     // Strip the `sigmakee-v` (or bare `v`) prefix for display and comparison.
     let stripped = latest

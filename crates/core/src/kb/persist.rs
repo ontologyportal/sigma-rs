@@ -194,6 +194,37 @@ use super::*;
     }
 
     #[test]
+    fn file_origin_round_trips_through_lmdb() {
+        use crate::types::{FileOrigin, LocalProvenance};
+
+        let dir = tmp_dir("file-origin-rt");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let origin = FileOrigin::Local(LocalProvenance { mtime_secs: 1_700_000_000, content_hash: 0xABCD1234 });
+        {
+            let mut kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("open new DB");
+            let sf = crate::types::SourceFile {
+                parser:   crate::Parser::Kif,
+                name:     "origin.kif".to_string(),
+                path:     std::path::PathBuf::from("origin.kif"),
+                origin:   origin.clone(),
+                contents: "(subclass Cat Animal)".to_string(),
+                prebuilt: None,
+            };
+            let r = kb.load(sf, "s1");
+            assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+            assert_eq!(kb.file_origin("origin.kif"), Some(origin.clone()),
+                "origin recorded in-memory right after ingest");
+            kb.persist().expect("persist to LMDB");
+        }
+
+        let kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("reopen DB");
+        assert_eq!(kb.file_origin("origin.kif"), Some(origin), "origin restored from LMDB");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn snapshot_clone_is_independent() {
         let dir = tmp_dir("snap-clone");
         let _ = std::fs::remove_dir_all(&dir);

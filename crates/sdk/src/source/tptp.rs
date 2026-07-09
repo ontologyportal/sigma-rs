@@ -20,7 +20,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use sigmakee_rs_core::{FileOrigin, Parser, SourceFile};
+use sigmakee_rs_core::{FileOrigin, LocalProvenance, Parser, SourceFile};
 
 // -- include resolution (text + an injected reader; no Source/feature coupling) --
 
@@ -150,13 +150,15 @@ fn fetch_include(
 /// Build the `SourceFile` for `location` with the given (possibly blanked)
 /// contents.  Parser comes from the extension (falling back to TPTP, since this
 /// is the TPTP include resolver); origin is `Remote` for a `scheme://` location,
-/// else `Local`.
+/// else `Local` — tagged [`LocalProvenance::UNKNOWN`] since this resolver is
+/// deliberately filesystem-free (bytes come from an injected reader, so there's
+/// no mtime/hash to stat here; see the module doc comment).
 fn make_source(location: &str, contents: String) -> SourceFile {
     SourceFile {
         parser:   Parser::from_filename(location).unwrap_or(Parser::Tptp { options: None }),
         name:     file_name(location),
         path:     PathBuf::from(location),
-        origin:   if is_url(location) { FileOrigin::Remote } else { FileOrigin::Local },
+        origin:   if is_url(location) { FileOrigin::Remote } else { FileOrigin::Local(LocalProvenance::UNKNOWN) },
         contents,
         prebuilt: None,
     }
@@ -310,7 +312,7 @@ fof(goal, conjecture, p(a)).\n";
         assert!(inc.contains("keep_a") && inc.contains("keep_c"), "{inc:?}");
         assert!(!inc.contains("drop_b") && !inc.contains("q(b)"), "unselected blanked: {inc:?}");
         assert_eq!(inc.lines().count(), AX.lines().count(), "line numbers preserved");
-        assert!(matches!(out[1].origin, FileOrigin::Local));
+        assert!(matches!(out[1].origin, FileOrigin::Local(_)));
     }
 
     #[test]
