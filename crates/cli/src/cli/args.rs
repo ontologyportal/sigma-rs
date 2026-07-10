@@ -191,6 +191,12 @@ pub enum Cmd {
         #[arg(short = 't', long = "tell", value_name = "KIF")]
         tell: Vec<String>,
 
+        /// Open an interactive, vim-lite editor for entering hypotheses and
+        /// a conjecture, instead of passing them as arguments. Requires a
+        /// real terminal (TTY); errors on non-interactive input.
+        #[arg(short = 'i', long = "interactive")]
+        interactive: bool,
+
         #[command(flatten)]
         kb: KbArgs,
 

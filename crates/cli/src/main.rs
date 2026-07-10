@@ -13,7 +13,7 @@ use sigmakee::cli::{
 };
 use sigmakee::cli::args_project;
 #[cfg(feature = "ask")]
-use sigmakee::cli::{run_ask, run_test, run_audit};
+use sigmakee::cli::{run_ask, run_ask_tui, run_test, run_audit};
 #[cfg(feature = "server")]
 use sigmakee::cli::run_serve;
 
@@ -397,8 +397,25 @@ where
             run_validate(session, manager, formula, parse),
 
         #[cfg(feature = "ask")]
-        Cmd::Ask { formula, tell, kb: _, keep } =>
-            run_ask(session, &manager, formula, tell, keep),
+        Cmd::Ask { formula, tell, interactive, kb: _, keep } => {
+            if interactive {
+                if std::io::stdout().is_terminal() && !sigmakee::style::is_ugly() {
+                    // The interactive editor's result overlay always renders
+                    // the proof steps when one is found — unlike one-shot
+                    // `ask`, there's no `--proof`/`--want-proof` flag to opt
+                    // in with, so force it on for the native backend (the
+                    // only one that needs the flag; external backends always
+                    // record a proof when they find one).
+                    manager.native_prover.want_proof = true;
+                    run_ask_tui(session, &manager)
+                } else {
+                    log::error!("ask -i requires an interactive terminal (not a TTY, or --no-color/dumb terminal)");
+                    false
+                }
+            } else {
+                run_ask(session, &manager, formula, tell, keep)
+            }
+        }
 
         #[cfg(feature = "ask")]
         Cmd::Test { paths, kb: _, keep, step, full_kb } => {

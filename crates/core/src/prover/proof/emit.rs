@@ -394,7 +394,7 @@ mod tests {
         // KIF: no statement framing — each step's bare formula.
         let kif = emit_proof(&p, "demo", Emitter::Kif);
         assert!(kif.is_complete());
-        assert!(kif.text.contains("(=> (human ?X) (mortal ?X))"), "{}", kif.text);
+        assert!(kif.text.contains("(=>\n  (human ?X)\n  (mortal ?X))"), "{}", kif.text);
         assert!(!kif.text.contains("fof("), "kif must not frame: {}", kif.text);
 
         // FOF: framed, untyped.

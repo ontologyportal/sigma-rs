@@ -17,6 +17,8 @@ pub mod args_project;
 #[cfg(feature = "ask")]
 pub mod ask;
 #[cfg(feature = "ask")]
+pub mod ask_tui;
+#[cfg(feature = "ask")]
 pub mod test;
 #[cfg(feature = "ask")]
 pub mod audit;
@@ -44,6 +46,8 @@ pub use check::{run_check, maybe_notify_stale_local, maybe_notify_stale_git};
 
 #[cfg(feature = "ask")]
 pub use ask::run_ask;
+#[cfg(feature = "ask")]
+pub use ask_tui::run_ask_tui;
 #[cfg(feature = "ask")]
 #[cfg(feature = "sweep")]
 pub use sweep::run_sweep;

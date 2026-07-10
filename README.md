@@ -31,55 +31,41 @@ preexisting compilation errors. This is future work**
 
 Only use this method if you intend on modifying your build. You will be responsible for maintaining provenance over your updates.
 
-The quickest way to get started is the install script — it downloads the latest release for your
-platform, adds `sumo` to your `PATH`, sets `SIGMA_HOME`, and generates a starter `config.xml`:
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.sh | bash
-```
-
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/ontologyportal/sigma-rs/main/install.ps1 | iex
-```
-
-Today, there are three installation options:
-
-1. Run the install script above (recommended).
-
-2. Use Github releases to install a native binary yourself. Rust statically links all their
-dependencies so you do not need to install anything other than copying the binary to your machine.
-Choose your correct architecture (`amd64`, `aarch64`, etc).
-
-3. Compile from source. 
-
-To compile from source, first install Rust:
+To compile from source, first install 
+[Rust](https://rustup.rs/):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-When clone this repository:
+Then clone this repository:
 
 ```bash
 
 git clone https://github.com/ontologyportal/sigma-rs && cd sigma-rs
 ```
 
-Compile everything (Cargo fetches the Vampire C++ bindings directly from
-their git repo as an ordinary dependency, no submodule init needed):
+Compile everything (Cargo fetches the Vampire C++ bindings directly from their git repo as an ordinary dependency):
 
 ```bash
 cargo build --release --bin sumo
 ```
 
-The executable is located in `target/release/sumo`. You can link it to your PATh using:
+For **Windows**, you have to exclude the `integrated-prover`
+feature:
+
+```powershell
+cargo build --release --bin sumo --no-default-features --features ask,parallel,alloc-mi
+```
+
+The executable is located in `target/release/sumo`. You can link it to your system PATH using (UNIX):
 
 ```bash
 sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 ```
 
+For Windows, you have to manually add it to your PATH or set
+up a PowerShell alias.
 
 ---
 
@@ -91,32 +77,38 @@ sudo ln -s $PWD/target/release/sumo /usr/local/bin/sumo
 | `crates/sdk` (`sigmakee-rs-sdk`) | SDK which makes software consumption of `sigmakee-rs-core` more intuitive |
 | `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
 | `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
-| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) |
-| `crates/xtask` (`xtask`) | Dev-only build / release automation tasks |
+| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) (BROKEN) |
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Parse KIF files specified in you config.xml into a cached database, 
-# by default the cached database is ./sumo.lmdb
-# NOTE: it will look for your config.xml in $SIGMA_HOME/KBs/config.xml. If you 
-# have your config.xml somewhere else, pass the path using --config 
-sumo -c load
+# 1. Initialize a config.xml file with default options
+sumo config --declare --kb SUMO -f Merge.kif -f Mid-level-ontology.kif
 
-# 2. Ask a conjecture
+# 2. Fetch the ontology from the SUMO GitHub 
+sumo -c --git https://github.com/ontologyportal/sumo load
+
+# 3. Ask a conjecture
 sumo ask "(instance Socrates Human)"
 
-# 3. Assert facts then ask
+# 4. Assert facts then ask
 sumo ask --tell "(instance Socrates Philosopher)" \
   "(instance Socrates Human)"
 
-# 4. Dump the KB as TFF TPTP
+# 5. Dump the KB as TFF TPTP
 sumo translate --lang tff > sumo.p
 
-# 5. Look up information about a symbol
+# 6. Look up information about a symbol
 sumo man Socrates
+
+# 7. Search for a term in the ontology
+sumo search Philosopher
+
+# 8. Check if any of the KB constituents have changed since
+# the last time you loaded them into your KB
+sumo check
 ```
 
 ---
@@ -135,12 +127,11 @@ in your `config.xml` using the `-c` flag. By default, `load` will write the comp
 cache to the current directory in a file called `sumo.lmdb`. You can change the DB location
 and name using the `--db` flag.
 
-By default, all other commands will first look for a cached DB either in your current
-directory (`./sumo.lmdb`) or at the location specified by the `--db` flag. If you do
+By default, all other commands will first look for a cached DB in the `editDir` directory (as specified in your `config.xml`)
+or at the location specified by the `--db` flag. If you do
 not have a `sumo.lmdb` and you do not specify one using `--db`, or if you use the
 `--no-db` flag, it will perform all operations in memory and will parse any files you
-manually pass to the command at runtime without writing it to disk. ONLY `load` and
-`serve` (the persistent kernel) write to disk.
+manually pass to the command at runtime without writing it to disk. ONLY `load` write to disk.
 
 So, the following command will translate a single file to TPTP and nothing else:
 
@@ -148,8 +139,8 @@ So, the following command will translate a single file to TPTP and nothing else:
 sumo --no-db -f Merge.kif translate
 ```
 
-Whereas this command will first cache the file to disk then use that cache to
-generate the TPTP translation:
+Whereas this command will first cache the file to disk then use 
+that cache to generate the TPTP translation:
 
 ```bash
 sumo -f Merge.kif load
@@ -171,6 +162,13 @@ rewrite it from just the supplied files (the pre-reconcile "full rewrite" behavi
 sumo -f Merge.kif --db sumo.lmdb load --flush
 ```
 
+This will use all the constituent files in the KB SUMO in your 
+config.xml to overwrite the corresponding files already persisted in your LMDB stored KB ONLY for the single CLI invocation.
+
+```bash
+sumo -c ask "(instance Socrates Human)"
+```
+
 ### Global flags
 
 | Flag | Default | Description |
@@ -179,8 +177,10 @@ sumo -f Merge.kif --db sumo.lmdb load --flush
 | `-q` / `--quiet` | — | Suppress all warnings |
 | `-c` | — | Use the `config.xml` for options and KB constituents |
 | `--config PATH` | — | Path to a SigmaKEE `config.xml` or the directory containing it |
-| `--kb NAME` | — | Knowledge-base name from `config.xml` to load (requires `-c`) |
+| `--kb NAME` | — | Knowledge-base name from `config.xml` to load (requires `-c`); with `sumo config`, the KB to edit (see below) |
 | `-W CODE\|all` / `--warning CODE\|all` | — | Promote semantic warning `CODE` (e.g. `E005`, `arity-mismatch`) or `all` to a hard error (repeatable) |
+| `--exclude PATH` | — | With `sumo config --kb NAME`: remove a constituent from that KB (repeatable). No effect elsewhere |
+| `--declare` | — | With `sumo config --kb NAME -f/-d ...`: skip the existence check when adding constituents. No effect elsewhere |
 
 ### Shared KB arguments (`-f`, `-d`, `--db`, `--no-db`, `--git`)
 
@@ -396,6 +396,38 @@ The kernel's RPC surface is:
 | `shutdown` | `{}` | Clean exit |
 
 Semantic warnings never populate the reconcile report's `semanticErrors` list by default — they're logged to stderr via the standard `SemanticError::handle` path. Run `sumo -W <code> serve` (or `-W all`) to promote specific warnings to hard errors that the RPC caller sees.
+
+### `sumo config`
+
+Inspect or edit the resolved `KBManager` configuration (config.xml).
+
+```
+sumo config
+sumo config --<setting> VALUE ...
+sumo config --kb NAME [-f FILE]... [-d DIR]... [--exclude PATH]... [--declare]
+```
+
+Three modes, chosen by the arguments given:
+
+- **No flags** — print every option, its current value, which CLI flag(s) and config.xml key(s) it maps to, and the configured knowledge bases + their constituents. If run in an interactive terminal with a resolved config.xml, this instead opens a `ratatui`-based TUI for browsing and editing in place (options, and KBs/constituents — add, delete, or create a KB); press `s` to save, `q` to quit. Non-interactive invocations (e.g. piped output) always fall back to the read-only dump.
+- **`--<setting> VALUE`** — patch one or more scalar options (e.g. `--timeout 60`, `--vampire /path/to/vampire`) and write the result back to config.xml. Every option `sumo config`'s read-only dump lists is settable this way; the same table shows each one's flag name.
+- **`--kb NAME` with `-f`/`-d`/`--exclude`** — edit that KB's constituent list instead of a scalar option, creating the KB if it doesn't exist yet. `-f`/`-d` add constituents (existence-checked and deduplicated by resolved path unless `--declare` is passed); `--exclude PATH` removes one, matched by the exact path shown in the dump's "Knowledge bases" listing. Adds and removes may be combined in one invocation; only one KB may be edited per invocation.
+
+```bash
+# Add a constituent to (or create) the KB "SUMO"
+sumo config --kb SUMO -f Merge.kif
+
+# Declare a constituent before it's actually fetched (skips the existence check)
+sumo config --declare --kb SUMO -f Mid-level-ontology.kif
+
+# Remove a constituent
+sumo config --kb SUMO --exclude Merge.kif
+
+# Patch a scalar option
+sumo config --timeout 60
+```
+
+config.xml is always rewritten in full on a write (comments/formatting/element order from a hand-edited file aren't preserved); any `<preference>` key this build doesn't recognize is round-tripped verbatim rather than dropped.
 
 ---
 

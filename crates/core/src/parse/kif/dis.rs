@@ -27,7 +27,6 @@ use crate::parse::dialect::{Emit, PrettyEmit};
 /// on one line; longer ones break with each argument indented two further.
 const LINE_WIDTH: usize = 72;
 
-// -- the rendering logic ------------------------------------------------------
 
 /// Compact flat KIF — `(op a b)` with no extra spaces.
 pub(crate) fn flat(node: &AstNode) -> String {
@@ -47,8 +46,8 @@ pub(crate) fn flat(node: &AstNode) -> String {
 }
 
 /// Indented, width-wrapped rendering.  `color` toggles ANSI leaf colourisation;
-/// the layout (line breaking, quantifier-on-head-line rule) is identical either
-/// way, so the plain and coloured renderers can never drift.
+/// the layout is identical either way, so the plain and coloured renderers can
+/// never drift.
 pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
     // Statement wrapper: render its formula (annotation framing is `Emit`'s job).
     if let AstNode::Annotated { formula, .. } = node {
@@ -56,31 +55,50 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
     }
     let leaf = |n: &AstNode| if color { Pretty(n).to_string() } else { flat(n) };
 
-    let f = flat(node);
-    if indent + f.len() <= LINE_WIDTH {
+    let AstNode::List { elements, .. } = node else { return leaf(node); };
+    if elements.len() < 2 {
         return leaf(node);
     }
-    match node {
-        AstNode::List { elements, .. } if elements.len() >= 2 => {
-            let pad  = " ".repeat(indent + 2);
-            let head = styled(&elements[0], 0, color);
 
-            // Quantifier rule: `(forall|exists VARS BODY...)` keeps the variable
-            // list on the head line, grouping the binding with its operator.
-            if is_quantifier_head(&elements[0]) && elements.len() >= 3 {
-                let vars = leaf(&elements[1]);
-                let body: Vec<String> = elements[2..].iter()
-                    .map(|e| format!("{}{}", pad, styled(e, indent + 2, color)))
-                    .collect();
-                return format!("({} {}\n{})", head, vars, body.join("\n"));
-            }
+    // The one argument slot allowed to sit inline with the head, if any.
+    let inline_idx = if is_quantifier_head(&elements[0]) && elements.len() >= 3 {
+        Some(1) // the variable list
+    } else if is_not_head(&elements[0]) && elements.len() == 2 {
+        Some(1) // not's sole argument
+    } else {
+        None
+    };
 
-            let args: Vec<String> = elements[1..].iter()
-                .map(|e| format!("{}{}", pad, styled(e, indent + 2, color)))
-                .collect();
-            format!("({}\n{})", head, args.join("\n"))
-        }
-        _ => leaf(node),
+    // Render the inline slot eagerly — if it itself needs to break (e.g. `not`
+    // wrapping a compound `and`), that cascades: the parent can no longer stay
+    // on one line either, even though the inline exemption still holds.
+    let inline_rendered = inline_idx.map(|idx| styled(&elements[idx], indent, color));
+
+    let forces_break = inline_rendered.as_deref().is_some_and(|s| s.contains('\n'))
+        || elements.iter().enumerate().skip(1)
+            .any(|(i, e)| Some(i) != inline_idx && is_compound(e));
+
+    let f = flat(node);
+    if !forces_break && indent + f.len() <= LINE_WIDTH {
+        return leaf(node);
+    }
+
+    let pad  = " ".repeat(indent + 2);
+    let head = styled(&elements[0], 0, color);
+
+    let (prefix, body_start) = match (inline_idx, inline_rendered) {
+        (Some(idx), Some(rendered)) => (format!("({} {}", head, rendered), idx + 1),
+        _ => (format!("({}", head), 1),
+    };
+
+    let body: Vec<String> = elements[body_start..].iter()
+        .map(|e| format!("{}{}", pad, styled(e, indent + 2, color)))
+        .collect();
+
+    if body.is_empty() {
+        format!("{prefix})")
+    } else {
+        format!("{prefix}\n{})", body.join("\n"))
     }
 }
 
@@ -89,7 +107,18 @@ fn is_quantifier_head(head: &AstNode) -> bool {
     matches!(head, AstNode::Operator { op, .. } if op.is_quantifier())
 }
 
-// -- extension trait: keep `node.flat()` / `.pretty_print()` / `.format_plain()`
+/// `true` iff `head` is the `not` operator.
+fn is_not_head(head: &AstNode) -> bool {
+    matches!(head, AstNode::Operator { op, .. } if op.name() == "not")
+}
+
+/// `true` iff `node` is a non-empty list — i.e. would itself open a paren,
+/// so inlining it next to a sibling's open paren would violate the
+/// no-two-opens-per-line rule.
+fn is_compound(node: &AstNode) -> bool {
+    matches!(node, AstNode::List { elements, .. } if !elements.is_empty())
+}
+
 
 /// KIF rendering methods on [`AstNode`].  `use` this (re-exported at the crate
 /// root as `sigmakee_rs_core::AstKif`) where the method syntax is wanted; the
@@ -109,7 +138,6 @@ impl AstKif for AstNode {
     fn format_plain(&self, indent: usize) -> String { KifEmit.emit_pretty(self, indent, false) }
 }
 
-// -- dialect trait impls ------------------------------------------------------
 
 /// The KIF output dialect.  Stateless (no per-format options).
 pub(crate) struct KifEmit;
@@ -237,4 +265,74 @@ mod tests {
         assert_eq!(Emitter::Kif.emit_one(&ann).text.trim_end(), inner.format_plain(0));
         assert_eq!(ann.flat(), inner.flat());
     }
+
+    /// Count consecutive `((` runs on one line — i.e. two opens landing back
+    /// to back with nothing but whitespace between them. The `not`/quantifier
+    /// exemptions produce exactly one `(head (arg` pattern each, which this
+    /// same check would also flag if it looked at *all* adjacent opens rather
+    /// than back-to-back ones — so instead we assert the general rule
+    /// directly: strip every allowed inline pair first, then no `(` may be
+    /// immediately followed (modulo whitespace) by another `(` on the same
+    /// line.
+    fn assert_no_stacked_opens(text: &str) {
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            // Skip the one inline pair a quantifier var-list or `not` may
+            // introduce right after the head symbol.
+            let rest = if let Some(after) = trimmed.strip_prefix("(forall (")
+                .or_else(|| trimmed.strip_prefix("(exists ("))
+            {
+                after
+            } else if let Some(after) = trimmed.strip_prefix("(not (") {
+                after
+            } else if let Some(after) = trimmed.strip_prefix('(') {
+                after
+            } else {
+                trimmed
+            };
+            assert!(!rest.trim_start().starts_with('('),
+                "stacked opens on line: {line:?}");
+        }
+    }
+
+    #[test]
+    fn no_two_opens_share_a_line_outside_quantifier_and_not() {
+        let cases = [
+            "(forall (?X ?Y) (=> (instance ?X Human) (instance ?Y Human)))",
+            "(not (instance ?A Human))",
+            "(not (and (instance ?A Human) (instance ?B Human)))",
+            "(and (instance Foo Bar) (instance Foo Baz))",
+            "(exists (?X) (P ?X))",
+            "(forall (?X) (=> (and (P ?X) (Q ?X)) (R ?X)))",
+        ];
+        for c in cases {
+            let n = parse_one(c);
+            let out = n.format_plain(0);
+            assert_no_stacked_opens(&out);
+            // Round-trips: re-parsing the pretty-printed form yields the same
+            // canonical flat KIF as the original.
+            let reparsed = parse_one(&out);
+            assert_eq!(reparsed.flat(), n.flat(), "not re-parseable:\n{out}");
+        }
+    }
+
+    #[test]
+    fn quantifier_body_always_breaks_even_when_short() {
+        let n = parse_one("(forall (?X) (instance ?X Entity))");
+        assert_eq!(n.format_plain(0), "(forall (?X)\n  (instance ?X Entity))");
+    }
+
+    #[test]
+    fn not_keeps_compound_argument_inline() {
+        let n = parse_one("(not (instance ?A Human))");
+        assert_eq!(n.format_plain(0), "(not (instance ?A Human))");
+    }
+
+    #[test]
+    fn and_with_compound_args_always_breaks() {
+        let n = parse_one("(and (instance Foo Bar) (instance Foo Baz))");
+        assert_eq!(n.format_plain(0),
+            "(and\n  (instance Foo Bar)\n  (instance Foo Baz))");
+    }
 }
+

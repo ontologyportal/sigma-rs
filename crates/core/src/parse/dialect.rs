@@ -38,7 +38,6 @@ impl EmitResult {
 pub enum Emitter {
     Kif,
     Tptp(TptpLang),
-    // Tq / Json / Datalog land in later phases.
 }
 
 impl Emitter {
@@ -54,6 +53,16 @@ impl Emitter {
     /// Convenience for a single formula/statement.
     pub fn emit_one(&self, stmt: &AstNode) -> EmitResult {
         self.emit(std::slice::from_ref(stmt))
+    }
+
+    /// Pretty (indented, width-wrapped) rendering of a bare formula — the
+    /// [`PrettyEmit`] counterpart to [`Self::emit`]/[`Self::emit_one`].
+    /// `color` toggles ANSI leaf styling where the dialect defines any.
+    pub fn emit_pretty(&self, node: &AstNode, indent: usize, color: bool) -> String {
+        match self {
+            Emitter::Kif        => super::kif::dis::KifEmit.emit_pretty(node, indent, color),
+            Emitter::Tptp(lang) => super::tptp::dis::TptpEmit { lang: *lang }.emit_pretty(node, indent, color),
+        }
     }
 }
 

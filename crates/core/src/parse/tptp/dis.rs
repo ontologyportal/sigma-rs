@@ -10,12 +10,23 @@
 // are dropped and reported in `EmitResult.dropped`.
 
 use crate::parse::ast::{AstNode, OpKind, Role, Source};
-use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, TptpLang};
+use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 use super::syntax;
+
+/// Soft-wrap threshold for [`styled`] — mirrors `kif::dis::LINE_WIDTH`.  Forms
+/// fitting in this many columns at their indent stay on one line; longer ones
+/// break at the top connective, one operand per line.
+const LINE_WIDTH: usize = 72;
 
 /// The TPTP output dialect, configured with a target language.
 pub(crate) struct TptpEmit {
     pub lang: TptpLang,
+}
+
+impl PrettyEmit for TptpEmit {
+    fn emit_pretty(&self, node: &AstNode, indent: usize, color: bool) -> String {
+        styled(node, indent, color, self.lang.is_typed())
+    }
 }
 
 impl Emit for TptpEmit {
@@ -169,13 +180,19 @@ fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, Stri
     // TFF quantifier binders carry an explicit sort (`![X: $i]`); every other
     // language renders untyped binders.  Symbol typing is monomorphic over `$i`
     // (declared in the document preamble), so bodies are otherwise identical.
-    let body = render_formula(formula, lang.is_typed());
+    // `styled` (width-wrapped) rather than the always-flat `render_formula`:
+    // short formulas render identically either way, long ones wrap instead of
+    // producing one unreadable line — see `styled`'s doc comment.
+    let body = styled(formula, 2, false, lang.is_typed());
 
     // A `Source` (provenance) becomes the optional 4th TPTP argument; without
     // one the statement is the bare 3-arg form.
-    Ok(match source {
-        Some(src) => format!("{kw}({}, {}, {}, {}).", name, role_word(&role), body, render_source(&src)),
-        None      => format!("{kw}({}, {}, {}).",      name, role_word(&role), body),
+    let source_suffix = source.map(|src| format!(", {}", render_source(&src))).unwrap_or_default();
+
+    Ok(if body.contains('\n') {
+        format!("{kw}({}, {},\n  {}{}).", name, role_word(&role), body, source_suffix)
+    } else {
+        format!("{kw}({}, {}, {}{}).", name, role_word(&role), body, source_suffix)
     })
 }
 
@@ -250,8 +267,6 @@ fn is_atom(f: &AstNode) -> bool {
     }
 }
 
-// -- formula/term rendering (moved from kb/tptp.rs) ---------------------------
-
 /// AST → untyped TPTP formula text (FOF/CNF).  Symbols are TPTP-legal (else
 /// single-quoted) and variables upper-cased / armored.  All token spellings
 /// come from [`syntax`], the layer shared with the typed (`trans`) emitter.
@@ -323,6 +338,67 @@ fn quantifier_parts(args: &[AstNode], typed: bool) -> (Vec<String>, String) {
         vars.push(if typed { "X__: $i".to_string() } else { "X__".to_string() });
     }
     (vars, body)
+}
+
+/// Indented, width-wrapped TPTP formula rendering — the [`PrettyEmit`]
+/// counterpart to the always-flat [`render_formula`].  `color` is accepted
+/// for parity with `kif::dis::styled` but unused for now: TPTP has no leaf
+/// colourisation defined yet, so plain and "coloured" output are identical.
+///
+/// Short forms (fit in [`LINE_WIDTH`] at their indent) render exactly like
+/// [`render_formula`]. Longer ones break at the top connective, one operand
+/// per line, continuation lines indented under the opening `(`:
+///
+/// ```text
+/// ( (instance ?X Human) => (mortal ?X) )     -- short: one line
+///
+/// ( (instance ?X Human)
+/// & (instance ?X Mammal)
+/// & (mortal ?X) )                            -- long: one conjunct per line
+/// ```
+///
+/// Predicate/function application arguments (`pred(a,b,c)`) are never
+/// wrapped — TPTP's infix connectives are where deep nesting piles up
+/// (mirroring KIF's prefix-list problem), argument lists rarely do.
+fn styled(node: &AstNode, indent: usize, _color: bool, typed: bool) -> String {
+    if let AstNode::Annotated { formula, .. } = node {
+        return styled(formula, indent, _color, typed);
+    }
+    let flat = render_formula(node, typed);
+    if indent + flat.len() <= LINE_WIDTH {
+        return flat;
+    }
+    let AstNode::List { elements, .. } = node else { return flat };
+    let Some(AstNode::Operator { op, .. }) = elements.first() else { return flat };
+    let args = &elements[1..];
+    let pad  = " ".repeat(indent);
+    let pad2 = " ".repeat(indent + 2);
+    let rec  = |n: &AstNode| styled(n, indent + 2, _color, typed);
+
+    match op {
+        OpKind::Not => format!("(~\n{pad2}{})", rec(&args[0])),
+        OpKind::And | OpKind::Or => {
+            let sym = if matches!(op, OpKind::And) { "&" } else { "|" };
+            let mut parts = args.iter().map(rec);
+            let first = parts.next().unwrap_or_else(|| syntax::TRUE.to_string());
+            let rest: String = parts.map(|p| format!("\n{pad}{sym} {p}")).collect();
+            format!("({first}{rest})")
+        }
+        OpKind::Implies | OpKind::Iff | OpKind::Equal => {
+            let sym = match op {
+                OpKind::Implies => "=>",
+                OpKind::Iff     => "<=>",
+                _               => "=",
+            };
+            format!("({}\n{pad}{sym} {})", rec(&args[0]), rec(&args[1]))
+        }
+        OpKind::ForAll | OpKind::Exists => {
+            let q = if matches!(op, OpKind::ForAll) { syntax::FORALL } else { syntax::EXISTS };
+            let (vars, _) = quantifier_parts(args, typed);
+            let body = args.get(1).map(rec).unwrap_or_else(|| syntax::TRUE.to_string());
+            format!("({q} [{}] :\n{pad2}{body})", vars.join(","))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -431,5 +507,75 @@ mod tests {
         assert!(r.text.contains("type, c: $i)."), "{}", r.text);
         assert!(!r.text.contains("'='"), "equality must not be declared: {}", r.text);
         assert!(r.text.contains("tff(a1, axiom, (f(c) = c))."), "{}", r.text);
+    }
+
+    #[test]
+    fn short_formula_pretty_matches_flat() {
+        // Under LINE_WIDTH, `emit_pretty` and the flat `Emit` renderer agree —
+        // no gratuitous wrapping of short forms.
+        let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
+        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        assert_eq!(pretty, "(instance(X,'Human') => mortal(X))");
+        assert!(!pretty.contains('\n'));
+    }
+
+    #[test]
+    fn long_conjunction_wraps_one_conjunct_per_line() {
+        let f = parse_one(
+            "(and (instanceOfSomeVeryLongPredicateName ?X ?Y ?Z) \
+                  (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
+                  (yetAnotherLongPredicateNameForTestingWrap ?D))",
+        );
+        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let lines: Vec<&str> = pretty.lines().collect();
+        assert_eq!(lines.len(), 3, "expected one conjunct per line:\n{pretty}");
+        assert!(lines[0].starts_with('('), "{pretty}");
+        assert!(lines[1].trim_start().starts_with('&'), "{pretty}");
+        assert!(lines[2].trim_start().starts_with('&') && lines[2].ends_with(')'), "{pretty}");
+    }
+
+    #[test]
+    fn long_formula_in_a_framed_statement_indents_under_the_frame() {
+        // `frame_stmt` (driven by `Emit::emit_statement`/`emit_document`) picks
+        // up the wrap automatically — proof/document output never needs a
+        // separate pretty-only call site.
+        let f = parse_one(
+            "(and (instanceOfSomeVeryLongPredicateName ?X ?Y ?Z) \
+                  (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
+                  (yetAnotherLongPredicateNameForTestingWrap ?D))",
+        );
+        let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
+        assert!(r.is_complete());
+        assert!(r.text.starts_with("fof(a1, axiom,\n  ("), "{}", r.text);
+        assert!(r.text.trim_end().ends_with(")).") , "{}", r.text);
+    }
+
+    #[test]
+    fn long_quantified_formula_wraps_body_under_the_binder() {
+        let f = parse_one(
+            "(forall (?X) (=> (instanceOfSomeVeryLongPredicateName ?X) \
+                              (anotherVeryLongPredicateNameHereToo ?X)))",
+        );
+        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        assert!(pretty.starts_with("(! [X] :\n  ("), "{pretty}");
+        assert!(pretty.trim_end().ends_with("))"), "{pretty}");
+    }
+
+    #[test]
+    fn pretty_output_is_still_valid_tptp_when_reparsed_flat() {
+        // Multi-line output isn't just for humans — collapse whitespace and
+        // it must still be byte-identical to the flat renderer's formula
+        // (same tokens, same order), so anything parsing TPTP downstream
+        // (a prover, a round-trip test) sees the same formula either way.
+        let f = parse_one(
+            "(and (instanceOfSomeVeryLongPredicateName ?X ?Y ?Z) \
+                  (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
+                  (yetAnotherLongPredicateNameForTestingWrap ?D))",
+        );
+        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let collapsed: String = pretty.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = tptp_formula(&f);
+        let flat_collapsed: String = flat.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(collapsed, flat_collapsed);
     }
 }
