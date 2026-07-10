@@ -67,7 +67,9 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Build sumo-lsp (release, --target)
-        run: cargo build -p sumo-lsp --release --target ${{ matrix.target }}
+        # --locked: build exactly the committed Cargo.lock, so the released
+        # binary is the dependency tree that was tested, not a fresh resolve.
+        run: cargo build -p sumo-lsp --release --locked --target ${{ matrix.target }}
 
       - name: Strip binary (Unix)
         if: matrix.archive == 'tar.gz'
@@ -116,3 +118,28 @@ jobs:
           # doesn't exist; otherwise the files are appended.
           draft: false
           generate_release_notes: true
+
+  # ---------------------------------------------------------------------
+  # Keep the moving `sumo-lsp-latest` pointer tag on the commit of the
+  # newest successful release.  Consumers that build from source
+  # (`cargo install --git … --tag sumo-lsp-latest`, e.g. the VSCode
+  # extension's `npm run server:install`) therefore always compile the
+  # exact commit the released binaries were built from.  Runs only after
+  # EVERY platform build succeeded, so a half-broken release never moves
+  # the pointer.  (The pointer tag itself doesn't match `sumo-lsp-v*`,
+  # so force-pushing it cannot re-trigger this workflow.)
+  # ---------------------------------------------------------------------
+  update-latest-tag:
+    name: Move sumo-lsp-latest tag
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Force-move sumo-lsp-latest to this release's commit
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          echo "pointing sumo-lsp-latest at ${GITHUB_REF_NAME} (${commit})"
+          git tag -f sumo-lsp-latest "${commit}"
+          git push --force origin refs/tags/sumo-lsp-latest

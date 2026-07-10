@@ -1634,6 +1634,7 @@ mod tests {
         assert_eq!(m.native_prover.max_steps, 4000);
     }
 
+    #[cfg(feature = "ask")]
     #[test]
     fn external_config_builds_prover_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();
@@ -1822,13 +1823,16 @@ mod tests {
         assert!(matches!(m.validate().unwrap_err(), SdkError::Config(_)));
 
         // Remote (Git) constituents are not disk-checked.
-        let mut m = kb_with("K");
-        m.kbs[0].constituents.push(Constituent::Source(Source::Git {
-            uri: "https://example/repo".into(),
-            paths: vec!["Merge.kif".into()],
-            branch: None,
-        }));
-        assert!(m.validate().is_ok());
+        #[cfg(feature = "git")]
+        {
+            let mut m = kb_with("K");
+            m.kbs[0].constituents.push(Constituent::Source(Source::Git {
+                uri: "https://example/repo".into(),
+                paths: vec!["Merge.kif".into()],
+                branch: None,
+            }));
+            assert!(m.validate().is_ok());
+        }
     }
 
     #[test]

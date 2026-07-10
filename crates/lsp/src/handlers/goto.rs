@@ -21,7 +21,8 @@ pub fn handle_goto_definition(
     let offset = position_to_offset(&doc.rope, position);
     let tag    = uri_to_tag(&uri);
 
-    let kb = state.kb.read().ok()?;
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
     let sym_name             = kb.symbol_at_offset(&tag, offset)?;
     let (_defining_sid, span) = kb.defining_sentence(&sym_name)?;
 

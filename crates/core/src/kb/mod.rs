@@ -35,6 +35,7 @@ pub mod session_tags;
 pub(crate) mod assemble;
 #[cfg(feature = "ask")]
 pub(crate) mod natural_lang;
+#[cfg(feature = "ask")]
 pub(crate) mod proof_prose;
 
 /// The base structure defining a knowledge base.

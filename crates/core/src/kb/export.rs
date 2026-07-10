@@ -2,12 +2,18 @@
 //! `format_sentence_tptp`, and their helpers.
 
 use std::collections::HashSet;
+#[cfg(feature = "ask")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "ask")]
 use crate::cache::events::Event;
+#[cfg(feature = "ask")]
 use crate::syntactic::SelectionParams;
 use crate::types::SentenceId;
-use crate::{Diagnostic, ExternalOpts, HasTranslation, Parser, ProveCtx, SourceFile, TestCase, TptpLang};
+use crate::{HasTranslation, TptpLang};
+#[cfg(feature = "ask")]
+use crate::{Diagnostic, ExternalOpts, Parser, ProveCtx, SourceFile, TestCase};
+#[cfg(feature = "ask")]
 use crate::prover::Conjecture;
 use super::assemble::{assemble_tptp, AssemblyOpts};
 
@@ -73,6 +79,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     ///
     /// Returns the ingestion diagnostics if interning the testcase's
     /// hypotheses or conjecture fails.
+    #[cfg(feature = "ask")]
     pub fn tc_to_tptp(
         &self,
         tc: TestCase,

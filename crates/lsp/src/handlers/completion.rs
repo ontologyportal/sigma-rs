@@ -16,7 +16,7 @@ use lsp_types::{
     Documentation, MarkupContent, MarkupKind,
 };
 
-use sigmakee_rs_core::{KnowledgeBase, TokenKind};
+use sigmakee_rs_sdk::{KnowledgeBase, TokenKind};
 
 use crate::conv::{position_to_offset, uri_to_tag};
 use crate::state::GlobalState;
@@ -37,16 +37,17 @@ pub fn handle_completion(
     let offset = position_to_offset(&doc.rope, position);
     let tag    = uri_to_tag(&uri);
 
-    let kb = state.kb.read().ok()?;
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
 
     let text         = String::from(&doc.rope);
-    let (tokens, _e) = sigmakee_rs_core::tokenize_kif(&text, &tag);
+    let (tokens, _e) = sigmakee_rs_sdk::tokenize_kif(&text, &tag);
 
     let ctx = classify_cursor_context(&tokens, offset);
     let items = match ctx {
-        CompletionCtx::SentenceHead  => suggest_heads(&kb),
+        CompletionCtx::SentenceHead  => suggest_heads(kb),
         CompletionCtx::ArgPosition { head, arg_idx } =>
-            suggest_args(&kb, &head, arg_idx),
+            suggest_args(kb, &head, arg_idx),
         CompletionCtx::Free          => Vec::new(),
     };
 
@@ -77,7 +78,7 @@ enum CompletionCtx {
 /// Tracks a paren stack where each frame records the head name (`None` until
 /// the first non-paren token is consumed) and the argument count seen so far;
 /// the topmost frame at the cursor determines the context.
-fn classify_cursor_context(tokens: &[sigmakee_rs_core::Token], cursor_offset: usize) -> CompletionCtx {
+fn classify_cursor_context(tokens: &[sigmakee_rs_sdk::Token], cursor_offset: usize) -> CompletionCtx {
     #[derive(Default)]
     struct Frame {
         head:     Option<String>,
@@ -220,9 +221,9 @@ fn classify_completion_kind(kb: &KnowledgeBase, name: &str) -> CompletionItemKin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sigmakee_rs_core::tokenize_kif;
+    use sigmakee_rs_sdk::tokenize_kif;
 
-    fn tokens_for(src: &str) -> Vec<sigmakee_rs_core::Token> {
+    fn tokens_for(src: &str) -> Vec<sigmakee_rs_sdk::Token> {
         let (toks, _errs) = tokenize_kif(src, "t.kif");
         toks
     }

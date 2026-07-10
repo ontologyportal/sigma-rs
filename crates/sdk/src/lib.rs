@@ -109,7 +109,9 @@ pub use sigmakee_rs_core::{
 
 // Layer stack: the concrete top layers plus the traits downstream backend
 // dispatch bounds on.
-pub use sigmakee_rs_core::{HasTranslation, ProvingLayer, TopLayer, TranslationLayer};
+pub use sigmakee_rs_core::{HasTranslation, TopLayer, TranslationLayer};
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use sigmakee_rs_core::ProvingLayer;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::ProverLayer;
 #[cfg(feature = "ask")]
@@ -120,13 +122,24 @@ pub use sigmakee_rs_core::{
     parse_document, parse_test_content, AstKif, AstNode, DocEntry, Parser, SourceFile, Span,
 };
 
+// Editor-tooling surface: the retained parse (spans + per-document findings),
+// the raw KIF tokenizer for syntax-highlighting-grade consumers (semantic
+// tokens, completion contexts), and file provenance for hand-built
+// `SourceFile`s.  Lets an editor front-end (e.g. sumo-lsp) build on the SDK
+// alone, without a direct sigmakee-rs-core dependency.
+pub use sigmakee_rs_core::{
+    tokenize_kif, FileOrigin, LocalProvenance, ParsedDocument, Token, TokenKind,
+};
+
 // Diagnostics machinery beyond the `Diagnostic` type itself.
 pub use sigmakee_rs_core::{
     promote_to_error, set_all_errors, Severity, TellResult, ToDiagnostic,
 };
 
 // Proof-source indexing + search + shared prover opts.
-pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts, SearchOpts, SearchSource};
+pub use sigmakee_rs_core::{SearchOpts, SearchSource};
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
 #[cfg(feature = "ask")]
 pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]
@@ -134,6 +147,7 @@ pub use sigmakee_rs_core::Strategy;
 
 // The whole prover module (backends, runners, result types) for path-style
 // access (`sigmakee_rs_sdk::prover::external::backends::…`).
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use sigmakee_rs_core::prover;
 
 // The external-backend selector + the trait for plugging in a custom runner.

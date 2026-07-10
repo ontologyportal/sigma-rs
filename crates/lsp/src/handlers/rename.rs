@@ -7,11 +7,15 @@
 //   * Symbol rename -- every `Element::Symbol { id }` occurrence
 //     across every file gets a text replacement.
 //
-//   * Variable rename -- same, but the SymbolId is already
-//     scope-qualified (`X__42` in the intern table), so occurrences
-//     naturally restrict to the same `(forall/exists (?X) ...)`
-//     body.  The surface text replacement uses the leading sigil
-//     (`?` / `@`) the user had under the cursor so the renamed form
+//   * Variable rename -- resolved from the DOCUMENT, not the KB: the
+//     content-addressed sentence store no longer carries scope-
+//     qualified variable ids (`id_at_offset` refuses variables), so
+//     the handler re-tokenizes the live buffer and renames every
+//     same-named variable token inside the top-level form under the
+//     cursor.  Variables never leak across root sentences in KIF, so
+//     the containing form is the correct scope boundary; intra-form
+//     quantifier shadowing is not distinguished.  The replacement
+//     preserves the leading sigil (`?` / `@`) so the renamed form
 //     stays syntactically valid.
 //
 // The returned `WorkspaceEdit` uses the `changes` map (simplest
@@ -24,7 +28,7 @@ use std::collections::HashMap;
 use lsp_types::{RenameParams, TextEdit, Url, WorkspaceEdit};
 // `Url` is used as the key type in `HashMap<Url, Vec<TextEdit>>`.
 
-use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
+use crate::conv::{offset_to_position, position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
 
 pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<WorkspaceEdit> {
@@ -37,20 +41,19 @@ pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<Worksp
     let offset = position_to_offset(&doc.rope, position);
     let tag    = uri_to_tag(&uri);
 
-    let kb = state.kb.read().ok()?;
-    let (sym_id, _old_display) = kb.id_at_offset(&tag, offset)?;
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
 
-    // Determine the replacement-text shape based on the kind of the
-    // element under the cursor.  Variables need their sigil
-    // preserved (or supplied by the user if `new_name` already
-    // carries one); plain symbols go in verbatim.
+    // Variables are renamed from the live document (see module doc); ground
+    // symbols go through the KB's occurrence index below.
     let hit = kb.element_at_offset(&tag, offset)?;
-    let replacement = if hit.is_variable {
-        let stripped = new_name.trim_start_matches('?').trim_start_matches('@');
-        if hit.is_row { format!("@{}", stripped) } else { format!("?{}", stripped) }
-    } else {
-        new_name.clone()
-    };
+    if hit.is_variable {
+        let name = hit.name?;
+        return rename_variable_in_document(&doc.rope, &tag, &uri, offset, &name, hit.is_row, &new_name);
+    }
+
+    let (sym_id, _old_display) = kb.id_at_offset(&tag, offset)?;
+    let replacement = new_name.clone();
 
     // Build `changes: HashMap<Url, Vec<TextEdit>>` from the
     // occurrence index.  Each edit replaces the stored span with
@@ -72,6 +75,79 @@ pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<Worksp
     // still counts as a successful rename of a symbol that happens
     // to have zero references.  Return Some(empty) rather than None
     // so the client doesn't report "cannot rename".
+    Some(WorkspaceEdit {
+        changes:           Some(changes),
+        document_changes:  None,
+        change_annotations: None,
+    })
+}
+
+/// Rename every occurrence of the variable `name` (sigil-less, as reported by
+/// `element_at_offset`) inside the top-level form containing `cursor_offset`.
+///
+/// Re-tokenizes the buffer, walks paren depth to find the boundaries of the
+/// root form under the cursor, and emits one `TextEdit` per matching
+/// `Variable` / `RowVariable` token in that range.  Row and plain variables
+/// are distinct namespaces (`@X` vs `?X`), so only the cursor's own kind is
+/// touched.
+fn rename_variable_in_document(
+    rope:          &ropey::Rope,
+    tag:           &str,
+    uri:           &Url,
+    cursor_offset: usize,
+    name:          &str,
+    is_row:        bool,
+    new_name:      &str,
+) -> Option<WorkspaceEdit> {
+    let stripped    = new_name.trim_start_matches('?').trim_start_matches('@');
+    let replacement = if is_row { format!("@{}", stripped) } else { format!("?{}", stripped) };
+    let old_token   = if is_row { format!("@{}", name) }     else { format!("?{}", name) };
+
+    let text = String::from(rope);
+    let (tokens, _errs) = sigmakee_rs_sdk::tokenize_kif(&text, tag);
+
+    // Locate the top-level form [start, end] whose span covers the cursor.
+    let mut depth = 0usize;
+    let mut form_start = 0usize;
+    let mut form: Option<(usize, usize)> = None;
+    for tok in &tokens {
+        match tok.kind {
+            sigmakee_rs_sdk::TokenKind::LParen => {
+                if depth == 0 { form_start = tok.span.offset; }
+                depth += 1;
+            }
+            sigmakee_rs_sdk::TokenKind::RParen => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && form_start <= cursor_offset && cursor_offset < tok.span.end_offset {
+                    form = Some((form_start, tok.span.end_offset));
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (start, end) = form?;
+
+    let mut edits: Vec<TextEdit> = Vec::new();
+    for tok in &tokens {
+        if tok.span.offset < start || tok.span.end_offset > end { continue; }
+        let matches = match &tok.kind {
+            sigmakee_rs_sdk::TokenKind::Variable(v)    if !is_row => v == &old_token,
+            sigmakee_rs_sdk::TokenKind::RowVariable(v) if  is_row => v == &old_token,
+            _ => false,
+        };
+        if !matches { continue; }
+        edits.push(TextEdit {
+            range: lsp_types::Range {
+                start: offset_to_position(rope, tok.span.offset),
+                end:   offset_to_position(rope, tok.span.end_offset),
+            },
+            new_text: replacement.clone(),
+        });
+    }
+
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    changes.insert(uri.clone(), edits);
     Some(WorkspaceEdit {
         changes:           Some(changes),
         document_changes:  None,

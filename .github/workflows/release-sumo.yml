@@ -109,7 +109,7 @@ jobs:
         env:
           SUMO_BUILD_KIND:   release
           SUMO_BUILD_COMMIT: ${{ github.sha }}
-        run: cargo build -p sigmakee --release --target ${{ matrix.target }} --features integrated-prover
+        run: cargo build -p sigmakee --release --locked --target ${{ matrix.target }} --features integrated-prover
 
       - name: Build sumo CLI (release, --target, no integrated-prover on Windows)
         # vampire-sys's embedded C++ FFI build doesn't currently compile
@@ -121,7 +121,7 @@ jobs:
         env:
           SUMO_BUILD_KIND:   release
           SUMO_BUILD_COMMIT: ${{ github.sha }}
-        run: cargo build -p sigmakee --release --target ${{ matrix.target }} --no-default-features --features ask,parallel,alloc-mi
+        run: cargo build -p sigmakee --release --locked --target ${{ matrix.target }} --no-default-features --features ask,parallel,alloc-mi
 
       - name: Strip binary (Unix)
         if: matrix.archive == 'tar.gz'

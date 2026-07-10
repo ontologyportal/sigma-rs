@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use lsp_types::{Diagnostic as LspDiagnostic, DiagnosticSeverity, Position, Range, Url};
 use ropey::Rope;
 
-use sigmakee_rs_core::{Diagnostic as KbDiagnostic, Severity, Span};
+use sigmakee_rs_sdk::{Diagnostic as KbDiagnostic, Severity, Span};
 
 use crate::state::DocState;
 

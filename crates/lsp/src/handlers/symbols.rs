@@ -14,8 +14,8 @@
 use lsp_types::{
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolKind,
 };
-use sigmakee_rs_core::{parse_document, AstNode, Parser};
-use sigmakee_rs_core::AstKif;
+use sigmakee_rs_sdk::{parse_document, AstNode, Parser};
+use sigmakee_rs_sdk::AstKif;
 
 use crate::conv::{span_to_range, uri_to_tag};
 use crate::state::GlobalState;
@@ -36,9 +36,13 @@ pub fn handle_document_symbol(
         return Some(DocumentSymbolResponse::Nested(Vec::new()));
     }
 
-    let kb = state.kb.read().ok()?;
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
     let mut symbols: Vec<DocumentSymbol> = Vec::with_capacity(parsed.ast.len());
-    for node in &parsed.ast {
+    for item in &parsed.ast {
+        // Only logical statements make the outline; non-logical `Meta`
+        // directives (TQ harness keys etc.) have no symbol to show.
+        let Some(node) = item.as_stmt() else { continue };
         let span = node.span();
         if span.is_synthetic() { continue; }
         let range = span_to_range(&doc.rope, span);
@@ -52,7 +56,7 @@ pub fn handle_document_symbol(
             .map(|sp| span_to_range(&doc.rope, sp))
             .unwrap_or(range);
 
-        let (name, detail, kind) = describe_node(&kb, node);
+        let (name, detail, kind) = describe_node(kb, node);
 
         #[allow(deprecated)]  // `deprecated` field deprecated; must still be passed
         symbols.push(DocumentSymbol {
@@ -83,7 +87,7 @@ fn head_node(node: &AstNode) -> Option<&AstNode> {
 /// - Detail: a short preview of the rest of the sentence.
 /// - Kind: maps the head through the KB's classification caches.
 fn describe_node(
-    kb:   &sigmakee_rs_core::KnowledgeBase,
+    kb:   &sigmakee_rs_sdk::KnowledgeBase,
     node: &AstNode,
 ) -> (String, Option<String>, SymbolKind) {
     let AstNode::List { elements, .. } = node else {

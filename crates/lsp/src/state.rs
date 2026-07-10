@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use lsp_types::Url;
 use ropey::Rope;
 
-use sigmakee_rs_core::{KnowledgeBase, ParsedDocument};
+use sigmakee_rs_sdk::{ParsedDocument, Session, TranslationLayer};
 
 /// Per-document session state held by the server.
 pub struct DocState {
@@ -38,11 +38,18 @@ impl DocState {
     }
 }
 
+/// Session name for the server's shared KB.  The LSP is translation-only
+/// (no prover), so the name only tags inline scratch sessions.
+pub const LSP_SESSION: &str = "sumo-lsp";
+
 /// Server-wide shared state. Cloning is cheap — all fields are `Arc`s.
 #[derive(Clone)]
 pub struct GlobalState {
-    /// The shared knowledge base.
-    pub kb:   Arc<RwLock<KnowledgeBase>>,
+    /// The shared knowledge base, held as an SDK [`Session`].  SDK-level ops
+    /// (`manpage`, `validate`, …) are called on the session directly;
+    /// introspection the SDK doesn't wrap goes through `Session::kb` /
+    /// `Session::kb_mut`.
+    pub session: Arc<RwLock<Session<TranslationLayer>>>,
     /// Per-URI document state.
     pub docs: Arc<RwLock<HashMap<Url, DocState>>>,
     /// Set to true once the client sends a `sumo/setActiveFiles` notification,
@@ -61,7 +68,7 @@ impl GlobalState {
     /// Create a new, empty server state.
     pub fn new() -> Self {
         Self {
-            kb:   Arc::new(RwLock::new(KnowledgeBase::new())),
+            session: Arc::new(RwLock::new(Session::<TranslationLayer>::new(LSP_SESSION.to_string()))),
             docs: Arc::new(RwLock::new(HashMap::new())),
             client_manages_files:     Arc::new(AtomicBool::new(false)),
             ignored_diagnostic_codes: Arc::new(RwLock::new(HashSet::new())),

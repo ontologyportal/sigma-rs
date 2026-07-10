@@ -62,7 +62,9 @@ impl PartialEq for Source {
         match (self, other) {
             (Self::Local(l0), Self::Local(r0)) => l0 == r0,
             (Self::Reader { name: l_name, .. }, Self::Reader { name: r_name, .. }) => l_name == r_name,
+            #[cfg(feature = "http")]
             (Self::Http { uri: l_uri }, Self::Http { uri: r_uri }) => l_uri == r_uri,
+            #[cfg(feature = "git")]
             (Self::Git { uri: l_uri, paths: l_paths, branch: l_branch },
              Self::Git { uri: r_uri, paths: r_paths, branch: r_branch }) =>
                 l_uri == r_uri && l_paths == r_paths && l_branch == r_branch,
@@ -78,7 +80,9 @@ impl Source {
         match self {
             Self::Local(_) => 0,
             Self::Reader { .. } => 1,
+            #[cfg(feature = "http")]
             Self::Http { .. } => 2,
+            #[cfg(feature = "git")]
             Self::Git { .. } => 3,
         }
     }
@@ -89,9 +93,11 @@ impl Ord for Source {
         match (self, other) {
             (Self::Local(r), Self::Local(l)) => r.cmp(l),
             (Self::Reader { name, .. }, Self::Reader { name: lname, .. }) => name.cmp(lname),
+            #[cfg(feature = "http")]
             (Self::Http { uri }, Self::Http { uri: luri }) => {
                 uri.to_string().cmp(&luri.to_string())
             }
+            #[cfg(feature = "git")]
             (Self::Git { uri, paths, branch }, Self::Git { uri: luri, paths: lpaths, branch: lbranch }) => {
                 uri.cmp(luri).then_with(|| paths.cmp(lpaths)).then_with(|| branch.cmp(lbranch))
             }
@@ -309,6 +315,7 @@ fn read_local_file(p: PathBuf) -> SdkResult<SourceFile> {
 /// callers expanding a *directory* filter unrecognized names out first (see
 /// [`read_dir_sources`]), so this only errors for an explicitly-named single
 /// source.
+#[cfg(feature = "git")]
 fn read_file_source(p: PathBuf, origin: FileOrigin) -> SdkResult<SourceFile> {
     let contents = std::fs::read_to_string(&p)
         .map_err(|e| SdkError::Io { path: p.clone(), source: e })?;
@@ -341,15 +348,19 @@ fn splice_tptp_includes(path: &Path, contents: String) -> SdkResult<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "http", feature = "git"))]
     use super::Source;
+    #[cfg(any(feature = "http", feature = "git"))]
     use sigmakee_rs_core::{FileOrigin, Parser};
 
     // `ontologyportal/sumo` Merge.kif — the SUMO upper ontology.  Stable, public,
     // and large enough to exercise a real fetch.  These tests hit the network, so
     // they are `#[ignore]`d: run with `cargo test -p sigmakee-rs-sdk --features
     // <http|git> -- --ignored`.
+    #[cfg(feature = "http")]
     const RAW_MERGE_KIF: &str =
         "https://raw.githubusercontent.com/ontologyportal/sumo/refs/heads/master/Merge.kif";
+    #[cfg(feature = "git")]
     const SUMO_REPO: &str = "https://github.com/ontologyportal/sumo";
 
     #[cfg(feature = "http")]

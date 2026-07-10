@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "ask")]
 use crate::{SentenceId, ToDiagnostic};
 use crate::cache::events::Event;
 use crate::cache::router::RouteOutcome;
@@ -221,6 +220,23 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// Return the SentenceIds for a session (empty if it doesn't exist).
     pub fn session_sids(&self, session: &str) -> Vec<SentenceId> {
         self.layer.semantic().syntactic.sessions.session_sentences(session)
+    }
+
+    /// Drop every root sentence tagged with `file` from the in-memory KB by
+    /// re-ingesting the file as empty: the source cache diffs the now-empty
+    /// contents against its prior formulas and retracts them through the
+    /// cascade (refcounting keeps any still referenced by another file/session).
+    /// A persistent store (if attached) is untouched; call
+    /// `KnowledgeBase::persist` to flush.
+    pub fn remove_file(&mut self, file: &str) {
+        let outcome = self.load(SourceFile::truncate(PathBuf::from(file)), file);
+        let removed = outcome.removed_sids;
+        let removed_set: HashSet<SentenceId> = removed.into_iter().collect();
+
+        // Prune the session mirror of any sentences that were removed.
+        for sids in self.sessions.values_mut() {
+            sids.retain(|s| !removed_set.contains(s));
+        }
     }
 
     /// Promote `session`'s assertions to axioms.

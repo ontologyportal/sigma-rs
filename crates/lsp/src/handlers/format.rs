@@ -17,8 +17,8 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_core::AstNode;
-use sigmakee_rs_core::AstKif;
+use sigmakee_rs_sdk::AstNode;
+use sigmakee_rs_sdk::AstKif;
 
 use crate::conv::{offset_to_position, position_to_offset};
 use crate::state::GlobalState;
@@ -37,7 +37,7 @@ pub fn handle_formatting(
     if parsed.has_errors() { return Some(Vec::new()); }
     if parsed.ast.is_empty() { return Some(Vec::new()); }
 
-    let formatted = render_forms(&parsed.ast);
+    let formatted = render_forms(parsed.ast.iter().filter_map(|i| i.as_stmt()));
 
     // Replace the entire document -- one TextEdit covering
     // [0, end_of_buffer).  LSP clients accept this shape; they
@@ -72,6 +72,7 @@ pub fn handle_range_formatting(
     // at all -- partial overlap pulls the whole node in so we don't
     // emit mid-sentence edits.
     let nodes: Vec<&AstNode> = parsed.ast.iter()
+        .filter_map(|i| i.as_stmt())
         .filter(|n| {
             let s = n.span();
             !(s.end_offset <= start_off || s.offset >= end_off)
@@ -87,9 +88,7 @@ pub fn handle_range_formatting(
     let union_start = offset_to_position(&doc.rope, first.offset);
     let union_end   = offset_to_position(&doc.rope, last.end_offset);
 
-    let formatted = render_forms(
-        &nodes.iter().map(|n| (*n).clone()).collect::<Vec<_>>()
-    );
+    let formatted = render_forms(nodes.iter().copied());
 
     Some(vec![TextEdit {
         range: Range { start: union_start, end: union_end },
@@ -101,9 +100,9 @@ pub fn handle_range_formatting(
 
 /// Pretty-print every node in `nodes` using the plain-text
 /// formatter (no ANSI colour) and join with blank-line separators.
-fn render_forms(nodes: &[AstNode]) -> String {
+fn render_forms<'a>(nodes: impl IntoIterator<Item = &'a AstNode>) -> String {
     let mut out = String::new();
-    for (i, node) in nodes.iter().enumerate() {
+    for (i, node) in nodes.into_iter().enumerate() {
         if i > 0 { out.push_str("\n\n"); }
         out.push_str(&node.format_plain(0));
     }

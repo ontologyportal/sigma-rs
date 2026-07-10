@@ -23,8 +23,9 @@ pub fn handle_workspace_symbols(
 ) -> Option<WorkspaceSymbolResponse> {
     let query = params.query.to_lowercase();
 
-    let docs = state.docs.read().ok()?;
-    let kb   = state.kb.read().ok()?;
+    let docs    = state.docs.read().ok()?;
+    let session = state.session.read().ok()?;
+    let kb      = session.kb();
 
     let mut out: Vec<SymbolInformation> = Vec::new();
     for (_id, name) in kb.iter_symbols() {
@@ -38,7 +39,7 @@ pub fn handle_workspace_symbols(
 
         let range = span_to_range_with_fallback(&docs, &uri, &span);
 
-        let kind = classify_symbol(&kb, name);
+        let kind = classify_symbol(kb, name);
 
         #[allow(deprecated)]  // field required by the lsp_types struct
         out.push(SymbolInformation {
@@ -57,7 +58,7 @@ pub fn handle_workspace_symbols(
 }
 
 /// Map a sigmakee-rs-core symbol to an LSP `SymbolKind` by taxonomy role.
-fn classify_symbol(kb: &sigmakee_rs_core::KnowledgeBase, name: &str) -> SymbolKind {
+fn classify_symbol(kb: &sigmakee_rs_sdk::KnowledgeBase, name: &str) -> SymbolKind {
     let Some(id) = kb.symbol_id(name) else { return SymbolKind::NULL; };
     if kb.is_class(id)       { return SymbolKind::CLASS; }
     if kb.is_function(id)    { return SymbolKind::FUNCTION; }

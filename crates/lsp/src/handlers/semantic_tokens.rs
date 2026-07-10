@@ -16,7 +16,7 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_core::{KnowledgeBase, TokenKind, tokenize_kif};
+use sigmakee_rs_sdk::{KnowledgeBase, TokenKind, tokenize_kif};
 
 use crate::conv::{offset_to_position, uri_to_tag};
 use crate::state::GlobalState;
@@ -65,9 +65,10 @@ pub fn handle_semantic_tokens_full(
     let uri = params.text_document.uri;
     let tag = uri_to_tag(&uri);
 
-    let docs  = state.docs.read().ok()?;
-    let doc   = docs.get(&uri)?;
-    let kb    = state.kb.read().ok()?;
+    let docs    = state.docs.read().ok()?;
+    let doc     = docs.get(&uri)?;
+    let session = state.session.read().ok()?;
+    let kb      = session.kb();
 
     let rope = &doc.rope;
 
@@ -75,7 +76,7 @@ pub fn handle_semantic_tokens_full(
     let (tokens, _errs)  = tokenize_kif(&text, &tag);
     let mut classified: Vec<ClassifiedToken> = Vec::with_capacity(tokens.len());
     for tok in &tokens {
-        if let Some(ct) = classify_token(tok, &kb) {
+        if let Some(ct) = classify_token(tok, kb) {
             classified.push(ct);
         }
     }
@@ -98,7 +99,7 @@ struct ClassifiedToken {
 }
 
 fn classify_token(
-    tok: &sigmakee_rs_core::Token,
+    tok: &sigmakee_rs_sdk::Token,
     kb:  &KnowledgeBase,
 ) -> Option<ClassifiedToken> {
     let type_idx = match &tok.kind {
@@ -183,17 +184,17 @@ fn encode_delta(tokens: &[ClassifiedToken], rope: &Rope) -> Vec<SemanticToken> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sigmakee_rs_core::KnowledgeBase;
+    use sigmakee_rs_sdk::KnowledgeBase;
 
     /// Build a KB with `text` loaded as `file`.
     fn kb_with(text: &str, file: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
-        let _ = kb.load(sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file), text.to_string()), file);
+        let _ = kb.load(sigmakee_rs_sdk::SourceFile::kif(std::path::PathBuf::from(file), text.to_string()), file);
         kb
     }
 
     /// Tokenise `text` tagged as `file`.
-    fn tokens_for(text: &str, file: &str) -> Vec<sigmakee_rs_core::Token> {
+    fn tokens_for(text: &str, file: &str) -> Vec<sigmakee_rs_sdk::Token> {
         let (toks, _errs) = tokenize_kif(text, file);
         toks
     }

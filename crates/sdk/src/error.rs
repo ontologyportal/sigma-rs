@@ -170,11 +170,17 @@ impl SdkError {
             SdkError::Io { .. } => Severity::Error,
             SdkError::DirRead { .. } => Severity::Error,
             SdkError::Config(_) => Severity::Error,
+            #[cfg(feature = "persist")]
             SdkError::Persist(_) => Severity::Error,
+            #[cfg(feature = "ask")]
             SdkError::VampireNotFound(_) => Severity::Error,
+            #[cfg(feature = "ask")]
             SdkError::Prover(_) => Severity::Error,
+            #[cfg(any(feature = "http", feature = "git"))]
             SdkError::TempDir(_, _) => Severity::Error,
+            #[cfg(feature = "git")]
             SdkError::Git(_) => Severity::Error,
+            #[cfg(feature = "http")]
             SdkError::Http(_) => Severity::Error,
             SdkError::Input(_) => Severity::Error,
             SdkError::Unsupported => Severity::Error,

@@ -21,7 +21,7 @@ use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Url};
 use ropey::Rope;
 
-use sigmakee_rs_core::{KnowledgeBase, ParsedDocument, Severity};
+use sigmakee_rs_sdk::{KnowledgeBase, ParsedDocument, Severity};
 
 use crate::conv::{kb_diagnostic_to_lsp, uri_to_tag};
 use crate::state::GlobalState;

@@ -21,7 +21,8 @@ pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option
     let offset = position_to_offset(&doc.rope, position);
     let tag    = uri_to_tag(&uri);
 
-    let kb = state.kb.read().ok()?;
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
     let (sym_id, _) = kb.id_at_offset(&tag, offset)?;
     let occurrences = kb.occurrences_of(sym_id);
 

@@ -110,22 +110,6 @@ impl<L: TopLayer> KnowledgeBase<L> {
         self.persist()
     }
 
-    /// Drop every root sentence tagged with `file` from the in-memory KB by
-    /// re-ingesting the file as empty: the source cache diffs the now-empty
-    /// contents against its prior formulas and retracts them through the
-    /// cascade (refcounting keeps any still referenced by another file/session).
-    /// The persistent store is untouched; call [`Self::persist`] to flush.
-    pub fn remove_file(&mut self, file: &str) {
-        let outcome = self.load(SourceFile::truncate(PathBuf::from(file)), file);
-        let removed = outcome.removed_sids;
-        let removed_set: std::collections::HashSet<SentenceId> =
-            removed.into_iter().collect();
-
-        // Prune the session mirror of any sentences that were removed.
-        for sids in self.sessions.values_mut() {
-            sids.retain(|s| !removed_set.contains(s));
-        }
-    }
 }
 
 #[cfg(all(test, feature = "persist"))]

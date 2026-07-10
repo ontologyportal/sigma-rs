@@ -21,7 +21,7 @@ use lsp_types::{
 use ropey::Rope;
 use serde::de::DeserializeOwned;
 
-use sigmakee_rs_core::{parse_document, Parser};
+use sigmakee_rs_sdk::{parse_document, Parser, SourceFile};
 
 use crate::conv::uri_to_tag;
 use crate::handlers::{
@@ -166,8 +166,14 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                 // workspace stays healthy; the bad file still publishes
                 // diagnostics below via `parse_document`.
                 let load_report = {
-                    let mut kb = state.kb.write().expect("kb not poisoned");
-                    kb.load(sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag)
+                    let mut session = state.session.write().expect("kb not poisoned");
+                    let kb = session.kb_mut();
+                    let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag);
+                    // Man-page / documentation introspection reads the Base
+                    // scope; a loaded file sits in its own session until
+                    // promoted.
+                    if report.ok { let _ = kb.make_session_axiomatic(&tag); }
+                    report
                 };
                 if !load_report.ok {
                     log::warn!(target: "sumo_lsp",
@@ -180,8 +186,8 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                 // Publish diagnostics before moving `parsed` into the doc state
                 // (ParsedDocument is not Clone).
                 {
-                    let kb = state.kb.read().expect("kb not poisoned");
-                    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, None);
+                    let session = state.session.read().expect("kb not poisoned");
+                    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), None);
                 }
                 {
                     let mut docs = state.docs.write().expect("docs not poisoned");
@@ -359,13 +365,16 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
     // Skip the re-load if the workspace sweep already loaded this file, or if
     // the client owns KB membership via `sumo/setActiveFiles`.
     let already_loaded = {
-        let kb = state.kb.read().expect("kb not poisoned");
-        !kb.file_roots(&tag).is_empty()
+        let session = state.session.read().expect("kb not poisoned");
+        !session.kb().file_roots(&tag).is_empty()
     };
     let client_managed = state.client_manages_files.load(Ordering::SeqCst);
     if !already_loaded && !client_managed {
-        let mut kb = state.kb.write().expect("kb not poisoned");
-        let _ = kb.load(sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag);
+        let mut session = state.session.write().expect("kb not poisoned");
+        let kb = session.kb_mut();
+        let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag);
+        // Promote so man-page introspection (Base scope) sees the file.
+        if report.ok { let _ = kb.make_session_axiomatic(&tag); }
     }
 
     let parsed = parse_document(tag.clone(), text.as_str(), Parser::Kif);
@@ -373,8 +382,8 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
     // Publish diagnostics before moving `parsed` into the per-doc state
     // (ParsedDocument is not Clone).
     {
-        let kb = state.kb.read().expect("kb not poisoned");
-        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, Some(version));
+        let session = state.session.read().expect("kb not poisoned");
+        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), Some(version));
     }
     {
         let mut docs = state.docs.write().expect("docs not poisoned");
@@ -401,15 +410,19 @@ fn on_did_change(connection: &Connection, state: &GlobalState, params: DidChange
     };
 
     {
-        let mut kb = state.kb.write().expect("kb not poisoned");
-        let _ = kb.load(sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(&tag), new_text.to_string()), &tag);
+        let mut session = state.session.write().expect("kb not poisoned");
+        let kb = session.kb_mut();
+        let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), new_text.to_string()), &tag);
+        // Re-promote the reconciled delta so man-page introspection
+        // (Base scope) keeps seeing the file's current contents.
+        if report.ok { let _ = kb.make_session_axiomatic(&tag); }
     }
 
     let parsed = parse_document(tag.clone(), new_text.as_str(), Parser::Kif);
     let rope   = Rope::from_str(&new_text);
     {
-        let kb = state.kb.read().expect("kb not poisoned");
-        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, &kb, Some(version));
+        let session = state.session.read().expect("kb not poisoned");
+        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), Some(version));
     }
     {
         let mut docs = state.docs.write().expect("docs not poisoned");
@@ -451,8 +464,9 @@ fn on_set_active_files(
 
     let report = handle_set_active_files(state, params);
 
-    let docs = state.docs.read().expect("docs lock not poisoned");
-    let kb   = state.kb.read().expect("kb lock not poisoned");
+    let docs    = state.docs.read().expect("docs lock not poisoned");
+    let session = state.session.read().expect("kb lock not poisoned");
+    let kb      = session.kb();
     for tag in report.added.iter().chain(report.removed.iter()) {
         let Some(uri) = uri_from_tag(tag) else { continue; };
         let doc = docs.get(&uri);
@@ -461,14 +475,14 @@ fn on_set_active_files(
         let parsed = doc.and_then(|d| d.parsed.as_ref());
 
         match parsed {
-            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, state, &kb, None),
+            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, state, kb, None),
             None => {
                 // No open document for this tag: reparse from disk so
                 // diagnostics reflect current state.
                 if let Ok(text) = std::fs::read_to_string(tag) {
-                    let p    = sigmakee_rs_core::parse_document(tag.clone(), text.as_str(), Parser::Kif);
+                    let p    = parse_document(tag.clone(), text.as_str(), Parser::Kif);
                     let rope = Rope::from_str(&text);
-                    publish_diagnostics(&connection.sender, &uri, &rope, &p, state, &kb, None);
+                    publish_diagnostics(&connection.sender, &uri, &rope, &p, state, kb, None);
                 }
             }
         }
@@ -500,12 +514,12 @@ fn on_set_ignored_diagnostics(
     handle_set_ignored_diagnostics(state, params);
 
     // Republish diagnostics for every open document.
-    let docs = state.docs.read().expect("docs lock not poisoned");
-    let kb   = state.kb.read().expect("kb lock not poisoned");
+    let docs    = state.docs.read().expect("docs lock not poisoned");
+    let session = state.session.read().expect("kb lock not poisoned");
     for (uri, doc) in docs.iter() {
         let rope = doc.rope.clone();
         if let Some(parsed) = doc.parsed.as_ref() {
-            publish_diagnostics(&connection.sender, uri, &rope, parsed, state, &kb, Some(doc.version));
+            publish_diagnostics(&connection.sender, uri, &rope, parsed, state, session.kb(), Some(doc.version));
         }
     }
     Ok(())

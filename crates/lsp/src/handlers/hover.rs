@@ -25,10 +25,11 @@ pub fn handle_hover(state: &GlobalState, params: HoverParams) -> Option<Hover> {
     let offset = position_to_offset(&doc.rope, position);
     let tag    = uri_to_tag(&uri);
 
-    let kb = state.kb.read().ok()?;
+    let session  = state.session.read().ok()?;
+    let kb       = session.kb();
     let sym_name = kb.symbol_at_offset(&tag, offset)?;
     let sym_span = kb.element_at_offset(&tag, offset).map(|h| h.span);
-    let view     = sigmakee_rs_sdk::manpage_view(&kb, &sym_name)?;
+    let view     = session.manpage(&sym_name)?;
 
     let markdown = render_manpage_markdown(&view);
 
@@ -142,7 +143,7 @@ fn render_spans(block: &DocBlock) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sigmakee_rs_core::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
+    use sigmakee_rs_sdk::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
     use sigmakee_rs_sdk::view_from_manpage;
 
     fn fixture_view() -> ManPageView {

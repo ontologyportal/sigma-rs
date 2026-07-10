@@ -38,15 +38,15 @@ pub fn handle_set_active_files(
 ) -> SetActiveFilesReport {
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use sigmakee_rs_core::{FileOrigin, LocalProvenance, Severity, SourceFile};
+    use sigmakee_rs_sdk::{FileOrigin, LocalProvenance, Severity, SourceFile};
 
     let requested: HashSet<String> = params.files.into_iter().collect();
 
     // Snapshot under the read lock so the delta is computed without holding
     // the lock across the mutation calls (which take the write lock).
     let currently_loaded: HashSet<String> = {
-        let kb = state.kb.read().expect("kb lock not poisoned");
-        kb.iter_files().into_iter().collect()
+        let session = state.session.read().expect("kb lock not poisoned");
+        session.kb().iter_files().into_iter().collect()
     };
 
     let to_add:    Vec<String> = requested.difference(&currently_loaded).cloned().collect();
@@ -64,15 +64,15 @@ pub fn handle_set_active_files(
         if rebuild_is_cheaper { " (rebuild path)" } else { "" });
 
     let mut report = SetActiveFilesReport::default();
-    let mut kb = state.kb.write().expect("kb lock not poisoned");
+    let mut session = state.session.write().expect("kb lock not poisoned");
 
     let files_to_ingest: Vec<String> = if rebuild_is_cheaper {
-        *kb = sigmakee_rs_core::KnowledgeBase::new();
+        *session = sigmakee_rs_sdk::Session::<sigmakee_rs_sdk::TranslationLayer>::new(crate::state::LSP_SESSION.to_string());
         report.removed = currently_loaded.into_iter().collect();
         requested.into_iter().collect()
     } else {
         for tag in &to_remove {
-            kb.remove_file(tag);
+            session.kb_mut().remove_file(tag);
             report.removed.push(tag.to_string());
         }
         to_add
@@ -99,7 +99,9 @@ pub fn handle_set_active_files(
             continue;
         };
 
-        let result = kb.load(src, &tag);
+        let result = session.kb_mut().load(src, &tag);
+        // Promote so man-page introspection (Base scope) sees the file.
+        if result.ok { let _ = session.kb_mut().make_session_axiomatic(&tag); }
         let warnings = result.diagnostics.iter()
             .filter(|d| matches!(d.severity, Severity::Warning))
             .count();
@@ -116,7 +118,7 @@ pub fn handle_set_active_files(
         report.added.push(tag);
     }
 
-    drop(kb);
+    drop(session);
     report
 }
 

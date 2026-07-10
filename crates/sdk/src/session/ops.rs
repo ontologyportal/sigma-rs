@@ -4,12 +4,16 @@
 
 #[cfg(feature = "persist")]
 use sigmakee_rs_core::DynSink;
-use sigmakee_rs_core::{Diagnostic, ExternalOpts, HasTranslation, TopLayer, TptpLang, TptpOptions, TranslationLayer};
+#[cfg(feature = "ask")]
+use sigmakee_rs_core::ExternalOpts;
+use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions};
+#[cfg(feature = "persist")]
+use sigmakee_rs_core::TranslationLayer;
 
+#[cfg(feature = "ask")]
 use crate::Source;
 
 use super::Session;
-#[cfg(feature = "persist")]
 use super::super::{SdkError, SdkResult};
 
 impl<L: TopLayer> Session<L> {
@@ -98,6 +102,7 @@ impl<L: HasTranslation> Session<L> {
     }
 
     /// Translate a [`TestCase`] into TPTP
+    #[cfg(feature = "ask")]
     pub fn translate_test(&mut self, src: Source, opts: TptpOptions, prover_opts: ExternalOpts) -> Result<String, Vec<SdkError>> {
         let tc = self.source_to_test_case(src)?;
         Ok(self.kb.tc_to_tptp(

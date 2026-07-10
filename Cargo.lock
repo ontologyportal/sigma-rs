@@ -2732,7 +2732,6 @@ dependencies = [
  "ropey",
  "serde",
  "serde_json",
- "sigmakee-rs-core",
  "sigmakee-rs-sdk",
  "url",
 ]

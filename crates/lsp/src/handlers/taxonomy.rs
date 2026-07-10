@@ -93,14 +93,14 @@ const MAX_NODES: usize = 2048;
 pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyResponse {
     let root = params.symbol;
 
-    let Ok(kb) = state.kb.read() else {
+    let Ok(session) = state.session.read() else {
         log::warn!(target: "sumo_lsp::taxonomy", "kb lock poisoned");
         return TaxonomyResponse {
             symbol: root, unknown: true, ..Default::default()
         };
     };
 
-    let Some(root_view) = sigmakee_rs_sdk::manpage_view(&kb, &root) else {
+    let Some(root_view) = session.manpage(&root) else {
         return TaxonomyResponse {
             symbol: root, unknown: true, ..Default::default()
         };
@@ -131,7 +131,7 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
             break;
         }
 
-        let Some(view) = sigmakee_rs_sdk::manpage_view(&kb, &current) else { continue; };
+        let Some(view) = session.manpage(&current) else { continue; };
         push_parent_edges(&current, &view.parents, &mut edges, &mut visited, &mut queue);
     }
 
@@ -161,7 +161,7 @@ fn flatten_doc_block(block: &DocBlock) -> String {
 /// Append an edge per parent of `child` and enqueue newly-seen parents.
 fn push_parent_edges(
     child:   &str,
-    parents: &[sigmakee_rs_core::ParentEdge],
+    parents: &[sigmakee_rs_sdk::ParentEdge],
     edges:   &mut Vec<TaxonomyEdgeDto>,
     visited: &mut HashSet<String>,
     queue:   &mut VecDeque<String>,
@@ -188,11 +188,12 @@ mod tests {
     fn load(kb_text: &str) -> GlobalState {
         let state = GlobalState::new();
         {
-            let mut kb = state.kb.write().expect("kb not poisoned");
-            let _ = kb.load(sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from("test.kif"), kb_text.to_string()), "test.kif");
+            let mut session = state.session.write().expect("kb not poisoned");
+            let kb = session.kb_mut();
+            let _ = kb.load(sigmakee_rs_sdk::SourceFile::kif(std::path::PathBuf::from("test.kif"), kb_text.to_string()), "test.kif");
             // Man-page introspection reads the `Base` scope; a freshly-loaded
             // file sits in its own session until promoted.
-            let _ = kb.make_session_axiomatic("test.kif", None, None, None);
+            let _ = kb.make_session_axiomatic("test.kif");
         }
         state
     }

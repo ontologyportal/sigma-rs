@@ -15,11 +15,18 @@ name = "sumo_lsp"
 path = "src/lib.rs"
 
 [dependencies]
-# sigmakee-rs-core gives us the parser, semantic layer, manpage data, and
-# every type the LSP handlers thread through.  No `ask` /
-# `integrated-prover` / `cnf` / `persist` features — LSP wants
-# parse + validate + manpage and nothing else (no Vampire, no CMake,
-# no LMDB).
+# sigmakee-rs-sdk is the LSP's ONLY sigma dependency: the shared KB is held
+# as a `Session<TranslationLayer>`, SDK-level ops (`manpage`, ingest, …) are
+# called on it directly, and everything else (parser, tokenizer, offset /
+# occurrence introspection) reaches core through the SDK's re-exports and
+# the `Session::kb()` / `kb_mut()` escape hatches.  No direct
+# sigmakee-rs-core dep — if a core item is missing here, re-export it from
+# the SDK instead of re-adding core.
+#
+# `default-features = false` keeps LMDB (`persist`), the provers (`ask`),
+# rayon (`parallel`), and the remote sources (`http`/`git`) out of the
+# LSP's dep graph — LSP wants parse + validate + manpage and nothing else
+# (no Vampire, no CMake, no LMDB).
 #
 # NOTE: deliberately a direct path dep, NOT `workspace = true`.
 # Workspace inheritance ignores a member's `default-features = false`
@@ -28,15 +35,6 @@ path = "src/lib.rs"
 # dragged `ask` (Vampire), `persist` (LMDB), and `parallel` (rayon)
 # back into the LSP's graph.  Pinning the path lets the opt-out take
 # effect, holding the lean posture the comment above promises.
-sigmakee-rs-core    = { path = "../core", default-features = false }
-
-# sigmakee-rs-sdk wraps sigmakee-rs-core's mutation primitives in builder-shaped
-# operations with structured reports (IngestOp, ValidateOp, etc.).
-# The LSP uses it for batch ingest in the `setActiveFiles` handler
-# and for the structured `manpage_view` projection in hover.
-# `default-features = false` keeps LMDB and the prover out of the
-# LSP's dep graph — same posture as the sigmakee-rs-core dep above.
-# Direct path dep for the same reason as core (see note above).
 sigmakee-rs-sdk     = { path = "../sdk", default-features = false }
 
 lsp-server      = "0.7"
