@@ -253,12 +253,18 @@ where
             CaseVerdict::Informational
         }
     };
-    println!("  % SZS status {} for {}", oc.szs, basename(&oc.name));
-
     let format = manager.proof.as_str();
-    if format != "none" && !oc.result.proof_kif.is_empty() {
-        println!("    {style_bold}Proof:{style_reset}");
-        print_proof(kb, &oc.result, format);
+    if format == "casc" {
+        // Strict CASC output (matches Vampire's own stdout): `print_proof`
+        // emits the `% SZS status ... for ...` line itself, flush-left, with
+        // no other decoration — don't print a second one here.
+        print_proof(kb, &oc.result, format, &basename(&oc.name), oc.szs);
+    } else {
+        println!("  % SZS status {} for {}", oc.szs, basename(&oc.name));
+        if format != "none" && !oc.result.proof_kif.is_empty() {
+            println!("    {style_bold}Proof:{style_reset}");
+            print_proof(kb, &oc.result, format, &basename(&oc.name), oc.szs);
+        }
     }
     if manager.prose && !oc.result.proof_kif.is_empty() {
         let report = kb.render_proof_prose(None, &oc.result.proof_kif, "EnglishLanguage");

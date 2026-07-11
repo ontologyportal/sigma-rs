@@ -99,7 +99,7 @@ pub use sigmakee_rs_core::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 
 pub use session::{Backend, Session};
 #[cfg(feature = "native-prover")]
-pub use session::{ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
+pub use session::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
 pub use source::Source;
 
 pub use sigmakee_rs_core::{

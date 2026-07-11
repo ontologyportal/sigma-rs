@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use sigmakee_rs_sdk::{AstKif, ProverStatus, ProvingLayer};
+use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::Session;
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use crate::style::*;
@@ -86,7 +86,7 @@ where
     // is auto-stubbed: `print_proof` prints "(none)" when `proof_tptp` is empty.
     let format = manager.proof.as_str();
     if format != "none" {
-        if format != "tptp" && result.proof_kif.is_empty() {
+        if format != "tptp" && format != "casc" && result.proof_kif.is_empty() {
             // Say WHY there are no steps to render, per verdict.  Proved and
             // Inconsistent mean a refutation WAS found — a proof exists, we
             // just don't have a transcript.  Disproved and Consistent are
@@ -108,8 +108,11 @@ where
             };
             println!("{}", note);
         } else {
-            println!("\n{style_bold}Conjecture:{style_reset} {}", conjecture.trim());
-            print_proof(session.kb(), &result, format);
+            if format != "casc" {
+                println!("\n{style_bold}Conjecture:{style_reset} {}", conjecture.trim());
+            }
+            let status = szs_status(&result, true);
+            print_proof(session.kb(), &result, format, "problem", status);
         }
     }
 

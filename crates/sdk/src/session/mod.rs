@@ -26,7 +26,7 @@ mod ask;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "native-prover")]
-pub use ask::{ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
+pub use ask::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
 
 use sigmakee_rs_core::{DynSink, KnowledgeBase, TranslationLayer};
 #[cfg(feature = "native-prover")]

@@ -1,7 +1,10 @@
 //! Shared `--proof <FORMAT>` rendering, used by `sumo ask` and `sumo debug`.
 //!
-//! Three branches:
+//! Four branches:
 //!   - `tptp`                → dump `result.proof_tptp` verbatim
+//!   - `casc`                → strict SZS-wrapped TPTP, matching Vampire's
+//!                             own stdout (`% SZS status`/`% SZS output
+//!                             start|end Proof`), no other output
 //!   - `kif`                 → SUO-KIF pretty-print with per-axiom source
 //!   - any SUMO language id  → natural-language via format/termFormat
 
@@ -10,12 +13,18 @@
 use crate::style::*;
 use sigmakee_rs_sdk::AstKif;
 
-use sigmakee_rs_sdk::{emit_proof, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport};
+use sigmakee_rs_sdk::{emit_proof, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus};
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
 
 /// Dispatch the `--proof <FORMAT>` rendering.  Recognised values:
 /// - `tptp`                     → dump `result.proof_tptp` verbatim
+/// - `casc`                     → strict SZS-wrapped TPTP (CASC submission
+///                                 format): `% SZS status <status> for
+///                                 <name>` then, if a proof exists, `% SZS
+///                                 output start Proof for <name>` / the
+///                                 proof / `% SZS output end Proof for
+///                                 <name>` — nothing else
 /// - `kif`                      → SUO-KIF pretty-print
 /// - any SUMO language (e.g.
 ///   `EnglishLanguage`,
@@ -23,11 +32,19 @@ use sigmakee_rs_sdk::TopLayer;
 ///
 /// Unknown values fall through to the language branch, which renders via
 /// `termFormat`/`format` and warns about any unrecognised language.
-pub fn print_proof<L: TopLayer>(kb: &KnowledgeBase<L>, result: &ProverResult, format: &str) {
+pub fn print_proof<L: TopLayer>(
+    kb:     &KnowledgeBase<L>,
+    result: &ProverResult,
+    format: &str,
+    name:   &str,
+    status: SzsStatus,
+) {
     print_proof_impl(
         &kb.build_axiom_source_index(),
         result,
         format,
+        name,
+        status,
         &|f, lang| kb.render_formula_colored(f, lang),
     )
 }
@@ -37,60 +54,80 @@ pub fn print_proof_native(
     kb:     &KnowledgeBase<sigmakee_rs_sdk::ProverLayer>,
     result: &ProverResult,
     format: &str,
+    name:   &str,
+    status: SzsStatus,
 ) {
     print_proof_impl(
         &kb.build_axiom_source_index(),
         result,
         format,
+        name,
+        status,
         &|f, lang| kb.render_formula_colored(f, lang),
     )
+}
+
+/// Resolve the proof text for the `tptp`/`casc` branches: the verbatim
+/// subprocess transcript when one was captured, else a reconstruction from
+/// `proof_kif` via the same dialect-emission seam `solve_tptp` uses.  Returns
+/// `None` when there is no proof to show (no transcript, no KIF steps).
+fn resolve_tptp_proof_text(result: &ProverResult) -> Option<String> {
+    if !result.proof_tptp.is_empty() {
+        return Some(result.proof_tptp.clone());
+    }
+    if result.proof_kif.is_empty() {
+        return None;
+    }
+    let emitted = emit_proof(&result.proof_kif, "problem", Emitter::Tptp(result.proof_tptp_lang));
+    if !emitted.is_complete() {
+        eprintln!(
+            "{color_bright_yellow}warning:{color_reset} {} proof step(s) could not be represented in TPTP:",
+            emitted.dropped.len(),
+        );
+        for d in &emitted.dropped {
+            eprintln!(
+                "  - {}: {}",
+                d.name.as_deref().unwrap_or("<unnamed>"),
+                d.reason,
+            );
+        }
+    }
+    Some(emitted.text)
+}
+
+fn print_step(text: &str) {
+    print!("{}", text);
+    if !text.ends_with('\n') {
+        println!();
+    }
 }
 
 fn print_proof_impl(
     src_idx: &AxiomSourceIndex,
     result:  &ProverResult,
     format:  &str,
+    name:    &str,
+    status:  SzsStatus,
     render:  &dyn Fn(&AstNode, &str) -> RenderReport,
 ) {
     match format {
+        "casc" => {
+            println!("% SZS status {} for {}", status, name);
+            if let Some(text) = resolve_tptp_proof_text(result) {
+                println!("% SZS output start Proof for {}", name);
+                print_step(&text);
+                println!("% SZS output end Proof for {}", name);
+            }
+        }
         "tptp" => {
-            if !result.proof_tptp.is_empty() {
-                println!("\n{style_bold}Proof (TPTP):{style_reset}");
-                print!("{}", result.proof_tptp);
-                if !result.proof_tptp.ends_with('\n') {
-                    println!();
+            match resolve_tptp_proof_text(result) {
+                Some(text) => {
+                    println!("\n{style_bold}Proof (TPTP):{style_reset}");
+                    print_step(&text);
                 }
-                return;
-            }
-            // Subprocess backends stash Vampire/E's verbatim transcript in
-            // `proof_tptp`; the native `ProverLayer` and embedded FFI Vampire
-            // backend have no such transcript but still carry a parsed
-            // `proof_kif` — reconstruct TPTP text from it via the same
-            // dialect-emission seam `solve_tptp` uses.
-            if result.proof_kif.is_empty() {
-                println!(
+                None => println!(
                     "\n{style_bold}Proof (TPTP):{style_reset} (none — Vampire did not emit a proof section)"
-                );
-                return;
-            }
-            let emitted = emit_proof(&result.proof_kif, "problem", Emitter::Tptp(result.proof_tptp_lang));
-            println!("\n{style_bold}Proof (TPTP):{style_reset}");
-            print!("{}", emitted.text);
-            if !emitted.text.ends_with('\n') {
-                println!();
-            }
-            if !emitted.is_complete() {
-                eprintln!(
-                    "{color_bright_yellow}warning:{color_reset} {} proof step(s) could not be represented in TPTP:",
-                    emitted.dropped.len(),
-                );
-                for d in &emitted.dropped {
-                    eprintln!(
-                        "  - {}: {}",
-                        d.name.as_deref().unwrap_or("<unnamed>"),
-                        d.reason,
-                    );
-                }
+                ),
             }
         }
         "kif" => {
