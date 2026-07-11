@@ -226,6 +226,13 @@ fn render_case<L>(
 where
     L: ProvingLayer,
 {
+    // Fold this case's per-mechanism saturation timers (only populated
+    // under `--profile`) into the same aggregator the coarser `ask.*`
+    // phases report through — see `run_ask`'s matching call.
+    if let Some(sink) = crate::progress::global() {
+        crate::progress::record_mechanism_profile(&sink, &oc.result.phase_profile);
+    }
+
     let format = manager.proof.as_str();
     // `casc`/`graphviz` output must be pure SZS/TPTP or DOT text on stdout —
     // the pass/fail banner, expectation diagnostics, and prose paraphrase

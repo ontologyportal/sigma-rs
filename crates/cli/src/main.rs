@@ -587,11 +587,17 @@ fn init_logging(cli: &Cli, manager: &KBManager) {
 }
 
 /// `-W` warning-elevation policy → core promotion flags.
-fn apply_global_overrides(cli: &Cli, _manager: &mut KBManager) {
+fn apply_global_overrides(cli: &Cli, manager: &mut KBManager) {
     use sigmakee_rs_sdk::{promote_to_error, set_all_errors};
     for arg in &cli.suppress {
         if arg == "all" { set_all_errors(true); } else { promote_to_error(arg); }
     }
+    // `--profile` is one knob: it also turns on the native prover's
+    // per-mechanism saturation-loop timers (formerly the separate
+    // `--native-profile` flag), so the report it prints always has
+    // something to show inside `ask.saturate` rather than needing a
+    // second flag most callers didn't know to reach for.
+    manager.native_prover.profile = cli.profile;
 }
 
 /// Whether the user (or its env var) supplied the projected option `field` on

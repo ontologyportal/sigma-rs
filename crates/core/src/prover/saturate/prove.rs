@@ -987,11 +987,13 @@ impl ProverLayer {
             }
             let mechanisms: Vec<(String, std::time::Duration)> = if opts_profile {
                 [
+                    ("saturate.select", prover.stats.t_select),
                     ("saturate.resimplify", prover.stats.t_resimplify),
                     ("saturate.factor", prover.stats.t_factors),
                     ("saturate.eq_resolve", prover.stats.t_eq_resolve),
                     ("saturate.paramodulate", prover.stats.t_paramod),
                     ("saturate.resolve", prover.stats.t_resolve),
+                    ("saturate.activate", prover.stats.t_activate),
                 ]
                 .into_iter()
                 .map(|(n, d)| (n.to_string(), d))

@@ -276,6 +276,38 @@ impl CliSink {
     pub fn finish(&self) {
         if let Some(s) = &self.spinner { s.finish(); }
     }
+
+    /// Fold a pre-measured phase duration into the `--profile` aggregator —
+    /// a no-op when profiling is off.  See [`PhaseAggregator::record`].
+    pub fn record(&self, name: &'static str, dur: Duration) {
+        if let Some(p) = &self.profiler { p.record(name, dur); }
+    }
+}
+
+/// Fold a `ProverResult::phase_profile` slice (the native prover's
+/// per-mechanism saturation-loop timers — resimplify/factor/eq_resolve/
+/// paramodulate/resolve, summed across every given-clause step) into the
+/// global `--profile` aggregator, so they show up alongside the coarser
+/// `ask.*` phases with the same total/count/average shape.
+///
+/// `ProverResult` carries names as owned `String`s (it derives
+/// `Deserialize`, which rules out a `&'static str` field), but the native
+/// prover only ever emits this fixed, known set — mapped back to `'static`
+/// here rather than leaking a string per call.
+pub fn record_mechanism_profile(sink: &CliSink, profile: &[(String, Duration)]) {
+    for (name, dur) in profile {
+        let static_name = match name.as_str() {
+            "saturate.select"       => "saturate.select",
+            "saturate.resimplify"   => "saturate.resimplify",
+            "saturate.factor"       => "saturate.factor",
+            "saturate.eq_resolve"   => "saturate.eq_resolve",
+            "saturate.paramodulate" => "saturate.paramodulate",
+            "saturate.resolve"      => "saturate.resolve",
+            "saturate.activate"     => "saturate.activate",
+            _                       => "saturate.other",
+        };
+        sink.record(static_name, *dur);
+    }
 }
 
 // -- Phase-timing aggregator (the `--profile` half of `CliSink`) --------------
@@ -340,6 +372,21 @@ impl PhaseAggregator {
         inner.starts.clear();
         inner.totals.clear();
         inner.counts.clear();
+    }
+
+    /// Fold a pre-measured duration directly into a phase's total/count,
+    /// bypassing the `PhaseStarted`/`PhaseFinished` pair — for callers that
+    /// already hold an accumulated [`Duration`] rather than discrete
+    /// start/end events (e.g. the native prover's per-mechanism
+    /// saturation-loop timers, summed internally across every given-clause
+    /// step and only available once the call returns).  One `record` call
+    /// counts as one call for averaging purposes, same as one
+    /// `PhaseStarted`/`PhaseFinished` pair — so a phase fed this way reads
+    /// exactly like any other row: total, call count, average per call.
+    pub fn record(&self, name: &'static str, dur: Duration) {
+        let mut inner = self.inner.lock().expect("PhaseAggregator mutex poisoned");
+        *inner.totals.entry(name).or_default() += dur;
+        *inner.counts.entry(name).or_insert(0) += 1;
     }
 }
 

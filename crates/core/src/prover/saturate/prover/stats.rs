@@ -184,11 +184,19 @@ pub(crate) struct ProverStats {
     pub(crate) factor_prefiltered: u64,
     // -- saturation-loop mechanism timing (populated when opts.profile;
     //    one Instant pair per mechanism per given-clause step).
+    /// Time in `pop_given` — passive-queue selection (by-weight/by-age
+    /// heaps) plus the staleness/retirement bookkeeping it does while
+    /// popping.
+    pub(crate) t_select: std::time::Duration,
     pub(crate) t_resimplify: std::time::Duration,
     pub(crate) t_factors: std::time::Duration,
     pub(crate) t_eq_resolve: std::time::Duration,
     pub(crate) t_paramod: std::time::Duration,
     pub(crate) t_resolve: std::time::Duration,
+    /// Time in `activate` — indexing the given clause's every subterm
+    /// position into the retrieval structures (term/literal index,
+    /// backward-demod postings) once it's done generating from.
+    pub(crate) t_activate: std::time::Duration,
     /// Empty clauses whose lineage never touches the negated
     /// conjecture: the INPUTS are contradictory (SUMO is, in places —
     /// e.g. Merge's species-inheritance axiom vs the Man/Woman

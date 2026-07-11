@@ -61,6 +61,13 @@ where
             return false;
         }
     };
+    // Fold the native prover's per-mechanism saturation timers (only
+    // populated under `--profile`) into the same aggregator the coarser
+    // `ask.*` phases report through, so `--profile`'s output covers what's
+    // inside `ask.saturate`, not just its total.
+    if let Some(sink) = crate::progress::global() {
+        crate::progress::record_mechanism_profile(&sink, &result.phase_profile);
+    }
 
     // --proof: shared three-way rendering (`kif` pretty-print / `tptp` dump /
     // any SUMO language via format+termFormat).  For the native backend `tptp`

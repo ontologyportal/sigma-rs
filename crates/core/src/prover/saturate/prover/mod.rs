@@ -103,10 +103,10 @@ pub struct NativeOpts {
     pub time_limit_secs: u64,
     /// Run the bounded forward closure before the main loop.
     pub forward_close: bool,
-    /// Collect per-mechanism timing inside the saturation loop
-    /// (re-simplify / factor / eq-resolve / paramodulate / resolve).
-    /// Off by default — the timers cost a few clock reads per
-    /// given-clause step.
+    /// Collect per-mechanism timing inside the saturation loop (select /
+    /// re-simplify / factor / eq-resolve / paramodulate / resolve /
+    /// activate — the whole given-clause loop body).  Off by default —
+    /// the timers cost a few clock reads per given-clause step.
     pub profile: bool,
     /// Render the refutation into `proof_kif` (KIF ASTs with original
     /// source formulas, skolem relabeling — the `--proof` experience).
@@ -3486,7 +3486,11 @@ impl<'a> NativeProver<'a> {
             // make's unit feedback / forward closure) — surface them
             // before selecting the next given.
             self.drain_fd_equalities();
-            let Some(mut given) = self.pop_given() else {
+            let prof = self.opts.profile;
+            let t_select = prof.then(Instant::now);
+            let popped = self.pop_given();
+            if let Some(t) = t_select { self.stats.t_select += t.elapsed(); }
+            let Some(mut given) = popped else {
                 // `pop_given` also returns None on a mid-materialization
                 // deadline bail — that must grade as TimedOut, never as
                 // the Saturated certificate.
@@ -3495,7 +3499,6 @@ impl<'a> NativeProver<'a> {
                 }
                 return (RunVerdict::Saturated, steps);
             };
-            let prof = self.opts.profile;
             // Second-chance theory simplification: only when the oracle
             // or unit stores learned something touching this clause.
             let t_mech = prof.then(Instant::now);
@@ -3824,7 +3827,9 @@ impl<'a> NativeProver<'a> {
             if self.out_of_time() {
                 return (RunVerdict::TimedOut, steps);
             }
+            let t_activate = prof.then(Instant::now);
             self.activate(given);
+            if let Some(t) = t_activate { self.stats.t_activate += t.elapsed(); }
         }
         (RunVerdict::StepsExhausted, steps)
     }
