@@ -997,15 +997,61 @@ where
     if prefs.is_empty() {
         return Ok(T::default());
     }
-    let obj: serde_json::Map<String, serde_json::Value> =
-        prefs.iter().map(|(k, v)| (k.clone(), json_value_of(v))).collect();
+    let mut obj = serde_json::Map::new();
+    for (k, v) in prefs {
+        insert_dotted(&mut obj, k, json_value_of(v));
+    }
     serde_json::from_value(serde_json::Value::Object(obj))
         .map_err(|e| SdkError::Config(format!("invalid <prover> preference: {e}")))
 }
 
+/// Fold a possibly dot-separated preference name (`selection.tolerance`)
+/// into `obj` as a nested object path. Plain names insert at the top level;
+/// a dotted path merges into any object already present at its prefix (so
+/// `selection.tolerance` and a legacy JSON-valued `selection` compose,
+/// dotted leaves winning).
+fn insert_dotted(obj: &mut serde_json::Map<String, serde_json::Value>, name: &str, value: serde_json::Value) {
+    let mut parts = name.split('.');
+    let first = parts.next().expect("split yields at least one part");
+    let rest: Vec<&str> = parts.collect();
+    if rest.is_empty() {
+        match (obj.get_mut(first), &value) {
+            // A dotted leaf may already have created the nested object;
+            // merge a legacy whole-object value under it, existing wins.
+            (Some(serde_json::Value::Object(existing)), serde_json::Value::Object(incoming)) => {
+                for (k, v) in incoming {
+                    existing.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+            _ => { obj.insert(first.to_string(), value); }
+        }
+        return;
+    }
+    let mut cur = obj
+        .entry(first.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    for p in &rest[..rest.len() - 1] {
+        if !cur.is_object() {
+            *cur = serde_json::Value::Object(serde_json::Map::new());
+        }
+        cur = cur
+            .as_object_mut()
+            .expect("just ensured object")
+            .entry(p.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    }
+    if !cur.is_object() {
+        *cur = serde_json::Value::Object(serde_json::Map::new());
+    }
+    cur.as_object_mut()
+        .expect("just ensured object")
+        .insert(rest.last().expect("rest is non-empty").to_string(), value);
+}
+
 /// Best-effort JSON typing of a preference value string, so it lands in the
 /// right serde field type: SUMO/JSON booleans, integers, floats, nested JSON
-/// (object/array — for `selection` / `strategy`), else a plain string.
+/// (object/array — for legacy `selection` / `strategy` values), else a plain
+/// string.
 fn json_value_of(v: &str) -> serde_json::Value {
     let t = v.trim();
     match t.to_ascii_lowercase().as_str() {
@@ -1230,6 +1276,39 @@ mod tests {
         // regenerated form uses different formatting entirely.
         assert_eq!(reparsed.sumokbname, "SUMO");
         assert_eq!(reparsed.kbs[0].constituents().len(), 3);
+    }
+
+    #[test]
+    fn prover_prefs_flatten_to_dotted_names() {
+        let mut m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
+        m.native_prover.selection.tolerance = 4.25;
+        let xml = m.to_config_xml();
+        assert!(xml.contains(r#"<preference name="selection.tolerance" value="4.25"/>"#),
+            "nested prover config flattens to dotted names:\n{xml}");
+        assert!(!xml.contains("&quot;"),
+            "no JSON-in-attribute values remain:\n{xml}");
+        let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
+        assert!((reparsed.native_prover.selection.tolerance - 4.25).abs() < 1e-6);
+        assert_structurally_eq(&m, &reparsed);
+    }
+
+    #[test]
+    fn legacy_json_valued_prover_prefs_still_parse() {
+        // Pre-dotted config.xml files carried nested objects as compact JSON
+        // in the value attribute; both forms must read, dotted leaves winning.
+        let legacy = r#"<configuration>
+  <preference name="sumokbname" value="SUMO"/>
+  <kb name="SUMO"><constituent filename="Merge.kif"/></kb>
+  <prover type="native">
+    <preference name="selection" value="{&quot;tolerance&quot;:2.5,&quot;autoscale&quot;:true}"/>
+    <preference name="selection.tolerance" value="9.0"/>
+  </prover>
+</configuration>"#;
+        let m = KBManager::parse_config_xml_lenient(legacy).unwrap();
+        assert!((m.native_prover.selection.tolerance - 9.0).abs() < 1e-6,
+            "dotted leaf wins over the legacy JSON object");
+        assert!(m.native_prover.selection.autoscale,
+            "legacy JSON fields still land");
     }
 
     #[test]

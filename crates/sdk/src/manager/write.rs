@@ -112,9 +112,10 @@ fn write_error_elevation(w: &mut W, ew: &ElevateWarnings) {
 
 /// Write a `<prover type="{kind}">` section from any serde-serializable
 /// prover config struct — mirrors `prover_config_from_prefs`'s read side:
-/// each top-level field becomes one `<preference>`, with a nested object
-/// (`selection`/`strategy`) serialized as compact JSON text in its `value`
-/// attribute, exactly what `json_value_of` expects to parse back.
+/// each leaf field becomes one `<preference>`, with nested objects
+/// (`selection`/`strategy`) flattened to dot-separated names
+/// (`selection.tolerance`). `None` leaves are omitted — the nested structs
+/// are `#[serde(default)]`, so absence reads back as the default.
 fn write_prover<T: serde::Serialize>(w: &mut W, kind: &str, cfg: &T) {
     let value = serde_json::to_value(cfg).expect("prover config serializes to JSON");
     let obj = value.as_object().expect("prover config serializes to a JSON object");
@@ -122,11 +123,23 @@ fn write_prover<T: serde::Serialize>(w: &mut W, kind: &str, cfg: &T) {
         .with_attribute(("type", kind))
         .write_inner_content(|w| {
             for (k, v) in obj {
-                pref(w, k, &json_value_to_pref_str(v));
+                write_pref_tree(w, k, v);
             }
             Ok(())
         })
         .expect("write <prover>");
+}
+
+fn write_pref_tree(w: &mut W, name: &str, v: &Value) {
+    match v {
+        Value::Object(m) => {
+            for (k, sub) in m {
+                write_pref_tree(w, &format!("{name}.{k}"), sub);
+            }
+        }
+        Value::Null => {}
+        _ => pref(w, name, &json_value_to_pref_str(v)),
+    }
 }
 
 fn json_value_to_pref_str(v: &Value) -> String {
