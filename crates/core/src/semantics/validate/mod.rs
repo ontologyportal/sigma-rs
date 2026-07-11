@@ -17,7 +17,7 @@ mod diagnostics;
 /// Semantic validation over a [`SemanticLayer`].
 ///
 /// A thin borrow of the layer: construct one per validation pass via
-/// [`SemanticLayer::validator`], then call `validate_sentence_collect`.  Holds
+/// [`SemanticLayer::validator_scoped`], then call `validate_sentence_collect`.  Holds
 /// no state beyond the borrow; the layer's caches do the memoisation.
 pub(crate) struct SemanticValidator<'a> {
     layer: &'a SemanticLayer,
@@ -32,12 +32,8 @@ pub(crate) struct SemanticValidator<'a> {
 }
 
 impl SemanticLayer {
-    /// A [`SemanticValidator`] borrowing this layer, reasoning in `Base` scope.
-    pub(crate) fn validator(&self) -> SemanticValidator<'_> {
-        self.validator_scoped(Scope::Base)
-    }
-
-    /// A [`SemanticValidator`] reasoning in an explicit [`Scope`].
+    /// A [`SemanticValidator`] borrowing this layer, reasoning in an explicit
+    /// [`Scope`].
     pub(crate) fn validator_scoped(&self, scope: Scope) -> SemanticValidator<'_> {
         SemanticValidator { layer: self, scope, visited: Default::default() }
     }
@@ -208,6 +204,7 @@ impl<'a> SemanticValidator<'a> {
 #[cfg(test)]
 mod tests {
     use crate::semantics::SemanticLayer;
+    use crate::semantics::types::Scope;
     use crate::syntactic::SyntacticLayer;
 
     fn kif_layer(kif_str: &str) -> SemanticLayer {
@@ -247,7 +244,7 @@ mod tests {
     fn validate_sentence_valid() {
         let layer = base_layer();
         let sid = *layer.syntactic.by_head("subclass").iter().next().unwrap();
-        assert!(layer.validator().validate_sentence_collect(sid).is_empty());
+        assert!(layer.validator_scoped(Scope::Base).validate_sentence_collect(sid).is_empty());
     }
 
     #[test]
@@ -255,7 +252,7 @@ mod tests {
         let layer = base_layer();
         let roots: Vec<_> = layer.syntactic.root_sids();
         for sid in roots {
-            let _ = layer.validator().validate_sentence_collect(sid);
+            let _ = layer.validator_scoped(Scope::Base).validate_sentence_collect(sid);
         }
     }
 
@@ -270,7 +267,7 @@ mod tests {
         assert!(!foo_sids.is_empty(), "expected a sentence headed by Foo");
         let sid = foo_sids.iter().next().unwrap();
 
-        let errs = layer.validator().validate_sentence_collect(*sid);
+        let errs = layer.validator_scoped(Scope::Base).validate_sentence_collect(*sid);
         assert!(errs.iter().any(|e| e.code() == "E002"),
             "validate_sentence_collect should include HeadNotRelation (E002); got {:?}",
             errs.iter().map(|e| e.code()).collect::<Vec<_>>());
@@ -335,11 +332,11 @@ mod tests {
         let impl_sid         = root_by_op(&layer, crate::OpKind::Implies);
         let relation_sid     = root_by_head(&layer, "relation");
         let not_relation_sid = root_by_head(&layer, "NotARelation");
-        assert!(layer.validator().is_logical_sentence(impl_sid));
-        assert!(layer.validator().is_logical_sentence(relation_sid));
+        assert!(layer.validator_scoped(Scope::Base).is_logical_sentence(impl_sid));
+        assert!(layer.validator_scoped(Scope::Base).is_logical_sentence(relation_sid));
         // An undeclared head is treated as logical: only a positively-declared
         // function is non-logical.
-        assert!(layer.validator().is_logical_sentence(not_relation_sid));
+        assert!(layer.validator_scoped(Scope::Base).is_logical_sentence(not_relation_sid));
     }
 
     #[test]
@@ -350,14 +347,14 @@ mod tests {
             (AbsoluteValueFn N)
         ");
         let fn_sid = root_by_head(&layer, "AbsoluteValueFn");
-        assert!(!layer.validator().is_logical_sentence(fn_sid),
+        assert!(!layer.validator_scoped(Scope::Base).is_logical_sentence(fn_sid),
             "a declared-function head must be non-logical");
     }
 
     // -- New syntactic checks: W020, W021, W022, E023 ------------------------
 
     fn codes_in(layer: &SemanticLayer, sid: crate::SentenceId) -> Vec<&'static str> {
-        layer.validator().validate_sentence_collect(sid)
+        layer.validator_scoped(Scope::Base).validate_sentence_collect(sid)
             .iter().map(|e| e.code()).collect()
     }
 

@@ -32,6 +32,7 @@ use crate::semantics::types::{RelationDomain, Scope};
 use crate::types::{Element, Sentence, SentenceId, SymbolId, TaxRelation};
 
 use super::clause::{AtomId, AtomTable};
+use super::parked;
 use super::theory::{Coverage, CoverageClaim, RelationClaim, TheoryOracle};
 
 /// Provable class-disjointness, built once per problem from SUMO's
@@ -560,37 +561,41 @@ impl<'a> SemanticOracle<'a> {
         }
     }
 
-    /// Decode a stored/interned atom into `(rel, x, y)` symbol ids —
-    /// the shape the oracle can discharge.  `None` for non-binary,
-    /// non-ground, compound-argument, or variable-headed atoms (those
-    /// fall back to ordinary resolution).
-    pub(crate) fn decode(
-        atoms: &AtomTable,
-        syn:   &crate::syntactic::SyntacticLayer,
-        atom:  AtomId,
-    ) -> Option<(SymbolId, SymbolId, SymbolId)> {
-        let s = atoms.resolve(atom, syn)?;
-        if s.elements.len() != 3 { return None; }
-        let Some(Element::Symbol(rel)) = s.elements.first() else { return None };
-        let Element::Symbol(x) = &s.elements[1] else { return None };
-        let Element::Symbol(y) = &s.elements[2] else { return None };
-        Some((rel.id(), x.id(), y.id()))
+    parked! {
+        /// Decode a stored/interned atom into `(rel, x, y)` symbol ids —
+        /// the shape the oracle can discharge.  `None` for non-binary,
+        /// non-ground, compound-argument, or variable-headed atoms (those
+        /// fall back to ordinary resolution).
+        pub(crate) fn decode(
+            atoms: &AtomTable,
+            syn:   &crate::syntactic::SyntacticLayer,
+            atom:  AtomId,
+        ) -> Option<(SymbolId, SymbolId, SymbolId)> {
+            let s = atoms.resolve(atom, syn)?;
+            if s.elements.len() != 3 { return None; }
+            let Some(Element::Symbol(rel)) = s.elements.first() else { return None };
+            let Element::Symbol(x) = &s.elements[1] else { return None };
+            let Element::Symbol(y) = &s.elements[2] else { return None };
+            Some((rel.id(), x.id(), y.id()))
+        }
     }
 
-    /// Equality reflexivity at the atom level: `(equal t t)` for ANY
-    /// ground t, compounds included — content addressing turns the
-    /// structural comparison into an element/id comparison.
-    pub(crate) fn equal_reflexive(
-        atoms: &AtomTable,
-        syn:   &crate::syntactic::SyntacticLayer,
-        atom:  AtomId,
-    ) -> Option<bool> {
-        let s = atoms.resolve(atom, syn)?;
-        if s.elements.len() != 3 { return None; }
-        if !matches!(s.elements.first(), Some(Element::Op(crate::parse::OpKind::Equal))) {
-            return None;
+    parked! {
+        /// Equality reflexivity at the atom level: `(equal t t)` for ANY
+        /// ground t, compounds included — content addressing turns the
+        /// structural comparison into an element/id comparison.
+        pub(crate) fn equal_reflexive(
+            atoms: &AtomTable,
+            syn:   &crate::syntactic::SyntacticLayer,
+            atom:  AtomId,
+        ) -> Option<bool> {
+            let s = atoms.resolve(atom, syn)?;
+            if s.elements.len() != 3 { return None; }
+            if !matches!(s.elements.first(), Some(Element::Op(crate::parse::OpKind::Equal))) {
+                return None;
+            }
+            Some(element_eq(&s.elements[1], &s.elements[2]))
         }
-        Some(element_eq(&s.elements[1], &s.elements[2]))
     }
 
     /// Exhaustiveness case analysis for `x`: for each decomposition of
@@ -660,7 +665,9 @@ impl<'a> SemanticOracle<'a> {
         }
     }
 
-    pub(crate) fn has_fd(&self) -> bool { !self.fd_decls.is_empty() }
+    parked! {
+        pub(crate) fn has_fd(&self) -> bool { !self.fd_decls.is_empty() }
+    }
 
     /// Union with a proof-forest label, queueing the equality for
     /// surfacing as a unit clause.  Internal to the FD fixpoint.
@@ -1076,7 +1083,7 @@ impl<'a> SemanticOracle<'a> {
     fn edge_why(
         &self,
         below: &crate::semantics::caches::subrel_lattice::BelowMap,
-        rel:   SymbolId,
+        _rel:  SymbolId,
         x:     SymbolId,
         y:     SymbolId,
     ) -> Option<Vec<Witness>> {
@@ -1640,15 +1647,17 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     }
 }
 
-/// Structural equality of two atom elements (span/var_index-blind) —
-/// the equality-reflexivity comparison.
-fn element_eq(a: &Element, b: &Element) -> bool {
-    match (a, b) {
-        (Element::Symbol(x), Element::Symbol(y)) => x == y,
-        (Element::Variable { id: x, .. }, Element::Variable { id: y, .. }) => x == y,
-        (Element::Literal(x), Element::Literal(y)) => x == y,
-        (Element::Sub(x), Element::Sub(y)) => x == y, // content hash == identity
-        (Element::Op(x), Element::Op(y)) => x == y,
-        _ => false,
+parked! {
+    /// Structural equality of two atom elements (span/var_index-blind) —
+    /// the equality-reflexivity comparison.
+    fn element_eq(a: &Element, b: &Element) -> bool {
+        match (a, b) {
+            (Element::Symbol(x), Element::Symbol(y)) => x == y,
+            (Element::Variable { id: x, .. }, Element::Variable { id: y, .. }) => x == y,
+            (Element::Literal(x), Element::Literal(y)) => x == y,
+            (Element::Sub(x), Element::Sub(y)) => x == y, // content hash == identity
+            (Element::Op(x), Element::Op(y)) => x == y,
+            _ => false,
+        }
     }
 }

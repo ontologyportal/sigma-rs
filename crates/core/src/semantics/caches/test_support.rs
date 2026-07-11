@@ -49,7 +49,7 @@ pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
     use crate::parse::{Parser, TptpParseOptions};
     use crate::types::{FileOrigin, LocalProvenance, SourceFile};
 
-    let mut store = SyntacticLayer::default();
+    let store = SyntacticLayer::default();
     let source = SourceFile {
         parser: Parser::Tptp { options: Some(TptpParseOptions {
             formulas_only: false, keep_conjectures: true, ..TptpParseOptions::default()

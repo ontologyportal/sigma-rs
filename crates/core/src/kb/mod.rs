@@ -116,9 +116,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 impl<L: HasTranslation + TopLayer> KnowledgeBase<L> {
     /// Top layer (translation).
     pub(crate) fn translation(&self) -> &TranslationLayer { &self.layer.translation() }
-
-    /// Mut access to the top layer.
-    pub(crate) fn translation_mut(&mut self) -> &mut TranslationLayer { self.layer.translation_mut() }
 }
 
 impl KnowledgeBase {

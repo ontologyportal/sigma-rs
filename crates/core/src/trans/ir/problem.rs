@@ -76,6 +76,7 @@ impl Problem {
     }
 
     /// Sets (or overwrites) the conjecture.
+    #[cfg(feature = "ask")]
     pub fn conjecture(&mut self, f: Formula) -> &mut Self {
         self.conjecture = Some(f);
         self

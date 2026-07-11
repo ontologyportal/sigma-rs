@@ -28,6 +28,7 @@ use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 use crate::SineParams;
 
 use super::ProverLayer;
+use super::parked;
 use super::clause::{AtomId, ClauseKey, PClause, PLit, Term};
 use super::AtomInfo;
 use super::index::{EntryRef, LiteralIndex};
@@ -2092,10 +2093,12 @@ impl<'a> NativeProver<'a> {
         }
     }
 
-    /// Whether ordered superposition's maximality machinery is needed.
-    #[inline]
-    fn needs_superposition(&self) -> bool {
-        self.opts.strategy.superposition
+    parked! {
+        /// Whether ordered superposition's maximality machinery is needed.
+        #[inline]
+        fn needs_superposition(&self) -> bool {
+            self.opts.strategy.superposition
+        }
     }
 
     /// Index one clause's superposition surfaces: every non-variable
@@ -3934,11 +3937,13 @@ fn eq_key(t: &Term) -> Option<u64> {
     }
 }
 
-/// Whether the term is a numeric literal (preferred as equality-class
-/// root so normalization keeps numbers literal — arithmetic
-/// comparisons stay decidable after rewriting).
-fn is_num_lit(t: &Term) -> bool {
-    matches!(t, Term::Lit(Literal::Number(_)))
+parked! {
+    /// Whether the term is a numeric literal (preferred as equality-class
+    /// root so normalization keeps numbers literal — arithmetic
+    /// comparisons stay decidable after rewriting).
+    fn is_num_lit(t: &Term) -> bool {
+        matches!(t, Term::Lit(Literal::Number(_)))
+    }
 }
 
 /// The two sides of a ground `(equal l r)` term, un-keyed (keys need

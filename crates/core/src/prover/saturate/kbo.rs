@@ -264,7 +264,7 @@ impl KboOrdering {
         let mut weight = 0u64;
         let mut vars: SmallVec<[(SymbolId, u32); 4]> = SmallVec::new();
         let mut var_mask = 0u64;
-        let mut bump = |v: SymbolId, vars: &mut SmallVec<[(SymbolId, u32); 4]>| {
+        let bump = |v: SymbolId, vars: &mut SmallVec<[(SymbolId, u32); 4]>| {
             match vars.iter_mut().find(|(s, _)| *s == v) {
                 Some((_, c)) => *c += 1,
                 None => vars.push((v, 1)),

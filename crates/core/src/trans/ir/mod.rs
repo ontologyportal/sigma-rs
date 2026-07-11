@@ -20,6 +20,7 @@ pub mod clause;
 pub mod ho;
 pub mod problem;
 pub(crate) mod tptp_emit;
+#[cfg(feature = "ask")]
 pub mod tptp_parse;
 
 pub use symbol::{Sort, Function, Predicate, Interp};
@@ -29,7 +30,10 @@ pub use formula::Formula;
 #[allow(unused_imports)]
 pub use clause::{Clause, Literal as IrLiteral, LitKind};
 pub use problem::{Problem, LogicMode};
-pub use ho::{HoProblem, HoSort, ThfConst, ThfExpr};
+#[cfg(feature = "ask")]
+pub use ho::HoProblem;
+pub use ho::{HoSort, ThfConst, ThfExpr};
+#[cfg(feature = "ask")]
 pub use tptp_parse::{TptpParser, ParseError as TptpParseError};
 
 /// Parse a TPTP string into an [`Problem`].
@@ -37,6 +41,7 @@ pub use tptp_parse::{TptpParser, ParseError as TptpParseError};
 /// This is the primary entry point for the TPTP→IR parser.  Handles both
 /// FOF and TFF dialects.  Returns an error if the input is syntactically
 /// invalid.
+#[cfg(feature = "ask")]
 pub fn parse_tptp(input: &str) -> Result<Problem, TptpParseError> {
     TptpParser::parse(input)
 }

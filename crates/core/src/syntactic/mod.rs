@@ -44,6 +44,7 @@ pub mod position;
 pub mod display;
 pub mod sine;
 mod select;
+#[cfg(feature = "ask")]
 pub(crate) use select::SelectionParams;
 pub mod caches;
 pub(crate) mod pattern;
@@ -213,16 +214,6 @@ impl SyntacticLayer {
     /// rewrite derived it from; the synthetic is stored parent-less.
     pub(crate) fn push_synthetic_sentence(&self, elements: ElementVec, _origin: SentenceId) -> SentenceId {
         self.sentences.push_sentence(elements)
-    }
-
-    /// No-op: new sentences are transient by default, so there is nothing to
-    /// flag.
-    pub(crate) fn mark_transient(&mut self, _session: &str) {}
-
-    /// Promote a session's transient roots to axioms by driving a
-    /// `SessionAxiomatized` cascade.
-    pub(crate) fn unmark_transient(&mut self, session: &str) {
-        let _ = self.cascade(vec![Event::SessionAxiomatized { session: session.to_string() }]);
     }
 }
 

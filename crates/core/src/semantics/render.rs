@@ -24,8 +24,10 @@
 //! or `termFormat` specifiers are collected in [`RenderReport::missing`] rather
 //! than silently guessed.
 
+#[cfg(feature = "ask")]
 use std::collections::BTreeSet;
 
+#[cfg(feature = "ask")]
 use crate::parse::ast::{AstNode, OpKind};
 use crate::semantics::consts::{FORMAT_RELATION, TERM_RELATION};
 use crate::semantics::types::DocEntry;
@@ -37,6 +39,7 @@ use super::SemanticLayer;
 /// `rendered` is always populated with a best-effort rendering (missing
 /// templates → bare symbol names).  Callers that require strict fidelity
 /// should check `missing` before displaying the text.
+#[cfg(feature = "ask")]
 #[derive(Debug, Clone, Default)]
 pub struct RenderReport {
     /// The rendered natural-language string.
@@ -68,6 +71,7 @@ impl SemanticLayer {
     /// Render `formula` to natural language in `language` (e.g.
     /// `"EnglishLanguage"`).  See module docs for the template DSL.  Plain (no
     /// ANSI escapes) — safe for logs / files / JSON.
+    #[cfg(feature = "ask")]
     pub(crate) fn render_formula(&self, formula: &AstNode, language: &str) -> RenderReport {
         self.render_formula_impl(formula, language, /*coloured=*/ false)
     }
@@ -75,10 +79,12 @@ impl SemanticLayer {
     /// Same as [`render_formula`](SemanticLayer::render_formula) but wraps
     /// variables, `&%Symbol` cross-references, negations, and structural
     /// operators in ANSI colour escapes for terminal output.
+    #[cfg(feature = "ask")]
     pub(crate) fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
         self.render_formula_impl(formula, language, /*coloured=*/ true)
     }
 
+    #[cfg(feature = "ask")]
     fn render_formula_impl(&self, formula: &AstNode, language: &str, coloured: bool) -> RenderReport {
         let mut ctx = RenderCtx {
             sem: self,
@@ -97,6 +103,7 @@ impl SemanticLayer {
 // ANSI colour classes, aliased from `inline_colorization` so the mapping from
 // *semantic class* (variable, linked symbol, negation, operator) to *palette
 // colour* stays tunable from one place.  `ANSI_RESET` follows every open.
+#[cfg(feature = "ask")]
 pub(crate) use inline_colorization::{
     color_bright_blue as ANSI_LINKED, // `&%Symbol` cross-references
     color_bright_red  as ANSI_NEG,    // negations
@@ -105,6 +112,7 @@ pub(crate) use inline_colorization::{
     color_reset       as ANSI_RESET,
 };
 
+#[cfg(feature = "ask")]
 struct RenderCtx<'a> {
     sem:      &'a SemanticLayer,
     language: &'a str,
@@ -112,6 +120,7 @@ struct RenderCtx<'a> {
     coloured: bool,
 }
 
+#[cfg(feature = "ask")]
 impl<'a> RenderCtx<'a> {
     /// Wrap `text` in an ANSI colour class when `self.coloured` is on.
     fn col(&self, text: &str, class: &str) -> String {
@@ -381,6 +390,7 @@ impl<'a> RenderCtx<'a> {
 
 /// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
 /// `(exists …)` argument list.  Returns `(names, body_ast)`.
+#[cfg(feature = "ask")]
 fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<AstNode>) {
     let mut names = Vec::new();
     let body = if args.len() >= 2 {
@@ -402,6 +412,7 @@ fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<As
 
 /// Byte offset of the next `target`, ignoring nested `{…}` groups (so `%n{TEXT}`
 /// parses without tripping on a `}` inside `TEXT`).
+#[cfg(feature = "ask")]
 fn find_matching(bytes: &[u8], target: u8) -> Option<usize> {
     let mut depth: usize = 0;
     for (i, &b) in bytes.iter().enumerate() {
@@ -416,6 +427,7 @@ fn find_matching(bytes: &[u8], target: u8) -> Option<usize> {
 
 /// Collapse consecutive spaces into a single space and trim ends.  Conservative
 /// — preserves newlines/tabs so templates with intentional spacing stay readable.
+#[cfg(feature = "ask")]
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;

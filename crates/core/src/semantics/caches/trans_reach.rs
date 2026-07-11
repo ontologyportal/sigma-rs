@@ -91,6 +91,7 @@ impl CacheBehavior for TransReach {
 impl SemanticLayer {
     /// Everything reachable from `start` over the ground edges of `rel`
     /// (subrelation-inherited edges included), with witness pointers.
+    #[cfg(any(test, feature = "native-prover"))]
     pub(crate) fn trans_reach(
         &self,
         rel:   SymbolId,

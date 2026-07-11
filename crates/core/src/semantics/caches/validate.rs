@@ -108,14 +108,10 @@ impl CacheBehavior for Validate {
 }
 
 impl SemanticLayer {
-    /// The semantic-validation result for sentence `sid` in the `Base` taxonomy:
-    /// every `SemanticError` the validator raises, empty meaning valid.
-    pub(crate) fn validation(&self, sid: SentenceId) -> Arc<Vec<SemanticError>> {
-        self.validation_scoped(sid, Scope::Base)
-    }
-
-    /// [`Self::validation`] in an explicit [`Scope`], read through the
-    /// `semantic::validate` cache (compute-on-miss via the validator engine).
+    /// The semantic-validation result for sentence `sid` in an explicit
+    /// [`Scope`] — every `SemanticError` the validator raises, empty meaning
+    /// valid — read through the `semantic::validate` cache (compute-on-miss via
+    /// the validator engine).
     ///
     /// Memoised only when the `semantic::validate` cache is enabled; it is off
     /// by default, in which case each call recomputes.
@@ -154,7 +150,7 @@ mod tests {
             (Foo Bar Baz)
         "#);
         let sid = *layer.syntactic.by_head("Foo").iter().next().unwrap();
-        let errs = layer.validation(sid);
+        let errs = layer.validation_scoped(sid, Scope::Base);
         assert!(!errs.is_empty(), "undeclared-relation head should raise a diagnostic");
         // Cached after first access (under the Base scope).
         assert!(layer.validate.peek(&base(sid)).is_some(),
@@ -192,7 +188,7 @@ mod tests {
     fn root_change_clears_validation() {
         let layer = layer("(subclass Animal Entity)");
         let sid = layer.syntactic.root_sids().into_iter().next().unwrap();
-        let _ = layer.validation(sid);
+        let _ = layer.validation_scoped(sid, Scope::Base);
         assert!(layer.validate.peek(&base(sid)).is_some());
 
         // Any sentence add/remove drops the whole cache.

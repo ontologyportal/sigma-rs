@@ -7,32 +7,6 @@ use crate::types::SessionId;
 // Relations (domain / range axioms)
 // ---------------------------------------------------------------------------
 
-/// Kind of domain/range axiom that constrains a relation argument.
-pub(crate) enum RelationRelation {
-    /// `(domain rel n class)`.
-    Domain,
-    /// `(domainSubclass rel n class)`.
-    DomainSubclass,
-    /// `(range rel class)`.
-    Range,
-    /// `(rangeSubclass rel class)`.
-    RangeSubclass,
-}
-
-impl RelationRelation {
-    /// Parses a relation keyword into a [`RelationRelation`], or `None` if the
-    /// keyword is not one of `domain`, `domainSubclass`, `range`, `rangeSubclass`.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "domain"         => Some(RelationRelation::Domain),
-            "domainSubclass" => Some(RelationRelation::DomainSubclass),
-            "range"          => Some(RelationRelation::Range),
-            "rangeSubclass"  => Some(RelationRelation::RangeSubclass),
-            _ => None,
-        }
-    }
-}
-
 /// Describes the expected type of a relation argument value.
 #[derive(Debug, Clone)]
 pub(crate) enum RelationDomain {
@@ -100,7 +74,7 @@ pub struct DocEntry {
 // Type inference
 // ---------------------------------------------------------------------------
 
-/// Helper Enum. Used to wrap output of [`SemanticLayer::infer_class`](super::SemanticLayer::infer_class)
+/// Helper Enum. Used to wrap output of [`SemanticLayer::infer_class_scoped`](super::SemanticLayer::infer_class_scoped)
 #[derive(Debug, Clone)]
 pub(crate) enum ClassInference {
     /// The inference could not determine the type of the symbol
@@ -163,14 +137,12 @@ pub(crate) enum ClassScope {
     Local(SentenceId),
 }
 
-/// A symbol/variable's inferred class together with the scope it holds in.
-/// Returned by [`crate::semantics::SemanticLayer::classify_formula`].
+/// A symbol/variable's inferred class.
+/// Returned by [`crate::semantics::SemanticLayer::classify_formula_scoped`].
 #[derive(Debug, Clone)]
 pub(crate) struct ScopedClass {
     /// The inferred class.
     pub class: ClassInference,
-    /// The scope in which the classification holds.
-    pub scope: ClassScope,
 }
 
 // ---------------------------------------------------------------------------

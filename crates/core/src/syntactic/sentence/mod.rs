@@ -163,6 +163,7 @@ impl Sentence {
 ///
 /// Variable scopes are minted from a fresh counter, so ids are only
 /// self-consistent within this build.
+#[cfg(feature = "native-prover")]
 pub(crate) fn build_detached(node: &AstNode) -> Option<(Sentence, Vec<Sentence>)> {
     let ctx = ScopeCtx::new(Arc::new(AtomicU64::new(0)));
     let (root, subs, _syms) = Sentence::from_node(node, &ctx)?;

@@ -25,6 +25,8 @@ use smallvec::SmallVec;
 
 use crate::types::{SentenceId, SymbolId};
 
+use super::parked;
+
 pub(crate) mod cluster;
 pub(crate) mod extract;
 pub(crate) mod magic;
@@ -52,6 +54,7 @@ pub(crate) struct ModelProgram {
     /// (stratifiability only — condition (b) of certification); the full
     /// definitional-completeness gate it was waiting for is [`certified`]
     /// below, which refines this set.
+    #[allow(dead_code)] // parked
     pub complete: HashSet<Pred>,
     /// COMPLETION-CERTIFIED relations (the Clark-completion gate): relations
     /// whose extracted rules are PROVABLY their only definition in the KB —
@@ -1245,21 +1248,23 @@ impl Program {
         self.rules.push(Rule { head, body, sid: None });
     }
 
-    /// Evaluate the program to its perfect model (bottom-up, stratum by
-    /// stratum; positive recursion within a stratum, negation only against
-    /// fully-computed lower strata).  Model-only convenience (provenance
-    /// discarded) — see [`evaluate_within`](Self::evaluate_within).
-    pub(crate) fn evaluate(&self) -> Result<Model, ModelError> {
-        self.evaluate_budgeted(usize::MAX)
-    }
+    parked! {
+        /// Evaluate the program to its perfect model (bottom-up, stratum by
+        /// stratum; positive recursion within a stratum, negation only against
+        /// fully-computed lower strata).  Model-only convenience (provenance
+        /// discarded) — see [`evaluate_within`](Self::evaluate_within).
+        pub(crate) fn evaluate(&self) -> Result<Model, ModelError> {
+            self.evaluate_budgeted(usize::MAX)
+        }
 
-    /// Evaluate, but abort with [`ModelError::Overflow`] once the materialized
-    /// model exceeds `max_tuples` total facts — the guard that keeps an
-    /// un-scoped evaluation over a large KB from blowing up (it bails to
-    /// resolution instead).  `usize::MAX` ⇒ unbounded (see [`evaluate`]).
-    /// Model-only convenience (provenance discarded).
-    pub(crate) fn evaluate_budgeted(&self, max_tuples: usize) -> Result<Model, ModelError> {
-        self.evaluate_within(max_tuples, None).map(|(m, _)| m)
+        /// Evaluate, but abort with [`ModelError::Overflow`] once the materialized
+        /// model exceeds `max_tuples` total facts — the guard that keeps an
+        /// un-scoped evaluation over a large KB from blowing up (it bails to
+        /// resolution instead).  `usize::MAX` ⇒ unbounded (see [`evaluate`]).
+        /// Model-only convenience (provenance discarded).
+        pub(crate) fn evaluate_budgeted(&self, max_tuples: usize) -> Result<Model, ModelError> {
+            self.evaluate_within(max_tuples, None).map(|(m, _)| m)
+        }
     }
 
     /// As [`evaluate_budgeted`], but also aborts (`Overflow`) past a wall-clock
@@ -1689,7 +1694,7 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::eventcalc::{self, Effect, Narrative};
+    use super::super::eventcalc::{Effect, Narrative};
     use crate::types::Symbol;
 
     fn s(name: &str) -> SymbolId { Symbol::hash_name(name) }
@@ -1699,7 +1704,9 @@ mod tests {
     fn pos(a: Atom) -> Literal { Literal { atom: a, negated: false } }
     fn neg(a: Atom) -> Literal { Literal { atom: a, negated: true } }
     fn v(i: u32) -> DTerm { DTerm::Var(i) }
-    fn c(name: &str) -> DTerm { DTerm::Const(s(name)) }
+    parked! {
+        fn c(name: &str) -> DTerm { DTerm::Const(s(name)) }
+    }
 
     fn holds(model: &Model, pred: &str, args: &[&str]) -> bool {
         let t: Tuple = args.iter().map(|a| s(a)).collect();

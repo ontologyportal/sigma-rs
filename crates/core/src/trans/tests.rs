@@ -51,9 +51,9 @@ fn numeric_caches_populated_on_new() {
 
 #[test]
 fn on_change_taxonomy_invalidates_and_rebuilds_numeric_caches() {
-    use crate::cache::events::Event;
+    
 
-    let mut trans = make_trans("(subclass Dog Animal)");
+    let trans = make_trans("(subclass Dog Animal)");
     // Confirm the LayerCache fields are populated even for a minimal KB.
     // (numeric_sorts and numeric_char are EntryCaches and will be empty since
     //  the KB has no numeric classes; numeric_ancestor_set is a LayerCache
@@ -110,7 +110,7 @@ fn literal_equality_types_the_constant() {
     );
     let v = trans.semantic.syntactic.sym_id("Value21-1").unwrap();
     // Layer 1: the semantic classification from the defining equality.
-    let cls = trans.semantic.infer_class(v);
+    let cls = trans.semantic.infer_class_scoped(v, crate::semantics::types::Scope::Base);
     eprintln!("[probe] infer_class(Value21-1) = {cls:?}");
     // Layer 2: the numeric sort.
     let sort = trans.sort_for_symbol(v);

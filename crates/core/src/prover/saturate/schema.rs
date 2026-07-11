@@ -38,6 +38,7 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Symbol, SymbolId};
 
 use super::canon::{canonical_clause, canonical_slot};
+use super::parked;
 use super::clause::{AtomTable, PLit, Term};
 use super::hash64::Map64;
 
@@ -647,7 +648,9 @@ impl SchemaTable {
         Some(SchemaHit { kind, rel, rel2: None })
     }
 
-    pub(crate) fn len(&self) -> usize { self.map.len() }
+    parked! {
+        pub(crate) fn len(&self) -> usize { self.map.len() }
+    }
 }
 
 #[cfg(test)]

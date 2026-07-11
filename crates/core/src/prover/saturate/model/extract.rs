@@ -36,6 +36,8 @@ use crate::types::{Element, OpKind, Sentence, SentenceId, SymbolId};
 
 use super::{Atom, DTerm, Literal, Program, Rule};
 
+use crate::prover::saturate::parked;
+
 /// A sub-sentence id from an element.
 fn sub(e: &Element) -> Option<SentenceId> {
     match e {
@@ -213,28 +215,30 @@ pub(crate) struct Extraction {
     pub(crate) wildcard_skip: bool,
 }
 
-/// Extract the Horn / definite fragment of the stored axioms as a Datalog(¬)
-/// program: implication-shaped roots become rules, ground symbol atoms become
-/// EDB facts, and (Milestone C) clausal `(or …)` roots with exactly one
-/// positive symbol-headed literal become rules too — a clause
-/// `¬a1 ∨ … ∨ ¬an ∨ c` IS the Horn rule `c :- a1, …, an`.  This is what makes
-/// extraction dialect-blind: TPTP CNF input and post-clausification FOF both
-/// store their clauses as `(or …)` roots (see `extract_horn_program_stats`'s
-/// doc for the shapes actually observed), so without this arm the extracted
-/// program was structurally empty on the whole TPTP corpus.  Non-Datalog
-/// roots (function-term args, non-Horn disjunctive heads, quantifier
-/// structure beyond the implicit top-level `forall` already stripped at
-/// ingest) are skipped — they remain for resolution.
-pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
-    extract_horn_program_full(syn).program
-}
+parked! {
+    /// Extract the Horn / definite fragment of the stored axioms as a Datalog(¬)
+    /// program: implication-shaped roots become rules, ground symbol atoms become
+    /// EDB facts, and (Milestone C) clausal `(or …)` roots with exactly one
+    /// positive symbol-headed literal become rules too — a clause
+    /// `¬a1 ∨ … ∨ ¬an ∨ c` IS the Horn rule `c :- a1, …, an`.  This is what makes
+    /// extraction dialect-blind: TPTP CNF input and post-clausification FOF both
+    /// store their clauses as `(or …)` roots (see `extract_horn_program_stats`'s
+    /// doc for the shapes actually observed), so without this arm the extracted
+    /// program was structurally empty on the whole TPTP corpus.  Non-Datalog
+    /// roots (function-term args, non-Horn disjunctive heads, quantifier
+    /// structure beyond the implicit top-level `forall` already stripped at
+    /// ingest) are skipped — they remain for resolution.
+    pub(crate) fn extract_horn_program(syn: &SyntacticLayer) -> Program {
+        extract_horn_program_full(syn).program
+    }
 
-/// As [`extract_horn_program`], but also returns the [`ExtractStats`]
-/// breakdown of the clausal arm's skip reasons (SIGMA_STATS-style
-/// instrumentation; zero effect on the returned program).
-pub(crate) fn extract_horn_program_stats(syn: &SyntacticLayer) -> (Program, ExtractStats) {
-    let ex = extract_horn_program_full(syn);
-    (ex.program, ex.stats)
+    /// As [`extract_horn_program`], but also returns the [`ExtractStats`]
+    /// breakdown of the clausal arm's skip reasons (SIGMA_STATS-style
+    /// instrumentation; zero effect on the returned program).
+    pub(crate) fn extract_horn_program_stats(syn: &SyntacticLayer) -> (Program, ExtractStats) {
+        let ex = extract_horn_program_full(syn);
+        (ex.program, ex.stats)
+    }
 }
 
 /// Base-scope visibility for whole-KB extraction: `root_sids` and
@@ -977,9 +981,11 @@ pub(crate) fn transitive_members(model: &super::Model, roles: &TaxonomyRoles) ->
     role_members(model, roles, roles.transitive)
 }
 
-/// Relations that are symmetric in `model` (membership in `SymmetricRelation`).
-pub(crate) fn symmetric_members(model: &super::Model, roles: &TaxonomyRoles) -> Vec<SymbolId> {
-    role_members(model, roles, roles.symmetric)
+parked! {
+    /// Relations that are symmetric in `model` (membership in `SymmetricRelation`).
+    pub(crate) fn symmetric_members(model: &super::Model, roles: &TaxonomyRoles) -> Vec<SymbolId> {
+        role_members(model, roles, roles.symmetric)
+    }
 }
 
 #[cfg(test)]

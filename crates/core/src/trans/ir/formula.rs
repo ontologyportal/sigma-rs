@@ -96,6 +96,7 @@ impl Formula {
 
     /// Builds a TFF-typed equality `lhs = rhs` with the given sort
     /// annotation.
+    #[cfg(feature = "ask")]
     pub fn eq_typed(lhs: Term, rhs: Term, sort: Sort) -> Self {
         Self::EqTyped { lhs, rhs, sort }
     }

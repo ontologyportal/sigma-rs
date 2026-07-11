@@ -67,7 +67,7 @@ impl CacheBehavior for InferredClass {
         let mut evict_scopes: HashSet<Scope> = HashSet::new();
         for e in events {
             match e {
-                Event::SymbolsRetracted { syms, .. } => evict.extend(syms.iter().copied()),
+                Event::SymbolsRetracted { syms } => evict.extend(syms.iter().copied()),
                 Event::RootAdded { sid } => evict.extend(
                     inference_affected(parent, added_root_bodies(parent, *sid).iter().map(|a| a.as_ref())),
                 ),
@@ -91,41 +91,33 @@ impl CacheBehavior for InferredClass {
 }
 
 impl SemanticLayer {
-    /// Memoised type inference: the most specific SUMO class(es) for `sym`.
+    /// Memoised type inference: the most specific SUMO class(es) for `sym`, in
+    /// an explicit [`Scope`].
     ///
     /// Combines taxonomy (`instance` edges) with pattern-based usage (instance
     /// atoms, relation `domain`s, equality identity, function `range`s) over
     /// `sym`'s whole equality component.  Works for both ground symbols and
     /// scope-qualified variables; the per-formula counterpart is
-    /// [`Self::classify_formula`].
-    pub(crate) fn infer_class(&self, sym: SymbolId) -> ClassInference {
-        self.infer_class_scoped(sym, Scope::Base)
-    }
-
-    /// [`Self::infer_class`] in an explicit [`Scope`] — reasons over `Base`
-    /// evidence unioned with the session's transient assertions when `scope` is a
-    /// session.
+    /// [`Self::classify_formula_scoped`].  Reasons over `Base` evidence unioned
+    /// with the session's transient assertions when `scope` is a session.
     pub(crate) fn infer_class_scoped(&self, sym: SymbolId, scope: Scope) -> ClassInference {
         self.inferred_class.get(self, Scoped { scope, key: sym })
     }
 
     /// Classify every symbol/variable occurring in root formula `root_sid` by
     /// walking its sentence tree — the contextual counterpart to
-    /// [`Self::infer_class`].  Each entry is the collapsed most-specific class
-    /// plus its [`ClassScope`]: `Global` when the evidence is a ground,
-    /// unconditional atom, `Local(root_sid)` when it only holds inside the
-    /// formula's logical structure (a rule hypothesis, a quantifier body).
+    /// [`Self::infer_class_scoped`].  Each entry is the collapsed most-specific
+    /// class.  Ground (unconditional) evidence is preferred over evidence that
+    /// only holds inside the formula's logical structure (a rule hypothesis, a
+    /// quantifier body).
     ///
     /// This is how variable classes are recovered: a variable's class lives in
     /// the atoms of its binding formula — an explicit `(instance ?V C)` guard, or
     /// its argument position in a relation with a declared `domain`.
-    pub(crate) fn classify_formula(&self, root_sid: SentenceId) -> HashMap<SymbolId, ScopedClass> {
-        self.classify_formula_scoped(root_sid, Scope::Base)
-    }
-
-    /// [`Self::classify_formula`] with the domain/range/taxonomy evidence
-    /// resolved in an explicit [`Scope`] — session-declared `(domain …)` /
-    /// `(range …)` axioms then classify the formula's variables too.
+    ///
+    /// The domain/range/taxonomy evidence is resolved in an explicit [`Scope`]
+    /// — session-declared `(domain …)` / `(range …)` axioms then classify the
+    /// formula's variables too.
     ///
     /// Returns a map from each symbol/variable to its [`ScopedClass`].
     pub(crate) fn classify_formula_scoped(
@@ -158,17 +150,17 @@ impl SemanticLayer {
                 // Prefer ground (unconditional) evidence; fall back to local.
                 let (globals, locals): (Vec<_>, Vec<_>) =
                     cands.into_iter().partition(|(_, s)| matches!(s, ClassScope::Global));
-                let (classes, scope): (Vec<SymbolId>, ClassScope) = if !globals.is_empty() {
-                    (globals.into_iter().map(|(c, _)| c).collect(), ClassScope::Global)
+                let classes: Vec<SymbolId> = if !globals.is_empty() {
+                    globals.into_iter().map(|(c, _)| c).collect()
                 } else {
-                    (locals.into_iter().map(|(c, _)| c).collect(), ClassScope::Local(root_sid))
+                    locals.into_iter().map(|(c, _)| c).collect()
                 };
                 let class = if classes.is_empty() {
                     ClassInference::Unknown
                 } else {
                     collapse_classes(self, &classes, Scope::Base)
                 };
-                (sym, ScopedClass { class, scope })
+                (sym, ScopedClass { class })
             })
             .collect()
     }

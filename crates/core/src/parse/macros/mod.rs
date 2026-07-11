@@ -4,7 +4,6 @@
 /// but pre-symbol resolved statements
 
 mod row_vars;
-mod errors;
 mod quantifiers;
 mod arith;
 mod literals;
@@ -43,6 +42,7 @@ pub(crate) fn expand_node(node: AstNode) -> Vec<AstNode> {
 /// skolemizing (`∃X. ¬φ`).  Keeping the quantifier lets
 /// `lift_form`→`nnf` flip ∀→∃ and skolemize correctly; genuinely free
 /// SUMO query variables (no wrapper) are untouched either way.
+#[cfg(feature = "ask")]
 pub(crate) fn expand_node_conjecture(node: AstNode) -> Vec<AstNode> {
     expand_node_inner(node, false)
 }

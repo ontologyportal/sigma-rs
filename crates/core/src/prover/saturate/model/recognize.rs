@@ -23,117 +23,121 @@
 
 use super::{DTerm, Pred, Rule};
 
-/// The two arguments of a binary atom as a pair of DISTINCT variable ids
-/// (no constants) — the unit the signature matchers reason over.
-fn bin_vars(args: &[DTerm]) -> Option<(u32, u32)> {
-    if args.len() != 2 {
-        return None;
-    }
-    match (&args[0], &args[1]) {
-        (DTerm::Var(a), DTerm::Var(b)) if a != b => Some((*a, *b)),
-        _ => None,
-    }
-}
+use crate::prover::saturate::parked;
 
-/// `R(a,c) :- R(a,b), R(b,c)` (distinct a,b,c) — `R` is transitive.
-pub(crate) fn is_transitive(r: &Rule) -> Option<Pred> {
-    if r.body.len() != 2 || r.body.iter().any(|l| l.negated) {
-        return None;
-    }
-    let rel = r.head.pred;
-    if r.body[0].atom.pred != rel || r.body[1].atom.pred != rel {
-        return None;
-    }
-    let (a, c) = bin_vars(&r.head.args)?;
-    let b0 = bin_vars(&r.body[0].atom.args)?;
-    let b1 = bin_vars(&r.body[1].atom.args)?;
-    // Some ordering of the two body literals is (a,mid) then (mid,c).
-    let chain = |x: (u32, u32), y: (u32, u32)| {
-        x.0 == a && y.1 == c && x.1 == y.0 && x.1 != a && x.1 != c
-    };
-    if a != c && (chain(b0, b1) || chain(b1, b0)) {
-        Some(rel)
-    } else {
-        None
-    }
-}
-
-/// `R(a,b) :- R(b,a)` — `R` is symmetric.
-pub(crate) fn is_symmetric(r: &Rule) -> Option<Pred> {
-    if r.body.len() != 1 || r.body[0].negated || r.body[0].atom.pred != r.head.pred {
-        return None;
-    }
-    let (a, b) = bin_vars(&r.head.args)?;
-    let (c, d) = bin_vars(&r.body[0].atom.args)?;
-    (a == d && b == c).then_some(r.head.pred)
-}
-
-/// `S(a,b) :- R(a,b)` — `R` is a subrelation of `S`.  Returns `(R, S)`.
-pub(crate) fn is_subrelation(r: &Rule) -> Option<(Pred, Pred)> {
-    if r.body.len() != 1 || r.body[0].negated || r.body[0].atom.pred == r.head.pred {
-        return None;
-    }
-    let h = bin_vars(&r.head.args)?;
-    let b = bin_vars(&r.body[0].atom.args)?;
-    (h == b).then_some((r.body[0].atom.pred, r.head.pred))
-}
-
-/// `I(z,y) :- I(z,x), C(x,y)` (distinct z,x,y) — the instance/subclass bridge.
-/// Returns `(I, C)`: the instance-like and subclass-like relations, identified
-/// purely by the coupling pattern (no names).
-pub(crate) fn is_bridge(r: &Rule) -> Option<(Pred, Pred)> {
-    if r.body.len() != 2 || r.body.iter().any(|l| l.negated) {
-        return None;
-    }
-    let inst = r.head.pred;
-    // One body literal repeats the head relation (the instance self-link); the
-    // other is the subclass-like relation.
-    let (ib, cb) = if r.body[0].atom.pred == inst && r.body[1].atom.pred != inst {
-        (&r.body[0], &r.body[1])
-    } else if r.body[1].atom.pred == inst && r.body[0].atom.pred != inst {
-        (&r.body[1], &r.body[0])
-    } else {
-        return None;
-    };
-    let (z, y) = bin_vars(&r.head.args)?;
-    let (zi, x) = bin_vars(&ib.atom.args)?;
-    let (xc, yc) = bin_vars(&cb.atom.args)?;
-    (zi == z && yc == y && x == xc && x != z && x != y && z != y)
-        .then_some((inst, cb.atom.pred))
-}
-
-/// Roles recognized from a rule set by clause signature.
-#[derive(Debug, Default, Clone)]
-pub(crate) struct RolePatterns {
-    pub transitive:  Vec<Pred>,
-    pub symmetric:   Vec<Pred>,
-    pub subrelation: Vec<(Pred, Pred)>,
-    pub bridges:     Vec<(Pred, Pred)>,
-}
-
-/// Scan a rule set (definite Horn clauses) for the four role signatures.
-pub(crate) fn recognize(rules: &[Rule]) -> RolePatterns {
-    let mut p = RolePatterns::default();
-    for r in rules {
-        if let Some(t) = is_transitive(r) {
-            p.transitive.push(t);
-        } else if let Some(s) = is_symmetric(r) {
-            p.symmetric.push(s);
-        } else if let Some(sr) = is_subrelation(r) {
-            p.subrelation.push(sr);
-        } else if let Some(br) = is_bridge(r) {
-            p.bridges.push(br);
+parked! {
+    /// The two arguments of a binary atom as a pair of DISTINCT variable ids
+    /// (no constants) — the unit the signature matchers reason over.
+    fn bin_vars(args: &[DTerm]) -> Option<(u32, u32)> {
+        if args.len() != 2 {
+            return None;
+        }
+        match (&args[0], &args[1]) {
+            (DTerm::Var(a), DTerm::Var(b)) if a != b => Some((*a, *b)),
+            _ => None,
         }
     }
-    p.transitive.sort_unstable();
-    p.transitive.dedup();
-    p.symmetric.sort_unstable();
-    p.symmetric.dedup();
-    p.subrelation.sort_unstable();
-    p.subrelation.dedup();
-    p.bridges.sort_unstable();
-    p.bridges.dedup();
-    p
+
+    /// `R(a,c) :- R(a,b), R(b,c)` (distinct a,b,c) — `R` is transitive.
+    pub(crate) fn is_transitive(r: &Rule) -> Option<Pred> {
+        if r.body.len() != 2 || r.body.iter().any(|l| l.negated) {
+            return None;
+        }
+        let rel = r.head.pred;
+        if r.body[0].atom.pred != rel || r.body[1].atom.pred != rel {
+            return None;
+        }
+        let (a, c) = bin_vars(&r.head.args)?;
+        let b0 = bin_vars(&r.body[0].atom.args)?;
+        let b1 = bin_vars(&r.body[1].atom.args)?;
+        // Some ordering of the two body literals is (a,mid) then (mid,c).
+        let chain = |x: (u32, u32), y: (u32, u32)| {
+            x.0 == a && y.1 == c && x.1 == y.0 && x.1 != a && x.1 != c
+        };
+        if a != c && (chain(b0, b1) || chain(b1, b0)) {
+            Some(rel)
+        } else {
+            None
+        }
+    }
+
+    /// `R(a,b) :- R(b,a)` — `R` is symmetric.
+    pub(crate) fn is_symmetric(r: &Rule) -> Option<Pred> {
+        if r.body.len() != 1 || r.body[0].negated || r.body[0].atom.pred != r.head.pred {
+            return None;
+        }
+        let (a, b) = bin_vars(&r.head.args)?;
+        let (c, d) = bin_vars(&r.body[0].atom.args)?;
+        (a == d && b == c).then_some(r.head.pred)
+    }
+
+    /// `S(a,b) :- R(a,b)` — `R` is a subrelation of `S`.  Returns `(R, S)`.
+    pub(crate) fn is_subrelation(r: &Rule) -> Option<(Pred, Pred)> {
+        if r.body.len() != 1 || r.body[0].negated || r.body[0].atom.pred == r.head.pred {
+            return None;
+        }
+        let h = bin_vars(&r.head.args)?;
+        let b = bin_vars(&r.body[0].atom.args)?;
+        (h == b).then_some((r.body[0].atom.pred, r.head.pred))
+    }
+
+    /// `I(z,y) :- I(z,x), C(x,y)` (distinct z,x,y) — the instance/subclass bridge.
+    /// Returns `(I, C)`: the instance-like and subclass-like relations, identified
+    /// purely by the coupling pattern (no names).
+    pub(crate) fn is_bridge(r: &Rule) -> Option<(Pred, Pred)> {
+        if r.body.len() != 2 || r.body.iter().any(|l| l.negated) {
+            return None;
+        }
+        let inst = r.head.pred;
+        // One body literal repeats the head relation (the instance self-link); the
+        // other is the subclass-like relation.
+        let (ib, cb) = if r.body[0].atom.pred == inst && r.body[1].atom.pred != inst {
+            (&r.body[0], &r.body[1])
+        } else if r.body[1].atom.pred == inst && r.body[0].atom.pred != inst {
+            (&r.body[1], &r.body[0])
+        } else {
+            return None;
+        };
+        let (z, y) = bin_vars(&r.head.args)?;
+        let (zi, x) = bin_vars(&ib.atom.args)?;
+        let (xc, yc) = bin_vars(&cb.atom.args)?;
+        (zi == z && yc == y && x == xc && x != z && x != y && z != y)
+            .then_some((inst, cb.atom.pred))
+    }
+
+    /// Roles recognized from a rule set by clause signature.
+    #[derive(Debug, Default, Clone)]
+    pub(crate) struct RolePatterns {
+        pub transitive:  Vec<Pred>,
+        pub symmetric:   Vec<Pred>,
+        pub subrelation: Vec<(Pred, Pred)>,
+        pub bridges:     Vec<(Pred, Pred)>,
+    }
+
+    /// Scan a rule set (definite Horn clauses) for the four role signatures.
+    pub(crate) fn recognize(rules: &[Rule]) -> RolePatterns {
+        let mut p = RolePatterns::default();
+        for r in rules {
+            if let Some(t) = is_transitive(r) {
+                p.transitive.push(t);
+            } else if let Some(s) = is_symmetric(r) {
+                p.symmetric.push(s);
+            } else if let Some(sr) = is_subrelation(r) {
+                p.subrelation.push(sr);
+            } else if let Some(br) = is_bridge(r) {
+                p.bridges.push(br);
+            }
+        }
+        p.transitive.sort_unstable();
+        p.transitive.dedup();
+        p.symmetric.sort_unstable();
+        p.symmetric.dedup();
+        p.subrelation.sort_unstable();
+        p.subrelation.dedup();
+        p.bridges.sort_unstable();
+        p.bridges.dedup();
+        p
+    }
 }
 
 #[cfg(test)]

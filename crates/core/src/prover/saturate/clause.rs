@@ -25,6 +25,8 @@ use crate::parse::OpKind;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, ElementVec, InternedSym, Literal, Sentence, SentenceId, Symbol, SymbolId};
 
+use super::parked;
+
 /// An atom's identity: the content hash of its canonical `Sentence` form.
 /// Shares the `SentenceId` space deliberately — a ground atom that also
 /// exists as a store sub-sentence hashes to the same id.
@@ -56,8 +58,10 @@ pub(crate) struct PClause {
 }
 
 impl PClause {
-    pub(crate) fn is_unit(&self) -> bool { self.lits.len() == 1 }
-    pub(crate) fn is_ground(&self) -> bool { self.nvars == 0 }
+    parked! {
+        pub(crate) fn is_unit(&self) -> bool { self.lits.len() == 1 }
+        pub(crate) fn is_ground(&self) -> bool { self.nvars == 0 }
+    }
 }
 
 /// Self-contained term tree.  Mirrors `Sentence`/`Element` shape
@@ -213,7 +217,9 @@ impl AtomTable {
         Some(Term::App(elems))
     }
 
-    pub(crate) fn len(&self) -> usize { self.map.len() }
+    parked! {
+        pub(crate) fn len(&self) -> usize { self.map.len() }
+    }
 }
 
 // -- hash-only content ids (hash-before-intern) --------------------------------

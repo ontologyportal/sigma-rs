@@ -1,6 +1,6 @@
 //! Structural matching of patterns against stored sentences.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::SymbolId;
 use crate::types::{Element, SentenceId};

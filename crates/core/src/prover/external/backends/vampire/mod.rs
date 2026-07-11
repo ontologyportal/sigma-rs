@@ -31,8 +31,14 @@ pub(crate) mod lower_ho;
 pub mod integrated;
 #[cfg(feature = "integrated-prover")]
 pub(crate) mod native_proof;
-#[cfg(feature = "integrated-prover")]
-pub(crate) mod bindings;
+// The whole proof-binding extractor is parked: it is the "walk the native
+// Proof for ground-term bindings" implementation that `integrated.rs`'s
+// TODO calls for, fully tested but not yet wired into the integrated
+// backend (which currently returns empty bindings).
+crate::prover::parked! {
+    #[cfg(feature = "integrated-prover")]
+    pub(crate) mod bindings;
+}
 
 pub use subprocess::VampireRunner;
 #[cfg(feature = "integrated-prover")]

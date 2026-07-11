@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+#[cfg(feature = "ask")]
 use crate::Element;
 use crate::{SymbolId, types::TaxRelation};
 use crate::types::SentenceId;
@@ -24,18 +25,6 @@ impl SemanticLayer {
             None     => return false,
         };
         self.has_ancestor_scoped(sym, anc_id, scope)
-    }
-
-    /// Collect the `subclass`/`instance` fact sentences along the taxonomy
-    /// ancestor closure of `seed_syms`, walking upward from every seed symbol
-    /// and returning the fact sentence for each edge.  Bounded by `cap` total
-    /// facts.
-    pub(crate) fn taxonomy_closure_facts(
-        &self,
-        seed_syms: &HashSet<SymbolId>,
-        cap:       usize,
-    ) -> HashSet<SentenceId> {
-        self.taxonomy_closure_facts_scoped(seed_syms, cap, Scope::Base)
     }
 
     /// Depth-first walk over the strict subclass-closure of `start` — upward
@@ -65,10 +54,14 @@ impl SemanticLayer {
         }
     }
 
-    /// [`Self::taxonomy_closure_facts`] in an explicit [`Scope`]: the upward
-    /// walk follows `Base` ∪ the session overlay (via `parents_of_scoped`) so a
-    /// session-local class chains up to its base ancestors.  Only `Base` axiom
-    /// fact sentences are returned.
+    /// Collect the `subclass`/`instance` fact sentences along the taxonomy
+    /// ancestor closure of `seed_syms`, walking upward from every seed symbol
+    /// and returning the fact sentence for each edge.  Bounded by `cap` total
+    /// facts.  The upward walk follows `Base` ∪ the session overlay (via
+    /// `parents_of_scoped`) so a session-local class chains up to its base
+    /// ancestors.  Only `Base` axiom fact sentences are returned.
+    // Sole caller is the external prover's SInE seeding (ask-gated).
+    #[cfg(feature = "ask")]
     pub(crate) fn taxonomy_closure_facts_scoped(
         &self,
         seed_syms: &HashSet<SymbolId>,
@@ -111,18 +104,6 @@ impl SemanticLayer {
             }
         }
         out
-    }
-
-    /// `true` iff `sym` is an **instance** of `class` (directly, or of a
-    /// subclass of `class`) — i.e. there is an `instance` edge `sym → K` with
-    /// `K == class` or `K` a subclass-descendant of `class`.
-    ///
-    /// Distinct from [`Self::has_ancestor`], which also returns `true` when
-    /// `sym` is a *subclass* of `class`.
-    pub(crate) fn reaches_via_instance(&self, sym: SymbolId, class: SymbolId) -> bool {
-        self.parents_of(sym).into_iter().any(|(k, rel)| {
-            matches!(rel, TaxRelation::Instance) && (k == class || self.has_ancestor(k, class))
-        })
     }
 
     /// Return the name of the nearest ancestor of `sym` that appears in

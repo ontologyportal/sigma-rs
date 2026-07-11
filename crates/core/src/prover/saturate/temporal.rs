@@ -20,6 +20,8 @@ use std::collections::VecDeque;
 
 use crate::types::{SentenceId, SymbolId};
 
+use super::parked;
+
 /// A node in the network: a time point identity.  An interval `I`
 /// contributes `Begin(I)` and `End(I)`; a bare `TimePoint` `P` is a
 /// degenerate interval with `Begin(P) = End(P) = Point(P)`.
@@ -118,9 +120,11 @@ impl TemporalNet {
         self.closed = false;
     }
 
-    /// `a ≤ b`.
-    pub(crate) fn add_le(&mut self, a: PointKey, b: PointKey) {
-        self.add_le_w(a, b, None);
+    parked! {
+        /// `a ≤ b`.
+        pub(crate) fn add_le(&mut self, a: PointKey, b: PointKey) {
+            self.add_le_w(a, b, None);
+        }
     }
 
     /// `a ≤ b`, citing the KB fact `sid` it came from.
@@ -131,9 +135,11 @@ impl TemporalNet {
         self.closed = false;
     }
 
-    /// `a = b`.
-    pub(crate) fn add_eq(&mut self, a: PointKey, b: PointKey) {
-        self.add_eq_w(a, b, None);
+    parked! {
+        /// `a = b`.
+        pub(crate) fn add_eq(&mut self, a: PointKey, b: PointKey) {
+            self.add_eq_w(a, b, None);
+        }
     }
 
     /// `a = b`, citing the KB fact `sid` it came from.  Equality is a
@@ -199,10 +205,12 @@ impl TemporalNet {
         }
     }
 
-    /// `true` iff the constraints are satisfiable (no `a < a`).
-    pub(crate) fn consistent(&mut self) -> bool {
-        self.ensure_closed();
-        self.consistent
+    parked! {
+        /// `true` iff the constraints are satisfiable (no `a < a`).
+        pub(crate) fn consistent(&mut self) -> bool {
+            self.ensure_closed();
+            self.consistent
+        }
     }
 
     /// Whether the network ENTAILS `a <rel> b`.  Unknown points (never

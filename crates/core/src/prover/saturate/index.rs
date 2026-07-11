@@ -26,6 +26,7 @@ use smallvec::SmallVec;
 use super::hash64::Map64;
 
 use super::clause::AtomId;
+use super::parked;
 use super::AtomInfo;
 
 /// Where an indexed literal lives: (clause arena index, literal index).
@@ -286,13 +287,15 @@ impl LiteralIndex {
         self.t.add(Self::gkey(pos, info.arity), at, atom, &info);
     }
 
-    /// Indexed literals of polarity `pos` possibly unifiable with `q`
-    /// (no seat-shape filtering — the historical probe; tests and any
-    /// caller that needs the raw residue superset use this).
-    pub(crate) fn probe(
-        &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
-    ) -> Vec<EntryRef> {
-        self.t.probe(Self::gkey(pos, q.arity), q, src, SeatRel::Any)
+    parked! {
+        /// Indexed literals of polarity `pos` possibly unifiable with `q`
+        /// (no seat-shape filtering — the historical probe; tests and any
+        /// caller that needs the raw residue superset use this).
+        pub(crate) fn probe(
+            &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
+        ) -> Vec<EntryRef> {
+            self.t.probe(Self::gkey(pos, q.arity), q, src, SeatRel::Any)
+        }
     }
 
     /// [`Self::probe`] under an explicit retrieval relation — the
@@ -319,9 +322,11 @@ impl LiteralIndex {
         self.t.count(Self::gkey(!pos, q.arity), q, src)
     }
 
-    /// How many union views were derived (a retrieval-cost probe; tests).
-    pub(crate) fn view_derivations(&self) -> u64 {
-        self.t.view_derivations
+    parked! {
+        /// How many union views were derived (a retrieval-cost probe; tests).
+        pub(crate) fn view_derivations(&self) -> u64 {
+            self.t.view_derivations
+        }
     }
 
     /// Tombstone a clause — its literals no longer surface as partners

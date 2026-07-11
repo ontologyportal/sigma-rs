@@ -12,6 +12,7 @@ use std::collections::HashSet;
 
 use crate::types::{Element, SentenceId};
 use crate::trans::{TranslationError, ir, CachedFormula};
+#[cfg(feature = "ask")]
 use crate::trans::lower::QueryVarMap;
 use crate::parse::tptp::syntax::TptpLang;
 
@@ -110,7 +111,7 @@ impl TranslationLayer {
     ///
     /// When `formulas_fof` is disabled in the shared `CacheConfig`, the FOF
     /// loop performs on-the-fly conversions whose results are discarded.
-    pub(crate) fn prime_formula_cache(&self) -> Result<(), TranslationError> {
+    pub fn prime_formula_cache(&self) -> Result<(), TranslationError> {
         let sids = self.all_emittable_sids();
 
         #[cfg(feature = "parallel")]
@@ -252,6 +253,7 @@ impl TranslationLayer {
     ///
     /// Returns `(problem, sid_map, qvm)`; `qvm` is `None` when no conjecture
     /// was requested or none of the candidates converted.
+    #[cfg(feature = "ask")]
     pub(crate) fn assemble_problem(
         &self,
         axiom_sids:  &[SentenceId],

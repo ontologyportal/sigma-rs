@@ -61,13 +61,17 @@ pub(crate) struct RewriteProgram {
     /// Case-1 (numeric subclass) rules followed by Case-2 (predicate-variable)
     /// rules, with Case-2 ids offset past the Case-1 block (as in
     /// [`TranslationLayer::run_rewrite_pass`]).
+    #[allow(dead_code)]
     pub rules: Vec<RewriteRule>,
     /// Predicate-variable schema templates (transitivity / symmetry /
-    /// subrelation-propagation); instantiated lazily per query elsewhere.
+    /// subrelation-propagation); instantiated lazily per query elsewhere
+    /// (`instantiate_predvars`, which is `ask`-gated).
+    #[cfg_attr(not(feature = "ask"), allow(dead_code))]
     pub predvar_schemas: Vec<PredVarSchema>,
     /// Source implication ids (rule sources ∪ schema sources, plus any
     /// `synthetic_origin` they derive from) whose rewritten / instantiated forms
     /// stand in for them, so the originals must be suppressed from plain TPTP.
+    #[allow(dead_code)]
     pub suppressed_sources: HashSet<SentenceId>,
 }
 

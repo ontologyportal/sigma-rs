@@ -14,9 +14,12 @@
 // phase-1 bi-sorted scheme: `$i`, `$o`, and arrows over them (SUMO's class
 // taxonomy stays as `instance` guards, exactly like the FOF encoding).
 
+#[cfg(feature = "ask")]
 use std::collections::HashSet;
+#[cfg(feature = "ask")]
 use std::fmt::Write as _;
 
+#[cfg(feature = "ask")]
 use crate::types::SentenceId;
 
 /// A TH0 sort: `$i`, `$o`, or a (right-associated, curried) arrow.
@@ -40,6 +43,7 @@ impl HoSort {
 
     /// The THF rendering.  Arrows are parenthesized when they appear in
     /// argument position (`($i > $o) > $i`), bare otherwise.
+    #[cfg(feature = "ask")]
     pub fn thf(&self) -> String {
         match self {
             HoSort::I => "$i".to_string(),
@@ -73,6 +77,7 @@ pub enum ThfExpr {
     /// Application `f @ x` (curried; spines flatten on emission).
     App(Box<ThfExpr>, Box<ThfExpr>),
     /// Lambda `^[X<n>: σ]: body`.
+    #[cfg(feature = "ask")]
     Lam(u32, HoSort, Box<ThfExpr>),
     Not(Box<ThfExpr>),
     And(Vec<ThfExpr>),
@@ -95,6 +100,7 @@ impl ThfExpr {
 
     /// Render as THF text.  Conservative parenthesization: every composite
     /// is wrapped, application spines flatten to `(f @ a @ b)`.
+    #[cfg(feature = "ask")]
     pub fn thf(&self) -> String {
         match self {
             ThfExpr::Const(n) => n.clone(),
@@ -134,6 +140,7 @@ impl ThfExpr {
         }
     }
 
+    #[cfg(feature = "ask")]
     fn assoc(op: &str, es: &[ThfExpr]) -> String {
         match es {
             [] => "$true".to_string(),
@@ -156,6 +163,7 @@ impl ThfExpr {
 /// A complete THF problem: constant declarations, axioms (paired with their
 /// origin sentences via `sid_map`, exactly like the FO `Problem`), and an
 /// optional conjecture.
+#[cfg(feature = "ask")]
 #[derive(Debug, Clone, Default)]
 pub struct HoProblem {
     decls: Vec<ThfConst>,
@@ -164,6 +172,7 @@ pub struct HoProblem {
     conjecture: Option<ThfExpr>,
 }
 
+#[cfg(feature = "ask")]
 impl HoProblem {
     pub fn new() -> Self {
         Self::default()
@@ -229,7 +238,7 @@ impl HoProblem {
 
 // -- Tests ---------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ask"))]
 mod tests {
     use super::*;
 

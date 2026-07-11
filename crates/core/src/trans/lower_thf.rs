@@ -30,7 +30,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::semantics::types::Scope;
 use crate::trans::caches::ho_signatures::{HoSignature, KAPPA_FN};
-use crate::trans::ir::{HoProblem, HoSort, ThfConst, ThfExpr};
+#[cfg(feature = "ask")]
+use crate::trans::ir::HoProblem;
+use crate::trans::ir::{HoSort, ThfConst, ThfExpr};
 use crate::trans::TranslationLayer;
 use crate::types::{Element, Literal, OpKind, Sentence};
 use crate::{SentenceId, SymbolId};
@@ -120,6 +122,7 @@ impl TranslationLayer {
     /// union wrapped existentially once (same soundness argument as the FO
     /// `lower_conjecture_set`: CAF-split `(and …)` queries share variable
     /// SymbolIds but not indices).
+    #[cfg(feature = "ask")]
     pub(crate) fn lower_conjecture_thf(
         &self,
         sids:  &[SentenceId],
@@ -679,6 +682,7 @@ impl TranslationLayer {
 /// Rewrite every variable index in `e` through `map` (indices absent from the
 /// map are unchanged) — the THF analog of `remap_formula_vars`, for conjoining
 /// separately-lowered conjecture roots whose per-root index spaces collide.
+#[cfg(feature = "ask")]
 fn remap_thf_vars(e: &mut ThfExpr, map: &HashMap<u32, u32>) {
     match e {
         ThfExpr::Var(v) => {
@@ -718,6 +722,7 @@ impl TranslationLayer {
     /// When `KappaFn` occurs anywhere in the problem, the comprehension axiom
     /// connecting it to `instance` is appended:
     ///   `![P: $i > $o, X: $i]: (instance @ X @ (KappaFn @ P)) <=> (P @ X)`.
+    #[cfg(feature = "ask")]
     pub(crate) fn assemble_problem_thf(
         &self,
         axiom_sids:  &[SentenceId],

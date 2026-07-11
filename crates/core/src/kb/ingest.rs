@@ -90,7 +90,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// reference remains (cascading `RootRemoved`). Clears the session's
     /// tombstones. `path` doubles as the review session. No-op if nothing
     /// pending.
-    pub(crate) fn commit(&mut self, path: &str) {
+    pub fn commit(&mut self, path: &str) {
         with_guard!(self);
         let recycled = self.layer.semantic().syntactic.recycled_fingerprints_of(path);
         let mut events = Vec::new();
@@ -118,7 +118,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// and the session's tombstones are cleared so its scoped view shows them
     /// again. Additions made by the staged reload remain; this governs only the
     /// removals.
-    pub(crate) fn rollback(&mut self, path: &str) {
+    pub fn rollback(&mut self, path: &str) {
         with_guard!(self);
         self.layer.semantic().syntactic.clear_source_recycle(path);
         let _ = self.layer.semantic().syntactic.sessions
@@ -127,7 +127,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
 
     /// The axiom sentence ids a staged update of `path` is holding in the
     /// recycle bin (would-be removals awaiting accept/reject); empty if none.
-    pub(crate) fn pending_axiom_removals(&self, path: &str) -> Vec<SentenceId> {
+    pub fn pending_axiom_removals(&self, path: &str) -> Vec<SentenceId> {
         let syn = &self.layer.semantic().syntactic;
         syn.recycled_fingerprints_of(path)
             .into_iter()
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn infer_class_end_to_end_through_kb() {
         use std::path::PathBuf;
-        use crate::semantics::types::ClassInference;
+        use crate::semantics::types::{ClassInference, Scope};
         let mut kb = KnowledgeBase::new();
         let f = PathBuf::from("t.kif");
 
@@ -488,7 +488,7 @@ mod tests {
         let dog   = kb.symbol_id("Dog").unwrap();
 
         // Equality `(equal A B)` folds A's Human into B (which is itself a Dog).
-        match kb.layer.semantic.infer_class(b) {
+        match kb.layer.semantic.infer_class_scoped(b, Scope::Base) {
             ClassInference::Multiple(v) =>
                 assert!(v.contains(&human) && v.contains(&dog), "B should be {{Dog, Human}}, got {v:?}"),
             other => panic!("expected Multiple([Dog, Human]), got {other:?}"),
@@ -500,9 +500,9 @@ mod tests {
             &f, "t.kif");
         kb.commit("t.kif");
         kb.make_session_axiomatic("t.kif").ok();
-        assert!(matches!(kb.layer.semantic.infer_class(b), ClassInference::Single(d) if d == dog),
+        assert!(matches!(kb.layer.semantic.infer_class_scoped(b, Scope::Base), ClassInference::Single(d) if d == dog),
             "after removing the equality, B should be Single(Dog), got {:?}",
-            kb.layer.semantic.infer_class(b));
+            kb.layer.semantic.infer_class_scoped(b, Scope::Base));
     }
 
 
@@ -944,7 +944,7 @@ mod tests {
         let sa = Scope::Session(session_id("session_a"));
 
         let scoped = kb.layer.semantic.validator_scoped(sa).validate_sentence_collect(likes_sid);
-        let global = kb.layer.semantic.validator().validate_sentence_collect(likes_sid);
+        let global = kb.layer.semantic.validator_scoped(Scope::Base).validate_sentence_collect(likes_sid);
 
         // E002 = HeadNotRelation.
         assert!(!scoped.iter().any(|e| e.code() == "E002"),
@@ -984,8 +984,8 @@ mod tests {
             "session A: B is equal to A which is a Human → Single(Human), got {:?}",
             sem.infer_class_scoped(b, sa));
         // Base never saw these (un-promoted) → Unknown.
-        assert!(matches!(sem.infer_class(b), ClassInference::Unknown),
-            "Base has no evidence for B → Unknown, got {:?}", sem.infer_class(b));
+        assert!(matches!(sem.infer_class_scoped(b, Scope::Base), ClassInference::Unknown),
+            "Base has no evidence for B → Unknown, got {:?}", sem.infer_class_scoped(b, Scope::Base));
         // A concurrent session is isolated → Unknown.
         assert!(matches!(sem.infer_class_scoped(b, sb), ClassInference::Unknown),
             "session B never asserted this → Unknown, got {:?}", sem.infer_class_scoped(b, sb));
@@ -1024,8 +1024,8 @@ mod tests {
             "session B: Mary → its own domain (Caregiver), not session A's Mother, got {:?}",
             sem.infer_class_scoped(mary, sb));
         // Base saw neither (both transient) → Unknown.
-        assert!(matches!(sem.infer_class(mary), ClassInference::Unknown),
-            "Base has no transient evidence for Mary → Unknown, got {:?}", sem.infer_class(mary));
+        assert!(matches!(sem.infer_class_scoped(mary, Scope::Base), ClassInference::Unknown),
+            "Base has no transient evidence for Mary → Unknown, got {:?}", sem.infer_class_scoped(mary, Scope::Base));
     }
 
     #[test]

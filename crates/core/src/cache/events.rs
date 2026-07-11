@@ -46,14 +46,16 @@ pub(crate) enum Event {
     /// invalidate the session's stale entries.  Carries no semantics for sids
     /// that aren't taxonomy edges — consumers filter.
     SessionReferenced { session: String, sids: Vec<SentenceId> },
-    /// A conjecture is asked of the [`crate::KnowledgeBase`]
-    QuestionAsked { conjecture: crate::parse::ast::AstNode, session: String },
 
     // Tier 1 — sentence-store reactor output
     /// The sentence store changed: which sentences and symbols were
     /// added/removed, and which symbols were merely *touched* (already present,
     /// occurrence count unchanged-to-nonzero). Consumed by `occurrences`,
     /// `head_index`, the doc caches, and the detectors.
+    // parked: Tier-0/1 invalidation protocol — caches already subscribe
+    // (`interested_in` / `matches!` arms); the emitting reactors land with
+    // the cache-behavior refactor.  Same for the three below.
+    #[allow(dead_code)]
     SentencesChanged {
         added:         Vec<SentenceId>,
         removed:       Vec<SentenceId>,
@@ -76,16 +78,8 @@ pub(crate) enum Event {
     RelationAdded { sid: SentenceId, head_id: SymbolId },
     /// A relation was removed (a sentence with a symbol head).
     RelationRemoved { sid: SentenceId, sentence: Sentence },
-    /// A synthetic sentence was produced by normalization, derived from `origin`.
-    SyntheticAdded { sid: SentenceId, origin: SentenceId },
-    /// A synthetic sentence was dropped (its `origin` was removed).
-    SyntheticRemoved { sid: SentenceId, origin: SentenceId },
-    /// A sentence now contributes these symbol uses (reverse-index maintenance).
-    SymbolsIntroduced { sid: SentenceId, syms: Vec<SymbolId> },
     /// A sentence no longer contributes these symbol uses.
-    SymbolsRetracted { sid: SentenceId, syms: Vec<SymbolId> },
-    /// Trigger the orphan-symbol prune after a removal batch (scan-and-prune).
-    Prune,
+    SymbolsRetracted { syms: Vec<SymbolId> },
 
     // ---- semantic classification (middle layer) ----
     // These carry the affected `SymbolId`s that the consuming caches evict.
@@ -97,13 +91,16 @@ pub(crate) enum Event {
     DomainRangeChanged { syms: Vec<SymbolId> },
     /// Non-taxonomy, non-domain/range roots changed; `syms` = all symbols those
     /// sentences mention (`SemanticDelta::all_affected_symbols`).
+    #[allow(dead_code)] // parked: see `SentencesChanged`
     OtherRootsChanged { syms: Vec<SymbolId> },
 
     // ---- batch markers (translation fast path) ----
     /// The batch is a pure addition (no taxonomy edge / domain-range / other
     /// root was removed) — enables the formula/relation cache fast path.
+    #[allow(dead_code)] // parked: see `SentencesChanged`
     PureAddition,
     /// An implication-shaped root was added (rewrite pass must re-run).
+    #[allow(dead_code)] // parked: see `SentencesChanged`
     ImplicationsAdded,
 
     /// A numeric sort class was removed
@@ -112,16 +109,22 @@ pub(crate) enum Event {
     NumericSortAdded(SymbolId),
 
     // ---- validation (user-triggered) ----
+    // parked: the validate cache subscribes and tests cascade these, but the
+    // production trigger API doesn't exist yet — validation currently flows
+    // through `validate_sentence`/`validator_scoped` directly.
     /// Validate *every* root sentence: the `semantic::validation` cache runs the
     /// semantic validator over each root and memoises the result.
+    #[allow(dead_code)]
     ValidateKB,
     /// Validate a single sentence and memoise its result in the
     /// `semantic::validation` cache.
+    #[allow(dead_code)]
     ValidateSentence { sid: SentenceId },
     /// Validate every sentence belonging to `session`, reasoning in that
     /// session's scope (`Base` ∪ the session's transient overlay) rather than
     /// globally — so a session's own transient taxonomy/type declarations are
     /// visible to the validator.  `ValidateKB` / `ValidateSentence` stay global.
+    #[allow(dead_code)] // parked: see `ValidateKB`
     ValidateSession { session: String },
 
     // ---- diagnostics (emitted by any reactor, consumed by none) ----
@@ -155,8 +158,6 @@ pub(crate) enum EventKind {
     SessionRetracted,
     /// A session newly references already-interned roots (dedup re-assert).
     SessionReferenced,
-    /// A conjecture is asked of the knowledge base.
-    QuestionAsked,
     /// The sentence store changed (sentences and symbols added/removed/touched).
     SentencesChanged,
     /// A session's sentences became axioms.
@@ -169,16 +170,8 @@ pub(crate) enum EventKind {
     RelationAdded,
     /// A relation (symbol-headed sentence) was removed.
     RelationRemoved,
-    /// A synthetic sentence was produced by normalization.
-    SyntheticAdded,
-    /// A synthetic sentence was dropped.
-    SyntheticRemoved,
-    /// A sentence contributed new symbol uses.
-    SymbolsIntroduced,
     /// A sentence's symbol uses were retracted.
     SymbolsRetracted,
-    /// Trigger the orphan-symbol prune after a removal batch.
-    Prune,
     /// Taxonomy edges changed.
     TaxonomyChanged,
     /// Relation domain/range changed.
@@ -216,18 +209,13 @@ impl Event {
             Event::SessionAxiomatized { .. } => EventKind::SessionAxiomatized,
             Event::SessionRetracted { .. } => EventKind::SessionRetracted,
             Event::SessionReferenced { .. } => EventKind::SessionReferenced,
-            Event::QuestionAsked { .. } => EventKind::QuestionAsked,
             Event::SentencesChanged { .. } => EventKind::SentencesChanged,
             Event::AxiomsPromoted { .. } => EventKind::AxiomsPromoted,
             Event::RootAdded { .. } => EventKind::RootAdded,
             Event::RootRemoved { .. } => EventKind::RootRemoved,
             Event::RelationAdded { .. } => EventKind::RelationAdded,
             Event::RelationRemoved { .. } => EventKind::RelationRemoved,
-            Event::SyntheticAdded { .. } => EventKind::SyntheticAdded,
-            Event::SyntheticRemoved { .. } => EventKind::SyntheticRemoved,
-            Event::SymbolsIntroduced { .. } => EventKind::SymbolsIntroduced,
             Event::SymbolsRetracted { .. } => EventKind::SymbolsRetracted,
-            Event::Prune => EventKind::Prune,
             Event::TaxonomyChanged { .. } => EventKind::TaxonomyChanged,
             Event::DomainRangeChanged { .. } => EventKind::DomainRangeChanged,
             Event::OtherRootsChanged { .. } => EventKind::OtherRootsChanged,
@@ -364,6 +352,8 @@ pub(crate) fn build_schedule(
 /// semantic/translation events → cache and structural reactors consume them.
 /// Fed to [`build_schedule`] to validate acyclicity and document the cohort
 /// (parallel-level) ordering.
+// parked: cross-layer reactor DAG used by the acyclicity test / design doc
+#[allow(dead_code)]
 pub(crate) fn kb_reactor_graph() -> Vec<ReactorDecl> {
     use EventKind::*;
     vec![
@@ -417,10 +407,10 @@ mod tests {
 
     #[test]
     fn producer_runs_before_consumer() {
-        // A produces RootAdded(-derived) SymbolsIntroduced; B consumes it.
+        // A produces RootAdded-derived SentencesChanged; B consumes it.
         let decls = [
-            decl("B", &[EventKind::SymbolsIntroduced], &[]),
-            decl("A", &[EventKind::RootAdded], &[EventKind::SymbolsIntroduced]),
+            decl("B", &[EventKind::SentencesChanged], &[]),
+            decl("A", &[EventKind::RootAdded], &[EventKind::SentencesChanged]),
         ];
         let schedule = build_schedule(&decls).unwrap();
         assert_eq!(schedule, vec![vec!["A"], vec!["B"]]);
@@ -440,8 +430,8 @@ mod tests {
     #[test]
     fn three_level_chain() {
         let decls = [
-            decl("store", &[EventKind::RootAdded], &[EventKind::SymbolsIntroduced]),
-            decl("index", &[EventKind::SymbolsIntroduced], &[EventKind::TaxonomyChanged]),
+            decl("store", &[EventKind::RootAdded], &[EventKind::SentencesChanged]),
+            decl("index", &[EventKind::SentencesChanged], &[EventKind::TaxonomyChanged]),
             decl("taxonomy", &[EventKind::TaxonomyChanged], &[]),
         ];
         let schedule = build_schedule(&decls).unwrap();
@@ -452,8 +442,8 @@ mod tests {
     fn cycle_is_rejected() {
         // A → B (A produces X, B consumes X) and B → A (B produces Y, A consumes Y).
         let decls = [
-            decl("A", &[EventKind::DomainRangeChanged], &[EventKind::SymbolsIntroduced]),
-            decl("B", &[EventKind::SymbolsIntroduced], &[EventKind::DomainRangeChanged]),
+            decl("A", &[EventKind::DomainRangeChanged], &[EventKind::SentencesChanged]),
+            decl("B", &[EventKind::SentencesChanged], &[EventKind::DomainRangeChanged]),
         ];
         let err = build_schedule(&decls).unwrap_err();
         assert_eq!(err.names.len(), 2);
@@ -503,8 +493,8 @@ mod tests {
     fn self_loop_is_rejected() {
         let decls = [decl(
             "loop",
-            &[EventKind::SymbolsIntroduced],
-            &[EventKind::SymbolsIntroduced],
+            &[EventKind::SentencesChanged],
+            &[EventKind::SentencesChanged],
         )];
         assert_eq!(
             build_schedule(&decls),

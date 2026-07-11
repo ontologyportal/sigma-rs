@@ -19,6 +19,7 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::Element;
 
 use super::clause::{AtomId, AtomTable, Term};
+use super::parked;
 use super::AtomInfos;
 use super::hash64::Map64;
 use super::unify::{match_one_way, slot_atom, term_slots, Subst};
@@ -44,14 +45,16 @@ pub(crate) fn op_tag(op: &crate::parse::OpKind) -> u8 {
     }
 }
 
-/// What a unit lookup found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UnitHit {
-    /// A same-polarity unit covers the literal — the clause is subsumed.
-    Subsumes(u32),
-    /// An opposite-polarity unit refutes the literal — drop it, citing
-    /// the unit clause as a parent.
-    Refutes(u32),
+parked! {
+    /// What a unit lookup found.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum UnitHit {
+        /// A same-polarity unit covers the literal — the clause is subsumed.
+        Subsumes(u32),
+        /// An opposite-polarity unit refutes the literal — drop it, citing
+        /// the unit clause as a parent.
+        Refutes(u32),
+    }
 }
 
 /// One open (non-ground) unit in its bucket, with the pattern term
@@ -61,6 +64,7 @@ pub(crate) enum UnitHit {
 /// measured profile hotspot.
 #[derive(Debug, Clone)]
 pub(crate) struct OpenUnit {
+    #[allow(dead_code)] // parked
     pub(crate) atom:    AtomId,
     pub(crate) clause:  u32,
     pub(crate) pattern: Arc<Term>,
@@ -258,60 +262,62 @@ impl UnitStores {
         out
     }
 
-    /// Check a (canonical) literal against the active units: ground
-    /// table first (one probe each way), then the head bucket of open
-    /// units by one-way match.  `nvars_lit` is the number of canonical
-    /// variables in the literal's own clause (slot-space sizing).
-    pub(crate) fn check(
-        &self,
-        pos:        bool,
-        atom:       AtomId,
-        nvars_lit:  u32,
-        infos:      &AtomInfos,
-        atoms:      &AtomTable,
-        syn:        &SyntacticLayer,
-    ) -> Option<UnitHit> {
-        let info = infos.info(atom, atoms, syn);
-        if info.is_ground() {
-            if let Some(cid) = self.ground_unit(pos, atom) {
-                return Some(UnitHit::Subsumes(cid));
+    parked! {
+        /// Check a (canonical) literal against the active units: ground
+        /// table first (one probe each way), then the head bucket of open
+        /// units by one-way match.  `nvars_lit` is the number of canonical
+        /// variables in the literal's own clause (slot-space sizing).
+        pub(crate) fn check(
+            &self,
+            pos:        bool,
+            atom:       AtomId,
+            nvars_lit:  u32,
+            infos:      &AtomInfos,
+            atoms:      &AtomTable,
+            syn:        &SyntacticLayer,
+        ) -> Option<UnitHit> {
+            let info = infos.info(atom, atoms, syn);
+            if info.is_ground() {
+                if let Some(cid) = self.ground_unit(pos, atom) {
+                    return Some(UnitHit::Subsumes(cid));
+                }
+                if let Some(cid) = self.ground_unit(!pos, atom) {
+                    return Some(UnitHit::Refutes(cid));
+                }
             }
-            if let Some(cid) = self.ground_unit(!pos, atom) {
-                return Some(UnitHit::Refutes(cid));
-            }
-        }
-        // Open units: the literal's head must be concrete to bucket.
-        let (h, ar) = head_key(atoms, syn, atom)?;
-        // The unit pattern gets slots [0, nvars_unit); the target
-        // literal's variables sit above at offset nvars-of-pattern...
-        // — but one-way match never binds target vars, so the target
-        // only needs slots distinct from the pattern's.  Offset by the
-        // largest pattern var count we may see in this bucket scan.
-        const PATTERN_SLOTS: u32 = 256;
-        let target = slot_atom(atoms, syn, atom, PATTERN_SLOTS)?;
-        for &same_pol in &[pos, !pos] {
-            if let Some(groups) = self.open.get(&(same_pol, h, ar)) {
-                for residues in groups.values() {
-                    for bucket in residues.values() {
-                        for u in bucket {
-                            let mut s: Subst =
-                                vec![None; (PATTERN_SLOTS + nvars_lit) as usize];
-                            if match_one_way(&u.pattern, &target, &mut s) {
-                                return Some(if same_pol == pos {
-                                    UnitHit::Subsumes(u.clause)
-                                } else {
-                                    UnitHit::Refutes(u.clause)
-                                });
+            // Open units: the literal's head must be concrete to bucket.
+            let (h, ar) = head_key(atoms, syn, atom)?;
+            // The unit pattern gets slots [0, nvars_unit); the target
+            // literal's variables sit above at offset nvars-of-pattern...
+            // — but one-way match never binds target vars, so the target
+            // only needs slots distinct from the pattern's.  Offset by the
+            // largest pattern var count we may see in this bucket scan.
+            const PATTERN_SLOTS: u32 = 256;
+            let target = slot_atom(atoms, syn, atom, PATTERN_SLOTS)?;
+            for &same_pol in &[pos, !pos] {
+                if let Some(groups) = self.open.get(&(same_pol, h, ar)) {
+                    for residues in groups.values() {
+                        for bucket in residues.values() {
+                            for u in bucket {
+                                let mut s: Subst =
+                                    vec![None; (PATTERN_SLOTS + nvars_lit) as usize];
+                                if match_one_way(&u.pattern, &target, &mut s) {
+                                    return Some(if same_pol == pos {
+                                        UnitHit::Subsumes(u.clause)
+                                    } else {
+                                        UnitHit::Refutes(u.clause)
+                                    });
+                                }
                             }
                         }
                     }
                 }
             }
+            None
         }
-        None
-    }
 
-    pub(crate) fn ground_len(&self) -> usize { self.ground.len() }
+        pub(crate) fn ground_len(&self) -> usize { self.ground.len() }
+    }
 }
 
 /// One forward demodulator `l → r`: a positive unit equality whose

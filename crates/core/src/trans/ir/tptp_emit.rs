@@ -62,6 +62,7 @@ fn emit_sub(out: &mut String, f: &Formula, parent: Prec) {
 }
 
 /// Serialises a [`Term`] to TPTP syntax.
+#[cfg(feature = "ask")]
 pub(crate) fn term_to_tptp(t: &Term) -> String {
     let mut s = String::new();
     emit_term(&mut s, t);
@@ -197,6 +198,7 @@ impl Term {
     /// let t = Term::apply(f, vec![Term::var(0), Term::int("1")]);
     /// assert_eq!(t.to_tptp(), "f(X0,1)");
     /// ```
+    #[cfg(feature = "ask")]
     pub fn to_tptp(&self) -> String {
         term_to_tptp(self)
     }

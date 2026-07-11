@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
-use sigmakee_rs_sdk::{ExpectedOutcome, Session, Source, SzsStatus, TestCaseOutcome, TestOutcome};
+use sigmakee_rs_sdk::{Session, Source, TestCaseOutcome, TestOutcome};
 
 use crate::cli::proof::print_proof;
 use crate::style::*;

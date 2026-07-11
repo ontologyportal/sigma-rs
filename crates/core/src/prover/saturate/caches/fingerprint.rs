@@ -30,6 +30,7 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Literal, Symbol};
 
 use super::super::clause::{AtomId, AtomTable, Term};
+use super::super::parked;
 
 /// Seed for the coin PRF — its own keyspace, disjoint from sentence
 /// content hashes and clause keys.
@@ -434,7 +435,9 @@ impl AtomInfos {
         }
     }
 
-    pub(crate) fn len(&self) -> usize { self.map.len() }
+    parked! {
+        pub(crate) fn len(&self) -> usize { self.map.len() }
+    }
 
     /// Decode-phone-book lookup: the (seat, filler) a coin encodes,
     /// materialized as a [`Term`] (compound subterms lift through the

@@ -21,8 +21,12 @@ use crate::Diagnostic;
 /// never against a concrete backend.
 pub(crate) trait PersistenceBackend {
     /// Stage a write of `bytes` under `key`.  May be buffered until `commit`.
+    // Only called from `cache/persistence.rs` code that is `cfg(feature =
+    // "persist")`, but the impls exist unconditionally — don't cfg out.
+    #[cfg_attr(not(feature = "persist"), allow(dead_code))]
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic>;
     /// Read the committed bytes under `key`, or `None` if absent.
+    #[cfg_attr(not(feature = "persist"), allow(dead_code))]
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic>;
     // TODO: implement incremental rewrites, right now, persistence is ALL OR NOTHING
     /// Stage a removal of `key`.  May be buffered until `commit`.

@@ -5,10 +5,14 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::prover::{CommonProverOpts, ProverResult, ProverStatus, ProvingLayer};
+use crate::prover::{CommonProverOpts, ProverResult, ProvingLayer};
+#[cfg(feature = "native-prover")]
+use crate::prover::ProverStatus;
 use crate::types::{SentenceId, SourceFile};
 use crate::layer::{Layer, TopLayer};
-use crate::{Parser, SineParams, TestCase};
+use crate::{Parser, TestCase};
+#[cfg(feature = "native-prover")]
+use crate::SineParams;
 
 use super::KnowledgeBase;
 

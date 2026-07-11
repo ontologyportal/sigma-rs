@@ -341,6 +341,7 @@ where
 ///
 /// `SIGMA_ALL_LANES=1` forces every lane regardless of budget, for A/B'ing
 /// this function's bucketing against the unconditional old behavior.
+#[cfg(feature = "native-prover")]
 pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize {
     if std::env::var_os("SIGMA_ALL_LANES").is_some() {
         return all_lanes;
@@ -375,6 +376,7 @@ pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize
 /// 12s, not 10s) — free budget inflation that then stacked with any real
 /// per-lane engine overrun. `drive_portfolio`'s carry/total-elapsed tracking
 /// is the run-time backstop; this is the static, no-overrun-yet baseline.
+#[cfg(feature = "native-prover")]
 fn lane_shares(total_timeout: u32, lanes: usize) -> Vec<u32> {
     if lanes == 0 { return Vec::new(); }
     if total_timeout == 0 { return vec![0; lanes]; }
@@ -408,6 +410,7 @@ fn lane_shares(total_timeout: u32, lanes: usize) -> Vec<u32> {
 /// task's honesty rule — a Disproved that ISN'T a saturation certificate
 /// (`complete_saturation == Some(false)`) is really just "no proof found",
 /// so it ranks alongside GaveUp rather than above it.
+#[cfg(feature = "native-prover")]
 fn verdict_rank(r: &ProverResult) -> u8 {
     match r.status {
         ProverStatus::Proved | ProverStatus::Inconsistent => 4,
@@ -424,6 +427,7 @@ fn verdict_rank(r: &ProverResult) -> u8 {
 /// certificate, not merely "search exhausted its budget without a proof").
 /// Anything else (Timeout, GaveUp, an uncertified Disproved/Unknown) moves
 /// the schedule to the next lane.
+#[cfg(feature = "native-prover")]
 pub(crate) fn is_schedule_final(r: &ProverResult) -> bool {
     verdict_rank(r) >= 3
 }
@@ -434,6 +438,7 @@ pub(crate) fn is_schedule_final(r: &ProverResult) -> bool {
 /// the coarser sub-checks in setup phases the scheduler can't see inside)
 /// (see the CASC-mode overrun fix: total wall time must stay within
 /// `total_timeout + OVERRUN_GRACE_SECS`, never scale with lane count).
+#[cfg(feature = "native-prover")]
 const OVERRUN_GRACE_SECS: f64 = 1.0;
 
 /// Run a CASC-style strategy schedule: `lane_count` lanes, each raced (in
@@ -470,6 +475,7 @@ const OVERRUN_GRACE_SECS: f64 = 1.0;
 /// lane. Returns the winning lane's index alongside its result — or, if every
 /// lane comes back inconclusive, the BEST-ranked result seen (see
 /// [`verdict_rank`]) and its lane.
+#[cfg(feature = "native-prover")]
 pub(crate) fn drive_portfolio(
     lane_count:  usize,
     total_timeout: u32,
@@ -703,21 +709,25 @@ mod tests {
 
     // -- Portfolio schedule (lane_shares / verdict_rank / drive_portfolio) --
 
+    #[cfg(feature = "native-prover")]
     fn result(status: S, term: Option<TR>, complete_saturation: Option<bool>) -> ProverResult {
         ProverResult { status, termination: term, complete_saturation, ..Default::default() }
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn lane_shares_first_lane_gets_forty_percent() {
         // 20s / 5 lanes: first ~40% = 8s, remainder (12s) / 4 = 3s each.
         assert_eq!(lane_shares(20, 5), vec![8, 3, 3, 3, 3]);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn lane_shares_unbounded_timeout_is_unbounded_per_lane() {
         assert_eq!(lane_shares(0, 5), vec![0, 0, 0, 0, 0]);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn lane_shares_single_lane_gets_everything() {
         assert_eq!(lane_shares(20, 1), vec![20]);
@@ -731,11 +741,14 @@ mod tests {
     // that test (measured flake: the override test raced the `< 15s`
     // bucket assertions).  Same convention as strategy.rs's
     // `LANE_ENV_LOCK`.
+    #[cfg(feature = "native-prover")]
     static ALL_LANES_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[cfg(feature = "native-prover")]
     fn all_lanes_env_guard() -> std::sync::MutexGuard<'static, ()> {
         ALL_LANES_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_under_15s_is_single_lane() {
         let _env = all_lanes_env_guard();
@@ -744,6 +757,7 @@ mod tests {
         assert_eq!(adaptive_lane_count(14, 5), 1);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_15_to_40s_is_three_lanes() {
         let _env = all_lanes_env_guard();
@@ -752,12 +766,14 @@ mod tests {
         assert_eq!(adaptive_lane_count(40, 5), 3);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_over_40s_is_all_lanes() {
         assert_eq!(adaptive_lane_count(41, 5), 5);
         assert_eq!(adaptive_lane_count(100, 5), 5);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_unbounded_timeout_is_all_lanes() {
         // `total_timeout == 0` (no `--timeout` given) has no tight budget to
@@ -767,6 +783,7 @@ mod tests {
         assert_eq!(adaptive_lane_count(0, 5), 5);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_never_exceeds_available_lanes() {
         let _env = all_lanes_env_guard();
@@ -781,6 +798,7 @@ mod tests {
     //    the schedule supplies; the `< 15s` and
     //    `15..=40s` buckets are unaffected by the schedule growing a lane.
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_over_40s_includes_the_deferred_lane() {
         // Real call shape: `run_portfolio_schedule` passes
@@ -792,6 +810,7 @@ mod tests {
         assert_eq!(adaptive_lane_count(0, 6), 6); // unbounded timeout, same rule
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_under_15s_and_15_to_40s_unchanged_by_sixth_lane() {
         let _env = all_lanes_env_guard();
@@ -805,6 +824,7 @@ mod tests {
         assert_eq!(adaptive_lane_count(40, 6), 3);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn adaptive_lane_count_sigma_all_lanes_forces_full_schedule() {
         let _env = all_lanes_env_guard();
@@ -824,6 +844,7 @@ mod tests {
         result.unwrap();
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn lane_shares_never_zero_under_a_real_budget() {
         // A tiny total (e.g. 3s over 5 lanes) must still hand every lane at
@@ -833,6 +854,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn verdict_rank_orders_proved_over_disproved_over_gaveup_over_timeout() {
         let proved    = result(S::Proved, None, None);
@@ -844,6 +866,7 @@ mod tests {
         assert!(verdict_rank(&gaveup) > verdict_rank(&timeout));
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn verdict_rank_uncertified_disproved_ranks_with_gaveup_not_above() {
         // Verdict honesty: a Disproved that ISN'T a saturation certificate is
@@ -853,6 +876,7 @@ mod tests {
         assert_eq!(verdict_rank(&uncertified), verdict_rank(&gaveup));
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn is_schedule_final_true_only_for_conclusive_verdicts() {
         assert!(is_schedule_final(&result(S::Proved, None, None)));
@@ -863,6 +887,7 @@ mod tests {
         assert!(!is_schedule_final(&result(S::Unknown, Some(TR::GaveUp), None)));
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_stops_at_first_proof() {
         let mut calls = Vec::new();
@@ -882,6 +907,7 @@ mod tests {
         assert_eq!(calls[1].0, 1);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_confident_disproof_ends_schedule() {
         let mut calls = 0usize;
@@ -898,6 +924,7 @@ mod tests {
         assert_eq!(calls, 1, "a confident disproof must end the schedule immediately");
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_uncertified_disproof_does_not_end_schedule() {
         let (winner, r) = drive_portfolio(2, 20, |idx, _slice| {
@@ -911,6 +938,7 @@ mod tests {
         assert_eq!(r.status, S::Proved);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_falls_back_to_best_rank_when_all_inconclusive() {
         let (winner, r) = drive_portfolio(3, 20, |idx, _slice| {
@@ -925,6 +953,7 @@ mod tests {
         assert_eq!(r.status, S::Unknown);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_donates_unused_slice_forward() {
         // Lane 0 gets 40% of 20s = 8s; if it returns almost instantly, that
@@ -945,6 +974,7 @@ mod tests {
         assert!(slices[1] > 12, "unused lane-0 time should roll forward: {:?}", slices);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_single_lane_never_starves() {
         let (winner, r) = drive_portfolio(1, 20, |_idx, slice| {
@@ -957,6 +987,7 @@ mod tests {
 
     // -- Overrun fix: lane_shares never oversums; overruns debit later lanes --
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn lane_shares_never_oversums_the_budget() {
         // Every budget/lane-count combination where the budget can afford
@@ -976,6 +1007,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_overrun_debits_the_next_lane() {
         // A tiny 2s budget over 2 lanes: nominal shares are [1, 1] (lane 0
@@ -1004,6 +1036,7 @@ mod tests {
         assert_eq!(slices[1], 1);
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_overrun_reduces_total_elapsed_vs_uncapped_carry() {
         // Same setup as above, but the real assertion: total wall time for
@@ -1026,6 +1059,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_stops_launching_lanes_once_over_budget_plus_grace() {
         // A single lane's real elapsed time (2.2s) already exceeds
@@ -1047,6 +1081,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_total_wall_time_bounded_by_budget_plus_grace() {
         // End-to-end: every lane overruns; the schedule's OWN measured wall

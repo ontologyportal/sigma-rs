@@ -29,11 +29,14 @@ use std::collections::{HashMap, HashSet};
 
 use super::{Pred, Program};
 
+use crate::prover::saturate::parked;
+
 /// A definitional cluster: a set of predicates and the self-contained
 /// sub-program (rules + EDB facts) that defines them.
 #[derive(Debug, Clone)]
 pub(crate) struct Cluster {
     pub preds:   HashSet<Pred>,
+    #[allow(dead_code)] // parked
     pub program: Program,
 }
 
@@ -236,18 +239,20 @@ pub(crate) fn positive_program(prog: &Program) -> Program {
     p
 }
 
-/// Demand selection (the SInE hook): the clusters touched by a set of seed
-/// predicates — exactly what to materialize for a query whose relevant symbols
-/// are `seed`.  `seed` is meant to come from SInE's symbol selection over the
-/// conjecture (`kb::sine`), so this narrows *which* clusters to evaluate
-/// without affecting *what* each cluster decides.  Returns cluster indices.
-pub(crate) fn relevant_clusters(clusters: &[Cluster], seed: &HashSet<Pred>) -> Vec<usize> {
-    clusters
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.preds.iter().any(|p| seed.contains(p)))
-        .map(|(i, _)| i)
-        .collect()
+parked! {
+    /// Demand selection (the SInE hook): the clusters touched by a set of seed
+    /// predicates — exactly what to materialize for a query whose relevant symbols
+    /// are `seed`.  `seed` is meant to come from SInE's symbol selection over the
+    /// conjecture (`kb::sine`), so this narrows *which* clusters to evaluate
+    /// without affecting *what* each cluster decides.  Returns cluster indices.
+    pub(crate) fn relevant_clusters(clusters: &[Cluster], seed: &HashSet<Pred>) -> Vec<usize> {
+        clusters
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.preds.iter().any(|p| seed.contains(p)))
+            .map(|(i, _)| i)
+            .collect()
+    }
 }
 
 // -- Tarjan SCC ---------------------------------------------------------------

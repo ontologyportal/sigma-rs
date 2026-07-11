@@ -1,7 +1,7 @@
 //! Unit tests for scope-aware SUMO class inference (`compute_infer_class` and helpers).
 
 use crate::semantics::caches::test_support::kif_layer as layer;
-use crate::semantics::types::{ClassInference, ClassScope};
+use crate::semantics::types::{ClassInference, Scope};
 
 // -- classify_formula (variable inference) --------------------------------
 
@@ -23,7 +23,7 @@ fn classify_formula_infers_variable_classes() {
         .find(|&sid| l.syntactic.sentence(sid).map(|s| s.is_operator()).unwrap_or(false))
         .expect("implication root");
 
-    let classes = l.classify_formula(root);
+    let classes = l.classify_formula_scoped(root, Scope::Base);
     // Exactly the two bound variables get classified (Animal / Mother values
     // and the relation heads are not argument targets).
     assert_eq!(classes.len(), 2, "both variables classified, got {classes:?}");
@@ -36,9 +36,6 @@ fn classify_formula_infers_variable_classes() {
             ClassInference::Single(id) if *id == mother => saw_mother = true,
             other => panic!("unexpected class {other:?}"),
         }
-        // Every classification here comes from inside the rule → Local to it.
-        assert!(matches!(sc.scope, ClassScope::Local(r) if r == root),
-            "expected Local({root}) scope, got {:?}", sc.scope);
     }
     assert!(saw_animal, "?X should resolve to Animal");
     assert!(saw_mother, "?M should resolve to Mother");
@@ -61,15 +58,13 @@ fn classify_formula_global_scope_for_ground_atoms() {
 
     // (instance Bob Human) → Bob : Human, Global.
     let inst_root = *l.syntactic.by_head("instance").iter().next().unwrap();
-    let bsc = l.classify_formula(inst_root).get(&bob).cloned().expect("Bob classified");
+    let bsc = l.classify_formula_scoped(inst_root, Scope::Base).get(&bob).cloned().expect("Bob classified");
     assert!(matches!(&bsc.class, ClassInference::Single(id) if *id == human));
-    assert!(matches!(bsc.scope, ClassScope::Global), "ground instance at root is Global");
 
     // (mother Mary Jesus) → Mary : Mother (mother's arg-1 domain), Global.
     let m_root = *l.syntactic.by_head("mother").iter().next().unwrap();
-    let msc = l.classify_formula(m_root).get(&mary).cloned().expect("Mary classified");
+    let msc = l.classify_formula_scoped(m_root, Scope::Base).get(&mary).cloned().expect("Mary classified");
     assert!(matches!(&msc.class, ClassInference::Single(id) if *id == mother_c));
-    assert!(matches!(msc.scope, ClassScope::Global));
 }
 
 #[test]
@@ -89,10 +84,9 @@ fn classify_formula_equality_takes_function_range() {
             .map(|o| matches!(o, crate::OpKind::Equal)).unwrap_or(false))
         .expect("equality root");
 
-    let jsc = l.classify_formula(root).get(&joseph).cloned().expect("Joseph classified");
+    let jsc = l.classify_formula_scoped(root, Scope::Base).get(&joseph).cloned().expect("Joseph classified");
     assert!(matches!(&jsc.class, ClassInference::Single(id) if *id == man),
         "Joseph = (FatherOfFn …) takes range Man, got {:?}", jsc.class);
-    assert!(matches!(jsc.scope, ClassScope::Global), "ground equality at root → Global");
 }
 
 #[test]
@@ -114,11 +108,11 @@ fn classify_formula_symbol_equality_propagates_class() {
             .map(|o| matches!(o, crate::OpKind::Equal)).unwrap_or(false))
         .expect("equality root");
 
-    let fp_sc = l.classify_formula(root).get(&fp).cloned().expect("FirstPresident classified");
+    let fp_sc = l.classify_formula_scoped(root, Scope::Base).get(&fp).cloned().expect("FirstPresident classified");
     assert!(matches!(&fp_sc.class, ClassInference::Single(id) if *id == human),
         "FirstPresident inherits GeorgeWashington's class, got {:?}", fp_sc.class);
     // …and it equals GeorgeWashington's own inferred class.
-    assert!(matches!(l.infer_class(gw), ClassInference::Single(id) if id == human));
+    assert!(matches!(l.infer_class_scoped(gw, Scope::Base), ClassInference::Single(id) if id == human));
 }
 
 #[test]
@@ -136,7 +130,7 @@ fn classify_formula_skips_negated_atoms() {
         .find(|&sid| l.syntactic.sentence(sid).map(|s| s.is_operator()).unwrap_or(false))
         .expect("implication root");
 
-    let classes = l.classify_formula(root);
+    let classes = l.classify_formula_scoped(root, Scope::Base);
     assert_eq!(classes.len(), 1, "only ?X is classified (Bar is negated), got {classes:?}");
     let sc = classes.values().next().unwrap();
     assert!(matches!(&sc.class, ClassInference::Single(id) if *id == foo),
@@ -156,8 +150,8 @@ fn infer_class_sees_through_double_negation() {
         .find(|&sid| !l.syntactic.sentence_vars(sid).is_empty())
         .expect("a root with variables");
     let (x, _) = l.syntactic.sentence_vars(root).into_iter().next().unwrap();
-    assert!(matches!(l.infer_class(x), ClassInference::Single(id) if id == foo),
-        "double-negated instance → ?X : Foo, got {:?}", l.infer_class(x));
+    assert!(matches!(l.infer_class_scoped(x, Scope::Base), ClassInference::Single(id) if id == foo),
+        "double-negated instance → ?X : Foo, got {:?}", l.infer_class_scoped(x, Scope::Base));
 }
 
 #[test]
@@ -174,8 +168,8 @@ fn infer_class_drops_singly_negated_instance() {
         .find(|&sid| !l.syntactic.sentence_vars(sid).is_empty())
         .expect("a root with variables");
     let (x, _) = l.syntactic.sentence_vars(root).into_iter().next().unwrap();
-    assert!(matches!(l.infer_class(x), ClassInference::Single(id) if id == bar),
-        "?X should be Bar only (Foo is negated), got {:?}", l.infer_class(x));
+    assert!(matches!(l.infer_class_scoped(x, Scope::Base), ClassInference::Single(id) if id == bar),
+        "?X should be Bar only (Foo is negated), got {:?}", l.infer_class_scoped(x, Scope::Base));
 }
 
 #[test]
@@ -192,8 +186,8 @@ fn infer_class_not_and_yields_unknown() {
     let mut checked = 0;
     for root in l.syntactic.root_sids().into_iter() {
         for (x, _) in l.syntactic.sentence_vars(root) {
-            assert!(matches!(l.infer_class(x), ClassInference::Unknown),
-                "?X under (not (and …)) must be Unknown, got {:?}", l.infer_class(x));
+            assert!(matches!(l.infer_class_scoped(x, Scope::Base), ClassInference::Unknown),
+                "?X under (not (and …)) must be Unknown, got {:?}", l.infer_class_scoped(x, Scope::Base));
             checked += 1;
         }
     }
@@ -210,16 +204,16 @@ fn infer_class_equality_is_order_independent() {
     let l1 = mk();
     let human1 = l1.syntactic.sym_id("Human").unwrap();
     let b1     = l1.syntactic.sym_id("B").unwrap();
-    assert!(matches!(l1.infer_class(b1), ClassInference::Single(id) if id == human1),
-        "B-first must be Human, got {:?}", l1.infer_class(b1));
+    assert!(matches!(l1.infer_class_scoped(b1, Scope::Base), ClassInference::Single(id) if id == human1),
+        "B-first must be Human, got {:?}", l1.infer_class_scoped(b1, Scope::Base));
 
     let l2 = mk();
     let human2 = l2.syntactic.sym_id("Human").unwrap();
     let a2     = l2.syntactic.sym_id("A").unwrap();
     let b2     = l2.syntactic.sym_id("B").unwrap();
-    let _ = l2.infer_class(a2);  // compute A first
-    assert!(matches!(l2.infer_class(b2), ClassInference::Single(id) if id == human2),
-        "B-after-A must ALSO be Human (order-independent), got {:?}", l2.infer_class(b2));
+    let _ = l2.infer_class_scoped(a2, Scope::Base);  // compute A first
+    assert!(matches!(l2.infer_class_scoped(b2, Scope::Base), ClassInference::Single(id) if id == human2),
+        "B-after-A must ALSO be Human (order-independent), got {:?}", l2.infer_class_scoped(b2, Scope::Base));
 }
 
 #[test]
@@ -234,8 +228,8 @@ fn infer_class_equality_chains_transitively() {
     let human = l.syntactic.sym_id("Human").unwrap();
     for name in ["A", "B", "C"] {
         let id = l.syntactic.sym_id(name).unwrap();
-        assert!(matches!(l.infer_class(id), ClassInference::Single(c) if c == human),
-            "{name} should be Human via the equality chain, got {:?}", l.infer_class(id));
+        assert!(matches!(l.infer_class_scoped(id, Scope::Base), ClassInference::Single(c) if c == human),
+            "{name} should be Human via the equality chain, got {:?}", l.infer_class_scoped(id, Scope::Base));
     }
 }
 
@@ -252,7 +246,7 @@ fn infer_class_domain_reads_all_positions() {
     let region   = l.syntactic.sym_id("Region").unwrap();
     let district = l.syntactic.sym_id("District").unwrap();
     let foo      = l.syntactic.sym_id("Foo").unwrap();
-    match l.infer_class(foo) {
+    match l.infer_class_scoped(foo, Scope::Base) {
         ClassInference::Multiple(v) =>
             assert!(v.contains(&region) && v.contains(&district),
                 "both arg positions' domains expected, got {v:?}"),
@@ -288,7 +282,7 @@ fn infer_class_from_taxonomy() {
     let l = layer("(instance Fido Dog)");
     let fido = l.syntactic.sym_id("Fido").unwrap();
     let dog  = l.syntactic.sym_id("Dog").unwrap();
-    assert!(matches!(l.infer_class(fido), ClassInference::Single(id) if id == dog));
+    assert!(matches!(l.infer_class_scoped(fido, Scope::Base), ClassInference::Single(id) if id == dog));
 }
 
 #[test]
@@ -296,7 +290,7 @@ fn infer_class_class_symbol_returns_class() {
     let l = layer("(subclass Dog Animal)");
     // No instance edge for Dog or Animal.
     let dog = l.syntactic.sym_id("Dog").unwrap();
-    assert!(matches!(l.infer_class(dog), ClassInference::Class));
+    assert!(matches!(l.infer_class_scoped(dog, Scope::Base), ClassInference::Class));
 }
 
 // -- occurrence (instance atom) path --------------------------------------
@@ -314,7 +308,7 @@ fn infer_class_variable_in_antecedent() {
     let vars = l.syntactic.sentence_vars(root_sid);
     let (x_id, _) = vars.iter().next().expect("should have a variable");
     let dog = l.syntactic.sym_id("Dog").unwrap();
-    assert!(matches!(l.infer_class(*x_id), ClassInference::Single(id) if id == dog));
+    assert!(matches!(l.infer_class_scoped(*x_id, Scope::Base), ClassInference::Single(id) if id == dog));
 }
 
 #[test]
@@ -335,7 +329,7 @@ fn infer_class_most_specific_two_instance_atoms() {
     let vars = l.syntactic.sentence_vars(root_sid);
     let (x_id, _) = vars.iter().next().unwrap();
     let special_dog = l.syntactic.sym_id("SpecialDog").unwrap();
-    assert!(matches!(l.infer_class(*x_id), ClassInference::Single(id) if id == special_dog));
+    assert!(matches!(l.infer_class_scoped(*x_id, Scope::Base), ClassInference::Single(id) if id == special_dog));
 }
 
 // -- domain path ----------------------------------------------------------
@@ -355,7 +349,7 @@ fn infer_class_from_domain() {
     let vars = l.syntactic.sentence_vars(root_sid);
     let (x_id, _) = vars.iter().next().unwrap();
     let real_number = l.syntactic.sym_id("RealNumber").unwrap();
-    assert!(matches!(l.infer_class(*x_id), ClassInference::Single(id) if id == real_number));
+    assert!(matches!(l.infer_class_scoped(*x_id, Scope::Base), ClassInference::Single(id) if id == real_number));
 }
 
 // -- equality path --------------------------------------------------------
@@ -376,7 +370,7 @@ fn infer_class_equality_from_range() {
     let vars = l.syntactic.sentence_vars(root_sid);
     let (x_id, _) = vars.iter().next().unwrap();
     let foo = l.syntactic.sym_id("Foo").unwrap();
-    assert!(matches!(l.infer_class(*x_id), ClassInference::Single(id) if id == foo));
+    assert!(matches!(l.infer_class_scoped(*x_id, Scope::Base), ClassInference::Single(id) if id == foo));
 }
 
 #[test]
@@ -390,8 +384,8 @@ fn infer_class_relations() {
     let relation = l.syntactic.sym_id("Relation").unwrap();
     let color = l.syntactic.sym_id("color").unwrap();
     let sheen = l.syntactic.sym_id("sheen").unwrap();
-    assert!(matches!(l.infer_class(color), ClassInference::Single(id) if id == relation));
-    assert!(matches!(l.infer_class(sheen), ClassInference::Single(id) if id == relation));
+    assert!(matches!(l.infer_class_scoped(color, Scope::Base), ClassInference::Single(id) if id == relation));
+    assert!(matches!(l.infer_class_scoped(sheen, Scope::Base), ClassInference::Single(id) if id == relation));
 }
 
 #[test]
@@ -405,8 +399,8 @@ fn infer_class_multi() {
     let relation = l.syntactic.sym_id("Relation").unwrap();
     let color = l.syntactic.sym_id("color").unwrap();
     let sheen = l.syntactic.sym_id("sheen").unwrap();
-    assert!(matches!(l.infer_class(color), ClassInference::Single(id) if id == relation));
-    assert!(matches!(l.infer_class(sheen), ClassInference::Single(id) if id == relation));
+    assert!(matches!(l.infer_class_scoped(color, Scope::Base), ClassInference::Single(id) if id == relation));
+    assert!(matches!(l.infer_class_scoped(sheen, Scope::Base), ClassInference::Single(id) if id == relation));
 }
 
 #[test]
@@ -417,16 +411,16 @@ fn infer_class_unknown() {
     let color = l.syntactic.sym_id("color").unwrap();
     let red = l.syntactic.sym_id("Red").unwrap();
     let color_fn = l.syntactic.sym_id("ColorFn").unwrap();
-    assert!(matches!(l.infer_class(color), ClassInference::Unknown));
-    assert!(matches!(l.infer_class(red), ClassInference::Unknown));
-    assert!(matches!(l.infer_class(color_fn), ClassInference::Unknown));
+    assert!(matches!(l.infer_class_scoped(color, Scope::Base), ClassInference::Unknown));
+    assert!(matches!(l.infer_class_scoped(red, Scope::Base), ClassInference::Unknown));
+    assert!(matches!(l.infer_class_scoped(color_fn, Scope::Base), ClassInference::Unknown));
 
     let root_sid = l.syntactic.root_sids().into_iter()
         .find(|&sid| !l.syntactic.sentence_vars(sid).is_empty())
         .expect("a root with variables");
     let vars = l.syntactic.sentence_vars(root_sid);
     let (x_id, _) = vars.iter().next().unwrap();
-    assert!(matches!(l.infer_class(*x_id), ClassInference::Unknown));
+    assert!(matches!(l.infer_class_scoped(*x_id, Scope::Base), ClassInference::Unknown));
 }
 
 #[test]
@@ -456,7 +450,7 @@ fn infer_class_multi_result_not_domain() {
     let doctor = l.syntactic.sym_id("Doctor").unwrap();
     let bob = l.syntactic.sym_id("Bob").unwrap();
 
-    let bob_types = l.infer_class(bob);
+    let bob_types = l.infer_class_scoped(bob, Scope::Base);
 
     let ClassInference::Multiple(types) = bob_types else { panic!("Bob should have multiple class inferences") };
     assert_eq!(types.len(), 2);
@@ -483,7 +477,7 @@ fn infer_class_multi_result_domain() {
     let star = l.syntactic.sym_id("PopStar").unwrap();
     let bob = l.syntactic.sym_id("Bob").unwrap();
 
-    let bob_types = l.infer_class(bob);
+    let bob_types = l.infer_class_scoped(bob, Scope::Base);
 
     let ClassInference::Multiple(types) = bob_types else { panic!("Bob should have multiple class inferences") };
     assert_eq!(types.len(), 2);

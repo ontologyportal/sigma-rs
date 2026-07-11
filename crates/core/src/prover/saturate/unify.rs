@@ -17,6 +17,7 @@ use crate::types::SymbolId;
 
 use super::canon::canonical_slot;
 use super::clause::{AtomId, AtomTable, Term};
+use super::parked;
 
 /// Inline-capacity trail for the local-trail entry points: unification
 /// binds a handful of slots per attempt, so 16 inline elements cover
@@ -56,15 +57,17 @@ fn reslot(t: &Term, offset: u32) -> Option<Term> {
     })
 }
 
-/// Chase a variable through the substitution to its representative.
-pub(crate) fn walk<'a>(mut t: &'a Term, s: &'a Subst) -> &'a Term {
-    while let Term::Var(v) = t {
-        match s.get(*v as usize).and_then(Option::as_ref) {
-            Some(next) => t = next,
-            None => break,
+parked! {
+    /// Chase a variable through the substitution to its representative.
+    pub(crate) fn walk<'a>(mut t: &'a Term, s: &'a Subst) -> &'a Term {
+        while let Term::Var(v) = t {
+            match s.get(*v as usize).and_then(Option::as_ref) {
+                Some(next) => t = next,
+                None => break,
+            }
         }
+        t
     }
-    t
 }
 
 /// Rename-apart by slot offset, materialized.  Bindings in a `Subst`

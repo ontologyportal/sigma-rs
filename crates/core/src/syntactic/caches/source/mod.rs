@@ -458,6 +458,8 @@ impl SyntacticLayer {
     /// Bulk consumers (axiom-source index, man pages) must use this rather than
     /// `source_node_of` per root: that lookup is itself a linear scan over the
     /// forward map, so per-root calls go quadratic in KB size.
+    // Bulk consumers (axiom-source index / proof prose) are all ask-gated.
+    #[cfg(feature = "ask")]
     pub(crate) fn root_source_nodes(&self) -> Vec<(crate::SentenceId, AstNode)> {
         let mut seen = std::collections::HashSet::new();
         let mut out  = Vec::new();

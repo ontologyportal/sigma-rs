@@ -18,8 +18,12 @@ pub(crate) mod backend;
 mod env;
 
 // -- backend abstraction (always available) ---------------------------------
-pub(crate) use backend::{PersistenceBackend, PersistenceEngine};
-#[cfg(test)]
+pub(crate) use backend::PersistenceBackend;
+// The engine enum + in-memory backend are compiled unconditionally (see
+// above), but only feature-gated code imports them through this module.
+#[cfg(feature = "persist")]
+pub(crate) use backend::PersistenceEngine;
+#[cfg(all(test, feature = "persist"))]
 pub(crate) use backend::MemoryBackend;
 
 // -- LMDB storage (persist feature only) ------------------------------------

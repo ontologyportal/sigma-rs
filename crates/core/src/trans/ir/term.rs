@@ -27,6 +27,7 @@ impl VarId {
     pub fn index(self) -> u32 { self.0 }
 
     /// The TPTP identifier for this variable (`X0`, `X1`, ...).
+    #[cfg(feature = "ask")]
     pub fn tptp_name(self) -> String { format!("X{}", self.0) }
 }
 
@@ -155,15 +156,18 @@ impl Term {
     /// let vars: Vec<u32> = t.free_vars().map(|v| v.index()).collect();
     /// assert_eq!(vars, vec![0, 1]);
     /// ```
+    #[cfg(feature = "ask")]
     pub fn free_vars(&self) -> impl Iterator<Item = VarId> + '_ {
         FreeVarsIter { stack: vec![self] }
     }
 }
 
+#[cfg(feature = "ask")]
 struct FreeVarsIter<'a> {
     stack: Vec<&'a Term>,
 }
 
+#[cfg(feature = "ask")]
 impl<'a> Iterator for FreeVarsIter<'a> {
     type Item = VarId;
 

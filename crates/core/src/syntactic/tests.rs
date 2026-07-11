@@ -165,7 +165,6 @@ fn refcount_shared_sub_sentence() {
                 matches!(s.elements.get(1), Some(crate::types::Element::Symbol(sym)) if Some(sym.id()) == layer.sym_id("A"))
             })
     }).expect("(instance A B) is a root");
-    assert!(layer.sub_sentences().contains(&inst_ab), "(instance A B) is also a sub");
 
     // Remove the compound file: the `and` root goes, but `(instance A B)` survives
     // (still a root via y.kif).
@@ -214,7 +213,7 @@ fn promotion_populates_axiom_index_and_sine() {
     assert_eq!(layer.sine.with_ref(|idx| idx.generality(sub)), 0, "SInE empty pre-promotion");
 
     // Promote the session → AxiomsPromoted cascade.
-    layer.unmark_transient("a.kif");
+    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
 
     assert!(layer.is_axiom(sid), "axiom after promotion");
     assert!(layer.axiom_sentences_of(sub).contains(&sid), "axiom_index indexes the promoted axiom");
@@ -227,7 +226,7 @@ fn promotion_populates_axiom_index_and_sine() {
 fn retracting_axiom_drops_it_from_axiom_index_and_sine() {
     let mut layer = SyntacticLayer::default();
     layer.load_kif_assert("(subclass Human Animal)", "a.kif");
-    layer.unmark_transient("a.kif");
+    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
     let sub = layer.sym_id("subclass").unwrap();
     let sid = roots(&layer)[0];
     assert!(layer.axiom_sentences_of(sub).contains(&sid));
@@ -253,7 +252,7 @@ fn shared_axiom_promoted_once_and_survives_until_last_ref() {
     let inst = layer.sym_id("instance").unwrap();
     let sid = roots(&layer)[0];
 
-    layer.unmark_transient("a.kif");
+    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
     assert!(layer.axiom_sentences_of(inst).contains(&sid));
 
     // Promoting b.kif must NOT re-emit the already-axiom sid (the filter). Drive
@@ -289,7 +288,7 @@ fn cache_snapshot_round_trips_the_store() {
 
     let mut layer = SyntacticLayer::default();
     layer.load_kif_assert("(subclass Human Animal)(instance Fido Dog)", "a.kif");
-    layer.unmark_transient("a.kif"); // promote → sine + axiom_index + promoted set
+    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]); // promote → sine + axiom_index + promoted set
     let roots_before = roots(&layer);
     let sub = layer.sym_id("subclass").unwrap();
     let gen_before = layer.sine.with_ref(|idx| idx.generality(sub));

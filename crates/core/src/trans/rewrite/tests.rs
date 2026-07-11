@@ -137,7 +137,7 @@ fn substitute_var_recurses_into_sub_references() {
 
 #[test]
 fn extract_case1_rules_finds_rule_with_full_consequent() {
-    let mut syntactic = syntactic_from(
+    let syntactic = syntactic_from(
         "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))"
     );
     let pos_int_id = syntactic.sym_id("PositiveInteger")
@@ -170,7 +170,7 @@ fn extract_case1_rules_finds_rule_with_full_consequent() {
 fn extract_case1_rules_keeps_full_and_consequent() {
     let kif = "(=> (instance ?X PositiveInteger) \
                (and (instance ?X Integer) (greaterThan ?X 0)))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let pos_int_id = syntactic.sym_id("PositiveInteger")
         .expect("PositiveInteger should be interned");
     let int_id = syntactic.sym_id("Integer")
@@ -195,7 +195,7 @@ fn extract_case1_rules_keeps_full_and_consequent() {
 
 #[test]
 fn extract_case1_rules_ignores_non_numeric_class() {
-    let mut syntactic = syntactic_from("(=> (instance ?X Dog) (Animal ?X))");
+    let syntactic = syntactic_from("(=> (instance ?X Dog) (Animal ?X))");
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
     let impls = syntactic.normal_implications();
@@ -205,7 +205,7 @@ fn extract_case1_rules_ignores_non_numeric_class() {
 
 #[test]
 fn extract_case1_rules_skips_when_instance_not_in_kb() {
-    let mut syntactic = syntactic_from("(=> (P ?X) (Q ?X))");
+    let syntactic = syntactic_from("(=> (P ?X) (Q ?X))");
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
     let impls = syntactic.normal_implications();
@@ -352,7 +352,7 @@ fn augmented_sentence_is_accessible_via_sentence_method() {
 #[test]
 fn var_appears_as_predicate_direct_head_position() {
     let kif = "(=> (instance ?REL SomeClass) (?REL ?X ?Y))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let root = root_of(&syntactic);
     let root_s = syntactic.sentence(root).unwrap();
     let ant_sid = match root_s.elements.get(1) {
@@ -376,7 +376,7 @@ fn var_appears_as_predicate_direct_head_position() {
 #[test]
 fn var_appears_as_predicate_holds_style() {
     let kif = "(=> (instance ?REL SomeClass) (holds ?REL ?X ?Y))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let root = root_of(&syntactic);
     let root_s = syntactic.sentence(root).unwrap();
     let ant_sid = match root_s.elements.get(1) {
@@ -400,7 +400,7 @@ fn var_appears_as_predicate_holds_style() {
 #[test]
 fn var_appears_as_predicate_only_in_arg_position_returns_false() {
     let kif = "(=> (instance ?REL SomeClass) (arity ?REL 2))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let root = root_of(&syntactic);
     let root_s = syntactic.sentence(root).unwrap();
     let ant_sid = match root_s.elements.get(1) {
@@ -424,7 +424,7 @@ fn var_appears_as_predicate_only_in_arg_position_returns_false() {
 #[test]
 fn var_appears_as_predicate_nested_inside_and() {
     let kif = "(=> (instance ?REL SomeClass) (and (arity ?REL 2) (?REL ?X ?Y)))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let root = root_of(&syntactic);
     let root_s = syntactic.sentence(root).unwrap();
     let ant_sid = match root_s.elements.get(1) {
@@ -452,7 +452,7 @@ fn var_appears_as_predicate_nested_inside_and() {
 #[test]
 fn extract_case2_rules_finds_rule_with_predicate_variable_in_head() {
     let kif = "(=> (instance ?REL SymmetricRelation) (?REL ?X ?Y))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -481,7 +481,7 @@ fn extract_case2_rules_finds_rule_with_predicate_variable_in_head() {
 #[test]
 fn extract_case2_rules_finds_rule_with_holds_style_predicate() {
     let kif = "(=> (instance ?REL SomeClass) (holds ?REL ?X ?Y))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -495,7 +495,7 @@ fn extract_case2_rules_finds_rule_with_holds_style_predicate() {
 #[test]
 fn extract_case2_rules_ignores_numeric_class() {
     let kif = "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let pos_int_id = syntactic.sym_id("PositiveInteger").unwrap();
     let numeric_sorts = make_numeric_sorts(pos_int_id);
 
@@ -509,7 +509,7 @@ fn extract_case2_rules_ignores_numeric_class() {
 #[test]
 fn extract_case2_rules_ignores_var_not_in_head_position() {
     let kif = "(=> (instance ?REL SomeClass) (arity ?REL 2))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -634,7 +634,7 @@ fn run_rewrite_pass_case2_rule_id_does_not_collide_with_case1() {
 #[test]
 fn case1_sumo_positive_integer_axiom() {
     let kif = "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let class_id = syntactic.sym_id("PositiveInteger").unwrap();
     let numeric_sorts = make_numeric_sorts(class_id);
 
@@ -663,7 +663,7 @@ fn case1_sumo_positive_integer_axiom() {
 #[test]
 fn case1_sumo_nonnegative_integer_axiom_with_negative_bound() {
     let kif = "(=> (instance ?X NonnegativeInteger) (greaterThan ?X -1))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let class_id = syntactic.sym_id("NonnegativeInteger").unwrap();
     let numeric_sorts = make_numeric_sorts(class_id);
 
@@ -684,7 +684,7 @@ fn case1_sumo_nonnegative_integer_axiom_with_negative_bound() {
 fn case1_sumo_negative_integer_axiom_reversed_comparison() {
     // The variable appears at position 2, not position 1.
     let kif = "(=> (instance ?X NegativeInteger) (greaterThan 0 ?X))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let class_id = syntactic.sym_id("NegativeInteger").unwrap();
     let numeric_sorts = make_numeric_sorts(class_id);
 
@@ -700,7 +700,7 @@ fn case1_sumo_positive_real_biconditional_yields_one_rule() {
     let kif = "(<=> (instance ?NUMBER PositiveRealNumber)
                     (and (greaterThan ?NUMBER 0)
                          (instance ?NUMBER RealNumber)))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let pos_real_id = syntactic.sym_id("PositiveRealNumber").unwrap();
     let real_id     = syntactic.sym_id("RealNumber").unwrap();
     let numeric_sorts = EagerMap::new(&CacheConfig::default(), NumericSorts);
@@ -797,7 +797,7 @@ fn case1_sumo_nonneg_real_biconditional_augments_target() {
 #[test]
 fn case2_sumo_reflexive_relation_axiom() {
     let kif = "(=> (instance ?REL ReflexiveRelation) (?REL ?INST ?INST))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -821,7 +821,7 @@ fn case2_sumo_irreflexive_relation_axiom_forall_not() {
     let kif = "(=> (instance ?REL IrreflexiveRelation)
                    (forall (?INST)
                       (not (?REL ?INST ?INST))))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -836,7 +836,7 @@ fn case2_sumo_symmetric_relation_axiom_forall_nested_implication() {
                    (forall (?INST1 ?INST2)
                       (=> (?REL ?INST1 ?INST2)
                           (?REL ?INST2 ?INST1))))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -854,7 +854,7 @@ fn case2_sumo_transitive_relation_axiom_forall_and_body() {
                       (=> (and (?REL ?INST1 ?INST2)
                                (?REL ?INST2 ?INST3))
                           (?REL ?INST1 ?INST3))))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 
@@ -870,7 +870,7 @@ fn case2_sumo_antisymmetric_relation_axiom_full_form() {
                       (=> (and (?REL ?INST1 ?INST2)
                                (?REL ?INST2 ?INST1))
                           (equal ?INST1 ?INST2))))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let numeric_sorts: EagerMap<NumericSorts> =
         EagerMap::new(&CacheConfig::default(), NumericSorts);
 

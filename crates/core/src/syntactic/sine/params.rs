@@ -146,6 +146,7 @@ impl SineParams {
 
 /// Budget multiplier for each autoscale step (widen ×, narrow ÷).
 /// `SINE_SCALE_FACTOR`, default `2`.
+#[cfg(feature = "ask")]
 pub fn scale_factor() -> usize {
     option_env!("SINE_SCALE_FACTOR").and_then(|s| s.parse().ok()).filter(|&f| f >= 2).unwrap_or(2)
 }
@@ -153,17 +154,20 @@ pub fn scale_factor() -> usize {
 /// Give-up threshold for the widen path: stop after this many consecutive
 /// under-selection verdicts (disproof / saturation) that fail to prove.
 /// `SINE_MAX_DISPROOFS`, default `6`.
+#[cfg(feature = "ask")]
 pub fn scale_max_disproofs() -> usize {
     option_env!("SINE_MAX_DISPROOFS").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(6)
 }
 
 /// Number of full-length prover runs the total timeout is split across for
 /// the narrow path.  `SINE_MAX_TIME_RUNS`, default `4`.
+#[cfg(feature = "ask")]
 pub fn scale_max_time_runs() -> usize {
     option_env!("SINE_MAX_TIME_RUNS").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(4)
 }
 
 /// Floor on the axiom budget when narrowing.  `SINE_MIN_BUDGET`, default `64`.
+#[cfg(feature = "ask")]
 pub fn scale_min_budget() -> usize {
     option_env!("SINE_MIN_BUDGET").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(64)
 }
@@ -172,6 +176,7 @@ pub fn scale_min_budget() -> usize {
 /// schema if more than this many of the problem's relations are instances of
 /// its guard class (prevents a broad guard class from bloating the axiom set
 /// even within a single problem).  `SINE_PREDVAR_CAP`, default `32`.
+#[cfg(feature = "ask")]
 pub fn scale_predvar_cap() -> usize {
     option_env!("SINE_PREDVAR_CAP").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(32)
 }

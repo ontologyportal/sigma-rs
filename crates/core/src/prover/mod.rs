@@ -18,6 +18,15 @@ pub mod axiom_source;
 
 pub(crate) mod scale;
 
+/// Marks intentionally-parked items — written for a planned prover
+/// capability but not wired into the live search yet — so they compile
+/// warning-free while staying grep-able. Unwrapping an item is the
+/// signal that it went live.
+macro_rules! parked {
+    ($($item:item)*) => { $(#[allow(dead_code)] $item)* };
+}
+pub(crate) use parked;
+
 pub use result::*;
 #[cfg(feature = "native-prover")]
 pub use saturate::ProverLayer;

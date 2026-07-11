@@ -44,7 +44,6 @@ pub(crate) struct SentenceSide {
     /// be a sub.  Read via `root_sids` / `num_roots`.
     roots:           DashSet<SentenceId>,
     /// Sentence ids referenced as a sub by ≥1 parent.  A sub may also be a root.
-    /// Read via `sub_sentences`.
     subs:            DashSet<SentenceId>,
     /// Per-root recorded sub-sentence ids.  Read via `subs_of`.
     sentence_subs:   DashMap<SentenceId, Vec<SentenceId>>
@@ -161,19 +160,14 @@ impl EagerMapBehavior for SentenceCache {
                 if !removed.is_empty() {
                     let referenced  = parent.sentences.referenced_symbols();
                     let removed_syms = parent.symbols.retain_referenced(&referenced);
-                    let first_sid = removed.first().map(|r| r.sid);
                     for r in removed {
                         out.push(Event::RootRemoved { sid: r.sid, sentences: r.sentences });
                     }
-                    if let Some(sid) = first_sid {
-                        if !removed_syms.is_empty() {
-                            // Orphaned symbols are batch-global; attribute them to
-                            // the first removed root.
-                            out.push(Event::SymbolsRetracted {
-                                sid,
-                                syms: removed_syms.into_iter().collect(),
-                            });
-                        }
+                    if !removed_syms.is_empty() {
+                        // Orphaned symbols are batch-global.
+                        out.push(Event::SymbolsRetracted {
+                            syms: removed_syms.into_iter().collect(),
+                        });
                     }
                 }
             }
@@ -222,12 +216,6 @@ impl SyntacticLayer {
         self.sentences.entries().get(&sid)
     }
 
-    /// The sub-sentence ids: every sentence referenced as a sub by ≥1 parent.
-    /// Under content-addressing a sentence can be *both* a root and a sub.
-    pub(crate) fn sub_sentences(&self) -> HashSet<SentenceId> {
-        self.sentences.side().subs.iter().map(|r| *r).collect()
-    }
-
     /// Every root sentence id (source-backed roots).
     pub(crate) fn root_sids(&self) -> Vec<SentenceId> {
         self.sentences.side().roots.iter().map(|r| *r).collect()
@@ -250,6 +238,8 @@ impl SyntacticLayer {
 
     /// A snapshot of the whole `forward` map (`fingerprint -> roots`), for
     /// bulk provenance.
+    // Sole caller is the ask-gated `root_source_nodes` bulk walk.
+    #[cfg(feature = "ask")]
     pub(crate) fn fingerprint_roots(&self) -> Vec<(u64, Vec<SentenceId>)> {
         self.sentences.side().forward.iter()
             .map(|e| (*e.key(), e.value().to_vec()))

@@ -10,8 +10,8 @@
 //
 //   * **source** — the original `AstNode`(s) the sentence was built from, as
 //     parsed.  A sentence can have several sources (logical equivalence / dedup
-//     collapse to one content-addressed id), so [`SyntacticLayer::display_source`]
-//     can render all of them grouped, or just the first.
+//     collapse to one content-addressed id), so
+//     [`SyntacticLayer::display_source_pretty`] renders all of them grouped.
 
 use crate::AstNode;
 use crate::parse::Span;
@@ -22,12 +22,10 @@ use super::SyntacticLayer;
 
 // -- Source vs. normalized views ----------------------------------------------
 
-/// How [`SyntacticLayer::display_source`] renders a sentence's provenance.
+/// How [`SyntacticLayer::display_source_pretty`] renders a sentence's provenance.
 pub(crate) enum SourceMode {
-    /// Every source formula that produced the sentence, grouped (the default).
+    /// Every source formula that produced the sentence, grouped.
     All,
-    /// Only the first source formula (by fingerprint order).
-    First,
 }
 
 impl SyntacticLayer {
@@ -68,21 +66,16 @@ impl SyntacticLayer {
         sentence_to_plain_kif(sid, self)
     }
 
-    /// Render the **source** formula(s) `sid` was built from, as parsed.
+    /// Render the **source** formula(s) `sid` was built from, as parsed, with
+    /// each source formula ANSI-colour pretty-printed (`pretty_print`).  Used
+    /// by diagnostic output so the offending KIF is syntax-highlighted on
+    /// screen, consistent with the rest of the tool.
     ///
     /// A content-addressed sentence can be produced by several source formulas
     /// (e.g. `(<=> A B)` and a separate `(=> A B)` both yield `(=> A B)`).
-    /// [`SourceMode::All`] groups them (each under a `; source i/n` header);
-    /// [`SourceMode::First`] shows one.  Falls back to the normalized form when
-    /// no source is recorded (a synthetic sentence).
-    pub(crate) fn display_source(&self, sid: SentenceId, mode: SourceMode) -> String {
-        self.display_source_styled(sid, mode, false)
-    }
-
-    /// Like [`Self::display_source`], but rendering each source formula with
-    /// ANSI-coloured pretty-printing (`pretty_print`) instead of plain text.
-    /// Used by diagnostic output so the offending KIF is syntax-highlighted on
-    /// screen, consistent with the rest of the tool.
+    /// [`SourceMode::All`] groups them (each under a `; source i/n` header).
+    /// Falls back to the normalized form when no source is recorded (a
+    /// synthetic sentence).
     pub(crate) fn display_source_pretty(&self, sid: SentenceId, mode: SourceMode) -> String {
         self.display_source_styled(sid, mode, true)
     }
@@ -90,8 +83,7 @@ impl SyntacticLayer {
     fn display_source_styled(&self, sid: SentenceId, mode: SourceMode, color: bool) -> String {
         let fps = self.source_fingerprints(sid);
         let nodes: Vec<AstNode> = match mode {
-            SourceMode::First => fps.iter().take(1).filter_map(|fp| self.source_ast(*fp)).collect(),
-            SourceMode::All   => fps.iter().filter_map(|fp| self.source_ast(*fp)).collect(),
+            SourceMode::All => fps.iter().filter_map(|fp| self.source_ast(*fp)).collect(),
         };
         let render = |n: &AstNode| if color { n.pretty_print(0) } else { n.format_plain(0) };
 

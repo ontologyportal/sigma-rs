@@ -8,6 +8,11 @@ pub mod validate;
 pub mod query;
 pub mod taxonomy;
 pub(crate) mod render;
+// Only the native prover's theory oracle reaches most of this module, but
+// `TaxonomyRoles` itself (the field below, `tax_role_of`, `domain_role`,
+// `range_role`, `query.rs`) is referenced unconditionally, so the module
+// cannot be cfg'd out wholesale — suppress dead_code instead.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) mod roles;
 
 use crate::syntactic::SyntacticLayer;
@@ -34,13 +39,18 @@ use caches::trans_reach::TransReach;
 
 /// Middle layer of the KB stack, owning the [`SyntacticLayer`] and providing
 /// the semantic queries built on top of it.
+///
+/// Nominally `pub` but unnameable outside the crate (the `semantics` module
+/// is `pub(crate)`): the pub-in-private-module pattern, so the `pub`
+/// [`TopLayer`](crate::layer::TopLayer) methods can mention it without
+/// tripping `private_interfaces`.
 #[derive(Debug)]
-pub(crate) struct SemanticLayer {
+pub struct SemanticLayer {
     /// Inner layer: raw parse store.
-    pub syntactic:            SyntacticLayer,
+    pub(crate) syntactic:     SyntacticLayer,
 
     /// Taxonomy edges, eagerly maintained.  See [`caches::tax_edges`].
-    pub tax_edges:            EagerMap<TaxEdges>,
+    pub(crate) tax_edges:     EagerMap<TaxEdges>,
 
     /// Whether a symbol is an instance.  See [`caches::is_instance`].
     pub(crate) is_instance:   Cache<IsInstance>,
@@ -143,6 +153,7 @@ impl SemanticLayer {
     /// installed), then rebuild the taxonomy so the renamed edges are
     /// classified.  Idempotent.  Must run after the ontology is loaded, as it
     /// scans the full root set.
+    #[cfg(feature = "native-prover")]
     pub(crate) fn ensure_taxonomy_roles(&self) {
         if self.tax_roles.get().is_some() {
             return;
@@ -157,12 +168,15 @@ impl SemanticLayer {
     }
 
     /// The recognized roles, if installed.
+    // Called unconditionally from `query.rs` (a path only live under
+    // native-prover), so it must stay compiled in every build.
+    #[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
     pub(crate) fn recognized_roles(&self) -> Option<crate::semantics::roles::TaxonomyRoles> {
         self.tax_roles.get().copied()
     }
 
     /// The `domain` relation head id — recognized (renamed dialect) or the
-    /// default `hash_name("domain")` (== `DOMAIN_RELATION.id()`).
+    /// default `hash_name("domain")`.
     pub(crate) fn domain_role(&self) -> SymbolId {
         self.tax_roles.get().map_or_else(
             || crate::semantics::roles::TaxonomyRoles::default().domain,
@@ -180,6 +194,7 @@ impl SemanticLayer {
 
     /// Re-prime the taxonomy adjacency (and drop the lazy caches derived
     /// from it) so a newly-installed role vocabulary takes effect.
+    #[cfg(feature = "native-prover")]
     fn rebuild_taxonomy(&self) {
         self.tax_edges.side().clear();
         self.tax_edges.clear();

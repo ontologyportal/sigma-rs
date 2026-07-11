@@ -42,6 +42,7 @@ impl Sort {
     /// let animal = Sort::new("animal");
     /// assert_eq!(animal.tptp_name(), "animal");
     /// ```
+    #[cfg(feature = "ask")]
     pub fn new(name: &str) -> Self {
         Self { name: name.to_string(), is_builtin: false }
     }
@@ -59,6 +60,7 @@ impl Sort {
     pub fn rational() -> Self { Self::builtin("$rat") }
 
     /// Returns the Boolean sort (`$o`).
+    #[cfg(feature = "ask")]
     pub fn bool() -> Self { Self::builtin("$o") }
 
     fn builtin(name: &str) -> Self {

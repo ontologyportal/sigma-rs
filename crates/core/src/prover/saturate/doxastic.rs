@@ -56,7 +56,7 @@ use std::collections::HashSet;
 
 use crate::SentenceId;
 use crate::progress::ProveCtx;
-use crate::prover::{ProverResult, ProverStatus, TerminationReason};
+use crate::prover::{ProverResult, ProverStatus};
 use crate::semantics::types::Scope;
 
 use super::{Conjecture, ProverLayer};

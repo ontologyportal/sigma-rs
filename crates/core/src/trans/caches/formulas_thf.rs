@@ -77,6 +77,7 @@ impl CacheBehavior for FormulasThf {
 
 impl TranslationLayer {
     /// The [`ThfEntry`] for `sid`, lowering and caching on miss.
+    #[cfg(feature = "ask")]
     pub(crate) fn formula_thf(&self, sid: SentenceId) -> ThfEntry {
         self.formulas_thf.get(self, sid)
     }

@@ -10,9 +10,6 @@
 //! polynomial-multiply instruction (ARM PMULL / x86 PCLMULQDQ) with a
 //! portable shift/XOR loop as fallback.
 
-/// Low part of the reduction polynomial: x⁶⁴ ≡ x⁴ + x³ + x + 1.
-const POLY_LOW: u64 = (1 << 4) | (1 << 3) | (1 << 1) | 1;
-
 /// Carryless (polynomial) multiply of two 64-bit polynomials → 128 bits.
 ///
 /// Dispatches to the hardware polynomial-multiply instruction (ARM `PMULL`
@@ -145,6 +142,7 @@ pub(crate) fn cube(a: u64) -> u64 {
 /// Multiplicative inverse via Fermat: a⁻¹ = a^(2⁶⁴ − 2).
 ///
 /// Panics in debug builds on a zero input; callers must guard against it.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn inv(a: u64) -> u64 {
     debug_assert_ne!(a, 0, "gf64: inverse of zero");
     let mut result = 1u64;
@@ -162,6 +160,7 @@ pub(crate) fn inv(a: u64) -> u64 {
 
 /// Field division: a / b = a · b⁻¹.
 #[inline]
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn div(a: u64, b: u64) -> u64 {
     mul(a, inv(b))
 }
@@ -170,6 +169,7 @@ pub(crate) fn div(a: u64, b: u64) -> u64 {
 /// inverse using one Fermat inversion plus 3(n−1) multiplies.
 ///
 /// All inputs must be nonzero.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn batch_inv(xs: &mut [u64]) {
     match xs.len() {
         0 => return,
@@ -201,17 +201,17 @@ pub(crate) fn batch_inv(xs: &mut [u64]) {
 // z and z ⊕ 1.
 
 /// Precomputed solver for z² ⊕ z = c over GF(2⁶⁴).
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 struct QuadSolver {
     /// Row transform: echelon row r = XOR of the original equations
     /// selected by `transform[r]`'s bits.  Original equation r is
     /// "output bit r", so applying to a rhs c is `parity(transform[r] & c)`.
     transform: [u64; 64],
-    /// RREF rows over the 64 unknowns (bit i = coefficient of zᵢ).
-    rows: [u64; 64],
     /// Pivot column of each non-zero RREF row (u8::MAX = zero row).
     pivot: [u8; 64],
 }
 
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 impl QuadSolver {
     fn build() -> Self {
         // Column i of L = L(xⁱ) = (xⁱ)² ⊕ xⁱ.
@@ -255,7 +255,7 @@ impl QuadSolver {
         }
         // L's kernel is exactly {0, 1}: rank must be 63.
         debug_assert_eq!(rank, 63, "gf64: z²+z must have rank 63");
-        Self { transform, rows, pivot }
+        Self { transform, pivot }
     }
 
     /// One root of z² ⊕ z = c, or `None` when c is not in the image
@@ -286,6 +286,7 @@ impl QuadSolver {
 
 /// In-place 64×64 bit-matrix transpose: after the call, bit j of row i =
 /// the old bit i of row j.  Involutive.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 fn transpose64(a: &mut [u64; 64]) {
     transpose64_hd(a);
     let mut b = [0u64; 64];
@@ -297,6 +298,7 @@ fn transpose64(a: &mut [u64; 64]) {
 
 /// Bit-matrix transpose kernel: bit j of row i = old bit (63−i) of
 /// row (63−j).
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 fn transpose64_hd(a: &mut [u64; 64]) {
     let mut j = 32usize;
     let mut m: u64 = 0x0000_0000_FFFF_FFFF;
@@ -313,6 +315,7 @@ fn transpose64_hd(a: &mut [u64; 64]) {
     }
 }
 
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 impl QuadSolver {
     /// Bitsliced batch solve of z² ⊕ z = c for 64 right-hand sides at once.
     ///
@@ -349,6 +352,7 @@ impl QuadSolver {
     }
 }
 
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 fn solver() -> &'static QuadSolver {
     use std::sync::OnceLock;
     static SOLVER: OnceLock<QuadSolver> = OnceLock::new();
@@ -358,6 +362,7 @@ fn solver() -> &'static QuadSolver {
 /// Roots of z² ⊕ e1·z ⊕ e2 = 0 (e1 ≠ 0).
 ///
 /// Returns the pair, or `None` when the quadratic has no roots in the field.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn quad_roots(e1: u64, e2: u64) -> Option<(u64, u64)> {
     debug_assert_ne!(e1, 0);
     let c = div(e2, sq(e1));
@@ -403,6 +408,7 @@ impl Sketch {
 
 /// Result of decoding a residual sketch with a known expected count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) enum Decoded {
     /// Zero unknowns: the residual must be exactly zero.
     None,
@@ -422,6 +428,7 @@ pub(crate) enum Decoded {
 /// - `expected == 2`: sum e1 = `s1`, product e2 = (s3 ⊕ e1³) / e1; the coins
 ///   are the roots of z² ⊕ e1·z ⊕ e2.
 /// - `expected >= 3`: beyond this sketch's capacity, so [`Decoded::Fail`].
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn decode(r: Sketch, expected: u32) -> Decoded {
     match expected {
         0 => {
@@ -459,6 +466,7 @@ pub(crate) fn decode(r: Sketch, expected: u32) -> Decoded {
 
 /// Batch size from which the bitsliced quadratic solver beats per-element
 /// scalar solves.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 const BITSLICE_MIN: usize = 16;
 
 /// Batched [`decode`], exactly equivalent to mapping the scalar `decode`
@@ -468,6 +476,7 @@ const BITSLICE_MIN: usize = 16;
 /// - `expected == 2`: each element's two divisions ride one Montgomery
 ///   batch inversion, and the quadratic solves go through the bitsliced
 ///   block solver once the batch reaches [`BITSLICE_MIN`].
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn decode_batch(rs: &[Sketch], expected: u32, out: &mut Vec<Decoded>) {
     out.clear();
     if expected != 2 || rs.len() < 2 {
@@ -703,8 +712,8 @@ mod tests {
     fn mul_known_vectors() {
         // x · x = x²
         assert_eq!(mul(2, 2), 4);
-        // x⁶³ · x = x⁶⁴ ≡ x⁴+x³+x+1
-        assert_eq!(mul(1 << 63, 2), POLY_LOW);
+        // x⁶³ · x = x⁶⁴ ≡ x⁴+x³+x+1 (the reduction polynomial's low part)
+        assert_eq!(mul(1 << 63, 2), (1 << 4) | (1 << 3) | (1 << 1) | 1);
         // 1 is the multiplicative identity
         assert_eq!(mul(1, 0xDEAD_BEEF_CAFE_F00D), 0xDEAD_BEEF_CAFE_F00D);
         // 0 annihilates

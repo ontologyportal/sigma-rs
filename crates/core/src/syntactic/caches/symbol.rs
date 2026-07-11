@@ -105,9 +105,6 @@ impl EagerMap<SymbolCache> {
 }
 
 impl SyntacticLayer {
-    /// Whether `id` is a known symbol.
-    pub(crate) fn has_symbol(&self, id: SymbolId) -> bool { self.symbols.has_symbol(id) }
-
     /// The id for `name`, if it has been interned.
     pub(crate) fn sym_id(&self, name: &str) -> Option<SymbolId> { self.symbols.sym_id(name) }
 
@@ -116,8 +113,4 @@ impl SyntacticLayer {
 
     /// Whether a given [`SymbolId`] is a CNF-generated Skolem symbol.
     pub(crate) fn is_skolem(&self, id: SymbolId) -> bool { self.symbols.is_skolem(id) }
-
-    /// Arity of a Skolem function symbol; [`None`] for Skolem constants and for
-    /// ordinary (non-Skolem) symbols.
-    pub(crate) fn skolem_arity(&self, id: SymbolId) -> Option<usize> { self.symbols.skolem_arity(id) }
 }

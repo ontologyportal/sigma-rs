@@ -6,14 +6,12 @@
 //! provenance, symbols, sessions/axiom status, and the eager indices/taxonomy —
 //! round-trips through the one backend-agnostic seam.
 
-use std::path::PathBuf;
 
 use crate::SentenceId;
 use crate::persist::{LmdbEnv, PersistenceEngine};
 use crate::progress::{DynSink, SinkGuard};
 use crate::semantics::SemanticLayer;
 use crate::Diagnostic;
-use crate::types::SourceFile;
 use crate::layer::TopLayer;
 
 use super::KnowledgeBase;

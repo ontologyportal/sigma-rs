@@ -11,23 +11,6 @@
 use crate::OpKind;
 use crate::parse::{AstNode, Span};
 
-/// Dedup key for a concrete (variable-free) normalized root.
-///
-/// Returns `None` if `node` contains any variable anywhere; otherwise the
-/// span-independent [`AstNode::fingerprint`].
-pub(crate) fn concrete_fingerprint(node: &AstNode) -> Option<u64> {
-    if has_variable(node) { None } else { Some(node.fingerprint()) }
-}
-
-/// Whether `node` contains any variable (regular or row) in its subtree.
-fn has_variable(node: &AstNode) -> bool {
-    match node {
-        AstNode::Variable { .. } | AstNode::RowVariable { .. } => true,
-        AstNode::List { elements, .. } => elements.iter().any(has_variable),
-        _ => false,
-    }
-}
-
 /// Associatively flatten nested `and` / `or` connectives throughout the tree:
 /// `(and (and (and A B) C) D)` → `(and A B C D)`, `(or (or A B) C)` →
 /// `(or A B C)`.  Only a connective nested directly under the same connective is
@@ -539,15 +522,5 @@ mod tests {
     fn split_passes_through_non_and() {
         assert_eq!(split("(instance Fido Dog)").len(), 1);
         assert_eq!(split("(=> (p ?x) (q ?x))").len(), 1);
-    }
-
-    #[test]
-    fn concrete_fingerprint_some_for_variable_free() {
-        assert!(concrete_fingerprint(&parse_one("(instance Fido Dog)")).is_some());
-    }
-
-    #[test]
-    fn concrete_fingerprint_none_for_variable_bearing() {
-        assert!(concrete_fingerprint(&parse_one("(=> (P ?X) (Q ?X))")).is_none());
     }
 }

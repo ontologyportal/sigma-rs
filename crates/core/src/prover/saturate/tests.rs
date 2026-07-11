@@ -1346,7 +1346,7 @@ fn native_stack_smoke() {
     let animal = syn.sym_id("Animal").expect("Animal interned");
     let fido = syn.sym_id("Fido").expect("Fido interned");
     assert!(kb.semantic().has_ancestor(dog, animal), "taxonomy edge live");
-    assert!(kb.semantic().reaches_via_instance(fido, dog), "instance live");
+    assert!(kb.semantic().has_ancestor(fido, dog), "instance live");
 
     // SInE selection over the promoted axioms.
     assert_eq!(kb.sine_axiom_count(), 3);
@@ -1748,7 +1748,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn horn_chain_is_proved_with_proof() {
-        let mut kb = kb_from("
+        let kb = kb_from("
             (instance Corleone Mafioso)
             (=> (instance ?X Mafioso) (criminal ?X))
             (=> (criminal ?X) (suspect ?X))
@@ -1773,7 +1773,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn non_theorem_saturates_to_disproved() {
-        let mut kb = kb_from("
+        let kb = kb_from("
             (instance Rex Dog)
             (=> (instance ?X Cat) (meows ?X))
         ");
@@ -1787,7 +1787,7 @@ fn native_stack_smoke() {
     fn oracle_discharge_appears_in_proof_with_fact_sids() {
         // The rule needs (instance ?X Dog); Fido is a Puppy, a subclass
         // of Dog — only the oracle's taxonomy closure bridges the gap.
-        let mut kb = kb_from("
+        let kb = kb_from("
             (subclass Puppy Dog)
             (instance Fido Puppy)
             (=> (instance ?X Dog) (barks ?X))
@@ -1816,14 +1816,14 @@ fn native_stack_smoke() {
 
     #[test]
     fn consistency_check_native() {
-        let mut kb = kb_from("
+        let kb = kb_from("
             (instance Rex Dog)
             (=> (instance ?X Dog) (barks ?X))
         ");
         let res = kb.check_satisfiable(fast());
         assert_eq!(res.status, ProverStatus::Consistent, "raw: {}", res.raw_output);
 
-        let mut kb2 = kb_from("
+        let kb2 = kb_from("
             (barks Rex)
             (not (barks Rex))
         ");
@@ -1845,7 +1845,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn parse_error_maps_to_input_error() {
-        let mut kb = kb_from("(instance Rex Dog)");
+        let kb = kb_from("(instance Rex Dog)");
         let res = kb.ask_query("(broken (", None, SineParams::default(), fast());
         assert_eq!(res.status, ProverStatus::InputError);
         // And the failed parse left no residue: a follow-up ask works.
@@ -1861,7 +1861,7 @@ fn native_stack_smoke() {
     // conjunction (TQG7's shape, caught via a planted false conjunct).
     #[test]
     fn conjunction_with_unprovable_conjunct_is_not_proved() {
-        let mut kb = kb_from("(instance Rex Dog)");
+        let kb = kb_from("(instance Rex Dog)");
         let res = kb.ask_query(
             "(and (instance Rex Dog) (instance Rex Cat))",
             None, SineParams::default(), fast());
@@ -2306,7 +2306,7 @@ fn native_stack_smoke() {
                     (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
                     (=> (instance ?X Cat) (meows ?X))";
 
-        let mut kb_on = kb_from(kif);
+        let kb_on = kb_from(kif);
         let mut opts_on = fast();
         opts_on.strategy = crate::saturate::strategy::Strategy::base();
         opts_on.strategy.semantic_guide = true;
@@ -2319,7 +2319,7 @@ fn native_stack_smoke() {
         assert!(on.raw_output.contains("0 guide_disabled_bail"),
             "a tiny KB's model build must not bail: {}", on.raw_output);
 
-        let mut kb_off = kb_from(kif);
+        let kb_off = kb_from(kif);
         let off = kb_off.ask_query("(meows Fido)", None, SineParams::default(), fast());
         assert_eq!(off.status, ProverStatus::Disproved, "guide off: {}", off.raw_output);
         assert!(off.raw_output.contains("0 guided_clauses_scored"),
@@ -2752,7 +2752,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn quoted_binders_resist_capture() {
-        let mut kb = kb_from("(believes John (forall (?X) (loves ?X Mary)))");
+        let kb = kb_from("(believes John (forall (?X) (loves ?X Mary)))");
         // The alpha-variant IS the same quote — proves.
         let yes = kb.ask_query("(believes John (forall (?W) (loves ?W Mary)))",
             None, SineParams::default(), fast());
@@ -2770,7 +2770,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn quoted_compound_binds_through_predicate_variable_rules() {
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(believes John (and (shape Earth Flat) (orbits Earth Sun)))\n\
              (=> (believes John ?P) (interested John ?P))");
         let asked = kb.ask_query(
@@ -2795,7 +2795,7 @@ fn native_stack_smoke() {
     fn modal_k_distributes_believed_conjunction() {
         // Formula domain declared → the K schema injects; each conjunct
         // of a believed conjunction becomes derivable.
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(domain believes 2 Formula)\n\
              (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
         let a = kb.ask_query("(believes John (shape Earth Flat))",
@@ -2815,7 +2815,7 @@ fn native_stack_smoke() {
         // No Formula domain declaration → NO injection: the THF chip's
         // bug class (it injects on the relation NAME alone), tested
         // natively — same KB as above minus the `domain` axiom.
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(believes John (and (shape Earth Flat) (orbits Earth Sun)))");
         let no = kb.ask_query("(believes John (shape Earth Flat))",
             None, SineParams::default(), fast());
@@ -2826,7 +2826,7 @@ fn native_stack_smoke() {
     fn modal_k_accepts_formula_descendant_domain_for_knows() {
         // A Formula DESCENDANT class qualifies too (the ho_signatures
         // `is_formula_class` rule), and `knows` gets the same schema.
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(subclass EpistemicFormula Formula)\n\
              (domain knows 2 EpistemicFormula)\n\
              (knows Alice (and (p A) (q B)))");
@@ -2842,7 +2842,7 @@ fn native_stack_smoke() {
     fn modal_k_strategy_off_switch_disables_injection() {
         // The `Strategy.modal_k` knob (env: SIGMA_NO_MODAL_K) gates the
         // whole mechanism.
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(domain believes 2 Formula)\n\
              (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
         let mut opts = fast();
@@ -2994,7 +2994,7 @@ fn native_stack_smoke() {
 
     #[test]
     fn kappa_comprehension_proves_both_directions() {
-        let mut kb = kb_from(
+        let kb = kb_from(
             "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))\n\
              (instance Fido Dog)\n\
              (attribute Fido Brown)\n\

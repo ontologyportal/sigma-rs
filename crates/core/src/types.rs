@@ -18,7 +18,7 @@ pub(crate) use crate::syntactic::caches::session::SessionId;
 pub use crate::semantics::types::{DocEntry, TaxDirection, TaxRelation};
 #[allow(unused_imports)]
 pub(crate) use crate::semantics::types::{
-    ClassInference, RelationDomain, RelationRange, RelationRelation,
+    ClassInference, RelationDomain, RelationRange,
 };
 
 #[allow(unused_imports)]

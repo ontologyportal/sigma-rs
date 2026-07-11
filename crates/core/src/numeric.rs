@@ -37,6 +37,7 @@ pub(crate) fn eval_binary_fn(name: &str, x: f64, y: f64) -> Option<f64> {
 
 /// Decide one of SUMO's comparison predicates over ground numeric
 /// arguments.  `None` ⇒ not a comparison predicate.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn eval_compare(name: &str, x: f64, y: f64) -> Option<bool> {
     Some(match name {
         "greaterThan"          => x > y,
@@ -49,6 +50,7 @@ pub(crate) fn eval_compare(name: &str, x: f64, y: f64) -> Option<bool> {
 
 /// The equality-class key for a numeric literal: a hash of the canonical
 /// rendering in its own namespace, disjoint from symbol-name hashes.
+#[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn num_eq_key(s: &str) -> Option<u64> {
     let v = parse_num(s)?;
     Some(xxhash_rust::xxh64::xxh64(

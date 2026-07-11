@@ -11,7 +11,9 @@
 // here so the CLI / `serve` / audit callers are unaffected; the layer
 // `prove_once` calls them directly off `self.semantic().syntactic`.
 
-use std::collections::{HashMap, HashSet};
+#[cfg(feature = "ask")]
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::profile_span;
 use crate::progress::ProveCtx;
@@ -24,6 +26,7 @@ use super::SyntacticLayer;
 /// ([`SyntacticLayer::select_axioms`]).  The SInE tolerance/budget live in
 /// [`SineParams`]; these are the augmentation toggles each prover sets from its
 /// own opts (native: `Strategy`; external: defaults — it wants Liu too).
+#[cfg(feature = "ask")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SelectionParams {
     /// Drop bookkeeping-head sentences (`documentation`, `termFormat`, …).
@@ -36,6 +39,7 @@ pub(crate) struct SelectionParams {
     pub liu_top_k:   usize,
 }
 
+#[cfg(feature = "ask")]
 impl Default for SelectionParams {
     fn default() -> Self {
         Self { head_filter: true, liu_rescue: true, liu_rounds: 1, liu_top_k: 32 }
@@ -52,6 +56,7 @@ impl SyntacticLayer {
     /// definitional completion.  Each backend then applies its own augmentation
     /// (native: def-completion; external: synthetic-replacement / predvar /
     /// taxonomy-closure injection).
+    #[cfg(feature = "ask")]
     pub(crate) fn select_relevant(
         &self,
         seed:   &HashSet<SymbolId>,
@@ -163,6 +168,7 @@ impl SyntacticLayer {
     /// relation.  Ranks axioms by shared predicate-position symbols weighted
     /// by inverse generality; `rounds` iterates the expansion, each adding at
     /// most `top_k`.  Returns the additions; `selected` is not mutated.
+    #[cfg(feature = "ask")]
     pub(crate) fn structural_include(
         &self,
         seed:     &HashSet<SymbolId>,

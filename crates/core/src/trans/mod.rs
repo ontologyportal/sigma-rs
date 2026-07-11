@@ -16,6 +16,7 @@ pub mod caches;
 pub mod sort;
 pub(crate) mod lower_thf;
 pub(crate) mod term_sorts;
+#[cfg(feature = "ask")]
 pub(crate) mod poly_expand;
 pub mod arith;
 pub mod literal;
@@ -30,6 +31,9 @@ pub(crate) mod lower;
 pub use sort::Sort;
 pub use caches::sort_annotations::SortAnnotation;
 pub use errors::TranslationError;
+// Consumed only by the integrated-prover binding extractor
+// (prover/external/backends/vampire/bindings.rs).
+#[cfg(feature = "integrated-prover")]
 pub use lower::QueryVarMap;
 pub(crate) use types::CachedFormula;
 

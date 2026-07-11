@@ -42,6 +42,10 @@ pub mod strategy;
 #[cfg(test)]
 mod tests;
 
+// `parked!` lives one level up (crate::prover) so the external-prover
+// backends can use it too; re-exported here for the saturate modules.
+pub(crate) use super::parked;
+
 use super::ProvingLayer;
 pub(crate) use super::Conjecture;
 

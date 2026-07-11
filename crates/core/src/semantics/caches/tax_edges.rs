@@ -66,6 +66,7 @@ impl TaxEdgesSide {
     }
 
     /// Drop all edge records and overlay refcounts, resetting the side to empty.
+    #[cfg(feature = "native-prover")]
     pub(crate) fn clear(&self) {
         self.edges.clear();
         self.session_overlay.clear();
