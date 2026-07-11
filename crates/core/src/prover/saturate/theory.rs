@@ -220,13 +220,15 @@ pub(crate) trait TheoryOracle {
     fn add_neg_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>);
 
     /// Union two ground equality-class keys (smallest id becomes
-    /// representative).
-    fn add_equality(&mut self, a: SymbolId, b: SymbolId);
+    /// representative).  `src`, when given, is the deriving clause id —
+    /// recorded so `eq_explain` can cite it as a proof-DAG parent the next
+    /// time this merge causes a `normalize_eq` rewrite.
+    fn add_equality(&mut self, a: SymbolId, b: SymbolId, src: Option<u32>);
 
     /// Union with a FORCED root — the literal-preference path (numeric
     /// literals stay representatives so rewriting moves toward
-    /// numbers).
-    fn add_equality_rooted(&mut self, root: u64, child: u64);
+    /// numbers).  `src` as in [`Self::add_equality`].
+    fn add_equality_rooted(&mut self, root: u64, child: u64, src: Option<u32>);
 
     /// Declare a functional dependency on `rel` (mined uniqueness
     /// axioms / `SingleValuedRelation` declarations).

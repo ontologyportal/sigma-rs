@@ -623,7 +623,10 @@ impl ProverLayer {
                 for sid in &session_sids {
                     prover.add_support_root(*sid);
                 }
-                prover.add_conjecture_clauses(&conjecture_clauses);
+                prover.add_conjecture_clauses(
+                    &conjecture_clauses,
+                    conjecture_sents.first().map(|(_, sid)| *sid),
+                );
             }
 
             if prover.opts.strategy.bg_completion {

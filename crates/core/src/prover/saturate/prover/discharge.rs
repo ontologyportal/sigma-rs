@@ -1926,7 +1926,7 @@ mod tests {
         let clauses = clausify_sentence(
             &layer.semantic.syntactic, &layer.atoms, &sent, goal, true);
         assert!(!clauses.is_empty(), "conjecture clausifies");
-        prover.add_conjecture_clauses(&clauses);
+        prover.add_conjecture_clauses(&clauses, Some(goal));
 
         prover.discharge_models_forced();
 

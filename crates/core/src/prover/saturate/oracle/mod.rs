@@ -1342,12 +1342,17 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
 
     /// Union two ground constants into one equality class (smallest id
     /// becomes the representative).
-    fn add_equality(&mut self, a: SymbolId, b: SymbolId) {
+    fn add_equality(&mut self, a: SymbolId, b: SymbolId, src: Option<u32>) {
         self.epoch.set(self.epoch.get() + 1);
         let (ra, rb) = (self.eq_rep(a), self.eq_rep(b));
         if ra != rb {
             let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
             self.eq.insert(child, root);
+            if let Some(cid) = src {
+                self.eq_just.insert(child, EqJust {
+                    fact_sids: Vec::new(), clause_parents: vec![cid], axiom: None,
+                });
+            }
             // An external merge can collapse two FD keys.
             self.fd_fixpoint();
         }
@@ -1421,11 +1426,16 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// Union with a FORCED root (the literal-preference path: numeric
     /// literals stay representatives so normalization rewrites symbols
     /// toward numbers, never the reverse).
-    fn add_equality_rooted(&mut self, root: u64, child: u64) {
+    fn add_equality_rooted(&mut self, root: u64, child: u64, src: Option<u32>) {
         self.epoch.set(self.epoch.get() + 1);
         let (rr, rc) = (self.eq_rep(root), self.eq_rep(child));
         if rr != rc {
             self.eq.insert(rc, rr);
+            if let Some(cid) = src {
+                self.eq_just.insert(rc, EqJust {
+                    fact_sids: Vec::new(), clause_parents: vec![cid], axiom: None,
+                });
+            }
             self.fd_fixpoint();
         }
     }

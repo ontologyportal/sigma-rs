@@ -69,14 +69,22 @@ impl<'a> NativeProver<'a> {
     /// representative, IN PLACE — touched nodes are replaced, untouched
     /// subtrees are never rebuilt, and the no-equalities case (most
     /// runs, most literals) is a single branch.
-    fn normalize_eq(&self, t: &mut Term) {
+    ///
+    /// Every actual rewrite is cited: the justifying fact sids / clause
+    /// parents behind that equality class merge (`oracle.eq_explain`) are
+    /// appended to `just_sids`/`just_clauses`, so the caller (`make`) can
+    /// fold them into the new clause's `fact_parents`/`parents` — without
+    /// this, a clause could silently rename a constant (e.g. a problem's
+    /// own named constant collapsing into an unrelated Skolem witness) with
+    /// no trace of why in the proof DAG.
+    fn normalize_eq(&self, t: &mut Term, just_sids: &mut Vec<SentenceId>, just_clauses: &mut Vec<u32>) {
         if !self.oracle.has_equalities() {
             return;
         }
-        self.normalize_eq_rec(t);
+        self.normalize_eq_rec(t, just_sids, just_clauses);
     }
 
-    fn normalize_eq_rec(&self, t: &mut Term) {
+    fn normalize_eq_rec(&self, t: &mut Term, just_sids: &mut Vec<SentenceId>, just_clauses: &mut Vec<u32>) {
         match t {
             Term::Sym(_) | Term::Lit(Literal::Number(_)) => {
                 let Some(key) = eq_key(t) else { return };
@@ -84,6 +92,9 @@ impl<'a> NativeProver<'a> {
                 if rep == key {
                     return;
                 }
+                let (sids, clauses) = self.oracle.eq_explain(key, rep);
+                just_sids.extend(sids);
+                just_clauses.extend(clauses);
                 if let Some(r) = self.eq_terms.get(&rep) {
                     *t = r.clone();
                 } else if let Some(sym) = self.syn().sym_name(rep) {
@@ -92,7 +103,7 @@ impl<'a> NativeProver<'a> {
             }
             Term::App(elems) => {
                 for e in elems.iter_mut() {
-                    self.normalize_eq_rec(e);
+                    self.normalize_eq_rec(e, just_sids, just_clauses);
                 }
                 if self.has_compound_eqs
                     && t.is_ground()
@@ -105,6 +116,9 @@ impl<'a> NativeProver<'a> {
                     let rep = self.oracle.eq_rep(key);
                     if rep != key {
                         if let Some(r) = self.eq_terms.get(&rep) {
+                            let (sids, clauses) = self.oracle.eq_explain(key, rep);
+                            just_sids.extend(sids);
+                            just_clauses.extend(clauses);
                             *t = r.clone();
                         }
                     }
@@ -1150,7 +1164,7 @@ impl<'a> NativeProver<'a> {
                 continue;
             }
             if let Some((ta, tb, ka, kb)) = self.ground_equality(c.lits[0].atom) {
-                self.register_equality(ta, tb, ka, kb);
+                self.register_equality(ta, tb, ka, kb, None);
             }
         }
     }
@@ -1174,7 +1188,15 @@ impl<'a> NativeProver<'a> {
     /// keys and preferring a NUMERIC literal as the class root (so
     /// `normalize_eq` rewrites symbols TO numbers, keeping arithmetic
     /// comparisons decidable downstream).
-    fn register_equality(&mut self, ta: Term, tb: Term, ka: u64, kb: u64) {
+    ///
+    /// `source_clause`, when given, is the id of the clause asserting this
+    /// equality — recorded (via `oracle.add_equality[_rooted]`) as the
+    /// merge's justification, so a later `normalize_eq` rewrite that relies
+    /// on this equality can cite it instead of silently renaming a
+    /// constant with no trace in the proof DAG.  `None` for the pre-search
+    /// bulk pass ([`Self::register_equalities`]), which runs before any
+    /// clause has an arena id to cite.
+    fn register_equality(&mut self, ta: Term, tb: Term, ka: u64, kb: u64, source_clause: Option<u32>) {
         if matches!(ta, Term::App(_)) || matches!(tb, Term::App(_)) {
             self.has_compound_eqs = true;
         }
@@ -1198,11 +1220,11 @@ impl<'a> NativeProver<'a> {
             std::cmp::Ordering::Less => (ka, kb),
             std::cmp::Ordering::Greater => (kb, ka),
             std::cmp::Ordering::Equal => {
-                self.oracle.add_equality(ka, kb);
+                self.oracle.add_equality(ka, kb, source_clause);
                 return;
             }
         };
-        self.oracle.add_equality_rooted(root, child);
+        self.oracle.add_equality_rooted(root, child, source_clause);
     }
 
     /// Whether `t` is a symbol-headed relation atom the oracle can prove
@@ -1442,6 +1464,7 @@ impl<'a> NativeProver<'a> {
         // literal costs a walk, not a rebuild.
         let mut lits = lits;
         let mut demod_used: Vec<u32> = Vec::new();
+        let mut eq_norm_clauses: Vec<u32> = Vec::new();
         // Duplicate-hit probe (Part 2; SIGMA_STATS instrumentation only):
         // eligible when demod is on and there is at least one indexed
         // demodulator to rewrite with — mirrors `demodulate`'s own early-out
@@ -1462,7 +1485,7 @@ impl<'a> NativeProver<'a> {
             && (tier != CONJECTURE || self.opts.strategy.superposition);
         for (_, t) in lits.iter_mut() {
             arith_norm(t);
-            self.normalize_eq(t);
+            self.normalize_eq(t, &mut fact_parents, &mut eq_norm_clauses);
             // Forward demodulation: rewrite to KBO normal form with the
             // indexed oriented unit equations (a simplification — the
             // normalized literal replaces the original).
@@ -1471,6 +1494,17 @@ impl<'a> NativeProver<'a> {
                 let n = self.demodulate(t, &mut demod_used);
                 self.stats.demod_rewrites += n;
             }
+        }
+        if !eq_norm_clauses.is_empty() {
+            eq_norm_clauses.sort_unstable();
+            eq_norm_clauses.dedup();
+            if self.want_notes() {
+                notes.push(format!(
+                    "{} ground constant(s) rewritten to their equality-class representative",
+                    eq_norm_clauses.len(),
+                ));
+            }
+            parents.extend(eq_norm_clauses);
         }
         let was_demodulated = !demod_used.is_empty();
         if demod_eligible && was_demodulated {
@@ -1845,9 +1879,13 @@ impl<'a> NativeProver<'a> {
         // Any resulting ground positive unit extends the oracle: a binary
         // relation edge feeds the closure; a ground `(equal a b)` feeds
         // the equality union-find (helps later derivations — already-made
-        // clauses are normalized by the input pre-pass).  The edge is
+        // clauses are normalized by the input pre-pass).  Both are
         // registered AFTER the clause is pushed (below) so the learned
-        // entry can carry this clause's id as its proof-DAG source.
+        // entry / equality merge can carry this clause's id as its
+        // proof-DAG source (`register_equality`'s `source_clause`) — a
+        // later `normalize_eq` rewrite that relies on this equality can
+        // then cite it instead of silently renaming a constant.
+        let mut unit_eq: Option<(Term, Term, u64, u64)> = None;
         let unit_edge = if lits.len() == 1 && lits[0].0 {
             if let Some((rel, x, y)) = term_binary_ids(&lits[0].1) {
                 // Remember the constants: FD-derived equalities over
@@ -1865,8 +1903,7 @@ impl<'a> NativeProver<'a> {
                 if let Some((l, r)) = term_ground_equality_sides(&lits[0].1) {
                     if let (Some(ka), Some(kb)) = (self.term_eq_key(l), self.term_eq_key(r)) {
                         if ka != kb {
-                            let (l, r) = (l.clone(), r.clone());
-                            self.register_equality(l, r, ka, kb);
+                            unit_eq = Some((l.clone(), r.clone(), ka, kb));
                         }
                     }
                 }
@@ -2051,6 +2088,9 @@ impl<'a> NativeProver<'a> {
         }
         if let Some((rel, x, y)) = unit_edge {
             self.oracle.add_unit(rel, x, y, Some(id));
+        }
+        if let Some((l, r, ka, kb)) = unit_eq {
+            self.register_equality(l, r, ka, kb, Some(id));
         }
         if let Some((rel, x, y)) = neg_unit_edge {
             self.oracle.add_neg_unit(rel, x, y, Some(id));

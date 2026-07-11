@@ -2580,7 +2580,17 @@ impl<'a> NativeProver<'a> {
     /// Add the negated conjecture's clauses (already clausified by the
     /// caller, `negate=true`).  Ground positive binary units feed the
     /// oracle first — they are assumptions of this refutation.
-    pub(crate) fn add_conjecture_clauses(&mut self, clauses: &[super::clause::PClause]) {
+    ///
+    /// `conjecture_root` is the (first) stored `SentenceId` the caller
+    /// negated+clausified — threaded through as each clause's `source` so
+    /// `extract_proof` can cite the original conjecture and link every
+    /// resulting unit clause back to ONE shared "negated conjecture" step,
+    /// instead of rendering each as an unrelated, parentless fact.
+    pub(crate) fn add_conjecture_clauses(
+        &mut self,
+        clauses: &[super::clause::PClause],
+        conjecture_root: Option<SentenceId>,
+    ) {
         self.has_conjecture = true;
         // Loading itself can exhaust the wall budget on mega-CNF inputs
         // (postings registration walks every subterm of every accepted
@@ -2614,7 +2624,7 @@ impl<'a> NativeProver<'a> {
                 self.stats.slot_lift_failures += 1;
                 continue;
             };
-            let id = self.make(terms, vec![], "negated_conjecture", CONJECTURE, None, false);
+            let id = self.make(terms, vec![], "negated_conjecture", CONJECTURE, conjecture_root, false);
             self.push_input(id);
         }
     }

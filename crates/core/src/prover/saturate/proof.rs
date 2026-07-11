@@ -124,6 +124,11 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     let mut steps: Vec<KifProofStep> = Vec::new();
     let mut clause_step: HashMap<u32, usize> = HashMap::new();
     let mut root_steps: HashMap<SentenceId, usize> = HashMap::new();
+    // Separate from `root_steps`: one shared "negated conjecture" step per
+    // source sid, rendered as the NEGATION of the original (keyed apart from
+    // `root_steps` so a conjecture sid can never collide with an axiom
+    // step — see `negated_root_step`).
+    let mut neg_conj_steps: HashMap<SentenceId, usize> = HashMap::new();
     // One renamer for the whole proof: skolem labels are stable across steps.
     let mut renamer = SkolemRenamer::default();
 
@@ -161,13 +166,61 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         i
     }
 
+    // One displayed "negated conjecture" step per source sid, shared by
+    // every unit clause the clausifier split it into — mirrors TPTP/Vampire
+    // transcripts (one `negated_conjecture` step, with the clausified units
+    // citing it as their parent) instead of each unit appearing as its own
+    // unrelated, parentless fact.  Renders `(not <original conjecture>)`;
+    // when normalization split a conjunctive conjecture into several roots,
+    // `sid` is only the first — a known simplification shared with
+    // `clausify_negated_conjunction_lossy`, whose own `root` is likewise
+    // just the first conjunct's sid.
+    //
+    // `source_sid` stays `None` on the pushed step: unlike an axiom/hypothesis
+    // root, a conjecture sid is a `build_detached` interning (see
+    // `intern_conjecture_native`), not a stored KB root with file:line
+    // provenance — `AxiomSourceIndex` lookups (and this module's own
+    // "cited sid resolves in the store" invariant) assume `source_sid` only
+    // ever names a genuine loaded root. `sid` is still used to render the
+    // formula (`sentence_ast`/`atom_ast` resolve it fine via the atom table)
+    // and to key the dedup map.
+    fn negated_root_step(
+        layer:          &ProverLayer,
+        sid:            SentenceId,
+        steps:          &mut Vec<KifProofStep>,
+        neg_conj_steps: &mut HashMap<SentenceId, usize>,
+        renamer:        &mut SkolemRenamer,
+    ) -> usize {
+        if let Some(&i) = neg_conj_steps.get(&sid) { return i; }
+        let formula = layer.semantic.syntactic.source_node_of(sid)
+            .or_else(|| sentence_ast(layer, sid, renamer))
+            .unwrap_or_else(|| AstNode::Symbol {
+                name: format!("<unresolved {:x}>", sid),
+                span: Span::synthetic(),
+            });
+        let negated = AstNode::List {
+            elements: vec![AstNode::Operator { op: OpKind::Not, span: Span::synthetic() }, formula],
+            span: Span::synthetic(),
+        };
+        steps.push(KifProofStep {
+            index: steps.len(),
+            rule: "negated_conjecture".to_string(),
+            premises: Vec::new(),
+            formula: negated,
+            source_sid: None,
+        });
+        let i = steps.len() - 1;
+        neg_conj_steps.insert(sid, i);
+        i
+    }
+
     for cid in order {
         let c = &prover.clauses[cid as usize];
 
         // Input clauses cite their source root directly: the step IS
-        // the axiom/hypothesis as written.  (Synthesized clauses —
-        // subrel_schema, negated_conjecture — keep their clause form:
-        // no file formula matches them.)
+        // the axiom/hypothesis as written.  (`subrel_schema` and other
+        // synthesized clauses keep their clause form: no file formula
+        // matches them.)
         if matches!(c.rule, "axiom" | "hypothesis") {
             if let Some(src) = c.source {
                 let idx = root_step(layer, src, c.rule, &mut steps, &mut root_steps, &mut renamer);
@@ -180,6 +233,27 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
                 for w in &c.fact_parents {
                     root_step(layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer);
                 }
+                continue;
+            }
+        }
+
+        // The negated conjecture's clausified unit clauses: cite the ONE
+        // shared "negated conjecture" step (the source-formula negation) as
+        // their sole parent, instead of appearing as unrelated, parentless
+        // facts (`add_conjecture_clauses` populates `c.source` for exactly
+        // this).  Falls through to the generic branch below when `source` is
+        // unset (defensive — every live call site sets it).
+        if c.rule == "negated_conjecture" {
+            if let Some(src) = c.source {
+                let root_idx = negated_root_step(layer, src, &mut steps, &mut neg_conj_steps, &mut renamer);
+                steps.push(KifProofStep {
+                    index: steps.len(),
+                    rule: "cnf_transformation".to_string(),
+                    premises: vec![root_idx],
+                    formula: clause_ast(layer, c, &mut renamer),
+                    source_sid: None,
+                });
+                clause_step.insert(cid, steps.len() - 1);
                 continue;
             }
         }

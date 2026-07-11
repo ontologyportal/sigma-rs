@@ -157,7 +157,10 @@ impl ProverLayer {
             for sid in contents {
                 prover.add_background_root(*sid);
             }
-            prover.add_conjecture_clauses(&conjecture_clauses);
+            prover.add_conjecture_clauses(
+                &conjecture_clauses,
+                conj.as_ref().and_then(|c| c.sents.first().map(|(_, sid)| *sid)),
+            );
         } else {
             for sid in contents {
                 prover.add_support_root(*sid);
