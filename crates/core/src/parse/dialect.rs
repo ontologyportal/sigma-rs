@@ -111,3 +111,13 @@ pub(crate) fn stmt_name(stmt: &AstNode) -> Option<String> {
         _ => None,
     }
 }
+
+/// ANSI syntax-highlight a blob of TPTP text (lexes it with the real TPTP
+/// tokenizer and colourises by token kind).  Unlike [`Emitter::emit_pretty`],
+/// this works over already-serialized text rather than an [`AstNode`] —
+/// the only way to colourise a subprocess prover's own verbatim transcript
+/// (`ProverResult::proof_tptp`), which was never parsed back into our AST.
+/// Falls back to `text` unmodified on any lex error.
+pub fn tptp_highlight(text: &str) -> String {
+    super::tptp::dis::highlight(text)
+}

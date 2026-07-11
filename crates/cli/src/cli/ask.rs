@@ -4,7 +4,7 @@ use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::Session;
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use crate::style::*;
-use crate::cli::proof::print_proof;
+use crate::cli::proof::{is_quiet_proof_format, print_proof};
 use crate::cli::util::read_stdin;
 
 pub fn run_ask<L>(
@@ -62,31 +62,36 @@ where
         }
     };
 
-    // Always surface the verdict, regardless of `-v` — friendlier for scripting
-    // against stdout and for interactive users.
-    let (verdict, colour) = match result.status {
-        ProverStatus::Proved       => ("Proved",       color_bright_green),
-        ProverStatus::Disproved    => ("Disproved",    color_bright_yellow),
-        ProverStatus::Consistent   => ("Consistent",   color_bright_green),
-        ProverStatus::Inconsistent => ("Inconsistent", color_bright_red),
-        ProverStatus::Timeout      => ("Timeout",      color_bright_yellow),
-        ProverStatus::InputError   => ("Input Error",  color_bright_red),
-        ProverStatus::Unknown      => ("Unknown",      color_bright_red),
-    };
-    println!("{style_bold}Result:{style_reset} {colour}{}{color_reset}", verdict);
-
-    if !result.bindings.is_empty() {
-        for b in &result.bindings {
-            println!("  {style_bold}{}{style_reset}", b);
-        }
-    }
-
     // --proof: shared three-way rendering (`kif` pretty-print / `tptp` dump /
     // any SUMO language via format+termFormat).  For the native backend `tptp`
     // is auto-stubbed: `print_proof` prints "(none)" when `proof_tptp` is empty.
     let format = manager.proof.as_str();
+
+    // Always surface the verdict, regardless of `-v` — friendlier for scripting
+    // against stdout and for interactive users.  Suppressed under `casc`/
+    // `graphviz`: that output must be pure SZS/TPTP or DOT text, and
+    // `print_proof`'s own branch for each already reports the SZS status.
+    if !is_quiet_proof_format(format) {
+        let (verdict, colour) = match result.status {
+            ProverStatus::Proved       => ("Proved",       color_bright_green),
+            ProverStatus::Disproved    => ("Disproved",    color_bright_yellow),
+            ProverStatus::Consistent   => ("Consistent",   color_bright_green),
+            ProverStatus::Inconsistent => ("Inconsistent", color_bright_red),
+            ProverStatus::Timeout      => ("Timeout",      color_bright_yellow),
+            ProverStatus::InputError   => ("Input Error",  color_bright_red),
+            ProverStatus::Unknown      => ("Unknown",      color_bright_red),
+        };
+        println!("{style_bold}Result:{style_reset} {colour}{}{color_reset}", verdict);
+
+        if !result.bindings.is_empty() {
+            for b in &result.bindings {
+                println!("  {style_bold}{}{style_reset}", b);
+            }
+        }
+    }
+
     if format != "none" {
-        if format != "tptp" && format != "casc" && result.proof_kif.is_empty() {
+        if format != "tptp" && format != "casc" && format != "graphviz" && result.proof_kif.is_empty() {
             // Say WHY there are no steps to render, per verdict.  Proved and
             // Inconsistent mean a refutation WAS found — a proof exists, we
             // just don't have a transcript.  Disproved and Consistent are
@@ -108,7 +113,7 @@ where
             };
             println!("{}", note);
         } else {
-            if format != "casc" {
+            if !is_quiet_proof_format(format) {
                 println!("\n{style_bold}Conjecture:{style_reset} {}", conjecture.trim());
             }
             let status = szs_status(&result, true);
@@ -118,8 +123,9 @@ where
 
     // --prose: ADDITIVE paragraph rendering (the step view above is the
     // transformation source, not replaced).  Language follows --proof when it
-    // names a SUMO language; EnglishLanguage otherwise.
-    if manager.prose && !result.proof_kif.is_empty() {
+    // names a SUMO language; EnglishLanguage otherwise.  Suppressed under
+    // `casc`/`graphviz` along with everything else non-machine-readable.
+    if manager.prose && !is_quiet_proof_format(format) && !result.proof_kif.is_empty() {
         let lang = match format {
             "kif" | "tptp" | "none" => "EnglishLanguage",
             other                   => other,
@@ -142,7 +148,7 @@ where
             "{} input contradiction(s) detected — the axioms/hypotheses are \
              mutually inconsistent (rerun with --proof kif to see the derivations)",
             result.contradiction_proofs.len());
-        if format != "none" {
+        if format != "none" && !is_quiet_proof_format(format) {
             let src_idx = session.kb().build_axiom_source_index();
             for (n, steps) in result.contradiction_proofs.iter().enumerate() {
                 println!("\n{style_bold}Input contradiction #{} ({} steps):{style_reset}",

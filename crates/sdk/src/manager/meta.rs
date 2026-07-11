@@ -267,7 +267,7 @@ const OPTIONS: &[OptionMeta] = &[
     // -- Proof output (ask / test / audit) -----------------------------------
     OptionMeta { field: "proof", json_paths: &["proof"], long: "proof", short: None,
         env: None, scope: Scope::Subsystems(PROVERS), kind: Kind::Str,
-        help: "Proof-rendering format when one is found: 'kif' (default), 'tptp'/'casc', or a SUMO language for natural-language rendering." },
+        help: "Proof-rendering format when one is found: 'kif' (default), 'tptp'/'casc'/'graphviz', or a SUMO language for natural-language rendering." },
     OptionMeta { field: "prose", json_paths: &["prose"], long: "prose", short: None,
         env: None, scope: Scope::Subsystems(&[Ask, Test]), kind: Kind::Bool,
         help: "Also render each proof as connected prose." },

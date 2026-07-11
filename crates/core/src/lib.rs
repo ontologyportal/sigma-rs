@@ -100,7 +100,7 @@ pub use parse::{
 };
 pub use parse::kif::dis::AstKif;
 pub use parse::kif::{Token, TokenKind, tokenize as tokenize_kif};
-pub use parse::dialect::{DroppedStmt, EmitResult, Emitter};
+pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
 pub use parse::tptp::syntax::detect_tptp_lang;
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]

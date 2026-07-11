@@ -192,12 +192,26 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         renamer:        &mut SkolemRenamer,
     ) -> usize {
         if let Some(&i) = neg_conj_steps.get(&sid) { return i; }
-        let formula = layer.semantic.syntactic.source_node_of(sid)
-            .or_else(|| sentence_ast(layer, sid, renamer))
-            .unwrap_or_else(|| AstNode::Symbol {
-                name: format!("<unresolved {:x}>", sid),
-                span: Span::synthetic(),
-            });
+        // A conjecture sid is a `build_detached` interning (see
+        // `intern_conjecture_native`) — no stored file span, so
+        // `source_node_of` always misses and this always falls back to
+        // `sentence_ast`, which reconstructs bound variables from their
+        // internal hashed slot ids (`V<hex>`, unreadable).  Relabel them
+        // A, B, C, … in first-appearance order so the negated conjecture
+        // reads like the rest of the proof's axiom citations, which get
+        // their variable names verbatim from `source_node_of`'s file text
+        // and are left untouched here.
+        let formula = match layer.semantic.syntactic.source_node_of(sid) {
+            Some(f) => f,
+            None => {
+                let mut f = sentence_ast(layer, sid, renamer).unwrap_or_else(|| AstNode::Symbol {
+                    name: format!("<unresolved {:x}>", sid),
+                    span: Span::synthetic(),
+                });
+                rename_vars_pretty(&mut f, &mut HashMap::new());
+                f
+            }
+        };
         let negated = AstNode::List {
             elements: vec![AstNode::Operator { op: OpKind::Not, span: Span::synthetic() }, formula],
             span: Span::synthetic(),
@@ -284,6 +298,33 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         clause_step.insert(cid, steps.len() - 1);
     }
     steps
+}
+
+/// Rewrite every bound variable name in `node`, in first-appearance order,
+/// to a short sequential label (`A`, `B`, …, `Z`, `A1`, `B1`, …) — the
+/// [`negated_root_step`] fallback for a conjecture's variables, which have
+/// no original file spelling to preserve.
+fn rename_vars_pretty(node: &mut AstNode, seen: &mut HashMap<String, String>) {
+    match node {
+        AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => {
+            let next = seen.len();
+            let label = seen.entry(name.clone())
+                .or_insert_with(|| sequential_var_label(next));
+            *name = label.clone();
+        }
+        AstNode::List { elements, .. } => {
+            for e in elements.iter_mut() { rename_vars_pretty(e, seen); }
+        }
+        AstNode::Annotated { formula, .. } => rename_vars_pretty(formula, seen),
+        _ => {}
+    }
+}
+
+/// `0` → `A`, `1` → `B`, … `25` → `Z`, `26` → `A1`, `27` → `B1`, …
+fn sequential_var_label(n: usize) -> String {
+    let letter = (b'A' + (n % 26) as u8) as char;
+    let suffix = n / 26;
+    if suffix == 0 { letter.to_string() } else { format!("{letter}{suffix}") }
 }
 
 /// A clause as a KIF AST: the empty clause renders as the symbol

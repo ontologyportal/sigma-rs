@@ -98,3 +98,5 @@ tempfile  = "3"
 indicatif = "0.18.4"
 # `alloc-mi` only (see the feature docs above).
 mimalloc = { version = "0.1", optional = true }
+# `--proof graphviz` renders the proof DAG as DOT syntax on stdout.
+graphviz-rust = "0.9.8"

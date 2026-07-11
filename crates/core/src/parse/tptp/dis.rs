@@ -12,6 +12,68 @@
 use crate::parse::ast::{AstNode, OpKind, Role, Source};
 use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 use super::syntax;
+use super::tokenizer::{tokenize, TokenKind};
+
+/// ANSI-colourised TPTP text — tokenizes `text` (the real TPTP lexer, not an
+/// ad-hoc regex) and re-emits it with each token's ORIGINAL bytes wrapped in
+/// a colour keyed on its kind, splicing the untouched source back in between
+/// tokens so whitespace, newlines, and comments survive verbatim (the
+/// caller's chosen layout — flat or `styled`-wrapped — is unaffected).
+/// Mirrors KIF's `Pretty` (`kif::dis`), adapted to TPTP's lexical shape;
+/// unlike `Pretty`, this works over raw text rather than a parsed `AstNode`,
+/// so it colourises a subprocess prover's verbatim transcript too, not just
+/// document-reconstructed proofs.  Falls back to `text` unmodified on any
+/// lex error — a readable plain proof beats a truncated/garbled highlight.
+pub fn highlight(text: &str) -> String {
+    use inline_colorization::*;
+
+    let (tokens, errors) = tokenize(text, "highlight");
+    if !errors.is_empty() {
+        return text.to_string();
+    }
+
+    // Statement-framing / inference-annotation vocabulary: coloured as
+    // keywords wherever it appears, since a flat token stream has no
+    // parser state to confirm position (`fof(`, `..., axiom, ...`).  Real
+    // predicate/function names in SUMO-derived proofs never collide with
+    // this fixed set.
+    const KEYWORDS: &[&str] = &[
+        "fof", "cnf", "tff", "thf", "tcf", "include",
+        "axiom", "hypothesis", "definition", "lemma", "conjecture",
+        "negated_conjecture", "plain", "type", "unknown", "assumption",
+        "theorem", "corollary", "fi_domain", "fi_functors", "fi_predicates",
+        "inference", "file", "status", "introduced", "esa", "thm", "cth",
+    ];
+
+    let mut out = String::with_capacity(text.len() + tokens.len() * 8);
+    let mut pos = 0usize;
+    for t in &tokens {
+        let (start, end) = (t.span.offset, t.span.end_offset);
+        out.push_str(&text[pos..start]);
+        let color = match &t.kind {
+            TokenKind::LowerWord(w) if KEYWORDS.contains(&w.as_str()) => color_yellow,
+            TokenKind::LowerWord(_) => color_bright_blue,
+            TokenKind::UpperWord(_) => color_magenta,
+            TokenKind::DollarWord(_) | TokenKind::DollarDollarWord(_) => color_bright_cyan,
+            TokenKind::Integer(_) | TokenKind::Rational(_) | TokenKind::Real(_) => color_green,
+            TokenKind::SingleQuoted(_) | TokenKind::DoubleQuoted(_) => color_green,
+            TokenKind::Tilde | TokenKind::Bang | TokenKind::Question
+            | TokenKind::Pipe | TokenKind::Ampersand | TokenKind::Equals
+            | TokenKind::Operator(_) => color_cyan,
+            _ => "",
+        };
+        if color.is_empty() {
+            out.push_str(&text[start..end]);
+        } else {
+            out.push_str(color);
+            out.push_str(&text[start..end]);
+            out.push_str(color_reset);
+        }
+        pos = end;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
 
 /// Soft-wrap threshold for [`styled`] — mirrors `kif::dis::LINE_WIDTH`.  Forms
 /// fitting in this many columns at their indent stay on one line; longer ones

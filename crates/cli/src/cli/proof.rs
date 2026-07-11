@@ -1,10 +1,11 @@
 //! Shared `--proof <FORMAT>` rendering, used by `sumo ask` and `sumo debug`.
 //!
-//! Four branches:
+//! Five branches:
 //!   - `tptp`                → dump `result.proof_tptp` verbatim
 //!   - `casc`                → strict SZS-wrapped TPTP, matching Vampire's
 //!                             own stdout (`% SZS status`/`% SZS output
 //!                             start|end Proof`), no other output
+//!   - `graphviz`            → the proof DAG as DOT syntax, no other output
 //!   - `kif`                 → SUO-KIF pretty-print with per-axiom source
 //!   - any SUMO language id  → natural-language via format/termFormat
 
@@ -13,9 +14,23 @@
 use crate::style::*;
 use sigmakee_rs_sdk::AstKif;
 
-use sigmakee_rs_sdk::{emit_proof, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus};
+use graphviz_rust::dot_structures::{
+    Attribute, Edge, EdgeTy, Graph, GraphAttributes, Id, Node, NodeId, Stmt, Vertex,
+};
+use graphviz_rust::printer::{DotPrinter, PrinterContext};
+
+use sigmakee_rs_sdk::{emit_proof, tptp_highlight, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus};
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
+
+/// `true` for the "machine-readable, nothing else on stdout" formats —
+/// `casc` (strict SZS/TPTP) and `graphviz` (strict DOT) — both of which
+/// `print_proof` fully owns the output for. Callers use this to suppress the
+/// verdict banner, `Conjecture:` line, prose paraphrase, and other
+/// interactive decoration that would otherwise interleave with it.
+pub fn is_quiet_proof_format(format: &str) -> bool {
+    matches!(format, "casc" | "graphviz")
+}
 
 /// Dispatch the `--proof <FORMAT>` rendering.  Recognised values:
 /// - `tptp`                     → dump `result.proof_tptp` verbatim
@@ -25,6 +40,10 @@ use sigmakee_rs_sdk::TopLayer;
 ///                                 output start Proof for <name>` / the
 ///                                 proof / `% SZS output end Proof for
 ///                                 <name>` — nothing else
+/// - `graphviz`                 → the proof DAG as DOT syntax on stdout
+///                                 (one node per `proof_kif` step, one edge
+///                                 per premise), nothing else — pipe straight
+///                                 into `dot`/`neato`/etc.
 /// - `kif`                      → SUO-KIF pretty-print
 /// - any SUMO language (e.g.
 ///   `EnglishLanguage`,
@@ -95,6 +114,58 @@ fn resolve_tptp_proof_text(result: &ProverResult) -> Option<String> {
     Some(emitted.text)
 }
 
+/// Render `result.proof_kif` as a DOT digraph: one node per proof step
+/// (labelled `N. [rule]` plus the flattened formula), one edge per premise
+/// pointing from the premise step into the step it derives. Always produces
+/// a syntactically valid graph — including when there is no proof — so the
+/// output is safe to pipe straight into `dot`/`neato`/etc.
+fn render_graphviz(result: &ProverResult, name: &str, status: SzsStatus) -> String {
+    let mut stmts = vec![
+        Stmt::GAttribute(GraphAttributes::Graph(vec![Attribute(
+            Id::Plain("label".to_string()),
+            dot_escaped(&format!("SZS status {status} for {name}")),
+        )])),
+        Stmt::GAttribute(GraphAttributes::Node(vec![Attribute(
+            Id::Plain("shape".to_string()),
+            Id::Plain("box".to_string()),
+        )])),
+    ];
+
+    for step in &result.proof_kif {
+        let node = node_id(step.index);
+        let label = format!("{}. [{}]\n{}", step.index + 1, step.rule, step.formula.flat());
+        stmts.push(Stmt::Node(Node::new(
+            NodeId(Id::Plain(node.clone()), None),
+            vec![Attribute(Id::Plain("label".to_string()), dot_escaped(&label))],
+        )));
+        for &premise in &step.premises {
+            stmts.push(Stmt::Edge(Edge {
+                ty: EdgeTy::Pair(
+                    Vertex::N(NodeId(Id::Plain(node_id(premise)), None)),
+                    Vertex::N(NodeId(Id::Plain(node.clone()), None)),
+                ),
+                attributes: vec![],
+            }));
+        }
+    }
+
+    let graph = Graph::DiGraph { id: Id::Plain("proof".to_string()), strict: false, stmts };
+    graph.print(&mut PrinterContext::default())
+}
+
+fn node_id(step_index: usize) -> String {
+    format!("n{step_index}")
+}
+
+/// Quote and escape a string for use as a DOT `Id::Escaped` — `dot_structures`
+/// prints an `Escaped` id verbatim, so the surrounding quotes and internal
+/// escaping are the caller's responsibility (see `dot_generator`'s `esc`
+/// macro, which this mirrors).
+fn dot_escaped(s: &str) -> Id {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    Id::Escaped(format!("\"{escaped}\""))
+}
+
 fn print_step(text: &str) {
     print!("{}", text);
     if !text.ends_with('\n') {
@@ -119,11 +190,18 @@ fn print_proof_impl(
                 println!("% SZS output end Proof for {}", name);
             }
         }
+        "graphviz" => {
+            print_step(&render_graphviz(result, name, status));
+        }
         "tptp" => {
             match resolve_tptp_proof_text(result) {
                 Some(text) => {
                     println!("\n{style_bold}Proof (TPTP):{style_reset}");
-                    print_step(&text);
+                    // Syntax-highlight for terminal readability; `casc` stays
+                    // plain (it's meant to be pasted verbatim into a CASC
+                    // submission / SZS transcript, not viewed in a terminal).
+                    let shown = if crate::style::is_ugly() { text } else { tptp_highlight(&text) };
+                    print_step(&shown);
                 }
                 None => println!(
                     "\n{style_bold}Proof (TPTP):{style_reset} (none — Vampire did not emit a proof section)"

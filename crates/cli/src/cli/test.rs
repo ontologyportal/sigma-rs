@@ -7,7 +7,7 @@ use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use sigmakee_rs_sdk::{Session, Source, TestCaseOutcome, TestOutcome};
 
-use crate::cli::proof::print_proof;
+use crate::cli::proof::{is_quiet_proof_format, print_proof};
 use crate::style::*;
 
 /// Entry point for `sumo test`.
@@ -46,6 +46,11 @@ where
 
     let opts = <L::Opts as ProverOptsFor>::from_manager(&manager);
 
+    // `casc`/`graphviz` output must be pure SZS/TPTP or DOT text on stdout
+    // (no interleaved suite UI) — see `render_case`'s matching gate on the
+    // per-case verdict decoration.
+    let quiet = is_quiet_proof_format(manager.proof.as_str());
+
     let total = test_sources.len();
     let mut passed = 0usize;
     let mut informational = 0usize;
@@ -54,11 +59,13 @@ where
     let t_all = Instant::now();
 
     for (label, src) in test_sources {
-        println!("Running test: {label}");
+        if !quiet { println!("Running test: {label}"); }
         let mut case = match session.fork() {
             Ok(c) => c,
             Err(e) => {
-                println!("  {color_bright_red}ERROR{color_reset}  (could not fork session: {e})");
+                if !quiet {
+                    println!("  {color_bright_red}ERROR{color_reset}  (could not fork session: {e})");
+                }
                 all_passed = false;
                 continue;
             }
@@ -74,23 +81,25 @@ where
                 }
             }
             Err(errs) => {
-                println!("  {color_bright_red}ERROR{color_reset}");
+                if !quiet { println!("  {color_bright_red}ERROR{color_reset}"); }
                 for e in errs { log::error!("  {e}"); }
                 all_passed = false;
             }
         }
     }
 
-    let graded = total - informational;
-    print!("\nTest Summary: {passed} / {graded} passed");
-    if informational > 0 {
-        print!("  ({informational} informational, not graded)");
+    if !quiet {
+        let graded = total - informational;
+        print!("\nTest Summary: {passed} / {graded} passed");
+        if informational > 0 {
+            print!("  ({informational} informational, not graded)");
+        }
+        if false_verdicts > 0 {
+            print!("  {color_bright_red}{false_verdicts} FALSE VERDICT{}{color_reset}",
+                if false_verdicts == 1 { "" } else { "S" });
+        }
+        println!("  (tests {:.2}s)", t_all.elapsed().as_secs_f64());
     }
-    if false_verdicts > 0 {
-        print!("  {color_bright_red}{false_verdicts} FALSE VERDICT{}{color_reset}",
-            if false_verdicts == 1 { "" } else { "S" });
-    }
-    println!("  (tests {:.2}s)", t_all.elapsed().as_secs_f64());
     all_passed
 }
 
@@ -217,47 +226,62 @@ fn render_case<L>(
 where
     L: ProvingLayer,
 {
+    let format = manager.proof.as_str();
+    // `casc`/`graphviz` output must be pure SZS/TPTP or DOT text on stdout —
+    // the pass/fail banner, expectation diagnostics, and prose paraphrase
+    // below are all suite-UI, not proof content, so they're suppressed
+    // rather than interleaved with it.  The `CaseVerdict` is still computed
+    // either way: suppressing the print doesn't change the suite tally.
+    let quiet = is_quiet_proof_format(format);
     let note = format!("(total {:.2}s)", elapsed.as_secs_f64());
     let verdict = match &oc.outcome {
         TestOutcome::Passed => {
-            println!("  {color_bright_green}PASSED{color_reset}  {note}");
+            if !quiet { println!("  {color_bright_green}PASSED{color_reset}  {note}"); }
             CaseVerdict::Passed
         }
         TestOutcome::Incomplete { inferred, missing } => {
             // The query was proven; only the answer-set enumeration was partial.
-            println!("  {color_bright_green}PASSED{color_reset}  {note}");
-            println!("    the query was proven but only some answers were inferred");
-            println!("    inferred: {}", inferred.join(", "));
-            println!("    missing:  {}", missing.join(", "));
+            if !quiet {
+                println!("  {color_bright_green}PASSED{color_reset}  {note}");
+                println!("    the query was proven but only some answers were inferred");
+                println!("    inferred: {}", inferred.join(", "));
+                println!("    missing:  {}", missing.join(", "));
+            }
             CaseVerdict::Passed
         }
         TestOutcome::Failed { expected, got, status } => {
-            println!("  {color_bright_red}FAILED{color_reset}  {note}");
-            println!("    expected: {}, got: {} ({})",
-                if *expected { "yes" } else { "no" },
-                if *got      { "yes" } else { "no" },
-                reason_tag(*status));
+            if !quiet {
+                println!("  {color_bright_red}FAILED{color_reset}  {note}");
+                println!("    expected: {}, got: {} ({})",
+                    if *expected { "yes" } else { "no" },
+                    if *got      { "yes" } else { "no" },
+                    reason_tag(*status));
+            }
             CaseVerdict::Failed
         }
         TestOutcome::FalseVerdict { expected, status } => {
             // Distinct from FAILED: the prover didn't run out of budget, it
             // made a CONFIDENT claim that contradicts the file's own `%
             // Status` header — the harness's most serious finding.
-            println!("  {color_bright_red}{style_bold}FALSE VERDICT{style_reset}{color_reset}  {note}");
-            println!("    expected: {expected:?}, got: {status:?} ({})", reason_tag(*status));
+            if !quiet {
+                println!("  {color_bright_red}{style_bold}FALSE VERDICT{style_reset}{color_reset}  {note}");
+                println!("    expected: {expected:?}, got: {status:?} ({})", reason_tag(*status));
+            }
             CaseVerdict::FalseVerdict
         }
         TestOutcome::Informational => {
-            println!("  {color_bright_cyan}INFO{color_reset}      {note}");
-            println!("    no graded expectation (Open/Unknown status, or none) — reporting only");
+            if !quiet {
+                println!("  {color_bright_cyan}INFO{color_reset}      {note}");
+                println!("    no graded expectation (Open/Unknown status, or none) — reporting only");
+            }
             CaseVerdict::Informational
         }
     };
-    let format = manager.proof.as_str();
-    if format == "casc" {
-        // Strict CASC output (matches Vampire's own stdout): `print_proof`
-        // emits the `% SZS status ... for ...` line itself, flush-left, with
-        // no other decoration — don't print a second one here.
+    if is_quiet_proof_format(format) {
+        // Strict CASC/graphviz output (matches Vampire's own stdout / a bare
+        // DOT graph): `print_proof` emits the leading status line itself
+        // (`% SZS status ... for ...`, or nothing for graphviz), flush-left,
+        // with no other decoration — don't print a second one here.
         print_proof(kb, &oc.result, format, &basename(&oc.name), oc.szs);
     } else {
         println!("  % SZS status {} for {}", oc.szs, basename(&oc.name));
@@ -266,7 +290,7 @@ where
             print_proof(kb, &oc.result, format, &basename(&oc.name), oc.szs);
         }
     }
-    if manager.prose && !oc.result.proof_kif.is_empty() {
+    if manager.prose && !quiet && !oc.result.proof_kif.is_empty() {
         let report = kb.render_proof_prose(None, &oc.result.proof_kif, "EnglishLanguage");
         println!("\n    {style_bold}Proof (prose):{style_reset}\n\n{}", report.rendered);
     }

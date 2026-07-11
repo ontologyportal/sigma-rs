@@ -167,7 +167,7 @@ pub use sigmakee_rs_core::{
 // verbatim prover transcript of its own (native `ProverLayer`, embedded FFI
 // Vampire).
 #[cfg(feature = "native-prover")]
-pub use sigmakee_rs_core::Emitter;
+pub use sigmakee_rs_core::{tptp_highlight, Emitter};
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::prover::proof::emit_proof;
 #[cfg(feature = "native-prover")]
