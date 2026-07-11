@@ -475,8 +475,7 @@ impl ProverLayer {
             }
         };
 
-        let recognize_roles = opts.strategy.recognize_roles
-            || std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some();
+        let recognize_roles = opts.strategy.recognize_roles;
         let (verdict, steps, proof_kif, raw, phase_profile, contradiction_proofs, conjecture_used, complete_saturation) = {
             let mut prover = match &plan {
                 BgPlan::Hit(snap) | BgPlan::Extend(snap, _) => {

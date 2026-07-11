@@ -65,8 +65,7 @@ impl ProverLayer {
 
         let scope = session.map(|s| Scope::Session(session_id(s))).unwrap_or(Scope::Base);
 
-        let recognize_roles = opts.strategy.recognize_roles
-            || std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some();
+        let recognize_roles = opts.strategy.recognize_roles;
 
         let mut prover = NativeProver::new(self, scope, opts);
         // Audit mode: collect up to `limit` contradictions, then stop.

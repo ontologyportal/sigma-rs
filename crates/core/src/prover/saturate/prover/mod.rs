@@ -130,6 +130,36 @@ pub struct NativeOpts {
     /// stdin.  Equivalent to setting `SIGMA_STEP`; intended for a single
     /// problem on one thread.  See the `stepdbg` module.
     pub step: bool,
+
+    // -- discharge subsystems ---------------------------------------------
+    // Separate reasoning engines that run once, as a prologue before the
+    // given-clause loop even starts (they feed ground facts back in as
+    // ordinary unit clauses) — a whole-attempt capability decision, not a
+    // [`Strategy`] search-shaping knob.  Each pairs an enable flag with its
+    // own budget so a caller can turn a subsystem on without inheriting an
+    // unrelated caller's tuning.
+    /// Enable the Datalog(&not;) model-discharge oracle (conjunctive-query
+    /// entailment / Clark-completion certified absence).  Equivalent to
+    /// setting `SIGMA_MODEL`.
+    pub model: bool,
+    /// Per-evaluation tuple budget for the model evaluator before it bails
+    /// to ordinary resolution.  Equivalent to `SIGMA_MODEL_BUDGET`.
+    pub model_budget: usize,
+    /// Wall-clock cap (ms) on model materialization across all goal atoms.
+    /// Equivalent to `SIGMA_MODEL_MS`.
+    pub model_ms: u64,
+    /// Enable the event-calculus discharge (kernel-based `holdsAt`
+    /// decision over a parsed narrative).  Equivalent to setting `SIGMA_EC`.
+    pub ec: bool,
+    /// Enable SLD-style backward-chaining discharge.  Equivalent to
+    /// setting `SIGMA_BACKWARD`.
+    pub backward: bool,
+    /// Wall-clock deadline (ms) for one backward-chaining DFS pass.
+    /// Equivalent to `SIGMA_BACKWARD_MS`.
+    pub backward_ms: u64,
+    /// Node budget backstop for the backward-chaining DFS. Equivalent to
+    /// `SIGMA_BACKWARD_NODES`.
+    pub backward_nodes: u64,
 }
 
 impl Default for NativeOpts {
@@ -139,6 +169,17 @@ impl Default for NativeOpts {
             max_steps: 4000, max_lits: 8, time_limit_secs: 30,
             forward_close: true, profile: false, want_proof: false,
             strategy: Strategy::default(), cancel: None, step: false,
+            model: std::env::var_os("SIGMA_MODEL").is_some(),
+            model_budget: std::env::var("SIGMA_MODEL_BUDGET").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(250_000),
+            model_ms: std::env::var("SIGMA_MODEL_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(800),
+            ec: std::env::var_os("SIGMA_EC").is_some(),
+            backward: std::env::var_os("SIGMA_BACKWARD").is_some(),
+            backward_ms: std::env::var("SIGMA_BACKWARD_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(800),
+            backward_nodes: std::env::var("SIGMA_BACKWARD_NODES").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(200_000),
         }
     }
 }
@@ -3483,7 +3524,7 @@ impl<'a> NativeProver<'a> {
 
             // Interactive single-step: show the given clause being activated
             // and the queue state, before its inferences are generated.
-            if stepdbg::enabled() {
+            if stepdbg::enabled() || self.opts.step {
                 let body = format!(
                     "step {steps}   given [{given}]:  {}\n  \
                      passive queue: {} by-weight / {} by-age    total clauses: {}",

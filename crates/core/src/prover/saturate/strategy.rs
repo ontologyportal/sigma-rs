@@ -255,6 +255,18 @@ pub struct Strategy {
     /// OFF — and a provable no-op on SUMO (the names resolve to the
     /// same ids the recognizer recovers).
     pub recognize_roles: bool,
+    /// Horn-chain rule-join discharge: a bounded ground join over
+    /// conclusion-only rule heads (relations with no ground facts of
+    /// their own), run as a prologue pass before the given-clause loop.
+    /// `true` (default) preserves the historical behavior — a per-goal
+    /// applicability guard decides whether the pass actually does
+    /// anything, so the saturation baseline stays byte-identical off
+    /// the guarded path.  `false` disables the pass unconditionally —
+    /// the `SIGMA_NO_RULE_JOIN` safety valve.  (The old
+    /// `SIGMA_RULE_JOIN=1` "force on, bypass the guard" A/B mode is not
+    /// represented here — portfolio/GA sweep is the intended way to
+    /// explore that dimension now.)
+    pub rule_join: bool,
     /// Modal K-distribution schemata over quote constructors (native
     /// HO-parity, part A): at problem assembly, inject conjunction
     /// distribution for the attitude relations `knows`/`believes` —
@@ -435,6 +447,7 @@ impl Strategy {
             bg_completion: false,
             bg_completion_budget: 256,
             recognize_roles: false,
+            rule_join: true,
             modal_k: true,
             full_saturation: false,
             strict_saturation: false,
@@ -502,12 +515,14 @@ impl Strategy {
         if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         if on("SIGMA_NO_MODAL_K") { s.modal_k = false; }
+        if on("SIGMA_RECOGNIZE_ROLES") { s.recognize_roles = true; }
         s.demod = Self::demod_env_override(s.demod);
         s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
         s.subs_join = Self::subs_join_env_override(s.subs_join);
         s.subterm_rows = Self::subterm_rows_env_override(s.subterm_rows);
         s.deferred_passive = Self::deferred_passive_env_override(s.deferred_passive);
         s.deferred_cap = Self::deferred_cap_env_override(s.deferred_cap);
+        s.rule_join = Self::rule_join_env_override(s.rule_join);
         s
     }
 
@@ -528,6 +543,19 @@ impl Strategy {
     /// by `from_env()` and `tptp()` so the A/B override works on both
     /// paths.  The off direction exists because `tptp()` now defaults
     /// the knob TRUE (posting-indexed retrieval landed).
+    /// `SIGMA_NO_RULE_JOIN=1` forces the Horn-chain rule-join pass OFF
+    /// unconditionally — the safety valve.  Unlike the paired overrides
+    /// above there is no force-ON direction: the historical
+    /// `SIGMA_RULE_JOIN=1` "bypass the guard" A/B mode isn't
+    /// represented by this single boolean (see the field doc).
+    fn rule_join_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_NO_RULE_JOIN").is_some() {
+            false
+        } else {
+            default
+        }
+    }
+
     fn bwd_demod_env_override(default: bool) -> bool {
         if std::env::var_os("SIGMA_NO_BWD_DEMOD").is_some() {
             false
@@ -641,6 +669,10 @@ impl Strategy {
             // volume the discipline attacks actually exists).
             deferred_passive:  Self::deferred_passive_env_override(false),
             deferred_cap:      Self::deferred_cap_env_override(Self::base().deferred_cap),
+            // Same reachability concern as `semantic_guide` above:
+            // `from_env()` is not consulted here.
+            recognize_roles:   std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some(),
+            rule_join:         Self::rule_join_env_override(Self::base().rule_join),
             ..Self::base()
         }
         .named("tptp-complete")
@@ -894,6 +926,11 @@ impl Strategy {
             // Correctness/portability feature, not a search lever — kept
             // out of the sweep genome (and a no-op on SUMO anyway).
             recognize_roles: false,
+            // Not in the sweep genome yet (no RNG draw — existing seeds'
+            // sample streams shift only via fields that DO draw): new,
+            // unmeasured lever — kept switchable via its env A/B instead
+            // (`SIGMA_NO_RULE_JOIN`) until a corpus run backs a chance().
+            rule_join: Strategy::base().rule_join,
             // Correctness/parity feature (attitude-relation K schemata),
             // not a search lever — kept out of the sweep genome.
             modal_k: true,

@@ -1384,7 +1384,7 @@ impl<'a> NativeProver<'a> {
     /// merge the model's own evaluation discovered is honored the same
     /// way the model's OWN tuples are already stored in canonical form.
     fn model_true_negative(&mut self, t: &Term, tier: u8) -> Option<Vec<SentenceId>> {
-        if std::env::var_os("SIGMA_MODEL").is_none() {
+        if !self.opts.model {
             return None;
         }
         self.model_true_negative_forced(t, tier)
@@ -1435,7 +1435,7 @@ impl<'a> NativeProver<'a> {
         // block before we normalize/register it.  Only INFERENCES pause
         // (`derived`); the initial axiom/conjecture load (derived = false) is
         // not a match and would otherwise flood the prompt before the loop.
-        if derived && stepdbg::enabled() {
+        if derived && (stepdbg::enabled() || self.opts.step) {
             let body = format!(
                 "rule = {rule}   tier = {tier}   derived = {derived}\n  \
                  conclusion: {}\n  from parents:\n{}",

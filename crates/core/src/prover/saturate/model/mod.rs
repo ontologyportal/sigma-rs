@@ -297,7 +297,7 @@ impl ModelProgram {
         deadline: Option<std::time::Instant>,
     ) -> Option<Vec<Tuple>> {
         let mut stats = ModelStats::default();
-        self.answer_stats(rel, args, deadline, &mut stats).map(|(rows, _)| rows)
+        self.answer_stats(rel, args, deadline, &mut stats, 250_000).map(|(rows, _)| rows)
     }
 
     /// As [`answer`](Self::answer), but records WHY a bail happened (or that
@@ -312,6 +312,7 @@ impl ModelProgram {
         args:     &[DTerm],
         deadline: Option<std::time::Instant>,
         stats:    &mut ModelStats,
+        budget:   usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         // Positive-path policy: an unsafe rule in the cone FAILS FAST
         // (`ModelError::Unsafe`), the long-standing behavior — on full SUMO
@@ -319,7 +320,7 @@ impl ModelProgram {
         // per-prove deadline evaluating a cone that then overflows anyway
         // would tax every SIGMA_MODEL prove for nothing.  The denial chase
         // (`refutes`) opts into the sound unsafe-rule drop instead.
-        self.answer_stats_impl(rel, args, deadline, stats, false)
+        self.answer_stats_impl(rel, args, deadline, stats, false, budget)
     }
 
     /// [`answer_stats`] with the unsafe-rule policy explicit — see there.
@@ -337,6 +338,7 @@ impl ModelProgram {
     /// rules (independent of transitivity), while the shallow cone is the
     /// taxonomy bridge + one layer of typing rules over the store.  The
     /// caller's deadline is split between the two attempts.
+    #[allow(clippy::too_many_arguments)]
     fn answer_stats_impl(
         &self,
         rel:         Pred,
@@ -344,17 +346,18 @@ impl ModelProgram {
         deadline:    Option<std::time::Instant>,
         stats:       &mut ModelStats,
         drop_unsafe: bool,
+        budget:      usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         let first_deadline = deadline.map(|d| {
             let now = std::time::Instant::now();
             let half = (d.saturating_duration_since(now)) / 2;
             now + half
         });
-        match self.answer_cone_impl(rel, args, first_deadline, stats, drop_unsafe, false) {
+        match self.answer_cone_impl(rel, args, first_deadline, stats, drop_unsafe, false, budget) {
             Some(ans) => Some(ans),
             None if stats.retry_eligible => {
                 stats.shallow_retries += 1;
-                self.answer_cone_impl(rel, args, deadline, stats, drop_unsafe, true)
+                self.answer_cone_impl(rel, args, deadline, stats, drop_unsafe, true, budget)
             }
             None => None,
         }
@@ -373,17 +376,14 @@ impl ModelProgram {
         stats:       &mut ModelStats,
         drop_unsafe: bool,
         shallow:     bool,
+        budget:      usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         stats.retry_eligible = false;
-        // Per-evaluation tuple budget.  `SIGMA_MODEL_BUDGET` overrides the
-        // default (diagnosis / experimentation on dense KBs — full SUMO's
-        // `instance` cone materializes past the default and bails; the real
-        // fix is built-in transitive closure, which stops materializing the
-        // dense closure altogether).  Gated path only.
-        let budget: usize = std::env::var("SIGMA_MODEL_BUDGET")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(250_000);
+        // Per-evaluation tuple budget (`opts.model_budget` / `SIGMA_MODEL_BUDGET`
+        // — diagnosis / experimentation on dense KBs: full SUMO's `instance`
+        // cone materializes past the default and bails; the real fix is
+        // built-in transitive closure, which stops materializing the dense
+        // closure altogether).
         // Magic restricts *facts*, but the naive evaluator still processes
         // every rule in the cone each round.  When the cone is the whole
         // program — OpenCyc `genls` depends transitively on ~everything, so its
@@ -594,6 +594,7 @@ impl ModelProgram {
         tuple:    &[SymbolId],
         deadline: Option<std::time::Instant>,
         stats:    &mut ModelStats,
+        budget:   usize,
     ) -> Option<ModelRefutation> {
         if self.denials.is_empty() || rel != self.roles.instance || tuple.len() != 2 {
             return None;
@@ -613,6 +614,7 @@ impl ModelProgram {
             deadline,
             stats,
             true,
+            budget,
         )?;
         if inst_rows.is_empty() {
             return None;
@@ -632,6 +634,7 @@ impl ModelProgram {
                 deadline,
                 stats,
                 true,
+                budget,
             )?;
             anc_c.extend(rows.iter().filter(|r| r.len() == 2).map(|r| r[1]));
             prov_c = Some(prov);
@@ -684,14 +687,11 @@ impl ModelProgram {
         tuple:    &[SymbolId],
         deadline: Option<std::time::Instant>,
         stats:    &mut ModelStats,
+        budget:   usize,
     ) -> Option<Vec<SentenceId>> {
         if !self.certified.contains(&rel) {
             return None;
         }
-        let budget: usize = std::env::var("SIGMA_MODEL_BUDGET")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(250_000);
         const MAX_CONE_RULES: usize = 50_000;
         const MAX_CONE_FACTS: usize = 200_000;
 
@@ -1944,7 +1944,7 @@ mod tests {
         // Wolf ⊑ WildAnimal, and partition makes those disjoint.
         let mut stats = ModelStats::default();
         let r = mp
-            .refutes(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats)
+            .refutes(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats, 250_000)
             .expect("denial refutes (instance Rex Wolf)");
         assert_eq!(r.member, s("DomesticAnimal"), "clashing membership");
         assert_eq!(r.goal_ancestor, s("WildAnimal"), "goal-side ancestor");
@@ -1984,10 +1984,10 @@ mod tests {
         // No denial between Rex's classes and Dog / an unknown class: no
         // refutation (and membership of a class ON Rex's own chain never
         // refutes).
-        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Dog")], None, &mut stats).is_none());
-        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Cat")], None, &mut stats).is_none());
+        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Dog")], None, &mut stats, 250_000).is_none());
+        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Cat")], None, &mut stats, 250_000).is_none());
         // Non-instance relations are never refuted here.
-        assert!(mp.refutes(s("subclass"), &[s("Dog"), s("Wolf")], None, &mut stats).is_none());
+        assert!(mp.refutes(s("subclass"), &[s("Dog"), s("Wolf")], None, &mut stats, 250_000).is_none());
     }
 
     // Cross-check: on a fixture where BOTH engines see the same information
@@ -2031,7 +2031,7 @@ mod tests {
                 let o = oracle.refutes_instance(s("instance"), s(x), s(c), None);
                 let mut stats = ModelStats::default();
                 let m = mp
-                    .refutes(s("instance"), &[s(x), s(c)], None, &mut stats)
+                    .refutes(s("instance"), &[s(x), s(c)], None, &mut stats, 250_000)
                     .is_some();
                 assert_eq!(o, m, "oracle/model disagreement on (instance {x} {c})");
                 refuted += usize::from(m);
@@ -2193,7 +2193,7 @@ mod tests {
         // — the grandparent rule and the parent-via-adoption rule.
         let mut stats = ModelStats::default();
         let cited = mp
-            .complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats)
+            .complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
             .expect("certified absence must decide the negative");
         let rule_sids: Vec<SentenceId> =
             mp.program.rules.iter().filter_map(|r| r.sid).collect();
@@ -2206,14 +2206,14 @@ mod tests {
 
         // Present tuples decide nothing (both are model-derived).
         assert!(mp
-            .complete_absent(s("grandparent"), &[s("Alice"), s("Carol")], None, &mut stats)
+            .complete_absent(s("grandparent"), &[s("Alice"), s("Carol")], None, &mut stats, 250_000)
             .is_none());
         assert!(mp
-            .complete_absent(s("grandparent"), &[s("Bob"), s("Dave")], None, &mut stats)
+            .complete_absent(s("grandparent"), &[s("Bob"), s("Dave")], None, &mut stats, 250_000)
             .is_none());
         // An uncertified (unknown) relation decides nothing.
         assert!(mp
-            .complete_absent(s("instance"), &[s("Alice"), s("Dave")], None, &mut stats)
+            .complete_absent(s("instance"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
             .is_none());
     }
 
@@ -2245,7 +2245,7 @@ mod tests {
 
         let mut stats = ModelStats::default();
         assert!(
-            mp.complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats)
+            mp.complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
                 .is_none(),
             "no negative may be decided for a blocked relation"
         );
@@ -2296,10 +2296,10 @@ mod tests {
         let mut stats = ModelStats::default();
         // Neither the entailed nor the un-entailed instance atom is decided.
         assert!(mp
-            .complete_absent(s("instance"), &[s("Rex"), s("Animal")], None, &mut stats)
+            .complete_absent(s("instance"), &[s("Rex"), s("Animal")], None, &mut stats, 250_000)
             .is_none());
         assert!(mp
-            .complete_absent(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats)
+            .complete_absent(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats, 250_000)
             .is_none());
     }
 
@@ -2391,7 +2391,7 @@ mod tests {
         let mut stats = ModelStats::default();
         for &((f, t), expected) in &golden {
             assert_eq!(holds_rel.contains(&vec![f, t]), expected, "grid cell");
-            let neg = mp.complete_absent(pid("holdsAt"), &[f, t], None, &mut stats);
+            let neg = mp.complete_absent(pid("holdsAt"), &[f, t], None, &mut stats, 250_000);
             assert_eq!(
                 neg.is_some(),
                 !expected,
@@ -2510,7 +2510,7 @@ mod tests {
         // match, and the returned row must carry the ORIGINAL constant.
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(s("AgeA"))], None, &mut stats)
+            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(s("AgeA"))], None, &mut stats, 250_000)
             .expect("ageOf answers");
         assert_eq!(rows, vec![vec![s("Bob"), s("AgeA")]], "original goal constant kept");
 
@@ -2544,7 +2544,7 @@ mod tests {
             .unwrap();
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(probe)], None, &mut stats)
+            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(probe)], None, &mut stats, 250_000)
             .expect("non-rep goal constant still answers");
         assert_eq!(rows, vec![vec![s("Bob"), probe]], "original (non-rep) goal constant kept");
         let cited = mp.cite(&prov, s("ageOf"), &vec![s("Bob"), probe]);
@@ -2594,7 +2594,7 @@ mod tests {
         };
         let mut stats = ModelStats::default();
         assert!(mp
-            .answer_stats(s("val"), &[DTerm::Const(s("k")), DTerm::Var(0)], None, &mut stats)
+            .answer_stats(s("val"), &[DTerm::Const(s("k")), DTerm::Var(0)], None, &mut stats, 250_000)
             .is_none());
         assert_eq!(stats.rigid_conflicts, 1, "conflict surfaced in ModelStats");
 
@@ -2680,7 +2680,7 @@ mod tests {
 
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("r"), &[DTerm::Const(s("n0")), DTerm::Const(s("n1000"))], None, &mut stats)
+            .answer_stats(s("r"), &[DTerm::Const(s("n0")), DTerm::Const(s("n1000"))], None, &mut stats, 250_000)
             .expect("reachability answers");
         assert_eq!(rows, vec![vec![s("n0"), s("n1000")]]);
         assert!(
@@ -2760,7 +2760,7 @@ mod tests {
         let mp = ModelProgram::build(&sem.syntactic);
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("r"), &[DTerm::Const(s("a")), DTerm::Var(0)], None, &mut stats)
+            .answer_stats(s("r"), &[DTerm::Const(s("a")), DTerm::Var(0)], None, &mut stats, 250_000)
             .expect("closure answers");
         let mut got: Vec<Tuple> = rows.clone();
         got.sort();
@@ -2811,7 +2811,7 @@ mod tests {
         // the declaring sid.
         let mut stats = ModelStats::default();
         let (_, prov) = mp
-            .answer_stats(s("linked"), &[DTerm::Const(s("a")), DTerm::Const(s("c"))], None, &mut stats)
+            .answer_stats(s("linked"), &[DTerm::Const(s("a")), DTerm::Const(s("c"))], None, &mut stats, 250_000)
             .expect("ground goal answers");
         let cited = mp.cite(&prov, s("linked"), &vec![s("a"), s("c")]);
         let decl = find_fact(&sem.syntactic, "instance", "r", "TransitiveRelation");
@@ -2922,6 +2922,7 @@ mod tests {
                     None,
                     &mut st,
                     true,
+                    250_000,
                 )
                 .expect("subclass ancestors answer");
             rows.iter()
@@ -2941,6 +2942,7 @@ mod tests {
                 None,
                 &mut st,
                 true,
+                    250_000,
             );
             eprintln!(
                 "HEADLINE diag unbounded GROUND: answered={} rows={} budget_used={} elapsed={:?}",
@@ -2964,6 +2966,7 @@ mod tests {
             deadline,
             &mut stats,
             true,
+                    250_000,
         );
         eprintln!(
             "HEADLINE after (builtin, ground instance membership): answered={} rows={} \
@@ -2984,6 +2987,7 @@ mod tests {
             deadline,
             &mut stats_sub,
             true,
+                    250_000,
         );
         eprintln!(
             "HEADLINE after (subclass Human cone): answered={} rows={} budget_used={} elapsed={:?}",
@@ -3009,6 +3013,7 @@ mod tests {
                 None,
                 &mut st,
                 true,
+                    250_000,
             );
             eprintln!(
                 "HEADLINE diag member-bound instance: answered={} rows={} budget_used={} elapsed={:?}",
@@ -3052,6 +3057,7 @@ mod tests {
             deadline,
             &mut stats_b,
             true,
+                    250_000,
         );
         eprintln!(
             "HEADLINE before (schema rules, same ground query): answered={} \
@@ -3071,6 +3077,7 @@ mod tests {
             deadline,
             &mut stats_bs,
             true,
+                    250_000,
         );
         eprintln!(
             "HEADLINE before (schema rules, subclass Human cone): answered={} rows={} \

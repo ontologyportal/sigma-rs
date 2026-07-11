@@ -40,23 +40,19 @@ impl<'a> NativeProver<'a> {
     /// bounded fixpoint feeds each emitted head back as a fact so chained
     /// rules (`breaksLaw ⇒ goesToJail`) fire on later rounds.
     ///
-    /// Applicability is now decided PER GOAL by a guard predicate
+    /// Applicability is decided PER GOAL by a guard predicate
     /// (`guard_applicable`, computed below from the same scan that used to
-    /// only drive `suppress_rules`) rather than by a single blanket flag:
-    /// `SIGMA_RULE_JOIN=1` forces the
-    /// pass on unconditionally (bypassing the guard; kept for A/B testing
-    /// and backward compat), `SIGMA_NO_RULE_JOIN=1` forces it off
-    /// unconditionally (the safety valve; wins if both are set), and with
-    /// neither set the guard runs the pass by default exactly on the
-    /// Horn-chain / conclusion-rule goal shape it wins on (e.g. the
-    /// "jail" proof) while staying inert everywhere else — so the
-    /// saturation baseline is byte-identical off the guarded path, same
-    /// as the old default-off behaviour.
+    /// only drive `suppress_rules`) — `Strategy.rule_join` (default `true`)
+    /// just gates whether the guard even runs: with it on, the pass fires
+    /// by default exactly on the Horn-chain / conclusion-rule goal shape it
+    /// wins on (e.g. the "jail" proof) while staying inert everywhere else,
+    /// so the saturation baseline is byte-identical off the guarded path;
+    /// `false` (`SIGMA_NO_RULE_JOIN`) disables the pass unconditionally —
+    /// the safety valve.
     pub(crate) fn discharge_horn_joins(&mut self) {
-        if std::env::var_os("SIGMA_NO_RULE_JOIN").is_some() {
-            return; // force-off wins over force-on: the A/B safety valve.
+        if !self.opts.strategy.rule_join {
+            return;
         }
-        let forced_on = std::env::var_os("SIGMA_RULE_JOIN").is_some();
         let cov = self.oracle.coverage();
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
 
@@ -231,22 +227,19 @@ impl<'a> NativeProver<'a> {
         // This is exactly the jail-proof shape and exactly the shape the
         // existing suppression logic already carves out as safe.
         let guard_applicable = !rules.is_empty() && !queries.is_empty() && !suppress_rules;
-        let run_pass = forced_on || guard_applicable;
         if trace {
             eprintln!(
                 "RULE-JOIN scan: {} generator relations, {} ground facts, {} conclusion rules, \
-                 {} queries, suppress_rules={}, forced_on={}, guard_applicable={}, run_pass={}",
+                 {} queries, suppress_rules={}, guard_applicable={}",
                 facts.len(),
                 facts.values().map(Vec::len).sum::<usize>(),
                 rules.len(),
                 queries.len(),
                 suppress_rules,
-                forced_on,
                 guard_applicable,
-                run_pass,
             );
         }
-        if !run_pass {
+        if !guard_applicable {
             return;
         }
 
@@ -377,7 +370,7 @@ impl<'a> NativeProver<'a> {
     /// exists); see `model::tests::ec_kernel_holds_grid` for the golden-grid
     /// regression that replaced the parity cross-check.
     pub(crate) fn discharge_event_calculus(&mut self) {
-        if std::env::var_os("SIGMA_EC").is_none() {
+        if !self.opts.ec {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
@@ -470,7 +463,7 @@ impl<'a> NativeProver<'a> {
     /// when the conjecture's relations aren't defined in the program — so SUMO
     /// non-taxonomy queries pay only a cheap miss.
     pub(crate) fn discharge_models(&mut self) {
-        if std::env::var_os("SIGMA_MODEL").is_none() {
+        if !self.opts.model {
             return;
         }
         self.discharge_models_forced();
@@ -539,13 +532,9 @@ impl<'a> NativeProver<'a> {
         // Hard wall-clock cap on model materialization across all goal atoms,
         // so a slow/zero-value model build (e.g. a dense OpenCyc cone that
         // emits nothing) can never eat the prover's time budget — it bails and
-        // resolution proceeds.  `SIGMA_MODEL_MS` overrides the default 800ms
-        // (diagnosis / experimentation on dense KBs; gated path only).
-        let model_ms: u64 = std::env::var("SIGMA_MODEL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(800);
-        let deadline = Instant::now() + std::time::Duration::from_millis(model_ms);
+        // resolution proceeds.  `opts.model_ms` (`SIGMA_MODEL_MS`) overrides
+        // the default 800ms (diagnosis / experimentation on dense KBs).
+        let deadline = Instant::now() + std::time::Duration::from_millis(self.opts.model_ms);
         let mut to_emit: Vec<(SymbolId, Vec<SymbolId>, Vec<SentenceId>)> = Vec::new();
         let mut model_stats = super::super::model::ModelStats::default();
         if defines {
@@ -554,7 +543,7 @@ impl<'a> NativeProver<'a> {
                     self.stats.model_atoms_rejected += 1;
                     continue;
                 };
-                let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats);
+                let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats, self.opts.model_budget);
                 if let Some((rows, prov)) = answered {
                     self.stats.model_atoms_answered += 1;
                     for row in rows {
@@ -605,7 +594,7 @@ impl<'a> NativeProver<'a> {
                         continue;
                     };
                     let Some(r) =
-                        mp.refutes(rel, &[x, cc], Some(deadline), &mut model_stats)
+                        mp.refutes(rel, &[x, cc], Some(deadline), &mut model_stats, self.opts.model_budget)
                     else {
                         continue;
                     };
@@ -689,7 +678,7 @@ impl<'a> NativeProver<'a> {
                         continue;
                     };
                     let Some(cited) =
-                        mp.complete_absent(rel, &tuple, Some(deadline), &mut model_stats)
+                        mp.complete_absent(rel, &tuple, Some(deadline), &mut model_stats, self.opts.model_budget)
                     else {
                         continue;
                     };
@@ -851,7 +840,7 @@ impl<'a> NativeProver<'a> {
     /// so the bespoke per-atom path (which already closes e.g. CSR116+5) is
     /// untouched; this only adds closures it was missing.
     pub(crate) fn discharge_model_joins(&mut self) {
-        if std::env::var_os("SIGMA_MODEL").is_none() {
+        if !self.opts.model {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
@@ -970,7 +959,7 @@ impl<'a> NativeProver<'a> {
                         })
                         .collect();
                     let mut model_stats = super::super::model::ModelStats::default();
-                    let answered = mp.answer_stats(rel, &dargs, Some(deadline), &mut model_stats);
+                    let answered = mp.answer_stats(rel, &dargs, Some(deadline), &mut model_stats, self.opts.model_budget);
                     self.merge_model_stats(&model_stats);
                     if let Some((rows, prov)) = answered {
                         self.stats.model_atoms_answered += 1;
@@ -1122,7 +1111,7 @@ impl<'a> NativeProver<'a> {
     /// positive literal (non-definite partner) is not pursued — a prototype
     /// limitation, not unsoundness.
     pub(crate) fn discharge_backward(&mut self) {
-        if std::env::var_os("SIGMA_BACKWARD").is_none() {
+        if !self.opts.backward {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
@@ -1203,15 +1192,8 @@ impl<'a> NativeProver<'a> {
         // Best-effort: bounded by a wall-clock deadline (each DFS node
         // materializes a real resolvent, so the node count is a poor bound)
         // plus a node backstop.  Returns promptly either way.
-        let ms: u64 = std::env::var("SIGMA_BACKWARD_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(800);
-        let deadline = Instant::now() + std::time::Duration::from_millis(ms);
-        let mut budget = std::env::var("SIGMA_BACKWARD_NODES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(200_000usize);
+        let deadline = Instant::now() + std::time::Duration::from_millis(self.opts.backward_ms);
+        let mut budget = self.opts.backward_nodes as usize;
         for &g in &goals {
             let width = self.clauses[g as usize].terms.len() as u32;
             let max_depth = width.saturating_mul(2).saturating_add(16).min(64);

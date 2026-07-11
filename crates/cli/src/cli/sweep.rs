@@ -380,6 +380,7 @@ fn run_one(
                 strategy: strat.clone(),
                 cancel: None,
                 step: false,
+                ..Default::default()
             };
             let kb = kb.expect("TQ problems imply a shared KB");
             let r = kb.ask_query(query, Some(session), sine, opts);
@@ -401,6 +402,7 @@ fn run_one(
                 strategy: strat.clone(),
                 cancel: None,
                 step: false,
+                ..Default::default()
             };
             let mut sess = Session::<ProverLayer>::new(format!("sweep-{name}"));
             let r = match sess.test(Source::Local(vec![path.clone()]), Some(opts)) {
