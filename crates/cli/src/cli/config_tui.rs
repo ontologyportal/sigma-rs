@@ -99,17 +99,17 @@ fn enter_and_run(manager: KBManager, target: &Path) -> io::Result<bool> {
 
 /// Build the row list in the same section order as `config_cmd.rs::run_config`
 /// (Global / native prover / external prover / other subsystem / config-only
-/// / knowledge bases), skipping `Kind::List` entries — no table option of
-/// that kind can round-trip through a typed single value (see
-/// `args_project::extract`), so there's nothing sane to edit inline;
-/// `--warning` (the only one) stays runtime-only, unchanged from how every
-/// other subcommand already treats it.
+/// / knowledge bases), skipping `Kind::List` and `Kind::Json` entries — no
+/// table option of either kind can round-trip through a typed single-line
+/// value (see `args_project::extract`), so there's nothing sane to edit
+/// inline; `--warning` and `--strategy` (the only ones) stay runtime-only,
+/// unchanged from how every other subcommand already treats them.
 fn build_rows(manager: &KBManager) -> Vec<Row> {
     let opts = KBManager::options();
     let mut rows = Vec::new();
     let mut section = |title: &'static str, pred: &dyn Fn(&OptionMeta) -> bool| {
         let items: Vec<&'static OptionMeta> = opts.iter()
-            .filter(|o| !matches!(o.kind, Kind::List) && pred(o))
+            .filter(|o| !matches!(o.kind, Kind::List | Kind::Json) && pred(o))
             .collect();
         if items.is_empty() { return; }
         rows.push(Row::Header(title));
@@ -257,7 +257,10 @@ impl App {
             Kind::Int   => buf.trim().parse::<u64>().ok().map(|n| serde_json::json!(n)),
             Kind::Float => buf.trim().parse::<f64>().ok().map(|n| serde_json::json!(n)),
             Kind::Str | Kind::Path => Some(serde_json::json!(buf)),
-            Kind::Bool | Kind::List => None,
+            // Never reached: `build_rows` filters both out of the editable
+            // rows (see its doc comment) before `activate`/`confirm_edit`
+            // can select one.
+            Kind::Bool | Kind::List | Kind::Json => None,
         };
         match parsed {
             Some(v) => { self.values.insert(o.field, v); self.dirty = true; self.status = None; }

@@ -4434,6 +4434,7 @@ fn keq_lit_compatible(cl: &PLit, cinfo: &AtomInfo, dl: &PLit, dinfo: &AtomInfo) 
         && cinfo.seats_match_onto(dinfo)
 }
 
+#[allow(dead_code)]
 fn clause_subsumes(sub: &[(bool, Term)], sup: &[(bool, Term)]) -> bool {
     if sub.len() > sup.len() {
         return false;
@@ -4522,6 +4523,7 @@ fn subsume_rec_in(
     false
 }
 
+#[allow(dead_code)]
 fn subsume_rec(
     sub: &[(bool, Term)],
     sup: &[(bool, Term)],

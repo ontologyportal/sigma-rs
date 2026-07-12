@@ -163,7 +163,29 @@ fn arg_of(o: &'static OptionMeta) -> Arg {
         // projected today (the only one, `--warning`, is hand-declared), but the
         // arm keeps `arg_of` total for any future list option.
         Kind::List  => a.value_name("VAL").action(ArgAction::Append),
+        // Resolved (file read, if it names one) and JSON-validated at parse
+        // time, so a bad --strategy fails like any other clap arg error
+        // rather than surfacing later out of apply_overrides.
+        Kind::Json  => a.value_name("JSON|FILE").action(ArgAction::Set)
+            .value_parser(resolve_json_arg),
     }
+}
+
+/// Resolve one `Kind::Json` argument: if `raw` names an existing file, read
+/// and use its contents; otherwise treat `raw` itself as inline JSON. Either
+/// way the result must parse as JSON, checked here so the error surfaces at
+/// argument-parsing time with the raw flag context clap already has.
+fn resolve_json_arg(raw: &str) -> Result<String, String> {
+    let is_file = std::path::Path::new(raw).is_file();
+    let text = if is_file {
+        std::fs::read_to_string(raw).map_err(|e| format!("reading '{raw}': {e}"))?
+    } else {
+        raw.to_string()
+    };
+    serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
+        if is_file { format!("invalid JSON in '{raw}': {e}") } else { format!("invalid JSON: {e}") }
+    })?;
+    Ok(text)
 }
 
 /// Extract a user-/env-supplied value for `o` from the subcommand matches, as a
@@ -178,6 +200,11 @@ fn extract(o: &OptionMeta, m: &ArgMatches) -> Option<serde_json::Value> {
         Kind::Int              => serde_json::json!(m.get_one::<u64>(o.field)?),
         Kind::Float            => serde_json::json!(m.get_one::<f64>(o.field)?),
         Kind::Str | Kind::Path => serde_json::json!(m.get_one::<String>(o.field)?),
+        // Already validated + resolved to plain JSON text by `resolve_json_arg`
+        // at parse time — parse it into the object itself (NOT wrapped as a
+        // JSON string like Str/Path above), since it patches a nested struct
+        // (`native_prover.strategy`), not a scalar leaf.
+        Kind::Json             => serde_json::from_str(m.get_one::<String>(o.field)?).ok()?,
         // Not projected today (the only list option is hand-declared); a future
         // one would need a target-typed mapping, so refuse rather than guess.
         Kind::List             => return None,

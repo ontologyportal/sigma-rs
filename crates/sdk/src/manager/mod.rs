@@ -368,7 +368,7 @@ impl KBManager {
     /// of the parsed `<kb>`s.
     pub fn from_config_xml(xml: &str) -> SdkResult<Self> {
         let mut m = Self::parse_config_xml_lenient(xml)?;
-        m.validate()?;
+        m.validate(None)?;
         let default_kb = m.sumokbname.clone();
         m.set_current_kb(&default_kb);
         Ok(m)
@@ -483,7 +483,10 @@ impl KBManager {
     /// [`from_config_xml`](Self::from_config_xml) calls this and propagates a
     /// fatal [`SdkError::Config`] on failure; consumers building a `KBManager`
     /// another way (e.g. deserializing from JSON) can call it explicitly.
-    pub fn validate(&mut self) -> SdkResult<()> {
+    ///
+    /// `git` is the run's `--git` re-root, if any: constituents that will be
+    /// fetched from that repo are not required to exist locally (see step 4).
+    pub fn validate(&mut self, git: Option<&str>) -> SdkResult<()> {
         // (1) Resolve the DB directory.
         if self.edit_dir.is_relative() && !self.edit_dir.as_os_str().is_empty() {
             self.edit_dir = self.base_dir.join(&self.edit_dir);
@@ -507,11 +510,12 @@ impl KBManager {
 
         // (4) Every *local* constituent of the active KB must exist on disk.
         // Skipped when no KB is selected yet (e.g. `from_config_xml` validates
-        // before selecting).  Resolved locally (no `--git`); a `--git` run
-        // re-roots `Named` constituents to remote `Source::Git`, which this
-        // local check skips.
+        // before selecting).  Resolved under the same `git` the run will
+        // ingest with: a `--git` run re-roots `Named` constituents to a
+        // remote `Source::Git`, which this local check skips — only pinned
+        // (absolute / `..`) constituents stay `Source::Local` and must exist.
         if let Some(kb) = self.current_kb() {
-            for src in kb.resolve(&self.base_dir, &self.kb_dir, None, None) {
+            for src in kb.resolve(&self.base_dir, &self.kb_dir, git, None) {
                 if let Source::Local(paths) = src {
                     for p in &paths {
                         if !p.exists() {
@@ -1388,13 +1392,13 @@ mod tests {
         let mut m = kb_with("K");
         m.base_dir = tmp.clone();
         m.edit_dir = PathBuf::from("sdk_editdir_resolve_test");
-        m.validate().unwrap();
+        m.validate(None).unwrap();
         assert_eq!(m.edit_dir, sub);
 
         // Non-existent editDir → current working directory.
         let mut m = kb_with("K");
         m.edit_dir = PathBuf::from("/no/such/dir/xyz123");
-        m.validate().unwrap();
+        m.validate(None).unwrap();
         assert_eq!(m.edit_dir, std::env::current_dir().unwrap());
     }
 
@@ -1881,7 +1885,7 @@ mod tests {
         // since its constituents are placeholder paths; see
         // `validate_checks_selected_kb_constituents_exist`.)
         let mut m = kb_with("SUMO");
-        assert!(m.validate().is_ok());
+        assert!(m.validate(None).is_ok());
     }
 
     #[test]
@@ -1894,12 +1898,12 @@ mod tests {
         // Existing local constituent → ok.
         let mut m = kb_with("K");
         m.kbs[0].constituents.push(Constituent::Source(Source::Local(vec![real])));
-        assert!(m.validate().is_ok());
+        assert!(m.validate(None).is_ok());
 
         // Missing local constituent → error.
         let mut m = kb_with("K");
         m.kbs[0].constituents.push(Constituent::Source(Source::Local(vec!["/no/such/Merge.kif".into()])));
-        assert!(matches!(m.validate().unwrap_err(), SdkError::Config(_)));
+        assert!(matches!(m.validate(None).unwrap_err(), SdkError::Config(_)));
 
         // Remote (Git) constituents are not disk-checked.
         #[cfg(feature = "git")]
@@ -1910,8 +1914,22 @@ mod tests {
                 paths: vec!["Merge.kif".into()],
                 branch: None,
             }));
-            assert!(m.validate().is_ok());
+            assert!(m.validate(None).is_ok());
         }
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn validate_skips_named_constituents_under_git_reroot() {
+        // A `--git` run re-roots `Named` constituents to the remote repo, so
+        // they need not exist locally — `sumo -c --git <url> load` must work
+        // on a machine that has never had the ontology files on disk.
+        let mut m = kb_with("K");
+        m.kbs[0].constituents.push(Constituent::Named("no/such/Merge.kif".into()));
+        assert!(matches!(m.validate(None).unwrap_err(), SdkError::Config(_)),
+            "without --git the Named constituent must exist locally");
+        assert!(m.validate(Some("https://example/repo")).is_ok(),
+            "with --git the Named constituent resolves remotely and is not disk-checked");
     }
 
     #[test]

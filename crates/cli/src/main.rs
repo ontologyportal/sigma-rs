@@ -145,7 +145,24 @@ fn main_worker() {
         } else {
             let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
             let loaded = !cli.no_config && cfg.is_some();
-            run_config(&manager, cfg, loaded)
+            // Reload leniently rather than reusing the outer `manager`: that one
+            // came from `build_manager`'s *strict* `from_config_xml_path`, which
+            // requires a valid `sumokbname` and falls back to
+            // `KBManager::default()` on any validation failure (see
+            // `build_manager`'s `Cmd::Config` special case just below it) --
+            // exactly the state a config.xml being tuned via `sumo config
+            // --<setting>` before a KB is configured is in. Reusing that
+            // manager here would silently dump built-in defaults while still
+            // reporting the config.xml path as loaded.
+            let dump_manager = if loaded {
+                match KBManager::from_config_xml_path_lenient(cfg.as_deref().unwrap()) {
+                    Ok(m) => m,
+                    Err(e) => { log::error!("config: cannot parse {}: {e}", cfg.as_deref().unwrap().display()); process::exit(2); }
+                }
+            } else {
+                KBManager::default()
+            };
+            run_config(&dump_manager, cfg, loaded)
         };
         process::exit(if ok { 0 } else { 1 });
     }
@@ -178,7 +195,7 @@ fn main_worker() {
             p.ends_with(".p") || p.ends_with(".tptp") || p.ends_with(".ax")
         }));
     if !tptp_only_test {
-        if let Err(e) = manager.validate() {
+        if let Err(e) = manager.validate(cli.git.as_deref()) {
             log::error!("config error: {e}");
             process::exit(2);
         }

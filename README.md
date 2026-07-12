@@ -431,6 +431,124 @@ config.xml is always rewritten in full on a write (comments/formatting/element o
 
 ---
 
+## Prover knobs
+
+The native prover (`crates/core/src/prover/saturate/`) is tuned by two structs:
+
+- **`Strategy`** — search-shaping knobs: queues, weights, caps, which inference
+  mechanisms are on, precedence, portfolio-lane genome. Lives at
+  `NativeOpts.strategy` / `NativeProverConfig.strategy`.
+- **`NativeOpts`** — everything else: step/time budgets, SInE selection, proof
+  rendering, and whole-attempt discharge subsystems (model-join, event-calculus,
+  backward-chaining) that run as a prologue before the given-clause loop.
+
+Only a subset of these are wired all the way through to `KBManager` (the
+config.xml/CLI-facing struct). Where a knob has no `KBManager` field, it can
+only be set via its environment variable — there is no config.xml key or CLI
+flag for it.
+
+### `Strategy` fields (env-var A/B overrides only — no CLI flag, no config.xml key)
+
+These `Strategy::from_env()` switches are process-global kill switches used for
+A/B measurement, not user-facing settings. The *whole* `Strategy` struct **is**
+settable as one nested JSON object — via `--strategy` (inline JSON or a JSON
+file, see below), or config.xml's `<prover type="native"><preference
+name="strategy" value='{"schema":false,...}'/></prover>` (every field name
+below is the literal JSON key) — or generated wholesale by
+`sumo sweep --configs FILE.json` / `--random N --seed S`.
+
+| Strategy field | Env var | Effect |
+|---|---|---|
+| `schema` | `SIGMA_NO_SCHEMA` | off → disables schema simplification (on by default) |
+| `decode` | `SIGMA_NO_DECODE` | off → disables decode simplification (on by default) |
+| `demod` | `SIGMA_DEMOD` | on → enables forward demodulation (off by default outside `tptp()`) |
+| `bwd_demod` | `SIGMA_NO_BWD_DEMOD` / `SIGMA_BWD_DEMOD` | backward demodulation (on by default) |
+| `subs_join` | `SIGMA_NO_SUBS_JOIN` / `SIGMA_SUBS_JOIN` | subsumption-join |
+| `subterm_rows` | `SIGMA_NO_SUBTERM_ROWS` / `SIGMA_SUBTERM_ROWS` | subterm-row indexing |
+| `recognize_roles` | `SIGMA_RECOGNIZE_ROLES` | on → shape-recognized taxonomy roles |
+| `rule_join` | `SIGMA_NO_RULE_JOIN` | off → disables Horn rule-join discharge (on by default) |
+| `goal_dist` | `SIGMA_GOALDIST` | on → goal-distance clause weighting |
+| `liu_rescue` / `def_completion` | `SIGMA_NO_LIU` | off → disables both Liu rescue and definition completion |
+| `head_filter` | `SIGMA_HEADFILTER` | on → head-symbol filtering |
+| `bg_snapshot` | `SIGMA_NO_BG_SNAPSHOT` | off → disables background-KB snapshotting (on by default) |
+| `semantic_guide` | `SIGMA_GUIDE` | on → semantic-model search guidance |
+| `modal_k` | `SIGMA_NO_MODAL_K` | off → disables modal-K handling (on by default) |
+| `deferred_passive` | `SIGMA_NO_DEFERRED_PASSIVE` / `SIGMA_DEFERRED_PASSIVE` | deferred-passive queue discipline; also gates whether the `tptp-deferred` portfolio lane exists |
+| `split_naming` | `SIGMA_NO_SPLIT` / `SIGMA_SPLIT` | naming-split lane |
+| `split_width` | `SIGMA_SPLIT_WIDTH=N` | naming-split width |
+| `deferred_cap` | `SIGMA_DEFERRED_CAP=N` | deferred-passive queue cap |
+
+All other `Strategy` fields (`tier_weight`, `pick_ratio`, `cw_*`, `lit_select`,
+`max_depth`, `max_term_size`, `para_cap`, `demod_cap`, `bwd_demod_cap`,
+`prec_seed`, `fc_*`, `bg_completion*`, `liu_rounds`/`liu_top_k`,
+`defcomp_*`, `ordered_resolution`, `subsumption`, `superposition`,
+`eq_factoring`, `full_saturation`, `strict_saturation`) have no individual env
+var at all — they're only reachable via the nested `strategy` JSON object
+(`--strategy` / config.xml), or drawn by `Strategy::sample(seed)` for
+GA/portfolio sweep genomes.
+
+### `NativeOpts` fields exposed through `KBManager` → config.xml → CLI
+
+| `NativeOpts` field | `KBManager`/`NativeProverConfig` field | config.xml key (`<prover type="native">`) | CLI flag |
+|---|---|---|---|
+| `max_steps` | `native_prover.max_steps` | `maxSteps` | `--max-steps` |
+| `max_lits` | `native_prover.max_lits` | `maxLits` | `--max-lits` |
+| `time_limit_secs` | `native_prover.time_limit_secs` | `timeLimitSecs` | `--timeout` (shared with `external_prover.timeoutSecs`) |
+| `forward_close` | `native_prover.forward_close` | `forwardClose` | `--forward-close` |
+| `want_proof` | `native_prover.want_proof` | `wantProof` | `--want-proof` |
+| `step` | `native_prover.step` | `step` | `--step` (on `ask`/`test` only) |
+| `selection` (`SineParams.tolerance`) | `native_prover.selection.tolerance` | `selection` (nested) | `--scope` |
+| `selection` (`SineParams.autoscale`) | `native_prover.selection.autoscale` | `selection` (nested) | `--autoscale` |
+| `strategy` | `native_prover.strategy` | `strategy` (nested, see above) | `--strategy <JSON\|FILE>` on `ask`/`test`/`audit`/`sweep` (`native-prover` build only) |
+| `profile` | `native_prover.profile` | `profile` | `--profile` — hand-declared **global** flag (`main.rs`), not projected through the `OptionMeta` table; sets `manager.native_prover.profile` directly |
+
+`disable_selection` isn't a `NativeOpts` field itself — it's a `KBManager`-only
+flag (`--full-kb` / config.xml `disableSelection`) that `KBManager::native_opts()`
+folds in as `opts.selection.select_all |= self.disable_selection` when building
+the `NativeOpts` the prover actually runs with.
+
+**`--strategy`** takes either inline JSON (`--strategy '{"schema":false,"para_cap":400}'`)
+or a path to a `.json` file holding the same object; either way it's a
+*partial* spec — any `Strategy` field it omits keeps its default (`Strategy`'s
+`#[serde(default)]`). Invalid JSON, or a named file that can't be read, is a
+clap argument error (reported immediately, before the KB even loads). This
+also persists correctly through `sumo config --strategy ...` — see below.
+
+### `NativeOpts` fields with **no** `KBManager`/config.xml/CLI mirror (env-only)
+
+These whole-attempt discharge subsystems and runtime knobs can only be set via
+their environment variable — there is no way to reach them from config.xml or
+a CLI flag:
+
+| `NativeOpts` field | Env var | Default | Effect |
+|---|---|---|---|
+| `model` | `SIGMA_MODEL` | off (set-if-present) | Enable the Datalog(¬) model-join discharge prologue |
+| `model_budget` | `SIGMA_MODEL_BUDGET` | `250_000` | Per-eval tuple budget for model discharge |
+| `model_ms` | `SIGMA_MODEL_MS` | `800` | Wall-clock cap (ms) for model discharge |
+| `ec` | `SIGMA_EC` | off (set-if-present) | Enable the event-calculus discharge prologue |
+| `backward` | `SIGMA_BACKWARD` | off (set-if-present) | Enable the backward-chaining discharge prologue |
+| `backward_ms` | `SIGMA_BACKWARD_MS` | `800` | Wall-clock cap (ms) for backward chaining |
+| `backward_nodes` | `SIGMA_BACKWARD_NODES` | `200_000` | Search-node cap for backward chaining |
+| `cores` | `SIGMA_CORES` | `available_parallelism()` | Portfolio-lane worker-thread cap (concurrent TPTP lane racing) |
+
+`max_lits` also has a `SIGMA_MAX_LITS` env override applied post-construction
+in `NativeProver::new` (distinct from, and layered on top of, the CLI/config
+`--max-lits` path above).
+
+### Other diagnostic / tracing env vars
+
+Debug and trace switches, not search-shaping tunables: `SIGMA_NO_PORTFOLIO`,
+`SIGMA_STATS`, `SIGMA_SELECT_DUMP`, `SIGMA_SELECT_GREP`, `SIGMA_DISJOINT_DECOMP`,
+`SIGMA_DISJOINT_ALWAYS`, `SIGMA_HINTS`, `SIGMA_HINTS_DEBUG`, `SIGMA_WIDTH_DUMP`,
+`SIGMA_FLOOD_DUMP`, `SIGMA_GATE0_DUMP`, `SIGMA_LIU_TRACE`, `SIGMA_ORACLE_TRACE`,
+`SIGMA_TEMPORAL`, `SIGMA_MAGIC_TRACE`, `SIGMA_MODEL_TRACE`, `SIGMA_HEADLINE_DIAG`,
+`SIGMA_NO_ARENA`, `SIGMA_SCALE_TRACE`, `SIGMA_ALL_LANES`, `SIGMA_PROOF_TRACE`,
+`SIGMA_RESIDUE_DECODE`, `SIGMA_REACTOR_PROFILE`, `SIGMA_STEP` (also settable
+via `NativeOpts.step`/`--step`, but the env var is read independently by the
+`stepdbg` module).
+
+---
+
 ## Environment variables
 
 | Variable | Description |

@@ -92,6 +92,13 @@ pub enum Kind {
     /// consumer collects the tokens and maps them to the target field's type
     /// (for `--warning`, via [`ElevateWarnings::from_tokens`](super::ElevateWarnings::from_tokens)).
     List,
+    /// A JSON object, given either inline or as a path to a `.json` file
+    /// (`--strategy`).  The consumer resolves file-vs-inline and validates
+    /// the JSON at parse time, then hands the whole object to the option's
+    /// `json_path` as-is (a partial object — missing fields keep their
+    /// default via the target struct's `#[serde(default)]`), rather than
+    /// wrapping it as a JSON string like [`Kind::Str`] does.
+    Json,
 }
 
 /// One configurable option: how it appears on the CLI and where it lands in the
@@ -124,14 +131,25 @@ pub struct OptionMeta {
 impl KBManager {
     /// The full option table — the single source of truth a consumer projects
     /// into a CLI parser + a `flag > config.xml > default` merge.
+    ///
+    /// Feature-gated rows (currently just `strategy`, `native-prover`-only)
+    /// are appended on top of [`OPTIONS`] here rather than living in it
+    /// directly — see [`NATIVE_PROVER_STRATEGY_OPTION`].
     pub fn options() -> &'static [OptionMeta] {
-        OPTIONS
+        static COMBINED: std::sync::OnceLock<Vec<OptionMeta>> = std::sync::OnceLock::new();
+        COMBINED.get_or_init(|| {
+            #[allow(unused_mut, reason = "mutated only when native-prover is on")]
+            let mut opts = OPTIONS.to_vec();
+            #[cfg(feature = "native-prover")]
+            opts.push(NATIVE_PROVER_STRATEGY_OPTION);
+            opts
+        })
     }
 
     /// The options that surface as a flag on `sub` (CLI flags only; global +
     /// in-scope subsystem options).
     pub fn options_for(sub: Subsystem) -> impl Iterator<Item = &'static OptionMeta> {
-        OPTIONS.iter().filter(move |o| o.scope.applies_to(sub))
+        Self::options().iter().filter(move |o| o.scope.applies_to(sub))
     }
 
     /// Layer CLI/env overrides on top of this config — the bottom of the
@@ -335,7 +353,20 @@ const OPTIONS: &[OptionMeta] = &[
     OptionMeta { field: "ollama_host", json_paths: &["ollama_host"], long: "ollama-host", short: None,
         env: None, scope: Scope::ConfigOnly, kind: Kind::Str,
         help: "Ollama / OpenAI-compatible host for LLM proof explanations." },
+
 ];
+
+/// `native_prover.strategy` only exists when the `native-prover` feature is
+/// on (see [`super::NativeProverConfig`]), so this row lives apart from
+/// [`OPTIONS`] instead of inside it — a `json_path` that never resolves
+/// would fail [`tests::every_json_path_resolves`] whenever this crate is
+/// built without that feature.  [`KBManager::options`] /
+/// [`KBManager::options_for`] append it back on when the feature is active.
+#[cfg(feature = "native-prover")]
+const NATIVE_PROVER_STRATEGY_OPTION: OptionMeta = OptionMeta {
+    field: "strategy", json_paths: &["native_prover.strategy"], long: "strategy", short: None,
+    env: None, scope: Scope::Subsystems(NATIVE), kind: Kind::Json,
+    help: "Native prover search-shaping knobs (Strategy), as a JSON object given inline or as a path to a JSON file. Unset fields keep their default; see Strategy in sigmakee-rs-core's saturate::strategy module." };
 
 #[cfg(test)]
 mod tests {
