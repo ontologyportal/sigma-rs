@@ -62,7 +62,9 @@ impl PartialEq for Source {
         match (self, other) {
             (Self::Local(l0), Self::Local(r0)) => l0 == r0,
             (Self::Reader { name: l_name, .. }, Self::Reader { name: r_name, .. }) => l_name == r_name,
+            #[cfg(feature = "http")]
             (Self::Http { uri: l_uri }, Self::Http { uri: r_uri }) => l_uri == r_uri,
+            #[cfg(feature = "git")]
             (Self::Git { uri: l_uri, paths: l_paths, branch: l_branch },
              Self::Git { uri: r_uri, paths: r_paths, branch: r_branch }) =>
                 l_uri == r_uri && l_paths == r_paths && l_branch == r_branch,
@@ -78,7 +80,9 @@ impl Source {
         match self {
             Self::Local(_) => 0,
             Self::Reader { .. } => 1,
+            #[cfg(feature = "http")]
             Self::Http { .. } => 2,
+            #[cfg(feature = "git")]
             Self::Git { .. } => 3,
         }
     }
@@ -89,9 +93,11 @@ impl Ord for Source {
         match (self, other) {
             (Self::Local(r), Self::Local(l)) => r.cmp(l),
             (Self::Reader { name, .. }, Self::Reader { name: lname, .. }) => name.cmp(lname),
+            #[cfg(feature = "http")]
             (Self::Http { uri }, Self::Http { uri: luri }) => {
                 uri.to_string().cmp(&luri.to_string())
             }
+            #[cfg(feature = "git")]
             (Self::Git { uri, paths, branch }, Self::Git { uri: luri, paths: lpaths, branch: lbranch }) => {
                 uri.cmp(luri).then_with(|| paths.cmp(lpaths)).then_with(|| branch.cmp(lbranch))
             }

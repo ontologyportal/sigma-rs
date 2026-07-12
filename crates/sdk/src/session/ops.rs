@@ -9,7 +9,6 @@ use sigmakee_rs_core::{Diagnostic, ExternalOpts, HasTranslation, TopLayer, TptpL
 use crate::Source;
 
 use super::Session;
-#[cfg(feature = "persist")]
 use super::super::{SdkError, SdkResult};
 
 impl<L: TopLayer> Session<L> {

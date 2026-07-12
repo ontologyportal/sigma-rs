@@ -126,7 +126,7 @@ pub use sigmakee_rs_core::{
 };
 
 // Proof-source indexing + search + shared prover opts.
-pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts, SearchOpts, SearchSource};
+pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts, SearchHit, SearchOpts, SearchSource};
 #[cfg(feature = "ask")]
 pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]

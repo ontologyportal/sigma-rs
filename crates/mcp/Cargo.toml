@@ -1,0 +1,41 @@
+[package]
+name    = "sumo-mcp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "MCP server exposing sigma-rs's KIF/SUMO validation, ingestion, and theorem-proving as tools for LLM ontology authoring."
+
+# Standalone stdio MCP server binary, protocol-only — mirrors sumo-lsp's
+# posture (crates/lsp): a thin wire-format crate over `sigmakee-rs-sdk`'s
+# `Session` API, no CLI, no TUI.
+[[bin]]
+name = "sumo-mcp"
+path = "src/main.rs"
+
+[lib]
+name = "sumo_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+# Direct path dep (not `workspace = true`, same reasoning as sumo-lsp):
+# workspace-dependency inheritance ignores a member's `default-features =
+# false`, which would silently drag `ask`/`http`/`git` back in. We want
+# exactly: parse + validate + ingest + the in-process native prover +
+# LMDB persistence — no external Vampire subprocess, no CMake, no HTTP/git
+# fetch (an LLM client hands us local paths or inline KIF, not URLs).
+sigmakee-rs-sdk = { path = "../sdk", default-features = false, features = ["native-prover", "parallel"] }
+# Direct path dep, `RenderReport` only (`sigmakee-rs-sdk` re-exports it, but
+# only behind its `ask` feature — which also pulls in the external-Vampire
+# subprocess machinery we don't want here). Same "borrow one type from core"
+# pattern as the CLI's `sweep` feature.
+sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover"] }
+
+rmcp        = { version = "2", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+tokio       = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "sync", "signal"] }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+log.workspace = true
+env_logger  = "0.11"
+anyhow      = "1"
+clap        = { version = "4", features = ["derive"] }
