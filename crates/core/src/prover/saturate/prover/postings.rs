@@ -297,6 +297,104 @@ impl SubtermPostings {
         }
     }
 
+    /// B′-1: the registration walk over ARENA NODES — emission-identical
+    /// to [`Self::register_clause`] with `store_rows == false` (caller
+    /// guarantees rows are off; rows mode stays on the tree walk).  No
+    /// hashing happens here: compound keys, ground flags and head
+    /// symbols are inline node fields written once at intern.
+    pub(crate) fn register_clause_arena(
+        &mut self,
+        id: u32,
+        roots: &[u32],
+        arena: &super::term_arena::TermArena,
+    ) {
+        let mut n = 0u32;
+        let mut path: PathBytes = SmallVec::new();
+        for (li, &root) in roots.iter().enumerate().take(256) {
+            debug_assert!(path.is_empty());
+            self.walk_arena(id, li as u8, root, true, arena, &mut path, &mut n);
+        }
+        if n > 0 {
+            self.total += u64::from(n);
+            *self.counts.entry(id).or_insert(0) += n;
+        }
+    }
+
+    fn walk_arena(
+        &mut self,
+        id: u32,
+        lit: u8,
+        t: u32,
+        is_top: bool,
+        arena: &super::term_arena::TermArena,
+        path: &mut PathBytes,
+        n: &mut u32,
+    ) {
+        let node = *arena.node(t);
+        match node.tag {
+            super::term_arena::TAG_SYM => {
+                if !is_top {
+                    let k = arena.sym_content(node.sym);
+                    let p = self.posting(id, lit, path);
+                    self.exact.entry(k).or_default().push(p);
+                    *n += 1;
+                }
+            }
+            super::term_arena::TAG_APP => {
+                // Arg seats only (head seat and its subtree emit nothing
+                // with rows off, exactly like the tree walk's
+                // register=false descent); path steps above 255 are not
+                // registered, mirroring the tree walk's byte-path cap.
+                let cnt = (node.nargs as usize).min(256);
+                for i in 1..cnt {
+                    path.push(i as u8);
+                    self.walk_arena(id, lit, arena.kid(&node, i), false, arena, path, n);
+                    path.pop();
+                }
+                if !is_top {
+                    let head = arena.node(arena.kid(&node, 0));
+                    let hk = match head.tag {
+                        super::term_arena::TAG_SYM => Some(arena.sym_content(head.sym)),
+                        super::term_arena::TAG_OP => Some(u64::from(head.sym)),
+                        _ => None,
+                    };
+                    if let Some(hk) = hk {
+                        let ar = node.nargs.min(255);
+                        let p = self.posting(id, lit, path);
+                        let b = self.heads.entry((hk, ar)).or_default();
+                        b.posts.push(p);
+                        *n += 1;
+                        if node.flags & super::term_arena::F_HAS_VAR == 0 {
+                            self.exact.entry(node.key).or_default().push(p);
+                            *n += 1;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Debug-twin support: every posting this store holds, normalized to
+    /// (kind, key, arity, path bytes, clause, lit) and sorted — used to
+    /// assert the arena walk emits exactly what the tree walk emits.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn emissions_normalized(&self) -> Vec<(u8, u64, u8, Vec<u8>, u32, u8)> {
+        let mut out = Vec::new();
+        for (k, ps) in &self.exact {
+            for p in ps {
+                out.push((0u8, *k, 0u8, self.paths[p.path as usize].to_vec(), p.clause, p.lit));
+            }
+        }
+        for ((hk, ar), b) in &self.heads {
+            for p in &b.posts {
+                out.push((1u8, *hk, *ar, self.paths[p.path as usize].to_vec(), p.clause, p.lit));
+            }
+        }
+        out.sort();
+        out
+    }
+
     fn posting(&mut self, clause: u32, lit: u8, path: &PathBytes) -> Posting {
         let pid = match self.path_ids.get(path) {
             Some(&id) => id,

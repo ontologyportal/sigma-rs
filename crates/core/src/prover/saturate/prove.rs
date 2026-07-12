@@ -346,6 +346,25 @@ impl ProverLayer {
         // SIGMA_SELECT_GREP=<substr>[,<substr>…]: print which selected roots'
         // KIF contains each substring — "is the proof axiom even in the
         // selection?" diagnostics.
+        // SIGMA_SELECT_DUMP=<path>: write the canonical KIF of every
+        // selected root (one per line) — the "did SInE keep the proof
+        // axioms?" diagnostic.  Conjecture roots are tagged `# conj`.
+        if let Ok(path) = std::env::var("SIGMA_SELECT_DUMP") {
+            use std::io::Write;
+            if let Ok(f) = std::fs::File::create(&path) {
+                let mut w = std::io::BufWriter::new(f);
+                for sid in &selected {
+                    let kif = crate::syntactic::display::sentence_to_plain_kif(
+                        *sid, &self.semantic.syntactic);
+                    let _ = writeln!(w, "{kif}");
+                }
+                for (_, sid) in conjecture_sents {
+                    let kif = crate::syntactic::display::sentence_to_plain_kif(
+                        *sid, &self.semantic.syntactic);
+                    let _ = writeln!(w, "# conj\t{kif}");
+                }
+            }
+        }
         if let Ok(pats) = std::env::var("SIGMA_SELECT_GREP") {
             for pat in pats.split(',').filter(|p| !p.is_empty()) {
                 let n = selected.iter().filter(|sid| {
@@ -574,6 +593,48 @@ impl ProverLayer {
                 }
                 BgPlan::Fresh => NativeProver::new(self, scope, opts),
             };
+            // SIGMA_HINTS=<file>: Veroff-style watchlist replay.  The
+            // file holds reference-proof clauses each wrapped `~(...)`,
+            // so the standard negated-conjunction clausifier returns
+            // the POSITIVE clause (double negation) — same parser, same
+            // canonicalization, hence keys that match derived clauses
+            // exactly.  Interning is content-addressed and tag-free, so
+            // hint sentences leave no semantic residue in the store.
+            if let Some(hp) = std::env::var_os("SIGMA_HINTS") {
+                if let Ok(text) = std::fs::read_to_string(&hp) {
+                    // Parse directly (not parse_document: its per-root
+                    // fingerprinting rejects Annotated statements, which
+                    // TPTP items are until stripped below).  Same options
+                    // as the ".p" problem loader so hint clauses take the
+                    // identical parse path as problem clauses.
+                    let parser = crate::parse::Parser::Tptp {
+                        options: Some(crate::parse::TptpParseOptions {
+                            formulas_only: false,
+                            keep_conjectures: false,
+                            ..Default::default()
+                        }),
+                    };
+                    let (items, _errs) = parser.parse(&text, "hints");
+                    for item in items {
+                        let Some(ast) = item.as_stmt().cloned() else { continue };
+                        // TPTP items arrive annotation-wrapped; the
+                        // downstream pipeline expects bare formulas.
+                        let ast = ast.strip_annotation();
+                        let (normalized, _) = Conjecture::normalize(vec![ast]);
+                        let sents = self.intern_conjecture_native(&normalized);
+                        if sents.is_empty() { continue; }
+                        let (cls, _) = clausify_negated_conjunction_lossy(
+                            &self.semantic.syntactic, &self.atoms, &sents);
+                        for c in cls {
+                            if std::env::var_os("SIGMA_HINTS_DEBUG").is_some() {
+                                eprintln!("HINT {:016x} {:?}", c.key.0, c.lits);
+                            }
+                            prover.hints.insert(c.key);
+                        }
+                    }
+                    eprintln!("hints: {} watchlist keys loaded", prover.hints.len());
+                }
+            }
 
             if let BgPlan::Extend(_, delta) = &plan {
                 // Delta pre-pass (guard guarantees no ground equalities;
@@ -793,8 +854,21 @@ impl ProverLayer {
                 }
                 _ => Vec::new(),
             };
+            if std::env::var_os("SIGMA_WIDTH_DUMP").is_some() {
+                eprintln!("width histogram:\n{}", prover.width_histogram());
+            }
             if std::env::var_os("SIGMA_FLOOD_DUMP").is_some() {
                 eprintln!("flood histogram (top 25):\n{}", prover.flood_histogram(25));
+            }
+            if let Some(path) = std::env::var_os("SIGMA_GATE0_DUMP") {
+                if let Err(e) = prover.gate0_dump(std::path::Path::new(&path)) {
+                    eprintln!("gate0 dump failed: {e}");
+                }
+            }
+            if std::env::var_os("SIGMA_STATS").is_some() {
+                if let Some(sa) = &prover.arena {
+                    eprintln!("{}", sa.report());
+                }
             }
             // Surface suppressed input contradictions as transcripts,
             // deduped by the set of source axioms they implicate.
@@ -997,6 +1071,25 @@ impl ProverLayer {
             // Deferred-passive discipline line only when the knob is
             // on: the default-path SIGMA_STATS output stays
             // byte-identical.
+            if !prover.hints.is_empty() {
+                raw.push_str(&format!(
+                    "\nhints: {}/{} covered, {} boosts",
+                    prover.hint_matched.len(),
+                    prover.hints.len(),
+                    prover.stats.hint_boosts,
+                ));
+            }
+            if prover.opts.strategy.split_naming {
+                raw.push_str(&format!(
+                    "\nsplit: {} rescued, {} pieces, bails {} connected / {} fat / {} selector, {} unit guards",
+                    prover.stats.split_rescued,
+                    prover.stats.split_pieces,
+                    prover.stats.split_bail_connected,
+                    prover.stats.split_bail_fat,
+                    prover.stats.split_bail_selector,
+                    prover.stats.split_guard_units,
+                ));
+            }
             if prover.opts.strategy.deferred_passive {
                 let s = &prover.stats;
                 raw.push_str(&format!(

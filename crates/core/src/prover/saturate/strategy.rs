@@ -373,6 +373,23 @@ pub struct Strategy {
     /// `run()`'s given-clause loop), so the frozen background is
     /// byte-identical either way.
     pub deferred_passive: bool,
+    /// Naming-split rescue at the width gate (docs/plans/
+    /// splitting-lane.md step 2): a derived clause the `max_lits` cap
+    /// would DISCARD is instead split into variable-disjoint components
+    /// through fresh propositional guards (selector encoding), each
+    /// piece narrow enough to queue.  Recovers the proof space the cap
+    /// structurally excludes (reference proofs with wide intermediates)
+    /// at the cost of queue pressure — the far cases still exist as
+    /// guarded clauses.  Default OFF everywhere; `SIGMA_SPLIT=1` /
+    /// `SIGMA_NO_SPLIT=1` are the A/B overrides.
+    pub split_naming: bool,
+    /// Companion threshold for [`Self::split_naming`]: when nonzero,
+    /// decomposable clauses WIDER than this are split even though they
+    /// fit under the cap — the combined wide-lane discipline (width
+    /// headroom for connected clauses via a raised cap, splitting to
+    /// keep the decomposable fraction narrow).  0 = split only clauses
+    /// the cap would discard.  `SIGMA_SPLIT_WIDTH=N` overrides.
+    pub split_width: u8,
     /// Recipe budget for the deferred-passive discipline: the maximum
     /// number of LIVE recipes (queued, not yet materialized) the
     /// passive queue may hold.  While the queue is at the cap, new
@@ -483,6 +500,8 @@ impl Strategy {
             // via its env A/B / the tptp-deferred portfolio lane; see
             // the field doc).
             deferred_passive: false,
+            split_naming: false,
+            split_width: 0,
             // Cap arithmetic (measured on RNG044+1 @60s, the heaviest
             // known recipe generator): the uncapped run peaks at
             // 23.4 GB max RSS (18.1 GB peak footprint) vs 0.73 GB
@@ -521,6 +540,8 @@ impl Strategy {
         s.subs_join = Self::subs_join_env_override(s.subs_join);
         s.subterm_rows = Self::subterm_rows_env_override(s.subterm_rows);
         s.deferred_passive = Self::deferred_passive_env_override(s.deferred_passive);
+        s.split_naming = Self::split_naming_env_override(s.split_naming);
+        s.split_width = Self::split_width_env_override(s.split_width);
         s.deferred_cap = Self::deferred_cap_env_override(s.deferred_cap);
         s.rule_join = Self::rule_join_env_override(s.rule_join);
         s
@@ -615,6 +636,29 @@ impl Strategy {
         }
     }
 
+    /// `SIGMA_NO_SPLIT=1` forces the naming-split rescue OFF,
+    /// `SIGMA_SPLIT=1` forces it ON (off wins when both are set) —
+    /// same two-directional A/B convention as the deferred-passive
+    /// override, shared by `from_env()` and `tptp()`.
+    fn split_naming_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_NO_SPLIT").is_some() {
+            false
+        } else if std::env::var_os("SIGMA_SPLIT").is_some() {
+            true
+        } else {
+            default
+        }
+    }
+
+    /// `SIGMA_SPLIT_WIDTH=N` overrides [`Self::split_width`]
+    /// (unparsable values are ignored).
+    fn split_width_env_override(default: u8) -> u8 {
+        std::env::var("SIGMA_SPLIT_WIDTH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
     /// `SIGMA_DEFERRED_CAP=N` overrides the recipe budget
     /// ([`Self::deferred_cap`]) — the measurement/A-B lever for sizing
     /// the default (unparsable values are ignored).  Shared by
@@ -673,6 +717,11 @@ impl Strategy {
             // `from_env()` is not consulted here.
             recognize_roles:   std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some(),
             rule_join:         Self::rule_join_env_override(Self::base().rule_join),
+            // Naming-split rescue: reachable on the TPTP path for the
+            // funded-problem A/B (its regime is where the width cap
+            // excludes reference proofs).
+            split_naming:      Self::split_naming_env_override(false),
+            split_width:       Self::split_width_env_override(0),
             ..Self::base()
         }
         .named("tptp-complete")
@@ -822,7 +871,11 @@ impl Strategy {
             self.tier_weight[2],
             u64::from(self.max_depth),
             self.max_term_size as u64,
-            u64::from(self.schema),
+            // split_naming CHANGES accepted clause content (background
+            // wide clauses split at load), so it must separate
+            // snapshots — packed into the schema word's high bits so
+            // the knob-off fingerprint stays bit-identical.
+            u64::from(self.schema) | (u64::from(self.split_naming) << 8),
             u64::from(self.goal_dist),
             self.goal_dist_w,
         ];
@@ -954,6 +1007,8 @@ impl Strategy {
             // sample streams shift only via fields that DO draw): a
             // structural variant, measured via its env A/B first.
             deferred_passive: false,
+            split_naming: false,
+            split_width: 0,
             // Not in the sweep genome (no RNG draw): a safety budget,
             // not a search lever — the measured default applies.
             deferred_cap: Strategy::base().deferred_cap,
@@ -1151,6 +1206,8 @@ mod tests {
         assert_eq!(lane.deferred_cap, 2_750_000);
         let neutralized = Strategy {
             deferred_passive: false,
+            split_naming: false,
+            split_width: 0,
             deferred_cap: Strategy::tptp().deferred_cap,
             ..lane
         }

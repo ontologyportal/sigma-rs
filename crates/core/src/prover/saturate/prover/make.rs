@@ -629,13 +629,50 @@ impl<'a> NativeProver<'a> {
             self.stats.bwd_postings_size_skips += 1;
             return;
         }
-        self.bwd_postings.register_clause(
-            id,
-            &self.clauses[id as usize].terms,
-            &self.layer.term_facts,
-            &self.layer.kbo,
-            self.opts.strategy.subterm_rows,
-        );
+        let arena_route = self.arena.is_some()
+            && !self.opts.strategy.subterm_rows
+            && !self.arena_roots[id as usize].is_empty();
+        if arena_route {
+            // Debug twin: the arena walk must emit EXACTLY what the tree
+            // walk emits for this clause (keys, buckets, paths, order-
+            // insensitive set equality; counts checked via `n` parity).
+            #[cfg(any(test, debug_assertions))]
+            {
+                let mut tree_scratch = super::postings::SubtermPostings::default();
+                tree_scratch.register_clause(
+                    id,
+                    &self.clauses[id as usize].terms,
+                    &self.layer.term_facts,
+                    &self.layer.kbo,
+                    false,
+                );
+                let mut arena_scratch = super::postings::SubtermPostings::default();
+                arena_scratch.register_clause_arena(
+                    id,
+                    &self.arena_roots[id as usize],
+                    self.arena.as_ref().expect("arena_route"),
+                );
+                debug_assert_eq!(
+                    tree_scratch.emissions_normalized(),
+                    arena_scratch.emissions_normalized(),
+                    "arena registration walk diverged from tree walk on clause {id}",
+                );
+            }
+            let Self { bwd_postings, arena, arena_roots, .. } = self;
+            bwd_postings.register_clause_arena(
+                id,
+                &arena_roots[id as usize],
+                arena.as_ref().expect("arena_route"),
+            );
+        } else {
+            self.bwd_postings.register_clause(
+                id,
+                &self.clauses[id as usize].terms,
+                &self.layer.term_facts,
+                &self.layer.kbo,
+                self.opts.strategy.subterm_rows,
+            );
+        }
     }
 
     /// Rebuild the backward-demodulation postings from the activated
@@ -706,8 +743,23 @@ impl<'a> NativeProver<'a> {
         candidates.clear();
         if d.l.is_ground() {
             // Exact-key retrieval: postings are content-equal
-            // occurrences — every live one is a redex.
-            if let Some(key) = ground_lhs_key(&d.l, &self.layer.term_facts, &self.layer.kbo) {
+            // occurrences — every live one is a redex.  B′-2: with the
+            // arena on, the probe key is read off the interned pattern
+            // node (a pure hit-walk) instead of re-hashing the tree.
+            let probe_key = match self.arena.as_mut() {
+                Some(ar) if !self.opts.strategy.subterm_rows => {
+                    let k = ar.intern_term(&d.l).and_then(|t| ar.ground_probe_key(t));
+                    #[cfg(any(test, debug_assertions))]
+                    debug_assert_eq!(
+                        k,
+                        ground_lhs_key(&d.l, &self.layer.term_facts, &self.layer.kbo),
+                        "arena ground probe key diverged from ground_lhs_key",
+                    );
+                    k
+                }
+                _ => ground_lhs_key(&d.l, &self.layer.term_facts, &self.layer.kbo),
+            };
+            if let Some(key) = probe_key {
                 for p in self.bwd_postings.exact_postings(key) {
                     if p.clause == demod_id || self.is_retired(p.clause) {
                         continue;
@@ -753,11 +805,85 @@ impl<'a> NativeProver<'a> {
                     debug_assert!(btrail.is_empty());
                 }
             }
+            // B′-2: when the pattern is interned and the decode chain is
+            // off, candidate verification runs in id space — the seat
+            // prefilter and the structural verify read node fields, and
+            // bound-variable consistency is one integer comparison.  A
+            // candidate clause without arena roots (hydrated, or a
+            // >255-arity literal) falls back to the tree verify.
+            let d_l_tid = match self.arena.as_mut() {
+                Some(ar) if !chain => ar.intern_term(&d.l),
+                _ => None,
+            };
+            let mut id_s: Vec<Option<u32>> = Vec::new();
+            let mut id_trail: Vec<usize> = Vec::new();
             for (bi, p) in bucket.iter().enumerate() {
                 let c = &self.clauses[p.clause as usize];
                 if p.clause == demod_id || self.is_retired(p.clause) {
                     continue;
                 }
+                let occ_tid = match (d_l_tid, self.arena.as_deref()) {
+                    (Some(_), Some(ar)) => self.arena_roots[p.clause as usize]
+                        .get(p.lit as usize)
+                        .and_then(|&rt| ar.subterm_at_path(rt, self.bwd_postings.path(p))),
+                    _ => None,
+                };
+                if let (Some(lt), Some(ot), Some(ar)) = (d_l_tid, occ_tid, self.arena.as_deref()) {
+                    // -------- id-space path --------
+                    let pass = ar.seat_prefilter_match(lt, ot);
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        let occ = subterm_at_bytes(
+                            &c.terms[p.lit as usize].1,
+                            self.bwd_postings.path(p),
+                        )
+                        .expect("posting path must resolve");
+                        debug_assert_eq!(
+                            pass,
+                            seat_prefilter_match(&d.l, occ),
+                            "arena seat prefilter diverged",
+                        );
+                    }
+                    if !pass {
+                        continue;
+                    }
+                    let off = u64::from(c.nvars);
+                    let need = (off + u64::from(d.nslots)) as usize + 1;
+                    if id_s.len() < need {
+                        id_s.resize(need, None);
+                    }
+                    debug_assert!(id_trail.is_empty());
+                    self.stats.bwd_verify_calls += 1;
+                    let hit = ar.match_one_way(lt, off as u32, ot, &mut id_s, &mut id_trail);
+                    for &slot in &id_trail {
+                        id_s[slot] = None;
+                    }
+                    id_trail.clear();
+                    #[cfg(any(test, debug_assertions))]
+                    {
+                        let occ = subterm_at_bytes(
+                            &c.terms[p.lit as usize].1,
+                            self.bwd_postings.path(p),
+                        )
+                        .expect("posting path must resolve");
+                        if scr.s.len() < need {
+                            scr.s.resize(need, None);
+                        }
+                        let tree_hit =
+                            match_one_way_off(&d.l, off, occ, &mut scr.s, &mut scr.trail);
+                        for &slot in &scr.trail {
+                            scr.s[slot] = None;
+                        }
+                        scr.trail.clear();
+                        debug_assert_eq!(hit, tree_hit, "arena bwd verify diverged");
+                    }
+                    if hit {
+                        self.stats.bwd_postings_hits += 1;
+                        candidates.push(p.clause);
+                    }
+                    continue;
+                }
+                // -------- tree fallback path (unchanged) --------
                 let Some(occ) =
                     subterm_at_bytes(&c.terms[p.lit as usize].1, self.bwd_postings.path(p))
                 else {
@@ -2078,6 +2204,33 @@ impl<'a> NativeProver<'a> {
             self.retired_bits.len(), self.clauses.len().div_ceil(64),
             "retired bitmap/arena lockstep",
         );
+        // Watchlist coverage at ACCEPT: every clause passes here —
+        // including background axioms, which are activated directly and
+        // never enter the passive queue (the push-time boost only sees
+        // queued clauses; coverage must not share that blind spot).
+        if !self.hints.is_empty() {
+            let k = self.clauses[id as usize].key;
+            if self.hints.contains(&k) {
+                self.hint_matched.insert(k);
+            }
+        }
+        // B′: intern the accepted clause into the term arena.  Products
+        // that died at the gates above never reach this point — the
+        // arena holds exactly the persistent search state.  Empty roots
+        // (arena off, or a >255-arity literal) leave this clause on the
+        // owned-tree fallback paths.
+        {
+            let Self { arena, arena_roots, clauses, .. } = self;
+            let roots = match arena.as_mut() {
+                Some(ar) => {
+                    let c = &clauses[id as usize];
+                    ar.intern_clause(&c.terms, &c.lits).unwrap_or_default()
+                }
+                None => Default::default(),
+            };
+            arena_roots.push(roots);
+        }
+        debug_assert_eq!(self.arena_roots.len(), self.clauses.len(), "roots lockstep");
         // Backward-demodulation postings: every arena clause's
         // rewritable subterm occurrences are findable by exact ground
         // key / (head, len) bucket, so a LATER oriented equation can

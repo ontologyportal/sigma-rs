@@ -3,7 +3,7 @@ members  = ["crates/core", "crates/sdk", "crates/wasm", "crates/cli", "crates/ls
 resolver = "2"
 
 [workspace.package]
-version     = "2.0.1"
+version     = "2.1.0"
 edition     = "2021"
 authors     = ["Theodore Kim", "Adam Pease"]
 license     = "GPL-3.0"

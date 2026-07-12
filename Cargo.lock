@@ -2582,7 +2582,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sigmakee"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "clap",
  "crossterm 0.29.0",
@@ -2608,7 +2608,7 @@ dependencies = [
 
 [[package]]
 name = "sigmakee-rs-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "bincode",
  "dashmap",
@@ -2632,7 +2632,7 @@ dependencies = [
 
 [[package]]
 name = "sigmakee-rs-sdk"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "env_logger",
  "git2",
@@ -2817,7 +2817,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sumo-lsp"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -2834,7 +2834,7 @@ dependencies = [
 
 [[package]]
 name = "sumo-parser-wasm"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "js-sys",
  "serde",

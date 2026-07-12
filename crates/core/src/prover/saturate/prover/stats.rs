@@ -440,6 +440,24 @@ pub(crate) struct ProverStats {
     /// (tautology, oracle-subsumed, unit-subsumed, depth/size caps).
     pub(crate) act_rejected_other: u64,
     /// Materialized recipes accepted by `make` but over the derived
+    /// Naming-split rescue (Strategy.split_naming): clauses the width
+    /// cap would discard that instead split into guarded pieces; the
+    /// pieces made; rescue attempts that bailed (not decomposable /
+    /// pieces too wide / selector too wide); and unit GUARD clauses
+    /// derived — the split-does-logical-work diagnostic (a derived
+    /// unit q or ¬q resolves a case globally).
+    pub(crate) split_rescued: u64,
+    pub(crate) split_pieces: u64,
+    /// bail reasons: connected (no var-disjoint decomposition), fat (a
+    /// component + guard exceeds the cap), selector (more components
+    /// than the cap allows literals).
+    pub(crate) split_bail_connected: u64,
+    pub(crate) split_bail_fat: u64,
+    pub(crate) split_bail_selector: u64,
+    pub(crate) split_guard_units: u64,
+    /// SIGMA_HINTS watchlist: queue boosts fired (a derived clause
+    /// matched a reference-proof clause key).
+    pub(crate) hint_boosts: u64,
     /// width cap (`max_lits`) — the `push_capped` discard, also counted
     /// into `discarded_long` exactly as the eager path would.
     pub(crate) act_over_cap: u64,

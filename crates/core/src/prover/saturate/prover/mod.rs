@@ -40,6 +40,7 @@ use super::unify::{apply, apply_off, match_one_way, shift_slots, slot_atom, unif
 use super::units::UnitStores;
 
 mod discharge;
+mod term_arena;
 mod ej;
 mod forward;
 mod fvi;
@@ -754,11 +755,39 @@ pub(crate) struct NativeProver<'a> {
     /// call, every `superpose` attempt deep-cloning the whole clause.
     /// `None` = unbounded (no time limit, or interactive step mode).
     run_deadline: Option<Instant>,
+    /// B′ term arena: dense hash-consed store of every accepted
+    /// clause's terms; readers migrate onto it stage by stage.  Default
+    /// ON; `None` under SIGMA_NO_ARENA=1 (every reader falls back to
+    /// the owned-tree paths).
+    pub(crate) arena: Option<Box<term_arena::TermArena>>,
+    /// Per-clause literal-root ids into the arena, lockstep with
+    /// `clauses`; an empty entry means owned-tree fallback.
+    pub(crate) arena_roots: Vec<SmallVec<[u32; 4]>>,
+    /// Atom ids of naming-split guard symbols minted this run — the
+    /// unit-guard diagnostic reads it (Strategy.split_naming only).
+    pub(crate) split_guard_atoms: Set64<AtomId>,
+    /// SIGMA_HINTS watchlist (Veroff-style): canonical keys of
+    /// reference-proof clauses; a derived clause matching one is queued
+    /// at weight 0.  Empty unless the env lever is set (prove.rs).
+    pub(crate) hints: Set64<ClauseKey>,
+    /// Distinct hint keys actually matched — reference-proof COVERAGE:
+    /// how much of the oracle's proof our calculus ever derived.
+    pub(crate) hint_matched: Set64<ClauseKey>,
     pub(crate) stats: ProverStats,
 }
 
 impl<'a> NativeProver<'a> {
     pub(crate) fn new(layer: &'a ProverLayer, scope: Scope, opts: NativeOpts) -> Self {
+        // Measurement lever: SIGMA_MAX_LITS overrides the derived-clause
+        // width cap (single-lane A/B of width headroom; the portfolio
+        // path has Strategy.derived_width_cap for the same job).
+        let mut opts = opts;
+        if let Some(v) = std::env::var("SIGMA_MAX_LITS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            opts.max_lits = v;
+        }
         let prec = (opts.strategy.prec_seed != 0)
             .then(|| super::kbo::KboOrdering::with_prec_seed(opts.strategy.prec_seed));
         // Anchor the wall deadline at CONSTRUCTION: the attempt's budget
@@ -821,6 +850,11 @@ impl<'a> NativeProver<'a> {
             guide_model: None,
             guide_attempted: false,
             run_deadline,
+            arena: term_arena::TermArena::from_env(),
+            arena_roots: Vec::new(),
+            split_guard_atoms: Set64::default(),
+            hints: Set64::default(),
+            hint_matched: Set64::default(),
             stats: ProverStats::default(),
         }
     }
@@ -841,6 +875,17 @@ impl<'a> NativeProver<'a> {
         p.clauses = snap.clauses.clone();
         p.subs = snap.subs.clone();
         p.retired_bits = snap.retired_bits.clone();
+        // B′: rebuild the term arena from the hydrated clause list in
+        // order — TermId assignment is a pure function of intern order,
+        // so the rebuilt arena is identical to the snapshot run's.
+        if let Some(ar) = p.arena.as_mut() {
+            for c in &p.clauses {
+                p.arena_roots
+                    .push(ar.intern_clause(&c.terms, &c.lits).unwrap_or_default());
+            }
+        } else {
+            p.arena_roots = vec![Default::default(); p.clauses.len()];
+        }
         debug_assert_eq!(p.subs.len(), p.clauses.len(), "SoA/arena lockstep (hydrate)");
         debug_assert_eq!(
             p.retired_bits.len(), p.clauses.len().div_ceil(64),
@@ -1782,12 +1827,51 @@ impl<'a> NativeProver<'a> {
         let key = self.clauses[id as usize].key;
         if self.seen_duplicate(key, id) { return None; }
         if self.clauses[id as usize].lits.len() > max_lits {
+            // Naming-split rescue: instead of the silent discard, split
+            // a variable-disjoint over-wide clause into guarded pieces
+            // that fit under the cap (docs/plans/splitting-lane.md).
+            if self.opts.strategy.split_naming {
+                if let Some(sel) = self.try_split(id, max_lits) {
+                    return Some(sel);
+                }
+            }
             self.stats.discarded_long += 1;
             return None;
         }
+        // Combined wide-lane discipline: under a raised cap, still split
+        // DECOMPOSABLE clauses above the split_width threshold so width
+        // headroom is spent on connected clauses only.
+        let sw = self.opts.strategy.split_width as usize;
+        if self.opts.strategy.split_naming
+            && sw > 0
+            && self.clauses[id as usize].lits.len() > sw
+        {
+            if let Some(sel) = self.try_split(id, max_lits.min(sw.max(2))) {
+                return Some(sel);
+            }
+        }
+        // Unit-guard diagnostic: a derived unit q / ¬q resolves a split
+        // case globally — the split-does-logical-work signal.
+        if self.opts.strategy.split_naming
+            && self.clauses[id as usize].lits.len() == 1
+            && self.split_guard_atoms.contains(&self.clauses[id as usize].lits[0].atom)
+        {
+            self.stats.split_guard_units += 1;
+        }
         self.seen_record(key, id);
+        if std::env::var_os("SIGMA_HINTS_DEBUG").is_some() && !self.hints.is_empty() {
+            let c = &self.clauses[id as usize];
+            eprintln!("LOAD {:016x} {:?} rule={}", key.0, c.lits, c.rule);
+        }
         let c = &self.clauses[id as usize];
-        let (w, n) = (c.weight, self.seq);
+        let (mut w, n) = (c.weight, self.seq);
+        // Watchlist boost: a clause on the reference proof's path goes
+        // to the front of the weight queue.
+        if !self.hints.is_empty() && self.hints.contains(&key) {
+            w = 0;
+            self.hint_matched.insert(key);
+            self.stats.hint_boosts += 1;
+        }
         self.seq += 1;
         // Semantic-guide tie-break: 0 (inert, first-in-key-order) when the
         // knob is off, so the heap ordering is byte-identical to the
@@ -1799,6 +1883,70 @@ impl<'a> NativeProver<'a> {
         self.h_weight.push(Reverse((w, g, n, id)));
         self.h_age.push(Reverse((n, id)));
         Some(id)
+    }
+
+    /// Naming-split rescue (docs/plans/splitting-lane.md step 2): split
+    /// the over-wide accepted-but-unqueued clause `id` into variable-
+    /// disjoint components through fresh propositional guards, selector
+    /// encoding — pieces `¬q_i ∨ K_i` plus the selector `q_1 ∨ … ∨ q_n`
+    /// — every emitted clause under the cap.  Guard names derive from
+    /// each component's canonical content key, so identical components
+    /// ANYWHERE in the run share one guard symbol and their definition
+    /// pieces dedup through the ordinary `ClauseKey` gate (the
+    /// Riazanov–Voronkov component index, by content addressing).
+    /// Pieces cite `id` as parent (rule "split"), so proofs walk
+    /// through the original wide clause to its real derivation.
+    /// Returns the queued selector id, or None when the clause does
+    /// not decompose into cap-fitting pieces — the caller then
+    /// discards exactly as before.
+    fn try_split(&mut self, id: u32, max_lits: usize) -> Option<u32> {
+        let (terms, tier) = {
+            let c = &self.clauses[id as usize];
+            (c.terms.clone(), c.tier)
+        };
+        let comps = var_disjoint_components(&terms);
+        // Rescue conditions: genuinely decomposable, selector fits the
+        // cap, every piece (component + its guard) fits the cap.
+        if comps.len() < 2 {
+            self.stats.split_bail_connected += 1;
+            return None;
+        }
+        if comps.len() > max_lits {
+            self.stats.split_bail_selector += 1;
+            return None;
+        }
+        if comps.iter().any(|k| k.len() + 1 > max_lits) {
+            self.stats.split_bail_fat += 1;
+            return None;
+        }
+        let mut selector: Vec<(bool, Term)> = Vec::with_capacity(comps.len());
+        for comp in &comps {
+            let lits: Vec<(bool, Term)> =
+                comp.iter().map(|&i| terms[i].clone()).collect();
+            let (pc, _) = super::canon::canonical_clause_hashed(lits.clone());
+            let guard = Term::Sym(Symbol::from(
+                format!("sp_{:016x}", pc.key.0).as_str(),
+            ));
+            let mut piece: Vec<(bool, Term)> = Vec::with_capacity(lits.len() + 1);
+            piece.push((false, guard.clone()));
+            piece.extend(lits);
+            let made = self.make(piece, vec![id], "split", tier, None, true);
+            if made.is_some() {
+                self.stats.split_pieces += 1;
+            }
+            self.push(made);
+            selector.push((true, guard));
+        }
+        let sel = self.make(selector, vec![id], "split", tier, None, true);
+        if let Some(sid) = sel {
+            for l in self.clauses[sid as usize].lits.clone() {
+                self.split_guard_atoms.insert(l.atom);
+            }
+            self.stats.split_pieces += 1;
+        }
+        let queued = self.push(sel);
+        self.stats.split_rescued += 1;
+        queued.or(Some(id))
     }
 
     /// Whether the deferred-passive discipline applies to the current
@@ -3330,6 +3478,103 @@ impl<'a> NativeProver<'a> {
 
     // -- main loop ----------------------------------------------------------------
 
+    /// Serialize the active clause set's slot-form literal terms, one
+    /// literal per line, for the GATE 0 representation bench.  Gated
+    /// behind `SIGMA_GATE0_DUMP=<path>` at the call site.
+    pub(crate) fn gate0_dump(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+        fn esc(out: &mut impl Write, s: &str) -> std::io::Result<()> {
+            for b in s.bytes() {
+                match b {
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b'.' => {
+                        out.write_all(&[b])?
+                    }
+                    _ => write!(out, "%{b:02x}")?,
+                }
+            }
+            Ok(())
+        }
+        fn wt(out: &mut impl Write, t: &Term) -> std::io::Result<()> {
+            match t {
+                Term::Var(v) => write!(out, "v:{v}"),
+                Term::Sym(s) => {
+                    write!(out, "s:")?;
+                    esc(out, &s.name())
+                }
+                Term::Lit(crate::types::Literal::Str(x)) => {
+                    write!(out, "l:")?;
+                    esc(out, x)
+                }
+                Term::Lit(crate::types::Literal::Number(x)) => {
+                    write!(out, "n:")?;
+                    esc(out, x)
+                }
+                Term::Op(op) => write!(out, "o:{op:?}"),
+                Term::App(elems) => {
+                    write!(out, "(")?;
+                    for (i, e) in elems.iter().enumerate() {
+                        if i > 0 {
+                            write!(out, " ")?;
+                        }
+                        wt(out, e)?;
+                    }
+                    write!(out, ")")
+                }
+            }
+        }
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        for c in &self.clauses {
+            if !c.activated || self.is_retired(c.id) {
+                continue;
+            }
+            writeln!(out, "# clause {} nvars {} rule {}", c.id, c.nvars, c.rule)?;
+            for (pos, t) in &c.terms {
+                write!(out, "T {} ", u8::from(*pos))?;
+                wt(&mut out, t)?;
+                writeln!(out)?;
+            }
+        }
+        out.flush()
+    }
+
+    /// Splitting-plan step-1 diagnostic (docs/plans/splitting-lane.md):
+    /// clause-width histogram split by provenance (input vs generated),
+    /// plus the variable-disjoint-component count per width band — the
+    /// naming-split opportunity is a clause that is BOTH wide AND
+    /// decomposable.  Gated behind `SIGMA_WIDTH_DUMP` at the call site.
+    pub(crate) fn width_histogram(&self) -> String {
+        // width -> (input count, generated count, decomposable count)
+        let mut bands: std::collections::BTreeMap<usize, (u64, u64, u64)> =
+            std::collections::BTreeMap::new();
+        for c in &self.clauses {
+            let w = c.lits.len();
+            let e = bands.entry(w.min(32)).or_insert((0, 0, 0));
+            if c.rule == "axiom" || c.rule == "conjecture" {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+            }
+            // variable-disjoint decomposability: do the literals split
+            // into >=2 groups sharing no slots?  Union-find over
+            // literals via slot sets (cheap: widths are small).
+            if w >= 2 && var_disjoint_components(&c.terms).len() >= 2 {
+                e.2 += 1;
+            }
+        }
+        let mut out = String::from("width	input	generated	decomposable
+");
+        for (w, (i, g, d)) in bands {
+            out.push_str(&format!("{w}	{i}	{g}	{d}
+"));
+        }
+        out.push_str(&format!(
+            "discarded_long {} discarded_deep {} max_lits {}
+",
+            self.stats.discarded_long, self.stats.discarded_deep, self.opts.max_lits,
+        ));
+        out
+    }
+
     /// Diagnostic histogram of the clause arena: count by (rule,
     /// first-literal head), top `n` — what is flooding, and from which
     /// inference.  Gated behind `SIGMA_FLOOD_DUMP` at the call site.
@@ -4308,6 +4553,48 @@ fn subsume_rec(
 /// The largest slot-variable index occurring in `t`, or `None` when `t`
 /// is ground — the offset basis for renaming a demodulator apart from
 /// its target.
+/// Partition a clause's literals into maximal variable-disjoint groups
+/// (ground literals are singleton groups): the decomposition both the
+/// width diagnostic and the naming-split rescue use.  Merge-to-fixpoint
+/// so a bridging literal fuses every group it touches.  Returns groups
+/// of literal INDICES, in first-touch order (deterministic).
+pub(super) fn var_disjoint_components(terms: &[(bool, Term)]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<(std::collections::BTreeSet<u64>, Vec<usize>)> = Vec::new();
+    for (li, (_, t)) in terms.iter().enumerate() {
+        let mut slots = std::collections::BTreeSet::new();
+        super::unify::term_slots(t, &mut slots);
+        let mut merged_lits = vec![li];
+        let mut merged_slots = slots;
+        loop {
+            let mut fused = false;
+            let mut i = 0;
+            while i < groups.len() {
+                let overlap = !groups[i].0.is_disjoint(&merged_slots)
+                    && !(groups[i].0.is_empty() || merged_slots.is_empty());
+                if overlap {
+                    let (gs, gl) = groups.swap_remove(i);
+                    merged_slots.extend(gs);
+                    merged_lits.extend(gl);
+                    fused = true;
+                } else {
+                    i += 1;
+                }
+            }
+            if !fused {
+                break;
+            }
+        }
+        groups.push((merged_slots, merged_lits));
+    }
+    groups
+        .into_iter()
+        .map(|(_, mut lits)| {
+            lits.sort_unstable();
+            lits
+        })
+        .collect()
+}
+
 fn max_slot(t: &Term) -> Option<u64> {
     let mut slots = std::collections::BTreeSet::new();
     super::unify::term_slots(t, &mut slots);
