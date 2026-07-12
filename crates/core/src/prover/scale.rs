@@ -199,6 +199,51 @@ impl ScalePlanner {
     }
 }
 
+/// Pick a saner starting budget than the caller's configured default when
+/// the whole indexed universe (`total_axioms`, e.g. `SineIndex::axiom_count`)
+/// is already smaller than it — climbing from a budget the selection could
+/// never fill just burns narrow-retry attempts that all reselect the exact
+/// same axiom set (see `drive`'s `reached_floor` check, which this pairs
+/// with: once the budget search reaches a tier that already covers
+/// `total_axioms`, further narrowing is a no-op verified there, not here).
+///
+/// Walks `requested` down by `cfg.factor` while the halved value would still
+/// cover `total_axioms`, floored at `cfg.min_budget`. A no-op (`requested`
+/// returned unchanged) whenever `total_axioms` is unknown (`0`) or already
+/// at/above `requested` — i.e. every large-KB call (SUMO-scale background)
+/// is untouched; this only shortens the climb for small/self-contained
+/// corpora (standalone TPTP problems, small test KBs).
+pub(crate) fn adaptive_start_budget(requested: usize, total_axioms: usize, cfg: &ScaleConfig) -> usize {
+    if total_axioms == 0 || total_axioms >= requested {
+        return requested;
+    }
+    let mut candidate = requested;
+    while candidate > cfg.min_budget && candidate / cfg.factor >= total_axioms {
+        candidate /= cfg.factor;
+    }
+    candidate.max(cfg.min_budget)
+}
+
+/// Companion to [`adaptive_start_budget`]: when the indexed universe is
+/// already at/under the floor, the SInE-budget search has nothing left to
+/// adapt on (every budget from here down reselects the same set — see
+/// `drive`'s `reached_floor` check), so [`ScalePlanner::slice`] dividing
+/// `total_timeout` by `max_time_runs` up front only starves the ONE attempt
+/// that's actually going to run of most of its wall-clock budget for no
+/// reason — a Timeout verdict there means the SEARCH needed more time, not
+/// that a different budget would have helped, and `reached_floor` stops the
+/// loop after that first attempt regardless of how short its slice was.
+/// Returns `1` in that case (so `slice()` hands the whole `total_timeout` to
+/// the single attempt that matters); otherwise returns `configured`
+/// unchanged. A no-op whenever `total_axioms` is unknown or the corpus is
+/// large enough that genuine budget-search iterations are still useful —
+/// same safety property as `adaptive_start_budget`.
+pub(crate) fn effective_max_time_runs(
+    configured: usize, total_axioms: usize, min_budget: usize,
+) -> usize {
+    if total_axioms > 0 && total_axioms <= min_budget { 1 } else { configured }
+}
+
 /// The backend-agnostic autoscaling driver shared by the TPTP/Vampire path
 /// (`KnowledgeBase::run_scaling`) and the native saturation path
 /// (`KnowledgeBase::ask_native_scaled`).
@@ -267,9 +312,15 @@ where
 
         // Selection smaller than the budget ⇒ reachable fixed point hit
         // (can't widen further); larger ⇒ strict tolerance-1.0 floor hit
-        // (can't narrow further).
+        // (can't narrow further). Selection is monotone non-decreasing in
+        // budget, so `raw_selected <= cfg.min_budget` at ANY budget (even a
+        // much larger one) already means every budget down to the floor
+        // would reselect the same-or-smaller set — narrowing further on a
+        // Timeout can only risk dropping needed premises for no speedup, so
+        // it's folded into `reached_floor` too rather than requiring the
+        // planner to rediscover it by halving all the way down.
         let reached_ceiling = raw_selected < budget;
-        let reached_floor   = raw_selected > budget;
+        let reached_floor   = raw_selected > budget || raw_selected <= cfg.min_budget;
         let act = classify(result.status, remap(result.status, result.termination));
         if trace {
             eprintln!("SCALE-TRACE: budget={budget} per_run={per_run} raw_selected={raw_selected} \
@@ -558,6 +609,87 @@ pub(crate) fn drive_portfolio(
         }
     }
     best.expect("lane_count > 0 guaranteed by caller")
+}
+
+/// Parallel counterpart to [`drive_portfolio`]: races every lane
+/// concurrently (capped at `workers` threads) instead of carving
+/// `total_timeout` into per-lane shares — each lane's `drive_one_lane`
+/// closure is responsible for enforcing its own budget (it already gets the
+/// FULL timeout, since lanes aren't competing for one shared wall-clock
+/// window anymore). The moment any lane returns a schedule-final verdict
+/// (see [`is_schedule_final`]), `cancel` is raised so every other in-flight
+/// lane's saturation loop notices at its next `NativeOpts::cancelled` poll
+/// and stops promptly — the caller is expected to have handed each lane's
+/// `NativeOpts.cancel` the SAME flag passed here.
+///
+/// Work-stealing over a shared atomic counter (mirrors `cli::sweep`'s
+/// worker-pool pattern): with `workers >= lane_count` every lane launches
+/// immediately in original priority order; with fewer workers than lanes,
+/// lower-index (higher-priority) lanes still claim a thread first, and a
+/// freed worker picks up the next-lowest unclaimed lane.
+///
+/// Returns the winning lane's index alongside its result — or, if every
+/// lane comes back inconclusive, the BEST-ranked result seen and its lane
+/// (same tie-breaking as `drive_portfolio`).
+#[cfg(feature = "native-prover")]
+pub(crate) fn drive_portfolio_parallel(
+    lane_count: usize,
+    workers:    usize,
+    cancel:     &std::sync::atomic::AtomicBool,
+    drive_one_lane: impl Fn(usize) -> ProverResult + Sync,
+) -> (usize, ProverResult) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let next = AtomicUsize::new(0);
+    let best: Mutex<Option<(usize, ProverResult)>> = Mutex::new(None);
+    let workers = workers.clamp(1, lane_count.max(1));
+    let trace = std::env::var_os("SIGMA_SCALE_TRACE").is_some();
+
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| loop {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let idx = next.fetch_add(1, Ordering::Relaxed);
+                if idx >= lane_count {
+                    break;
+                }
+                let t0 = Instant::now();
+                let result = drive_one_lane(idx);
+                let elapsed = t0.elapsed().as_secs_f64();
+                let final_verdict = is_schedule_final(&result);
+                if trace {
+                    eprintln!(
+                        "PORTFOLIO-PARALLEL-TRACE: lane={idx} elapsed={elapsed:.3}s \
+                         status={:?} term={:?} complete_saturation={:?} final={final_verdict}",
+                        result.status, result.termination, result.complete_saturation);
+                }
+                if final_verdict {
+                    // Raise BEFORE taking the results lock: every other
+                    // worker's next `cancel.load` (in its own loop-top
+                    // check, or inside the saturation loop it's mid-run
+                    // on) should see this as early as possible.
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                {
+                    let mut best = best.lock().expect("portfolio results mutex poisoned");
+                    let better = best.as_ref()
+                        .is_none_or(|(_, b)| verdict_rank(&result) > verdict_rank(b));
+                    if better {
+                        *best = Some((idx, result));
+                    }
+                }
+                if final_verdict {
+                    break;
+                }
+            });
+        }
+    });
+
+    best.into_inner().expect("portfolio results mutex poisoned")
+        .expect("lane_count > 0 guaranteed by caller")
 }
 
 #[cfg(test)]

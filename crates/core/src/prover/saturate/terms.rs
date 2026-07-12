@@ -148,7 +148,14 @@ impl TermFactsTable {
         }
         let key = h.finish();
         let facts = PTermFacts { size, depth: depth.saturating_add(1), sym_bloom, kbo_weight };
-        self.map.entry(key).or_insert(facts);
+        // Read-first: ground subterms recur constantly, so most calls here
+        // find the key already memoized — `.entry()` alone would take the
+        // shard's write lock even on a hit. See `AtomTable::intern_atom`'s
+        // matching comment; the race with a concurrent first-insert is
+        // benign (facts are a pure function of `key`'s content).
+        if !self.map.contains_key(&key) {
+            self.map.entry(key).or_insert(facts);
+        }
         Some((key, facts))
     }
 

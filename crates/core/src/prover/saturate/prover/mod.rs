@@ -160,6 +160,12 @@ pub struct NativeOpts {
     /// Node budget backstop for the backward-chaining DFS. Equivalent to
     /// `SIGMA_BACKWARD_NODES`.
     pub backward_nodes: u64,
+    /// Worker-thread cap for [`super::prove::ProverLayer::run_portfolio_schedule`]'s
+    /// lane race — how many TPTP strategy lanes run concurrently instead of
+    /// the original sequential carry-forward schedule.  `1` (or a lane count
+    /// of `1`) falls back to that unchanged sequential path.  Defaults to
+    /// the hardware's available parallelism.  Equivalent to `SIGMA_CORES`.
+    pub cores: usize,
 }
 
 impl Default for NativeOpts {
@@ -180,6 +186,9 @@ impl Default for NativeOpts {
                 .and_then(|v| v.parse().ok()).unwrap_or(800),
             backward_nodes: std::env::var("SIGMA_BACKWARD_NODES").ok()
                 .and_then(|v| v.parse().ok()).unwrap_or(200_000),
+            cores: std::env::var("SIGMA_CORES").ok().and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism()
+                    .map(std::num::NonZeroUsize::get).unwrap_or(1)),
         }
     }
 }

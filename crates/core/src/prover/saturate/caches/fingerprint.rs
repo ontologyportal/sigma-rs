@@ -369,7 +369,11 @@ impl AtomInfos {
                 coins.push(c);
                 // The decode phone book: coin → (seat, filler).  Pure
                 // function of its inputs — append-only, never stale.
-                self.dict.entry(c).or_insert_with(|| (i as u8, coin_val(el)));
+                // Read-first (see `AtomTable::intern_atom`'s comment):
+                // most coins recur, so skip the write-lock path on a hit.
+                if !self.dict.contains_key(&c) {
+                    self.dict.entry(c).or_insert_with(|| (i as u8, coin_val(el)));
+                }
             }
         }
         AtomInfo {

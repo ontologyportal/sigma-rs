@@ -118,7 +118,16 @@ impl AtomTable {
         };
         let sent = Sentence { parent: Vec::new(), elements };
         let id = sent.hash();
-        self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        // Read-first: `.entry()` always takes the shard's write lock, even
+        // when the id already exists (the common case — the same subterm
+        // gets re-derived constantly during search). A `contains_key` read
+        // lets concurrent lanes/threads interning already-known content
+        // never block each other; the race between this check and the
+        // entry insert below is benign (inserts are idempotent — the id IS
+        // the content, see the struct doc).
+        if !self.map.contains_key(&id) {
+            self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        }
         id
     }
 
@@ -155,7 +164,10 @@ impl AtomTable {
         };
         let sent = Sentence { parent: Vec::new(), elements };
         let id = sent.hash();
-        self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        // See `intern_atom`'s read-first comment.
+        if !self.map.contains_key(&id) {
+            self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        }
         id
     }
 
@@ -188,7 +200,10 @@ impl AtomTable {
     /// store, so `resolve` finds them without any store round-trip).
     pub(crate) fn intern_sentence(&self, sent: Sentence) -> AtomId {
         let id = sent.hash();
-        self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        // See `intern_atom`'s read-first comment.
+        if !self.map.contains_key(&id) {
+            self.map.entry(id).or_insert_with(|| Arc::new(sent));
+        }
         id
     }
 

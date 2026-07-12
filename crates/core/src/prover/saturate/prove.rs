@@ -102,16 +102,30 @@ impl ProverLayer {
 
         // Prover-feedback autoscaling — the same shared planner the trait
         // `prove` uses, driven here directly so the path stays `&self`.
-        use crate::prover::scale::{drive, ScaleConfig};
+        use crate::prover::scale::{adaptive_start_budget, drive, effective_max_time_runs, ScaleConfig};
         use crate::syntactic::sine::{
-            scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
+            default_budget, scale_factor, scale_max_disproofs, scale_max_time_runs,
+            scale_min_budget,
         };
+        // Don't climb from a budget the indexed universe could never fill —
+        // see `adaptive_start_budget`'s doc.
+        let total_axioms = self.semantic.syntactic.sine_current(|idx| idx.axiom_count());
+        let min_budget = scale_min_budget();
         let cfg = ScaleConfig {
             factor:        scale_factor(),
             max_disproofs: scale_max_disproofs(),
-            max_time_runs: scale_max_time_runs(),
-            min_budget:    scale_min_budget(),
+            // Don't starve the one attempt that matters of most of its
+            // slice when there's no budget-search left to do — see
+            // `effective_max_time_runs`'s doc.
+            max_time_runs: effective_max_time_runs(
+                scale_max_time_runs(), total_axioms, min_budget),
+            min_budget,
             total_timeout,
+        };
+        let requested     = selection.auto_budget.unwrap_or_else(default_budget);
+        let selection = crate::SineParams {
+            auto_budget: Some(adaptive_start_budget(requested, total_axioms, &cfg)),
+            ..selection
         };
         drive(selection, cfg, Self::remap_native, |params, slice| {
             self.prove_one_driver(&conj, params, slice, &opts, ctx)
@@ -137,19 +151,34 @@ impl ProverLayer {
     }
 
     /// CASC-style strategy schedule for a standalone TPTP problem: race
-    /// [`Strategy::tptp_lanes`](super::strategy::Strategy::tptp_lanes) in
-    /// order, each over its own slice of `total_timeout` (see
-    /// [`crate::prover::scale::drive_portfolio`] for the split / carry-forward
-    /// rule). Every lane still runs the ordinary budget-autoscaling `drive`
-    /// loop internally — full saturation means that loop mostly just
-    /// re-confirms the same search, but it costs nothing to leave it wired in
-    /// (a lane that somehow doesn't reach the ceiling on its first shot still
-    /// benefits). A verdict of Proved/Inconsistent, or a CONFIDENT
-    /// Disproved/Consistent, from any lane ends the schedule immediately;
-    /// otherwise the best-ranked (never worse-than-first) result across every
-    /// lane is returned. The winning lane's name is prepended to
-    /// `raw_output` so `SIGMA_STATS`/verbose output can show which lane
-    /// solved it.
+    /// [`Strategy::tptp_lanes`](super::strategy::Strategy::tptp_lanes)
+    /// against each other. Every lane still runs the ordinary
+    /// budget-autoscaling `drive` loop internally — full saturation means
+    /// that loop mostly just re-confirms the same search, but it costs
+    /// nothing to leave it wired in (a lane that somehow doesn't reach the
+    /// ceiling on its first shot still benefits). A verdict of
+    /// Proved/Inconsistent, or a CONFIDENT Disproved/Consistent, from any
+    /// lane ends the schedule immediately; otherwise the best-ranked
+    /// (never worse-than-first) result across every lane is returned. The
+    /// winning lane's name is prepended to `raw_output` so
+    /// `SIGMA_STATS`/verbose output can show which lane solved it.
+    ///
+    /// Two dispatch paths, chosen by `opts.cores`:
+    ///
+    /// - **`cores > 1` and more than one lane** (the common case):
+    ///   [`crate::prover::scale::drive_portfolio_parallel`] races every
+    ///   lane concurrently, each given the FULL `total_timeout` (they
+    ///   aren't sharing one wall-clock window, so there's no reason to
+    ///   shrink the lane count for a tight budget the way the sequential
+    ///   path has to) — the first lane to return a schedule-final verdict
+    ///   raises a shared cancel flag every other in-flight lane's
+    ///   saturation loop polls, so losers stop promptly instead of running
+    ///   to their own deadline.
+    /// - **`cores <= 1`, or only one lane configured**: the original
+    ///   sequential [`crate::prover::scale::drive_portfolio`] carry-forward
+    ///   schedule, unchanged — the fallback for a single-core caller (or
+    ///   any future lane that can't safely run concurrently and should be
+    ///   raced this way instead).
     pub(super) fn run_portfolio_schedule(
         &self,
         conj:          &Conjecture,
@@ -157,38 +186,90 @@ impl ProverLayer {
         opts:          &NativeOpts,
         ctx:           &crate::ProveCtx,
     ) -> ProverResult {
-        use crate::prover::scale::{adaptive_lane_count, drive, drive_portfolio, ScaleConfig};
-        use crate::syntactic::sine::{
-            scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
+        use crate::prover::scale::{
+            adaptive_lane_count, adaptive_start_budget, drive, drive_portfolio,
+            drive_portfolio_parallel, effective_max_time_runs, ScaleConfig,
         };
+        use crate::syntactic::sine::{
+            default_budget, scale_factor, scale_max_disproofs, scale_max_time_runs,
+            scale_min_budget,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
 
         let all_lanes: Vec<Strategy> = Strategy::tptp_lanes();
-        // Budget-adaptive lane count (task #33): racing all 5 lanes against a
-        // tight total timeout starves every lane after the first — see
-        // `adaptive_lane_count`'s doc for the measured trade-off. Truncating
-        // (not reordering) `all_lanes` keeps the schedule's ordering promise
-        // (`tptp_lanes_first_is_plain_tptp` etc.) intact for any prefix count.
-        let lane_count = adaptive_lane_count(total_timeout, all_lanes.len());
+        let cores = opts.cores.max(1);
+        // Parallel lanes don't divide `total_timeout` (each gets the whole
+        // thing), so the "racing more lanes starves each one" concern
+        // `adaptive_lane_count` exists for (task #33) only applies to the
+        // sequential fallback — race every configured lane when running
+        // concurrently.
+        let use_parallel = cores > 1 && all_lanes.len() > 1;
+        let lane_count = if use_parallel {
+            all_lanes.len()
+        } else {
+            adaptive_lane_count(total_timeout, all_lanes.len())
+        };
+        // Truncating (not reordering) `all_lanes` keeps the schedule's
+        // ordering promise (`tptp_lanes_first_is_plain_tptp` etc.) intact.
         let lanes = &all_lanes[..lane_count];
-        let selection = opts.selection;
 
-        let (winner, mut result) = drive_portfolio(lanes.len(), total_timeout, |idx, slice| {
+        // Same "don't climb from a budget the indexed universe could never
+        // fill" adjustment as the plain (non-portfolio) path above — every
+        // lane shares one selection start point, so it's computed once here
+        // rather than per lane.
+        let total_axioms = self.semantic.syntactic.sine_current(|idx| idx.axiom_count());
+        let probe_cfg = ScaleConfig {
+            factor: scale_factor(), max_disproofs: 0, max_time_runs: 0,
+            min_budget: scale_min_budget(), total_timeout: 0,
+        };
+        let requested = opts.selection.auto_budget.unwrap_or_else(default_budget);
+        let selection = crate::SineParams {
+            auto_budget: Some(adaptive_start_budget(requested, total_axioms, &probe_cfg)),
+            ..opts.selection
+        };
+        let min_budget = probe_cfg.min_budget;
+        // Same reasoning as `effective_max_time_runs`'s doc: when there's no
+        // budget-search left to do, a lane's one attempt that matters should
+        // get its FULL slice, not `slice / max_time_runs` of it — otherwise
+        // a hard problem needing real search time (not axiom tuning) times
+        // out on a fraction of its budget for no reason. Bites hardest in
+        // the parallel path, where a lane that gives up early has no
+        // sequential carry-forward to fall back on.
+        let max_time_runs = effective_max_time_runs(
+            scale_max_time_runs(), total_axioms, min_budget);
+
+        // Shared by both dispatch paths: run lane `idx` for `slice` seconds
+        // (`0` = unbounded), with `lane_cancel` wired into that lane's own
+        // `NativeOpts` (only the parallel path hands this a live flag).
+        let build_lane_result = |idx: usize, slice: u32, lane_cancel: Option<Arc<AtomicBool>>| {
             let lane_opts = NativeOpts {
                 strategy: lanes[idx].clone(),
                 max_lits: lane_max_lits(&lanes[idx], opts.max_lits),
+                cancel:   lane_cancel,
                 ..opts.clone()
             };
             let cfg = ScaleConfig {
-                factor:        scale_factor(),
-                max_disproofs: scale_max_disproofs(),
-                max_time_runs: scale_max_time_runs(),
-                min_budget:    scale_min_budget(),
+                factor: scale_factor(), max_disproofs: scale_max_disproofs(),
+                max_time_runs, min_budget,
                 total_timeout: slice,
             };
             drive(selection, cfg, Self::remap_native, |params, per_run| {
                 self.prove_one_driver(conj, params, per_run, &lane_opts, ctx)
             })
-        });
+        };
+
+        let (winner, mut result) = if use_parallel {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let workers = cores.min(lane_count);
+            drive_portfolio_parallel(lane_count, workers, &cancel, |idx| {
+                build_lane_result(idx, total_timeout, Some(cancel.clone()))
+            })
+        } else {
+            drive_portfolio(lane_count, total_timeout, |idx, slice| {
+                build_lane_result(idx, slice, None)
+            })
+        };
 
         if crate::prover::scale::is_schedule_final(&result) {
             let lane_name = lanes[winner].name.as_str();
