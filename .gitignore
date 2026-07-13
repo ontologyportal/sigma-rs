@@ -4,6 +4,7 @@ target/
 .claude
 .vscode
 scripts/
+!/.github/scripts/
 TODO.md
 *.tptp
 *.p

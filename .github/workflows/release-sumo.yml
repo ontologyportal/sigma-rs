@@ -33,6 +33,13 @@
 # This workflow does NOT publish to crates.io; distribution is
 # via GitHub-release artifacts plus `cargo install --git` for
 # developers who want to build from source.
+#
+# The linux-x64-gnu leg additionally builds and uploads a StarExec solver
+# package (see .github/scripts/build_starexec_package.sh): `ubuntu-latest`
+# already *is* StarExec's execution-node platform (Linux x86_64), so this
+# needs no cross-compilation. It's a separate build from the main release
+# binary above (drops `integrated-prover`; see the script for why) and
+# uploaded as its own release asset, not the same archive.
 
 name: Release (sumo CLI)
 
@@ -168,5 +175,34 @@ jobs:
             ${{ env.STAGING }}.${{ matrix.archive }}.sha256
           # The release itself is auto-created on the tag if it
           # doesn't exist; otherwise the files are appended.
+          draft: false
+          generate_release_notes: true
+
+      - name: Build StarExec package (linux-x64-gnu only)
+        # `ubuntu-latest` is already StarExec's execution-node platform
+        # (Linux x86_64) -- no --target/cross needed, a native build IS
+        # the StarExec-compatible artifact. Separate cargo build from the
+        # one above: different feature set (no `integrated-prover`; see
+        # the script), so this recompiles `sigmakee` and its dependents,
+        # not just a repackage of the existing binary.
+        if: matrix.label == 'linux-x64-gnu'
+        env:
+          SUMO_BUILD_KIND:   release
+          SUMO_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#sigmakee-v}"
+          out="sumo-${ver}-starexec-linux-x64.tar.gz"
+          .github/scripts/build_starexec_package.sh --out "${out}"
+          shasum -a 256 "${out}" > "${out}.sha256"
+          echo "STAREXEC_OUT=${out}" >> "${GITHUB_ENV}"
+
+      - name: Upload StarExec package to release
+        if: matrix.label == 'linux-x64-gnu'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.STAREXEC_OUT }}
+            ${{ env.STAREXEC_OUT }}.sha256
           draft: false
           generate_release_notes: true
