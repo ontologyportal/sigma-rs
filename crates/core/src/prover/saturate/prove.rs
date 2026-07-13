@@ -239,6 +239,17 @@ impl ProverLayer {
         let max_time_runs = effective_max_time_runs(
             scale_max_time_runs(), total_axioms, min_budget);
 
+        // SIGMA_LANE_BUDGETS="2000,500,8000,…": per-lane SInE start budgets
+        // by lane index (missing/unparsable entries keep the shared start).
+        // The 2026-07-12 CSR profile showed the six lanes producing
+        // near-identical searches on SUMO-scale problems — the strategy
+        // knobs don't diversify there, but selection SIZE does (measured:
+        // narrowed retries solve problems the budget-2000 selection cannot,
+        // and vice versa), so the portfolio's diversity axis is the budget.
+        let lane_budgets: Vec<Option<usize>> = std::env::var("SIGMA_LANE_BUDGETS")
+            .map(|s| s.split(',').map(|t| t.trim().parse::<usize>().ok()).collect())
+            .unwrap_or_default();
+
         // Shared by both dispatch paths: run lane `idx` for `slice` seconds
         // (`0` = unbounded), with `lane_cancel` wired into that lane's own
         // `NativeOpts` (only the parallel path hands this a live flag).
@@ -249,12 +260,19 @@ impl ProverLayer {
                 cancel:   lane_cancel,
                 ..opts.clone()
             };
+            let lane_selection = match lane_budgets.get(idx).copied().flatten() {
+                Some(b) => crate::SineParams {
+                    auto_budget: Some(adaptive_start_budget(b, total_axioms, &probe_cfg)),
+                    ..selection
+                },
+                None => selection,
+            };
             let cfg = ScaleConfig {
                 factor: scale_factor(), max_disproofs: scale_max_disproofs(),
                 max_time_runs, min_budget,
                 total_timeout: slice,
             };
-            drive(selection, cfg, Self::remap_native, |params, per_run| {
+            drive(lane_selection, cfg, Self::remap_native, |params, per_run| {
                 self.prove_one_driver(conj, params, per_run, &lane_opts, ctx)
             })
         };
@@ -413,6 +431,23 @@ impl ProverLayer {
             v.sort_unstable();
             v
         };
+
+        // SIGMA_SELECT_DUMP_FINAL=<path>: like SIGMA_SELECT_DUMP but AFTER
+        // every augmentation (Liu rescue, definitional completion) — the
+        // selection the prover actually loads.  The early dump fires before
+        // defcomp, so it cannot measure completion-based selection fixes
+        // (selection-adequacy audit follow-up).
+        if let Ok(path) = std::env::var("SIGMA_SELECT_DUMP_FINAL") {
+            use std::io::Write;
+            if let Ok(f) = std::fs::File::create(&path) {
+                let mut w = std::io::BufWriter::new(f);
+                for sid in &selected {
+                    let kif = crate::syntactic::display::sentence_to_plain_kif(
+                        *sid, &self.semantic.syntactic);
+                    let _ = writeln!(w, "{kif}");
+                }
+            }
+        }
 
         // Input-completeness gate (defense in depth): count input formulas
         // that FAILED to make it into the clause set — conjecture roots
@@ -777,6 +812,25 @@ impl ProverLayer {
             if prover.opts.forward_close {
                 profile_span!(ctx, "ask.forward_close");
                 prover.forward_close();
+            }
+            // SIGMA_ORACLE_PROBE="rel(x,y);rel(x,y)…": before search starts,
+            // print whether the oracle DECIDES each ground binary edge — the
+            // "does the taxonomy closure know the audited missing axioms?"
+            // diagnostic (selection-adequacy audit follow-up).
+            if let Ok(probes) = std::env::var("SIGMA_ORACLE_PROBE") {
+                use super::theory::TheoryOracle;
+                for p in probes.split(';').filter(|p| !p.is_empty()) {
+                    let Some((rel, rest)) = p.split_once('(') else { continue };
+                    let args: Vec<&str> = rest.trim_end_matches(')').split(',').collect();
+                    if args.len() != 2 {
+                        continue;
+                    }
+                    let r = crate::types::Symbol::hash_name(rel.trim());
+                    let x = crate::types::Symbol::hash_name(args[0].trim());
+                    let y = crate::types::Symbol::hash_name(args[1].trim());
+                    let known = prover.oracle.holds(r, x, y, None);
+                    eprintln!("ORACLE-PROBE {p} = {known}");
+                }
             }
             let (verdict, steps) = {
                 profile_span!(ctx, "ask.saturate");
@@ -1293,11 +1347,14 @@ impl ProverLayer {
         strategy:   &Strategy,
         ctx:        &crate::ProveCtx,
     ) {
-        let max_rounds = strategy.defcomp_rounds;
-        let max_adds = strategy.defcomp_max_adds;
+        let env_usize = |k: &str, d: usize| -> usize {
+            std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
+        };
+        let max_rounds = env_usize("SIGMA_DEFCOMP_ROUNDS", strategy.defcomp_rounds);
+        let max_adds = env_usize("SIGMA_DEFCOMP_ADDS", strategy.defcomp_max_adds);
         /// Predicates more general than this are hubs — always provided.
         const OCC_CAP: usize = 1500;
-        let per_sym = strategy.defcomp_per_sym;
+        let per_sym = env_usize("SIGMA_DEFCOMP_PER_SYM", strategy.defcomp_per_sym);
 
         let syn = &self.semantic.syntactic;
         let trace = std::env::var_os("SIGMA_LIU_TRACE").is_some();
@@ -1312,6 +1369,19 @@ impl ProverLayer {
             }
         };
 
+        // SIGMA_DEFCOMP_GLOBAL=1: goal-backward provider chase.  Two changes
+        // to the stock semantics, both bounded by the same rounds/caps:
+        // (a) obligations are completed even when some selected clause
+        //     already provides them — a proof may need a SECOND provider
+        //     (audit, CSR076+1: the selected reporter provides `property` to
+        //     the goal, so stock `missing` is empty and the
+        //     property←attribute←mother chain is never chased);
+        // (b) the hub filter is lifted — `property`/`attribute`-class
+        //     predicates ARE what these chains run through.
+        // The goal-line seed stays NARROW (a global seed floods the add
+        // budget with rare-but-irrelevant obligations — measured); reach
+        // comes from the existing frontier propagation across rounds.
+        let global = std::env::var_os("SIGMA_DEFCOMP_GLOBAL").is_some();
         let mut frontier: Vec<SentenceId> = frontier.to_vec();
         for _ in 0..max_rounds {
             // Obligations: negative-literal predicates of the GOAL LINE.
@@ -1356,11 +1426,28 @@ impl ProverLayer {
             // round instead of two lock round-trips per symbol.
             let (missing, candidates_by_sym): (Vec<(usize, SymbolId)>, Vec<Vec<SentenceId>>) =
                 self.semantic.syntactic.sine_current(|idx| {
-                    let mut missing: Vec<(usize, SymbolId)> = required
-                        .difference(&provided)
+                    // GLOBAL mode: complete every obligation, not only the
+                    // unprovided ones — a proof may need a SECOND provider
+                    // of a predicate the goal line already has one for
+                    // (CSR076: the reporter provides `property` to the goal,
+                    // but the chain also needs the attribute→property
+                    // bridge, a different property-provider).  Caps below
+                    // still bound the growth.
+                    let obligations: Vec<&SymbolId> = if global {
+                        required.iter().collect()
+                    } else {
+                        required.difference(&provided).collect()
+                    };
+                    // GLOBAL mode also lifts the hub filter: `property` /
+                    // `attribute`-class predicates ARE the obligations these
+                    // proofs chain through (occ ≫ 1500); per_sym + max_adds
+                    // bound the pull instead.
+                    let occ_cap = if global { usize::MAX } else { OCC_CAP };
+                    let mut missing: Vec<(usize, SymbolId)> = obligations
+                        .into_iter()
                         .filter_map(|&s| {
                             let occ = idx.generality(s);
-                            (occ > 0 && occ <= OCC_CAP).then_some((occ, s))
+                            (occ > 0 && occ <= occ_cap).then_some((occ, s))
                         })
                         .collect();
                     missing.sort_unstable();

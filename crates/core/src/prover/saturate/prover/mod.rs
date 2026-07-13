@@ -3714,11 +3714,24 @@ impl<'a> NativeProver<'a> {
         // call to this same method, so they are not left stale.
         self.ensure_guide_model();
         self.defer_active = false;
+        let dbg_prologue = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
+        let mut t_pass = std::time::Instant::now();
+        let mut mark = |name: &str, t: &mut std::time::Instant| {
+            if dbg_prologue {
+                eprintln!("[SIGMA_MODEL_TRACE] prologue {name}: {:?}", t.elapsed());
+            }
+            *t = std::time::Instant::now();
+        };
         self.discharge_horn_joins();
+        mark("horn_joins", &mut t_pass);
         self.discharge_event_calculus();
+        mark("event_calculus", &mut t_pass);
         self.discharge_models();
+        mark("models", &mut t_pass);
         self.discharge_model_joins();
+        mark("model_joins", &mut t_pass);
         self.discharge_backward();
+        mark("backward", &mut t_pass);
         // Deferred-passive discipline: recipes may be created only from
         // here on — the discharge prologue above (and every load-time /
         // forward-closure path, which runs before `run()`) drives

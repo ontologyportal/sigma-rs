@@ -535,6 +535,8 @@ impl Strategy {
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         if on("SIGMA_NO_MODAL_K") { s.modal_k = false; }
         if on("SIGMA_RECOGNIZE_ROLES") { s.recognize_roles = true; }
+        s.liu_rounds = Self::liu_rounds_env_override(s.liu_rounds);
+        s.liu_top_k = Self::liu_top_k_env_override(s.liu_top_k);
         s.demod = Self::demod_env_override(s.demod);
         s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
         s.subs_join = Self::subs_join_env_override(s.subs_join);
@@ -556,6 +558,20 @@ impl Strategy {
     /// from `base()` directly and does not otherwise read the environment).
     fn demod_env_override(default: bool) -> bool {
         if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
+    }
+
+    /// `SIGMA_LIU_ROUNDS=N` / `SIGMA_LIU_TOP_K=N`: A/B overrides for the
+    /// structural-rescue expansion (same style as the other `_env_override`
+    /// helpers — shared by `from_env()` and `tptp()`).  The defaults
+    /// (1 round, 32 additions) cannot walk a multi-hop symbol bridge (the
+    /// CSR "prove the KB inconsistent" family plants its contradiction
+    /// symbol-disjoint from the conjecture).
+    fn liu_rounds_env_override(default: usize) -> usize {
+        std::env::var("SIGMA_LIU_ROUNDS").ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    }
+
+    fn liu_top_k_env_override(default: usize) -> usize {
+        std::env::var("SIGMA_LIU_TOP_K").ok().and_then(|s| s.parse().ok()).unwrap_or(default)
     }
 
     /// `SIGMA_NO_BWD_DEMOD=1` forces backward demodulation OFF,
@@ -688,6 +704,8 @@ impl Strategy {
             superposition:     true,
             eq_factoring:      true,
             subsumption:       true,
+            liu_rounds:        Self::liu_rounds_env_override(Self::base().liu_rounds),
+            liu_top_k:         Self::liu_top_k_env_override(Self::base().liu_top_k),
             demod:             Self::demod_env_override(false),
             // ON by default under the TPTP regime: retrieval is now
             // posting-indexed (exact ground keys + (head, len) buckets

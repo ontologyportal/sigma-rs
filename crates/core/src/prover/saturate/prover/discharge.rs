@@ -863,10 +863,27 @@ impl<'a> NativeProver<'a> {
             }
             let mut lits: Vec<Term> = Vec::with_capacity(c.lits.len());
             let mut ok = true;
+            let mut eqmap: HashMap<SymbolId, Term> = HashMap::new();
             for l in &c.lits {
                 match slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) {
                     Some(t) => {
                         self.stats.model_atoms_seen += 1;
+                        // Negated var-var equality (the `∃X,Y … X=Y`
+                        // conjecture shape, e.g. negatedAntonymPattern):
+                        // pre-unify the variables and DROP the literal —
+                        // once the join binds the unified variable to one
+                        // witness, the dropped `X≠Y` instantiates to
+                        // `w≠w` and resolves by reflexivity in the loop.
+                        if let Term::App(es) = &t {
+                            if es.len() == 3
+                                && matches!(es[0], Term::Op(crate::parse::OpKind::Equal))
+                            {
+                                if let (Term::Var(a), Term::Var(b)) = (&es[1], &es[2]) {
+                                    eqmap.insert(*b, Term::Var(*a));
+                                    continue;
+                                }
+                            }
+                        }
                         if lit_pattern(&t).is_some() {
                             lits.push(t);
                         } else {
@@ -877,6 +894,11 @@ impl<'a> NativeProver<'a> {
                     }
                     None => { ok = false; break; }
                 }
+            }
+            if !eqmap.is_empty() {
+                // Apply twice: bounded handling for chained pairs (X=Y, Y=Z).
+                lits = lits.iter().map(|t| subst(t, &eqmap)).collect();
+                lits = lits.iter().map(|t| subst(t, &eqmap)).collect();
             }
             if ok && lits.len() >= 2 {
                 for t in &lits {
@@ -904,36 +926,77 @@ impl<'a> NativeProver<'a> {
         //         `subr(_, rprs_0)`.
         //    We union both: (a) when it fits, (b) always (cheap, demand-scoped).
         //    Theory relations are oracle-decided, never enumerated.
-        let deadline = Instant::now() + std::time::Duration::from_millis(1500);
-        const MAX_FACTS_PER_REL: usize = 50_000;
+        // SIGMA_CHASE: answer over the bounded-chase model (existential
+        // witnesses from SUMO inhabitation/frame TGDs) instead of the plain
+        // positive model.  Classically sound for this POSITIVE join path
+        // only; certification / negative answers never see chased facts.
+        let chase = std::env::var_os("SIGMA_CHASE").is_some();
+        let chase_ms = std::env::var("SIGMA_CHASE_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10_000);
+        let deadline = Instant::now()
+            + std::time::Duration::from_millis(if chase { chase_ms } else { 1500 });
+        let max_facts_per_rel: usize = if chase { 250_000 } else { 50_000 };
         // Provenance of each materialization, in `provs`; a model-sourced
         // `JoinFact` records WHICH evaluation derived it (`FactSrc::Model`
         // index), so a satisfying join can cite the KB sentences behind every
         // model-derived conjunct (per-evaluation state — never cached on the
         // registry).
         let mut provs: Vec<super::super::model::Provenance> = Vec::new();
-        let full_model = match mp.positive_model(Some(deadline)) {
+        let dbgt = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
+        let t0 = Instant::now();
+        let materialized = if chase {
+            mp.chase_model(self.syn(), &needed, Some(deadline))
+        } else {
+            mp.positive_model(Some(deadline))
+        };
+        if dbgt {
+            eprintln!("[SIGMA_MODEL_TRACE] model_joins: materialize {:?}", t0.elapsed());
+        }
+        let t1 = Instant::now();
+        let full_model = match materialized {
             Some((m, p)) => {
                 provs.push(p);
                 Some(m)
             }
             None => None,
         };
+        if trace {
+            match full_model.as_ref() {
+                Some(m) => eprintln!(
+                    "MODEL-JOIN: materialized {} preds / {} tuples (chase={chase})",
+                    m.len(), m.values().map(|s| s.len()).sum::<usize>()
+                ),
+                None => eprintln!("MODEL-JOIN: full model bailed (chase={chase})"),
+            }
+        }
         let mut facts: HashMap<SymbolId, Vec<JoinFact>> = HashMap::new();
         for &rel in &needed {
             if cov.owns(rel) {
                 continue;
             }
             let mut f = self.store_facts(rel);
+            let mut seen: HashSet<Vec<SymbolId>> = f
+                .iter()
+                .filter_map(|jf| jf.args.iter().map(sym_of).collect())
+                .collect();
             // (a) full model, when it materialized (provenance index 0).
             if let Some(model) = full_model.as_ref().and_then(|m| m.get(&rel)) {
                 for row in model {
-                    push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL, 0);
+                    push_join_fact(self.syn(), &mut f, &mut seen, row, max_facts_per_rel, 0);
                 }
             }
             // (b) per-atom demand-scoped answers, seeded on the conjuncts'
             //     constants — derives constant-bound IDB slices the full model
-            //     bailed on.
+            //     bailed on.  Redundant (measured: ~10s of magic-cone
+            //     evaluations) when the chase already materialized the model.
+            if chase && full_model.is_some() {
+                if !f.is_empty() {
+                    facts.insert(rel, f);
+                }
+                continue;
+            }
             for lits in &queries {
                 for t in lits {
                     let Some((r, args)) = lit_pattern(t) else { continue };
@@ -966,7 +1029,7 @@ impl<'a> NativeProver<'a> {
                         let pix = provs.len() as u32;
                         provs.push(prov);
                         for row in &rows {
-                            push_join_fact(self.syn(), &mut f, row, MAX_FACTS_PER_REL, pix);
+                            push_join_fact(self.syn(), &mut f, &mut seen, row, max_facts_per_rel, pix);
                         }
                     } else {
                         self.stats.model_atoms_unanswered += 1;
@@ -989,9 +1052,16 @@ impl<'a> NativeProver<'a> {
             );
         }
 
+        if dbgt {
+            eprintln!("[SIGMA_MODEL_TRACE] model_joins: facts build {:?}", t1.elapsed());
+        }
         // 3) Join each query; on the first satisfying binding, collect the
         //    ground conjuncts to emit.
+        let t2 = Instant::now();
         let seat_idx = build_seat_index(&facts);
+        if dbgt {
+            eprintln!("[SIGMA_MODEL_TRACE] model_joins: seat index {:?}", t2.elapsed());
+        }
         let mut budget = 200_000usize;
         let mut produced: Vec<(Term, Vec<SentenceId>)> = Vec::new();
         for lits in &queries {
@@ -1011,6 +1081,26 @@ impl<'a> NativeProver<'a> {
                 &mut sols,
                 &mut budget,
             );
+            if trace {
+                eprintln!(
+                    "MODEL-JOIN: query of {} atoms joined, {} solutions, budget left {budget}",
+                    body.len(), sols.len()
+                );
+                for (rel, args) in &body {
+                    let n = facts.get(rel).map_or(0, |v| {
+                        v.iter()
+                            .filter(|jf| {
+                                jf.args.len() == args.len()
+                                    && args.iter().zip(&jf.args).all(|(p, f)| match p {
+                                        Term::Sym(_) => p == f,
+                                        _ => true,
+                                    })
+                            })
+                            .count()
+                    });
+                    eprintln!("MODEL-JOIN:   conjunct {rel:?}{args:?} pattern-matches {n}");
+                }
+            }
             if let Some(sol) = sols.first() {
                 // Re-walk the satisfied conjuncts under the binding to gather
                 // citations: store facts cite their sentence directly;
@@ -1463,7 +1553,7 @@ impl<'a> NativeProver<'a> {
             let (rel, args) = &body[li];
             let sargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
             if sargs.iter().all(Term::is_ground) {
-                if !self.ground_lit_holds(*rel, &sargs, facts) {
+                if !self.ground_lit_holds(*rel, &sargs, facts, seat_idx) {
                     return; // dead branch
                 }
                 let rest: Vec<usize> = pending.iter().copied().filter(|&x| x != li).collect();
@@ -1552,8 +1642,24 @@ impl<'a> NativeProver<'a> {
         rel: SymbolId,
         args: &[Term],
         facts: &HashMap<SymbolId, Vec<JoinFact>>,
+        seat_idx: &SeatIndex,
     ) -> bool {
-        if facts.get(&rel).is_some_and(|v| {
+        // Seat-indexed check when any argument keys into the index — a
+        // full-relation scan here turns the join's ground checks
+        // quadratic on SUMO-scale instance extensions (measured: the
+        // chase's 35k-row `instance` extension × thousands of checks
+        // blew the whole prologue deadline).
+        let narrowed: Option<&Vec<u32>> = args.iter().enumerate().find_map(|(seat, a)| {
+            seat_key(a).and_then(|k| seat_idx.get(&(rel, seat as u8, k)))
+        });
+        if let (Some(idxs), Some(v)) = (narrowed, facts.get(&rel)) {
+            if idxs.iter().any(|&fi| {
+                let jf = &v[fi as usize];
+                jf.args.len() == args.len() && jf.args.iter().zip(args).all(|(a, b)| a == b)
+            }) {
+                return true;
+            }
+        } else if facts.get(&rel).is_some_and(|v| {
             v.iter().any(|jf| {
                 jf.args.len() == args.len() && jf.args.iter().zip(args).all(|(a, b)| a == b)
             })
@@ -1692,6 +1798,7 @@ struct JoinFact {
 fn push_join_fact(
     syn:     &crate::syntactic::SyntacticLayer,
     f:       &mut Vec<JoinFact>,
+    seen:    &mut HashSet<Vec<SymbolId>>,
     row:     &[SymbolId],
     cap:     usize,
     prov_ix: u32,
@@ -1699,8 +1806,13 @@ fn push_join_fact(
     if f.len() >= cap {
         return;
     }
+    // Dedup on the raw id row — the old linear `f.iter().any(...)` scan was
+    // quadratic (measured 11s for 82k chase-model rows).
+    if !seen.insert(row.to_vec()) {
+        return;
+    }
     let aargs: Vec<Term> = row.iter().filter_map(|v| syn.sym_name(*v).map(Term::Sym)).collect();
-    if aargs.len() == row.len() && !f.iter().any(|jf| jf.args == aargs) {
+    if aargs.len() == row.len() {
         f.push(JoinFact { args: aargs, src: FactSrc::Model(prov_ix) });
     }
 }

@@ -268,6 +268,50 @@ impl SyntacticLayer {
                             crate::syntactic::display::sentence_to_plain_kif(*aid, self));
                     }
                 }
+                // Ground FACTS of frontier predicates, admitted outside the
+                // idf ranking: a planted leaf fact shares exactly one
+                // predicate with the frontier and scores ~0.1 — it never
+                // beats rule candidates sharing near-unique symbols, yet it
+                // is precisely what the rescue exists to recover (the CSR
+                // "prove the KB inconsistent" family hides its contradiction
+                // in such facts).  Facts do not fan out in saturation the
+                // way rules do, so unconditional admission is cheap.
+                const FACT_CAP: usize = 256;
+                let mut fact_adds: Vec<SentenceId> = Vec::new();
+                'facts: for &s in &work_nonhub {
+                    for &(_, aid) in idx.axioms_of_symbol(s) {
+                        if fact_adds.len() >= FACT_CAP {
+                            break 'facts;
+                        }
+                        if selected.contains(&aid) || in_set.contains(&aid) {
+                            continue;
+                        }
+                        let Some(sent) = self.sentence(aid) else { continue };
+                        // Head must BE the frontier predicate and the
+                        // sentence a flat ground atom (no variables, no
+                        // nested sub-sentences).
+                        if !matches!(sent.elements.first(),
+                                     Some(Element::Symbol(h)) if h.id() == s) {
+                            continue;
+                        }
+                        let ground = sent.elements.iter().all(|el| {
+                            !matches!(el, Element::Variable { .. } | Element::Sub(_))
+                        });
+                        if !ground {
+                            continue;
+                        }
+                        fact_adds.push(aid);
+                    }
+                }
+                if trace && !fact_adds.is_empty() {
+                    eprintln!(
+                        "LIU round {round}: +{} ground facts of frontier predicates",
+                        fact_adds.len());
+                }
+                for aid in fact_adds {
+                    in_set.insert(aid);
+                    included.push(aid);
+                }
                 if accepted.is_empty() {
                     break;
                 }

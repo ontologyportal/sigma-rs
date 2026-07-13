@@ -213,6 +213,82 @@ pub(crate) struct Extraction {
     /// shape like `(?REL a b)`): such a root could derive atoms of ANY
     /// relation, so certification must be refused wholesale.
     pub(crate) wildcard_skip: bool,
+    /// Existential rules `(=> body (exists (evars) heads))` — SUMO's
+    /// inhabitation / frame axioms.  Consumed ONLY by the bounded chase
+    /// (`ModelProgram::chase_model`, SIGMA_CHASE): head tuples over fresh
+    /// witness symbols are classical consequences (systematic existential
+    /// instantiation), sound for answering POSITIVE conjunctive-query
+    /// conjectures.  Certification bookkeeping for these roots is untouched
+    /// (they stay in `skipped_heads` — invented facts must never feed
+    /// completeness claims).
+    pub(crate) tgds: Vec<Tgd>,
+}
+
+/// One tuple-generating dependency: `heads(body_vars, evars) :- body`.
+/// Body literals are all POSITIVE flat atoms; head atoms may mention the
+/// existential variables (indices `>= n_body_vars`).
+#[derive(Debug, Clone)]
+pub(crate) struct Tgd {
+    pub(crate) body:        Vec<Literal>,
+    pub(crate) heads:       Vec<Atom>,
+    pub(crate) n_body_vars: u32,
+    pub(crate) n_vars:      u32,
+    pub(crate) sid:         SentenceId,
+}
+
+/// Parse `(=> ant (exists (?E…) con))` into a [`Tgd`]: positive flat-atom
+/// body, flat-atom (or `(and …)` of flat atoms) consequent.  Every variable
+/// in a head atom must be a body variable or a declared existential.  `None`
+/// on any other shape — the root then follows the ordinary skip path.
+fn tgd_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<Tgd> {
+    let (ant_id, con_id) = (sub(&s.elements[1])?, sub(&s.elements[2])?);
+    let (ant, con) = (syn.sentence(ant_id)?, syn.sentence(con_id)?);
+    if con.op() != Some(&OpKind::Exists) || con.elements.len() != 3 {
+        return None;
+    }
+    let mut vars: HashMap<SymbolId, u32> = HashMap::new();
+    // Body first, so body vars index low (the chase's frontier binding).
+    let body_ids: Vec<SentenceId> = if ant.op() == Some(&OpKind::And) {
+        ant.elements[1..].iter().filter_map(sub).collect()
+    } else {
+        vec![ant_id]
+    };
+    let mut body = Vec::with_capacity(body_ids.len());
+    for bid in body_ids {
+        let lit = literal_of(syn, bid, &mut vars)?;
+        if lit.negated {
+            return None; // keep the chase monotone: positive bodies only
+        }
+        body.push(lit);
+    }
+    let n_body_vars = vars.len() as u32;
+    // Declared existentials claim the next indices.
+    let vl = syn.sentence(sub(&con.elements[1])?)?;
+    for el in vl.elements.iter() {
+        let Element::Variable { id, .. } = el else { return None };
+        let next = vars.len() as u32;
+        vars.entry(*id).or_insert(next);
+    }
+    let ebody = syn.sentence(sub(&con.elements[2])?)?;
+    let head_ids: Vec<SentenceId> = if ebody.op() == Some(&OpKind::And) {
+        ebody.elements[1..].iter().filter_map(sub).collect()
+    } else {
+        vec![sub(&con.elements[2])?]
+    };
+    let n_before_heads = vars.len();
+    let mut heads = Vec::with_capacity(head_ids.len());
+    for hid in head_ids {
+        let hs = syn.sentence(hid)?;
+        if hs.op().is_some() {
+            return None; // negation / nesting inside the existential body
+        }
+        let (atom, _) = atom_of(&hs, &mut vars)?;
+        heads.push(atom);
+    }
+    if vars.len() != n_before_heads {
+        return None; // a head used a variable that is neither body nor declared
+    }
+    Some(Tgd { body, heads, n_body_vars, n_vars: vars.len() as u32, sid: root })
 }
 
 parked! {
@@ -274,6 +350,13 @@ pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
                 match implies_rule(syn, root, &s) {
                     Some(rule) => ex.program.rules.push(rule),
                     None => {
+                        // Existential-headed rule → TGD for the bounded
+                        // chase.  Certification bookkeeping below still
+                        // runs for it (invented facts must never feed
+                        // completeness claims).
+                        if let Some(tgd) = tgd_rule(syn, root, &s) {
+                            ex.tgds.push(tgd);
+                        }
                         // Certification bookkeeping (a): this skipped root
                         // could derive atoms of its consequent — collect the
                         // consequent subtree's head positions (for a flat

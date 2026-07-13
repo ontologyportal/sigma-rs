@@ -76,6 +76,9 @@ pub(crate) struct ModelProgram {
     /// pairwise ⊥-rules) — the integrity constraints [`refutes`](Self::refutes)
     /// chases.  Empty on a KB with no disjointness.
     pub denials:  Vec<extract::Denial>,
+    /// Existential rules for the bounded chase ([`chase_model`](Self::chase_model),
+    /// SIGMA_CHASE) — never consulted by certification or negative answers.
+    pub tgds:     Vec<extract::Tgd>,
 }
 
 impl ModelProgram {
@@ -153,6 +156,7 @@ impl ModelProgram {
 
         ModelProgram {
             program, clusters, monotone, complete, certified, cert_blocked, roles, denials,
+            tgds: ex.tgds,
         }
     }
 
@@ -267,6 +271,236 @@ impl ModelProgram {
                      relation(s) OK, {} tuples across {} preds, took {:?}",
                     fresh.len(), n, model.len(), t1.elapsed()
                 );
+            }
+        }
+        Some((model, prov))
+    }
+
+    /// Bounded restricted chase over the extracted [`extract::Tgd`]s
+    /// (SIGMA_CHASE): start from [`positive_model`](Self::positive_model),
+    /// then for a fixed number of rounds fire every TGD on every
+    /// not-yet-witnessed body match — interning a fresh 0-ary witness
+    /// symbol per existential variable — and re-close under the monotone
+    /// Horn program with the invented head tuples as extra EDB facts
+    /// (provenance = the TGD's own sentence).
+    ///
+    /// CLASSICAL soundness (not CWA): each invented fact is a skolemized
+    /// instance of its existential axiom, so any POSITIVE conjunctive
+    /// consequence of the chased model is entailed by the KB.  The chase
+    /// must never feed certification or negative answers — only the
+    /// positive CQ-join answer path consumes it.
+    ///
+    /// Body literals over builtin-transitive relations match against a
+    /// budgeted materialized closure of the base edges (the returned model
+    /// only carries base edges for builtins).  Bails to the plain positive
+    /// model on any budget/deadline overrun.
+    pub(crate) fn chase_model(
+        &self,
+        syn:        &SyntacticLayer,
+        goal_preds: &HashSet<Pred>,
+        deadline:   Option<std::time::Instant>,
+    ) -> Option<(Model, Provenance)> {
+        const BUDGET: usize = 250_000;
+        // Re-evaluations after witness invention close each witness's
+        // taxonomy cone — thousands of witnesses legitimately cascade past
+        // the base budget.  Still deadline-capped.
+        const CHASE_BUDGET: usize = 1_000_000;
+        const ROUNDS: usize = 2;
+        const MAX_WITNESS_FIRINGS: usize = 20_000;
+        let trace = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
+        if trace {
+            eprintln!("[SIGMA_MODEL_TRACE] chase_model: {} TGDs extracted", self.tgds.len());
+        }
+        if self.tgds.is_empty() {
+            return self.positive_model(deadline);
+        }
+        // Demand-scope the evaluation (the full SUMO-scale monotone program
+        // overflows any practical budget — same reason `answer_cone_impl`
+        // scopes): the cone of the query's relations plus every TGD body
+        // relation, so body matching has its generator facts.
+        let mut goals: HashSet<Pred> = goal_preds.clone();
+        for tgd in &self.tgds {
+            for l in &tgd.body {
+                goals.insert(l.atom.pred);
+            }
+        }
+        let cone = cluster::dependency_cone(&self.monotone, &goals);
+        let mut work = cluster::scope_program(&self.monotone, &cone);
+        work.rules.retain(rule_is_safe);
+        // EGD merges over skolem witnesses are useless for CQ answering
+        // (witness identity is irrelevant) and can explode re-evaluation
+        // via mass re-canonicalization — drop them for the chase.  Sound:
+        // fewer merges only shrink the derivable positive set.
+        work.egds.clear();
+        // Only TGDs that can matter: some head relation feeds the cone.
+        let live: Vec<&extract::Tgd> = self
+            .tgds
+            .iter()
+            .filter(|t| t.heads.iter().any(|h| cone.contains(&h.pred)))
+            .collect();
+        if trace {
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] chase_model: scoped to {} rules / {} EDB preds \
+                 (cone of {} goals), {} live TGDs",
+                work.rules.len(), work.edb.len(), goals.len(), live.len()
+            );
+        }
+        if live.is_empty() {
+            return match work.evaluate_within(BUDGET, deadline) {
+                Ok(mp) => Some(mp),
+                Err(_) => None,
+            };
+        }
+        let t0 = std::time::Instant::now();
+        let (mut model, mut prov) = match work.evaluate_within(BUDGET, deadline) {
+            Ok(mp) => mp,
+            Err(e) => {
+                if trace {
+                    eprintln!("[SIGMA_MODEL_TRACE] chase_model: scoped base eval bailed: {e:?}");
+                }
+                return None;
+            }
+        };
+        if trace {
+            eprintln!("[SIGMA_MODEL_TRACE] chase_model: scoped base eval took {:?}", t0.elapsed());
+        }
+        let mut memo: HashSet<(usize, Vec<SymbolId>)> = HashSet::new();
+        let mut firings = 0usize;
+        let mut wid = 0usize;
+        for round in 0..ROUNDS {
+            // Body matching sees builtin-transitive relations CLOSED.
+            let matchable = match closed_for_matching(&model, &work, BUDGET) {
+                Some(m) => m,
+                None => {
+                    if trace {
+                        eprintln!("[SIGMA_MODEL_TRACE] chase round {round}: closure budget blown, stopping");
+                    }
+                    break; // closure blew the budget: keep what we have
+                }
+            };
+            if trace {
+                let n: usize = matchable.values().map(HashSet::len).sum();
+                eprintln!(
+                    "[SIGMA_MODEL_TRACE] chase round {round}: matching against {} preds / {} tuples",
+                    matchable.len(), n
+                );
+            }
+            let t_round = std::time::Instant::now();
+            let pos_idx = build_pos_index(&matchable);
+            let t_idx = t_round.elapsed();
+            let mut new_facts: Vec<(Pred, Tuple, SentenceId)> = Vec::new();
+            // Per-TGD firing cap per round: a body of two instance literals
+            // with no shared variable is a cross-product over SUMO-scale
+            // extensions (measured 18.8s for one round without the cap);
+            // beyond a few hundred witnesses per rule, additional firings
+            // add nothing the CQ join will ever bind.
+            const MAX_FIRINGS_PER_TGD: usize = 256;
+            for (ti, tgd) in live.iter().enumerate() {
+                let mut tgd_firings = 0usize;
+                // Single-literal bodies enumerate linearly — no cap (the
+                // inhabitation axiom's witnesses are the chase substrate).
+                let cap = if tgd.body.len() > 1 { MAX_FIRINGS_PER_TGD } else { usize::MAX };
+                let stop = std::cell::Cell::new(false);
+                let t_tgd = std::time::Instant::now();
+                // Most-selective literal first: constants beat variables,
+                // small extensions beat large — the nested-loop join's
+                // only real cost lever.
+                let mut ordered = tgd.body.clone();
+                ordered.sort_by_key(|l| {
+                    let rows = matchable.get(&l.atom.pred).map_or(0, HashSet::len);
+                    let has_const = l.atom.args.iter().any(|a| matches!(a, DTerm::Const(_)));
+                    (if has_const { 0usize } else { 1 }, rows)
+                });
+                let mut binding: Vec<Option<SymbolId>> = vec![None; tgd.n_vars as usize];
+                let mut on_match = |b: &mut Vec<Option<SymbolId>>| {
+                    if tgd_firings >= cap {
+                        stop.set(true);
+                        return;
+                    }
+                    let frontier: Vec<SymbolId> =
+                        (0..tgd.n_body_vars as usize).map(|i| b[i].unwrap_or(0)).collect();
+                    if firings >= MAX_WITNESS_FIRINGS || !memo.insert((ti, frontier)) {
+                        return;
+                    }
+                    firings += 1;
+                    tgd_firings += 1;
+                    for k in tgd.n_body_vars..tgd.n_vars {
+                        let name = format!("w__chase_{wid}");
+                        wid += 1;
+                        b[k as usize] = Some(syn.symbols.intern_skolem(&name, Some(0)));
+                    }
+                    for h in &tgd.heads {
+                        let tuple: Tuple = h.args.iter().map(|a| match a {
+                            DTerm::Const(c) => *c,
+                            DTerm::Var(v) => b[*v as usize].unwrap_or(0),
+                        }).collect();
+                        new_facts.push((h.pred, tuple, tgd.sid));
+                    }
+                };
+                let visits = std::cell::Cell::new(0usize);
+                match_tgd_body(
+                    &matchable, &pos_idx, &ordered, 0, &mut binding, &mut on_match,
+                    deadline, &stop, &visits,
+                );
+                if trace && t_tgd.elapsed().as_millis() > 200 {
+                    eprintln!(
+                        "[SIGMA_MODEL_TRACE] chase slow TGD sid={:?}: {:?} body_lits={} \
+                         body_preds={:?}",
+                        tgd.sid, t_tgd.elapsed(), tgd.body.len(),
+                        tgd.body.iter().map(|l| l.atom.pred).collect::<Vec<_>>()
+                    );
+                }
+            }
+            if trace {
+                eprintln!(
+                    "[SIGMA_MODEL_TRACE] chase round {round}: {} invented facts \
+                     ({firings} TGD firings total; idx {t_idx:?}, round {:?})",
+                    new_facts.len(),
+                    t_round.elapsed()
+                );
+            }
+            if new_facts.is_empty() {
+                break;
+            }
+            // Close invented facts DIRECTLY instead of re-running the Horn
+            // engine: a full re-evaluation with thousands of fresh witnesses
+            // measured quadratic-slow (8.8s without finishing round 1), and
+            // the only witness closure the CQ join needs is taxonomy
+            // membership — one hop over the already-CLOSED subclass rows in
+            // `matchable`.  Other consequences of witnesses are soundly
+            // under-derived (fewer answers, never wrong ones).
+            let inst = self.roles.instance;
+            let subc = self.roles.subclass;
+            let sup: HashMap<SymbolId, Vec<SymbolId>> = matchable
+                .get(&subc)
+                .map(|rows| {
+                    let mut m: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+                    for t in rows {
+                        if t.len() == 2 {
+                            m.entry(t[0]).or_default().push(t[1]);
+                        }
+                    }
+                    m
+                })
+                .unwrap_or_default();
+            let mut derived: Vec<(Pred, Tuple, SentenceId)> = Vec::new();
+            for (p, t, sid) in &new_facts {
+                if *p == inst && t.len() == 2 {
+                    for d in sup.get(&t[1]).into_iter().flatten() {
+                        derived.push((inst, vec![t[0], *d], *sid));
+                    }
+                }
+            }
+            if trace {
+                eprintln!(
+                    "[SIGMA_MODEL_TRACE] chase round {round}: +{} taxonomy-closure facts",
+                    derived.len()
+                );
+            }
+            for (p, t, sid) in new_facts.iter().chain(derived.iter()) {
+                if model.entry(*p).or_default().insert(t.clone()) {
+                    prov.edb_sids.insert((*p, t.clone()), *sid);
+                }
             }
         }
         Some((model, prov))
@@ -1333,6 +1567,158 @@ impl Program {
             }
         }
         Err(ModelError::Unstratifiable)
+    }
+}
+
+/// Chase body-matching view: the positive model with every
+/// builtin-transitive relation replaced by its materialized closure
+/// (plain BFS over base edges).  `None` when the closure would exceed
+/// `budget` tuples — the chase then stops instead of blowing up.
+fn closed_for_matching(model: &Model, work: &Program, budget: usize) -> Option<Model> {
+    let mut out = model.clone();
+    let mut total: usize = model.values().map(HashSet::len).sum();
+    for (&pred, _) in work.builtin_transitive.iter() {
+        let Some(base) = model.get(&pred) else { continue };
+        if base.iter().any(|t| t.len() != 2) {
+            continue; // closure only defined for binary relations
+        }
+        let mut adj: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
+        for t in base {
+            adj.entry(t[0]).or_default().push(t[1]);
+        }
+        let mut closed: HashSet<Tuple> = HashSet::new();
+        for &seed in adj.keys() {
+            let mut stack = vec![seed];
+            let mut seen: HashSet<SymbolId> = HashSet::new();
+            while let Some(n) = stack.pop() {
+                for &m in adj.get(&n).into_iter().flatten() {
+                    if seen.insert(m) {
+                        closed.insert(vec![seed, m]);
+                        total += 1;
+                        if total > budget {
+                            return None;
+                        }
+                        stack.push(m);
+                    }
+                }
+            }
+        }
+        out.insert(pred, closed);
+    }
+    Some(out)
+}
+
+/// Position index over a matching view: `(pred, arg-position, symbol)` →
+/// the rows with that symbol at that position.  Built once per chase round;
+/// turns the body join from cross-product scans into index-nested-loop.
+type PosIndex = HashMap<(Pred, usize, SymbolId), Vec<Tuple>>;
+
+fn build_pos_index(model: &Model) -> PosIndex {
+    let mut idx: PosIndex = HashMap::new();
+    for (&pred, rows) in model {
+        for row in rows {
+            for (i, &s) in row.iter().enumerate() {
+                idx.entry((pred, i, s)).or_default().push(row.clone());
+            }
+        }
+    }
+    idx
+}
+
+/// Enumerate all bindings of `lits[li..]` (positive flat atoms) against
+/// `model`, extending `binding` in place and invoking `on_match` at a full
+/// match.  Index-nested-loop join: when some argument of the current
+/// literal is a constant or an already-bound variable, candidates come
+/// from the position index (most selective bound seat) instead of a full
+/// extension scan.
+fn match_tgd_body(
+    model:    &Model,
+    idx:      &PosIndex,
+    lits:     &[Literal],
+    li:       usize,
+    binding:  &mut Vec<Option<SymbolId>>,
+    on_match: &mut dyn FnMut(&mut Vec<Option<SymbolId>>),
+    deadline: Option<std::time::Instant>,
+    stop:     &std::cell::Cell<bool>,
+    visits:   &std::cell::Cell<usize>,
+) {
+    // Row-visit budget: a wide body (7 literals over instance/subclass)
+    // can burn seconds scanning without ever firing — cap the join's
+    // EFFORT, not just its yield.
+    const MAX_VISITS_PER_TGD: usize = 100_000;
+    if stop.get() || deadline.is_some_and(|d| std::time::Instant::now() > d) {
+        return;
+    }
+    let Some(lit) = lits.get(li) else {
+        on_match(binding);
+        return;
+    };
+    // Candidate source: the most selective bound seat's index bucket,
+    // else the full extension.
+    let mut indexed: Option<&Vec<Tuple>> = None;
+    for (i, a) in lit.atom.args.iter().enumerate() {
+        let seat = match a {
+            DTerm::Const(c) => Some(*c),
+            DTerm::Var(v) => binding[*v as usize],
+        };
+        if let Some(s) = seat {
+            match idx.get(&(lit.atom.pred, i, s)) {
+                Some(c) if indexed.is_none_or(|best| c.len() < best.len()) => {
+                    indexed = Some(c);
+                }
+                Some(_) => {}
+                None => return, // a bound seat with zero rows: dead literal
+            }
+        }
+    }
+    let scan: Vec<Tuple>;
+    let candidates: &[Tuple] = match indexed {
+        Some(c) => c,
+        None => {
+            let Some(r) = model.get(&lit.atom.pred) else { return };
+            scan = r.iter().cloned().collect();
+            &scan
+        }
+    };
+    'row: for row in candidates {
+        let v = visits.get() + 1;
+        visits.set(v);
+        if v > MAX_VISITS_PER_TGD {
+            stop.set(true);
+            return;
+        }
+        if row.len() != lit.atom.args.len() {
+            continue;
+        }
+        let mut bound_here: SmallVec<[u32; 4]> = SmallVec::new();
+        for (a, &v) in lit.atom.args.iter().zip(row.iter()) {
+            match a {
+                DTerm::Const(c) => {
+                    if *c != v {
+                        for &u in &bound_here { binding[u as usize] = None; }
+                        continue 'row;
+                    }
+                }
+                DTerm::Var(u) => match binding[*u as usize] {
+                    Some(b) if b != v => {
+                        for &u2 in &bound_here { binding[u2 as usize] = None; }
+                        continue 'row;
+                    }
+                    Some(_) => {}
+                    None => {
+                        binding[*u as usize] = Some(v);
+                        bound_here.push(*u);
+                    }
+                },
+            }
+        }
+        match_tgd_body(model, idx, lits, li + 1, binding, on_match, deadline, stop, visits);
+        for &u in &bound_here {
+            binding[u as usize] = None;
+        }
+        if stop.get() {
+            return;
+        }
     }
 }
 
