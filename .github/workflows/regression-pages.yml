@@ -11,8 +11,12 @@
 #   * TPTP smoke — scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
 #                 (there is no raw endpoint) into a cached $TPTP tree
 #
-# The page always deploys — a red run still publishes its report (showing
-# FAILURES); the trailing `gate` job is what turns the run red.
+# Results are published, not graded: the page prints each test's outcome,
+# diffs it against the previous published run, and keeps a history table
+# (the live site's results.json/history.json are fetched before each build,
+# so the site itself is the storage).  The trailing `gate` job only turns
+# the run red when the run itself was unhealthy — build, ontology load,
+# test enumeration, or missing TPTP inputs.
 #
 # One-time repo setup: Settings → Pages → Source: "GitHub Actions".
 
@@ -99,11 +103,29 @@ jobs:
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "Regression status: $status"
 
+      # The previous deploy's results.json/history.json seed the "changes
+      # since last run" section and the history table — the site itself is
+      # the storage, carried forward deploy to deploy.  Both fetches are
+      # best-effort: a first run (or disabled Pages) just builds without them.
+      - name: Fetch previous published results (deltas + history)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p prev
+          url=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url 2>/dev/null || true)
+          [ -n "$url" ] || url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+          echo "pages url: $url"
+          curl -fsSL "${url%/}/results.json?run=$GITHUB_RUN_ID" -o prev/results.json || true
+          curl -fsSL "${url%/}/history.json?run=$GITHUB_RUN_ID" -o prev/history.json || true
+          ls -la prev/ || true
+
       - name: Build report site
         run: |
           python3 scripts/regression_report.py \
             --results regression-out \
             --out site \
+            --prev prev/results.json \
+            --history prev/history.json \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Upload raw results (debugging)
@@ -131,10 +153,11 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
-  # Turns the run red when expectations failed — after the page is up, so a
-  # failing night still publishes its report.
+  # Turns the run red when the run itself was unhealthy (build, load,
+  # enumeration, TPTP inputs) — after the page is up, so a failing night
+  # still publishes whatever it managed to produce.
   gate:
-    name: expectations gate
+    name: run-health gate
     needs: [regression, deploy]
     runs-on: ubuntu-latest
     steps:

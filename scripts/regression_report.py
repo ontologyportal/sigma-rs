@@ -2,13 +2,22 @@
 """Render scripts/ci_regression.sh results as a static GitHub Pages site.
 
 Reads the structured output directory ci_regression.sh produced (meta.tsv,
-suites.tsv, tptp.tsv, logs/*.log) and writes:
+sumo.tsv, tptp.tsv, logs/*.log) and writes:
 
     <out>/index.html    the report page (self-contained, no external assets)
-    <out>/results.json  the parsed results, for machine consumption
+    <out>/results.json  this run's full parsed results (also next run's diff base)
+    <out>/history.json  compact per-run summaries, newest first
     <out>/badge.json    a shields.io endpoint (https://img.shields.io/endpoint)
 
-Usage: regression_report.py --results regression-out --out site [--run-url URL]
+Nothing is graded: the page prints each test's outcome as reported by the
+CLI, and — when the previous deploy's results.json / history.json are
+supplied — shows what changed since the last run and a history table.  The
+workflow fetches those two files from the live Pages site before building,
+so history accumulates across deploys with no storage beyond the site
+itself.
+
+Usage: regression_report.py --results regression-out --out site
+           [--run-url URL] [--prev results.json] [--history history.json]
 """
 
 import argparse
@@ -17,6 +26,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+HISTORY_LIMIT = 300  # runs kept in history.json
 
 VERDICT_RE = re.compile(
     r"^  (PASSED|FAILED|FALSE VERDICT|INFO|ERROR)\s*(?:\(total (\d+\.\d+)s\))?")
@@ -65,21 +76,64 @@ def collect(results: Path):
     status = (results / "status").read_text().strip() \
         if (results / "status").exists() else "FAIL"
 
-    suites = []
-    for backend, suite, passed, graded, expected, verdict in read_tsv(results / "suites.tsv"):
-        log = results / "logs" / f"{backend}-{suite}.log"
-        suites.append({
-            "backend": backend, "suite": suite,
+    backends = []
+    for backend, passed, graded, fv in read_tsv(results / "sumo.tsv"):
+        log = results / "logs" / f"{backend}.log"
+        backends.append({
+            "backend": backend,
             "passed": int(passed) if passed else None,
             "graded": int(graded) if graded else None,
-            "expected": int(expected) if expected else None,
-            "status": verdict,
+            "false_verdicts": int(fv) if fv else 0,
             "cases": parse_suite_log(log) if log.exists() else [],
         })
 
-    tptp = [{"name": n, "szs": s, "verdict": v}
-            for n, s, v in read_tsv(results / "tptp.tsv")]
-    return {"meta": meta, "status": status, "suites": suites, "tptp": tptp}
+    tptp = [{"name": r[0], "szs": r[1]} for r in read_tsv(results / "tptp.tsv")]
+    return {"meta": meta, "status": status, "backends": backends, "tptp": tptp}
+
+
+# ------------------------------------------------------------------ diffs
+
+def diff_runs(cur: dict, prev: dict | None):
+    """Per-test changes between this run and the previous one.
+
+    Returns {"backends": {name: {"flips": [(test, old, new)], "added": [...],
+    "removed": [...]}}, "tptp": [(name, old, new)]} — or None when there is
+    no comparable previous data.
+    """
+    if not prev or "backends" not in prev:
+        return None
+    prev_backends = {b["backend"]: {c["name"]: c["verdict"] for c in b.get("cases", [])}
+                     for b in prev["backends"]}
+    out = {"backends": {}, "tptp": []}
+    for b in cur["backends"]:
+        old = prev_backends.get(b["backend"])
+        if old is None:
+            continue
+        new = {c["name"]: c["verdict"] for c in b["cases"]}
+        out["backends"][b["backend"]] = {
+            "flips":   [(n, old[n], v) for n, v in sorted(new.items())
+                        if n in old and old[n] != v],
+            "added":   sorted(set(new) - set(old)),
+            "removed": sorted(set(old) - set(new)),
+        }
+    old_tptp = {t["name"]: t["szs"] for t in prev.get("tptp", [])}
+    out["tptp"] = [(t["name"], old_tptp[t["name"]], t["szs"]) for t in cur["tptp"]
+                   if t["name"] in old_tptp and old_tptp[t["name"]] != t["szs"]]
+    return out
+
+
+def summarize(data: dict) -> dict:
+    """The compact per-run record appended to history.json."""
+    solved = sum(t["szs"] in ("Theorem", "Unsatisfiable") for t in data["tptp"])
+    return {
+        "date": data["meta"].get("date_utc", ""),
+        "sigma_commit": data["meta"].get("sigma_commit", "")[:12],
+        "sumo_commit": data["meta"].get("sumo_commit", "")[:12],
+        "backends": {b["backend"]: {"passed": b["passed"], "graded": b["graded"],
+                                    "false_verdicts": b["false_verdicts"]}
+                     for b in data["backends"]},
+        "tptp": {"solved": solved, "total": len(data["tptp"])},
+    }
 
 
 # ---------------------------------------------------------------- HTML
@@ -109,7 +163,6 @@ h2 { font-size: 1.1rem; margin: 2.2rem 0 .8rem; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem;
   margin: 1.2rem 0 .4rem; }
 .state { font-weight: 700; padding: .35rem .9rem; border-radius: 999px; }
-.state.green { color: var(--green); background: var(--green-bg); }
 .state.fail { color: var(--red); background: var(--red-bg); }
 .meta { color: var(--muted); font-size: .86rem; }
 .meta code, td code, .mono { font-family: var(--mono); font-size: .86em; }
@@ -127,21 +180,20 @@ td.detail { white-space: normal; color: var(--muted); font-size: .86rem; }
 .pill.fail  { color: var(--red);   background: var(--red-bg); }
 .pill.warn  { color: var(--amber); background: var(--amber-bg); }
 .pill.info  { color: var(--gray);  background: var(--gray-bg); }
+.delta-up   { color: var(--green); }
+.delta-down { color: var(--red); }
 details { margin: .7rem 0; }
 summary { cursor: pointer; padding: .55rem .9rem; background: var(--card);
   border: 1px solid var(--line); border-radius: 10px; font-weight: 600; }
-summary .pill { margin-left: .6rem; }
 details[open] summary { border-radius: 10px 10px 0 0; }
 details .card { border-top: none; border-radius: 0 0 10px 10px; }
 footer { margin-top: 3rem; color: var(--muted); font-size: .82rem; }
 """
 
 PILL = {
-    "ok": ("ok", "ok"), "FAIL": ("fail", "FAIL"), "report": ("info", "report-only"),
     "PASSED": ("ok", "passed"), "FAILED": ("fail", "failed"),
     "FALSE VERDICT": ("fail", "FALSE VERDICT"), "INFO": ("info", "info"),
-    "ERROR": ("warn", "error"), "SOUNDNESS": ("fail", "SOUNDNESS"),
-    "MUST_SOLVE": ("fail", "must-solve"),
+    "ERROR": ("warn", "error"),
 }
 
 
@@ -154,10 +206,9 @@ def esc(s) -> str:
     return html.escape(str(s))
 
 
-def render(data: dict, run_url: str | None) -> str:
+def render(data: dict, deltas: dict | None, history: list, run_url: str | None) -> str:
     meta, out = data["meta"], []
     w = out.append
-    ok = data["status"] == "GREEN"
     date = meta.get("date_utc", "")
     sigma = meta.get("sigma_commit", "")
     sumo_repo = meta.get("sumo_repo", "https://github.com/ontologyportal/sumo")
@@ -167,8 +218,8 @@ def render(data: dict, run_url: str | None) -> str:
     w("<main>")
     w("<h1>sigma-rs regression</h1>")
     w('<div class="banner">')
-    w(f'<span class="state {"green" if ok else "fail"}">'
-      f'{"ALL GREEN" if ok else "FAILURES"}</span>')
+    if data["status"] != "GREEN":
+        w('<span class="state fail">RUN INCOMPLETE</span>')
     w(f'<span class="meta">{esc(date)}</span>')
     w("</div>")
     w('<p class="meta">')
@@ -184,26 +235,57 @@ def render(data: dict, run_url: str | None) -> str:
         w(f' &nbsp;·&nbsp; <a href="{esc(run_url)}">workflow run</a>')
     w("</p>")
 
-    # -- suite × backend summary ------------------------------------
-    w("<h2>SUMO suites</h2>")
+    # -- per-backend summary -------------------------------------------
+    w("<h2>SUMO tests</h2>")
     w('<div class="card"><table>')
-    w("<tr><th>backend</th><th>suite</th><th>result</th><th>expected</th>"
-      "<th>status</th></tr>")
-    for s in data["suites"]:
+    w("<tr><th>backend</th><th>result</th><th>false verdicts</th></tr>")
+    for s in data["backends"]:
         res = "—" if s["passed"] is None else f'{s["passed"]} / {s["graded"]} passed'
-        exp = "" if s["expected"] is None else str(s["expected"])
-        w(f'<tr><td>{esc(s["backend"])}</td><td>{esc(s["suite"])}</td>'
-          f'<td>{esc(res)}</td><td>{esc(exp)}</td><td>{pill(s["status"])}</td></tr>')
+        fv = s["false_verdicts"]
+        fv_cell = pill("FALSE VERDICT") + f" × {fv}" if fv else "0"
+        w(f'<tr><td>{esc(s["backend"])}</td><td>{esc(res)}</td>'
+          f'<td>{fv_cell}</td></tr>')
     w("</table></div>")
 
-    # -- per-suite detail --------------------------------------------
+    # -- changes since the previous run ---------------------------------
+    w("<h2>Changes since previous run</h2>")
+    if deltas is None:
+        w('<p class="meta">No previous run data to compare against.</p>')
+    else:
+        prev_date = history[1]["date"] if len(history) > 1 else ""
+        rows = []
+        for backend, d in deltas["backends"].items():
+            for name, old, new in d["flips"]:
+                rows.append((backend, name, pill(old) + " → " + pill(new)))
+            if d["added"]:
+                rows.append((backend, f'{len(d["added"])} new test(s)',
+                             esc(", ".join(d["added"][:8])
+                                 + ("…" if len(d["added"]) > 8 else ""))))
+            if d["removed"]:
+                rows.append((backend, f'{len(d["removed"])} removed test(s)',
+                             esc(", ".join(d["removed"][:8])
+                                 + ("…" if len(d["removed"]) > 8 else ""))))
+        for name, old, new in deltas["tptp"]:
+            rows.append(("tptp", name,
+                         f"<code>{esc(old)}</code> → <code>{esc(new)}</code>"))
+        if not rows:
+            w(f'<p class="meta">No changes since {esc(prev_date)}.</p>')
+        else:
+            w(f'<p class="meta">Compared against {esc(prev_date)}.</p>')
+            w('<div class="card"><table>')
+            w("<tr><th>where</th><th>test</th><th>change</th></tr>")
+            for where, name, change in rows:
+                w(f"<tr><td>{esc(where)}</td><td>{esc(name)}</td>"
+                  f"<td>{change}</td></tr>")
+            w("</table></div>")
+
+    # -- per-backend detail ---------------------------------------------
     w("<h2>Per-test detail</h2>")
-    for s in data["suites"]:
+    for s in data["backends"]:
         if not s["cases"]:
             continue
         res = "" if s["passed"] is None else f' — {s["passed"]} / {s["graded"]}'
-        w(f'<details><summary>{esc(s["backend"])} / {esc(s["suite"])}{esc(res)}'
-          f'{pill(s["status"])}</summary>')
+        w(f'<details><summary>{esc(s["backend"])}{esc(res)}</summary>')
         w('<div class="card"><table>')
         w("<tr><th>test</th><th>verdict</th><th>time</th><th>SZS</th><th>notes</th></tr>")
         for c in s["cases"]:
@@ -218,19 +300,49 @@ def render(data: dict, run_url: str | None) -> str:
     # -- TPTP smoke ----------------------------------------------------
     if data["tptp"]:
         w(f'<h2>TPTP smoke (native, {esc(meta.get("tptp_budget", "?"))}s each)</h2>')
-        w('<p class="meta">Theorem-rated slice from '
-          '<a href="https://tptp.org">tptp.org</a> (fetched by '
-          '<code>scripts/fetch_tptp.py</code>): a SAT/CSA verdict is a soundness '
-          'failure; must-solve problems are marked when they stop solving.</p>')
+        w('<p class="meta">Problems from <a href="https://tptp.org">tptp.org</a> '
+          '(fetched by <code>scripts/fetch_tptp.py</code>); each row is the SZS '
+          'status the prover reported.</p>')
         w('<div class="card"><table>')
-        w("<tr><th>problem</th><th>SZS status</th><th>status</th></tr>")
+        w("<tr><th>problem</th><th>SZS status</th></tr>")
         for t in data["tptp"]:
             m = re.match(r"[A-Z]+", t["name"])
             dom = m.group(0) if m else t["name"][:3]
             url = (f'https://tptp.org/cgi-bin/SeeTPTP?Category=Problems'
                    f'&Domain={dom}&File={t["name"]}.p')
             w(f'<tr><td><a href="{esc(url)}">{esc(t["name"])}</a></td>'
-              f'<td><code>{esc(t["szs"])}</code></td><td>{pill(t["verdict"])}</td></tr>')
+              f'<td><code>{esc(t["szs"])}</code></td></tr>')
+        w("</table></div>")
+
+    # -- history ---------------------------------------------------------
+    if len(history) > 1:
+        w("<h2>History</h2>")
+        w('<div class="card"><table>')
+        backends = sorted({b for h in history for b in h.get("backends", {})})
+        w("<tr><th>date</th><th>sigma-rs</th><th>ontology</th>"
+          + "".join(f"<th>{esc(b)}</th>" for b in backends)
+          + "<th>tptp solved</th></tr>")
+        for i, h in enumerate(history[:60]):
+            cells = []
+            for b in backends:
+                r = h.get("backends", {}).get(b)
+                cur = f'{r["passed"]}/{r["graded"]}' if r and r["passed"] is not None else "—"
+                arrow = ""
+                if r and i + 1 < len(history):
+                    p = history[i + 1].get("backends", {}).get(b)
+                    if p and p.get("passed") is not None and r["passed"] is not None:
+                        if r["passed"] > p["passed"]:
+                            arrow = ' <span class="delta-up">▲</span>'
+                        elif r["passed"] < p["passed"]:
+                            arrow = ' <span class="delta-down">▼</span>'
+                cells.append(cur + arrow)
+            t = h.get("tptp", {})
+            tp = f'{t.get("solved", "—")}/{t.get("total", "—")}' if t else "—"
+            w(f'<tr><td>{esc(h.get("date", ""))}</td>'
+              f'<td><code>{esc(h.get("sigma_commit", ""))}</code></td>'
+              f'<td><code>{esc(h.get("sumo_commit", ""))}</code></td>'
+              + "".join(f"<td>{c}</td>" for c in cells)
+              + f"<td>{esc(tp)}</td></tr>")
         w("</table></div>")
 
     w('<footer>Generated by <code>scripts/regression_report.py</code> from a '
@@ -243,25 +355,51 @@ def render(data: dict, run_url: str | None) -> str:
             + "\n".join(out) + "</body></html>\n")
 
 
+def load_json(path: Path | None):
+    if path and path.exists():
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--results", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--run-url", default=None)
+    ap.add_argument("--prev", type=Path, default=None,
+                    help="previous deploy's results.json (for the changes section)")
+    ap.add_argument("--history", type=Path, default=None,
+                    help="previous deploy's history.json (appended to)")
     args = ap.parse_args()
 
     data = collect(args.results)
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "index.html").write_text(render(data, args.run_url))
-    (args.out / "results.json").write_text(json.dumps(data, indent=2) + "\n")
+    prev = load_json(args.prev)
+    deltas = diff_runs(data, prev)
 
-    ok = data["status"] == "GREEN"
+    prev_history = load_json(args.history) or []
+    if not isinstance(prev_history, list):
+        prev_history = []
+    history = ([summarize(data)] + prev_history)[:HISTORY_LIMIT]
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "index.html").write_text(render(data, deltas, history, args.run_url))
+    (args.out / "results.json").write_text(json.dumps(data, indent=2) + "\n")
+    (args.out / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+
+    native = next((b for b in data["backends"] if b["backend"] == "native"), None)
+    msg = (f'{native["passed"]}/{native["graded"]}'
+           if native and native["passed"] is not None else "no results")
+    ok_run = data["status"] == "GREEN"
     (args.out / "badge.json").write_text(json.dumps({
         "schemaVersion": 1, "label": "regression",
-        "message": "all green" if ok else "failures",
-        "color": "brightgreen" if ok else "red",
+        "message": msg if ok_run else "run incomplete",
+        "color": "blue" if ok_run else "red",
     }) + "\n")
-    print(f"wrote {args.out}/index.html ({data['status']})")
+    print(f"wrote {args.out}/index.html "
+          f"({len(history)} run(s) in history, deltas: {'yes' if deltas else 'none'})")
     return 0
 
 
