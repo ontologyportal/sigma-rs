@@ -197,22 +197,32 @@ impl ProverLayer {
         use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
-        let all_lanes: Vec<Strategy> = Strategy::tptp_lanes();
+        // The CENTRAL racing table (`Strategy::tptp_lane_specs`) — every
+        // lane composition decision lives THERE, including the opt-in
+        // chase / roles rows (`NativeOpts::chase_lane` / `roles_lane`,
+        // env `SIGMA_CHASE_LANE` / `SIGMA_ROLES_LANE`).  A row is skipped
+        // when the whole attempt already carries its delta (`opts.chase`
+        // — every lane chases then; `strategy.recognize_roles` — every
+        // lane already recognizes).
+        let specs = Strategy::tptp_lane_specs(
+            opts.chase_lane && !opts.chase,
+            opts.roles_lane && !opts.strategy.recognize_roles,
+        );
         let cores = opts.cores.max(1);
         // Parallel lanes don't divide `total_timeout` (each gets the whole
         // thing), so the "racing more lanes starves each one" concern
         // `adaptive_lane_count` exists for (task #33) only applies to the
         // sequential fallback — race every configured lane when running
         // concurrently.
-        let use_parallel = cores > 1 && all_lanes.len() > 1;
+        let use_parallel = cores > 1 && specs.len() > 1;
         let lane_count = if use_parallel {
-            all_lanes.len()
+            specs.len()
         } else {
-            adaptive_lane_count(total_timeout, all_lanes.len())
+            adaptive_lane_count(total_timeout, specs.len())
         };
-        // Truncating (not reordering) `all_lanes` keeps the schedule's
-        // ordering promise (`tptp_lanes_first_is_plain_tptp` etc.) intact.
-        let lanes = &all_lanes[..lane_count];
+        // Truncating (not reordering) keeps the schedule's ordering
+        // promise (`tptp_lanes_first_is_plain_tptp` etc.) intact.
+        let lanes = &specs[..lane_count];
 
         // Same "don't climb from a budget the indexed universe could never
         // fill" adjustment as the plain (non-portfolio) path above — every
@@ -239,28 +249,30 @@ impl ProverLayer {
         let max_time_runs = effective_max_time_runs(
             scale_max_time_runs(), total_axioms, min_budget);
 
-        // SIGMA_LANE_BUDGETS="2000,500,8000,…": per-lane SInE start budgets
-        // by lane index (missing/unparsable entries keep the shared start).
-        // The 2026-07-12 CSR profile showed the six lanes producing
+        // `NativeOpts::lane_budgets` (env `SIGMA_LANE_BUDGETS`): per-lane
+        // SInE start budgets by lane index (`0`/missing keeps the shared
+        // start).  The 2026-07-12 CSR profile showed the six lanes producing
         // near-identical searches on SUMO-scale problems — the strategy
         // knobs don't diversify there, but selection SIZE does (measured:
         // narrowed retries solve problems the budget-2000 selection cannot,
         // and vice versa), so the portfolio's diversity axis is the budget.
-        let lane_budgets: Vec<Option<usize>> = std::env::var("SIGMA_LANE_BUDGETS")
-            .map(|s| s.split(',').map(|t| t.trim().parse::<usize>().ok()).collect())
-            .unwrap_or_default();
+        let lane_budgets: &[usize] = &opts.lane_budgets;
 
         // Shared by both dispatch paths: run lane `idx` for `slice` seconds
         // (`0` = unbounded), with `lane_cancel` wired into that lane's own
         // `NativeOpts` (only the parallel path hands this a live flag).
         let build_lane_result = |idx: usize, slice: u32, lane_cancel: Option<Arc<AtomicBool>>| {
+            let spec = &lanes[idx];
             let lane_opts = NativeOpts {
-                strategy: lanes[idx].clone(),
-                max_lits: lane_max_lits(&lanes[idx], opts.max_lits),
+                strategy: spec.strategy.clone(),
+                max_lits: lane_max_lits(&spec.strategy, opts.max_lits),
                 cancel:   lane_cancel,
+                // A spec row's subsystem delta applies to ITSELF only.
+                model:    opts.model || spec.chase,
+                chase:    opts.chase || spec.chase,
                 ..opts.clone()
             };
-            let lane_selection = match lane_budgets.get(idx).copied().flatten() {
+            let lane_selection = match lane_budgets.get(idx).copied().filter(|&b| b > 0) {
                 Some(b) => crate::SineParams {
                     auto_budget: Some(adaptive_start_budget(b, total_axioms, &probe_cfg)),
                     ..selection
@@ -290,7 +302,7 @@ impl ProverLayer {
         };
 
         if crate::prover::scale::is_schedule_final(&result) {
-            let lane_name = lanes[winner].name.as_str();
+            let lane_name = lanes[winner].strategy.name.as_str();
             ctx.debug(format!(
                 "portfolio: lane {winner} ({lane_name}) reported the final verdict"
             ));
@@ -494,7 +506,7 @@ impl ProverLayer {
                     })
                 })
             };
-            let active = std::env::var_os("SIGMA_DISJOINT_DECOMP").is_some()
+            let active = opts.strategy.disjoint_decomp
                 && (goal_needs_disjoint
                     || std::env::var_os("SIGMA_DISJOINT_ALWAYS").is_some());
             crate::semantics::roles::set_disjoint_decomp_override(Some(active));
@@ -1347,14 +1359,11 @@ impl ProverLayer {
         strategy:   &Strategy,
         ctx:        &crate::ProveCtx,
     ) {
-        let env_usize = |k: &str, d: usize| -> usize {
-            std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d)
-        };
-        let max_rounds = env_usize("SIGMA_DEFCOMP_ROUNDS", strategy.defcomp_rounds);
-        let max_adds = env_usize("SIGMA_DEFCOMP_ADDS", strategy.defcomp_max_adds);
+        let max_rounds = strategy.defcomp_rounds;
+        let max_adds = strategy.defcomp_max_adds;
         /// Predicates more general than this are hubs — always provided.
         const OCC_CAP: usize = 1500;
-        let per_sym = env_usize("SIGMA_DEFCOMP_PER_SYM", strategy.defcomp_per_sym);
+        let per_sym = strategy.defcomp_per_sym;
 
         let syn = &self.semantic.syntactic;
         let trace = std::env::var_os("SIGMA_LIU_TRACE").is_some();
@@ -1369,8 +1378,9 @@ impl ProverLayer {
             }
         };
 
-        // SIGMA_DEFCOMP_GLOBAL=1: goal-backward provider chase.  Two changes
-        // to the stock semantics, both bounded by the same rounds/caps:
+        // Goal-backward provider chase (`Strategy::defcomp_global`, env
+        // `SIGMA_DEFCOMP_GLOBAL`).  Two changes to the stock semantics,
+        // both bounded by the same rounds/caps:
         // (a) obligations are completed even when some selected clause
         //     already provides them — a proof may need a SECOND provider
         //     (audit, CSR076+1: the selected reporter provides `property` to
@@ -1381,7 +1391,7 @@ impl ProverLayer {
         // The goal-line seed stays NARROW (a global seed floods the add
         // budget with rare-but-irrelevant obligations — measured); reach
         // comes from the existing frontier propagation across rounds.
-        let global = std::env::var_os("SIGMA_DEFCOMP_GLOBAL").is_some();
+        let global = strategy.defcomp_global;
         let mut frontier: Vec<SentenceId> = frontier.to_vec();
         for _ in 0..max_rounds {
             // Obligations: negative-literal predicates of the GOAL LINE.

@@ -48,7 +48,28 @@ pub fn run_casc(manager: &KBManager, path: PathBuf, timeout: u32, jobs: usize) -
         return false;
     }
 
-    let base_opts = manager.native_opts();
+    // CASC batch profile: a competition run faces unknown problem types,
+    // so enable every SELF-GUARDING mechanism up front and let each
+    // problem's structure dispatch it (measured, 2026-07-13 CSR campaign):
+    //   * chase lane  — wins the existential-witness family; inert (a 7th
+    //     standard lane) when the KB has no `(=> … (exists …))` axioms;
+    //   * roles lane  — wins the foreign-dialect disjointness family;
+    //     inert without partition declarations / disjointness goals;
+    //   * event calculus — wins narrative problems; its recognizer bails
+    //     in microseconds on everything else;
+    //   * lane-budget ladder — selection-size diversity across the lanes
+    //     (the six standard lanes otherwise search near-identically on
+    //     large flat KBs).
+    // Explicit env settings still win where they exist (`SIGMA_LANE_BUDGETS`
+    // pre-populates `lane_budgets`, so only the empty default is replaced).
+    // `cores` is deliberately untouched: available parallelism.
+    let mut base_opts = manager.native_opts();
+    base_opts.chase_lane = true;
+    base_opts.roles_lane = true;
+    base_opts.ec = true;
+    if base_opts.lane_budgets.is_empty() {
+        base_opts.lane_budgets = vec![2000, 500, 8000, 1000, 250, 4000];
+    }
     let workers = jobs.max(1).min(problems.len());
     let next = AtomicUsize::new(0);
     let rows: Mutex<Vec<Row>> = Mutex::new(Vec::with_capacity(problems.len()));

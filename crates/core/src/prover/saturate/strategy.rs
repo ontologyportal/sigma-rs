@@ -255,6 +255,17 @@ pub struct Strategy {
     /// OFF — and a provable no-op on SUMO (the names resolve to the
     /// same ids the recognizer recovers).
     pub recognize_roles: bool,
+    /// Disjointness-decomposition capability: harvest pairwise-disjoint
+    /// class pairs from partition / disjointDecomposition declarations
+    /// into the oracle (their meaning axioms omitted from the clause
+    /// space — discharge-and-omit), so ground disjointness refutes
+    /// instantly instead of flooding resolution.  Guarded per prove by
+    /// the conjecture's SHAPE (an equality or `disjoint`-ish goal atom;
+    /// blind activation reorders search and loses proofs — CSR176/182);
+    /// `SIGMA_DISJOINT_ALWAYS` overrides the shape guard.  Pairs with
+    /// [`Self::recognize_roles`] on foreign dialects.  Default OFF.
+    /// Equivalent to `SIGMA_DISJOINT_DECOMP`.
+    pub disjoint_decomp: bool,
     /// Horn-chain rule-join discharge: a bounded ground join over
     /// conclusion-only rule heads (relations with no ground facts of
     /// their own), run as a prologue pass before the given-clause loop.
@@ -318,6 +329,13 @@ pub struct Strategy {
     /// Polarity-aware definitional completion: pull providers for
     /// goal-line proof obligations nothing selected concludes.
     pub def_completion: bool,
+    /// Goal-backward provider CHASE: complete every goal-line obligation
+    /// (not only unprovided ones — a proof may need a SECOND provider of a
+    /// predicate the goal already has one for) and lift the hub filter on
+    /// obligations; bounded by the same rounds/caps.  Measured on the CSR
+    /// selection-adequacy audit: fully-covered Vampire proofs 17→28 on the
+    /// unsolved gap set.  Equivalent to `SIGMA_DEFCOMP_GLOBAL`.
+    pub defcomp_global: bool,
     /// Completion rounds (chains of definitions need several).
     pub defcomp_rounds: usize,
     /// Total axioms completion may add.
@@ -406,6 +424,18 @@ pub struct Strategy {
     pub deferred_cap: u32,
 }
 
+/// One row of the TPTP portfolio's central racing table
+/// ([`Strategy::tptp_lane_specs`]): the lane's search strategy plus the
+/// whole-attempt discharge subsystems (`NativeOpts`-level, prologue-class)
+/// the lane enables for itself.
+#[derive(Debug, Clone)]
+pub struct TptpLaneSpec {
+    /// The lane's search-shaping strategy (carries the lane name).
+    pub strategy: Strategy,
+    /// Enable the model+chase discharge prologue for this lane only.
+    pub chase: bool,
+}
+
 impl Strategy {
     /// The pure shipping defaults — no environment reads.  Portfolio
     /// members start here.
@@ -464,6 +494,7 @@ impl Strategy {
             bg_completion: false,
             bg_completion_budget: 256,
             recognize_roles: false,
+            disjoint_decomp: false,
             rule_join: true,
             modal_k: true,
             full_saturation: false,
@@ -490,6 +521,7 @@ impl Strategy {
             liu_rounds: 1,
             liu_top_k: 32,
             def_completion: true,
+            defcomp_global: false,
             defcomp_rounds: 4,
             defcomp_max_adds: 64,
             defcomp_per_sym: 8,
@@ -535,8 +567,13 @@ impl Strategy {
         if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
         if on("SIGMA_NO_MODAL_K") { s.modal_k = false; }
         if on("SIGMA_RECOGNIZE_ROLES") { s.recognize_roles = true; }
+        if on("SIGMA_DISJOINT_DECOMP") { s.disjoint_decomp = true; }
         s.liu_rounds = Self::liu_rounds_env_override(s.liu_rounds);
         s.liu_top_k = Self::liu_top_k_env_override(s.liu_top_k);
+        s.defcomp_global = Self::defcomp_global_env_override(s.defcomp_global);
+        s.defcomp_rounds = Self::usize_env_override("SIGMA_DEFCOMP_ROUNDS", s.defcomp_rounds);
+        s.defcomp_max_adds = Self::usize_env_override("SIGMA_DEFCOMP_ADDS", s.defcomp_max_adds);
+        s.defcomp_per_sym = Self::usize_env_override("SIGMA_DEFCOMP_PER_SYM", s.defcomp_per_sym);
         s.demod = Self::demod_env_override(s.demod);
         s.bwd_demod = Self::bwd_demod_env_override(s.bwd_demod);
         s.subs_join = Self::subs_join_env_override(s.subs_join);
@@ -572,6 +609,19 @@ impl Strategy {
 
     fn liu_top_k_env_override(default: usize) -> usize {
         std::env::var("SIGMA_LIU_TOP_K").ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    }
+
+    /// `SIGMA_DEFCOMP_GLOBAL=1` forces the goal-backward provider chase on
+    /// (same opt-in override style as `demod_env_override`, shared by
+    /// `from_env()` and `tptp()`).
+    fn defcomp_global_env_override(default: bool) -> bool {
+        if std::env::var_os("SIGMA_DEFCOMP_GLOBAL").is_some() { true } else { default }
+    }
+
+    /// Generic numeric env override for the completion caps
+    /// (`SIGMA_DEFCOMP_ROUNDS` / `SIGMA_DEFCOMP_ADDS` / `SIGMA_DEFCOMP_PER_SYM`).
+    fn usize_env_override(key: &str, default: usize) -> usize {
+        std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
     }
 
     /// `SIGMA_NO_BWD_DEMOD=1` forces backward demodulation OFF,
@@ -706,6 +756,13 @@ impl Strategy {
             subsumption:       true,
             liu_rounds:        Self::liu_rounds_env_override(Self::base().liu_rounds),
             liu_top_k:         Self::liu_top_k_env_override(Self::base().liu_top_k),
+            defcomp_global:    Self::defcomp_global_env_override(false),
+            defcomp_rounds:    Self::usize_env_override(
+                                   "SIGMA_DEFCOMP_ROUNDS", Self::base().defcomp_rounds),
+            defcomp_max_adds:  Self::usize_env_override(
+                                   "SIGMA_DEFCOMP_ADDS", Self::base().defcomp_max_adds),
+            defcomp_per_sym:   Self::usize_env_override(
+                                   "SIGMA_DEFCOMP_PER_SYM", Self::base().defcomp_per_sym),
             demod:             Self::demod_env_override(false),
             // ON by default under the TPTP regime: retrieval is now
             // posting-indexed (exact ground keys + (head, len) buckets
@@ -734,6 +791,7 @@ impl Strategy {
             // Same reachability concern as `semantic_guide` above:
             // `from_env()` is not consulted here.
             recognize_roles:   std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some(),
+            disjoint_decomp:   std::env::var_os("SIGMA_DISJOINT_DECOMP").is_some(),
             rule_join:         Self::rule_join_env_override(Self::base().rule_join),
             // Naming-split rescue: reachable on the TPTP path for the
             // funded-problem A/B (its regime is where the width cap
@@ -873,6 +931,44 @@ impl Strategy {
         lanes
     }
 
+    /// The CENTRAL racing table for the TPTP portfolio: every lane the
+    /// schedule may run, as (strategy, whole-attempt subsystem deltas).
+    /// A lane whose delta is a DISCHARGE SUBSYSTEM (prologue-class,
+    /// `NativeOpts`-level — e.g. the chase) cannot be expressed as a bare
+    /// [`Strategy`], so the table row carries the opts delta explicitly;
+    /// `run_portfolio_schedule` consumes THIS table, never composing lanes
+    /// ad hoc.  `chase_lane` / `roles_lane` mirror the corresponding
+    /// `NativeOpts` composition switches (both default off — their slots
+    /// are earned per-invocation until a full-corpus run backs a default).
+    ///
+    /// The roles and chase rows stay SEPARATE lanes by design: within one
+    /// attempt, roles-driven oracle ownership of `instance` starves the
+    /// chase's CQ join of generator facts (measured, 2026-07-13).
+    pub fn tptp_lane_specs(chase_lane: bool, roles_lane: bool) -> Vec<TptpLaneSpec> {
+        let mut specs: Vec<TptpLaneSpec> = Self::tptp_lanes()
+            .into_iter()
+            .map(|strategy| TptpLaneSpec { strategy, chase: false })
+            .collect();
+        if roles_lane {
+            specs.push(TptpLaneSpec {
+                strategy: Strategy {
+                    recognize_roles: true,
+                    disjoint_decomp: true,
+                    ..Strategy::tptp()
+                }
+                .named("tptp-roles"),
+                chase: false,
+            });
+        }
+        if chase_lane {
+            specs.push(TptpLaneSpec {
+                strategy: Strategy::tptp().named("tptp-chase"),
+                chase: true,
+            });
+        }
+        specs
+    }
+
     /// Fingerprint of the fields that shape the FROZEN BACKGROUND —
     /// anything `make` consults while loading background clauses
     /// (caps that drop clauses, the schema channel's absorption /
@@ -997,6 +1093,9 @@ impl Strategy {
             // Correctness/portability feature, not a search lever — kept
             // out of the sweep genome (and a no-op on SUMO anyway).
             recognize_roles: false,
+            // Capability switch with a per-prove shape guard — same
+            // out-of-genome treatment as recognize_roles.
+            disjoint_decomp: false,
             // Not in the sweep genome yet (no RNG draw — existing seeds'
             // sample streams shift only via fields that DO draw): new,
             // unmeasured lever — kept switchable via its env A/B instead
@@ -1013,6 +1112,10 @@ impl Strategy {
             liu_rounds: r.pick(&[1, 1, 1, 2]) as usize,
             liu_top_k: r.pick(&[16, 32, 64, 128]) as usize,
             def_completion: r.chance(85),
+            // Not in the sweep genome yet (no RNG draw — existing seeds'
+            // sample streams shift only via fields that DO draw): measured
+            // via its env A/B first, same as deferred_passive.
+            defcomp_global: false,
             defcomp_rounds: r.pick(&[2, 4, 6, 8]) as usize,
             defcomp_max_adds: r.pick(&[32, 64, 128, 256]) as usize,
             defcomp_per_sym: r.pick(&[4, 8, 16]) as usize,

@@ -167,6 +167,33 @@ pub struct NativeOpts {
     /// of `1`) falls back to that unchanged sequential path.  Defaults to
     /// the hardware's available parallelism.  Equivalent to `SIGMA_CORES`.
     pub cores: usize,
+    /// Enable the bounded existential chase feeding the model-join CQ
+    /// answer path (TGD witnesses from `(=> body (exists …))` axioms).
+    /// Only consulted when [`Self::model`] is also set.  Equivalent to
+    /// setting `SIGMA_CHASE`.
+    pub chase: bool,
+    /// Wall-clock cap (ms) for the chase + join materialization window.
+    /// Equivalent to `SIGMA_CHASE_MS`.
+    pub chase_ms: u64,
+    /// Race ONE dedicated chase+model lane in the TPTP portfolio schedule,
+    /// in parallel with the standard strategy lanes — the in-prover
+    /// equivalent of the external race wrapper's phase 2 (a composition
+    /// switch; [`Self::chase`] instead enables the mechanism attempt-wide).
+    /// Equivalent to setting `SIGMA_CHASE_LANE`.
+    pub chase_lane: bool,
+    /// Race ONE dedicated roles+disjointness lane in the TPTP portfolio
+    /// schedule (Strategy `recognize_roles` + `disjoint_decomp`), in
+    /// parallel with the standard lanes — the in-prover equivalent of the
+    /// external race wrapper's phase 1.  NOTE: kept a SEPARATE lane from
+    /// the chase lane by design — oracle ownership of `instance` under
+    /// roles starves the chase's CQ join within a single attempt.
+    /// Equivalent to setting `SIGMA_ROLES_LANE`.
+    pub roles_lane: bool,
+    /// Per-lane SInE start budgets for the TPTP portfolio schedule
+    /// (index = lane; `0` or a missing entry keeps the shared start) —
+    /// the portfolio's selection-diversity axis.  Equivalent to
+    /// `SIGMA_LANE_BUDGETS` (comma-separated, e.g. `2000,500,8000`).
+    pub lane_budgets: Vec<usize>,
 }
 
 impl Default for NativeOpts {
@@ -190,6 +217,16 @@ impl Default for NativeOpts {
             cores: std::env::var("SIGMA_CORES").ok().and_then(|v| v.parse().ok())
                 .unwrap_or_else(|| std::thread::available_parallelism()
                     .map(std::num::NonZeroUsize::get).unwrap_or(1)),
+            chase: std::env::var_os("SIGMA_CHASE").is_some(),
+            chase_ms: std::env::var("SIGMA_CHASE_MS").ok()
+                .and_then(|v| v.parse().ok()).unwrap_or(10_000),
+            chase_lane: std::env::var_os("SIGMA_CHASE_LANE").is_some(),
+            roles_lane: std::env::var_os("SIGMA_ROLES_LANE").is_some(),
+            lane_budgets: std::env::var("SIGMA_LANE_BUDGETS").ok()
+                .map(|s| s.split(',')
+                    .map(|t| t.trim().parse().unwrap_or(0))
+                    .collect())
+                .unwrap_or_default(),
         }
     }
 }

@@ -926,17 +926,14 @@ impl<'a> NativeProver<'a> {
         //         `subr(_, rprs_0)`.
         //    We union both: (a) when it fits, (b) always (cheap, demand-scoped).
         //    Theory relations are oracle-decided, never enumerated.
-        // SIGMA_CHASE: answer over the bounded-chase model (existential
-        // witnesses from SUMO inhabitation/frame TGDs) instead of the plain
-        // positive model.  Classically sound for this POSITIVE join path
-        // only; certification / negative answers never see chased facts.
-        let chase = std::env::var_os("SIGMA_CHASE").is_some();
-        let chase_ms = std::env::var("SIGMA_CHASE_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10_000);
-        let deadline = Instant::now()
-            + std::time::Duration::from_millis(if chase { chase_ms } else { 1500 });
+        // `NativeOpts::chase` (env `SIGMA_CHASE`): answer over the
+        // bounded-chase model (existential witnesses from SUMO
+        // inhabitation/frame TGDs) instead of the plain positive model.
+        // Classically sound for this POSITIVE join path only;
+        // certification / negative answers never see chased facts.
+        let chase = self.opts.chase;
+        let deadline = Instant::now() + std::time::Duration::from_millis(
+            if chase { self.opts.chase_ms } else { 1500 });
         let max_facts_per_rel: usize = if chase { 250_000 } else { 50_000 };
         // Provenance of each materialization, in `provs`; a model-sourced
         // `JoinFact` records WHICH evaluation derived it (`FactSrc::Model`
