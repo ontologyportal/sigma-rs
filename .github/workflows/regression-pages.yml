@@ -1,0 +1,144 @@
+# Nightly regression battery, published to GitHub Pages.
+#
+# The CI twin of scripts/regression.sh with every input remote (see
+# scripts/ci_regression.sh):
+#
+#   * ontology  — `sumo -c --git https://github.com/ontologyportal/sumo load`
+#                 (the CLI's own git feature; one sparse fetch, no checkout)
+#   * SUMO tests — tests/**/*.kif.tq enumerated via the GitHub trees API and
+#                 fetched per-case by the CLI's http feature from
+#                 raw.githubusercontent.com
+#   * TPTP smoke — scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
+#                 (there is no raw endpoint) into a cached $TPTP tree
+#
+# The page always deploys — a red run still publishes its report (showing
+# FAILURES); the trailing `gate` job is what turns the run red.
+#
+# One-time repo setup: Settings → Pages → Source: "GitHub Actions".
+
+name: Regression Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      sumo_branch:
+        description: ontologyportal/sumo branch to test against
+        default: master
+      tptp_budget:
+        description: per-problem seconds for the TPTP smoke slice
+        default: "10"
+      ext_budget:
+        description: per-test cap (seconds) for external prover backends
+        default: "60"
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: regression-pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  regression:
+    name: run regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      status: ${{ steps.status.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CMake + toolchain deps (embedded Vampire FFI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: regression-pages
+
+      - name: Build sumo (release)
+        run: cargo build --release --bin sumo
+
+      # The scraped TPTP tree only changes when the problem list (or the
+      # scraper) does — cache it so tptp.org is normally never touched.
+      - name: Cache TPTP problem tree
+        uses: actions/cache@v4
+        with:
+          path: ~/TPTP
+          key: tptp-tree-${{ hashFiles('scripts/tptp_regression.list', 'scripts/fetch_tptp.py') }}
+
+      - name: Fetch TPTP problems (tptp.org SeeTPTP scrape, cache misses only)
+        run: python3 scripts/fetch_tptp.py --list scripts/tptp_regression.list --dest ~/TPTP
+
+      - name: Run regression (remote ontology + tests)
+        id: regress
+        continue-on-error: true
+        env:
+          SKIP_BUILD: "1"
+          SUMO_BRANCH: ${{ inputs.sumo_branch || 'master' }}
+          TPTP_BUDGET: ${{ inputs.tptp_budget || '10' }}
+          EXT_BUDGET: ${{ inputs.ext_budget || '60' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TPTP="$HOME/TPTP" bash scripts/ci_regression.sh
+
+      - name: Report status
+        id: status
+        run: |
+          status=$(cat regression-out/status 2>/dev/null || echo FAIL)
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "Regression status: $status"
+
+      - name: Build report site
+        run: |
+          python3 scripts/regression_report.py \
+            --results regression-out \
+            --out site \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Upload raw results (debugging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-out
+          path: |
+            regression-out
+            !regression-out/work
+          retention-days: 14
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy pages
+    needs: regression
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Turns the run red when expectations failed — after the page is up, so a
+  # failing night still publishes its report.
+  gate:
+    name: expectations gate
+    needs: [regression, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if regression failed
+        run: |
+          echo "status: ${{ needs.regression.outputs.status }}"
+          test "${{ needs.regression.outputs.status }}" = "GREEN"
