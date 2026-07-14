@@ -1,8 +1,46 @@
-# SigmaKEE-rs
+<div align="center">
+  <img src="./logo.png" alt="SUPr Logo" width="100" style="background:#ddd;padding:10px;border-radius:10px">
+  <div style="font-weight:bold;font-size:24px">SigmaKEE-rs + <br>SUPr (SUMO Prover) v1</div>
+</div>
+<br>
 
 A parser, validator, and theorem-prover interface for the [SUO-KIF](https://www.ontologyportal.org/suo-kif.pdf) / [SUMO](https://www.ontologyportal.org/) knowledge representation language.
 
-KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb) database. Formulas are stored in Conjunctive Normal Form (CNF) with full Skolemization so that subsequent theorem-prover queries require no runtime conversion. The [Vampire](https://vprover.github.io/) prover is used for automated reasoning.
+KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb) database. Formulas are stored in Conjunctive Normal Form (CNF) with full Skolemization so that subsequent theorem-prover queries require no runtime conversion. The backend prover is configurable. SigmaKEE-rs currently supports the following automated theorem provers (ATPs) for automated reasoning against SUMO:
+
+- [Vampire](https://vprover.github.io/) - both embedded as an API and via subprocess invocation
+- [E](https://github.com/eprover/eprover) - via subprocess invocation
+- SUPr (SUMO Prover) - a prover tweaked specifically for reasoning over SUMO!
+
+[Check out the current test results against the current version of SUMO (run nightly)](https://ontologyportal.github.io/sigma-rs/)
+
+## Table of Contents
+- [Install](#install)
+    * [Official Release](#from-official-release-channel)
+        - [UNIX](#unix-macos-intelarm64--linux-arm64--linux-amd64)
+        - [Windows](#windows)
+    * [Building from Source](#build-from-source)
+- [Workspace Layout](#workspace-layout)
+- [Quick Start](#quick-start)
+- [CLI Reference](#cli-reference)
+    * [LMDB Caching](#to-cache-or-not-to-cache-that-is-the-question)
+    * [Global Flags](#global-flags)
+    * [Shared KB Arguments](#shared-kb-arguments--f--d---db---no-db---git)
+    * [`validate`](#sumo-validate)
+    * [`ask`](#sumo-ask)
+    * [`translate`](#sumo-translate)
+    * [`test`](#sumo-test)
+    * [`load`](#sumo-load)
+    * [`man`](#sumo-man)
+    * [`audit`](#sumo-audit)
+    * [`update`](#sumo-update)
+    * [`config`](#sumo-config)
+- [Prover Knobs](#prover-knobs)
+    * [Strategy](#strategy-fields-env-var-ab-overrides-only--no-cli-flag-no-configxml-key)
+    * [NativeOpts](#nativeopts-fields-exposed-through-kbmanager--configxml--cli)
+    * [Other options](#other-diagnostic--tracing-env-vars)
+- [Environment Variables](#environment-variables)
+- [Running Tests](#running-tests)
 
 ## Install
 
@@ -195,7 +233,7 @@ These flags are available on every subcommand:
 | `--git URL` | — | Git repository URL to load the ontology from. With `load`: clones and commits to the LMDB database (cached). With other commands: clones on the fly into a temporary directory. `-f` / `-d` / `-c` paths are resolved relative to the repository root |
 
 `--vampire PATH` is exposed only on the prover-driven subcommands —
-`ask`, `test`, `debug`, and `serve`. Defaults to the `vampire` binary
+`ask`, `test`, `audit`, and `serve`. Defaults to the `vampire` binary
 on `PATH`; if `--config` is active and the config specifies a vampire
 path, that takes precedence over the `PATH` lookup.
 
@@ -320,14 +358,14 @@ sumo man SYMBOL [--lang LANG] [-P] [-f FILE]... [-d DIR]... [--db DIR]
 | `--lang LANG` | — | Filter documentation / term-format entries by language tag (e.g. `EnglishLanguage`). When omitted, entries in all languages are shown |
 | `-P` / `--no-pager` | — | Disable the interactive pager; print directly to stdout. Pager is also disabled automatically when stdout is not a TTY or when `NO_PAGER` is set |
 
-### `sumo debug`
+### `sumo audit`
 
 Consistency-check a single loaded KIF file against the rest of the
 knowledge base via Vampire, surfacing any axioms that contradict each
 other.
 
 ```
-sumo debug FILE [--thoroughness F] [--scope F] [--timeout SECS] [-k FILE]
+sumo audit <FILE> [--thoroughness F] [--scope F] [--timeout SECS] [-k FILE]
                 [--proof FORMAT] [--vampire PATH]
                 [-f FILE]... [-d DIR]... [--db DIR]
 ```

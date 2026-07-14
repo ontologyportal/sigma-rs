@@ -41,7 +41,6 @@
 # Exit code: 0 iff the run itself was healthy (results are never graded).
 
 set -u
-# This file lives at .github/scripts/ — the repo root is two levels up.
 cd "$(dirname "$0")/../.."
 REPO="$PWD"
 SUMO_GIT="${SUMO_GIT:-https://github.com/ontologyportal/sumo}"
