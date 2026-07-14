@@ -30,8 +30,8 @@ pub mod casc;
 #[cfg(feature = "sweep")]
 pub mod sweep;
 
-#[cfg(feature = "server")]
-pub mod serve;
+// #[cfg(feature = "server")]
+// pub mod serve;
 
 pub use args::{Cli, KbArgs, Cmd};
 pub use load::{run_load, run_load_warm, run_flush};
@@ -58,5 +58,5 @@ pub use audit::run_audit;
 #[cfg(feature = "ask")]
 pub use casc::run_casc;
 
-#[cfg(feature = "server")]
-pub use serve::run_serve;
+// #[cfg(feature = "server")]
+// pub use serve::run_serve;

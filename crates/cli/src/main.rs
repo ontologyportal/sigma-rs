@@ -14,8 +14,8 @@ use sigmakee::cli::{
 use sigmakee::cli::args_project;
 #[cfg(feature = "ask")]
 use sigmakee::cli::{run_ask, run_ask_tui, run_test, run_audit};
-#[cfg(feature = "server")]
-use sigmakee::cli::run_serve;
+// #[cfg(feature = "server")]
+// use sigmakee::cli::run_serve;
 
 use sigmakee_rs_sdk::{
     DynSink, KnowledgeBase, ProverLayer,
@@ -469,8 +469,8 @@ where
         Cmd::Search { query, kind, lang, limit } =>
             run_search(session, manager, query, kind, lang, limit),
 
-        #[cfg(feature = "server")]
-        Cmd::Serve { kb: _ } => run_serve(session, &manager),
+        // #[cfg(feature = "server")]
+        // Cmd::Serve { kb: _ } => run_serve(session, &manager),
 
         Cmd::Update { check } => run_update(check),
 

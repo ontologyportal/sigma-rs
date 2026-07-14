@@ -5,36 +5,36 @@ use sigmakee_rs_sdk::{
     Diagnostic, Span, TptpLang,
 };
 
-#[cfg(feature = "server")]
-use crate::cli::args::KbArgs;
-#[cfg(feature = "server")]
-use crate::parse_error;
+// #[cfg(feature = "server")]
+// use crate::cli::args::KbArgs;
+// #[cfg(feature = "server")]
+// use crate::parse_error;
 
 // -- Internal helpers ----------------------------------------------------------
 
-// Only the JSON-RPC server (`serve`) ingests loose kif files this way.
-#[cfg(feature = "server")]
-pub(crate) fn collect_kif_files(args: &KbArgs) -> Result<Vec<PathBuf>, ()> {
-    let mut all_files: Vec<PathBuf> = args.files.clone();
-    for dir in &args.dirs {
-        match kif_files_in_dir(dir) {
-            Ok(f) => all_files.extend(f),
-            Err((span, e)) => {
-                parse_error!(span, e);
-                return Err(());
-            }
-        }
-    }
-    log::debug!("collect_kif_files: {} file(s)", all_files.len());
-    Ok(all_files)
-}
-
-#[cfg(feature = "server")]
-pub(crate) fn read_kif_file(path: &Path) -> Result<String, ()> {
-    std::fs::read_to_string(path).map_err(|e| {
-        log::error!("cannot read '{}': {}", path.display(), e);
-    })
-}
+// // Only the JSON-RPC server (`serve`) ingests loose kif files this way.
+// #[cfg(feature = "server")]
+// pub(crate) fn collect_kif_files(args: &KbArgs) -> Result<Vec<PathBuf>, ()> {
+//     let mut all_files: Vec<PathBuf> = args.files.clone();
+//     for dir in &args.dirs {
+//         match kif_files_in_dir(dir) {
+//             Ok(f) => all_files.extend(f),
+//             Err((span, e)) => {
+//                 parse_error!(span, e);
+//                 return Err(());
+//             }
+//         }
+//     }
+//     log::debug!("collect_kif_files: {} file(s)", all_files.len());
+//     Ok(all_files)
+// }
+//
+// #[cfg(feature = "server")]
+// pub(crate) fn read_kif_file(path: &Path) -> Result<String, ()> {
+//     std::fs::read_to_string(path).map_err(|e| {
+//         log::error!("cannot read '{}': {}", path.display(), e);
+//     })
+// }
 
 // -- Directory helpers ---------------------------------------------------------
 
