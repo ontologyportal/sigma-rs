@@ -3753,7 +3753,7 @@ impl<'a> NativeProver<'a> {
         self.defer_active = false;
         let dbg_prologue = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
         let mut t_pass = std::time::Instant::now();
-        let mut mark = |name: &str, t: &mut std::time::Instant| {
+        let mark = |name: &str, t: &mut std::time::Instant| {
             if dbg_prologue {
                 eprintln!("[SIGMA_MODEL_TRACE] prologue {name}: {:?}", t.elapsed());
             }

@@ -301,10 +301,6 @@ impl ModelProgram {
         deadline:   Option<std::time::Instant>,
     ) -> Option<(Model, Provenance)> {
         const BUDGET: usize = 250_000;
-        // Re-evaluations after witness invention close each witness's
-        // taxonomy cone — thousands of witnesses legitimately cascade past
-        // the base budget.  Still deadline-capped.
-        const CHASE_BUDGET: usize = 1_000_000;
         const ROUNDS: usize = 2;
         const MAX_WITNESS_FIRINGS: usize = 20_000;
         let trace = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
@@ -2764,6 +2760,7 @@ mod tests {
             cert_blocked,
             roles,
             denials: Vec::new(),
+            tgds: Vec::new(),
         };
         let model = prog.evaluate().expect("spinning narrative is stratified");
         let holds_rel = model.get(&pid("holdsAt")).cloned().unwrap_or_default();
@@ -2977,6 +2974,7 @@ mod tests {
             cert_blocked: CertBlocked::default(),
             roles: crate::semantics::roles::TaxonomyRoles::default(),
             denials: Vec::new(),
+            tgds: Vec::new(),
         };
         let mut stats = ModelStats::default();
         assert!(mp
@@ -3423,6 +3421,7 @@ mod tests {
             cert_blocked: mp.cert_blocked,
             roles: mp.roles.clone(),
             denials: mp.denials.clone(),
+            tgds: mp.tgds.clone(),
         };
         let extra: Vec<(Pred, Option<SentenceId>)> = before_mp
             .monotone
