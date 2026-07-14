@@ -1,14 +1,17 @@
 #!/bin/bash
-# scripts/ci_regression.sh — the regression battery with every input remote.
+# .github/scripts/ci_regression.sh — the regression battery with every input
+# remote.
 #
-# The CI twin of scripts/regression.sh, with nothing assumed on disk —
+# The CI twin of scripts/regression.sh (the gitignored local dev script),
+# with nothing assumed on disk —
 #
 #   * the SUMO ontology is loaded through the CLI's own git feature
 #     (`sumo -c --git <repo> load`, one sparse fetch for all constituents),
 #   * each test case is fetched through the CLI's http feature
 #     (`sumo test https://raw.githubusercontent.com/.../TQG1.kif.tq ...`),
 #   * the TPTP smoke slice runs from a tree materialized by
-#     scripts/fetch_tptp.py (tptp.org has no raw endpoint; run that first).
+#     .github/scripts/fetch_tptp.py (tptp.org has no raw endpoint; run
+#     that first).
 #
 # Unlike regression.sh, nothing here is graded against expectations: every
 # tests/**/*.kif.tq at the branch head runs as one pool per backend, the TPTP
@@ -38,7 +41,8 @@
 # Exit code: 0 iff the run itself was healthy (results are never graded).
 
 set -u
-cd "$(dirname "$0")/.."
+# This file lives at .github/scripts/ — the repo root is two levels up.
+cd "$(dirname "$0")/../.."
 REPO="$PWD"
 SUMO_GIT="${SUMO_GIT:-https://github.com/ontologyportal/sumo}"
 SUMO_BRANCH="${SUMO_BRANCH:-master}"
@@ -174,11 +178,11 @@ done
 # ------------------------------------------- TPTP smoke (native CLI)
 # Each listed problem's SZS status is recorded as-is — no grading; the
 # report page shows the statuses and their drift from the previous run.
-# The tree under $TPTP comes from scripts/fetch_tptp.py.
-LIST="$REPO/scripts/tptp_regression.list"
+# The tree under $TPTP comes from .github/scripts/fetch_tptp.py.
+LIST="$REPO/.github/scripts/tptp_regression.list"
 note ""
 if [ ! -d "$TPTP/Problems" ]; then
-  note "== TPTP smoke skipped ($TPTP has no Problems/ — run scripts/fetch_tptp.py) =="
+  note "== TPTP smoke skipped ($TPTP has no Problems/ — run .github/scripts/fetch_tptp.py) =="
   bad "TPTP tree missing at $TPTP"
 else
   note "== TPTP smoke (native, ${TPTP_BUDGET}s each) =="
