@@ -111,6 +111,28 @@ struct Row {
 /// Run one TPTP problem to completion on a fresh, isolated `Session` —
 /// mirrors `sweep.rs`'s `Problem::Tptp` arm, the existing template for
 /// per-problem KB isolation under `--jobs` parallelism.
+///
+/// `--timeout` only arms `run_deadline` at the start of the given-clause
+/// search loop (see `prover/saturate/prover/mod.rs`); parsing, `include(...)`
+/// splicing, and `make_session_axiomatic`'s promotion/indexing cascade all
+/// run before that point with NO deadline at all. For an ordinary problem
+/// that phase is milliseconds, so the gap is invisible -- but a problem
+/// whose `include(...)` set is unusually large (observed: a CASC-30 FEQ
+/// problem pulling in ~200K lines across 131 axiom files) can blow the
+/// budget by 1-2 orders of magnitude with nothing to stop it, since that
+/// phase has no internal checkpoint to test a deadline against.
+///
+/// Rather than threading a deadline through the parser / cascade / native
+/// clausifier (invasive, and those phases have no natural per-item
+/// checkpoint exposed to callers), the actual work runs on its own thread
+/// and this function bounds *total* wall time from the outside: whatever
+/// phase is running, if it hasn't finished by `timeout + grace` the problem
+/// is reported as `Timeout` and the still-running thread is abandoned
+/// (detached, not joined). The process exits shortly after `run_casc`
+/// returns either way (see `main.rs`'s `process::exit` after dispatch),
+/// which reclaims it; the cost is that an abandoned thread keeps burning a
+/// CPU core for the rest of a multi-problem `--jobs N` batch, so this is a
+/// containment measure, not a true cancellation.
 fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
     let name = basename(path);
     let mut opts = base_opts.clone();
@@ -119,17 +141,44 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
     // N)` directive the way `.kif.tq` cases can.
     opts.time_limit_secs = u64::from(timeout);
 
-    let mut session = Session::<ProverLayer>::new(format!("casc-{name}"));
-    match session.test(Source::Local(vec![path.to_path_buf()]), Some(opts)) {
-        Ok(oc) => Row {
+    let owned_path = path.to_path_buf();
+    let thread_name = name.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut session = Session::<ProverLayer>::new(format!("casc-{thread_name}"));
+        let result = session.test(Source::Local(vec![owned_path]), Some(opts));
+        // The receiver may already have given up and hung up; nothing to do.
+        let _ = tx.send(result);
+    });
+
+    // The search loop's own deadline should already have returned by
+    // `timeout`; this grace only covers the un-timed pre-search phase
+    // above, so it doesn't need to be generous -- just enough to not
+    // false-positive on ordinary scheduling jitter.
+    let grace = std::time::Duration::from_secs(u64::from(timeout) + 5);
+    match rx.recv_timeout(grace) {
+        Ok(Ok(oc)) => Row {
             name,
             szs: oc.szs,
             solved: matches!(oc.outcome, TestOutcome::Passed | TestOutcome::Incomplete { .. }),
         },
-        Err(errs) => {
+        Ok(Err(errs)) => {
             for e in &errs {
                 log::error!("casc: {name}: {e}");
             }
+            Row { name, szs: SzsStatus::GaveUp, solved: false }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            log::error!(
+                "casc: {name}: exceeded {timeout}s + {}s grace without the search loop's own \
+                 deadline catching it -- likely still in KB construction (parse/cascade), which \
+                 has no deadline check; reporting Timeout and abandoning the still-running thread",
+                grace.as_secs() - u64::from(timeout),
+            );
+            Row { name, szs: SzsStatus::Timeout, solved: false }
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            log::error!("casc: {name}: worker thread died without a result (panic?)");
             Row { name, szs: SzsStatus::GaveUp, solved: false }
         }
     }
