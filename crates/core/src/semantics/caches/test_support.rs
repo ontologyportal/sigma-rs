@@ -43,6 +43,7 @@ pub(crate) fn base_layer() -> SemanticLayer { kif_layer(BASE) }
 /// selects for those extensions.  Used by tests that need to inspect
 /// post-ingest root-sentence shapes for TPTP input (e.g. clausal `(or …)`
 /// roots), which are NOT reachable through `kif_layer`.
+#[cfg(feature = "native-prover")]
 pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
     use crate::cache::events::Event;
     use crate::layer::Layer;
