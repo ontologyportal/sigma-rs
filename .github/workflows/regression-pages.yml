@@ -1,14 +1,11 @@
 # Nightly regression battery, published to GitHub Pages.
 #
-# The CI twin of scripts/regression.sh with every input remote (see
-# scripts/ci_regression.sh):
-#
 #   * ontology  — `sumo -c --git https://github.com/ontologyportal/sumo load`
 #                 (the CLI's own git feature; one sparse fetch, no checkout)
 #   * SUMO tests — tests/**/*.kif.tq enumerated via the GitHub trees API and
 #                 fetched per-case by the CLI's http feature from
 #                 raw.githubusercontent.com
-#   * TPTP smoke — scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
+#   * TPTP smoke — .github/scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
 #                 (there is no raw endpoint) into a cached $TPTP tree
 #
 # Results are published, not graded: the page prints each test's outcome,
@@ -79,10 +76,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/TPTP
-          key: tptp-tree-${{ hashFiles('scripts/tptp_regression.list', 'scripts/fetch_tptp.py') }}
+          key: tptp-tree-${{ hashFiles('.github/scripts/tptp_regression.list', '.github/scripts/fetch_tptp.py') }}
 
       - name: Fetch TPTP problems (tptp.org SeeTPTP scrape, cache misses only)
-        run: python3 scripts/fetch_tptp.py --list scripts/tptp_regression.list --dest ~/TPTP
+        run: python3 .github/scripts/fetch_tptp.py --list .github/scripts/tptp_regression.list --dest ~/TPTP
 
       - name: Run regression (remote ontology + tests)
         id: regress
@@ -94,7 +91,7 @@ jobs:
           EXT_BUDGET: ${{ inputs.ext_budget || '60' }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          TPTP="$HOME/TPTP" bash scripts/ci_regression.sh
+          TPTP="$HOME/TPTP" bash .github/scripts/ci_regression.sh
 
       - name: Report status
         id: status
@@ -121,7 +118,7 @@ jobs:
 
       - name: Build report site
         run: |
-          python3 scripts/regression_report.py \
+          python3 .github/scripts/regression_report.py \
             --results regression-out \
             --out site \
             --prev prev/results.json \
