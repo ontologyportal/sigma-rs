@@ -23,6 +23,8 @@ use std::time::Instant;
 use sigmakee_rs_sdk::{NativeOpts, ProverLayer, Session, Source, SzsStatus, TestOutcome};
 use sigmakee_rs_sdk::manager::KBManager;
 
+use super::proof::print_proof;
+
 /// Entry point for `sumo casc <path> [--timeout N] [--jobs K]`.
 ///
 /// `path` is either a directory (every `.p`/`.tptp` file directly inside it)
@@ -67,6 +69,7 @@ pub fn run_casc(manager: &KBManager, path: PathBuf, timeout: u32, jobs: usize) -
     base_opts.chase_lane = true;
     base_opts.roles_lane = true;
     base_opts.ec = true;
+    base_opts.want_proof = true;
     if base_opts.lane_budgets.is_empty() {
         base_opts.lane_budgets = vec![2000, 500, 8000, 1000, 250, 4000];
     }
@@ -88,7 +91,8 @@ pub fn run_casc(manager: &KBManager, path: PathBuf, timeout: u32, jobs: usize) -
                 // from concurrent threads may interleave across problems
                 // but never WITHIN a `println!` call, so each printed line
                 // stays intact.
-                println!("% SZS status {} for {}", row.szs, row.name);
+                // println!("% SZS status {} for {}", row.szs, row.name);
+                
                 rows.lock().unwrap().push(row);
             });
         }
@@ -148,7 +152,7 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
         let mut session = Session::<ProverLayer>::new(format!("casc-{thread_name}"));
         let result = session.test(Source::Local(vec![owned_path]), Some(opts));
         // The receiver may already have given up and hung up; nothing to do.
-        let _ = tx.send(result);
+        let _ = tx.send(result.map(|oc| (oc, session)));
     });
 
     // The search loop's own deadline should already have returned by
@@ -157,10 +161,13 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
     // false-positive on ordinary scheduling jitter.
     let grace = std::time::Duration::from_secs(u64::from(timeout) + 5);
     match rx.recv_timeout(grace) {
-        Ok(Ok(oc)) => Row {
-            name,
-            szs: oc.szs,
-            solved: matches!(oc.outcome, TestOutcome::Passed | TestOutcome::Incomplete { .. }),
+        Ok(Ok((oc, session))) => {
+            print_proof(session.kb(), &oc.result, "casc", name.as_str(), oc.szs);
+            Row {
+                name,
+                szs: oc.szs,
+                solved: matches!(oc.outcome, TestOutcome::Passed | TestOutcome::Incomplete { .. }),
+            }
         },
         Ok(Err(errs)) => {
             for e in &errs {
@@ -171,7 +178,7 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             log::error!(
                 "casc: {name}: exceeded {timeout}s + {}s grace without the search loop's own \
-                 deadline catching it -- likely still in KB construction (parse/cascade), which \
+                 deadline catching it likely still in KB construction (parse/cascade), which \
                  has no deadline check; reporting Timeout and abandoning the still-running thread",
                 grace.as_secs() - u64::from(timeout),
             );
@@ -270,8 +277,8 @@ fn print_summary(rows: &[Row], wall_secs: f64) {
     let total = rows.len();
     let solved = rows.iter().filter(|r| r.solved).count();
 
-    println!();
-    println!("CASC summary: {solved} / {total} solved");
+    eprintln!();
+    eprintln!("CASC summary: {solved} / {total} solved");
 
     let classes = [
         SzsStatus::Theorem,
@@ -287,7 +294,7 @@ fn print_summary(rows: &[Row], wall_secs: f64) {
             continue;
         }
         let class_solved = in_class.iter().filter(|r| r.solved).count();
-        println!("  {:<18} {:>4} / {}", class.to_string(), class_solved, in_class.len());
+        eprintln!("  {:<18} {:>4} / {}", class.to_string(), class_solved, in_class.len());
     }
-    println!("Total wall time: {wall_secs:.2}s");
+    eprintln!("Total wall time: {wall_secs:.2}s");
 }
