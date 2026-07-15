@@ -7,7 +7,7 @@
  * `persist` and native git/http `Source`s are server-side only and are
  * intentionally absent here.
  *
- *     import { init, Session, Source, Backend, Config } from "@ontologyportal/sumo-wasm/sdk";
+ *     import { init, Session, Source, Backend, Config } from "sigmakee/sdk";
  *     await init();
  *     const s = new Session({ backend: Backend.Native });
  *     await s.ingest(Source.kif("(instance Socrates Man)"));

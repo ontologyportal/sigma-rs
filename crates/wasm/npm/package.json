@@ -1,6 +1,6 @@
 {
-  "name": "@ontologyportal/sumo-wasm",
-  "version": "2.0.1",
+  "name": "sigmakee",
+  "version": "2.1.2",
   "description": "Load SUO-KIF, translate to TPTP, and prove theorems in-browser with the pure-Rust native saturation prover (sigmakee-rs).",
   "license": "GPL-3.0",
   "type": "module",

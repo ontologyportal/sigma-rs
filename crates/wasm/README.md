@@ -6,10 +6,10 @@ native saturation prover. No server, no subprocess, no WASI required.
 
 Two layers are shipped:
 
-- **`@ontologyportal/sumo-wasm/sdk`** — an SDK-shaped facade (`Session`,
+- **`sigmakee/sdk`** — an SDK-shaped facade (`Session`,
   `Source`, `Backend`, `Config`) that mirrors the [`sigmakee-rs-sdk`](../sdk)
   crate's surface. **Start here.**
-- **`@ontologyportal/sumo-wasm`** (package root) — the raw wasm-bindgen classes
+- **`sigmakee`** (package root) — the raw wasm-bindgen classes
   (`WasmNativeProver`, `WasmKnowledgeBase`, `Config`) for direct, lower-level
   control.
 
@@ -23,7 +23,7 @@ Two layers are shipped:
 ## Quick start
 
 ```ts
-import { init, Session, Source, Backend, Config } from "@ontologyportal/sumo-wasm/sdk";
+import { init, Session, Source, Backend, Config } from "sigmakee/sdk";
 
 await init();                                  // instantiate the WASM module (once)
 
@@ -226,14 +226,14 @@ The output directory (`pkg/`) is a complete, publishable package.
 ```bash
 cd crates/wasm/pkg
 npm publish --dry-run                # inspect the file list first
-npm publish --access public          # --access public is required for @scoped names
+npm publish                          # unscoped `sigmakee` → public by default
 ```
 
 Before the first publish:
 
-- **Name / scope.** [`npm/package.json`](npm/package.json) is
-  `@ontologyportal/sumo-wasm`. To publish under that scope you must own it on
-  npm; otherwise change `name`.
+- **Name.** [`npm/package.json`](npm/package.json) is the unscoped name
+  `sigmakee` (no `--access public` needed). It's currently unclaimed on npm; the
+  first publish claims it for your account/org.
 - **Version.** Keep it in step with the crate (`2.0.1`).
 - **Auth.** `npm login` (or an `NPM_TOKEN` in CI) with publish rights.
 

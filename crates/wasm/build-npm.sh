@@ -12,7 +12,7 @@
 #   ./build-npm.sh                 # → crates/wasm/pkg/       (browser ESM)
 #   ./build-npm.sh nodejs pkg-node # → crates/wasm/pkg-node/  (Node CommonJS)
 #
-# Publish with:  cd <out-dir> && npm publish --access public
+# Publish with:  cd <out-dir> && npm publish
 #
 set -euo pipefail
 
@@ -76,4 +76,4 @@ fi
 echo
 echo "Done. Package is in: $OUT_PATH"
 echo "  Inspect : cd '$OUT_PATH' && npm publish --dry-run"
-echo "  Publish : cd '$OUT_PATH' && npm publish --access public"
+echo "  Publish : cd '$OUT_PATH' && npm publish"

@@ -1,18 +1,18 @@
 /**
- * TypeScript driver using the SDK-shaped facade (`@ontologyportal/sumo-wasm/sdk`).
+ * TypeScript driver using the SDK-shaped facade (`sigmakee/sdk`).
  *
  * This surface mirrors the `sigmakee-rs-sdk` crate — `Session`, `Source`,
  * `Backend`, `Config` — for the browser. For the lower-level bindings
  * (`WasmNativeProver` etc.) see `node-demo.mjs`.
  *
  * Import from the published subpath:
- *     import { init, Session, Source } from "@ontologyportal/sumo-wasm/sdk";
+ *     import { init, Session, Source } from "sigmakee/sdk";
  * or, against a local build:
  *     import { init, Session, Source } from "../pkg/sdk.mjs";
  */
 import {
   init, Session, Source, Backend, Config, type AskResult,
-} from "@ontologyportal/sumo-wasm/sdk";
+} from "sigmakee/sdk";
 
 export async function main(): Promise<void> {
   await init(); // browser: fetches the .wasm next to the JS
