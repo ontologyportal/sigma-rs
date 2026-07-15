@@ -7,6 +7,10 @@
 #                 raw.githubusercontent.com
 #   * TPTP smoke — .github/scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
 #                 (there is no raw endpoint) into a cached $TPTP tree
+#   * vampire   — a prebuilt Linux release binary is installed onto PATH
+#                 (cached by version), which turns on the SUMO pool's
+#                 `subprocess` backend and a same-slice/same-budget raw-
+#                 vampire comparison column on the TPTP smoke table
 #
 # Results are published, not graded: the page prints each test's outcome,
 # diffs it against the previous published run, and keeps a history table
@@ -45,6 +49,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Bump to track a newer vprover/vampire release; must have a
+  # vampire-Linux-X64.zip release asset (true from v5.0.0 on).
+  VAMPIRE_VERSION: v5.0.1
 
 jobs:
   regression:
@@ -66,6 +73,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: regression-pages
+
+      # A standalone `vampire` binary on PATH — separate from the embedded
+      # FFI build above — turns on the SUMO pool's `subprocess` backend and
+      # the TPTP smoke slice's raw-vampire comparison column (see
+      # ci_regression.sh). Cached by version so this is a cache hit on every
+      # run except a VAMPIRE_VERSION bump.
+      - name: Cache vampire binary
+        id: cache-vampire
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/vampire-bin
+          key: vampire-${{ env.VAMPIRE_VERSION }}-linux-x64
+
+      - name: Install vampire
+        if: steps.cache-vampire.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.local/vampire-bin
+          curl -fsSL -o /tmp/vampire.zip \
+            "https://github.com/vprover/vampire/releases/download/${VAMPIRE_VERSION}/vampire-Linux-X64.zip"
+          unzip -q /tmp/vampire.zip -d ~/.local/vampire-bin
+          chmod +x ~/.local/vampire-bin/vampire
+
+      - name: Add vampire to PATH
+        run: |
+          echo "$HOME/.local/vampire-bin" >> "$GITHUB_PATH"
+          "$HOME/.local/vampire-bin/vampire" --version
 
       - name: Build sumo (release)
         run: cargo build --release --bin sumo

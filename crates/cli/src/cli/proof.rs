@@ -218,7 +218,14 @@ fn print_proof_impl(
             println!("\n{style_bold}Proof (SUO-KIF):{style_reset}");
             for step in &result.proof_kif {
                 print_step_header(step);
-                println!("        {}", step.formula.pretty_print(2).replace('\n', "\n        "));
+                // Same gate as the TPTP arm above: `--ugly` output must be
+                // plain re-parseable text, not terminal syntax highlighting.
+                let text = if crate::style::is_ugly() {
+                    step.formula.format_plain(2)
+                } else {
+                    step.formula.pretty_print(2)
+                };
+                println!("        {}", text.replace('\n', "\n        "));
                 print_step_source(step, src_idx);
             }
         }

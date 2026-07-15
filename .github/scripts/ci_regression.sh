@@ -31,10 +31,16 @@
 #   SKIP_BUILD   nonempty = use existing target/release/sumo
 #   GITHUB_TOKEN used for the GitHub API test listing when set (rate limits)
 #
+# A `vampire` binary on PATH is optional but changes two things: the SUMO
+# pool's `subprocess` backend runs (skipped otherwise), and the TPTP smoke
+# slice gets a second column — raw `vampire --include $TPTP -t N <file>`
+# run directly, no sigma-rs in the loop — alongside the native prover's own
+# result, so the two are directly comparable on the same problems/budget.
+#
 # Outputs under $OUT:
 #   sumo.tsv             backend<TAB>passed<TAB>graded<TAB>false_verdicts
 #   logs/<backend>.log   full per-test CLI output (--ugly)
-#   tptp.tsv             name<TAB>szs
+#   tptp.tsv             name<TAB>sigma_szs<TAB>vampire_szs (vampire_szs blank if not on PATH)
 #   meta.tsv             key<TAB>value run metadata
 #   status               GREEN or FAIL (infrastructure only)
 #
@@ -126,14 +132,17 @@ PY
 sumo_commit=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['sha'])" "$WORK/tree.json")
 note "$(wc -l < "$WORK/tests.txt" | tr -d ' ') tests at $sumo_commit"
 
-meta sigma_commit  "$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-meta sumo_version  "$("$BIN" --version)"
-meta sumo_repo     "$SUMO_GIT"
-meta sumo_branch   "$SUMO_BRANCH"
-meta sumo_commit   "$sumo_commit"
-meta date_utc      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-meta tptp_budget   "$TPTP_BUDGET"
-meta ext_budget    "$EXT_BUDGET"
+have_vampire() { command -v vampire >/dev/null; }
+
+meta sigma_commit     "$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+meta sumo_version     "$("$BIN" --version)"
+meta sumo_repo        "$SUMO_GIT"
+meta sumo_branch      "$SUMO_BRANCH"
+meta sumo_commit      "$sumo_commit"
+meta date_utc         "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+meta tptp_budget      "$TPTP_BUDGET"
+meta ext_budget       "$EXT_BUDGET"
+meta vampire_version  "$(have_vampire && vampire --version 2>&1 | head -1 || echo '')"
 
 # ------------------------------------------- SUMO tests x backends
 # The whole pool runs on every available backend, report-only.  External
@@ -141,7 +150,7 @@ meta ext_budget    "$EXT_BUDGET"
 # burn minutes; native keeps each test's own `(time N)` directive.
 have_backend() {
   case "$1" in
-    subprocess) command -v vampire >/dev/null ;;
+    subprocess) have_vampire ;;
     *)          true ;;
   esac
 }
@@ -158,8 +167,12 @@ for backend in native subprocess embedded; do
   cap=""
   [ "$backend" != native ] && cap="--timeout $EXT_BUDGET"
   log="$OUT/logs/$backend.log"
+  # `--proof kif --want-proof true`: print each solved test's SUO-KIF proof
+  # into the log (the native prover only records one when asked); the report
+  # page shows them behind a per-test expander.
   # shellcheck disable=SC2086
-  "$BIN" --ugly --config "$CFG" test --backend "$backend" $cap $urls \
+  "$BIN" --ugly --config "$CFG" test --backend "$backend" $cap \
+    --proof kif --want-proof true $urls \
     > "$log" 2>&1
   got=$(grep -oE '[0-9]+ / [0-9]+ passed' "$log" | head -1)
   passed=${got%% *}
@@ -174,17 +187,27 @@ for backend in native subprocess embedded; do
   printf '%s\t%s\t%s\t%s\n' "$backend" "$passed" "$graded" "${fv:-0}" >> "$OUT/sumo.tsv"
 done
 
-# ------------------------------------------- TPTP smoke (native CLI)
+# ------------------------------------------- TPTP smoke (native CLI + vampire)
 # Each listed problem's SZS status is recorded as-is — no grading; the
 # report page shows the statuses and their drift from the previous run.
 # The tree under $TPTP comes from .github/scripts/fetch_tptp.py.
+#
+# When vampire is on PATH, it also runs directly against the identical
+# problem file (`--include $TPTP` resolves the same `include('Axioms/…')`
+# directives sigma-rs's own include-splicing does) at the same per-problem
+# budget — a same-slice, same-budget comparison against the reference
+# prover, no sigma-rs translation layer in the loop.
 LIST="$REPO/.github/scripts/tptp_regression.list"
 note ""
 if [ ! -d "$TPTP/Problems" ]; then
   note "== TPTP smoke skipped ($TPTP has no Problems/ — run .github/scripts/fetch_tptp.py) =="
   bad "TPTP tree missing at $TPTP"
 else
-  note "== TPTP smoke (native, ${TPTP_BUDGET}s each) =="
+  if have_vampire; then
+    note "== TPTP smoke (native + vampire, ${TPTP_BUDGET}s each) =="
+  else
+    note "== TPTP smoke (native, ${TPTP_BUDGET}s each; vampire not on PATH — comparison column skipped) =="
+  fi
   [ -f "$LIST" ] || { bad "missing $LIST"; exit $((FAIL)); }
   while read -r entry; do
     [ -z "$entry" ] && continue; case "$entry" in \#*) continue ;; esac
@@ -193,8 +216,13 @@ else
     if [ ! -f "$f" ]; then bad "missing problem file $f"; continue; fi
     szs=$(timeout $((TPTP_BUDGET + 15)) "$BIN" --no-db test "$f" --timeout "$TPTP_BUDGET" 2>/dev/null \
           | grep -m1 -oE 'SZS status [A-Za-z]+' | awk '{print $3}')
-    printf '  %-16s %s\n' "$name" "${szs:-none}"
-    printf '%s\t%s\n' "$name" "${szs:-none}" >> "$OUT/tptp.tsv"
+    vszs=""
+    if have_vampire; then
+      vszs=$(timeout $((TPTP_BUDGET + 15)) vampire --include "$TPTP" -t "$TPTP_BUDGET" "$f" 2>/dev/null \
+             | grep -m1 -oE 'SZS status [A-Za-z]+' | awk '{print $3}')
+    fi
+    printf '  %-16s sigma=%-20s vampire=%s\n' "$name" "${szs:-none}" "${vszs:-—}"
+    printf '%s\t%s\t%s\n' "$name" "${szs:-none}" "${vszs:-}" >> "$OUT/tptp.tsv"
   done < "$LIST"
 fi
 

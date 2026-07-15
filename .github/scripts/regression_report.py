@@ -32,6 +32,8 @@ HISTORY_LIMIT = 300  # runs kept in history.json
 VERDICT_RE = re.compile(
     r"^  (PASSED|FAILED|FALSE VERDICT|INFO|ERROR)\s*(?:\(total (\d+\.\d+)s\))?")
 SZS_RE = re.compile(r"^  % SZS status (\S+) for (\S+)")
+# The KIF proof pretty-printer colors its output even under `--ugly`.
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def read_tsv(path: Path):
@@ -45,17 +47,35 @@ def read_tsv(path: Path):
 
 
 def parse_suite_log(path: Path):
-    """Per-test cases from one `sumo test --ugly` transcript."""
-    cases, case = [], None
-    for line in path.read_text(errors="replace").splitlines():
-        if line.startswith("Running test: "):
+    """Per-test cases from one `sumo test --ugly` transcript.
+
+    A `--proof kif` run appends a flush-left `Proof (SUO-KIF):` block after a
+    solved case's SZS line; it is captured verbatim into the case's "proof"
+    until the next case (or the trailing summary) starts.
+    """
+    cases, case, in_proof = [], None, False
+    for raw in path.read_text(errors="replace").splitlines():
+        line = ANSI_RE.sub("", raw)
+        if line.startswith("Running test: ") or line.startswith("Test Summary:"):
+            in_proof = False
+            if not line.startswith("Running test: "):
+                case = None
+                continue
             case = {"label": line[len("Running test: "):].strip(),
-                    "verdict": "ERROR", "secs": None, "szs": None, "detail": []}
+                    "verdict": "ERROR", "secs": None, "szs": None,
+                    "detail": [], "proof": None}
             name = case["label"].rsplit("/", 1)[-1]
             case["name"] = re.sub(r"\.(kif\.tq|p|tptp)$", "", name)
             cases.append(case)
             continue
         if case is None:
+            continue
+        if in_proof:
+            case["proof"].append(line)
+            continue
+        if line == "Proof (SUO-KIF):":
+            case["proof"] = []
+            in_proof = True
             continue
         m = VERDICT_RE.match(line)
         if m:
@@ -66,8 +86,11 @@ def parse_suite_log(path: Path):
         if m:
             case["szs"] = m.group(1)
             continue
-        if line.startswith("    ") and line.strip():
+        if line.startswith("    ") and line.strip() and line.strip() != "Proof:":
             case["detail"].append(line.strip())
+    for c in cases:
+        if c["proof"] is not None:
+            c["proof"] = "\n".join(c["proof"]).strip("\n") or None
     return cases
 
 
@@ -87,7 +110,10 @@ def collect(results: Path):
             "cases": parse_suite_log(log) if log.exists() else [],
         })
 
-    tptp = [{"name": r[0], "szs": r[1]} for r in read_tsv(results / "tptp.tsv")]
+    # vampire_szs is "" when vampire wasn't on PATH for this run (or, for an
+    # older results.json fed in as --prev, when the column didn't exist yet).
+    tptp = [{"name": r[0], "szs": r[1], "vampire_szs": r[2] if len(r) > 2 else ""}
+            for r in read_tsv(results / "tptp.tsv")]
     return {"meta": meta, "status": status, "backends": backends, "tptp": tptp}
 
 
@@ -97,14 +123,17 @@ def diff_runs(cur: dict, prev: dict | None):
     """Per-test changes between this run and the previous one.
 
     Returns {"backends": {name: {"flips": [(test, old, new)], "added": [...],
-    "removed": [...]}}, "tptp": [(name, old, new)]} — or None when there is
-    no comparable previous data.
+    "removed": [...]}}, "tptp": {"sigma": [(name, old, new)],
+    "vampire": [(name, old, new)]}} — or None when there is no comparable
+    previous data. A TPTP flip only counts when both runs have a
+    (non-empty) status for that prover — a run where vampire wasn't
+    installed doesn't register as every problem "changing".
     """
     if not prev or "backends" not in prev:
         return None
     prev_backends = {b["backend"]: {c["name"]: c["verdict"] for c in b.get("cases", [])}
                      for b in prev["backends"]}
-    out = {"backends": {}, "tptp": []}
+    out = {"backends": {}, "tptp": {}}
     for b in cur["backends"]:
         old = prev_backends.get(b["backend"])
         if old is None:
@@ -116,15 +145,21 @@ def diff_runs(cur: dict, prev: dict | None):
             "added":   sorted(set(new) - set(old)),
             "removed": sorted(set(old) - set(new)),
         }
-    old_tptp = {t["name"]: t["szs"] for t in prev.get("tptp", [])}
-    out["tptp"] = [(t["name"], old_tptp[t["name"]], t["szs"]) for t in cur["tptp"]
-                   if t["name"] in old_tptp and old_tptp[t["name"]] != t["szs"]]
+    for prover, key in (("sigma", "szs"), ("vampire", "vampire_szs")):
+        old_tptp = {t["name"]: t[key] for t in prev.get("tptp", []) if t.get(key)}
+        out["tptp"][prover] = [(t["name"], old_tptp[t["name"]], t[key]) for t in cur["tptp"]
+                               if t.get(key) and t["name"] in old_tptp
+                               and old_tptp[t["name"]] != t[key]]
     return out
+
+
+SOLVED = ("Theorem", "Unsatisfiable")
 
 
 def summarize(data: dict) -> dict:
     """The compact per-run record appended to history.json."""
-    solved = sum(t["szs"] in ("Theorem", "Unsatisfiable") for t in data["tptp"])
+    solved = sum(t["szs"] in SOLVED for t in data["tptp"])
+    vampire_rows = [t for t in data["tptp"] if t.get("vampire_szs")]
     return {
         "date": data["meta"].get("date_utc", ""),
         "sigma_commit": data["meta"].get("sigma_commit", "")[:12],
@@ -133,6 +168,8 @@ def summarize(data: dict) -> dict:
                                     "false_verdicts": b["false_verdicts"]}
                      for b in data["backends"]},
         "tptp": {"solved": solved, "total": len(data["tptp"])},
+        "vampire_tptp": {"solved": sum(t["vampire_szs"] in SOLVED for t in vampire_rows),
+                         "total": len(vampire_rows)} if vampire_rows else None,
     }
 
 
@@ -187,6 +224,14 @@ summary { cursor: pointer; padding: .55rem .9rem; background: var(--card);
   border: 1px solid var(--line); border-radius: 10px; font-weight: 600; }
 details[open] summary { border-radius: 10px 10px 0 0; }
 details .card { border-top: none; border-radius: 0 0 10px 10px; }
+details.proof { margin: 0; }
+details.proof summary { display: inline-block; padding: 0 .4rem; border: none;
+  background: none; color: var(--link); font-weight: 500; font-size: .82rem; }
+details.proof[open] summary { border-radius: 0; }
+pre.kif { margin: .3rem 0 .4rem; padding: .6rem .8rem; background: var(--gray-bg);
+  border-radius: 8px; overflow: auto; max-height: 24rem; max-width: 72ch;
+  font: .78rem/1.45 var(--mono); }
+code.szs-solved { color: var(--green); font-weight: 700; }
 footer { margin-top: 3rem; color: var(--muted); font-size: .82rem; }
 """
 
@@ -204,6 +249,14 @@ def pill(key: str) -> str:
 
 def esc(s) -> str:
     return html.escape(str(s))
+
+
+def szs_code(szs: str) -> str:
+    """An SZS status as a `<code>` cell, highlighted when it's a solved
+    verdict (`Theorem` / `Unsatisfiable` — the FOF/CNF spellings of the
+    same "proved" outcome) so a solved row pops out of a dense table."""
+    cls = ' class="szs-solved"' if szs in SOLVED else ""
+    return f'<code{cls}>{esc(szs)}</code>'
 
 
 def render(data: dict, deltas: dict | None, history: list, run_url: str | None) -> str:
@@ -265,9 +318,10 @@ def render(data: dict, deltas: dict | None, history: list, run_url: str | None) 
                 rows.append((backend, f'{len(d["removed"])} removed test(s)',
                              esc(", ".join(d["removed"][:8])
                                  + ("…" if len(d["removed"]) > 8 else ""))))
-        for name, old, new in deltas["tptp"]:
-            rows.append(("tptp", name,
-                         f"<code>{esc(old)}</code> → <code>{esc(new)}</code>"))
+        for prover, flips in deltas["tptp"].items():
+            for name, old, new in flips:
+                rows.append((f"tptp/{prover}", name,
+                             f"<code>{esc(old)}</code> → <code>{esc(new)}</code>"))
         if not rows:
             w(f'<p class="meta">No changes since {esc(prev_date)}.</p>')
         else:
@@ -287,31 +341,45 @@ def render(data: dict, deltas: dict | None, history: list, run_url: str | None) 
         res = "" if s["passed"] is None else f' — {s["passed"]} / {s["graded"]}'
         w(f'<details><summary>{esc(s["backend"])}{esc(res)}</summary>')
         w('<div class="card"><table>')
-        w("<tr><th>test</th><th>verdict</th><th>time</th><th>SZS</th><th>notes</th></tr>")
+        w("<tr><th>test</th><th>verdict</th><th>time</th><th>SZS</th>"
+          "<th>proof</th><th>notes</th></tr>")
         for c in s["cases"]:
             secs = "" if c["secs"] is None else f'{c["secs"]:.2f}s'
             detail = "; ".join(c["detail"][:2])
+            proof = c.get("proof")
+            proof_cell = (f'<details class="proof"><summary>show</summary>'
+                          f'<pre class="kif">{esc(proof)}</pre></details>'
+                          if proof else "")
             w(f'<tr><td><a href="{esc(c["label"])}">{esc(c["name"])}</a></td>'
               f'<td>{pill(c["verdict"])}</td><td>{esc(secs)}</td>'
-              f'<td><code>{esc(c["szs"] or "")}</code></td>'
+              f'<td>{szs_code(c["szs"] or "")}</td>'
+              f'<td>{proof_cell}</td>'
               f'<td class="detail">{esc(detail)}</td></tr>')
         w("</table></div></details>")
 
     # -- TPTP smoke ----------------------------------------------------
     if data["tptp"]:
-        w(f'<h2>TPTP smoke (native, {esc(meta.get("tptp_budget", "?"))}s each)</h2>')
-        w('<p class="meta">Problems from <a href="https://tptp.org">tptp.org</a> '
-          '(fetched by <code>fetch_tptp.py</code>); each row is the SZS '
-          'status the prover reported.</p>')
+        vampire_ran = any(t.get("vampire_szs") for t in data["tptp"])
+        w(f'<h2>TPTP smoke ({esc(meta.get("tptp_budget", "?"))}s each)</h2>')
+        vampire_note = ((f' Run directly alongside — <code>{esc(meta.get("vampire_version", "vampire"))}'
+                         '</code>, same problem file, same --include tree, same time budget, no '
+                         'sigma-rs translation involved — for a same-slice reference-prover comparison.')
+                        if vampire_ran else
+                        ' (vampire wasn\'t on PATH for this run — no comparison column.)')
+        w(f'<p class="meta">Problems from <a href="https://tptp.org">tptp.org</a> '
+          f'(fetched by <code>fetch_tptp.py</code>); the <b>sigma</b> column is sigma-rs\'s '
+          f'native prover.{vampire_note}</p>')
         w('<div class="card"><table>')
-        w("<tr><th>problem</th><th>SZS status</th></tr>")
+        w("<tr><th>problem</th><th>sigma</th>"
+          + ("<th>vampire</th>" if vampire_ran else "") + "</tr>")
         for t in data["tptp"]:
             m = re.match(r"[A-Z]+", t["name"])
             dom = m.group(0) if m else t["name"][:3]
             url = (f'https://tptp.org/cgi-bin/SeeTPTP?Category=Problems'
                    f'&Domain={dom}&File={t["name"]}.p')
+            vcell = f'<td>{szs_code(t["vampire_szs"])}</td>' if vampire_ran else ""
             w(f'<tr><td><a href="{esc(url)}">{esc(t["name"])}</a></td>'
-              f'<td><code>{esc(t["szs"])}</code></td></tr>')
+              f'<td>{szs_code(t["szs"])}</td>{vcell}</tr>')
         w("</table></div>")
 
     # -- history ---------------------------------------------------------
@@ -319,9 +387,12 @@ def render(data: dict, deltas: dict | None, history: list, run_url: str | None) 
         w("<h2>History</h2>")
         w('<div class="card"><table>')
         backends = sorted({b for h in history for b in h.get("backends", {})})
+        any_vampire_tptp = any(h.get("vampire_tptp") for h in history)
         w("<tr><th>date</th><th>sigma-rs</th><th>ontology</th>"
           + "".join(f"<th>{esc(b)}</th>" for b in backends)
-          + "<th>tptp solved</th></tr>")
+          + "<th>tptp (sigma)</th>"
+          + ("<th>tptp (vampire)</th>" if any_vampire_tptp else "")
+          + "</tr>")
         for i, h in enumerate(history[:60]):
             cells = []
             for b in backends:
@@ -338,11 +409,14 @@ def render(data: dict, deltas: dict | None, history: list, run_url: str | None) 
                 cells.append(cur + arrow)
             t = h.get("tptp", {})
             tp = f'{t.get("solved", "—")}/{t.get("total", "—")}' if t else "—"
+            vt = h.get("vampire_tptp")
+            vtp_text = f'{vt["solved"]}/{vt["total"]}' if vt else "—"
+            vtp_cell = f'<td>{esc(vtp_text)}</td>' if any_vampire_tptp else ""
             w(f'<tr><td>{esc(h.get("date", ""))}</td>'
               f'<td><code>{esc(h.get("sigma_commit", ""))}</code></td>'
               f'<td><code>{esc(h.get("sumo_commit", ""))}</code></td>'
               + "".join(f"<td>{c}</td>" for c in cells)
-              + f"<td>{esc(tp)}</td></tr>")
+              + f"<td>{esc(tp)}</td>{vtp_cell}</tr>")
         w("</table></div>")
 
     w('<footer>Generated by <code>regression_report.py</code> from a '
