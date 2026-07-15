@@ -1,0 +1,53 @@
+{
+  "name": "@ontologyportal/sumo-wasm",
+  "version": "2.0.1",
+  "description": "Load SUO-KIF, translate to TPTP, and prove theorems in-browser with the pure-Rust native saturation prover (sigmakee-rs).",
+  "license": "GPL-3.0",
+  "type": "module",
+  "module": "sumo_parser_wasm.js",
+  "types": "sumo_parser_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./sumo_parser_wasm.d.ts",
+      "default": "./sumo_parser_wasm.js"
+    },
+    "./sdk": {
+      "types": "./sdk.d.ts",
+      "default": "./sdk.mjs"
+    },
+    "./sumo_parser_wasm_bg.wasm": "./sumo_parser_wasm_bg.wasm"
+  },
+  "files": [
+    "sumo_parser_wasm.js",
+    "sumo_parser_wasm.d.ts",
+    "sumo_parser_wasm_bg.wasm",
+    "sumo_parser_wasm_bg.wasm.d.ts",
+    "sdk.mjs",
+    "sdk.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "./sumo_parser_wasm.js",
+    "./snippets/*"
+  ],
+  "keywords": [
+    "sumo",
+    "suo-kif",
+    "kif",
+    "tptp",
+    "ontology",
+    "theorem-prover",
+    "wasm",
+    "webassembly"
+  ],
+  "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/crates/wasm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ontologyportal/sigma-rs.git",
+    "directory": "crates/wasm"
+  },
+  "bugs": {
+    "url": "https://github.com/ontologyportal/sigma-rs/issues"
+  }
+}

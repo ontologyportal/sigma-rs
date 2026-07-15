@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SUMO browser</title>
+  <style>
+    :root {
+      --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #e2e2e2;
+      --card: #f7f7f8; --accent: #2d6cdf; --ok: #1a7f37; --bad: #b42318; --warn: #9a6700;
+      --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16171a; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c2e33;
+        --card: #1e2024; --accent: #6ea8ff; --ok: #4ac26b; --bad: #ff6b5e; --warn: #e3b341;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg);
+      font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    main { max-width: 900px; margin: 0 auto; padding: 20px 20px 64px; }
+    h1 { font-size: 20px; margin: 0; }
+    .sub { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+    a { color: var(--accent); cursor: pointer; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, .mono { font-family: var(--mono); }
+
+    header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    #kbStatus { font-size: 12px; color: var(--muted); text-align: right; }
+    #kbStatus b { color: var(--fg); }
+
+    nav.tabs { display: flex; gap: 4px; margin: 18px 0 16px; border-bottom: 1px solid var(--line); }
+    nav.tabs button {
+      font: inherit; background: none; border: none; color: var(--muted); cursor: pointer;
+      padding: 9px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+
+    .panel[hidden] { display: none; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+    input, textarea, button.btn {
+      font: inherit; color: inherit; background: var(--bg);
+      border: 1px solid var(--line); border-radius: 7px; padding: 9px 11px;
+    }
+    input[type=text], input[type=search], input[type=number], textarea { width: 100%; }
+    textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
+    button.btn { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; padding: 9px 16px; }
+    button.btn:disabled { opacity: .5; cursor: default; }
+    .inline { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+
+    select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 6px; }
+    select option { padding: 3px 4px; font-family: var(--mono); font-size: 13px; }
+    .loaded-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .loaded-row .rm { color: var(--bad); cursor: pointer; font-size: 13px; }
+    ul.results { list-style: none; margin: 0; padding: 0; }
+    ul.results li { padding: 9px 4px; border-bottom: 1px solid var(--line); }
+    ul.results li:last-child { border-bottom: none; }
+    .sym { font-weight: 600; font-family: var(--mono); }
+    .kinds { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+    .snippet { color: var(--muted); font-size: 13px; }
+
+    .man h2 { font-family: var(--mono); font-size: 20px; margin: 0 0 2px; }
+    .man .field { margin: 10px 0; }
+    .man .field h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 3px; }
+    .man .field .val { font-size: 14px; }
+    .man .tax code { display: inline-block; margin: 0 8px 4px 0; }
+
+    .status { padding: 3px 9px; border-radius: 20px; font-weight: 700; font-size: 12px; }
+    .status.Proved, .status.Inconsistent { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+    .status.Disproved, .status.Consistent { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+    .status.InputError, .status.Timeout, .status.Unknown { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+    ol.proof { font-family: var(--mono); font-size: 13px; padding-left: 26px; margin: 8px 0 0; }
+    ol.proof .rule { color: var(--accent); }
+    details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; overflow-x: auto; }
+    .diag { border-bottom: 1px solid var(--line); padding: 8px 2px; }
+    .diag:last-child { border-bottom: none; }
+    .diag-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+    .sev { font-size: 10px; text-transform: uppercase; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+    .sev.Error { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+    .sev.Warning { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+    .sev.Info, .sev.Hint { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+    .diag .loc { font-family: var(--mono); font-size: 12px; color: var(--accent); cursor: pointer; }
+    .diag .code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .diag .msg { font-size: 13px; }
+    .src { margin: 8px 0 2px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; background: var(--bg); }
+    .src table { border-collapse: collapse; font-family: var(--mono); font-size: 12px; width: 100%; }
+    .src td { padding: 1px 8px; white-space: pre; }
+    .src td.ln { color: var(--muted); text-align: right; user-select: none; border-right: 1px solid var(--line); }
+    .src tr.hit { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+    .src tr.hit td.ln { color: var(--warn); font-weight: 700; }
+    .hint { color: var(--muted); font-size: 13px; }
+
+    #overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 20px; }
+    .spinner { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>SUMO browser</h1>
+        <p class="sub">The <code>sigmakee-rs</code> native prover in WebAssembly — search, inspect, and prove over SUMO, entirely in your browser.</p>
+      </div>
+      <div id="kbStatus"></div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="home" aria-selected="true">Home</button>
+      <button role="tab" data-tab="kb" aria-selected="false">Knowledge base</button>
+      <button role="tab" data-tab="diagnostics" aria-selected="false">Diagnostics</button>
+      <button role="tab" data-tab="prover" aria-selected="false">Theorem prover</button>
+    </nav>
+
+    <!-- Home: symbol lookup -->
+    <section id="tab-home" class="panel" role="tabpanel">
+      <div class="card">
+        <form id="searchForm">
+          <label for="q">Search symbols &amp; documentation</label>
+          <div class="inline">
+            <input type="search" id="q" placeholder="e.g. Human, Process, part…" autocomplete="off" />
+            <button class="btn" type="submit">Search</button>
+          </div>
+        </form>
+      </div>
+      <div id="homeView"></div>
+    </section>
+
+    <!-- Knowledge base: manage constituents -->
+    <section id="tab-kb" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="inline" style="justify-content:space-between">
+          <div id="kbTotals" class="hint"></div>
+          <button class="btn" id="resetKb" type="button">Reset to Merge.kif</button>
+        </div>
+        <ul id="loadedList" class="results" style="margin-top:8px"></ul>
+      </div>
+
+      <div class="card">
+        <label for="fileFilter">Add SUMO constituents from <code>ontologyportal/sumo</code></label>
+        <input type="search" id="fileFilter" placeholder="filter file list…" autocomplete="off" />
+        <select id="sumoPicker" multiple size="10" style="width:100%; margin-top:8px"></select>
+        <div class="inline" style="margin-top:8px; justify-content:space-between">
+          <span id="pickerStatus" class="hint"></span>
+          <button class="btn" id="addSumo" type="button">Add selected</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>Add a constituent from elsewhere</label>
+        <div class="inline">
+          <input type="text" id="kbUrl" placeholder="https://example.org/ontology.kif" />
+          <button class="btn" id="addUrl" type="button">Add URL</button>
+        </div>
+        <div style="margin-top:10px"><label for="kbFile">Upload a .kif file</label><input type="file" id="kbFile" accept=".kif,.txt,text/plain" /></div>
+      </div>
+
+      <div id="kbLog" class="hint"></div>
+    </section>
+
+    <!-- Diagnostics -->
+    <section id="tab-diagnostics" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="inline" style="justify-content:space-between">
+          <div id="diagSummary" class="hint"></div>
+          <button class="btn" id="revalidate" type="button">Re-validate</button>
+        </div>
+        <div id="diagList" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <!-- Theorem prover -->
+    <section id="tab-prover" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <label for="assertions">Assertions — <code>tell</code> (added to the KB for this query)</label>
+        <textarea id="assertions" rows="4">(instance Rex Dog)
+(subclass Dog Mammal)</textarea>
+        <label for="pquery" style="margin-top:10px">Query — <code>ask</code></label>
+        <textarea id="pquery" rows="2">(instance Rex Animal)</textarea>
+        <div class="inline" style="margin-top:10px">
+          <div style="width:150px"><label for="ptime">time limit (s)</label><input type="number" id="ptime" value="10" min="0" /></div>
+          <button class="btn" id="prove" type="button">Prove</button>
+        </div>
+      </div>
+      <div id="proverResult" class="card" hidden>
+        <div><span id="pStatus" class="status"></span> <span id="pSteps" class="hint"></span></div>
+        <ol id="pProof" class="proof"></ol>
+        <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre id="pRaw"></pre></details>
+      </div>
+    </section>
+  </main>
+
+  <div id="overlay">
+    <div class="spinner"></div>
+    <div id="overlayMsg">Loading the WASM module…</div>
+    <div id="overlayErr" class="hint" style="color:var(--bad)"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

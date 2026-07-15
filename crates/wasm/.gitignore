@@ -1,0 +1,6 @@
+# npm build output from build-npm.sh / wasm-pack
+/pkg/
+/pkg-*/
+node_modules/
+# demo's local copy of the package (serve.sh mirrors pkg/ here)
+/web/pkg/
