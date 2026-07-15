@@ -18,7 +18,7 @@
 // Narrow have fired the sweet spot is bracketed (`lo`/`hi`) and subsequent
 // steps bisect between them; before that, Widen doubles and Narrow halves.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::prover::{ProverResult, ProverStatus, TerminationReason};
 use crate::syntactic::sine::{default_budget, SineParams};

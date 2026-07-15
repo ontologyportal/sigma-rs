@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::layer::{TopLayer, Layer};
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 use crate::prover::ProvingLayer;
 use crate::syntactic::SyntacticLayer;
 use crate::semantics::SemanticLayer;
@@ -18,7 +18,7 @@ use crate::persist::LmdbEnv;
 
 #[macro_use]
 pub mod progress;
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub mod prove;
 pub mod export;
 #[cfg(feature = "persist")]
@@ -33,9 +33,13 @@ pub mod dis;
 pub mod doxastic;
 pub mod session_tags;
 pub(crate) mod assemble;
-#[cfg(feature = "ask")]
+// Pure prose/AST rendering (no subprocess or regex deps); `proof_prose` below
+// consumes it to narrate proofs, which the native prover also produces.  Both
+// need a prover backend present (they import `KifProofStep`/`AxiomSource`), so
+// they ride the same `any(ask, native-prover)` gate.
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) mod natural_lang;
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) mod proof_prose;
 
 /// The base structure defining a knowledge base.
@@ -130,7 +134,7 @@ impl Default for KnowledgeBase {
     fn default() -> Self { Self::new() }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 impl<L: ProvingLayer> KnowledgeBase<L> {
     /// Read-only access to the proving top layer.
     pub fn prover(&self) -> &L {

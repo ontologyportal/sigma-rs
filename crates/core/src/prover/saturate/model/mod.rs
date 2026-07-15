@@ -191,7 +191,7 @@ impl ModelProgram {
     /// path: past it, bail to `None` (guidance/full-model consumers degrade
     /// gracefully — see their call sites) rather than blocking the run.
     /// `None` ⇒ unbounded (existing behavior, e.g. the unit test below).
-    pub(crate) fn positive_model(&self, deadline: Option<std::time::Instant>) -> Option<(Model, Provenance)> {
+    pub(crate) fn positive_model(&self, deadline: Option<crate::clock::Instant>) -> Option<(Model, Provenance)> {
         // Materialization budget — bail (→ resolution) rather than blow up on a
         // large un-scoped KB.  Demand scoping (SInE, slice 4) is the real fix;
         // this keeps slice 2 from regressing problems resolution already solves.
@@ -208,7 +208,7 @@ impl ModelProgram {
             );
         }
         let mut known: HashSet<Pred> = work.builtin_transitive.keys().copied().collect();
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let (mut model, mut prov) = match work.evaluate_within(BUDGET, deadline) {
             Ok(mp) => mp,
             Err(e) => {
@@ -250,7 +250,7 @@ impl ModelProgram {
                 let sids = prov.cite(self.roles.instance, &membership);
                 work.builtin_transitive.insert(r, sids.first().copied());
             }
-            let t1 = std::time::Instant::now();
+            let t1 = crate::clock::Instant::now();
             (model, prov) = match work.evaluate_within(BUDGET, deadline) {
                 Ok(mp) => mp,
                 Err(e) => {
@@ -298,7 +298,7 @@ impl ModelProgram {
         &self,
         syn:        &SyntacticLayer,
         goal_preds: &HashSet<Pred>,
-        deadline:   Option<std::time::Instant>,
+        deadline:   Option<crate::clock::Instant>,
     ) -> Option<(Model, Provenance)> {
         const BUDGET: usize = 250_000;
         const ROUNDS: usize = 2;
@@ -347,7 +347,7 @@ impl ModelProgram {
                 Err(_) => None,
             };
         }
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let (mut model, mut prov) = match work.evaluate_within(BUDGET, deadline) {
             Ok(mp) => mp,
             Err(e) => {
@@ -381,7 +381,7 @@ impl ModelProgram {
                     matchable.len(), n
                 );
             }
-            let t_round = std::time::Instant::now();
+            let t_round = crate::clock::Instant::now();
             let pos_idx = build_pos_index(&matchable);
             let t_idx = t_round.elapsed();
             let mut new_facts: Vec<(Pred, Tuple, SentenceId)> = Vec::new();
@@ -397,7 +397,7 @@ impl ModelProgram {
                 // inhabitation axiom's witnesses are the chase substrate).
                 let cap = if tgd.body.len() > 1 { MAX_FIRINGS_PER_TGD } else { usize::MAX };
                 let stop = std::cell::Cell::new(false);
-                let t_tgd = std::time::Instant::now();
+                let t_tgd = crate::clock::Instant::now();
                 // Most-selective literal first: constants beat variables,
                 // small extensions beat large — the nested-loop join's
                 // only real cost lever.
@@ -524,7 +524,7 @@ impl ModelProgram {
         &self,
         rel:      Pred,
         args:     &[DTerm],
-        deadline: Option<std::time::Instant>,
+        deadline: Option<crate::clock::Instant>,
     ) -> Option<Vec<Tuple>> {
         let mut stats = ModelStats::default();
         self.answer_stats(rel, args, deadline, &mut stats, 250_000).map(|(rows, _)| rows)
@@ -540,7 +540,7 @@ impl ModelProgram {
         &self,
         rel:      Pred,
         args:     &[DTerm],
-        deadline: Option<std::time::Instant>,
+        deadline: Option<crate::clock::Instant>,
         stats:    &mut ModelStats,
         budget:   usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
@@ -573,13 +573,13 @@ impl ModelProgram {
         &self,
         rel:         Pred,
         args:        &[DTerm],
-        deadline:    Option<std::time::Instant>,
+        deadline:    Option<crate::clock::Instant>,
         stats:       &mut ModelStats,
         drop_unsafe: bool,
         budget:      usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         let first_deadline = deadline.map(|d| {
-            let now = std::time::Instant::now();
+            let now = crate::clock::Instant::now();
             let half = (d.saturating_duration_since(now)) / 2;
             now + half
         });
@@ -602,7 +602,7 @@ impl ModelProgram {
         &self,
         rel:         Pred,
         args:        &[DTerm],
-        deadline:    Option<std::time::Instant>,
+        deadline:    Option<crate::clock::Instant>,
         stats:       &mut ModelStats,
         drop_unsafe: bool,
         shallow:     bool,
@@ -822,7 +822,7 @@ impl ModelProgram {
         &self,
         rel:      Pred,
         tuple:    &[SymbolId],
-        deadline: Option<std::time::Instant>,
+        deadline: Option<crate::clock::Instant>,
         stats:    &mut ModelStats,
         budget:   usize,
     ) -> Option<ModelRefutation> {
@@ -915,7 +915,7 @@ impl ModelProgram {
         &self,
         rel:      Pred,
         tuple:    &[SymbolId],
-        deadline: Option<std::time::Instant>,
+        deadline: Option<crate::clock::Instant>,
         stats:    &mut ModelStats,
         budget:   usize,
     ) -> Option<Vec<SentenceId>> {
@@ -1505,7 +1505,7 @@ impl Program {
     pub(crate) fn evaluate_within(
         &self,
         max_tuples: usize,
-        deadline:   Option<std::time::Instant>,
+        deadline:   Option<crate::clock::Instant>,
     ) -> Result<(Model, Provenance), ModelError> {
         self.validate_safe()?;
         let strata = self.stratify()?;
@@ -1634,7 +1634,7 @@ fn match_tgd_body(
     li:       usize,
     binding:  &mut Vec<Option<SymbolId>>,
     on_match: &mut dyn FnMut(&mut Vec<Option<SymbolId>>),
-    deadline: Option<std::time::Instant>,
+    deadline: Option<crate::clock::Instant>,
     stop:     &std::cell::Cell<bool>,
     visits:   &std::cell::Cell<usize>,
 ) {
@@ -1642,7 +1642,7 @@ fn match_tgd_body(
     // can burn seconds scanning without ever firing — cap the join's
     // EFFORT, not just its yield.
     const MAX_VISITS_PER_TGD: usize = 100_000;
-    if stop.get() || deadline.is_some_and(|d| std::time::Instant::now() > d) {
+    if stop.get() || deadline.is_some_and(|d| crate::clock::Instant::now() > d) {
         return;
     }
     let Some(lit) = lits.get(li) else {
@@ -3108,8 +3108,8 @@ mod tests {
             vec![pos(atom("a", vec![v(0)])), pos(atom("b", vec![v(1)]))],
         );
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-        let t0 = std::time::Instant::now();
+        let deadline = crate::clock::Instant::now() + std::time::Duration::from_millis(50);
+        let t0 = crate::clock::Instant::now();
         let result = p.evaluate_within(50_000_000, Some(deadline));
         let elapsed = t0.elapsed();
 
@@ -3241,7 +3241,7 @@ mod tests {
     #[ignore]
     fn headline_full_sumo_instance_cone_under_default_budget() {
         use crate::semantics::caches::test_support::kif_layer;
-        use std::time::Instant;
+        use crate::clock::Instant;
 
         // Load the full KB from the config's constituent list.
         let home = std::env::var("HOME").unwrap_or_default();

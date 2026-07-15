@@ -47,7 +47,9 @@
 //! diagnostic purposes, but callers that want fidelity should check
 //! `missing.is_empty()` and fall back otherwise.
 
-#![cfg(feature = "ask")]
+// Available under either prover backend: the native prover also produces
+// proofs whose steps get rendered through `render_formula` (see `proof_prose`).
+#![cfg(any(feature = "ask", feature = "native-prover"))]
 
 use super::KnowledgeBase;
 use crate::parse::ast::AstNode;

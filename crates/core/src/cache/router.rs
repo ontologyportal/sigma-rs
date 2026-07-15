@@ -265,7 +265,7 @@ fn run_reactor(
     if let Some(min_ms) = *PROFILE.get_or_init(|| {
         std::env::var("SIGMA_REACTOR_PROFILE").ok().map(|v| v.parse().unwrap_or(1.0))
     }) {
-        let t0  = std::time::Instant::now();
+        let t0  = crate::clock::Instant::now();
         let out = run_reactor_inner(entry, relevant, config);
         let ms  = t0.elapsed().as_secs_f64() * 1e3;
         if ms >= min_ms {

@@ -17,7 +17,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use std::time::Instant;
+use crate::clock::Instant;
 
 use smallvec::SmallVec;
 
@@ -3752,12 +3752,12 @@ impl<'a> NativeProver<'a> {
         self.ensure_guide_model();
         self.defer_active = false;
         let dbg_prologue = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
-        let mut t_pass = std::time::Instant::now();
-        let mark = |name: &str, t: &mut std::time::Instant| {
+        let mut t_pass = crate::clock::Instant::now();
+        let mark = |name: &str, t: &mut crate::clock::Instant| {
             if dbg_prologue {
                 eprintln!("[SIGMA_MODEL_TRACE] prologue {name}: {:?}", t.elapsed());
             }
-            *t = std::time::Instant::now();
+            *t = crate::clock::Instant::now();
         };
         self.discharge_horn_joins();
         mark("horn_joins", &mut t_pass);

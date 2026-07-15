@@ -18,6 +18,9 @@
 
 mod model;
 mod emit;
+// TSTP transcript parsing (subprocess-backend only) pulls in `regex`, an
+// `ask`-only dep; the native prover's proof vocabulary lives in `model`/`emit`.
+#[cfg(feature = "ask")]
 pub(crate) mod tstp;
 
 pub use model::{IrProofStep, KifProofStep};

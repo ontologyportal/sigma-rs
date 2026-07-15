@@ -6,6 +6,10 @@ use crate::SineParams;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 use crate::layer::TopLayer;
 
+// The external (subprocess) prover spawns `vampire`/`E` and parses their TSTP
+// transcripts with `regex` — impossible on wasm32, so the whole module is
+// gated on `ask`.  The native saturation prover (`saturate`) shares none of it.
+#[cfg(feature = "ask")]
 pub mod external;
 #[cfg(feature = "native-prover")]
 pub mod saturate;
@@ -13,6 +17,9 @@ pub mod saturate;
 pub mod result;
 
 pub mod proof;
+// TSTP transcript parsing is consumed only by the subprocess backends and
+// pulls in `regex` (an `ask`-only dep), so it rides the `ask` gate.
+#[cfg(feature = "ask")]
 pub(crate) use proof::tstp as tptp_proof;
 pub mod axiom_source;
 
@@ -30,7 +37,9 @@ pub(crate) use parked;
 pub use result::*;
 #[cfg(feature = "native-prover")]
 pub use saturate::ProverLayer;
+#[cfg(feature = "ask")]
 pub use external::{ExternalProverLayer, ExternalOpts};
+#[cfg(feature = "ask")]
 pub use external::backends::{Prover, ProverRunner, ProverOpts, ProverMode};
 
 /// A [`TopLayer`] that can discharge a proof obligation — the single seam

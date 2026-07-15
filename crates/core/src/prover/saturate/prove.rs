@@ -3,7 +3,7 @@
 // Proving driver
 
 use std::collections::HashSet;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::{SentenceId, SymbolId, profile_span};
 use crate::prover::{ProverResult, ProverStatus, TerminationReason};

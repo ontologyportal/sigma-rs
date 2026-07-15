@@ -5,7 +5,7 @@
 // equation saturation) -- both run ONCE before the main given-clause
 // loop, over the pre-activated background.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::types::SentenceId;
 

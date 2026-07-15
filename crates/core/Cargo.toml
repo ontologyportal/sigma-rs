@@ -13,9 +13,16 @@ persist = ["dep:heed", "dep:bincode"]
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = ["dep:regex"]
 # Native saturation prover (residue index + theory oracle + given-clause
-# loop).  Pure Rust, no external prover, no new dependencies. 
+# loop).  Pure Rust, no external prover, no new dependencies.
 # Adds the ProverLayer top layer and KnowledgeBase::new_native.
-native-prover = ["ask"]
+# Deliberately does NOT imply `ask`: `ask` is the SUBPROCESS prover (spawns
+# vampire/E, pulls in regex) and is `compile_error!`-banned on wasm32.  The
+# native saturation prover is pure Rust and is the one heavyweight proving
+# capability that CAN run on wasm32, so it must be reachable without `ask`.
+# Shared proving infra (the generic `KnowledgeBase::ask`/`audit_consistency`
+# entry points in kb/prove.rs, the `ProvingLayer` trait) is gated on
+# `any(ask, native-prover)` so both backends share it.
+native-prover = []
 # Generic inductive-definition model builder (the "ModelLayer").  Umbrella
 # flag for wiring the Datalog(¬) model engine into the prover's query path
 # (Phase 5+).  The engine + reproduction tests live under `native-prover`
@@ -87,6 +94,12 @@ vampire-prover = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670
 
 # Direct vampire-sys access for the clausify path (integrated-prover only).
 vampire-sys = { git = "https://github.com/theo-kim/vampire-rs", rev = "f25670d5ddec82594aa9019029e7ea8961acc8c8", optional = true }
+
+# wasm32 has no system clock: `std::time::Instant::now()` /
+# `SystemTime::now()` panic at runtime.  `crate::clock` backs those with
+# `js_sys::Date::now()` on wasm only, so `js-sys` is a wasm-target dep.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
 
 [dev-dependencies]
 env_logger = "0.11"

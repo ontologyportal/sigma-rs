@@ -14,7 +14,7 @@
 // unconditionally, for A/B testing and backward compat.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::types::{Element, SentenceId, Symbol, SymbolId};
 

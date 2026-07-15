@@ -1,9 +1,13 @@
 //! Theorem-proving entrypoints on `KnowledgeBase`.
+//!
+//! Gated on `any(ask, native-prover)`: the generic `ask` / `audit_consistency`
+//! entry points are backend-agnostic (any `ProvingLayer`), so they must be
+//! reachable by the native saturation prover WITHOUT the subprocess `ask`
+//! feature — the native prover is the only proving backend that runs on wasm32.
 
-#![cfg(feature = "ask")]
+#![cfg(any(feature = "ask", feature = "native-prover"))]
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::prover::{CommonProverOpts, ProverResult, ProvingLayer};
 #[cfg(feature = "native-prover")]
@@ -30,9 +34,9 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         with_guard!(self);
         self.debug(format!("ask: query={}", tc.query_kif().unwrap_or_default()));
 
-        let session = session.map_or_else(|| format!("{:x}", 
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ), |s| s.to_string());
+        let session = session.map_or_else(
+            || format!("{:x}", crate::clock::epoch_nanos()),
+            |s| s.to_string());
 
         let Some(query) = tc.query else { return ProverResult::default() };
         // Hypothesis-staging failures must not stay silent: a hypothesis

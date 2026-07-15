@@ -19,6 +19,7 @@ compile_error!(
 
 // -- Module declarations ------------------------------------------------------
 
+pub(crate) mod clock;
 pub(crate) mod parse;
 pub(crate) mod gf64;
 pub(crate) mod diagnostic;
@@ -106,11 +107,14 @@ pub use parse::tptp::syntax::detect_tptp_lang;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use prover::{
     ProverStatus,
-    ProverRunner,
     ProverResult,
     Binding,
     ProverTimings,
 };
+// `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they
+// live in the `ask`-only `external` module, absent on native/wasm builds.
+#[cfg(feature = "ask")]
+pub use prover::ProverRunner;
 #[cfg(feature = "ask")]
 pub use prover::Prover;
 #[cfg(any(feature = "ask", feature = "native-prover"))]

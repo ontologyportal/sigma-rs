@@ -100,7 +100,7 @@ impl TermArena {
         terms: &[(bool, Term)],
         lits: &[PLit],
     ) -> Option<SmallVec<[u32; 4]>> {
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let mut out: SmallVec<[u32; 4]> = SmallVec::with_capacity(terms.len());
         let mut ok = true;
         for ((_, t), l) in terms.iter().zip(lits.iter()) {

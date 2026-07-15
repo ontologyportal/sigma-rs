@@ -46,7 +46,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use crate::clock::Instant;
 
 use smallvec::SmallVec;
 

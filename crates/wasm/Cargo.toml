@@ -7,7 +7,12 @@ edition.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-sigmakee-rs-core.workspace = true
+# Direct path dep with `default-features = false` (NOT `workspace = true`):
+# the workspace edge turns on core's default `ask` feature, which spawns
+# subprocess provers and is `compile_error!`-banned on wasm32.  We enable only
+# `native-prover` — the pure-Rust saturation prover, the one proving backend
+# that runs in-browser.
+sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover"] }
 serde.workspace            = true
 serde_json.workspace       = true
 wasm-bindgen               = "0.2"
