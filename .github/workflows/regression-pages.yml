@@ -167,6 +167,31 @@ jobs:
             !regression-out/work
           retention-days: 14
 
+      # -- In-browser demo (published under /browse) --------------------------
+      # This site is the sole Pages deployment, so the demo is staged into the
+      # same artifact. Gated with `continue-on-error` so a wasm hiccup can't
+      # block the regression report deploy.
+      - name: Install wasm toolchain (for the demo)
+        continue-on-error: true
+        run: |
+          rustup target add wasm32-unknown-unknown
+          # Match the wasm-bindgen CLI to the crate version in Cargo.lock.
+          WB_VER=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
+                   | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "wasm-bindgen $WB_VER"
+          cargo install wasm-bindgen-cli --version "$WB_VER" --locked
+          sudo apt-get install -y binaryen   # wasm-opt (build-npm.sh uses it to shrink the .wasm)
+
+      - name: Build & stage the in-browser demo at /browse
+        id: demo
+        continue-on-error: true
+        run: |
+          crates/wasm/build-npm.sh
+          mkdir -p site/browse
+          cp -R crates/wasm/web/* site/browse/       # web/pkg is gitignored / absent in CI
+          rm -rf site/browse/pkg
+          cp -R crates/wasm/pkg site/browse/pkg
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

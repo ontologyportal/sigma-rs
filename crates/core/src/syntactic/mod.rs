@@ -44,7 +44,7 @@ pub mod position;
 pub mod display;
 pub mod sine;
 mod select;
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) use select::SelectionParams;
 pub mod caches;
 pub(crate) mod pattern;

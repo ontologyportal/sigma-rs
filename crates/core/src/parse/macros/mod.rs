@@ -42,7 +42,7 @@ pub(crate) fn expand_node(node: AstNode) -> Vec<AstNode> {
 /// skolemizing (`∃X. ¬φ`).  Keeping the quantifier lets
 /// `lift_form`→`nnf` flip ∀→∃ and skolemize correctly; genuinely free
 /// SUMO query variables (no wrapper) are untouched either way.
-#[cfg(feature = "ask")]
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) fn expand_node_conjecture(node: AstNode) -> Vec<AstNode> {
     expand_node_inner(node, false)
 }

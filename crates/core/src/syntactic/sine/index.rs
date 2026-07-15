@@ -152,7 +152,7 @@ impl SineIndex {
 
     /// Every tracked axiom containing symbol `s`, with the axiom's cached
     /// g_min, in descending g_min order. Empty slice for unknown symbols.
-    #[cfg(feature = "ask")]
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
     #[inline]
     pub(crate) fn axioms_of_symbol(&self, s: SymbolId) -> &[(usize, SentenceId)] {
         self.sym_to_axioms.get(&s).map(Vec::as_slice).unwrap_or(&[])

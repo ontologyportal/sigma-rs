@@ -239,7 +239,7 @@ impl SyntacticLayer {
     /// A snapshot of the whole `forward` map (`fingerprint -> roots`), for
     /// bulk provenance.
     // Sole caller is the ask-gated `root_source_nodes` bulk walk.
-    #[cfg(feature = "ask")]
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn fingerprint_roots(&self) -> Vec<(u64, Vec<SentenceId>)> {
         self.sentences.side().forward.iter()
             .map(|e| (*e.key(), e.value().to_vec()))
