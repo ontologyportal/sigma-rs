@@ -212,6 +212,21 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
                 f
             }
         };
+        // The original conjecture appears as its own leaf step, with the
+        // negated form derived FROM it — verifiers (GDV) check the
+        // `negate_conjecture` inference against its parent, so a parentless
+        // negated conjecture fails structural verification ("'f1' is not a
+        // cth of its parents").  This mirrors Vampire transcripts: a
+        // `conjecture` input step, then `inference(negate_conjecture,
+        // [status(cth)], [<it>])`.
+        steps.push(KifProofStep {
+            index: steps.len(),
+            rule: "conjecture".to_string(),
+            premises: Vec::new(),
+            formula: formula.clone(),
+            source_sid: None,
+        });
+        let conj_idx = steps.len() - 1;
         let negated = AstNode::List {
             elements: vec![AstNode::Operator { op: OpKind::Not, span: Span::synthetic() }, formula],
             span: Span::synthetic(),
@@ -219,7 +234,7 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         steps.push(KifProofStep {
             index: steps.len(),
             rule: "negated_conjecture".to_string(),
-            premises: Vec::new(),
+            premises: vec![conj_idx],
             formula: negated,
             source_sid: None,
         });

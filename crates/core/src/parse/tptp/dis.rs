@@ -9,7 +9,7 @@
 // clausification); FOF frames any untyped formula; non-conforming statements
 // are dropped and reported in `EmitResult.dropped`.
 
-use crate::parse::ast::{AstNode, OpKind, Role, Source};
+use crate::parse::ast::{AstNode, OpKind, Role, Source, Span};
 use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 use super::syntax;
 use super::tokenizer::{tokenize, TokenKind};
@@ -239,6 +239,26 @@ fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, Stri
         TptpLang::Tff => "tff",
         TptpLang::Auto => unreachable!("Auto is resolved before frame_stmt"),
     };
+    // FOF/TFF formulas must be closed — TPTP permits free variables only in
+    // cnf clauses, where they are implicitly universal.  KIF-convention ASTs
+    // leave universal variables free (derived proof clauses; top-level
+    // foralls stripped for display), so close them with an explicit
+    // universal binder here.
+    let closed;
+    let formula = match lang {
+        TptpLang::Fof | TptpLang::Tff => {
+            let mut free = Vec::new();
+            free_var_names(formula, &mut Vec::new(), &mut free);
+            if free.is_empty() {
+                formula
+            } else {
+                closed = universal_closure(formula, free);
+                &closed
+            }
+        }
+        _ => formula,
+    };
+
     // TFF quantifier binders carry an explicit sort (`![X: $i]`); every other
     // language renders untyped binders.  Symbol typing is monomorphic over `$i`
     // (declared in the document preamble), so bodies are otherwise identical.
@@ -258,14 +278,80 @@ fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, Stri
     })
 }
 
+/// Free-variable names of `node` in first-appearance order, respecting
+/// `forall`/`exists` binders (a variable bound by an enclosing quantifier
+/// is not free in its body).
+fn free_var_names(node: &AstNode, bound: &mut Vec<String>, out: &mut Vec<String>) {
+    match node {
+        AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => {
+            if !bound.iter().any(|b| b == name) && !out.iter().any(|o| o == name) {
+                out.push(name.clone());
+            }
+        }
+        AstNode::Annotated { formula, .. } => free_var_names(formula, bound, out),
+        AstNode::List { elements, .. } => {
+            let is_quant = matches!(elements.first(),
+                Some(AstNode::Operator { op: OpKind::ForAll | OpKind::Exists, .. }));
+            if !is_quant {
+                for e in elements { free_var_names(e, bound, out); }
+                return;
+            }
+            let depth = bound.len();
+            match elements.get(1) {
+                Some(AstNode::List { elements: vs, .. }) => {
+                    for v in vs {
+                        if let AstNode::Variable { name, .. }
+                             | AstNode::RowVariable { name, .. } = v {
+                            bound.push(name.clone());
+                        }
+                    }
+                }
+                Some(AstNode::Variable { name, .. })
+                | Some(AstNode::RowVariable { name, .. }) => bound.push(name.clone()),
+                _ => {}
+            }
+            for body in elements.iter().skip(2) {
+                free_var_names(body, bound, out);
+            }
+            bound.truncate(depth);
+        }
+        _ => {}
+    }
+}
+
+/// `formula` wrapped in one explicit universal binder over `names` — the
+/// closure [`frame_stmt`] applies before framing an open formula as FOF/TFF.
+fn universal_closure(formula: &AstNode, names: Vec<String>) -> AstNode {
+    let sp = Span::synthetic;
+    AstNode::List {
+        elements: vec![
+            AstNode::Operator { op: OpKind::ForAll, span: sp() },
+            AstNode::List {
+                elements: names.into_iter()
+                    .map(|name| AstNode::Variable { name, span: sp() })
+                    .collect(),
+                span: sp(),
+            },
+            formula.clone(),
+        ],
+        span: sp(),
+    }
+}
+
 /// TPTP annotation-source term for a [`Source`].  Inputs cite
 /// `file('<path>')`; inferences cite `inference(<rule>, [status(<s>)],
-/// [<parents>])` — `cth` (counter-theorem) for `negate_conjecture`, else `thm`.
+/// [<parents>])` — `cth` (counter-theorem) for `negate_conjecture`, `esa`
+/// (equisatisfiable) for `cnf_transformation` (clausification skolemizes,
+/// so the clauses are not theorems of their parent), else `thm`.
 fn render_source(src: &Source) -> String {
     match src {
         Source::Input(f) => format!("file('{f}')"),
         Source::Inference { rule, parents } => {
-            let status = if rule == "negate_conjecture" { "cth" } else { "thm" };
+            let status = match rule.as_str() {
+                "negate_conjecture" => "cth",
+                "cnf_transformation" => "esa",
+                _ => "thm",
+            };
             format!("inference({}, [status({status})], [{}])",
                 syntax::lower_word(rule), parents.join(","))
         }
@@ -482,11 +568,34 @@ mod tests {
 
     #[test]
     fn fof_frames_quantified_formula() {
+        // A KIF-convention open formula (free ?X = implicitly universal) is
+        // explicitly closed on framing: fof formulas must have no free
+        // variables (GDV rejects them).
         let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
         assert_eq!(r.text.trim_end(),
-            "fof(a1, axiom, (instance(X,'Human') => mortal(X))).");
+            "fof(a1, axiom, (! [X] : (instance(X,'Human') => mortal(X)))).");
         assert!(r.is_complete());
+    }
+
+    #[test]
+    fn fof_closure_skips_bound_vars_and_keeps_order() {
+        // Only genuinely free variables are closed over — ?Y is bound by the
+        // inner exists and must not reappear in the outer binder.  Free vars
+        // bind in first-appearance order.
+        let f = parse_one("(=> (p ?X ?Z) (exists (?Y) (q ?X ?Y)))");
+        let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Plain, "f7", f));
+        assert_eq!(r.text.trim_end(),
+            "fof(f7, plain, (! [X,Z] : (p(X,Z) => (? [Y] : q(X,Y))))).");
+    }
+
+    #[test]
+    fn cnf_keeps_free_variables_open() {
+        // cnf clauses are the one TPTP form where free variables are legal
+        // (implicitly universal) — no closure there.
+        let clause = parse_one("(or (p ?X) (not (q ?X)))");
+        let r = Emitter::Tptp(TptpLang::Cnf).emit_one(&ann(Role::Axiom, "c1", clause));
+        assert!(r.text.contains("p(X) | (~ q(X))") && !r.text.contains("! ["), "{}", r.text);
     }
 
     #[test]
@@ -535,7 +644,7 @@ mod tests {
             parse_one("(not (q a))"));
         let r = Emitter::Tptp(TptpLang::Fof).emit(&[input, derived, negc]);
         let lines: Vec<&str> = r.text.lines().collect();
-        assert_eq!(lines[0], "fof(f1, axiom, p(X), file('p.kif')).");
+        assert_eq!(lines[0], "fof(f1, axiom, (! [X] : p(X)), file('p.kif')).");
         assert_eq!(lines[1],
             "fof(f3, plain, q(a), inference(resolution, [status(thm)], [f1,f2])).");
         assert_eq!(lines[2],

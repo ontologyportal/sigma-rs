@@ -120,16 +120,19 @@ pub fn formula_to_kif(tptp: &str) -> String {
 /// ready for emission through a dialect ([`crate::parse::dialect::Emitter`]).
 ///
 /// Mirrors the framing the bespoke TPTP proof emitter used: each step is named
-/// `f{index+1}`; a premise-less input axiom cites `file(problem)`; the
-/// premise-less negated conjecture cites a `negate_conjecture` inference;
-/// derived steps cite `inference(rule, [parents])`.  Names are assigned before
-/// parents are wired so `Source::Inference.parents` resolve.
+/// `f{index+1}`; a premise-less input axiom (or conjecture) cites
+/// `file(problem)`; the negated conjecture cites a `negate_conjecture`
+/// inference over its conjecture parent (premise-less fallback: the same
+/// inference with no parents); derived steps cite `inference(rule, [parents])`.
+/// Names are assigned before parents are wired so `Source::Inference.parents`
+/// resolve.
 pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
     use crate::parse::ast::{Role, Source};
     steps.iter().map(|s| {
         let role = match s.rule.as_str() {
             "axiom"              => Role::Axiom,
             "hypothesis"         => Role::Hypothesis,
+            "conjecture"         => Role::Conjecture,
             "negated_conjecture" => Role::NegatedConjecture,
             _                    => Role::Plain,
         };
@@ -140,8 +143,16 @@ pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
                 Source::Input(problem.to_string())
             }
         } else {
+            // The negated conjecture cites the `negate_conjecture` inference
+            // (whose TPTP status is `cth`, see `render_source`) over its
+            // conjecture parent — not its own role word as a rule name.
+            let rule = if s.rule == "negated_conjecture" {
+                "negate_conjecture".to_string()
+            } else {
+                s.rule.clone()
+            };
             Source::Inference {
-                rule:    s.rule.clone(),
+                rule,
                 parents: s.premises.iter().map(|p| format!("f{}", p + 1)).collect(),
             }
         };
@@ -397,14 +408,15 @@ mod tests {
         assert!(kif.text.contains("(=>\n  (human ?X)\n  (mortal ?X))"), "{}", kif.text);
         assert!(!kif.text.contains("fof("), "kif must not frame: {}", kif.text);
 
-        // FOF: framed, untyped.
+        // FOF: framed, untyped, free variables universally closed (fof
+        // formulas must be closed — GDV rejects unquantified variables).
         let fof = emit_proof(&p, "demo", Emitter::Tptp(TptpLang::Fof));
-        assert!(fof.text.contains("fof(f1, axiom, (human(X) => mortal(X)), file('demo'))."), "{}", fof.text);
+        assert!(fof.text.contains("fof(f1, axiom, (! [X] : (human(X) => mortal(X))), file('demo'))."), "{}", fof.text);
         assert!(fof.text.contains("inference(resolve, [status(thm)], [f1,f2])"), "{}", fof.text);
 
-        // TFF: typed preamble + binder-free body here (free var), framed as tff.
+        // TFF: typed preamble + the same closure with a typed binder.
         let tff = emit_proof(&p, "demo", Emitter::Tptp(TptpLang::Tff));
         assert!(tff.text.contains("type, human: $i > $o)."), "{}", tff.text);
-        assert!(tff.text.contains("tff(f1, axiom,"), "{}", tff.text);
+        assert!(tff.text.contains("tff(f1, axiom, (! [X: $i] : (human(X) => mortal(X))), file('demo'))."), "{}", tff.text);
     }
 }
