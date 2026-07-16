@@ -52,10 +52,23 @@ rm -rf "$OUT_PATH"
 mkdir -p "$OUT_PATH"
 wasm-bindgen --target "$TARGET" --out-dir "$OUT_PATH" "$WASM_IN"
 
-# Optional size pass — only if wasm-opt (binaryen) is installed.
+# Optional size pass — only if wasm-opt (binaryen) is installed. Never fatal:
+# older binaryen builds reject newer wasm opcodes (e.g. reference-types /
+# bulk-memory: "invalid code after misc prefix: 17"), so we pass the feature
+# flags and, if it still fails, keep the unoptimized .wasm rather than abort.
 if command -v wasm-opt >/dev/null; then
   echo "==> Optimizing .wasm with wasm-opt -Oz"
-  wasm-opt -Oz "$OUT_PATH/${LIB_NAME}_bg.wasm" -o "$OUT_PATH/${LIB_NAME}_bg.wasm"
+  WASM_FILE="$OUT_PATH/${LIB_NAME}_bg.wasm"
+  if wasm-opt -Oz \
+       --enable-bulk-memory --enable-reference-types --enable-mutable-globals \
+       --enable-nontrapping-float-to-int --enable-sign-ext \
+       "$WASM_FILE" -o "$WASM_FILE.opt" 2>/dev/null; then
+    mv "$WASM_FILE.opt" "$WASM_FILE"
+    echo "    optimized"
+  else
+    rm -f "$WASM_FILE.opt"
+    echo "    wasm-opt failed (likely an old binaryen); keeping the unoptimized .wasm"
+  fi
 else
   echo "==> wasm-opt not found; skipping size optimization (optional)"
 fi

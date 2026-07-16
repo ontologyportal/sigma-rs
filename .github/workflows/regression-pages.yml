@@ -1,29 +1,30 @@
-# Nightly regression battery, published to GitHub Pages.
+# GitHub Pages: the in-browser demo (always) + the SUMO regression report.
 #
+# Two triggers, one Pages artifact:
+#   * push to main  — fast: rebuild the demo and redeploy it alongside the MOST
+#                     RECENT regression report (re-fetched from the live site).
+#                     The regression battery itself does NOT run on push.
+#   * nightly cron / manual dispatch — run the full regression battery, rebuild
+#                     the report AND the demo, and deploy both.
+#
+# The regression battery (only on the nightly/dispatch path):
 #   * ontology  — `sumo -c --git https://github.com/ontologyportal/sumo load`
-#                 (the CLI's own git feature; one sparse fetch, no checkout)
-#   * SUMO tests — tests/**/*.kif.tq enumerated via the GitHub trees API and
-#                 fetched per-case by the CLI's http feature from
-#                 raw.githubusercontent.com
+#   * SUMO tests — tests/**/*.kif.tq via the GitHub trees API + the CLI's http feature
 #   * TPTP smoke — .github/scripts/fetch_tptp.py scrapes tptp.org's SeeTPTP pages
-#                 (there is no raw endpoint) into a cached $TPTP tree
-#   * vampire   — a prebuilt Linux release binary is installed onto PATH
-#                 (cached by version), which turns on the SUMO pool's
-#                 `subprocess` backend and a same-slice/same-budget raw-
-#                 vampire comparison column on the TPTP smoke table
+#   * vampire   — a prebuilt Linux release binary on PATH (subprocess backend + compare column)
 #
-# Results are published, not graded: the page prints each test's outcome,
-# diffs it against the previous published run, and keeps a history table
-# (the live site's results.json/history.json are fetched before each build,
-# so the site itself is the storage).  The trailing `gate` job only turns
-# the run red when the run itself was unhealthy — build, ontology load,
-# test enumeration, or missing TPTP inputs.
+# Results are published, not graded: the page diffs each run against the previous
+# published run and keeps a history table (the live site's results.json/history.json
+# are the storage).  The trailing `gate` job (nightly only) turns the run red when
+# the run itself was unhealthy.
 #
 # One-time repo setup: Settings → Pages → Source: "GitHub Actions".
 
 name: Regression Pages
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       sumo_branch:
@@ -55,7 +56,7 @@ env:
 
 jobs:
   regression:
-    name: run regression
+    name: build pages
     runs-on: ubuntu-latest
     timeout-minutes: 120
     outputs:
@@ -65,14 +66,16 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install CMake + toolchain deps (embedded Vampire FFI)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake build-essential
-
       - uses: Swatinem/rust-cache@v2
         with:
           key: regression-pages
+
+      # ---- Regression battery: nightly cron / manual dispatch only ----------
+      - name: Install CMake + toolchain deps (embedded Vampire FFI)
+        if: github.event_name != 'push'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential
 
       # A standalone `vampire` binary on PATH — separate from the embedded
       # FFI build above — turns on the SUMO pool's `subprocess` backend and
@@ -80,6 +83,7 @@ jobs:
       # ci_regression.sh). Cached by version so this is a cache hit on every
       # run except a VAMPIRE_VERSION bump.
       - name: Cache vampire binary
+        if: github.event_name != 'push'
         id: cache-vampire
         uses: actions/cache@v4
         with:
@@ -87,7 +91,7 @@ jobs:
           key: vampire-${{ env.VAMPIRE_VERSION }}-linux-x64
 
       - name: Install vampire
-        if: steps.cache-vampire.outputs.cache-hit != 'true'
+        if: github.event_name != 'push' && steps.cache-vampire.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.local/vampire-bin
           curl -fsSL -o /tmp/vampire.zip \
@@ -96,25 +100,30 @@ jobs:
           chmod +x ~/.local/vampire-bin/vampire
 
       - name: Add vampire to PATH
+        if: github.event_name != 'push'
         run: |
           echo "$HOME/.local/vampire-bin" >> "$GITHUB_PATH"
           "$HOME/.local/vampire-bin/vampire" --version
 
       - name: Build sumo (release)
+        if: github.event_name != 'push'
         run: cargo build --release --bin sumo
 
       # The scraped TPTP tree only changes when the problem list (or the
       # scraper) does — cache it so tptp.org is normally never touched.
       - name: Cache TPTP problem tree
+        if: github.event_name != 'push'
         uses: actions/cache@v4
         with:
           path: ~/TPTP
           key: tptp-tree-${{ hashFiles('.github/scripts/tptp_regression.list', '.github/scripts/fetch_tptp.py') }}
 
       - name: Fetch TPTP problems (tptp.org SeeTPTP scrape, cache misses only)
+        if: github.event_name != 'push'
         run: python3 .github/scripts/fetch_tptp.py --list .github/scripts/tptp_regression.list --dest ~/TPTP
 
       - name: Run regression (remote ontology + tests)
+        if: github.event_name != 'push'
         id: regress
         continue-on-error: true
         env:
@@ -127,6 +136,7 @@ jobs:
           TPTP="$HOME/TPTP" bash .github/scripts/ci_regression.sh
 
       - name: Report status
+        if: github.event_name != 'push'
         id: status
         run: |
           status=$(cat regression-out/status 2>/dev/null || echo FAIL)
@@ -138,6 +148,7 @@ jobs:
       # the storage, carried forward deploy to deploy.  Both fetches are
       # best-effort: a first run (or disabled Pages) just builds without them.
       - name: Fetch previous published results (deltas + history)
+        if: github.event_name != 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -150,6 +161,7 @@ jobs:
           ls -la prev/ || true
 
       - name: Build report site
+        if: github.event_name != 'push'
         run: |
           python3 .github/scripts/regression_report.py \
             --results regression-out \
@@ -159,6 +171,7 @@ jobs:
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Upload raw results (debugging)
+        if: github.event_name != 'push'
         uses: actions/upload-artifact@v4
         with:
           name: regression-out
@@ -167,10 +180,26 @@ jobs:
             !regression-out/work
           retention-days: 14
 
-      # -- In-browser demo (published under /browse) --------------------------
-      # This site is the sole Pages deployment, so the demo is staged into the
-      # same artifact. Gated with `continue-on-error` so a wasm hiccup can't
-      # block the regression report deploy.
+      # ---- Push builds: keep the most recent regression report --------------
+      # No regression run on push. The report is self-contained (index.html +
+      # results/history/badge json), so re-fetch it from the live Pages site
+      # and republish it beside the freshly-built demo. Best-effort: on a first
+      # deploy (no site yet) the report is simply absent until the next nightly.
+      - name: Restore last published report
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p site
+          url=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url 2>/dev/null || true)
+          [ -n "$url" ] || url="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+          echo "pages url: $url"
+          for f in index.html results.json history.json badge.json; do
+            curl -fsSL "${url%/}/$f?run=$GITHUB_RUN_ID" -o "site/$f" \
+              && echo "restored $f" || echo "no prior $f (first deploy?)"
+          done
+
+      # ---- In-browser demo: every build (push + nightly) --------------------
       - name: Install wasm toolchain (for the demo)
         continue-on-error: true
         run: |
@@ -208,11 +237,12 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
-  # Turns the run red when the run itself was unhealthy (build, load,
-  # enumeration, TPTP inputs) — after the page is up, so a failing night
-  # still publishes whatever it managed to produce.
+  # Turns the run red when the nightly regression itself was unhealthy (build,
+  # load, enumeration, TPTP inputs) — after the page is up. Skipped on push
+  # builds, which don't run the battery.
   gate:
     name: run-health gate
+    if: github.event_name != 'push'
     needs: [regression, deploy]
     runs-on: ubuntu-latest
     steps:
