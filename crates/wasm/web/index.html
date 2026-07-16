@@ -30,10 +30,14 @@
     #kbStatus { font-size: 12px; color: var(--muted); text-align: right; }
     #kbStatus b { color: var(--fg); }
 
-    nav.tabs { display: flex; gap: 4px; margin: 18px 0 16px; border-bottom: 1px solid var(--line); }
+    nav.tabs {
+      display: flex; gap: 4px; margin: 18px 0 16px; border-bottom: 1px solid var(--line);
+      overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+    }
     nav.tabs button {
       font: inherit; background: none; border: none; color: var(--muted); cursor: pointer;
       padding: 9px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+      flex: 0 0 auto; white-space: nowrap;
     }
     nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
 
@@ -302,6 +306,7 @@
           </div>
           <div class="inline" style="gap:8px">
             <span id="editStatus" class="hint"></span>
+            <button class="btn" id="editDownload" type="button" style="background:var(--card); color:var(--fg); border:1px solid var(--line)">Download</button>
             <button class="btn" id="editSave" type="button">Save</button>
           </div>
         </div>

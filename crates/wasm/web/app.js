@@ -88,20 +88,32 @@ function rebuildSession() {
 }
 
 /**
- * Save `text` as constituent `name`/`origin` — updates it in place (and
- * persists to OPFS for `file`-origin constituents) if already loaded, else
- * adds it as a brand-new constituent. Used by the Edit tab's Save button.
- * @returns {{ added: boolean, notices: string[] }}
+ * Save `text` as constituent `name`/`origin` — updates it in place if
+ * already loaded, else adds it as a brand-new constituent. Used by the Edit
+ * tab's Save button.
+ *
+ * For `file`-origin constituents, persists to OPFS FIRST (awaited), mirroring
+ * the Knowledge base tab's upload flow (`$('kbFile').onchange`), which writes
+ * to OPFS before ever registering the constituent. That ordering matters:
+ * `addConstituent` tracks `{name, origin}` in `savedConstituents`/localStorage
+ * regardless of whether a backing file exists, and `boot()` reloads every
+ * tracked constituent from `fromOrigin` on next launch — a `file`-origin
+ * entry with no OPFS handle throws there, and since `boot()` wraps its whole
+ * load loop in one try/catch, that throw aborts loading every OTHER
+ * constituent too, not just the broken one.
+ * @returns {Promise<{ added: boolean, notices: string[] }>}
  */
-function updateConstituentText(name, text, origin = 'file') {
+async function updateConstituentText(name, text, origin = 'file') {
+  if (origin === 'file') {
+    if (!opfsRoot) throw new Error('File system not initialized yet');
+    const handle = await opfsRoot.getFileHandle(name, { create: true });
+    const stream = await handle.createWritable();
+    await stream.write(text);
+    await stream.close();
+  }
   const idx = constituents.findIndex((c) => c.name === name && c.origin === origin);
   if (idx === -1) return addConstituent(name, text, origin);
   constituents[idx] = { ...constituents[idx], text };
-  if (origin === 'file' && opfsRoot) {
-    opfsRoot.getFileHandle(name, { create: true })
-      .then((h) => h.createWritable())
-      .then(async (stream) => { await stream.write(text); await stream.close(); });
-  }
   rebuildSession();
   return { added: false, notices: [] };
 }
@@ -147,18 +159,21 @@ async function boot() {
     await init();
     session = newSession();
     opfsRoot = await navigator.storage.getDirectory();
+    let i = 1;
+    const total = savedConstituents.length;
 
     for (const {name, origin} of savedConstituents) {
-      $('overlayMsg').textContent = `Loading ${name}...`;
+      $('overlayMsg').textContent = `Loading ${name} (${i}/${total})...`;
       const text = await fromOrigin(origin, name);
       $('overlayMsg').textContent = 'Loading & validating...';
       addConstituent(name, text, origin);  
+      i+=1;
     }
 
     $('overlay').remove();
   } catch (e) {
     $('overlayMsg').textContent = 'Failed to load SUMO.';
-    $('overlayErr').textContent = String(e && e.message || e) + '  (GitHub reachable? Try reloading.)';
+    $('overlayErr').textContent = String(e && e.message || e) + '  (Try checking your network connection.)';
     document.querySelector('.spinner')?.remove();
   }
 }
@@ -769,39 +784,61 @@ async function ensureEditorReady() {
 
 $('editPicker').addEventListener('change', onEditPickerChange);
 
+/** Save the buffer to the user's local disk (a real download, independent of the in-browser OPFS/KB state). */
+$('editDownload').onclick = () => {
+  if (!monacoEditor) return;
+  const name = editCurrentFile ? editCurrentFile.name : ($('editNewName').value.trim() || 'untitled.kif');
+  const blob = new Blob([monacoEditor.getValue()], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
 // Not routed through `withBusy` — it hardcodes error output to #kbLog, which
 // would silently misdirect Edit-tab errors into the (hidden) Knowledge base
 // tab. Inline busy-toggle instead, matching the Ask/Tell and Audit handlers.
-$('editSave').onclick = () => {
+$('editSave').onclick = async () => {
   const btn = $('editSave');
   btn.disabled = true; btn.textContent = 'Saving…';
-  setTimeout(() => {
-    try {
-      if (!monacoEditor) return;
-      const text = monacoEditor.getValue();
-      let name, origin;
-      if (editCurrentFile) {
-        ({ name, origin } = editCurrentFile);
-      } else {
-        name = $('editNewName').value.trim();
-        if (!name) throw new Error('Enter a filename first.');
-        origin = 'file';
-      }
-      const r = updateConstituentText(name, text, origin);
-      editCurrentFile = { name, origin };
-      populateEditPicker();
-      $('editPicker').value = `${name}|${origin}`;
-      $('editNewNameWrap').hidden = true;
-      runEditValidate();
-      $('editLog').style.color = '';
-      $('editLog').textContent = r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`;
-    } catch (e) {
-      $('editLog').style.color = 'var(--bad)';
-      $('editLog').textContent = String(e && e.message || e);
-    } finally {
-      btn.disabled = false; btn.textContent = 'Save';
+  try {
+    if (!monacoEditor) return;
+    const text = monacoEditor.getValue();
+    let name, origin;
+    if (editCurrentFile) {
+      ({ name, origin } = editCurrentFile);
+    } else {
+      name = $('editNewName').value.trim();
+      if (!name) throw new Error('Enter a filename first.');
+      origin = 'file';
     }
-  }, 0);
+    // Only `file`-origin constituents persist to OPFS (see updateConstituentText) —
+    // `sumo`/`url` ones are refetched from the network on every boot, so an
+    // in-memory edit here is silently gone the moment the page reloads.
+    if (origin === 'sumo' || origin === 'url') {
+      alert(
+        `"${name}" was loaded from ${origin === 'sumo' ? 'the SUMO GitHub repo' : 'a URL'}, ` +
+        `not uploaded to this browser. Your changes are saved in memory for this session only — ` +
+        `they will be discarded once you refresh the page.`
+      );
+    }
+    const r = await updateConstituentText(name, text, origin);
+    editCurrentFile = { name, origin };
+    populateEditPicker();
+    $('editPicker').value = `${name}|${origin}`;
+    $('editNewNameWrap').hidden = true;
+    runEditValidate();
+    $('editLog').style.color = '';
+    $('editLog').textContent = r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`;
+  } catch (e) {
+    $('editLog').style.color = 'var(--bad)';
+    $('editLog').textContent = String(e && e.message || e);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save';
+  }
 };
 
 boot();
