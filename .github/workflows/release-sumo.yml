@@ -190,18 +190,35 @@ jobs:
             Out-File -Encoding ASCII "$env:STAGING.zip.sha256"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.STAGING }}.${{ matrix.archive }}
-            ${{ env.STAGING }}.${{ matrix.archive }}.sha256
-          # The release itself is auto-created on the tag if it
-          # doesn't exist; otherwise the files are appended.  tag_name is
-          # explicit so workflow_call runs (whose github.ref is the
-          # caller's branch, not the tag) target the right release.
-          tag_name: ${{ env.RELEASE_TAG }}
-          draft: false
-          generate_release_notes: true
+        # `gh release upload` against a release created up front (by the
+        # release-version.yml orchestrator, or the ensure-step below for
+        # manually pushed tags).  Replaces softprops/action-gh-release:
+        # its per-leg auto-create raced across the matrix and the create
+        # call was observed reproducibly 503ing; uploads to an EXISTING
+        # release are a separate, reliable endpoint.  --clobber makes
+        # re-runs idempotent.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Manual tag pushes reach here with no release yet.  Creation may
+          # race across legs — losing the race is fine, upload appends.
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 \
+            || gh release create "${RELEASE_TAG}" --verify-tag \
+                 --title "${RELEASE_TAG}" --generate-notes \
+            || true
+          for i in 1 2 3; do
+            if gh release upload "${RELEASE_TAG}" \
+                 "${STAGING}.${{ matrix.archive }}" \
+                 "${STAGING}.${{ matrix.archive }}.sha256" \
+                 --clobber; then
+              exit 0
+            fi
+            echo "upload attempt $i failed; retrying in 20s" >&2
+            sleep 20
+          done
+          exit 1
 
       - name: Build StarExec package (linux-x64-gnu only)
         # `ubuntu-latest` is already StarExec's execution-node platform
@@ -224,11 +241,17 @@ jobs:
 
       - name: Upload StarExec package to release
         if: matrix.label == 'linux-x64-gnu'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.STAREXEC_OUT }}
-            ${{ env.STAREXEC_OUT }}.sha256
-          tag_name: ${{ env.RELEASE_TAG }}
-          draft: false
-          generate_release_notes: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if gh release upload "${RELEASE_TAG}" \
+                 "${STAREXEC_OUT}" "${STAREXEC_OUT}.sha256" --clobber; then
+              exit 0
+            fi
+            echo "upload attempt $i failed; retrying in 20s" >&2
+            sleep 20
+          done
+          exit 1

@@ -117,6 +117,25 @@ jobs:
           git tag "$TAG"
           git push origin main "$TAG"
 
+      - name: Create GitHub release
+        # Created HERE, once, so the five build legs never race to create
+        # it — they only upload assets.  Retried because the create call
+        # has been observed 503ing ("Unicorn!" page); if generated notes
+        # are what's failing server-side, fall back to plain notes — a
+        # release without pretty notes beats no release.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.bump.outputs.tag }}"
+          for i in 1 2 3; do
+            gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes && exit 0
+            echo "release create attempt $i failed; retrying in 20s" >&2
+            sleep 20
+          done
+          gh release create "$TAG" --verify-tag --title "$TAG" \
+            --notes "Automated release $TAG."
+
   build-cli:
     name: build + release sumo CLI
     needs: bump
