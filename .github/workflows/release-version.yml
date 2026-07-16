@@ -21,8 +21,12 @@
 #               (cargo + version-matched wasm-bindgen-cli + wasm-opt) and
 #               publishes it to npm.
 #
-# One-time repo setup: add an `NPM_TOKEN` repository secret (an npm
-# automation token with publish rights on the `sigmakee` package).
+# One-time npm setup (no token, no secret): npmjs.com → the `sigmakee`
+# package → Settings → Trusted Publisher → GitHub Actions, with
+# repository = this repo and workflow filename = `release-version.yml`.
+# The npm-publish job then authenticates via OIDC (`id-token: write`);
+# see https://docs.npmjs.com/trusted-publishers.  Requires npm >= 11.5.1
+# (Node 24's bundled npm) and a cloud-hosted runner — both satisfied here.
 # After a release, `git pull` locally — the bump commit lands on the
 # remote main.
 #
@@ -128,6 +132,9 @@ jobs:
     needs: bump
     if: ${{ inputs.publish_npm }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # OIDC — required for npm trusted publishing
     steps:
       - uses: actions/checkout@v4
         with:
@@ -156,13 +163,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Publish
+      - name: Publish (npm trusted publishing / OIDC)
+        # No token: the job's OIDC identity (repo + this workflow filename,
+        # registered as the package's Trusted Publisher on npmjs.com)
+        # authenticates the publish.  Requires npm >= 11.5.1 — Node 24's
+        # bundled npm qualifies; the version check below fails fast with a
+        # clear message if the runner image ever regresses.
         working-directory: crates/wasm/pkg
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -euo pipefail
+          NPM_VER=$(npm --version)
+          if [ "$(printf '%s\n11.5.1\n' "$NPM_VER" | sort -V | head -1)" != "11.5.1" ]; then
+            echo "npm $NPM_VER < 11.5.1 — too old for trusted publishing" >&2
+            exit 1
+          fi
           npm publish --dry-run
           npm publish
