@@ -47,6 +47,17 @@ on:
   push:
     tags:
       - 'sigmakee-v*'
+  # Callable from the release-version.yml orchestrator: a tag pushed with the
+  # default GITHUB_TOKEN deliberately does not trigger tag workflows
+  # (GitHub's recursion guard), so the orchestrator invokes this one
+  # directly with the tag it just created.  Manually pushed tags still
+  # trigger via `push` above, unchanged.
+  workflow_call:
+    inputs:
+      tag:
+        description: The sigmakee-vX.Y.Z tag to build and release
+        required: true
+        type: string
 
 permissions:
   contents: write  # needed to upload release artifacts
@@ -89,6 +100,17 @@ jobs:
             bin:     sumo.exe
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tag-triggered: github.ref IS the tag.  Called from the
+          # orchestrator: the run's ref is the caller's branch, so check
+          # out the tag it passed instead.
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Resolve release tag + commit
+        shell: bash
+        run: |
+          echo "RELEASE_TAG=${{ inputs.tag || github.ref_name }}" >> "${GITHUB_ENV}"
+          echo "BUILD_COMMIT=$(git rev-parse HEAD)" >> "${GITHUB_ENV}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -115,7 +137,7 @@ jobs:
         if: matrix.os != 'windows-latest'
         env:
           SUMO_BUILD_KIND:   release
-          SUMO_BUILD_COMMIT: ${{ github.sha }}
+          SUMO_BUILD_COMMIT: ${{ env.BUILD_COMMIT }}
         run: cargo build -p sigmakee --release --locked --target ${{ matrix.target }} --features integrated-prover
 
       - name: Build sumo CLI (release, --target, no integrated-prover on Windows)
@@ -127,7 +149,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         env:
           SUMO_BUILD_KIND:   release
-          SUMO_BUILD_COMMIT: ${{ github.sha }}
+          SUMO_BUILD_COMMIT: ${{ env.BUILD_COMMIT }}
         run: cargo build -p sigmakee --release --locked --target ${{ matrix.target }} --no-default-features --features ask,parallel,alloc-mi
 
       - name: Strip binary (Unix)
@@ -140,7 +162,7 @@ jobs:
           set -euo pipefail
           # Tag format: `sigmakee-vX.Y.Z`.  Strip the prefix so the
           # version inside the archive name is clean.
-          ver="${GITHUB_REF_NAME#sigmakee-v}"
+          ver="${RELEASE_TAG#sigmakee-v}"
           staging="sumo-${ver}-${{ matrix.label }}"
           mkdir "${staging}"
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${staging}/"
@@ -174,7 +196,10 @@ jobs:
             ${{ env.STAGING }}.${{ matrix.archive }}
             ${{ env.STAGING }}.${{ matrix.archive }}.sha256
           # The release itself is auto-created on the tag if it
-          # doesn't exist; otherwise the files are appended.
+          # doesn't exist; otherwise the files are appended.  tag_name is
+          # explicit so workflow_call runs (whose github.ref is the
+          # caller's branch, not the tag) target the right release.
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: false
           generate_release_notes: true
 
@@ -188,10 +213,10 @@ jobs:
         if: matrix.label == 'linux-x64-gnu'
         env:
           SUMO_BUILD_KIND:   release
-          SUMO_BUILD_COMMIT: ${{ github.sha }}
+          SUMO_BUILD_COMMIT: ${{ env.BUILD_COMMIT }}
         run: |
           set -euo pipefail
-          ver="${GITHUB_REF_NAME#sigmakee-v}"
+          ver="${RELEASE_TAG#sigmakee-v}"
           out="sumo-${ver}-starexec-linux-x64.tar.gz"
           .github/scripts/build_starexec_package.sh --out "${out}"
           shasum -a 256 "${out}" > "${out}.sha256"
@@ -204,5 +229,6 @@ jobs:
           files: |
             ${{ env.STAREXEC_OUT }}
             ${{ env.STAREXEC_OUT }}.sha256
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: false
           generate_release_notes: true

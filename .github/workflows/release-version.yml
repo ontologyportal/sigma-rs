@@ -1,0 +1,168 @@
+# One-button release orchestrator: bump → commit → tag → build → publish.
+#
+# Run from the Actions tab (workflow_dispatch).  Given a bump level
+# (patch/minor/major), it:
+#
+#   1. bump:    increments the workspace version in every tracked version
+#               file, in lockstep — Cargo.toml ([workspace.package],
+#               inherited by all five crates), crates/wasm/npm/package.json,
+#               and Cargo.lock (synced via `cargo update --workspace`, never
+#               sed: unrelated packages can share the version string).
+#               Commits "Release vX.Y.Z" to main and pushes the
+#               `sigmakee-vX.Y.Z` tag.
+#
+#   2. build-cli: calls release-sumo.yml with that tag — the same 5-platform
+#               binary matrix + StarExec package a manually pushed tag gets.
+#               (Called explicitly because a tag pushed with the default
+#               GITHUB_TOKEN does not trigger tag workflows — GitHub's
+#               recursion guard.)
+#
+#   3. npm-publish: builds the wasm package with crates/wasm/build-npm.sh
+#               (cargo + version-matched wasm-bindgen-cli + wasm-opt) and
+#               publishes it to npm.
+#
+# One-time repo setup: add an `NPM_TOKEN` repository secret (an npm
+# automation token with publish rights on the `sigmakee` package).
+# After a release, `git pull` locally — the bump commit lands on the
+# remote main.
+#
+# The LSP release (release.yml, `sumo-lsp-v*` tags) is deliberately not
+# orchestrated here — it has its own cadence.
+
+name: Release (version)
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version component to increment
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      publish_npm:
+        description: Publish the wasm package to npm
+        type: boolean
+        default: true
+
+permissions:
+  contents: write  # push the bump commit + tag; upload release artifacts
+
+jobs:
+  bump:
+    name: bump version + tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag:     ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump workspace version
+        id: bump
+        run: |
+          set -euo pipefail
+
+          CUR=$(awk -F'"' '/^\[workspace\.package\]/{s=1} s && /^version/{print $2; exit}' Cargo.toml)
+          [ -n "$CUR" ] || { echo "could not read [workspace.package] version"; exit 1; }
+
+          MAJOR=${CUR%%.*}; REST=${CUR#*.}; MINOR=${REST%%.*}; PATCH=${REST#*.}
+          case "${{ inputs.bump }}" in
+            major) NEW="$((MAJOR + 1)).0.0" ;;
+            minor) NEW="$MAJOR.$((MINOR + 1)).0" ;;
+            *)     NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+          esac
+          echo "bump: $CUR -> $NEW"
+
+          # Only the version line inside the [workspace.package] section.
+          awk -v new="$NEW" '
+              /^\[/ { sect = $0 }
+              sect == "[workspace.package]" && $1 == "version" && !done {
+                  sub(/"[0-9][0-9.]*"/, "\"" new "\""); done = 1
+              }
+              { print }
+          ' Cargo.toml > Cargo.toml.bump && mv Cargo.toml.bump Cargo.toml
+
+          # The npm package's own version (first "version" key — the header).
+          awk -v new="$NEW" '
+              !done && /^[[:space:]]*"version":/ {
+                  sub(/"[0-9][0-9.]*"/, "\"" new "\""); done = 1
+              }
+              { print }
+          ' crates/wasm/npm/package.json > pj.bump \
+              && mv pj.bump crates/wasm/npm/package.json
+
+          # Sync Cargo.lock's workspace-member entries.
+          cargo update --workspace --quiet
+
+          echo "version=$NEW"          >> "$GITHUB_OUTPUT"
+          echo "tag=sigmakee-v$NEW"    >> "$GITHUB_OUTPUT"
+
+      - name: Commit + tag + push
+        run: |
+          set -euo pipefail
+          NEW="${{ steps.bump.outputs.version }}"
+          TAG="${{ steps.bump.outputs.tag }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock crates/wasm/npm/package.json
+          git commit -m "Release v$NEW"
+          git tag "$TAG"
+          git push origin main "$TAG"
+
+  build-cli:
+    name: build + release sumo CLI
+    needs: bump
+    uses: ./.github/workflows/release-sumo.yml
+    with:
+      tag: ${{ needs.bump.outputs.tag }}
+    secrets: inherit
+    permissions:
+      contents: write
+
+  npm-publish:
+    name: publish sigmakee to npm
+    needs: bump
+    if: ${{ inputs.publish_npm }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: npm-publish-wasm
+
+      - name: Install wasm toolchain
+        # Same recipe as regression-pages.yml: the wasm-bindgen CLI must
+        # exactly match the crate version locked in Cargo.lock.
+        run: |
+          set -euo pipefail
+          rustup target add wasm32-unknown-unknown
+          WB_VER=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
+                     | awk -F'"' '/version/{print $2; exit}')
+          echo "wasm-bindgen $WB_VER"
+          cargo install wasm-bindgen-cli --version "$WB_VER" --locked
+          sudo apt-get install -y binaryen   # wasm-opt (optional size pass)
+
+      - name: Build npm package
+        run: ./crates/wasm/build-npm.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish
+        working-directory: crates/wasm/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm publish --dry-run
+          npm publish
