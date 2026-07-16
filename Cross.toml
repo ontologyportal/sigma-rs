@@ -1,0 +1,22 @@
+# cross-rs configuration (https://github.com/cross-rs/cross) — used by
+# .github/scripts/build_starexec_package.sh when cross-compiling (e.g.
+# building the StarExec linux-x64 package from a macOS host).
+#
+# The cross containers are minimal: they lack the OpenSSL headers that
+# libgit2-sys (via the SDK's git2 dependency) links against, so install
+# them (plus pkg-config so the build script can find them) before the
+# build.  $CROSS_DEB_ARCH pins the target architecture's packages when
+# cross-building to a foreign-arch container.
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update",
+    "apt-get install -y libssl-dev:$CROSS_DEB_ARCH pkg-config",
+]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update",
+    "apt-get install -y libssl-dev:$CROSS_DEB_ARCH pkg-config",
+]
