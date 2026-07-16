@@ -72,3 +72,11 @@ SUMO_SUBATTRIBUTE_RELATION = "subAttribute"
 
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# getrandom 0.3 (pulled in transitively by graphviz-rust's `tempfile` dep, used
+# only by its non-wasm `exec`/`exec_dot` process-spawning path — core's own
+# graphviz DOT-string rendering never calls it) requires wasm targets to pick
+# a backend explicitly at compile time. Set workspace-wide so `build-npm.sh`
+# doesn't need a special RUSTFLAGS incantation to cross-compile the wasm crate.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

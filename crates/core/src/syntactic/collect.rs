@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::syntactic::SyntacticLayer;
-use crate::{Element, OpKind, SentenceId, SymbolId};
+use crate::{Element, Literal, OpKind, SentenceId, SymbolId, TptpLang};
 
 impl SyntacticLayer {
      /// Collect every symbol id mentioned in `sent_id` (recursing into subs).
@@ -13,6 +13,49 @@ impl SyntacticLayer {
                 Element::Symbol(sym) => { out.insert(sym.id()); },
                 _ => continue
             };
+        }
+    }
+
+    /// `true` if `sent_id` (recursing into subs) contains a numeric literal
+    /// anywhere in its formula.
+    ///
+    /// Drives `TptpLang::Auto`'s Fof-vs-Tff choice: untyped TPTP (FOF/CNF)
+    /// has no numeric domain, so a numeral there becomes an opaque `n__N`
+    /// constant with no arithmetic distinctness (see `hide_numbers` in
+    /// `trans::lower`) — TFF emits it as a real `$int`/`$rat`/`$real`
+    /// literal instead. See `sigma-rs` memory `typed-suite-tff-gate` for
+    /// the concrete failure mode this exists to route around.
+    pub(crate) fn sentence_has_numeral(&self, sent_id: SentenceId) -> bool {
+        let Some(sentence) = self.sentence(sent_id) else { return false };
+        sentence.elements.iter().any(|el| match el {
+            Element::Sub(sid) => self.sentence_has_numeral(*sid),
+            Element::Literal(Literal::Number(_)) => true,
+            _ => false,
+        })
+    }
+
+    /// Resolve `TptpLang::Auto` against a sentence set: `Tff` if any
+    /// sentence contains a numeric literal (see
+    /// [`Self::sentence_has_numeral`]), else the untyped default `Fof`.
+    /// A non-`Auto` `mode` passes through unchanged — this never
+    /// second-guesses an explicit `--lang` choice.
+    ///
+    /// `sids` should be the *actually selected* set for this problem (the
+    /// whole KB for a bare whole-KB translate, or the post-SInE-selection
+    /// axioms — plus the conjecture/query — for a test file or a live
+    /// `ask`/`test` run), not the universe of everything loaded.
+    pub(crate) fn resolve_tptp_lang<'a>(
+        &self,
+        mode: TptpLang,
+        sids: impl IntoIterator<Item = &'a SentenceId>,
+    ) -> TptpLang {
+        if mode != TptpLang::Auto {
+            return mode;
+        }
+        if sids.into_iter().any(|&sid| self.sentence_has_numeral(sid)) {
+            TptpLang::Tff
+        } else {
+            TptpLang::Fof
         }
     }
 
@@ -90,5 +133,71 @@ impl SyntacticLayer {
                 self.collect_bound_vars(*sub, sub_in_formula_pos, out);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store(kif: &str) -> SyntacticLayer {
+        let mut store = SyntacticLayer::default();
+        store.load_kif(kif, "test");
+        store
+    }
+
+    fn root_sid(store: &SyntacticLayer, nth: usize) -> SentenceId {
+        let mut r = store.root_sids();
+        r.sort();
+        r[nth]
+    }
+
+    #[test]
+    fn sentence_has_numeral_detects_a_direct_literal() {
+        let s = store("(greaterThan ?X 5)");
+        assert!(s.sentence_has_numeral(root_sid(&s, 0)));
+    }
+
+    #[test]
+    fn sentence_has_numeral_recurses_into_subs() {
+        // The numeral sits inside the antecedent, a nested sub-sentence of
+        // the top-level `=>` — this only passes if the recursion into
+        // `Element::Sub` actually happens.
+        let s = store("(=> (greaterThan ?X 5) (instance ?X Big))");
+        assert!(s.sentence_has_numeral(root_sid(&s, 0)));
+    }
+
+    #[test]
+    fn sentence_has_numeral_false_with_no_numerals() {
+        let s = store("(instance Fido Dog)");
+        assert!(!s.sentence_has_numeral(root_sid(&s, 0)));
+    }
+
+    #[test]
+    fn resolve_tptp_lang_picks_tff_only_when_a_numeral_is_present() {
+        // Sentence ids are content hashes, not load-order indices — split
+        // the two roots by which one actually has a numeral rather than
+        // assuming a load-order/sort-order correspondence.
+        let s = store("(instance Fido Dog)\n(greaterThan ?X 5)");
+        let roots = s.root_sids();
+        assert_eq!(roots.len(), 2);
+        let plain = *roots.iter().find(|&&sid| !s.sentence_has_numeral(sid)).unwrap();
+        let numeric = *roots.iter().find(|&&sid| s.sentence_has_numeral(sid)).unwrap();
+
+        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&plain]), TptpLang::Fof,
+            "no numeral in the selected set -> untyped fallback");
+        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&numeric]), TptpLang::Tff,
+            "a numeral in the selected set -> typed");
+        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&plain, &numeric]), TptpLang::Tff,
+            "one numeral anywhere in the set is enough to upgrade the whole problem");
+    }
+
+    #[test]
+    fn resolve_tptp_lang_never_overrides_an_explicit_choice() {
+        let s = store("(greaterThan ?X 5)");
+        let numeric = root_sid(&s, 0);
+        assert_eq!(s.resolve_tptp_lang(TptpLang::Fof, [&numeric]), TptpLang::Fof,
+            "an explicit --lang fof is never second-guessed, even with a numeral present");
+        assert_eq!(s.resolve_tptp_lang(TptpLang::Tff, [&numeric]), TptpLang::Tff);
     }
 }

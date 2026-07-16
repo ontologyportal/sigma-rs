@@ -152,7 +152,7 @@ impl Default for KBManager {
             systems_dir:        PathBuf::new(),
             thoroughness:       1.0,
             tptp:               false,
-            tptp_lang:          "fof".into(),
+            tptp_lang:          "auto".into(),
             real_numbers:       None,
             vampire:            PathBuf::new(),
             kbs:                Vec::new(),
@@ -229,12 +229,26 @@ impl NativeProverConfig {
 /// Default options for the external (subprocess) prover — the serde-able config
 /// subset of [`ProverOpts`](sigmakee_rs_core::ProverOpts) (the per-query
 /// `mode` is excluded).  From a `<prover type="external">` section.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalProverConfig {
     pub timeout_secs: u64,
     pub tptp_lang:    String,
     pub selection:    SineParams
+}
+
+impl Default for ExternalProverConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 0,
+            // Manual (not derived) so this stays "auto" rather than silently
+            // reverting to an empty string, which `to_prover_opts`'s match
+            // also treats as Auto today but with no self-documentation —
+            // see `KBManager::default`'s `tptp_lang`.
+            tptp_lang:    "auto".into(),
+            selection:    SineParams::default(),
+        }
+    }
 }
 
 /// Build a runtime [`ProverOpts`](sigmakee_rs_core::prover::ProverOpts) seeded

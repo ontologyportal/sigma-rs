@@ -22,6 +22,8 @@ export interface AskResult {
   given_steps: number | null;
   raw_output: string;
   proof: Array<{ index: number; rule: string; premises: number[]; kif: string }>;
+  /** The proof as a Graphviz DOT digraph — always valid, even when `proof` is empty. */
+  graphviz: string;
 }
 
 /** One step of a cited contradiction derivation (see {@link AuditResult}). */
@@ -41,7 +43,8 @@ export interface AuditResult {
   inconsistent: boolean;
   given_steps: number | null;
   raw_output: string;
-  contradictions: Array<{ steps: AuditStep[] }>;
+  /** One entry per distinct contradiction, each with its own DOT digraph. */
+  contradictions: Array<{ steps: AuditStep[]; graphviz: string }>;
 }
 
 /** Which engine a {@link Session} drives (browser subset of the SDK `Backend`). */

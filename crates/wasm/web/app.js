@@ -495,6 +495,126 @@ function attachKifHighlighting(textareaId, preId) {
 attachKifHighlighting('assertions', 'assertionsHl');
 attachKifHighlighting('pquery', 'pqueryHl');
 
+// -- Proof graph (Cytoscape.js, lazy CDN load) ---------------------------------
+//
+// Interactive rendering of a proof/contradiction's `{index, rule, premises,
+// kif}[]` steps, used by both Ask/Tell's proof and each Audit contradiction.
+// Cytoscape + the dagre layout extension are loaded lazily from a CDN on
+// first use (same rationale as Monaco: keep the base page light). The graph
+// itself is built directly from the steps JSON — not from the `graphviz` DOT
+// string also on the result, which is kept alongside as a raw-text fallback
+// (mirroring the "raw engine output" collapsible) rather than parsed back.
+
+const CYTOSCAPE_VERSION = '3.34.0';
+const CYTOSCAPE_DAGRE_VERSION = '4.0.0';
+
+let cytoscapeLoadPromise = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+/** Loads cytoscape.js then cytoscape-dagre (which self-registers onto `window.cytoscape` once it sees the global is present). */
+function loadCytoscape() {
+  if (cytoscapeLoadPromise) return cytoscapeLoadPromise;
+  cytoscapeLoadPromise = (async () => {
+    await loadScript(`https://cdn.jsdelivr.net/npm/cytoscape@${CYTOSCAPE_VERSION}/dist/cytoscape.min.js`);
+    await loadScript(`https://cdn.jsdelivr.net/npm/cytoscape-dagre@${CYTOSCAPE_DAGRE_VERSION}/dist/cytoscape-dagre.min.js`);
+    return window.cytoscape;
+  })();
+  return cytoscapeLoadPromise;
+}
+
+/** Proof/contradiction steps → Cytoscape elements: one node per step, one edge per premise. */
+function stepsToElements(steps) {
+  const nodes = steps.map((s) => ({
+    data: { id: `n${s.index}`, label: `${s.index + 1}. ${s.rule}`, kif: s.kif },
+  }));
+  const edges = steps.flatMap((s) => s.premises.map((p) => ({
+    data: { id: `n${p}-n${s.index}`, source: `n${p}`, target: `n${s.index}` },
+  })));
+  return [...nodes, ...edges];
+}
+
+function cytoscapeStyle(dark) {
+  return [
+    { selector: 'node', style: {
+        'background-color': dark ? '#1e2024' : '#f7f7f8',
+        'border-color':     dark ? '#6ea8ff' : '#2d6cdf',
+        'border-width': 1.5,
+        shape: 'round-rectangle',
+        label: 'data(label)',
+        color: dark ? '#e6e6e6' : '#1a1a1a',
+        'font-family': 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        'font-size': 10,
+        'text-valign': 'center', 'text-halign': 'center',
+        'text-wrap': 'wrap', 'text-max-width': '160px',
+        padding: '8px', width: 'label', height: 'label',
+      } },
+    { selector: 'edge', style: {
+        width: 1.5,
+        'line-color':          dark ? '#9aa0a6' : '#666666',
+        'target-arrow-color':  dark ? '#9aa0a6' : '#666666',
+        'target-arrow-shape': 'triangle',
+        'curve-style': 'bezier',
+      } },
+    { selector: 'node:selected', style: {
+        'border-color': dark ? '#d2a8ff' : '#8250df',
+        'border-width': 3,
+      } },
+  ];
+}
+
+/** Create a Cytoscape instance inside `container` from `steps`, top-down (dagre) layout. `tipEl`, if given, shows the full KIF of whichever node was last tapped/hovered (node labels stay short). */
+async function renderProofGraph(container, steps, tipEl) {
+  const cytoscape = await loadCytoscape();
+  container.textContent = '';
+  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  const cy = cytoscape({
+    container,
+    elements: stepsToElements(steps),
+    style: cytoscapeStyle(dark),
+    layout: { name: 'dagre', rankDir: 'TB', nodeSep: 20, rankSep: 40 },
+    wheelSensitivity: 0.2,
+  });
+  if (tipEl) {
+    cy.on('tap mouseover', 'node', (e) => { tipEl.textContent = e.target.data('kif'); });
+  }
+  return cy;
+}
+
+/**
+ * Wire a `<details>` element to lazily render its proof graph the first time
+ * it's opened (a hidden container has zero size, so Cytoscape can't lay out
+ * until then), and re-fit on later opens. `getSteps()` is called fresh each
+ * time so the same wiring keeps working across re-runs (Ask/Tell reuses one
+ * `<details>`); call the returned `invalidate()` after `getSteps()`'s data
+ * changes so an already-open graph re-renders instead of going stale.
+ */
+function wireProofGraph(details, container, tipEl, getSteps) {
+  const render = async () => {
+    if (details._cy) { details._cy.destroy(); details._cy = null; }
+    container.textContent = 'Loading graph…';
+    try {
+      details._cy = await renderProofGraph(container, getSteps(), tipEl);
+    } catch (err) {
+      container.textContent = 'Failed to load graph: ' + (err && err.message || err);
+    }
+  };
+  details.addEventListener('toggle', () => {
+    if (!details.open) return;
+    if (details._cy) { details._cy.resize(); details._cy.fit(); }
+    else render();
+  });
+  return () => { if (details.open) render(); else if (details._cy) { details._cy.destroy(); details._cy = null; } };
+}
+
 // -- Prover: tell + ask -------------------------------------------------------
 
 $('prove').onclick = () => {
@@ -519,12 +639,18 @@ $('prove').onclick = () => {
       $('proverResult').hidden = false;
       $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
       $('pSteps').textContent = String(e && e.message || e);
-      $('pProof').innerHTML = ''; $('pRaw').textContent = '';
+      $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
+      lastAskProof = [];
+      invalidateAskGraph();
     } finally {
       btn.disabled = false; btn.textContent = 'Prove';
     }
   }, 0);
 };
+
+let lastAskProof = [];
+const invalidateAskGraph = wireProofGraph(
+  $('pGraphDetails'), $('pGraphContainer'), $('pGraphTip'), () => lastAskProof);
 
 function renderProof(r) {
   $('proverResult').hidden = false;
@@ -532,6 +658,9 @@ function renderProof(r) {
   $('pSteps').textContent = r.given_steps != null ? `${r.given_steps} given-clause steps` : '';
   $('pProof').innerHTML = r.proof.map((s) => `<li><span class="rule">${esc(s.rule)}</span>: ${esc(s.kif)}</li>`).join('');
   $('pRaw').textContent = r.raw_output || '(none)';
+  $('pGraphDot').textContent = r.graphviz || '(none)';
+  lastAskProof = r.proof;
+  invalidateAskGraph();
 }
 
 // -- Audit: whole-KB consistency check -----------------------------------------
@@ -588,10 +717,25 @@ function renderAudit(r) {
     return `<div class="card">
       <div class="contradiction-hd">Contradiction #${i + 1} — ${c.steps.length} step${c.steps.length === 1 ? '' : 's'}</div>
       <ol class="refs">${rows}</ol>
+      <details class="proof-graph-details" style="margin-top:10px">
+        <summary class="hint">proof graph</summary>
+        <div class="graph-container"></div>
+        <div class="hint graph-tip"></div>
+        <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre>${esc(c.graphviz || '(none)')}</pre></details>
+      </details>
     </div>`;
   }).join('');
 
   $('auditResult').innerHTML = html;
+
+  document.querySelectorAll('#auditResult .proof-graph-details').forEach((details, i) => {
+    wireProofGraph(
+      details,
+      details.querySelector('.graph-container'),
+      details.querySelector('.graph-tip'),
+      () => r.contradictions[i].steps,
+    );
+  });
 }
 
 // -- Edit: in-browser IDE (Monaco) for KIF constituents ------------------------

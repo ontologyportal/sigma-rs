@@ -111,6 +111,13 @@ impl ExternalProverLayer {
             return (result, raw_selected);
         }
 
+        // `Auto` resolves against exactly the axioms this run selected (plus
+        // the query) — never the whole KB — so a numeral anywhere in the
+        // actual problem upgrades it to Tff; `assertion_ids` is already
+        // folded into `axiom_sids` above, so it's covered by that scan.
+        let mode = self.translation.semantic.syntactic
+            .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
+
         // Translate through the translation layer: on-demand synthetic scan
         // over the selected axioms (replacements + predicate-variable
         // instantiation), cached axiom translation, and the conjecture install

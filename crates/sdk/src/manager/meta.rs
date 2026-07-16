@@ -263,7 +263,7 @@ const OPTIONS: &[OptionMeta] = &[
     // its own default and silently ran FOF under `--lang tff`.
     OptionMeta { field: "lang", json_paths: &["tptp_lang", "external_prover.tptpLang"], long: "lang", short: None,
         env: None, scope: Scope::Subsystems(TRANSLATORS), kind: Kind::Str,
-        help: "TPTP language variant: 'fof' (default) or 'tff'." },
+        help: "TPTP language variant: 'auto' (default — picks 'tff' if any selected axiom has a numeral, else 'fof'), 'fof', 'tff', or 'cnf'." },
     OptionMeta { field: "real_numbers", json_paths: &["real_numbers"], long: "real-numbers", short: None,
         env: None, scope: Scope::Subsystems(TRANSLATORS), kind: Kind::Bool,
         help: "Cast every TFF numeric to $real (no $int/$rat, no $to_real coercions). Default: on for the E backend under TFF, off otherwise." },

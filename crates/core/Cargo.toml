@@ -66,6 +66,15 @@ dashmap                     = "6"
 smallvec                    = { version = "1", features = ["serde"] }
 itertools                   = "0.14"
 
+# Proof → Graphviz DOT rendering (crate::prover::proof::render_graphviz).
+# Pure string-building via dot_structures/printer — this crate's `exec`/
+# `exec_dot` (spawns a `dot` process) is never called, so it's wasm32-safe.
+# The transitive `tempfile` dep (used only by that unused exec path) still
+# pulls in getrandom 0.3, which requires wasm targets to name a backend
+# explicitly at compile time — see .cargo/config.toml's wasm32 rustflags.
+graphviz-rust                = "0.9.8"
+getrandom                    = { version = "0.3", features = ["wasm_js"] }
+
 # persist feature
 heed    = { version = "0.20", features = ["serde-bincode"], optional = true }
 bincode = { version = "1",                                  optional = true }

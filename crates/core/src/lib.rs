@@ -118,7 +118,7 @@ pub use prover::ProverRunner;
 #[cfg(feature = "ask")]
 pub use prover::Prover;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::proof::{emit_proof, KifProofStep, IrProofStep};
+pub use prover::proof::{emit_proof, render_graphviz, KifProofStep, IrProofStep};
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use prover::CommonProverOpts;
 #[cfg(any(feature = "ask", feature = "native-prover"))]

@@ -94,6 +94,11 @@
     ol.proof { font-family: var(--mono); font-size: 13px; padding-left: 26px; margin: 8px 0 0; }
     ol.proof .rule { color: var(--accent); }
     details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; overflow-x: auto; }
+    .graph-container { height: 340px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); margin-top: 8px; }
+    .graph-tip { min-height: 18px; margin-top: 6px; font-family: var(--mono); white-space: pre-wrap; word-break: break-word; }
+    .graph-dot-toggle { margin-top: 8px; }
+    .graph-dot-toggle summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+    .graph-dot-toggle pre { font-size: 11px; max-height: 200px; overflow-y: auto; }
     .diag { border-bottom: 1px solid var(--line); border-left: 3px solid transparent; padding: 8px 2px 8px 8px; }
     .diag:last-child { border-bottom: none; }
     .diag[data-sev="error"] { border-left-color: var(--bad); }
@@ -268,6 +273,12 @@
       <div id="proverResult" class="card" hidden>
         <div><span id="pStatus" class="status"></span> <span id="pSteps" class="hint"></span></div>
         <ol id="pProof" class="proof"></ol>
+        <details id="pGraphDetails" style="margin-top:10px">
+          <summary class="hint">proof graph</summary>
+          <div id="pGraphContainer" class="graph-container"></div>
+          <div id="pGraphTip" class="hint graph-tip"></div>
+          <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre id="pGraphDot"></pre></details>
+        </details>
         <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre id="pRaw"></pre></details>
       </div>
     </section>

@@ -171,4 +171,6 @@ pub use sigmakee_rs_core::{tptp_highlight, Emitter};
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::prover::proof::emit_proof;
 #[cfg(feature = "native-prover")]
+pub use sigmakee_rs_core::render_graphviz;
+#[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::prover::ProverTimings;

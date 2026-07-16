@@ -452,16 +452,19 @@ impl WasmNativeProver {
     /// * `given_steps` — given-clause steps the native loop executed (or `null`);
     /// * `raw_output` — the engine's human-readable trace;
     /// * `contradictions` — one entry per distinct contradiction found, each
-    ///   `{ steps: { index, rule, premises, kif, file, line }[] }`; `file`/`line`
-    ///   are `null` for derived/anonymous steps that don't trace to an input axiom.
+    ///   `{ steps: { index, rule, premises, kif, file, line }[], graphviz }`;
+    ///   `file`/`line` are `null` for derived/anonymous steps that don't trace
+    ///   to an input axiom; `graphviz` is that contradiction's derivation
+    ///   rendered as a DOT digraph.
     #[wasm_bindgen(js_name = auditConsistency)]
     pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
         let opts = self.config.to_native_opts();
         let result = self.inner.audit_consistency(&[], opts, limit.unwrap_or(5) as usize);
         let src_idx = self.inner.build_axiom_source_index();
 
-        let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().map(|steps| {
+        let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().enumerate().map(|(i, steps)| {
             ContradictionJs {
+                graphviz: sigmakee_rs_core::render_graphviz(steps, &format!("contradiction-{}", i + 1), "Inconsistent"),
                 steps: steps.iter().map(|s| {
                     let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
                     AuditStepJs {
@@ -502,7 +505,9 @@ impl WasmNativeProver {
     /// * `given_steps` — given-clause steps the native loop executed (or `null`);
     /// * `raw_output` — the engine's human-readable trace;
     /// * `proof` — on `Proved`, the SUO-KIF proof as
-    ///   `{ index, rule, premises, kif }[]` (empty otherwise).
+    ///   `{ index, rule, premises, kif }[]` (empty otherwise);
+    /// * `graphviz` — the same proof rendered as a Graphviz DOT digraph
+    ///   (always a syntactically valid graph, even when `proof` is empty).
     #[wasm_bindgen]
     pub fn ask(
         &self,
@@ -525,12 +530,15 @@ impl WasmNativeProver {
             kif:      format!("{}", s.formula),
         }).collect();
 
+        let status_str = format!("{:?}", result.status);
+        let graphviz = sigmakee_rs_core::render_graphviz(&result.proof_kif, "ask", &status_str);
         let out = AskResultJs {
-            status:      format!("{:?}", result.status),
+            status:      status_str,
             proved:      result.status == sigmakee_rs_core::ProverStatus::Proved,
             given_steps: result.given_steps,
             raw_output:  result.raw_output,
             proof,
+            graphviz,
         };
         serde_wasm_bindgen::to_value(&out)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -554,6 +562,10 @@ struct AskResultJs {
     given_steps: Option<usize>,
     raw_output:  String,
     proof:       Vec<ProofStepJs>,
+    /// The proof rendered as a Graphviz DOT digraph (one node per step, one
+    /// edge per premise) — always a syntactically valid graph, even when
+    /// `proof` is empty. Safe to hand straight to a DOT renderer.
+    graphviz:    String,
 }
 
 /// One step of a cited contradiction derivation (see [`WasmNativeProver::audit_consistency`]).
@@ -570,7 +582,9 @@ struct AuditStepJs {
 /// One distinct contradiction the audit found — a full derivation to `FALSE`.
 #[derive(serde::Serialize)]
 struct ContradictionJs {
-    steps: Vec<AuditStepJs>,
+    steps:    Vec<AuditStepJs>,
+    /// This contradiction's derivation rendered as a Graphviz DOT digraph.
+    graphviz: String,
 }
 
 /// Curated native-prover consistency-audit result projected to JS-safe types.

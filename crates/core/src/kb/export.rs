@@ -61,6 +61,9 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             }
         }
 
+        // Whole-KB translate has no selection step — "the selected axioms"
+        // is everything about to be emitted, i.e. `axioms_sorted` itself.
+        let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
         let (axiom_problem, axiom_sid_map) = self.layer.translation().build_problem(&axioms_sorted, mode);
 
         assemble_tptp(&axiom_problem, &axiom_sid_map, &AssemblyOpts {
@@ -158,6 +161,10 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         let query_scope = crate::semantics::types::Scope::Session(
             crate::syntactic::caches::session::session_id(session),
         );
+        // The "selected axioms" here are the SInE-selected set plus support
+        // hypotheses; the conjecture's own numerals matter just as much as
+        // an axiom's, so it's scanned too.
+        let mode = syn.resolve_tptp_lang(mode, all_axioms.iter().chain(conjecture.iter()));
         let (problem, sid_map, _qvm) = self.layer.translation().assemble_problem(
             &all_axioms,
             &problem_sids,
