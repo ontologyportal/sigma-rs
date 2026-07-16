@@ -243,6 +243,121 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         i
     }
 
+    // Expand an oracle-refuted ground binary goal into explicit hop steps.
+    //
+    // The empty clause's `fact_parents` hold the taxonomy oracle's witness
+    // walk for a goal `(rel x Y)`: one start fact `(rel x c0)` plus edge
+    // facts `(_ c0 c1) … (_ cn Y)` (edge order is recovered by endpoint
+    // matching, so this is insensitive to `fact_parents` ordering).  Emits
+    //
+    //   cnf_transformation:  (not (rel x Y))         <- negated conjecture
+    //   taxonomy:            (rel x c1)              <- start, edge0
+    //   taxonomy:            (rel x c2)              <- prev, edge1  …
+    //   resolve:             FALSE                   <- unit, last hop
+    //
+    // Returns `None` (caller falls back to the flat witness citation) when
+    // the goal is not a ground binary atom, any witness is not one, or the
+    // witnesses do not form exactly one chain from `x` to `Y`.
+    fn expand_oracle_refutation(
+        layer:      &ProverLayer,
+        src:        SentenceId,
+        witnesses:  &[SentenceId],
+        root_idx:   usize,
+        steps:      &mut Vec<KifProofStep>,
+        root_steps: &mut HashMap<SentenceId, usize>,
+        renamer:    &mut SkolemRenamer,
+    ) -> Option<usize> {
+        if witnesses.is_empty() {
+            return None;
+        }
+        let goal = sentence_ast(layer, src, renamer)?;
+        let (grel, gx, gy) = ground_binary(&goal)?;
+
+        // Split witnesses into chain edges and "license" facts — property
+        // declarations about the goal relation itself, e.g. `(instance
+        // sister TransitiveRelation)` from a schema dispatch.  Licenses are
+        // not part of the walk; they justify it, so they become premises of
+        // every hop step.
+        let mut facts:    Vec<(SentenceId, String, String, String)> = Vec::new();
+        let mut licenses: Vec<SentenceId> = Vec::new();
+        for sid in witnesses {
+            let f = layer.semantic.syntactic.source_node_of(*sid)
+                .or_else(|| sentence_ast(layer, *sid, renamer))?;
+            let (r, a, b) = ground_binary(&f)?;
+            if r == "instance" && a == grel {
+                licenses.push(*sid);
+            } else {
+                facts.push((*sid, r, a, b));
+            }
+        }
+
+        // Chain walk: start at the fact `(grel gx _)`, then repeatedly take
+        // the unused edge whose left endpoint is the current class.
+        let start = facts.iter().position(|(_, r, a, _)| *r == grel && *a == gx)?;
+        let mut used = vec![false; facts.len()];
+        used[start] = true;
+        let mut chain: Vec<usize> = Vec::new();
+        let mut current = facts[start].3.clone();
+        while current != gy {
+            let next = facts.iter().enumerate()
+                .position(|(i, (_, _, a, _))| !used[i] && *a == current)?;
+            used[next] = true;
+            current = facts[next].3.clone();
+            chain.push(next);
+        }
+        if used.iter().any(|u| !u) {
+            return None; // leftover witnesses — not a single clean chain
+        }
+
+        let sp = Span::synthetic;
+        let nc_unit = steps.len();
+        steps.push(KifProofStep {
+            index: nc_unit,
+            rule: "cnf_transformation".to_string(),
+            premises: vec![root_idx],
+            formula: AstNode::List {
+                elements: vec![
+                    AstNode::Operator { op: OpKind::Not, span: sp() },
+                    mk_ground_binary(&grel, &gx, &gy),
+                ],
+                span: sp(),
+            },
+            source_sid: None,
+        });
+        let mut prev = root_step(layer, facts[start].0, "axiom", steps, root_steps, renamer);
+        let license_steps: Vec<usize> = if chain.is_empty() { Vec::new() } else {
+            licenses.iter()
+                .map(|sid| root_step(layer, *sid, "axiom", steps, root_steps, renamer))
+                .collect()
+        };
+        // Schema-licensed chains are the relation's own property at work
+        // (transitivity), not the taxonomy oracle's built-in semantics.
+        let hop_rule = if license_steps.is_empty() { "taxonomy" } else { "transitivity" };
+        for &ei in &chain {
+            let edge = root_step(layer, facts[ei].0, "axiom", steps, root_steps, renamer);
+            let idx = steps.len();
+            let mut premises = vec![prev, edge];
+            premises.extend(&license_steps);
+            steps.push(KifProofStep {
+                index: idx,
+                rule: hop_rule.to_string(),
+                premises,
+                formula: mk_ground_binary(&grel, &gx, &facts[ei].3),
+                source_sid: None,
+            });
+            prev = idx;
+        }
+        let f_idx = steps.len();
+        steps.push(KifProofStep {
+            index: f_idx,
+            rule: "resolve".to_string(),
+            premises: vec![nc_unit, prev],
+            formula: AstNode::Symbol { name: "FALSE".to_string(), span: sp() },
+            source_sid: None,
+        });
+        Some(f_idx)
+    }
+
     for cid in order {
         let c = &prover.clauses[cid as usize];
 
@@ -275,10 +390,41 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         if c.rule == "negated_conjecture" {
             if let Some(src) = c.source {
                 let root_idx = negated_root_step(layer, src, &mut steps, &mut neg_conj_steps, &mut renamer);
+                // A goal literal struck to the empty clause by the taxonomy
+                // oracle: expand the witness chain into explicit hop steps
+                // ((instance Rex Mammal), (instance Rex Vertebrate), …) so
+                // the proof reads like the axiomatic derivation instead of
+                // one opaque jump from edge facts to FALSE.  Falls through
+                // to the flat witness citation for any other shape.
+                if c.lits.is_empty() {
+                    if let Some(idx) = expand_oracle_refutation(
+                        layer, src, &c.fact_parents, root_idx,
+                        &mut steps, &mut root_steps, &mut renamer)
+                    {
+                        clause_step.insert(cid, idx);
+                        continue;
+                    }
+                }
+                // Oracle witnesses attached during clausification (e.g. a
+                // taxonomy oracle striking a goal literal it knows true,
+                // possibly all the way to the empty clause) are premises of
+                // this step too — dropping them renders a one-step "proof"
+                // that never cites the facts that refuted the conjecture.
+                // Likewise clause parents: an equality-oracle strike records
+                // its justifying equality/fact units there (`eq_clauses`),
+                // not in `fact_parents`.
+                let mut premises = vec![root_idx];
+                for w in &c.fact_parents {
+                    premises.push(root_step(
+                        layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer));
+                }
+                premises.extend(c.parents.iter().filter_map(|p| clause_step.get(p).copied()));
+                premises.sort_unstable();
+                premises.dedup();
                 steps.push(KifProofStep {
                     index: steps.len(),
                     rule: "cnf_transformation".to_string(),
-                    premises: vec![root_idx],
+                    premises,
                     formula: clause_ast(layer, c, &mut renamer),
                     source_sid: None,
                 });
@@ -313,6 +459,29 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         clause_step.insert(cid, steps.len() - 1);
     }
     steps
+}
+
+/// `(rel a b)` ground binary atom → its three symbol names (unwrapping any
+/// `Annotated` shell).  `None` for anything else — variables, nested terms,
+/// other arities.
+fn ground_binary(node: &AstNode) -> Option<(String, String, String)> {
+    match node {
+        AstNode::Annotated { formula, .. } => ground_binary(formula),
+        AstNode::List { elements, .. } => match elements.as_slice() {
+            [AstNode::Symbol { name: r, .. },
+             AstNode::Symbol { name: a, .. },
+             AstNode::Symbol { name: b, .. }] => Some((r.clone(), a.clone(), b.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build a `(rel a b)` ground atom AST.
+fn mk_ground_binary(rel: &str, a: &str, b: &str) -> AstNode {
+    let sp = Span::synthetic;
+    let sym = |name: &str| AstNode::Symbol { name: name.to_string(), span: sp() };
+    AstNode::List { elements: vec![sym(rel), sym(a), sym(b)], span: sp() }
 }
 
 /// Rewrite every bound variable name in `node`, in first-appearance order,
