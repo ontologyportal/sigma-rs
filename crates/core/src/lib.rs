@@ -92,7 +92,7 @@ pub use semantics::types::{TaxDirection, TaxRelation};
 pub use semantics::types::DocEntry;
 
 pub use kb::KnowledgeBase;
-pub use kb::man::{ManKind, ManPage, ParentEdge, SortSig};
+pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 pub use kb::search::{SearchHit, SearchOpts, SearchSource};
 pub use syntactic::position::ElementHit;
 pub use parse::{

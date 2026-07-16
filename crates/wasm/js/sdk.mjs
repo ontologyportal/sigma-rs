@@ -174,6 +174,20 @@ export class Session {
   }
 
   /**
+   * Consistency-audit the whole KB (Native backend only): enumerates up to
+   * `limit` distinct contradictions via the native saturation prover, each
+   * cited back to `file:line` wherever a step traces to an input axiom.
+   * @param {number} [limit] caps distinct contradictions found (default 5).
+   * @returns {import('./sdk').AuditResult}
+   */
+  auditConsistency(limit) {
+    if (typeof this.#kb.auditConsistency !== 'function') {
+      throw new Error('auditConsistency() requires a Native session');
+    }
+    return this.#kb.auditConsistency(limit);
+  }
+
+  /**
    * Render the KB as TPTP (TranslationOnly backend).
    * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean, session?: string }} [opts]
    */

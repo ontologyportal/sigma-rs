@@ -24,6 +24,26 @@ export interface AskResult {
   proof: Array<{ index: number; rule: string; premises: number[]; kif: string }>;
 }
 
+/** One step of a cited contradiction derivation (see {@link AuditResult}). */
+export interface AuditStep {
+  index: number;
+  rule: string;
+  premises: number[];
+  kif: string;
+  /** `null` for derived/anonymous steps that don't trace to an input axiom. */
+  file: string | null;
+  line: number | null;
+}
+
+/** Consistency-audit result (from a Native-backed {@link Session.auditConsistency}). */
+export interface AuditResult {
+  status: 'Consistent' | 'Inconsistent' | 'Timeout' | 'InputError' | 'Unknown';
+  inconsistent: boolean;
+  given_steps: number | null;
+  raw_output: string;
+  contradictions: Array<{ steps: AuditStep[] }>;
+}
+
 /** Which engine a {@link Session} drives (browser subset of the SDK `Backend`). */
 export const Backend: {
   readonly Native: 'native';
@@ -95,6 +115,16 @@ export interface SearchOpts {
 }
 export interface DocBlock { language: string; text: string; }
 export interface SortSig { class: string; subclass: boolean; }
+/** One formula referencing the man-paged symbol. `position` is the symbol's
+ * 0-based root-level position in the sentence, or `null` when it only occurs
+ * nested inside a sub-sentence. `file`/`line` are `null` for sentences with
+ * no source origin (e.g. synthetic/CNF sentences). */
+export interface ManPageRef {
+  position: number | null;
+  kif: string;
+  file: string | null;
+  line: number | null;
+}
 export interface ManPage {
   name: string;
   kinds: string[];
@@ -108,6 +138,7 @@ export interface ManPage {
   range: SortSig | null;
   appears_in_count: number;
   consequent_count: number;
+  references: ManPageRef[];
 }
 
 /** Browser analogue of the SDK's `Session`. */
@@ -121,6 +152,8 @@ export class Session {
   tell(kif: string, session?: string): TellResult;
   /** Native backend → AskResult; TranslationOnly backend (with hook) → string. */
   ask(queryKif: string, opts?: AskOpts): AskResult | string;
+  /** Native backend only: consistency-audit the whole KB. `limit` caps distinct contradictions (default 5). */
+  auditConsistency(limit?: number): AuditResult;
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];
   validate(): Diagnostic[];

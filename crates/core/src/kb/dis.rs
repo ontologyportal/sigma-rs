@@ -110,6 +110,18 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         }
     }
 
+    /// [`Self::pretty_print_sentence`]'s plain-text twin: the same indented,
+    /// width-wrapped layout with no ANSI colour codes — safe for contexts
+    /// that aren't a terminal (e.g. a browser DOM).
+    pub fn pretty_print_sentence_plain(&self, sid: SentenceId, base_indent: usize) -> String {
+        let kif = self.sentence_kif_str(sid);
+        let doc = crate::parse::parse_document("<display>", kif.as_str(), crate::Parser::Kif);
+        match doc.ast.into_iter().next() {
+            Some(DocItem::Stmt(node)) => node.format_plain(base_indent),
+            _       => kif,
+        }
+    }
+
     /// Print a SemanticError with formula context to the log.
     pub fn pretty_print_error(&self, e: &Diagnostic, _level: log::Level) {
         e.emit(Some(self));

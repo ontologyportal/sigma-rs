@@ -8,6 +8,7 @@ use sigmakee_rs_core::{KnowledgeBase, TptpOptions, TptpLang};
 use sigmakee_rs_core::{ProverLayer, NativeOpts};
 use sigmakee_rs_core::{ManKind, ManPage, SearchHit, SearchOpts};
 use sigmakee_rs_core::TopLayer;
+use sigmakee_rs_core::AstKif;
 
 // -- WasmKnowledgeBase ---------------------------------------------------------
 
@@ -148,11 +149,11 @@ impl WasmKnowledgeBase {
     }
 
     /// Structured "man page" for a symbol: kinds, documentation, taxonomy
-    /// (parents/children), signature (arity/domains/range), and reference
-    /// counts. Returns `null` if the symbol is unknown.
+    /// (parents/children), signature (arity/domains/range), and the full
+    /// list of referencing formulas. Returns `null` if the symbol is unknown.
     #[wasm_bindgen]
     pub fn manpage(&self, symbol: &str) -> Result<JsValue, JsValue> {
-        manpage_to_js(self.inner.manpage(symbol))
+        manpage_to_js(&self.inner, self.inner.manpage(symbol))
     }
 
     /// Invoke the theorem prover via a JS callback.
@@ -429,11 +430,60 @@ impl WasmNativeProver {
     }
 
     /// Structured "man page" for a symbol: kinds, documentation, taxonomy
-    /// (parents/children), signature (arity/domains/range), and reference
-    /// counts. Returns `null` if the symbol is unknown.
+    /// (parents/children), signature (arity/domains/range), and the full
+    /// list of referencing formulas. Returns `null` if the symbol is unknown.
     #[wasm_bindgen]
     pub fn manpage(&self, symbol: &str) -> Result<JsValue, JsValue> {
-        manpage_to_js(self.inner.manpage(symbol))
+        manpage_to_js(&self.inner, self.inner.manpage(symbol))
+    }
+
+    /// Audit the whole KB for logical consistency via the native saturation
+    /// prover — enumerates up to `limit` (default 5) distinct contradictions,
+    /// each cited back to `file:line` wherever a step traces to an input
+    /// axiom. In-browser analogue of the `sumo audit` CLI command; uses the
+    /// active [`Config`] (set via [`configure`](Self::configure)) for its
+    /// time/step budget.
+    ///
+    /// Returns a JS object:
+    ///
+    /// * `status` — one of `"Consistent"`, `"Inconsistent"`, `"Timeout"`,
+    ///   `"InputError"`, `"Unknown"`;
+    /// * `inconsistent` — `true` iff `status === "Inconsistent"`;
+    /// * `given_steps` — given-clause steps the native loop executed (or `null`);
+    /// * `raw_output` — the engine's human-readable trace;
+    /// * `contradictions` — one entry per distinct contradiction found, each
+    ///   `{ steps: { index, rule, premises, kif, file, line }[] }`; `file`/`line`
+    ///   are `null` for derived/anonymous steps that don't trace to an input axiom.
+    #[wasm_bindgen(js_name = auditConsistency)]
+    pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
+        let opts = self.config.to_native_opts();
+        let result = self.inner.audit_consistency(&[], opts, limit.unwrap_or(5) as usize);
+        let src_idx = self.inner.build_axiom_source_index();
+
+        let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().map(|steps| {
+            ContradictionJs {
+                steps: steps.iter().map(|s| {
+                    let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+                    AuditStepJs {
+                        index:    s.index,
+                        rule:     s.rule.clone(),
+                        premises: s.premises.clone(),
+                        kif:      s.formula.format_plain(0),
+                        file:     loc.map(|a| a.file.clone()),
+                        line:     loc.map(|a| a.line),
+                    }
+                }).collect(),
+            }
+        }).collect();
+
+        let out = AuditResultJs {
+            status:         format!("{:?}", result.status),
+            inconsistent:   result.status == sigmakee_rs_core::ProverStatus::Inconsistent,
+            given_steps:    result.given_steps,
+            raw_output:     result.raw_output,
+            contradictions,
+        };
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Prove `query_kif` (a single KIF conjecture) in-browser against the KB
@@ -504,6 +554,33 @@ struct AskResultJs {
     given_steps: Option<usize>,
     raw_output:  String,
     proof:       Vec<ProofStepJs>,
+}
+
+/// One step of a cited contradiction derivation (see [`WasmNativeProver::audit_consistency`]).
+#[derive(serde::Serialize)]
+struct AuditStepJs {
+    index:    usize,
+    rule:     String,
+    premises: Vec<usize>,
+    kif:      String,
+    file:     Option<String>,
+    line:     Option<u32>,
+}
+
+/// One distinct contradiction the audit found — a full derivation to `FALSE`.
+#[derive(serde::Serialize)]
+struct ContradictionJs {
+    steps: Vec<AuditStepJs>,
+}
+
+/// Curated native-prover consistency-audit result projected to JS-safe types.
+#[derive(serde::Serialize)]
+struct AuditResultJs {
+    status:         String,
+    inconsistent:   bool,
+    given_steps:    Option<usize>,
+    raw_output:     String,
+    contradictions: Vec<ContradictionJs>,
 }
 
 // -- Shared projections for validate / search / manpage ------------------------
@@ -613,8 +690,21 @@ struct SortJs { class: String, subclass: bool }
 #[derive(serde::Serialize)]
 struct DomainJs { position: usize, sort: SortJs }
 
+/// One formula that references the man-paged symbol: its rendered KIF text
+/// plus source location (when the sentence has one — synthetic/CNF sentences
+/// don't). `position` is the symbol's 0-based root-level position in the
+/// sentence, or `null` when it only occurs nested inside a sub-sentence.
+#[derive(serde::Serialize)]
+struct ManPageRefJs {
+    position: Option<usize>,
+    kif:      String,
+    file:     Option<String>,
+    line:     Option<u32>,
+}
+
 /// A JS-safe projection of `ManPage` — the human-facing fields, with the raw
-/// `SentenceId`/`SymbolId` reference lists dropped in favour of counts.
+/// `SentenceId`/`SymbolId` reference lists resolved to rendered KIF + source
+/// location (see [`ManPageRefJs`]) rather than dropped.
 #[derive(serde::Serialize)]
 struct ManPageJs {
     name:             String,
@@ -629,9 +719,10 @@ struct ManPageJs {
     range:            Option<SortJs>,
     appears_in_count: usize,
     consequent_count: usize,
+    references:       Vec<ManPageRefJs>,
 }
 
-fn manpage_to_js(page: Option<ManPage>) -> Result<JsValue, JsValue> {
+fn manpage_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, page: Option<ManPage>) -> Result<JsValue, JsValue> {
     let Some(p) = page else { return Ok(JsValue::NULL) };
     let docs = |v: &[sigmakee_rs_core::DocEntry]| -> Vec<DocJs> {
         v.iter().map(|d| DocJs { language: d.language.clone(), text: d.text.clone() }).collect()
@@ -640,6 +731,19 @@ fn manpage_to_js(page: Option<ManPage>) -> Result<JsValue, JsValue> {
         v.iter().map(|e| EdgeJs { relation: e.relation.clone(), parent: e.parent.clone() }).collect()
     };
     let sort = |s: &sigmakee_rs_core::SortSig| SortJs { class: s.class.clone(), subclass: s.subclass };
+    let reference = |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefJs {
+        let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+        ManPageRefJs {
+            position,
+            kif:  kb.pretty_print_sentence_plain(sid, 0),
+            file: span.as_ref().map(|s| s.file.clone()),
+            line: span.as_ref().map(|s| s.line),
+        }
+    };
+    let mut references: Vec<ManPageRefJs> = p.ref_args.iter()
+        .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos)))
+        .collect();
+    references.extend(p.ref_nested.iter().map(|&sid| reference(sid, None)));
     let out = ManPageJs {
         name:             p.name.clone(),
         kinds:            p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
@@ -653,6 +757,7 @@ fn manpage_to_js(page: Option<ManPage>) -> Result<JsValue, JsValue> {
         range:            p.range.as_ref().map(sort),
         appears_in_count: p.appears_in_count,
         consequent_count: p.consequent_count,
+        references,
     };
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
