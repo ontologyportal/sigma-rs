@@ -40,6 +40,14 @@
       flex: 0 0 auto; white-space: nowrap;
     }
     nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+    nav.tabs button.disabled { opacity: .4; cursor: not-allowed; }
+
+    #toast { position: fixed; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 10px;
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.2); font-size: 13px; color: var(--muted); z-index: 50; }
+    #toast[hidden] { display: none; }
+    #toast .spin { width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite; }
 
     .panel[hidden] { display: none; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
@@ -328,6 +336,11 @@
       <div id="editLog" class="hint"></div>
     </section>
   </main>
+
+  <div id="toast" hidden>
+    <div class="spin"></div>
+    <span>Post-processing — some features may not be available until complete.</span>
+  </div>
 
   <div id="overlay">
     <div class="spinner"></div>

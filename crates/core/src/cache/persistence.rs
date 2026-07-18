@@ -5,9 +5,10 @@
 //! This is full-snapshot persistence: every `freeze` writes the cache's whole
 //! value.
 //!
-//! Serialization (bincode) lives behind `cfg(feature = "persist")`, so without
-//! the feature `freeze`/`thaw` compile to no-ops and the whole snapshot API is
-//! inert.
+//! Serialization (bincode) lives behind `cfg(feature = "snapshot")`, so without
+//! it `freeze`/`thaw` compile to no-ops and the whole snapshot API is inert.
+//! `persist` (heed/LMDB) implies `snapshot`; `snapshot` alone gives the
+//! heed-free in-memory byte snapshot used on wasm32.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -26,7 +27,7 @@ use super::{
 // -- Serialization helpers ---------------------------------------------------
 
 /// Serialize `value` and stage it under `key`.  No-op without `persist`.
-#[cfg(feature = "persist")]
+#[cfg(feature = "snapshot")]
 fn freeze_value<T: Serialize>(
     backend: &mut dyn PersistenceBackend,
     key:     &'static str,
@@ -37,7 +38,7 @@ fn freeze_value<T: Serialize>(
     backend.put(key, &bytes)
 }
 
-#[cfg(not(feature = "persist"))]
+#[cfg(not(feature = "snapshot"))]
 fn freeze_value<T: Serialize>(
     _backend: &mut dyn PersistenceBackend,
     _key:     &'static str,
@@ -48,7 +49,7 @@ fn freeze_value<T: Serialize>(
 
 /// Read + deserialize the blob under `key`, or `None` if absent.  Always
 /// `None` without `persist`.
-#[cfg(feature = "persist")]
+#[cfg(feature = "snapshot")]
 fn thaw_value<T: DeserializeOwned>(
     backend: &dyn PersistenceBackend,
     key:     &'static str,
@@ -61,7 +62,7 @@ fn thaw_value<T: DeserializeOwned>(
     }
 }
 
-#[cfg(not(feature = "persist"))]
+#[cfg(not(feature = "snapshot"))]
 fn thaw_value<T: DeserializeOwned>(
     _backend: &dyn PersistenceBackend,
     _key:     &'static str,

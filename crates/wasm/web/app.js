@@ -1,54 +1,77 @@
 /**
- * SUMO browser — a demo over the SDK-shaped facade (`Session` / `Config`).
- * Autoloads SUMO's foundational ontology (Merge.kif) from
- * github.com/ontologyportal/sumo, and lets you add/remove constituents. Tabs:
- *   Home         — symbol search → results → man page
+ * SUMO browser — a demo over the SDK-shaped facade, running the wasm engine in
+ * a Web Worker (sigma.worker.js) so the prover never blocks the UI thread.
+ *
+ * Loading only INGESTS each constituent; axiomatization (promote) runs in the
+ * background afterwards, during which the promote-dependent tabs (Diagnostics /
+ * Ask-Tell / Audit) are greyed behind a "post-processing" toast. Search /
+ * Knowledge base / Edit stay live throughout.
+ *
+ * Tabs:
+ *   Home          — symbol search → results → man page
  *   Knowledge base — manage loaded constituents (add from SUMO / URL / upload)
- *   Diagnostics  — the KB's validation findings
- *   Prover       — tell assertions + ask a query, in-browser
+ *   Diagnostics   — the KB's validation findings
+ *   Ask/Tell      — tell assertions + ask a query, in-browser (Cytoscape proof)
+ *   Audit         — whole-KB consistency check
+ *   Edit          — in-browser Monaco IDE for KIF constituents
  *
  * Must be served over HTTP — browsers block ES modules + wasm fetch on file://.
  *   ./serve.sh   # → http://localhost:8080/
  *
- * Self-contained: imports `./pkg/…` (not `../pkg/…`) so the whole demo can be
- * dropped at any path — served from web/ locally, or published under /browse/
- * on GitHub Pages — with pkg/ as a sibling of this file.
+ * The page owns the constituent list, OPFS, localStorage, and the editor; the
+ * worker owns the Session. Self-contained: worker + pkg are siblings of this
+ * file, so the whole demo can be dropped at any path (web/ locally, /browse/ on
+ * GitHub Pages).
  */
-import { init, Session, Config } from './pkg/sdk.mjs';
+
+const worker = new Worker(new URL('./sigma.worker.js', import.meta.url), { type: 'module' });
+
+// -- tiny id-keyed RPC over postMessage ---------------------------------------
+let seq = 0;
+const pending = new Map();
+worker.onmessage = (e) => {
+  const { id, result, error } = e.data;
+  const p = pending.get(id);
+  if (!p) return;
+  pending.delete(id);
+  error ? p.reject(new Error(error)) : p.resolve(result);
+};
+const call = (cmd, args) => new Promise((resolve, reject) => {
+  const id = ++seq; pending.set(id, { resolve, reject });
+  worker.postMessage({ id, cmd, args });
+});
+worker.onerror = (e) => {
+  const m = e.message || `${e.filename || ''}:${e.lineno || ''}`;
+  const ov = document.getElementById('overlayErr'); if (ov) ov.textContent = 'worker: ' + m;
+  console.error('worker error', e);
+};
 
 const SUMO = { owner: 'ontologyportal', repo: 'sumo', ref: 'HEAD' };
-const MERGE = 'Merge.kif'; // the foundational ontology, loaded on startup
-const MIDLEVEL = 'Mid-level-ontology.kif'; // the foundational ontology, loaded on startup
+const MERGE = 'Merge.kif';                     // the foundational ontology, loaded on startup
+const MIDLEVEL = 'Mid-level-ontology.kif';     // also loaded on startup
 const rawUrl = (path) => `https://raw.githubusercontent.com/${SUMO.owner}/${SUMO.repo}/${SUMO.ref}/${path}`;
-const SUMO_FILE_SETTING = "sumoFiles";
-let savedConstituents = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || "null") || [
-  { name: MERGE, origin: "sumo"},
-  { name: MIDLEVEL, origin: "sumo"}
+const SUMO_FILE_SETTING = 'sumoFiles';
+let savedConstituents = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || 'null') || [
+  { name: MERGE, origin: 'sumo' },
+  { name: MIDLEVEL, origin: 'sumo' },
 ];
 let opfsRoot = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
-let session = null;
 let diagnostics = [];
 let diagFilter = { file: '', severity: '' };
-let constituents = [];   // [{ name, text }] — cached so remove/reset rebuild without refetch
+let constituents = [];   // [{ name, text, origin }] — the page's source of truth
 let sumoCatalog = null;  // cached list of *.kif paths in the repo
 
-function newSession() {
-  const cfg = new Config();
-  cfg.wantProof = true;
-  return new Session({ config: cfg });
-}
-
 async function fromOrigin(origin, file) {
-  if (origin === "sumo") return await fetchText(rawUrl(file))
-  if (origin === "url") return await fetchText(file)
-  if (origin === "file") {
-    if (opfsRoot === null) { throw "File system not initialized yet"; }
-    let handle = await opfsRoot.getFileHandle(file);
-    let vFile = await handle.getFile();
+  if (origin === 'sumo') return await fetchText(rawUrl(file));
+  if (origin === 'url') return await fetchText(file);
+  if (origin === 'file') {
+    if (opfsRoot === null) throw new Error('File system not initialized yet');
+    const handle = await opfsRoot.getFileHandle(file);
+    const vFile = await handle.getFile();
     return await vFile.text();
   }
 }
@@ -60,47 +83,38 @@ async function fetchText(url) {
 }
 
 // -- KB state mutations -------------------------------------------------------
+// Mutations INGEST (fast) but do not promote; the caller runs reprocess() once
+// to promote + validate under the post-processing toast.
 
 /**
- * Load one constituent's text into the KB and cache it. The constituent is
- * always tracked once loaded — `loadKif` still ingests content that carries
- * non-fatal notices (e.g. "duplicate formula ignored"), so those are returned
- * as informational, not treated as a failure.
- * @returns {{ added: boolean, notices: string[] }}
+ * Ingest one constituent's text into the worker session and track it. The
+ * constituent is tracked once ingested — ingest still accepts content that
+ * carries non-fatal notices (e.g. "duplicate formula ignored").
+ * @returns {Promise<{ added: boolean, notices: string[] }>}
  */
-function addConstituent(name, text, origin = 'sumo') {
+async function ingestConstituent(name, text, origin = 'sumo') {
   if (constituents.some((c) => c.name === name)) return { added: false, notices: [`${name}: already loaded`] };
-  const notices = session.kb.loadKif(text, name); // native loadKif promotes into the axiom base
+  const { notices } = await call('ingest', { name, text });
   constituents.push({ name, text, origin });
   if (savedConstituents.find((c) => c.name == name && c.origin == origin) === undefined) {
-    savedConstituents.push({name, origin});
+    savedConstituents.push({ name, origin });
     localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(savedConstituents));
   }
-  refreshAll();
   return { added: true, notices };
 }
 
-/** Rebuild the session from the current (cached) constituents — used by remove/reset. */
-function rebuildSession() {
-  session = newSession();
-  for (const c of constituents) session.kb.loadKif(c.text, c.name);
-  refreshAll();
+/** Rebuild the worker session from the current (cached) constituents — used by remove/reset/edit. */
+async function rebuildSession() {
+  await call('newSession');
+  for (const c of constituents) await call('ingest', { name: c.name, text: c.text });
 }
 
 /**
- * Save `text` as constituent `name`/`origin` — updates it in place if
- * already loaded, else adds it as a brand-new constituent. Used by the Edit
- * tab's Save button.
- *
- * For `file`-origin constituents, persists to OPFS FIRST (awaited), mirroring
- * the Knowledge base tab's upload flow (`$('kbFile').onchange`), which writes
- * to OPFS before ever registering the constituent. That ordering matters:
- * `addConstituent` tracks `{name, origin}` in `savedConstituents`/localStorage
- * regardless of whether a backing file exists, and `boot()` reloads every
- * tracked constituent from `fromOrigin` on next launch — a `file`-origin
- * entry with no OPFS handle throws there, and since `boot()` wraps its whole
- * load loop in one try/catch, that throw aborts loading every OTHER
- * constituent too, not just the broken one.
+ * Save `text` as constituent `name`/`origin` — updates it in place if already
+ * loaded, else adds it. Used by the Edit tab's Save button. For `file`-origin
+ * constituents, persists to OPFS FIRST (awaited), mirroring the KB tab's upload
+ * flow — a `file` entry with no OPFS handle would throw on next boot and abort
+ * loading every OTHER constituent too.
  * @returns {Promise<{ added: boolean, notices: string[] }>}
  */
 async function updateConstituentText(name, text, origin = 'file') {
@@ -112,31 +126,84 @@ async function updateConstituentText(name, text, origin = 'file') {
     await stream.close();
   }
   const idx = constituents.findIndex((c) => c.name === name && c.origin === origin);
-  if (idx === -1) return addConstituent(name, text, origin);
+  if (idx === -1) {
+    const r = await ingestConstituent(name, text, origin);
+    await reprocess();
+    return r;
+  }
   constituents[idx] = { ...constituents[idx], text };
-  rebuildSession();
+  await rebuildSession();
+  await reprocess();
   return { added: false, notices: [] };
 }
 
-function removeConstituent(name, origin = 'sumo') {
+async function removeConstituent(name, origin = 'sumo') {
   constituents = constituents.filter((c) => c.name !== name || c.origin !== origin);
   savedConstituents = savedConstituents.filter((c) => c.name !== name || c.origin !== origin);
   localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(savedConstituents));
   if (origin === 'file') {
-    opfsRoot.getFileHandle(name).then((h) => h.remove());
+    try { const h = await opfsRoot.getFileHandle(name); await h.remove(); } catch { /* already gone */ }
   }
-  rebuildSession();
+  await rebuildSession();
+  await reprocess();
 }
 
-function resetToMerge() {
+async function resetToMerge() {
   const merge = constituents.find((c) => c.name === MERGE);
   constituents = merge ? [merge] : [];
-  rebuildSession();
+  await rebuildSession();
+  await reprocess();
 }
 
-/** Re-validate and refresh every view that reflects KB contents. */
-function refreshAll() {
-  diagnostics = session.validate();
+// -- Deferred promote + post-processing UI ------------------------------------
+
+// Keep the toast up at least this long so the post-processing state is
+// perceptible even when promote+validate finish in well under one paint frame.
+const MIN_TOAST_MS = 650;
+// Tabs that need the KB axiomatized; greyed while a promote is in flight.
+const PROMOTE_TABS = ['diagnostics', 'prover', 'audit'];
+let promoting = false;
+
+// Run `fn` (promote → validate → render) under the "post-processing" UI: grey
+// the promote-dependent tabs and show the toast until it finishes. Ingest
+// happens BEFORE this (under the loading screen on boot / the busy button on
+// adds). Re-entrant: a nested call runs inside the outer window.
+async function withPostProcessing(fn) {
+  const outer = !promoting;
+  if (outer) {
+    promoting = true;
+    setPromoteTabsEnabled(false);
+    showToast(true);
+    updateKbStatus();
+  }
+  const shownAt = performance.now();
+  try {
+    await fn();
+  } finally {
+    if (outer) {
+      const held = performance.now() - shownAt;
+      if (held < MIN_TOAST_MS) await new Promise((r) => setTimeout(r, MIN_TOAST_MS - held));
+      promoting = false;
+      setPromoteTabsEnabled(true);
+      showToast(false);
+      updateKbStatus();
+    }
+  }
+}
+
+// Promote every ingested constituent into the axiom base, THEN validate once,
+// THEN refresh every view. Promote and validate are the KB-size-bound steps —
+// validation runs exactly once here, not per constituent.
+async function promoteAndValidate() {
+  await call('promoteAll', { names: constituents.map((c) => c.name) });
+  diagnostics = (await call('validate')).diagnostics;
+  renderAll();
+}
+
+const reprocess = () => withPostProcessing(promoteAndValidate);
+
+/** Refresh every view that reflects KB contents (after promote+validate). */
+function renderAll() {
   renderDiagnostics();
   renderConstituents();
   updateKbStatus();
@@ -144,10 +211,22 @@ function refreshAll() {
   populateEditPicker();
 }
 
+function setPromoteTabsEnabled(on) {
+  for (const t of PROMOTE_TABS) {
+    const btn = document.querySelector(`nav.tabs [data-tab=${t}]`);
+    if (btn) { btn.classList.toggle('disabled', !on); btn.setAttribute('aria-disabled', String(!on)); }
+  }
+  if (!on && PROMOTE_TABS.includes(currentTab())) showTab('home');
+}
+
+function showToast(on) { const t = $('toast'); if (t) t.hidden = !on; }
+
 function updateKbStatus() {
+  const status = promoting
+    ? 'post-processing…'
+    : `<b>${diagnostics.length}</b> diagnostic${diagnostics.length === 1 ? '' : 's'}`;
   $('kbStatus').innerHTML =
-    `<b>${constituents.length}</b> constituent${constituents.length === 1 ? '' : 's'} · ` +
-    `<b>${diagnostics.length}</b> diagnostic${diagnostics.length === 1 ? '' : 's'} · ` +
+    `<b>${constituents.length}</b> constituent${constituents.length === 1 ? '' : 's'} · ${status} · ` +
     `<a data-tab="kb" class="jump">manage</a>`;
 }
 
@@ -155,22 +234,22 @@ function updateKbStatus() {
 
 async function boot() {
   try {
-    $('overlayMsg').textContent = 'Loading application...';
-    await init();
-    session = newSession();
+    $('overlayMsg').textContent = 'Loading application…';
+    await call('boot');
     opfsRoot = await navigator.storage.getDirectory();
     let i = 1;
     const total = savedConstituents.length;
-
-    for (const {name, origin} of savedConstituents) {
-      $('overlayMsg').textContent = `Loading ${name} (${i}/${total})...`;
+    for (const { name, origin } of savedConstituents) {
+      $('overlayMsg').textContent = `Loading ${name} (${i}/${total})…`;
       const text = await fromOrigin(origin, name);
-      $('overlayMsg').textContent = 'Loading & validating...';
-      addConstituent(name, text, origin);  
-      i+=1;
+      await ingestConstituent(name, text, origin);   // ingest only — promote runs after
+      i += 1;
     }
-
     $('overlay').remove();
+    renderConstituents();
+    updateKbStatus();
+    showTab('home');
+    reprocess();   // toast → promote all → validate → untoast (off the critical path)
   } catch (e) {
     $('overlayMsg').textContent = 'Failed to load SUMO.';
     $('overlayErr').textContent = String(e && e.message || e) + '  (Try checking your network connection.)';
@@ -180,7 +259,12 @@ async function boot() {
 
 // -- Tabs ---------------------------------------------------------------------
 
+function currentTab() {
+  return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'home';
+}
+
 function showTab(name) {
+  if (promoting && PROMOTE_TABS.includes(name)) return; // greyed while post-processing
   for (const btn of document.querySelectorAll('nav.tabs button')) {
     btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
   }
@@ -190,12 +274,12 @@ function showTab(name) {
 }
 
 document.querySelector('nav.tabs').addEventListener('click', (e) => {
-  const tab = e.target.closest('button')?.dataset.tab;
-  if (tab) showTab(tab);
+  const btn = e.target.closest('button');
+  if (btn && btn.getAttribute('aria-disabled') !== 'true') showTab(btn.dataset.tab);
 });
 document.addEventListener('click', (e) => {
   const jump = e.target.closest('.jump');
-  if (jump) { e.preventDefault(); showTab(jump.dataset.tab); }
+  if (jump && jump.getAttribute('aria-disabled') !== 'true') { e.preventDefault(); showTab(jump.dataset.tab); }
 });
 
 async function withBusy(button, fn) {
@@ -250,46 +334,54 @@ $('fileFilter').addEventListener('input', () => { if (sumoCatalog) renderPicker(
 $('addSumo').onclick = (e) => withBusy(e.target, async () => {
   const paths = [...$('sumoPicker').selectedOptions].map((o) => o.value);
   if (!paths.length) { $('kbLog').textContent = 'Select one or more files first.'; return; }
-  let added = 0, notices = 0;
-  for (const path of paths) {
-    $('kbLog').style.color = ''; $('kbLog').textContent = `Fetching ${path}…`;
-    const r = addConstituent(path, await fetchText(rawUrl(path)));
-    if (r.added) added += 1;
-    notices += r.notices.length;
+  // Ingest (fetch + parse) under the busy button — no toast yet.
+  let added = 0, notices = 0; const failed = [];
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    $('kbLog').style.color = ''; $('kbLog').textContent = `Fetching ${path}… (${i + 1}/${paths.length})`;
+    try { const r = await ingestConstituent(path, await fetchText(rawUrl(path))); if (r.added) added += 1; notices += r.notices.length; }
+    catch (err) { failed.push(`${path}: ${err.message || err}`); }
   }
-  $('kbLog').textContent = `Added ${added}/${paths.length} constituent(s)` + (notices ? ` (${notices} load notice(s))` : '') + '.';
+  renderConstituents();
+  $('kbLog').textContent = `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`;
+  await reprocess();   // toast → promote → validate → untoast
+  if (failed.length) { $('kbLog').style.color = 'var(--bad)'; $('kbLog').textContent = `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`; }
+  else $('kbLog').textContent = `Added ${added}/${paths.length} constituent(s)` + (notices ? ` (${notices} load notice(s))` : '') + '.';
 });
 
 $('addUrl').onclick = (e) => withBusy(e.target, async () => {
   const url = $('kbUrl').value.trim();
   if (!url) { $('kbLog').textContent = 'Enter a URL first.'; return; }
-  const r = addConstituent(url, await fetchText(url), 'url');
+  const r = await ingestConstituent(url, await fetchText(url), 'url');
+  renderConstituents();
   $('kbLog').style.color = '';
-  $('kbLog').textContent = r.added ? `Added ${url}` + (r.notices.length ? ` (${r.notices.length} notice(s))` : '') + '.' : r.notices.join(' | ');
+  $('kbLog').textContent = r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(' | ');
+  if (r.added) await reprocess();
 });
 
 $('kbFile').onchange = (e) => withBusy($('addUrl'), async () => {
   const file = e.target.files[0];
   if (!file) return;
   const text = await file.text();
-  if (!opfsRoot === null) throw "File system not yet initialized";
-  console.log(file.name);
+  if (opfsRoot === null) throw new Error('File system not yet initialized');
   const handle = await opfsRoot.getFileHandle(file.name, { create: true });
   const stream = await handle.createWritable();
   await stream.write(text);
   await stream.close();
-  const r = addConstituent(file.name, text, 'file');
+  const r = await ingestConstituent(file.name, text, 'file');
+  renderConstituents();
   $('kbLog').style.color = '';
-  $('kbLog').textContent = r.added ? `Added ${file.name}` + (r.notices.length ? ` (${r.notices.length} notice(s))` : '') + '.' : r.notices.join(' | ');
+  $('kbLog').textContent = r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(' | ');
+  if (r.added) await reprocess();
 });
 
 // -- Home: search → results → man page ----------------------------------------
 
 $('searchForm').addEventListener('submit', (e) => { e.preventDefault(); runSearch($('q').value.trim()); });
 
-function runSearch(query) {
+async function runSearch(query) {
   if (!query) { $('homeView').innerHTML = ''; return; }
-  const hits = session.search(query, { limit: 100 });
+  const { hits } = await call('search', { query, limit: 100 });
   if (hits.length === 0) {
     $('homeView').innerHTML = `<div class="card hint">No matches for <code>${esc(query)}</code>.</div>`;
     return;
@@ -320,8 +412,8 @@ function linkifyDoc(text) {
   }).join('');
 }
 
-function openManPage(symbol) {
-  const p = session.manpage(symbol);
+async function openManPage(symbol) {
+  const { page: p } = await call('manpage', { symbol });
   if (!p) { $('homeView').innerHTML = `<div class="card hint">No man page for <code>${esc(symbol)}</code>.</div>`; return; }
 
   const docs = (v) => v.map((d) => `<div>${linkifyDoc(d.text)} <span class="hint">(${esc(d.language)})</span></div>`).join('');
@@ -388,7 +480,7 @@ function renderDiagnostics() {
     .filter(({ d }) => (!diagFilter.file || d.file === diagFilter.file) &&
       (!diagFilter.severity || d.severity === diagFilter.severity));
 
-  const errs = diagnostics.filter((d) => d.severity === 'Error').length;
+  const errs = diagnostics.filter((d) => d.severity === 'error').length;
   const filterActive = diagFilter.file || diagFilter.severity;
   const sum = $('diagSummary');
   if (sum) sum.innerHTML = diagnostics.length
@@ -450,7 +542,11 @@ $('diagList').addEventListener('click', (e) => {
     : `<div class="hint" style="margin-top:6px">Source for <code>${esc(d.file || '?')}</code> isn't among the loaded constituents.</div>`);
 });
 
-$('revalidate').onclick = () => { diagnostics = session.validate(); renderDiagnostics(); };
+$('revalidate').onclick = () => withBusy($('revalidate'), async () => {
+  diagnostics = (await call('validate')).diagnostics;
+  renderDiagnostics();
+  updateKbStatus();
+});
 
 $('diagFileFilter').addEventListener('change', () => { diagFilter.file = $('diagFileFilter').value; renderDiagnostics(); });
 $('diagSevFilter').addEventListener('change', () => { diagFilter.severity = $('diagSevFilter').value; renderDiagnostics(); });
@@ -499,11 +595,6 @@ attachKifHighlighting('pquery', 'pqueryHl');
 //
 // Interactive rendering of a proof/contradiction's `{index, rule, premises,
 // kif}[]` steps, used by both Ask/Tell's proof and each Audit contradiction.
-// Cytoscape + the dagre layout extension are loaded lazily from a CDN on
-// first use (same rationale as Monaco: keep the base page light). The graph
-// itself is built directly from the steps JSON — not from the `graphviz` DOT
-// string also on the result, which is kept alongside as a raw-text fallback
-// (mirroring the "raw engine output" collapsible) rather than parsed back.
 
 const CYTOSCAPE_VERSION = '3.34.0';
 const CYTOSCAPE_DAGRE_VERSION = '4.0.0';
@@ -520,7 +611,7 @@ function loadScript(src) {
   });
 }
 
-/** Loads cytoscape.js then cytoscape-dagre (which self-registers onto `window.cytoscape` once it sees the global is present). */
+/** Loads cytoscape.js then cytoscape-dagre (which self-registers onto `window.cytoscape`). */
 function loadCytoscape() {
   if (cytoscapeLoadPromise) return cytoscapeLoadPromise;
   cytoscapeLoadPromise = (async () => {
@@ -571,7 +662,7 @@ function cytoscapeStyle(dark) {
   ];
 }
 
-/** Create a Cytoscape instance inside `container` from `steps`, top-down (dagre) layout. `tipEl`, if given, shows the full KIF of whichever node was last tapped/hovered (node labels stay short). */
+/** Create a Cytoscape instance inside `container` from `steps`, top-down (dagre) layout. */
 async function renderProofGraph(container, steps, tipEl) {
   const cytoscape = await loadCytoscape();
   container.textContent = '';
@@ -589,14 +680,7 @@ async function renderProofGraph(container, steps, tipEl) {
   return cy;
 }
 
-/**
- * Wire a `<details>` element to lazily render its proof graph the first time
- * it's opened (a hidden container has zero size, so Cytoscape can't lay out
- * until then), and re-fit on later opens. `getSteps()` is called fresh each
- * time so the same wiring keeps working across re-runs (Ask/Tell reuses one
- * `<details>`); call the returned `invalidate()` after `getSteps()`'s data
- * changes so an already-open graph re-renders instead of going stale.
- */
+/** Wire a `<details>` element to lazily render its proof graph the first time it's opened, and re-fit on later opens. */
 function wireProofGraph(details, container, tipEl, getSteps) {
   const render = async () => {
     if (details._cy) { details._cy.destroy(); details._cy = null; }
@@ -617,35 +701,27 @@ function wireProofGraph(details, container, tipEl, getSteps) {
 
 // -- Prover: tell + ask -------------------------------------------------------
 
-$('prove').onclick = () => {
+$('prove').onclick = async () => {
   const btn = $('prove');
   btn.disabled = true; btn.textContent = 'Proving…';
-  setTimeout(() => {
-    try {
-      const cfg = new Config();
-      cfg.wantProof = true;
-      cfg.timeLimitSecs = Number($('ptime').value) || 0;
-      session.configure(cfg);
-
-      const SESS = 'user-assertions';
-      session.flushSession(SESS);
-      const assertions = $('assertions').value.trim();
-      if (assertions) {
-        const t = session.tell(assertions, SESS);
-        if (!t.ok) throw new Error('assertion parse errors: ' + t.errors.slice(0, 3).join('; '));
-      }
-      renderProof(session.ask($('pquery').value, { session: SESS }));
-    } catch (e) {
-      $('proverResult').hidden = false;
-      $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
-      $('pSteps').textContent = String(e && e.message || e);
-      $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
-      lastAskProof = [];
-      invalidateAskGraph();
-    } finally {
-      btn.disabled = false; btn.textContent = 'Prove';
-    }
-  }, 0);
+  try {
+    const { result } = await call('prove', {
+      assertions: $('assertions').value.trim(),
+      query: $('pquery').value,
+      timeLimitSecs: Number($('ptime').value) || 0,
+      session: 'user-assertions',
+    });
+    renderProof(result);
+  } catch (e) {
+    $('proverResult').hidden = false;
+    $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
+    $('pSteps').textContent = String(e && e.message || e);
+    $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
+    lastAskProof = [];
+    invalidateAskGraph();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Prove';
+  }
 };
 
 let lastAskProof = [];
@@ -665,23 +741,20 @@ function renderProof(r) {
 
 // -- Audit: whole-KB consistency check -----------------------------------------
 
-$('runAudit').onclick = () => {
+$('runAudit').onclick = async () => {
   const btn = $('runAudit');
   btn.disabled = true; btn.textContent = 'Auditing…';
-  setTimeout(() => {
-    try {
-      const cfg = new Config();
-      cfg.wantProof = true;
-      cfg.timeLimitSecs = Number($('auditTime').value) || 0;
-      session.configure(cfg);
-      const limit = Math.max(1, Number($('auditLimit').value) || 5);
-      renderAudit(session.auditConsistency(limit));
-    } catch (e) {
-      $('auditResult').innerHTML = `<div class="card hint" style="color:var(--bad)">${esc(String(e && e.message || e))}</div>`;
-    } finally {
-      btn.disabled = false; btn.textContent = 'Run audit';
-    }
-  }, 0);
+  try {
+    const { result } = await call('audit', {
+      timeLimitSecs: Number($('auditTime').value) || 0,
+      limit: Math.max(1, Number($('auditLimit').value) || 5),
+    });
+    renderAudit(result);
+  } catch (e) {
+    $('auditResult').innerHTML = `<div class="card hint" style="color:var(--bad)">${esc(String(e && e.message || e))}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Run audit';
+  }
 };
 
 function renderAudit(r) {
@@ -739,13 +812,6 @@ function renderAudit(r) {
 }
 
 // -- Edit: in-browser IDE (Monaco) for KIF constituents ------------------------
-//
-// Monaco is loaded lazily from a CDN on first visit to the tab — it's a ~5MB
-// AMD bundle, so the base page stays light until someone actually opens the
-// editor. A single reused editor instance + model swaps content on file
-// switch; diagnostics come from `validateFormula` (a scratch-session parse,
-// no KB mutation) so markers track the buffer's own line numbers live as you
-// type, independent of whatever file the text originated from.
 
 const MONACO_VERSION = '0.55.1';
 const MONACO_CDN = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
@@ -771,9 +837,7 @@ function loadMonaco() {
   return monacoLoadPromise;
 }
 
-/** Monarch tokenizer mirroring `highlightKif` (see the Ask/Tell editor) — parens,
- * operators, variables, strings, numbers, comments, and the relation/function
- * symbol immediately after `(` (via the `afterOpen` state). */
+/** Monarch tokenizer mirroring `highlightKif`. */
 const KIF_MONARCH = {
   defaultToken: '',
   tokenizer: {
@@ -792,7 +856,7 @@ const KIF_MONARCH = {
       { include: '@whitespace' },
       [/\b(?:and|or|not|forall|exists|equal)\b/, { token: 'keyword', next: '@pop' }],
       [/[A-Za-z_][A-Za-z0-9_-]*/, { token: 'kif-function', next: '@pop' }],
-      [/./, { token: '@rematch', next: '@pop' }], // nested "(", string, etc. right after "(" — not a function name
+      [/./, { token: '@rematch', next: '@pop' }],
     ],
     whitespace: [
       [/[ \t\r\n]+/, 'white'],
@@ -808,7 +872,6 @@ function defineKifLanguage(m) {
     brackets: [['(', ')']],
     autoClosingPairs: [{ open: '(', close: ')' }, { open: '"', close: '"' }],
   });
-  // Colors mirror the CSS custom-highlighter tokens (.tok-paren/.tok-kw/…).
   m.editor.defineTheme('kif-light', {
     base: 'vs', inherit: true,
     rules: [
@@ -856,11 +919,12 @@ function scheduleEditValidate() {
   editValidateTimer = setTimeout(runEditValidate, 400);
 }
 
-function runEditValidate() {
+async function runEditValidate() {
   if (!monacoEditor) return;
   let diags = [];
-  try { diags = session.validateFormula(monacoEditor.getValue()); }
+  try { diags = (await call('validateFormula', { kif: monacoEditor.getValue() })).diagnostics; }
   catch (e) { $('editStatus').textContent = 'parse error: ' + (e && e.message || e); return; }
+  if (!monacoEditor) return;
   monaco.editor.setModelMarkers(monacoEditor.getModel(), 'sigma', diagsToMarkers(diags));
   const errs = diags.filter((d) => d.severity === 'error').length;
   $('editStatus').textContent = diags.length
@@ -942,9 +1006,6 @@ $('editDownload').onclick = () => {
   URL.revokeObjectURL(url);
 };
 
-// Not routed through `withBusy` — it hardcodes error output to #kbLog, which
-// would silently misdirect Edit-tab errors into the (hidden) Knowledge base
-// tab. Inline busy-toggle instead, matching the Ask/Tell and Audit handlers.
 $('editSave').onclick = async () => {
   const btn = $('editSave');
   btn.disabled = true; btn.textContent = 'Saving…';
@@ -959,9 +1020,6 @@ $('editSave').onclick = async () => {
       if (!name) throw new Error('Enter a filename first.');
       origin = 'file';
     }
-    // Only `file`-origin constituents persist to OPFS (see updateConstituentText) —
-    // `sumo`/`url` ones are refetched from the network on every boot, so an
-    // in-memory edit here is silently gone the moment the page reloads.
     if (origin === 'sumo' || origin === 'url') {
       alert(
         `"${name}" was loaded from ${origin === 'sumo' ? 'the SUMO GitHub repo' : 'a URL'}, ` +

@@ -358,6 +358,55 @@ impl WasmNativeProver {
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Load KIF under `file_tag` WITHOUT promoting it to axioms.
+    ///
+    /// Enables search / man pages / editing immediately (they read the ingested
+    /// store); proving and the full man-page taxonomy require a later
+    /// [`promote`](Self::promote). Returns parse-error strings ([] on success).
+    #[wasm_bindgen(js_name = ingest)]
+    pub fn ingest(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
+        let result = self.inner.load(
+            sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file_tag), kif_text.to_string()),
+            file_tag,
+        );
+        let errors: Vec<String> = result.diagnostics.iter().map(|e: &sigmakee_rs_core::Diagnostic| e.to_string()).collect();
+        serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Promote a previously-[`ingest`](Self::ingest)ed source into the axiom
+    /// base (`make_session_axiomatic`) — the deferred, heavier step that enables
+    /// proving. Returns error strings ([] on success).
+    #[wasm_bindgen(js_name = promote)]
+    pub fn promote(&mut self, file_tag: &str) -> Result<JsValue, JsValue> {
+        let mut errors: Vec<String> = Vec::new();
+        if let Err(e) = self.inner.make_session_axiomatic(file_tag) {
+            errors.push(format!("promote failed: {:?}", e));
+        }
+        serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Freeze the entire KB — promoted axioms, symbols, indices, taxonomy — into
+    /// a self-contained byte buffer (a `Uint8Array`).
+    ///
+    /// The bytes are heed-free and portable: stash them in IndexedDB / a file /
+    /// a download, then rebuild the KB on a later visit with
+    /// [`restore`](Self::restore) instead of re-ingesting and re-promoting. This
+    /// is the browser freeze/thaw seam.
+    #[wasm_bindgen]
+    pub fn snapshot(&self) -> Result<Vec<u8>, JsValue> {
+        self.inner.snapshot_bytes().map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Thaw a KB previously produced by [`snapshot`](Self::snapshot), replacing
+    /// this instance's contents. The active [`Config`] is preserved.
+    #[wasm_bindgen]
+    pub fn restore(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        let kb = KnowledgeBase::<ProverLayer>::restore_from_bytes(bytes)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.inner = kb;
+        Ok(())
+    }
+
     /// Assert a single KIF formula into the KB under the given session key.
     ///
     /// `session` defaults to `"default"` if omitted.

@@ -70,19 +70,21 @@ export function init(input) {
 
 /** @typedef {{ loaded: number, files: string[], errors: string[] }} LoadReport */
 
-async function ingestUrl(kb, { url, tag }) {
+// `load` is the binding method to use: 'loadKif' (fused ingest+promote) or
+// 'ingest' (ingest only; the caller promotes later via Session.promote).
+async function ingestUrl(kb, { url, tag }, load = 'loadKif') {
   const res = await fetch(url);
   if (!res.ok) return { loaded: 0, files: [], errors: [`${url}: HTTP ${res.status}`] };
-  const errors = kb.loadKif(await res.text(), tag);
+  const errors = kb[load](await res.text(), tag);
   return { loaded: errors.length ? 0 : 1, files: [tag], errors };
 }
 
-async function ingestFile(kb, { file }) {
-  const errors = kb.loadKif(await file.text(), file.name);
+async function ingestFile(kb, { file }, load = 'loadKif') {
+  const errors = kb[load](await file.text(), file.name);
   return { loaded: errors.length ? 0 : 1, files: [file.name], errors };
 }
 
-async function ingestGitHub(kb, { owner, repo, ref, dir, match, token }) {
+async function ingestGitHub(kb, { owner, repo, ref, dir, match, token }, load = 'loadKif') {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`;
   const treeRes = await fetch(treeUrl, { headers });
@@ -100,7 +102,7 @@ async function ingestGitHub(kb, { owner, repo, ref, dir, match, token }) {
     try {
       const r = await fetch(rawUrl, { headers });
       if (!r.ok) { report.errors.push(`${path}: HTTP ${r.status}`); continue; }
-      const errs = kb.loadKif(await r.text(), path);
+      const errs = kb[load](await r.text(), path);
       if (errs.length) report.errors.push(...errs.map((e) => `${path}: ${e}`));
       else { report.loaded += 1; report.files.push(path); }
     } catch (e) { report.errors.push(`${path}: ${e}`); }
@@ -135,22 +137,45 @@ export class Session {
 
   /**
    * Load a {@link Source} into the KB. Async because URL/GitHub sources fetch.
+   * Pass `{ promote: false }` to ingest only (search / man pages / editing work
+   * immediately); then call {@link Session#promote} on the returned `files` to
+   * finish axiomatization (proving). Native backend only for deferred promote.
    * @param {Source} source
+   * @param {{ promote?: boolean }} [opts]
    * @returns {Promise<LoadReport>}
    */
-  async ingest(source) {
+  async ingest(source, { promote = true } = {}) {
+    const load = promote ? 'loadKif' : 'ingest';
     switch (source.kind) {
       case 'kif': {
         const { text, tag } = source.spec;
-        const errors = this.#kb.loadKif(text, tag);
+        const errors = this.#kb[load](text, tag);
         return { loaded: errors.length ? 0 : 1, files: [tag], errors };
       }
-      case 'url':    return ingestUrl(this.#kb, source.spec);
-      case 'file':   return ingestFile(this.#kb, source.spec);
-      case 'github': return ingestGitHub(this.#kb, source.spec);
+      case 'url':    return ingestUrl(this.#kb, source.spec, load);
+      case 'file':   return ingestFile(this.#kb, source.spec, load);
+      case 'github': return ingestGitHub(this.#kb, source.spec, load);
       default: throw new Error(`unknown Source kind: ${source.kind}`);
     }
   }
+
+  /** Promote an ingested source (by tag) into the axiom base. Native only. */
+  promote(tag) { return this.#kb.promote(tag); }
+
+  /**
+   * Freeze the whole KB to a portable `Uint8Array` (native backend). Stash it
+   * (IndexedDB, a file, a download) and rebuild later with {@link Session#restore}
+   * instead of re-ingesting. Heed-free; the bytes carry the promoted axiom base.
+   * @returns {Uint8Array}
+   */
+  snapshot() { return this.#kb.snapshot(); }
+
+  /**
+   * Thaw a KB frozen by {@link Session#snapshot}, replacing this session's
+   * contents in place (native backend). The active {@link Config} is preserved.
+   * @param {Uint8Array} bytes
+   */
+  restore(bytes) { return this.#kb.restore(bytes); }
 
   /** Assert one formula into an in-memory session (default "default"). */
   tell(kif, session) { return this.#kb.tell(kif, session); }

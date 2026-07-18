@@ -93,6 +93,18 @@ impl SemanticLayer {
     ) -> Vec<DocEntry> {
         filter_lang(&self.documentation.get(self, Scoped { scope, key: sym }), language)
     }
+
+    /// Documentation entries for `sym` from **every** source, promoted or not.
+    /// Man-page rendering uses this so metadata (`documentation` / `format` /
+    /// `termFormat`) is visible immediately after ingest, before promotion.
+    /// Not cached — man-page rendering is cold and this bypasses the scoped cache.
+    pub(crate) fn documentation_any(&self, sym: SymbolId, language: Option<&str>) -> Vec<DocEntry> {
+        let mut out = Vec::new();
+        for (_, rel) in DOCUMENTATION_RELATIONS {
+            out.extend(collect_doc_entries_any(self, rel.id(), sym));
+        }
+        filter_lang(&out, language)
+    }
 }
 
 /// The symbol arguments of `sid` iff it is a documentation-style root, else an
@@ -123,8 +135,31 @@ pub(crate) fn collect_doc_entries(
     scope:  Scope,
 ) -> Vec<DocEntry> {
     let store = &parent.syntactic;
+    let sids = parent.scope_filter_sids(store.by_head_id(&head).iter().copied(), scope);
+    collect_from_sids(store, head, target, sids)
+}
+
+/// Documentation-style entries for `target` from **every** source headed by
+/// `head` — promoted axioms and un-promoted (ingested-but-not-yet-axiomatic)
+/// sessions alike, no scope filtering. Man pages use this so `documentation` /
+/// `format` / `termFormat` render immediately on ingest, before promotion.
+pub(crate) fn collect_doc_entries_any(
+    parent: &SemanticLayer,
+    head:   SymbolId,
+    target: SymbolId,
+) -> Vec<DocEntry> {
+    let store = &parent.syntactic;
+    collect_from_sids(store, head, target, store.by_head_id(&head).iter().copied())
+}
+
+fn collect_from_sids(
+    store:  &crate::syntactic::SyntacticLayer,
+    head:   SymbolId,
+    target: SymbolId,
+    sids:   impl IntoIterator<Item = SentenceId>,
+) -> Vec<DocEntry> {
     let mut out = Vec::new();
-    for sid in parent.scope_filter_sids(store.by_head_id(&head).iter().copied(), scope) {
+    for sid in sids {
         let Some(sent) = store.sentence(sid) else { continue };
         let mut syms = Vec::new();
         let mut text = None;

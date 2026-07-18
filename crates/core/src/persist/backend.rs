@@ -44,6 +44,19 @@ pub(crate) struct MemoryBackend {
     map: HashMap<String, Vec<u8>>,
 }
 
+impl MemoryBackend {
+    /// Build a backend pre-seeded with a blob map (thaw a byte snapshot).
+    #[cfg(feature = "snapshot")]
+    pub(crate) fn from_map(map: HashMap<String, Vec<u8>>) -> Self {
+        Self { map }
+    }
+    /// Consume the backend, yielding its blob map (freeze to a byte snapshot).
+    #[cfg(feature = "snapshot")]
+    pub(crate) fn into_map(self) -> HashMap<String, Vec<u8>> {
+        self.map
+    }
+}
+
 impl PersistenceBackend for MemoryBackend {
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
         self.map.insert(key.to_owned(), bytes.to_vec());

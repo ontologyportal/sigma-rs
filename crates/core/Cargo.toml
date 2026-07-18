@@ -6,8 +6,14 @@ edition.workspace = true
 [features]
 # No default features
 default = ["ask"]
-# LMDB-backed persistence. Pulls in heed + bincode.
-persist = ["dep:heed", "dep:bincode"]
+# Cache (de)serialization only — bincode, NO heed. Enables the in-memory
+# snapshot-bytes API (`KnowledgeBase::snapshot_bytes` / `restore_from_bytes`),
+# which round-trips the whole KB through a byte buffer with no disk backend.
+# Compiles on wasm32 (heed does not), so the browser can freeze/thaw a built KB.
+snapshot = ["dep:bincode"]
+# LMDB-backed persistence. Pulls in heed and, transitively, the bincode
+# serialization the snapshot layer provides.
+persist = ["dep:heed", "snapshot"]
 # Theorem proving: the subprocess prover (spawns a `vampire` process)
 # and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.

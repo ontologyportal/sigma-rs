@@ -151,7 +151,14 @@ export class Session {
   /** The underlying raw binding (WasmNativeProver | WasmKnowledgeBase). */
   readonly kb: unknown;
   configure(config: Config): this;
-  ingest(source: Source): Promise<LoadReport>;
+  /** `{ promote: false }` ingests only (search/man pages work); call `promote` later. */
+  ingest(source: Source, opts?: { promote?: boolean }): Promise<LoadReport>;
+  /** Promote an ingested source (by tag) into the axiom base. Native backend only. */
+  promote(tag: string): string[];
+  /** Freeze the whole KB (promoted axioms included) to a portable byte buffer. Native backend only. */
+  snapshot(): Uint8Array;
+  /** Thaw a KB frozen by {@link Session.snapshot}, replacing this session in place. Native backend only. */
+  restore(bytes: Uint8Array): void;
   tell(kif: string, session?: string): TellResult;
   /** Native backend → AskResult; TranslationOnly backend (with hook) → string. */
   ask(queryKif: string, opts?: AskOpts): AskResult | string;

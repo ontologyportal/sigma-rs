@@ -12,7 +12,7 @@
 
 use crate::SentenceId;
 use crate::layer::{Layer, TopLayer};
-use crate::semantics::consts::DOC_RELATION;
+use crate::semantics::consts::{DOC_RELATION, FORMAT_RELATION, TERM_RELATION};
 use crate::syntactic::SyntacticLayer;
 use crate::types::{DocEntry, RelationDomain, RelationRange};
 use crate::types::{Element, SymbolId};
@@ -177,6 +177,15 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         self.layer.semantic().format_string(relation, language)
     }
 
+    /// `documentation` / `termFormat` / `format` for `symbol` from **every**
+    /// source — promoted axioms and un-promoted (ingested-but-not-yet-axiomatic)
+    /// sessions alike. Man pages use these so metadata renders immediately on
+    /// ingest, before promotion; the scoped variants above serve the prover.
+    fn documentation_any(&self, symbol: &str, rel: SymbolId) -> Vec<DocEntry> {
+        let Some(id) = self.symbol_id(symbol) else { return Vec::new(); };
+        self.layer.semantic().documentation_any(id, None).into_iter().filter(|d| d.rel == rel).collect()
+    }
+
     /// Build a full man-page view for `symbol`.  `None` if the symbol is not
     /// interned in the KB.  All fields are best-effort: the query succeeds even
     /// when some data is missing, in which case the corresponding field is
@@ -245,9 +254,9 @@ fn build_manpage<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, sym_id: SymbolId, n
     ManPage {
         name: name.to_string(),
         kinds,
-        documentation: kb.documentation(name, None),
-        term_format:   kb.term_format(name, None),
-        format:        kb.format_string(name, None),
+        documentation: kb.documentation_any(name, DOC_RELATION.id()),
+        term_format:   kb.documentation_any(name, TERM_RELATION.id()),
+        format:        kb.documentation_any(name, FORMAT_RELATION.id()),
         parents,
         children,
         arity,
@@ -462,6 +471,33 @@ mod tests {
         let r = kb.make_session_axiomatic("test.kif");
         assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
         kb
+    }
+
+    #[test]
+    fn manpage_shows_metadata_before_promotion() {
+        // The load/promote split (WASM ingest → deferred promote) must not hide
+        // man-page metadata: documentation / termFormat / format render from the
+        // un-promoted source, before `make_session_axiomatic`.
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            r#"
+            (documentation Widget EnglishLanguage "A widget.")
+            (termFormat EnglishLanguage Widget "widget")
+            (format EnglishLanguage part "%1 is a part of %2")
+            "#,
+            &std::path::PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        // NOTE: deliberately NOT promoted.
+
+        let page = kb.manpage("Widget").expect("Widget interned on ingest");
+        assert_eq!(page.documentation.len(), 1, "doc must show pre-promote: {:?}", page.documentation);
+        assert_eq!(page.documentation[0].text, "A widget.");
+        assert_eq!(page.term_format.len(), 1, "termFormat must show pre-promote");
+        assert_eq!(page.term_format[0].text, "widget");
+
+        let part = kb.manpage("part").expect("part interned on ingest");
+        assert_eq!(part.format.len(), 1, "format must show pre-promote: {:?}", part.format);
+        assert_eq!(part.format[0].text, "%1 is a part of %2");
     }
 
     #[test]

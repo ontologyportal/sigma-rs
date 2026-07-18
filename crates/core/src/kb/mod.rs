@@ -21,7 +21,7 @@ pub mod progress;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub mod prove;
 pub mod export;
-#[cfg(feature = "persist")]
+#[cfg(any(feature = "snapshot", feature = "persist"))]
 pub mod persist;
 pub mod man;
 pub mod search;

@@ -7,10 +7,17 @@
 //! round-trips through the one backend-agnostic seam.
 
 
+#[cfg(feature = "persist")]
 use crate::SentenceId;
-use crate::persist::{LmdbEnv, PersistenceEngine};
+#[cfg(any(feature = "snapshot", feature = "persist"))]
+use crate::persist::PersistenceEngine;
+#[cfg(feature = "persist")]
+use crate::persist::LmdbEnv;
+#[cfg(feature = "persist")]
 use crate::progress::{DynSink, SinkGuard};
+#[cfg(any(feature = "snapshot", feature = "persist"))]
 use crate::semantics::SemanticLayer;
+#[cfg(any(feature = "snapshot", feature = "persist"))]
 use crate::Diagnostic;
 use crate::layer::TopLayer;
 
@@ -83,6 +90,51 @@ impl<L: TopLayer> KnowledgeBase<L> {
         Ok(kb)
     }
 
+    /// Freeze the entire KB into a self-contained byte buffer.
+    ///
+    /// Snapshots every persistable cache into an in-memory blob store (no disk,
+    /// no heed), then bincode-encodes the blob map. The bytes round-trip through
+    /// [`restore_from_bytes`](Self::restore_from_bytes) into an independent KB.
+    ///
+    /// This is the browser freeze/thaw seam: a built KB can be handed to JS as a
+    /// `Uint8Array`, stashed in IndexedDB, and thawed on a later visit without
+    /// re-ingesting. Requires the `snapshot` feature (heed-free; compiles on
+    /// wasm32, unlike [`persist`](Self::persist)).
+    #[cfg(feature = "snapshot")]
+    pub fn snapshot_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
+        with_guard!(self);
+
+        let mut backend = PersistenceEngine::memory();
+        self.layer.snapshot_caches(&mut backend)?;
+        let map = match backend {
+            PersistenceEngine::Memory(m) => m.into_map(),
+            _ => unreachable!("memory() constructs the Memory variant"),
+        };
+        bincode::serialize(&map)
+            .map_err(|e| Diagnostic::new_error("snapshot", "serialize", e.to_string()))
+    }
+
+    /// Thaw a KB previously frozen by [`snapshot_bytes`](Self::snapshot_bytes)
+    /// into a fresh, detached (`db: None`) KB over layer `L`. Blob keys the
+    /// layer doesn't recognize are left to rebuild, mirroring
+    /// [`open`](Self::open). Requires the `snapshot` feature.
+    #[cfg(feature = "snapshot")]
+    pub fn restore_from_bytes(bytes: &[u8]) -> Result<Self, Diagnostic> {
+        use crate::persist::MemoryBackend;
+        use crate::syntactic::SyntacticLayer;
+        use std::collections::HashMap;
+
+        let map: HashMap<String, Vec<u8>> = bincode::deserialize(bytes)
+            .map_err(|e| Diagnostic::new_error("snapshot", "deserialize", e.to_string()))?;
+        let backend = PersistenceEngine::Memory(MemoryBackend::from_map(map));
+
+        let layer = L::from_semantic(SemanticLayer::new(SyntacticLayer::default()));
+        layer.restore_caches_from(&backend)?;
+        layer.initialize_caches();
+
+        Ok(Self::from_layer(layer))
+    }
+
     /// Freeze the entire KB to the LMDB store (wholesale snapshot of every
     /// persistable cache).  No-op when there is no attached DB.
     ///
@@ -108,6 +160,36 @@ impl<L: TopLayer> KnowledgeBase<L> {
         self.persist()
     }
 
+}
+
+#[cfg(all(test, feature = "snapshot", feature = "native-prover"))]
+mod snapshot_bytes_tests {
+    use crate::ProverLayer;
+    use super::KnowledgeBase;
+
+    #[test]
+    fn kb_round_trips_through_bytes() {
+        // Build + promote a small theory, freeze to bytes, thaw into a fresh KB,
+        // and confirm the thawed KB carries the promoted axioms and can prove.
+        let mut master = KnowledgeBase::<ProverLayer>::new_native();
+        let r = master.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Mammal Animal)\n(instance Rex Dog)",
+            &std::path::PathBuf::from("s.kif"), "s1");
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+        master.make_session_axiomatic("s1").expect("promote");
+        let roots_before = master.layer.semantic.syntactic.root_sids().len();
+        assert_eq!(roots_before, 3, "three promoted roots");
+
+        let bytes = master.snapshot_bytes().expect("snapshot_bytes");
+        assert!(!bytes.is_empty(), "snapshot produced bytes");
+
+        let thawed = KnowledgeBase::<ProverLayer>::restore_from_bytes(&bytes)
+            .expect("restore_from_bytes");
+        assert_eq!(thawed.layer.semantic.syntactic.root_sids().len(), roots_before,
+            "thawed KB carries the promoted axioms");
+        assert!(thawed.layer.semantic.syntactic.sym_id("Dog").is_some(),
+            "thawed KB interns the master's symbols");
+    }
 }
 
 #[cfg(all(test, feature = "persist"))]
