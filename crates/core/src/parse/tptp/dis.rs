@@ -346,6 +346,7 @@ fn universal_closure(formula: &AstNode, names: Vec<String>) -> AstNode {
 fn render_source(src: &Source) -> String {
     match src {
         Source::Input(f) => format!("file('{f}')"),
+        Source::Introduced(mechanism) => format!("introduced({})", syntax::lower_word(mechanism)),
         Source::Inference { rule, parents } => {
             let status = match rule.as_str() {
                 "negate_conjecture" => "cth",

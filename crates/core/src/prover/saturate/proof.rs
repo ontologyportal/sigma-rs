@@ -70,11 +70,11 @@ pub(crate) fn count_proof_tags(prover: &NativeProver<'_>, empty_id: u32) -> Proo
         // the mechanism the task/field name `proof_tag_join` refers to; there
         // is no bare `"join"` tag in the codebase.
         match c.rule {
-            "model" => counts.model += 1,
+            "model" | "model_refute" | "model_complete" => counts.model += 1,
             "model_join" => counts.model_join += 1,
             "rule_join" => counts.join += 1,
             "event_calculus" => counts.event_calculus += 1,
-            "oracle" => counts.oracle += 1,
+            "oracle" | "exhaustive" | "fd_congruence" => counts.oracle += 1,
             _ => {}
         }
     }
@@ -511,6 +511,31 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
                         clause_step.insert(cid, f_idx);
                         continue;
                     }
+                    // Unrecognized refutation shape: still terminate the
+                    // transcript.  The witnesses become premises of an
+                    // explicit [oracle] FALSE step instead of floating
+                    // detached, and the contradiction actually ENDS in a
+                    // contradiction.
+                    let mut premises = vec![idx];
+                    for w in &c.fact_parents {
+                        premises.push(root_step(
+                            layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer));
+                    }
+                    premises.extend(c.parents.iter().filter_map(|p| clause_step.get(p).copied()));
+                    premises.sort_unstable();
+                    premises.dedup();
+                    steps.push(KifProofStep {
+                        index: steps.len(),
+                        rule: "oracle".to_string(),
+                        premises,
+                        formula: AstNode::Symbol {
+                            name: "FALSE".to_string(),
+                            span: Span::synthetic(),
+                        },
+                        source_sid: None,
+                    });
+                    clause_step.insert(cid, steps.len() - 1);
+                    continue;
                 }
                 // Also surface any oracle witnesses attached to this input
                 // clause — e.g. the disjointness/partition axioms that
@@ -564,9 +589,22 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
                 premises.extend(c.parents.iter().filter_map(|p| clause_step.get(p).copied()));
                 premises.sort_unstable();
                 premises.dedup();
+                // A goal that vanished with NO witnesses and NO clause
+                // parents was decided by a theory procedure (arithmetic
+                // evaluation, `x = x`); say so instead of the misleading
+                // bare `cnf_transformation` — that's the only trace the
+                // proof gets, since theory truths have no KB premise.
+                let rule = if c.lits.is_empty() && premises.len() == 1 {
+                    sentence_ast(layer, src, &mut renamer)
+                        .as_ref()
+                        .and_then(theory_discharge_rule)
+                        .unwrap_or("cnf_transformation")
+                } else {
+                    "cnf_transformation"
+                };
                 steps.push(KifProofStep {
                     index: steps.len(),
-                    rule: "cnf_transformation".to_string(),
+                    rule: rule.to_string(),
                     premises,
                     formula: clause_ast(layer, c, &mut renamer),
                     source_sid: None,
@@ -602,6 +640,35 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         clause_step.insert(cid, steps.len() - 1);
     }
     steps
+}
+
+/// Rule label for a goal a theory decision procedure discharged with no
+/// premises at all: a syntactic self-equality is `reflexivity`; a ground
+/// comparison (or equality) over two numeric literals is `arithmetic`.
+/// `None` when the goal's shape doesn't explain a premise-free discharge.
+fn theory_discharge_rule(goal: &AstNode) -> Option<&'static str> {
+    match goal {
+        AstNode::Annotated { formula, .. } => theory_discharge_rule(formula),
+        AstNode::List { elements, .. } => match elements.as_slice() {
+            [AstNode::Operator { op: OpKind::Equal, .. }, a, b] => {
+                if let (AstNode::Number { value: x, .. }, AstNode::Number { value: y, .. }) = (a, b) {
+                    return (x == y).then_some("arithmetic");
+                }
+                match (a, b) {
+                    (AstNode::Symbol { name: x, .. }, AstNode::Symbol { name: y, .. })
+                        if x == y => Some("reflexivity"),
+                    _ => None,
+                }
+            }
+            [AstNode::Symbol { name, .. }, AstNode::Number { .. }, AstNode::Number { .. }]
+                if matches!(name.as_str(),
+                    "greaterThan" | "lessThan"
+                    | "greaterThanOrEqualTo" | "lessThanOrEqualTo") =>
+                Some("arithmetic"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// A flat all-symbol statement `(head s1 s2 …)` → its symbol names

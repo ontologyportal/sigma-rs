@@ -82,6 +82,10 @@ pub enum Source {
     /// Derived by an inference rule from named parent statements
     /// (`inference(rule, …, [parents])`).
     Inference { rule: String, parents: Vec<String> },
+    /// Synthesized by the prover itself — background schemata, theory
+    /// units — with no input formula or parent steps to cite
+    /// (`introduced(mechanism)`).
+    Introduced(String),
 }
 
 /// A node in the raw abstract syntax tree produced by the parser.

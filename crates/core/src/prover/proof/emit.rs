@@ -137,10 +137,15 @@ pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
             _                    => Role::Plain,
         };
         let source = if s.premises.is_empty() {
-            if s.rule == "negated_conjecture" {
-                Source::Inference { rule: "negate_conjecture".into(), parents: Vec::new() }
-            } else {
-                Source::Input(problem.to_string())
+            match s.rule.as_str() {
+                "negated_conjecture" =>
+                    Source::Inference { rule: "negate_conjecture".into(), parents: Vec::new() },
+                // Genuine inputs cite the problem; any other premise-less
+                // step is prover-synthesized (subrel_schema, list_theory,
+                // modal_k, …) and must not masquerade as a stated axiom.
+                "axiom" | "hypothesis" | "conjecture" =>
+                    Source::Input(problem.to_string()),
+                other => Source::Introduced(other.to_string()),
             }
         } else {
             // The negated conjecture cites the `negate_conjecture` inference

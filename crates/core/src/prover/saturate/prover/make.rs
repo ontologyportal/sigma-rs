@@ -1130,7 +1130,9 @@ impl<'a> NativeProver<'a> {
     /// predicate-variable seat-0 bucket, which otherwise explodes.
     pub(crate) fn synthesize_subrelation_rules(&mut self, clauses: &[PClause]) {
         let subrel = self.oracle.roles().subrelation;
-        let mut pairs: Vec<(Symbol, Symbol)> = Vec::new();
+        // (`AtomId = SentenceId`, so the licensing fact's atom id is
+        // directly citable as a proof premise.)
+        let mut pairs: Vec<(Symbol, Symbol, SentenceId)> = Vec::new();
         for c in clauses {
             if c.lits.len() != 1 || !c.lits[0].pos {
                 continue;
@@ -1143,12 +1145,12 @@ impl<'a> NativeProver<'a> {
                 (Some(Element::Symbol(h)), Element::Symbol(r), Element::Symbol(s))
                     if h.id() == subrel && r.id() != s.id() =>
                 {
-                    pairs.push((r.0.clone(), s.0.clone()));
+                    pairs.push((r.0.clone(), s.0.clone(), c.lits[0].atom));
                 }
                 _ => {}
             }
         }
-        for (r, s) in pairs {
+        for (r, s, fact_sid) in pairs {
             if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
                 eprintln!("SUBREL-SCHEMA {} -> {}", r.name(), s.name());
             }
@@ -1157,6 +1159,10 @@ impl<'a> NativeProver<'a> {
             if let Some(id) =
                 self.make(vec![(false, body), (true, head)], vec![], "subrel_schema", BACKGROUND, None, false)
             {
+                // Cite the `(subrelation R S)` fact this rule reifies —
+                // without it the synthesized clause is an unjustified
+                // proof leaf.
+                self.clauses[id as usize].fact_parents.push(fact_sid);
                 let key = self.clauses[id as usize].key;
                 if self.clauses[id as usize].lits.len() <= self.opts.max_lits
                     && self.seen_insert(key, id)
@@ -1722,6 +1728,15 @@ impl<'a> NativeProver<'a> {
                 if self.atom_ill_sorted(t) {
                     if !*pos {
                         return None; // (not ill-sorted) ≡ tautology
+                    }
+                    // At least a trace: this strike previously recorded
+                    // NOTHING.  Full citation (domain declaration +
+                    // instance fact + disjointness) needs sids threaded
+                    // through the semantic domain caches — future work.
+                    if self.want_notes() {
+                        notes.push(format!(
+                            "{} -- ill-sorted (argument disjoint from declared domain)",
+                            term_kif(t, self.syn())));
                     }
                     dropped_positive = true;
                     continue;
