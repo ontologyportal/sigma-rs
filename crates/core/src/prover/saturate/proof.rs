@@ -358,6 +358,136 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         Some(f_idx)
     }
 
+    // Expand a disjointness-oracle refutation of a ground binary INPUT fact
+    // (`sumo audit` contradictions: an `(instance x C)` axiom/hypothesis
+    // refuted because two of x's derived classes are declared disjoint).
+    //
+    // The witness set is one disjointness declaration (`partition` /
+    // `disjoint` / `disjointDecomposition`) plus subclass edges forming a
+    // DAG from C — possibly BRANCHING toward the two conflicting classes,
+    // so this is a worklist walk, not the single chain of
+    // [`expand_oracle_refutation`].  Emits one `taxonomy` hop per edge and
+    // a final `disjoint` step:
+    //
+    //   taxonomy:  (instance x c_i)   <- reached-class step, edge
+    //   disjoint:  FALSE              <- (instance x D1), (instance x D2), decl
+    //
+    // Returns `None` (caller falls back to the flat witness citation) when
+    // the shape is anything else: no single declaration, non-symbol
+    // witnesses, unused edges, or fewer than two reached declared-disjoint
+    // classes.
+    fn expand_disjoint_refutation(
+        layer:      &ProverLayer,
+        src:        SentenceId,
+        witnesses:  &[SentenceId],
+        input_idx:  usize,
+        steps:      &mut Vec<KifProofStep>,
+        root_steps: &mut HashMap<SentenceId, usize>,
+        renamer:    &mut SkolemRenamer,
+    ) -> Option<usize> {
+        if witnesses.len() < 2 {
+            return None;
+        }
+        let goal = layer.semantic.syntactic.source_node_of(src)
+            .or_else(|| sentence_ast(layer, src, renamer))?;
+        let (grel, gx, gc0) = ground_binary(&goal)?;
+
+        let mut edges: Vec<(SentenceId, String, String)> = Vec::new();
+        let mut decls: Vec<(SentenceId, Vec<String>)> = Vec::new();
+        for sid in witnesses {
+            let f = layer.semantic.syntactic.source_node_of(*sid)
+                .or_else(|| sentence_ast(layer, *sid, renamer))?;
+            let syms = ground_symbols(&f)?;
+            if DISJOINT_HEADS.contains(&syms[0].as_str()) {
+                decls.push((*sid, syms));
+            } else if syms.len() == 3 {
+                edges.push((*sid, syms[1].clone(), syms[2].clone()));
+            } else {
+                return None;
+            }
+        }
+        if decls.len() != 1 {
+            return None;
+        }
+        let (decl_sid, decl_syms) = decls.pop().expect("one declaration");
+
+        // Worklist: classes x provably inhabits, each with the step that
+        // establishes it.  Seeded by the refuted input fact itself.
+        let mut reached: Vec<(String, usize)> = vec![(gc0, input_idx)];
+        let mut used = vec![false; edges.len()];
+        loop {
+            let mut progress = false;
+            for (i, (sid, a, b)) in edges.iter().enumerate() {
+                if used[i] {
+                    continue;
+                }
+                // A direct `(instance x K)` witness fact seeds K itself.
+                if *a == gx {
+                    let st = root_step(layer, *sid, "axiom", steps, root_steps, renamer);
+                    if !reached.iter().any(|(c, _)| c == b) {
+                        reached.push((b.clone(), st));
+                    }
+                    used[i] = true;
+                    progress = true;
+                    continue;
+                }
+                // Both branches of a fork share their prefix chain, and the
+                // oracle cites the shared edges once per branch — an edge
+                // whose target class is already established needs no second
+                // derivation.
+                if reached.iter().any(|(c, _)| c == b) {
+                    used[i] = true;
+                    progress = true;
+                    continue;
+                }
+                let Some(&(_, prev)) = reached.iter().find(|(c, _)| c == a) else {
+                    continue;
+                };
+                let edge_step = root_step(layer, *sid, "axiom", steps, root_steps, renamer);
+                let idx = steps.len();
+                steps.push(KifProofStep {
+                    index: idx,
+                    rule: "taxonomy".to_string(),
+                    premises: vec![prev, edge_step],
+                    formula: mk_ground_binary(&grel, &gx, b),
+                    source_sid: None,
+                });
+                reached.push((b.clone(), idx));
+                used[i] = true;
+                progress = true;
+            }
+            if !progress {
+                break;
+            }
+        }
+        if used.iter().any(|u| !u) {
+            return None; // leftover witnesses — not the shape we understand
+        }
+
+        // The declaration's class arguments: `(disjoint C1 C2)` lists them
+        // from position 1; `(partition Parent C1 …)` and
+        // `(disjointDecomposition Parent C1 …)` from position 2.
+        let classes = if decl_syms[0] == "disjoint" { &decl_syms[1..] } else { &decl_syms[2..] };
+        let mut conflict: Vec<usize> = classes.iter()
+            .filter_map(|c| reached.iter().find(|(rc, _)| rc == c).map(|&(_, i)| i))
+            .collect();
+        conflict.sort_unstable();
+        conflict.dedup();
+        if conflict.len() < 2 {
+            return None;
+        }
+        let decl_step = root_step(layer, decl_sid, "axiom", steps, root_steps, renamer);
+        let f_idx = steps.len();
+        steps.push(KifProofStep {
+            index: f_idx,
+            rule: "disjoint".to_string(),
+            premises: vec![conflict[0], conflict[1], decl_step],
+            formula: AstNode::Symbol { name: "FALSE".to_string(), span: Span::synthetic() },
+            source_sid: None,
+        });
+        Some(f_idx)
+    }
+
     for cid in order {
         let c = &prover.clauses[cid as usize];
 
@@ -369,6 +499,19 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
             if let Some(src) = c.source {
                 let idx = root_step(layer, src, c.rule, &mut steps, &mut root_steps, &mut renamer);
                 clause_step.insert(cid, idx);
+                // An EMPTY input clause is an oracle-refuted fact (an audit
+                // contradiction): expand the disjointness witnesses into
+                // the derivation — taxonomy hops up both branches, then
+                // the disjoint/partition conflict step to FALSE.
+                if c.lits.is_empty() {
+                    if let Some(f_idx) = expand_disjoint_refutation(
+                        layer, src, &c.fact_parents, idx,
+                        &mut steps, &mut root_steps, &mut renamer)
+                    {
+                        clause_step.insert(cid, f_idx);
+                        continue;
+                    }
+                }
                 // Also surface any oracle witnesses attached to this input
                 // clause — e.g. the disjointness/partition axioms that
                 // refute `(instance Length MeasurementAttribute)`.  Without
@@ -460,6 +603,32 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     }
     steps
 }
+
+/// A flat all-symbol statement `(head s1 s2 …)` → its symbol names
+/// (unwrapping any `Annotated` shell).  `None` when any element is not a
+/// bare symbol (variables, nested terms) or there are fewer than three.
+fn ground_symbols(node: &AstNode) -> Option<Vec<String>> {
+    match node {
+        AstNode::Annotated { formula, .. } => ground_symbols(formula),
+        AstNode::List { elements, .. } => {
+            let mut out = Vec::with_capacity(elements.len());
+            for e in elements {
+                match e {
+                    AstNode::Symbol { name, .. } => out.push(name.clone()),
+                    _ => return None,
+                }
+            }
+            (out.len() >= 3).then_some(out)
+        }
+        _ => None,
+    }
+}
+
+/// Statement heads that declare class disjointness — the possible "conflict
+/// declaration" witness of a disjointness-oracle refutation.  (SUMO-standard
+/// spellings; the expansion falls back to the flat citation for dialects
+/// that name them differently.)
+const DISJOINT_HEADS: &[&str] = &["disjoint", "partition", "disjointDecomposition"];
 
 /// `(rel a b)` ground binary atom → its three symbol names (unwrapping any
 /// `Annotated` shell).  `None` for anything else — variables, nested terms,
