@@ -186,7 +186,12 @@ async function withPostProcessing(fn) {
       promoting = false;
       setPromoteTabsEnabled(true);
       showToast(false);
+      // Anything that renders the `promoting` flag has to be redrawn HERE.
+      // Views refreshed inside the window (renderAll → refreshHomeStats) ran
+      // while the flag was still set, so their "post-processing" wording is
+      // stale the moment it clears.
       updateKbStatus();
+      if (currentTab() === 'home') refreshHomeStats();
     }
   }
 }
@@ -198,6 +203,9 @@ async function promoteAndValidate() {
   await call('promoteAll', { names: constituents.map((c) => c.name) });
   diagnostics = (await call('validate')).diagnostics;
   renderAll();
+  // The route was applied before any of this existed; re-honour ?file/?sev/?l
+  // now that there is something to filter and scroll to.
+  applyDiagRouteParams();
 }
 
 const reprocess = () => withPostProcessing(promoteAndValidate);
@@ -209,6 +217,7 @@ function renderAll() {
   updateKbStatus();
   if (sumoCatalog) renderPicker();
   populateEditPicker();
+  if (currentTab() === 'home') refreshHomeStats();   // counts moved
 }
 
 function setPromoteTabsEnabled(on) {
@@ -232,45 +241,165 @@ function updateKbStatus() {
 
 // -- Boot ---------------------------------------------------------------------
 
+// Boot progress. Each constituent contributes two steps — the fetch and the
+// ingest — so the bar keeps moving across a slow download instead of sitting at
+// one value for the whole of a multi-MB file. Step 1 is the engine itself.
+let bootStep = 0;
+let bootTotal = 1;
+
+/** Advance the bar one step and show `label` as the quiet line beneath it. */
+function bootProgress(label) {
+  bootStep += 1;
+  const pct = Math.min(100, Math.round((bootStep / bootTotal) * 100));
+  const fill = $('bootBarFill');
+  if (fill) fill.style.width = `${pct}%`;
+  $('bootBar')?.setAttribute('aria-valuenow', String(pct));
+  const msg = $('overlayMsg');
+  if (msg) msg.textContent = label;
+}
+
 async function boot() {
   try {
-    $('overlayMsg').textContent = 'Loading application…';
+    bootTotal = 1 + savedConstituents.length * 2;
+    $('overlayMsg').textContent = 'Starting the engine…';
+    // Fetching + compiling the wasm is the longest single phase on a cold load
+    // and reports no intermediate progress, so seed a visible sliver rather
+    // than leaving the bar at a dead 0% for all of it.
+    $('bootBarFill').style.width = '8%';
     await call('boot');
+    bootProgress('Engine ready');
     opfsRoot = await navigator.storage.getDirectory();
     let i = 1;
     const total = savedConstituents.length;
     for (const { name, origin } of savedConstituents) {
-      $('overlayMsg').textContent = `Loading ${name} (${i}/${total})…`;
+      bootProgress(`Fetching ${name} (${i}/${total})`);
       const text = await fromOrigin(origin, name);
+      bootProgress(`Reading ${name} (${i}/${total})`);
       await ingestConstituent(name, text, origin);   // ingest only — promote runs after
       i += 1;
     }
     $('overlay').remove();
     renderConstituents();
     updateKbStatus();
-    showTab('home');
+    // Honour the URL now that the constituents exist — ?tab=edit&file=…&l=…
+    // needs them loaded before it can select a file in the editor.
+    applyRoute();
     reprocess();   // toast → promote all → validate → untoast (off the critical path)
   } catch (e) {
-    $('overlayMsg').textContent = 'Failed to load SUMO.';
+    $('overlayTitle').textContent = 'Failed to load SUMO';
+    $('overlayMsg').textContent = '';
     $('overlayErr').textContent = String(e && e.message || e) + '  (Try checking your network connection.)';
-    document.querySelector('.spinner')?.remove();
+    $('bootBar')?.remove();   // a stalled bar reads as "still working"
   }
 }
 
-// -- Tabs ---------------------------------------------------------------------
+// -- Tabs + URL routing -------------------------------------------------------
+//
+// Routing lives entirely in the query string — ?tab=edit&file=Merge.kif&l=100.
+// Deliberately NOT path-based (/edit): a tab path is not a real file, so it
+// needs a server rewrite, and GitHub Pages (where this demo is published under
+// /browse/) has none. Query-only routing needs no server support at all, so the
+// same URLs work from `serve.sh`, from Pages, and from a plain file server.
+
+const TABS = ['home', 'browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'];
+
+// The directory this module was served from — "/" locally, "/browse/" on Pages.
+// Deriving it from import.meta.url keeps the rewritten URL canonical at any
+// mount point (and drops a stray /index.html).
+const BASE = new URL('.', import.meta.url).pathname;
 
 function currentTab() {
   return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'home';
 }
 
-function showTab(name) {
+/** The route encoded in the address bar: { tab, params }. */
+function routeFromLocation() {
+  const params = new URLSearchParams(location.search);
+  const t = params.get('tab');
+  return { tab: TABS.includes(t) ? t : 'home', params };
+}
+
+/** Write `tab` + `params` to the address bar without reloading. `home` is the
+ *  default, so it is left out to keep the bare URL clean. */
+function syncUrl(tab, params = new URLSearchParams(), { replace = false } = {}) {
+  const p = new URLSearchParams(params);
+  if (tab && tab !== 'home') p.set('tab', tab); else p.delete('tab');
+  const qs = p.toString();
+  history[replace ? 'replaceState' : 'pushState'](null, '', BASE + (qs ? `?${qs}` : ''));
+}
+
+/**
+ * Show a tab. By default this records a history entry so Back/Forward work;
+ * pass `{ push: false }` when reacting to the URL (boot, popstate) so we don't
+ * re-push what we just read. `params` is carried into the address bar.
+ */
+function showTab(name, { push = true, params } = {}) {
   if (promoting && PROMOTE_TABS.includes(name)) return; // greyed while post-processing
   for (const btn of document.querySelectorAll('nav.tabs button')) {
     btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
   }
   for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== `tab-${name}`;
+  if (push) syncUrl(name, params ?? new URLSearchParams());
+  if (name === 'home') refreshHomeStats();
   if (name === 'kb') loadSumoCatalog();
-  if (name === 'edit') ensureEditorReady();
+  if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
+  // Read the file straight off the URL: syncUrl (above) has already applied a
+  // nav click, so this sees ?file=… on a deep link and nothing on a plain
+  // click — one code path, and no double fetch from applyRoute.
+  if (name === 'history') ensureHistory(new URLSearchParams(location.search).get('file'));
+}
+
+/**
+ * Apply the current URL: switch to its tab and honour its deep-link params.
+ * Runs after boot (constituents must exist) and on every popstate.
+ *   ?tab=edit&file=Merge.kif&l=100   load that file in the editor, reveal line 100
+ *   ?tab=kb / ?tab=audit / …         open that tab
+ *   ?q=Human                         run the search
+ *   ?sym=Human                       open the man page
+ */
+async function applyRoute() {
+  const { tab, params } = routeFromLocation();
+  showTab(tab, { push: false });
+
+  if (tab === 'edit') {
+    const file = params.get('file');
+    const line = Number(params.get('l') || params.get('line'));
+    await ensureEditorReady();
+    if (file) {
+      // Match on name alone — a deep link shouldn't have to know the origin.
+      const c = constituents.find((x) => x.name === file);
+      if (c) {
+        $('editPicker').value = `${c.name}|${c.origin}`;
+        onEditPickerChange();
+      } else {
+        $('editLog').style.color = 'var(--bad)';
+        $('editLog').textContent = `${file} is not among the loaded constituents.`;
+      }
+    }
+    if (monacoEditor && Number.isFinite(line) && line > 0) {
+      monacoEditor.revealLineInCenter(line);
+      monacoEditor.setPosition({ lineNumber: line, column: 1 });
+      monacoEditor.focus();
+    }
+    return;
+  }
+
+  if (tab === 'diagnostics') { applyDiagRouteParams(); return; }
+
+  // ?sym= / ?q= belong to Browse. They predate the tab split and were emitted
+  // without a ?tab=, so honour them on `home` too rather than breaking old links.
+  if (tab === 'browse' || tab === 'home') {
+    const sym = params.get('sym');
+    const q = params.get('q');
+    if (sym || q) {
+      if (tab === 'home') showTab('browse', { push: false });
+      if (sym) { openManPage(sym); }
+      else { $('q').value = q; runSearch(q); }
+      return;
+    }
+  }
+
+  if (tab === 'home') refreshHomeStats();
 }
 
 document.querySelector('nav.tabs').addEventListener('click', (e) => {
@@ -281,6 +410,15 @@ document.addEventListener('click', (e) => {
   const jump = e.target.closest('.jump');
   if (jump && jump.getAttribute('aria-disabled') !== 'true') { e.preventDefault(); showTab(jump.dataset.tab); }
 });
+window.addEventListener('popstate', () => { applyRoute(); });
+
+/** Replace the query on the current tab, so the address bar stays shareable
+ *  without pushing a history entry for every search/file switch. */
+function updateParams(obj) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj)) if (v != null && v !== '') p.set(k, String(v));
+  syncUrl(currentTab(), p, { replace: true });
+}
 
 async function withBusy(button, fn) {
   const prev = button.textContent;
@@ -308,6 +446,99 @@ $('loadedList').addEventListener('click', (e) => {
   const rm = e.target.closest('.rm');
   if (rm) { $('kbLog').textContent = ''; removeConstituent(rm.dataset.name, rm.dataset.source); }
 });
+
+// -- Standard constituent sets ------------------------------------------------
+//
+// File lists mirror the Sigma XML configuration. Order is preserved from it:
+// ingest is order-independent here (everything is promoted together at the
+// end), but keeping it makes the two lists diffable against the source.
+
+const PRESETS = {
+  minimal: {
+    label: 'Minimal SUMO',
+    files: ['Merge.kif', 'Mid-level-ontology.kif', 'english_format.kif', 'domainEnglishFormat.kif'],
+  },
+  full: {
+    label: 'Full SUMO',
+    files: [
+      'english_format.kif', 'domainEnglishFormat.kif', 'ArabicCulture.kif', 'Anatomy.kif',
+      'arteries.kif', 'Biography.kif', 'Cars.kif', 'Catalog.kif', 'Communications.kif',
+      'ComputerInput.kif', 'ComputingBrands.kif', 'CountriesAndRegions.kif', 'Dining.kif',
+      'Economy.kif', 'emotion.kif', 'engineering.kif', 'Facebook.kif', 'FinancialOntology.kif',
+      'Food.kif', 'Geography.kif', 'Government.kif', 'Hotel.kif', 'Justice.kif', 'Languages.kif',
+      'Law.kif', 'Media.kif', 'Medicine.kif', 'Merge.kif', 'Mid-level-ontology.kif',
+      'MilitaryDevices.kif', 'Military.kif', 'MilitaryPersons.kif', 'MilitaryProcesses.kif',
+      'Music.kif', 'development/Muscles.kif', 'naics.kif', 'People.kif', 'pictureList.kif',
+      'pictureList-ImageNet.kif', 'QoSontology.kif', 'Sports.kif', 'TransnationalIssues.kif',
+      'Transportation.kif', 'TransportDetail.kif', 'UXExperimentalTerms.kif',
+      'VirusProteinAndCellPart.kif', 'Weather.kif', 'WMD.kif', 'capabilities.kif',
+    ],
+  },
+};
+
+/** Fetch every file, up to `limit` at once, returning texts in list order.
+ *  A per-file failure is captured rather than thrown so one bad file cannot
+ *  abandon the other forty-eight. Sequential fetching would make Full SUMO
+ *  a minutes-long wait. */
+async function fetchAllTexts(files, limit, onDone) {
+  const out = new Array(files.length);
+  let next = 0, done = 0;
+  const worker = async () => {
+    for (let i = next++; i < files.length; i = next++) {
+      try { out[i] = await fetchText(rawUrl(files[i])); }
+      catch (e) { out[i] = e instanceof Error ? e : new Error(String(e)); }
+      onDone(++done);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, files.length) }, worker));
+  return out;
+}
+
+async function loadPreset(key) {
+  const preset = PRESETS[key];
+  const buttons = [$('loadMinimal'), $('loadFull')];
+  buttons.forEach((b) => { b.disabled = true; });
+  const note = $('presetNote');
+  try {
+    // A preset describes a whole KB, so it replaces rather than merges.
+    constituents = [];
+    savedConstituents = [];
+    localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(savedConstituents));
+    await call('newSession');
+    renderConstituents();
+
+    const total = preset.files.length;
+    note.style.color = '';
+    note.textContent = `Fetching ${preset.label} — 0/${total}…`;
+    const texts = await fetchAllTexts(preset.files, 6,
+      (n) => { note.textContent = `Fetching ${preset.label} — ${n}/${total}…`; });
+
+    const failed = [];
+    for (let i = 0; i < preset.files.length; i++) {
+      const name = preset.files[i], text = texts[i];
+      if (text instanceof Error) { failed.push(`${name}: ${text.message}`); continue; }
+      note.textContent = `Reading ${name} (${i + 1}/${total})…`;
+      try { await ingestConstituent(name, text, 'sumo'); }
+      catch (e) { failed.push(`${name}: ${e.message || e}`); }
+    }
+    renderConstituents();
+    note.textContent = `Axiomatizing ${constituents.length} constituent(s)…`;
+    await reprocess();
+
+    note.style.color = failed.length ? 'var(--bad)' : '';
+    note.textContent = failed.length
+      ? `${preset.label}: loaded ${constituents.length}/${total}, ${failed.length} failed — ${failed[0]}`
+      : `${preset.label} loaded — ${constituents.length} constituents.`;
+  } catch (e) {
+    note.style.color = 'var(--bad)';
+    note.textContent = String(e && e.message || e);
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+$('loadMinimal').onclick = () => loadPreset('minimal');
+$('loadFull').onclick = () => loadPreset('full');
 
 async function loadSumoCatalog() {
   if (sumoCatalog) return;
@@ -377,13 +608,18 @@ $('kbFile').onchange = (e) => withBusy($('addUrl'), async () => {
 
 // -- Home: search → results → man page ----------------------------------------
 
-$('searchForm').addEventListener('submit', (e) => { e.preventDefault(); runSearch($('q').value.trim()); });
+$('searchForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const q = $('q').value.trim();
+  updateParams({ q });
+  runSearch(q);
+});
 
 async function runSearch(query) {
-  if (!query) { $('homeView').innerHTML = ''; return; }
+  if (!query) { $('browseView').innerHTML = ''; return; }
   const { hits } = await call('search', { query, limit: 100 });
   if (hits.length === 0) {
-    $('homeView').innerHTML = `<div class="card hint">No matches for <code>${esc(query)}</code>.</div>`;
+    $('browseView').innerHTML = `<div class="card hint">No matches for <code>${esc(query)}</code>.</div>`;
     return;
   }
   const items = hits.map((h) => `
@@ -392,16 +628,16 @@ async function runSearch(query) {
       <span class="kinds">${h.kinds.join(' · ') || h.source} · rank ${h.rank.toFixed(0)}</span>
       ${h.text ? `<div class="snippet">${esc(h.text)}</div>` : ''}
     </li>`).join('');
-  $('homeView').innerHTML =
+  $('browseView').innerHTML =
     `<div class="card">
        <div class="hint" style="margin-bottom:6px">${hits.length} result${hits.length === 1 ? '' : 's'} for <code>${esc(query)}</code></div>
        <ul class="results">${items}</ul>
      </div>`;
 }
 
-$('homeView').addEventListener('click', (e) => {
+$('browseView').addEventListener('click', (e) => {
   const link = e.target.closest('.open');
-  if (link) { e.preventDefault(); openManPage(link.dataset.sym); }
+  if (link) { e.preventDefault(); updateParams({ sym: link.dataset.sym }); openManPage(link.dataset.sym); }
 });
 
 /** Turn `&%Symbol` cross-reference markers in documentation text into man-page links. */
@@ -414,7 +650,7 @@ function linkifyDoc(text) {
 
 async function openManPage(symbol) {
   const { page: p } = await call('manpage', { symbol });
-  if (!p) { $('homeView').innerHTML = `<div class="card hint">No man page for <code>${esc(symbol)}</code>.</div>`; return; }
+  if (!p) { $('browseView').innerHTML = `<div class="card hint">No man page for <code>${esc(symbol)}</code>.</div>`; return; }
 
   const docs = (v) => v.map((d) => `<div>${linkifyDoc(d.text)} <span class="hint">(${esc(d.language)})</span></div>`).join('');
   const links = (edges) => edges.length
@@ -432,20 +668,18 @@ async function openManPage(symbol) {
   const references = () => {
     if (!p.references.length) return '<span class="hint">none</span>';
     const rows = p.references.map((r) => {
-      const gh = ghLink(r.file, r.line);
-      const loc = r.file ? `${esc(r.file)}:${r.line}` : null;
       return `<li>
         <pre class="ref-kif">${highlightKif(r.kif).replace(/\n$/, '')}</pre>
         <div class="ref-meta">
-          ${loc ? `<span class="hint ref-loc">${loc}</span>` : ''}
-          ${gh ? `<a class="hint gh" href="${gh}" target="_blank" rel="noopener">GitHub ↗</a>` : ''}
+          ${locLink(r.file, r.line)}
+          ${ghAnchor(r.file, r.line)}
         </div>
       </li>`;
     }).join('');
     return `<ol class="refs">${rows}</ol>`;
   };
 
-  $('homeView').innerHTML = `
+  $('browseView').innerHTML = `
     <div class="card man">
       <a class="hint back" style="cursor:pointer">← back to results</a>
       <h2>${esc(p.name)}</h2>
@@ -458,7 +692,7 @@ async function openManPage(symbol) {
       ${p.format.length ? field('Format', docs(p.format)) : ''}
       ${field('References', `<div class="hint" style="margin-bottom:4px">appears in ${p.appears_in_count} formula${p.appears_in_count === 1 ? '' : 's'} total (excluding documentation/taxonomy, listed below)</div>${references()}`)}
     </div>`;
-  $('homeView').querySelector('.back').onclick = () => runSearch($('q').value.trim());
+  $('browseView').querySelector('.back').onclick = () => runSearch($('q').value.trim());
 }
 
 // -- Diagnostics --------------------------------------------------------------
@@ -469,7 +703,10 @@ function renderDiagnostics() {
   if (fileSel) {
     fileSel.innerHTML = `<option value="">All files</option>` +
       files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
-    if (!files.includes(diagFilter.file)) diagFilter.file = '';
+    // Only discard an unknown file filter once there is data to contradict it:
+    // the route is applied right after ingest, while validation is still
+    // running, and clearing it then would drop a filter from the URL.
+    if (diagnostics.length && !files.includes(diagFilter.file)) diagFilter.file = '';
     fileSel.value = diagFilter.file;
   }
   const sevSel = $('diagSevFilter');
@@ -488,58 +725,78 @@ function renderDiagnostics() {
         ? `<b>${filtered.length}</b> of <b>${diagnostics.length}</b> diagnostic${diagnostics.length === 1 ? '' : 's'} shown`
         : `<b>${diagnostics.length}</b> diagnostic${diagnostics.length === 1 ? '' : 's'}`) +
       (errs ? ` (${errs} error${errs === 1 ? '' : 's'} total)` : '') +
-      ` — click a <span class="loc">file:line</span> to view the source`
+      ` — click a <span class="loc">file:line</span> to open it in the editor`
     : 'No diagnostics — the loaded KB is clean.';
 
   const list = $('diagList');
   if (!list) return;
   list.innerHTML = filtered.length ? filtered.map(({ d, i }) => {
-    const gh = ghLink(d.file, d.line);
-    const loc = d.file ? `${esc(d.file)}:${d.line}` : '(no location)';
+    const loc = d.file ? locLink(d.file, d.line, 'loc') : '<span class="loc">(no location)</span>';
     return `<div class="diag" data-i="${i}" data-sev="${esc(d.severity)}">
       <div class="diag-head">
         <span class="sev ${esc(d.severity)}">${esc(d.severity)}</span>
-        <a class="loc">${loc}</a>
+        ${loc}
         <span class="code">[${esc(d.kind)}/${esc(d.code)}]</span>
-        ${gh ? `<a class="hint gh" href="${gh}" target="_blank" rel="noopener">GitHub ↗</a>` : ''}
+        ${ghAnchor(d.file, d.line)}
         <span class="msg">${esc(d.message)}</span>
       </div>
     </div>`;
   }).join('') : `<div class="hint">${diagnostics.length ? 'No diagnostics match the current filters.' : ''}</div>`;
 }
 
-/** Lines around `line` from the cached constituent text, or null if unavailable. */
-function sourceAt(file, line, ctx = 3) {
-  const c = constituents.find((x) => x.name === file);
-  if (!c || !(line > 0)) return null;
-  const lines = c.text.split('\n');
-  const start = Math.max(1, line - ctx), end = Math.min(lines.length, line + ctx);
-  const rows = [];
-  for (let n = start; n <= end; n++) rows.push({ n, text: (lines[n - 1] ?? '').replace(/\r$/, ''), hit: n === line });
-  return rows;
-}
-
-/** GitHub blob deep-link for a SUMO-sourced constituent, else null. */
+/**
+ * GitHub *blame* deep-link for a SUMO-sourced constituent, else null.
+ *
+ * Blame rather than blob: it lands on the same line but with per-line author,
+ * date and commit attribution — "who last changed this axiom" — for free. The
+ * API route to that data is GraphQL `Blob.blame`, which requires a token even
+ * for public repos and so is unusable from a static, unauthenticated page.
+ */
 function ghLink(file, line) {
   const c = constituents.find((x) => x.name === file);
   if (!c || c.origin !== 'sumo') return null;
-  return `https://github.com/${SUMO.owner}/${SUMO.repo}/blob/${SUMO.ref}/${file}#L${line}`;
+  return `https://github.com/${SUMO.owner}/${SUMO.repo}/blame/${SUMO.ref}/${file}#L${line}`;
 }
 
-// Click a diagnostic's location → toggle an inline source view at that line.
-$('diagList').addEventListener('click', (e) => {
-  if (e.target.closest('a.gh')) return; // let the GitHub link open normally
-  const head = e.target.closest('.diag-head');
-  if (!head) return;
-  const diag = head.closest('.diag');
-  const existing = diag.querySelector('.src');
-  if (existing) { existing.remove(); return; } // toggle off
-  const d = diagnostics[+diag.dataset.i];
-  const rows = sourceAt(d.file, d.line);
-  diag.insertAdjacentHTML('beforeend', rows
-    ? `<div class="src"><table>${rows.map((r) =>
-        `<tr class="${r.hit ? 'hit' : ''}"><td class="ln">${r.n}</td><td>${esc(r.text)}</td></tr>`).join('')}</table></div>`
-    : `<div class="hint" style="margin-top:6px">Source for <code>${esc(d.file || '?')}</code> isn't among the loaded constituents.</div>`);
+/** The blame anchor for a citation, or '' when the source is not on GitHub. */
+function ghAnchor(file, line) {
+  const url = ghLink(file, line);
+  return url
+    ? `<a class="hint gh" href="${url}" target="_blank" rel="noopener"
+         title="Who last changed this line (GitHub blame)">blame ↗</a>`
+    : '';
+}
+
+/** Open `file` in the Edit tab with the caret on `line`. Routed through the URL
+ *  so the jump is a real history entry and the resulting view is shareable. */
+function openInEditor(file, line) {
+  const params = new URLSearchParams({ file });
+  if (line > 0) params.set('l', String(line));
+  syncUrl('edit', params);   // push, so Back returns where we came from
+  applyRoute();
+}
+
+/**
+ * A `file:line` citation. Rendered as a link that opens the editor there when
+ * the file is a loaded constituent, and as plain text otherwise — a proof can
+ * cite a synthetic/CNF source, or an axiom from a file the user has since
+ * removed, and neither is openable. `extraClass` carries the caller's styling.
+ */
+function locLink(file, line, extraClass = 'hint ref-loc') {
+  if (!file) return '';
+  const label = `${esc(file)}:${line}`;
+  if (!constituents.some((c) => c.name === file)) return `<span class="${extraClass}">${label}</span>`;
+  return `<a class="${extraClass} jump-src" data-file="${esc(file)}" data-line="${line}">${label}</a>`;
+}
+
+// One delegated handler for every file:line citation — diagnostics, proof
+// steps, audit contradictions, and man-page references all route through here.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('a.gh')) return;   // let the GitHub link open normally
+  const a = e.target.closest('a.jump-src');
+  if (!a) return;
+  e.preventDefault();
+  openInEditor(a.dataset.file, Number(a.dataset.line));
 });
 
 $('revalidate').onclick = () => withBusy($('revalidate'), async () => {
@@ -548,8 +805,64 @@ $('revalidate').onclick = () => withBusy($('revalidate'), async () => {
   updateKbStatus();
 });
 
-$('diagFileFilter').addEventListener('change', () => { diagFilter.file = $('diagFileFilter').value; renderDiagnostics(); });
-$('diagSevFilter').addEventListener('change', () => { diagFilter.severity = $('diagSevFilter').value; renderDiagnostics(); });
+/** Mirror the active filters into the address bar so a filtered view is shareable. */
+function syncDiagUrl() {
+  updateParams({ file: diagFilter.file, sev: diagFilter.severity });
+}
+
+/**
+ * Apply ?file / ?sev / ?l to the Diagnostics tab. Called both when the route is
+ * applied and again once validation finishes — on a cold load the route runs
+ * before any diagnostics exist, so the first pass has nothing to filter or
+ * scroll to.
+ */
+function applyDiagRouteParams() {
+  const params = new URLSearchParams(location.search);
+  if ((params.get('tab') || 'home') !== 'diagnostics') return;
+  diagFilter.file     = params.get('file') || '';
+  diagFilter.severity = params.get('sev')  || '';
+  renderDiagnostics();
+  const line = Number(params.get('l'));
+  if (Number.isFinite(line) && line > 0) scrollToDiagnostic(diagFilter.file, line);
+}
+
+$('diagFileFilter').addEventListener('change', () => {
+  diagFilter.file = $('diagFileFilter').value; renderDiagnostics(); syncDiagUrl();
+});
+$('diagSevFilter').addEventListener('change', () => {
+  diagFilter.severity = $('diagSevFilter').value; renderDiagnostics(); syncDiagUrl();
+});
+
+/**
+ * Scroll to the diagnostic in `file` nearest `line` and flash it. Nearest
+ * rather than exact: the caller's line comes from an edited buffer, whose line
+ * numbers drift from the KB's as soon as anything above is inserted.
+ */
+function scrollToDiagnostic(file, line) {
+  let best = -1, bestDist = Infinity;
+  diagnostics.forEach((d, i) => {
+    if (file && d.file !== file) return;
+    const dist = Math.abs((d.line || 0) - line);
+    if (dist < bestDist) { bestDist = dist; best = i; }
+  });
+  const el = best >= 0 && $('diagList').querySelector(`.diag[data-i="${best}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('diag-target');
+  setTimeout(() => el.classList.remove('diag-target'), 2200);
+}
+
+// The IDE's diagnostic count links here, filtered to the file being edited.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a.jump-diag');
+  if (!a) return;
+  e.preventDefault();
+  const p = new URLSearchParams();
+  if (a.dataset.file) p.set('file', a.dataset.file);
+  if (a.dataset.line) p.set('l', a.dataset.line);
+  syncUrl('diagnostics', p);
+  applyRoute();
+});
 
 // -- KIF syntax highlighting (textarea + mirrored <pre> overlay) --------------
 
@@ -611,14 +924,45 @@ function loadScript(src) {
   });
 }
 
+/**
+ * Load a UMD bundle so it lands on `window`, not in a module registry.
+ *
+ * Monaco's loader installs a global `define` with `.amd`, and a UMD wrapper
+ * that sees one registers itself as an anonymous AMD module and never sets its
+ * browser global — so `window.cytoscape` stays undefined and instantiating it
+ * throws "cytoscape is not a function". It only bites when the Edit tab loaded
+ * Monaco before the first proof graph, which is what made it look intermittent.
+ *
+ * Hiding `define`/`exports`/`module` for the duration forces the wrapper down
+ * its browser-global branch. They are restored in a `finally`, so an aborted
+ * load cannot leave Monaco's loader detached.
+ */
+async function loadUmdGlobal(src) {
+  const saved = { define: window.define, exports: window.exports, module: window.module };
+  window.define = undefined; window.exports = undefined; window.module = undefined;
+  try {
+    await loadScript(src);
+  } finally {
+    window.define = saved.define; window.exports = saved.exports; window.module = saved.module;
+  }
+}
+
 /** Loads cytoscape.js then cytoscape-dagre (which self-registers onto `window.cytoscape`). */
 function loadCytoscape() {
   if (cytoscapeLoadPromise) return cytoscapeLoadPromise;
   cytoscapeLoadPromise = (async () => {
-    await loadScript(`https://cdn.jsdelivr.net/npm/cytoscape@${CYTOSCAPE_VERSION}/dist/cytoscape.min.js`);
-    await loadScript(`https://cdn.jsdelivr.net/npm/cytoscape-dagre@${CYTOSCAPE_DAGRE_VERSION}/dist/cytoscape-dagre.min.js`);
+    // Never pull `define` out from under an in-flight Monaco load.
+    if (monacoLoadPromise) { try { await monacoLoadPromise; } catch { /* its own problem */ } }
+    await loadUmdGlobal(`https://cdn.jsdelivr.net/npm/cytoscape@${CYTOSCAPE_VERSION}/dist/cytoscape.min.js`);
+    await loadUmdGlobal(`https://cdn.jsdelivr.net/npm/cytoscape-dagre@${CYTOSCAPE_DAGRE_VERSION}/dist/cytoscape-dagre.min.js`);
+    if (typeof window.cytoscape !== 'function') {
+      throw new Error('cytoscape did not register as a browser global');
+    }
     return window.cytoscape;
-  })();
+  })().catch((e) => {
+    cytoscapeLoadPromise = null;   // a cached rejection would break the graph for the session
+    throw e;
+  });
   return cytoscapeLoadPromise;
 }
 
@@ -699,6 +1043,58 @@ function wireProofGraph(details, container, tipEl, getSteps) {
   return () => { if (details.open) render(); else if (details._cy) { details._cy.destroy(); details._cy = null; } };
 }
 
+// -- Prover settings (the wasm `Config`) ---------------------------------------
+//
+// The cog next to Prove toggles a panel over the same knobs `Config` exposes.
+// Values are read fresh on each run and sent to the worker, which builds the
+// Config there — the page never holds a wasm object.
+
+const CFG_DEFAULTS = { timeLimitSecs: 30, maxSteps: 4000, maxLits: 8, forwardClose: true, wantProof: true, profile: false };
+const CFG_FIELDS = {
+  timeLimitSecs: 'cfgTimeLimit', maxSteps: 'cfgMaxSteps', maxLits: 'cfgMaxLits',
+  forwardClose: 'cfgForwardClose', wantProof: 'cfgWantProof', profile: 'cfgProfile',
+};
+
+/** Current settings as a plain object for the worker. Numbers coerce to u32-safe ints. */
+function proverConfig() {
+  const int = (id, dflt) => { const v = Math.floor(Number($(id).value)); return Number.isFinite(v) && v >= 0 ? v : dflt; };
+  return {
+    timeLimitSecs: int('cfgTimeLimit', CFG_DEFAULTS.timeLimitSecs),
+    maxSteps:      int('cfgMaxSteps',  CFG_DEFAULTS.maxSteps),
+    maxLits:       int('cfgMaxLits',   CFG_DEFAULTS.maxLits),
+    forwardClose:  $('cfgForwardClose').checked,
+    wantProof:     $('cfgWantProof').checked,
+    profile:       $('cfgProfile').checked,
+  };
+}
+
+function applyProverConfig(c) {
+  for (const [key, id] of Object.entries(CFG_FIELDS)) {
+    const el = $(id);
+    if (typeof c[key] === 'boolean') el.checked = c[key]; else el.value = c[key];
+  }
+  renderCfgSummary();
+}
+
+/** One-line summary next to the cog, so non-default settings are visible without opening the panel. */
+function renderCfgSummary() {
+  const c = proverConfig();
+  const diffs = Object.keys(CFG_DEFAULTS).filter((k) => c[k] !== CFG_DEFAULTS[k]);
+  $('proverCfgSummary').textContent = diffs.length
+    ? `${c.timeLimitSecs}s · ${c.maxSteps} steps · ${diffs.length} non-default`
+    : `${c.timeLimitSecs}s · ${c.maxSteps} steps · defaults`;
+}
+
+$('proverSettingsBtn').onclick = () => {
+  const panel = $('proverSettings');
+  const open = panel.hidden;
+  panel.hidden = !open;
+  $('proverSettingsBtn').setAttribute('aria-expanded', String(open));
+};
+$('cfgReset').onclick = () => applyProverConfig(CFG_DEFAULTS);
+for (const id of Object.values(CFG_FIELDS)) $(id).addEventListener('input', renderCfgSummary);
+renderCfgSummary();
+
 // -- Prover: tell + ask -------------------------------------------------------
 
 $('prove').onclick = async () => {
@@ -708,7 +1104,7 @@ $('prove').onclick = async () => {
     const { result } = await call('prove', {
       assertions: $('assertions').value.trim(),
       query: $('pquery').value,
-      timeLimitSecs: Number($('ptime').value) || 0,
+      config: proverConfig(),
       session: 'user-assertions',
     });
     renderProof(result);
@@ -717,6 +1113,7 @@ $('prove').onclick = async () => {
     $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
     $('pSteps').textContent = String(e && e.message || e);
     $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
+    $('pProse').textContent = ''; $('pProseMissing').textContent = '';
     lastAskProof = [];
     invalidateAskGraph();
   } finally {
@@ -728,13 +1125,60 @@ let lastAskProof = [];
 const invalidateAskGraph = wireProofGraph(
   $('pGraphDetails'), $('pGraphContainer'), $('pGraphTip'), () => lastAskProof);
 
+// -- Shared proof rendering (Ask/Tell and Audit) ------------------------------
+//
+// Both a refutation proof and an audit contradiction are the same thing — a
+// `{index, rule, premises, kif, file, line}[]` transcript — so they render
+// through one code path: rule + derivation, highlighted KIF, source citation.
+
+/** "(from steps 1, 3)" — the premise back-references the graph draws as edges.
+ *  Step indices are 0-based on the wire; the <ol> and the graph both label from
+ *  1, so shift for display. */
+function premiseRefs(s) {
+  if (!s.premises || !s.premises.length) return '';
+  const label = s.premises.length === 1 ? 'step' : 'steps';
+  return ` <span class="hint">(from ${label} ${s.premises.map((p) => p + 1).join(', ')})</span>`;
+}
+
+/** One proof/contradiction step as an <li>. */
+function proofStepRow(s) {
+  const loc = locLink(s.file, s.line);
+  const gh = ghAnchor(s.file, s.line);
+  return `<li>
+    <div class="hint">${esc(s.rule)}${premiseRefs(s)}</div>
+    <pre class="ref-kif">${highlightKif(s.kif).replace(/\n$/, '')}</pre>
+    ${loc || gh ? `<div class="ref-meta">${loc}${gh}</div>` : ''}
+  </li>`;
+}
+
+const renderProofSteps = (steps) => steps.map(proofStepRow).join('');
+
+/** The "shown by bare name" note under a prose block, or '' when nothing is missing. */
+function proseMissingNote(missing) {
+  return missing && missing.length
+    ? `${missing.length} symbol(s) shown by bare name (no format/termFormat in EnglishLanguage): ${missing.join(', ')}`
+    : '';
+}
+
+/** A collapsible plain-English rendering of a transcript (used inline by Audit;
+ *  Ask/Tell fills the equivalent static markup in index.html). */
+function proseDetails(prose, missing) {
+  return `<details class="prose-details" style="margin-top:10px">
+    <summary class="hint">proof in plain English</summary>
+    <div class="prose">${esc(prose || '')}</div>
+    ${missing && missing.length ? `<div class="hint" style="margin-top:6px">${esc(proseMissingNote(missing))}</div>` : ''}
+  </details>`;
+}
+
 function renderProof(r) {
   $('proverResult').hidden = false;
   $('pStatus').textContent = r.status; $('pStatus').className = 'status ' + r.status;
   $('pSteps').textContent = r.given_steps != null ? `${r.given_steps} given-clause steps` : '';
-  $('pProof').innerHTML = r.proof.map((s) => `<li><span class="rule">${esc(s.rule)}</span>: ${esc(s.kif)}</li>`).join('');
+  $('pProof').innerHTML = renderProofSteps(r.proof);
   $('pRaw').textContent = r.raw_output || '(none)';
   $('pGraphDot').textContent = r.graphviz || '(none)';
+  $('pProse').textContent = r.prose || '';
+  $('pProseMissing').textContent = proseMissingNote(r.prose_missing);
   lastAskProof = r.proof;
   invalidateAskGraph();
 }
@@ -745,8 +1189,9 @@ $('runAudit').onclick = async () => {
   const btn = $('runAudit');
   btn.disabled = true; btn.textContent = 'Auditing…';
   try {
+    // Audit inherits the Ask/Tell prover settings, but keeps its own time limit.
     const { result } = await call('audit', {
-      timeLimitSecs: Number($('auditTime').value) || 0,
+      config: { ...proverConfig(), timeLimitSecs: Math.max(0, Math.floor(Number($('auditTime').value)) || 0) },
       limit: Math.max(1, Number($('auditLimit').value) || 5),
     });
     renderAudit(result);
@@ -777,27 +1222,18 @@ function renderAudit(r) {
       <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre>${esc(r.raw_output || '(none)')}</pre></details>
     </div>`;
 
-  html += r.contradictions.map((c, i) => {
-    const rows = c.steps.map((s) => {
-      const gh = ghLink(s.file, s.line);
-      const loc = s.file ? `${esc(s.file)}:${s.line}` : null;
-      return `<li>
-        <div class="hint">${esc(s.rule)}${s.premises.length ? ` <span class="hint">(from step${s.premises.length === 1 ? '' : 's'} ${s.premises.join(', ')})</span>` : ''}</div>
-        <pre class="ref-kif">${highlightKif(s.kif).replace(/\n$/, '')}</pre>
-        ${loc || gh ? `<div class="ref-meta">${loc ? `<span class="hint ref-loc">${loc}</span>` : ''}${gh ? `<a class="hint gh" href="${gh}" target="_blank" rel="noopener">GitHub ↗</a>` : ''}</div>` : ''}
-      </li>`;
-    }).join('');
-    return `<div class="card">
+  html += r.contradictions.map((c, i) => `
+    <div class="card">
       <div class="contradiction-hd">Contradiction #${i + 1} — ${c.steps.length} step${c.steps.length === 1 ? '' : 's'}</div>
-      <ol class="refs">${rows}</ol>
+      <ol class="refs">${renderProofSteps(c.steps)}</ol>
+      ${proseDetails(c.prose, c.prose_missing)}
       <details class="proof-graph-details" style="margin-top:10px">
         <summary class="hint">proof graph</summary>
         <div class="graph-container"></div>
         <div class="hint graph-tip"></div>
         <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre>${esc(c.graphviz || '(none)')}</pre></details>
       </details>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 
   $('auditResult').innerHTML = html;
 
@@ -871,6 +1307,10 @@ function defineKifLanguage(m) {
   m.languages.setLanguageConfiguration('kif', {
     brackets: [['(', ')']],
     autoClosingPairs: [{ open: '(', close: ')' }, { open: '"', close: '"' }],
+    // Match the tokenizer's notion of a symbol so word selection and
+    // getWordAtPosition return whole SUMO terms, hyphens included — the Monaco
+    // default stops at "-" and would hand back a fragment.
+    wordPattern: /[A-Za-z_][A-Za-z0-9_-]*/g,
   });
   m.editor.defineTheme('kif-light', {
     base: 'vs', inherit: true,
@@ -927,9 +1367,17 @@ async function runEditValidate() {
   if (!monacoEditor) return;
   monaco.editor.setModelMarkers(monacoEditor.getModel(), 'sigma', diagsToMarkers(diags));
   const errs = diags.filter((d) => d.severity === 'error').length;
-  $('editStatus').textContent = diags.length
-    ? `${diags.length} diagnostic${diags.length === 1 ? '' : 's'}${errs ? ` (${errs} error${errs === 1 ? '' : 's'})` : ''}`
-    : 'no diagnostics';
+  if (!diags.length) { $('editStatus').textContent = 'no diagnostics'; return; }
+  // Link the count into the Diagnostics tab, filtered to this file and landing
+  // on the diagnostic nearest the first problem in the buffer.
+  const label = `${diags.length} diagnostic${diags.length === 1 ? '' : 's'}` +
+    (errs ? ` (${errs} error${errs === 1 ? '' : 's'})` : '');
+  const file = editCurrentFile ? editCurrentFile.name : '';
+  const line = diags[0]?.line || 0;
+  $('editStatus').innerHTML = file
+    ? `<a class="jump-diag" data-file="${esc(file)}" data-line="${line}"
+         title="Show these in the Diagnostics tab">${esc(label)}</a>`
+    : esc(label);
 }
 
 function setEditorContent(text) {
@@ -948,6 +1396,30 @@ function populateEditPicker() {
   sel.value = [...sel.options].some((o) => o.value === current) ? current : '__new__';
 }
 
+/**
+ * The Edit tab offers exactly one write action, chosen by where the buffer came
+ * from — there is no single action that means the same thing for all three:
+ *   file (upload/new) → Save     — persists to OPFS + the in-memory KB
+ *   sumo (GitHub)     → Submit change — opens a PR upstream; a local save would
+ *                                   be silently discarded on reload anyway
+ *   url (remote)      → neither  — nowhere to save it and nowhere to submit it
+ */
+function updateEditActions() {
+  const origin = editCurrentFile ? editCurrentFile.origin : 'file';  // unsaved new file is local
+  const isLocal = origin === 'file';
+  const isGitHub = origin === 'sumo';
+  $('editSave').hidden = !isLocal;
+  $('ghPropose').hidden = !isGitHub;
+  if (!isGitHub) {                       // collapse the PR panel when it no longer applies
+    $('ghPanel').hidden = true;
+    $('ghPropose').setAttribute('aria-expanded', 'false');
+  }
+  $('editLog').style.color = '';   // clear any prior error styling
+  $('editLog').textContent = origin === 'url'
+    ? 'Loaded from a URL — it can be edited and downloaded here, but not saved or submitted.'
+    : '';
+}
+
 function onEditPickerChange() {
   const val = $('editPicker').value;
   if (val === '__new__') {
@@ -955,6 +1427,7 @@ function onEditPickerChange() {
     $('editNewNameWrap').hidden = false;
     $('editNewName').value = '';
     setEditorContent('; New KIF file\n');
+    updateEditActions();
     return;
   }
   $('editNewNameWrap').hidden = true;
@@ -963,9 +1436,26 @@ function onEditPickerChange() {
   const c = constituents.find((x) => x.name === name && x.origin === origin);
   editCurrentFile = c ? { name: c.name, origin: c.origin } : null;
   setEditorContent(c ? c.text : '');
+  updateEditActions();
 }
 
-async function ensureEditorReady() {
+// Memoized: `showTab('edit')` and `applyRoute()` both ask for the editor, and
+// without this the two concurrent calls each get past the `monacoEditor` guard
+// (it is only set at the very end, after an await) and build a SECOND editor.
+// The loser's `onEditPickerChange()` then resets the buffer, clobbering any
+// cursor position a deep link had just set.
+let editorReadyPromise = null;
+function ensureEditorReady() {
+  if (!editorReadyPromise) {
+    editorReadyPromise = createEditor().catch((e) => {
+      editorReadyPromise = null;   // let a later visit retry
+      throw e;
+    });
+  }
+  return editorReadyPromise;
+}
+
+async function createEditor() {
   if (monacoEditor) return;
   const container = $('editorContainer');
   try {
@@ -986,11 +1476,43 @@ async function ensureEditorReady() {
     fontSize: 13,
   });
   monacoEditor.onDidChangeModelContent(scheduleEditValidate);
+
+  // Right-click a symbol → its man page. Monaco does not reliably move the
+  // caret on right-click, so the click's own position is captured and used in
+  // preference to the cursor.
+  let ctxPos = null;
+  monacoEditor.onContextMenu((e) => { ctxPos = e.target?.position ?? null; });
+  monacoEditor.addAction({
+    id: 'sumo.open-documentation',
+    label: 'Open SUMO documentation',
+    contextMenuGroupId: 'navigation',
+    contextMenuOrder: 0,
+    run: (ed) => {
+      const model = ed.getModel();
+      const pos = ctxPos || ed.getPosition();
+      ctxPos = null;
+      const word = model && pos && model.getWordAtPosition(pos);
+      if (!word) return;
+      // `?x` / `@row` are KIF variables, not terms — nothing to document.
+      const prev = word.startColumn > 1
+        ? model.getValueInRange({
+            startLineNumber: pos.lineNumber, startColumn: word.startColumn - 1,
+            endLineNumber: pos.lineNumber,   endColumn: word.startColumn })
+        : '';
+      if (prev === '?' || prev === '@') return;
+      syncUrl('browse', new URLSearchParams({ sym: word.word }));
+      applyRoute();
+    },
+  });
+
   populateEditPicker();
   onEditPickerChange();
 }
 
-$('editPicker').addEventListener('change', onEditPickerChange);
+$('editPicker').addEventListener('change', () => {
+  onEditPickerChange();
+  updateParams(editCurrentFile ? { file: editCurrentFile.name } : {});
+});
 
 /** Save the buffer to the user's local disk (a real download, independent of the in-browser OPFS/KB state). */
 $('editDownload').onclick = () => {
@@ -1020,18 +1542,15 @@ $('editSave').onclick = async () => {
       if (!name) throw new Error('Enter a filename first.');
       origin = 'file';
     }
-    if (origin === 'sumo' || origin === 'url') {
-      alert(
-        `"${name}" was loaded from ${origin === 'sumo' ? 'the SUMO GitHub repo' : 'a URL'}, ` +
-        `not uploaded to this browser. Your changes are saved in memory for this session only — ` +
-        `they will be discarded once you refresh the page.`
-      );
-    }
+    // Save is only offered for local files now (see updateEditActions), so the
+    // old "this edit is session-only" warning for sumo/url origins is gone with
+    // the button that could trigger it.
     const r = await updateConstituentText(name, text, origin);
     editCurrentFile = { name, origin };
     populateEditPicker();
     $('editPicker').value = `${name}|${origin}`;
     $('editNewNameWrap').hidden = true;
+    updateEditActions();
     runEditValidate();
     $('editLog').style.color = '';
     $('editLog').textContent = r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`;
@@ -1042,5 +1561,234 @@ $('editSave').onclick = async () => {
     btn.disabled = false; btn.textContent = 'Save';
   }
 };
+
+// -- Home: what is loaded, at a glance ----------------------------------------
+//
+// Counts come from the worker (one pass over the KB); the upstream commit date
+// is one unauthenticated GitHub call, cached for the session so revisiting the
+// tab does not spend the 60/hour budget.
+
+let lastCommitCache = null;
+
+const fmtNum = (n) => Number(n).toLocaleString();
+
+async function fetchLastCommitDate() {
+  if (lastCommitCache !== null) return lastCommitCache;
+  const url = `https://api.github.com/repos/${SUMO.owner}/${SUMO.repo}/commits?per_page=1`;
+  const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+  if (!r.ok) throw new Error(r.status === 403 ? 'rate-limited' : `HTTP ${r.status}`);
+  const iso = (await r.json())[0]?.commit?.author?.date;
+  lastCommitCache = iso ? new Date(iso) : null;
+  return lastCommitCache;
+}
+
+async function refreshHomeStats() {
+  // KB counts. These are only meaningful once promotion has run; while it is
+  // still in flight the numbers are simply what has been ingested so far.
+  try {
+    const { stats } = await call('stats');
+    $('statFiles').textContent   = fmtNum(stats.files);
+    $('statSymbols').textContent = fmtNum(stats.symbols);
+    $('statAxioms').textContent  = fmtNum(stats.axioms);
+    $('statRules').textContent   = fmtNum(stats.rules);
+    $('statNote').textContent = promoting
+      ? 'Post-processing — counts will settle once axiomatization finishes.'
+      : '';
+  } catch (e) {
+    $('statNote').textContent = `Could not read KB stats: ${e.message || e}`;
+  }
+
+  // Upstream commit date, best effort — the rest of the page is useful without it.
+  try {
+    const d = await fetchLastCommitDate();
+    $('statCommit').textContent = d
+      ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+      : 'unknown';
+    $('statCommit').title = d ? d.toString() : '';
+  } catch (e) {
+    $('statCommit').textContent = '—';
+    $('statCommit').title = `Could not reach GitHub: ${e.message || e}`;
+  }
+}
+
+// -- Contribute: open a pull request against ontologyportal/sumo ---------------
+//
+// The editor buffer is proposed upstream as a branch + PR using a token the
+// user supplies. The token is held in memory for the session; it is only
+// persisted (localStorage) if the user ticks "remember", and never leaves the
+// browser except as an Authorization header to api.github.com.
+
+const GH_TOKEN_KEY = 'sumoBrowserGhToken';
+let ghToken = localStorage.getItem(GH_TOKEN_KEY) || '';
+
+function ghSetStatus(text, bad = false) {
+  const el = $('ghStatus');
+  el.textContent = text;
+  el.style.color = bad ? 'var(--bad)' : '';
+}
+
+/** The file the Contribute panel acts on: whatever the Edit tab has open. */
+function ghCurrentFile() {
+  if (editCurrentFile) return editCurrentFile.name;
+  const v = $('editPicker').value;
+  return v && v !== '__new__' ? v.slice(0, v.indexOf('|')) : ($('editNewName').value.trim() || '');
+}
+
+$('ghPropose').onclick = () => {
+  const panel = $('ghPanel');
+  const open = panel.hidden;
+  panel.hidden = !open;
+  $('ghPropose').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  $('ghToken').value = ghToken;
+  $('ghRemember').checked = Boolean(localStorage.getItem(GH_TOKEN_KEY));
+  const file = ghCurrentFile();
+  if (!$('ghTitle').value) $('ghTitle').value = file ? `Update ${file}` : 'Update SUMO';
+  ghSetStatus(file ? '' : 'Open a file in the editor first.', !file);
+};
+
+$('ghForget').onclick = () => {
+  localStorage.removeItem(GH_TOKEN_KEY);
+  ghToken = '';
+  $('ghToken').value = '';
+  $('ghRemember').checked = false;
+  ghSetStatus('Token forgotten.');
+};
+
+$('ghSubmit').onclick = async () => {
+  const btn = $('ghSubmit');
+  const file = ghCurrentFile();
+  const token = $('ghToken').value.trim();
+  $('ghResult').innerHTML = '';
+  if (!file)  { ghSetStatus('Open a file in the editor first.', true); return; }
+  if (!token) { ghSetStatus('Enter a GitHub token.', true); return; }
+  if (!monacoEditor) { ghSetStatus('The editor is still loading.', true); return; }
+
+  // Remember only on explicit opt-in; otherwise keep it to this session.
+  ghToken = token;
+  if ($('ghRemember').checked) localStorage.setItem(GH_TOKEN_KEY, token);
+  else localStorage.removeItem(GH_TOKEN_KEY);
+
+  btn.disabled = true; btn.textContent = 'Submitting…';
+  try {
+    const { contribute } = await import('./github.js');
+    const pr = await contribute({
+      token, owner: SUMO.owner, repo: SUMO.repo,
+      path: file,
+      content: monacoEditor.getValue(),      // the live buffer, not the last save
+      title: $('ghTitle').value.trim() || `Update ${file}`,
+      body: $('ghBody').value.trim(),
+      onStep: (s) => ghSetStatus(s),
+    });
+    ghSetStatus('');
+    $('ghResult').innerHTML =
+      `Opened <a href="${esc(pr.url)}" target="_blank" rel="noopener">pull request #${pr.number} ↗</a>` +
+      ` from <code>${esc(pr.branch)}</code>${pr.forked ? ' (via your fork)' : ''}.`;
+  } catch (e) {
+    ghSetStatus('');
+    $('ghResult').innerHTML = `<span style="color:var(--bad)">${esc(String(e && e.message || e))}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Create pull request';
+  }
+};
+
+// -- History: a file's commit timeline from GitHub -----------------------------
+//
+// Plain unauthenticated GitHub REST — the same public API the Knowledge base
+// tab already uses for the file catalog, so no token and no dependency. That
+// caps us at 60 requests/hour per IP, so results are cached per file for the
+// session and only refetched on an explicit Refresh.
+
+const historyCache = new Map();   // file -> commits[]
+let historyShown = null;          // file currently rendered, so re-entry is free
+
+/** Only `sumo`-origin constituents exist on GitHub; uploads/URLs have no history. */
+function populateHistoryPicker() {
+  const sel = $('historyPicker');
+  if (!sel) return;
+  const current = sel.value;
+  const files = constituents.filter((c) => c.origin === 'sumo').map((c) => c.name);
+  sel.innerHTML = files.length
+    ? files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('')
+    : '<option value="">(no SUMO-sourced files loaded)</option>';
+  if (files.includes(current)) sel.value = current;
+}
+
+async function fetchCommits(file) {
+  if (historyCache.has(file)) return historyCache.get(file);
+  const url = `https://api.github.com/repos/${SUMO.owner}/${SUMO.repo}/commits`
+    + `?path=${encodeURIComponent(file)}&per_page=30`;
+  const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
+  if (r.status === 403 || r.status === 429) {
+    throw new Error('GitHub rate limit reached (60/hour without sign-in). Try again shortly.');
+  }
+  if (!r.ok) throw new Error(`GitHub API: HTTP ${r.status}`);
+  const commits = await r.json();
+  historyCache.set(file, commits);
+  return commits;
+}
+
+function renderHistory(file, commits) {
+  const list = $('historyList');
+  if (!commits.length) {
+    list.innerHTML = `<div class="card hint">No commits found for <code>${esc(file)}</code>.</div>`;
+    return;
+  }
+  const rows = commits.map((c) => {
+    const msg  = (c.commit?.message || '(no message)').split('\n')[0];
+    const who  = c.commit?.author?.name || c.author?.login || 'unknown';
+    const iso  = c.commit?.author?.date;
+    const when = iso ? new Date(iso).toLocaleDateString(undefined,
+      { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+    return `<li>
+      <div class="commit-msg"><a href="${esc(c.html_url || '#')}" target="_blank" rel="noopener">${esc(msg)}</a></div>
+      <div class="commit-meta">${esc(who)}${when ? ` · ${esc(when)}` : ''} · <span class="sha">${esc((c.sha || '').slice(0, 7))}</span></div>
+    </li>`;
+  }).join('');
+  // The API view is capped at one page; send people to GitHub for the full log.
+  const all = `https://github.com/${SUMO.owner}/${SUMO.repo}/commits/${SUMO.ref}/${encodeURI(file)}`;
+  list.innerHTML = `<div class="card">
+    <ol class="timeline">${rows}</ol>
+    <div class="hint" style="margin-top:12px; padding-top:10px; border-top:1px solid var(--line)">
+      Showing the ${commits.length} most recent —
+      <a href="${esc(all)}" target="_blank" rel="noopener">full commit history for ${esc(file)} on GitHub ↗</a>
+    </div>
+  </div>`;
+}
+
+async function loadHistory(file, { force = false } = {}) {
+  const list = $('historyList');
+  if (!file) { list.innerHTML = ''; $('historyStatus').textContent = ''; historyShown = null; return; }
+  if (!force && file === historyShown && historyCache.has(file)) return;  // already on screen
+  if (force) historyCache.delete(file);
+  historyShown = file;
+  $('historyStatus').textContent = 'loading…';
+  list.innerHTML = '';
+  try {
+    const commits = await fetchCommits(file);
+    if (historyShown !== file) return;   // a newer request won
+    $('historyStatus').textContent = `${commits.length} commit${commits.length === 1 ? '' : 's'}`;
+    renderHistory(file, commits);
+  } catch (e) {
+    $('historyStatus').textContent = '';
+    historyShown = null;                 // let a retry re-fetch
+    list.innerHTML = `<div class="card hint" style="color:var(--bad)">${esc(String(e && e.message || e))}</div>`;
+  }
+}
+
+/** Open the History tab on `file` (or whatever the picker already has). */
+function ensureHistory(file) {
+  populateHistoryPicker();
+  const sel = $('historyPicker');
+  if (file && [...sel.options].some((o) => o.value === file)) sel.value = file;
+  loadHistory(sel.value);
+}
+
+$('historyPicker').addEventListener('change', () => {
+  const f = $('historyPicker').value;
+  updateParams({ file: f });
+  loadHistory(f);
+});
+$('historyRefresh').onclick = () => loadHistory($('historyPicker').value, { force: true });
 
 boot();

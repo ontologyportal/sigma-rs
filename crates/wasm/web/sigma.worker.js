@@ -8,9 +8,22 @@ import { init, Session, Config, Backend } from './pkg/sdk.mjs';
 let session = null;
 
 function newSession() {
+  return new Session({ backend: Backend.Native, config: makeConfig() });
+}
+
+// Build a wasm `Config` from a plain settings object (the Ask/Tell settings
+// menu). Only keys actually supplied are applied, so the Rust-side defaults
+// stand for anything the UI leaves blank. `wantProof` defaults on — the demo
+// always wants the proof/graph/prose.
+function makeConfig(o = {}) {
   const cfg = new Config();
-  cfg.wantProof = true;
-  return new Session({ backend: Backend.Native, config: cfg });
+  cfg.wantProof = o.wantProof !== undefined ? !!o.wantProof : true;
+  if (o.timeLimitSecs != null) cfg.timeLimitSecs = o.timeLimitSecs;
+  if (o.maxSteps     != null) cfg.maxSteps     = o.maxSteps;
+  if (o.maxLits      != null) cfg.maxLits      = o.maxLits;
+  if (o.forwardClose != null) cfg.forwardClose = !!o.forwardClose;
+  if (o.profile      != null) cfg.profile      = !!o.profile;
+  return cfg;
 }
 
 const handlers = {
@@ -37,15 +50,13 @@ const handlers = {
   },
 
   validate() { return { diagnostics: session.validate() }; },
+  stats() { return { stats: session.kb.stats() }; },
   validateFormula({ kif }) { return { diagnostics: session.validateFormula(kif) }; },
   search({ query, limit }) { return { hits: session.search(query, { limit: limit ?? 100 }) }; },
   manpage({ symbol }) { return { page: session.manpage(symbol) }; },
 
-  prove({ assertions, query, timeLimitSecs, session: sess }) {
-    const cfg = new Config();
-    cfg.wantProof = true;
-    if (timeLimitSecs != null) cfg.timeLimitSecs = timeLimitSecs;
-    session.configure(cfg);
+  prove({ assertions, query, config, session: sess }) {
+    session.configure(makeConfig(config));
     const tag = sess || 'user-assertions';
     session.flushSession(tag);
     if (assertions && assertions.trim()) {
@@ -55,11 +66,8 @@ const handlers = {
     return { result: session.ask(query, { session: tag }) };
   },
 
-  audit({ timeLimitSecs, limit }) {
-    const cfg = new Config();
-    cfg.wantProof = true;
-    if (timeLimitSecs != null) cfg.timeLimitSecs = timeLimitSecs;
-    session.configure(cfg);
+  audit({ config, limit }) {
+    session.configure(makeConfig(config));
     return { result: session.auditConsistency(limit ?? 5) };
   },
 };

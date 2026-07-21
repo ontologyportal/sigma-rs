@@ -21,9 +21,14 @@ export interface AskResult {
   proved: boolean;
   given_steps: number | null;
   raw_output: string;
-  proof: Array<{ index: number; rule: string; premises: number[]; kif: string }>;
+  /** Same shape as {@link AuditStep} so both proofs render through one code path. */
+  proof: AuditStep[];
   /** The proof as a Graphviz DOT digraph — always valid, even when `proof` is empty. */
   graphviz: string;
+  /** The proof narrated as connected English prose. Empty when there is no proof. */
+  prose: string;
+  /** Symbols the prose showed by bare name (no `format`/`termFormat` in the language). */
+  prose_missing: string[];
 }
 
 /** One step of a cited contradiction derivation (see {@link AuditResult}). */
@@ -43,8 +48,15 @@ export interface AuditResult {
   inconsistent: boolean;
   given_steps: number | null;
   raw_output: string;
-  /** One entry per distinct contradiction, each with its own DOT digraph. */
-  contradictions: Array<{ steps: AuditStep[]; graphviz: string }>;
+  /** One entry per distinct contradiction, each with its own DOT digraph and prose. */
+  contradictions: Array<{
+    steps: AuditStep[];
+    graphviz: string;
+    /** This contradiction's derivation narrated as connected English prose. */
+    prose: string;
+    /** Symbols the prose showed by bare name (no `format`/`termFormat`). */
+    prose_missing: string[];
+  }>;
 }
 
 /** Which engine a {@link Session} drives (browser subset of the SDK `Backend`). */

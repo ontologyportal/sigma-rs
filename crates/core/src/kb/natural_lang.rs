@@ -15,6 +15,7 @@
 //! | Marker       | Meaning                                                      |
 //! |--------------|--------------------------------------------------------------|
 //! | `%1` … `%9`  | Positional argument (1-indexed) rendered recursively.        |
+//! | `%*{N-Z}[s]` | Multi-argument: arguments `N` up to (not including) `Z`, joined by `s` + a space. `{N-}` takes the rest. `\[s]` joins by `s` alone. So `%*{2-4}[,]` ≡ `%2, %3`. |
 //! | `&%Symbol`   | Cross-reference: render via `termFormat(Symbol, lang)` with a fallback to the raw name. |
 //! | `%n`         | Negation placeholder: empty in positive context, `" not "` in negative. |
 //! | `%n{TEXT}`   | Custom negation phrase: empty in positive context, `TEXT` in negative. |
@@ -131,6 +132,94 @@ mod tests {
         let r = kb.render_formula(&f, "EnglishLanguage");
         assert_eq!(r.rendered, "fido is an instance of dog");
         assert!(r.missing.is_empty(), "unexpected misses: {:?}", r.missing);
+    }
+
+    /// `%*{N-Z}[s]` — arguments N..Z (Z exclusive), joined by the bracket text
+    /// plus a space. `%*{2-4}[,]` is exactly `%2, %3`.
+    #[test]
+    fn multi_arg_bounded_range() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage between "%1 sits between %*{2-4}[,]")
+               (termFormat EnglishLanguage between "between")"#);
+        let f = parse_kif_formula("(between Fido Juno Dog Animal)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido sits between juno, dog",
+            "{{2-4}} is exclusive of 4, so `animal` (arg 4) must NOT appear");
+    }
+
+    /// An open `{N-}` consumes the remaining arguments.
+    #[test]
+    fn multi_arg_open_range_consumes_rest() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage listing "the list holds %*{2-}[,]")
+               (termFormat EnglishLanguage listing "listing")"#);
+        let f = parse_kif_formula("(listing Fido Juno Dog Animal)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "the list holds juno, dog, animal");
+    }
+
+    /// A backslash before the bracket drops the space after the separator.
+    #[test]
+    fn multi_arg_backslash_omits_space() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage tight "%1 :: %*{2-}\[,]")
+               (termFormat EnglishLanguage tight "tight")"#);
+        let f = parse_kif_formula("(tight Fido Juno Dog)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido :: juno,dog");
+    }
+
+    /// The separator may be any run of characters, not just punctuation.
+    #[test]
+    fn multi_arg_multichar_separator() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage anyof "either %*{1-}[ or]")
+               (termFormat EnglishLanguage anyof "anyof")"#);
+        let f = parse_kif_formula("(anyof Fido Juno Dog)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "either fido or juno or dog");
+    }
+
+    /// A range that selects nothing renders nothing (and doesn't panic).
+    #[test]
+    fn multi_arg_empty_and_overrun_ranges_are_safe() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage empt "[%*{3-3}[,]]")
+               (termFormat EnglishLanguage empt "empt")
+               (format EnglishLanguage over "[%*{2-9}[,]]")
+               (termFormat EnglishLanguage over "over")"#);
+        let empty = kb.render_formula(&parse_kif_formula("(empt Fido Juno)"), "EnglishLanguage");
+        assert_eq!(empty.rendered, "[]", "3-3 selects nothing");
+        // Upper bound past the real arity stops at the last argument.
+        let over = kb.render_formula(&parse_kif_formula("(over Fido Juno Dog)"), "EnglishLanguage");
+        assert_eq!(over.rendered, "[juno, dog]");
+    }
+
+    /// A malformed marker is left literal, matching the DSL's "template bugs
+    /// stay visible" rule for unknown markers.
+    #[test]
+    fn malformed_multi_arg_marker_stays_literal() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage broke "%1 %*{2-} then")
+               (termFormat EnglishLanguage broke "broke")"#);
+        let r = kb.render_formula(&parse_kif_formula("(broke Fido Juno)"), "EnglishLanguage");
+        assert!(r.rendered.contains("%*"), "expected literal marker, got {:?}", r.rendered);
+    }
+
+    /// The real SUMO templates that use this marker (Merge.kif) render correctly.
+    #[test]
+    fn real_sumo_multi_arg_templates() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage partition "%1 is %n &%exhaustively &%partitioned into %*{2-}[,]")
+               (termFormat EnglishLanguage partition "partition")
+               (format EnglishLanguage AssignmentFn "%1(%*{2-}[,])")
+               (termFormat EnglishLanguage AssignmentFn "AssignmentFn")"#);
+        let r = kb.render_formula(
+            &parse_kif_formula("(partition Animal Dog Fido Juno)"), "EnglishLanguage");
+        assert_eq!(r.rendered, "animal is exhaustively partitioned into dog, fido, juno");
+        let a = kb.render_formula(
+            &parse_kif_formula("(AssignmentFn Dog Fido Juno)"), "EnglishLanguage");
+        assert_eq!(a.rendered, "dog(fido, juno)");
     }
 
     #[test]

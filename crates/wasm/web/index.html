@@ -42,6 +42,28 @@
     nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
     nav.tabs button.disabled { opacity: .4; cursor: not-allowed; }
 
+    /* Ask/Tell prover settings (cog + panel) */
+    button.cog {
+      font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+      background: var(--bg); color: var(--muted);
+      border: 1px solid var(--line); border-radius: 7px; padding: 8px 11px;
+    }
+    button.cog:hover { color: var(--fg); border-color: var(--accent); }
+    button.cog[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+    button.btn.ghost { background: none; color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+    button.btn.ghost:hover { color: var(--fg); }
+    .settings { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+    .settings[hidden] { display: none; }
+    .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .settings .sub { font-size: 11px; margin-top: 2px; }
+    .settings-checks { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+    .settings label.check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--fg); margin: 0; }
+    .settings label.check input { width: auto; }
+
+    /* Plain-English proof */
+    .prose { font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
+    .prose:empty::before { content: '(no prose available)'; color: var(--muted); }
+
     #toast { position: fixed; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 10px;
       background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
       box-shadow: 0 4px 16px rgba(0,0,0,.2); font-size: 13px; color: var(--muted); z-index: 50; }
@@ -84,6 +106,44 @@
     .ref-kif { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre; overflow-x: auto; }
     .ref-meta { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 4px; }
     .ref-loc { font-family: var(--mono); color: var(--accent); }
+    /* Home: welcome + KB summary */
+    .welcome-h { font-size: 17px; margin: 0; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px; margin-bottom: 12px; }
+    .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      padding: 14px; text-align: center; }
+    .stat-n { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .stat-n.stat-date { font-size: 16px; }
+    .stat-l { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+    /* History: commit timeline */
+    ol.timeline { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 2px solid var(--line); }
+    ol.timeline li { position: relative; padding: 0 0 14px 14px; }
+    ol.timeline li::before { content: ''; position: absolute; left: -23px; top: 5px; width: 8px; height: 8px;
+      border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg); }
+    ol.timeline li:last-child { padding-bottom: 0; }
+    .commit-msg { font-size: 14px; }
+    .commit-msg a { color: var(--fg); }
+    .commit-msg a:hover { color: var(--accent); }
+    .commit-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .commit-meta .sha { font-family: var(--mono); }
+
+    /* GitHub mark inside the Submit-change button */
+    #ghPropose { display: inline-flex; align-items: center; gap: 7px; }
+    .gh-mark { flex: 0 0 auto; }
+
+    /* IDE diagnostic count -> Diagnostics tab */
+    a.jump-diag { cursor: pointer; color: var(--accent); }
+    a.jump-diag:hover { text-decoration: underline; }
+    /* Brief flash on the diagnostic a deep link landed on. */
+    .diag.diag-target { background: color-mix(in srgb, var(--accent) 14%, transparent);
+      border-radius: 6px; transition: background 1s ease; }
+
+    /* Only citations we can actually open are rendered as <a class="jump-src">;
+       unopenable ones stay as plain <span> and must not look clickable. */
+    a.jump-src { cursor: pointer; }
+    a.jump-src:hover { text-decoration: underline; }
+    span.ref-loc, span.loc { color: var(--muted); }
 
     .status { padding: 3px 9px; border-radius: 20px; font-weight: 700; font-size: 12px; }
     .status.Proved, .status.Inconsistent { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
@@ -123,12 +183,7 @@
     .diag .loc { font-family: var(--mono); font-size: 12px; color: var(--accent); cursor: pointer; }
     .diag .code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
     .diag .msg { font-size: 13px; }
-    .src { margin: 8px 0 2px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; background: var(--bg); }
-    .src table { border-collapse: collapse; font-family: var(--mono); font-size: 12px; width: 100%; }
-    .src td { padding: 1px 8px; white-space: pre; }
-    .src td.ln { color: var(--muted); text-align: right; user-select: none; border-right: 1px solid var(--line); }
-    .src tr.hit { background: color-mix(in srgb, var(--warn) 16%, transparent); }
-    .src tr.hit td.ln { color: var(--warn); font-weight: 700; }
+    .diag .loc:hover { text-decoration: underline; }
     .hint { color: var(--muted); font-size: 13px; }
     .xref { border-bottom: 1px dotted var(--accent); }
 
@@ -156,9 +211,15 @@
     }
 
     #overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 20px; }
-    .spinner { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--accent);
-      border-radius: 50%; animation: spin 0.8s linear infinite; }
+      align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; }
+    #overlayTitle { font-size: 15px; font-weight: 600; }
+    /* Linear boot progress: a track with a width-animated fill. */
+    #bootBar { width: min(380px, 72vw); height: 6px; background: var(--line);
+      border-radius: 999px; overflow: hidden; }
+    #bootBarFill { height: 100%; width: 0%; background: var(--accent);
+      border-radius: 999px; transition: width .25s ease; }
+    /* The currently-loading constituent, kept deliberately quiet. */
+    #overlayMsg { font-size: 12px; color: var(--muted); min-height: 1.2em; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -180,15 +241,41 @@
 
     <nav class="tabs" role="tablist">
       <button role="tab" data-tab="home" aria-selected="true">Home</button>
+      <button role="tab" data-tab="browse" aria-selected="false">Browse</button>
       <button role="tab" data-tab="kb" aria-selected="false">Knowledge base</button>
       <button role="tab" data-tab="diagnostics" aria-selected="false">Diagnostics</button>
       <button role="tab" data-tab="prover" aria-selected="false">Ask/Tell</button>
       <button role="tab" data-tab="audit" aria-selected="false">Audit</button>
       <button role="tab" data-tab="edit" aria-selected="false">Edit</button>
+      <button role="tab" data-tab="history" aria-selected="false">History</button>
     </nav>
 
     <!-- Home: symbol lookup -->
+    <!-- Home: what is currently loaded, at a glance -->
     <section id="tab-home" class="panel" role="tabpanel">
+      <div class="card">
+        <h2 class="welcome-h">SUMO in your browser</h2>
+        <p class="hint" style="margin:6px 0 0">
+          The <code>sigmakee-rs</code> native prover compiled to WebAssembly. Search and read the
+          ontology under <a class="jump" data-tab="browse">Browse</a>, manage what is loaded under
+          <a class="jump" data-tab="kb">Knowledge base</a>, prove things under
+          <a class="jump" data-tab="prover">Ask/Tell</a>, and edit or contribute changes under
+          <a class="jump" data-tab="edit">Edit</a>. Everything runs locally: <strong>no server</strong>.
+        </p>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="stat-n" id="statFiles">—</div><div class="stat-l">constituent files</div></div>
+        <div class="stat"><div class="stat-n" id="statSymbols">—</div><div class="stat-l">symbols</div></div>
+        <div class="stat"><div class="stat-n" id="statAxioms">—</div><div class="stat-l">axioms</div></div>
+        <div class="stat"><div class="stat-n" id="statRules">—</div><div class="stat-l">rules</div></div>
+        <div class="stat"><div class="stat-n stat-date" id="statCommit">—</div><div class="stat-l">last upstream commit</div></div>
+      </div>
+      <div id="statNote" class="hint"></div>
+    </section>
+
+    <!-- Browse: symbol search → results → man page -->
+    <section id="tab-browse" class="panel" role="tabpanel" hidden>
       <div class="card">
         <form id="searchForm">
           <label for="q">Search symbols &amp; documentation</label>
@@ -198,11 +285,25 @@
           </div>
         </form>
       </div>
-      <div id="homeView"></div>
+      <div id="browseView"></div>
     </section>
 
     <!-- Knowledge base: manage constituents -->
     <section id="tab-kb" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="inline" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
+          <div>
+            <div style="font-weight:600">Load a standard set</div>
+            <div class="hint">Replaces everything currently loaded.</div>
+          </div>
+          <div class="inline" style="gap:8px">
+            <button class="btn" id="loadMinimal" type="button">Minimal SUMO</button>
+            <button class="btn" id="loadFull" type="button">Full SUMO</button>
+          </div>
+        </div>
+        <div id="presetNote" class="hint" style="margin-top:8px"></div>
+      </div>
+
       <div class="card">
         <div class="inline" style="justify-content:space-between">
           <div id="kbTotals" class="hint"></div>
@@ -273,14 +374,51 @@
           <pre id="pqueryHl" class="hl" aria-hidden="true"></pre>
           <textarea id="pquery" rows="2" spellcheck="false">(instance Rex Animal)</textarea>
         </div>
-        <div class="inline" style="margin-top:10px">
-          <div style="width:150px"><label for="ptime">time limit (s)</label><input type="number" id="ptime" value="10" min="0" /></div>
+        <div class="inline" style="margin-top:10px; gap:8px">
           <button class="btn" id="prove" type="button">Prove</button>
+          <button class="cog" id="proverSettingsBtn" type="button"
+                  title="Prover settings" aria-label="Prover settings"
+                  aria-expanded="false" aria-controls="proverSettings">⚙</button>
+          <span id="proverCfgSummary" class="hint"></span>
+        </div>
+
+        <!-- Prover settings (the wasm `Config`) -->
+        <div id="proverSettings" class="settings" hidden>
+          <div class="settings-grid">
+            <div>
+              <label for="cfgTimeLimit">time limit (s)</label>
+              <input type="number" id="cfgTimeLimit" min="0" step="1" value="30" />
+              <div class="hint sub">0 = no wall-clock limit</div>
+            </div>
+            <div>
+              <label for="cfgMaxSteps">max steps</label>
+              <input type="number" id="cfgMaxSteps" min="0" step="100" value="4000" />
+              <div class="hint sub">given-clause loop budget</div>
+            </div>
+            <div>
+              <label for="cfgMaxLits">max literals</label>
+              <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
+              <div class="hint sub">per retained clause</div>
+            </div>
+          </div>
+          <div class="settings-checks">
+            <label class="check"><input type="checkbox" id="cfgForwardClose" checked /> forward closure <span class="hint">— saturate the theory before the loop</span></label>
+            <label class="check"><input type="checkbox" id="cfgWantProof" checked /> want proof <span class="hint">— populate the proof, graph and prose</span></label>
+            <label class="check"><input type="checkbox" id="cfgProfile" /> profile <span class="hint">— emit phase timings into raw output</span></label>
+          </div>
+          <div class="inline" style="justify-content:flex-end; margin-top:10px">
+            <button class="btn ghost" id="cfgReset" type="button">Reset to defaults</button>
+          </div>
         </div>
       </div>
       <div id="proverResult" class="card" hidden>
         <div><span id="pStatus" class="status"></span> <span id="pSteps" class="hint"></span></div>
-        <ol id="pProof" class="proof"></ol>
+        <ol id="pProof" class="refs"></ol>
+        <details id="pProseDetails" style="margin-top:10px">
+          <summary class="hint">proof in plain English</summary>
+          <div id="pProse" class="prose"></div>
+          <div id="pProseMissing" class="hint" style="margin-top:6px"></div>
+        </details>
         <details id="pGraphDetails" style="margin-top:10px">
           <summary class="hint">proof graph</summary>
           <div id="pGraphContainer" class="graph-container"></div>
@@ -296,8 +434,7 @@
       <div class="card">
         <div class="inline" style="justify-content:space-between">
           <p class="hint" style="margin:0">
-            Saturates the loaded KB looking for a logical contradiction — the same
-            check as the <code>sumo audit</code> CLI command, run entirely in-browser.
+            Saturates the loaded KB looking for a logical contradiction and prints the proofs for said contradictions.
           </p>
           <div class="inline" style="gap:10px">
             <div style="width:110px"><label for="auditTime">time limit (s)</label><input type="number" id="auditTime" value="15" min="0" /></div>
@@ -327,13 +464,79 @@
             <span id="editStatus" class="hint"></span>
             <button class="btn" id="editDownload" type="button" style="background:var(--card); color:var(--fg); border:1px solid var(--line)">Download</button>
             <button class="btn" id="editSave" type="button">Save</button>
+            <button class="btn" id="ghPropose" type="button" aria-expanded="false" aria-controls="ghPanel">
+              <svg class="gh-mark" viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              Submit change
+            </button>
           </div>
+        </div>
+
+        <!-- Contribute the buffer upstream as a branch + pull request -->
+        <div id="ghPanel" class="settings" hidden>
+          <p class="hint" style="margin:0 0 10px">
+            Opens a pull request against <code>ontologyportal/sumo</code> with this file.
+            You will be forked automatically if you lack push access. Your token is sent
+            only from this browser to <code>api.github.com</code> — this page is static,
+            there is no server behind it.
+          </p>
+          <div class="settings-grid">
+            <div>
+              <label for="ghToken">GitHub token</label>
+              <input type="password" id="ghToken" placeholder="ghp_…" autocomplete="off" spellcheck="false" />
+              <div class="hint sub">
+                Needs <code>public_repo</code>.
+                <a href="https://github.com/settings/tokens/new?scopes=public_repo&amp;description=SUMO%20browser"
+                   target="_blank" rel="noopener">Create one ↗</a>
+              </div>
+            </div>
+            <div>
+              <label for="ghTitle">Pull request title</label>
+              <input type="text" id="ghTitle" placeholder="Update Merge.kif" />
+            </div>
+          </div>
+          <div style="margin-top:10px">
+            <label for="ghBody">Description</label>
+            <textarea id="ghBody" rows="3" placeholder="What changed and why."></textarea>
+          </div>
+          <div class="settings-checks">
+            <label class="check"><input type="checkbox" id="ghRemember" /> remember this token on this device
+              <span class="hint">— stored in this browser until you press Forget</span></label>
+          </div>
+          <div class="inline" style="justify-content:space-between; margin-top:10px">
+            <span id="ghStatus" class="hint"></span>
+            <div class="inline" style="gap:8px">
+              <button class="btn ghost" id="ghForget" type="button">Forget token</button>
+              <button class="btn" id="ghSubmit" type="button">Create pull request</button>
+            </div>
+          </div>
+          <div id="ghResult" class="hint" style="margin-top:8px"></div>
         </div>
       </div>
       <div class="card" id="editPane">
         <div id="editorContainer" data-placeholder="Loading editor…"></div>
       </div>
       <div id="editLog" class="hint"></div>
+    </section>
+
+    <!-- History: the file's commit timeline from GitHub -->
+    <section id="tab-history" class="panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="inline" style="justify-content:space-between">
+          <div style="min-width:260px">
+            <label for="historyPicker">File</label>
+            <select id="historyPicker"></select>
+          </div>
+          <div class="inline" style="gap:8px">
+            <span id="historyStatus" class="hint"></span>
+            <button class="btn" id="historyRefresh" type="button">Refresh</button>
+          </div>
+        </div>
+        <p class="hint" style="margin:8px 0 0">
+          Commit history from <code>ontologyportal/sumo</code> via the public GitHub API
+          (no sign-in; unauthenticated requests are rate-limited to 60/hour).
+        </p>
+      </div>
+      <div id="historyList"></div>
     </section>
   </main>
 
@@ -343,8 +546,11 @@
   </div>
 
   <div id="overlay">
-    <div class="spinner"></div>
-    <div id="overlayMsg">Loading the WASM module…</div>
+    <div id="overlayTitle">Loading SUMO</div>
+    <div id="bootBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div id="bootBarFill"></div>
+    </div>
+    <div id="overlayMsg">Starting the engine…</div>
     <div id="overlayErr" class="hint" style="color:var(--bad)"></div>
   </div>
 

@@ -385,6 +385,45 @@ impl WasmNativeProver {
         serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Summary counts describing the loaded KB, for an overview page.
+    ///
+    /// Returns `{ files, symbols, axioms, rules }`:
+    /// * `symbols` — interned names a reader would recognise: KIF variables
+    ///   (`?x` / `@row`) and the prover's skolem constants are excluded;
+    /// * `axioms` — top-level formulas contributed by the loaded files;
+    /// * `rules` — those whose top-level connective is `=>` or `<=>`.
+    #[wasm_bindgen]
+    pub fn stats(&self) -> Result<JsValue, JsValue> {
+        use sigmakee_rs_core::{Element, OpKind};
+
+        let symbols = self.inner.iter_symbols()
+            .filter(|(_, name)| !name.starts_with('?') && !name.starts_with('@'))
+            .filter(|(_, name)| !self.inner.symbol_is_skolem(name))
+            .count();
+
+        // Internal scratch sessions (`__inline(N)__`, `__wasm:…`) are not
+        // constituents and would inflate every count.
+        let files: Vec<String> = self.inner.iter_files()
+            .into_iter().filter(|f| !f.starts_with("__")).collect();
+
+        let mut axioms = 0usize;
+        let mut rules  = 0usize;
+        for f in &files {
+            for sid in self.inner.file_roots(f) {
+                axioms += 1;
+                if let Some(sent) = self.inner.sentence(sid) {
+                    if matches!(sent.elements.first(),
+                                Some(Element::Op(OpKind::Implies | OpKind::Iff))) {
+                        rules += 1;
+                    }
+                }
+            }
+        }
+
+        let out = KbStatsJs { files: files.len(), symbols, axioms, rules };
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Freeze the entire KB — promoted axioms, symbols, indices, taxonomy — into
     /// a self-contained byte buffer (a `Uint8Array`).
     ///
@@ -512,8 +551,13 @@ impl WasmNativeProver {
         let src_idx = self.inner.build_axiom_source_index();
 
         let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().enumerate().map(|(i, steps)| {
+            // A contradiction has no conjecture to restate — it refutes the KB
+            // itself — so the prose opens straight into the derivation.
+            let prose_report = self.inner.render_proof_prose(None, steps, "EnglishLanguage");
             ContradictionJs {
                 graphviz: sigmakee_rs_core::render_graphviz(steps, &format!("contradiction-{}", i + 1), "Inconsistent"),
+                prose:         prose_report.rendered,
+                prose_missing: prose_report.missing,
                 steps: steps.iter().map(|s| {
                     let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
                     AuditStepJs {
@@ -572,15 +616,37 @@ impl WasmNativeProver {
         // symbol/sentence hashes that overflow JS's safe-integer range and
         // abort serde-wasm-bindgen.  Proof formulas render to KIF text via
         // `AstNode`'s `Display`; every field here is `usize`/`String`/`bool`.
-        let proof: Vec<ProofStepJs> = result.proof_kif.iter().map(|s| ProofStepJs {
-            index:    s.index,
-            rule:     s.rule.clone(),
-            premises: s.premises.clone(),
-            kif:      format!("{}", s.formula),
+        // Same projection the audit path uses (source-cited, pretty-printed
+        // KIF) so Ask/Tell and Audit proofs render through one UI code path.
+        let src_idx = self.inner.build_axiom_source_index();
+        let proof: Vec<ProofStepJs> = result.proof_kif.iter().map(|s| {
+            let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+            ProofStepJs {
+                index:    s.index,
+                rule:     s.rule.clone(),
+                premises: s.premises.clone(),
+                kif:      s.formula.format_plain(0),
+                file:     loc.map(|a| a.file.clone()),
+                line:     loc.map(|a| a.line),
+            }
         }).collect();
 
         let status_str = format!("{:?}", result.status);
         let graphviz = sigmakee_rs_core::render_graphviz(&result.proof_kif, "ask", &status_str);
+
+        // Narrate the transcript in English. The goal restatement needs the
+        // conjecture as an AST, so re-parse the query (cheap — one formula);
+        // a parse failure just drops the opener, it never fails the ask.
+        let (prose, prose_missing) = if result.proof_kif.is_empty() {
+            (String::new(), Vec::new())
+        } else {
+            let goal_doc = sigmakee_rs_core::parse_document(
+                "__prose_goal__", query_kif.to_string(), sigmakee_rs_core::Parser::Kif);
+            let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
+            let report = self.inner.render_proof_prose(goal_ast, &result.proof_kif, "EnglishLanguage");
+            (report.rendered, report.missing)
+        };
+
         let out = AskResultJs {
             status:      status_str,
             proved:      result.status == sigmakee_rs_core::ProverStatus::Proved,
@@ -588,6 +654,8 @@ impl WasmNativeProver {
             raw_output:  result.raw_output,
             proof,
             graphviz,
+            prose,
+            prose_missing,
         };
         serde_wasm_bindgen::to_value(&out)
             .map_err(|e| JsValue::from_str(&e.to_string()))
@@ -601,6 +669,20 @@ struct ProofStepJs {
     rule:     String,
     premises: Vec<usize>,
     kif:      String,
+    /// Source of the input axiom this step traces to, when it traces to one.
+    /// `null` for derived/anonymous steps — same shape as [`AuditStepJs`], so
+    /// both proofs render through one code path in the UI.
+    file:     Option<String>,
+    line:     Option<u32>,
+}
+
+/// Summary counts describing the loaded KB (see [`WasmNativeProver::stats`]).
+#[derive(serde::Serialize)]
+struct KbStatsJs {
+    files:   usize,
+    symbols: usize,
+    axioms:  usize,
+    rules:   usize,
 }
 
 /// Curated native-prover result projected to JS-safe types.
@@ -615,6 +697,13 @@ struct AskResultJs {
     /// edge per premise) — always a syntactically valid graph, even when
     /// `proof` is empty. Safe to hand straight to a DOT renderer.
     graphviz:    String,
+    /// The proof narrated as connected English prose (goal restatement, the
+    /// axioms/hypotheses used, then the derivation chain). Empty when there is
+    /// no proof to narrate.
+    prose:       String,
+    /// Symbols the prose showed by bare name because they have no
+    /// `format`/`termFormat` in the rendering language. Sorted, de-duplicated.
+    prose_missing: Vec<String>,
 }
 
 /// One step of a cited contradiction derivation (see [`WasmNativeProver::audit_consistency`]).
@@ -634,6 +723,10 @@ struct ContradictionJs {
     steps:    Vec<AuditStepJs>,
     /// This contradiction's derivation rendered as a Graphviz DOT digraph.
     graphviz: String,
+    /// This contradiction's derivation narrated as connected English prose.
+    prose:    String,
+    /// Symbols the prose showed by bare name (no `format`/`termFormat`).
+    prose_missing: Vec<String>,
 }
 
 /// Curated native-prover consistency-audit result projected to JS-safe types.
