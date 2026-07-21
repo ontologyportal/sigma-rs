@@ -59,6 +59,15 @@ let opfsRoot = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const fmtNum = (n) => Number(n).toLocaleString();
+const fmtDate = (d) => d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+
+/** Unauthenticated GitHub REST, via the same client the contribute flow uses —
+ *  one place for the Accept/API-version headers and the rate-limit wording. */
+async function githubApi(path) {
+  const { api } = await import('./github.js');
+  return api(null, path);
+}
 
 let diagnostics = [];
 let diagFilter = { file: '', severity: '' };
@@ -191,7 +200,7 @@ async function withPostProcessing(fn) {
       // while the flag was still set, so their "post-processing" wording is
       // stale the moment it clears.
       updateKbStatus();
-      if (currentTab() === 'home') refreshHomeStats();
+      if (currentTab() === 'home') updateHomeNote();
     }
   }
 }
@@ -399,7 +408,6 @@ async function applyRoute() {
     }
   }
 
-  if (tab === 'home') refreshHomeStats();
 }
 
 document.querySelector('nav.tabs').addEventListener('click', (e) => {
@@ -411,6 +419,16 @@ document.addEventListener('click', (e) => {
   if (jump && jump.getAttribute('aria-disabled') !== 'true') { e.preventDefault(); showTab(jump.dataset.tab); }
 });
 window.addEventListener('popstate', () => { applyRoute(); });
+
+/** Push a history entry for `tab` with `params` and render it. The three
+ *  cross-tab jumps (editor, diagnostics, documentation) all go through here so
+ *  they agree on push-vs-replace and on param naming. */
+function navigate(tab, obj) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(obj || {})) if (v != null && v !== '') p.set(k, String(v));
+  syncUrl(tab, p);
+  return applyRoute();
+}
 
 /** Replace the query on the current tab, so the address bar stays shareable
  *  without pushing a history entry for every search/file switch. */
@@ -544,7 +562,9 @@ async function loadSumoCatalog() {
   if (sumoCatalog) return;
   $('pickerStatus').textContent = 'loading file list…';
   try {
-    const tree = await (await fetch(`https://api.github.com/repos/${SUMO.owner}/${SUMO.repo}/git/trees/${SUMO.ref}?recursive=1`)).json();
+    // Via the shared client so a rate-limited response raises rather than
+    // silently yielding `undefined.tree`.
+    const tree = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/git/trees/${SUMO.ref}?recursive=1`);
     sumoCatalog = (tree.tree || []).filter((e) => e.type === 'blob' && /\.kif$/i.test(e.path)).map((e) => e.path).sort();
     renderPicker();
   } catch (e) {
@@ -565,12 +585,17 @@ $('fileFilter').addEventListener('input', () => { if (sumoCatalog) renderPicker(
 $('addSumo').onclick = (e) => withBusy(e.target, async () => {
   const paths = [...$('sumoPicker').selectedOptions].map((o) => o.value);
   if (!paths.length) { $('kbLog').textContent = 'Select one or more files first.'; return; }
-  // Ingest (fetch + parse) under the busy button — no toast yet.
+  // Ingest (fetch + parse) under the busy button — no toast yet. Fetches run
+  // batched, like the presets: a multi-select of a dozen files is otherwise a
+  // dozen serial round-trips.
   let added = 0, notices = 0; const failed = [];
+  $('kbLog').style.color = '';
+  const texts = await fetchAllTexts(paths, 6,
+    (n) => { $('kbLog').textContent = `Fetching — ${n}/${paths.length}…`; });
   for (let i = 0; i < paths.length; i++) {
-    const path = paths[i];
-    $('kbLog').style.color = ''; $('kbLog').textContent = `Fetching ${path}… (${i + 1}/${paths.length})`;
-    try { const r = await ingestConstituent(path, await fetchText(rawUrl(path))); if (r.added) added += 1; notices += r.notices.length; }
+    const path = paths[i], text = texts[i];
+    if (text instanceof Error) { failed.push(`${path}: ${text.message}`); continue; }
+    try { const r = await ingestConstituent(path, text); if (r.added) added += 1; notices += r.notices.length; }
     catch (err) { failed.push(`${path}: ${err.message || err}`); }
   }
   renderConstituents();
@@ -770,10 +795,7 @@ function ghAnchor(file, line) {
 /** Open `file` in the Edit tab with the caret on `line`. Routed through the URL
  *  so the jump is a real history entry and the resulting view is shareable. */
 function openInEditor(file, line) {
-  const params = new URLSearchParams({ file });
-  if (line > 0) params.set('l', String(line));
-  syncUrl('edit', params);   // push, so Back returns where we came from
-  applyRoute();
+  return navigate('edit', { file, l: line > 0 ? line : null });   // Back returns here
 }
 
 /**
@@ -857,11 +879,7 @@ document.addEventListener('click', (e) => {
   const a = e.target.closest('a.jump-diag');
   if (!a) return;
   e.preventDefault();
-  const p = new URLSearchParams();
-  if (a.dataset.file) p.set('file', a.dataset.file);
-  if (a.dataset.line) p.set('l', a.dataset.line);
-  syncUrl('diagnostics', p);
-  applyRoute();
+  navigate('diagnostics', { file: a.dataset.file, l: a.dataset.line });
 });
 
 // -- KIF syntax highlighting (textarea + mirrored <pre> overlay) --------------
@@ -1049,29 +1067,37 @@ function wireProofGraph(details, container, tipEl, getSteps) {
 // Values are read fresh on each run and sent to the worker, which builds the
 // Config there — the page never holds a wasm object.
 
-const CFG_DEFAULTS = { timeLimitSecs: 30, maxSteps: 4000, maxLits: 8, forwardClose: true, wantProof: true, profile: false };
-const CFG_FIELDS = {
-  timeLimitSecs: 'cfgTimeLimit', maxSteps: 'cfgMaxSteps', maxLits: 'cfgMaxLits',
-  forwardClose: 'cfgForwardClose', wantProof: 'cfgWantProof', profile: 'cfgProfile',
-};
+// One descriptor per Config knob, driving the form, the summary and the object
+// sent to the worker. Adding a knob is one row here plus the markup, rather
+// than four coordinated edits where a typo'd id fails silently.
+const CFG_KNOBS = [
+  { key: 'timeLimitSecs', id: 'cfgTimeLimit',    dflt: 30   },
+  { key: 'maxSteps',      id: 'cfgMaxSteps',     dflt: 4000 },
+  { key: 'maxLits',       id: 'cfgMaxLits',      dflt: 8    },
+  { key: 'forwardClose',  id: 'cfgForwardClose', dflt: true },
+  { key: 'wantProof',     id: 'cfgWantProof',    dflt: true },
+  { key: 'profile',       id: 'cfgProfile',      dflt: false },
+];
+const CFG_DEFAULTS = Object.fromEntries(CFG_KNOBS.map((k) => [k.key, k.dflt]));
 
-/** Current settings as a plain object for the worker. Numbers coerce to u32-safe ints. */
-function proverConfig() {
-  const int = (id, dflt) => { const v = Math.floor(Number($(id).value)); return Number.isFinite(v) && v >= 0 ? v : dflt; };
-  return {
-    timeLimitSecs: int('cfgTimeLimit', CFG_DEFAULTS.timeLimitSecs),
-    maxSteps:      int('cfgMaxSteps',  CFG_DEFAULTS.maxSteps),
-    maxLits:       int('cfgMaxLits',   CFG_DEFAULTS.maxLits),
-    forwardClose:  $('cfgForwardClose').checked,
-    wantProof:     $('cfgWantProof').checked,
-    profile:       $('cfgProfile').checked,
-  };
+/** Current settings as a plain object for the worker. Numeric fields coerce to
+ *  u32-safe ints; `overrides` wins, so callers with their own input (Audit's
+ *  time limit) get the same coercion instead of redoing it. */
+function proverConfig(overrides = {}) {
+  const cfg = {};
+  for (const { key, id, dflt } of CFG_KNOBS) {
+    if (typeof dflt === 'boolean') { cfg[key] = $(id).checked; continue; }
+    const raw = key in overrides ? overrides[key] : $(id).value;
+    const v = Math.floor(Number(raw));
+    cfg[key] = Number.isFinite(v) && v >= 0 ? v : dflt;
+  }
+  return cfg;
 }
 
 function applyProverConfig(c) {
-  for (const [key, id] of Object.entries(CFG_FIELDS)) {
+  for (const { key, id, dflt } of CFG_KNOBS) {
     const el = $(id);
-    if (typeof c[key] === 'boolean') el.checked = c[key]; else el.value = c[key];
+    if (typeof dflt === 'boolean') el.checked = c[key]; else el.value = c[key];
   }
   renderCfgSummary();
 }
@@ -1085,14 +1111,19 @@ function renderCfgSummary() {
     : `${c.timeLimitSecs}s · ${c.maxSteps} steps · defaults`;
 }
 
-$('proverSettingsBtn').onclick = () => {
-  const panel = $('proverSettings');
-  const open = panel.hidden;
+/** Disclosure panel: flip (or force) visibility and keep aria-expanded paired
+ *  with it, so the two never drift apart. */
+function togglePanel(btnId, panelId, force) {
+  const panel = $(panelId);
+  const open = force !== undefined ? force : panel.hidden;
   panel.hidden = !open;
-  $('proverSettingsBtn').setAttribute('aria-expanded', String(open));
-};
+  $(btnId).setAttribute('aria-expanded', String(open));
+  return open;
+}
+
+$('proverSettingsBtn').onclick = () => togglePanel('proverSettingsBtn', 'proverSettings');
 $('cfgReset').onclick = () => applyProverConfig(CFG_DEFAULTS);
-for (const id of Object.values(CFG_FIELDS)) $(id).addEventListener('input', renderCfgSummary);
+for (const { id } of CFG_KNOBS) $(id).addEventListener('input', renderCfgSummary);
 renderCfgSummary();
 
 // -- Prover: tell + ask -------------------------------------------------------
@@ -1113,7 +1144,7 @@ $('prove').onclick = async () => {
     $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
     $('pSteps').textContent = String(e && e.message || e);
     $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
-    $('pProse').textContent = ''; $('pProseMissing').textContent = '';
+    $('pProseSlot').innerHTML = '';
     lastAskProof = [];
     invalidateAskGraph();
   } finally {
@@ -1161,7 +1192,7 @@ function proseMissingNote(missing) {
 }
 
 /** A collapsible plain-English rendering of a transcript (used inline by Audit;
- *  Ask/Tell fills the equivalent static markup in index.html). */
+ *  Both Ask/Tell and Audit render through this. */
 function proseDetails(prose, missing) {
   return `<details class="prose-details" style="margin-top:10px">
     <summary class="hint">proof in plain English</summary>
@@ -1177,8 +1208,7 @@ function renderProof(r) {
   $('pProof').innerHTML = renderProofSteps(r.proof);
   $('pRaw').textContent = r.raw_output || '(none)';
   $('pGraphDot').textContent = r.graphviz || '(none)';
-  $('pProse').textContent = r.prose || '';
-  $('pProseMissing').textContent = proseMissingNote(r.prose_missing);
+  $('pProseSlot').innerHTML = proseDetails(r.prose, r.prose_missing);
   lastAskProof = r.proof;
   invalidateAskGraph();
 }
@@ -1191,7 +1221,7 @@ $('runAudit').onclick = async () => {
   try {
     // Audit inherits the Ask/Tell prover settings, but keeps its own time limit.
     const { result } = await call('audit', {
-      config: { ...proverConfig(), timeLimitSecs: Math.max(0, Math.floor(Number($('auditTime').value)) || 0) },
+      config: proverConfig({ timeLimitSecs: $('auditTime').value }),
       limit: Math.max(1, Number($('auditLimit').value) || 5),
     });
     renderAudit(result);
@@ -1410,10 +1440,8 @@ function updateEditActions() {
   const isGitHub = origin === 'sumo';
   $('editSave').hidden = !isLocal;
   $('ghPropose').hidden = !isGitHub;
-  if (!isGitHub) {                       // collapse the PR panel when it no longer applies
-    $('ghPanel').hidden = true;
-    $('ghPropose').setAttribute('aria-expanded', 'false');
-  }
+  // Collapse the PR panel when it no longer applies.
+  if (!isGitHub) togglePanel('ghPropose', 'ghPanel', false);
   $('editLog').style.color = '';   // clear any prior error styling
   $('editLog').textContent = origin === 'url'
     ? 'Loaded from a URL — it can be edited and downloaded here, but not saved or submitted.'
@@ -1500,8 +1528,7 @@ async function createEditor() {
             endLineNumber: pos.lineNumber,   endColumn: word.startColumn })
         : '';
       if (prev === '?' || prev === '@') return;
-      syncUrl('browse', new URLSearchParams({ sym: word.word }));
-      applyRoute();
+      navigate('browse', { sym: word.word });
     },
   });
 
@@ -1568,18 +1595,28 @@ $('editSave').onclick = async () => {
 // is one unauthenticated GitHub call, cached for the session so revisiting the
 // tab does not spend the 60/hour budget.
 
-let lastCommitCache = null;
-
-const fmtNum = (n) => Number(n).toLocaleString();
+// Cache the promise, not the resolved value: two overlapping callers would
+// both see a null value and each fire a request, spending two of the 60/hour
+// unauthenticated budget on one page load.
+let lastCommitPromise = null;
 
 async function fetchLastCommitDate() {
-  if (lastCommitCache !== null) return lastCommitCache;
-  const url = `https://api.github.com/repos/${SUMO.owner}/${SUMO.repo}/commits?per_page=1`;
-  const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
-  if (!r.ok) throw new Error(r.status === 403 ? 'rate-limited' : `HTTP ${r.status}`);
-  const iso = (await r.json())[0]?.commit?.author?.date;
-  lastCommitCache = iso ? new Date(iso) : null;
-  return lastCommitCache;
+  if (!lastCommitPromise) {
+    lastCommitPromise = (async () => {
+      const commits = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/commits?per_page=1`);
+      const iso = commits[0]?.commit?.author?.date;
+      return iso ? new Date(iso) : null;
+    })().catch((e) => { lastCommitPromise = null; throw e; });
+  }
+  return lastCommitPromise;
+}
+
+/** The only part of Home derived from `promoting` — cheap, no RPC, so the
+ *  post-processing window can redraw it without repeating a whole-KB pass. */
+function updateHomeNote(error) {
+  $('statNote').textContent = error ? `Could not read KB stats: ${error}`
+    : promoting ? 'Post-processing — counts will settle once axiomatization finishes.'
+    : '';
 }
 
 async function refreshHomeStats() {
@@ -1591,19 +1628,15 @@ async function refreshHomeStats() {
     $('statSymbols').textContent = fmtNum(stats.symbols);
     $('statAxioms').textContent  = fmtNum(stats.axioms);
     $('statRules').textContent   = fmtNum(stats.rules);
-    $('statNote').textContent = promoting
-      ? 'Post-processing — counts will settle once axiomatization finishes.'
-      : '';
+    updateHomeNote();
   } catch (e) {
-    $('statNote').textContent = `Could not read KB stats: ${e.message || e}`;
+    updateHomeNote(e.message || e);
   }
 
   // Upstream commit date, best effort — the rest of the page is useful without it.
   try {
     const d = await fetchLastCommitDate();
-    $('statCommit').textContent = d
-      ? d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-      : 'unknown';
+    $('statCommit').textContent = d ? fmtDate(d) : 'unknown';
     $('statCommit').title = d ? d.toString() : '';
   } catch (e) {
     $('statCommit').textContent = '—';
@@ -1635,11 +1668,7 @@ function ghCurrentFile() {
 }
 
 $('ghPropose').onclick = () => {
-  const panel = $('ghPanel');
-  const open = panel.hidden;
-  panel.hidden = !open;
-  $('ghPropose').setAttribute('aria-expanded', String(open));
-  if (!open) return;
+  if (!togglePanel('ghPropose', 'ghPanel')) return;
   $('ghToken').value = ghToken;
   $('ghRemember').checked = Boolean(localStorage.getItem(GH_TOKEN_KEY));
   const file = ghCurrentFile();
@@ -1716,14 +1745,8 @@ function populateHistoryPicker() {
 
 async function fetchCommits(file) {
   if (historyCache.has(file)) return historyCache.get(file);
-  const url = `https://api.github.com/repos/${SUMO.owner}/${SUMO.repo}/commits`
-    + `?path=${encodeURIComponent(file)}&per_page=30`;
-  const r = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } });
-  if (r.status === 403 || r.status === 429) {
-    throw new Error('GitHub rate limit reached (60/hour without sign-in). Try again shortly.');
-  }
-  if (!r.ok) throw new Error(`GitHub API: HTTP ${r.status}`);
-  const commits = await r.json();
+  const commits = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/commits`
+    + `?path=${encodeURIComponent(file)}&per_page=30`);
   historyCache.set(file, commits);
   return commits;
 }

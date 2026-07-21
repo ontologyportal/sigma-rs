@@ -552,23 +552,16 @@ impl WasmNativeProver {
 
         let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().enumerate().map(|(i, steps)| {
             // A contradiction has no conjecture to restate — it refutes the KB
-            // itself — so the prose opens straight into the derivation.
-            let prose_report = self.inner.render_proof_prose(None, steps, "EnglishLanguage");
+            // itself — so the prose opens straight into the derivation. Reuse
+            // the one index built above: rendering N contradictions would
+            // otherwise repeat a whole-KB fingerprint pass N times.
+            let prose_report = self.inner.render_proof_prose_with(
+                None, steps, "EnglishLanguage", &src_idx);
             ContradictionJs {
                 graphviz: sigmakee_rs_core::render_graphviz(steps, &format!("contradiction-{}", i + 1), "Inconsistent"),
                 prose:         prose_report.rendered,
                 prose_missing: prose_report.missing,
-                steps: steps.iter().map(|s| {
-                    let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
-                    AuditStepJs {
-                        index:    s.index,
-                        rule:     s.rule.clone(),
-                        premises: s.premises.clone(),
-                        kif:      s.formula.format_plain(0),
-                        file:     loc.map(|a| a.file.clone()),
-                        line:     loc.map(|a| a.line),
-                    }
-                }).collect(),
+                steps: proof_steps_js(steps, &src_idx),
             }
         }).collect();
 
@@ -616,35 +609,27 @@ impl WasmNativeProver {
         // symbol/sentence hashes that overflow JS's safe-integer range and
         // abort serde-wasm-bindgen.  Proof formulas render to KIF text via
         // `AstNode`'s `Display`; every field here is `usize`/`String`/`bool`.
-        // Same projection the audit path uses (source-cited, pretty-printed
-        // KIF) so Ask/Tell and Audit proofs render through one UI code path.
-        let src_idx = self.inner.build_axiom_source_index();
-        let proof: Vec<ProofStepJs> = result.proof_kif.iter().map(|s| {
-            let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
-            ProofStepJs {
-                index:    s.index,
-                rule:     s.rule.clone(),
-                premises: s.premises.clone(),
-                kif:      s.formula.format_plain(0),
-                file:     loc.map(|a| a.file.clone()),
-                line:     loc.map(|a| a.line),
-            }
-        }).collect();
-
         let status_str = format!("{:?}", result.status);
         let graphviz = sigmakee_rs_core::render_graphviz(&result.proof_kif, "ask", &status_str);
 
-        // Narrate the transcript in English. The goal restatement needs the
-        // conjecture as an AST, so re-parse the query (cheap — one formula);
-        // a parse failure just drops the opener, it never fails the ask.
-        let (prose, prose_missing) = if result.proof_kif.is_empty() {
-            (String::new(), Vec::new())
+        // Building the source index walks and fingerprints every root sentence,
+        // so do it once and only when there is actually a proof to cite — an
+        // unproved ask (Timeout/Unknown) would otherwise pay a whole-KB pass to
+        // project an empty vec.
+        let (proof, prose, prose_missing) = if result.proof_kif.is_empty() {
+            (Vec::new(), String::new(), Vec::new())
         } else {
+            let src_idx = self.inner.build_axiom_source_index();
+            let proof = proof_steps_js(&result.proof_kif, &src_idx);
+            // The goal restatement needs the conjecture as an AST, so re-parse
+            // the query (cheap — one formula); a parse failure just drops the
+            // opener, it never fails the ask.
             let goal_doc = sigmakee_rs_core::parse_document(
                 "__prose_goal__", query_kif.to_string(), sigmakee_rs_core::Parser::Kif);
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
-            let report = self.inner.render_proof_prose(goal_ast, &result.proof_kif, "EnglishLanguage");
-            (report.rendered, report.missing)
+            let report = self.inner.render_proof_prose_with(
+                goal_ast, &result.proof_kif, "EnglishLanguage", &src_idx);
+            (proof, report.rendered, report.missing)
         };
 
         let out = AskResultJs {
@@ -662,18 +647,26 @@ impl WasmNativeProver {
     }
 }
 
-/// One SUO-KIF proof step, JS-safe (no internal hash IDs).
-#[derive(serde::Serialize)]
-struct ProofStepJs {
-    index:    usize,
-    rule:     String,
-    premises: Vec<usize>,
-    kif:      String,
-    /// Source of the input axiom this step traces to, when it traces to one.
-    /// `null` for derived/anonymous steps — same shape as [`AuditStepJs`], so
-    /// both proofs render through one code path in the UI.
-    file:     Option<String>,
-    line:     Option<u32>,
+/// Project a proof/contradiction transcript to JS-safe steps, citing each
+/// step's source axiom where it has one.
+///
+/// A refutation proof and an audit contradiction are the same shape, so both
+/// endpoints share this — and the UI renders them through one code path.
+fn proof_steps_js(
+    steps:   &[sigmakee_rs_core::KifProofStep],
+    src_idx: &sigmakee_rs_core::AxiomSourceIndex,
+) -> Vec<ProofStepJs> {
+    steps.iter().map(|s| {
+        let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+        ProofStepJs {
+            index:    s.index,
+            rule:     s.rule.clone(),
+            premises: s.premises.clone(),
+            kif:      s.formula.format_plain(0),
+            file:     loc.map(|a| a.file.clone()),
+            line:     loc.map(|a| a.line),
+        }
+    }).collect()
 }
 
 /// Summary counts describing the loaded KB (see [`WasmNativeProver::stats`]).
@@ -706,9 +699,10 @@ struct AskResultJs {
     prose_missing: Vec<String>,
 }
 
-/// One step of a cited contradiction derivation (see [`WasmNativeProver::audit_consistency`]).
+/// One step of a cited derivation — a refutation proof or an audit
+/// contradiction; both endpoints project to this single shape.
 #[derive(serde::Serialize)]
-struct AuditStepJs {
+struct ProofStepJs {
     index:    usize,
     rule:     String,
     premises: Vec<usize>,
@@ -720,7 +714,7 @@ struct AuditStepJs {
 /// One distinct contradiction the audit found — a full derivation to `FALSE`.
 #[derive(serde::Serialize)]
 struct ContradictionJs {
-    steps:    Vec<AuditStepJs>,
+    steps:    Vec<ProofStepJs>,
     /// This contradiction's derivation rendered as a Graphviz DOT digraph.
     graphviz: String,
     /// This contradiction's derivation narrated as connected English prose.

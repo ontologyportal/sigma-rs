@@ -53,13 +53,30 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         steps:      &[KifProofStep],
         language:   &str,
     ) -> RenderReport {
+        let src_idx = self.build_axiom_source_index();
+        self.render_proof_prose_with(conjecture, steps, language, &src_idx)
+    }
+
+    /// [`render_proof_prose`](Self::render_proof_prose) against an index the
+    /// caller already has.
+    ///
+    /// Building the index walks every root sentence and fingerprints its whole
+    /// AST, so it is the most expensive pass either prose call makes. A caller
+    /// narrating several transcripts from one KB — an audit renders one per
+    /// contradiction — should build it once and reuse it here.
+    pub fn render_proof_prose_with(
+        &self,
+        conjecture: Option<&AstNode>,
+        steps:      &[KifProofStep],
+        language:   &str,
+        src_idx:    &AxiomSourceIndex,
+    ) -> RenderReport {
         let mut missing: BTreeSet<String> = BTreeSet::new();
         let mut render = |f: &AstNode| -> String {
             let r = self.render_formula(f, language);
             missing.extend(r.missing);
             r.rendered
         };
-        let src_idx = self.build_axiom_source_index();
         let cite = |step: &KifProofStep| -> String {
             step.source_sid
                 .and_then(|sid| src_idx.lookup_by_sid(sid))

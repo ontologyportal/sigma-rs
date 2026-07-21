@@ -24,7 +24,7 @@ export class GitHubError extends Error {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function api(token, path, opts = {}) {
+export async function api(token, path, opts = {}) {
   const res = await fetch(path.startsWith('http') ? path : API + path, {
     ...opts,
     headers: {
