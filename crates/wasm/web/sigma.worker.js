@@ -51,7 +51,27 @@ const handlers = {
 
   validate() { return { diagnostics: session.validate() }; },
   stats() { return { stats: session.kb.stats() }; },
-  validateFormula({ kif }) { return { diagnostics: session.validateFormula(kif) }; },
+
+  /**
+   * Revalidate an edited constituent with FULL KB context by diffing the buffer
+   * into its own session and committing it — the live KB tracks the editor.
+   * Symbols resolve against the real KB, so semantic diagnostics are meaningful.
+   */
+  validateBuffer({ file, text }) {
+    return { diagnostics: session.kb.validateBuffer(file, text) };
+  },
+
+  /**
+   * Validate scratch input (the Ask/Tell box, or an editor buffer with no
+   * backing file) in a THROWAWAY session — never the live KB. That session has
+   * no SUMO loaded, so every symbol reference reads "unknown"; only `parse`
+   * diagnostics are meaningful without context, so the rest are dropped.
+   */
+  validateFormula({ kif }) {
+    const diagnostics = newSession().validateFormula(kif)
+      .filter((d) => d.kind === 'parse');
+    return { diagnostics };
+  },
   search({ query, limit }) { return { hits: session.search(query, { limit: limit ?? 100 }) }; },
   manpage({ symbol }) { return { page: session.manpage(symbol) }; },
 

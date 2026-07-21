@@ -371,6 +371,26 @@ mod tests {
     /// documentation never repeats its name) without also surfacing that
     /// scope-qualified variable id as if it were a real symbol.
     #[test]
+    fn flushed_session_sentences_are_not_searchable() {
+        // The editor validates a buffer by telling it into the KB and flushing
+        // it again. Nothing that round trip leaves behind should stay visible:
+        // a half-typed term surfaced in search as a ghost with partial docs.
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif("(documentation Dog EnglishLanguage \"a real dog\")",
+                              &std::path::PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "seed load failed: {:?}", r.diagnostics);
+
+        kb.tell("(documentation ZzGhost EnglishLanguage \"half typed thing\")", "__scratch__");
+        kb.flush_session("__scratch__");
+
+        let opts = SearchOpts { kind: None, language: None, limit: None };
+        let hits = kb.search("half typed", &opts);
+        assert!(hits.is_empty(),
+            "flushed scratch content must not be searchable, got {:?}",
+            hits.iter().map(|h| h.symbol.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn search_excludes_scope_qualified_variable_names() {
         let kb = kb_from(
             r#"

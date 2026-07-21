@@ -429,7 +429,17 @@ impl EagerMap<SentenceCache> {
     fn collect_own_symbols(&self, sid: SentenceId, out: &mut HashSet<SymbolId>) {
         let Some(sentence) = self.get(&sid) else { return };
         for el in &sentence.elements {
-            if let Element::Symbol(sym) = el { out.insert(sym.id()); }
+            match el {
+                Element::Symbol(sym) => { out.insert(sym.id()); }
+                // Variables are interned into the symbol table under their
+                // scope-qualified name (`X__<scope>`) but stored as
+                // `Element::Variable`, not `Element::Symbol`. Count their id
+                // here too, or a removal batch's orphan prune (which keeps only
+                // ids this walk returns) evicts every live variable symbol —
+                // thousands of them across a rule-heavy KB like SUMO.
+                Element::Variable { id, .. } => { out.insert(*id); }
+                _ => {}
+            }
         }
     }
 

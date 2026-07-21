@@ -385,6 +385,38 @@ impl WasmNativeProver {
         serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Revalidate an edited buffer for `file` **with full KB context**, updating
+    /// the live KB to match the buffer.
+    ///
+    /// Staging the buffer under the file's own name is a diff, so only the
+    /// lines that changed are processed — judging a 600KB constituent costs a
+    /// handful of sentences, not a re-ingest — and the changed sentences are
+    /// validated against the whole KB, so symbol resolution works. The change
+    /// is committed and left in place; the KB tracks the editor.
+    ///
+    /// Prefer [`validate_formula`](Self::validate_formula) for scratch input
+    /// that belongs to no file.
+    #[wasm_bindgen(js_name = validateBuffer)]
+    pub fn validate_buffer(&mut self, file: &str, text: &str) -> Result<JsValue, JsValue> {
+        use sigmakee_rs_core::SourceFile;
+        let path = std::path::PathBuf::from(file);
+
+        // Diff the buffer into the file's own session and commit it live: the KB
+        // simply tracks what the editor holds. No restore step, so a pure
+        // addition emits no FormulaRemoved and cannot trigger the symbol prune.
+        let staged = self.inner.stage(SourceFile::kif(path, text.to_string()), file);
+        self.inner.commit(file);
+
+        if !staged.ok {
+            return diagnostics_to_js(&staged.diagnostics);
+        }
+        let mut diags = Vec::new();
+        for sid in &staged.sids {
+            diags.extend(self.inner.validate_sentence(*sid));
+        }
+        diagnostics_to_js(&diags)
+    }
+
     /// Summary counts describing the loaded KB, for an overview page.
     ///
     /// Returns `{ files, symbols, axioms, rules }`:
@@ -396,8 +428,12 @@ impl WasmNativeProver {
     pub fn stats(&self) -> Result<JsValue, JsValue> {
         use sigmakee_rs_core::{Element, OpKind};
 
+        // Count ontology terms: exclude KIF variables (`?x`/`@row`), the
+        // scope-qualified variable symbols the store interns (`X__<scope>`),
+        // and CNF skolem constants.
         let symbols = self.inner.iter_symbols()
             .filter(|(_, name)| !name.starts_with('?') && !name.starts_with('@'))
+            .filter(|(_, name)| !self.inner.symbol_is_variable(name))
             .filter(|(_, name)| !self.inner.symbol_is_skolem(name))
             .count();
 

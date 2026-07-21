@@ -450,6 +450,7 @@ impl ToDiagnostic for PromoteError {
 #[cfg(test)]
 mod tests {
     use crate::KnowledgeBase;
+    use crate::SourceFile;
     use super::PromoteError;
     use std::{collections::HashSet, path::PathBuf};
 
@@ -1440,6 +1441,174 @@ mod tests {
         assert_eq!(r.retained, 0);
         assert_eq!(r.added(), 1);
         assert_eq!(r.removed(), 1);
+    }
+
+    // ── truncation: an empty file zeroes the source ─────────────────────────
+
+    #[test]
+    fn truncate_removes_every_axiom_of_the_file() {
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        assert_eq!(kb.file_roots("t.kif").len(), 2);
+
+        // An empty source diffs against the file's prior formulas: everything
+        // it used to contribute is recycled, nothing is added.
+        let r = kb.load(SourceFile::truncate(PathBuf::from("t.kif")), "t.kif");
+        assert!(r.ok, "truncate failed: {:?}", r.diagnostics);
+        assert_eq!(r.added(), 0);
+        assert_eq!(r.removed(), 2, "both axioms should be recycled");
+        assert!(kb.file_roots("t.kif").is_empty(), "file should own nothing after truncation");
+    }
+
+    #[test]
+    fn reloading_with_empty_text_zeroes_the_file() {
+        // Same outcome by the route a caller is likelier to take: re-ingesting
+        // the same path with empty contents rather than building a truncate.
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(instance Rex Dog)");
+        assert_eq!(kb.file_roots("t.kif").len(), 2);
+
+        let r = kb.reload_kif("", &PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "empty reload failed: {:?}", r.diagnostics);
+        assert_eq!(r.removed(), 2);
+        kb.commit("t.kif");                    // staged removals become real
+        assert!(kb.file_roots("t.kif").is_empty());
+    }
+
+    #[test]
+    fn remove_file_drops_the_files_axioms() {
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        kb.remove_file("t.kif");
+        assert!(kb.file_roots("t.kif").is_empty());
+    }
+
+    #[test]
+    fn truncating_one_file_keeps_a_sentence_another_file_still_owns() {
+        // Sentences are content-addressed, so an axiom present in two files is
+        // one sid with two owners. Truncating one owner must not retract it —
+        // this is the refcounting `remove_file` documents.
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "a.kif", "(subclass Dog Mammal)");
+        load_file(&mut kb, "b.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+
+        kb.remove_file("a.kif");
+
+        assert!(kb.file_roots("a.kif").is_empty(), "a.kif should own nothing");
+        assert_eq!(kb.file_roots("b.kif").len(), 2,
+            "b.kif still owns the shared axiom and its own");
+        assert!(kb.store_for_testing().sym_id("Dog").is_some(),
+            "the shared axiom must survive: b.kif still references it");
+    }
+
+    #[test]
+    fn truncate_then_reload_restores_the_file() {
+        // Truncation is not destructive to the path: re-ingesting the original
+        // text brings the axioms back as ordinary additions.
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        kb.remove_file("t.kif");
+        assert!(kb.file_roots("t.kif").is_empty());
+
+        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Cat Mammal)",
+                              &PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "reload after truncate failed: {:?}", r.diagnostics);
+        assert_eq!(r.added(), 2);
+        assert_eq!(r.removed(), 0);
+        assert_eq!(kb.file_roots("t.kif").len(), 2);
+    }
+
+    #[test]
+    fn revalidating_a_buffer_leaves_the_file_untouched() {
+        // How the editor revalidates a buffer with full KB context and without
+        // polluting it: stage the edited text as a diff against the file, judge
+        // only the sentences the diff added, then stage the original back so the
+        // additions are diffed away again.
+        let mut kb = KnowledgeBase::new();
+        let orig = "(subclass Dog Mammal)\n(instance Rex Dog)";
+        load_file(&mut kb, "t.kif", orig);
+        let before = kb.file_roots("t.kif").len();
+
+        let edited = format!("{orig}\n(documentation ZzGhost EnglishLanguage \"half typed\")");
+        let staged = kb.reload_kif(&edited, &PathBuf::from("t.kif"), "t.kif");
+        assert_eq!(staged.added(), 1, "only the edited line is staged, not the file");
+
+        // Semantic checks resolve against the whole KB here, which is the point.
+        let mut diags = Vec::new();
+        for sid in &staged.sids { diags.extend(kb.validate_sentence(*sid)); }
+
+        let back = kb.reload_kif(orig, &PathBuf::from("t.kif"), "t.kif");
+        kb.commit("t.kif");
+        assert_eq!(back.removed(), 1, "the staged addition is diffed back out");
+
+        assert_eq!(kb.file_roots("t.kif").len(), before, "file restored exactly");
+        let opts = crate::kb::search::SearchOpts { kind: None, language: None, limit: None };
+        assert!(kb.search("half typed", &opts).is_empty(), "no searchable ghost remains");
+        assert!(kb.symbol_id("ZzGhost").is_none(), "the buffer's symbol is not left interned");
+    }
+
+    #[test]
+    fn removal_keeps_variable_symbols_of_other_live_sentences() {
+        use std::collections::HashSet;
+        // Two rules whose scope-qualified variables (X__<scope>) are interned
+        // into the symbol table. Removing one sentence must not evict the
+        // OTHER rule's variable symbols — the over-prune that surfaced when the
+        // editor revalidated a rule-heavy constituent.
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif",
+            "(=> (instance ?X Dog) (instance ?X Mammal))\n             (=> (instance ?Y Cat) (instance ?Y Mammal))\n             (instance Rex Dog)");
+
+        let vars_before: HashSet<String> = kb.iter_symbols()
+            .map(|(_, n)| n).filter(|n| n.contains("__")).collect();
+        assert!(vars_before.len() >= 2, "expected scope-qualified var symbols, got {vars_before:?}");
+
+        // Remove one sentence (the atomic fact) — a real FormulaRemoved batch.
+        let r = kb.reload_kif(
+            "(=> (instance ?X Dog) (instance ?X Mammal))\n             (=> (instance ?Y Cat) (instance ?Y Mammal))",
+            &PathBuf::from("t.kif"), "t.kif");
+        assert_eq!(r.removed(), 1);
+        kb.commit("t.kif");
+
+        let vars_after: HashSet<String> = kb.iter_symbols()
+            .map(|(_, n)| n).filter(|n| n.contains("__")).collect();
+        // Both rules survive, so their variable symbols must survive too.
+        assert_eq!(vars_before, vars_after,
+            "variables of still-live rules must not be pruned by an unrelated removal");
+    }
+
+    #[test]
+    fn removing_a_rule_evicts_only_its_own_variable_symbols() {
+        use std::collections::HashSet;
+        // The complement: a removed rule's OWN variables should still be
+        // reclaimed, so the fix keeps legitimate orphan pruning working.
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "t.kif",
+            "(=> (instance ?X Dog) (instance ?X Mammal))\n             (=> (instance ?Y Cat) (instance ?Y Mammal))");
+        let before: HashSet<String> = kb.iter_symbols().map(|(_,n)|n).filter(|n|n.contains("__")).collect();
+
+        // Drop the first rule entirely.
+        let r = kb.reload_kif("(=> (instance ?Y Cat) (instance ?Y Mammal))",
+            &PathBuf::from("t.kif"), "t.kif");
+        assert_eq!(r.removed(), 1);
+        kb.commit("t.kif");
+
+        let after: HashSet<String> = kb.iter_symbols().map(|(_,n)|n).filter(|n|n.contains("__")).collect();
+        assert!(after.len() < before.len(),
+            "the removed rule's own variable symbols should be reclaimed ({before:?} -> {after:?})");
+    }
+
+    #[test]
+    fn symbol_is_variable_discriminates_scope_qualified_names() {
+        let kb = KnowledgeBase::new();
+        // Scope-qualified variables (what the store interns) are variables.
+        for v in ["X__0", "X__1", "OBJ1__42", "ROW__3", "FOO__BAR__7"] {
+            assert!(kb.symbol_is_variable(v), "{v} should read as a variable");
+        }
+        // Real ontology terms are not — including ones with a double underscore
+        // but no trailing scope number.
+        for t in ["Human", "instance", "subclass", "Mid-level", "foo__bar", "A__", "__3"] {
+            assert!(!kb.symbol_is_variable(t), "{t} should read as a term");
+        }
     }
 
     // ── reload_kifs (batch) ─────────────────────────────────────────────────

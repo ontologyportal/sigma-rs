@@ -1391,9 +1391,18 @@ function scheduleEditValidate() {
 
 async function runEditValidate() {
   if (!monacoEditor) return;
+  const text = monacoEditor.getValue();
+  // A buffer belonging to a loaded constituent is diffed into the live KB and
+  // validated against it, so semantic diagnostics resolve. A scratch buffer has
+  // no backing file, so it falls back to parse-only checking in a throwaway KB.
+  const known = editCurrentFile
+    && constituents.find((c) => c.name === editCurrentFile.name && c.origin === editCurrentFile.origin);
   let diags = [];
-  try { diags = (await call('validateFormula', { kif: monacoEditor.getValue() })).diagnostics; }
-  catch (e) { $('editStatus').textContent = 'parse error: ' + (e && e.message || e); return; }
+  try {
+    diags = known
+      ? (await call('validateBuffer', { file: known.name, text })).diagnostics
+      : (await call('validateFormula', { kif: text })).diagnostics;
+  } catch (e) { $('editStatus').textContent = 'parse error: ' + (e && e.message || e); return; }
   if (!monacoEditor) return;
   monaco.editor.setModelMarkers(monacoEditor.getModel(), 'sigma', diagsToMarkers(diags));
   const errs = diags.filter((d) => d.severity === 'error').length;

@@ -59,6 +59,20 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
             .unwrap_or(false)
     }
 
+    /// True when `symbol` is a scope-qualified variable, not an ontology term.
+    ///
+    /// Variables are interned into the symbol table under the name
+    /// `<var>__<scope>` (see `Sentence::from_node`) so their id resolves to a
+    /// name, but they are stored as `Element::Variable`, never as an ontology
+    /// symbol. Callers counting or listing *terms* (search, completion, KB
+    /// stats) should exclude them. No SUMO term ends in `__<digits>`, so the
+    /// name shape is an exact discriminator.
+    pub fn symbol_is_variable(&self, symbol: &str) -> bool {
+        symbol.rsplit_once("__")
+            .is_some_and(|(head, scope)| !head.is_empty()
+                && !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit()))
+    }
+
     /// Resolve a [`SymbolId`] to its interned name.
     ///
     /// Returns `None` for ids that aren't in the store.
