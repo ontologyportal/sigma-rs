@@ -59,6 +59,7 @@ let opfsRoot = null;
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const escAttr = (s) => esc(s).replace(/"/g, '&quot;');
 const fmtNum = (n) => Number(n).toLocaleString();
 const fmtDate = (d) => d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
@@ -73,6 +74,7 @@ let diagnostics = [];
 let diagFilter = { file: '', severity: '' };
 let constituents = [];   // [{ name, text, origin }] — the page's source of truth
 let sumoCatalog = null;  // cached list of *.kif paths in the repo
+let uiLanguage = 'EnglishLanguage';  // header selector; the language for term/format rendering
 
 async function fromOrigin(origin, file) {
   if (origin === 'sumo') return await fetchText(rawUrl(file));
@@ -183,7 +185,6 @@ async function withPostProcessing(fn) {
     promoting = true;
     setPromoteTabsEnabled(false);
     showToast(true);
-    updateKbStatus();
   }
   const shownAt = performance.now();
   try {
@@ -199,8 +200,7 @@ async function withPostProcessing(fn) {
       // Views refreshed inside the window (renderAll → refreshHomeStats) ran
       // while the flag was still set, so their "post-processing" wording is
       // stale the moment it clears.
-      updateKbStatus();
-      if (currentTab() === 'home') updateHomeNote();
+      if (currentTab() === 'browse') updateHomeNote();
     }
   }
 }
@@ -223,10 +223,10 @@ const reprocess = () => withPostProcessing(promoteAndValidate);
 function renderAll() {
   renderDiagnostics();
   renderConstituents();
-  updateKbStatus();
+  refreshLangSelect();
   if (sumoCatalog) renderPicker();
   populateEditPicker();
-  if (currentTab() === 'home') refreshHomeStats();   // counts moved
+  if (currentTab() === 'browse') refreshHomeStats();   // counts moved
 }
 
 function setPromoteTabsEnabled(on) {
@@ -234,19 +234,50 @@ function setPromoteTabsEnabled(on) {
     const btn = document.querySelector(`nav.tabs [data-tab=${t}]`);
     if (btn) { btn.classList.toggle('disabled', !on); btn.setAttribute('aria-disabled', String(!on)); }
   }
-  if (!on && PROMOTE_TABS.includes(currentTab())) showTab('home');
+  if (!on && PROMOTE_TABS.includes(currentTab())) showTab('browse');
 }
 
 function showToast(on) { const t = $('toast'); if (t) t.hidden = !on; }
 
-function updateKbStatus() {
-  const status = promoting
-    ? 'post-processing…'
-    : `<b>${diagnostics.length}</b> diagnostic${diagnostics.length === 1 ? '' : 's'}`;
-  $('kbStatus').innerHTML =
-    `<b>${constituents.length}</b> constituent${constituents.length === 1 ? '' : 's'} · ${status} · ` +
-    `<a data-tab="kb" class="jump">manage</a>`;
+// Populate the header language selector from the KB's `NaturalLanguage`
+// instances, preserving the current choice. Fire-and-forget: the selected
+// symbol lands in the `uiLanguage` global, consumed by search, man-page
+// rendering, and the NL paraphrases. Only call where the language list can
+// actually have changed (boot, promote) — the worker round-trip is KB-bound.
+async function refreshLangSelect() {
+  const sel = $('langSelect');
+  if (!sel) return;
+  let languages;
+  try { languages = (await call('naturalLanguages')).languages; }
+  catch { return; }
+  if (!languages || !languages.length) return;
+  const has = (v) => languages.some((l) => l.symbol === v);
+  const options = languages
+    .map((l) => `<option value="${esc(l.symbol)}">${esc(l.label)}</option>`)
+    .join('');
+  // Unchanged list → leave the DOM alone (a rebuild would collapse the
+  // dropdown under the user's pointer and reset the selection).
+  if (sel.dataset.options !== options) {
+    sel.dataset.options = options;
+    sel.innerHTML = options;
+  }
+  sel.value = has(uiLanguage) ? uiLanguage
+    : has('EnglishLanguage') ? 'EnglishLanguage' : languages[0].symbol;
+  uiLanguage = sel.value;
 }
+
+// One-time: react to a language change by re-rendering whatever the Browse
+// tab is showing so its documentation follows the selection.
+$('langSelect')?.addEventListener('change', () => {
+  const sel = $('langSelect');
+  uiLanguage = sel.value;
+  if (currentTab() !== 'browse') return;
+  const params = new URLSearchParams(location.search);
+  const sym = params.get('sym');
+  const q = params.get('q') || $('q').value.trim();
+  if (sym) openManPage(sym);
+  else if (q) runSearch(q);
+});
 
 // -- Boot ---------------------------------------------------------------------
 
@@ -289,7 +320,7 @@ async function boot() {
     }
     $('overlay').remove();
     renderConstituents();
-    updateKbStatus();
+    refreshLangSelect();
     // Honour the URL now that the constituents exist — ?tab=edit&file=…&l=…
     // needs them loaded before it can select a file in the editor.
     applyRoute();
@@ -310,7 +341,7 @@ async function boot() {
 // /browse/) has none. Query-only routing needs no server support at all, so the
 // same URLs work from `serve.sh`, from Pages, and from a plain file server.
 
-const TABS = ['home', 'browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'];
+const TABS = ['browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'];
 
 // The directory this module was served from — "/" locally, "/browse/" on Pages.
 // Deriving it from import.meta.url keeps the rewritten URL canonical at any
@@ -318,21 +349,22 @@ const TABS = ['home', 'browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 
 const BASE = new URL('.', import.meta.url).pathname;
 
 function currentTab() {
-  return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'home';
+  return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'browse';
 }
 
-/** The route encoded in the address bar: { tab, params }. */
+/** The route encoded in the address bar: { tab, params }. Legacy `?tab=home`
+ *  URLs fall through to the default (Browse absorbed the Home tab). */
 function routeFromLocation() {
   const params = new URLSearchParams(location.search);
   const t = params.get('tab');
-  return { tab: TABS.includes(t) ? t : 'home', params };
+  return { tab: TABS.includes(t) ? t : 'browse', params };
 }
 
-/** Write `tab` + `params` to the address bar without reloading. `home` is the
- *  default, so it is left out to keep the bare URL clean. */
+/** Write `tab` + `params` to the address bar without reloading. `browse` is
+ *  the default, so it is left out to keep the bare URL clean. */
 function syncUrl(tab, params = new URLSearchParams(), { replace = false } = {}) {
   const p = new URLSearchParams(params);
-  if (tab && tab !== 'home') p.set('tab', tab); else p.delete('tab');
+  if (tab && tab !== 'browse') p.set('tab', tab); else p.delete('tab');
   const qs = p.toString();
   history[replace ? 'replaceState' : 'pushState'](null, '', BASE + (qs ? `?${qs}` : ''));
 }
@@ -349,7 +381,7 @@ function showTab(name, { push = true, params } = {}) {
   }
   for (const p of document.querySelectorAll('.panel')) p.hidden = p.id !== `tab-${name}`;
   if (push) syncUrl(name, params ?? new URLSearchParams());
-  if (name === 'home') refreshHomeStats();
+  if (name === 'browse') refreshHomeStats();
   if (name === 'kb') loadSumoCatalog();
   if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
   // Read the file straight off the URL: syncUrl (above) has already applied a
@@ -395,17 +427,14 @@ async function applyRoute() {
 
   if (tab === 'diagnostics') { applyDiagRouteParams(); return; }
 
-  // ?sym= / ?q= belong to Browse. They predate the tab split and were emitted
-  // without a ?tab=, so honour them on `home` too rather than breaking old links.
-  if (tab === 'browse' || tab === 'home') {
+  // ?sym= / ?q= belong to Browse (the default tab, so bare legacy links with
+  // neither ?tab= nor ?tab=home land here too).
+  if (tab === 'browse') {
     const sym = params.get('sym');
     const q = params.get('q');
-    if (sym || q) {
-      if (tab === 'home') showTab('browse', { push: false });
-      if (sym) { openManPage(sym); }
-      else { $('q').value = q; runSearch(q); }
-      return;
-    }
+    if (sym) { openManPage(sym); }
+    else if (q) { $('q').value = q; runSearch(q); }
+    else { setBrowseHome(true); }
   }
 
 }
@@ -418,7 +447,65 @@ document.addEventListener('click', (e) => {
   const jump = e.target.closest('.jump');
   if (jump && jump.getAttribute('aria-disabled') !== 'true') { e.preventDefault(); showTab(jump.dataset.tab); }
 });
+// A symbol inside a rendered formula (man-page refs, proof/audit steps) opens
+// its man page from any tab. preventDefault also cancels the enclosing
+// <summary>'s expand toggle when the symbol sits inside a citation row.
+document.addEventListener('click', async (e) => {
+  const link = e.target.closest('.sym-link');
+  if (!link) return;
+  e.preventDefault();
+  if (link.classList.contains('sym-dead')) return;
+  // Probe before navigating: a symbol with no man page (Skolems that slipped
+  // the lexical filter, numerals, ill-formed tokens) must not yank the user
+  // away from a proof they are reading just to show an error card.
+  try {
+    const { page } = await call('manpage', { symbol: link.dataset.sym });
+    if (!page) {
+      link.classList.add('sym-dead');
+      link.title = `no man page for ${link.dataset.sym}`;
+      return;
+    }
+  } catch { return; }
+  navigate('browse', { sym: link.dataset.sym });
+});
 window.addEventListener('popstate', () => { applyRoute(); });
+
+// -- Keyboard shortcuts: `/` focuses search, Esc backs out of a man page ------
+
+document.addEventListener('keydown', (e) => {
+  const t = e.target;
+  const typing = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement ||
+    t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+  if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
+    e.preventDefault();
+    showTab('browse');
+    $('q').focus();
+    $('q').select();
+  } else if (e.key === 'Escape' && currentTab() === 'browse' && (!typing || t === $('q'))) {
+    const params = new URLSearchParams(location.search);
+    const q = params.get('q') || $('q').value.trim();
+    if (params.get('sym')) {
+      // Man page open → back to the search results (or the welcome state).
+      updateParams({ q });
+      if (q) runSearch(q); else setBrowseHome(true);
+    } else if (t === $('q') && $('q').value) {
+      $('q').value = '';
+      updateParams({});
+      setBrowseHome(true);
+    }
+  }
+});
+
+// -- Theme toggle: explicit choice wins over the OS preference ----------------
+
+const THEME_KEY = 'sumoBrowserTheme';
+$('themeToggle')?.addEventListener('click', () => {
+  const current = document.documentElement.dataset.theme ||
+    (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
+});
 
 /** Push a history entry for `tab` with `params` and render it. The three
  *  cross-tab jumps (editor, diagnostics, documentation) all go through here so
@@ -640,9 +727,53 @@ $('searchForm').addEventListener('submit', (e) => {
   runSearch(q);
 });
 
+// Search-as-you-type: results render live off a short debounce; Enter still
+// works via the submit handler above (same runSearch, seq-guarded below).
+let searchDebounce = 0;
+$('q').addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => {
+    const q = $('q').value.trim();
+    updateParams({ q });
+    runSearch(q);
+  }, 150);
+});
+
+/** Show/hide the Browse tab's empty state (welcome card + KB stats). */
+function setBrowseHome(show) {
+  const el = $('browseHome');
+  if (el) el.hidden = !show;
+  if (show) $('browseView').innerHTML = '';
+}
+
+// The welcome card's example queries.
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a.try-q');
+  if (!a) return;
+  e.preventDefault();
+  $('q').value = a.textContent;
+  updateParams({ q: a.textContent });
+  runSearch(a.textContent);
+});
+
+// Only the newest in-flight search may render: typing "proc" fires four
+// requests and the slower ones must not clobber the freshest results.
+let searchSeq = 0;
+
 async function runSearch(query) {
-  if (!query) { $('browseView').innerHTML = ''; return; }
-  const { hits } = await call('search', { query, limit: 100 });
+  if (!query) { setBrowseHome(true); return; }
+  const seq = ++searchSeq;
+  setBrowseHome(false);
+  let { hits } = await call('search', { query, limit: 100, language: uiLanguage });
+  if (seq !== searchSeq) return;
+  // The language filter is a preference, not a wall: a KB documented in
+  // another language must stay searchable on the default (English) setting.
+  let langNote = '';
+  if (hits.length === 0) {
+    ({ hits } = await call('search', { query, limit: 100 }));
+    if (seq !== searchSeq) return;
+    if (hits.length) langNote = ` (no ${esc(langLabel(uiLanguage))} matches — showing all languages)`;
+  }
   if (hits.length === 0) {
     $('browseView').innerHTML = `<div class="card hint">No matches for <code>${esc(query)}</code>.</div>`;
     return;
@@ -651,19 +782,35 @@ async function runSearch(query) {
     <li>
       <a class="sym open" data-sym="${esc(h.symbol)}">${esc(h.symbol)}</a>
       <span class="kinds">${h.kinds.join(' · ') || h.source} · rank ${h.rank.toFixed(0)}</span>
-      ${h.text ? `<div class="snippet">${esc(h.text)}</div>` : ''}
+      ${h.text ? `<div class="snippet">${boldifyDoc(h.text)}</div>` : ''}
     </li>`).join('');
   $('browseView').innerHTML =
     `<div class="card">
-       <div class="hint" style="margin-bottom:6px">${hits.length} result${hits.length === 1 ? '' : 's'} for <code>${esc(query)}</code></div>
+       <div class="hint" style="margin-bottom:6px">${hits.length} result${hits.length === 1 ? '' : 's'} for <code>${esc(query)}</code>${langNote}</div>
        <ul class="results">${items}</ul>
      </div>`;
+}
+
+/** Human label for a language symbol from the header selector, falling back
+ *  to the raw symbol name. */
+function langLabel(symbol) {
+  const opt = [...($('langSelect')?.options ?? [])].find((o) => o.value === symbol);
+  return opt ? opt.textContent : symbol;
 }
 
 $('browseView').addEventListener('click', (e) => {
   const link = e.target.closest('.open');
   if (link) { e.preventDefault(); updateParams({ sym: link.dataset.sym }); openManPage(link.dataset.sym); }
 });
+
+/** Render `&%Symbol` cross-reference markers as bold plain text (no link) —
+ *  used in search-result snippets, where each row already links to the symbol. */
+function boldifyDoc(text) {
+  return String(text).split(/(&%[A-Za-z0-9_-]+)/).map((part) => {
+    const m = part.match(/^&%([A-Za-z0-9_-]+)$/);
+    return m ? `<b>${esc(m[1])}</b>` : esc(part);
+  }).join('');
+}
 
 /** Turn `&%Symbol` cross-reference markers in documentation text into man-page links. */
 function linkifyDoc(text) {
@@ -673,14 +820,21 @@ function linkifyDoc(text) {
   }).join('');
 }
 
+/** Doc entries in the selected language, falling back to English then to all,
+ *  so a symbol never renders blank just because it lacks the chosen language. */
+function docsForLanguage(entries) {
+  const pick = (lang) => entries.filter((d) => d.language === lang);
+  return pick(uiLanguage).length ? pick(uiLanguage)
+    : pick('EnglishLanguage').length ? pick('EnglishLanguage')
+    : entries;
+}
+
 async function openManPage(symbol) {
   const { page: p } = await call('manpage', { symbol });
+  setBrowseHome(false);
   if (!p) { $('browseView').innerHTML = `<div class="card hint">No man page for <code>${esc(symbol)}</code>.</div>`; return; }
 
-  const docs = (v) => v.map((d) => `<div>${linkifyDoc(d.text)} <span class="hint">(${esc(d.language)})</span></div>`).join('');
-  const links = (edges) => edges.length
-    ? edges.map((edge) => `<code><span class="hint">${esc(edge.relation)}</span> <a class="open" data-sym="${esc(edge.parent)}">${esc(edge.parent)}</a></code>`).join('')
-    : '<span class="hint">none</span>';
+  const docs = (v) => docsForLanguage(v).map((d) => `<div>${linkifyDoc(d.text)} <span class="hint">(${esc(d.language)})</span></div>`).join('');
   const sig = () => {
     const parts = [];
     if (p.arity != null) parts.push(`arity ${p.arity < 0 ? 'variable' : p.arity}`);
@@ -690,34 +844,232 @@ async function openManPage(symbol) {
   };
   const field = (title, html) => `<div class="field"><h3>${title}</h3><div class="val">${html}</div></div>`;
 
-  const references = () => {
-    if (!p.references.length) return '<span class="hint">none</span>';
-    const rows = p.references.map((r) => {
-      return `<li>
-        <pre class="ref-kif">${highlightKif(r.kif).replace(/\n$/, '')}</pre>
-        <div class="ref-meta">
-          ${locLink(r.file, r.line)}
-          ${ghAnchor(r.file, r.line)}
-        </div>
-      </li>`;
-    }).join('');
-    return `<ol class="refs">${rows}</ol>`;
+  const refsNote = (p) => {
+    const shown = p.references.length;
+    const omitted = Math.max(0, p.appears_in_count - shown);
+    if (!shown) {
+      return omitted
+        ? `appears only in ${omitted} documentation/taxonomy/format entr${omitted === 1 ? 'y' : 'ies'} (not shown)`
+        : 'appears in no formulas';
+    }
+    const excl = omitted
+      ? ` (${omitted} documentation/taxonomy/format entr${omitted === 1 ? 'y' : 'ies'} omitted)`
+      : '';
+    return `appears in ${shown} formula${shown === 1 ? '' : 's'}${excl}, listed below`;
   };
+  const refsBlock = p.references.length
+    ? `<div class="hint" style="margin-bottom:4px">${refsNote(p)}</div>
+       ${refFilterControl(p.references)}
+       <div id="refListWrap">${renderRefList(p.references, '', p.name)}</div>`
+    : `<div class="hint">${refsNote(p)}</div>`;
 
   $('browseView').innerHTML = `
     <div class="card man">
-      <a class="hint back" style="cursor:pointer">← back to results</a>
-      <h2>${esc(p.name)}</h2>
-      <div class="kinds">${p.kinds.join(' · ') || 'symbol'}</div>
+      <div class="man-head">
+        <a class="hint back" style="cursor:pointer">← back to results</a>
+        <h2>${esc(p.name)}</h2>
+        <div class="kinds">${p.kinds.join(' · ') || 'symbol'}</div>
+      </div>
       ${p.documentation.length ? field('Documentation', docs(p.documentation)) : ''}
-      ${field('Parents', `<div class="tax">${links(p.parents)}</div>`)}
-      ${field('Children', `<div class="tax">${links(p.children)}</div>`)}
+      ${field('Taxonomy', taxonomyWidget(p))}
       ${(p.arity != null || p.domains.length || p.range) ? field('Signature', sig()) : ''}
       ${p.term_format.length ? field('Term format', docs(p.term_format)) : ''}
       ${p.format.length ? field('Format', docs(p.format)) : ''}
-      ${field('References', `<div class="hint" style="margin-bottom:4px">appears in ${p.appears_in_count} formula${p.appears_in_count === 1 ? '' : 's'} total (excluding documentation/taxonomy, listed below)</div>${references()}`)}
+      ${field('References', refsBlock)}
     </div>`;
   $('browseView').querySelector('.back').onclick = () => runSearch($('q').value.trim());
+  const refSel = $('refFilter');
+  if (refSel) refSel.onchange = () => { $('refListWrap').innerHTML = renderRefList(p.references, refSel.value, p.name); };
+  fillAncestors(p);   // fire-and-forget: the chain above the symbol streams in
+}
+
+// -- Taxonomy tree ------------------------------------------------------------
+//
+// Replaces the flat Parents/Children link lists: the ancestor chain renders
+// above the current symbol (walked lazily upward after first paint), and the
+// descendants below expand on demand via the lightweight `taxonomy` call.
+
+/** The edge kinds the tree walks, in legend order. */
+const TAX_RELATIONS = ['subclass', 'instance', 'subrelation', 'subAttribute'];
+
+/** Color-coded pill for an edge's relation kind (colors keyed off data-rel). */
+function relChip(relation) {
+  return `<span class="tax-rel" data-rel="${escAttr(relation)}">${esc(relation)}</span>`;
+}
+
+/** Legend row naming each edge kind present in the rendered tree. */
+function taxLegend(rels) {
+  const present = [...TAX_RELATIONS.filter((r) => rels.has(r)),
+                   ...[...rels].filter((r) => !TAX_RELATIONS.includes(r))];
+  return present.length
+    ? `<div class="tax-legend"><span class="hint">edges:</span> ${present.map(relChip).join(' ')}</div>`
+    : '';
+}
+
+/** How many direct children the diagram shows before eliding the rest. */
+const TAX_MAX_CHILDREN = 60;
+
+/** The initial widget: legend + an empty graph container that
+ *  `fillAncestors` populates with the Cytoscape diagram. */
+function taxonomyWidget(p) {
+  const rels = new Set([...p.parents, ...p.children].map((e) => e.relation));
+  return `<div class="taxtree">
+    ${taxLegend(rels)}
+    <div id="taxGraph" class="graph-container tax-graph"><span class="hint">tracing taxonomy…</span></div>
+    <div id="taxTip" class="hint graph-tip">tap a node to open its man page · scroll to zoom</div>
+  </div>`;
+}
+
+/** Walk the ENTIRE ancestor graph upward from `p` (all parents, transitively,
+ *  to the roots — Entity, ultimately), add the direct children, and render it
+ *  all as a Cytoscape diagram: roots at the top, the current symbol
+ *  highlighted, edges color-coded by relation kind. Tapping any other node
+ *  opens its man page. Bounded and cycle-safe. */
+async function fillAncestors(p) {
+  const container = document.getElementById('taxGraph');
+  if (!container) return;
+
+  // BFS upward, collecting every symbol's parent edges.
+  const parentEdges = new Map([[p.name, p.parents]]);       // sym → [{relation, parent}]
+  const seen = new Set([p.name]);
+  const queue = [];
+  for (const e of p.parents) if (!seen.has(e.parent)) { seen.add(e.parent); queue.push(e.parent); }
+  for (let n = 0; queue.length && n < 80; n++) {
+    const sym = queue.shift();
+    let tax;
+    try { ({ tax } = await call('taxonomy', { symbol: sym })); } catch { continue; }
+    const ps = tax?.parents ?? [];
+    parentEdges.set(sym, ps);
+    for (const e of ps) if (!seen.has(e.parent)) { seen.add(e.parent); queue.push(e.parent); }
+  }
+  if (!container.isConnected) return;  // view re-rendered while walking — stale target
+
+  // Elements: ancestor nodes + current + (capped) direct children; one edge
+  // per taxonomy assertion, tagged with its relation for the color styling.
+  const rels = new Set();
+  const nodes = new Map();                                  // sym → node element
+  const addNode = (sym, kind) => {
+    if (!nodes.has(sym)) nodes.set(sym, { data: { id: sym, label: sym, kind } });
+  };
+  const edges = [];
+  const addEdge = (child, relation, parent) => {
+    rels.add(relation);
+    edges.push({ data: { id: `${child}→${parent}#${relation}`, source: child, target: parent, rel: relation } });
+  };
+  addNode(p.name, 'current');
+  for (const [child, ps] of parentEdges) {
+    if (child !== p.name) addNode(child, 'ancestor');
+    for (const e of ps) { addNode(e.parent, 'ancestor'); addEdge(child, e.relation, e.parent); }
+  }
+  const shownKids = p.children.slice(0, TAX_MAX_CHILDREN);
+  for (const e of shownKids) { addNode(e.parent, 'child'); addEdge(e.parent, e.relation, p.name); }
+  const elided = p.children.length - shownKids.length;
+
+  try {
+    const cytoscape = await loadCytoscape();
+    if (!container.isConnected) return;
+    container.textContent = '';
+    const cy = cytoscape({
+      container,
+      elements: [...nodes.values(), ...edges],
+      style: taxonomyGraphStyle(isDarkTheme()),
+      // Edges point child → parent, so rank bottom-to-top puts Entity on top.
+      layout: { name: 'dagre', rankDir: 'BT', nodeSep: 14, rankSep: 46 },
+      wheelSensitivity: 0.2,
+    });
+    const tip = document.getElementById('taxTip');
+    cy.on('tap', 'node', (e) => {
+      const sym = e.target.id();
+      if (sym !== p.name) navigate('browse', { sym });
+    });
+    if (tip) {
+      cy.on('mouseover', 'edge', (e) => { tip.textContent = `(${e.target.data('rel')} ${e.target.source().id()} ${e.target.target().id()})`; });
+      if (elided) tip.textContent += ` · showing ${shownKids.length} of ${p.children.length} children`;
+    }
+  } catch (err) {
+    container.textContent = 'Failed to load taxonomy graph: ' + (err && err.message || err);
+    return;
+  }
+
+  const legend = container.parentElement.querySelector('.tax-legend');
+  const fresh = taxLegend(rels);
+  if (legend) legend.outerHTML = fresh; else container.insertAdjacentHTML('beforebegin', fresh);
+}
+
+/** Cytoscape style for the taxonomy diagram: node emphasis by role (current /
+ *  ancestor / child), edge color by relation kind — matching the legend pills. */
+function taxonomyGraphStyle(dark) {
+  const relColor = {
+    subclass:     dark ? '#6ea8ff' : '#2d6cdf',   // --accent
+    instance:     dark ? '#4ac26b' : '#1a7f37',   // --ok
+    subrelation:  dark ? '#d2a8ff' : '#8250df',   // --op
+    subAttribute: dark ? '#e3b341' : '#9a6700',   // --warn
+  };
+  const base = cytoscapeStyle(dark);
+  return [
+    ...base,
+    { selector: 'node', style: { 'font-size': 11, 'text-max-width': '140px' } },
+    { selector: 'node[kind="current"]', style: {
+        'border-width': 3,
+        'font-weight': 'bold',
+      } },
+    { selector: 'node[kind="child"]', style: {
+        'border-style': 'dashed',
+      } },
+    ...Object.entries(relColor).map(([rel, color]) => ({
+      selector: `edge[rel="${rel}"]`,
+      style: { 'line-color': color, 'target-arrow-color': color },
+    })),
+  ];
+}
+
+/** `true` when the page currently renders dark — the explicit header choice
+ *  wins, the OS preference is the fallback. */
+function isDarkTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t === 'dark';
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+}
+
+/** Reference-filter <select>, offering only the categories present among `refs`.
+ *  Value encoding: '' = all; 'fact' = any plain fact (a relation atom, possibly
+ *  under `not`); 'fact:<n>' = plain fact with the symbol at argument n (0 = the
+ *  relation itself); '=>' '<=>' 'and' 'or' = a top-level logical operator.
+ *  `kind`/`arg_pos` come from the core classification in `manpage_to_js`. */
+function refFilterControl(refs) {
+  const facts = refs.filter((r) => r.kind === 'fact');
+  const positions = [...new Set(facts.map((r) => r.arg_pos).filter((n) => n != null))].sort((a, b) => a - b);
+  const ops = [['=>', 'Implications (⇒)'], ['<=>', 'Biconditionals (⇔)'], ['and', 'Conjunctions (and)'], ['or', 'Disjunctions (or)']]
+    .filter(([k]) => refs.some((r) => r.kind === k));
+  const opt = (v, label) => `<option value="${esc(v)}">${esc(label)}</option>`;
+  const posLabel = (n) => n === 0 ? 'symbol as the relation (arg 0)' : `symbol as argument ${n}`;
+  const count = (pred) => refs.filter(pred).length;
+  return `<label class="ref-filter"><span class="hint">Filter</span>
+    <select id="refFilter">
+      ${opt('', `All (${refs.length})`)}
+      ${facts.length ? opt('fact', `Plain facts (${facts.length})`) : ''}
+      ${positions.map((n) => opt(`fact:${n}`, `  ${posLabel(n)} (${count((r) => r.kind === 'fact' && r.arg_pos === n)})`)).join('')}
+      ${ops.map(([k, label]) => opt(k, `${label} (${count((r) => r.kind === k)})`)).join('')}
+    </select></label>`;
+}
+
+/** Subset of `refs` matching an encoded filter value (see refFilterControl). */
+function filterRefs(refs, filter) {
+  if (!filter) return refs;
+  if (filter === 'fact') return refs.filter((r) => r.kind === 'fact');
+  if (filter.startsWith('fact:')) {
+    const n = Number(filter.slice(5));
+    return refs.filter((r) => r.kind === 'fact' && r.arg_pos === n);
+  }
+  return refs.filter((r) => r.kind === filter);
+}
+
+/** The filtered <ol> of reference rows for man-page subject `name`. */
+function renderRefList(refs, filter, name) {
+  const shown = filterRefs(refs, filter);
+  if (!shown.length) return '<span class="hint">no formulas match this filter</span>';
+  const rows = shown.map((r) => kifCiteRow({ kif: r.kif, file: r.file, line: r.line, focusSymbol: name })).join('');
+  return `<ol class="refs">${rows}</ol>`;
 }
 
 // -- Diagnostics --------------------------------------------------------------
@@ -743,6 +1095,18 @@ function renderDiagnostics() {
       (!diagFilter.severity || d.severity === diagFilter.severity));
 
   const errs = diagnostics.filter((d) => d.severity === 'error').length;
+
+  // Count chip on the Diagnostics tab button — glanceable KB health from any
+  // tab. Hidden at zero; colored by worst severity present.
+  const tabBtn = document.querySelector('nav.tabs [data-tab="diagnostics"]');
+  if (tabBtn) {
+    tabBtn.querySelector('.tab-badge')?.remove();
+    if (diagnostics.length) {
+      tabBtn.insertAdjacentHTML('beforeend',
+        `<span class="tab-badge${errs ? ' err' : ''}">${diagnostics.length}</span>`);
+    }
+  }
+
   const filterActive = diagFilter.file || diagFilter.severity;
   const sum = $('diagSummary');
   if (sum) sum.innerHTML = diagnostics.length
@@ -824,7 +1188,6 @@ document.addEventListener('click', (e) => {
 $('revalidate').onclick = () => withBusy($('revalidate'), async () => {
   diagnostics = (await call('validate')).diagnostics;
   renderDiagnostics();
-  updateKbStatus();
 });
 
 /** Mirror the active filters into the address bar so a filtered view is shareable. */
@@ -840,7 +1203,7 @@ function syncDiagUrl() {
  */
 function applyDiagRouteParams() {
   const params = new URLSearchParams(location.search);
-  if ((params.get('tab') || 'home') !== 'diagnostics') return;
+  if ((params.get('tab') || 'browse') !== 'diagnostics') return;
   diagFilter.file     = params.get('file') || '';
   diagFilter.severity = params.get('sev')  || '';
   renderDiagnostics();
@@ -885,9 +1248,17 @@ document.addEventListener('click', (e) => {
 // -- KIF syntax highlighting (textarea + mirrored <pre> overlay) --------------
 
 const KIF_KEYWORDS = new Set(['and', 'or', 'not', 'forall', 'exists', 'equal']);
+
+/** Prover-internal vocabulary that has no man page: Skolem constants
+ *  (`sK1`, `esk2_0`, …) and scope-qualified variable interning keys
+ *  (`Human__15551`) that can leak into prover-emitted KIF. Linking them
+ *  would only offer dead ends. */
+function isInternalSymbol(word) {
+  return /^(sK|esk|epred)\d/.test(word) || /__\d+$/.test(word);
+}
 const KIF_TOKEN_RE = /(;[^\n]*)|("(?:[^"\\]|\\.)*")|([()])|([?@][A-Za-z0-9_-]+)|(-?\d+(?:\.\d+)?)|(<=>|=>|=)|([A-Za-z_][A-Za-z0-9_-]*)/g;
 
-function highlightKif(src) {
+function highlightKif(src, { focusSymbol, linkSymbols } = {}) {
   let out = '', last = 0, m, afterOpenParen = false;
   KIF_TOKEN_RE.lastIndex = 0;
   while ((m = KIF_TOKEN_RE.exec(src))) {
@@ -900,9 +1271,17 @@ function highlightKif(src) {
     else if (num) { out += `<span class="tok-num">${esc(num)}</span>`; afterOpenParen = false; }
     else if (op) { out += `<span class="tok-kw">${esc(op)}</span>`; afterOpenParen = false; }
     else if (word) {
-      if (KIF_KEYWORDS.has(word)) out += `<span class="tok-kw">${esc(word)}</span>`;
-      else if (afterOpenParen) out += `<span class="tok-fn">${esc(word)}</span>`; // relation/function symbol
-      else out += esc(word);
+      const isKw = KIF_KEYWORDS.has(word);
+      let tok;
+      if (isKw) tok = `<span class="tok-kw">${esc(word)}</span>`;
+      else if (afterOpenParen) tok = `<span class="tok-fn">${esc(word)}</span>`; // relation/function symbol
+      else tok = esc(word);
+      if (focusSymbol && word === focusSymbol) {
+        tok = `<span class="sym-focus">${tok}</span>`;      // the viewed symbol: highlight, don't self-link
+      } else if (linkSymbols && !isKw && !isInternalSymbol(word)) {
+        tok = `<a class="sym-link" data-sym="${escAttr(word)}">${tok}</a>`;  // symbol → its man page
+      }
+      out += tok;
       afterOpenParen = false;
     }
     last = KIF_TOKEN_RE.lastIndex;
@@ -1028,7 +1407,7 @@ function cytoscapeStyle(dark) {
 async function renderProofGraph(container, steps, tipEl) {
   const cytoscape = await loadCytoscape();
   container.textContent = '';
-  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  const dark = isDarkTheme();
   const cy = cytoscape({
     container,
     elements: stepsToElements(steps),
@@ -1171,18 +1550,55 @@ function premiseRefs(s) {
   return ` <span class="hint">(from ${label} ${s.premises.map((p) => p + 1).join(', ')})</span>`;
 }
 
-/** One proof/contradiction step as an <li>. */
-function proofStepRow(s) {
-  const loc = locLink(s.file, s.line);
-  const gh = ghAnchor(s.file, s.line);
+/** One KIF-citation row (an <li> for an `ol.refs` list), shared by the man-page
+ *  reference list and the proof/contradiction step list: an optional `header`
+ *  line, the highlighted KIF (with `focusSymbol` subtly highlighted), and a
+ *  `file:line` + blame footer shown only when a source location is known.
+ *  Clicking the row expands a natural-language paraphrase of the formula,
+ *  rendered lazily in the currently selected language. */
+function kifCiteRow({ kif, file, line, header, focusSymbol }) {
+  const loc = locLink(file, line);
+  const gh = ghAnchor(file, line);
+  const meta = loc || gh ? `<div class="ref-meta">${loc}${gh}</div>` : '';
   return `<li>
-    <div class="hint">${esc(s.rule)}${premiseRefs(s)}</div>
-    <pre class="ref-kif">${highlightKif(s.kif).replace(/\n$/, '')}</pre>
-    ${loc || gh ? `<div class="ref-meta">${loc}${gh}</div>` : ''}
+    <details class="cite">
+      <summary>
+        ${header ? `<div class="hint">${header}</div>` : ''}
+        <pre class="ref-kif">${highlightKif(kif, { focusSymbol, linkSymbols: true }).replace(/\n$/, '')}</pre>
+      </summary>
+      <div class="nl" data-kif="${escAttr(kif)}"></div>
+    </details>
+    ${meta}
   </li>`;
 }
 
-const renderProofSteps = (steps) => steps.map(proofStepRow).join('');
+// Lazily render a citation row's natural-language paraphrase when it is
+// expanded, re-rendering if the language changed since the last time it opened.
+// `toggle` doesn't bubble, so listen in the capture phase.
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('cite') || !d.open) return;
+  const nl = d.querySelector('.nl');
+  if (!nl || nl.dataset.lang === uiLanguage) return;
+  nl.dataset.lang = uiLanguage;
+  nl.textContent = 'rendering…';
+  call('renderNl', { kif: nl.dataset.kif, language: uiLanguage })
+    .then(({ text }) => { nl.textContent = text && text.trim() ? text : 'no paraphrase available'; })
+    // A failed call is not a verdict — clear the language stamp so the next
+    // expand retries instead of treating the failure as a cached answer.
+    .catch(() => { nl.dataset.lang = ''; nl.textContent = 'paraphrase failed — reopen to retry'; });
+}, true);
+
+/** One proof/contradiction step as an <li>. `pos` is the 0-based fallback when a
+ *  step carries no explicit `index` — the number shown must match `premiseRefs`
+ *  and the graph node labels, which both count from 1. */
+function proofStepRow(s, pos) {
+  const n = (s.index != null ? s.index : pos) + 1;
+  const header = `<span class="step-num">${n}.</span> ${esc(s.rule)}${premiseRefs(s)}`;
+  return kifCiteRow({ kif: s.kif, file: s.file, line: s.line, header });
+}
+
+const renderProofSteps = (steps) => steps.map((s, i) => proofStepRow(s, i)).join('');
 
 /** The "shown by bare name" note under a prose block, or '' when nothing is missing. */
 function proseMissingNote(missing) {
@@ -1461,20 +1877,57 @@ function onEditPickerChange() {
   const val = $('editPicker').value;
   if (val === '__new__') {
     editCurrentFile = null;
-    $('editNewNameWrap').hidden = false;
-    $('editNewName').value = '';
     setEditorContent('; New KIF file\n');
     updateEditActions();
+    updateEditFileLabel();
     return;
   }
-  $('editNewNameWrap').hidden = true;
   const sep = val.indexOf('|');
   const name = val.slice(0, sep), origin = val.slice(sep + 1);
   const c = constituents.find((x) => x.name === name && x.origin === origin);
   editCurrentFile = c ? { name: c.name, origin: c.origin } : null;
   setEditorContent(c ? c.text : '');
   updateEditActions();
+  updateEditFileLabel();
 }
+
+/** The filename shown beside the toolbar button group. */
+function updateEditFileLabel() {
+  const el = $('editFileName');
+  if (!el) return;
+  el.textContent = editCurrentFile
+    ? editCurrentFile.name
+    : `${$('editNewName').value.trim() || 'new file'} (unsaved)`;
+}
+
+// -- Open-file dialog: pick a loaded constituent, or start a new file ---------
+
+$('editOpen').onclick = () => {
+  $('openList').innerHTML = constituents.length
+    ? constituents.map((c) =>
+        `<li><a class="open-file" data-val="${escAttr(`${c.name}|${c.origin}`)}">${esc(c.name)}</a>
+             <span class="hint origin">${esc(c.origin)}</span></li>`).join('')
+    : '<li class="hint">no files loaded yet — create one below</li>';
+  $('openDialog').showModal();
+};
+
+$('openList').addEventListener('click', (e) => {
+  const a = e.target.closest('a.open-file');
+  if (!a) return;
+  $('openDialog').close();
+  $('editPicker').value = a.dataset.val;
+  onEditPickerChange();
+  updateParams(editCurrentFile ? { file: editCurrentFile.name } : {});
+});
+
+$('editCreate').onclick = () => {
+  $('openDialog').close();
+  $('editPicker').value = '__new__';
+  onEditPickerChange();
+  updateParams({});
+};
+
+$('openCancel').onclick = () => $('openDialog').close();
 
 // Memoized: `showTab('edit')` and `applyRoute()` both ask for the editor, and
 // without this the two concurrent calls each get past the `monacoEditor` guard
@@ -1566,7 +2019,7 @@ $('editDownload').onclick = () => {
 
 $('editSave').onclick = async () => {
   const btn = $('editSave');
-  btn.disabled = true; btn.textContent = 'Saving…';
+  btn.disabled = true;   // icon-only button: disable, don't swap the label
   try {
     if (!monacoEditor) return;
     const text = monacoEditor.getValue();
@@ -1585,8 +2038,8 @@ $('editSave').onclick = async () => {
     editCurrentFile = { name, origin };
     populateEditPicker();
     $('editPicker').value = `${name}|${origin}`;
-    $('editNewNameWrap').hidden = true;
     updateEditActions();
+    updateEditFileLabel();
     runEditValidate();
     $('editLog').style.color = '';
     $('editLog').textContent = r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`;
@@ -1594,7 +2047,7 @@ $('editSave').onclick = async () => {
     $('editLog').style.color = 'var(--bad)';
     $('editLog').textContent = String(e && e.message || e);
   } finally {
-    btn.disabled = false; btn.textContent = 'Save';
+    btn.disabled = false;
   }
 };
 
@@ -1622,6 +2075,91 @@ async function fetchLastCommitDate() {
 
 /** The only part of Home derived from `promoting` — cheap, no RPC, so the
  *  post-processing window can redraw it without repeating a whole-KB pass. */
+// The latest stats payload, kept for the clickable tiles' popovers.
+let lastStats = null;
+
+// -- Stat-tile popovers -------------------------------------------------------
+//
+// Clickable tiles (marked with the corner ⓘ) open a small animated overlay
+// anchored beneath the tile. One popover at a time; outside click, Esc, or
+// re-clicking the tile dismisses it.
+
+function closeStatPopover() {
+  document.querySelector('.stat-pop')?.remove();
+  document.removeEventListener('click', onStatPopoverOutsideClick, true);
+  document.removeEventListener('keydown', onStatPopoverEsc);
+}
+
+function onStatPopoverOutsideClick(e) {
+  if (!e.target.closest('.stat-pop')) closeStatPopover();
+}
+
+function onStatPopoverEsc(e) {
+  if (e.key === 'Escape') closeStatPopover();
+}
+
+function showStatPopover(tile, html) {
+  const already = document.querySelector('.stat-pop');
+  closeStatPopover();
+  if (already && already.dataset.for === tile.id) return;   // toggle off
+  const pop = document.createElement('div');
+  pop.className = 'stat-pop';
+  pop.dataset.for = tile.id;
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  const r = tile.getBoundingClientRect();
+  pop.style.top = `${r.bottom + 6 + scrollY}px`;
+  pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 12)) + scrollX}px`;
+  requestAnimationFrame(() => pop.classList.add('show'));
+  // Deferred so the opening click doesn't immediately dismiss it.
+  setTimeout(() => {
+    document.addEventListener('click', onStatPopoverOutsideClick, true);
+    document.addEventListener('keydown', onStatPopoverEsc);
+  }, 0);
+}
+
+// Row grid: label | meter (or spacer) | right-aligned value.
+const popRow = (label, value, extra = '', title = '') =>
+  `<div class="pop-row"${title ? ` title="${escAttr(title)}"` : ''}><span class="pop-label">${label}</span>${
+    extra || '<span></span>'}<span class="pop-n">${value}</span></div>`;
+
+$('tileDoc')?.addEventListener('click', () => {
+  const s = lastStats;
+  if (!s) return;
+  // Sub-1% coverage still deserves a signal, not a rounded-to-zero 0%.
+  const pctTxt = (n) => {
+    if (!n || !s.symbols) return '—';
+    const p = (100 * n) / s.symbols;
+    return p >= 1 ? `${Math.round(p)}%` : `${p.toFixed(1)}%`;
+  };
+  // Union of both coverage kinds: many languages ship termFormat labels
+  // without a single documentation string (SUMO's German, French, …).
+  const docs  = new Map((s.doc_languages  ?? []).map((l) => [l.language, l.documented]));
+  const terms = new Map((s.term_languages ?? []).map((l) => [l.language, l.documented]));
+  const langs = [...new Set([...docs.keys(), ...terms.keys()])].sort((a, b) =>
+    (docs.get(b) ?? 0) - (docs.get(a) ?? 0) || (terms.get(b) ?? 0) - (terms.get(a) ?? 0));
+  const rows = langs.map((lang) => popRow(
+    esc(langLabel(lang)),
+    pctTxt(terms.get(lang)),
+    `<span class="pop-n">${pctTxt(docs.get(lang))}</span>`,
+    `docs: ${fmtNum(docs.get(lang) ?? 0)} · labels: ${fmtNum(terms.get(lang) ?? 0)} · of ${fmtNum(s.symbols)} symbols`,
+  )).join('');
+  const header = popRow('<span class="hint">language</span>',
+    '<span class="hint">labels</span>', '<span class="hint">docs</span>');
+  showStatPopover($('tileDoc'), `<h4>Coverage by language</h4>${
+    rows ? header + rows : '<div class="hint">no documentation or labels loaded</div>'}`);
+});
+
+$('tileRelations')?.addEventListener('click', () => {
+  const s = lastStats;
+  if (!s || !Number.isFinite(s.relations)) return;
+  const other = Math.max(0, s.relations - (s.predicates ?? 0) - (s.functions ?? 0));
+  showStatPopover($('tileRelations'), `<h4>Relations</h4>${
+    popRow('predicates', fmtNum(s.predicates ?? 0))}${
+    popRow('functions', fmtNum(s.functions ?? 0))}${
+    popRow('other relations', fmtNum(other))}`);
+});
+
 function updateHomeNote(error) {
   $('statNote').textContent = error ? `Could not read KB stats: ${error}`
     : promoting ? 'Post-processing — counts will settle once axiomatization finishes.'
@@ -1633,10 +2171,30 @@ async function refreshHomeStats() {
   // still in flight the numbers are simply what has been ingested so far.
   try {
     const { stats } = await call('stats');
-    $('statFiles').textContent   = fmtNum(stats.files);
-    $('statSymbols').textContent = fmtNum(stats.symbols);
-    $('statAxioms').textContent  = fmtNum(stats.axioms);
-    $('statRules').textContent   = fmtNum(stats.rules);
+    lastStats = stats;
+    // A stale engine (older wasm) omits newer fields — show a dash, not NaN.
+    const num = (v) => (Number.isFinite(v) ? fmtNum(v) : '—');
+    $('statFiles').textContent     = num(stats.files);
+    $('statSymbols').textContent   = num(stats.symbols);
+    $('statAxioms').textContent    = num(stats.axioms);
+    $('statRules').textContent     = num(stats.rules);
+    $('statClasses').textContent   = num(stats.classes);
+    $('statInstances').textContent = num(stats.instances);
+    $('statRelations').textContent = num(stats.relations);
+    // Documentation coverage: % of symbols carrying a documentation string.
+    const pct = stats.symbols && Number.isFinite(stats.documented)
+      ? Math.round((100 * stats.documented) / stats.symbols) : null;
+    $('statDoc').textContent = pct == null ? '—' : `${pct}%`;
+    $('statDocBar').style.width = `${pct ?? 0}%`;
+    $('statDoc').closest('.stat').title =
+      `${fmtNum(stats.documented)} of ${fmtNum(stats.symbols)} symbols have documentation; ` +
+      `${fmtNum(stats.labeled)} have a termFormat label`;
+    // Diagnostics split: errors in red, warnings in amber.
+    const errs  = diagnostics.filter((d) => d.severity === 'error').length;
+    const warns = diagnostics.filter((d) => d.severity === 'warning').length;
+    $('statDiag').innerHTML = diagnostics.length
+      ? `<span style="color:var(--bad)">${fmtNum(errs)}</span> · <span style="color:var(--warn)">${fmtNum(warns)}</span>`
+      : '<span style="color:var(--ok)">0</span>';
     updateHomeNote();
   } catch (e) {
     updateHomeNote(e.message || e);

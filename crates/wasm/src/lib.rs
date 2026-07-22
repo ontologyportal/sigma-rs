@@ -156,6 +156,29 @@ impl WasmKnowledgeBase {
         manpage_to_js(&self.inner, self.inner.manpage(symbol))
     }
 
+    /// Direct taxonomy edges of `symbol` — `{ parents, children }` — without
+    /// the man page's reference scan. Powers lazy taxonomy-tree expansion.
+    #[wasm_bindgen]
+    pub fn taxonomy(&self, symbol: &str) -> Result<JsValue, JsValue> {
+        taxonomy_to_js(&self.inner, symbol)
+    }
+
+    /// The `(instance ? NaturalLanguage)` symbols, each with the English label
+    /// from its `termFormat` (falling back to the bare symbol name). Sorted by
+    /// label, with `EnglishLanguage` guaranteed present as a fallback. Powers the
+    /// UI language selector.
+    #[wasm_bindgen(js_name = naturalLanguages)]
+    pub fn natural_languages(&self) -> Result<JsValue, JsValue> {
+        natural_languages_to_js(&self.inner)
+    }
+
+    /// Natural-language paraphrase of a single KIF formula in `language`. Empty
+    /// when the KIF doesn't parse to a statement.
+    #[wasm_bindgen(js_name = renderNl)]
+    pub fn render_nl(&self, kif: &str, language: &str) -> String {
+        render_nl_string(&self.inner, kif, language)
+    }
+
     /// Invoke the theorem prover via a JS callback.
     ///
     /// WASM cannot spawn native processes, so callers must supply an `ask_hook`
@@ -456,7 +479,19 @@ impl WasmNativeProver {
             }
         }
 
-        let out = KbStatsJs { files: files.len(), symbols, axioms, rules };
+        let v = self.inner.vocab_stats();
+        let out = KbStatsJs {
+            files: files.len(), symbols, axioms, rules,
+            classes: v.classes, instances: v.instances, relations: v.relations,
+            predicates: v.predicates, functions: v.functions,
+            documented: v.documented, labeled: v.labeled,
+            doc_languages: v.doc_languages.into_iter()
+                .map(|(language, documented)| DocLangJs { language, documented })
+                .collect(),
+            term_languages: v.term_languages.into_iter()
+                .map(|(language, documented)| DocLangJs { language, documented })
+                .collect(),
+        };
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -559,6 +594,29 @@ impl WasmNativeProver {
     #[wasm_bindgen]
     pub fn manpage(&self, symbol: &str) -> Result<JsValue, JsValue> {
         manpage_to_js(&self.inner, self.inner.manpage(symbol))
+    }
+
+    /// Direct taxonomy edges of `symbol` — `{ parents, children }` — without
+    /// the man page's reference scan. Powers lazy taxonomy-tree expansion.
+    #[wasm_bindgen]
+    pub fn taxonomy(&self, symbol: &str) -> Result<JsValue, JsValue> {
+        taxonomy_to_js(&self.inner, symbol)
+    }
+
+    /// The `(instance ? NaturalLanguage)` symbols, each with the English label
+    /// from its `termFormat` (falling back to the bare symbol name). Sorted by
+    /// label, with `EnglishLanguage` guaranteed present. Powers the UI language
+    /// selector. Mirrors [`WasmKnowledgeBase::natural_languages`].
+    #[wasm_bindgen(js_name = naturalLanguages)]
+    pub fn natural_languages(&self) -> Result<JsValue, JsValue> {
+        natural_languages_to_js(&self.inner)
+    }
+
+    /// Natural-language paraphrase of a single KIF formula in `language`. Empty
+    /// when the KIF doesn't parse to a statement.
+    #[wasm_bindgen(js_name = renderNl)]
+    pub fn render_nl(&self, kif: &str, language: &str) -> String {
+        render_nl_string(&self.inner, kif, language)
     }
 
     /// Audit the whole KB for logical consistency via the native saturation
@@ -706,12 +764,30 @@ fn proof_steps_js(
 }
 
 /// Summary counts describing the loaded KB (see [`WasmNativeProver::stats`]).
+/// The vocabulary/coverage fields come from `KnowledgeBase::vocab_stats`;
+/// `documented`/`labeled` divide by `symbols` for a coverage percentage.
 #[derive(serde::Serialize)]
 struct KbStatsJs {
-    files:   usize,
-    symbols: usize,
-    axioms:  usize,
-    rules:   usize,
+    files:      usize,
+    symbols:    usize,
+    axioms:     usize,
+    rules:      usize,
+    classes:    usize,
+    instances:  usize,
+    relations:  usize,
+    predicates: usize,
+    functions:  usize,
+    documented: usize,
+    labeled:    usize,
+    doc_languages:  Vec<DocLangJs>,
+    term_languages: Vec<DocLangJs>,
+}
+
+/// One language's documentation coverage (see `KbStatsJs.doc_languages`).
+#[derive(serde::Serialize)]
+struct DocLangJs {
+    language:   String,
+    documented: usize,
 }
 
 /// Curated native-prover result projected to JS-safe types.
@@ -880,12 +956,21 @@ struct DomainJs { position: usize, sort: SortJs }
 /// plus source location (when the sentence has one — synthetic/CNF sentences
 /// don't). `position` is the symbol's 0-based root-level position in the
 /// sentence, or `null` when it only occurs nested inside a sub-sentence.
+///
+/// `kind` / `arg_pos` classify the formula's top-level shape for the reference
+/// filter (see [`classify_reference`]): `kind` is `"fact"` (a relation atom,
+/// possibly under `not`), `"=>"`, `"<=>"`, `"and"`, `"or"`, or `"other"`; for a
+/// fact, `arg_pos` is the symbol's argument index in the atom (0 = the relation
+/// itself), after peeling one top-level `not`, or `null` when it isn't a direct
+/// argument.
 #[derive(serde::Serialize)]
 struct ManPageRefJs {
     position: Option<usize>,
     kif:      String,
     file:     Option<String>,
     line:     Option<u32>,
+    kind:     String,
+    arg_pos:  Option<usize>,
 }
 
 /// A JS-safe projection of `ManPage` — the human-facing fields, with the raw
@@ -908,6 +993,102 @@ struct ManPageJs {
     references:       Vec<ManPageRefJs>,
 }
 
+/// Direct taxonomy edges of `symbol` as `{ parents, children }` of
+/// `{ relation, parent }` rows (downward rows carry the *child* in `parent`,
+/// matching `ManPageJs.children`). The lightweight peer of `manpage` for the
+/// lazily-expanded taxonomy tree. Shared by both backends' `taxonomy` binding.
+fn taxonomy_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, symbol: &str) -> Result<JsValue, JsValue> {
+    #[derive(serde::Serialize)]
+    struct TaxJs { parents: Vec<EdgeJs>, children: Vec<EdgeJs> }
+    let (parents, children) = kb.taxonomy_edges(symbol);
+    let edge = |e: sigmakee_rs_core::ParentEdge| EdgeJs { relation: e.relation, parent: e.parent };
+    let tax = TaxJs {
+        parents:  parents.into_iter().map(edge).collect(),
+        children: children.into_iter().map(edge).collect(),
+    };
+    serde_wasm_bindgen::to_value(&tax).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// `(instance ? NaturalLanguage)` symbols — including instances of
+/// `NaturalLanguage` subclasses like `ChineseLanguage` — with English
+/// `termFormat` labels, for the UI language selector. Shared by both backends'
+/// `naturalLanguages` binding.
+fn natural_languages_to_js<L: TopLayer>(kb: &KnowledgeBase<L>) -> Result<JsValue, JsValue> {
+    #[derive(serde::Serialize)]
+    struct LangJs { symbol: String, label: String }
+    let mut langs: Vec<LangJs> = Vec::new();
+    for symbol in kb.instances_of("NaturalLanguage") {
+        let label = kb.term_format(&symbol, Some("EnglishLanguage"))
+            .first().map(|d| d.text.clone())
+            .unwrap_or_else(|| symbol.clone());
+        langs.push(LangJs { symbol, label });
+    }
+    if !langs.iter().any(|l| l.symbol == "EnglishLanguage") {
+        langs.push(LangJs { symbol: "EnglishLanguage".into(), label: "English".into() });
+    }
+    langs.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    serde_wasm_bindgen::to_value(&langs).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Natural-language paraphrase of a single KIF formula in `language`, using the
+/// KB's format / termFormat templates. Empty string when the KIF does not parse
+/// to a statement. Shared by both backends' `renderNl` binding.
+fn render_nl_string<L: TopLayer>(kb: &KnowledgeBase<L>, kif: &str, language: &str) -> String {
+    let doc = sigmakee_rs_core::parse_document(
+        "__wasm:render_nl__", kif.to_string(), sigmakee_rs_core::Parser::Kif);
+    match doc.ast.iter().find_map(|d| d.as_stmt()) {
+        Some(ast) => kb.render_formula(ast, language).rendered,
+        None => String::new(),
+    }
+}
+
+/// Classify a reference formula's top-level shape for the man-page filter.
+/// Returns `(kind, arg_pos)`:
+///   - `kind`: `"fact"` (relation atom, possibly wrapped in a single `not`),
+///     `"=>"`, `"<=>"`, `"and"`, `"or"`, or `"other"` (quantifier / equal /
+///     unresolvable). A leading `not` is transparent — it's peeled before
+///     classifying, so `(not (p a b))` is a fact and `(not (=> a b))` an `"=>"`.
+///   - `arg_pos`: for a fact, `target`'s argument index in the atom (0 = the
+///     relation symbol, 1 = first argument, …); `None` when `target` isn't a
+///     direct argument (e.g. it sits inside a nested function term) or the
+///     formula isn't a fact.
+fn classify_reference<L: TopLayer>(
+    kb:     &KnowledgeBase<L>,
+    sid:    sigmakee_rs_core::SentenceId,
+    target: sigmakee_rs_core::SymbolId,
+) -> (String, Option<usize>) {
+    use sigmakee_rs_core::{Element, OpKind};
+    let Some(root) = kb.sentence(sid) else { return ("other".into(), None) };
+    // A leading `not` wraps its operand as a nested sub-sentence; peel one.
+    let atom = if matches!(root.op(), Some(OpKind::Not)) {
+        match root.elements.get(1) {
+            Some(Element::Sub(inner)) => kb.sentence(*inner),
+            _                         => Some(root.clone()),
+        }
+    } else {
+        Some(root.clone())
+    };
+    let Some(atom) = atom else { return ("other".into(), None) };
+    match atom.elements.first() {
+        Some(Element::Symbol(_)) => {
+            let pos = atom.elements.iter()
+                .position(|el| matches!(el, Element::Symbol(s) if s.id() == target));
+            ("fact".into(), pos)
+        }
+        Some(Element::Op(op)) => {
+            let k = match op {
+                OpKind::Implies => "=>",
+                OpKind::Iff     => "<=>",
+                OpKind::And     => "and",
+                OpKind::Or      => "or",
+                _               => "other",
+            };
+            (k.into(), None)
+        }
+        _ => ("other".into(), None),
+    }
+}
+
 fn manpage_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, page: Option<ManPage>) -> Result<JsValue, JsValue> {
     let Some(p) = page else { return Ok(JsValue::NULL) };
     let docs = |v: &[sigmakee_rs_core::DocEntry]| -> Vec<DocJs> {
@@ -917,13 +1098,20 @@ fn manpage_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, page: Option<ManPage>) -> R
         v.iter().map(|e| EdgeJs { relation: e.relation.clone(), parent: e.parent.clone() }).collect()
     };
     let sort = |s: &sigmakee_rs_core::SortSig| SortJs { class: s.class.clone(), subclass: s.subclass };
+    let target = kb.symbol_id(&p.name);
     let reference = |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefJs {
         let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+        let (kind, arg_pos) = match target {
+            Some(t) => classify_reference(kb, sid, t),
+            None    => ("other".to_string(), None),
+        };
         ManPageRefJs {
             position,
             kif:  kb.pretty_print_sentence_plain(sid, 0),
             file: span.as_ref().map(|s| s.file.clone()),
             line: span.as_ref().map(|s| s.line),
+            kind,
+            arg_pos,
         }
     };
     let mut references: Vec<ManPageRefJs> = p.ref_args.iter()

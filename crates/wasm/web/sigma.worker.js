@@ -72,8 +72,11 @@ const handlers = {
       .filter((d) => d.kind === 'parse');
     return { diagnostics };
   },
-  search({ query, limit }) { return { hits: session.search(query, { limit: limit ?? 100 }) }; },
+  search({ query, limit, language }) { return { hits: session.search(query, { limit: limit ?? 100, language }) }; },
   manpage({ symbol }) { return { page: session.manpage(symbol) }; },
+  taxonomy({ symbol }) { return { tax: session.taxonomy(symbol) }; },
+  naturalLanguages() { return { languages: session.naturalLanguages() }; },
+  renderNl({ kif, language }) { return { text: session.renderNl(kif, language) }; },
 
   prove({ assertions, query, config, session: sess }) {
     session.configure(makeConfig(config));

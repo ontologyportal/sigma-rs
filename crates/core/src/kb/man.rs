@@ -194,6 +194,63 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let sym_id = self.symbol_id(symbol)?;
         Some(build_manpage(self, sym_id, symbol))
     }
+
+    /// Direct taxonomy edges of `symbol`: `(rel symbol PARENT)` upward and
+    /// `(rel CHILD symbol)` downward, over subclass / instance / subrelation /
+    /// subAttribute.  The lightweight peer of [`Self::manpage`] for tree
+    /// navigation — no reference scan, no signature assembly.  Both empty when
+    /// `symbol` is not interned.  (As in [`ManPage`], the downward edges reuse
+    /// [`ParentEdge`] with the *child* in the `parent` field.)
+    pub fn taxonomy_edges(&self, symbol: &str) -> (Vec<ParentEdge>, Vec<ParentEdge>) {
+        let Some(sym_id) = self.symbol_id(symbol) else { return (Vec::new(), Vec::new()) };
+        let store = &self.layer.semantic().syntactic;
+        (collect_parents(store, sym_id), collect_children(store, sym_id))
+    }
+
+    /// Every symbol declared `(instance X C)` where `C` is `class` or a
+    /// transitive `subclass` descendant of it.  One pass over the `subclass`
+    /// and `instance` head indexes — no man-page assembly.  Sorted, deduped;
+    /// empty when `class` is not interned.
+    pub fn instances_of(&self, class: &str) -> Vec<String> {
+        let store = &self.layer.semantic().syntactic;
+        let Some(root) = self.symbol_id(class) else { return Vec::new() };
+
+        // Downward subclass closure from `root`: (subclass CHILD PARENT).
+        let mut edges: std::collections::HashMap<SymbolId, Vec<SymbolId>> =
+            std::collections::HashMap::new();
+        for sid in store.by_head("subclass").iter().copied() {
+            let Some(sent) = store.sentence(sid) else { continue };
+            if let (Some(Element::Symbol(child)), Some(Element::Symbol(parent))) =
+                (sent.elements.get(1), sent.elements.get(2))
+            {
+                edges.entry(parent.id()).or_default().push(child.id());
+            }
+        }
+        let mut classes: std::collections::HashSet<SymbolId> = std::iter::once(root).collect();
+        let mut frontier = vec![root];
+        while let Some(c) = frontier.pop() {
+            for &child in edges.get(&c).map(Vec::as_slice).unwrap_or(&[]) {
+                if classes.insert(child) {
+                    frontier.push(child);
+                }
+            }
+        }
+
+        let mut out: Vec<String> = Vec::new();
+        for sid in store.by_head("instance").iter().copied() {
+            let Some(sent) = store.sentence(sid) else { continue };
+            if let (Some(Element::Symbol(inst)), Some(Element::Symbol(class))) =
+                (sent.elements.get(1), sent.elements.get(2))
+            {
+                if classes.contains(&class.id()) {
+                    out.push(inst.to_string());
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
 }
 
 impl KnowledgeBase {
@@ -810,5 +867,30 @@ mod tests {
         let human = kb.manpage("Human").expect("Human recovered despite parse error");
         // Human inherits from Hominid via the recovered subclass edge.
         assert!(human.parents.iter().any(|p| p.parent == "Hominid" && p.relation == "subclass"));
+    }
+
+    #[test]
+    fn instances_of_includes_subclass_declared_instances() {
+        // Mirrors real SUMO: CantoneseLanguage is an instance of
+        // ChineseLanguage, itself a subclass of NaturalLanguage — it must
+        // surface as a NaturalLanguage instance alongside the direct ones.
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(r#"
+            (instance EnglishLanguage NaturalLanguage)
+            (subclass ChineseLanguage NaturalLanguage)
+            (instance CantoneseLanguage ChineseLanguage)
+            (instance MandarinLanguage ChineseLanguage)
+            (instance FrenchLanguage RomanceLanguage)
+        "#, &std::path::PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok);
+        assert!(matches!(kb.make_session_axiomatic("t.kif"), Ok(_)));
+
+        let langs = kb.instances_of("NaturalLanguage");
+        for want in ["EnglishLanguage", "CantoneseLanguage", "MandarinLanguage"] {
+            assert!(langs.contains(&want.to_string()), "missing {want} in {langs:?}");
+        }
+        // RomanceLanguage was never linked under NaturalLanguage here.
+        assert!(!langs.contains(&"FrenchLanguage".to_string()));
+        assert!(kb.instances_of("NoSuchClass").is_empty());
     }
 }

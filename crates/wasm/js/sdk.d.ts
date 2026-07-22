@@ -133,12 +133,18 @@ export interface SortSig { class: string; subclass: boolean; }
 /** One formula referencing the man-paged symbol. `position` is the symbol's
  * 0-based root-level position in the sentence, or `null` when it only occurs
  * nested inside a sub-sentence. `file`/`line` are `null` for sentences with
- * no source origin (e.g. synthetic/CNF sentences). */
+ * no source origin (e.g. synthetic/CNF sentences). `kind` classifies the
+ * formula's top-level shape — "fact" (a relation atom, possibly under `not`),
+ * "=>", "<=>", "and", "or", or "other"; for a fact, `arg_pos` is the symbol's
+ * argument index in the atom (0 = the relation itself), after peeling one
+ * top-level `not`, or `null` when it isn't a direct argument. */
 export interface ManPageRef {
   position: number | null;
   kif: string;
   file: string | null;
   line: number | null;
+  kind: string;
+  arg_pos: number | null;
 }
 export interface ManPage {
   name: string;
@@ -182,5 +188,16 @@ export class Session {
   validateFormula(kif: string): Diagnostic[];
   search(query: string, opts?: SearchOpts): SearchHit[];
   manpage(symbol: string): ManPage | null;
+  /** Direct taxonomy edges — the lightweight peer of `manpage` for lazy tree
+   * expansion. Downward rows carry the child in `parent`, as in
+   * `ManPage.children`. */
+  taxonomy(symbol: string): {
+    parents: Array<{ relation: string; parent: string }>;
+    children: Array<{ relation: string; parent: string }>;
+  };
+  /** `NaturalLanguage` instances as `{symbol, label}`, for the UI selector. */
+  naturalLanguages(): Array<{ symbol: string; label: string }>;
+  /** Natural-language paraphrase of a single KIF formula in `language`. */
+  renderNl(kif: string, language: string): string;
   flushSession(session: string): void;
 }

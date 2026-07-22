@@ -131,13 +131,19 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let q = query.to_lowercase();
         let syn = &self.layer.semantic().syntactic;
 
-        let mut hits: Vec<SearchHit> = Vec::new();
-        // Per-symbol first-seen (sid, source, language, text) from the scan
-        // below, kept regardless of whether `q` matched — the name-match pass
-        // uses this to give a symbol with no text hit of its own a real
-        // citation + preview instead of a bare, unsourced row.  SCHEMAS is
-        // scanned termFormat-first, so "first-seen" already prefers the
-        // higher source tier.
+        // Best text hit per symbol — one row per symbol, keeping the
+        // highest-ranked match when the query hits several of its text fields
+        // (the displayed snippet is unified from `backing` below, so extra
+        // rows would render as duplicates).
+        let mut text_hits: HashMap<SymbolId, SearchHit> = HashMap::new();
+        // Per-symbol (sid, source, language, text) from the scan below, kept
+        // regardless of whether `q` matched — the name-match pass uses this to
+        // give a symbol with no text hit of its own a real citation + preview
+        // instead of a bare, unsourced row.  The preview prefers the
+        // *documentation* string (the real description) over the terse
+        // `termFormat` label, then `format`; ties within a tier keep first-seen.
+        // When a language filter is set, off-language entries never enter the
+        // map: the preview must respect the same filter the matches do.
         let mut backing: HashMap<SymbolId, (SentenceId, SearchSource, String, String)> = HashMap::new();
 
         // (head_name, symbol_arg_index, lang_arg_index, text_arg_index, source).
@@ -168,8 +174,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     _ => continue,
                 };
 
-                backing.entry(sym_id)
-                    .or_insert_with(|| (sid, source, lang.clone(), strip_quotes(text)));
+                // Preview preference: documentation (the real description)
+                // beats the terse termFormat label beats format; first-seen
+                // breaks ties.  Entries in a filtered-out language are never
+                // eligible as previews.
+                if opts.language.is_none_or(|want| lang == want) {
+                    let better = backing.get(&sym_id)
+                        .is_none_or(|cur| source_preview_rank(source) < source_preview_rank(cur.1));
+                    if better {
+                        backing.insert(sym_id, (sid, source, lang.clone(), strip_quotes(text)));
+                    }
+                }
 
                 let text_lc = text.to_lowercase();
                 let Some(match_idx) = text_lc.find(&q) else { continue };
@@ -188,20 +203,40 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     None => continue,
                 };
                 let rank = search_rank(&q, &symbol, source, match_idx);
-                hits.push(SearchHit {
-                    symbol,
-                    kinds,
-                    source,
-                    language: lang,
-                    text:     strip_quotes(text),
-                    sid,
-                    rank,
-                });
+                let keep = text_hits.get(&sym_id).is_none_or(|cur| rank > cur.rank);
+                if keep {
+                    text_hits.insert(sym_id, SearchHit {
+                        symbol,
+                        kinds,
+                        source,
+                        language: lang,
+                        text:     strip_quotes(text),
+                        sid,
+                        rank,
+                    });
+                }
             }
         }
 
+        // The snippet shown is the symbol's *description*, not necessarily the
+        // field the query matched: a query that hit a one-word `termFormat`
+        // still displays the documentation string. Rank (relevance) is left as
+        // computed from the actual match; only the displayed citation changes.
+        for (id, h) in text_hits.iter_mut() {
+            if let Some((sid, source, lang, text)) = backing.get(id) {
+                if !text.is_empty() {
+                    h.sid = *sid;
+                    h.source = *source;
+                    h.language = lang.clone();
+                    h.text = text.clone();
+                }
+            }
+        }
+
+        let mut hits: Vec<SearchHit> = text_hits.into_values().collect();
         let already_hit: HashSet<&str> = hits.iter().map(|h| h.symbol.as_str()).collect();
-        hits.extend(self.name_match_hits(&q, opts, &backing, &already_hit));
+        let name_hits = self.name_match_hits(&q, opts, &backing, &already_hit);
+        hits.extend(name_hits);
 
         // Sort by relevance (descending), then deterministic tie-breaks. The
         // stable sort preserves KB order for hits with an identical key.
@@ -226,10 +261,10 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// (`sid = SentenceId::MAX`, empty language/text) rather than being
     /// dropped, since the name match itself is still a legitimate result.
     ///
-    /// A symbol with no backing text has no natural language tag, so
-    /// [`SearchOpts::language`] only filters it out when it *does* have
-    /// backing text in a different language; language-less name hits always
-    /// pass through.
+    /// `backing` is already restricted to [`SearchOpts::language`] by the
+    /// caller, so a name match never carries an off-filter citation: a symbol
+    /// documented only in another language surfaces as an unsourced hit
+    /// (the name match itself is still a legitimate result).
     fn name_match_hits(
         &self,
         q:           &str,
@@ -262,9 +297,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 Some((sid, source, lang, text)) => (*sid, *source, lang.clone(), text.clone()),
                 None => (SentenceId::MAX, SearchSource::Documentation, String::new(), String::new()),
             };
-            if let Some(want) = opts.language {
-                if !language.is_empty() && language != want { return; }
-            }
 
             let rank = search_rank(q, &name, source, 0);
             out.push(SearchHit { symbol: name.to_string(), kinds, source, language, text, sid, rank });
@@ -304,6 +336,18 @@ fn search_rank(query_lc: &str, symbol: &str, source: SearchSource, match_idx: us
     name + src + pos
 }
 
+/// Preview preference for the name-match snippet: lower is preferred. The
+/// documentation string is the real description, so it wins over the terse
+/// `termFormat` label and the `format` template. (Distinct from `search_rank`'s
+/// source tier, which scores *content* relevance.)
+fn source_preview_rank(source: SearchSource) -> u8 {
+    match source {
+        SearchSource::Documentation => 0,
+        SearchSource::TermFormat    => 1,
+        SearchSource::Format        => 2,
+    }
+}
+
 /// Kind-filter matcher.  `--kind relation` matches the broad sense (any of
 /// Relation, Predicate, Function); all other kinds require an exact match.
 fn kind_matches(have: &[ManKind], want: ManKind) -> bool {
@@ -321,7 +365,7 @@ fn kind_matches(have: &[ManKind], want: ManKind) -> bool {
 /// key rather than real KB vocabulary — i.e. matches `"<base>__<scope-id>"`
 /// where `<scope-id>` is the all-digit suffix `Element::from_node`'s
 /// `Variable` arm mints per binding scope (see `ScopeCtx::scope_for`).
-fn is_scoped_variable_name(name: &str) -> bool {
+pub(crate) fn is_scoped_variable_name(name: &str) -> bool {
     match name.rfind("__") {
         Some(idx) if idx > 0 => {
             let suffix = &name[idx + 2..];
@@ -407,5 +451,97 @@ mod tests {
             "a scope-qualified variable name leaked into results: {:?}",
             hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn name_match_preview_prefers_documentation_over_term_format() {
+        // A symbol carrying both a terse termFormat and a real documentation
+        // string: the name-match snippet must show the documentation, not the
+        // one-word label.
+        let kb = kb_from(
+            r#"
+            (instance Triangle Class)
+            (termFormat EnglishLanguage Triangle "triangle")
+            (documentation Triangle EnglishLanguage "A three-sided polygon.")
+            "#,
+        );
+        let hits = kb.search("Triangle", &SearchOpts::default());
+        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
+        assert_eq!(hit.source, SearchSource::Documentation, "preview should cite the documentation");
+        assert_eq!(hit.text, "A three-sided polygon.");
+    }
+
+    #[test]
+    fn preview_prefers_the_wanted_language_documentation() {
+        let kb = kb_from(
+            r#"
+            (instance Triangle Class)
+            (documentation Triangle EnglishLanguage "A three-sided polygon.")
+            (documentation Triangle FrenchLanguage "Un polygone a trois cotes.")
+            "#,
+        );
+        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let hits = kb.search("Triangle", &opts);
+        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
+        assert_eq!(hit.language, "FrenchLanguage");
+        assert_eq!(hit.text, "Un polygone a trois cotes.");
+    }
+
+    #[test]
+    fn language_filter_never_shows_an_off_filter_snippet() {
+        // The wanted-language termFormat matches the query; the only
+        // documentation is English. The preview must not "upgrade" the hit to
+        // the excluded English documentation — source tier never outranks the
+        // language filter.
+        let kb = kb_from(
+            r#"
+            (instance Triangle Class)
+            (termFormat FrenchLanguage Triangle "triangle")
+            (documentation Triangle EnglishLanguage "A three-sided polygon.")
+            "#,
+        );
+        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let hits = kb.search("triangle", &opts);
+        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
+        assert_eq!(hit.language, "FrenchLanguage", "snippet language must respect the filter");
+        assert_eq!(hit.text, "triangle");
+        assert_eq!(hit.source, SearchSource::TermFormat);
+    }
+
+    #[test]
+    fn language_filtered_name_match_survives_other_language_documentation() {
+        // Query matches only the symbol NAME. The wanted-language termFormat
+        // must back the hit; the English-only documentation must neither back
+        // it nor knock the symbol out of the results.
+        let kb = kb_from(
+            r#"
+            (instance Foo Class)
+            (termFormat FrenchLanguage Foo "fou")
+            (documentation Foo EnglishLanguage "An English-only description.")
+            "#,
+        );
+        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let hits = kb.search("Foo", &opts);
+        let hit = hits.iter().find(|h| h.symbol == "Foo")
+            .expect("name match must not be dropped by off-language documentation");
+        assert_eq!(hit.language, "FrenchLanguage");
+        assert_eq!(hit.text, "fou");
+    }
+
+    #[test]
+    fn query_matching_several_text_fields_yields_one_row() {
+        // "polygon" matches both the termFormat and the documentation of
+        // Triangle; the unified preview would render two byte-identical rows.
+        let kb = kb_from(
+            r#"
+            (instance Triangle Class)
+            (termFormat EnglishLanguage Triangle "the polygon")
+            (documentation Triangle EnglishLanguage "A polygon with three sides.")
+            "#,
+        );
+        let hits = kb.search("polygon", &SearchOpts::default());
+        let rows: Vec<_> = hits.iter().filter(|h| h.symbol == "Triangle").collect();
+        assert_eq!(rows.len(), 1, "one row per symbol, got {rows:?}");
+        assert_eq!(rows[0].text, "A polygon with three sides.");
     }
 }

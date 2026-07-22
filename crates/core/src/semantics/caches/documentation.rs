@@ -7,7 +7,7 @@
 use crate::{Element, Literal, SentenceId, SymbolId};
 use crate::cache::{CacheBehavior, EntryCache};
 use crate::semantics::SemanticLayer;
-use crate::semantics::consts::DOCUMENTATION_RELATIONS;
+use crate::semantics::consts::{DOC_RELATION, DOCUMENTATION_RELATIONS};
 use crate::semantics::types::{DocEntry, Scope, Scoped};
 use crate::syntactic::caches::session::session_id;
 
@@ -124,10 +124,11 @@ fn doc_symbols(parent: &SemanticLayer, sid: SentenceId) -> Vec<SymbolId> {
 /// Scan head-indexed root sentences for a documentation-style relation,
 /// collecting `(language, text)` entries describing `target`.
 ///
-/// Layout-agnostic: it locates the string literal (the text) and the two symbol
-/// arguments, treats whichever symbol equals `target` as the subject, and takes
-/// the other symbol as the language.  A sentence is skipped unless it mentions
-/// `target` alongside a distinct language symbol and a text literal.
+/// Subject-position aware: `target` must occupy the *subject* slot, which
+/// differs by relation (subject-first for `documentation`, subject-second for
+/// `termFormat` / `format`).  Matching any slot would let a language symbol such
+/// as `EnglishLanguage` — present in the language slot of nearly every entry —
+/// pull in every documented symbol's text.
 pub(crate) fn collect_doc_entries(
     parent: &SemanticLayer,
     head:   SymbolId,
@@ -173,8 +174,20 @@ fn collect_from_sids(
             }
         }
         let Some(text) = text else { continue };
-        if !syms.contains(&target) { continue; }
-        let Some(&lang_id) = syms.iter().find(|&&id| id != target) else { continue };
+        // The subject occupies a different slot per relation:
+        //   (documentation Subject  Language "text")   -- subject first
+        //   (termFormat    Language Subject  "text")   -- subject second
+        //   (format        Language Subject  "format") -- subject second
+        // Match on the *subject* slot alone; matching any slot makes a language
+        // symbol (e.g. EnglishLanguage, which sits in the language slot of nearly
+        // every entry) spuriously pull in every documented symbol's text.
+        let (subject, lang_id) = if head == DOC_RELATION.id() {
+            (syms.first().copied(), syms.get(1).copied())
+        } else {
+            (syms.get(1).copied(), syms.first().copied())
+        };
+        if subject != Some(target) { continue; }
+        let Some(lang_id) = lang_id else { continue };
         let Some(lang_sym) = store.sym_name(lang_id) else { continue };
         out.push(DocEntry { rel: head, language: lang_sym.name().to_string(), text });
     }
@@ -257,6 +270,29 @@ mod tests {
             language: "EnglishLanguage".into(),
             text:     "entity".into(),
         }]);
+    }
+
+    #[test]
+    fn language_symbol_matches_only_its_own_subject_entries() {
+        // EnglishLanguage sits in the language slot of every entry below, but is
+        // the *subject* of only the last one. Looking it up must return that one
+        // entry, not everyone else's documentation.
+        let layer = kif_layer(r#"
+            (documentation Animal EnglishLanguage "A living organism.")
+            (documentation Plant EnglishLanguage "A photosynthesizing organism.")
+            (termFormat EnglishLanguage Animal "animal")
+            (format EnglishLanguage instance "%1 is an instance of %2")
+            (documentation EnglishLanguage EnglishLanguage "A natural language.")
+        "#);
+        let english = layer.syntactic.sym_id("EnglishLanguage").unwrap();
+        let entries = layer.documentation(english, None);
+        assert_eq!(entries.len(), 1, "expected only EnglishLanguage's own doc, got: {entries:?}");
+        assert_eq!(entries[0].rel, DOC_RELATION.id());
+        assert_eq!(entries[0].text, "A natural language.");
+
+        // The real subjects still resolve, unaffected by the shared language slot.
+        let animal = layer.syntactic.sym_id("Animal").unwrap();
+        assert_eq!(layer.documentation(animal, None).len(), 2, "documentation + termFormat");
     }
 
     #[test]

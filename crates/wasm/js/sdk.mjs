@@ -245,6 +245,16 @@ export class Session {
   /** Structured man page for a symbol, or `null` if unknown. */
   manpage(symbol) { return this.#kb.manpage(symbol); }
 
+  /** Direct taxonomy edges `{parents, children}` — the lightweight peer of
+   *  `manpage` for lazy tree expansion. */
+  taxonomy(symbol) { return this.#kb.taxonomy(symbol); }
+
+  /** `NaturalLanguage` instances as `[{symbol, label}]`, for the UI selector. */
+  naturalLanguages() { return this.#kb.naturalLanguages(); }
+
+  /** Natural-language paraphrase of a single KIF formula in `language`. */
+  renderNl(kif, language) { return this.#kb.renderNl(kif, language); }
+
   /** Drop a session's assertions. */
   flushSession(session) { this.#kb.flushSession(session); }
 }

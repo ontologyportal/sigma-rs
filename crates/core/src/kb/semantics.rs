@@ -4,6 +4,27 @@ use crate::layer::{TopLayer, Layer};
 
 use super::KnowledgeBase;
 
+/// Aggregate vocabulary + documentation-coverage counts — see
+/// [`KnowledgeBase::vocab_stats`].
+#[derive(Debug, Clone, Default)]
+pub struct VocabStats {
+    pub total:      usize,
+    pub classes:    usize,
+    pub instances:  usize,
+    pub relations:  usize,
+    /// Subset of `relations` classified as predicates / as functions.
+    pub predicates: usize,
+    pub functions:  usize,
+    pub documented: usize,
+    pub labeled:    usize,
+    /// Distinct documented symbols per language tag, most-covered first.
+    pub doc_languages: Vec<(String, usize)>,
+    /// Distinct termFormat-labeled symbols per language tag, most-covered
+    /// first.  Many languages ship labels without any documentation strings
+    /// (SUMO's German/French/… coverage), so this list is usually longer.
+    pub term_languages: Vec<(String, usize)>,
+}
+
 impl<L: TopLayer + Layer> KnowledgeBase<L> {
     // -- Semantic queries ------------------------------------------------------
 
@@ -35,6 +56,66 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// Axiom sentences in which `sym` occurs.
     pub fn sym_refs(&self, sym: crate::types::SymbolId) -> Vec<SentenceId> {
         self.layer.semantic().syntactic.axiom_sentences_of(sym).iter().copied().collect()
+    }
+
+    /// Aggregate vocabulary and documentation-coverage counts for an overview
+    /// page.  `classes` / `instances` / `relations` classify every "real"
+    /// symbol (KIF variables, scope-qualified interning keys, and skolem
+    /// constants excluded — the same notion of vocabulary as `search`); a
+    /// symbol may land in several buckets, and `relations` covers predicates
+    /// and functions too.  `documented` / `labeled` count distinct symbols
+    /// carrying a `documentation` / `termFormat` string; `total` is the
+    /// vocabulary size the coverage percentages should divide by.
+    pub fn vocab_stats(&self) -> VocabStats {
+        use crate::types::Element;
+        use std::collections::HashSet;
+
+        let syn = &self.layer.semantic().syntactic;
+        let mut ids: Vec<crate::types::SymbolId> = Vec::new();
+        syn.symbols.entries().for_each(|(&sym_id, sym)| {
+            let name = sym.name();
+            if name.starts_with('?') || name.starts_with('@') { return; }
+            if syn.is_skolem(sym_id) { return; }
+            if crate::kb::search::is_scoped_variable_name(&name) { return; }
+            ids.push(sym_id);
+        });
+
+        let mut out = VocabStats { total: ids.len(), ..VocabStats::default() };
+        for &id in &ids {
+            if self.is_class(id)    { out.classes += 1; }
+            if self.is_instance(id) { out.instances += 1; }
+            let pred = self.is_predicate(id);
+            let func = self.is_function(id);
+            if pred { out.predicates += 1; }
+            if func { out.functions  += 1; }
+            if self.is_relation(id) || pred || func { out.relations += 1; }
+        }
+
+        // Distinct documented/labeled subjects, straight off the head indexes.
+        // Subject/language slots: (documentation SUBJECT LANG "…"),
+        //                         (termFormat LANG SUBJECT "…").
+        // Distinct subjects per language tag; the scalar count is the union.
+        // Subject/language slots: (documentation SUBJECT LANG "…"),
+        //                         (termFormat LANG SUBJECT "…").
+        let mut coverage = |head: &str, subj_slot: usize, lang_slot: usize| {
+            let mut union: HashSet<crate::types::SymbolId> = HashSet::new();
+            let mut per_lang: std::collections::HashMap<String, HashSet<crate::types::SymbolId>> =
+                std::collections::HashMap::new();
+            for sid in syn.by_head(head).iter().copied() {
+                let Some(sent) = syn.sentence(sid) else { continue };
+                let (Some(Element::Symbol(subj)), Some(Element::Symbol(lang))) =
+                    (sent.elements.get(subj_slot), sent.elements.get(lang_slot)) else { continue };
+                union.insert(subj.id());
+                per_lang.entry(lang.to_string()).or_default().insert(subj.id());
+            }
+            let mut langs: Vec<(String, usize)> =
+                per_lang.into_iter().map(|(l, set)| (l, set.len())).collect();
+            langs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            (union.len(), langs)
+        };
+        (out.documented, out.doc_languages)  = coverage("documentation", 1, 2);
+        (out.labeled,    out.term_languages) = coverage("termFormat", 2, 1);
+        out
     }
 
     /// True if `sym` has `ancestor` (by name) somewhere in its taxonomy.
