@@ -1,8 +1,16 @@
-//! Error types and warning-control flags for the `SemanticLayer`.
+//! Error types for the `SemanticLayer`.
+//!
+//! Every [`SemanticError`] variant carries its own intrinsic [`Severity`] via
+//! [`SemanticError::severity`] — a pure function of *what kind of problem
+//! this is*, not of any global mutable state. Structural findings (arity,
+//! domain, taxonomy) default to `Error`; advisory findings (naming
+//! conventions, single-use variables) default to `Warning`; documentation-
+//! completeness findings default to `Hint`. A caller wanting `-Wall`-style
+//! promotion (warnings become errors) applies that as an explicit, stateless
+//! transform over the resulting `Diagnostic`s — see `crates/cli`'s
+//! `apply_severity_overrides` — never by mutating how `SemanticError` itself
+//! classifies findings.
 
-use std::{collections::HashSet, sync::{RwLock, atomic::{AtomicBool, Ordering}}};
-
-use once_cell::sync::Lazy;
 use thiserror::Error;
 
 use crate::{Diagnostic, SentenceId, Severity, Span, ToDiagnostic};
@@ -76,13 +84,22 @@ pub enum SemanticError {
     #[error("only one argument was passed to an conjunctive/disjunctive operator. Not technically incorrect, but meaningless")]
     SingleArity { sid: SentenceId },
 
-    /// A term has no `documentation` axiom.
+    /// A term has no `documentation` axiom in any language.
     #[error("term '{sym}' has no documentation axiom")]
     MissingDocumentation { sym: String },
 
-    /// A term has more than one `documentation` axiom.
-    #[error("term '{sym}' has {count} documentation axioms (expected 1)")]
-    MultipleDocumentation { sym: String, count: usize },
+    /// A term has more than one `documentation` axiom in the SAME language
+    /// (documented in several distinct languages is normal and not flagged).
+    #[error("term '{sym}' has {count} documentation axioms in {language} (expected 1)")]
+    MultipleDocumentation { sym: String, language: String, count: usize },
+
+    /// A term has no `termFormat` axiom in any language.
+    #[error("term '{sym}' has no termFormat axiom")]
+    MissingTermFormat { sym: String },
+
+    /// A relation symbol has no `format` axiom in any language.
+    #[error("relation '{sym}' has no format axiom")]
+    MissingFormatString { sym: String },
 
     /// A variable appears exactly once in its enclosing formula -- almost
     /// always a typo.
@@ -134,23 +151,45 @@ pub enum SemanticError {
 }
 
 impl SemanticError {
-    /// The severity this error currently resolves to, honouring the global
-    /// `-Wall` / `-Werror=<code>` promotion flags.
-    pub fn current_level(&self) -> log::Level {
-        if ALL_ERRORS.load(Ordering::SeqCst) {
-            return log::Level::Error;
-        }
-        let promoted = PROMOTED_TO_ERROR.read().expect("lock poisoned");
-        if promoted.contains(self.code()) || promoted.contains(self.name()) {
-            log::Level::Error
-        } else {
-            log::Level::Warn
-        }
-    }
+    /// This error's intrinsic severity — a pure function of the variant, not
+    /// of any global promotion state. See the module doc comment for the
+    /// classification: structural findings are `Error`, advisory findings
+    /// are `Warning`, documentation-completeness findings are `Hint`.
+    pub fn severity(&self) -> Severity {
+        match self {
+            Self::NoEntityAncestor { .. }
+            | Self::HeadNotRelation { .. }
+            | Self::HeadInvalid { .. }
+            | Self::NonLogicalArg { .. }
+            | Self::ArityMismatch { .. }
+            | Self::DomainMismatch { .. }
+            | Self::DoubleRange { .. }
+            | Self::MissingRange { .. }
+            | Self::MissingDomain { .. }
+            | Self::InstanceSubclassConflict { .. }
+            | Self::DisjointInstance { .. }
+            | Self::DisjointSubclass { .. }
+            | Self::Other { .. }
+            | Self::SingleArity { .. }
+            | Self::QuantifierVacuous { .. }
+            | Self::PartitionViolation { .. }
+            | Self::PartitionNonMember { .. }
+            | Self::MissingConstituentDep { .. } => Severity::Error,
 
-    /// `true` if this error currently classifies as a warning.
-    pub fn is_warn(&self) -> bool {
-        self.current_level() == log::Level::Warn
+            Self::MissingArity { .. }
+            | Self::FunctionCase { .. }
+            | Self::PredicateCase { .. }
+            | Self::SingleUseVariable { .. }
+            | Self::FreeVarInConsequent { .. }
+            | Self::ExistentialInAntecedent { .. }
+            | Self::TermNoRule { .. }
+            | Self::MutualConstituentDep { .. } => Severity::Warning,
+
+            Self::MissingDocumentation { .. }
+            | Self::MultipleDocumentation { .. }
+            | Self::MissingTermFormat { .. }
+            | Self::MissingFormatString { .. } => Severity::Hint,
+        }
     }
 
     /// Short alphanumeric code for use with `-W` / `--warning`.
@@ -173,8 +212,9 @@ impl SemanticError {
             Self::DisjointSubclass { .. }         => "E015",
             Self::Other { .. }                    => "E016",
             Self::SingleArity { .. }              => "E017",
-            Self::MissingDocumentation { .. }     => "W018",
-            Self::MultipleDocumentation { .. }    => "W019",
+            // W018/W019 are retired: MissingDocumentation/MultipleDocumentation
+            // moved to the Hint-tier H0xx series below (their severity no
+            // longer matches the W-prefix convention).
             Self::SingleUseVariable { .. }        => "W020",
             Self::FreeVarInConsequent { .. }      => "W021",
             Self::ExistentialInAntecedent { .. }  => "W022",
@@ -185,6 +225,12 @@ impl SemanticError {
             Self::TermNoRule { .. }               => "W027",
             Self::MissingConstituentDep { .. }    => "E028",
             Self::MutualConstituentDep { .. }     => "W029",
+            // H0xx: Hint-tier documentation-completeness findings (whole-KB
+            // pass, see KnowledgeBase::completeness_findings).
+            Self::MissingDocumentation { .. }     => "H001",
+            Self::MultipleDocumentation { .. }    => "H002",
+            Self::MissingTermFormat { .. }        => "H003",
+            Self::MissingFormatString { .. }      => "H004",
         }
     }
 
@@ -208,8 +254,6 @@ impl SemanticError {
             Self::DisjointSubclass { .. }         => "disjoint-subclass",
             Self::Other { .. }                    => "other",
             Self::SingleArity { .. }              => "single-arity",
-            Self::MissingDocumentation { .. }     => "missing-documentation",
-            Self::MultipleDocumentation { .. }    => "multiple-documentation",
             Self::SingleUseVariable { .. }        => "single-use-variable",
             Self::FreeVarInConsequent { .. }      => "free-var-in-consequent",
             Self::ExistentialInAntecedent { .. }  => "existential-in-antecedent",
@@ -219,88 +263,18 @@ impl SemanticError {
             Self::TermNoRule { .. }               => "term-no-rule",
             Self::MissingConstituentDep { .. }    => "missing-constituent-dep",
             Self::MutualConstituentDep { .. }     => "mutual-constituent-dep",
+            Self::MissingDocumentation { .. }     => "missing-documentation",
+            Self::MultipleDocumentation { .. }    => "multiple-documentation",
+            Self::MissingTermFormat { .. }        => "missing-term-format",
+            Self::MissingFormatString { .. }      => "missing-format-string",
         }
     }
 
-}
-
-/// A semantic-validation pass's findings, classified by severity.
-///
-/// Each entry is paired with the [`SentenceId`] the finding fired against so
-/// consumers can map back to source spans via `kb.sentence(sid)`.
-///
-/// Classification follows [`SemanticError::is_warn`], which honours the
-/// `-Wall` / `-W <code>` / `-q` global flags, so switching a flag between two
-/// passes reclassifies identical inputs accordingly.
-#[derive(Debug, Clone, Default)]
-pub struct Findings {
-    /// Hard errors (`is_warn() == false`). Loading commands should treat a
-    /// non-empty `errors` list as an abort condition.
-    pub errors:   Vec<(SentenceId, SemanticError)>,
-    /// Warnings (`is_warn() == true`). Advisory; consumers may render, suppress
-    /// (via `-q`), or ignore them.
-    pub warnings: Vec<(SentenceId, SemanticError)>,
-}
-
-impl Findings {
-    /// `true` iff no hard errors were reported. Warnings don't unset
-    /// cleanliness; check `warnings.is_empty()` separately for a stricter test.
-    pub fn is_clean(&self) -> bool {
-        self.errors.is_empty()
-    }
-
-    /// Total finding count (errors + warnings).
-    pub fn total(&self) -> usize {
-        self.errors.len() + self.warnings.len()
-    }
-
-    /// Push a finding, classifying it by [`SemanticError::is_warn`].
-    pub fn push(&mut self, sid: SentenceId, error: SemanticError) {
-        if error.is_warn() {
-            self.warnings.push((sid, error));
-        } else {
-            self.errors.push((sid, error));
-        }
-    }
-}
-
-// -- Global warning-control flags ---------------------------------------------
-
-/// Treat all ignorable semantic errors as fatal (mimics -Wall).
-static ALL_ERRORS: AtomicBool = AtomicBool::new(false);
-
-/// Specific error codes or names promoted to errors (mimics -Werror=<code>).
-static PROMOTED_TO_ERROR: Lazy<RwLock<HashSet<String>>> =
-    Lazy::new(|| RwLock::new(HashSet::new()));
-
-/// Enable or disable treating all ignorable semantic errors as fatal (`-Wall`).
-pub fn set_all_errors(val: bool) {
-    ALL_ERRORS.store(val, Ordering::SeqCst);
-}
-
-/// Promote the given error code or kebab-case name to a hard error
-/// (`-Werror=<code>`).
-pub fn promote_to_error(code_or_name: &str) {
-    if let Ok(mut set) = PROMOTED_TO_ERROR.write() {
-        set.insert(code_or_name.to_string());
-    }
-}
-
-/// Clear the promoted-error set installed by [`promote_to_error`].
-pub fn clear_promoted_errors() {
-    if let Ok(mut set) = PROMOTED_TO_ERROR.write() {
-        set.clear();
-    }
 }
 
 impl ToDiagnostic for SemanticError {
     fn to_diagnostic(&self) -> Diagnostic {
-        let severity = match self.current_level() {
-            log::Level::Error => Severity::Error,
-            log::Level::Warn  => Severity::Warning,
-            log::Level::Info  => Severity::Info,
-            _                 => Severity::Hint,
-        };
+        let severity = self.severity();
         let (sids, highlight_arg): (Vec<SentenceId>, i32) = match self {
             SemanticError::HeadNotRelation { sid, .. }
             | SemanticError::HeadInvalid   { sid, .. }
@@ -366,5 +340,38 @@ mod tests {
         let s   = d.render(None);
         assert!(s.contains("[semantic/function-case]"));
         assert!(s.contains("uppercase"));
+    }
+
+    #[test]
+    fn structural_findings_default_to_error_severity() {
+        // No global flag needed: NoEntityAncestor is intrinsically Error,
+        // matching its E001 code — the exact case that used to be Warning
+        // by default under the old promotion-only model.
+        let err = SemanticError::NoEntityAncestor { sym: "Foo".into() };
+        assert_eq!(err.severity(), Severity::Error);
+        assert_eq!(err.to_diagnostic().severity, Severity::Error);
+    }
+
+    #[test]
+    fn documentation_completeness_findings_are_hints() {
+        for err in [
+            SemanticError::MissingDocumentation { sym: "Foo".into() },
+            SemanticError::MultipleDocumentation { sym: "Foo".into(), language: "EnglishLanguage".into(), count: 2 },
+            SemanticError::MissingTermFormat { sym: "Foo".into() },
+            SemanticError::MissingFormatString { sym: "likes".into() },
+        ] {
+            assert_eq!(err.severity(), Severity::Hint, "{} should be Hint-severity", err.name());
+            assert_eq!(err.to_diagnostic().severity, Severity::Hint);
+        }
+    }
+
+    #[test]
+    fn severity_is_a_pure_function_of_the_variant() {
+        // No global state left to consult — two identical errors always
+        // agree, and there is nothing left to reset between test runs.
+        let a = SemanticError::MissingArity { sym: "likes".into() };
+        let b = SemanticError::MissingArity { sym: "likes".into() };
+        assert_eq!(a.severity(), b.severity());
+        assert_eq!(a.severity(), Severity::Warning);
     }
 }

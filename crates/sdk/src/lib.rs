@@ -103,7 +103,7 @@ pub use session::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseO
 pub use source::Source;
 
 pub use sigmakee_rs_core::{
-    Diagnostic, Findings, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
+    Diagnostic, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
     SortSig, TptpLang, TptpOptions,
 };
 
@@ -131,10 +131,12 @@ pub use sigmakee_rs_core::{
     tokenize_kif, FileOrigin, LocalProvenance, ParsedDocument, Token, TokenKind,
 };
 
-// Diagnostics machinery beyond the `Diagnostic` type itself.
-pub use sigmakee_rs_core::{
-    promote_to_error, set_all_errors, Severity, TellResult, ToDiagnostic,
-};
+// Diagnostics machinery beyond the `Diagnostic` type itself. Severity is now
+// intrinsic to each `SemanticError` variant (`SemanticError::severity`) —
+// there is no more process-global promotion state to re-export; a caller
+// wanting `-Wall`-style promotion applies it as an explicit, stateless
+// transform over the returned `Diagnostic`s (see `crates/cli`).
+pub use sigmakee_rs_core::{Severity, TellResult, ToDiagnostic};
 
 // Proof-source indexing + search + shared prover opts.
 pub use sigmakee_rs_core::{SearchOpts, SearchSource};

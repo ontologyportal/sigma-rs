@@ -262,7 +262,7 @@ fn main_worker() {
                     || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
                     KnowledgeBase::new_native,
                 );
-                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
+                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats, &cli.suppress)
             }
             // e / eprover / subprocess / embedded → external layer.
             _ => {
@@ -299,7 +299,7 @@ fn main_worker() {
                     ingest_constituents(&mut session, &manager, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats);
                     run_load_warm(session, manager)
                 } else {
-                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
+                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats, &cli.suppress)
                 }
             }
         }
@@ -391,6 +391,7 @@ fn dispatch<L: ProvingLayer>(
     git: Option<&str>,
     branch: Option<&str>,
     stats: &mut IngestStats,
+    suppress: &[String],
 ) -> bool
 where
     L::Opts: ProverOptsFor,
@@ -411,7 +412,7 @@ where
             run_load(session, manager),
 
         Cmd::Validate { formula, parse } =>
-            run_validate(session, manager, formula, parse),
+            run_validate(session, manager, formula, parse, suppress),
 
         #[cfg(feature = "ask")]
         Cmd::Ask { formula, tell, interactive, kb: _, keep } => {
@@ -603,12 +604,12 @@ fn init_logging(cli: &Cli, manager: &KBManager) {
         .init();
 }
 
-/// `-W` warning-elevation policy → core promotion flags.
+/// CLI startup knobs that aren't `-W` (that one is no longer global — see
+/// `sigmakee::cli::validate::apply_severity_overrides`, applied explicitly
+/// wherever diagnostics are printed, since `SemanticError` now carries its
+/// own intrinsic severity rather than consulting process-global promotion
+/// state).
 fn apply_global_overrides(cli: &Cli, manager: &mut KBManager) {
-    use sigmakee_rs_sdk::{promote_to_error, set_all_errors};
-    for arg in &cli.suppress {
-        if arg == "all" { set_all_errors(true); } else { promote_to_error(arg); }
-    }
     // `--profile` is one knob: it also turns on the native prover's
     // per-mechanism saturation-loop timers (formerly the separate
     // `--native-profile` flag), so the report it prints always has

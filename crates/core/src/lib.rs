@@ -135,7 +135,7 @@ pub use kb::ingest::{IngestResult, PromoteError};
 pub type TellResult = IngestResult;
 pub use kb::export::TptpOptions;
 pub use kb::session_tags;
-pub use semantics::errors::{SemanticError, Findings};
+pub use semantics::errors::SemanticError;
 
 pub use parse::tptp::syntax::TptpLang;
 
@@ -205,10 +205,4 @@ pub mod test {
         }
     }
 }
-
-// Process-global semantic-error classification knobs: promote specific warning
-// codes to errors, or flip every warning to an error.
-pub use semantics::errors::{
-    clear_promoted_errors, promote_to_error, set_all_errors,
-};
 

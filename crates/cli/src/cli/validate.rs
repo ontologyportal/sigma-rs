@@ -12,36 +12,62 @@ use crate::cli::util::{read_stdin};
 ///
 /// `formula`: only validate the given formula in the context of the full KB.
 /// `parse_only`: skip all semantic checks; only verify the KIF is syntactically valid.
+/// `suppress`: `-W`/`--warning` arguments (`"all"` or a specific code/name) —
+/// applied as a post-hoc severity flip via [`apply_severity_overrides`], since
+/// `SemanticError` severity is no longer global mutable state.
 pub fn run_validate<L>(
     session:       Session<L>,
     _manager:       KBManager,
     formula:       Option<String>,
     parse_only:    bool,
-) -> bool 
-where 
+    suppress:      &[String],
+) -> bool
+where
     L: ProvingLayer {
     log::debug!(
         "run_validate: formula={:?}, parse_only={}",
-        formula.is_some(), parse_only, 
+        formula.is_some(), parse_only,
     );
 
     let formula = formula.or_else(read_stdin);
 
     match formula {
-        Some(text) => validate_single_formula(session, &text, parse_only),
+        Some(text) => validate_single_formula(session, &text, parse_only, suppress),
         None       => {
-            let diagnostics = if !parse_only {
+            let mut diagnostics = if !parse_only {
                 session.validate()
             } else {
                 vec![]
             };
-            
+            apply_severity_overrides(&mut diagnostics, suppress);
+
             let scope = session.kb().iter_files().len();
             let (errs, warns) = split_severity(diagnostics);
             let (n_err, n_warn) = print_diags(session.kb(), &errs, &warns);
-            
+
             println!("Validated {} constituents: {}, {}", scope, count_phrase(n_err, "error"), count_phrase(n_warn, "warning"));
             n_err > 0
+        }
+    }
+}
+
+/// `-W`/`--warning` severity-elevation policy, applied as a stateless
+/// transform over an already-produced `Vec<Diagnostic>` — never by mutating
+/// how core classifies findings (there is no more global promotion state to
+/// mutate: each `SemanticError` carries its own intrinsic severity). `-W all`
+/// promotes every `Warning` to `Error`; `-W <code-or-name>` promotes only
+/// diagnostics matching that specific code (`"E002"`) or kebab-case name
+/// (`"head-not-relation"`). `Info`/`Hint` findings are never touched — they're
+/// advisory by design, and `-Wall` promoting a documentation hint to a
+/// build-breaking error would defeat the point of giving it that severity.
+pub fn apply_severity_overrides(diags: &mut [Diagnostic], suppress: &[String]) {
+    if suppress.is_empty() { return; }
+    let promote_all = suppress.iter().any(|s| s == "all");
+    for d in diags.iter_mut() {
+        if d.severity == sigmakee_rs_sdk::Severity::Warning
+            && (promote_all || suppress.iter().any(|s| s == d.code))
+        {
+            d.severity = sigmakee_rs_sdk::Severity::Error;
         }
     }
 }
@@ -57,7 +83,8 @@ pub fn validate_single_formula<L>(
     mut session:   Session<L>,
     text:          &str,
     parse_only:    bool,
-) -> bool 
+    suppress:      &[String],
+) -> bool
 where L: ProvingLayer {
     log::debug!(
         "validate_single_formula: text={}, parse_only={}",
@@ -73,7 +100,7 @@ where L: ProvingLayer {
                 }
             }
             return false;
-        }, 
+        },
         Ok(s) => s
     };
 
@@ -81,12 +108,13 @@ where L: ProvingLayer {
         return true;
     }
 
-    let diags: Vec<Diagnostic> = open_session.validate().into_iter().filter_map(|e| {
+    let mut diags: Vec<Diagnostic> = open_session.validate().into_iter().filter_map(|e| {
         match e {
             SdkError::Kb(e) => Some(e),
             _ => None
         }
     }).collect();
+    apply_severity_overrides(&mut diags, suppress);
 
     let (errs, warns) = split_severity(diags);
     let (n_err, n_warn) = print_diags(session.kb(), &errs, &warns);

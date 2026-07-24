@@ -271,8 +271,11 @@ mod tests {
         assert!(errs.iter().any(|e| e.code() == "E002"),
             "validate_sentence_collect should include HeadNotRelation (E002); got {:?}",
             errs.iter().map(|e| e.code()).collect::<Vec<_>>());
-        assert!(errs.iter().find(|e| e.code() == "E002").unwrap().is_warn(),
-            "HeadNotRelation is warning-severity by default");
+        assert_eq!(
+            errs.iter().find(|e| e.code() == "E002").unwrap().severity(),
+            crate::Severity::Error,
+            "HeadNotRelation is structural — Error severity, matching its E-prefix code",
+        );
     }
 
     /// Find the single root sentence headed by predicate `head`.

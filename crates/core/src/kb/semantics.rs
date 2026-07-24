@@ -1,5 +1,8 @@
 //! Public re-exports of semantic operations.
-use crate::{SentenceId, Diagnostic, ToDiagnostic};
+use std::collections::{HashMap, HashSet};
+
+use crate::{SentenceId, SymbolId, Diagnostic, ToDiagnostic, SemanticError};
+use crate::types::Element;
 use crate::layer::{TopLayer, Layer};
 
 use super::KnowledgeBase;
@@ -67,18 +70,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// carrying a `documentation` / `termFormat` string; `total` is the
     /// vocabulary size the coverage percentages should divide by.
     pub fn vocab_stats(&self) -> VocabStats {
-        use crate::types::Element;
-        use std::collections::HashSet;
-
         let syn = &self.layer.semantic().syntactic;
-        let mut ids: Vec<crate::types::SymbolId> = Vec::new();
-        syn.symbols.entries().for_each(|(&sym_id, sym)| {
-            let name = sym.name();
-            if name.starts_with('?') || name.starts_with('@') { return; }
-            if syn.is_skolem(sym_id) { return; }
-            if crate::kb::search::is_scoped_variable_name(&name) { return; }
-            ids.push(sym_id);
-        });
+        let ids = self.real_symbol_ids();
 
         let mut out = VocabStats { total: ids.len(), ..VocabStats::default() };
         for &id in &ids {
@@ -116,6 +109,123 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         (out.documented, out.doc_languages)  = coverage("documentation", 1, 2);
         (out.labeled,    out.term_languages) = coverage("termFormat", 2, 1);
         out
+    }
+
+    /// Every interned symbol that counts as real KB vocabulary: KIF
+    /// variables (`?x`/`@row`), scope-qualified variable interning keys, and
+    /// CNF skolem constants are excluded. Shared by [`Self::vocab_stats`] and
+    /// [`Self::completeness_findings`] so both agree on what a "symbol" is.
+    fn real_symbol_ids(&self) -> Vec<SymbolId> {
+        let syn = &self.layer.semantic().syntactic;
+        let mut ids: Vec<SymbolId> = Vec::new();
+        syn.symbols.entries().for_each(|(&sym_id, sym)| {
+            let name = sym.name();
+            if name.starts_with('?') || name.starts_with('@') { return; }
+            if syn.is_skolem(sym_id) { return; }
+            if crate::kb::search::is_scoped_variable_name(&name) { return; }
+            ids.push(sym_id);
+        });
+        ids
+    }
+
+    /// The set of symbols bound to `subject_slot` across every sentence
+    /// matching `pattern_kif` (head-indexed via `head`, same O(1)
+    /// pre-filter [`Self::vocab_stats`]'s hand-written scan uses). Empty when
+    /// `pattern_kif`'s head relation isn't interned in this KB at all — never
+    /// panics (unlike the public [`Self::lookup`], where an unknown symbol in
+    /// a developer-typed pattern is a genuine usage error worth aborting on).
+    fn symbols_matching(&self, pattern_kif: &str, head: &str, subject_slot: usize) -> HashSet<SymbolId> {
+        let syn = &self.layer.semantic().syntactic;
+        let Ok(pat) = syn.patterns().pattern_from_kif(pattern_kif) else { return HashSet::new() };
+        syn.patterns().find_by_pattern(&pat, Some(head), None)
+            .into_iter()
+            .filter_map(|(_, b)| match b.elements.get(&subject_slot) {
+                Some(Element::Symbol(s)) => Some(s.id()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Per-`(subject, language)` occurrence counts for `(documentation
+    /// SUBJECT LANGUAGE "...")` sentences — the finer key
+    /// [`Self::symbols_matching`] can't give, needed to tell "documented in
+    /// three languages" (fine) apart from "documented three times in
+    /// English" (a real duplicate — [`SemanticError::MultipleDocumentation`]
+    /// fires per-language, never across languages).
+    fn documentation_occurrences(&self) -> HashMap<(SymbolId, String), usize> {
+        let syn = &self.layer.semantic().syntactic;
+        let Ok(pat) = syn.patterns().pattern_from_kif("(documentation ?Subj ?Lang ?Text)") else {
+            return HashMap::new();
+        };
+        let mut counts: HashMap<(SymbolId, String), usize> = HashMap::new();
+        for (_, b) in syn.patterns().find_by_pattern(&pat, Some("documentation"), None) {
+            let (Some(Element::Symbol(subj)), Some(Element::Symbol(lang))) =
+                (b.elements.get(&0), b.elements.get(&1)) else { continue };
+            *counts.entry((subj.id(), lang.to_string())).or_insert(0) += 1;
+        }
+        counts
+    }
+
+    /// The whole-KB documentation-completeness pass folded into
+    /// [`Self::validate_all`] as a second pass alongside the per-sentence
+    /// structural checks: every real symbol ([`Self::real_symbol_ids`])
+    /// missing a `documentation` or `termFormat` entry, every relation
+    /// symbol missing a `format` string, and every `(symbol, language)` pair
+    /// documented more than once. All findings are [`crate::Severity::Hint`]
+    /// (advisory, additive — never a substitute for the structural checks).
+    ///
+    /// Uses the syntactic layer's pattern matcher
+    /// ([`crate::syntactic::pattern`], reached the same way
+    /// [`Self::lookup`] does) rather than hand-indexed element positions, so
+    /// each check states the formula shape it looks for directly instead of
+    /// through bare argument-index numbers.
+    fn completeness_findings(&self) -> Vec<Diagnostic> {
+        let syn = &self.layer.semantic().syntactic;
+        let doc_occurrences = self.documentation_occurrences();
+        let documented: HashSet<SymbolId> = doc_occurrences.keys().map(|(id, _)| *id).collect();
+        let has_term_format = self.symbols_matching("(termFormat ?Lang ?Subj ?Text)", "termFormat", 1);
+        let has_format      = self.symbols_matching("(format ?Lang ?Rel ?Text)", "format", 1);
+
+        let mut out = Vec::new();
+        for id in self.real_symbol_ids() {
+            let Some(name) = syn.sym_name(id).map(|s| s.name().to_string()) else { continue };
+
+            if !documented.contains(&id) {
+                out.push(self.completeness_diag(SemanticError::MissingDocumentation { sym: name.clone() }, &name));
+            }
+            if !has_term_format.contains(&id) {
+                out.push(self.completeness_diag(SemanticError::MissingTermFormat { sym: name.clone() }, &name));
+            }
+            if (self.is_relation(id) || self.is_predicate(id) || self.is_function(id))
+                && !has_format.contains(&id)
+            {
+                out.push(self.completeness_diag(SemanticError::MissingFormatString { sym: name.clone() }, &name));
+            }
+        }
+
+        for ((id, language), count) in &doc_occurrences {
+            if *count <= 1 { continue; }
+            if let Some(name) = syn.sym_name(*id).map(|s| s.name().to_string()) {
+                out.push(self.completeness_diag(
+                    SemanticError::MultipleDocumentation { sym: name.clone(), language: language.clone(), count: *count },
+                    &name,
+                ));
+            }
+        }
+        out
+    }
+
+    /// Convert `err` to a [`Diagnostic`], anchoring it at `sym`'s defining
+    /// sentence ([`Self::defining_sentence`]) when one exists — symbol-level
+    /// completeness findings carry no `sid` of their own the way
+    /// per-sentence structural errors do.
+    fn completeness_diag(&self, err: SemanticError, sym: &str) -> Diagnostic {
+        let mut d = err.to_diagnostic();
+        if let Some((sid, span)) = self.defining_sentence(sym) {
+            d.sids  = vec![sid];
+            d.range = span;
+        }
+        d
     }
 
     /// True if `sym` has `ancestor` (by name) somewhere in its taxonomy.
@@ -212,11 +322,19 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         self.validate_sids(&[sid], Scope::Session(session_id(session)))
     }
 
-    /// Validate every root sentence in the KB, reasoning globally (`Base`).
+    /// Validate every root sentence in the KB, reasoning globally (`Base`),
+    /// PLUS a second, whole-KB pass of documentation-completeness hints
+    /// ([`Self::completeness_findings`]) — a distinct axis from the
+    /// per-sentence structural checks above (a symbol's documentation
+    /// coverage isn't a property of any one sentence), folded into this same
+    /// entry point rather than exposed separately so `validate_all` remains
+    /// the one "check everything" call.
     pub fn validate_all(&self) -> Vec<Diagnostic> {
         crate::with_guard!(self);
         let roots: Vec<SentenceId> = self.layer.semantic().syntactic.root_sids();
-        self.validate_sids(&roots, crate::semantics::types::Scope::Base)
+        let mut diags = self.validate_sids(&roots, crate::semantics::types::Scope::Base);
+        diags.extend(self.completeness_findings());
+        diags
     }
 
     /// Validate only the sentences belonging to `session`, reasoning in that
@@ -409,5 +527,108 @@ mod session_validate_probe {
         assert!(
             !messages.iter().any(|m| m.contains("not a declared relation")),
             "declared relation must not warn; got {:?}", messages);
+    }
+}
+
+#[cfg(test)]
+mod completeness_tests {
+    use crate::{KnowledgeBase, Severity};
+
+    fn promoted(kif: &str) -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(kif, &std::path::PathBuf::from("t.kif"), "load");
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("load").expect("promote");
+        kb
+    }
+
+    fn find<'a>(diags: &'a [crate::Diagnostic], code: &str, needle: &str) -> Option<&'a crate::Diagnostic> {
+        diags.iter().find(|d| d.code == code && d.message.contains(needle))
+    }
+
+    #[test]
+    fn missing_documentation_hint_fires_and_is_a_hint() {
+        let kb = promoted("(subclass Foo Entity)");
+        let diags = kb.validate_all();
+        let d = find(&diags, "missing-documentation", "Foo")
+            .expect("Foo has no documentation axiom — should be flagged");
+        assert_eq!(d.severity, Severity::Hint);
+    }
+
+    #[test]
+    fn missing_documentation_hint_absent_when_documented() {
+        let kb = promoted(
+            "(subclass Foo Entity)\n(documentation Foo EnglishLanguage \"A foo.\")",
+        );
+        let diags = kb.validate_all();
+        assert!(find(&diags, "missing-documentation", "Foo").is_none(),
+            "Foo is documented — must not be flagged");
+    }
+
+    #[test]
+    fn missing_term_format_hint_fires_and_absent_when_present() {
+        let undocumented = promoted("(subclass Foo Entity)");
+        assert!(find(&undocumented.validate_all(), "missing-term-format", "Foo").is_some());
+
+        let labeled = promoted(
+            "(subclass Foo Entity)\n(termFormat EnglishLanguage Foo \"foo\")",
+        );
+        assert!(find(&labeled.validate_all(), "missing-term-format", "Foo").is_none());
+    }
+
+    #[test]
+    fn missing_format_string_only_applies_to_relations() {
+        let kb = promoted(
+            "(subclass BinaryRelation Relation)\n\
+             (instance likes BinaryRelation)\n\
+             (subclass Foo Entity)",
+        );
+        let diags = kb.validate_all();
+        assert!(find(&diags, "missing-format-string", "likes").is_some(),
+            "a relation with no format string should be flagged");
+        assert!(find(&diags, "missing-format-string", "Foo").is_none(),
+            "a non-relation class must never be flagged for a missing format string");
+    }
+
+    #[test]
+    fn missing_format_string_absent_when_present() {
+        let kb = promoted(
+            "(subclass BinaryRelation Relation)\n\
+             (instance likes BinaryRelation)\n\
+             (format EnglishLanguage likes \"%1 likes %2\")",
+        );
+        assert!(find(&kb.validate_all(), "missing-format-string", "likes").is_none());
+    }
+
+    #[test]
+    fn multiple_documentation_same_language_fires_with_count() {
+        let kb = promoted(
+            "(subclass Foo Entity)\n\
+             (documentation Foo EnglishLanguage \"A foo.\")\n\
+             (documentation Foo EnglishLanguage \"Another foo description.\")",
+        );
+        let diags = kb.validate_all();
+        let d = find(&diags, "multiple-documentation", "Foo")
+            .expect("two English documentation axioms for Foo should be flagged");
+        assert_eq!(d.severity, Severity::Hint);
+        assert!(d.message.contains('2'), "message should mention the count: {}", d.message);
+    }
+
+    #[test]
+    fn multiple_documentation_different_languages_does_not_fire() {
+        // Documented in two DISTINCT languages is normal multilingual
+        // coverage, not a duplicate — must not be flagged.
+        let kb = promoted(
+            "(subclass Foo Entity)\n\
+             (documentation Foo EnglishLanguage \"A foo.\")\n\
+             (documentation Foo FrenchLanguage \"Un foo.\")",
+        );
+        assert!(find(&kb.validate_all(), "multiple-documentation", "Foo").is_none());
+    }
+
+    #[test]
+    fn empty_kb_has_no_completeness_findings() {
+        let kb = KnowledgeBase::new();
+        assert!(kb.validate_all().is_empty(), "an empty KB has no symbols to flag");
     }
 }
