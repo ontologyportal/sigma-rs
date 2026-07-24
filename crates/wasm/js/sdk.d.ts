@@ -88,6 +88,15 @@ export class Source {
 /** Instantiate the WASM module (idempotent). */
 export function init(input?: unknown): Promise<unknown>;
 
+/**
+ * Reformat raw KIF source by rewriting each line's leading whitespace to
+ * match its paren-nesting depth. Pure JS, no WASM/KB involved — comments,
+ * strings (including one spanning a newline), and blank lines are preserved
+ * byte-for-byte; only leading indentation is rewritten. `indentUnit`
+ * defaults to `"   "` (3 spaces), matching SUMO's own Merge.kif convention.
+ */
+export function formatKif(text: string, opts?: { indentUnit?: string }): string;
+
 export interface AskOpts {
   session?: string;
   hook?: (tptp: string) => string;

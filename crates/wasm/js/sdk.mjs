@@ -259,6 +259,160 @@ export class Session {
   flushSession(session) { this.#kb.flushSession(session); }
 }
 
+// -- KIF formatting -------------------------------------------------------------
+//
+// Deliberately NOT implemented as reparse-with-core-then-re-render (the
+// approach `sumo-lsp`'s textDocument/formatting uses, via
+// AstNode::format_plain): SUO-KIF comments (`;...`) are discarded at the
+// tokenizer stage and never reach core's AST at all — core has no concept of
+// a comment surviving a parse. Reformatting through core would silently
+// delete every comment in the buffer, and the LSP's formatter does exactly
+// that today (a known, accepted limitation there — an LSP client can at
+// least show a diff/confirm before applying an edit; a live editor button
+// should not carry that risk by surprise).
+//
+// Instead: a structural re-indenter/reflower that never discards to an AST.
+// It keeps every existing line break, blank line, comment, and string
+// exactly as written — it only ever ADDS line breaks, never removes one —
+// and rewrites leading whitespace to match paren-nesting depth. Safe on a
+// buffer with unbalanced parens (depth just clamps at 0) since it never
+// requires the input to parse.
+
+/** Two open parens are never allowed on the same output line, with two
+ *  named exceptions: `not`'s sole argument, and a quantifier's
+ *  (`exists`/`forall`) variable list — both conventionally sit on the same
+ *  line as the symbol that introduces them. Every other case of a second
+ *  open before the first has closed gets a line break inserted before it. */
+const INLINE_HEAD_EXCEPTIONS = new Set(['not', 'exists', 'forall']);
+
+/** Tokenizer for the reflow pass: comments/strings/parens as before (see
+ *  the two-alternative closed-vs-unterminated-string split below), plus a
+ *  dedicated symbol-word group — the only token kind that can BE "not" /
+ *  "exists" / "forall" — and a single-char catch-all for everything else
+ *  (variables, numbers, operators). The catch-all is coarse (one char per
+ *  match rather than a whole token), but that's harmless here: all that
+ *  matters for anything besides parens/words is *that* something occupied
+ *  the position, invalidating a pending inline exception — not what it was. */
+const KIF_REFLOW_SCAN_RE = /(;[^\n]*)|("(?:[^"\\]|\\.)*")|("(?:[^"\\]|\\.)*$)|([()])|([A-Za-z_][A-Za-z0-9_-]*)|(\S)/g;
+
+/**
+ * Reformat `text` (raw KIF source, need not even be syntactically valid):
+ * rewrite leading whitespace to match paren-nesting depth, and insert a line
+ * break wherever a second open paren would otherwise land on a line that
+ * already has one open (except `not`'s argument and a quantifier's variable
+ * list — see {@link INLINE_HEAD_EXCEPTIONS}). Never REMOVES an existing line
+ * break, so a file that's already broken up more than the rule requires is
+ * left alone; it only closes gaps where the rule is violated. `indentUnit`
+ * defaults to 3 spaces, matching SUMO's own Merge.kif convention. Comments,
+ * strings (including one that happens to span a newline, however unusual),
+ * blank lines, and inter-token spacing are otherwise preserved byte-for-byte.
+ *
+ * @param {string} text
+ * @param {{indentUnit?: string}} [opts]
+ * @returns {string}
+ */
+export function formatKif(text, { indentUnit = '   ' } = {}) {
+  const srcLines = text.split('\n');
+  const out = [];
+
+  let depth = 0;
+  let inString = false;   // true mid-line ⇒ carried over an unterminated "…\n
+  // One-shot per-nesting-level bookkeeping (0-based: level d == paren depth
+  // d+1): headAtLevel[d] is the head symbol of the form open at that level,
+  // once its first token is seen; exceptionOpen[d] is true only until that
+  // head's one allowed inline argument (if it has one) has been placed.
+  const headAtLevel = [];
+  const exceptionOpen = [];
+
+  // The output line currently being assembled — one source line may expand
+  // into several of these when a break gets inserted mid-line.
+  let cur = '';
+  // A one-way latch, NOT a count of still-open parens: once any '(' has
+  // landed on this line, it stays true even after that form fully closes —
+  // "two open parens on one line" is a textual rule, not "two simultaneously
+  // unclosed", so a second sibling argument that's itself a compound form
+  // still isn't allowed to share the line just because the first already
+  // closed (e.g. `(instance ?X Dog) (instance ?X Animal)` still splits).
+  let openedOnCur = false;
+  const startAt = (indentDepth) => { cur = indentUnit.repeat(Math.max(0, indentDepth)); openedOnCur = false; };
+
+  /** Scans `scanText` for parens/heads, updating depth/head state. When
+   *  `emit` is true, also reconstructs the text into `cur` (flushing to
+   *  `out` and starting a fresh indented line at each rule violation);
+   *  when false, only the depth/head bookkeeping runs — used for a string
+   *  continuation line's trailing content, which (matching the rest of
+   *  that line) is never split or re-emitted, only scanned. */
+  const scan = (scanText, emit) => {
+    KIF_REFLOW_SCAN_RE.lastIndex = 0;
+    let m;
+    let lastWritten = 0;
+    while ((m = KIF_REFLOW_SCAN_RE.exec(scanText))) {
+      const [full, , , openStr, paren, word] = m;   // [full, comment, closedStr, openStr, paren, word]
+      if (paren === '(') {
+        const parentLevel = depth - 1;
+        const exempt = parentLevel >= 0 && exceptionOpen[parentLevel]
+          && INLINE_HEAD_EXCEPTIONS.has(headAtLevel[parentLevel]);
+        if (emit && openedOnCur && !exempt) {
+          // Flush everything up to (not including) this '(' first, trimming
+          // the dangling trailing space a line break would otherwise leave.
+          cur += scanText.slice(lastWritten, m.index).replace(/[ \t]+$/, '');
+          out.push(cur);
+          startAt(depth);
+          lastWritten = m.index;
+        }
+        if (exempt) exceptionOpen[parentLevel] = false;   // one-shot, now used
+        depth++;
+        headAtLevel[depth - 1] = undefined;
+        exceptionOpen[depth - 1] = false;
+        if (emit) openedOnCur = true;
+      } else if (paren === ')') {
+        depth--;   // does NOT clear openedOnCur — see the latch comment above
+      } else if (word !== undefined) {
+        const lvl = depth - 1;
+        if (lvl >= 0 && headAtLevel[lvl] === undefined) {
+          headAtLevel[lvl] = word;
+          exceptionOpen[lvl] = INLINE_HEAD_EXCEPTIONS.has(word);
+        }
+      } else if (openStr !== undefined) {
+        inString = true;   // reached EOL still inside a string
+      }
+      // comment / a fully-closed string: no effect on depth or inString.
+    }
+    if (emit) cur += scanText.slice(lastWritten);
+  };
+
+  for (const line of srcLines) {
+    if (inString) {
+      // Inside a string literal opened on an earlier line. The line is never
+      // re-indented or split — it starts as string content, not code — but a
+      // common SUMO pattern is a `documentation` string wrapping across
+      // exactly two lines with the form's OWN closing ')' sitting right
+      // after the closing quote (`...")`), so whatever follows the quote
+      // still needs scanning (not emitting): skipping it undercounts depth
+      // by one for every such form, and the drift compounds across the file.
+      out.push(line);
+      const m = /^(?:[^"\\]|\\.)*"/.exec(line);
+      if (!m) continue;   // still open at EOL — nothing on this line to scan
+      inString = false;
+      scan(line.slice(m[0].length), false);
+      continue;
+    }
+
+    const trimmed = line.replace(/^[ \t]+/, '');
+    if (trimmed.length === 0) { out.push(''); continue; }
+    // This line's own indent reflects depth AFTER any closing parens it
+    // opens with (`)  )  qux)` should sit at the depth *after* those closes,
+    // not before) — a plain run of leading ')' can't be inside a string or
+    // comment, so counting it directly (ahead of the full scan below) is safe.
+    let leadDepth = depth;
+    for (let i = 0; trimmed[i] === ')'; i++) leadDepth--;
+    startAt(leadDepth);
+    scan(trimmed, true);
+    out.push(cur);
+  }
+  return out.join('\n');
+}
+
 // -- Standalone loaders --------------------------------------------------------
 // The same fetch/File logic as Session#ingest, but operating directly on a raw
 // binding (`WasmNativeProver` / `WasmKnowledgeBase`) for callers not using the

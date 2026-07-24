@@ -52,6 +52,11 @@ const handlers = {
   validate() { return { diagnostics: session.validate() }; },
   stats() { return { stats: session.kb.stats() }; },
 
+  // Freeze/thaw seam for the page's OPFS boot cache (see app.js's
+  // tryRestoreFromCache/saveKbCache) — native backend only, per the SDK doc.
+  snapshot() { return { bytes: session.snapshot() }; },
+  restore({ bytes }) { session.restore(bytes); return { ok: true }; },
+
   /**
    * Revalidate an edited constituent with FULL KB context by diffing the buffer
    * into its own session and committing it — the live KB tracks the editor.

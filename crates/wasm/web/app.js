@@ -24,6 +24,8 @@
  * GitHub Pages).
  */
 
+import { formatKif } from './pkg/sdk.mjs';
+
 const worker = new Worker(new URL('./sigma.worker.js', import.meta.url), { type: 'module' });
 
 // -- tiny id-keyed RPC over postMessage ---------------------------------------
@@ -71,7 +73,11 @@ async function githubApi(path) {
 }
 
 let diagnostics = [];
-let diagFilter = { file: '', severity: '' };
+let diagFilter = { file: '', severity: '', kind: '', code: '', page: 0 };
+// A full SUMO load can produce thousands of Hint-severity completeness
+// findings alone; pagination keeps `diagList` from rendering them all as DOM
+// nodes at once.
+const DIAG_PAGE_SIZE = 50;
 let constituents = [];   // [{ name, text, origin }] — the page's source of truth
 let sumoCatalog = null;  // cached list of *.kif paths in the repo
 let uiLanguage = 'EnglishLanguage';  // header selector; the language for term/format rendering
@@ -215,6 +221,12 @@ async function promoteAndValidate() {
   // The route was applied before any of this existed; re-honour ?file/?sev/?l
   // now that there is something to filter and scroll to.
   applyDiagRouteParams();
+  // Fire-and-forget: refresh the boot cache for next time. Every mutation
+  // path (ingest/edit/remove/reset) funnels through here, so the cache is
+  // always kept as fresh as the last successful promote — no separate
+  // invalidation step. Not awaited: the app is already usable, and a failed
+  // or slow cache write must never hold up the UI (see saveKbCache).
+  saveKbCache();
 }
 
 const reprocess = () => withPostProcessing(promoteAndValidate);
@@ -279,6 +291,173 @@ $('langSelect')?.addEventListener('change', () => {
   else if (q) runSearch(q);
 });
 
+// -- KB snapshot cache (OPFS) --------------------------------------------------
+//
+// Boot's expensive work is re-fetching every 'sumo'-origin file over HTTP and
+// re-running ingest+promote+validate from scratch. The core KB has its own
+// freeze/thaw seam (session.snapshot()/restore()) built exactly for this; this
+// cache pairs a frozen snapshot with a cached copy of each 'sumo' file's text
+// (needed for the Edit tab / file-size display, which read `constituents[i]
+// .text` regardless of how the KB itself got built) so a matching boot can
+// skip BOTH the network fetch and the ingest+promote — not just one of them.
+//
+// Validity: the cached upstream commit SHA must match the CURRENT SHA
+// (`sumo`-origin content is pinned to a commit, not versioned per-file), and
+// a fingerprint of the exact (name, origin) set loaded must match (a
+// different file set obviously needs a different snapshot). `file`-origin
+// text has no commit to pin to, so its cache freshness instead relies on
+// every mutation path (ingest/update/remove/reset) funnelling through
+// promoteAndValidate, which rewrites the cache after every successful
+// promote — there is no separate "invalidate" step, just "always keep the
+// cache as fresh as the last successful promote".
+//
+// `url`-origin constituents have no version signal at all (an arbitrary
+// link's content can change with nothing to detect it against), so their
+// presence disables caching for that boot entirely rather than risk serving
+// stale content silently.
+
+const SUMO_CACHE_DIR      = 'sumo-cache';
+const SUMO_CACHE_META     = 'meta.json';
+const SUMO_CACHE_SNAPSHOT = 'snapshot.bin';
+
+let sumoCacheDirHandle = null;   // lazily opened, separate from the top-level
+                                  // OPFS dir 'file'-origin uploads already use
+
+async function getSumoCacheDir() {
+  if (sumoCacheDirHandle) return sumoCacheDirHandle;
+  if (!opfsRoot) throw new Error('File system not initialized yet');
+  sumoCacheDirHandle = await opfsRoot.getDirectoryHandle(SUMO_CACHE_DIR, { create: true });
+  return sumoCacheDirHandle;
+}
+
+async function writeOpfsFile(dir, name, contents) {
+  const handle = await dir.getFileHandle(name, { create: true });
+  const w = await handle.createWritable();
+  await w.write(contents);
+  await w.close();
+}
+
+/** Encode a constituent name into a single OPFS-safe path segment. Some SUMO
+ *  constituents live in a subdirectory of the repo (e.g.
+ *  "development/Muscles.kif"), and OPFS's `getFileHandle` only accepts one
+ *  path component — a `/` in the name throws `TypeError: Invalid filename`.
+ *  That failure happens mid-loop in `saveKbCache`, *before* snapshot.bin/
+ *  meta.json are written, so it silently aborted the entire cache save on
+ *  every KB containing such a file, forcing a normal fetch+rebuild on every
+ *  boot even though the cache directory looked partially populated. */
+function opfsSafeName(name) {
+  return encodeURIComponent(name);
+}
+
+/** Stable fingerprint of the current constituent SET (name+origin pairs) —
+ *  changes on add/remove, independent of any file's content. */
+function constituentsFingerprint() {
+  return savedConstituents.map((c) => `${c.origin}:${c.name}`).sort().join('|');
+}
+
+/** `false` when any loaded constituent has no stable version signal to cache
+ *  against (`url` origin) — caching is skipped entirely for that boot. */
+function kbCacheEligible() {
+  return savedConstituents.length > 0 && savedConstituents.every((c) => c.origin === 'sumo' || c.origin === 'file');
+}
+
+/**
+ * Attempt a cache-hit boot: restore the KB from a cached snapshot and
+ * populate `constituents` from cached ('sumo') / OPFS ('file') text,
+ * skipping the fetch+ingest+promote loop entirely.
+ *
+ * Returns `true` on success — the caller still renders/routes, just skips
+ * straight past the fetch loop and `reprocess()`. Returns `false` for any
+ * reason at all (no cache yet, a stale one, a corrupt read, an unsupported
+ * browser) and touches no state the normal boot path wouldn't also set, so
+ * the caller can unconditionally fall through to it.
+ */
+async function tryRestoreFromCache() {
+  if (!kbCacheEligible()) return false;
+  // Offline / rate-limited: trust whatever's cached rather than fail the
+  // whole boot — the normal path needs this same network access anyway, so a
+  // cache miss here doesn't cost anything a fresh boot wasn't already risking.
+  let info;
+  try { info = await fetchLastCommitInfo(); } catch { info = null; }
+  try {
+    const dir = await getSumoCacheDir();
+    const meta = JSON.parse(await (await (await dir.getFileHandle(SUMO_CACHE_META)).getFile()).text());
+    if (info && meta.commitSha !== info.sha) return false;
+    if (meta.fingerprint !== constituentsFingerprint()) return false;
+
+    // Confirmed hit — only now touch the shared boot-progress counters. Doing
+    // this any earlier corrupts them for the normal fetch loop on a MISS
+    // (the common case): bootTotal got left at a tiny fixed number while
+    // bootStep kept climbing once per file, so the bar rushed to 100% almost
+    // immediately and then sat pinned there while the per-file status label
+    // kept changing underneath it.
+    bootStep = 0;
+    bootTotal = 2;   // short, fixed sequence — unlike the fetch loop, not sized per constituent
+    bootProgress('Restoring from cache…');
+    const bytes = new Uint8Array(await (await (await dir.getFileHandle(SUMO_CACHE_SNAPSHOT)).getFile()).arrayBuffer());
+    await call('restore', { bytes });
+
+    const built = [];
+    for (const { name, origin } of savedConstituents) {
+      const text = origin === 'sumo'
+        ? await (await (await dir.getFileHandle(opfsSafeName(name))).getFile()).text()
+        : await fromOrigin(origin, name);
+      built.push({ name, origin, text });
+    }
+    constituents = built;
+    // The restored KB is already promoted — this is the read-only structural
+    // pass reprocess() would otherwise run, not a rebuild, so it's cheap.
+    diagnostics = (await call('validate')).diagnostics;
+    bootProgress('Cache restored');
+    return true;
+  } catch {
+    return false;   // no cache dir yet, a missing/corrupt entry, restore() rejected, …
+  }
+}
+
+/**
+ * Persist the current, just-promoted KB as the cache for next boot. Best
+ * effort and fire-and-forget from the caller's perspective: any failure
+ * (OPFS quota, an unsupported browser, offline) just means the next boot
+ * does a normal fetch+ingest — never surfaced to the user.
+ */
+async function saveKbCache() {
+  if (!kbCacheEligible()) return;
+  try {
+    const info = await fetchLastCommitInfo();
+    if (!info?.sha) return;
+    const bytes = (await call('snapshot')).bytes;
+    const dir = await getSumoCacheDir();
+    for (const { name, origin, text } of constituents) {
+      if (origin === 'sumo') await writeOpfsFile(dir, opfsSafeName(name), text);
+    }
+    await writeOpfsFile(dir, SUMO_CACHE_SNAPSHOT, bytes);
+    await writeOpfsFile(dir, SUMO_CACHE_META, JSON.stringify({
+      commitSha: info.sha, fingerprint: constituentsFingerprint(),
+    }));
+  } catch (e) {
+    console.warn('KB snapshot cache: failed to save', e);
+  }
+}
+
+// Deliberately understated maintenance link (bottom-right, low-contrast) — a
+// manual escape hatch for a stale/corrupt cache, not a feature to promote.
+// Only clears the persisted OPFS cache; the live in-memory KB is untouched,
+// so a fresh boot (a manual reload) is what actually exercises the change.
+$('clearCacheLink')?.addEventListener('click', async (e) => {
+  e.preventDefault();
+  const link = $('clearCacheLink');
+  const original = link.textContent;
+  try {
+    if (opfsRoot) await opfsRoot.removeEntry(SUMO_CACHE_DIR, { recursive: true });
+  } catch {
+    // Nothing cached yet is not a failure — either way the cache is now clear.
+  }
+  sumoCacheDirHandle = null;   // the lazily-opened handle would otherwise point at a removed directory
+  link.textContent = 'cache cleared';
+  setTimeout(() => { link.textContent = original; }, 2000);
+});
+
 // -- Boot ---------------------------------------------------------------------
 
 // Boot progress. Each constituent contributes two steps — the fetch and the
@@ -309,6 +488,16 @@ async function boot() {
     await call('boot');
     bootProgress('Engine ready');
     opfsRoot = await navigator.storage.getDirectory();
+
+    // Cache hit: the KB and every constituent's text are already restored —
+    // skip the fetch+ingest+promote loop below entirely.
+    if (await tryRestoreFromCache()) {
+      $('overlay').remove();
+      renderAll();
+      applyRoute();
+      return;
+    }
+
     let i = 1;
     const total = savedConstituents.length;
     for (const { name, origin } of savedConstituents) {
@@ -376,6 +565,10 @@ function syncUrl(tab, params = new URLSearchParams(), { replace = false } = {}) 
  */
 function showTab(name, { push = true, params } = {}) {
   if (promoting && PROMOTE_TABS.includes(name)) return; // greyed while post-processing
+  // Navigating away from Edit — a tab-bar click, a citation's "open man page"
+  // link, browser Back, anything that routes through here — always deflates
+  // fullscreen first, whether or not `name` is actually 'edit' itself.
+  if (name !== 'edit') setEditFullscreen(false);
   for (const btn of document.querySelectorAll('nav.tabs button')) {
     btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
   }
@@ -1074,25 +1267,85 @@ function renderRefList(refs, filter, name) {
 
 // -- Diagnostics --------------------------------------------------------------
 
-function renderDiagnostics() {
-  const files = [...new Set(diagnostics.map((d) => d.file).filter(Boolean))].sort();
-  const fileSel = $('diagFileFilter');
-  if (fileSel) {
-    fileSel.innerHTML = `<option value="">All files</option>` +
-      files.map((f) => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
-    // Only discard an unknown file filter once there is data to contradict it:
-    // the route is applied right after ingest, while validation is still
-    // running, and clearing it then would drop a filter from the URL.
-    if (diagnostics.length && !files.includes(diagFilter.file)) diagFilter.file = '';
-    fileSel.value = diagFilter.file;
-  }
-  const sevSel = $('diagSevFilter');
-  if (sevSel) sevSel.value = diagFilter.severity;
+const DIAG_SEV_ORDER = ['error', 'warning', 'info', 'hint'];
 
-  const filtered = diagnostics
+/** `true` if `d` matches every active diagFilter dimension except `exceptDim`
+ *  (pass `null` to apply all four). The single predicate both
+ *  `filteredDiagnostics` (what's actually shown) and `diagnosticsExcept`
+ *  (each dropdown's faceted counts) build on, so the two never drift apart. */
+function matchesDiagFilter(d, exceptDim) {
+  return (exceptDim === 'file'     || !diagFilter.file     || d.file === diagFilter.file) &&
+    (exceptDim === 'severity' || !diagFilter.severity || d.severity === diagFilter.severity) &&
+    (exceptDim === 'kind'     || !diagFilter.kind     || d.kind === diagFilter.kind) &&
+    (exceptDim === 'code'     || !diagFilter.code     || d.code === diagFilter.code);
+}
+
+/** `{d, i}` pairs (`i` = index into the full `diagnostics` array) matching
+ *  every active filter — shared by rendering and deep-link scrolling so both
+ *  agree on what's "shown" (and therefore which page it's on). */
+function filteredDiagnostics() {
+  return diagnostics
     .map((d, i) => ({ d, i }))
-    .filter(({ d }) => (!diagFilter.file || d.file === diagFilter.file) &&
-      (!diagFilter.severity || d.severity === diagFilter.severity));
+    .filter(({ d }) => matchesDiagFilter(d, null));
+}
+
+/** Diagnostics matching every active filter EXCEPT `dim` — the pool `dim`'s
+ *  own dropdown counts its options against, so a count reflects what the
+ *  OTHER active filters already narrowed to (faceted: e.g. once Severity is
+ *  set to Error, the File dropdown's counts are error counts per file, not
+ *  raw totals) rather than freezing at the unfiltered totals. */
+function diagnosticsExcept(dim) {
+  return diagnostics.filter((d) => matchesDiagFilter(d, dim));
+}
+
+/**
+ * Populate `sel` from `field`'s distinct values within `pool`, each option
+ * labelled with its occurrence count — `"All <label> (N)"` plus one row per
+ * value, `"value (n)"`. `opts.order` fixes a leading sort order (severity's
+ * error/warning/info/hint); unlisted values fall back to alphabetical after
+ * it. `opts.labelFn` formats a value for display (raw value if omitted).
+ *
+ * Resets `diagFilter[stateKey]` to '' when its current value has no match in
+ * `pool` — a sibling filter changing (or a fresh validate()) can invalidate
+ * an existing selection; this is the one place that's discovered and healed,
+ * mirroring how a stale `?file=`/`?kind=` from the URL is handled the same
+ * way on first load.
+ */
+function populateDiagFilter(sel, stateKey, field, pool, allLabel, opts = {}) {
+  if (!sel) return;
+  const { order, labelFn } = opts;
+  const counts = new Map();
+  for (const d of pool) {
+    const v = d[field];
+    if (!v) continue;
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  const values = [...counts.keys()].sort((a, b) => {
+    const ia = order ? order.indexOf(a) : -1, ib = order ? order.indexOf(b) : -1;
+    if (ia !== -1 || ib !== -1) return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  sel.innerHTML = `<option value="">${allLabel} (${pool.length})</option>` +
+    values.map((v) => `<option value="${esc(v)}">${esc(labelFn ? labelFn(v) : v)} (${counts.get(v)})</option>`).join('');
+  if (diagnostics.length && diagFilter[stateKey] && !counts.has(diagFilter[stateKey])) {
+    diagFilter[stateKey] = '';
+  }
+  sel.value = diagFilter[stateKey];
+}
+
+function renderDiagnostics() {
+  populateDiagFilter($('diagFileFilter'), 'file',     'file',     diagnosticsExcept('file'),     'All files');
+  populateDiagFilter($('diagSevFilter'),  'severity',  'severity', diagnosticsExcept('severity'), 'All severities',
+    { order: DIAG_SEV_ORDER, labelFn: (s) => s[0].toUpperCase() + s.slice(1) });
+  populateDiagFilter($('diagKindFilter'), 'kind',     'kind',     diagnosticsExcept('kind'),      'All types');
+  populateDiagFilter($('diagCodeFilter'), 'code',     'code',     diagnosticsExcept('code'),      'All codes');
+
+  // Active-filter count on the Filter button, so it's meaningful collapsed.
+  const activeCount = ['file', 'severity', 'kind', 'code'].filter((k) => diagFilter[k]).length;
+  const badge = $('diagFilterBadge');
+  if (badge) badge.textContent = activeCount || '';
+
+  const filtered = filteredDiagnostics();
 
   const errs = diagnostics.filter((d) => d.severity === 'error').length;
 
@@ -1107,7 +1360,7 @@ function renderDiagnostics() {
     }
   }
 
-  const filterActive = diagFilter.file || diagFilter.severity;
+  const filterActive = diagFilter.file || diagFilter.severity || diagFilter.kind || diagFilter.code;
   const sum = $('diagSummary');
   if (sum) sum.innerHTML = diagnostics.length
     ? (filterActive
@@ -1117,21 +1370,56 @@ function renderDiagnostics() {
       ` — click a <span class="loc">file:line</span> to open it in the editor`
     : 'No diagnostics — the loaded KB is clean.';
 
+  // Clamp the page to the current (possibly just-filtered/shrunk) result set
+  // so a filter change or a smaller re-validation never strands the view
+  // past the end.
+  const pageCount = Math.max(1, Math.ceil(filtered.length / DIAG_PAGE_SIZE));
+  diagFilter.page = Math.min(Math.max(0, diagFilter.page), pageCount - 1);
+  const pageStart = diagFilter.page * DIAG_PAGE_SIZE;
+  const pageItems = filtered.slice(pageStart, pageStart + DIAG_PAGE_SIZE);
+
   const list = $('diagList');
-  if (!list) return;
-  list.innerHTML = filtered.length ? filtered.map(({ d, i }) => {
-    const loc = d.file ? locLink(d.file, d.line, 'loc') : '<span class="loc">(no location)</span>';
-    return `<div class="diag" data-i="${i}" data-sev="${esc(d.severity)}">
-      <div class="diag-head">
-        <span class="sev ${esc(d.severity)}">${esc(d.severity)}</span>
-        ${loc}
-        <span class="code">[${esc(d.kind)}/${esc(d.code)}]</span>
-        ${ghAnchor(d.file, d.line)}
-        <span class="msg">${esc(d.message)}</span>
-      </div>
-    </div>`;
-  }).join('') : `<div class="hint">${diagnostics.length ? 'No diagnostics match the current filters.' : ''}</div>`;
+  if (list) {
+    list.innerHTML = pageItems.length ? pageItems.map(({ d, i }) => {
+      const loc = d.file ? locLink(d.file, d.line, 'loc') : '<span class="loc">(no location)</span>';
+      return `<div class="diag" data-i="${i}" data-sev="${esc(d.severity)}">
+        <div class="diag-head">
+          <span class="sev ${esc(d.severity)}">${esc(d.severity)}</span>
+          ${loc}
+          <span class="code">[${esc(d.kind)}/${esc(d.code)}]</span>
+          ${ghAnchor(d.file, d.line)}
+          <span class="msg">${esc(d.message)}</span>
+        </div>
+      </div>`;
+    }).join('') : `<div class="hint">${diagnostics.length ? 'No diagnostics match the current filters.' : ''}</div>`;
+  }
+  renderDiagPager(filtered.length, pageCount);
 }
+
+/** Prev/Next pager beneath the diagnostics list — hidden entirely when
+ *  everything fits on one page. */
+function renderDiagPager(total, pageCount) {
+  const el = $('diagPager');
+  if (!el) return;
+  if (pageCount <= 1) { el.innerHTML = ''; return; }
+  const page = diagFilter.page;
+  const from = total ? page * DIAG_PAGE_SIZE + 1 : 0;
+  const to = Math.min(total, from + DIAG_PAGE_SIZE - 1);
+  el.innerHTML = `
+    <button class="btn ghost" id="diagPrev" type="button" ${page === 0 ? 'disabled' : ''}>‹ Prev</button>
+    <span class="hint">${from}–${to} of ${total} · page ${page + 1} of ${pageCount}</span>
+    <button class="btn ghost" id="diagNext" type="button" ${page >= pageCount - 1 ? 'disabled' : ''}>Next ›</button>
+  `;
+}
+
+$('diagPager')?.addEventListener('click', (e) => {
+  if (e.target.id === 'diagPrev') diagFilter.page -= 1;
+  else if (e.target.id === 'diagNext') diagFilter.page += 1;
+  else return;
+  renderDiagnostics();
+  syncDiagUrl();
+  $('diagList').scrollIntoView({ block: 'nearest' });
+});
 
 /**
  * GitHub *blame* deep-link for a SUMO-sourced constituent, else null.
@@ -1190,47 +1478,81 @@ $('revalidate').onclick = () => withBusy($('revalidate'), async () => {
   renderDiagnostics();
 });
 
-/** Mirror the active filters into the address bar so a filtered view is shareable. */
+/** Mirror the active filters (and page, when not the first) into the address
+ *  bar so a filtered/paginated view is shareable. `p` is 1-based in the URL —
+ *  friendlier to read/type than the internal 0-based index. */
 function syncDiagUrl() {
-  updateParams({ file: diagFilter.file, sev: diagFilter.severity });
+  updateParams({
+    file: diagFilter.file,
+    sev:  diagFilter.severity,
+    kind: diagFilter.kind,
+    code: diagFilter.code,
+    p:    diagFilter.page ? diagFilter.page + 1 : null,
+  });
 }
 
 /**
- * Apply ?file / ?sev / ?l to the Diagnostics tab. Called both when the route is
- * applied and again once validation finishes — on a cold load the route runs
- * before any diagnostics exist, so the first pass has nothing to filter or
- * scroll to.
+ * Apply ?file / ?sev / ?kind / ?code / ?p / ?l to the Diagnostics tab. Called
+ * both when the route is applied and again once validation finishes — on a
+ * cold load the route runs before any diagnostics exist, so the first pass
+ * has nothing to filter or scroll to. `?l` (deep-link to one diagnostic)
+ * takes precedence over `?p` — it jumps to whatever page that diagnostic
+ * actually falls on.
  */
 function applyDiagRouteParams() {
   const params = new URLSearchParams(location.search);
   if ((params.get('tab') || 'browse') !== 'diagnostics') return;
   diagFilter.file     = params.get('file') || '';
   diagFilter.severity = params.get('sev')  || '';
+  diagFilter.kind     = params.get('kind') || '';
+  diagFilter.code     = params.get('code') || '';
+  diagFilter.page     = Math.max(0, (Number(params.get('p')) || 1) - 1);
+  // A shared/deep-linked URL that already carries a filter should show it
+  // expanded, not hide the active filter behind a collapsed button.
+  if (diagFilter.file || diagFilter.severity || diagFilter.kind || diagFilter.code) {
+    togglePanel('diagFilterBtn', 'diagFilterPanel', true);
+  }
   renderDiagnostics();
   const line = Number(params.get('l'));
-  if (Number.isFinite(line) && line > 0) scrollToDiagnostic(diagFilter.file, line);
+  if (Number.isFinite(line) && line > 0) scrollToDiagnostic(line);
 }
 
+$('diagFilterBtn').addEventListener('click', () => togglePanel('diagFilterBtn', 'diagFilterPanel'));
+
 $('diagFileFilter').addEventListener('change', () => {
-  diagFilter.file = $('diagFileFilter').value; renderDiagnostics(); syncDiagUrl();
+  diagFilter.file = $('diagFileFilter').value; diagFilter.page = 0; renderDiagnostics(); syncDiagUrl();
 });
 $('diagSevFilter').addEventListener('change', () => {
-  diagFilter.severity = $('diagSevFilter').value; renderDiagnostics(); syncDiagUrl();
+  diagFilter.severity = $('diagSevFilter').value; diagFilter.page = 0; renderDiagnostics(); syncDiagUrl();
+});
+$('diagKindFilter').addEventListener('change', () => {
+  // Picking a type invalidates a code chosen under a different type — clear
+  // it rather than leave a stale, now-impossible combination active.
+  diagFilter.kind = $('diagKindFilter').value; diagFilter.code = ''; diagFilter.page = 0;
+  renderDiagnostics(); syncDiagUrl();
+});
+$('diagCodeFilter').addEventListener('change', () => {
+  diagFilter.code = $('diagCodeFilter').value; diagFilter.page = 0; renderDiagnostics(); syncDiagUrl();
 });
 
 /**
- * Scroll to the diagnostic in `file` nearest `line` and flash it. Nearest
- * rather than exact: the caller's line comes from an edited buffer, whose line
- * numbers drift from the KB's as soon as anything above is inserted.
+ * Jump to whichever page contains the diagnostic nearest `line` (within the
+ * active file/severity filter) and flash it. Nearest rather than exact: the
+ * caller's line comes from an edited buffer, whose line numbers drift from
+ * the KB's as soon as anything above is inserted.
  */
-function scrollToDiagnostic(file, line) {
-  let best = -1, bestDist = Infinity;
-  diagnostics.forEach((d, i) => {
-    if (file && d.file !== file) return;
+function scrollToDiagnostic(line) {
+  const filtered = filteredDiagnostics();
+  let bestPos = -1, bestDist = Infinity;
+  filtered.forEach(({ d }, pos) => {
     const dist = Math.abs((d.line || 0) - line);
-    if (dist < bestDist) { bestDist = dist; best = i; }
+    if (dist < bestDist) { bestDist = dist; bestPos = pos; }
   });
-  const el = best >= 0 && $('diagList').querySelector(`.diag[data-i="${best}"]`);
+  if (bestPos < 0) return;
+  diagFilter.page = Math.floor(bestPos / DIAG_PAGE_SIZE);
+  renderDiagnostics();
+
+  const el = $('diagList').querySelector(`.diag[data-i="${filtered[bestPos].i}"]`);
   if (!el) return;
   el.scrollIntoView({ block: 'center', behavior: 'smooth' });
   el.classList.add('diag-target');
@@ -1758,6 +2080,15 @@ function defineKifLanguage(m) {
     // default stops at "-" and would hand back a fragment.
     wordPattern: /[A-Za-z_][A-Za-z0-9_-]*/g,
   });
+  // Registering this is what makes Monaco's OWN "Format Document" command
+  // (right-click menu, Shift+Alt+F) work, not just the toolbar button below —
+  // both end up calling this same provider, so there's exactly one
+  // implementation of "what formatting means" (formatKif, from the SDK).
+  m.languages.registerDocumentFormattingEditProvider('kif', {
+    provideDocumentFormattingEdits(model) {
+      return [{ range: model.getFullModelRange(), text: formatKif(model.getValue()) }];
+    },
+  });
   m.editor.defineTheme('kif-light', {
     base: 'vs', inherit: true,
     rules: [
@@ -1871,6 +2202,10 @@ function updateEditActions() {
   $('editLog').textContent = origin === 'url'
     ? 'Loaded from a URL — it can be edited and downloaded here, but not saved or submitted.'
     : '';
+  // A save result from whatever file was open before must not linger once
+  // the user has switched to a different one.
+  $('editSaveStatus').style.color = '';
+  $('editSaveStatus').textContent = '';
 }
 
 function onEditPickerChange() {
@@ -1895,9 +2230,7 @@ function onEditPickerChange() {
 function updateEditFileLabel() {
   const el = $('editFileName');
   if (!el) return;
-  el.textContent = editCurrentFile
-    ? editCurrentFile.name
-    : `${$('editNewName').value.trim() || 'new file'} (unsaved)`;
+  el.textContent = editCurrentFile ? editCurrentFile.name : 'new file (unsaved)';
 }
 
 // -- Open-file dialog: pick a loaded constituent, or start a new file ---------
@@ -2003,10 +2336,17 @@ $('editPicker').addEventListener('change', () => {
   updateParams(editCurrentFile ? { file: editCurrentFile.name } : {});
 });
 
+// Delegates to Monaco's own format-document command rather than calling
+// formatKif + applying the edit by hand — Monaco's command already runs it
+// through the SAME registered provider (defineKifLanguage, above) and
+// applies the result as one undoable edit, preserving cursor/scroll/undo
+// history the way a hand-rolled setValue() would not.
+$('editFormat').onclick = () => monacoEditor?.getAction('editor.action.formatDocument')?.run();
+
 /** Save the buffer to the user's local disk (a real download, independent of the in-browser OPFS/KB state). */
 $('editDownload').onclick = () => {
   if (!monacoEditor) return;
-  const name = editCurrentFile ? editCurrentFile.name : ($('editNewName').value.trim() || 'untitled.kif');
+  const name = editCurrentFile ? editCurrentFile.name : 'untitled.kif';
   const blob = new Blob([monacoEditor.getValue()], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2017,35 +2357,87 @@ $('editDownload').onclick = () => {
   URL.revokeObjectURL(url);
 };
 
+// -- Edit: fullscreen toggle ---------------------------------------------------
+//
+// Lifts #tab-edit (toolbar + editor + editLog) to cover the viewport via a
+// body-level class (body.edit-fullscreen), rather than moving/re-parenting
+// any DOM — the CSS alone describes the two end states. The View Transitions
+// API (where supported) morphs between them automatically; browsers without
+// it just get an instant toggle, still fully functional.
+
+let editFullscreen = false;
+
+// Two icon variants for the one button: outward corner-brackets to enter,
+// inward ones to exit — the same visual language most fullscreen toggles use.
+const EDIT_FULLSCREEN_ENTER_PATH =
+  'M2 5.5V2.75A.75.75 0 0 1 2.75 2h2.75M2 10.5v2.75c0 .414.336.75.75.75h2.75' +
+  'M14 5.5V2.75a.75.75 0 0 0-.75-.75h-2.75M14 10.5v2.75a.75.75 0 0 1-.75.75h-2.75';
+const EDIT_FULLSCREEN_EXIT_PATH =
+  'M5.5 2v2.75a.75.75 0 0 1-.75.75H2M10.5 2v2.75c0 .414.336.75.75.75H14' +
+  'M5.5 14v-2.75a.75.75 0 0 0-.75-.75H2M10.5 14v-2.75c0-.414.336-.75.75-.75H14';
+
+function setEditFullscreen(on) {
+  if (on === editFullscreen) return;
+  const apply = () => {
+    editFullscreen = on;
+    document.body.classList.toggle('edit-fullscreen', on);
+    const btn = $('editFullscreen');
+    btn.setAttribute('aria-pressed', String(on));
+    btn.title = on ? 'Exit fullscreen editor' : 'Toggle fullscreen editor';
+    btn.querySelector('path').setAttribute('d', on ? EDIT_FULLSCREEN_EXIT_PATH : EDIT_FULLSCREEN_ENTER_PATH);
+    // The container's size just changed outside of any window resize, which
+    // is the one case automaticLayout's own ResizeObserver can lag behind —
+    // an explicit layout() is cheap insurance against a stale-sized canvas.
+    monacoEditor?.layout();
+  };
+  // Snapshot-based morph between the two states; falls back to an instant
+  // toggle wherever unsupported (Firefox, Safari as of this writing) — still
+  // fully correct, just not animated.
+  if (document.startViewTransition) document.startViewTransition(apply);
+  else apply();
+}
+
+$('editFullscreen').onclick = () => setEditFullscreen(!editFullscreen);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && editFullscreen) setEditFullscreen(false);
+});
+
 $('editSave').onclick = async () => {
   const btn = $('editSave');
+  const status = $('editSaveStatus');
+  const setStatus = (text, bad) => { status.style.color = bad ? 'var(--bad)' : ''; status.textContent = text; };
+
+  if (!monacoEditor) return;
+  let name, origin;
+  if (editCurrentFile) {
+    ({ name, origin } = editCurrentFile);
+  } else {
+    // A file created via "+ New file" has no name yet — ask for one now,
+    // rather than expecting it to have been typed somewhere earlier (there
+    // is nowhere left to type it in advance; the Open dialog no longer asks).
+    const entered = window.prompt('Filename for this new file:', 'untitled.kif');
+    if (entered === null) return;   // cancelled — leave the buffer as-is, no status change
+    name = entered.trim();
+    if (!name) { setStatus('Enter a filename to save.', true); return; }
+    origin = 'file';
+  }
+
   btn.disabled = true;   // icon-only button: disable, don't swap the label
   try {
-    if (!monacoEditor) return;
-    const text = monacoEditor.getValue();
-    let name, origin;
-    if (editCurrentFile) {
-      ({ name, origin } = editCurrentFile);
-    } else {
-      name = $('editNewName').value.trim();
-      if (!name) throw new Error('Enter a filename first.');
-      origin = 'file';
-    }
     // Save is only offered for local files now (see updateEditActions), so the
     // old "this edit is session-only" warning for sumo/url origins is gone with
     // the button that could trigger it.
-    const r = await updateConstituentText(name, text, origin);
+    const r = await updateConstituentText(name, monacoEditor.getValue(), origin);
     editCurrentFile = { name, origin };
     populateEditPicker();
     $('editPicker').value = `${name}|${origin}`;
     updateEditActions();
     updateEditFileLabel();
     runEditValidate();
-    $('editLog').style.color = '';
-    $('editLog').textContent = r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`;
+    setStatus(r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`, false);
   } catch (e) {
-    $('editLog').style.color = 'var(--bad)';
-    $('editLog').textContent = String(e && e.message || e);
+    setStatus(String(e && e.message || e), true);
   } finally {
     btn.disabled = false;
   }
@@ -2053,21 +2445,27 @@ $('editSave').onclick = async () => {
 
 // -- Home: what is loaded, at a glance ----------------------------------------
 //
-// Counts come from the worker (one pass over the KB); the upstream commit date
+// Counts come from the worker (one pass over the KB); the upstream commit info
 // is one unauthenticated GitHub call, cached for the session so revisiting the
-// tab does not spend the 60/hour budget.
+// tab (or checking the KB snapshot cache — see fetchLastCommitInfo's other
+// caller in tryRestoreFromCache) does not spend the 60/hour budget twice.
 
 // Cache the promise, not the resolved value: two overlapping callers would
 // both see a null value and each fire a request, spending two of the 60/hour
 // unauthenticated budget on one page load.
 let lastCommitPromise = null;
 
-async function fetchLastCommitDate() {
+/** `{ sha, date }` of the latest commit on `SUMO.ref`, or `null` fields when
+ *  the API call fails — best-effort, never thrown past this function.
+ *  Shared by the stats tile (date) and the KB snapshot cache (sha, the
+ *  version signal 'sumo'-origin constituents are pinned to). */
+async function fetchLastCommitInfo() {
   if (!lastCommitPromise) {
     lastCommitPromise = (async () => {
       const commits = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/commits?per_page=1`);
-      const iso = commits[0]?.commit?.author?.date;
-      return iso ? new Date(iso) : null;
+      const c = commits[0];
+      const iso = c?.commit?.author?.date;
+      return { sha: c?.sha ?? null, date: iso ? new Date(iso) : null };
     })().catch((e) => { lastCommitPromise = null; throw e; });
   }
   return lastCommitPromise;
@@ -2202,7 +2600,7 @@ async function refreshHomeStats() {
 
   // Upstream commit date, best effort — the rest of the page is useful without it.
   try {
-    const d = await fetchLastCommitDate();
+    const { date: d } = await fetchLastCommitInfo();
     $('statCommit').textContent = d ? fmtDate(d) : 'unknown';
     $('statCommit').title = d ? d.toString() : '';
   } catch (e) {
@@ -2227,11 +2625,14 @@ function ghSetStatus(text, bad = false) {
   el.style.color = bad ? 'var(--bad)' : '';
 }
 
-/** The file the Contribute panel acts on: whatever the Edit tab has open. */
+/** The file the Contribute panel acts on: whatever the Edit tab has open.
+ *  (Submit-to-GitHub is only ever shown for a `sumo`-origin file — see
+ *  updateEditActions — so an unnamed new file, always `file`-origin, never
+ *  reaches here in practice; the empty-string fallback is just defensive.) */
 function ghCurrentFile() {
   if (editCurrentFile) return editCurrentFile.name;
   const v = $('editPicker').value;
-  return v && v !== '__new__' ? v.slice(0, v.indexOf('|')) : ($('editNewName').value.trim() || '');
+  return v && v !== '__new__' ? v.slice(0, v.indexOf('|')) : '';
 }
 
 $('ghPropose').onclick = () => {
