@@ -2136,7 +2136,25 @@ function scheduleEditValidate() {
   editValidateTimer = setTimeout(runEditValidate, 400);
 }
 
+// Coalesce validate requests: whole-file validation of a large constituent
+// takes a couple of seconds in the worker, so at most one runs at a time and
+// at most one rerun is queued behind it — typing never piles up a backlog.
+let editValidateBusy = false;
+let editValidateQueued = false;
+
 async function runEditValidate() {
+  if (!monacoEditor) return;
+  if (editValidateBusy) { editValidateQueued = true; return; }
+  editValidateBusy = true;
+  try {
+    await runEditValidateNow();
+  } finally {
+    editValidateBusy = false;
+    if (editValidateQueued) { editValidateQueued = false; runEditValidate(); }
+  }
+}
+
+async function runEditValidateNow() {
   if (!monacoEditor) return;
   const text = monacoEditor.getValue();
   // A buffer belonging to a loaded constituent is diffed into the live KB and

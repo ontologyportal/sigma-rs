@@ -76,6 +76,16 @@ pub use crate::prover::saturate::prover::NativeOpts;
 
 // -- Public re-exports --------------------------------------------------------
 
+/// Parse-only syntax check of KIF text — no KB, no ingestion, no state.
+/// Returns the tokenizer/parser diagnostics; empty means the text is
+/// syntactically well-formed.  `file` names the source in each diagnostic's
+/// span.  Use this to vet a transient editor buffer BEFORE staging it into a
+/// [`KnowledgeBase`]: staging syntactically broken content reads as "the file
+/// is now empty" and retracts every sentence the file previously contributed.
+pub fn kif_parse_diagnostics(text: &str, file: &str) -> Vec<Diagnostic> {
+    parse::Parser::Kif.parse(text, file).1.iter().map(|(_, e)| e.to_diagnostic()).collect()
+}
+
 #[cfg(feature = "ask")]
 pub use kb::natural_lang::RenderReport;
 

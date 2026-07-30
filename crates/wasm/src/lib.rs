@@ -424,20 +424,33 @@ impl WasmNativeProver {
         use sigmakee_rs_core::SourceFile;
         let path = std::path::PathBuf::from(file);
 
+        // A syntactically broken buffer must never touch the KB: it parses to
+        // zero forms, which the source cache treats as "the file is now empty"
+        // and retracts every sentence the file previously contributed —
+        // seconds of churn, and search/taxonomy/proofs silently lose the file
+        // until the syntax is fixed. Vet the syntax first (parse-only,
+        // milliseconds) and report just those findings.
+        let parse_diags = sigmakee_rs_core::kif_parse_diagnostics(text, file);
+        if !parse_diags.is_empty() {
+            return diagnostics_to_js(&parse_diags);
+        }
+
         // Diff the buffer into the file's own session and commit it live: the KB
         // simply tracks what the editor holds. No restore step, so a pure
         // addition emits no FormulaRemoved and cannot trigger the symbol prune.
         let staged = self.inner.stage(SourceFile::kif(path, text.to_string()), file);
         self.inner.commit(file);
-
         if !staged.ok {
             return diagnostics_to_js(&staged.diagnostics);
         }
-        let mut diags = Vec::new();
-        for sid in &staged.sids {
-            diags.extend(self.inner.validate_sentence(*sid));
-        }
-        diagnostics_to_js(&diags)
+
+        // Whole-file findings, not just the changed sentences': markers are
+        // replaced wholesale on the JS side, so a diff-only result would erase
+        // every pre-existing finding. Session scope, because buffer-committed
+        // sentences are not yet promoted — their declarations are visible only
+        // in the file's own session overlay, and Base-scope validation would
+        // falsely flag symbols they connect.
+        diagnostics_to_js(&self.inner.validate_file_in_session(file, file))
     }
 
     /// Summary counts describing the loaded KB, for an overview page.

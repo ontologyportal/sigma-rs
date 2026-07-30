@@ -90,7 +90,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         // Distinct subjects per language tag; the scalar count is the union.
         // Subject/language slots: (documentation SUBJECT LANG "…"),
         //                         (termFormat LANG SUBJECT "…").
-        let mut coverage = |head: &str, subj_slot: usize, lang_slot: usize| {
+        let coverage = |head: &str, subj_slot: usize, lang_slot: usize| {
             let mut union: HashSet<crate::types::SymbolId> = HashSet::new();
             let mut per_lang: std::collections::HashMap<String, HashSet<crate::types::SymbolId>> =
                 std::collections::HashMap::new();
@@ -361,6 +361,19 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         crate::with_guard!(self);
         let sids = self.layer.semantic().syntactic.file_root_sids(file_tag);
         self.validate_sids(&sids, crate::semantics::types::Scope::Base)
+    }
+
+    /// [`Self::validate_file`] in the context of `session` (`Base` ∪ that
+    /// session's transient overlay).  For live editor buffers staged into a
+    /// file's own session but not yet promoted: their declarations are
+    /// session-scoped, so Base-scope validation would falsely flag symbols
+    /// they connect (e.g. E001 on a just-typed, correctly-parented class).
+    pub fn validate_file_in_session(&self, file_tag: &str, session: &str) -> Vec<Diagnostic> {
+        crate::with_guard!(self);
+        use crate::semantics::types::Scope;
+        use crate::syntactic::caches::session::session_id;
+        let sids = self.layer.semantic().syntactic.file_root_sids(file_tag);
+        self.validate_sids(&sids, Scope::Session(session_id(session)))
     }
 
     /// Validate every sentence whose file tag is in `file_tags` (global scope),

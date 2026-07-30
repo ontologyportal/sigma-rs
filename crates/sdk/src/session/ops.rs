@@ -135,7 +135,9 @@ mod tests {
         // snippet's OWN taxonomy is clean, not that the whole diagnostic set
         // (which necessarily also covers the unbootstrapped primitives) is.
         let mut s = Session::<TranslationLayer>::new("ops-validate".into());
-        s.ingest(reader("t.kif", "(subclass Dog Mammal)"), true);
+        // Mammal must reach Entity: argument symbols are entity-checked too
+        // (E001), so an unclosed chain would correctly flag Dog and Mammal.
+        s.ingest(reader("t.kif", "(subclass Dog Mammal)\n(subclass Mammal Entity)"), true);
         let bad: Vec<_> = s.validate().into_iter()
             .filter(|d| d.is_err() && (d.message.contains("Dog") || d.message.contains("Mammal")))
             .collect();

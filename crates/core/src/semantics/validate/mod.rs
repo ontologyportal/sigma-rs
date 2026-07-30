@@ -29,13 +29,17 @@ pub(crate) struct SemanticValidator<'a> {
     /// Guards `validate_structure` against re-validating a shared sub when a
     /// root references the same sub more than once.  Reset per root.
     visited: std::cell::RefCell<std::collections::HashSet<SentenceId>>,
+    /// Symbols already entity-ancestry-checked in the current root pass, so a
+    /// symbol appearing several times in one formula yields one E001, not one
+    /// per occurrence.  Reset per root.
+    entity_checked: std::cell::RefCell<std::collections::HashSet<crate::SymbolId>>,
 }
 
 impl SemanticLayer {
     /// A [`SemanticValidator`] borrowing this layer, reasoning in an explicit
     /// [`Scope`].
     pub(crate) fn validator_scoped(&self, scope: Scope) -> SemanticValidator<'_> {
-        SemanticValidator { layer: self, scope, visited: Default::default() }
+        SemanticValidator { layer: self, scope, visited: Default::default(), entity_checked: Default::default() }
     }
 }
 
@@ -67,6 +71,7 @@ impl<'a> SemanticValidator<'a> {
         self.check_single_use_variables(sid, out);
         self.check_free_vars_in_consequent(sid, out);
         self.visited.borrow_mut().clear();
+        self.entity_checked.borrow_mut().clear();
         self.validate_structure(sid, out);
     }
 
@@ -129,10 +134,15 @@ impl<'a> SemanticValidator<'a> {
         }
 
         // Recurse into nested sub-sentence arguments (e.g. function terms like
-        // `(MeasureFn 35 Cm)`) so they get their own structural validation.
+        // `(MeasureFn 35 Cm)`) so they get their own structural validation, and
+        // entity-check argument symbols: a brand-new symbol typically appears
+        // ONLY in argument position (`(instance Foo Bar)`), so checking heads
+        // alone never flags it.
         for arg in &sentence.elements[1..] {
-            if let Element::Sub(sub_id) = arg {
-                self.validate_structure(*sub_id, out);
+            match arg {
+                Element::Sub(sub_id) => self.validate_structure(*sub_id, out),
+                Element::Symbol(sym) => self.check_entity_ancestor(sym.id(), out),
+                _ => {}
             }
         }
     }
@@ -519,5 +529,41 @@ mod tests {
         let codes = codes_in(&layer, sid);
         assert!(codes.contains(&"E023"),
             "expected E023 quantifier-vacuous, got {:?}", codes);
+    }
+
+    #[test]
+    fn e001_fires_for_argument_symbols() {
+        // A brand-new symbol typically appears ONLY in argument position
+        // (`(instance Foo Bar)`), so a head-only entity check never sees it.
+        let layer = kif_layer("
+            (subclass Relation Entity)
+            (subclass BinaryRelation Relation)
+            (instance subclass BinaryRelation)
+            (instance instance BinaryRelation)
+            (instance MyNewThing MyNewClass)
+        ");
+        let errs: Vec<_> = roots(&layer)
+            .into_iter()
+            .flat_map(|sid| layer.validator_scoped(Scope::Base).validate_sentence_collect(sid))
+            .collect();
+        for want in ["MyNewThing", "MyNewClass"] {
+            assert!(errs.iter().any(|e| e.code() == "E001" && format!("{e:?}").contains(want)),
+                "expected E001 no-entity-ancestor for {want}; got {errs:?}");
+        }
+    }
+
+    #[test]
+    fn e001_deduplicated_per_formula() {
+        // The same disconnected symbol recurring in one formula yields one
+        // E001, not one per occurrence.
+        let layer = kif_layer("
+            (subclass Relation Entity)
+            (instance instance Relation)
+            (=> (instance Loner Loner) (instance Loner Loner))
+        ");
+        let sid = root_by_op(&layer, crate::OpKind::Implies);
+        let errs = layer.validator_scoped(Scope::Base).validate_sentence_collect(sid);
+        let e001s = errs.iter().filter(|e| e.code() == "E001").count();
+        assert_eq!(e001s, 1, "expected exactly one E001 for Loner; got {errs:?}");
     }
 }

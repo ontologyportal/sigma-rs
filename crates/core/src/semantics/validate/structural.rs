@@ -11,6 +11,18 @@ use super::super::types::{RelationDomain, RelationRange};
 use super::SemanticValidator;
 
 impl<'a> SemanticValidator<'a> {
+    /// E001: `sym` must trace to `Entity` through the taxonomy.  Deduplicated
+    /// per root pass via `entity_checked`, since the same symbol commonly
+    /// recurs across a formula (head + arguments + nested subs).
+    pub(super) fn check_entity_ancestor(&self, id: crate::SymbolId, out: &mut Vec<SemanticError>) {
+        if !self.entity_checked.borrow_mut().insert(id) {
+            return;
+        }
+        if !self.layer.has_ancestor_by_name_scoped(id, &ROOT_SYMBOL.name(), self.scope) {
+            out.push(SemanticError::NoEntityAncestor { sym: self.sym_name_str(id) });
+        }
+    }
+
     /// Validate a single element, pushing any findings into `out`.
     pub(super) fn validate_element(&self, el: &Element, out: &mut Vec<SemanticError>) {
         let id = match el {
@@ -19,9 +31,7 @@ impl<'a> SemanticValidator<'a> {
             Element::Sub(sid)    => { self.validate_structure(*sid, out); return; }
             _                    => return,
         };
-        if !self.layer.has_ancestor_by_name_scoped(id, &ROOT_SYMBOL.name(), self.scope) {
-            out.push(SemanticError::NoEntityAncestor { sym: self.sym_name_str(id) });
-        }
+        self.check_entity_ancestor(id, out);
         if self.layer.is_relation_scoped(id, self.scope) {
             // Each declared argument position must name a domain class; an
             // `Unknown` gap (`rd.id() == None`) means none was declared there.
