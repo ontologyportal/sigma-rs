@@ -24,7 +24,7 @@
  * GitHub Pages).
  */
 
-import { formatKif } from './pkg/sdk.mjs';
+import { formatKif, formatTest } from './pkg/sdk.mjs';
 
 const worker = new Worker(new URL('./sigma.worker.js', import.meta.url), { type: 'module' });
 
@@ -235,6 +235,7 @@ const reprocess = () => withPostProcessing(promoteAndValidate);
 function renderAll() {
   renderDiagnostics();
   renderConstituents();
+  renderTests();
   refreshLangSelect();
   if (sumoCatalog) renderPicker();
   populateEditPicker();
@@ -495,6 +496,7 @@ async function boot() {
       $('overlay').remove();
       renderAll();
       applyRoute();
+      restoreTests();
       return;
     }
 
@@ -513,6 +515,7 @@ async function boot() {
     // Honour the URL now that the constituents exist — ?tab=edit&file=…&l=…
     // needs them loaded before it can select a file in the editor.
     applyRoute();
+    restoreTests();
     reprocess();   // toast → promote all → validate → untoast (off the critical path)
   } catch (e) {
     $('overlayTitle').textContent = 'Failed to load SUMO';
@@ -577,6 +580,7 @@ function showTab(name, { push = true, params } = {}) {
   if (name === 'browse') refreshHomeStats();
   if (name === 'kb') loadSumoCatalog();
   if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
+  if (name === 'prover') ensureProverEditors().catch(() => {}); // textareas remain the fallback
   // Read the file straight off the URL: syncUrl (above) has already applied a
   // nav click, so this sees ?file=… on a deep link and nothing on a plain
   // click — one code path, and no double fetch from applyRoute.
@@ -698,6 +702,7 @@ $('themeToggle')?.addEventListener('click', () => {
   const next = current === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
+  window.monaco?.editor.setTheme(next === 'dark' ? 'kif-dark' : 'kif-light');
 });
 
 /** Push a history entry for `tab` with `params` and render it. The three
@@ -744,6 +749,138 @@ $('loadedList').addEventListener('click', (e) => {
   const rm = e.target.closest('.rm');
   if (rm) { $('kbLog').textContent = ''; removeConstituent(rm.dataset.name, rm.dataset.source); }
 });
+
+// -- .kif.tq tests -------------------------------------------------------------
+//
+// Tests share the constituent import channels (GitHub picker / URL / upload)
+// but are a separate collection: a test's (query …) must never be ingested as
+// an axiom. Running one reuses the prove pipeline with the test's own axioms,
+// query, and (time N) budget.
+
+const TQ_SETTING = 'sumoTests';
+let savedTests = JSON.parse(localStorage.getItem(TQ_SETTING) || '[]');   // [{ name, origin }]
+let tqTests = [];   // [{ name, origin, text, parsed, outcome }]
+const isTestFile = (name) => /\.tq$/i.test(name);
+
+async function addTest(name, text, origin) {
+  if (tqTests.some((t) => t.name === name)) return { added: false, notices: [`${name}: already imported`] };
+  const { test } = await call('parseTest', { name, text });
+  tqTests.push({ name, origin, text, parsed: test, outcome: null });
+  if (!savedTests.some((t) => t.name === name && t.origin === origin)) {
+    savedTests.push({ name, origin });
+    localStorage.setItem(TQ_SETTING, JSON.stringify(savedTests));
+  }
+  renderTests();
+  return { added: true, notices: [] };
+}
+
+async function removeTest(name, origin) {
+  tqTests = tqTests.filter((t) => t.name !== name || t.origin !== origin);
+  savedTests = savedTests.filter((t) => t.name !== name || t.origin !== origin);
+  localStorage.setItem(TQ_SETTING, JSON.stringify(savedTests));
+  if (origin === 'file') {
+    try { const h = await opfsRoot.getFileHandle(name); await h.remove(); } catch { /* already gone */ }
+  }
+  renderTests();
+}
+
+async function restoreTests() {
+  for (const { name, origin } of savedTests) {
+    try { await addTest(name, await fromOrigin(origin, name), origin); }
+    catch (e) { console.warn(`test ${name}: ${e.message || e}`); }
+  }
+}
+
+function gradeTest(parsed, result) {
+  const exp = parsed.expectedProof;
+  const conclusiveNo = ['Disproved', 'CounterSatisfiable', 'Consistent'].includes(result.status);
+  if (exp === true) {
+    return result.proved ? { cls: 'ok', label: 'pass' } : { cls: 'bad', label: `no proof (${result.status})` };
+  }
+  if (exp === false) {
+    if (result.proved) return { cls: 'bad', label: 'proved — expected no' };
+    return conclusiveNo ? { cls: 'ok', label: 'pass' } : { cls: 'mut', label: result.status };
+  }
+  return { cls: 'mut', label: result.status };   // no yes/no expectation: informational
+}
+
+async function runTest(t) {
+  const cfg = proverConfig(t.parsed.timeout ? { timeLimitSecs: t.parsed.timeout } : {});
+  const { result } = await call('prove', {
+    assertions: t.parsed.axiomKif,
+    query: t.parsed.queryKif,
+    config: cfg,
+    session: '__tq_test__',
+  });
+  t.outcome = { ...gradeTest(t.parsed, result), status: result.status };
+}
+
+function renderTests() {
+  const list = $('testsList');
+  if (!list) return;
+  $('testsEmpty').hidden = tqTests.length > 0;
+  $('runAllTests').hidden = tqTests.length === 0;
+  list.innerHTML = tqTests.map((t, i) => {
+    const p = t.parsed;
+    const missing = (p.extraFiles || []).filter((f) => !constituents.some((c) => c.name.endsWith(f)));
+    const o = t.outcome;
+    return `
+    <li class="loaded-row">
+      <span>
+        <span class="sym">${esc(t.name)}</span>
+        ${p.note ? `<span class="hint">${esc(p.note)}</span>` : ''}
+        ${p.queryKif ? `<code class="hint">${esc(p.queryKif.length > 60 ? p.queryKif.slice(0, 60) + '…' : p.queryKif)}</code>` : '<span class="hint">no (query)</span>'}
+        ${p.expectedProof != null ? `<span class="hint">expects ${p.expectedProof ? 'yes' : 'no'}</span>` : ''}
+        ${p.expectedAnswer ? `<span class="hint">answer: ${esc(p.expectedAnswer.join(' '))}</span>` : ''}
+        ${missing.length ? `<span class="hint" style="color:var(--warn)">needs ${esc(missing.join(', '))}</span>` : ''}
+        ${o ? `<span class="tq-badge tq-${o.cls}">${esc(o.label)}</span>` : ''}
+      </span>
+      <span>
+        ${p.queryKif ? `<a class="tq-run" data-i="${i}">run</a> · ` : ''}
+        <a class="tq-open" data-i="${i}">open</a> ·
+        <a class="rm tq-rm" data-i="${i}">remove</a>
+      </span>
+    </li>`;
+  }).join('');
+}
+
+$('testsList')?.addEventListener('click', async (e) => {
+  const a = e.target.closest('a[data-i]');
+  if (!a) return;
+  const t = tqTests[Number(a.dataset.i)];
+  if (!t) return;
+  if (a.classList.contains('tq-rm')) return removeTest(t.name, t.origin);
+  if (a.classList.contains('tq-open')) {
+    await ensureProverEditors().catch(() => {});
+    if (assertionsEditor) {
+      assertionsEditor.setValue(t.parsed.axiomKif || '');
+      queryEditor.setValue(t.parsed.queryKif || '');
+    } else {
+      $('assertions').value = t.parsed.axiomKif || '';
+      $('pquery').value = t.parsed.queryKif || '';
+    }
+    showTab('prover');
+    return;
+  }
+  if (a.classList.contains('tq-run')) {
+    a.textContent = 'running…';
+    try { await runTest(t); } catch (err) { t.outcome = { cls: 'bad', label: String(err.message || err).slice(0, 60) }; }
+    renderTests();
+  }
+});
+
+$('runAllTests')?.addEventListener('click', (e) => withBusy(e.target, async () => {
+  let pass = 0, ran = 0;
+  for (const t of tqTests) {
+    if (!t.parsed.queryKif) continue;
+    $('testsLog').textContent = `Running ${t.name}…`;
+    try { await runTest(t); } catch (err) { t.outcome = { cls: 'bad', label: String(err.message || err).slice(0, 60) }; }
+    ran += 1;
+    if (t.outcome.cls === 'ok') pass += 1;
+    renderTests();
+  }
+  $('testsLog').textContent = `${pass}/${ran} passed.`;
+}));
 
 // -- Standard constituent sets ------------------------------------------------
 //
@@ -845,7 +982,7 @@ async function loadSumoCatalog() {
     // Via the shared client so a rate-limited response raises rather than
     // silently yielding `undefined.tree`.
     const tree = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/git/trees/${SUMO.ref}?recursive=1`);
-    sumoCatalog = (tree.tree || []).filter((e) => e.type === 'blob' && /\.kif$/i.test(e.path)).map((e) => e.path).sort();
+    sumoCatalog = (tree.tree || []).filter((e) => e.type === 'blob' && /\.kif(\.tq)?$/i.test(e.path)).map((e) => e.path).sort();
     renderPicker();
   } catch (e) {
     $('pickerStatus').textContent = 'could not load file list: ' + (e.message || e);
@@ -855,6 +992,7 @@ async function loadSumoCatalog() {
 function renderPicker() {
   const filter = $('fileFilter').value.toLowerCase();
   const loaded = new Set(constituents.filter((c) => c.origin === 'sumo').map((c) => c.name));
+  for (const t of tqTests) if (t.origin === 'sumo') loaded.add(t.name);
   const avail = sumoCatalog.filter((p) => !loaded.has(p) && p.toLowerCase().includes(filter));
   $('sumoPicker').innerHTML = avail.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
   $('pickerStatus').textContent = `${avail.length} file(s) available`;
@@ -875,7 +1013,10 @@ $('addSumo').onclick = (e) => withBusy(e.target, async () => {
   for (let i = 0; i < paths.length; i++) {
     const path = paths[i], text = texts[i];
     if (text instanceof Error) { failed.push(`${path}: ${text.message}`); continue; }
-    try { const r = await ingestConstituent(path, text); if (r.added) added += 1; notices += r.notices.length; }
+    try {
+      const r = isTestFile(path) ? await addTest(path, text, 'sumo') : await ingestConstituent(path, text);
+      if (r.added) added += 1; notices += r.notices.length;
+    }
     catch (err) { failed.push(`${path}: ${err.message || err}`); }
   }
   renderConstituents();
@@ -888,9 +1029,15 @@ $('addSumo').onclick = (e) => withBusy(e.target, async () => {
 $('addUrl').onclick = (e) => withBusy(e.target, async () => {
   const url = $('kbUrl').value.trim();
   if (!url) { $('kbLog').textContent = 'Enter a URL first.'; return; }
-  const r = await ingestConstituent(url, await fetchText(url), 'url');
-  renderConstituents();
+  const text = await fetchText(url);
   $('kbLog').style.color = '';
+  if (isTestFile(url)) {
+    const r = await addTest(url, text, 'url');
+    $('kbLog').textContent = r.added ? `Imported test ${url}.` : r.notices.join(' | ');
+    return;
+  }
+  const r = await ingestConstituent(url, text, 'url');
+  renderConstituents();
   $('kbLog').textContent = r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(' | ');
   if (r.added) await reprocess();
 });
@@ -904,9 +1051,14 @@ $('kbFile').onchange = (e) => withBusy($('addUrl'), async () => {
   const stream = await handle.createWritable();
   await stream.write(text);
   await stream.close();
+  $('kbLog').style.color = '';
+  if (isTestFile(file.name)) {
+    const r = await addTest(file.name, text, 'file');
+    $('kbLog').textContent = r.added ? `Imported test ${file.name}.` : r.notices.join(' | ');
+    return;
+  }
   const r = await ingestConstituent(file.name, text, 'file');
   renderConstituents();
-  $('kbLog').style.color = '';
   $('kbLog').textContent = r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(' | ');
   if (r.added) await reprocess();
 });
@@ -1612,16 +1764,93 @@ function highlightKif(src, { focusSymbol, linkSymbols } = {}) {
   return out + '\n'; // trailing line so a source ending in \n doesn't collapse height vs. the textarea
 }
 
-function attachKifHighlighting(textareaId, preId) {
-  const ta = $(textareaId), hl = $(preId);
-  const update = () => { hl.innerHTML = highlightKif(ta.value); };
-  ta.addEventListener('input', update);
-  ta.addEventListener('scroll', () => { hl.scrollTop = ta.scrollTop; hl.scrollLeft = ta.scrollLeft; });
-  update();
+// -- Ask/Tell Monaco panes -----------------------------------------------------
+//
+// The two prover inputs are compact Monaco editors sharing the Edit tab's kif
+// language, theme, and marker pipeline. The textareas in the markup remain the
+// working fallback if the Monaco CDN is unreachable; paneValue() reads from
+// whichever is active.
+
+let assertionsEditor = null;
+let queryEditor = null;
+let proverEditorsPromise = null;
+
+function paneValue(name) {
+  if (name === 'assertions') return assertionsEditor ? assertionsEditor.getValue() : $('assertions').value;
+  return queryEditor ? queryEditor.getValue() : $('pquery').value;
 }
 
-attachKifHighlighting('assertions', 'assertionsHl');
-attachKifHighlighting('pquery', 'pqueryHl');
+function ensureProverEditors() {
+  if (!proverEditorsPromise) {
+    proverEditorsPromise = createProverEditors().catch((e) => {
+      proverEditorsPromise = null;
+      throw e;
+    });
+  }
+  return proverEditorsPromise;
+}
+
+async function createProverEditors() {
+  if (assertionsEditor) return;
+  monaco = await loadMonaco();
+  const m = monaco;
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const opts = {
+    language: 'kif',
+    theme: dark ? 'kif-dark' : 'kif-light',
+    automaticLayout: true,
+    minimap: { enabled: false },
+    lineNumbers: 'off',
+    folding: false,
+    glyphMargin: false,
+    lineDecorationsWidth: 6,
+    scrollBeyondLastLine: false,
+    overviewRulerLanes: 0,
+    hideCursorInOverviewRuler: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 13,
+  };
+  const mount = (mountId, taId) => {
+    const ta = $(taId);
+    const box = $(mountId);
+    const ed = m.editor.create(box, { ...opts, value: ta.value });
+    ta.hidden = true;
+    box.hidden = false;
+    ed.onDidChangeModelContent(scheduleScratchValidate);
+    return ed;
+  };
+  assertionsEditor = mount('assertionsEd', 'assertions');
+  queryEditor = mount('pqueryEd', 'pquery');
+  runScratchValidate();
+}
+
+let scratchValidateTimer = 0;
+let scratchValidateBusy = false;
+let scratchValidateQueued = false;
+
+function scheduleScratchValidate() {
+  clearTimeout(scratchValidateTimer);
+  scratchValidateTimer = setTimeout(runScratchValidate, 400);
+}
+
+async function runScratchValidate() {
+  if (!assertionsEditor) return;
+  if (scratchValidateBusy) { scratchValidateQueued = true; return; }
+  scratchValidateBusy = true;
+  try {
+    const r = await call('validateScratch', {
+      assertions: assertionsEditor.getValue(),
+      query: queryEditor.getValue(),
+    });
+    if (!assertionsEditor) return;
+    monaco.editor.setModelMarkers(assertionsEditor.getModel(), 'sigma', diagsToMarkers(r.assertions));
+    monaco.editor.setModelMarkers(queryEditor.getModel(), 'sigma', diagsToMarkers(r.query));
+  } catch (e) { console.warn('validateScratch:', e.message || e); }
+  finally {
+    scratchValidateBusy = false;
+    if (scratchValidateQueued) { scratchValidateQueued = false; runScratchValidate(); }
+  }
+}
 
 // -- Proof graph (Cytoscape.js, lazy CDN load) ---------------------------------
 //
@@ -1829,13 +2058,32 @@ renderCfgSummary();
 
 // -- Prover: tell + ask -------------------------------------------------------
 
+$('saveTq').onclick = () => {
+  const query = paneValue('query').trim();
+  if (!query) { $('proverCfgSummary').textContent = 'Enter a query first.'; return; }
+  const text = formatTest({
+    timeout: proverConfig().timeLimitSecs,
+    assertions: paneValue('assertions'),
+    query,
+    expectedProof: true,
+  });
+  const blob = new Blob([text], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'test.kif.tq';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
 $('prove').onclick = async () => {
   const btn = $('prove');
   btn.disabled = true; btn.textContent = 'Proving…';
   try {
     const { result } = await call('prove', {
-      assertions: $('assertions').value.trim(),
-      query: $('pquery').value,
+      assertions: paneValue('assertions').trim(),
+      query: paneValue('query'),
       config: proverConfig(),
       session: 'user-assertions',
     });

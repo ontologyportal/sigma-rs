@@ -3,7 +3,7 @@
 // Session; the page (app.js) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
-import { init, Session, Config, Backend } from './pkg/sdk.mjs';
+import { init, Session, Config, Backend, parseTest } from './pkg/sdk.mjs';
 
 let session = null;
 
@@ -77,6 +77,15 @@ const handlers = {
       .filter((d) => d.kind === 'parse');
     return { diagnostics };
   },
+
+  // Ask/Tell live validation: assertions + query in one scratch session
+  // against the LIVE KB, so symbol references resolve and the assertions'
+  // own declarations are in scope for the query.
+  validateScratch({ assertions, query }) {
+    return session.kb.validateScratch(assertions || '', query || '');
+  },
+
+  parseTest({ name, text }) { return { test: parseTest(name, text) }; },
   search({ query, limit, language }) { return { hits: session.search(query, { limit: limit ?? 100, language }) }; },
   manpage({ symbol }) { return { page: session.manpage(symbol) }; },
   taxonomy({ symbol }) { return { tax: session.taxonomy(symbol) }; },

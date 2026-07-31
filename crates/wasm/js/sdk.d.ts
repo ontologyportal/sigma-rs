@@ -97,6 +97,32 @@ export function init(input?: unknown): Promise<unknown>;
  */
 export function formatKif(text: string, opts?: { indentUnit?: string }): string;
 
+/** A parsed `.kif.tq` test file (see {@link parseTest}). */
+export interface ParsedTest {
+  name: string;
+  note: string;
+  /** `(time N)` directive; 0 when absent. */
+  timeout: number;
+  /** The `(query …)` formula, or `null` for an axioms-only file. */
+  queryKif: string | null;
+  /** Hypotheses as newline-joined KIF. */
+  axiomKif: string;
+  /** `(answer yes|no)` → true/false; `null` when absent or bindings-style. */
+  expectedProof: boolean | null;
+  /** Bindings-style `(answer …)` values, when present. */
+  expectedAnswer: string[] | null;
+  /** `(file …)` directives — external KIF files the test expects loaded. */
+  extraFiles: string[];
+}
+
+/** Parse a `.kif.tq` test file (requires {@link init}); throws on malformed input. */
+export function parseTest(name: string, text: string): ParsedTest;
+
+/** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
+export function formatTest(opts?: {
+  note?: string; timeout?: number; assertions?: string; query?: string; expectedProof?: boolean | null;
+}): string;
+
 export interface AskOpts {
   session?: string;
   hook?: (tptp: string) => string;
@@ -195,6 +221,8 @@ export class Session {
   lookup(pattern: string): string[];
   validate(): Diagnostic[];
   validateFormula(kif: string): Diagnostic[];
+  /** Ask/Tell pair validated in one scratch session against the live KB. */
+  validateScratch(assertions: string, query: string): { assertions: Diagnostic[]; query: Diagnostic[] };
   search(query: string, opts?: SearchOpts): SearchHit[];
   manpage(symbol: string): ManPage | null;
   /** Direct taxonomy edges — the lightweight peer of `manpage` for lazy tree

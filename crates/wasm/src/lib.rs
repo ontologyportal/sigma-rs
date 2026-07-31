@@ -128,6 +128,13 @@ impl WasmKnowledgeBase {
         validate_formula_impl(&mut self.inner, kif)
     }
 
+    /// Validate an Ask/Tell pair (assertions then query) in one scratch
+    /// session against the live KB. Returns `{ assertions, query }` arrays.
+    #[wasm_bindgen(js_name = validateScratch)]
+    pub fn validate_scratch(&mut self, assertions: &str, query: &str) -> Result<JsValue, JsValue> {
+        validate_scratch_impl(&mut self.inner, assertions, query)
+    }
+
     /// Full-text / symbol search over the KB. `kind` filters by
     /// `"class"|"relation"|"function"|"predicate"|"instance"|"individual"`,
     /// `language` by tag (e.g. `"EnglishLanguage"`), `limit` caps results.
@@ -581,6 +588,13 @@ impl WasmNativeProver {
         validate_formula_impl(&mut self.inner, kif)
     }
 
+    /// Validate an Ask/Tell pair (assertions then query) in one scratch
+    /// session against the live KB. Returns `{ assertions, query }` arrays.
+    #[wasm_bindgen(js_name = validateScratch)]
+    pub fn validate_scratch(&mut self, assertions: &str, query: &str) -> Result<JsValue, JsValue> {
+        validate_scratch_impl(&mut self.inner, assertions, query)
+    }
+
     /// Full-text / symbol search over the KB. `kind` filters by
     /// `"class"|"relation"|"function"|"predicate"|"instance"|"individual"`,
     /// `language` by tag (e.g. `"EnglishLanguage"`), `limit` caps results.
@@ -915,10 +929,89 @@ fn validate_formula_impl<L: TopLayer>(
     let sids = kb.session_sids(TAG);
     let mut diags = Vec::new();
     for sid in sids {
-        diags.extend(kb.validate_sentence(sid));
+        // Session scope: symbols the scratch input itself declares are only
+        // visible in the session overlay.
+        diags.extend(kb.validate_sentence_in_session(sid, TAG));
     }
     kb.flush_session(TAG);
     diagnostics_to_js(&diags)
+}
+
+/// Validate an Ask/Tell pair in ONE scratch session against the live KB: the
+/// assertions are told first, then the query is validated with those
+/// declarations in scope.  Returns `{ assertions: Diagnostic[], query:
+/// Diagnostic[] }`; the session is flushed either way.
+/// Parse a `.kif.tq` test file. Pure: no KB, no state. Throws with the
+/// parse diagnostic's message on malformed input.
+#[wasm_bindgen(js_name = parseTest)]
+pub fn parse_test(name: &str, text: &str) -> Result<JsValue, JsValue> {
+    let tc = sigmakee_rs_core::parse_test_content(text, name)
+        .map_err(|d| JsValue::from_str(&d.to_string()))?;
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TestJs {
+        name:            String,
+        note:            String,
+        timeout:         u32,
+        query_kif:       Option<String>,
+        axiom_kif:       String,
+        expected_proof:  Option<bool>,
+        expected_answer: Option<Vec<String>>,
+        extra_files:     Vec<String>,
+    }
+    let out = TestJs {
+        name:            tc.file_name.clone(),
+        note:            tc.note.clone(),
+        timeout:         tc.timeout,
+        query_kif:       tc.query_kif(),
+        axiom_kif:       tc.axiom_kif(),
+        expected_proof:  tc.expected_proof,
+        expected_answer: tc.expected_answer.clone(),
+        extra_files:     tc.extra_files.clone(),
+    };
+    serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+fn validate_scratch_impl<L: TopLayer>(
+    kb:         &mut KnowledgeBase<L>,
+    assertions: &str,
+    query:      &str,
+) -> Result<JsValue, JsValue> {
+    const TAG: &str = "__wasm:validate_scratch__";
+
+    let collect = |kif: &str, kb: &mut KnowledgeBase<L>| -> Vec<sigmakee_rs_core::Diagnostic> {
+        if kif.trim().is_empty() { return Vec::new(); }
+        let before: std::collections::HashSet<_> = kb.session_sids(TAG).into_iter().collect();
+        let r = kb.tell(kif, TAG);
+        if !r.ok {
+            return r.diagnostics;
+        }
+        kb.session_sids(TAG).into_iter()
+            .filter(|sid| !before.contains(sid))
+            .flat_map(|sid| kb.validate_sentence_in_session(sid, TAG))
+            .collect()
+    };
+
+    kb.flush_session(TAG);
+    let a_diags = collect(assertions, kb);
+    let q_diags = collect(query, kb);
+    kb.flush_session(TAG);
+
+    #[derive(serde::Serialize)]
+    struct Out { assertions: Vec<DiagnosticJs>, query: Vec<DiagnosticJs> }
+    let to_js = |diags: Vec<sigmakee_rs_core::Diagnostic>| diags.iter().map(|d| DiagnosticJs {
+        severity: d.severity.as_str().to_string(),
+        kind:     d.kind.to_string(),
+        code:     d.code.to_string(),
+        message:  d.message.clone(),
+        file:     d.range.file.clone(),
+        line:     d.range.line,
+        col:      d.range.col,
+        end_line: d.range.end_line,
+        end_col:  d.range.end_col,
+    }).collect::<Vec<_>>();
+    let out = Out { assertions: to_js(a_diags), query: to_js(q_diags) };
+    serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[derive(serde::Serialize)]

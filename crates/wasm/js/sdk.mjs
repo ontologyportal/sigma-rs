@@ -16,9 +16,35 @@
  * The raw bindings (`WasmNativeProver`, `WasmKnowledgeBase`) remain available
  * from the package root for direct, lower-level control.
  */
-import initWasm, { WasmNativeProver, WasmKnowledgeBase, Config } from './sumo_parser_wasm.js';
+import initWasm, { WasmNativeProver, WasmKnowledgeBase, Config, parseTest as wasmParseTest } from './sumo_parser_wasm.js';
 
 export { Config };
+
+/**
+ * Parse a `.kif.tq` test file (requires {@link init}).  Returns
+ * `{ name, note, timeout, queryKif, axiomKif, expectedProof, expectedAnswer,
+ * extraFiles }`; throws with the parse diagnostic's message on malformed
+ * input.
+ */
+export function parseTest(name, text) { return wasmParseTest(name, text); }
+
+/**
+ * Render an Ask/Tell pair as `.kif.tq` test-file text — the inverse of
+ * {@link parseTest} for the fields the Ask/Tell window carries.  Pure string
+ * building, no WASM needed.  The query is wrapped in the format's
+ * `(query …)` directive; `expectedProof` becomes `(answer yes|no)`.
+ */
+export function formatTest({ note = '', timeout = 0, assertions = '', query = '', expectedProof = null } = {}) {
+  const out = [];
+  if (note) out.push(`(note "${String(note).replace(/"/g, "'")}")`);   // .tq notes have no escape syntax
+  if (timeout > 0) out.push(`(time ${Math.round(timeout)})`);
+  const a = assertions.trim();
+  if (a) out.push(a);
+  const q = query.trim();
+  if (q) out.push(`(query ${q})`);
+  if (expectedProof !== null) out.push(`(answer ${expectedProof ? 'yes' : 'no'})`);
+  return out.join('\n') + '\n';
+}
 
 /**
  * Which engine a {@link Session} drives — the browser subset of the SDK's
@@ -231,6 +257,13 @@ export class Session {
 
   /** Validate one inline formula without mutating the KB. Returns a `string[]`. */
   validateFormula(kif) { return this.#kb.validateFormula(kif); }
+
+  /**
+   * Validate an Ask/Tell pair — assertions then query — in one scratch
+   * session against the live KB, so the assertions' own declarations are in
+   * scope for the query. Returns `{ assertions, query }` diagnostic arrays.
+   */
+  validateScratch(assertions, query) { return this.#kb.validateScratch(assertions, query); }
 
   /**
    * Symbol / full-text search over the KB.

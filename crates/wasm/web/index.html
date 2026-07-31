@@ -298,15 +298,15 @@
     .hint { color: var(--muted); font-size: 13px; }
     .xref { border-bottom: 1px dotted var(--accent); }
 
-    .code-editor { position: relative; }
-    .code-editor pre.hl {
-      margin: 0; position: absolute; inset: 0; padding: 9px 11px;
-      font-family: var(--mono); font-size: 13px; white-space: pre-wrap; word-wrap: break-word;
-      pointer-events: none; overflow: auto; border: 1px solid transparent; border-radius: 7px;
+    .pane-editor {
+      height: 96px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
     }
-    .code-editor textarea {
-      position: relative; background: transparent; color: transparent; caret-color: var(--fg); z-index: 1;
-    }
+    .pane-editor-sm { height: 56px; }
+
+    .tq-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; font-weight: 600; }
+    .tq-ok  { background: color-mix(in srgb, var(--ok) 18%, transparent);   color: var(--ok); }
+    .tq-bad { background: color-mix(in srgb, var(--bad) 18%, transparent);  color: var(--bad); }
+    .tq-mut { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
     .tok-paren { color: var(--muted); font-weight: 600; }
     .tok-kw { color: var(--op); font-weight: 700; font-style: italic; }
     .tok-fn { color: var(--accent); }
@@ -504,7 +504,18 @@
           <input type="text" id="kbUrl" placeholder="https://example.org/ontology.kif" />
           <button class="btn" id="addUrl" type="button">Add URL</button>
         </div>
-        <div style="margin-top:10px"><label for="kbFile">Upload a .kif file</label><input type="file" id="kbFile" accept=".kif,.txt,text/plain" /></div>
+        <div style="margin-top:10px"><label for="kbFile">Upload a .kif or .kif.tq file</label><input type="file" id="kbFile" accept=".kif,.tq,.txt,text/plain" /></div>
+      </div>
+
+      <div class="card">
+        <label>Tests — <code>.kif.tq</code></label>
+        <div id="testsEmpty" class="hint">No tests imported. Add <code>.kif.tq</code> files through the picker,
+          URL, or upload above — they run against the loaded KB instead of joining it.</div>
+        <ul id="testsList" class="results"></ul>
+        <div class="inline" style="margin-top:8px">
+          <button class="btn" id="runAllTests" type="button" hidden>Run all</button>
+          <span id="testsLog" class="hint"></span>
+        </div>
       </div>
 
       <div id="kbLog" class="hint"></div>
@@ -553,18 +564,17 @@
     <section id="tab-prover" class="panel" role="tabpanel" hidden>
       <div class="card">
         <label for="assertions">Assertions — <code>tell</code> (added to the KB for this query)</label>
-        <div class="code-editor">
-          <pre id="assertionsHl" class="hl" aria-hidden="true"></pre>
-          <textarea id="assertions" rows="4" spellcheck="false">(instance Rex Dog)
+        <!-- Monaco mounts replace the textareas once the editor loads; the
+             textareas stay as the working fallback when the CDN is unreachable. -->
+        <div id="assertionsEd" class="pane-editor" hidden></div>
+        <textarea id="assertions" rows="4" spellcheck="false">(instance Rex Dog)
 (subclass Dog Mammal)</textarea>
-        </div>
         <label for="pquery" style="margin-top:10px">Query — <code>ask</code></label>
-        <div class="code-editor">
-          <pre id="pqueryHl" class="hl" aria-hidden="true"></pre>
-          <textarea id="pquery" rows="2" spellcheck="false">(instance Rex Animal)</textarea>
-        </div>
+        <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
+        <textarea id="pquery" rows="2" spellcheck="false">(instance Rex Animal)</textarea>
         <div class="inline" style="margin-top:10px; gap:8px">
           <button class="btn" id="prove" type="button">Prove</button>
+          <button class="btn ghost" id="saveTq" type="button" title="Download this assertion/query pair as a .kif.tq test file">Save .kif.tq</button>
           <button class="cog" id="proverSettingsBtn" type="button"
                   title="Prover settings" aria-label="Prover settings"
                   aria-expanded="false" aria-controls="proverSettings">⚙</button>
