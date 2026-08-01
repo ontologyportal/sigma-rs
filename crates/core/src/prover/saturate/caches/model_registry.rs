@@ -14,27 +14,35 @@
 // saturation path is byte-identical).  The query path (decide / retrieve) is
 // the next slice.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{LayerCache, WholeCacheBehavior};
+use crate::layer::TopLayer;
 use super::super::ProverLayer;
 use super::super::model::ModelProgram;
 
-/// Behavior for the `saturate::model_registry` whole-KB cache.
-#[derive(Debug, Default)]
-pub(crate) struct ModelRegistry;
+/// Behavior for the `saturate::model_registry` whole-KB cache.  Carries `S`
+/// only as a marker — see [`ClauseStore`](super::clause_store::ClauseStore)'s
+/// doc for why.
+#[derive(Debug)]
+pub(crate) struct ModelRegistry<S = crate::semantics::SemanticLayer>(PhantomData<fn() -> S>);
 
-impl WholeCacheBehavior for ModelRegistry {
-    type Parent = ProverLayer;
+impl<S> Default for ModelRegistry<S> {
+    fn default() -> Self { Self(PhantomData) }
+}
+
+impl<S: TopLayer + 'static> WholeCacheBehavior for ModelRegistry<S> {
+    type Parent = ProverLayer<S>;
     /// `Arc` so consulting the registry per query bumps a refcount instead of
     /// cloning the whole program.
     type Value = Arc<ModelProgram>;
 
     const NAME: &'static str = "saturate::model_registry";
 
-    fn generate(&self, parent: &ProverLayer) -> Arc<ModelProgram> {
-        Arc::new(ModelProgram::build(&parent.semantic.syntactic))
+    fn generate(&self, parent: &ProverLayer<S>) -> Arc<ModelProgram> {
+        Arc::new(ModelProgram::build(&parent.semantic.semantic().syntactic))
     }
 
     fn consumes(&self) -> &'static [EventKind] {
@@ -49,7 +57,7 @@ impl WholeCacheBehavior for ModelRegistry {
     /// full root set); the next `get` rebuilds.
     fn react(
         &self,
-        _parent: &ProverLayer,
+        _parent: &ProverLayer<S>,
         events:  &[&Event],
         store:   &LayerCache<Arc<ModelProgram>>,
     ) -> Vec<Event> {
@@ -63,7 +71,7 @@ impl WholeCacheBehavior for ModelRegistry {
     }
 }
 
-impl ProverLayer {
+impl<S: TopLayer + 'static> ProverLayer<S> {
     /// The whole-KB inductive-definition model program, built on
     /// first request and held until a root changes.
     pub(crate) fn model_program(&self) -> Arc<ModelProgram> {

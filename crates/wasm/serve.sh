@@ -11,6 +11,16 @@
 #
 #   ./serve.sh [port]        # default port 8080
 #   NO_REBUILD=1 ./serve.sh  # skip the rebuild (serve whatever is in pkg/)
+#   SKIP_VAMPIRE=1 ./serve.sh    # skip building the Vampire WASM backend
+#   VAMPIRE_RECLONE=1 ./serve.sh # force a clean Vampire rebuild
+#
+# The Vampire WASM backend (build-vampire.sh) is built here too, UNLESS
+# SKIP_VAMPIRE=1: it's a multi-minute Emscripten build (not a `cargo` one),
+# so it's cached by pinned ref (see build-vampire.sh) and only actually
+# rebuilds on a fresh checkout or a version bump — a plain rerun of this
+# script is a fast no-op for it. Needs its own toolchain (Emscripten SDK +
+# GNU awk); see build-vampire.sh's header for exactly what and why. Also
+# builds fine as its own step: `./build-vampire.sh` directly.
 #
 set -euo pipefail
 
@@ -30,6 +40,10 @@ fi
 rm -rf "$CRATE_DIR/web/pkg"
 cp -R "$CRATE_DIR/pkg" "$CRATE_DIR/web/pkg"
 
+"$CRATE_DIR/build-vampire.sh" || {
+  echo "==> Vampire WASM build failed or skipped — the demo still runs, just without that backend." >&2
+}
+
 echo
 echo "  Open:  http://localhost:${PORT}/"
 echo "  (Ctrl-C to stop)"
@@ -37,6 +51,11 @@ echo
 
 # SimpleHTTPRequestHandler + no-store headers, so reloads always fetch fresh
 # assets (ES modules are otherwise cached aggressively by the browser).
+# Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy: vampire.wasm is a
+# pthread-enabled Emscripten build, which browsers only grant SharedArrayBuffer
+# to on a cross-origin-isolated page — these two headers are what turn that on.
+# Harmless when the Vampire backend isn't built (nothing on this page depends
+# on cross-origin isolation otherwise).
 exec python3 - "$PORT" "$CRATE_DIR" <<'PY'
 import sys, functools
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -47,6 +66,8 @@ class NoCache(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         self.send_header('Expires', '0')
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         super().end_headers()
     def log_message(self, *a):
         pass

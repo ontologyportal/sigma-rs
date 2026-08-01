@@ -11,6 +11,7 @@ use crate::semantics::types::Scope;
 use crate::syntactic::caches::session::session_id;
 use crate::types::Element;
 
+use crate::layer::TopLayer;
 use super::{ProverLayer, Conjecture};
 use super::clause::{AtomId, PClause};
 use super::clausify::clausify_negated_conjunction_lossy;
@@ -31,7 +32,7 @@ pub(super) fn lane_max_lits(lane: &Strategy, base_max_lits: usize) -> usize {
     lane.derived_width_cap.map(usize::from).unwrap_or(base_max_lits)
 }
 
-impl ProverLayer {
+impl<S: TopLayer + 'static> ProverLayer<S> {
     /// Intern the conjecture into the prover-local atom table (content-addressed,
     /// tag-free → sweep-safe; no shared-store churn/rollback, plan D5) and
     /// resolve the roots.  The `&self` core behind both the trait
@@ -47,10 +48,24 @@ impl ProverLayer {
             }
             let sid = self.atoms.intern_sentence(root);
             let Some(arc) = self.atoms
-                .resolve(sid, &self.semantic.syntactic) else { continue };
+                .resolve(sid, &self.semantic().syntactic) else { continue };
             sents.push((arc, sid));
         }
         sents
+    }
+
+    /// Clausify a batch of ad hoc conjecture ASTs (not stored/promoted
+    /// axioms): intern each into the atom table
+    /// ([`intern_conjecture_native`](Self::intern_conjecture_native)) and
+    /// run the same clausifier the KB's stored axioms use. Backs
+    /// `KnowledgeBase::clausify_formula`.
+    pub(crate) fn clausify_asts(&self, asts: Vec<crate::AstNode>) -> Vec<PClause> {
+        let (normalized, _dropped) = Conjecture::normalize(asts);
+        let sents = self.intern_conjecture_native(&normalized);
+        sents.iter()
+            .flat_map(|(sent, sid)| super::clausify::clausify_sentence(
+                &self.semantic().syntactic, &self.atoms, sent, *sid, false))
+            .collect()
     }
 
     /// The native `&self` prove entry — parse-detached conjecture → scaled
@@ -109,7 +124,7 @@ impl ProverLayer {
         };
         // Don't climb from a budget the indexed universe could never fill —
         // see `adaptive_start_budget`'s doc.
-        let total_axioms = self.semantic.syntactic.sine_current(|idx| idx.axiom_count());
+        let total_axioms = self.semantic().syntactic.sine_current(|idx| idx.axiom_count());
         let min_budget = scale_min_budget();
         let cfg = ScaleConfig {
             factor:        scale_factor(),
@@ -228,7 +243,7 @@ impl ProverLayer {
         // fill" adjustment as the plain (non-portfolio) path above — every
         // lane shares one selection start point, so it's computed once here
         // rather than per lane.
-        let total_axioms = self.semantic.syntactic.sine_current(|idx| idx.axiom_count());
+        let total_axioms = self.semantic().syntactic.sine_current(|idx| idx.axiom_count());
         let probe_cfg = ScaleConfig {
             factor: scale_factor(), max_disproofs: 0, max_time_runs: 0,
             min_budget: scale_min_budget(), total_timeout: 0,
@@ -347,12 +362,12 @@ impl ProverLayer {
         // Session hypotheses are force-included AND seed SInE alongside the
         // conjecture (mirrors the external path's seeding).
         let session_sids: Vec<SentenceId> = session
-            .map(|s| self.semantic.syntactic.sessions.session_sentences(s))
+            .map(|s| self.semantic().syntactic.sessions.session_sentences(s))
             .unwrap_or_default();
 
         let mut seed = conj.seed_syms.clone();
         for sid in session_sids.iter() {
-            seed.extend(self.semantic.syntactic.sentence_symbols(*sid));
+            seed.extend(self.semantic().syntactic.sentence_symbols(*sid));
         }
 
         // Shared relevance pass: SInE → head-filter → Liu rescue.  (`head_filter`
@@ -366,7 +381,7 @@ impl ProverLayer {
         };
         let (mut selected, goal_frontier) = {
             profile_span!(ctx, "ask.sine_select");
-            self.semantic.syntactic.select_relevant(&seed, sine_params, &sel, ctx)
+            self.semantic().syntactic.select_relevant(&seed, sine_params, &sel, ctx)
         };
         let raw_selected = selected.len();
         if !goal_frontier.is_empty() {
@@ -385,12 +400,12 @@ impl ProverLayer {
                 let mut w = std::io::BufWriter::new(f);
                 for sid in &selected {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic.syntactic);
+                        *sid, &self.semantic().syntactic);
                     let _ = writeln!(w, "{kif}");
                 }
                 for (_, sid) in conjecture_sents {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic.syntactic);
+                        *sid, &self.semantic().syntactic);
                     let _ = writeln!(w, "# conj\t{kif}");
                 }
             }
@@ -399,7 +414,7 @@ impl ProverLayer {
             for pat in pats.split(',').filter(|p| !p.is_empty()) {
                 let n = selected.iter().filter(|sid| {
                     crate::syntactic::display::sentence_to_plain_kif(
-                        **sid, &self.semantic.syntactic)
+                        **sid, &self.semantic().syntactic)
                         .contains(pat)
                 }).count();
                 eprintln!("SELECT-GREP {pat:?}: {n} of {} selected roots", selected.len());
@@ -415,7 +430,7 @@ impl ProverLayer {
         let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = {
             profile_span!(ctx, "ask.clausify_conjecture");
             clausify_negated_conjunction_lossy(
-                &self.semantic.syntactic, &self.atoms, conjecture_sents)
+                &self.semantic().syntactic, &self.atoms, conjecture_sents)
         };
 
         // Definitional completion: polarity-aware selection repair.
@@ -455,7 +470,7 @@ impl ProverLayer {
                 let mut w = std::io::BufWriter::new(f);
                 for sid in &selected {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic.syntactic);
+                        *sid, &self.semantic().syntactic);
                     let _ = writeln!(w, "{kif}");
                 }
             }
@@ -493,7 +508,7 @@ impl ProverLayer {
         // per-prove decision from leaking across proves.
         {
             let goal_needs_disjoint = {
-                let syn = &self.semantic.syntactic;
+                let syn = &self.semantic().syntactic;
                 conjecture_clauses.iter().flat_map(|c| c.lits.iter()).any(|l| {
                     self.atoms.resolve(l.atom, syn).is_some_and(|s| {
                         match s.elements.first() {
@@ -565,7 +580,7 @@ impl ProverLayer {
         let snap_key = {
             use xxhash_rust::xxh64::xxh64;
             let mix = |sid: u64| xxh64(&sid.to_be_bytes(), 0x5AFE_BA5E);
-            let roots: u64 = self.semantic.syntactic.root_sids()
+            let roots: u64 = self.semantic().syntactic.root_sids()
                 .into_iter().map(mix).fold(0, |a, b| a ^ b);
             let sess: u64 = session_sids.iter().copied().map(mix).fold(0, |a, b| a ^ b);
             let conj: u64 = conjecture_sents.iter().map(|(_, sid)| mix(*sid))
@@ -671,7 +686,7 @@ impl ProverLayer {
                         let sents = self.intern_conjecture_native(&normalized);
                         if sents.is_empty() { continue; }
                         let (cls, _) = clausify_negated_conjunction_lossy(
-                            &self.semantic.syntactic, &self.atoms, &sents);
+                            &self.semantic().syntactic, &self.atoms, &sents);
                         for c in cls {
                             if std::env::var_os("SIGMA_HINTS_DEBUG").is_some() {
                                 eprintln!("HINT {:016x} {:?}", c.key.0, c.lits);
@@ -897,7 +912,7 @@ impl ProverLayer {
                                 && st.eq_factoring
                                 && prover.stats.unorientable_eqs == 0);
                         let whole_theory = selected.len()
-                            >= self.semantic.syntactic.root_sids().len();
+                            >= self.semantic().syntactic.root_sids().len();
                         // Schema absorption replaces the absorbed axiom at
                         // inference level ONLY for binary resolution (the
                         // swap retry in `resolve`); factoring and the unit
@@ -1288,7 +1303,7 @@ impl ProverLayer {
             self.clauses_for(*sid).iter().any(|pc| {
                 pc.nvars == 0 && pc.lits.len() == 1 && pc.lits[0].pos
                     && self.atoms
-                        .resolve(pc.lits[0].atom, &self.semantic.syntactic)
+                        .resolve(pc.lits[0].atom, &self.semantic().syntactic)
                         .is_some_and(|sent| matches!(
                             sent.elements.first(), Some(Element::Op(OpKind::Equal))))
             })
@@ -1317,17 +1332,17 @@ impl ProverLayer {
         seed:     &HashSet<SymbolId>,
     ) -> Vec<&'static str> {
         use crate::semantics::types::RelationDomain;
-        let syn = &self.semantic.syntactic;
+        let syn = &self.semantic().syntactic;
         let Some(formula) = syn.sym_id("Formula") else { return Vec::new() };
         let mut out = Vec::new();
         for rel in ["knows", "believes"] {
             let Some(sym) = syn.sym_id(rel) else { continue };
             // (a) declared Formula domain at argument 2.
             let arg2_is_formula = matches!(
-                self.semantic.domain_scoped(sym, scope).get(1),
+                self.semantic().domain_scoped(sym, scope).get(1),
                 Some(RelationDomain::Domain(cls))
                     if *cls == formula
-                        || self.semantic.has_ancestor_scoped(*cls, formula, scope));
+                        || self.semantic().has_ancestor_scoped(*cls, formula, scope));
             if !arg2_is_formula {
                 continue;
             }
@@ -1365,7 +1380,7 @@ impl ProverLayer {
         const OCC_CAP: usize = 1500;
         let per_sym = strategy.defcomp_per_sym;
 
-        let syn = &self.semantic.syntactic;
+        let syn = &self.semantic().syntactic;
         let trace = std::env::var_os("SIGMA_LIU_TRACE").is_some();
         let mut adds = 0usize;
 
@@ -1435,7 +1450,7 @@ impl ProverLayer {
             // each symbol's provider candidates — one index read for the whole
             // round instead of two lock round-trips per symbol.
             let (missing, candidates_by_sym): (Vec<(usize, SymbolId)>, Vec<Vec<SentenceId>>) =
-                self.semantic.syntactic.sine_current(|idx| {
+                self.semantic().syntactic.sine_current(|idx| {
                     // GLOBAL mode: complete every obligation, not only the
                     // unprovided ones — a proof may need a SECOND provider
                     // of a predicate the goal line already has one for

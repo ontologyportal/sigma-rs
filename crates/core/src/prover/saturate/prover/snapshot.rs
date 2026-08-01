@@ -8,6 +8,7 @@
 // (the constructors) stay in `mod.rs`; this file holds the snapshot
 // struct itself plus `freeze`/`retain_background`.
 
+use crate::layer::TopLayer;
 use crate::types::{SentenceId, SymbolId};
 
 use super::super::clause::{AtomId, ClauseKey, Term};
@@ -57,7 +58,7 @@ pub(crate) struct ProverSnapshot {
     pub(super) oracle: OracleSnapshot,
 }
 
-impl<'a> NativeProver<'a> {
+impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Capture the prover's owned state after BACKGROUND loading —
     /// clause arena, indexes, dedup set, oracle products of the input
     /// pre-pass — for reuse by later runs over an identical problem
@@ -137,7 +138,7 @@ impl<'a> NativeProver<'a> {
                 let nv = self.clauses[id as usize].nvars;
                 self.units.add_unit(
                     id, lits[0].pos, lits[0].atom, nv,
-                    &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
+                    &layer.atom_infos, &layer.atoms, &layer.semantic().syntactic);
                 // Re-registration of an already-active equation: no
                 // backward pass (that ran at its original activation).
                 let _ = self.index_demodulator(id);

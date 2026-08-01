@@ -242,6 +242,29 @@ fn main_worker() {
         process::exit(if ok { 0 } else { 1 });
     }
 
+    // Clausify needs the concrete in-process clausifier, so — like
+    // `sweep` — it always drives the native prover, independent of
+    // `--backend`.  Unlike `sweep` it still loads the KB the normal way
+    // (db or fresh + constituents) since it clausifies the loaded KB.
+    #[cfg(feature = "ask")]
+    if matches!(cli.command, Cmd::Clausify { .. }) {
+        let Cmd::Clausify { formula } = cli.command else { unreachable!() };
+        let kb = open_or_new(
+            use_db,
+            || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
+            KnowledgeBase::new_native,
+        );
+        let mut session = Session::from_kb(kb, session_name);
+        if let Some(s) = sink.clone() {
+            session.set_progress_sink(s);
+        }
+        ingest_constituents(&mut session, &manager, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats);
+        for clause in session.clausify(formula.as_deref()) {
+            println!("{clause}");
+        }
+        process::exit(0);
+    }
+
     let ok = if matches!(cli.command, Cmd::Translate { .. } | Cmd::Man { .. }) {
         // Translation-only commands run on a `TranslationLayer`, independent of
         // `--backend`: the native `ProverLayer` lacks `HasTranslation`.

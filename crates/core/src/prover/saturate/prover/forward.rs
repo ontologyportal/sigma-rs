@@ -15,7 +15,7 @@ use super::super::theory::TheoryOracle;
 use super::super::unify::{apply, shift_slots, slot_atom, unify, Subst};
 use super::{positions_paths, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver, JOIN_UNIT_OFF, SUPPORT};
 
-impl<'a> NativeProver<'a> {
+impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Is clause `id` an activated, KBO-orientable positive unit equality
     /// — i.e. a demodulator that completion can superpose with?
     fn is_unit_equation(&self, id: u32) -> bool {

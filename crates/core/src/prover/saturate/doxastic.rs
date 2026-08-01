@@ -59,12 +59,13 @@ use crate::progress::ProveCtx;
 use crate::prover::{ProverResult, ProverStatus};
 use crate::semantics::types::Scope;
 
+use crate::layer::TopLayer;
 use super::{Conjecture, ProverLayer};
 use super::clause::PClause;
 use super::clausify::clausify_negated_conjunction_lossy;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 
-impl ProverLayer {
+impl<S: TopLayer + 'static> ProverLayer<S> {
     /// One projected prover run over a harvested belief base.
     ///
     /// `contents` are the agent's believed-content sentence ids (store
@@ -118,7 +119,7 @@ impl ProverLayer {
         };
         let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = match &conj {
             Some(c) => clausify_negated_conjunction_lossy(
-                &self.semantic.syntactic, &self.atoms, &c.sents),
+                &self.semantic().syntactic, &self.atoms, &c.sents),
             None => (Vec::new(), false),
         };
 

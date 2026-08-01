@@ -354,6 +354,23 @@
       display: flex; align-items: center; justify-content: center; height: 100%;
     }
 
+    /* Split TPTP preview: #editPane becomes a two-column row when toggled on;
+       each side keeps the editor's own fixed height outside fullscreen. */
+    #editPane.split { display: flex; align-items: stretch; }
+    #editPane.split #editorContainer { flex: 1 1 0; min-width: 0; height: 520px; }
+    #tptpPane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+      border-left: 1px solid var(--line); height: 520px; }
+    .tptp-pane-header { display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 10px; font-size: 12px; font-family: var(--mono); color: var(--muted);
+      border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+    #tptpContainer { flex: 1 1 auto; min-height: 0; }
+    #tptpContainer:empty::before {
+      content: attr(data-placeholder); color: var(--muted); font-size: 13px;
+      display: flex; align-items: center; justify-content: center; height: 100%;
+    }
+    /* Follow-cursor highlight in the TPTP pane (deltaDecorations className). */
+    .tptp-follow-line { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
     /* Fullscreen editor: #tab-edit (toolbar + editor + editLog) lifted out of
        <main>'s max-width/flow to cover the viewport. Animated via the View
        Transitions API where supported (app.js wraps the class toggle in
@@ -368,6 +385,10 @@
     }
     body.edit-fullscreen #editPane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
     body.edit-fullscreen #editorContainer { flex: 1 1 auto; height: auto; }
+    /* Split stays a row even in fullscreen — only the column height becomes fluid. */
+    body.edit-fullscreen #editPane.split { flex-direction: row; }
+    body.edit-fullscreen #editPane.split #editorContainer { height: auto; }
+    body.edit-fullscreen #tptpPane { height: auto; }
 
     #overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; }
@@ -585,6 +606,14 @@
         <div id="proverSettings" class="settings" hidden>
           <div class="settings-grid">
             <div>
+              <label for="proverBackend">backend</label>
+              <select id="proverBackend">
+                <option value="native">SUPr</option>
+                <option value="vampire">Vampire</option>
+              </select>
+              <div class="hint sub" id="proverBackendHint">given-clause knobs below apply to the native backend only</div>
+            </div>
+            <div>
               <label for="cfgTimeLimit">time limit (s)</label>
               <input type="number" id="cfgTimeLimit" min="0" step="1" value="30" />
               <div class="hint sub">0 = no wall-clock limit</div>
@@ -598,6 +627,11 @@
               <label for="cfgMaxLits">max literals</label>
               <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
               <div class="hint sub">per retained clause</div>
+            </div>
+            <div>
+              <label for="cfgSelectionPct">selection budget</label>
+              <input type="range" id="cfgSelectionPct" min="0" max="100" step="1" value="0" />
+              <div class="hint sub" id="cfgSelectionPctVal">engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)</div>
             </div>
           </div>
           <div class="settings-checks">
@@ -668,6 +702,12 @@
                 <path d="M2 5.5V2.75A.75.75 0 0 1 2.75 2h2.75M2 10.5v2.75c0 .414.336.75.75.75h2.75M14 5.5V2.75a.75.75 0 0 0-.75-.75h-2.75M14 10.5v2.75a.75.75 0 0 1-.75.75h-2.75"/>
               </svg>
             </button>
+            <button id="editTptpToggle" type="button" aria-pressed="false"
+                    title="Show a read-only TPTP translation of the whole knowledge base, following this file" aria-label="Toggle TPTP preview">
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="1" y="2.5" width="6" height="11" rx="1"/><rect x="9" y="2.5" width="6" height="11" rx="1"/>
+              </svg>
+            </button>
           </div>
           <span id="editFileName"></span>
           <span class="spacer"></span>
@@ -734,6 +774,13 @@
       </div>
       <div class="card" id="editPane">
         <div id="editorContainer" data-placeholder="Loading editor…"></div>
+        <div id="tptpPane" hidden>
+          <div class="tptp-pane-header">
+            <span>TPTP — whole knowledge base</span>
+            <span id="tptpStatus" class="hint"></span>
+          </div>
+          <div id="tptpContainer" data-placeholder="Generating…"></div>
+        </div>
       </div>
       <div id="editLog" class="hint"></div>
     </section>

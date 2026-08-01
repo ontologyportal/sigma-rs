@@ -181,6 +181,15 @@ pub enum Cmd {
         parse: bool,
     },
 
+    /// Clausify the knowledge base and print its CNF form as SUO-KIF, one
+    /// clause per line, via the native prover's own clausifier.
+    #[cfg(feature = "ask")]
+    Clausify {
+        /// Clausify only this ad hoc formula (not pulled from the KB
+        /// store) instead of every axiom in the database.
+        formula: Option<String>,
+    },
+
     /// Run a KIF conjecture through Vampire against the knowledge base.
     #[cfg(feature = "ask")]
     Ask {

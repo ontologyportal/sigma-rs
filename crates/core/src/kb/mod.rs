@@ -20,6 +20,8 @@ use crate::persist::LmdbEnv;
 pub mod progress;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub mod prove;
+#[cfg(feature = "native-prover")]
+pub mod clausify;
 pub mod export;
 #[cfg(any(feature = "snapshot", feature = "persist"))]
 pub mod persist;
@@ -152,6 +154,23 @@ impl KnowledgeBase<crate::prover::ProverLayer> {
     pub fn new_native() -> Self {
         Self::from_layer(crate::prover::ProverLayer::new(
             SemanticLayer::new(SyntacticLayer::default())))
+    }
+}
+
+#[cfg(feature = "native-prover")]
+impl KnowledgeBase<crate::prover::ProverLayer<TranslationLayer>> {
+    /// Constructs a new KnowledgeBase over the native-prover stack, with
+    /// [`TranslationLayer`] as [`ProverLayer`]'s inner layer instead of a bare
+    /// [`SemanticLayer`] — native proving AND `to_tptp`/TPTP export off one
+    /// shared KB, since [`ProverLayer<S>`] forwards [`HasTranslation`] to any
+    /// `S` that has it. Same syntactic/semantic layers underneath either way.
+    ///
+    /// [`ProverLayer`]: crate::saturate::ProverLayer
+    /// [`ProverLayer<S>`]: crate::saturate::ProverLayer
+    pub fn new_native_translating() -> Self {
+        Self::from_layer(crate::prover::ProverLayer::new(
+            TranslationLayer::new(
+                SemanticLayer::new(SyntacticLayer::default()))))
     }
 }
 

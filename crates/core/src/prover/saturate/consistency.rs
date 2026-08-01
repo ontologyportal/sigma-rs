@@ -16,10 +16,11 @@ use crate::semantics::types::Scope;
 use crate::syntactic::caches::session::session_id;
 use crate::{SentenceId, SineParams, SymbolId};
 
+use crate::layer::TopLayer;
 use super::ProverLayer;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 
-impl ProverLayer {
+impl<S: TopLayer + 'static> ProverLayer<S> {
     /// Saturate the selected axiom base (everything as set-of-support, no
     /// conjecture) looking for input contradictions, harvesting up to `limit`
     /// distinct ones (deduped by the source axioms they implicate).
@@ -41,7 +42,7 @@ impl ProverLayer {
         ctx:         &ProveCtx,
         limit:       usize,
     ) -> ProverResult {
-        let syn = &self.semantic.syntactic;
+        let syn = &self.semantic().syntactic;
         let session_sids: Vec<SentenceId> = session
             .map(|s| syn.sessions.session_sentences(s))
             .unwrap_or_default();

@@ -102,6 +102,19 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         crate::syntactic::position::symbol_at_offset(&self.layer.semantic().syntactic, file, offset)
     }
 
+    /// The root sentence enclosing byte `offset` in `file`, if any.
+    ///
+    /// Resolves via [`Self::element_at_offset`]'s fingerprint, then the
+    /// fingerprint's produced root(s) — the representative (first) one when a
+    /// single source formula expanded to several roots (CAF / row-var
+    /// expansion). `None` when `file` isn't loaded, `offset` falls outside
+    /// every root's range, or the formula produced no root (e.g. it never
+    /// promoted past a scratch session).
+    pub fn sentence_at(&self, file: &str, offset: usize) -> Option<SentenceId> {
+        let fp = self.element_at_offset(file, offset)?.fingerprint;
+        self.layer.semantic().syntactic.roots_of_fingerprint(fp).into_iter().next()
+    }
+
     /// Interned id for whatever symbol-like element is at `offset`,
     /// **including** [`Element::Variable`](crate::types::Element::Variable).
     /// For ordinary symbols the id is the intern-table entry; for variables

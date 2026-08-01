@@ -27,6 +27,8 @@ use crate::semantics::types::Scope;
 use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 use crate::SineParams;
 
+use crate::layer::TopLayer;
+use crate::semantics::SemanticLayer;
 use super::ProverLayer;
 use super::parked;
 use super::clause::{AtomId, ClauseKey, PClause, PLit, Term};
@@ -549,8 +551,8 @@ pub(crate) fn map_verdict(
 }
 
 
-pub(crate) struct NativeProver<'a> {
-    layer: &'a ProverLayer,
+pub(crate) struct NativeProver<'a, S: TopLayer + 'static = SemanticLayer> {
+    layer: &'a ProverLayer<S>,
     scope: Scope,
     pub(crate) oracle: SemanticOracle<'a>,
     pub(crate) opts: NativeOpts,
@@ -813,8 +815,8 @@ pub(crate) struct NativeProver<'a> {
     pub(crate) stats: ProverStats,
 }
 
-impl<'a> NativeProver<'a> {
-    pub(crate) fn new(layer: &'a ProverLayer, scope: Scope, opts: NativeOpts) -> Self {
+impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
+    pub(crate) fn new(layer: &'a ProverLayer<S>, scope: Scope, opts: NativeOpts) -> Self {
         // Measurement lever: SIGMA_MAX_LITS overrides the derived-clause
         // width cap (single-lane A/B of width headroom; the portfolio
         // path has Strategy.derived_width_cap for the same job).
@@ -837,7 +839,7 @@ impl<'a> NativeProver<'a> {
         Self {
             layer,
             scope,
-            oracle: SemanticOracle::new(&layer.semantic, scope),
+            oracle: SemanticOracle::new(layer.semantic(), scope),
             opts,
             prec,
             clauses: Vec::new(),
@@ -901,13 +903,13 @@ impl<'a> NativeProver<'a> {
     /// state (queues, stats, conjecture flags, goal profile) starts
     /// clean.
     pub(crate) fn from_snapshot(
-        layer: &'a ProverLayer,
+        layer: &'a ProverLayer<S>,
         scope: Scope,
         opts:  NativeOpts,
         snap:  &ProverSnapshot,
     ) -> Self {
         let mut p = Self::new(layer, scope, opts);
-        p.oracle = SemanticOracle::from_snapshot(&layer.semantic, scope, &snap.oracle);
+        p.oracle = SemanticOracle::from_snapshot(layer.semantic(), scope, &snap.oracle);
         p.bg_roots = snap.loaded_roots.clone();
         p.clauses = snap.clauses.clone();
         p.subs = snap.subs.clone();
@@ -965,7 +967,7 @@ impl<'a> NativeProver<'a> {
         self.units.ground_unit(pos, atom).is_some()
     }
 
-    fn syn(&self) -> &crate::syntactic::SyntacticLayer { &self.layer.semantic.syntactic }
+    fn syn(&self) -> &crate::syntactic::SyntacticLayer { &self.layer.semantic().syntactic }
 
     /// The reduction ordering for this run — the per-prover permuted KBO
     /// when `prec_seed != 0`, else the shared layer KBO (warm memo).
@@ -975,7 +977,7 @@ impl<'a> NativeProver<'a> {
     }
 
     /// The owning layer (proof extraction resolves atoms through it).
-    pub(crate) fn layer(&self) -> &'a ProverLayer { self.layer }
+    pub(crate) fn layer(&self) -> &'a ProverLayer<S> { self.layer }
 
     /// Whether clause `id` was retired by backward demodulation — one
     /// bitmap-word read (the SoA home of the former `ClauseRec.retired`
@@ -1036,8 +1038,8 @@ impl<'a> NativeProver<'a> {
         // The semantic layer is the shared source of truth: recognize +
         // rebuild the taxonomy there, then seed the oracle from the same
         // installed roles.
-        self.layer.semantic.ensure_taxonomy_roles();
-        let roles = self.layer.semantic.recognized_roles().unwrap_or_default();
+        self.layer.semantic().ensure_taxonomy_roles();
+        let roles = self.layer.semantic().recognized_roles().unwrap_or_default();
         if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
             eprintln!(
                 "ROLES instance={:#x} subclass={:#x} subrelation={:#x} \
@@ -2309,7 +2311,7 @@ impl<'a> NativeProver<'a> {
             let nv = self.clauses[id as usize].nvars;
             self.units.add_unit(
                 id, lits[0].pos, lits[0].atom, nv,
-                &layer.atom_infos, &layer.atoms, &layer.semantic.syntactic);
+                &layer.atom_infos, &layer.atoms, &layer.semantic().syntactic);
             let demod = self.index_demodulator(id);
             // Backward demodulation: the NEWLY oriented equation
             // re-normalizes the EXISTING clause sets (interreduction).
@@ -3159,7 +3161,7 @@ impl<'a> NativeProver<'a> {
         };
 
         // Phone book: each coin must name exactly one expected open seat.
-        let syn = &self.layer.semantic.syntactic;
+        let syn = &self.layer.semantic().syntactic;
         let mut s: Subst = vec![None; shape.g_nvars as usize + 1];
         let mut seen_seats: SmallVec<[u8; 2]> = SmallVec::new();
         for c in coins {

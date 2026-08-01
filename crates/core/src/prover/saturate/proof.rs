@@ -20,6 +20,7 @@ use crate::parse::{OpKind, Span};
 use crate::prover::proof::KifProofStep;
 use crate::types::{Element, Literal, SentenceId};
 
+use crate::layer::TopLayer;
 use super::ProverLayer;
 use super::prover::NativeProver;
 
@@ -52,11 +53,11 @@ impl SkolemRenamer {
 /// actually leaned on the model-discharge / rule-join / event-calculus /
 /// oracle mechanisms, as opposed to them merely being enabled.  Zero
 /// behavior change: called only to fill `ProverStats` counters.
-pub(crate) fn count_proof_tags(prover: &NativeProver<'_>, empty_id: u32) -> ProofTagCounts {
+pub(crate) fn count_proof_tags<S: crate::layer::TopLayer + 'static>(prover: &NativeProver<'_, S>, empty_id: u32) -> ProofTagCounts {
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut counts = ProofTagCounts::default();
-    fn visit(
-        prover: &NativeProver<'_>,
+    fn visit<S: crate::layer::TopLayer + 'static>(
+        prover: &NativeProver<'_, S>,
         id: u32,
         seen: &mut std::collections::HashSet<u32>,
         counts: &mut ProofTagCounts,
@@ -93,13 +94,13 @@ pub(crate) struct ProofTagCounts {
 }
 
 /// Convert the refutation DAG ending at `empty_id` into proof steps.
-pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<KifProofStep> {
+pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &NativeProver<'_, S>, empty_id: u32) -> Vec<KifProofStep> {
     // Topological order via DFS over clause parents; witness facts are
     // emitted (once) before the step that uses them.
     let mut order: Vec<u32> = Vec::new();
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    fn visit(
-        prover: &NativeProver<'_>,
+    fn visit<S: crate::layer::TopLayer + 'static>(
+        prover: &NativeProver<'_, S>,
         id: u32,
         seen: &mut std::collections::HashSet<u32>,
         order: &mut Vec<u32>,
@@ -139,8 +140,8 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     // contributed several clausal fragments (or doubles as a witness)
     // shows once — the transcript cites axioms as written, not the
     // clausified internals.
-    fn root_step(
-        layer:      &ProverLayer,
+    fn root_step<S: crate::layer::TopLayer + 'static>(
+        layer:      &ProverLayer<S>,
         sid:        SentenceId,
         rule:       &str,
         steps:      &mut Vec<KifProofStep>,
@@ -148,7 +149,7 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         renamer:    &mut SkolemRenamer,
     ) -> usize {
         if let Some(&i) = root_steps.get(&sid) { return i; }
-        let formula = layer.semantic.syntactic.source_node_of(sid)
+        let formula = layer.semantic().syntactic.source_node_of(sid)
             .or_else(|| sentence_ast(layer, sid, renamer))
             .unwrap_or_else(|| AstNode::Symbol {
                 name: format!("<unresolved {:x}>", sid),
@@ -184,8 +185,8 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     // ever names a genuine loaded root. `sid` is still used to render the
     // formula (`sentence_ast`/`atom_ast` resolve it fine via the atom table)
     // and to key the dedup map.
-    fn negated_root_step(
-        layer:          &ProverLayer,
+    fn negated_root_step<S: crate::layer::TopLayer + 'static>(
+        layer:          &ProverLayer<S>,
         sid:            SentenceId,
         steps:          &mut Vec<KifProofStep>,
         neg_conj_steps: &mut HashMap<SentenceId, usize>,
@@ -201,7 +202,7 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         // reads like the rest of the proof's axiom citations, which get
         // their variable names verbatim from `source_node_of`'s file text
         // and are left untouched here.
-        let formula = match layer.semantic.syntactic.source_node_of(sid) {
+        let formula = match layer.semantic().syntactic.source_node_of(sid) {
             Some(f) => f,
             None => {
                 let mut f = sentence_ast(layer, sid, renamer).unwrap_or_else(|| AstNode::Symbol {
@@ -258,8 +259,8 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     // Returns `None` (caller falls back to the flat witness citation) when
     // the goal is not a ground binary atom, any witness is not one, or the
     // witnesses do not form exactly one chain from `x` to `Y`.
-    fn expand_oracle_refutation(
-        layer:      &ProverLayer,
+    fn expand_oracle_refutation<S: crate::layer::TopLayer + 'static>(
+        layer:      &ProverLayer<S>,
         src:        SentenceId,
         witnesses:  &[SentenceId],
         root_idx:   usize,
@@ -281,7 +282,7 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         let mut facts:    Vec<(SentenceId, String, String, String)> = Vec::new();
         let mut licenses: Vec<SentenceId> = Vec::new();
         for sid in witnesses {
-            let f = layer.semantic.syntactic.source_node_of(*sid)
+            let f = layer.semantic().syntactic.source_node_of(*sid)
                 .or_else(|| sentence_ast(layer, *sid, renamer))?;
             let (r, a, b) = ground_binary(&f)?;
             if r == "instance" && a == grel {
@@ -376,8 +377,8 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
     // the shape is anything else: no single declaration, non-symbol
     // witnesses, unused edges, or fewer than two reached declared-disjoint
     // classes.
-    fn expand_disjoint_refutation(
-        layer:      &ProverLayer,
+    fn expand_disjoint_refutation<S: crate::layer::TopLayer + 'static>(
+        layer:      &ProverLayer<S>,
         src:        SentenceId,
         witnesses:  &[SentenceId],
         input_idx:  usize,
@@ -388,14 +389,14 @@ pub(crate) fn extract_proof(prover: &NativeProver<'_>, empty_id: u32) -> Vec<Kif
         if witnesses.len() < 2 {
             return None;
         }
-        let goal = layer.semantic.syntactic.source_node_of(src)
+        let goal = layer.semantic().syntactic.source_node_of(src)
             .or_else(|| sentence_ast(layer, src, renamer))?;
         let (grel, gx, gc0) = ground_binary(&goal)?;
 
         let mut edges: Vec<(SentenceId, String, String)> = Vec::new();
         let mut decls: Vec<(SentenceId, Vec<String>)> = Vec::new();
         for sid in witnesses {
-            let f = layer.semantic.syntactic.source_node_of(*sid)
+            let f = layer.semantic().syntactic.source_node_of(*sid)
                 .or_else(|| sentence_ast(layer, *sid, renamer))?;
             let syms = ground_symbols(&f)?;
             if DISJOINT_HEADS.contains(&syms[0].as_str()) {
@@ -750,7 +751,7 @@ fn sequential_var_label(n: usize) -> String {
 /// A clause as a KIF AST: the empty clause renders as the symbol
 /// `FALSE`, a unit as its (possibly negated) atom, a multi-literal
 /// clause as `(or …)`.
-fn clause_ast(layer: &ProverLayer, c: &super::prover::ClauseRec, renamer: &mut SkolemRenamer) -> AstNode {
+fn clause_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, c: &super::prover::ClauseRec, renamer: &mut SkolemRenamer) -> AstNode {
     let sp = Span::synthetic;
     let mut lits: Vec<AstNode> = Vec::with_capacity(c.lits.len());
     for l in &c.lits {
@@ -782,13 +783,13 @@ fn clause_ast(layer: &ProverLayer, c: &super::prover::ClauseRec, renamer: &mut S
 }
 
 /// A stored root sentence as a KIF AST (witness facts, input sources).
-fn sentence_ast(layer: &ProverLayer, sid: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+fn sentence_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, sid: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
     atom_ast(layer, sid, renamer)
 }
 
 /// An atom/sentence (AtomTable or store) as a KIF AST.
-fn atom_ast(layer: &ProverLayer, id: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
-    let syn = &layer.semantic.syntactic;
+fn atom_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, id: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+    let syn = &layer.semantic().syntactic;
     let s = layer.atoms.resolve(id, syn)?;
     let sp = Span::synthetic;
     let mut elements: Vec<AstNode> = Vec::with_capacity(s.elements.len());

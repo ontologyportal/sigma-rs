@@ -259,3 +259,14 @@ impl Layer for SemanticLayer {
         self.tax_edges.initialize(self);
     }
 }
+
+/// Trivial (identity) top-layer view: a bare `SemanticLayer` with neither
+/// translation nor proving on top of it — the default inner layer for
+/// [`ProverLayer`](crate::prover::saturate::ProverLayer)'s generic parameter,
+/// so the plain, unparameterized `ProverLayer` keeps behaving exactly as it
+/// did before that type gained a type parameter.
+impl crate::layer::TopLayer for SemanticLayer {
+    fn from_semantic(semantic: SemanticLayer) -> Self { semantic }
+    fn semantic(&self) -> &SemanticLayer { self }
+    fn semantic_mut(&mut self) -> &mut SemanticLayer { self }
+}

@@ -64,7 +64,7 @@ enum GroundOutcome {
     Step(DemodStep),
 }
 
-impl<'a> NativeProver<'a> {
+impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Rewrite every ground constant in `t` to its equality-class
     /// representative, IN PLACE — touched nodes are replaced, untouched
     /// subtrees are never rebuilt, and the no-equalities case (most

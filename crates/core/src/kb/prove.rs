@@ -132,7 +132,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
 }
 
 #[cfg(feature = "native-prover")]
-impl KnowledgeBase<crate::prover::saturate::ProverLayer> {
+impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S>> {
     /// Ask the native saturation prover to discharge `query_kif` (a single KIF
     /// conjecture) under SInE selection `sine` and optional in-memory `session`
     /// support.  Convenience wrapper: parses the query, folds `sine` / `session`

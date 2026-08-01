@@ -16,6 +16,8 @@
 use std::collections::HashSet;
 
 use super::KnowledgeBase;
+#[cfg(feature = "native-prover")]
+use crate::layer::TopLayer;
 use crate::parse::OpKind;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Sentence, SentenceId};
@@ -178,7 +180,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
 /// anything.  No `believes(agent, X)` is ever fed back from an inner
 /// derivation; verdicts and proofs return to the caller only.
 #[cfg(feature = "native-prover")]
-impl KnowledgeBase<crate::prover::saturate::ProverLayer> {
+impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S>> {
     /// Prove `query_kif` inside `agent`'s belief context (`believes`):
     /// the agent's asserted belief contents become the inner problem's
     /// axioms (un-quoted naturally — contents are store sub-sentences

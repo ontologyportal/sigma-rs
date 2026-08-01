@@ -18,6 +18,7 @@
 
 pub(crate) mod clause;
 pub(crate) mod clausify;
+pub(crate) mod render;
 pub(crate) mod canon;
 pub(crate) mod caches;
 pub(crate) mod hash64;
@@ -66,11 +67,23 @@ pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, t
 /// The native-prover top layer.  Owns the semantic stack plus the
 /// prover-local clause state; the residue index and given-clause loop
 /// accrete here in later phases.
+///
+/// Generic over its inner layer `S` so the prover can sit directly atop a
+/// bare [`SemanticLayer`] (the default — every existing use of the bare
+/// `ProverLayer` name keeps its original behavior unchanged) **or** atop a
+/// [`TranslationLayer`](crate::trans::TranslationLayer), which additionally
+/// makes `KnowledgeBase<ProverLayer<TranslationLayer>>` satisfy
+/// [`HasTranslation`](crate::trans::HasTranslation) — native proving and TPTP
+/// export off one shared KB, with no duplicated semantic state. The prover's
+/// own algorithms (below, and in `prove`/`consistency`/`doxastic`) are
+/// unchanged either way; only the path to reach the semantic layer gains one
+/// hop (`self.semantic.semantic()` instead of a direct field).
 #[derive(Debug)]
-pub struct ProverLayer {
-    /// Inner layer: the semantic layer this prover queries for
-    /// taxonomy / subrelation / transitivity discharge.
-    pub(crate) semantic: SemanticLayer,
+pub struct ProverLayer<S: TopLayer + 'static = SemanticLayer> {
+    /// Inner layer: the semantic layer (or semantic-plus-translation layer)
+    /// this prover queries for taxonomy / subrelation / transitivity
+    /// discharge — see the type-level doc above.
+    pub(crate) semantic: S,
 
     /// Prover-local atom storage: canonical atom `Sentence`s by content
     /// hash.  NOT the shared sentence store — derived literals churn too
@@ -80,13 +93,13 @@ pub struct ProverLayer {
 
     /// Lazy root → canonical clauses cache.  See
     /// [`caches::clause_store`].
-    pub(crate) clause_store: Cache<ClauseStore>,
+    pub(crate) clause_store: Cache<ClauseStore<S>>,
 
     /// Whole-KB inductive-definition model program (Phase 5): extracted
     /// Datalog rules + role schemas + cluster partition + monotone fragment,
     /// built once and reactor-invalidated on root changes.  See
     /// [`caches::model_registry`].  Not yet consulted by the prover (slice 1).
-    pub(crate) model_program: WholeCache<ModelRegistry>,
+    pub(crate) model_program: WholeCache<ModelRegistry<S>>,
 
     /// Memoized per-atom residue facts (mask, fingerprint, seat coins) —
     /// content-addressed, so background atoms are fingerprinted once,
@@ -121,22 +134,22 @@ pub struct ProverLayer {
         dashmap::DashMap<u64, std::sync::Arc<prover::ProverSnapshot>>,
 }
 
-impl ProverLayer {
-    pub(crate) fn new(semantic: SemanticLayer) -> Self {
+impl<S: TopLayer + 'static> ProverLayer<S> {
+    pub(crate) fn new(semantic: S) -> Self {
         Self::with_config(semantic, &CacheConfig::default())
     }
 
     /// Construct a `ProverLayer` whose caches share `cfg`.
-    pub(crate) fn with_config(semantic: SemanticLayer, cfg: &CacheConfig) -> Self {
+    pub(crate) fn with_config(semantic: S, cfg: &CacheConfig) -> Self {
         let atoms = AtomTable::default();
         // The pattern exemplars intern into the layer's own atom table
         // (a few dozen atoms, once per layer).
-        let schema = schema::SchemaTable::build(&atoms, &semantic.syntactic);
+        let schema = schema::SchemaTable::build(&atoms, &semantic.semantic().syntactic);
         Self {
             semantic,
             atoms,
-            clause_store: Cache::new(cfg, ClauseStore),
-            model_program: WholeCache::new(cfg, ModelRegistry),
+            clause_store: Cache::new(cfg, ClauseStore::default()),
+            model_program: WholeCache::new(cfg, ModelRegistry::default()),
             atom_infos:   AtomInfos::default(),
             schema,
             kbo:          kbo::KboOrdering::new(),
@@ -147,7 +160,7 @@ impl ProverLayer {
 
     /// The memoized residue facts of `atom`.
     pub(crate) fn atom_info(&self, atom: clause::AtomId) -> Arc<AtomInfo> {
-        self.atom_infos.info(atom, &self.atoms, &self.semantic.syntactic)
+        self.atom_infos.info(atom, &self.atoms, &self.semantic.semantic().syntactic)
     }
 
     /// The canonical clauses of a stored root sentence (clausified on
@@ -168,28 +181,48 @@ impl ProverLayer {
         if !self.clauses_for(root).is_empty() {
             return false;
         }
-        let syn = &self.semantic.syntactic;
+        let syn = &self.semantic.semantic().syntactic;
         let Some(sent) = syn.sentence(root) else { return true };
         clausify::clausify_sentence_lossy(syn, &self.atoms, &sent, root, false).1
     }
 }
 
-impl TopLayer for ProverLayer {
-    fn from_semantic(semantic: SemanticLayer) -> Self { Self::new(semantic) }
-    fn semantic(&self) -> &SemanticLayer { &self.semantic }
-    fn semantic_mut(&mut self) -> &mut SemanticLayer { &mut self.semantic }
+impl<S: TopLayer + 'static> TopLayer for ProverLayer<S> {
+    fn from_semantic(semantic: SemanticLayer) -> Self { Self::new(S::from_semantic(semantic)) }
+    fn semantic(&self) -> &SemanticLayer { self.semantic.semantic() }
+    fn semantic_mut(&mut self) -> &mut SemanticLayer { self.semantic.semantic_mut() }
 }
 
-impl Layer for ProverLayer {
-    type Inner = SemanticLayer;
+impl<S: TopLayer + 'static> Layer for ProverLayer<S> {
+    type Inner = S;
     type Outer = NoLayer;
 
-    fn inner(&self) -> Option<&SemanticLayer> { Some(&self.semantic) }
+    fn inner(&self) -> Option<&S> { Some(&self.semantic) }
     fn outer(&self) -> Option<&NoLayer> { None }
 
+    // Every OTHER layer in this crate is a concrete (non-generic) type, so its
+    // `schedule_cell`'s function-local `static` is naturally distinct per
+    // type. `ProverLayer<S>` is the one layer that's actually generic — and
+    // its `schedule_cell` body doesn't reference `S`'s VALUE at all (only its
+    // type, in the signature), so every monomorphization compiles to
+    // byte-identical code. Rust does not guarantee separate statics for that
+    // case (identical-instantiation deduplication is real and unspecified),
+    // and it bit exactly this: `ProverLayer<SemanticLayer>` and
+    // `ProverLayer<TranslationLayer>` were observed sharing ONE cell, so the
+    // (smaller) schedule built for one S's reactor graph got reused as an
+    // index-table for the OTHER S's differently-shaped graph — silently
+    // dispatching cascades to the wrong reactors instead of erroring.
+    // Keying explicitly by `TypeId` forces a genuine per-S cell.
     fn schedule_cell(&self) -> &'static crate::layer::ScheduleCell {
-        static CELL: crate::layer::ScheduleCell = std::sync::OnceLock::new();
-        &CELL
+        use std::any::TypeId;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static CELLS: Mutex<Option<HashMap<TypeId, &'static crate::layer::ScheduleCell>>> =
+            Mutex::new(None);
+        let mut cells = CELLS.lock().unwrap();
+        cells.get_or_insert_with(HashMap::new)
+            .entry(TypeId::of::<S>())
+            .or_insert_with(|| Box::leak(Box::new(std::sync::OnceLock::new())))
     }
 
     fn cache_config(&self) -> &CacheConfig { self.semantic.cache_config() }
@@ -203,7 +236,7 @@ impl Layer for ProverLayer {
     }
 }
 
-impl ProvingLayer for ProverLayer {
+impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
     type Opts = NativeOpts;
 
     /// Interns into the prover-local atom table.  Forwards to the inherent
@@ -287,3 +320,14 @@ impl ProvingLayer for ProverLayer {
 // `Conjecture` + `collect_ast_symbols` now live on the shared prover module
 // (`crate::prover::Conjecture`) so both backends share one type; see the
 // `pub(crate) use super::Conjecture` re-export above.
+
+/// Forward `HasTranslation` through to whichever inner layer has it —
+/// `ProverLayer<TranslationLayer>` gets TPTP export this way, for free,
+/// with no duplicated semantic state. `ProverLayer<SemanticLayer>` (the
+/// default, unparameterized `ProverLayer`) does NOT implement
+/// `HasTranslation`, since plain `SemanticLayer` doesn't either — exactly
+/// preserving today's behavior for every existing caller.
+impl<S: crate::trans::HasTranslation + 'static> crate::trans::HasTranslation for ProverLayer<S> {
+    fn translation(&self) -> &crate::trans::TranslationLayer { self.semantic.translation() }
+    fn translation_mut(&mut self) -> &mut crate::trans::TranslationLayer { self.semantic.translation_mut() }
+}

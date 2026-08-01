@@ -1790,11 +1790,16 @@ function ensureProverEditors() {
   return proverEditorsPromise;
 }
 
+function darkThemeActive() {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === 'dark' : !!window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+}
+
 async function createProverEditors() {
   if (assertionsEditor) return;
   monaco = await loadMonaco();
   const m = monaco;
-  const dark = document.documentElement.dataset.theme === 'dark';
+  const dark = darkThemeActive();
   const opts = {
     language: 'kif',
     theme: dark ? 'kif-dark' : 'kif-light',
@@ -1809,6 +1814,9 @@ async function createProverEditors() {
     hideCursorInOverviewRuler: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 13,
+    // Only the KB's own symbols (via kifCompletionProvider) should be
+    // suggested, not arbitrary strings already typed in the buffer.
+    wordBasedSuggestions: 'off',
   };
   const mount = (mountId, taId) => {
     const ta = $(taId);
@@ -2007,6 +2015,10 @@ const CFG_KNOBS = [
   { key: 'forwardClose',  id: 'cfgForwardClose', dflt: true },
   { key: 'wantProof',     id: 'cfgWantProof',    dflt: true },
   { key: 'profile',       id: 'cfgProfile',      dflt: false },
+  // 0 means "engine default" (sent to the worker as `null` — see makeConfig
+  // in sigma.worker.js — never as a literal 0% budget). 100 searches the
+  // whole KB, same as the old standalone "disable axiom selection" toggle.
+  { key: 'selectionTolerancePct', id: 'cfgSelectionPct', dflt: 0 },
 ];
 const CFG_DEFAULTS = Object.fromEntries(CFG_KNOBS.map((k) => [k.key, k.dflt]));
 
@@ -2054,6 +2066,16 @@ function togglePanel(btnId, panelId, force) {
 $('proverSettingsBtn').onclick = () => togglePanel('proverSettingsBtn', 'proverSettings');
 $('cfgReset').onclick = () => applyProverConfig(CFG_DEFAULTS);
 for (const { id } of CFG_KNOBS) $(id).addEventListener('input', renderCfgSummary);
+
+/** Live "N% of axioms" / "engine default" label under the selection-budget slider. */
+function renderSelectionPctLabel() {
+  const pct = Number($('cfgSelectionPct').value);
+  $('cfgSelectionPctVal').textContent = pct === 0
+    ? 'engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)'
+    : `${pct}% of axioms admitted into a query-relevant selection (also applies to Vampire; 100% searches the whole KB)`;
+}
+$('cfgSelectionPct').addEventListener('input', renderSelectionPctLabel);
+renderSelectionPctLabel();
 renderCfgSummary();
 
 // -- Prover: tell + ask -------------------------------------------------------
@@ -2081,12 +2103,19 @@ $('prove').onclick = async () => {
   const btn = $('prove');
   btn.disabled = true; btn.textContent = 'Proving…';
   try {
-    const { result } = await call('prove', {
-      assertions: paneValue('assertions').trim(),
-      query: paneValue('query'),
-      config: proverConfig(),
-      session: 'user-assertions',
-    });
+    const { result } = $('proverBackend').value === 'vampire'
+      ? await call('proveVampire', {
+          assertions: paneValue('assertions').trim(),
+          query: paneValue('query'),
+          timeLimitSecs: proverConfig().timeLimitSecs,
+          selectionTolerancePct: proverConfig().selectionTolerancePct,
+        })
+      : await call('prove', {
+          assertions: paneValue('assertions').trim(),
+          query: paneValue('query'),
+          config: proverConfig(),
+          session: 'user-assertions',
+        });
     renderProof(result);
   } catch (e) {
     $('proverResult').hidden = false;
@@ -2205,11 +2234,14 @@ $('runAudit').onclick = async () => {
   const btn = $('runAudit');
   btn.disabled = true; btn.textContent = 'Auditing…';
   try {
-    // Audit inherits the Ask/Tell prover settings, but keeps its own time limit.
-    const { result } = await call('audit', {
-      config: proverConfig({ timeLimitSecs: $('auditTime').value }),
-      limit: Math.max(1, Number($('auditLimit').value) || 5),
-    });
+    // Audit inherits the Ask/Tell prover settings (including backend), but
+    // keeps its own time limit.
+    const { result } = $('proverBackend').value === 'vampire'
+      ? await call('auditVampire', { timeLimitSecs: $('auditTime').value })
+      : await call('audit', {
+          config: proverConfig({ timeLimitSecs: $('auditTime').value }),
+          limit: Math.max(1, Number($('auditLimit').value) || 5),
+        });
     renderAudit(result);
   } catch (e) {
     $('auditResult').innerHTML = `<div class="card hint" style="color:var(--bad)">${esc(String(e && e.message || e))}</div>`;
@@ -2225,6 +2257,11 @@ function renderAudit(r) {
   let verdict;
   if (r.status === 'Consistent') {
     verdict = 'No contradiction found — the loaded KB saturated cleanly.';
+  } else if (r.inconsistent && !r.contradictions.length) {
+    // Backends that don't extract structured contradictions (e.g. Vampire —
+    // this app doesn't parse its proof text into individual witnesses)
+    // still know a contradiction exists; say so without implying "zero".
+    verdict = 'Contradiction found — see raw engine output for the derivation.';
   } else if (r.inconsistent) {
     verdict = `${r.contradictions.length} distinct contradiction${r.contradictions.length === 1 ? '' : 's'} found.`;
   } else {
@@ -2281,7 +2318,11 @@ function loadMonaco() {
     script.src = `${MONACO_CDN}/loader.js`;
     script.onload = () => {
       window.require.config({ paths: { vs: MONACO_CDN } });
-      window.require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
+      window.require(['vs/editor/editor.main'], () => {
+        defineKifLanguage(window.monaco);
+        defineTptpLanguage(window.monaco);
+        resolve(window.monaco);
+      }, reject);
     };
     script.onerror = () => reject(new Error(`failed to load Monaco from ${MONACO_CDN}`));
     document.head.appendChild(script);
@@ -2316,6 +2357,59 @@ const KIF_MONARCH = {
   },
 };
 
+/** Monaco `CompletionItemKind` for a man-paged symbol's `ManKind` labels (see core's `ManKind::as_str`). */
+function kindToCompletionKind(m, kinds) {
+  const K = m.languages.CompletionItemKind;
+  if (kinds.includes('class')) return K.Class;
+  if (kinds.includes('relation')) return K.Interface;
+  if (kinds.includes('function')) return K.Function;
+  if (kinds.includes('predicate')) return K.Method;
+  if (kinds.includes('instance')) return K.Value;
+  if (kinds.includes('individual')) return K.Constant;
+  return K.Text;
+}
+
+// Only the newest in-flight completion request may resolve into suggestions —
+// typing several characters in a row fires one `search` per keystroke, and a
+// slow early one must not clobber the list for what's on screen now.
+let completionSeq = 0;
+
+/**
+ * Real KB symbols only, via the same `search` the Home tab uses — this
+ * replaces Monaco's default word-based suggestions (any string already
+ * typed in the buffer), which has no notion of what's actually a SUMO term.
+ */
+function kifCompletionProvider(m) {
+  return {
+    provideCompletionItems(model, position) {
+      const word = model.getWordUntilPosition(position);
+      const prefix = word.word;
+      if (!prefix) return { suggestions: [] };
+      const range = {
+        startLineNumber: position.lineNumber, startColumn: word.startColumn,
+        endLineNumber: position.lineNumber, endColumn: word.endColumn,
+      };
+      const seq = ++completionSeq;
+      return call('search', { query: prefix, limit: 50 })
+        .then((r) => {
+          if (seq !== completionSeq) return { suggestions: [] };
+          const prefixLc = prefix.toLowerCase();
+          const suggestions = r.hits
+            .filter((h) => h.symbol.toLowerCase().startsWith(prefixLc))
+            .map((h) => ({
+              label: h.symbol,
+              kind: kindToCompletionKind(m, h.kinds),
+              detail: h.kinds.join(' · ') || h.source,
+              insertText: h.symbol,
+              range,
+            }));
+          return { suggestions };
+        })
+        .catch(() => ({ suggestions: [] }));
+    },
+  };
+}
+
 function defineKifLanguage(m) {
   if (m.languages.getLanguages().some((l) => l.id === 'kif')) return;
   m.languages.register({ id: 'kif' });
@@ -2337,6 +2431,7 @@ function defineKifLanguage(m) {
       return [{ range: model.getFullModelRange(), text: formatKif(model.getValue()) }];
     },
   });
+  m.languages.registerCompletionItemProvider('kif', kifCompletionProvider(m));
   m.editor.defineTheme('kif-light', {
     base: 'vs', inherit: true,
     rules: [
@@ -2363,6 +2458,33 @@ function defineKifLanguage(m) {
     ],
     colors: {},
   });
+}
+
+/** Monarch tokenizer for the read-only TPTP preview pane. Reuses the `kif-*`
+ * themes' token names (comment/string/number/keyword/kif-function/delimiter)
+ * so the light/dark toggle at `setTheme` applies here too, with no separate
+ * theme to keep in sync. */
+const TPTP_MONARCH = {
+  defaultToken: '',
+  tokenizer: {
+    root: [
+      [/%.*$/, 'comment'],
+      [/"(?:[^"\\]|\\.)*"/, 'string'],
+      [/-?\d+(?:\.\d+)?/, 'number'],
+      [/\b(?:fof|tff|cnf|thf)\b/, 'keyword'],
+      [/\b(?:axiom|hypothesis|conjecture|negated_conjecture|type|plain)\b/, 'keyword'],
+      [/[!?]\[/, 'keyword'],
+      [/\b[A-Z][A-Za-z0-9_]*\b/, 'variable'],
+      [/\b[a-z][A-Za-z0-9_]*\b/, 'kif-function'],
+      [/[()[\],.]/, 'delimiter.parenthesis'],
+    ],
+  },
+};
+
+function defineTptpLanguage(m) {
+  if (m.languages.getLanguages().some((l) => l.id === 'tptp')) return;
+  m.languages.register({ id: 'tptp' });
+  m.languages.setMonarchTokensProvider('tptp', TPTP_MONARCH);
 }
 
 const SEVERITY_TO_MONACO = { error: 'Error', warning: 'Warning', info: 'Info', hint: 'Hint' };
@@ -2430,6 +2552,7 @@ async function runEditValidateNow() {
     ? `<a class="jump-diag" data-file="${esc(file)}" data-line="${line}"
          title="Show these in the Diagnostics tab">${esc(label)}</a>`
     : esc(label);
+  await refreshTptpPane();
 }
 
 function setEditorContent(text) {
@@ -2472,6 +2595,16 @@ function updateEditActions() {
   // the user has switched to a different one.
   $('editSaveStatus').style.color = '';
   $('editSaveStatus').textContent = '';
+
+  // The TPTP pane resolves cursor positions against a real loaded file — an
+  // unsaved new buffer has nothing in the KB to resolve against yet.
+  const usable = tptpPaneUsable();
+  $('editTptpToggle').disabled = !usable;
+  $('editTptpToggle').title = usable
+    ? 'Show a read-only TPTP translation of the whole knowledge base, following this file'
+    : 'Save this buffer first to preview its TPTP translation';
+  if (!usable) setTptpPaneOpen(false);
+  else if (tptpPaneOpen) refreshTptpPane();
 }
 
 function onEditPickerChange() {
@@ -2553,8 +2686,7 @@ async function createEditor() {
     container.dataset.placeholder = 'Failed to load the editor: ' + (e && e.message || e);
     return;
   }
-  defineKifLanguage(monaco);
-  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  const dark = darkThemeActive();
   monacoEditor = monaco.editor.create(container, {
     value: '',
     language: 'kif',
@@ -2563,8 +2695,12 @@ async function createEditor() {
     minimap: { enabled: false },
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 13,
+    // Only the KB's own symbols (via kifCompletionProvider) should be
+    // suggested, not arbitrary strings already typed in the buffer.
+    wordBasedSuggestions: 'off',
   });
   monacoEditor.onDidChangeModelContent(scheduleEditValidate);
+  monacoEditor.onDidChangeCursorPosition(scheduleTptpFollow);
 
   // Right-click a symbol → its man page. Monaco does not reliably move the
   // caret on right-click, so the click's own position is captured and used in
@@ -2668,6 +2804,121 @@ $('editFullscreen').onclick = () => setEditFullscreen(!editFullscreen);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && editFullscreen) setEditFullscreen(false);
 });
+
+// -- Edit: split TPTP preview --------------------------------------------------
+//
+// A second, read-only Monaco pane showing the WHOLE knowledge base's TPTP
+// translation (not just this file — an individual file's translation is
+// meaningless without the rest of the KB's declarations/context), scrolled
+// to follow this file's content as you edit and move the cursor. Only
+// meaningful for a buffer backed by a real loaded file (see `updateEditActions`);
+// a brand-new unsaved buffer has nothing in the KB to resolve positions against.
+
+let tptpEditor = null;
+let tptpPaneOpen = false;
+let tptpDecorationIds = [];
+
+/** Lazily create the read-only TPTP editor the first time the pane opens. */
+async function ensureTptpPane() {
+  if (tptpEditor) return;
+  monaco = await loadMonaco();
+  const dark = darkThemeActive();
+  tptpEditor = monaco.editor.create($('tptpContainer'), {
+    value: '',
+    language: 'tptp',
+    theme: dark ? 'kif-dark' : 'kif-light',
+    readOnly: true,
+    automaticLayout: true,
+    minimap: { enabled: false },
+    lineNumbers: 'on',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    fontSize: 13,
+  });
+}
+
+/** Whether the current buffer is backed by a real loaded file — the TPTP
+ * pane needs one to resolve cursor positions against the live KB. */
+function tptpPaneUsable() {
+  return !!(editCurrentFile
+    && constituents.find((c) => c.name === editCurrentFile.name && c.origin === editCurrentFile.origin));
+}
+
+async function setTptpPaneOpen(on) {
+  if (on === tptpPaneOpen) return;
+  tptpPaneOpen = on;
+  const btn = $('editTptpToggle');
+  btn.setAttribute('aria-pressed', String(on));
+  $('editPane').classList.toggle('split', on);
+  $('tptpPane').hidden = !on;
+  monacoEditor?.layout();
+  if (on) {
+    await ensureTptpPane();
+    tptpEditor?.layout();
+    await refreshTptpPane();
+    followTptpCursor();
+  }
+}
+
+$('editTptpToggle').onclick = () => setTptpPaneOpen(!tptpPaneOpen);
+
+// Whole-KB retranslation is the heavy half of this feature (thousands of
+// axioms for a full SUMO load) — piggybacks on the SAME 400ms debounce as
+// edit-validate (see `runEditValidateNow`) rather than firing separately,
+// and only while the pane is actually open.
+async function refreshTptpPane() {
+  if (!tptpPaneOpen || !tptpEditor) return;
+  if (!tptpPaneUsable()) {
+    tptpEditor.setValue('');
+    $('tptpStatus').textContent = 'no backing file — save this buffer first';
+    return;
+  }
+  $('tptpStatus').textContent = 'generating…';
+  try {
+    const { text } = await call('toTptpIndexed', {});
+    if (!tptpEditor) return;
+    tptpEditor.setValue(text);
+    $('tptpStatus').textContent = `${text.split('\n').length} lines`;
+    followTptpCursor();
+  } catch (e) {
+    $('tptpStatus').textContent = 'translation failed: ' + (e && e.message || e);
+  }
+}
+
+// Cursor-follow: cheap (cache lookups against the last generated dump, no
+// retranslation), so it can run on every cursor move with only a light
+// debounce — mainly to avoid flooding postMessage while arrow-keying/scrolling.
+let tptpFollowTimer = 0;
+function scheduleTptpFollow() {
+  clearTimeout(tptpFollowTimer);
+  tptpFollowTimer = setTimeout(followTptpCursor, 120);
+}
+
+async function followTptpCursor() {
+  if (!tptpPaneOpen || !tptpEditor || !monacoEditor || !tptpPaneUsable()) return;
+  const model = monacoEditor.getModel();
+  const pos = monacoEditor.getPosition();
+  if (!model || !pos) return;
+  // Rust's offsets are UTF-8 BYTE offsets; Monaco's are UTF-16 code-unit
+  // offsets — re-encode the prefix rather than assuming they coincide (true
+  // only for pure-ASCII text, which SUMO's documentation strings aren't
+  // always).
+  const prefix = model.getValueInRange({
+    startLineNumber: 1, startColumn: 1,
+    endLineNumber: pos.lineNumber, endColumn: pos.column,
+  });
+  const offset = new TextEncoder().encode(prefix).length;
+  let line;
+  try {
+    ({ line } = await call('tptpLineForPosition', { file: editCurrentFile.name, offset }));
+  } catch { return; }
+  if (line == null || !tptpEditor) return;
+  const lineNumber = line + 1; // 0-based from Rust -> Monaco's 1-based
+  tptpEditor.revealLineInCenterIfOutsideViewport(lineNumber);
+  tptpDecorationIds = tptpEditor.deltaDecorations(tptpDecorationIds, [{
+    range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+    options: { isWholeLine: true, className: 'tptp-follow-line' },
+  }]);
+}
 
 $('editSave').onclick = async () => {
   const btn = $('editSave');

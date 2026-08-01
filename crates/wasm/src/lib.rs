@@ -9,6 +9,7 @@ use sigmakee_rs_core::{ProverLayer, NativeOpts};
 use sigmakee_rs_core::{ManKind, ManPage, SearchHit, SearchOpts};
 use sigmakee_rs_core::TopLayer;
 use sigmakee_rs_core::AstKif;
+use sigmakee_rs_core::TranslationLayer;
 
 // -- WasmKnowledgeBase ---------------------------------------------------------
 
@@ -260,13 +261,20 @@ pub struct WasmConfig {
     forward_close:   bool,
     want_proof:      bool,
     profile:         bool,
+    select_all:      bool,
+    selection_tolerance_pct: Option<f64>,
 }
 
 impl WasmConfig {
     /// Build a runtime [`NativeOpts`] seeded with these defaults; per-query
     /// `session` is layered on by the caller.  Mirrors
     /// `NativeProverConfig::to_native_opts`.
-    fn to_native_opts(&self) -> NativeOpts {
+    ///
+    /// `axiom_count` is the live KB's current [`sine_axiom_count`]
+    /// (`KnowledgeBase::sine_axiom_count`) — needed to turn
+    /// [`Self::selection_tolerance_pct`] (a percentage) into the absolute
+    /// SInE auto-budget the engine actually takes.
+    fn to_native_opts(&self, axiom_count: usize) -> NativeOpts {
         NativeOpts {
             time_limit_secs: self.time_limit_secs,
             max_steps:       self.max_steps,
@@ -274,9 +282,23 @@ impl WasmConfig {
             forward_close:   self.forward_close,
             want_proof:      self.want_proof,
             profile:         self.profile,
+            selection: if self.select_all {
+                sigmakee_rs_core::SineParams::whole_kb()
+            } else if let Some(pct) = self.selection_tolerance_pct {
+                sigmakee_rs_core::SineParams::auto(selection_budget(axiom_count, pct))
+            } else {
+                sigmakee_rs_core::SineParams::default()
+            },
             ..NativeOpts::default()
         }
     }
+}
+
+/// Percentage (0-100) of `axiom_count` to admit into the SInE selection —
+/// the absolute count [`SineParams::auto`] expects. Always at least 1, so a
+/// non-empty KB never gets a zero budget from a very low slider value.
+fn selection_budget(axiom_count: usize, pct: f64) -> usize {
+    (((axiom_count as f64) * (pct.clamp(0.0, 100.0) / 100.0)).round() as usize).max(1)
 }
 
 #[wasm_bindgen]
@@ -293,6 +315,8 @@ impl WasmConfig {
             forward_close:   true,
             want_proof:      true,
             profile:         false,
+            select_all:      false,
+            selection_tolerance_pct: None,
         }
     }
 
@@ -331,6 +355,31 @@ impl WasmConfig {
     pub fn profile(&self) -> bool { self.profile }
     #[wasm_bindgen(setter)]
     pub fn set_profile(&mut self, v: bool) { self.profile = v; }
+
+    /// Disable SInE axiom selection — search the WHOLE promoted KB instead of
+    /// a query-relevant subset. Off (`false`) by default, matching the
+    /// engine's own default (`SineParams::default()`, auto-budget SInE on);
+    /// `true` uses `SineParams::whole_kb()`. Slower and more memory-hungry,
+    /// but sidesteps selection ever excluding an axiom the query actually
+    /// needs — useful for debugging a query that fails under selection.
+    #[wasm_bindgen(getter = selectAll)]
+    pub fn select_all(&self) -> bool { self.select_all }
+    #[wasm_bindgen(setter = selectAll)]
+    pub fn set_select_all(&mut self, v: bool) { self.select_all = v; }
+
+    /// SInE selection budget, as a percentage (0-100) of the KB's total
+    /// axiom count — how much of the ontology a query-relevant selection is
+    /// allowed to admit. `null`/`undefined` (the default) uses the engine's
+    /// own default budget (a fixed axiom count, not a percentage — see
+    /// `SineParams::default`) instead of a KB-relative one. Ignored when
+    /// [`Self::selectAll`](Self::select_all) is set. Applies to BOTH the
+    /// native backend (as the auto-tolerance loop's starting budget, which
+    /// may still widen from there) and Vampire (as the final, one-shot
+    /// budget — see [`WasmNativeProver::to_tptp_for_ask`]).
+    #[wasm_bindgen(getter = selectionTolerancePct)]
+    pub fn selection_tolerance_pct(&self) -> Option<f64> { self.selection_tolerance_pct }
+    #[wasm_bindgen(setter = selectionTolerancePct)]
+    pub fn set_selection_tolerance_pct(&mut self, v: Option<f64>) { self.selection_tolerance_pct = v; }
 }
 
 // -- WasmNativeProver ----------------------------------------------------------
@@ -344,16 +393,29 @@ impl WasmConfig {
 /// solves the SUMO TQ suite natively.
 #[wasm_bindgen]
 pub struct WasmNativeProver {
-    inner:  KnowledgeBase<ProverLayer>,
+    inner:  KnowledgeBase<ProverLayer<TranslationLayer>>,
     config: WasmConfig,
+    /// The sid→line map from the last [`to_tptp_indexed`](Self::to_tptp_indexed)
+    /// call, consulted by [`tptp_line_for_position`](Self::tptp_line_for_position).
+    /// Never serialized to JS — `SentenceId` doesn't cross the wasm boundary
+    /// (see the module doc on `DiagnosticJs`/`search_hits_to_js` for why).
+    tptp_lines: std::collections::HashMap<sigmakee_rs_core::SentenceId, u32>,
 }
 
 #[wasm_bindgen]
 impl WasmNativeProver {
     /// Create an empty native-prover knowledge base with default [`Config`].
+    ///
+    /// Topped by [`ProverLayer<TranslationLayer>`] rather than a bare
+    /// [`ProverLayer`] — native proving AND TPTP export off one shared KB
+    /// (see [`toTptpIndexed`](Self::to_tptp_indexed)), no dual KB.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: KnowledgeBase::new_native(), config: WasmConfig::new() }
+        Self {
+            inner:      KnowledgeBase::new_native_translating(),
+            config:     WasmConfig::new(),
+            tptp_lines: std::collections::HashMap::new(),
+        }
     }
 
     /// Replace the active [`Config`] used by subsequent [`ask`](Self::ask) calls.
@@ -415,6 +477,19 @@ impl WasmNativeProver {
         serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
+    /// Clausify the KB and return its CNF form as SUO-KIF, via the native
+    /// prover's own clausifier — one clause string per array entry. `formula`
+    /// clausifies just that ad hoc KIF text instead of the whole KB when
+    /// given (the loaded KB is untouched either way).
+    #[wasm_bindgen(js_name = clausify)]
+    pub fn clausify(&self, formula: Option<String>) -> Result<JsValue, JsValue> {
+        let clauses = match formula {
+            Some(kif) => self.inner.clausify_formula(&kif),
+            None      => self.inner.clausify_all(),
+        };
+        serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
     /// Revalidate an edited buffer for `file` **with full KB context**, updating
     /// the live KB to match the buffer.
     ///
@@ -458,6 +533,131 @@ impl WasmNativeProver {
         // in the file's own session overlay, and Base-scope validation would
         // falsely flag symbols they connect.
         diagnostics_to_js(&self.inner.validate_file_in_session(file, file))
+    }
+
+    /// Render the WHOLE KB as TPTP — `lang` `"fof"` (default) or `"tff"`,
+    /// `hide_numbers` replaces numeric literals with `n__N` tokens — and
+    /// remember which line each axiom landed on, for
+    /// [`tptpLineForPosition`](Self::tptp_line_for_position) to consult.
+    ///
+    /// Intended for an occasional "generate/refresh the TPTP preview" action,
+    /// not a per-keystroke call — this re-translates the entire KB (thousands
+    /// of axioms for a full SUMO load), whereas `tptpLineForPosition` itself
+    /// is cheap and fine to call on every cursor move.
+    #[wasm_bindgen(js_name = toTptpIndexed)]
+    pub fn to_tptp_indexed(&mut self, lang: Option<String>, hide_numbers: Option<bool>) -> String {
+        let opts = TptpOptions {
+            lang: match lang.as_deref() {
+                Some("tff") => TptpLang::Tff,
+                _           => TptpLang::Fof,
+            },
+            hide_numbers: hide_numbers.unwrap_or(true),
+            ..TptpOptions::default()
+        };
+        self.tptp_lines.clear();
+        self.inner.to_tptp_indexed(&opts, None, Some(&mut self.tptp_lines))
+    }
+
+    /// The 0-based line in the last [`toTptpIndexed`](Self::to_tptp_indexed)
+    /// output that renders the sentence enclosing byte `offset` in `file` —
+    /// e.g. wherever the editor's cursor currently sits. `null` when `file`
+    /// isn't loaded, `offset` falls outside every sentence, or that sentence
+    /// wasn't part of the last generated TPTP (stale index — the KB changed
+    /// since; call `toTptpIndexed` again first).
+    #[wasm_bindgen(js_name = tptpLineForPosition)]
+    pub fn tptp_line_for_position(&self, file: &str, offset: usize) -> Option<u32> {
+        let sid = self.inner.sentence_at(file, offset)?;
+        self.tptp_lines.get(&sid).copied()
+    }
+
+    /// Build a standalone TPTP problem for an external prover: whole-KB
+    /// axioms, `assertions` folded in as `hypothesis`-role support (a
+    /// scratch session, flushed before returning — never left in the live
+    /// KB), and `query_kif` appended as the `conjecture`. Mirrors
+    /// [`WasmKnowledgeBase::ask`]'s TPTP assembly, but returns the text
+    /// instead of invoking a (synchronous) hook — callers that need an
+    /// ASYNC prover (e.g. a WASM build of Vampire, run via `await`) can't
+    /// use that hook shape, so they get the text and drive the prover
+    /// themselves.
+    ///
+    /// Empty `assertions` is fine (no session created). Errors (as a
+    /// diagnostic-message array) on a query that fails to parse or
+    /// produces no sentence.
+    ///
+    /// `select_all` mirrors [`WasmConfig::selectAll`](WasmConfig::select_all)
+    /// on the native backend's `Config`, so ONE toggle in the UI means the
+    /// same thing for both: `false` (default) SInE-selects a query-relevant
+    /// axiom subset (seeded from the assertions + query, via
+    /// [`KnowledgeBase::to_tptp_selected`] — the same selection primitive
+    /// the native prover and the CLI's external-prover path both use);
+    /// `true` emits the whole promoted KB, unfiltered. `selection_tolerance_pct`
+    /// mirrors [`WasmConfig::selectionTolerancePct`](WasmConfig::selection_tolerance_pct)
+    /// — ignored when `select_all` is true; `None` uses the engine default
+    /// budget. Unlike the native backend's autoscaling loop, this is the
+    /// FINAL budget: Vampire runs as a one-shot external engine with no
+    /// feedback retry, so a query that needs more of the KB than the given
+    /// percentage admits will fail here even though the native backend
+    /// might still find it by widening its own selection.
+    #[wasm_bindgen(js_name = toTptpForAsk)]
+    pub fn to_tptp_for_ask(
+        &mut self,
+        assertions_kif: &str,
+        query_kif:      &str,
+        select_all:     Option<bool>,
+        selection_tolerance_pct: Option<f64>,
+    ) -> Result<String, JsValue> {
+        // Assertions and the query go into SEPARATE session tags (rather
+        // than one shared tag) so the query's own sids don't need to be
+        // set-differenced out of the assertions' — `session_sids(QUERY_TAG)`
+        // is exactly the query's sentences, nothing more.
+        const ASSERT_TAG: &str = "__vampire_ask_assertions__";
+        const QUERY_TAG:  &str = "__vampire_ask_query__";
+        if !assertions_kif.trim().is_empty() {
+            let r = self.inner.tell(assertions_kif, ASSERT_TAG);
+            if !r.ok {
+                self.inner.flush_session(ASSERT_TAG);
+                let errors: Vec<String> = r.diagnostics.iter().map(|e| e.to_string()).collect();
+                return Err(serde_wasm_bindgen::to_value(&errors)
+                    .unwrap_or_else(|_| JsValue::from_str("assertions parse error")));
+            }
+        }
+        let query_tell = self.inner.tell(query_kif, QUERY_TAG);
+        if !query_tell.ok {
+            self.inner.flush_session(ASSERT_TAG);
+            self.inner.flush_session(QUERY_TAG);
+            let errors: Vec<String> = query_tell.diagnostics.iter().map(|e| e.to_string()).collect();
+            return Err(serde_wasm_bindgen::to_value(&errors)
+                .unwrap_or_else(|_| JsValue::from_str("query parse error")));
+        }
+        let query_sids = self.inner.session_sids(QUERY_TAG);
+        if query_sids.is_empty() {
+            self.inner.flush_session(ASSERT_TAG);
+            self.inner.flush_session(QUERY_TAG);
+            return Err(JsValue::from_str("No query sentence parsed"));
+        }
+
+        let kb_opts = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
+        let mut tptp = if select_all.unwrap_or(false) {
+            self.inner.to_tptp(&kb_opts, Some(ASSERT_TAG))
+        } else {
+            // Seed relevance from BOTH the assertions and the query — same
+            // shape the native prover's own seed-building uses (support
+            // hypotheses + conjecture) — not just the query alone, so an
+            // assertion's own vocabulary can pull in axioms it needs too.
+            let mut seed_sids = self.inner.session_sids(ASSERT_TAG);
+            seed_sids.extend(query_sids.iter().copied());
+            self.inner.to_tptp_selected(&kb_opts, &seed_sids, Some(ASSERT_TAG), None, selection_tolerance_pct)
+        };
+
+        let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
+        for (i, &sid) in query_sids.iter().enumerate() {
+            let conj = self.inner.format_sentence_tptp(sid, &q_opts);
+            tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
+        }
+
+        self.inner.flush_session(ASSERT_TAG);
+        self.inner.flush_session(QUERY_TAG);
+        Ok(tptp)
     }
 
     /// Summary counts describing the loaded KB, for an overview page.
@@ -531,7 +731,7 @@ impl WasmNativeProver {
     /// this instance's contents. The active [`Config`] is preserved.
     #[wasm_bindgen]
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-        let kb = KnowledgeBase::<ProverLayer>::restore_from_bytes(bytes)
+        let kb = KnowledgeBase::<ProverLayer<TranslationLayer>>::restore_from_bytes(bytes)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.inner = kb;
         Ok(())
@@ -667,7 +867,7 @@ impl WasmNativeProver {
     ///   rendered as a DOT digraph.
     #[wasm_bindgen(js_name = auditConsistency)]
     pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
-        let opts = self.config.to_native_opts();
+        let opts = self.config.to_native_opts(self.inner.sine_axiom_count());
         let result = self.inner.audit_consistency(&[], opts, limit.unwrap_or(5) as usize);
         let src_idx = self.inner.build_axiom_source_index();
 
@@ -721,7 +921,7 @@ impl WasmNativeProver {
         query_kif: &str,
         session:   Option<String>,
     ) -> Result<JsValue, JsValue> {
-        let opts   = self.config.to_native_opts();
+        let opts   = self.config.to_native_opts(self.inner.sine_axiom_count());
         let sine   = opts.selection.clone();
         let result = self.inner.ask_query(query_kif, session.as_deref(), sine, opts);
 

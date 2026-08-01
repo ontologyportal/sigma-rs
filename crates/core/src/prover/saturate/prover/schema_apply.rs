@@ -14,7 +14,7 @@ use super::super::schema::{SchemaHit, SchemaKind};
 use super::super::theory::TheoryOracle;
 use super::NativeProver;
 
-impl<'a> NativeProver<'a> {
+impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Schema-channel pre-pass: probe every input clause of a root
     /// against the pattern table and register what it states (mined
     /// symmetric / transitive / antisymmetric / irreflexive relations,

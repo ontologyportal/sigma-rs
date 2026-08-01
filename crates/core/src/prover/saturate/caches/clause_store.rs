@@ -10,21 +10,30 @@
 // the regenerated clauses are byte-identical, which is what makes plain
 // eviction a sufficient retraction story.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::cache::{CacheBehavior, EntryCache};
 use crate::cache::events::{Event, EventKind};
+use crate::layer::TopLayer;
 use super::super::ProverLayer;
 use super::super::clause::PClause;
 use super::super::clausify::clausify_sentence;
 use crate::types::SentenceId;
 
-/// Behavior for the `saturate::clause_store` cache.
-#[derive(Debug, Default)]
-pub(crate) struct ClauseStore;
+/// Behavior for the `saturate::clause_store` cache.  Carries `S` only as a
+/// marker so this one behavior type serves every `ProverLayer<S>`
+/// monomorphization (plain `ProverLayer` and `ProverLayer<TranslationLayer>`
+/// alike) with independent caches — see [`ProverLayer`]'s type-level doc.
+#[derive(Debug)]
+pub(crate) struct ClauseStore<S = crate::semantics::SemanticLayer>(PhantomData<fn() -> S>);
 
-impl CacheBehavior for ClauseStore {
-    type Parent = ProverLayer;
+impl<S> Default for ClauseStore<S> {
+    fn default() -> Self { Self(PhantomData) }
+}
+
+impl<S: TopLayer + 'static> CacheBehavior for ClauseStore<S> {
+    type Parent = ProverLayer<S>;
     type Key    = SentenceId;
     /// `Arc` so a problem assembling thousands of background clauses
     /// bumps refcounts instead of deep-copying clause vectors.
@@ -37,8 +46,8 @@ impl CacheBehavior for ClauseStore {
     /// Clausify the root on miss.  Interning atoms into the layer's
     /// `AtomTable` is an idempotent (content-addressed) side effect, so
     /// the storage layer re-calling `generate` under contention is benign.
-    fn generate(&self, parent: &ProverLayer, root: &SentenceId) -> Arc<Vec<PClause>> {
-        let syn = &parent.semantic.syntactic;
+    fn generate(&self, parent: &ProverLayer<S>, root: &SentenceId) -> Arc<Vec<PClause>> {
+        let syn = &parent.semantic.semantic().syntactic;
         let Some(sent) = syn.sentence(*root) else { return Arc::new(Vec::new()) };
         Arc::new(clausify_sentence(syn, &parent.atoms, &sent, *root, false))
     }
@@ -53,7 +62,7 @@ impl CacheBehavior for ClauseStore {
 
     fn react(
         &self,
-        _parent: &ProverLayer,
+        _parent: &ProverLayer<S>,
         events:  &[&Event],
         store:   &EntryCache<SentenceId, Arc<Vec<PClause>>>,
         _side:   &Self::Side,

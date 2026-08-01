@@ -24,7 +24,7 @@ use super::super::theory::TheoryOracle;
 use super::super::unify::slot_atom;
 use super::{term_kif, NativeProver, CONJECTURE, SUPPORT};
 
-impl<'a> NativeProver<'a> {
+impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Event-oracle (fix B): discharge multi-premise Horn rules by an
     /// indexed nested-loop JOIN over ground facts, emitting only the
     /// satisfied head unit.  Theory body literals (taxonomy / temporal)

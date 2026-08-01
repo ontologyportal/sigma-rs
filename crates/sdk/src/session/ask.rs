@@ -353,6 +353,18 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     ) -> SdkResult<ProverResult> {
         Ok(self.kb.doxastic_consistent(agent, opts.unwrap_or_default()))
     }
+
+    /// Clausify the KB's CNF form (native prover's own clausifier), one
+    /// SUO-KIF clause per entry. `formula` is `None` to clausify every
+    /// axiom currently loaded, or `Some(kif)` to clausify one ad hoc
+    /// formula instead (not pulled from the KB store — the base KB is
+    /// untouched either way).
+    pub fn clausify(&self, formula: Option<&str>) -> Vec<String> {
+        match formula {
+            Some(kif) => self.kb.clausify_formula(kif),
+            None      => self.kb.clausify_all(),
+        }
+    }
 }
 
 impl<L: ProvingLayer> OpenSession<'_, L> {

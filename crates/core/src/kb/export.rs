@@ -15,7 +15,7 @@ use crate::{HasTranslation, TptpLang};
 use crate::{Diagnostic, ExternalOpts, Parser, ProveCtx, SourceFile, TestCase};
 #[cfg(feature = "ask")]
 use crate::prover::Conjecture;
-use super::assemble::{assemble_tptp, AssemblyOpts};
+use super::assemble::{assemble_tptp_indexed, AssemblyOpts};
 
 use super::KnowledgeBase;
 
@@ -30,6 +30,19 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     /// `opts.show_kif_comment` is set, and applies the `excluded` predicate
     /// filter before conversion.
     pub fn to_tptp(&mut self, opts: &TptpOptions, session: Option<&str>) -> String {
+        self.to_tptp_indexed(opts, session, None)
+    }
+
+    /// Like [`Self::to_tptp`], but when `axiom_lines` is `Some`, it's filled
+    /// with each emitted axiom's starting 0-based line number — see
+    /// [`assemble_tptp_indexed`]. Powers a "jump to this axiom" pane without
+    /// re-scanning the (potentially large, whole-KB) output text.
+    pub fn to_tptp_indexed(
+        &mut self,
+        opts:        &TptpOptions,
+        session:     Option<&str>,
+        axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
+    ) -> String {
 
         crate::with_guard!(self);
 
@@ -66,11 +79,106 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
         let (axiom_problem, axiom_sid_map) = self.layer.translation().build_problem(&axioms_sorted, mode);
 
-        assemble_tptp(&axiom_problem, &axiom_sid_map, &AssemblyOpts {
+        assemble_tptp_indexed(&axiom_problem, &axiom_sid_map, &AssemblyOpts {
             show_kif: opts.show_kif_comment,
-            layer:    Some(&self.layer.semantic()),
+            layer:    Some(self.layer.semantic()),
             ..AssemblyOpts::default()
-        })
+        }, axiom_lines)
+    }
+
+    /// Like [`Self::to_tptp_indexed`], but restricts the emitted axioms to a
+    /// SInE-relevant subset seeded from `seed_sids` (typically the query's
+    /// own sentence id(s), plus any support/assertion sids also worth
+    /// seeding from) — the SAME selection primitive
+    /// (`SyntacticLayer::select_relevant`) the native prover and the CLI's
+    /// external-prover path both already use, so an external prover fed
+    /// this text searches roughly the axiom set the "Native" backend would.
+    /// `session`, if given, still folds its sentences in UNFILTERED —
+    /// support hypotheses were explicitly asserted for this query, so
+    /// selection never gets a chance to exclude them (matches
+    /// [`Self::to_tptp_indexed`]'s own session handling).
+    ///
+    /// Falls back to the SAME axiom set [`Self::to_tptp_indexed`] would
+    /// emit (i.e. no selection) when `seed_sids` is empty — nothing to seed
+    /// relevance from.
+    ///
+    /// `budget_pct`, when given, is a percentage (0-100, clamped) of the
+    /// KB's current [`Self::sine_axiom_count`] to use as the SInE
+    /// auto-tolerance budget, overriding [`crate::SineParams::default`]'s
+    /// fixed budget. `None` uses that engine default. There is no
+    /// autoscaling feedback loop here (unlike the native prover's `ask`
+    /// path) — whatever this resolves to is the FINAL selection, so a
+    /// too-low percentage can under-select for a given query.
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    pub fn to_tptp_selected(
+        &mut self,
+        opts:        &TptpOptions,
+        seed_sids:   &[SentenceId],
+        session:     Option<&str>,
+        axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
+        budget_pct:  Option<f64>,
+    ) -> String {
+        if seed_sids.is_empty() {
+            return self.to_tptp_indexed(opts, session, axiom_lines);
+        }
+
+        crate::with_guard!(self);
+
+        let mode = opts.lang;
+        let syn  = &self.layer.semantic().syntactic;
+
+        let mut seed: HashSet<crate::SymbolId> = HashSet::new();
+        for &sid in seed_sids {
+            seed.extend(syn.sentence_symbols(sid));
+        }
+
+        let sine_params = match budget_pct {
+            Some(pct) => {
+                let total = self.sine_axiom_count().max(1);
+                crate::SineParams::auto(sine_budget_from_pct(total, pct))
+            }
+            None => crate::SineParams::default(),
+        };
+
+        let ctx = self.prove_ctx();
+        let (selected, _liu_frontier) = syn.select_relevant(
+            &seed,
+            sine_params,
+            &crate::syntactic::SelectionParams::default(),
+            &ctx,
+        );
+
+        let mut axioms_sorted: Vec<SentenceId> = selected
+            .into_iter()
+            .filter(|&sid| {
+                !self.sentence_excluded(sid, &opts.excluded)
+                    && !self.layer.translation().suppressed.read().unwrap().contains(&sid)
+            })
+            .collect();
+        axioms_sorted.sort_unstable();
+        axioms_sorted.dedup();
+
+        // Session assertions (hypotheses) fold in UNFILTERED by selection —
+        // see doc comment above.
+        if let Some(name) = session {
+            if let Some(sids) = self.sessions.get(name) {
+                for &sid in sids {
+                    if self.sentence_excluded(sid, &opts.excluded) { continue; }
+                    axioms_sorted.push(sid);
+                }
+                axioms_sorted.sort_unstable();
+                axioms_sorted.dedup();
+            }
+        }
+
+        let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
+        let (axiom_problem, axiom_sid_map) = self.layer.translation().build_problem(&axioms_sorted, mode);
+
+        assemble_tptp_indexed(&axiom_problem, &axiom_sid_map, &AssemblyOpts {
+            show_kif: opts.show_kif_comment,
+            layer:    Some(self.layer.semantic()),
+            ..AssemblyOpts::default()
+        }, axiom_lines)
     }
 
     /// Render a testcase to TPTP.
@@ -172,11 +280,11 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             mode,
             Some(query_scope),
         );
-        Ok(assemble_tptp(&problem, &sid_map, &AssemblyOpts {
+        Ok(assemble_tptp_indexed(&problem, &sid_map, &AssemblyOpts {
             show_kif: translation_opts.show_kif_comment,
-            layer:    Some(&self.layer.semantic()),
+            layer:    Some(self.layer.semantic()),
             ..AssemblyOpts::default()
-        }))
+        }, None))
     }
     
 
@@ -226,6 +334,15 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             .map(|cf| cf.formula.to_tptp())
             .unwrap_or_default()
     }
+}
+
+/// Convert a selection-budget percentage (0-100, clamped) of `total_axioms`
+/// into the absolute SInE auto-tolerance budget [`crate::SineParams::auto`]
+/// expects. Always at least 1, so a non-empty KB never gets a zero budget
+/// from a very low percentage.
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+fn sine_budget_from_pct(total_axioms: usize, pct: f64) -> usize {
+    (((total_axioms as f64) * (pct.clamp(0.0, 100.0) / 100.0)).round() as usize).max(1)
 }
 
 /// Canonical SUMO bookkeeping predicates that are noise for a theorem
