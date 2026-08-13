@@ -227,6 +227,41 @@ impl SyntacticLayer {
         self.sentences.side().forward.get(&fp).map(|s| s.to_vec()).unwrap_or_default()
     }
 
+    /// One-pass `sid -> source span` index over the whole `forward` map —
+    /// the bulk equivalent of calling
+    /// [`source_span`](SyntacticLayer::source_span) per sid, with identical
+    /// per-sid results (lowest non-synthetic fingerprint wins, matching
+    /// `source_span`'s sorted-fps/first-non-synthetic walk).
+    ///
+    /// `source_span` is a full-map linear scan PER CALL; that's fine for
+    /// display ("cold"), but a bulk consumer anchoring thousands of
+    /// diagnostics (validate_all) turns it into an O(diags x store)
+    /// quadratic hot spot whose DashMap shard locking also serialises the
+    /// `parallel` validation fan-out.  Build this once, then look up O(1).
+    pub(crate) fn source_span_index(
+        &self,
+    ) -> std::collections::HashMap<SentenceId, crate::parse::Span> {
+        let mut best: std::collections::HashMap<SentenceId, (u64, crate::parse::Span)> =
+            std::collections::HashMap::new();
+        for e in self.sentences.side().forward.iter() {
+            let fp = *e.key();
+            let Some(node) = self.source_ast(fp) else { continue };
+            let sp = node.span();
+            if sp.is_synthetic() { continue; }
+            for &sid in e.value().iter() {
+                match best.entry(sid) {
+                    std::collections::hash_map::Entry::Occupied(mut o) => {
+                        if fp < o.get().0 { o.insert((fp, sp.clone())); }
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert((fp, sp.clone()));
+                    }
+                }
+            }
+        }
+        best.into_iter().map(|(sid, (_, sp))| (sid, sp)).collect()
+    }
+
     /// The source fingerprints that produced `sid` — the inverse of `forward`.
     /// Linear scan (cold paths only, e.g. display / provenance).
     pub(crate) fn fingerprints_producing(&self, sid: SentenceId) -> Vec<u64> {

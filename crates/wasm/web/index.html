@@ -35,7 +35,23 @@
     a:hover { text-decoration: underline; }
     code, .mono { font-family: var(--mono); }
 
-    header { display: flex; justify-content: flex-start; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    /* Header: the brand (logo + title + tagline) is one inseparable unit; the
+       meta block (links + language + theme) sits to its right on wide screens
+       and reflows to a single left/right row underneath on narrow ones. */
+    header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 16px; flex-wrap: wrap; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand img { width: 50px; flex: 0 0 auto; }
+    .brand-text { min-width: 0; }
+    .head-meta { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+    @media (max-width: 620px) {
+      .brand img { width: 38px; }
+      h1 { font-size: 18px; }
+      .sub { font-size: 12px; }
+      /* The meta block becomes a full-width row: links left, controls right. */
+      .head-meta { margin-left: 0; flex: 1 1 100%; flex-direction: row; align-items: center;
+        justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; text-align: left; }
+      .head-meta .lang-select { margin-top: 0; }
+    }
     .lang-select { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); }
     .lang-select select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px;
                           background: var(--bg); color: var(--fg); }
@@ -78,8 +94,9 @@
     /* Ask/Tell prover settings (cog + panel) */
     button.cog {
       font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+      display: inline-flex; align-items: center; height: 41px;
       background: var(--bg); color: var(--muted);
-      border: 1px solid var(--line); border-radius: 7px; padding: 8px 11px;
+      border: 1px solid var(--line); border-radius: 7px; padding: 0 11px;
     }
     button.cog:hover { color: var(--fg); border-color: var(--accent); }
     button.cog[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
@@ -115,20 +132,32 @@
     .panel[hidden] { display: none; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
     label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+    /* One control height everywhere: 8px vertical padding + 1px border on
+       EVERY variant (transparent on solid buttons, so solid/ghost/input/select
+       all share the same 41px box and line up when placed in the same row). */
     input, textarea, button.btn {
       font: inherit; color: inherit; background: var(--bg);
-      border: 1px solid var(--line); border-radius: 7px; padding: 9px 11px;
+      border: 1px solid var(--line); border-radius: 7px; padding: 8px 11px;
     }
     input[type=text], input[type=search], input[type=number], textarea { width: 100%; }
     textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
-    button.btn { background: var(--accent); color: #fff; border: none; cursor: pointer; font-weight: 600; padding: 9px 16px; }
+    button.btn { background: var(--accent); color: #fff; border: 1px solid transparent;
+      cursor: pointer; font-weight: 600; padding: 0 16px; height: 41px; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center; }
+    button.btn[hidden] { display: none; }
     button.btn:disabled { opacity: .5; cursor: default; }
     .inline { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
 
-    select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 6px; }
+    /* Explicit height: the UA gives <select> a shorter line box than text
+       inputs at the same font/padding, leaving it 3px shy of the shared 41px
+       control height the other rules produce. size>1 listboxes override it. */
+    select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
+      border-radius: 7px; padding: 8px 10px; height: 41px; }
+    select[size], select[multiple] { height: auto; }
     select option { padding: 3px 4px; font-family: var(--mono); font-size: 13px; }
     .loaded-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .loaded-row .rm { color: var(--bad); cursor: pointer; font-size: 13px; }
+    .loaded-row a.file-open { font-family: var(--mono); font-size: 13px; font-weight: 600; }
     ul.results { list-style: none; margin: 0; padding: 0; }
     ul.results li { padding: 9px 4px; border-bottom: 1px solid var(--line); }
     ul.results li:last-child { border-bottom: none; }
@@ -289,7 +318,6 @@
     .diag-filter-stack select { width: 100%; max-width: 100%; }
     .diag-pager { display: flex; align-items: center; justify-content: center; gap: 12px;
       margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
-    .diag-pager button.btn.ghost { padding: 5px 12px; font-size: 13px; }
     .diag-pager button.btn.ghost:disabled { opacity: .35; cursor: default; }
     .diag .loc { font-family: var(--mono); font-size: 12px; color: var(--accent); cursor: pointer; }
     .diag .code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
@@ -332,12 +360,23 @@
     .btn-group { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
       overflow: hidden; background: var(--bg); }
     .btn-group > button { font: inherit; display: inline-flex; align-items: center; justify-content: center;
-      background: none; border: none; color: var(--fg); cursor: pointer; padding: 9px 12px; }
+      background: none; border: none; color: var(--fg); cursor: pointer; padding: 0 12px; height: 41px; }
     .btn-group > button + button { border-left: 1px solid var(--line); }
     .btn-group > button:hover { background: var(--card); color: var(--accent); }
     .btn-group > button[aria-expanded="true"], .btn-group > button[aria-pressed="true"] {
       color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .btn-group > button[hidden] { display: none; }
+    /* Download menu (#editDownloadMenu): fixed-position dropdown under the
+       download button; coordinates set by app.js when opened. */
+    .dl-menu { position: fixed; z-index: 300; min-width: 220px; padding: 4px;
+      border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+    .dl-menu > button { display: block; width: 100%; text-align: left; font: inherit;
+      font-size: 13px; background: none; border: none; border-radius: 6px;
+      color: var(--fg); cursor: pointer; padding: 8px 10px; }
+    .dl-menu > button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent); }
+    .dl-menu > button[disabled] { color: var(--muted); cursor: default; background: none; }
     /* Open-file dialog */
     dialog#openDialog { border: 1px solid var(--line); border-radius: 10px; background: var(--card);
       color: var(--fg); padding: 16px; width: min(420px, 92vw); }
@@ -354,12 +393,17 @@
       display: flex; align-items: center; justify-content: center; height: 100%;
     }
 
-    /* Split TPTP preview: #editPane becomes a two-column row when toggled on;
-       each side keeps the editor's own fixed height outside fullscreen. */
-    #editPane.split { display: flex; align-items: stretch; }
-    #editPane.split #editorContainer { flex: 1 1 0; min-width: 0; height: 520px; }
-    #tptpPane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
-      border-left: 1px solid var(--line); height: 520px; }
+    /* TPTP preview pane: BELOW the editor normally, BESIDE it in fullscreen
+       (see the body.edit-fullscreen rules further down). The toggle button
+       only shows/hides it; placement follows the fullscreen state. */
+    #editPane.split { display: flex; flex-direction: column; align-items: stretch; }
+    #editPane.split #editorContainer { flex: 0 0 auto; min-width: 0; height: 520px; }
+    #tptpPane { flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column;
+      border-top: 1px solid var(--line); height: 300px; }
+    /* `display: flex` above would otherwise BEAT the UA's `[hidden]` rule —
+       the closed pane then renders (below the editor, sans Monaco) showing
+       its "Generating…" placeholder forever. Keep `hidden` authoritative. */
+    #tptpPane[hidden] { display: none; }
     .tptp-pane-header { display: flex; justify-content: space-between; align-items: center;
       padding: 6px 10px; font-size: 12px; font-family: var(--mono); color: var(--muted);
       border-bottom: 1px solid var(--line); flex: 0 0 auto; }
@@ -385,10 +429,12 @@
     }
     body.edit-fullscreen #editPane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
     body.edit-fullscreen #editorContainer { flex: 1 1 auto; height: auto; }
-    /* Split stays a row even in fullscreen — only the column height becomes fluid. */
+    /* Fullscreen flips the pane to the side: row layout, equal halves, both
+       columns fluid-height, divider moves from top edge to left edge. */
     body.edit-fullscreen #editPane.split { flex-direction: row; }
-    body.edit-fullscreen #editPane.split #editorContainer { height: auto; }
-    body.edit-fullscreen #tptpPane { height: auto; }
+    body.edit-fullscreen #editPane.split #editorContainer { flex: 1 1 0; height: auto; }
+    body.edit-fullscreen #tptpPane { flex: 1 1 0; height: auto;
+      border-top: none; border-left: 1px solid var(--line); }
 
     #overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; }
@@ -413,14 +459,14 @@
 <body>
   <main>
     <header>
-      <div>
-        <img src="./logo.png" style="width: 50px; flex-grow: 0"/>
+      <div class="brand">
+        <img src="./logo.png" alt="SigmaKEE logo" />
+        <div class="brand-text">
+          <h1>SigmaKEE</h1>
+          <p class="sub">Explore the Suggested Upper Merged Ontology (SUMO)</p>
+        </div>
       </div>
-      <div style="flex-grow: 1">
-        <h1>SigmaKEE</h1>
-        <p class="sub">Explore the Suggested Upper Merged Ontology (SUMO)</p>
-      </div>
-      <div style="text-align: right">
+      <div class="head-meta">
         <div><small><a href="https://ontologyportal.github.io/sigma-rs">SUPr v1.0.0</a> -- <a href="https://ontologyportal.org">ontologyportal.org</a></small></div>
         <label class="lang-select" title="Language for term/format rendering">
           <span>Language</span>
@@ -513,7 +559,7 @@
         <label for="fileFilter">Add SUMO constituents from <code>ontologyportal/sumo</code></label>
         <input type="search" id="fileFilter" placeholder="filter file list…" autocomplete="off" />
         <select id="sumoPicker" multiple size="10" style="width:100%; margin-top:8px"></select>
-        <div class="inline" style="margin-top:8px; justify-content:space-between">
+        <div class="inline" style="margin-top:8px; justify-content:space-between; align-items:center">
           <span id="pickerStatus" class="hint"></span>
           <button class="btn" id="addSumo" type="button">Add selected</button>
         </div>
@@ -521,8 +567,8 @@
 
       <div class="card">
         <label>Add a constituent from elsewhere</label>
-        <div class="inline">
-          <input type="text" id="kbUrl" placeholder="https://example.org/ontology.kif" />
+        <div class="inline" style="flex-wrap:nowrap">
+          <input type="text" id="kbUrl" placeholder="https://example.org/ontology.kif" style="flex:1 1 auto; width:auto; min-width:0" />
           <button class="btn" id="addUrl" type="button">Add URL</button>
         </div>
         <div style="margin-top:10px"><label for="kbFile">Upload a .kif or .kif.tq file</label><input type="file" id="kbFile" accept=".kif,.tq,.txt,text/plain" /></div>
@@ -533,7 +579,7 @@
         <div id="testsEmpty" class="hint">No tests imported. Add <code>.kif.tq</code> files through the picker,
           URL, or upload above — they run against the loaded KB instead of joining it.</div>
         <ul id="testsList" class="results"></ul>
-        <div class="inline" style="margin-top:8px">
+        <div class="inline" style="margin-top:8px; align-items:center">
           <button class="btn" id="runAllTests" type="button" hidden>Run all</button>
           <span id="testsLog" class="hint"></span>
         </div>
@@ -593,7 +639,7 @@
         <label for="pquery" style="margin-top:10px">Query — <code>ask</code></label>
         <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
         <textarea id="pquery" rows="2" spellcheck="false">(instance Rex Animal)</textarea>
-        <div class="inline" style="margin-top:10px; gap:8px">
+        <div class="inline" style="margin-top:10px; gap:8px; align-items:center">
           <button class="btn" id="prove" type="button">Prove</button>
           <button class="btn ghost" id="saveTq" type="button" title="Download this assertion/query pair as a .kif.tq test file">Save .kif.tq</button>
           <button class="cog" id="proverSettingsBtn" type="button"
@@ -689,7 +735,8 @@
             <button id="editFormat" type="button" title="Format document (fix indentation to match paren nesting)" aria-label="Format document">
               <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 3h12M2 6.5h8M2 10h10M2 13.5h6"/></svg>
             </button>
-            <button id="editDownload" type="button" title="Download this file to your computer" aria-label="Download this file to your computer">
+            <button id="editDownload" type="button" aria-haspopup="menu" aria-expanded="false"
+                    title="Download…" aria-label="Download this file or the TPTP translation">
               <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7.25 1.75a.75.75 0 0 1 1.5 0v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06l2.22 2.22ZM2.5 13a.75.75 0 0 0 0 1.5h11a.75.75 0 0 0 0-1.5Z"/></svg>
             </button>
             <button id="ghPropose" type="button" aria-expanded="false" aria-controls="ghPanel"
@@ -702,8 +749,8 @@
                 <path d="M2 5.5V2.75A.75.75 0 0 1 2.75 2h2.75M2 10.5v2.75c0 .414.336.75.75.75h2.75M14 5.5V2.75a.75.75 0 0 0-.75-.75h-2.75M14 10.5v2.75a.75.75 0 0 1-.75.75h-2.75"/>
               </svg>
             </button>
-            <button id="editTptpToggle" type="button" aria-pressed="false"
-                    title="Show a read-only TPTP translation of the whole knowledge base, following this file" aria-label="Toggle TPTP preview">
+            <button id="editTptpToggle" type="button" aria-pressed="false" aria-haspopup="menu" aria-expanded="false"
+                    title="Split-screen views…" aria-label="Split-screen views">
               <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="1" y="2.5" width="6" height="11" rx="1"/><rect x="9" y="2.5" width="6" height="11" rx="1"/>
               </svg>
@@ -713,6 +760,19 @@
           <span class="spacer"></span>
           <span id="editStatus" class="hint"></span>
           <select id="editPicker" hidden aria-hidden="true"><option value="__new__">+ New file…</option></select>
+          <!-- Download menu for #editDownload. Lives OUTSIDE .btn-group (whose
+               overflow:hidden would clip it, and whose `button + button`
+               divider chain a nested div would break); app.js positions it
+               fixed under the button when opened. -->
+          <div id="editDownloadMenu" class="dl-menu" role="menu" hidden>
+            <button id="dlKifBtn" type="button" role="menuitem">This file (KIF)</button>
+            <button id="dlTptpBtn" type="button" role="menuitem">Whole knowledge base (TPTP)</button>
+          </div>
+          <!-- Split-screen menu for #editTptpToggle — same fixed-position
+               pattern as the download menu above. -->
+          <div id="editTptpMenu" class="dl-menu" role="menu" hidden>
+            <button id="tptpTranslationBtn" type="button" role="menuitem">TPTP Translation</button>
+          </div>
         </div>
         <!-- Save feedback (success/error) lives right under the toolbar, not
              buried below the editor — the one place a user glances after

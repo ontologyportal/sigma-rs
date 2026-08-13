@@ -40,6 +40,14 @@ fi
 rm -rf "$CRATE_DIR/web/pkg"
 cp -R "$CRATE_DIR/pkg" "$CRATE_DIR/web/pkg"
 
+# Threaded bundle is optional (needs nightly + rust-src, see build-npm.sh) —
+# mirror it only when a prior THREADED=1 build-npm.sh run produced it.
+# sigma.worker.js probes for its presence at runtime and falls back to pkg/.
+if [ -d "$CRATE_DIR/pkg-threaded" ]; then
+  rm -rf "$CRATE_DIR/web/pkg-threaded"
+  cp -R "$CRATE_DIR/pkg-threaded" "$CRATE_DIR/web/pkg-threaded"
+fi
+
 "$CRATE_DIR/build-vampire.sh" || {
   echo "==> Vampire WASM build failed or skipped — the demo still runs, just without that backend." >&2
 }

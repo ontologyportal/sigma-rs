@@ -186,46 +186,71 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let has_term_format = self.symbols_matching("(termFormat ?Lang ?Subj ?Text)", "termFormat", 1);
         let has_format      = self.symbols_matching("(format ?Lang ?Rel ?Text)", "format", 1);
 
+        // Bulk anchor map replacing per-diagnostic `defining_sentence` calls:
+        // each of those scanned EVERY declaration sentence (plus a full
+        // forward-map span scan per candidate), and at thousands of
+        // completeness findings that quadratic pass dominated validate_all.
+        // One walk over the declaration head lists in the same priority order,
+        // first hit per symbol wins, span-less (synthetic) candidates skipped —
+        // per-symbol results identical to `defining_sentence`'s declaration
+        // pass.  Its by-head fallback stays per-symbol below (an O(1) list
+        // lookup, not a scan).
+        let spans = syn.source_span_index();
+        let mut defining: std::collections::HashMap<SymbolId, (SentenceId, crate::Span)> =
+            std::collections::HashMap::new();
+        const DECLARATIONS: &[&str] = &[
+            "subclass", "instance", "subrelation", "subAttribute",
+            "documentation",
+        ];
+        for &head in DECLARATIONS {
+            for sid in syn.by_head(head).iter().copied() {
+                let Some(sent) = syn.sentence(sid) else { continue };
+                let Some(crate::types::Element::Symbol(sym)) = sent.elements.get(1) else { continue };
+                let Some(span) = spans.get(&sid) else { continue };
+                defining.entry(sym.id()).or_insert_with(|| (sid, span.clone()));
+            }
+        }
+        let anchor = |err: SemanticError, id: SymbolId, name: &str| -> Diagnostic {
+            let mut d = err.to_diagnostic();
+            let found = defining.get(&id).cloned().or_else(|| {
+                // `defining_sentence`'s fallback: any root headed by the symbol.
+                syn.by_head(name).iter().copied()
+                    .find_map(|sid| spans.get(&sid).map(|sp| (sid, sp.clone())))
+            });
+            if let Some((sid, span)) = found {
+                d.sids  = vec![sid];
+                d.range = span;
+            }
+            d
+        };
+
         let mut out = Vec::new();
         for id in self.real_symbol_ids() {
             let Some(name) = syn.sym_name(id).map(|s| s.name().to_string()) else { continue };
 
             if !documented.contains(&id) {
-                out.push(self.completeness_diag(SemanticError::MissingDocumentation { sym: name.clone() }, &name));
+                out.push(anchor(SemanticError::MissingDocumentation { sym: name.clone() }, id, &name));
             }
             if !has_term_format.contains(&id) {
-                out.push(self.completeness_diag(SemanticError::MissingTermFormat { sym: name.clone() }, &name));
+                out.push(anchor(SemanticError::MissingTermFormat { sym: name.clone() }, id, &name));
             }
             if (self.is_relation(id) || self.is_predicate(id) || self.is_function(id))
                 && !has_format.contains(&id)
             {
-                out.push(self.completeness_diag(SemanticError::MissingFormatString { sym: name.clone() }, &name));
+                out.push(anchor(SemanticError::MissingFormatString { sym: name.clone() }, id, &name));
             }
         }
 
         for ((id, language), count) in &doc_occurrences {
             if *count <= 1 { continue; }
             if let Some(name) = syn.sym_name(*id).map(|s| s.name().to_string()) {
-                out.push(self.completeness_diag(
+                out.push(anchor(
                     SemanticError::MultipleDocumentation { sym: name.clone(), language: language.clone(), count: *count },
-                    &name,
+                    *id, &name,
                 ));
             }
         }
         out
-    }
-
-    /// Convert `err` to a [`Diagnostic`], anchoring it at `sym`'s defining
-    /// sentence ([`Self::defining_sentence`]) when one exists — symbol-level
-    /// completeness findings carry no `sid` of their own the way
-    /// per-sentence structural errors do.
-    fn completeness_diag(&self, err: SemanticError, sym: &str) -> Diagnostic {
-        let mut d = err.to_diagnostic();
-        if let Some((sid, span)) = self.defining_sentence(sym) {
-            d.sids  = vec![sid];
-            d.range = span;
-        }
-        d
     }
 
     /// True if `sym` has `ancestor` (by name) somewhere in its taxonomy.
@@ -401,18 +426,23 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// findings.  Parallel under `feature = "parallel"`; each worker builds its
     /// own validator (a cheap borrow) so there's no cross-thread sharing.
     fn validate_sids(&self, sids: &[SentenceId], scope: crate::semantics::types::Scope) -> Vec<Diagnostic> {
+        // Span anchoring uses the bulk index, not per-sid `source_span`:
+        // that call is a full forward-map scan, and at thousands of
+        // diagnostics the per-call scans dominated validate_all (and their
+        // shard locking serialised the parallel fan-out below).
+        let spans = self.layer.semantic().syntactic.source_span_index();
         let one = |sid: SentenceId| -> Vec<Diagnostic> {
             self.layer.semantic().validation_scoped(sid, scope)
                 .iter()
-                .map(move |e| {
+                .map(|e| {
                     let mut d = e.to_diagnostic();
                     if d.sids.is_empty() { d.sids = vec![sid]; }
                     // Anchor the diagnostic at the *root* formula's source span,
                     // so findings on nested sub-sentences (which carry no span of
                     // their own) still report the enclosing formula's file:line.
                     if d.range.file.is_empty() {
-                        if let Some(span) = self.layer.semantic().syntactic.source_span(sid) {
-                            d.range = span;
+                        if let Some(span) = spans.get(&sid) {
+                            d.range = span.clone();
                         }
                     }
                     d

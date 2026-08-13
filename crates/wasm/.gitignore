@@ -4,6 +4,7 @@
 node_modules/
 # demo's local copy of the package (serve.sh mirrors pkg/ here)
 /web/pkg/
+/web/pkg-threaded/
 # build-vampire.sh: cloned vampire source + build dir, never committed
 /.vampire-cache/
 # build-vampire.sh output (vampire.js/.wasm/-runner.js), never committed

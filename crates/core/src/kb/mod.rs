@@ -104,6 +104,13 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     #[allow(dead_code)]
     pub(crate) fn store_for_testing(&self) -> &SyntacticLayer { self.syntactic() }
 
+    /// The stack's shared cache/parallelism config. Public so embedders that
+    /// spin up their own thread pool (wasm-bindgen-rayon on a threads-enabled
+    /// wasm32 build) can call [`crate::cache::CacheConfig::set_max_threads`]
+    /// with `navigator.hardwareConcurrency` — `std::thread::available_parallelism`,
+    /// the non-wasm default, is unavailable there and falls back to `1`.
+    pub fn cache_config(&self) -> &crate::cache::CacheConfig { self.layer.cache_config() }
+
     // -- Construction ----------------------------------------------------------
 
     /// Initializes the shared KB fields over an already-built top layer.

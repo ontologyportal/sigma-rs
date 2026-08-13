@@ -11,6 +11,14 @@ use sigmakee_rs_core::TopLayer;
 use sigmakee_rs_core::AstKif;
 use sigmakee_rs_core::TranslationLayer;
 
+// Threaded builds only: re-exports `initThreadPool`, the JS entry point that
+// spins up the wasm-bindgen-rayon worker pool. Plain (non-`atomics`) wasm32
+// builds never link this — `sigmakee-rs-core/parallel` itself is
+// compile_error!-banned there, so the feature can only be on in a
+// -Zbuild-std threads-enabled build (see build-npm.sh's threaded variant).
+#[cfg(feature = "parallel")]
+pub use wasm_bindgen_rayon::init_thread_pool;
+
 // -- WasmKnowledgeBase ---------------------------------------------------------
 
 /// A KIF knowledge base exposed to JavaScript.
@@ -422,6 +430,18 @@ impl WasmNativeProver {
     #[wasm_bindgen]
     pub fn configure(&mut self, config: &WasmConfig) {
         self.config = config.clone();
+    }
+
+    /// Set the worker-pool size the KB's `plan_threads` gates should target,
+    /// once the caller has spun up a rayon pool via `initThreadPool` (only
+    /// exported in threaded builds). `available_parallelism()` reads 1 on
+    /// wasm32 regardless of pool size, so without this call every
+    /// `plan_threads` gate would serialize even against a live N-worker pool.
+    /// A no-op degrade path everywhere else — calling it against a bundle
+    /// with no pool just biases planning without any workers to run on.
+    #[wasm_bindgen(js_name = setMaxThreads)]
+    pub fn set_max_threads(&self, n: u32) {
+        self.inner.cache_config().set_max_threads(n as usize);
     }
 
     /// Load KIF text into the KB under `file_tag` as **axioms**.

@@ -149,7 +149,13 @@ async function updateConstituentText(name, text, origin = 'file') {
     return r;
   }
   constituents[idx] = { ...constituents[idx], text };
-  await rebuildSession();
+  // In-place diff-commit instead of rebuildSession(): validateBuffer stages
+  // the buffer under the file's own name and commits it, so only the changed
+  // sentences are processed — a one-formula edit costs a diff, not a full
+  // re-ingest of every constituent. reprocess() then re-promotes (no-op for
+  // untouched files) and re-validates for correct whole-KB diagnostics.
+  // Remove/reset below genuinely retract whole files, so they keep the rebuild.
+  await call('validateBuffer', { file: name, text });
   await reprocess();
   return { added: false, notices: [] };
 }
@@ -738,16 +744,20 @@ function renderConstituents() {
   if (kb) kb.innerHTML = `<b>${constituents.length}</b> constituent(s) loaded · ${diagnostics.length} diagnostic(s)`;
   const list = $('loadedList');
   if (!list) return;
+  const ORIGIN_LABELS = { sumo: 'GitHub', file: 'Local File', url: 'Remote URL' };
   list.innerHTML = constituents.map((c) => `
     <li class="loaded-row">
-      <span><span class="sym">${esc(c.name)}</span> <span class="hint">${(c.text.length / 1000).toFixed(0)} KB</span></span>
+      <span><a class="file-open" data-name="${escAttr(c.name)}" title="Open in the editor">${esc(c.name)}</a>
+        <span class="hint">${(c.text.length / 1000).toFixed(0)} KB · ${ORIGIN_LABELS[c.origin] || esc(c.origin)}</span></span>
       ${c.name === MERGE ? '<span class="hint">core</span>' : `<a class="rm" data-name="${esc(c.name)}" data-source="${c.origin}">remove</a>`}
     </li>`).join('');
 }
 
 $('loadedList').addEventListener('click', (e) => {
   const rm = e.target.closest('.rm');
-  if (rm) { $('kbLog').textContent = ''; removeConstituent(rm.dataset.name, rm.dataset.source); }
+  if (rm) { $('kbLog').textContent = ''; removeConstituent(rm.dataset.name, rm.dataset.source); return; }
+  const open = e.target.closest('.file-open');
+  if (open) navigate('edit', { file: open.dataset.name });
 });
 
 // -- .kif.tq tests -------------------------------------------------------------
@@ -2598,13 +2608,8 @@ function updateEditActions() {
 
   // The TPTP pane resolves cursor positions against a real loaded file — an
   // unsaved new buffer has nothing in the KB to resolve against yet.
-  const usable = tptpPaneUsable();
-  $('editTptpToggle').disabled = !usable;
-  $('editTptpToggle').title = usable
-    ? 'Show a read-only TPTP translation of the whole knowledge base, following this file'
-    : 'Save this buffer first to preview its TPTP translation';
-  if (!usable) setTptpPaneOpen(false);
-  else if (tptpPaneOpen) refreshTptpPane();
+  $('editTptpToggle').title = 'Split-screen views…';
+  if (tptpPaneOpen) refreshTptpPane();
 }
 
 function onEditPickerChange() {
@@ -2745,11 +2750,9 @@ $('editPicker').addEventListener('change', () => {
 // history the way a hand-rolled setValue() would not.
 $('editFormat').onclick = () => monacoEditor?.getAction('editor.action.formatDocument')?.run();
 
-/** Save the buffer to the user's local disk (a real download, independent of the in-browser OPFS/KB state). */
-$('editDownload').onclick = () => {
-  if (!monacoEditor) return;
-  const name = editCurrentFile ? editCurrentFile.name : 'untitled.kif';
-  const blob = new Blob([monacoEditor.getValue()], { type: 'text/plain' });
+/** Trigger a real browser download of `text` as `name`. */
+function downloadText(name, text) {
+  const blob = new Blob([text], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = name;
@@ -2757,6 +2760,58 @@ $('editDownload').onclick = () => {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// -- Edit: download menu -------------------------------------------------------
+//
+// The download button opens a two-entry menu: the current buffer as KIF (a
+// real download, independent of the in-browser OPFS/KB state), or the WHOLE
+// knowledge base's TPTP translation (same `toTptpIndexed` dump the TPTP pane
+// shows — an individual file's translation is meaningless without the rest
+// of the KB's declarations, so there is no per-file TPTP option).
+
+function setDownloadMenuOpen(on) {
+  const menu = $('editDownloadMenu');
+  const btn  = $('editDownload');
+  if (on) {
+    // Fixed-position under the button (the menu can't live inside
+    // .btn-group — overflow:hidden would clip it; see index.html).
+    const r = btn.getBoundingClientRect();
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.top  = `${Math.round(r.bottom + 4)}px`;
+  }
+  menu.hidden = !on;
+  btn.setAttribute('aria-expanded', String(on));
+}
+
+$('editDownload').onclick = () => setDownloadMenuOpen($('editDownloadMenu').hidden);
+// Close on any click OUTSIDE the button/menu (matching on the event target
+// rather than relying on stopPropagation, which breaks under synthesized
+// event sequences). The menu-item handlers below close it themselves.
+document.addEventListener('click', (e) => {
+  if (e.target instanceof Element && e.target.closest('#editDownload, #editDownloadMenu')) return;
+  setDownloadMenuOpen(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDownloadMenuOpen(false); });
+
+$('dlKifBtn').onclick = () => {
+  setDownloadMenuOpen(false);
+  if (!monacoEditor) return;
+  downloadText(editCurrentFile ? editCurrentFile.name : 'untitled.kif', monacoEditor.getValue());
+};
+
+$('dlTptpBtn').onclick = async () => {
+  setDownloadMenuOpen(false);
+  const status = $('editStatus');
+  const prior = status.textContent;
+  status.textContent = 'generating TPTP…';
+  try {
+    const { text } = await call('toTptpIndexed', {});
+    downloadText('knowledge-base.tptp', text);
+    status.textContent = prior;
+  } catch (e) {
+    status.textContent = 'TPTP translation failed: ' + (e && e.message || e);
+  }
 };
 
 // -- Edit: fullscreen toggle ---------------------------------------------------
@@ -2810,9 +2865,9 @@ document.addEventListener('keydown', (e) => {
 // A second, read-only Monaco pane showing the WHOLE knowledge base's TPTP
 // translation (not just this file — an individual file's translation is
 // meaningless without the rest of the KB's declarations/context), scrolled
-// to follow this file's content as you edit and move the cursor. Only
-// meaningful for a buffer backed by a real loaded file (see `updateEditActions`);
-// a brand-new unsaved buffer has nothing in the KB to resolve positions against.
+// to follow this file's content as you edit and move the cursor. The pane
+// itself works for any buffer; only cursor-follow needs a real loaded file
+// to resolve positions against (see `tptpPaneUsable`).
 
 let tptpEditor = null;
 let tptpPaneOpen = false;
@@ -2836,13 +2891,16 @@ async function ensureTptpPane() {
   });
 }
 
-/** Whether the current buffer is backed by a real loaded file — the TPTP
- * pane needs one to resolve cursor positions against the live KB. */
+/** Whether the current buffer is backed by a real loaded file — cursor-follow
+ * needs one to resolve positions against the live KB; the pane itself doesn't. */
 function tptpPaneUsable() {
   return !!(editCurrentFile
     && constituents.find((c) => c.name === editCurrentFile.name && c.origin === editCurrentFile.origin));
 }
 
+// The toggle is pure show/hide; PLACEMENT is not its concern — the pane sits
+// below the editor normally and beside it in fullscreen, driven entirely by
+// the body.edit-fullscreen CSS (see index.html).
 async function setTptpPaneOpen(on) {
   if (on === tptpPaneOpen) return;
   tptpPaneOpen = on;
@@ -2859,7 +2917,37 @@ async function setTptpPaneOpen(on) {
   }
 }
 
-$('editTptpToggle').onclick = () => setTptpPaneOpen(!tptpPaneOpen);
+// The split-screen button opens a small menu (same pattern as the download
+// menu) rather than toggling directly — its one entry for now is the TPTP
+// translation pane; more split views can slot in later.
+function setTptpMenuOpen(on) {
+  const menu = $('editTptpMenu');
+  const btn  = $('editTptpToggle');
+  if (on) {
+    const r = btn.getBoundingClientRect();
+    menu.style.left = `${Math.round(r.left)}px`;
+    menu.style.top  = `${Math.round(r.bottom + 4)}px`;
+  }
+  menu.hidden = !on;
+  btn.setAttribute('aria-expanded', String(on));
+}
+
+// While a split view is open, the button acts as a plain dismiss — the menu
+// only appears when there is something to choose.
+$('editTptpToggle').onclick = () => {
+  if (tptpPaneOpen) { setTptpPaneOpen(false); return; }
+  setTptpMenuOpen($('editTptpMenu').hidden);
+};
+document.addEventListener('click', (e) => {
+  if (e.target instanceof Element && e.target.closest('#editTptpToggle, #editTptpMenu')) return;
+  setTptpMenuOpen(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setTptpMenuOpen(false); });
+
+$('tptpTranslationBtn').onclick = () => {
+  setTptpMenuOpen(false);
+  setTptpPaneOpen(!tptpPaneOpen);
+};
 
 // Whole-KB retranslation is the heavy half of this feature (thousands of
 // axioms for a full SUMO load) — piggybacks on the SAME 400ms debounce as
@@ -2867,11 +2955,6 @@ $('editTptpToggle').onclick = () => setTptpPaneOpen(!tptpPaneOpen);
 // and only while the pane is actually open.
 async function refreshTptpPane() {
   if (!tptpPaneOpen || !tptpEditor) return;
-  if (!tptpPaneUsable()) {
-    tptpEditor.setValue('');
-    $('tptpStatus').textContent = 'no backing file — save this buffer first';
-    return;
-  }
   $('tptpStatus').textContent = 'generating…';
   try {
     const { text } = await call('toTptpIndexed', {});

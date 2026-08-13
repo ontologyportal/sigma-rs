@@ -1,0 +1,9 @@
+# Cloudflare Pages response headers (ignored as a plain file everywhere else).
+#
+# COOP/COEP make the site cross-origin isolated, which enables
+# SharedArrayBuffer — required by the pthreads-built vampire.wasm. These are
+# the same two headers serve.sh sends locally; GitHub Pages cannot send them,
+# which is why the Vampire backend only works on the Cloudflare deployment.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp

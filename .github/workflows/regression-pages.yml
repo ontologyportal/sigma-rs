@@ -1,4 +1,8 @@
 # GitHub Pages: the in-browser demo (always) + the SUMO regression report.
+# The demo is ADDITIONALLY deployed to Cloudflare Pages (see the "Deploy demo
+# to Cloudflare Pages" step) because only Cloudflare can serve the COOP/COEP
+# headers the in-browser Vampire backend needs; the regression report lives on
+# GitHub Pages only.
 #
 # Two triggers, one Pages artifact:
 #   * push to main  — fast: rebuild the demo and redeploy it alongside the MOST
@@ -211,15 +215,83 @@ jobs:
           cargo install wasm-bindgen-cli --version "$WB_VER" --locked
           sudo apt-get install -y binaryen   # wasm-opt (build-npm.sh uses it to shrink the .wasm)
 
+      # The Vampire (WASM) backend needs its own toolchain: the Emscripten SDK
+      # (compiles Vampire's C++ to wasm) and gawk (build-vampire.sh's patch
+      # step requires GNU awk; Ubuntu's default awk already is gawk, but the
+      # script checks `command -v gawk` explicitly, so install it under that
+      # name too). Best-effort like the Rust wasm toolchain above — a missing
+      # Vampire backend degrades gracefully in the UI (sigma.worker.js).
+      - name: Install Emscripten SDK + gawk (for the Vampire WASM backend)
+        continue-on-error: true
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          # No specific version pinned here: build-vampire.sh's own pin
+          # (VAMPIRE_GUIDE_REF) is what determines reproducibility of the
+          # *output*; the emsdk cache below is keyed on that same ref so a
+          # guide bump also gets a fresh emsdk if setup-emsdk's default moves.
+          actions-cache-folder: emsdk-cache
+
+      - name: Install gawk
+        continue-on-error: true
+        run: sudo apt-get install -y gawk
+
+      # Extract the pinned vampireGuide ref so the expensive C++ -> WASM
+      # compile below is cache-keyed on it: a cache hit means "nothing to do,
+      # the built vampire.wasm from the last run at this pin is still good."
+      - name: Read pinned Vampire guide ref
+        id: vampire-ref
+        run: |
+          ref=$(grep -oE 'VAMPIRE_GUIDE_REF=\$\{VAMPIRE_GUIDE_REF:-[0-9a-f]+\}' crates/wasm/build-vampire.sh \
+                | grep -oE '[0-9a-f]{8,}')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "pinned vampireGuide ref: $ref"
+
+      # Caches build-vampire.sh's entire output directory, keyed on the pin
+      # above. build-vampire.sh has its own skip-stamp (.vampire-cache/
+      # BUILT_REF) for local incremental builds, but that cache dir itself
+      # isn't restored here — on a cache HIT of web/vampire/ the stamp is
+      # irrelevant because the build step below is skipped outright; on a
+      # cache MISS the script just does a full build and repopulates both.
+      - name: Cache Vampire WASM build output
+        id: cache-vampire-wasm
+        uses: actions/cache@v4
+        with:
+          path: crates/wasm/web/vampire
+          key: vampire-wasm-${{ steps.vampire-ref.outputs.ref }}
+
+      - name: Build the Vampire WASM backend
+        continue-on-error: true
+        if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
+        run: crates/wasm/build-vampire.sh
+
       - name: Build & stage the in-browser demo at /browse
         id: demo
         continue-on-error: true
         run: |
           crates/wasm/build-npm.sh
           mkdir -p site/browse
-          cp -R crates/wasm/web/* site/browse/       # web/pkg is gitignored / absent in CI
+          cp -R crates/wasm/web/* site/browse/       # web/pkg is gitignored / absent in CI;
+                                                      # web/vampire is gitignored, present when
+                                                      # build-vampire.sh (above) succeeded
           rm -rf site/browse/pkg
           cp -R crates/wasm/pkg site/browse/pkg
+
+      # ---- Cloudflare Pages: the demo, with COOP/COEP headers ---------------
+      # GitHub Pages cannot send the Cross-Origin-Opener-Policy/-Embedder-Policy
+      # response headers that the pthreads-built vampire.wasm needs for
+      # SharedArrayBuffer, so the demo ALSO deploys to Cloudflare Pages, where
+      # web/_headers supplies them — that copy has a working Vampire backend.
+      # The GitHub Pages /browse copy stays deployed as-is (everything except
+      # Vampire works there). This step skips quietly until the
+      # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.
+      - name: Deploy demo to Cloudflare Pages
+        if: ${{ steps.demo.outcome == 'success' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+        continue-on-error: true
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site/browse --project-name=sigma-rs-browse --branch=main
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

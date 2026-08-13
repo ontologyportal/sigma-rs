@@ -3,12 +3,73 @@
 // Session; the page (app.js) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
-import { init, Session, Config, Backend, parseTest } from './pkg/sdk.mjs';
-
+// The SDK bindings (`init`/`Session`/`Config`/`Backend`/`parseTest`) are
+// resolved at boot() rather than statically imported: which bundle to load
+// (single-threaded `./pkg/` vs. threads-enabled `./pkg-threaded/`) is a
+// runtime decision (see `loadEngine` below), and a static `import` can't be
+// conditional. Every other handler in this file reaches the engine through
+// these module-level bindings once `boot()` has resolved them.
+let init, Session, Config, Backend, parseTest;
 let session = null;
+// Surfaced to the page (via boot()'s return) so the UI can show whether the
+// threaded backend actually came up, vs. silently running single-threaded.
+let threaded = false;
 
 function newSession() {
   return new Session({ backend: Backend.Native, config: makeConfig() });
+}
+
+// Threads need cross-origin isolation (COOP/COEP — see serve.sh and, for
+// deployed Pages, its follow-up slice) for `SharedArrayBuffer`, which is how
+// wasm-bindgen-rayon's worker pool shares the wasm heap across workers.
+// Plain deploys — and any deploy that never shipped `pkg-threaded/` — are
+// never crossOriginIsolated, so this is a zero-cost check for them: it's
+// `false` and the plain `./pkg/` path runs exactly as before.
+//
+// The threaded bundle is a SEPARATE wasm-bindgen output (own .wasm, own
+// generated JS, own `sdk.mjs` copy — see build-npm.sh's THREADED=1 variant),
+// not a runtime flag on the single-threaded one, so switching bundles means
+// switching which module URL every binding comes from.
+async function loadEngine(wantThreads) {
+  // Opt-in only (`boot({threads: N})`): measured on SUMO-scale KBs, the
+  // threaded engine is a net LOSS — every parallel hot path is
+  // allocation-heavy and wasm's dlmalloc funnels all workers through one
+  // global lock, so a 16-thread pool ran validate ~1.6x slower and TPTP
+  // export ~5x slower than the plain bundle. Until wasm gets a scalable
+  // allocator (or the hot paths shed their allocations), the plain bundle
+  // is the right default even on cross-origin-isolated deploys.
+  const canThread = wantThreads > 0
+    && self.crossOriginIsolated === true && typeof SharedArrayBuffer !== 'undefined';
+  if (canThread) {
+    try {
+      const [sdk, raw] = await Promise.all([
+        import('./pkg-threaded/sdk.mjs'),
+        // The raw wasm-bindgen module, imported separately only for
+        // `initThreadPool` — sdk.mjs doesn't re-export it (that file is
+        // BYTE-IDENTICAL between pkg/ and pkg-threaded/, copied verbatim by
+        // build-npm.sh, and the plain build's generated module has no such
+        // export). Both imports resolve to the same pkg-threaded/ wasm
+        // instance (module specifiers dedupe by resolved URL), so
+        // `raw.initThreadPool` operates on the module `sdk.init()` below
+        // instantiates.
+        import('./pkg-threaded/sumo_parser_wasm.js'),
+      ]);
+      await sdk.init();
+      await raw.initThreadPool(Math.min(wantThreads, navigator.hardwareConcurrency || 4));
+      ({ Session, Config, Backend, parseTest } = sdk);
+      init = sdk.init;
+      threaded = true;
+      return;
+    } catch (err) {
+      // pkg-threaded/ absent from this deploy, nightly-only build skipped,
+      // pool init failed, etc. — fall back to the plain bundle exactly like
+      // loadVampireRunner() falls back off the Vampire backend below.
+      threaded = false;
+    }
+  }
+  const sdk = await import('./pkg/sdk.mjs');
+  ({ Session, Config, Backend, parseTest } = sdk);
+  init = sdk.init;
 }
 
 // Build a wasm `Config` from a plain settings object (the Ask/Tell settings
@@ -31,10 +92,20 @@ function makeConfig(o = {}) {
 }
 
 const handlers = {
-  async boot() {
+  async boot({ threads } = {}) {
+    const bootThreads = threads | 0;
+    await loadEngine(bootThreads);
     await init();
     session = newSession();
-    return { ok: true };
+    // The KB's `plan_threads` gates read `CacheConfig.max_threads`, which
+    // defaults to `available_parallelism()` — always 1 on wasm32 regardless
+    // of pool size — so without this every gate would serialize even against
+    // a live N-worker rayon pool. Only the native-prover session exposes
+    // `setMaxThreads`; a no-op on a bundle with no pool to size for.
+    if (threaded && session.kb && typeof session.kb.setMaxThreads === 'function') {
+      session.kb.setMaxThreads(Math.min(bootThreads, navigator.hardwareConcurrency || 4));
+    }
+    return { ok: true, threaded };
   },
   // Drop the session and start fresh (the page re-ingests every constituent).
   newSession() {
@@ -158,7 +229,19 @@ const handlers = {
 // build-vampire.sh was skipped) never pays for it.
 let vampireRunnerPromise = null;
 function loadVampireRunner() {
-  if (!vampireRunnerPromise) vampireRunnerPromise = import('./vampire/vampire-runner.js');
+  if (!vampireRunnerPromise) {
+    // Don't cache a rejection: a deploy missing web/vampire/ (build-vampire.sh
+    // wasn't run) fails every call identically, but a later redeploy — or a
+    // transient network blip fetching the chunk — should get a fresh attempt
+    // instead of being stuck replaying the first failure forever.
+    vampireRunnerPromise = import('./vampire/vampire-runner.js').catch(() => {
+      vampireRunnerPromise = null;
+      throw new Error(
+        'The Vampire (WASM) backend is not included in this deployment ' +
+        '(build-vampire.sh output missing). Use the Native backend instead.'
+      );
+    });
+  }
   return vampireRunnerPromise;
 }
 

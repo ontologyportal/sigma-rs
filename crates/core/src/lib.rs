@@ -9,12 +9,13 @@ compile_error!(
      Remove 'ask' from the features list for wasm builds."
 );
 
-#[cfg(all(feature = "parallel", target_arch = "wasm32"))]
+#[cfg(all(feature = "parallel", target_arch = "wasm32", not(target_feature = "atomics")))]
 compile_error!(
-    "The 'parallel' feature is not supported on wasm32 targets. \
-     Remove 'parallel' from the features list for wasm builds, \
-     or enable it only on non-wasm targets via target-conditional \
-     dependency declarations."
+    "The 'parallel' feature requires a threads-enabled wasm build (atomics \
+     and bulk-memory target features via -Zbuild-std, as used by \
+     wasm-bindgen-rayon). Remove 'parallel' from the features list for \
+     plain wasm32 builds, or enable it only on non-wasm targets via \
+     target-conditional dependency declarations."
 );
 
 // -- Module declarations ------------------------------------------------------
@@ -102,6 +103,7 @@ pub use semantics::types::{TaxDirection, TaxRelation};
 pub use semantics::types::DocEntry;
 
 pub use kb::KnowledgeBase;
+pub use cache::CacheConfig;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 pub use kb::search::{SearchHit, SearchOpts, SearchSource};
 pub use syntactic::position::ElementHit;

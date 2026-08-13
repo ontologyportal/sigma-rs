@@ -29,7 +29,12 @@ pub(crate) mod persistence;
 
 // `Epoch` lives in `backends` (defined for a later phase, not yet consumed); it
 // is reachable as `backends::Epoch` and re-exported here once a caller needs it.
-pub(crate) use backends::{CacheConfig, EagerIndex, EntryCache, LayerCache};
+// `CacheConfig` is re-exported `pub` (not `pub(crate)`) so a downstream crate
+// (e.g. crates/wasm) can reach it via `KnowledgeBase::cache_config` to seed
+// `max_threads` from `navigator.hardwareConcurrency` on wasm32, where
+// `std::thread::available_parallelism` isn't available.
+pub use backends::CacheConfig;
+pub(crate) use backends::{EagerIndex, EntryCache, LayerCache};
 pub(crate) use behaviors::{CacheBehavior, EagerBehavior, EagerMapBehavior, WholeCacheBehavior};
 pub(crate) use frontends::{Cache, Eager, EagerMap, WholeCache};
 // `persistence::PersistableCache` (the cache-side freeze/thaw; the backends

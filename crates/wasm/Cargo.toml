@@ -19,6 +19,26 @@ wasm-bindgen               = "0.2"
 serde-wasm-bindgen         = "0.6"
 js-sys                     = "0.3"
 
+# parallel feature: `sigmakee-rs-core/parallel` is itself compile_error!-banned
+# on plain wasm32 (see core's lib.rs) — it only compiles in a threads-enabled
+# build (atomics + bulk-memory via -Zbuild-std, built by build-npm.sh's
+# threaded variant). wasm-bindgen-rayon supplies the JS-callable
+# `initThreadPool` that spins up the worker pool this feature's rayon calls
+# then run on.
+wasm-bindgen-rayon         = { version = "1", optional = true }
+
+# Feature-unification rider, not used directly: dashmap's shard locks (core's
+# EntryCache) sit on parking_lot_core, whose wasm-atomics thread parker is
+# gated behind its `nightly` crate feature. Without it, wasm gets a fallback
+# parker whose park() PANICS ("Parking not supported on this platform") — the
+# first contended shard lock aborts a rayon worker (panic=abort) and the
+# dispatching par_iter hangs forever. Contention-dependent, so small KBs and
+# 1-worker pools mask it. Threaded builds compile on nightly anyway.
+parking_lot_core           = { version = "0.9", features = ["nightly"], optional = true }
+
 # Release-profile overrides for this crate live at the workspace root
 # (`[profile.release.package.sumo-parser-wasm]`) — Cargo only honours
 # profile sections at the root.
+
+[features]
+parallel = ["sigmakee-rs-core/parallel", "dep:wasm-bindgen-rayon", "dep:parking_lot_core"]

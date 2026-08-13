@@ -74,9 +74,16 @@ impl Drop for InProgressGuard {
 /// conventionally prefixed with the layer name:
 ///   `syntactic::occurrences`, `semantic::is_instance`, etc.
 #[derive(Debug, Clone)]
-pub(crate) struct CacheConfig {
+pub struct CacheConfig {
     /// Cache names in this set are disabled.  Empty = all caches active.
     disabled: Arc<RwLock<HashSet<&'static str>>>,
+    /// `disabled.len()`, maintained on every insert/remove.  `is_enabled` is
+    /// called on EVERY cache access from every thread; in the (overwhelmingly
+    /// common) nothing-disabled state this atomic lets it answer without
+    /// touching the shared `RwLock` at all — profiling showed that lock's
+    /// read path as the single hottest function under `validate_all`, and its
+    /// cache-line contention flattened all `parallel` scaling.
+    disabled_count: Arc<AtomicUsize>,
     /// Shared parallelism knobs for the reactive router (see [`ParallelCfg`]).
     parallel: Arc<ParallelCfg>,
 }
@@ -115,6 +122,7 @@ impl Default for CacheConfig {
     fn default() -> Self {
         Self {
             disabled: Arc::new(RwLock::new(HashSet::new())),
+            disabled_count: Arc::new(AtomicUsize::new(0)),
             parallel: Arc::new(ParallelCfg::default()),
         }
     }
@@ -138,6 +146,11 @@ pub(crate) fn plan_threads(units: usize, max_threads: usize, floor: usize) -> us
 impl CacheConfig {
     /// Returns `true` when `name` is NOT in the disabled set.
     pub(crate) fn is_enabled(&self, name: &'static str) -> bool {
+        // Lock-free fast path: nothing disabled anywhere (the steady state
+        // outside tests) — see `disabled_count`.
+        if self.disabled_count.load(Ordering::Acquire) == 0 {
+            return true;
+        }
         !self.disabled.read().unwrap().contains(name)
     }
 
@@ -145,14 +158,18 @@ impl CacheConfig {
     /// sharing this config
     #[allow(dead_code)] // TODO: consume in KB
     pub(crate) fn disable(&self, name: &'static str) {
-        self.disabled.write().unwrap().insert(name);
+        let mut set = self.disabled.write().unwrap();
+        set.insert(name);
+        self.disabled_count.store(set.len(), Ordering::Release);
     }
 
     /// Re-enable a named cache.  Immediately visible to all cache instances
     /// sharing this config.
     #[allow(dead_code)] // TODO: consume in KB
     pub(crate) fn enable(&self, name: &'static str) {
-        self.disabled.write().unwrap().remove(name);
+        let mut set = self.disabled.write().unwrap();
+        set.remove(name);
+        self.disabled_count.store(set.len(), Ordering::Release);
     }
 
     /// Create a fresh config with every name in `names` pre-disabled.
@@ -165,9 +182,10 @@ impl CacheConfig {
 
     /// Max concurrent tasks the reactive router may fan a cohort / event vector
     /// into.  `1` forces serial dispatch.  Only read by the router's parallel
-    /// dispatch (behind `feature = "parallel"`).
+    /// dispatch (behind `feature = "parallel"`). Public so a wasm embedder can
+    /// confirm the value it pushed via [`Self::set_max_threads`] actually took.
     #[cfg_attr(not(feature = "parallel"), allow(dead_code))]
-    pub(crate) fn max_threads(&self) -> usize {
+    pub fn max_threads(&self) -> usize {
         self.parallel.max_threads.load(Ordering::Relaxed)
     }
 
@@ -180,8 +198,14 @@ impl CacheConfig {
 
     /// Set the router's thread cap (shared with every clone of this config).
     /// `0` is clamped to `1` (serial).
+    ///
+    /// Public because `std::thread::available_parallelism` (the non-wasm
+    /// default in [`ParallelCfg::default`]) is unavailable on wasm32 and
+    /// falls back to `1`; a threads-enabled wasm embedder (wasm-bindgen-rayon)
+    /// must call this after spinning up its thread pool, seeded from
+    /// `navigator.hardwareConcurrency`, or the pool will run fully serial.
     #[allow(dead_code)]
-    pub(crate) fn set_max_threads(&self, n: usize) {
+    pub fn set_max_threads(&self, n: usize) {
         self.parallel.max_threads.store(n.max(1), Ordering::Relaxed);
     }
 
