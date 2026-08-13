@@ -173,7 +173,15 @@ const handlers = {
   tptpLineForPosition({ file, offset }) {
     return { line: session.kb.tptpLineForPosition(file, offset) ?? null };
   },
-  search({ query, limit, language }) { return { hits: session.search(query, { limit: limit ?? 100, language }) }; },
+  search({ query, limit, language, kind }) {
+    return {
+      hits: session.search(query, {
+        limit: limit ?? 100,
+        language,
+        kind,
+      }),
+    };
+  },
   manpage({ symbol }) { return { page: session.manpage(symbol) }; },
   taxonomy({ symbol }) { return { tax: session.taxonomy(symbol) }; },
   naturalLanguages() { return { languages: session.naturalLanguages() }; },

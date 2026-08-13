@@ -2384,6 +2384,18 @@ function kindToCompletionKind(m, kinds) {
 // slow early one must not clobber the list for what's on screen now.
 let completionSeq = 0;
 
+function isRelationPosition(model, position, wordStartColumn) {
+  let line = position.lineNumber;
+  while (line >= 1) {
+    const text = model.getLineContent(line);
+    let i = line === position.lineNumber ? wordStartColumn - 2 : text.length - 1;
+    while (i >= 0 && /\s/.test(text[i])) i--;
+    if (i >= 0) return text[i] === '(';
+    line--;
+  }
+  return false;
+}
+
 /**
  * Real KB symbols only, via the same `search` the Home tab uses — this
  * replaces Monaco's default word-based suggestions (any string already
@@ -2400,7 +2412,12 @@ function kifCompletionProvider(m) {
         endLineNumber: position.lineNumber, endColumn: word.endColumn,
       };
       const seq = ++completionSeq;
-      return call('search', { query: prefix, limit: 50 })
+      const relationOnly = isRelationPosition(model, position, word.startColumn);
+        return call('search', {
+          query: prefix,
+          limit: 50,
+          kind: relationOnly ? 'relation' : undefined,
+        })
         .then((r) => {
           if (seq !== completionSeq) return { suggestions: [] };
           const prefixLc = prefix.toLowerCase();
