@@ -57,6 +57,7 @@ env:
   # Bump to track a newer vprover/vampire release; must have a
   # vampire-Linux-X64.zip release asset (true from v5.0.0 on).
   VAMPIRE_VERSION: v5.0.1
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
   regression:
@@ -285,7 +286,7 @@ jobs:
       # Vampire works there). This step skips quietly until the
       # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.
       - name: Deploy demo to Cloudflare Pages
-        if: ${{ steps.demo.outcome == 'success' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+        if: ${{ steps.demo.outcome == 'success' && env.CLOUDFLARE_API_TOKEN != '' }}
         continue-on-error: true
         uses: cloudflare/wrangler-action@v3
         with:
