@@ -59,17 +59,28 @@ let savedConstituents = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || 'n
 ];
 let opfsRoot = null;
 
+// One credential for every GitHub API request: catalog/commit reads as well
+// as contribution writes. It remains session-only unless "remember" is
+// explicitly enabled in the Edit contribution panel.
+const GH_TOKEN_KEY = 'sumoBrowserGhToken';
+let ghToken = localStorage.getItem(GH_TOKEN_KEY) || '';
+
+function currentGithubToken() {
+  return $('ghToken')?.value.trim() || ghToken;
+}
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const escAttr = (s) => esc(s).replace(/"/g, '&quot;');
 const fmtNum = (n) => Number(n).toLocaleString();
 const fmtDate = (d) => d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
-/** Unauthenticated GitHub REST, via the same client the contribute flow uses —
- *  one place for the Accept/API-version headers and the rate-limit wording. */
+/** GitHub REST, via the same client the contribution flow uses. The user's
+ *  optional token authenticates catalog and commit reads as well as writes,
+ *  with one place for headers and rate-limit wording. */
 async function githubApi(path) {
   const { api } = await import('./github.js');
-  return api(null, path);
+  return api(currentGithubToken(), path);
 }
 
 let diagnostics = [];
@@ -3421,9 +3432,6 @@ async function refreshHomeStats() {
 // persisted (localStorage) if the user ticks "remember", and never leaves the
 // browser except as an Authorization header to api.github.com.
 
-const GH_TOKEN_KEY = 'sumoBrowserGhToken';
-let ghToken = localStorage.getItem(GH_TOKEN_KEY) || '';
-
 function ghSetStatus(text, bad = false) {
   const el = $('ghStatus');
   el.textContent = text;
@@ -3456,6 +3464,18 @@ $('ghForget').onclick = () => {
   $('ghRemember').checked = false;
   ghSetStatus('Token forgotten.');
 };
+
+// Keep a newly entered token available to read-only API calls even before the
+// user submits a pull request. Persistence still requires explicit opt-in.
+$('ghToken').addEventListener('change', () => {
+  ghToken = $('ghToken').value.trim();
+  if ($('ghRemember').checked && ghToken) localStorage.setItem(GH_TOKEN_KEY, ghToken);
+  else localStorage.removeItem(GH_TOKEN_KEY);
+});
+$('ghRemember').addEventListener('change', () => {
+  if ($('ghRemember').checked && currentGithubToken()) localStorage.setItem(GH_TOKEN_KEY, currentGithubToken());
+  else localStorage.removeItem(GH_TOKEN_KEY);
+});
 
 $('ghSubmit').onclick = async () => {
   const btn = $('ghSubmit');
