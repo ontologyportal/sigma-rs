@@ -71,7 +71,7 @@ SUMO_SUBRELATION_RELATION = "subrelation"
 SUMO_SUBATTRIBUTE_RELATION = "subAttribute"
 
 [alias]
-xtask = "run --quiet --package xtask --"
+web = "run --bin web"
 
 # getrandom 0.3 (pulled in transitively by graphviz-rust's `tempfile` dep, used
 # only by its non-wasm `exec`/`exec_dot` process-spawning path — core's own

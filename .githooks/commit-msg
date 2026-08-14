@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook — enforces the Conventional Commits format
+# https://www.conventionalcommits.org/
+
+commit_msg_file="$1"
+commit_msg=$(head -n 1 "$commit_msg_file")
+full_msg=$(cat "$commit_msg_file")
+git_dir=$(git rev-parse --git-dir)
+backup_file="$git_dir/REJECTED_COMMIT_MSG.txt"
+
+# Skip merge commits and reverts — git generates these messages itself
+if echo "$commit_msg" | grep -qE '^(Merge |Revert ")'; then
+    exit 0
+fi
+
+# Skip fixup!/squash! commits (used with git commit --fixup / --squash)
+if echo "$commit_msg" | grep -qE '^(fixup|squash)! '; then
+    exit 0
+fi
+
+valid_types="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+# type(optional-scope)(optional !): description
+pattern="^(${valid_types})(\([a-z0-9._-]+\))?(!)?: .+$"
+
+if ! echo "$commit_msg" | grep -qE "$pattern"; then
+    cat >&2 <<EOF
+❌ Commit message does not follow Conventional Commits format.
+
+Your message:
+  $commit_msg
+
+Expected format:
+  <type>[optional scope][!]: <description>
+
+Valid types:
+  feat      A new feature
+  fix       A bug fix
+  docs      Documentation only changes
+  style     Formatting, missing semicolons, etc. (no code change)
+  refactor  Code change that neither fixes a bug nor adds a feature
+  perf      Code change that improves performance
+  test      Adding or correcting tests
+  build     Changes to build system or dependencies
+  ci        Changes to CI configuration/scripts
+  chore     Other changes that don't modify src or test files
+  revert    Reverts a previous commit
+
+Examples:
+  feat(auth): add OAuth2 login support
+  fix: correct off-by-one error in pagination
+  feat!: drop support for Node 14 (breaking change)
+
+Docs: https://www.conventionalcommits.org/
+EOF
+
+    printf '%s\n' "$full_msg" > "$backup_file"
+
+    cat >&2 <<EOF
+
+── Your full message (copy this) ───────────────────────
+$full_msg
+─────────────────────────────────────────────────────────
+
+💡 Nothing was lost. This exact text was also saved to:
+     $backup_file
+   (unlike COMMIT_EDITMSG, this only changes on the next
+   rejected commit, so it's safe to walk away and come back)
+
+   Recover it with:
+     git commit -F "$backup_file"
+EOF
+    exit 1
+fi
+
+# Optional: warn (don't block) if the summary line is long
+first_line_len=${#commit_msg}
+if [ "$first_line_len" -gt 72 ]; then
+    echo "⚠️  Warning: commit summary is ${first_line_len} chars (recommended ≤72)." >&2
+fi
+
+exit 0

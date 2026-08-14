@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+
+# Prompt on the controlling terminal (not stdin) — git commit may
+# not have a normal stdin attached, e.g. when run from a GUI client.
+if [ -r /dev/tty ]; then
+    exec < /dev/tty
+    read -r -p "Skip pre-commit checks? [y/N] " reply
+    case "$reply" in
+        [yY][eE][sS]|[yY]) exit 0 ;;
+        *) echo "Running pre-commit tests" ;;
+    esac
+else
+    # No interactive terminal available — can't prompt, so just warn
+    echo "(No interactive terminal detected — proceeding with commit. Fix before opening the PR!)" >&2
+    exit 0
+fi
+
+if [ -n "$SKIP_BUILD_CHECK" ]; then
+    exit 0
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "⚠️  cargo not found in PATH — skipping pre-commit build/test check." >&2
+    exit 0
+fi
+
+# Only run inside a Rust project
+if [ ! -f "Cargo.toml" ]; then
+    exit 0
+fi
+
+build_failed=""
+test_failed=""
+
+echo "🔧 Running cargo build --release (pre-commit check)..."
+build_log=$(mktemp)
+if ! RUSTFLAGS="-D warnings" cargo build --release >"$build_log" 2>&1; then
+    echo "⚠️  cargo build --release failed:" >&2
+    echo "----------------------------------------" >&2
+    tail -n 40 "$build_log" >&2
+    echo "----------------------------------------" >&2
+    build_failed=1
+fi
+rm -f "$build_log"
+
+echo "🧪 Running cargo test (pre-commit check)..."
+test_log=$(mktemp)
+if ! cargo test >"$test_log" 2>&1; then
+    echo "⚠️  cargo test failed:" >&2
+    echo "----------------------------------------" >&2
+    tail -n 40 "$test_log" >&2
+    echo "----------------------------------------" >&2
+    test_failed=1
+fi
+rm -f "$test_log"
+
+if [ -n "$build_failed" ] || [ -n "$test_failed" ]; then
+    echo "" >&2
+    echo "⚠️  Build and/or tests failed. This commit won't pass CI/PR checks as-is." >&2
+
+    # Prompt on the controlling terminal (not stdin) — git commit may
+    # not have a normal stdin attached, e.g. when run from a GUI client.
+    if [ -r /dev/tty ]; then
+        exec < /dev/tty
+        read -r -p "Commit anyway? [y/N] " reply
+        case "$reply" in
+            [yY][eE][sS]|[yY]) exit 0 ;;
+            *) echo "Commit aborted. (Re-run with SKIP_BUILD_CHECK=1 to bypass this check entirely.)" >&2; exit 1 ;;
+        esac
+    else
+        # No interactive terminal available — can't prompt, so just warn
+        echo "(No interactive terminal detected — proceeding with commit. Fix before opening the PR!)" >&2
+        exit 0
+    fi
+fi
+
+exit 0

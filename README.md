@@ -115,7 +115,7 @@ up a PowerShell alias.
 | `crates/sdk` (`sigmakee-rs-sdk`) | SDK which makes software consumption of `sigmakee-rs-core` more intuitive |
 | `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
 | `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
-| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings (browser / Node.js) (BROKEN) |
+| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings + web UI (browser / Node.js) |
 
 ---
 
