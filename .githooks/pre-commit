@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# Colors
+RED='\033[0;31m'
+GRE='\033[0;32m'
+NC='\033[0m'
+
 # Prompt on the controlling terminal (not stdin) — git commit may
 # not have a normal stdin attached, e.g. when run from a GUI client.
 if [ -r /dev/tty ]; then
@@ -30,31 +35,67 @@ if [ ! -f "Cargo.toml" ]; then
 fi
 
 build_failed=""
+lint_failed=""
+clippy_failed=""
 test_failed=""
 
-echo "🔧 Running cargo build --release (pre-commit check)..."
+echo -n "🧹 Running Linting Check: cargo fmt (pre-commit check)..."
+lint_log=$(mktemp)
+if ! cargo fmt --check >"$lint_log" 2>&1; then
+    echo -e "${RED}failed${NC}"
+    echo "⚠️  cargo fmt failed:" >&2
+    echo "----------------------------------------" >&2
+    tail -n 40 "$lint_log" >&2
+    echo "----------------------------------------" >&2
+    lint_failed=1
+else 
+    printf "${GRE}ok${NC}\n"
+fi
+rm -f "$lint_log"
+
+echo -n "📎 Running Static Code Check: cargo clippy (pre-commit check)..."
+clippy_log=$(mktemp)
+if ! cargo clippy >"$clippy_log" 2>&1; then
+    echo -e "${RED}failed${NC}"
+    echo "⚠️  cargo clippy failed:" >&2
+    echo "----------------------------------------" >&2
+    tail -n 40 "$clippy_log" >&2
+    echo "----------------------------------------" >&2
+    clippy_failed=1
+else 
+    printf "${GRE}ok${NC}\n"
+fi
+rm -f "$clippy_log"
+
+echo -n "🔧 Running Build Check: cargo build --release (pre-commit check)..."
 build_log=$(mktemp)
 if ! RUSTFLAGS="-D warnings" cargo build --release >"$build_log" 2>&1; then
+    echo -e "${RED}failed${NC}"
     echo "⚠️  cargo build --release failed:" >&2
     echo "----------------------------------------" >&2
     tail -n 40 "$build_log" >&2
     echo "----------------------------------------" >&2
     build_failed=1
+else 
+    printf "${GRE}ok${NC}\n"
 fi
 rm -f "$build_log"
 
-echo "🧪 Running cargo test (pre-commit check)..."
+echo -n "🧪 Running Unit Tests: cargo test (pre-commit check)..."
 test_log=$(mktemp)
 if ! cargo test >"$test_log" 2>&1; then
+    echo -e "${RED}failed${NC}"
     echo "⚠️  cargo test failed:" >&2
     echo "----------------------------------------" >&2
     tail -n 40 "$test_log" >&2
     echo "----------------------------------------" >&2
     test_failed=1
+else 
+    printf "${GRE}ok${NC}\n"
 fi
 rm -f "$test_log"
 
-if [ -n "$build_failed" ] || [ -n "$test_failed" ]; then
+if [ -n "$build_failed" ] || [ -n "$test_failed" ]  || [ -n "$clippy_failed" ]  || [ -n "$lint_failed" ]; then
     echo "" >&2
     echo "⚠️  Build and/or tests failed. This commit won't pass CI/PR checks as-is." >&2
 
