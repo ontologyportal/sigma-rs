@@ -59,17 +59,28 @@ let savedConstituents = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || 'n
 ];
 let opfsRoot = null;
 
+// One credential for every GitHub API request: catalog/commit reads as well
+// as contribution writes. It remains session-only unless "remember" is
+// explicitly enabled in the Edit contribution panel.
+const GH_TOKEN_KEY = 'sumoBrowserGhToken';
+let ghToken = localStorage.getItem(GH_TOKEN_KEY) || '';
+
+function currentGithubToken() {
+  return $('ghToken')?.value.trim() || ghToken;
+}
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const escAttr = (s) => esc(s).replace(/"/g, '&quot;');
 const fmtNum = (n) => Number(n).toLocaleString();
 const fmtDate = (d) => d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
-/** Unauthenticated GitHub REST, via the same client the contribute flow uses —
- *  one place for the Accept/API-version headers and the rate-limit wording. */
+/** GitHub REST, via the same client the contribution flow uses. The user's
+ *  optional token authenticates catalog and commit reads as well as writes,
+ *  with one place for headers and rate-limit wording. */
 async function githubApi(path) {
   const { api } = await import('./github.js');
-  return api(null, path);
+  return api(currentGithubToken(), path);
 }
 
 let diagnostics = [];
@@ -2469,6 +2480,7 @@ let monacoEditor = null;
 let monacoLoadPromise = null;
 let editCurrentFile = null; // { name, origin } of the file being edited, or null for an unsaved "new file"
 let editValidateTimer = null;
+let editDiagnostics = [];
 
 function loadMonaco() {
   if (monacoLoadPromise) return monacoLoadPromise;
@@ -2677,6 +2689,37 @@ function diagsToMarkers(diags) {
   }));
 }
 
+/** Render only actionable errors/warnings for the buffer currently in Edit.
+ * Monaco still receives all severities as inline markers. */
+function renderEditDiagnostics(diags) {
+  editDiagnostics = diags.filter((d) => d.severity === 'error' || d.severity === 'warning');
+  const errors = editDiagnostics.filter((d) => d.severity === 'error').length;
+  const warnings = editDiagnostics.length - errors;
+  const parts = [];
+  if (errors) parts.push(`${errors} error${errors === 1 ? '' : 's'}`);
+  if (warnings) parts.push(`${warnings} warning${warnings === 1 ? '' : 's'}`);
+  $('editDiagSummary').textContent = parts.length ? parts.join(', ') : 'No errors or warnings';
+  $('editDiagList').innerHTML = editDiagnostics.length
+    ? editDiagnostics.map((d, i) => `<button class="edit-diag" type="button" data-i="${i}" data-sev="${esc(d.severity)}">
+        <span class="sev ${esc(d.severity)}">${esc(d.severity)}</span>
+        <span class="edit-diag-loc">${esc(editCurrentFile?.name || 'untitled')}:${Math.max(1, d.line || 1)}:${Math.max(1, d.col || 1)}</span>
+        <span class="edit-diag-msg">${esc(d.message)} <span class="edit-diag-code">[${esc(d.kind)}/${esc(d.code)}]</span></span>
+      </button>`).join('')
+    : '<div id="editDiagEmpty" class="hint">This file has no errors or warnings.</div>';
+}
+
+$('editDiagList').addEventListener('click', (e) => {
+  const row = e.target.closest('.edit-diag');
+  if (!row || !monacoEditor) return;
+  const d = editDiagnostics[Number(row.dataset.i)];
+  if (!d) return;
+  const lineNumber = Math.max(1, d.line || 1);
+  const column = Math.max(1, d.col || 1);
+  monacoEditor.setPosition({ lineNumber, column });
+  monacoEditor.revealPositionInCenter({ lineNumber, column });
+  monacoEditor.focus();
+});
+
 function scheduleEditValidate() {
   clearTimeout(editValidateTimer);
   editValidateTimer = setTimeout(runEditValidate, 400);
@@ -2703,6 +2746,10 @@ async function runEditValidate() {
 async function runEditValidateNow() {
   if (!monacoEditor) return;
   const text = monacoEditor.getValue();
+  const model = monacoEditor.getModel();
+  const version = model?.getVersionId();
+  const validatingFile = editCurrentFile
+    ? `${editCurrentFile.name}|${editCurrentFile.origin}` : '';
   // A buffer belonging to a loaded constituent is diffed into the live KB and
   // validated against it, so semantic diagnostics resolve. A scratch buffer has
   // no backing file, so it falls back to parse-only checking in a throwaway KB.
@@ -2714,8 +2761,11 @@ async function runEditValidateNow() {
       ? (await call('validateBuffer', { file: known.name, text })).diagnostics
       : (await call('validateFormula', { kif: text })).diagnostics;
   } catch (e) { $('editStatus').textContent = 'parse error: ' + (e && e.message || e); return; }
-  if (!monacoEditor) return;
-  monaco.editor.setModelMarkers(monacoEditor.getModel(), 'sigma', diagsToMarkers(diags));
+  if (!monacoEditor || monacoEditor.getModel() !== model
+      || model?.getVersionId() !== version
+      || validatingFile !== (editCurrentFile ? `${editCurrentFile.name}|${editCurrentFile.origin}` : '')) return;
+  monaco.editor.setModelMarkers(model, 'sigma', diagsToMarkers(diags));
+  renderEditDiagnostics(diags);
   const errs = diags.filter((d) => d.severity === 'error').length;
   if (!diags.length) { $('editStatus').textContent = 'no diagnostics'; return; }
   // Link the count into the Diagnostics tab, filtered to this file and landing
@@ -3382,9 +3432,6 @@ async function refreshHomeStats() {
 // persisted (localStorage) if the user ticks "remember", and never leaves the
 // browser except as an Authorization header to api.github.com.
 
-const GH_TOKEN_KEY = 'sumoBrowserGhToken';
-let ghToken = localStorage.getItem(GH_TOKEN_KEY) || '';
-
 function ghSetStatus(text, bad = false) {
   const el = $('ghStatus');
   el.textContent = text;
@@ -3417,6 +3464,18 @@ $('ghForget').onclick = () => {
   $('ghRemember').checked = false;
   ghSetStatus('Token forgotten.');
 };
+
+// Keep a newly entered token available to read-only API calls even before the
+// user submits a pull request. Persistence still requires explicit opt-in.
+$('ghToken').addEventListener('change', () => {
+  ghToken = $('ghToken').value.trim();
+  if ($('ghRemember').checked && ghToken) localStorage.setItem(GH_TOKEN_KEY, ghToken);
+  else localStorage.removeItem(GH_TOKEN_KEY);
+});
+$('ghRemember').addEventListener('change', () => {
+  if ($('ghRemember').checked && currentGithubToken()) localStorage.setItem(GH_TOKEN_KEY, currentGithubToken());
+  else localStorage.removeItem(GH_TOKEN_KEY);
+});
 
 $('ghSubmit').onclick = async () => {
   const btn = $('ghSubmit');

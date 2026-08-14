@@ -440,6 +440,33 @@
     /* Follow-cursor highlight in the TPTP pane (deltaDecorations className). */
     .tptp-follow-line { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 
+    /* File-scoped problems panel directly beneath the editor. */
+    #editDiagnostics { padding: 0; overflow: hidden; }
+    #editDiagnostics > summary {
+      display: flex; align-items: center; gap: 8px; cursor: pointer;
+      list-style: none; padding: 10px 14px; font-size: 13px; font-weight: 600;
+    }
+    #editDiagnostics > summary::-webkit-details-marker { display: none; }
+    #editDiagnostics > summary::before { content: '>'; color: var(--muted); font-size: 15px;
+      line-height: 1; transition: transform .12s ease; }
+    #editDiagnostics[open] > summary::before { transform: rotate(90deg); }
+    #editDiagSummary { color: var(--muted); font-weight: 400; }
+    #editDiagList { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
+    .edit-diag {
+      width: 100%; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+      gap: 8px; padding: 8px 14px; border: 0; border-bottom: 1px solid var(--line);
+      border-left: 3px solid transparent; background: var(--bg); color: var(--fg);
+      font: inherit; text-align: left; cursor: pointer;
+    }
+    .edit-diag:last-child { border-bottom: 0; }
+    .edit-diag:hover, .edit-diag:focus-visible { background: var(--card); outline: none; }
+    .edit-diag[data-sev="error"] { border-left-color: var(--bad); }
+    .edit-diag[data-sev="warning"] { border-left-color: var(--warn); }
+    .edit-diag-loc { color: var(--accent); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+    .edit-diag-msg { min-width: 0; font-size: 13px; }
+    .edit-diag-code { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    #editDiagEmpty { padding: 10px 14px; }
+
     /* Fullscreen editor: #tab-edit (toolbar + editor + editLog) lifted out of
        <main>'s max-width/flow to cover the viewport. Animated via the View
        Transitions API where supported (app.js wraps the class toggle in
@@ -860,7 +887,8 @@
               <label for="ghToken">GitHub token</label>
               <input type="password" id="ghToken" placeholder="ghp_…" autocomplete="off" spellcheck="false" />
               <div class="hint sub">
-                Needs <code>public_repo</code>.
+                Any valid token raises the API limit for catalog reads;
+                submitting changes needs <code>public_repo</code>.
                 <a href="https://github.com/settings/tokens/new?scopes=public_repo&amp;description=SUMO%20browser"
                    target="_blank" rel="noopener">Create one ↗</a>
               </div>
@@ -898,6 +926,13 @@
           <div id="tptpContainer" data-placeholder="Generating…"></div>
         </div>
       </div>
+      <details class="card" id="editDiagnostics" open>
+        <summary>
+          <span>Problems</span>
+          <span id="editDiagSummary">Checking...</span>
+        </summary>
+        <div id="editDiagList" aria-live="polite"></div>
+      </details>
       <div id="editLog" class="hint"></div>
     </section>
 

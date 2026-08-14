@@ -39,10 +39,19 @@ export async function api(token, path, opts = {}) {
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const msg = data?.message || `HTTP ${res.status}`;
-    throw new GitHubError(
-      res.status === 401 ? 'Token rejected by GitHub (check it has not expired).'
-      : res.status === 403 ? `${msg} — the token may lack the "public_repo" scope, or you hit a rate limit.`
-      : msg, res.status);
+    const rateLimited = res.status === 403
+      && (res.headers.get('x-ratelimit-remaining') === '0' || /rate limit/i.test(msg));
+    let detail = msg;
+    if (res.status === 401) {
+      detail = 'Token rejected by GitHub (check that it has not expired).';
+    } else if (rateLimited) {
+      detail = token
+        ? `${msg} — this token's GitHub API rate limit is exhausted.`
+        : `${msg} — add a GitHub token in Edit to raise the API limit.`;
+    } else if (res.status === 403) {
+      detail = `${msg} — the token may lack permission for this operation.`;
+    }
+    throw new GitHubError(detail, res.status);
   }
   return data;
 }
