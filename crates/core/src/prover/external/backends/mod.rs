@@ -117,11 +117,14 @@ impl ProverOpts {
 /// # Examples
 ///
 /// ```no_run
+/// use std::path::PathBuf;
 /// use sigmakee_rs_core::prover::{Prover, ProverOpts, ProverMode, ProverRunner};
+/// use sigmakee_rs_core::prover::external::backends::VampireRunner;
 ///
-/// let prover = Prover::VampireSubprocess(
-///     sigmakee_rs_core::prover::VampireRunner::new("/usr/bin/vampire"),
-/// );
+/// let prover = Prover::VampireSubprocess(VampireRunner {
+///     vampire_path: PathBuf::from("/usr/bin/vampire"),
+///     tptp_dump_path: None,
+/// });
 /// let opts = ProverOpts { timeout_secs: 5, mode: ProverMode::Prove };
 /// let result = prover.prove("fof(a, conjecture, p).\n", &opts);
 /// ```

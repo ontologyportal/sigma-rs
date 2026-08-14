@@ -2,9 +2,11 @@
 //! matching `backends` store and exposes the safe public API (`get` / `react` /
 //! snapshot+restore).  The owning layer holds one wrapper per cache as a field.
 //!
-//!                    | lazy (compute-on-miss) | eager (maintained)
-//!     keyed          |   `Cache<B>`           |   `EagerMap<B>`
-//!     whole          |   `WholeCache<B>`      |   `Eager<B>`
+//! ```text
+//!                | lazy (compute-on-miss) | eager (maintained)
+//! keyed          |   Cache<B>             |   EagerMap<B>
+//! whole          |   WholeCache<B>        |   Eager<B>
+//! ```
 
 use std::collections::HashMap;
 

@@ -11,7 +11,7 @@
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::Sort;
 ///
 /// // User-defined sort.
@@ -36,7 +36,7 @@ impl Sort {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::Sort;
     ///
     /// let animal = Sort::new("animal");
@@ -72,7 +72,7 @@ impl Sort {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::Sort;
     ///
     /// assert_eq!(Sort::int().tptp_name(),        "$int");
@@ -89,7 +89,7 @@ impl Sort {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::Sort;
     ///
     /// let animal = Sort::new("animal");
@@ -123,7 +123,7 @@ impl Sort {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::{Function, Sort};
 ///
 /// // Untyped binary function.
@@ -160,7 +160,7 @@ impl Function {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::Function;
     ///
     /// let succ = Function::new("succ", 1);
@@ -181,7 +181,7 @@ impl Function {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Sort};
     ///
     /// let person = Sort::new("person");
@@ -205,7 +205,7 @@ impl Function {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Interp};
     ///
     /// let plus = Function::interpreted("$sum", Interp::IntPlus);
@@ -249,7 +249,7 @@ impl Function {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Sort};
     ///
     /// let person = Sort::new("person");
@@ -300,7 +300,7 @@ impl Function {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::{Predicate, Sort};
 ///
 /// let mortal = Predicate::new("mortal", 1);
@@ -385,7 +385,7 @@ impl Predicate {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Predicate, Sort};
     ///
     /// let person = Sort::new("person");
@@ -532,5 +532,125 @@ impl Interp {
             Interp::IntToRat    | Interp::RatToRat    | Interp::RealToRat    => "$to_rat",
             Interp::IntToReal   | Interp::RatToReal   | Interp::RealToReal   => "$to_real",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn sort_new_and_builtins() {
+        let person = Sort::new("person");
+        assert_eq!(person.tptp_name(), "person");
+        assert!(!person.is_builtin());
+
+        let i = Sort::default_sort();
+        let z = Sort::int();
+        assert!(i.is_builtin() && z.is_builtin());
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn sort_new_tptp_name() {
+        let animal = Sort::new("animal");
+        assert_eq!(animal.tptp_name(), "animal");
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn sort_tptp_name() {
+        assert_eq!(Sort::int().tptp_name(), "$int");
+        assert_eq!(Sort::new("person").tptp_name(), "person");
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn sort_tptp_decl() {
+        let animal = Sort::new("animal");
+        assert_eq!(
+            animal.tptp_decl().unwrap(),
+            "tff(animal_type, type, animal: $tType).",
+        );
+        assert_eq!(Sort::int().tptp_decl(), None);
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn function_new_and_typed() {
+        let plus = Function::new("plus", 2);
+        assert_eq!(plus.arity(), 2);
+        assert!(!plus.is_typed());
+
+        let person = Sort::new("person");
+        let alice = Function::typed("alice", &[], person.clone());
+        assert_eq!(alice.arity(), 0);
+        assert_eq!(alice.ret_sort(), Some(&person));
+    }
+
+    #[test]
+    fn function_new() {
+        let succ = Function::new("succ", 1);
+        assert_eq!(succ.arity(), 1);
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    // `person` is also moved into `ret_sort` below, so `slice::from_ref` (which
+    // would keep the borrow alive) doesn't typecheck here; the clone is required.
+    #[allow(clippy::cloned_ref_to_slice_refs)]
+    fn function_typed() {
+        let person = Sort::new("person");
+        let father_of = Function::typed("father_of", &[person.clone()], person);
+        assert!(father_of.is_typed());
+    }
+
+    #[test]
+    fn function_interpreted() {
+        let plus = Function::interpreted("$sum", Interp::IntPlus);
+        assert_eq!(plus.arity(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn function_tptp_decl() {
+        let person = Sort::new("person");
+        let nil = Function::typed("nil", &[], person.clone());
+        assert_eq!(nil.tptp_decl().unwrap(), "tff(fn_nil, type, nil: person).");
+
+        let child_of = Function::typed("child_of", &[person.clone(), person.clone()], person);
+        assert_eq!(
+            child_of.tptp_decl().unwrap(),
+            "tff(fn_child_of, type, child_of: (person * person) > person).",
+        );
+
+        assert_eq!(Function::new("f", 2).tptp_decl(), None);
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn predicate_new_and_typed() {
+        let mortal = Predicate::new("mortal", 1);
+        assert_eq!(mortal.arity(), 1);
+        assert!(!mortal.is_typed());
+
+        let person = Sort::new("person");
+        let likes = Predicate::typed("likes", &[person.clone(), person]);
+        assert_eq!(likes.arity(), 2);
+        assert!(likes.is_typed());
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn predicate_tptp_decl() {
+        let person = Sort::new("person");
+        let likes = Predicate::typed("likes", &[person.clone(), person]);
+        assert_eq!(
+            likes.tptp_decl().unwrap(),
+            "tff(pred_likes_2, type, likes: (person * person) > $o).",
+        );
+
+        assert_eq!(Predicate::new("P", 3).tptp_decl(), None);
     }
 }

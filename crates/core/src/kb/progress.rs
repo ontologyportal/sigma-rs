@@ -11,8 +11,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! kb.set_process_sink(Arc::new(|e: &ProgressEvent| {
+//! ```ignore
+//! kb.set_progress_sink(Arc::new(|e: &ProgressEvent| {
 //!     eprintln!("[sumo] {e:?}");
 //! }));
 //! ```

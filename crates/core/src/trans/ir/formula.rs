@@ -73,7 +73,7 @@ impl Formula {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Formula, Function, Predicate, Term};
     ///
     /// let mortal   = Predicate::new("mortal", 1);
@@ -114,7 +114,7 @@ impl Formula {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Formula, Predicate};
     ///
     /// let p = Predicate::new("P", 0);
@@ -185,7 +185,7 @@ impl Formula {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Formula, Predicate};
     ///
     /// let p = Predicate::new("P", 0);
@@ -229,5 +229,47 @@ impl Formula {
     /// Builds `?[var: sort] : body` — typed existential quantification.
     pub fn exists_typed(var: VarId, sort: Sort, body: Formula) -> Self {
         Self::ExistsTyped(var, sort, Box::new(body))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::symbol::Function;
+
+    #[test]
+    fn formula_atom() {
+        let mortal = Predicate::new("mortal", 1);
+        let socrates = Term::constant(Function::new("socrates", 0));
+        let f = Formula::atom(mortal, vec![socrates]);
+        assert_eq!(f.to_tptp(), "mortal(socrates)");
+    }
+
+    #[test]
+    fn formula_and_normalisation() {
+        let p = Predicate::new("P", 0);
+        let q = Predicate::new("Q", 0);
+        let r = Predicate::new("R", 0);
+
+        let pq = Formula::and(vec![
+            Formula::atom(p.clone(), vec![]),
+            Formula::atom(q.clone(), vec![]),
+        ]);
+        let pqr = Formula::and(vec![pq, Formula::atom(r, vec![])]);
+        assert_eq!(pqr.to_tptp(), "P & Q & R");
+
+        let tp = Formula::and(vec![Formula::True, Formula::atom(p, vec![])]);
+        assert_eq!(tp.to_tptp(), "P");
+        assert_eq!(
+            Formula::and(vec![Formula::atom(q, vec![]), Formula::False]).to_tptp(),
+            "$false",
+        );
+    }
+
+    #[test]
+    fn formula_not_double_negation() {
+        let p = Predicate::new("P", 0);
+        let double_neg = Formula::not(Formula::not(Formula::atom(p, vec![])));
+        assert_eq!(double_neg.to_tptp(), "P");
     }
 }

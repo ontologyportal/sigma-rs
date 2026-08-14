@@ -26,7 +26,7 @@ impl Default for LogicMode {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::{Formula, Function, Predicate, Problem, Term};
 ///
 /// let p        = Predicate::new("P", 1);
@@ -137,7 +137,7 @@ impl Problem {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Formula, Function, Predicate, Problem, Sort, Term};
     ///
     /// let mut problem = Problem::new_tff();
@@ -189,5 +189,46 @@ impl Problem {
             out.push_str(&format!("{kw}(conjecture, conjecture, {}).\n", c.to_tptp()));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::term::Term;
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn problem_axiom_and_conjecture() {
+        let p = Predicate::new("P", 1);
+        let socrates = Term::constant(Function::new("socrates", 0));
+
+        let mut problem = Problem::new();
+        problem.with_axiom(Formula::atom(p.clone(), vec![socrates.clone()]));
+        problem.conjecture(Formula::atom(p, vec![socrates]));
+
+        let tptp = problem.to_tptp();
+        assert!(tptp.contains("fof(axiom_0, axiom, P(socrates))."));
+        assert!(tptp.contains("fof(conjecture, conjecture, P(socrates))."));
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn problem_tff_declarations() {
+        let mut problem = Problem::new_tff();
+        let person = Sort::new("person");
+        let alice = Function::typed("alice", &[], person.clone());
+        let mortal = Predicate::typed("mortal", std::slice::from_ref(&person));
+
+        problem.declare_sort(person);
+        problem.declare_function(alice.clone());
+        problem.declare_predicate(mortal.clone());
+        problem.with_axiom(Formula::atom(mortal, vec![Term::apply(alice, vec![])]));
+
+        let t = problem.to_tptp();
+        assert!(t.contains("tff(person_type, type, person: $tType)."));
+        assert!(t.contains("tff(fn_alice, type, alice: person)."));
+        assert!(t.contains("tff(pred_mortal_1, type, mortal: person > $o)."));
+        assert!(t.contains("tff(axiom_0, axiom, mortal(alice))."));
     }
 }

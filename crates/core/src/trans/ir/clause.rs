@@ -6,7 +6,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```ignore
 //! use sigmakee_rs_core::trans::ir::{Clause, Function, Literal, LitKind, Predicate, Term};
 //!
 //! let p = Predicate::new("P", 1);

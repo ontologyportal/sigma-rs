@@ -191,7 +191,7 @@ impl Term {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Term};
     ///
     /// let f = Function::new("f", 2);
@@ -209,7 +209,7 @@ impl Formula {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Formula, Predicate, Term};
     ///
     /// let p = Predicate::new("P", 1);
@@ -218,5 +218,26 @@ impl Formula {
     /// ```
     pub fn to_tptp(&self) -> String {
         formula_to_tptp(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::symbol::{Function, Predicate};
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn term_to_tptp() {
+        let f = Function::new("f", 2);
+        let t = Term::apply(f, vec![Term::var(0), Term::int("1")]);
+        assert_eq!(t.to_tptp(), "f(X0,1)");
+    }
+
+    #[test]
+    fn formula_to_tptp_atom() {
+        let p = Predicate::new("P", 1);
+        let f = Formula::atom(p, vec![Term::var(0)]);
+        assert_eq!(f.to_tptp(), "P(X0)");
     }
 }

@@ -11,7 +11,7 @@ use super::symbol::Function;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::VarId;
 ///
 /// let v = VarId(3);
@@ -39,7 +39,7 @@ impl VarId {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use crate::trans::ir::{Function, Term, VarId};
 ///
 /// // A variable term.
@@ -92,7 +92,7 @@ impl Term {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Term};
     ///
     /// let socrates = Term::constant(Function::new("socrates", 0));
@@ -110,7 +110,7 @@ impl Term {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Term};
     ///
     /// let plus = Function::new("plus", 2);
@@ -148,7 +148,7 @@ impl Term {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```ignore
     /// use crate::trans::ir::{Function, Term};
     ///
     /// let f = Function::new("f", 2);
@@ -180,5 +180,57 @@ impl<'a> Iterator for FreeVarsIter<'a> {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn var_id_index_and_tptp_name() {
+        let v = VarId(3);
+        assert_eq!(v.index(), 3);
+        assert_eq!(v.tptp_name(), "X3");
+    }
+
+    #[test]
+    fn term_constructors() {
+        let x = Term::var(0);
+        let zero = Term::constant(Function::new("zero", 0));
+        let succ = Function::new("succ", 1);
+        let succ_x = Term::apply(succ, vec![x.clone()]);
+        let two = Term::int("2");
+
+        assert_eq!(x, Term::Var(VarId(0)));
+        assert_eq!(zero, Term::Apply(Function::new("zero", 0), vec![]));
+        assert_eq!(succ_x, Term::Apply(Function::new("succ", 1), vec![Term::var(0)]));
+        assert_eq!(two, Term::Int("2".to_string()));
+    }
+
+    #[test]
+    fn term_constant() {
+        let socrates = Term::constant(Function::new("socrates", 0));
+        assert_eq!(socrates, Term::Apply(Function::new("socrates", 0), vec![]));
+    }
+
+    #[test]
+    fn term_apply() {
+        let plus = Function::new("plus", 2);
+        let t = Term::apply(plus, vec![Term::var(0), Term::int("1")]);
+        assert_eq!(
+            t,
+            Term::Apply(Function::new("plus", 2), vec![Term::var(0), Term::int("1")]),
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "ask")]
+    fn term_free_vars() {
+        let f = Function::new("f", 2);
+        let t = Term::apply(f, vec![Term::var(0), Term::var(1)]);
+        let vars: Vec<u32> = t.free_vars().map(|v| v.index()).collect();
+        assert_eq!(vars, vec![0, 1]);
     }
 }
