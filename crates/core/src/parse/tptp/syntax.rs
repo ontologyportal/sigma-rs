@@ -25,6 +25,7 @@ pub enum TptpLang {
     #[default]
     Fof,
     Tff,
+    Thf,
     Auto,
 }
 
@@ -36,6 +37,7 @@ impl TptpLang {
             TptpLang::Cnf  => "cnf",
             TptpLang::Fof  => "fof",
             TptpLang::Tff  => "tff",
+            TptpLang::Thf  => "thf",
             TptpLang::Auto => "fof",
         }
     }
@@ -49,7 +51,7 @@ impl TptpLang {
 }
 
 /// Detect a TPTP problem's language from its first annotated-formula keyword
-/// (`cnf`/`fof`/`tff`), skipping `%` line and `/* … */` block comments.  This is
+/// (`cnf`/`fof`/`tff`/`thf`), skipping `%` line and `/* … */` block comments.  This is
 /// how proof output mirrors its input dialect: a `tff` problem yields a `tff`
 /// proof, a `cnf` problem a `cnf` proof, etc.
 ///
@@ -78,6 +80,7 @@ pub fn detect_tptp_lang(text: &str) -> Option<TptpLang> {
                         "cnf" => return Some(TptpLang::Cnf),
                         "fof" => return Some(TptpLang::Fof),
                         "tff" => return Some(TptpLang::Tff),
+                        "thf" => return Some(TptpLang::Thf),
                         _ => {} // include / unrecognized — keep scanning
                     }
                 }

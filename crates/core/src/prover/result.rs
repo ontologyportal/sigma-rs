@@ -160,6 +160,19 @@ pub enum ProverStatus {
     Unknown,
 }
 
+/// Which verdict a prover run is after: a conjecture proof, or a bare
+/// consistency check of the axiom base with no conjecture attached. Lives
+/// here (ungated) rather than under `external::backends` so the wasm-safe
+/// `prover::vampire_proof::determine_status` can take one without pulling in
+/// the `ask`-gated subprocess-spawning machinery; re-exported at
+/// `external::backends::ProverMode` for the native subprocess backends.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ProverMode {
+    #[default]
+    Prove,
+    CheckConsistency,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
     pub variable: String,

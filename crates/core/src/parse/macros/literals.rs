@@ -29,6 +29,7 @@ fn decode_tptp_literals_inner(node: &mut AstNode) {
                 decode_tptp_literals_inner(el);
             }
         }
+        AstNode::Annotated { formula, .. } => decode_tptp_literals_inner(formula),
         _ => {}
     }
 }

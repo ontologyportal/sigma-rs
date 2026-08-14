@@ -11,7 +11,9 @@ crate-type = ["cdylib", "rlib"]
 # the workspace edge turns on core's default `ask` feature, which spawns
 # subprocess provers and is `compile_error!`-banned on wasm32.  We enable only
 # `native-prover` — the pure-Rust saturation prover, the one proving backend
-# that runs in-browser.
+# that runs in-browser. Vampire (WASM) proof-transcript parsing
+# (`parse_vampire_result`) needs no feature of its own — it's ungated, part
+# of core's default build (regex is a hard dependency there).
 sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover", "snapshot"] }
 serde.workspace            = true
 serde_json.workspace       = true

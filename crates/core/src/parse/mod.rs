@@ -6,6 +6,7 @@
 pub mod kif;
 pub mod tptp;
 pub mod tq;
+pub mod szs;
 pub mod doc;
 pub mod ast;
 pub mod span;

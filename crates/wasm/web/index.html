@@ -55,6 +55,8 @@
     .lang-select { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); }
     .lang-select select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px;
                           background: var(--bg); color: var(--fg); }
+    .head-controls { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; }
+    @media (max-width: 620px) { .head-controls { margin-top: 0; } }
 
     nav.tabs {
       display: flex; gap: 0; margin: 18px 0 16px; border-bottom: 1px solid var(--line);
@@ -81,12 +83,37 @@
       background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn);
     }
     .tab-badge.err { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
-    /* Header theme toggle */
-    #themeToggle {
-      font: inherit; font-size: 14px; line-height: 1; cursor: pointer; margin-left: 4px;
+    /* Header icon buttons: theme toggle, bug report, settings */
+    #themeToggle, #bugReport, #settingsBtn {
+      font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
       background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px;
     }
-    #themeToggle:hover { color: var(--fg); border-color: var(--accent); }
+    #themeToggle:hover, #bugReport:hover, #settingsBtn:hover { color: var(--fg); border-color: var(--accent); }
+    #bugReport svg { display: block; }
+    /* Settings modal */
+    dialog#settingsDialog { border: 1px solid var(--line); border-radius: 10px;
+      background: var(--card); color: var(--fg); padding: 22px 28px; width: min(360px, 92vw);
+      box-sizing: border-box; }
+    dialog#settingsDialog::backdrop { background: rgba(0, 0, 0, .45); }
+    dialog#settingsDialog h3 { margin: 0 0 16px; font-size: 14px; }
+    dialog#settingsDialog .settings-row { display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 18px; }
+    dialog#settingsDialog .settings-row label { margin: 0; flex: 0 0 auto; }
+    /* min-width: 0 lets the select shrink inside the flex row instead of its
+       longest option (e.g. a long language name) pushing past the dialog's
+       padding — a fixed-width dialog can't grow to accommodate it. */
+    dialog#settingsDialog .settings-row select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+    dialog#settingsDialog #clearCacheLink { width: 100%; margin-bottom: 16px; }
+    dialog#settingsDialog .dialog-actions { display: flex; align-items: center; justify-content: space-between; }
+    #settingsVersion { font-size: 11px; color: var(--muted); font-family: var(--mono); opacity: .7; }
+    /* Version-change modal */
+    dialog#versionDialog { border: 1px solid var(--line); border-radius: 10px;
+      background: var(--card); color: var(--fg); padding: 22px 28px; width: min(360px, 92vw);
+      box-sizing: border-box; }
+    dialog#versionDialog::backdrop { background: rgba(0, 0, 0, .45); }
+    dialog#versionDialog h3 { margin: 0 0 10px; font-size: 14px; }
+    dialog#versionDialog p { margin: 0 0 18px; }
     kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px;
       border-radius: 4px; padding: 0 4px; background: var(--card); }
     .kbd-hint { font-size: 11px; }
@@ -107,6 +134,11 @@
     .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
     .settings .sub { font-size: 11px; margin-top: 2px; }
     .settings-checks { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+    /* `display: flex` above would otherwise BEAT the UA's `[hidden]` rule
+       (same author-vs-UA precedence issue as #tptpPane below) — this is the
+       backend-visibility toggle (data-native-only) hiding this row for
+       Vampire. */
+    .settings-checks[hidden] { display: none; }
     .settings label.check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--fg); margin: 0; }
     .settings label.check input { width: auto; }
 
@@ -121,13 +153,6 @@
     #toast .spin { width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent);
       border-radius: 50%; animation: spin 0.8s linear infinite; }
 
-    /* Deliberately understated — a maintenance escape hatch, not a feature. */
-    .clear-cache-link {
-      position: fixed; right: 10px; bottom: 6px; z-index: 40;
-      font-size: 11px; color: var(--muted); opacity: .5; cursor: pointer; text-decoration: none;
-      transition: opacity .15s ease;
-    }
-    .clear-cache-link:hover { opacity: 1; text-decoration: underline; }
 
     .panel[hidden] { display: none; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
@@ -467,12 +492,26 @@
         </div>
       </div>
       <div class="head-meta">
-        <div><small><a href="https://ontologyportal.github.io/sigma-rs">SUPr v1.0.0</a> -- <a href="https://ontologyportal.org">ontologyportal.org</a></small></div>
-        <label class="lang-select" title="Language for term/format rendering">
-          <span>Language</span>
-          <select id="langSelect"><option value="EnglishLanguage">English</option></select>
+        <div><small><a href="https://ontologyportal.github.io/sigma-rs">SUPr</a> -- <a href="https://ontologyportal.org">ontologyportal.org</a></small></div>
+        <div class="head-controls">
           <button id="themeToggle" type="button" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">◐</button>
-        </label>
+          <button id="bugReport" type="button" title="Report a bug" aria-label="Report a bug">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="7" y="7" width="10" height="12" rx="5"/>
+              <path d="M9 7V6a3 3 0 0 1 6 0v1"/>
+              <path d="M12 10v9"/>
+              <path d="M7 11H3"/>
+              <path d="M7 15H4"/>
+              <path d="M17 11h4"/>
+              <path d="M17 15h3"/>
+              <path d="m8.5 4 1.5 2"/>
+              <path d="m15.5 4-1.5 2"/>
+            </svg>
+          </button>
+          <button id="settingsBtn" type="button" title="Settings" aria-label="Settings"
+                  aria-haspopup="dialog" aria-controls="settingsDialog">⚙</button>
+        </div>
       </div>
     </header>
 
@@ -493,6 +532,57 @@
         <button role="tab" data-tab="history" aria-selected="false">History</button>
       </div>
     </nav>
+
+    <!-- Prover settings (the wasm `Config`) — shared by Ask/Tell and Audit,
+         which both toggle this SAME panel (see their own cog buttons) rather
+         than each carrying a copy, so backend/knobs never drift out of sync
+         between the two. Lives outside any one tab's <section> so it stays
+         reachable regardless of which tab is active. -->
+    <div id="proverSettings" class="settings" hidden>
+      <div class="settings-grid">
+        <div>
+          <label for="proverBackend">backend</label>
+          <select id="proverBackend">
+            <option value="native">SUPr</option>
+            <option value="vampire">Vampire</option>
+          </select>
+          <div class="hint sub" id="proverBackendHint">given-clause knobs below apply to the native backend only</div>
+        </div>
+        <div>
+          <label for="cfgTimeLimit">time limit (s)</label>
+          <input type="number" id="cfgTimeLimit" min="0" step="1" value="30" />
+          <div class="hint sub">0 = no wall-clock limit</div>
+        </div>
+        <div data-native-only>
+          <label for="cfgMaxSteps">max steps</label>
+          <input type="number" id="cfgMaxSteps" min="0" step="100" value="4000" />
+          <div class="hint sub">given-clause loop budget</div>
+        </div>
+        <div data-native-only>
+          <label for="cfgMaxLits">max literals</label>
+          <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
+          <div class="hint sub">per retained clause</div>
+        </div>
+        <div>
+          <label for="cfgSelectionPct">selection budget</label>
+          <input type="range" id="cfgSelectionPct" min="0" max="100" step="1" value="0" />
+          <div class="hint sub" id="cfgSelectionPctVal">engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)</div>
+        </div>
+        <div data-vampire-only hidden>
+          <label for="cfgVampireArgs">extra CLI args</label>
+          <input type="text" id="cfgVampireArgs" placeholder="e.g. --avatar off" spellcheck="false" />
+          <div class="hint sub">appended to Vampire's command line (advanced)</div>
+        </div>
+      </div>
+      <div class="settings-checks" data-native-only>
+        <label class="check"><input type="checkbox" id="cfgForwardClose" checked /> forward closure <span class="hint">— saturate the theory before the loop</span></label>
+        <label class="check"><input type="checkbox" id="cfgWantProof" checked /> want proof <span class="hint">— populate the proof, graph and prose</span></label>
+        <label class="check"><input type="checkbox" id="cfgProfile" /> profile <span class="hint">— emit phase timings into raw output</span></label>
+      </div>
+      <div class="inline" style="justify-content:flex-end; margin-top:10px">
+        <button class="btn ghost" id="cfgReset" type="button">Reset to defaults</button>
+      </div>
+    </div>
 
     <!-- Browse: symbol search → results → man page. The welcome card + KB
          stats double as the tab's empty state (shown until a search runs). -->
@@ -642,56 +732,16 @@
         <div class="inline" style="margin-top:10px; gap:8px; align-items:center">
           <button class="btn" id="prove" type="button">Prove</button>
           <button class="btn ghost" id="saveTq" type="button" title="Download this assertion/query pair as a .kif.tq test file">Save .kif.tq</button>
+          <button class="btn ghost" id="downloadVampireTptp" type="button" hidden
+                  title="Download the exact TPTP problem text handed to Vampire for the last run">Download TPTP input</button>
           <button class="cog" id="proverSettingsBtn" type="button"
                   title="Prover settings" aria-label="Prover settings"
                   aria-expanded="false" aria-controls="proverSettings">⚙</button>
           <span id="proverCfgSummary" class="hint"></span>
         </div>
-
-        <!-- Prover settings (the wasm `Config`) -->
-        <div id="proverSettings" class="settings" hidden>
-          <div class="settings-grid">
-            <div>
-              <label for="proverBackend">backend</label>
-              <select id="proverBackend">
-                <option value="native">SUPr</option>
-                <option value="vampire">Vampire</option>
-              </select>
-              <div class="hint sub" id="proverBackendHint">given-clause knobs below apply to the native backend only</div>
-            </div>
-            <div>
-              <label for="cfgTimeLimit">time limit (s)</label>
-              <input type="number" id="cfgTimeLimit" min="0" step="1" value="30" />
-              <div class="hint sub">0 = no wall-clock limit</div>
-            </div>
-            <div>
-              <label for="cfgMaxSteps">max steps</label>
-              <input type="number" id="cfgMaxSteps" min="0" step="100" value="4000" />
-              <div class="hint sub">given-clause loop budget</div>
-            </div>
-            <div>
-              <label for="cfgMaxLits">max literals</label>
-              <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
-              <div class="hint sub">per retained clause</div>
-            </div>
-            <div>
-              <label for="cfgSelectionPct">selection budget</label>
-              <input type="range" id="cfgSelectionPct" min="0" max="100" step="1" value="0" />
-              <div class="hint sub" id="cfgSelectionPctVal">engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)</div>
-            </div>
-          </div>
-          <div class="settings-checks">
-            <label class="check"><input type="checkbox" id="cfgForwardClose" checked /> forward closure <span class="hint">— saturate the theory before the loop</span></label>
-            <label class="check"><input type="checkbox" id="cfgWantProof" checked /> want proof <span class="hint">— populate the proof, graph and prose</span></label>
-            <label class="check"><input type="checkbox" id="cfgProfile" /> profile <span class="hint">— emit phase timings into raw output</span></label>
-          </div>
-          <div class="inline" style="justify-content:flex-end; margin-top:10px">
-            <button class="btn ghost" id="cfgReset" type="button">Reset to defaults</button>
-          </div>
-        </div>
       </div>
       <div id="proverResult" class="card" hidden>
-        <div><span id="pStatus" class="status"></span> <span id="pSteps" class="hint"></span></div>
+        <div><span id="pStatus" class="status"></span> <span id="pBackendBadge" class="hint"></span> <span id="pSteps" class="hint"></span></div>
         <ol id="pProof" class="refs"></ol>
         <div id="pProseSlot"></div>
         <details id="pGraphDetails" style="margin-top:10px">
@@ -713,8 +763,14 @@
           </p>
           <div class="inline" style="gap:10px">
             <div style="width:110px"><label for="auditTime">time limit (s)</label><input type="number" id="auditTime" value="15" min="0" /></div>
-            <div style="width:110px"><label for="auditLimit">max found</label><input type="number" id="auditLimit" value="5" min="1" /></div>
+            <div style="width:110px" data-native-only><label for="auditLimit">max found</label><input type="number" id="auditLimit" value="5" min="1" /></div>
             <button class="btn" id="runAudit" type="button">Run audit</button>
+            <!-- Toggles the SAME #proverSettings panel Ask/Tell uses (see its
+                 own cog button) — one shared component, not a copy, so
+                 backend/knobs can't drift out of sync between the two tabs. -->
+            <button class="cog" id="auditSettingsBtn" type="button"
+                    title="Prover settings" aria-label="Prover settings"
+                    aria-expanded="false" aria-controls="proverSettings">⚙</button>
           </div>
         </div>
       </div>
@@ -867,13 +923,34 @@
     </section>
   </main>
 
+  <dialog id="settingsDialog">
+    <h3>Settings</h3>
+    <div class="settings-row">
+      <label for="langSelect">Language</label>
+      <select id="langSelect"><option value="EnglishLanguage">English</option></select>
+    </div>
+    <button class="btn ghost" id="clearCacheLink" type="button"
+            title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch">
+      Clear cache
+    </button>
+    <div class="dialog-actions">
+      <span id="settingsVersion">dev build</span>
+      <button class="btn ghost" id="settingsClose" type="button">Close</button>
+    </div>
+  </dialog>
+
+  <dialog id="versionDialog">
+    <h3 id="versionDialogTitle">Welcome to SigmaKEE</h3>
+    <p id="versionDialogBody" class="hint"></p>
+    <div class="dialog-actions" style="justify-content:flex-end">
+      <button class="btn ghost" id="versionDialogClose" type="button">Got it</button>
+    </div>
+  </dialog>
+
   <div id="toast" hidden>
     <div class="spin"></div>
     <span>Post-processing — some features may not be available until complete.</span>
   </div>
-
-  <a id="clearCacheLink" class="clear-cache-link"
-     title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch">clear cache</a>
 
   <div id="overlay">
     <div id="overlayTitle">Loading SUMO</div>

@@ -86,12 +86,11 @@ pub trait ProverRunner: Send + Sync {
     fn timeout_secs(&self) -> u32 { 0 }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum ProverMode {
-    #[default]
-    Prove,
-    CheckConsistency,
-}
+// `ProverMode` lives in `prover::result` (ungated) — the wasm-safe
+// `prover::vampire_proof::determine_status` needs it without pulling in the
+// whole `ask`-gated `external` module. Re-exported here for the existing
+// `external::backends::ProverMode` path.
+pub use crate::prover::result::ProverMode;
 
 /// The runner ABI: timeout + [`ProverMode`] instruction handed to
 /// [`ProverRunner::prove`].  Built locally per attempt by the external layer —

@@ -986,6 +986,90 @@ impl WasmNativeProver {
         serde_wasm_bindgen::to_value(&out)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// Parse a captured Vampire (WASM) run's combined stdout+stderr into the
+    /// SAME shape [`ask`](Self::ask) returns for the native prover — status
+    /// (with Vampire's own Theorem-vs-ContradictoryAxioms mislabelling
+    /// corrected, same as the native `ask`/subprocess `VampireRunner` paths),
+    /// proof steps, Graphviz digraph, and English prose — so both backends
+    /// render through one UI code path.
+    ///
+    /// `raw_output` — Vampire's stdout+stderr, verbatim (see the demo's
+    /// `sigma.worker.js`, which runs the Vampire WASM binary and hands its
+    /// captured output straight to this method).
+    /// `query_kif` — the conjecture KIF text, reparsed only for the prose's
+    /// goal restatement; a parse failure just drops that opener line.
+    #[wasm_bindgen(js_name = parseVampireAskResult)]
+    pub fn parse_vampire_ask_result(&self, raw_output: &str, query_kif: &str) -> Result<JsValue, JsValue> {
+        let parsed = sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
+        let status_str = format!("{:?}", parsed.status);
+        let graphviz = sigmakee_rs_core::render_graphviz(&parsed.proof, "ask", &status_str);
+
+        let (proof, prose, prose_missing) = if parsed.proof.is_empty() {
+            (Vec::new(), String::new(), Vec::new())
+        } else {
+            let src_idx = self.inner.build_axiom_source_index();
+            let proof = proof_steps_js(&parsed.proof, &src_idx);
+            let goal_doc = sigmakee_rs_core::parse_document(
+                "__prose_goal__", query_kif.to_string(), sigmakee_rs_core::Parser::Kif);
+            let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
+            let report = self.inner.render_proof_prose_with(
+                goal_ast, &parsed.proof, "EnglishLanguage", &src_idx);
+            (proof, report.rendered, report.missing)
+        };
+
+        let out = AskResultJs {
+            status:      status_str,
+            proved:      parsed.status == sigmakee_rs_core::ProverStatus::Proved,
+            given_steps: None,
+            raw_output:  raw_output.to_string(),
+            proof,
+            graphviz,
+            prose,
+            prose_missing,
+        };
+        serde_wasm_bindgen::to_value(&out)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Parse a captured Vampire (WASM) consistency-check run into the SAME
+    /// shape [`audit_consistency`](Self::audit_consistency) returns for the
+    /// native prover. Vampire's one-shot run yields at most a single
+    /// contradiction (no enumerator, unlike the native audit's driver), so
+    /// `contradictions` has 0 or 1 entries.
+    ///
+    /// `raw_output` — Vampire's stdout+stderr, verbatim, from a run over the
+    /// whole-KB TPTP dump (no conjecture — see the demo's `auditVampire`).
+    #[wasm_bindgen(js_name = parseVampireAuditResult)]
+    pub fn parse_vampire_audit_result(&self, raw_output: &str) -> Result<JsValue, JsValue> {
+        let parsed = sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::CheckConsistency);
+        let status_str    = format!("{:?}", parsed.status);
+        let inconsistent  = parsed.status == sigmakee_rs_core::ProverStatus::Inconsistent;
+
+        let contradictions = if inconsistent && !parsed.proof.is_empty() {
+            let src_idx = self.inner.build_axiom_source_index();
+            let prose_report = self.inner.render_proof_prose_with(
+                None, &parsed.proof, "EnglishLanguage", &src_idx);
+            vec![ContradictionJs {
+                graphviz: sigmakee_rs_core::render_graphviz(&parsed.proof, "contradiction-1", "Inconsistent"),
+                prose:         prose_report.rendered,
+                prose_missing: prose_report.missing,
+                steps: proof_steps_js(&parsed.proof, &src_idx),
+            }]
+        } else {
+            Vec::new()
+        };
+
+        let out = AuditResultJs {
+            status:      status_str,
+            inconsistent,
+            given_steps: None,
+            raw_output:  raw_output.to_string(),
+            contradictions,
+        };
+        serde_wasm_bindgen::to_value(&out)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }
 
 /// Project a proof/contradiction transcript to JS-safe steps, citing each

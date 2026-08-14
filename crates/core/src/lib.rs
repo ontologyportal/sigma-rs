@@ -123,6 +123,14 @@ pub use prover::{
     Binding,
     ProverTimings,
 };
+// Ungated: `ProverMode` is a plain data enum in `prover::result` with no
+// prover-backend dependency (see its doc comment for why it lives there
+// rather than under `external::backends`).
+pub use prover::ProverMode;
+// Pure SZS/TSTP parsing for a captured Vampire transcript (status +
+// `KifProofStep`s), no subprocess spawning — ungated, available in every
+// build including wasm32. See `prover::vampire_proof`.
+pub use prover::vampire_proof::{parse_vampire_result, VampireProofResult};
 // `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they
 // live in the `ask`-only `external` module, absent on native/wasm builds.
 #[cfg(feature = "ask")]

@@ -277,6 +277,25 @@ jobs:
           rm -rf site/browse/pkg
           cp -R crates/wasm/pkg site/browse/pkg
 
+      # Stamps the demo with the workspace crate version + this run's build
+      # number/commit/timestamp. Read client-side by the Settings modal
+      # (app.js fetches ./version.json). Written into the deploy artifact
+      # only — nothing is committed back to the repo — so it updates on
+      # every deploy (push or nightly) with zero write-back complexity.
+      - name: Write demo version info
+        if: steps.demo.outcome == 'success'
+        run: |
+          pkg_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          cat > site/browse/version.json <<EOF
+          {
+            "version": "${pkg_version}",
+            "build": ${GITHUB_RUN_NUMBER},
+            "commit": "${GITHUB_SHA:0:7}",
+            "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat site/browse/version.json
+
       # ---- Cloudflare Pages: the demo, with COOP/COEP headers ---------------
       # GitHub Pages cannot send the Cross-Origin-Opener-Policy/-Embedder-Policy
       # response headers that the pthreads-built vampire.wasm needs for

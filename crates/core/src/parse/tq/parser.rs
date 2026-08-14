@@ -297,7 +297,7 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
     AstNode::Annotated {
         role,
         name:    None,
-        source:  Some(crate::parse::ast::Source::Input(file.to_string())),
+        source:  Some(crate::parse::ast::Source::Input { file: file.to_string(), name: None }),
         formula: Box::new(formula),
         span,
     }

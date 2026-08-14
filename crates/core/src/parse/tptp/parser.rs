@@ -609,9 +609,23 @@ impl TptpParser {
 
         let formula = self.parse_formula()?;
 
+        // No annotation present: the plain-input default (unchanged from
+        // before this was a real parse — every ordinary axiom file omits
+        // the optional fourth argument entirely).
+        let mut source = Source::Input { file: self.file.clone(), name: None };
+
         if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
             self.advance();
-            self.skip_annotations()?;
+            if let Some(parsed) = self.parse_source()? {
+                source = parsed;
+            }
+            // `annotations ::= source, optional_info` — a second comma
+            // introduces a trailing `useful_info` general_list this crate
+            // has no use for; skip it structurally same as before.
+            if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                self.advance();
+                self.skip_annotations()?;
+            }
         }
 
         self.expect(&TokenKind::RParen)?;
@@ -621,10 +635,192 @@ impl TptpParser {
         Ok(Some(AstNode::Annotated {
             role,
             name:    Some(stmt_name),
-            source:  Some(Source::Input(self.file.clone())),
+            source:  Some(source),
             formula: Box::new(formula),
             span,
         }))
+    }
+
+    // ── Source annotation ────────────────────────────────────────────────
+    //
+    // The `source` in `fof(name, role, formula, source)` — TPTP's own
+    // grammar for where a statement came from: `file('path'[, name])` for
+    // input axioms, `inference(rule, useful_info, parents)` for derived
+    // steps, `introduced(mechanism)` for prover-synthesized ones. Only
+    // these three shapes are given real structure (matching this crate's
+    // own emitter, `render_source` in `dis.rs`); anything else is skipped
+    // structurally via the pre-existing `skip_annotations` and yields
+    // `None`, so an unrecognized annotation dialect degrades to the
+    // ordinary file-provenance default rather than failing the statement.
+
+    /// Read one atomic-word-shaped token (`lower_word` / `upper_word` /
+    /// `single_quoted` / `integer`) as a bare string — the same token set
+    /// `stmt_name` above accepts. Single-quoted atoms are unwrapped (the
+    /// tokenizer retains the quotes; callers here want the bare text, to
+    /// match how `self.file` — the un-quoted counterpart `render_source`
+    /// re-quotes on output — is already stored).
+    fn parse_atomic_word(&mut self) -> Result<String, (Span, TptpParseError)> {
+        match self.peek_kind() {
+            Some(TokenKind::LowerWord(w) | TokenKind::UpperWord(w) | TokenKind::Integer(w)) => {
+                let w = w.clone();
+                self.advance();
+                Ok(w)
+            }
+            Some(TokenKind::SingleQuoted(w)) => {
+                let w = w.trim_matches('\'').to_string();
+                self.advance();
+                Ok(w)
+            }
+            _ => {
+                let found = self.current_kind();
+                let sp = self.current_span();
+                Err((sp.clone(), TptpParseError::UnexpectedToken { found, span: sp }))
+            }
+        }
+    }
+
+    /// Dispatch on the annotation's head word. Consumes the whole
+    /// annotation term on every path (recognized or not) — the caller can
+    /// go straight on to check for a trailing `optional_info` comma either
+    /// way.
+    fn parse_source(&mut self) -> Result<Option<Source>, (Span, TptpParseError)> {
+        let head = match self.peek_kind() {
+            Some(TokenKind::LowerWord(w)) => w.clone(),
+            // A bare name (`source ::= name`, citing another statement by
+            // name with no further structure) or anything else unusual —
+            // not one of our three shapes, skip it structurally.
+            _ => {
+                self.skip_annotations()?;
+                return Ok(None);
+            }
+        };
+        match head.as_str() {
+            "file" => { self.advance(); self.parse_file_source().map(Some) }
+            "inference" => { self.advance(); self.parse_inference_source().map(Some) }
+            "introduced" => { self.advance(); self.parse_introduced_source().map(Some) }
+            _ => {
+                self.skip_annotations()?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// `file('path'[, name])` — already past the `file` keyword.
+    fn parse_file_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+        self.expect(&TokenKind::LParen)?;
+        let file = self.parse_atomic_word()?;
+        let name = if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+            self.advance();
+            Some(self.parse_atomic_word()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::RParen)?;
+        Ok(Source::Input { file, name })
+    }
+
+    /// `introduced(mechanism[, info])` — already past the `introduced` keyword.
+    fn parse_introduced_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+        self.expect(&TokenKind::LParen)?;
+        let mechanism = self.parse_atomic_word()?;
+        // `introduced(intro_type, intro_info)` per spec, but real output
+        // (Vampire's `introduced(definition, [], [choice_axiom])`) can carry
+        // more than one trailing info argument — skip all of them, not just
+        // the first.
+        while matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+            self.advance();
+            self.skip_one_arg()?;
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(Source::Introduced(mechanism))
+    }
+
+    /// `inference(rule, useful_info, parents)` — already past the
+    /// `inference` keyword. `rule` is always the first argument; `parents`
+    /// is, empirically, whichever trailing argument is a bracketed list —
+    /// for a spec-conforming 3-argument call that's positionally the third
+    /// (`useful_info` sits second), but providers vary in how many
+    /// arguments they emit, so this takes the LAST bracketed-list argument
+    /// rather than assuming a fixed arity — matching what the raw-text
+    /// regex parser this replaces already relied on ("last `[...]`
+    /// bracket"). Non-list arguments (status info, bare atoms) are skipped.
+    fn parse_inference_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+        self.expect(&TokenKind::LParen)?;
+        let rule = self.parse_atomic_word()?;
+        let mut parents: Vec<String> = Vec::new();
+        while matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+            self.advance();
+            if matches!(self.peek_kind(), Some(TokenKind::LBracket)) {
+                parents = self.parse_atomic_word_list()?;
+            } else {
+                self.skip_one_arg()?;
+            }
+        }
+        self.expect(&TokenKind::RParen)?;
+        Ok(Source::Inference { rule, parents })
+    }
+
+    /// `[a, b, c]` of atomic-word tokens — direct elements only (not
+    /// recursively flattened); an element that isn't a plain atomic word
+    /// (a nested function call, say) is skipped rather than failing the
+    /// whole list, since only the identifier-shaped entries are ever
+    /// meaningful as parent-step names.
+    fn parse_atomic_word_list(&mut self) -> Result<Vec<String>, (Span, TptpParseError)> {
+        self.expect(&TokenKind::LBracket)?;
+        let mut items = Vec::new();
+        loop {
+            // A `name(` lookahead means this element is a general_function
+            // (e.g. `status(thm)`), not a bare atomic word — skip the whole
+            // call rather than mistaking its head for a parent name.
+            let is_call = matches!(self.peek_kind(),
+                Some(TokenKind::LowerWord(_) | TokenKind::UpperWord(_)
+                     | TokenKind::SingleQuoted(_) | TokenKind::Integer(_)))
+                && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::LParen));
+            match self.peek_kind() {
+                Some(TokenKind::RBracket) => break,
+                Some(TokenKind::LowerWord(_) | TokenKind::UpperWord(_)
+                     | TokenKind::SingleQuoted(_) | TokenKind::Integer(_)) if !is_call => {
+                    items.push(self.parse_atomic_word()?);
+                }
+                _ => self.skip_one_arg()?,
+            }
+            if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RBracket)?;
+        Ok(items)
+    }
+
+    /// Skip exactly one general-term argument — everything up to (but not
+    /// including) the next top-level `,`, `)`, or `]`, tracking both paren
+    /// and bracket nesting so an argument containing its own `(...)`/`[...]`
+    /// doesn't end the skip early.
+    fn skip_one_arg(&mut self) -> Result<(), (Span, TptpParseError)> {
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek_kind() {
+                None => {
+                    let sp = self.eof_span();
+                    return Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }));
+                }
+                Some(TokenKind::LParen | TokenKind::LBracket) => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some(TokenKind::RParen | TokenKind::RBracket) if depth > 0 => {
+                    depth -= 1;
+                    self.advance();
+                }
+                Some(TokenKind::Comma | TokenKind::RParen | TokenKind::RBracket) if depth == 0 => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        Ok(())
     }
 
     // ── Formula ───────────────────────────────────────────────────────────
@@ -1935,6 +2131,149 @@ mod tests {
             ),
         }
         assert!(matches!(&tl_elements[1], AstNode::List { elements, .. } if elements.len() == 1 && matches!(&elements[0], AstNode::Variable { name, .. } if name == "X")), "Quantifier variable sentence wrong");
-        
+
+    }
+
+    // ── Source annotation ────────────────────────────────────────────────
+
+    /// Parse without stripping the `Annotated` framing, so `.source` is
+    /// inspectable — the shape-focused helpers above discard it.
+    fn parse_tptp_annotated(src: &str) -> Vec<AstNode> {
+        let (tokens, _) = tokenize(src, "test");
+        let (nodes, errors) = parse(tokens, "test", None);
+        assert!(errors.is_empty(), "unexpected parse errors: {:?}", errors);
+        nodes
+    }
+
+    fn source_of(node: &AstNode) -> &Source {
+        match node {
+            AstNode::Annotated { source: Some(s), .. } => s,
+            other => panic!("expected an Annotated node with a source, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_annotation_defaults_to_plain_file_source() {
+        let nodes = parse_tptp_annotated("fof(f1, axiom, p(a)).");
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Input { file: "test".into(), name: None }
+        );
+    }
+
+    #[test]
+    fn file_source_two_args_captures_name() {
+        // Vampire's `--output_axiom_names on` shape: the axiom's own
+        // `kb_<sid>` name rides as the second `file(...)` argument.
+        let nodes = parse_tptp_annotated(
+            "fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42))."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Input { file: "/dev/stdin".into(), name: Some("kb_42".into()) }
+        );
+    }
+
+    #[test]
+    fn file_source_one_arg_has_no_name() {
+        let nodes = parse_tptp_annotated(
+            "fof(f1, axiom, (p(a)), file('problem.p'))."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Input { file: "problem.p".into(), name: None }
+        );
+    }
+
+    #[test]
+    fn inference_source_captures_rule_and_last_bracket_as_parents() {
+        // Vampire's shape: rule, a flags/status list, then the parent list —
+        // "last bracketed argument", not a fixed position, since providers
+        // vary in how many arguments precede the parent list.
+        let nodes = parse_tptp_annotated(
+            "fof(f3, plain, ($false), \
+             inference(forward_subsumption_resolution, [], [f1, f2]))."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Inference {
+                rule: "forward_subsumption_resolution".into(),
+                parents: vec!["f1".into(), "f2".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn inference_source_status_info_between_rule_and_parents_is_skipped() {
+        // This crate's own emitter shape (`render_source` in dis.rs):
+        // inference(rule, [status(thm)], [parents]) — the status list must
+        // not be mistaken for the parent list.
+        let nodes = parse_tptp_annotated(
+            "fof(f3, plain, (q(a)), inference(resolution, [status(thm)], [f1, f2]))."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Inference {
+                rule: "resolution".into(),
+                parents: vec!["f1".into(), "f2".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn inference_source_with_no_parent_list_is_empty() {
+        // A `negate_conjecture` step over the top-level conjecture (no
+        // premises of its own) — this crate's own emitter shape for it.
+        let nodes = parse_tptp_annotated(
+            "fof(f2, negated_conjecture, (~p(a)), inference(negate_conjecture, [status(cth)], []))."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Inference { rule: "negate_conjecture".into(), parents: vec![] }
+        );
+    }
+
+    #[test]
+    fn introduced_source_captures_mechanism() {
+        let nodes = parse_tptp_annotated(
+            "fof(f9, plain, (p(a)), introduced(choice_axiom, []))."
+        );
+        assert_eq!(source_of(&nodes[0]), &Source::Introduced("choice_axiom".into()));
+    }
+
+    #[test]
+    fn introduced_source_with_multiple_trailing_info_args() {
+        // Real Vampire output: two trailing info arguments, not one.
+        let nodes = parse_tptp_annotated(
+            "fof(f9, plain, (p(a)), introduced(definition, [], [choice_axiom]))."
+        );
+        assert_eq!(source_of(&nodes[0]), &Source::Introduced("definition".into()));
+    }
+
+    #[test]
+    fn unrecognized_annotation_shape_degrades_to_plain_default() {
+        // A bare name (`source ::= name`, citing another statement with no
+        // further structure) isn't one of our three shapes — must not
+        // error, and must fall back to the ordinary file default rather
+        // than propagating nothing.
+        let nodes = parse_tptp_annotated("fof(f1, axiom, (p(a)), some_other_statement).");
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Input { file: "test".into(), name: None }
+        );
+    }
+
+    #[test]
+    fn trailing_optional_info_after_source_is_skipped() {
+        // `annotations ::= source, optional_info` — a second comma
+        // introduces a trailing useful_info general_list this crate has no
+        // use for; it must not break parsing of the source that precedes it.
+        let nodes = parse_tptp_annotated(
+            "fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42), [description('x')])."
+        );
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Input { file: "/dev/stdin".into(), name: Some("kb_42".into()) }
+        );
     }
 }

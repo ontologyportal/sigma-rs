@@ -17,7 +17,7 @@ persist = ["dep:heed", "snapshot"]
 # Theorem proving: the subprocess prover (spawns a `vampire` process)
 # and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
-ask     = ["dep:regex"]
+ask     = []
 # Native saturation prover (residue index + theory oracle + given-clause
 # loop).  Pure Rust, no external prover, no new dependencies.
 # Adds the ProverLayer top layer and KnowledgeBase::new_native.
@@ -85,8 +85,12 @@ getrandom                    = { version = "0.3", features = ["wasm_js"] }
 heed    = { version = "0.20", features = ["serde-bincode"], optional = true }
 bincode = { version = "1",                                  optional = true }
 
-# ask feature
-regex   = { version = "1", optional = true }
+# Pure Rust, compiles on every target including wasm32 (unlike `ask`, which
+# also needs `std::process::Command` spawning) — a hard dependency rather
+# than an optional one behind its own feature: `prover::vampire_proof` (SZS
+# transcript status + `TptpProofProcessor` binding extraction) needs it in
+# every build, wasm included, not just under `ask`.
+regex   = "1"
 
 # parallel feature
 rayon   = { version = "1.10", optional = true }

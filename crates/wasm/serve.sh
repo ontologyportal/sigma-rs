@@ -71,6 +71,16 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 port, directory = int(sys.argv[1]), sys.argv[2]
 
 class NoCache(SimpleHTTPRequestHandler):
+    # SPA fallback, mirroring web/_redirects on Cloudflare Pages: the app does
+    # client-side path routing (/edit, /diagnostics, …), so a path with no
+    # file extension that isn't an actual file on disk is a route, not a
+    # missing asset — serve index.html and let app.js's router take over.
+    def send_head(self):
+        path = self.translate_path(self.path.split('?', 1)[0])
+        import os
+        if '.' not in os.path.basename(path) and not os.path.exists(path):
+            self.path = '/index.html'
+        return super().send_head()
     def end_headers(self):
         self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate')
         self.send_header('Expires', '0')

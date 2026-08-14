@@ -237,6 +237,7 @@ fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, Stri
         }
         TptpLang::Fof => "fof",
         TptpLang::Tff => "tff",
+        TptpLang::Thf => "thf",
         TptpLang::Auto => unreachable!("Auto is resolved before frame_stmt"),
     };
     // FOF/TFF formulas must be closed — TPTP permits free variables only in
@@ -345,7 +346,8 @@ fn universal_closure(formula: &AstNode, names: Vec<String>) -> AstNode {
 /// so the clauses are not theorems of their parent), else `thm`.
 fn render_source(src: &Source) -> String {
     match src {
-        Source::Input(f) => format!("file('{f}')"),
+        Source::Input { file, name: None }         => format!("file('{file}')"),
+        Source::Input { file, name: Some(name) }    => format!("file('{file}', {name})"),
         Source::Introduced(mechanism) => format!("introduced({})", syntax::lower_word(mechanism)),
         Source::Inference { rule, parents } => {
             let status = match rule.as_str() {
@@ -636,7 +638,7 @@ mod tests {
         // An input axiom cites `file('...')`; a derived step cites an inference
         // with status `thm`; a `negate_conjecture` step uses status `cth`.
         let input = ann_src(Role::Axiom, "f1",
-            Source::Input("p.kif".into()), parse_one("(p ?X)"));
+            Source::Input { file: "p.kif".into(), name: None }, parse_one("(p ?X)"));
         let derived = ann_src(Role::Plain, "f3",
             Source::Inference { rule: "resolution".into(),
                 parents: vec!["f1".into(), "f2".into()] }, parse_one("(q a)"));

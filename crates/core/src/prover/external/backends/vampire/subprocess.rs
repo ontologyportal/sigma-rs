@@ -8,9 +8,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use once_cell::sync::Lazy;
-use regex::Regex;
-
 use super::super::{ProverMode, ProverOpts, ProverRunner};
 use super::super::super::super::result::{
     ProverResult,
@@ -19,28 +16,8 @@ use super::super::super::super::result::{
     TerminationReason
 };
 
-use crate::prover::tptp_proof::{ProofStep, TptpProofProcessor, kif_proof_inputs, proof_steps_to_ir};
-
-// -- Pre-compiled regexes ------------------------------------------------------
-
-/// Vampire names every proof step `f<n>`; used to pull parent references out
-/// of an inference tail's final `[...]` bracket.
-static RE_PARENT:    Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(f\d+)\b").unwrap());
-static RE_FOF:       Lazy<Regex> = Lazy::new(|| Regex::new(
-    r"(?s)(fof|cnf|tff|thf)\((f\d+),\s*(\w+),\s*\((.*?)\),\s*(.*?)\)\."
-).unwrap());
-/// Extract our `kb_<sid>` axiom name from Vampire's source annotation.
-///
-/// With `--output_axiom_names on` Vampire emits an axiom step's tail as
-///   `file('<path>', kb_<sid>)`
-/// — the second component of `file(..)` carries the axiom's original
-/// TPTP name.  Without the flag the tail becomes
-///   `file('<path>', unknown)`
-/// and this regex simply doesn't match (axiom traceback falls back to
-/// the canonical-hash path).
-static RE_AXIOM_NAME: Lazy<Regex> = Lazy::new(|| Regex::new(
-    r"file\('[^']*',\s*(kb_\d+)\s*\)"
-).unwrap());
+use crate::prover::tptp_proof::{TptpProofProcessor, kif_proof_inputs, proof_steps_to_ir};
+use crate::prover::vampire_proof::{determine_status, docitems_to_proof_steps, is_timeout, szs_status_word};
 
 // -- VampireRunner -------------------------------------------------------------
 
@@ -98,8 +75,8 @@ fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
         // Emit proofs in TSTP/TPTP format.  Without this Vampire
         // defaults to `--proof on` which prints steps as
         //     `36373. FORMULA [input(axiom)]`
-        // — a human-readable format that `parse_vampire_output`'s
-        // `fof(...)` regex can't parse.  Setting `-p tptp` produces
+        // — a human-readable format `parse::szs::parse_szs` (which reuses
+        // the TPTP grammar) can't parse.  Setting `-p tptp` produces
         //     `fof(f36373, axiom, (FORMULA), inference(...,[],[...])).`
         // which our parser *does* understand, and the `--proof`
         // CLI flag's SUO-KIF translation (`proof_kif`) depends on
@@ -182,9 +159,11 @@ impl ProverRunner for VampireRunner {
                 let stderr   = String::from_utf8_lossy(&out.stderr).into_owned();
                 let combined = format!("{}{}", stdout, stderr);
 
-                let status = determine_status(&combined, &opts.mode);
-                let has_proof = combined.contains("SZS output start");
-                let parsed = if has_proof { parse_vampire_output(&combined) } else { VampireOutput::default() };
+                let (doc, _parse_errors) = crate::parse::szs::parse_szs(&combined, "vampire");
+                let status_word = szs_status_word(&doc);
+                let status = determine_status(&combined, status_word, &opts.mode);
+                let parsed_steps = docitems_to_proof_steps(&doc);
+                let has_proof = !parsed_steps.is_empty();
                 // Distinguish a genuine Theorem from ContradictoryAxioms that
                 // Vampire mislabels: some schedules report `SZS status Theorem`
                 // even when the refutation never used the negated conjecture
@@ -197,7 +176,7 @@ impl ProverRunner for VampireRunner {
                 let status = if matches!(opts.mode, ProverMode::Prove)
                     && matches!(status, ProverStatus::Proved)
                     && has_proof
-                    && !parsed.proof_steps.iter().any(|s| s.role == "negated_conjecture")
+                    && !parsed_steps.iter().any(|s| s.role == "negated_conjecture")
                 {
                     ProverStatus::Inconsistent
                 } else {
@@ -220,10 +199,10 @@ impl ProverRunner for VampireRunner {
                 // axioms and carry no negated-conjecture steps, so the
                 // TptpProofProcessor cannot find any variable bindings there.
                 let bindings = if matches!(opts.mode, ProverMode::Prove)
-                    && combined.contains("SZS status Theorem")
+                    && status_word == Some("Theorem")
                 {
                     let mut proc = TptpProofProcessor::new();
-                    proc.load_proof(&parsed.proof_steps);
+                    proc.load_proof(&parsed_steps);
                     proc.extract_answers()
                 } else {
                     Vec::new()
@@ -251,14 +230,14 @@ impl ProverRunner for VampireRunner {
                     // `parents` into positional premise indices and carries
                     // the `kb_<sid>` source name through; see
                     // `proof_steps_to_kif` for how the tuples are consumed.
-                    let inputs = kif_proof_inputs(&parsed.proof_steps);
+                    let inputs = kif_proof_inputs(&parsed_steps);
                     crate::prover::proof::proof_steps_to_kif(&inputs)
                 } else {
                     Vec::new()
                 };
 
                 let ir_proof = if has_proof {
-                    proof_steps_to_ir(&parsed.proof_steps)
+                    proof_steps_to_ir(&parsed_steps)
                 } else {
                     Vec::new()
                 };
@@ -278,32 +257,6 @@ impl ProverRunner for VampireRunner {
             }
         }
     }
-}
-
-/// `true` if Vampire's output signals that the run terminated because
-/// it ran out of time.  Three markers are checked because Vampire 5.x
-/// emits them in different combinations depending on which phase the
-/// time-out hit (preprocessing vs saturation vs proof-search):
-///
-///   - `SZS status Timeout` — the canonical SZS line.  Always emitted
-///     when Vampire decides the result before the time budget is fully
-///     consumed *and* declares a Timeout verdict; commonly missing
-///     when the budget runs out mid-saturation.
-///   - `% Termination reason: Time limit` — the machine-friendly tail
-///     marker; present on every time-limit termination regardless of
-///     phase.  This is the most reliable signal.
-///   - `% Time limit reached!` — the early-banner line emitted from
-///     within the saturation loop when the limit is detected
-///     mid-iteration.  Implies the same outcome.
-///
-/// Matching any of the three avoids the previous failure mode where
-/// the absence of `SZS status Timeout` caused the parser to fall
-/// through to `Unknown`, which the SDK's test harness then
-/// misclassified as a `ProverError`.
-fn is_timeout(output: &str) -> bool {
-    output.contains("SZS status Timeout")
-        || output.contains("Termination reason: Time limit")
-        || output.contains("Time limit reached")
 }
 
 /// Classify *why* Vampire stopped, for the autoscaling loop.  Parses the
@@ -348,24 +301,6 @@ fn extract_termination_reason(output: &str) -> Option<TerminationReason> {
     None
 }
 
-/// `true` if Vampire's output signals that it could not consume the
-/// problem — a parse/syntax error or a type-check failure — as opposed
-/// to running and reaching no verdict.
-///
-/// Vampire emits these as `User error: …` on stderr (e.g. "Failed to
-/// create predicate application … is not an instance of sort $real",
-/// "Cannot create equality between terms of different types", or a
-/// tokeniser `Parse error`/`Syntax error`).  It then exits immediately,
-/// so no `SZS status` line is produced and the result would otherwise
-/// fall through to `Unknown`.
-fn is_input_error(output: &str) -> bool {
-    output.contains("User error")
-        || output.contains("Parse error")
-        || output.contains("Syntax error")
-        || output.contains("SZS status SyntaxError")
-        || output.contains("SZS status TypeError")
-}
-
 /// Pull out the single most informative line of a Vampire input-error
 /// report for logging.  Prefers the `User error:` line (and the line
 /// after it, which carries the sort/term detail); falls back to the
@@ -393,52 +328,6 @@ fn extract_input_error(output: &str) -> Option<String> {
     None
 }
 
-fn determine_status(output: &str, mode: &ProverMode) -> ProverStatus {
-    // An input rejection (parse/type error) is neither a Prove nor a
-    // CheckConsistency verdict — the prover never actually ran on the
-    // problem.  Check it first, before the mode-specific SZS markers, so
-    // it can't be misread as `Unknown` (or, in consistency mode,
-    // silently accepted as "consistent").
-    if is_input_error(output) {
-        return ProverStatus::InputError;
-    }
-    match mode {
-        ProverMode::Prove => {
-            if output.contains("SZS status Theorem")
-                || output.contains("SZS status Unsatisfiable")
-            {
-                ProverStatus::Proved
-            } else if output.contains("SZS status ContradictoryAxioms") {
-                // The axiom set itself is contradictory; the conjecture was never
-                // tested.  Report Inconsistent so the caller knows the KB is broken.
-                ProverStatus::Inconsistent
-            } else if output.contains("SZS status CounterSatisfiable") {
-                ProverStatus::Disproved
-            } else if is_timeout(output) {
-                ProverStatus::Timeout
-            } else {
-                ProverStatus::Unknown
-            }
-        }
-        ProverMode::CheckConsistency => {
-            if output.contains("SZS status Satisfiable")
-                || output.contains("SZS status CounterSatisfiable")
-            {
-                ProverStatus::Consistent
-            } else if output.contains("SZS status Unsatisfiable")
-                || output.contains("SZS status Theorem")
-                || output.contains("SZS status ContradictoryAxioms")
-            {
-                ProverStatus::Inconsistent
-            } else if is_timeout(output) {
-                ProverStatus::Timeout
-            } else {
-                ProverStatus::Unknown
-            }
-        }
-    }
-}
-
 fn status_label(s: &ProverStatus) -> &'static str {
     match s {
         ProverStatus::Proved       => "Proved",
@@ -454,63 +343,6 @@ fn status_label(s: &ProverStatus) -> &'static str {
 fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
     let mut f = fs::File::create(path)?;
     f.write_all(content.as_bytes())
-}
-
-// -- Vampire output parsing ----------------------------------------------------
-
-#[derive(Debug, Default)]
-pub(crate) struct VampireOutput {
-    pub proof_steps: Vec<ProofStep>,
-}
-
-/// Resolve a Vampire inference tail's parent step references.
-///
-/// Vampire's tail looks like `inference(rule,[flags],[f12,f34])` — the parent
-/// clauses are exactly the `f<n>` tokens in the *final* `[...]` bracket, so we
-/// scan from the last `[`.  Input/leaf steps (`file('…', kb_42)`) have no such
-/// bracket and yield an empty parent list.
-fn parse_vampire_parents(inference_raw: &str) -> Vec<String> {
-    inference_raw
-        .rfind('[')
-        .map(|p| &inference_raw[p..])
-        .map(|bracket_part| {
-            RE_PARENT.captures_iter(bracket_part)
-                .map(|c| c[1].to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-}
-
-pub(crate) fn parse_vampire_output(input: &str) -> VampireOutput {
-    let mut proof_steps = Vec::new();
-
-    if let Some(start_idx) = input.find("SZS output start") {
-        if let Some(end_idx) = input.find("SZS output end") {
-            let proof_section = &input[start_idx..end_idx];
-            for cap in RE_FOF.captures_iter(proof_section) {
-                let inference_raw = cap[5].trim().to_string();
-                // Extract `kb_<sid>` from a Vampire source annotation
-                // like `file('/dev/stdin', kb_42)`.  Only matches when
-                // `--output_axiom_names on` is in effect AND the step
-                // actually traces back to an input axiom; derived
-                // `inference(…)` tails don't match and fall through to
-                // `None`, which the consumer handles by falling back
-                // to canonical-hash lookup.
-                let source_name = RE_AXIOM_NAME
-                    .captures(&inference_raw)
-                    .map(|c| c[1].to_string());
-                proof_steps.push(ProofStep {
-                    id:        cap[2].to_string(),
-                    role:      cap[3].to_string(),
-                    formula:   cap[4].trim().replace('\n', " ").to_string(),
-                    parents:   parse_vampire_parents(&inference_raw),
-                    source_name,
-                });
-            }
-        }
-    }
-
-    VampireOutput { proof_steps }
 }
 
 // -- Vampire args construction tests -----------------------------------------
@@ -578,17 +410,25 @@ mod args_tests {
 }
 
 // -- Vampire output parsing tests --------------------------------------------
+//
+// Exercises this backend's own `parse::szs::parse_szs` +
+// `docitems_to_proof_steps` pipeline end to end (the lower-level TPTP
+// annotation grammar itself — `file(...)`/`inference(...)` shapes — has its
+// own coverage in `parse::tptp::parser`'s tests; this is regression coverage
+// for the adapter this subprocess backend specifically depends on).
 
 #[cfg(test)]
 mod parse_tests {
     use super::*;
+    use crate::prover::tptp_proof::ProofStep;
 
     fn parse_block(body: &str) -> Vec<ProofStep> {
         let input = format!(
             "% SZS output start Proof\n{}\n% SZS output end Proof\n",
             body,
         );
-        parse_vampire_output(&input).proof_steps
+        let (doc, _errors) = crate::parse::szs::parse_szs(&input, "test");
+        docitems_to_proof_steps(&doc)
     }
 
     #[test]
@@ -647,13 +487,14 @@ fof(f1,axiom,(
 mod status_tests {
     use super::{determine_status, ProverStatus};
     use super::ProverMode;
+    use crate::prover::vampire_proof::is_input_error;
 
     #[test]
     fn timeout_via_szs_line() {
         let out = "% SZS status Timeout for stdin\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove),
+        assert!(matches!(determine_status(out, Some("Timeout"), &ProverMode::Prove),
             ProverStatus::Timeout));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency),
+        assert!(matches!(determine_status(out, Some("Timeout"), &ProverMode::CheckConsistency),
             ProverStatus::Timeout));
     }
 
@@ -670,10 +511,10 @@ mod status_tests {
 % Peak memory usage: 186 MB
 % ------------------------------
 ";
-        assert!(matches!(determine_status(out, &ProverMode::Prove),
+        assert!(matches!(determine_status(out, None, &ProverMode::Prove),
             ProverStatus::Timeout),
             "Prove mode must classify Termination-reason output as Timeout");
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency),
+        assert!(matches!(determine_status(out, None, &ProverMode::CheckConsistency),
             ProverStatus::Timeout),
             "CheckConsistency mode must classify Termination-reason output as Timeout");
     }
@@ -683,9 +524,9 @@ mod status_tests {
         // Some preprocessing-phase timeouts emit only the banner
         // without the Termination block.
         let out = "% Time limit reached!\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove),
+        assert!(matches!(determine_status(out, None, &ProverMode::Prove),
             ProverStatus::Timeout));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency),
+        assert!(matches!(determine_status(out, None, &ProverMode::CheckConsistency),
             ProverStatus::Timeout));
     }
 
@@ -701,7 +542,7 @@ mod status_tests {
 % ------------------------------
 % Termination reason: Time limit
 ";
-        assert!(matches!(determine_status(out, &ProverMode::Prove),
+        assert!(matches!(determine_status(out, Some("Theorem"), &ProverMode::Prove),
             ProverStatus::Proved));
     }
 
@@ -715,16 +556,16 @@ The sort $int of the intended term argument 2500000 (at index 0) is not an insta
 ";
         // Both modes must report InputError, not Unknown — the prover
         // never produced a verdict.
-        assert!(matches!(super::determine_status(out, &ProverMode::Prove),
+        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
             ProverStatus::InputError));
-        assert!(matches!(super::determine_status(out, &ProverMode::CheckConsistency),
+        assert!(matches!(super::determine_status(out, None, &ProverMode::CheckConsistency),
             ProverStatus::InputError));
     }
 
     #[test]
     fn input_error_detected_for_parse_error() {
         let out = "Parse error: unexpected token ')' at line 5\n";
-        assert!(matches!(super::determine_status(out, &ProverMode::Prove),
+        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
             ProverStatus::InputError));
     }
 
@@ -746,8 +587,8 @@ X0 is $real (detected at or around line 27602)
         // A genuine timeout (no User error) must NOT be misread as
         // InputError — the detector only fires on actual rejection text.
         let out = "% Termination reason: Time limit\n";
-        assert!(!super::is_input_error(out));
-        assert!(matches!(super::determine_status(out, &ProverMode::Prove),
+        assert!(!is_input_error(out));
+        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
             ProverStatus::Timeout));
     }
 
@@ -762,7 +603,7 @@ X0 is $real (detected at or around line 27602)
 % Time limit reached!
 % Termination reason: Time limit
 ";
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency),
+        assert!(matches!(determine_status(out, Some("ContradictoryAxioms"), &ProverMode::CheckConsistency),
             ProverStatus::Inconsistent));
     }
 }

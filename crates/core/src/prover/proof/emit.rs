@@ -144,7 +144,7 @@ pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
                 // step is prover-synthesized (subrel_schema, list_theory,
                 // modal_k, …) and must not masquerade as a stated axiom.
                 "axiom" | "hypothesis" | "conjecture" =>
-                    Source::Input(problem.to_string()),
+                    Source::Input { file: problem.to_string(), name: None },
                 other => Source::Introduced(other.to_string()),
             }
         } else {
@@ -211,6 +211,26 @@ pub fn proof_steps_to_kif(
                     name: format!("; [unparseable] {}", formula),
                     span: crate::parse::ast::Span::point(String::new(), 0, 0, 0),
                 }),
+            source_sid: source_name.as_deref().and_then(parse_kb_axiom_name),
+        })
+        .collect()
+}
+
+/// Like [`proof_steps_to_kif`], but for steps whose formula is already a
+/// parsed TPTP `AstNode` (e.g. `parse::szs::parse_szs`'s output) rather than
+/// unparsed text — skips `formula_to_ast`'s parse and applies
+/// `normalize_display_quantifiers` directly.
+pub(crate) fn proof_steps_to_kif_ast(
+    steps: &[(AstNode, String, Vec<usize>, Option<String>)],
+) -> Vec<KifProofStep> {
+    steps
+        .iter()
+        .enumerate()
+        .map(|(i, (formula, rule, premises, source_name))| KifProofStep {
+            index: i,
+            rule: rule.clone(),
+            premises: premises.clone(),
+            formula: normalize_display_quantifiers(formula.clone()),
             source_sid: source_name.as_deref().and_then(parse_kb_axiom_name),
         })
         .collect()

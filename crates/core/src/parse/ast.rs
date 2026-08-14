@@ -77,8 +77,14 @@ pub enum Role {
 /// input with no recorded origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
-    /// Read from an input file/problem (`file('problem')`).
-    Input(String),
+    /// Read from an input file/problem (`file('problem')`). `name` is the
+    /// optional second `file(...)` argument some dialects use to preserve
+    /// the statement's original name through translation — e.g. Vampire's
+    /// `--output_axiom_names on` emits `file('/dev/stdin', kb_42)`, where
+    /// `kb_42` is our own `kb_<sid>` axiom-name convention, round-trippable
+    /// via `parse_kb_axiom_name`. `None` for the plain single-argument form
+    /// this crate's own emitter produces (`render_source` in `dis.rs`).
+    Input { file: String, name: Option<String> },
     /// Derived by an inference rule from named parent statements
     /// (`inference(rule, …, [parents])`).
     Inference { rule: String, parents: Vec<String> },

@@ -93,6 +93,11 @@ pub(crate) fn kif_proof_inputs(
 /// [`crate::trans::ir::parse_tptp`]; steps whose formula can't be parsed fall
 /// back to [`crate::trans::ir::Formula::True`].  Premises come from the
 /// pre-resolved [`ProofStep::parents`].
+///
+/// `ask`-only: `parse_tptp`/`TptpParser` is a separate, heavier TPTP grammar
+/// gated on `ask` — the wasm-safe `prover::vampire_proof` entry point
+/// doesn't need `IrProofStep` and calls only [`kif_proof_inputs`] instead.
+#[cfg(feature = "ask")]
 pub(crate) fn proof_steps_to_ir(steps: &[ProofStep]) -> Vec<crate::prover::proof::IrProofStep> {
     use crate::prover::proof::IrProofStep;
 

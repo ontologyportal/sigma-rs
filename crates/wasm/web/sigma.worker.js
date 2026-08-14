@@ -205,13 +205,14 @@ const handlers = {
 
   // -- Vampire (WASM) backend — an alternative to the native in-browser
   // prover, built by build-vampire.sh (gitignored; not present unless that
-  // script has run). Bare-bones: runs Vampire as a subprocess-shaped CLI
-  // over a self-contained TPTP problem and surfaces only its SZS status +
-  // raw output — no structured proof/graph/prose (that's the native path's
-  // job; Vampire's own proof text isn't parsed into this app's step shape
-  // yet). Both handlers build a `{status, ..., raw_output}` object shaped
-  // like the native `prove`/`audit` results, so they render through the
-  // SAME `renderProof`/`renderAudit` UI code unchanged.
+  // script has run). Runs Vampire as a subprocess-shaped CLI over a
+  // self-contained TPTP problem, then hands its captured stdout+stderr to
+  // `parseVampire{Ask,Audit}Result` — the SAME TSTP/SZS parsing the native
+  // `ask`-gated subprocess backend uses (crates/core's
+  // `prover::vampire_proof`) — so Vampire's status, proof steps, Graphviz
+  // digraph, and prose come back in the exact shape the native `prove`/
+  // `audit` results use, and render through the SAME `renderProof`/
+  // `renderAudit` UI code unchanged.
   // `selectionTolerancePct` mirrors the native backend's `Config.
   // selectionTolerancePct` (see makeConfig) — same slider, same meaning,
   // both backends: a percentage of the KB's axioms a query-relevant
@@ -222,13 +223,20 @@ const handlers = {
   // Disproved/Unknown on a query the KB actually proves.
   // Audit has no query to seed relevance from, so it's unaffected — it
   // already always searches the whole KB either way (native or Vampire).
-  proveVampire({ assertions, query, timeLimitSecs, selectionTolerancePct }) {
+  // `extraArgs` is raw user text (the settings panel's "extra CLI args"
+  // field), appended verbatim after the fixed args below — advanced/opt-in,
+  // not validated beyond what Vampire itself rejects. `tptp` rides back
+  // alongside `result` so the page can offer it as a download without a
+  // second worker round-trip to recompute the same selection.
+  async proveVampire({ assertions, query, timeLimitSecs, selectionTolerancePct, extraArgs }) {
     const tptp = session.kb.toTptpForAsk(assertions || '', query, false, selectionTolerancePct || null);
-    return runVampireProblem(tptp, timeLimitSecs, ASK_SZS_TO_STATUS, false);
+    const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);
+    return { result: session.kb.parseVampireAskResult(raw_output, query || ''), tptp };
   },
-  auditVampire({ timeLimitSecs }) {
+  async auditVampire({ timeLimitSecs, extraArgs }) {
     const tptp = session.kb.toTptpIndexed(undefined, true);
-    return runVampireProblem(tptp, timeLimitSecs, AUDIT_SZS_TO_STATUS, true);
+    const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);
+    return { result: session.kb.parseVampireAuditResult(raw_output), tptp };
   },
 };
 
@@ -253,42 +261,28 @@ function loadVampireRunner() {
   return vampireRunnerPromise;
 }
 
-function parseSzsStatus(text) {
-  const m = /%\s*SZS status (\w+)/.exec(text || '');
-  return m ? m[1] : null;
-}
+// Vampire CLI args, mirroring the native subprocess backend's
+// `build_vampire_args` (crates/core's `vampire::subprocess`) so its output
+// parses the same way:
+//  --mode vampire + --sine_selection off: our own SInE selection already ran
+//    (toTptpForAsk/toTptpIndexed already filtered the axiom set), so Vampire
+//    must not re-apply it — the `casc` portfolio's per-strategy encoded
+//    options would silently re-enable it.
+//  -p tptp: emit proof steps as `fof(f<n>, role, (...), inference(...))`
+//    lines — Vampire's default human-readable proof format doesn't parse.
+//  --output_axiom_names on: preserve our `kb_<sid>` axiom names in the
+//    proof transcript, so steps cite back to file:line like the native path.
+const VAMPIRE_ARGS = '--mode vampire --sine_selection off -p tptp --output_axiom_names on';
 
-// Vampire's SZS ontology -> this app's status vocabulary (see index.html's
-// `.status.<Name>` CSS and renderProof/renderAudit in app.js). Two separate
-// maps because the SAME SZS status means opposite things depending on
-// whether Vampire was given a conjecture (Ask/Tell) or not (Audit) — e.g.
-// "Satisfiable" is a DISPROOF of a conjecture, but a CONSISTENCY verdict
-// for the bare axioms.
-const ASK_SZS_TO_STATUS = {
-  Theorem: 'Proved', ContradictoryAxioms: 'Proved',
-  CounterSatisfiable: 'Disproved', Satisfiable: 'Disproved',
-  Timeout: 'Timeout',
-  GaveUp: 'Unknown', Unknown: 'Unknown', ResourceOut: 'Unknown',
-};
-const AUDIT_SZS_TO_STATUS = {
-  Unsatisfiable: 'Inconsistent', ContradictoryAxioms: 'Inconsistent',
-  Satisfiable: 'Consistent', CounterSatisfiable: 'Consistent',
-  Timeout: 'Unknown',
-  GaveUp: 'Unknown', Unknown: 'Unknown', ResourceOut: 'Unknown',
-};
-
-async function runVampireProblem(tptp, timeLimitSecs, szsMap, isAudit) {
+async function runVampireProblem(tptp, timeLimitSecs, extraArgs) {
   const { runVampire } = await loadVampireRunner();
   const t = Math.max(1, Math.floor(Number(timeLimitSecs)) || 30);
-  const res = await runVampire(tptp, `--input_syntax tptp -t ${t}`, {});
-  const szs = parseSzsStatus(res.stdout) || parseSzsStatus(res.stderr);
-  const status = (szs && szsMap[szs]) || 'Unknown';
-  const raw_output = res.stdout + (res.stderr ? '\n' + res.stderr : '');
-  return {
-    result: isAudit
-      ? { status, given_steps: null, inconsistent: status === 'Inconsistent', contradictions: [], raw_output }
-      : { status, given_steps: null, proof: [], raw_output, graphviz: null, prose: null, prose_missing: null },
-  };
+  // User-supplied args go last, so they can override a preceding default
+  // (Vampire, like most CLIs, takes the last occurrence of a repeated flag).
+  const extra = extraArgs && String(extraArgs).trim();
+  const args = `${VAMPIRE_ARGS} --input_syntax tptp -t ${t}` + (extra ? ` ${extra}` : '');
+  const res = await runVampire(tptp, args, {});
+  return res.stdout + (res.stderr ? '\n' + res.stderr : '');
 }
 
 self.onmessage = async (e) => {

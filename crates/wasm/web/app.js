@@ -208,6 +208,12 @@ async function withPostProcessing(fn) {
       promoting = false;
       setPromoteTabsEnabled(true);
       showToast(false);
+      // A cold-boot deep link into a promote tab (e.g. /prover) got deflected
+      // to Browse while promoting — the URL still names the real tab, so
+      // return to it now that it's usable (no history push: the URL never
+      // changed out from under it).
+      const { tab: urlTab } = routeFromLocation();
+      if (currentTab() === 'browse' && PROMOTE_TABS.includes(urlTab)) showTab(urlTab, { push: false });
       // Anything that renders the `promoting` flag has to be redrawn HERE.
       // Views refreshed inside the window (renderAll → refreshHomeStats) ran
       // while the flag was still set, so their "post-processing" wording is
@@ -253,7 +259,10 @@ function setPromoteTabsEnabled(on) {
     const btn = document.querySelector(`nav.tabs [data-tab=${t}]`);
     if (btn) { btn.classList.toggle('disabled', !on); btn.setAttribute('aria-disabled', String(!on)); }
   }
-  if (!on && PROMOTE_TABS.includes(currentTab())) showTab('browse');
+  // push:false — this is an automatic deflection (the tab isn't usable yet),
+  // not a navigation, so it must not clobber a deep-linked URL (e.g. a
+  // /prover link opened cold, before the boot promote finishes).
+  if (!on && PROMOTE_TABS.includes(currentTab())) showTab('browse', { push: false });
 }
 
 function showToast(on) { const t = $('toast'); if (t) t.hidden = !on; }
@@ -447,10 +456,10 @@ async function saveKbCache() {
   }
 }
 
-// Deliberately understated maintenance link (bottom-right, low-contrast) — a
-// manual escape hatch for a stale/corrupt cache, not a feature to promote.
-// Only clears the persisted OPFS cache; the live in-memory KB is untouched,
-// so a fresh boot (a manual reload) is what actually exercises the change.
+// Settings-modal maintenance action — a manual escape hatch for a stale/
+// corrupt cache, not a feature to promote day-to-day. Only clears the
+// persisted OPFS cache; the live in-memory KB is untouched, so a fresh boot
+// (a manual reload) is what actually exercises the change.
 $('clearCacheLink')?.addEventListener('click', async (e) => {
   e.preventDefault();
   const link = $('clearCacheLink');
@@ -518,7 +527,7 @@ async function boot() {
     $('overlay').remove();
     renderConstituents();
     refreshLangSelect();
-    // Honour the URL now that the constituents exist — ?tab=edit&file=…&l=…
+    // Honour the URL now that the constituents exist — /edit?file=…&l=…
     // needs them loaded before it can select a file in the editor.
     applyRoute();
     restoreTests();
@@ -533,11 +542,14 @@ async function boot() {
 
 // -- Tabs + URL routing -------------------------------------------------------
 //
-// Routing lives entirely in the query string — ?tab=edit&file=Merge.kif&l=100.
-// Deliberately NOT path-based (/edit): a tab path is not a real file, so it
-// needs a server rewrite, and GitHub Pages (where this demo is published under
-// /browse/) has none. Query-only routing needs no server support at all, so the
-// same URLs work from `serve.sh`, from Pages, and from a plain file server.
+// Routing is path-based — /edit?file=Merge.kif&l=100 — served by Cloudflare
+// Pages' _redirects (web/_redirects: `/* /index.html 200`), which rewrites any
+// sub-path to index.html so the SPA router below can take over. `serve.sh`
+// mirrors that fallback locally. GitHub Pages has no such rewrite, so a hard
+// refresh on a non-root path 404s there; in-app navigation (pushState) is
+// unaffected either way. `browse` is the default tab and stays at the bare
+// mount path. Legacy `?tab=` bookmarks (the old query-string scheme) still
+// resolve correctly.
 
 const TABS = ['browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'];
 
@@ -550,21 +562,30 @@ function currentTab() {
   return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'browse';
 }
 
-/** The route encoded in the address bar: { tab, params }. Legacy `?tab=home`
- *  URLs fall through to the default (Browse absorbed the Home tab). */
+/** The route encoded in the address bar: { tab, params }. The tab is a real
+ *  path segment (/edit, /diagnostics, …); a legacy `?tab=` query param (old
+ *  bookmarks/links, including the retired `?tab=home`) is honoured as a
+ *  fallback when the path itself doesn't name a known tab. */
 function routeFromLocation() {
   const params = new URLSearchParams(location.search);
-  const t = params.get('tab');
-  return { tab: TABS.includes(t) ? t : 'browse', params };
+  const seg = location.pathname.slice(BASE.length).replace(/^\/+/, '').split('/')[0];
+  let tab = TABS.includes(seg) ? seg : null;
+  if (!tab) {
+    const legacy = params.get('tab');
+    tab = TABS.includes(legacy) ? legacy : 'browse';
+  }
+  params.delete('tab');
+  return { tab, params };
 }
 
 /** Write `tab` + `params` to the address bar without reloading. `browse` is
- *  the default, so it is left out to keep the bare URL clean. */
+ *  the default, so it is left off the path to keep the bare URL clean. */
 function syncUrl(tab, params = new URLSearchParams(), { replace = false } = {}) {
   const p = new URLSearchParams(params);
-  if (tab && tab !== 'browse') p.set('tab', tab); else p.delete('tab');
+  p.delete('tab');
   const qs = p.toString();
-  history[replace ? 'replaceState' : 'pushState'](null, '', BASE + (qs ? `?${qs}` : ''));
+  const path = tab && tab !== 'browse' ? BASE + tab : BASE;
+  history[replace ? 'replaceState' : 'pushState'](null, '', path + (qs ? `?${qs}` : ''));
 }
 
 /**
@@ -596,10 +617,10 @@ function showTab(name, { push = true, params } = {}) {
 /**
  * Apply the current URL: switch to its tab and honour its deep-link params.
  * Runs after boot (constituents must exist) and on every popstate.
- *   ?tab=edit&file=Merge.kif&l=100   load that file in the editor, reveal line 100
- *   ?tab=kb / ?tab=audit / …         open that tab
- *   ?q=Human                         run the search
- *   ?sym=Human                       open the man page
+ *   /edit?file=Merge.kif&l=100   load that file in the editor, reveal line 100
+ *   /kb  /audit  …               open that tab
+ *   ?q=Human                     run the search (on the default /browse tab)
+ *   ?sym=Human                   open the man page
  */
 async function applyRoute() {
   const { tab, params } = routeFromLocation();
@@ -710,6 +731,71 @@ $('themeToggle')?.addEventListener('click', () => {
   try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
   window.monaco?.editor.setTheme(next === 'dark' ? 'kif-dark' : 'kif-light');
 });
+
+// -- Bug report: no anonymous issue creation via the GitHub API, so this just
+// opens a prefilled "new issue" page against this app's own repo. ----------
+
+const APP_REPO = { owner: 'ontologyportal', repo: 'sigma-rs' };
+
+$('bugReport')?.addEventListener('click', () => {
+  const body = [
+    '',
+    '',
+    '---',
+    `Version: ${appVersion?.version ?? 'unknown'} (build ${appVersion?.build ?? '?'}, ${appVersion?.commit ?? '?'})`,
+    `URL: ${location.href}`,
+    `User agent: ${navigator.userAgent}`,
+  ].join('\n');
+  const url = `https://github.com/${APP_REPO.owner}/${APP_REPO.repo}/issues/new?` +
+    new URLSearchParams({ title: '', body, labels: 'bug' });
+  window.open(url, '_blank', 'noopener');
+});
+
+// -- Settings modal: language selector (moved out of the header) + version --
+
+let appVersion = null;
+
+$('settingsBtn')?.addEventListener('click', () => $('settingsDialog').showModal());
+$('settingsClose')?.addEventListener('click', () => $('settingsDialog').close());
+
+fetch('./version.json')
+  .then(r => (r.ok ? r.json() : null))
+  .then(v => {
+    if (!v) return;
+    appVersion = v;
+    const el = $('settingsVersion');
+    if (el) el.textContent = `v${v.version} (build ${v.build}, ${v.commit})`;
+    checkVersionChange(v.version);
+  })
+  .catch(() => { /* local dev / no version.json published yet */ });
+
+// -- Version-change modal: welcome on first visit, notice on upgrade --------
+
+const SEEN_VERSION_KEY = 'sumoBrowserSeenVersion';
+
+function checkVersionChange(version) {
+  let seen;
+  try { seen = localStorage.getItem(SEEN_VERSION_KEY); } catch { return; }
+  if (seen === version) return;
+
+  const dialog = $('versionDialog');
+  const title = $('versionDialogTitle');
+  const body = $('versionDialogBody');
+  if (dialog && title && body) {
+    if (seen === null) {
+      title.textContent = 'Welcome to SigmaKEE';
+      body.textContent = '';
+    } else {
+      title.textContent = 'New version available';
+      body.textContent = `You are using a new version (v${version}).`;
+    }
+    dialog.showModal();
+  }
+
+  try { localStorage.setItem(SEEN_VERSION_KEY, version); } catch { /* private mode */ }
+}
+
+$('versionDialogClose')?.addEventListener('click', () => $('versionDialog').close());
 
 /** Push a history entry for `tab` with `params` and render it. The three
  *  cross-tab jumps (editor, diagnostics, documentation) all go through here so
@@ -2073,9 +2159,42 @@ function togglePanel(btnId, panelId, force) {
   return open;
 }
 
-$('proverSettingsBtn').onclick = () => togglePanel('proverSettingsBtn', 'proverSettings');
+// The panel is one shared instance toggled by either tab's cog — keep BOTH
+// buttons' aria-expanded in sync with it (only the one actually clicked would
+// otherwise update, leaving the other stale after a tab switch).
+function toggleProverSettings(force) {
+  const open = togglePanel('proverSettingsBtn', 'proverSettings', force);
+  $('auditSettingsBtn').setAttribute('aria-expanded', String(open));
+  return open;
+}
+$('proverSettingsBtn').onclick = () => toggleProverSettings();
+$('auditSettingsBtn').onclick = () => toggleProverSettings();
 $('cfgReset').onclick = () => applyProverConfig(CFG_DEFAULTS);
 for (const { id } of CFG_KNOBS) $(id).addEventListener('input', renderCfgSummary);
+
+// -- Backend-specific settings visibility -------------------------------------
+//
+// Vampire is a fixed-strategy refutation search, not a tunable given-clause
+// loop — most of the native backend's knobs (given-clause budget, literal
+// cap, forward closure, profiling) are silently ignored if sent to it. Grey
+// them out of the shared settings panel (and Audit's native-only "max found",
+// which Vampire can't honor — it's a single-shot run, not an enumerator) when
+// Vampire is selected, and show Vampire's own knob (raw CLI args) instead —
+// rather than leave editable controls that quietly do nothing.
+function updateBackendVisibility() {
+  const vampire = $('proverBackend').value === 'vampire';
+  document.querySelectorAll('[data-native-only]').forEach((el) => { el.hidden = vampire; });
+  document.querySelectorAll('[data-vampire-only]').forEach((el) => { el.hidden = !vampire; });
+  $('proverBackendHint').textContent = vampire
+    ? 'Vampire is a fixed refutation search — only time limit, selection budget, and extra CLI args apply.'
+    : 'given-clause knobs below apply to the native backend only';
+  // A downloadable TPTP input only exists for a completed Vampire run, and a
+  // prior one (if any) was for whichever backend was selected at the time —
+  // switching away invalidates it rather than leaving a stale download.
+  $('downloadVampireTptp').hidden = true;
+}
+$('proverBackend').addEventListener('change', updateBackendVisibility);
+updateBackendVisibility();
 
 /** Live "N% of axioms" / "engine default" label under the selection-budget slider. */
 function renderSelectionPctLabel() {
@@ -2109,27 +2228,44 @@ $('saveTq').onclick = () => {
   URL.revokeObjectURL(url);
 };
 
+// The exact TPTP problem text handed to Vampire for the most recent Ask/Tell
+// run — `proveVampire` returns it alongside the result (computed anyway to
+// run the query, previously discarded); `downloadVampireTptp` below just
+// hands back what's already in memory, no extra worker round-trip.
+let lastVampireTptp = null;
+
 $('prove').onclick = async () => {
   const btn = $('prove');
+  const vampire = $('proverBackend').value === 'vampire';
   btn.disabled = true; btn.textContent = 'Proving…';
+  lastVampireTptp = null;
+  $('downloadVampireTptp').hidden = true;
   try {
-    const { result } = $('proverBackend').value === 'vampire'
-      ? await call('proveVampire', {
-          assertions: paneValue('assertions').trim(),
-          query: paneValue('query'),
-          timeLimitSecs: proverConfig().timeLimitSecs,
-          selectionTolerancePct: proverConfig().selectionTolerancePct,
-        })
-      : await call('prove', {
-          assertions: paneValue('assertions').trim(),
-          query: paneValue('query'),
-          config: proverConfig(),
-          session: 'user-assertions',
-        });
-    renderProof(result);
+    let result;
+    if (vampire) {
+      const res = await call('proveVampire', {
+        assertions: paneValue('assertions').trim(),
+        query: paneValue('query'),
+        timeLimitSecs: proverConfig().timeLimitSecs,
+        selectionTolerancePct: proverConfig().selectionTolerancePct,
+        extraArgs: $('cfgVampireArgs').value.trim(),
+      });
+      result = res.result;
+      lastVampireTptp = res.tptp;
+      $('downloadVampireTptp').hidden = false;
+    } else {
+      ({ result } = await call('prove', {
+        assertions: paneValue('assertions').trim(),
+        query: paneValue('query'),
+        config: proverConfig(),
+        session: 'user-assertions',
+      }));
+    }
+    renderProof(result, vampire ? 'Vampire' : 'SUPr');
   } catch (e) {
     $('proverResult').hidden = false;
     $('pStatus').textContent = 'Error'; $('pStatus').className = 'status InputError';
+    $('pBackendBadge').textContent = '';
     $('pSteps').textContent = String(e && e.message || e);
     $('pProof').innerHTML = ''; $('pRaw').textContent = ''; $('pGraphDot').textContent = '';
     $('pProseSlot').innerHTML = '';
@@ -2138,6 +2274,11 @@ $('prove').onclick = async () => {
   } finally {
     btn.disabled = false; btn.textContent = 'Prove';
   }
+};
+
+$('downloadVampireTptp').onclick = () => {
+  if (!lastVampireTptp) return;
+  downloadText('vampire-input.tptp', lastVampireTptp);
 };
 
 let lastAskProof = [];
@@ -2226,9 +2367,10 @@ function proseDetails(prose, missing) {
   </details>`;
 }
 
-function renderProof(r) {
+function renderProof(r, backendLabel) {
   $('proverResult').hidden = false;
   $('pStatus').textContent = r.status; $('pStatus').className = 'status ' + r.status;
+  $('pBackendBadge').textContent = backendLabel ? `via ${backendLabel}` : '';
   $('pSteps').textContent = r.given_steps != null ? `${r.given_steps} given-clause steps` : '';
   $('pProof').innerHTML = renderProofSteps(r.proof);
   $('pRaw').textContent = r.raw_output || '(none)';
@@ -2242,17 +2384,22 @@ function renderProof(r) {
 
 $('runAudit').onclick = async () => {
   const btn = $('runAudit');
+  const vampire = $('proverBackend').value === 'vampire';
   btn.disabled = true; btn.textContent = 'Auditing…';
   try {
-    // Audit inherits the Ask/Tell prover settings (including backend), but
-    // keeps its own time limit.
-    const { result } = $('proverBackend').value === 'vampire'
-      ? await call('auditVampire', { timeLimitSecs: $('auditTime').value })
+    // Audit inherits the Ask/Tell prover settings (including backend, via
+    // the shared #proverSettings panel both tabs toggle), but keeps its own
+    // time limit.
+    const { result } = vampire
+      ? await call('auditVampire', {
+          timeLimitSecs: $('auditTime').value,
+          extraArgs: $('cfgVampireArgs').value.trim(),
+        })
       : await call('audit', {
           config: proverConfig({ timeLimitSecs: $('auditTime').value }),
           limit: Math.max(1, Number($('auditLimit').value) || 5),
         });
-    renderAudit(result);
+    renderAudit(result, vampire ? 'Vampire' : 'SUPr');
   } catch (e) {
     $('auditResult').innerHTML = `<div class="card hint" style="color:var(--bad)">${esc(String(e && e.message || e))}</div>`;
   } finally {
@@ -2260,17 +2407,19 @@ $('runAudit').onclick = async () => {
   }
 };
 
-function renderAudit(r) {
+function renderAudit(r, backendLabel) {
   const badge = `<span class="audit-status ${esc(r.status)}">${esc(r.status)}</span>`;
+  const backend = backendLabel ? `<span class="hint">via ${esc(backendLabel)}</span>` : '';
   const steps = r.given_steps != null ? `<span class="hint">${r.given_steps} given-clause steps</span>` : '';
 
   let verdict;
   if (r.status === 'Consistent') {
     verdict = 'No contradiction found — the loaded KB saturated cleanly.';
   } else if (r.inconsistent && !r.contradictions.length) {
-    // Backends that don't extract structured contradictions (e.g. Vampire —
-    // this app doesn't parse its proof text into individual witnesses)
-    // still know a contradiction exists; say so without implying "zero".
+    // Vampire's one-shot run yields at most a single contradiction (no
+    // enumerator, unlike the native audit's driver) — this covers the case
+    // where even that single witness failed to parse; say so without
+    // implying "zero".
     verdict = 'Contradiction found — see raw engine output for the derivation.';
   } else if (r.inconsistent) {
     verdict = `${r.contradictions.length} distinct contradiction${r.contradictions.length === 1 ? '' : 's'} found.`;
@@ -2280,7 +2429,7 @@ function renderAudit(r) {
 
   let html = `
     <div class="card">
-      <div class="inline" style="gap:10px">${badge}${steps}</div>
+      <div class="inline" style="gap:10px">${badge}${backend}${steps}</div>
       <div class="hint" style="margin-top:8px">${esc(verdict)}</div>
       <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre>${esc(r.raw_output || '(none)')}</pre></details>
     </div>`;

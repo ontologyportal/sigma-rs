@@ -20,12 +20,17 @@
 mod model;
 mod emit;
 mod graphviz;
-// TSTP transcript parsing (subprocess-backend only) pulls in `regex`, an
-// `ask`-only dep; the native prover's proof vocabulary lives in `model`/`emit`.
-#[cfg(feature = "ask")]
+// TSTP transcript parsing pulls in `regex` — a hard dependency (compiles on
+// every target including wasm32), so this is ungated: consumed by the
+// `ask`-gated subprocess backends AND by the wasm-safe `prover::vampire_proof`.
 pub(crate) mod tstp;
 
 pub use model::{IrProofStep, KifProofStep};
+// Only `tstp::proof_steps_to_ir` (ask-only: needs `IrProofStep`) consumes
+// this re-export; `emit.rs` imports `parse_kb_axiom_name` from `model`
+// directly.
+#[cfg(feature = "ask")]
 pub(crate) use model::parse_kb_axiom_name;
 pub use emit::{emit_proof, formula_to_ast, formula_to_kif, proof_steps_to_kif, proof_to_ast};
+pub(crate) use emit::proof_steps_to_kif_ast;
 pub use graphviz::render_graphviz;

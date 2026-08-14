@@ -4,6 +4,13 @@
 # SharedArrayBuffer — required by the pthreads-built vampire.wasm. These are
 # the same two headers serve.sh sends locally; GitHub Pages cannot send them,
 # which is why the Vampire backend only works on the Cloudflare deployment.
+# Cache-Control: no-cache means "store, but REVALIDATE with the server before
+# every use" — after a deploy, the next load gets the new files immediately
+# (unchanged ones come back as cheap 304s). Without it browsers heuristically
+# cache the un-hashed app.js/wasm and users see stale builds until a forced
+# refresh. If assets ever get content-hashed filenames, those can switch to
+# long-lived immutable caching instead.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
+  Cache-Control: no-cache
