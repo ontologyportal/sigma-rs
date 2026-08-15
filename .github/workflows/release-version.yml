@@ -5,9 +5,11 @@
 #
 #   1. bump:    increments the workspace version in every tracked version
 #               file, in lockstep — Cargo.toml ([workspace.package],
-#               inherited by all five crates), crates/wasm/npm/package.json,
-#               and Cargo.lock (synced via `cargo update --workspace`, never
-#               sed: unrelated packages can share the version string).
+#               inherited by all five crates), every npm workspace package
+#               (via `npm version --workspaces`, which also resyncs
+#               package-lock.json), and Cargo.lock (synced via
+#               `cargo update --workspace`, never sed: unrelated packages
+#               can share the version string).
 #               Commits "Release vX.Y.Z" to main and pushes the
 #               `sigmakee-vX.Y.Z` tag.
 #
@@ -17,9 +19,8 @@
 #               GITHUB_TOKEN does not trigger tag workflows — GitHub's
 #               recursion guard.)
 #
-#   3. npm-publish: builds the wasm package with crates/wasm/build-npm.sh
-#               (cargo + version-matched wasm-bindgen-cli + wasm-opt) and
-#               publishes it to npm.
+#   3. npm-publish: builds the wasm package (via `npm ci`, which runs the
+#               package's `prepare` hook) and publishes it to npm.
 #
 # One-time npm setup (no token, no secret): npmjs.com → the `sigmakee`
 # package → Settings → Trusted Publisher → GitHub Actions, with
@@ -65,6 +66,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Bump workspace version
         id: bump
         run: |
@@ -90,14 +95,13 @@ jobs:
               { print }
           ' Cargo.toml > Cargo.toml.bump && mv Cargo.toml.bump Cargo.toml
 
-          # The npm package's own version (first "version" key — the header).
-          awk -v new="$NEW" '
-              !done && /^[[:space:]]*"version":/ {
-                  sub(/"[0-9][0-9.]*"/, "\"" new "\""); done = 1
-              }
-              { print }
-          ' crates/wasm/npm/package.json > pj.bump \
-              && mv pj.bump crates/wasm/npm/package.json
+          # `npm version --workspaces` rewrites each package's own version but
+          # NOT the ranges its siblings depend on -- which is why @sigma/web
+          # pins its local deps to "*". Any other range stops matching the
+          # moment the version moves, and npm then falls through to the public
+          # registry and 404s on the private @sigma/language.
+          npm version "$NEW" --workspaces --no-git-tag-version --allow-same-version
+          npm install --package-lock-only
 
           # Sync Cargo.lock's workspace-member entries.
           cargo update --workspace --quiet
@@ -112,7 +116,7 @@ jobs:
           TAG="${{ steps.bump.outputs.tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock crates/wasm/npm/package.json
+          git add Cargo.toml Cargo.lock package.json package-lock.json packages/*/package.json
           git commit -m "Release v$NEW"
           git tag "$TAG"
           git push origin main "$TAG"
@@ -165,25 +169,15 @@ jobs:
         with:
           key: npm-publish-wasm
 
-      - name: Install wasm toolchain
-        # Same recipe as regression-pages.yml: the wasm-bindgen CLI must
-        # exactly match the crate version locked in Cargo.lock.
-        run: |
-          set -euo pipefail
-          rustup target add wasm32-unknown-unknown
-          WB_VER=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
-                     | awk -F'"' '/version/{print $2; exit}')
-          echo "wasm-bindgen $WB_VER"
-          cargo install wasm-bindgen-cli --version "$WB_VER" --locked
-          sudo apt-get install -y binaryen   # wasm-opt (optional size pass)
-
-      - name: Build npm package
-        run: ./crates/wasm/build-npm.sh
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+
+      - name: Build npm package
+        # sigmakee's `prepare` hook is the build, so this produces dist/ once
+        # and both publish commands below act on those same bytes.
+        run: npm ci
 
       - name: Publish (npm trusted publishing / OIDC)
         # No token: the job's OIDC identity (repo + this workflow filename,
@@ -191,7 +185,7 @@ jobs:
         # authenticates the publish.  Requires npm >= 11.5.1 — Node 24's
         # bundled npm qualifies; the version check below fails fast with a
         # clear message if the runner image ever regresses.
-        working-directory: crates/wasm/pkg
+        working-directory: packages/sigmakee
         run: |
           set -euo pipefail
           NPM_VER=$(npm --version)
@@ -199,5 +193,8 @@ jobs:
             echo "npm $NPM_VER < 11.5.1 — too old for trusted publishing" >&2
             exit 1
           fi
-          npm publish --dry-run
-          npm publish
+          # --ignore-scripts: without it each command re-runs the build, which
+          # starts by deleting dist/, so the dry run would inspect a tarball
+          # that is then replaced by an unverified rebuild.
+          npm publish --dry-run --ignore-scripts
+          npm publish --ignore-scripts

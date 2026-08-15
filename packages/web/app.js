@@ -16,15 +16,15 @@
  *   Edit          — in-browser Monaco IDE for KIF constituents
  *
  * Must be served over HTTP — browsers block ES modules + wasm fetch on file://.
- *   ./serve.sh   # → http://localhost:8080/
+ *   npm run web   # → http://localhost:8080/
  *
  * The page owns the constituent list, OPFS, localStorage, and the editor; the
- * worker owns the Session. Self-contained: worker + pkg are siblings of this
- * file, so the whole demo can be dropped at any path (web/ locally, /browse/ on
- * GitHub Pages).
+ * worker owns the Session. The engine comes from the `sigmakee` workspace
+ * package, which Vite bundles alongside this file, so the whole demo can be
+ * dropped at any path (locally, or /browse/ on GitHub Pages).
  */
 
-import { formatKif, formatTest } from './pkg/sdk.mjs';
+import { formatKif, formatTest } from 'sigmakee/sdk';
 
 const worker = new Worker(new URL('./sigma.worker.js', import.meta.url), { type: 'module' });
 
@@ -512,7 +512,9 @@ async function boot() {
     // and reports no intermediate progress, so seed a visible sliver rather
     // than leaving the bar at a dead 0% for all of it.
     $('bootBarFill').style.width = '8%';
-    await call('boot');
+    // The worker resolves the optional Vampire runner against this; its own
+    // URL sits in the bundle's asset directory, so it cannot derive the base.
+    await call('boot', { baseUrl: new URL(BASE, location.href).href });
     bootProgress('Engine ready');
     opfsRoot = await navigator.storage.getDirectory();
 
@@ -564,10 +566,13 @@ async function boot() {
 
 const TABS = ['browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'];
 
-// The directory this module was served from — "/" locally, "/browse/" on Pages.
-// Deriving it from import.meta.url keeps the rewritten URL canonical at any
-// mount point (and drops a stray /index.html).
-const BASE = new URL('.', import.meta.url).pathname;
+// The path the app is mounted at — "/" locally and on Cloudflare, "/browse/"
+// on Pages. Vite substitutes its configured `base` (always absolute, see
+// vite.config.js). Do not derive this from the document or from
+// `import.meta.url`: the bundled module lives in the asset directory, and
+// under the SPA fallback the document's directory varies per route, either of
+// which sends every deep link to the default tab.
+const BASE = import.meta.env.BASE_URL;
 
 function currentTab() {
   return document.querySelector('nav.tabs button[aria-selected="true"]')?.dataset.tab || 'browse';

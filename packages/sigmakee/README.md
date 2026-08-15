@@ -63,21 +63,24 @@ SUMO's foundational ontology** (`Merge.kif`, ~630 KB) from
   proves in-browser against SUMO plus your assertions.
 
 To load more of SUMO by default, edit the `SUMO_FILES` constant in
-[`web/app.js`](web/app.js) (only `Merge.kif` autoloads, to keep startup fast).
+[`app.js`](../web/app.js) (only `Merge.kif` autoloads, to keep startup fast).
 
-Run it locally:
+Run it locally, from the repository root:
 
 ```bash
-./serve.sh                           # rebuilds pkg/, mirrors it into web/pkg/, serves
+npm install
+npm run web                          # rebuilds this package, then serves the demo
 # → open http://localhost:8080/
 ```
 
-> **Must be served over HTTP.** Opening `web/index.html` directly (`file://`)
-> fails with *"Module source URI is not allowed"* — browsers block ES modules
-> and `fetch` (of the `.wasm`) on `file://`. The demo imports `./pkg/…`, so it's
-> self-contained: `serve.sh` mirrors the built package into `web/pkg/` and
-> serves `web/` as the root — the same layout the Pages deploy publishes at
-> `/browse/`, so local and live behave identically.
+`npm run web` builds this package, best-effort builds the optional Vampire
+backend (`@sigma/vampire`), and starts Vite's dev server for `@sigma/web`.
+Vite resolves the engine through the workspace dependency on `sigmakee`, so
+there is nothing to mirror by hand.
+
+> **Must be served over HTTP.** Opening `packages/web/index.html` directly
+> (`file://`) fails with *"Module source URI is not allowed"* — browsers block
+> ES modules and `fetch` (of the `.wasm`) on `file://`.
 
 ---
 
@@ -191,51 +194,56 @@ classes: `loadFromUrl(kb, url)`, `loadFromFile(kb, file)`,
 
 ## Building
 
-### Recommended: `wasm-pack`
-
 ```bash
-cargo install wasm-pack            # once
-wasm-pack build crates/wasm --target web --release
-#  → crates/wasm/pkg/  (add sdk.mjs/sdk.d.ts manually, or use build-npm.sh)
+npm run build --workspace sigmakee   # → packages/sigmakee/dist/ (web target)
 ```
 
-`--target`: `web` (browser ESM, works with Vite/webpack), `bundler`
-(webpack/rollup), `nodejs` (CommonJS for Node).
+[`scripts/build.mjs`](scripts/build.mjs) needs only `cargo` — no `wasm-pack`.
+It installs the `wasm-bindgen-cli` version the workspace `Cargo.lock` resolved
+(the generated glue and the crate's runtime must match) into a repo-local
+`target/wasm-bindgen/<version>/`, so it never disturbs a globally installed
+one; adds the `wasm32-unknown-unknown` target if missing; builds `--release`;
+runs `wasm-bindgen`; and stages the facade (`sdk.mjs`/`sdk.d.ts`) beside the
+generated bindings.
 
-### Without `wasm-pack`
+The `.wasm` is then size-optimized with `wasm-opt` from the pinned `binaryen`
+devDependency, so run `npm install` first. A distro `binaryen` is generally too
+old for the opcodes this build emits and fails; that failure is non-fatal and
+just ships a roughly 25% larger `.wasm`.
 
-[`build-npm.sh`](build-npm.sh) does the same with only `wasm-bindgen-cli`, and
-also copies the facade (`sdk.mjs`/`sdk.d.ts`) and package metadata into `pkg/`:
+Pass a different wasm-bindgen target as the first argument — `web` (default,
+browser ESM), `bundler` (webpack/rollup), or `nodejs` (CommonJS). Give it its
+own output directory: `dist/` is what this package's `exports` point at, so
+writing CommonJS glue there would leave an ESM manifest over a CJS payload.
 
 ```bash
-cargo install wasm-bindgen-cli --version 0.2.121   # match the wasm-bindgen crate
-crates/wasm/build-npm.sh                            # → crates/wasm/pkg/ (web target)
-crates/wasm/build-npm.sh nodejs pkg-node            # → crates/wasm/pkg-node/ (Node)
+node scripts/build.mjs nodejs dist-node
 ```
-
-Runs `--release` for `wasm32-unknown-unknown`, `wasm-bindgen`, then assembles a
-publishable `pkg/`. If `wasm-opt` (binaryen) is on `PATH` it size-optimizes the
-`.wasm`.
 
 ---
 
 ## Publishing to npm
 
-The output directory (`pkg/`) is a complete, publishable package.
+`dist/` holds the built artifacts; this directory is the package.
 
 ```bash
-cd crates/wasm/pkg
-npm publish --dry-run                # inspect the file list first
-npm publish                          # unscoped `sigmakee` → public by default
+npm ci                               # `prepare` builds dist/
+cd packages/sigmakee
+npm publish --dry-run --ignore-scripts   # inspect the file list first
+npm publish --ignore-scripts             # unscoped `sigmakee` → public by default
 ```
+
+`prepare` builds `dist/` during `npm ci`/`npm install`, so a publish can never
+ship a stale build. `--ignore-scripts` on the publish keeps the tarball the dry
+run inspected: without it each command rebuilds, and the build starts by
+deleting `dist/`, so the bytes that ship are not the bytes you just reviewed.
 
 Before the first publish:
 
-- **Name.** [`npm/package.json`](npm/package.json) is the unscoped name
-  `sigmakee` (no `--access public` needed). It's currently unclaimed on npm; the
-  first publish claims it for your account/org.
-- **Version.** Keep it in step with the crate (`2.0.1`).
-- **Auth.** `npm login` (or an `NPM_TOKEN` in CI) with publish rights.
+- **Name.** [`package.json`](package.json) is the unscoped name `sigmakee` (no
+  `--access public` needed).
+- **Version.** Keep it in step with the crate.
+- **Auth.** `npm login` (or trusted publishing in CI) with publish rights.
 
 ---
 

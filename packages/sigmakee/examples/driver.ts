@@ -8,7 +8,7 @@
  * Import from the published subpath:
  *     import { init, Session, Source } from "sigmakee/sdk";
  * or, against a local build:
- *     import { init, Session, Source } from "../pkg/sdk.mjs";
+ *     import { init, Session, Source } from "../dist/sdk.mjs";
  */
 import {
   init, Session, Source, Backend, Config, type AskResult,

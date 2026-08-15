@@ -1,0 +1,28 @@
+{
+  "name": "@sigma/language",
+  "version": "2.1.3",
+  "private": true,
+  "description": "Editor-neutral SUO-KIF / TPTP language assets shared by the Monaco web app and the VSCode extension.",
+  "license": "GPL-3.0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./language-configuration.json": "./config/language-configuration.json",
+    "./syntaxes/kif.tmLanguage.json": "./syntaxes/kif.tmLanguage.json",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "config", "syntaxes"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ontologyportal/sigma-rs.git",
+    "directory": "packages/language"
+  },
+  "bugs": { "url": "https://github.com/ontologyportal/sigma-rs/issues" },
+  "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/packages/language"
+}

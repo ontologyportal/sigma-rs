@@ -4,32 +4,32 @@
   "description": "Load SUO-KIF, translate to TPTP, and prove theorems in-browser with the pure-Rust native saturation prover (sigmakee-rs).",
   "license": "GPL-3.0",
   "type": "module",
-  "module": "sumo_parser_wasm.js",
-  "types": "sumo_parser_wasm.d.ts",
+  "module": "./dist/sumo_parser_wasm.js",
+  "types": "./dist/sumo_parser_wasm.d.ts",
   "exports": {
     ".": {
-      "types": "./sumo_parser_wasm.d.ts",
-      "default": "./sumo_parser_wasm.js"
+      "types": "./dist/sumo_parser_wasm.d.ts",
+      "default": "./dist/sumo_parser_wasm.js"
     },
     "./sdk": {
-      "types": "./sdk.d.ts",
-      "default": "./sdk.mjs"
+      "types": "./dist/sdk.d.ts",
+      "default": "./dist/sdk.mjs"
     },
-    "./sumo_parser_wasm_bg.wasm": "./sumo_parser_wasm_bg.wasm"
+    "./sumo_parser_wasm_bg.wasm": "./dist/sumo_parser_wasm_bg.wasm"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "binaryen": "^132.0.0"
   },
   "files": [
-    "sumo_parser_wasm.js",
-    "sumo_parser_wasm.d.ts",
-    "sumo_parser_wasm_bg.wasm",
-    "sumo_parser_wasm_bg.wasm.d.ts",
-    "sdk.mjs",
-    "sdk.d.ts",
-    "README.md",
+    "dist",
     "LICENSE"
   ],
   "sideEffects": [
-    "./sumo_parser_wasm.js",
-    "./snippets/*"
+    "./dist/sumo_parser_wasm.js"
   ],
   "keywords": [
     "sumo",
@@ -41,11 +41,11 @@
     "wasm",
     "webassembly"
   ],
-  "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/crates/wasm",
+  "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/packages/sigmakee",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ontologyportal/sigma-rs.git",
-    "directory": "crates/wasm"
+    "directory": "packages/sigmakee"
   },
   "bugs": {
     "url": "https://github.com/ontologyportal/sigma-rs/issues"

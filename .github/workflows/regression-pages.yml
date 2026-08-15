@@ -24,7 +24,7 @@
 #
 # One-time repo setup: Settings → Pages → Source: "GitHub Actions".
 
-name: Regression Pages
+name: Web App Deployment
 
 on:
   push:
@@ -66,6 +66,7 @@ jobs:
     timeout-minutes: 120
     outputs:
       status: ${{ steps.status.outputs.status }}
+      demo: ${{ steps.demo.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -205,28 +206,28 @@ jobs:
           done
 
       # ---- In-browser demo: every build (push + nightly) --------------------
-      - name: Install wasm toolchain (for the demo)
-        continue-on-error: true
-        run: |
-          rustup target add wasm32-unknown-unknown
-          # Match the wasm-bindgen CLI to the crate version in Cargo.lock.
-          WB_VER=$(grep -A1 '^name = "wasm-bindgen"$' Cargo.lock \
-                   | grep '^version' | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "wasm-bindgen $WB_VER"
-          cargo install wasm-bindgen-cli --version "$WB_VER" --locked
-          sudo apt-get install -y binaryen   # wasm-opt (build-npm.sh uses it to shrink the .wasm)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install npm workspace (for the demo)
+        # Deliberately not best-effort: every step below needs these
+        # node_modules, and sigmakee's `prepare` hook builds the wasm package
+        # here. Also supplies `binaryen` for the wasm-opt size pass.
+        run: npm ci
 
       # The Vampire (WASM) backend needs its own toolchain: the Emscripten SDK
-      # (compiles Vampire's C++ to wasm) and gawk (build-vampire.sh's patch
-      # step requires GNU awk; Ubuntu's default awk already is gawk, but the
-      # script checks `command -v gawk` explicitly, so install it under that
-      # name too). Best-effort like the Rust wasm toolchain above — a missing
+      # (compiles Vampire's C++ to wasm) and gawk (the build's patch step
+      # requires GNU awk; Ubuntu's default awk already is gawk, but the script
+      # checks `command -v gawk` explicitly, so install it under that name
+      # too). Best-effort like the Rust wasm toolchain above - a missing
       # Vampire backend degrades gracefully in the UI (sigma.worker.js).
       - name: Install Emscripten SDK + gawk (for the Vampire WASM backend)
         continue-on-error: true
         uses: mymindstorm/setup-emsdk@v14
         with:
-          # No specific version pinned here: build-vampire.sh's own pin
+          # No specific version pinned here: the Vampire build's own pin
           # (VAMPIRE_GUIDE_REF) is what determines reproducibility of the
           # *output*; the emsdk cache below is keyed on that same ref so a
           # guide bump also gets a fresh emsdk if setup-emsdk's default moves.
@@ -242,40 +243,48 @@ jobs:
       - name: Read pinned Vampire guide ref
         id: vampire-ref
         run: |
-          ref=$(grep -oE 'VAMPIRE_GUIDE_REF=\$\{VAMPIRE_GUIDE_REF:-[0-9a-f]+\}' crates/wasm/build-vampire.sh \
+          ref=$(grep -oE 'VAMPIRE_GUIDE_REF=\$\{VAMPIRE_GUIDE_REF:-[0-9a-f]+\}' packages/vampire/build.sh \
                 | grep -oE '[0-9a-f]{8,}')
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "pinned vampireGuide ref: $ref"
 
-      # Caches build-vampire.sh's entire output directory, keyed on the pin
-      # above. build-vampire.sh has its own skip-stamp (.vampire-cache/
-      # BUILT_REF) for local incremental builds, but that cache dir itself
-      # isn't restored here — on a cache HIT of web/vampire/ the stamp is
-      # irrelevant because the build step below is skipped outright; on a
-      # cache MISS the script just does a full build and repopulates both.
+      # Keyed on the pin above. The build's own skip-stamp
+      # (.vampire-cache/BUILT_REF) is not restored here and does not need to
+      # be: a cache hit skips the build step outright, a miss rebuilds fully.
       - name: Cache Vampire WASM build output
         id: cache-vampire-wasm
         uses: actions/cache@v4
         with:
-          path: crates/wasm/web/vampire
+          path: packages/vampire/dist
           key: vampire-wasm-${{ steps.vampire-ref.outputs.ref }}
 
       - name: Build the Vampire WASM backend
         continue-on-error: true
         if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
-        run: crates/wasm/build-vampire.sh
+        run: npm run build --workspace @sigma/vampire
 
       - name: Build & stage the in-browser demo at /browse
         id: demo
         continue-on-error: true
+        # SKIP_VAMPIRE/NO_REBUILD: both are already built by the steps above,
+        # so the mirror step only needs to copy Vampire into the site.
+        #
+        # Built twice because the mount point is baked into the bundle: Pages
+        # serves this under /browse/, Cloudflare at its root. See vite.config.js.
+        env:
+          SKIP_VAMPIRE: '1'
+          NO_REBUILD: '1'
         run: |
-          crates/wasm/build-npm.sh
+          VITE_BASE=/browse/ npm run build --workspace @sigma/web
           mkdir -p site/browse
-          cp -R crates/wasm/web/* site/browse/       # web/pkg is gitignored / absent in CI;
-                                                      # web/vampire is gitignored, present when
-                                                      # build-vampire.sh (above) succeeded
-          rm -rf site/browse/pkg
-          cp -R crates/wasm/pkg site/browse/pkg
+          cp -R packages/web/dist/* site/browse/
+
+          VITE_BASE=/ npm run build --workspace @sigma/web
+          mkdir -p site-cloudflare
+          cp -R packages/web/dist/* site-cloudflare/
+
+          # The deploy gate below keys off this file.
+          test -f site/browse/index.html
 
       # Stamps the demo with the workspace crate version + this run's build
       # number/commit/timestamp. Read client-side by the Settings modal
@@ -311,16 +320,28 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site/browse --project-name=sigma-rs-browse --branch=main
+          command: pages deploy site-cloudflare --project-name=sigma-rs-browse --branch=main
 
+      # A Pages deploy REPLACES the whole site, so publishing an artifact with
+      # no browse/ in it would delete the live demo -- silently, since the demo
+      # step is best-effort. Skipping leaves the previous site up.
       - name: Upload Pages artifact
+        if: steps.demo.outcome == 'success'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
+      - name: Warn that the Pages deploy was skipped
+        if: steps.demo.outcome != 'success'
+        run: |
+          echo "::warning::demo build failed; skipping the Pages deploy so the previous site stays live"
+
   deploy:
     name: deploy pages
     needs: regression
+    # Nothing is uploaded when the demo build failed, so there would be no
+    # artifact to deploy.
+    if: needs.regression.outputs.demo == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

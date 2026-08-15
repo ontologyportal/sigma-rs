@@ -21,6 +21,9 @@ KIF files are parsed once and committed to an [LMDB](https://www.symas.com/lmdb)
         - [Windows](#windows)
     * [Building from Source](#build-from-source)
 - [Workspace Layout](#workspace-layout)
+- [npm Setup](#npm-setup)
+    * [Run the demo site](#run-the-demo-site)
+    * [Build the `sigmakee` npm package](#build-the-sigmakee-npm-package)
 - [Quick Start](#quick-start)
 - [CLI Reference](#cli-reference)
     * [LMDB Caching](#to-cache-or-not-to-cache-that-is-the-question)
@@ -109,13 +112,89 @@ up a PowerShell alias.
 
 ## Workspace layout
 
+This repository is **both a Cargo workspace and an npm workspace**: `crates/`
+holds the Rust members, `packages/` holds the JavaScript members. The two meet
+at `crates/wasm`, whose compiled output is what the `sigmakee` npm package
+publishes and what the demo site runs in the browser.
+
 | Crate | Description |
 |---|---|
 | `crates/core` (`sigmakee-rs-core`) | Core library for the Sigmakee implementation |
 | `crates/sdk` (`sigmakee-rs-sdk`) | SDK which makes software consumption of `sigmakee-rs-core` more intuitive |
 | `crates/cli` (`sigmakee`) | Command line interface for SUMO, builds the `sumo` executable |
 | `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
-| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings + web UI (browser / Node.js) |
+| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings for the browser / Node.js |
+
+| Package | Published? | Description |
+|---|---|---|
+| `packages/sigmakee` (`sigmakee`) | yes | The publishable wasm package: `crates/wasm` built with `wasm-bindgen`, plus the SDK-shaped `./sdk` facade |
+| `packages/web` (`@sigma/web`) | no | The SUMO browser demo site (Vite); consumes `sigmakee` as a workspace dependency |
+| `packages/vampire` (`@sigma/vampire`) | no | Emscripten build of the Vampire prover, for the optional in-browser "Vampire (WASM)" backend |
+| `packages/language` (`@sigma/language`) | no | Editor-neutral SUO-KIF / TPTP language assets shared by the web app and the VSCode extension |
+
+---
+
+## npm setup
+
+Node 24+ and npm 11+ are expected; `cargo` and `rustup` must be on `PATH`
+because the wasm package compiles Rust as part of its build.
+
+```bash
+npm install          # once, from the repository root -- links all workspaces
+```
+
+That single install also provides the `wasm-opt` used for the size pass (the
+pinned `binaryen` devDependency), so no system package is needed.
+
+### Run the demo site
+
+```bash
+npm run web          # → http://localhost:8080/
+```
+
+This rebuilds `packages/sigmakee`, best-effort builds the Vampire backend, then
+starts Vite. Useful env vars:
+
+| Variable | Effect |
+|---|---|
+| `NO_REBUILD=1` | Skip the wasm rebuild and serve whatever is already built |
+| `SKIP_VAMPIRE=1` | Skip the Vampire backend build (a multi-minute Emscripten build) |
+| `VAMPIRE_RECLONE=1` | Force a clean Vampire rebuild |
+
+```bash
+SKIP_VAMPIRE=1 npm run web    # typical: skip the Emscripten toolchain
+```
+
+The Rust source is **not** watched -- Vite's HMR covers the JS/CSS it serves,
+not the Rust→wasm step. Re-run `npm run web` after changing Rust code.
+
+### Build the `sigmakee` npm package
+
+```bash
+npm run build --workspace sigmakee     # → packages/sigmakee/dist/
+```
+
+The build installs the `wasm-bindgen-cli` version pinned in the workspace
+`Cargo.lock` if it is missing — into a repo-local `target/wasm-bindgen/`, never
+over a globally installed one — adds the `wasm32-unknown-unknown` target,
+compiles `--release`, runs `wasm-bindgen`, size-optimizes with `wasm-opt -Oz`,
+and stages the SDK facade beside the generated bindings. `npm install` also
+runs it, via the package's `prepare` hook, so a fresh clone has a resolvable
+`sigmakee` without a separate build step.
+
+To inspect what would be published (`--ignore-scripts` so it reports the
+already-built `dist/` rather than rebuilding it):
+
+```bash
+npm publish --dry-run --ignore-scripts --workspace sigmakee
+```
+
+The Vampire backend builds separately, and needs the Emscripten SDK plus GNU
+awk (see `packages/vampire/build.sh` for the full list):
+
+```bash
+npm run build --workspace @sigma/vampire
+```
 
 ---
 

@@ -5,6 +5,14 @@ target/
 .vscode
 scripts/
 !/.github/scripts/
+!/packages/*/scripts/
+
+# npm workspace: build output, the mirrored Vampire copy, and the LICENSE
+# staged into the package at build time.
+node_modules/
+packages/*/dist*/
+packages/web/public/vampire/
+packages/sigmakee/LICENSE
 TODO.md
 *.tptp
 *.p

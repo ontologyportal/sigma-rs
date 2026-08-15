@@ -16,18 +16,55 @@ prover).
 
 ## Workspace layout
 
+This repo is **both a Cargo workspace and an npm workspace**. Rust members
+live in `crates/`, JavaScript members in `packages/`; they meet at
+`crates/wasm`, whose build output is what the `sigmakee` npm package ships.
+
 | Crate | Description |
 |---|---|
 | `crates/core` (`sigmakee-rs-core`) | Core library: KB, cache, parsing, semantics, translation, prover layers |
 | `crates/sdk` (`sigmakee-rs-sdk`) | Consumption-friendly SDK over `sigmakee-rs-core` |
 | `crates/cli` (`sigmakee`) | Command line interface, builds the `sumo` executable |
 | `crates/lsp` (`sumo-lsp`) | Persistent language server for IDE integration |
-| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings + web UI (browser / Node.js) |
+| `crates/wasm` (`sumo-parser-wasm`) | WASM bindings for the browser / Node.js |
+
+| Package | Published? | Description |
+|---|---|---|
+| `packages/sigmakee` (`sigmakee`) | yes | The publishable wasm package: `crates/wasm` via `wasm-bindgen`, plus the `./sdk` facade. Built by `scripts/build.mjs` into `dist/` |
+| `packages/web` (`@sigma/web`) | no | The SUMO browser demo (Vite). Consumes `sigmakee` as a workspace dependency -- there is no `pkg/` mirroring |
+| `packages/vampire` (`@sigma/vampire`) | no | Emscripten build of Vampire for the optional in-browser backend. Everything but `package.json`/`build.sh` is gitignored |
+| `packages/language` (`@sigma/language`) | no | Editor-neutral SUO-KIF / TPTP language assets |
 
 Inside `crates/core/src`, the major subsystems are `kb/` (knowledge base),
 `cache/`, `parse/`, `semantics/`, `syntactic/`, `trans/` (translation to
 TPTP dialects etc.), `persist/`, and `prover/` (backend integrations,
 including the native prover under `prover/saturate/`).
+
+### npm commands
+
+Run these from the repository root; `npm install` once first.
+
+| Command | Effect |
+|---|---|
+| `npm run web` | Rebuild the wasm package, best-effort build Vampire, serve the demo on :8080 |
+| `npm run build --workspace sigmakee` | Build the publishable package into `packages/sigmakee/dist/` |
+| `npm run build --workspace @sigma/web` | Production `vite build` into `packages/web/dist/` |
+| `npm run build --workspace @sigma/vampire` | Emscripten build (needs emsdk + gawk) |
+
+`SKIP_VAMPIRE=1` / `NO_REBUILD=1` / `VAMPIRE_RECLONE=1` apply to `npm run web`.
+Prefer `SKIP_VAMPIRE=1 npm run web` unless you are specifically testing the
+Vampire backend -- it is a multi-minute Emscripten build.
+
+Notes that matter when editing this area:
+- The Rust→wasm step is **not** watched. Re-run after changing Rust code.
+- `wasm-opt` comes from the pinned `binaryen` devDependency, not the system.
+  Do not reintroduce a distro `binaryen` install: the version apt ships is too
+  old for the opcodes this build emits, and the failure is non-fatal, so it
+  silently ships a ~25% larger `.wasm`.
+- Vite statically rewrites `new URL('.', import.meta.url)`. `app.js` derives
+  its router `BASE` from `import.meta.env.BASE_URL` for that reason -- the demo
+  deploys both at a site root and under `/browse/`, so do not reintroduce a
+  module-URL-derived base.
 
 ## Cache architecture: lazy vs. eager, and what it means for new features
 
@@ -181,7 +218,7 @@ agentic sessions. Treat it as read-only:
 ## Commits
 
 - This repo enforces Conventional Commits (see `CONTRIBUTING.md` and
-  `crates/.commitlintrc.yml`). Every commit message must use one of:
+  `.github/.commitlintrc.yml`). Every commit message must use one of:
   `build, ci, chore, docs, feat, fix, perf, refactor, revert, style, test`,
   lower-case type and scope, a non-empty lower-case subject with no
   trailing period, header <=100 chars, and a blank line before any body or

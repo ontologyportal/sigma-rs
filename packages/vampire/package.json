@@ -1,0 +1,15 @@
+{
+  "name": "@sigma/vampire",
+  "version": "2.1.3",
+  "private": true,
+  "description": "Emscripten build of the Vampire theorem prover, for the in-browser \"Vampire (WASM)\" backend. Not published to npm; consumed as a local workspace package.",
+  "license": "GPL-3.0",
+  "scripts": {
+    "build": "./build.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ontologyportal/sigma-rs.git",
+    "directory": "packages/vampire"
+  }
+}

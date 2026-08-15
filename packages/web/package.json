@@ -1,0 +1,22 @@
+{
+  "name": "@sigma/web",
+  "version": "2.1.3",
+  "private": true,
+  "description": "SUMO browser -- the demo site over the sigmakee wasm engine.",
+  "type": "module",
+  "scripts": {
+    "mirror": "node scripts/mirror.mjs",
+    "predev": "npm run mirror",
+    "dev": "vite",
+    "prebuild": "npm run mirror",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "sigmakee": "*",
+    "@sigma/language": "*"
+  },
+  "devDependencies": {
+    "vite": "^7.1.12"
+  }
+}

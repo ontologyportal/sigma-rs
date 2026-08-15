@@ -8,8 +8,8 @@
 # source and the vprover/vampireGuide build scripts that know how to compile
 # it for Emscripten are fetched fresh into a gitignored cache directory,
 # pinned to specific commits for reproducibility (bump VAMPIRE_GUIDE_REF /
-# the guide's own vampire-version.env pin to update). This mirrors how
-# serve.sh already treats the Rust→wasm build: nothing built is committed.
+# the guide's own vampire-version.env pin to update). This mirrors how the
+# Rust->wasm build is treated: nothing built is committed.
 #
 # Requires:
 #   - the Emscripten SDK (emcc / emcmake / emmake on PATH)
@@ -21,14 +21,13 @@
 #     `brew install gawk` on macOS.
 #   - git, cmake, python3, make — the ordinary Vampire native-build deps.
 #
-# Output: web/vampire/{vampire.js,vampire.wasm,vampire-runner.js} (gitignored,
-# same treatment as web/pkg/) — serve.sh copies nothing further; this script
-# writes directly into web/.
+# Output: dist/{vampire.js,vampire.wasm,vampire-runner.js} (gitignored);
+# @sigma/web mirrors it into public/vampire/ so the demo can load the runner.
 #
-#   ./build-vampire.sh                # build once, skip on a later call at
-#                                      # the same pin (see BUILT_STAMP below)
-#   VAMPIRE_RECLONE=1 ./build-vampire.sh   # force a clean rebuild
-#   SKIP_VAMPIRE=1 ./build-vampire.sh      # no-op (serve.sh's opt-out)
+#   npm run build --workspace @sigma/vampire   # skipped at the same pin (see
+#                                              # BUILT_STAMP below)
+#   VAMPIRE_RECLONE=1 ...   # force a clean rebuild
+#   SKIP_VAMPIRE=1 ...      # no-op (the web dev-server opt-out)
 set -euo pipefail
 
 if [ "${SKIP_VAMPIRE:-}" = "1" ]; then
@@ -36,11 +35,11 @@ if [ "${SKIP_VAMPIRE:-}" = "1" ]; then
   exit 0
 fi
 
-CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CACHE_DIR="${VAMPIRE_CACHE_DIR:-$CRATE_DIR/.vampire-cache}"
+PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE_DIR="${VAMPIRE_CACHE_DIR:-$PKG_DIR/.vampire-cache}"
 GUIDE_DIR="$CACHE_DIR/guide"
 VAMPIRE_DIR="$CACHE_DIR/vampire"
-OUT_DIR="$CRATE_DIR/web/vampire"
+OUT_DIR="$PKG_DIR/dist"
 
 # Pinned to a specific vampireGuide commit — NOT `main` — so this build is
 # reproducible; vampireGuide's own vampire-version.env (fetched below, at

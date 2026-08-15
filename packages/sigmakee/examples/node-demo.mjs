@@ -3,7 +3,7 @@
  * the native saturation prover, using a `web`-target build.
  *
  * Build the package first, then run:
- *     ./build-npm.sh            # produces crates/wasm/pkg/  (web target)
+ *     npm run build             # produces packages/sigmakee/dist/ (web target)
  *     node examples/node-demo.mjs
  *
  * The `web` target's default export is an `init(module_or_bytes)` function; in
@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const pkg = join(here, "..", "pkg");
+const pkg = join(here, "..", "dist");
 
 const mod = await import(join(pkg, "sumo_parser_wasm.js"));
 const init = mod.default;

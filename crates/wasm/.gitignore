@@ -1,11 +1,9 @@
-# npm build output from build-npm.sh / wasm-pack
+# Nothing is built into this crate directory any more; packages/sigmakee owns
+# the wasm output. These cover stray local wasm-pack runs and the output of the
+# retired build-npm.sh / serve.sh / build-vampire.sh, which an older checkout
+# may still have on disk (the Vampire build tree is GB-scale).
 /pkg/
 /pkg-*/
 node_modules/
-# demo's local copy of the package (serve.sh mirrors pkg/ here)
-/web/pkg/
-/web/pkg-threaded/
-# build-vampire.sh: cloned vampire source + build dir, never committed
 /.vampire-cache/
-# build-vampire.sh output (vampire.js/.wasm/-runner.js), never committed
-/web/vampire/
+/web/

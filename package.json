@@ -1,0 +1,9 @@
+{
+  "name": "sigma-rs",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "web": "npm run dev --workspace @sigma/web",
+    "build": "npm run build --workspace sigmakee"
+  }
+}

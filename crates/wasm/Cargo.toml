@@ -23,8 +23,8 @@ js-sys                     = "0.3"
 
 # parallel feature: `sigmakee-rs-core/parallel` is itself compile_error!-banned
 # on plain wasm32 (see core's lib.rs) — it only compiles in a threads-enabled
-# build (atomics + bulk-memory via -Zbuild-std, built by build-npm.sh's
-# threaded variant). wasm-bindgen-rayon supplies the JS-callable
+# build (atomics + bulk-memory via -Zbuild-std), which this repo's own build
+# pipeline does not produce. wasm-bindgen-rayon supplies the JS-callable
 # `initThreadPool` that spins up the worker pool this feature's rayon calls
 # then run on.
 wasm-bindgen-rayon         = { version = "1", optional = true }

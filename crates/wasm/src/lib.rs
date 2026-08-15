@@ -15,7 +15,8 @@ use sigmakee_rs_core::TranslationLayer;
 // spins up the wasm-bindgen-rayon worker pool. Plain (non-`atomics`) wasm32
 // builds never link this — `sigmakee-rs-core/parallel` itself is
 // compile_error!-banned there, so the feature can only be on in a
-// -Zbuild-std threads-enabled build (see build-npm.sh's threaded variant).
+// -Zbuild-std threads-enabled build. Nothing in this repo's build pipeline
+// produces one; the feature is left available for external consumers.
 #[cfg(feature = "parallel")]
 pub use wasm_bindgen_rayon::init_thread_pool;
 

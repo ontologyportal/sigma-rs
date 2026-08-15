@@ -1,0 +1,6 @@
+# Vampire is built from upstream source; nothing fetched or produced is
+# committed. Ignore everything except the files that drive the build.
+*
+!.gitignore
+!package.json
+!build.sh
