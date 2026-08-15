@@ -1065,7 +1065,7 @@ impl WasmNativeProver {
     #[wasm_bindgen]
     pub fn ask(&self, query_kif: &str, session: Option<String>) -> Result<JsValue, JsValue> {
         let opts = self.config.to_native_opts(self.inner.sine_axiom_count());
-        let sine = opts.selection.clone();
+        let sine = opts.selection;
         let result = self
             .inner
             .ask_query(query_kif, session.as_deref(), sine, opts);

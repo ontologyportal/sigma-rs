@@ -1706,7 +1706,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if let Some(k) = seat_key(&subst(a, binding)) {
                     match seat_idx.get(&(*rel, seat as u8, k)) {
                         Some(list) => {
-                            if narrowed.map_or(true, |c| list.len() < c.len()) {
+                            if narrowed.is_none_or(|c| list.len() < c.len()) {
                                 narrowed = Some(list);
                             }
                         }
@@ -1722,7 +1722,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             } else {
                 narrowed.map_or(rel_facts.len(), |c| c.len())
             };
-            if pick.as_ref().map_or(true, |(_, _, bn)| count < *bn) {
+            if pick.as_ref().is_none_or(|(_, _, bn)| count < *bn) {
                 let cands = if dead {
                     Some(Vec::new())
                 } else {

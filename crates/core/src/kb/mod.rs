@@ -142,7 +142,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 impl<L: HasTranslation + TopLayer> KnowledgeBase<L> {
     /// Top layer (translation).
     pub(crate) fn translation(&self) -> &TranslationLayer {
-        &self.layer.translation()
+        self.layer.translation()
     }
 }
 

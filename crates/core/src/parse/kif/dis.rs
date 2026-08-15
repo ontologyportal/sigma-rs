@@ -211,7 +211,7 @@ impl fmt::Display for Pretty<'_> {
                 write!(f, "{color_magenta}{}{color_reset}", flat(self.0))
             }
             AstNode::Symbol { name, .. } => {
-                if name.chars().next().map_or(false, |c| c.is_lowercase()) {
+                if name.chars().next().is_some_and(|c| c.is_lowercase()) {
                     write!(f, "{color_bright_blue}{}{color_reset}", name)
                 } else {
                     write!(f, "{color_yellow}{}{color_reset}", name)

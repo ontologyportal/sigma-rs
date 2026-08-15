@@ -450,7 +450,7 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
                 return Some((r.key().clone(), r.value().clone()));
             }
         }
-        return None;
+        None
     }
 
     /// Return clones of all `(key, value)` pairs for which `f` returns `true`.
@@ -461,7 +461,7 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
                 if f((r.key(), r.value())) {
                     return Some((r.key().clone(), r.value().clone()));
                 }
-                return None;
+                None
             })
             .collect()
     }

@@ -610,9 +610,9 @@ impl TranslationLayer {
         scope: crate::semantics::types::Scope,
     ) -> bool {
         schema.guards.iter().all(|g| match g {
-            PvGuard::Instance { var, class } => binding.get(var).map_or(false, |&r| {
-                self.reaches_via_instance_scoped(r, *class, scope)
-            }),
+            PvGuard::Instance { var, class } => binding
+                .get(var)
+                .is_some_and(|&r| self.reaches_via_instance_scoped(r, *class, scope)),
             PvGuard::Subrelation { v1, v2 } => match (binding.get(v1), binding.get(v2)) {
                 (Some(&r1), Some(&r2)) => self
                     .semantic

@@ -4,18 +4,15 @@ use super::formula::Formula;
 use super::symbol::{Function, Predicate, Sort};
 
 /// TPTP logic dialect used when this problem is serialised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
 pub enum LogicMode {
     /// First-order form (`fof(...)`).
+    #[default]
     Fof,
     /// Typed first-order form (`tff(...)`).
     Tff,
-}
-
-impl Default for LogicMode {
-    fn default() -> Self {
-        LogicMode::Fof
-    }
 }
 
 /// A pure-Rust TPTP problem.

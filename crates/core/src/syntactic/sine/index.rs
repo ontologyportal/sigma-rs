@@ -503,7 +503,7 @@ impl SineIndex {
             let currently_owns = self
                 .sym_to_owned
                 .get(&s)
-                .map_or(false, |set| set.contains(&a));
+                .is_some_and(|set| set.contains(&a));
             match (currently_owns, should_own) {
                 (false, true) => {
                     self.sym_to_owned.entry(s).or_default().insert(a);

@@ -217,7 +217,7 @@ fn discover_test_sources(
 
 fn push_if_test(p: PathBuf, out: &mut Vec<(String, Source)>) {
     let is_test =
-        Parser::from_filename(&p.to_string_lossy()).map_or(false, |parser| parser.is_test());
+        Parser::from_filename(&p.to_string_lossy()).is_some_and(|parser| parser.is_test());
     if is_test {
         out.push((p.display().to_string(), Source::Local(vec![p])));
     }
@@ -235,7 +235,7 @@ fn push_if_test_labeled(
     out: &mut Vec<(String, Source)>,
 ) {
     let is_test =
-        Parser::from_filename(&path.to_string_lossy()).map_or(false, |parser| parser.is_test());
+        Parser::from_filename(&path.to_string_lossy()).is_some_and(|parser| parser.is_test());
     if is_test {
         out.push((label, build(path)));
     } else {

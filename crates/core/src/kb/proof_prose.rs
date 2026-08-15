@@ -297,29 +297,29 @@ fn is_false(f: &AstNode) -> bool {
 /// Everything else renders as-is.
 fn render_assumption(f: &AstNode, render: &mut impl FnMut(&AstNode) -> String) -> String {
     if let AstNode::List { elements, .. } = f {
-        if elements.len() == 2 {
-            if matches!(
+        if elements.len() == 2
+            && matches!(
                 &elements[0],
                 AstNode::Operator {
                     op: OpKind::Not,
                     ..
                 }
-            ) {
-                if let AstNode::List {
-                    elements: inner, ..
-                } = &elements[1]
-                {
-                    let vars: Vec<&str> = inner[1..]
-                        .iter()
-                        .filter_map(|a| match a {
-                            AstNode::Variable { name, .. } => Some(name.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    if vars.len() == 1 {
-                        let positive = render(&elements[1]);
-                        return positive.replace(&format!("?{}", vars[0]), "nothing");
-                    }
+            )
+        {
+            if let AstNode::List {
+                elements: inner, ..
+            } = &elements[1]
+            {
+                let vars: Vec<&str> = inner[1..]
+                    .iter()
+                    .filter_map(|a| match a {
+                        AstNode::Variable { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                if vars.len() == 1 {
+                    let positive = render(&elements[1]);
+                    return positive.replace(&format!("?{}", vars[0]), "nothing");
                 }
             }
         }

@@ -211,7 +211,7 @@ impl SineIndex {
             out.push(nt);
             let (_set, n2) = self.select_reporting_next(seed_syms, nt, depth_limit);
             // Guard against a non-advancing breakpoint (FP corner case).
-            if n2.map_or(false, |v| v <= nt) {
+            if n2.is_some_and(|v| v <= nt) {
                 break;
             }
             next = n2;

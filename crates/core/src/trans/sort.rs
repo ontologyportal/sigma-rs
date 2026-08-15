@@ -120,9 +120,9 @@ impl Sort {
     }
 }
 
-impl Into<IrSort> for Sort {
-    fn into(self) -> IrSort {
-        match self {
+impl From<Sort> for IrSort {
+    fn from(val: Sort) -> Self {
+        match val {
             Sort::Individual => IrSort::default_sort(),
             Sort::Real => IrSort::real(),
             Sort::Rational => IrSort::rational(),

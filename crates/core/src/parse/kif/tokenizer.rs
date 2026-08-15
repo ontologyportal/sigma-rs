@@ -77,8 +77,8 @@ impl TokenKind {
             TokenKind::Symbol(_)
             | TokenKind::Variable(_)
             | TokenKind::RowVariable(_)
-            | TokenKind::Operator(_) => return true,
-            _ => return false,
+            | TokenKind::Operator(_) => true,
+            _ => false,
         }
     }
 }

@@ -128,7 +128,7 @@ impl<'a> SemanticValidator<'a> {
                 match dom {
                     RelationDomain::Domain(dom_id) => {
                         let dom_name = self.sym_name_str(*dom_id);
-                        if dom_name == &*ROOT_SYMBOL.name() {
+                        if dom_name == *ROOT_SYMBOL.name() {
                             return true;
                         }
                         // A class is an instance of `Class`, hence of every
@@ -156,7 +156,7 @@ impl<'a> SemanticValidator<'a> {
                     }
                     RelationDomain::DomainSubclass(dom_id) => {
                         let dom_name = self.sym_name_str(*dom_id);
-                        if dom_name == &*ROOT_SYMBOL.name() {
+                        if dom_name == *ROOT_SYMBOL.name() {
                             return true;
                         }
                         // `domainSubclass R N Class` means "the argument must be a

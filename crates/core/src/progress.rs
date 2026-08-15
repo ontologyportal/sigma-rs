@@ -428,7 +428,7 @@ pub enum LogLevel {
 #[macro_export]
 macro_rules! log {
     ($level:ident, $target:literal, $message:expr) => {
-        crate::emit_event!(crate::progress::ProgressEvent::Log {
+        $crate::emit_event!(crate::progress::ProgressEvent::Log {
             level: crate::progress::LogLevel::$level,
             target: $target,
             message: $message

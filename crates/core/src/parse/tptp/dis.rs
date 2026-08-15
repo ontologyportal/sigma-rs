@@ -215,8 +215,7 @@ fn arrow_domain(arity: usize) -> String {
     } else {
         format!(
             "({})",
-            std::iter::repeat("$i")
-                .take(arity)
+            std::iter::repeat_n("$i", arity)
                 .collect::<Vec<_>>()
                 .join(" * ")
         )

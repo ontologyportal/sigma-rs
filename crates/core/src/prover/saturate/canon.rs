@@ -225,10 +225,11 @@ fn rename(t: &Term, map: &mut super::hash64::Map64<SymbolId, SymbolId>) -> Term 
 /// Sort the two sides of an equality atom by blanked key, in place.
 fn orient_equality(t: &mut Term) {
     let Term::App(elems) = t else { return };
-    if elems.len() == 3 && matches!(elems[0], Term::Op(OpKind::Equal)) {
-        if blank_key(&elems[1]) > blank_key(&elems[2]) {
-            elems.swap(1, 2);
-        }
+    if elems.len() == 3
+        && matches!(elems[0], Term::Op(OpKind::Equal))
+        && blank_key(&elems[1]) > blank_key(&elems[2])
+    {
+        elems.swap(1, 2);
     }
 }
 

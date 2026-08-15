@@ -129,8 +129,8 @@ impl EagerMapBehavior for NumericSorts {
         _side: &Self::Side,
     ) {
         for (sym_name, sort) in NUMERIC_ROOTS {
-            if let Some(sym_id) = parent.semantic.syntactic.sym_id(*sym_name) {
-                assign_descendents_to_sort(&store, &parent.semantic, sym_id, *sort);
+            if let Some(sym_id) = parent.semantic.syntactic.sym_id(sym_name) {
+                assign_descendents_to_sort(store, &parent.semantic, sym_id, *sort);
             }
             // Missing root class is silently skipped: partial KBs and test
             // fixtures may not define every numeric root.

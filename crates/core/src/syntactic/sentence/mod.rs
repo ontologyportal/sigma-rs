@@ -110,7 +110,7 @@ impl Sentence {
             return None;
         };
 
-        let Some(first) = elements_ast.get(0) else {
+        let Some(first) = elements_ast.first() else {
             unreachable!("The parser should have found and rejected empty sentences");
         };
 
@@ -138,7 +138,7 @@ impl Sentence {
         // bound variables to a freshly minted scope.
         let child_ctx;
         let body_ctx = if matches!(
-            elements_ast.get(0),
+            elements_ast.first(),
             Some(AstNode::Operator {
                 op: OpKind::Exists | OpKind::ForAll,
                 ..

@@ -206,7 +206,7 @@ impl EagerMapBehavior for SessionCache {
                 // only retract individually.
                 Event::SessionRetracted { session } => {
                     side.tombstones.remove(&session_id(session));
-                    let is_axiom_session = store.get(session).map_or(false, |e| e.axiomatized);
+                    let is_axiom_session = store.get(session).is_some_and(|e| e.axiomatized);
                     if !is_axiom_session {
                         store.evict_keys(&[session.clone()]);
                     }
@@ -230,7 +230,7 @@ impl EagerMapBehavior for SessionCache {
                         store.modify_entry(name.clone(), |entry| {
                             entry.sentences.remove(sid);
                         });
-                        if store.get(&name).map_or(false, |e| e.sentences.is_empty()) {
+                        if store.get(&name).is_some_and(|e| e.sentences.is_empty()) {
                             store.evict_keys(&[name]);
                         }
                     }

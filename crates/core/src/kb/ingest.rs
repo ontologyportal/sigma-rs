@@ -175,10 +175,8 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         staged: bool,
     ) -> RouteOutcome {
         profile_span!(self, "ingest.source_cascade");
-        if matches!(source.origin, crate::types::FileOrigin::Inline) {
-            if source.name.is_empty() {
-                source.name = self.layer.semantic().syntactic.next_inline_source_key();
-            }
+        if matches!(source.origin, crate::types::FileOrigin::Inline) && source.name.is_empty() {
+            source.name = self.layer.semantic().syntactic.next_inline_source_key();
         }
         self.layer.cascade(vec![Event::SourceAdded {
             session: Arc::new(session.to_owned()),

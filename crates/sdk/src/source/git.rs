@@ -69,9 +69,9 @@ pub fn fetch_repo_sparse(
     let tmp = TempDir::new().map_err(|e| SdkError::TempDir(PathBuf::new(), e))?;
     let dest = tmp.path();
 
-    let repo = Repository::init(dest).map_err(|e| SdkError::Git(e))?;
+    let repo = Repository::init(dest).map_err(SdkError::Git)?;
 
-    let mut remote = repo.remote("origin", url).map_err(|e| SdkError::Git(e))?;
+    let mut remote = repo.remote("origin", url).map_err(SdkError::Git)?;
 
     let branch = match branch {
         Some(b) => b.to_string(),
@@ -98,15 +98,13 @@ pub fn fetch_repo_sparse(
             Some(&mut fetch_opts),
             None,
         )
-        .map_err(|e| SdkError::Git(e))?;
+        .map_err(SdkError::Git)?;
 
     // bar.finish_and_clear();
 
-    let reference = repo
-        .find_reference(&local_ref)
-        .map_err(|e| SdkError::Git(e))?;
-    let commit = reference.peel_to_commit().map_err(|e| SdkError::Git(e))?;
-    let tree = commit.tree().map_err(|e| SdkError::Git(e))?;
+    let reference = repo.find_reference(&local_ref).map_err(SdkError::Git)?;
+    let commit = reference.peel_to_commit().map_err(SdkError::Git)?;
+    let tree = commit.tree().map_err(SdkError::Git)?;
 
     checkout_paths(&repo, &tree, dest, sparse_paths)?;
 
@@ -149,17 +147,16 @@ fn checkout_paths(
         match tree.get_path(path) {
             Ok(entry) => match entry.kind() {
                 Some(ObjectType::Blob) => {
-                    let blob = repo.find_blob(entry.id()).map_err(|e| SdkError::Git(e))?;
+                    let blob = repo.find_blob(entry.id()).map_err(SdkError::Git)?;
                     let out = dest.join(path);
                     if let Some(parent) = out.parent() {
                         fs::create_dir_all(parent)
                             .map_err(|e| SdkError::TempDir(parent.into(), e))?;
                     }
-                    fs::write(&out, blob.content())
-                        .map_err(|e| SdkError::TempDir(out.into(), e))?;
+                    fs::write(&out, blob.content()).map_err(|e| SdkError::TempDir(out, e))?;
                 }
                 Some(ObjectType::Tree) => {
-                    let subtree = repo.find_tree(entry.id()).map_err(|e| SdkError::Git(e))?;
+                    let subtree = repo.find_tree(entry.id()).map_err(SdkError::Git)?;
                     extract_tree(repo, &subtree, &dest.join(path))?;
                 }
                 _ => {
@@ -184,12 +181,12 @@ fn extract_tree(repo: &Repository, tree: &Tree, dest: &Path) -> Result<(), SdkEr
         };
         match entry.kind() {
             Some(ObjectType::Blob) => {
-                let blob = repo.find_blob(entry.id()).map_err(|e| SdkError::Git(e))?;
+                let blob = repo.find_blob(entry.id()).map_err(SdkError::Git)?;
                 fs::write(dest.join(name), blob.content())
-                    .map_err(|e| SdkError::TempDir(dest.join(name).into(), e))?;
+                    .map_err(|e| SdkError::TempDir(dest.join(name), e))?;
             }
             Some(ObjectType::Tree) => {
-                let subtree = repo.find_tree(entry.id()).map_err(|e| SdkError::Git(e))?;
+                let subtree = repo.find_tree(entry.id()).map_err(SdkError::Git)?;
                 extract_tree(repo, &subtree, &dest.join(name))?;
             }
             _ => {}

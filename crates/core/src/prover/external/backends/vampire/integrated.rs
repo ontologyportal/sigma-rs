@@ -134,7 +134,7 @@ impl ProverRunner for IntegratedVampireRunner {
         // loop varies it run-to-run); fall back to the runner's own field.
         let timeout = opts.timeout();
         if timeout > 0 {
-            vp_opts.timeout(Duration::from_secs(timeout as u64));
+            vp_opts.timeout(Duration::from_secs(timeout));
         }
         match opts.mode {
             ProverMode::Prove => {

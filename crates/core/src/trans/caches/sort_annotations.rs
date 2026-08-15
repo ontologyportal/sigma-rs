@@ -68,9 +68,7 @@ impl CacheBehavior for SortAnnotationsCache {
     fn generate(&self, parent: &TranslationLayer, key: &Self::Key) -> Self::Value {
         if !parent.semantic.is_relation(*key) {
             return SortAnnotation::Constant(
-                parent
-                    .sort_for_symbol(*key)
-                    .unwrap_or_else(|_| Sort::Individual),
+                parent.sort_for_symbol(*key).unwrap_or(Sort::Individual),
             );
         }
 

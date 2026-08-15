@@ -1108,7 +1108,7 @@ impl<'a> SemanticOracle<'a> {
         };
         match found {
             Some(hops) => {
-                if let Some(w) = why.as_deref_mut() {
+                if let Some(w) = why {
                     w.extend(hops);
                     let (inst, tr) = (self.instance_id, self.transitive_id);
                     w.push(Witness {
@@ -1681,7 +1681,7 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
         }
         // Antisymmetry: both subclass directions ⇒ equal.
         let fwd = self.holds(self.subclass_id, x, y, why.as_deref_mut());
-        if fwd && self.holds(self.subclass_id, y, x, why.as_deref_mut()) {
+        if fwd && self.holds(self.subclass_id, y, x, why) {
             return true;
         }
         false

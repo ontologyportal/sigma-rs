@@ -246,10 +246,7 @@ impl SourceFile {
             .to_string();
         let parser = match Parser::from_filename(&name) {
             Some(p) => p,
-            None => match Parser::from_contents(&contents) {
-                Some(p) => p,
-                None => return None,
-            },
+            None => Parser::from_contents(&contents)?,
         };
         Some(Self {
             parser,

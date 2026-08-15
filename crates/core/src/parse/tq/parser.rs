@@ -350,7 +350,7 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
 /// [`DocItem`].  Parse errors are forwarded verbatim (positionally independent
 /// of the returned items, like every other parser).
 pub fn parse_tq(content: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, KifParseError)>) {
-    let (tokens, tok_err) = kif::tokenize(&content, file);
+    let (tokens, tok_err) = kif::tokenize(content, file);
     let (nodes, parse_err) = kif::parse(tokens, file);
     let items = nodes.into_iter().map(|n| classify(n, file)).collect();
     let mut errors = tok_err;

@@ -69,7 +69,7 @@ impl<L: TopLayer> Session<L> {
     /// method. The path is the same path the LMDB was opened from.
     #[cfg(feature = "persist")]
     pub fn persist(&self) -> SdkResult<()> {
-        self.kb.persist().map_err(|e| SdkError::Kb(e))
+        self.kb.persist().map_err(SdkError::Kb)
     }
 }
 
@@ -118,10 +118,9 @@ impl<L: HasTranslation> Session<L> {
         prover_opts: ExternalOpts,
     ) -> Result<String, Vec<SdkError>> {
         let tc = self.source_to_test_case(src)?;
-        Ok(self
-            .kb
+        self.kb
             .tc_to_tptp(tc, &opts, Some(&self.name), Some(prover_opts))
-            .map_err(|e| -> Vec<SdkError> { e.into_iter().map(|e| SdkError::Kb(e)).collect() })?)
+            .map_err(|e| -> Vec<SdkError> { e.into_iter().map(SdkError::Kb).collect() })
     }
 }
 

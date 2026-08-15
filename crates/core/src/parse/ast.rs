@@ -41,7 +41,7 @@ impl OpKind {
 
     /// Whether this operator is a quantifier (`ForAll` or `Exists`).
     pub fn is_quantifier(&self) -> bool {
-        return matches!(self, OpKind::ForAll | OpKind::Exists);
+        matches!(self, OpKind::ForAll | OpKind::Exists)
     }
 }
 

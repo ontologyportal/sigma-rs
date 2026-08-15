@@ -257,7 +257,7 @@ fn numeric_max(sorts: &[Sort]) -> Option<Sort> {
 /// precondition for mapping a SUMO arithmetic relation/function to a TPTP
 /// interpreted theory symbol.  `None` for empty or mixed calls.
 pub(in crate::trans) fn unified_numeric(sorts: &[Sort]) -> Option<Sort> {
-    if sorts.is_empty() || sorts.iter().any(|s| *s == Sort::Individual) {
+    if sorts.is_empty() || sorts.contains(&Sort::Individual) {
         return None;
     }
     numeric_max(sorts)

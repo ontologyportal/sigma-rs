@@ -67,10 +67,8 @@ impl<'a> PatternMatcher<'a> {
             None => self.store.root_sids().into_iter().collect(),
         };
 
-        let candidates: HashSet<SymbolId> = candidates
-            .intersection(&head_candidates)
-            .map(|h| *h)
-            .collect();
+        let candidates: HashSet<SymbolId> =
+            candidates.intersection(&head_candidates).copied().collect();
 
         candidates
             .into_iter()

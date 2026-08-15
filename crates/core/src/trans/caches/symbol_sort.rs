@@ -114,7 +114,7 @@ pub(crate) fn compute_sort_scoped(
             let (numeric_sort_classes, other_classes): (Vec<_>, Vec<_>) = class_ids
                 .iter()
                 .partition(|&id| parent.numeric_sort_of_class(*id).is_some());
-            if numeric_sort_classes.len() == 0 {
+            if numeric_sort_classes.is_empty() {
                 Ok(Sort::Individual)
             } else {
                 // All non-numeric classes must be superclasses of the numeric

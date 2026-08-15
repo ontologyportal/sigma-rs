@@ -159,12 +159,8 @@ impl SemanticLayer {
 
         // Ground (non-variable) argument symbols also carry their global
         // taxonomy class, even when asserted in a different root than this formula.
-        let var_ids: HashSet<SymbolId> = self
-            .syntactic
-            .sentence_vars(root_sid)
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let var_ids: HashSet<SymbolId> =
+            self.syntactic.sentence_vars(root_sid).into_keys().collect();
         let ground: Vec<SymbolId> = candidates
             .keys()
             .copied()
@@ -458,13 +454,7 @@ fn scoped_contain_roots(
     if let Scope::Session(sid) = scope {
         for r in layer.syntactic.sessions.session_sentences_by_id(sid) {
             let mut occ = layer.syntactic.sentence_symbols(r);
-            occ.extend(
-                layer
-                    .syntactic
-                    .sentence_vars(r)
-                    .into_iter()
-                    .map(|(id, _)| id),
-            );
+            occ.extend(layer.syntactic.sentence_vars(r).into_keys());
             if syms.iter().any(|s| occ.contains(s)) {
                 roots.insert(r);
             }

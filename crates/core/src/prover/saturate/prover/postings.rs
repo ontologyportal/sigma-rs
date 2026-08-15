@@ -359,7 +359,7 @@ impl SubtermPostings {
                         _ => None,
                     };
                     if let Some(hk) = hk {
-                        let ar = node.nargs.min(255);
+                        let ar = node.nargs;
                         let p = self.posting(id, lit, path);
                         let b = self.heads.entry((hk, ar)).or_default();
                         b.posts.push(p);

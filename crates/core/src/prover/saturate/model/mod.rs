@@ -382,10 +382,7 @@ impl ModelProgram {
             );
         }
         if live.is_empty() {
-            return match work.evaluate_within(BUDGET, deadline) {
-                Ok(mp) => Some(mp),
-                Err(_) => None,
-            };
+            return work.evaluate_within(BUDGET, deadline).ok();
         }
         let t0 = crate::clock::Instant::now();
         let (mut model, mut prov) = match work.evaluate_within(BUDGET, deadline) {

@@ -233,7 +233,7 @@ fn main_worker() {
     let db = manager.db_path();
     let use_db = !cli.no_db && db.is_some() && (is_load || db.as_ref().is_some_and(|p| p.exists()));
     // Flush before rebuild so the store can be recreated.
-    if matches!(cli.command, Cmd::Load { flush } if flush == true && db.is_some()) {
+    if matches!(cli.command, Cmd::Load { flush } if flush && db.is_some()) {
         run_flush(&manager);
     }
 

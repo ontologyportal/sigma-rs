@@ -711,9 +711,7 @@ fn view_loop<W: Write>(
                         }
                     }
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        if scroll > 0 {
-                            scroll -= 1;
-                        }
+                        scroll = scroll.saturating_sub(1);
                     }
                     (KeyCode::PageDown, _) | (KeyCode::Char(' '), _) => {
                         scroll = (scroll + body_rows.saturating_sub(1)).min(max_scroll);

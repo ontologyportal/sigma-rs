@@ -40,15 +40,15 @@ impl Parser {
     pub fn parse(&self, inp: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn ParseError>)>) {
         let (ast, errors) = match self {
             Parser::Kif => {
-                let (tokens, tok_err) = kif::tokenize(&inp, file);
+                let (tokens, tok_err) = kif::tokenize(inp, file);
                 let (ast, parse_err) = kif::parse(tokens, file);
                 let mut errors = tok_err;
                 errors.extend(parse_err);
-                let doc: Vec<DocItem> = ast.into_iter().map(|ast| DocItem::Stmt(ast)).collect();
+                let doc: Vec<DocItem> = ast.into_iter().map(DocItem::Stmt).collect();
                 (doc, wrap_error(errors))
             }
             Parser::Tptp { options } => {
-                let (tokens, tok_err, metas) = tptp::tokenize_with_meta(&inp, file);
+                let (tokens, tok_err, metas) = tptp::tokenize_with_meta(inp, file);
                 let (mut ast, parse_err) = tptp::parse(tokens, file, options.clone());
                 let mut errors = tok_err;
                 errors.extend(parse_err);
@@ -117,7 +117,7 @@ impl Parser {
     pub fn is_test(&self) -> bool {
         match self {
             Parser::Kif => false,
-            Parser::Tptp { options } => options.as_ref().map_or(false, |o| o.keep_conjectures),
+            Parser::Tptp { options } => options.as_ref().is_some_and(|o| o.keep_conjectures),
             Parser::Tq => true,
         }
     }

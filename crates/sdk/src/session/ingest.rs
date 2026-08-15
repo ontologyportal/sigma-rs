@@ -55,7 +55,7 @@ impl<L: TopLayer> Session<L> {
 
     pub(super) fn ingest_inner(&mut self, src: SourceFile) -> Vec<SdkError> {
         let r = self.kb.load(src, &self.name);
-        r.diagnostics.into_iter().map(|d| SdkError::Kb(d)).collect()
+        r.diagnostics.into_iter().map(SdkError::Kb).collect()
     }
 
     pub(super) fn after_ingest(&mut self) -> SdkResult<()> {
@@ -125,7 +125,7 @@ impl<L: TopLayer> Session<L> {
             }
             // `.tq`: bare KIF statements are already `Hypothesis`-role support.
             let (docs, parse_errs) = sf.parser.parse(&sf.contents, &sf.name);
-            if parse_errs.len() > 0 {
+            if !parse_errs.is_empty() {
                 // Skip tests with parse errors
                 errs.extend(
                     parse_errs

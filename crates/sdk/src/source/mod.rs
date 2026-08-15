@@ -349,7 +349,7 @@ impl Source {
             }
         };
         if let Some(s) = sink {
-            s.emit(&&ProgressEvent::PhaseFinished {
+            s.emit(&ProgressEvent::PhaseFinished {
                 name: "opening source for read",
             });
         }
@@ -383,7 +383,7 @@ fn read_local_file(p: PathBuf) -> SdkResult<SourceFile> {
     });
 
     let contents = splice_tptp_includes(&p, raw)?;
-    SourceFile::from_file(p.clone(), contents, origin).ok_or_else(|| SdkError::Input(p))
+    SourceFile::from_file(p.clone(), contents, origin).ok_or(SdkError::Input(p))
 }
 
 /// Read one on-disk file into a [`SourceFile`], detecting its parser from the
@@ -403,7 +403,7 @@ fn read_file_source(p: PathBuf, origin: FileOrigin) -> SdkResult<SourceFile> {
         source: e,
     })?;
     let contents = splice_tptp_includes(&p, contents)?;
-    SourceFile::from_file(p.clone(), contents, origin).ok_or_else(|| SdkError::Input(p))
+    SourceFile::from_file(p.clone(), contents, origin).ok_or(SdkError::Input(p))
 }
 
 /// Splice TPTP `include('…')` directives (the cross-file handler) when `path`

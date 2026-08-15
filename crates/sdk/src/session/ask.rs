@@ -258,7 +258,7 @@ impl<L: ProvingLayer> Session<L> {
         // Precedence: an explicit (non-zero) caller timeout — e.g. CLI
         // `--timeout` — pins the budget for every case; otherwise each case uses
         // its own `(time N)` directive (`tc.timeout`).
-        let pin_timeout = opts.as_ref().map_or(false, |o| o.timeout() != 0);
+        let pin_timeout = opts.as_ref().is_some_and(|o| o.timeout() != 0);
         let mut prover_opts = opts.unwrap_or_default();
         if !pin_timeout {
             prover_opts.set_timeout(tc.timeout as u64);
@@ -315,7 +315,7 @@ impl<L: ProvingLayer> Session<L> {
                     TestOutcome::Failed {
                         expected: true,
                         got: false,
-                        status: result.status.clone(),
+                        status: result.status,
                     }
                 }
             }
@@ -413,7 +413,7 @@ impl Session<sigmakee_rs_core::ProverLayer> {
 
 impl<L: ProvingLayer> OpenSession<'_, L> {
     fn session_mut(&mut self) -> &mut Session<L> {
-        return &mut self.session;
+        self.session
     }
 
     /// Accumulate more hypotheses.
@@ -451,17 +451,13 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
         );
 
         if res.has_errors() {
-            return res
-                .diagnostics
-                .into_iter()
-                .map(|d| SdkError::Kb(d))
-                .collect();
+            return res.diagnostics.into_iter().map(SdkError::Kb).collect();
         }
 
         let diag = kb
             .validate_session(&session_name)
             .into_iter()
-            .map(|d| SdkError::Kb(d))
+            .map(SdkError::Kb)
             .collect();
 
         kb.flush_session(&session_name);

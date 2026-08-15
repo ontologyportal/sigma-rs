@@ -984,8 +984,10 @@ impl PartialEq for KB {
 /// `{ "codes": [..] }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ElevateWarnings {
     /// Elevate nothing (default): warnings stay warnings.
+    #[default]
     None,
     /// Elevate every warning to an error (`-W all` /
     /// `<preference name="error" value="all">`).
@@ -993,12 +995,6 @@ pub enum ElevateWarnings {
     /// Elevate only these warning codes/names (`-W E005` /
     /// `<error code="E005"/>`).
     Codes(Vec<String>),
-}
-
-impl Default for ElevateWarnings {
-    fn default() -> Self {
-        ElevateWarnings::None
-    }
 }
 
 impl ElevateWarnings {
@@ -1423,17 +1419,17 @@ mod log_level_serde {
     }
 }
 
-impl Into<TptpOptions> for KBManager {
-    fn into(self) -> TptpOptions {
+impl From<KBManager> for TptpOptions {
+    fn from(val: KBManager) -> Self {
         TptpOptions {
-            lang: match self.tptp_lang.as_str() {
+            lang: match val.tptp_lang.as_str() {
                 "fof" => TptpLang::Fof,
                 "tff" => TptpLang::Tff,
                 "cnf" => TptpLang::Cnf,
                 _ => TptpLang::Auto,
             },
             excluded: HashSet::new(),
-            show_kif_comment: self.show_kif,
+            show_kif_comment: val.show_kif,
             ..TptpOptions::default()
         }
     }

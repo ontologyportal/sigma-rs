@@ -436,10 +436,8 @@ fn split_statements(section: &str) -> Vec<String> {
     let mut buf = String::new();
     for line in section.lines() {
         let trimmed = line.trim();
-        if buf.is_empty() {
-            if !(trimmed.starts_with("cnf(") || trimmed.starts_with("fof(")) {
-                continue;
-            }
+        if buf.is_empty() && !(trimmed.starts_with("cnf(") || trimmed.starts_with("fof(")) {
+            continue;
         }
         if !buf.is_empty() {
             buf.push(' ');

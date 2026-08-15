@@ -525,7 +525,7 @@ impl<'p> Kernel<'p> {
         };
         let t = self.join_ticks.get() + 1;
         self.join_ticks.set(t);
-        if t % DEADLINE_CHECK_TICKS != 0 {
+        if !t.is_multiple_of(DEADLINE_CHECK_TICKS) {
             return false;
         }
         if Instant::now() >= dl {

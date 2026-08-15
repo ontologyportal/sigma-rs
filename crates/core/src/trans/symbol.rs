@@ -8,7 +8,7 @@ pub(super) const S: &str = "s__";
 pub(super) const M: &str = "__m";
 
 fn tptp_name(name: &str) -> String {
-    name.replace('.', "_").replace('-', "_")
+    name.replace(['.', '-'], "_")
 }
 
 impl InternedSym {

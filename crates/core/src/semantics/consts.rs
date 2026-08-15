@@ -57,7 +57,7 @@ symbol_set!(
 );
 
 /// Maps SUMO arity-constant symbol names to their integer arity (`-1` = variable).
-pub(crate) const ARITY: &[(&'static str, i32)] = &[
+pub(crate) const ARITY: &[(&str, i32)] = &[
     (env!("SUMO_ARITY_TWO"), 2),
     (env!("SUMO_ARITY_THREE"), 3),
     (env!("SUMO_ARITY_FOUR"), 4),

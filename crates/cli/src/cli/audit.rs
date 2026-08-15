@@ -324,8 +324,8 @@ fn page_derivations(pages: &[String]) -> std::io::Result<()> {
                 pages.len()
             )?;
             out.flush()?;
-            match read()? {
-                Event::Key(k) => match k.code {
+            if let Event::Key(k) = read()? {
+                match k.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Char('n') | KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Right => {
                         if idx + 1 < pages.len() {
@@ -348,8 +348,7 @@ fn page_derivations(pages: &[String]) -> std::io::Result<()> {
                         top = top.saturating_sub(1);
                     }
                     _ => {}
-                },
-                _ => {}
+                }
             }
         }
         Ok(())

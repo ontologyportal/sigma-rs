@@ -1603,7 +1603,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             ClauseFv::compute(
                 lits,
                 self.kbo(),
-                &src,
+                src,
                 &self.layer.atoms,
                 self.syn(),
                 self.opts.strategy.demod.then_some(&self.layer.term_facts),
@@ -1620,7 +1620,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         #[cfg(any(test, debug_assertions))]
         debug_assert_eq!(
             d_blooms,
-            ClauseBlooms::compute(lits, terms, &src),
+            ClauseBlooms::compute(lits, terms, src),
             "transient bloom words diverged from the memoized compute",
         );
         // Candidate scan: every per-candidate filter below (retired bit,
@@ -2446,7 +2446,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// id) — the pre-deferred `pop_given` body.
     fn pop_queue_entry(&mut self) -> Option<u32> {
         self.tick += 1;
-        let prefer_age = self.tick % self.opts.strategy.pick_ratio.max(1) == 0;
+        let prefer_age = self
+            .tick
+            .is_multiple_of(self.opts.strategy.pick_ratio.max(1));
         for pass in 0..2 {
             let from_age = prefer_age == (pass == 0);
             // Retired (backward-demodulated) clauses are lazily skipped

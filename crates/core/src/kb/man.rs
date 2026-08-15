@@ -397,7 +397,7 @@ fn antecedent_consequent(_store: &SyntacticLayer, _sym_id: SymbolId) -> (Vec<Sen
     // ant_vec.sort_unstable();
     // let con = idx.consequent.get(&sym_id).map(|s| s.len()).unwrap_or(0);
     // (ant_vec, con)
-    return (vec![], 0);
+    (vec![], 0)
 }
 
 fn collect_parents(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge> {

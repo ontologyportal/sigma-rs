@@ -54,7 +54,7 @@ impl EagerMapBehavior for AxiomIndex {
                 Event::AxiomsPromoted { sids } => {
                     for sid in sids {
                         let mut ids = parent.sentence_symbols(*sid);
-                        ids.extend(parent.sentence_vars(*sid).into_iter().map(|(id, _)| id));
+                        ids.extend(parent.sentence_vars(*sid).into_keys());
                         for s in ids {
                             axiom_index.modify_entry(s, |set| {
                                 Arc::make_mut(set).insert(*sid);
@@ -119,7 +119,7 @@ impl SyntacticLayer {
                             Some(sub) => stack.push(sub),
                             None => {
                                 out.extend(self.sentence_symbols(*c));
-                                out.extend(self.sentence_vars(*c).into_iter().map(|(id, _)| id));
+                                out.extend(self.sentence_vars(*c).into_keys());
                             }
                         }
                     }

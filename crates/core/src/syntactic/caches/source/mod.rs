@@ -229,7 +229,7 @@ impl EagerMapBehavior for SourceCache {
             references: side
                 .references
                 .iter()
-                .map(|e| (e.key().clone(), e.value().clone()))
+                .map(|e| (*e.key(), e.value().clone()))
                 .collect(),
             origins: side
                 .origins

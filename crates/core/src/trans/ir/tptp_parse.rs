@@ -182,7 +182,7 @@ impl TptpParser {
                     formulas.push((role.to_string(), formula));
                 }
             } else {
-                if let Some(pos) = current_input.find(|c| c == 'f' || c == 't') {
+                if let Some(pos) = current_input.find(['f', 't']) {
                     current_input = &current_input[pos..];
                 } else {
                     break;
@@ -258,29 +258,29 @@ fn ws<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<()> {
 }
 
 fn ident<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<&'a str> {
-    let _ = ws(input)?;
+    ws(input)?;
     let res = take_while(1.., |c: char| {
         c.is_alphanumeric() || c == '_' || c == '$' || c == '+' || c == '-'
     })
     .parse_next(input)?;
-    let _ = ws(input)?;
+    ws(input)?;
     Ok(res)
 }
 
 fn op<'a, 'ctx>(mut s: &'static str) -> impl FnMut(&mut Stream<'a, 'ctx>) -> PResult<&'a str> {
     move |input| {
-        let _ = ws(input)?;
+        ws(input)?;
         let res = s.parse_next(input)?;
-        let _ = ws(input)?;
+        ws(input)?;
         Ok(res)
     }
 }
 
 fn punct<'a, 'ctx>(c: char) -> impl FnMut(&mut Stream<'a, 'ctx>) -> PResult<char> {
     move |input| {
-        let _ = ws(input)?;
+        ws(input)?;
         let res = winnow::token::one_of(c).parse_next(input)?;
-        let _ = ws(input)?;
+        ws(input)?;
         Ok(res)
     }
 }
