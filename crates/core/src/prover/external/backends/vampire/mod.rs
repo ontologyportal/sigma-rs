@@ -24,11 +24,11 @@ pub mod subprocess;
 pub use super::super::super::axiom_source;
 
 #[cfg(feature = "integrated-prover")]
+pub mod integrated;
+#[cfg(feature = "integrated-prover")]
 pub(crate) mod lower;
 #[cfg(feature = "integrated-prover")]
 pub(crate) mod lower_ho;
-#[cfg(feature = "integrated-prover")]
-pub mod integrated;
 #[cfg(feature = "integrated-prover")]
 pub(crate) mod native_proof;
 // The whole proof-binding extractor is parked: it is the "walk the native
@@ -40,6 +40,6 @@ crate::prover::parked! {
     pub(crate) mod bindings;
 }
 
-pub use subprocess::VampireRunner;
 #[cfg(feature = "integrated-prover")]
 pub use integrated::IntegratedVampireRunner;
+pub use subprocess::VampireRunner;

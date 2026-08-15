@@ -54,7 +54,11 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Emit a [`ProgressEvent::Log`] at the given level.
     #[inline(always)]
     pub(crate) fn log(&self, level: LogLevel, message: String) {
-        self.emit(ProgressEvent::Log { level, target: "sigmakee_rs_core::kb", message });
+        self.emit(ProgressEvent::Log {
+            level,
+            target: "sigmakee_rs_core::kb",
+            message,
+        });
     }
 
     /// Emit a log event at [`LogLevel::Info`].
@@ -123,5 +127,5 @@ macro_rules! profile_call {
 macro_rules! with_guard {
     ($self:ident) => {
         let _guard = $crate::progress::SinkGuard::install($self.progress.clone());
-    }
+    };
 }

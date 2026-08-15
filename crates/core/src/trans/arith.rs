@@ -23,11 +23,23 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ArithCond {
-    GreaterThan          { bound: String },
-    GreaterThanOrEqualTo { bound: String },
-    LessThan             { bound: String },
-    LessThanOrEqualTo    { bound: String },
+    GreaterThan {
+        bound: String,
+    },
+    GreaterThanOrEqualTo {
+        bound: String,
+    },
+    LessThan {
+        bound: String,
+    },
+    LessThanOrEqualTo {
+        bound: String,
+    },
     And(Vec<ArithCond>),
     /// `(equal (fn_name ?VAR other_arg) result)` — e.g. `(equal (RemainderFn ?X 2) 0)`.
-    EqualFn { fn_name: String, other_arg: String, result: String },
+    EqualFn {
+        fn_name: String,
+        other_arg: String,
+        result: String,
+    },
 }

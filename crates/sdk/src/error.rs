@@ -31,7 +31,7 @@ pub enum SdkError {
     #[error("I/O error reading {path}: {source}")]
     Io {
         /// File path the SDK tried to read.
-        path:   std::path::PathBuf,
+        path: std::path::PathBuf,
         /// The underlying [`std::io::Error`] from the OS.
         #[source]
         source: std::io::Error,
@@ -43,7 +43,7 @@ pub enum SdkError {
     #[error("cannot read directory '{path}': {message}")]
     DirRead {
         /// Directory path the SDK tried to enumerate.
-        path:    std::path::PathBuf,
+        path: std::path::PathBuf,
         /// Human-readable description of the failure.
         message: String,
     },
@@ -73,7 +73,7 @@ pub enum SdkError {
     #[error("prover failure: {0}")]
     Prover(String),
 
-    /// The system did not allow the SDK to create local resources to 
+    /// The system did not allow the SDK to create local resources to
     /// temporarily store remotely fetched sources
     #[cfg(any(feature = "http", feature = "git"))]
     #[error("failed to create temporary local resources to store remote files: {0}: {1}")]
@@ -142,8 +142,13 @@ mod tests {
     #[test]
     fn display_carries_context() {
         assert!(SdkError::Config("oops".into()).to_string().contains("oops"));
-        assert!(SdkError::Unsupported.to_string().to_lowercase().contains("unsupported"));
-        assert!(SdkError::Input(PathBuf::from("f.dat")).to_string().contains("f.dat"));
+        assert!(SdkError::Unsupported
+            .to_string()
+            .to_lowercase()
+            .contains("unsupported"));
+        assert!(SdkError::Input(PathBuf::from("f.dat"))
+            .to_string()
+            .contains("f.dat"));
     }
 
     #[test]
@@ -185,7 +190,7 @@ impl SdkError {
             SdkError::Input(_) => Severity::Error,
             SdkError::Unsupported => Severity::Error,
             SdkError::MultipleProblems => Severity::Error,
-            SdkError::NoProblem => Severity::Error
+            SdkError::NoProblem => Severity::Error,
         }
     }
 }

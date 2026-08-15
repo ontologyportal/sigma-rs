@@ -1,7 +1,7 @@
 //! Shared data types for the semantic layer.
 
-use crate::{SentenceId, SymbolId};
 use crate::types::SessionId;
+use crate::{SentenceId, SymbolId};
 
 // ---------------------------------------------------------------------------
 // Relations (domain / range axioms)
@@ -23,7 +23,7 @@ impl RelationDomain {
     pub(crate) fn id(&self) -> Option<SymbolId> {
         match self {
             Self::Domain(id) | Self::DomainSubclass(id) => Some(*id),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -46,7 +46,7 @@ impl RelationRange {
     pub(crate) fn id(&self) -> Option<SymbolId> {
         match self {
             Self::Range(id) | Self::RangeSubclass(id) => Some(*id),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -63,11 +63,11 @@ pub use super::taxonomy::{TaxDirection, TaxRelation};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocEntry {
     /// The documentation relation symbol (e.g. `documentation`).
-    pub rel:      SymbolId,
+    pub rel: SymbolId,
     /// Language tag for the blurb (e.g. `EnglishLanguage`).
     pub language: String,
     /// The blurb text, with surrounding KIF string quotes stripped.
-    pub text:     String,
+    pub text: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -170,5 +170,5 @@ pub(crate) struct Scoped<K> {
     /// Scope the key was computed in.
     pub scope: Scope,
     /// The unscoped cache key.
-    pub key:   K,
+    pub key: K,
 }

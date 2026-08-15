@@ -5,18 +5,19 @@
 use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
 use lsp_types::{
-    notification::{DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _},
+    notification::{
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification as _,
+    },
     request::{
         Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
         RangeFormatting, References, Rename, Request as _, SemanticTokensFullRequest,
         WorkspaceSymbolRequest,
     },
     CompletionOptions, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, InitializeParams, InitializeResult, OneOf,
-    PositionEncodingKind, RenameOptions, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url,
-    WorkDoneProgressOptions, WorkspaceFolder,
+    DidOpenTextDocumentParams, InitializeParams, InitializeResult, OneOf, PositionEncodingKind,
+    RenameOptions, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, Url, WorkDoneProgressOptions, WorkspaceFolder,
 };
 use ropey::Rope;
 use serde::de::DeserializeOwned;
@@ -29,8 +30,8 @@ use crate::handlers::{
     handle_hover, handle_range_formatting, handle_references, handle_rename,
     handle_semantic_tokens_full, handle_set_active_files, handle_set_ignored_diagnostics,
     handle_taxonomy, handle_workspace_symbols, publish_diagnostics, semantic_tokens_legend,
-    TaxonomyRequest, SET_ACTIVE_FILES_METHOD, SET_IGNORED_DIAGNOSTICS_METHOD,
-    SetActiveFilesParams, SetIgnoredDiagnosticsParams,
+    SetActiveFilesParams, SetIgnoredDiagnosticsParams, TaxonomyRequest, SET_ACTIVE_FILES_METHOD,
+    SET_IGNORED_DIAGNOSTICS_METHOD,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -41,8 +42,8 @@ pub fn run(connection: Connection) -> Result<()> {
     let init_params: InitializeParams = serde_json::from_value(params)?;
     let result = InitializeResult {
         capabilities: server_capabilities(),
-        server_info:  Some(ServerInfo {
-            name:    "sumo-lsp".to_string(),
+        server_info: Some(ServerInfo {
+            name: "sumo-lsp".to_string(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
         }),
     };
@@ -56,7 +57,8 @@ pub fn run(connection: Connection) -> Result<()> {
     // `initializationOptions: { "clientManagesFiles": true }` to suppress the
     // initial workspace sweep, whose un-loading is quadratic on large
     // workspaces.  Headless clients still get the sweep.
-    let client_manages_files = init_params.initialization_options
+    let client_manages_files = init_params
+        .initialization_options
         .as_ref()
         .and_then(|v| v.get("clientManagesFiles"))
         .and_then(|v| v.as_bool())
@@ -99,38 +101,41 @@ fn server_capabilities() -> ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
-                change:     Some(TextDocumentSyncKind::FULL),
-                save:       None,
-                will_save:  None,
+                change: Some(TextDocumentSyncKind::FULL),
+                save: None,
+                will_save: None,
                 will_save_wait_until: None,
             },
         )),
-        definition_provider:              Some(OneOf::Left(true)),
-        hover_provider:                   Some(lsp_types::HoverProviderCapability::Simple(true)),
-        document_symbol_provider:         Some(OneOf::Left(true)),
-        references_provider:              Some(OneOf::Left(true)),
-        rename_provider:                  Some(OneOf::Right(RenameOptions {
-            prepare_provider:                    Some(false),
-            work_done_progress_options:          WorkDoneProgressOptions::default(),
+        definition_provider: Some(OneOf::Left(true)),
+        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(false),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
-        workspace_symbol_provider:        Some(OneOf::Left(true)),
-        semantic_tokens_provider:         Some(
-            SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                work_done_progress_options:       WorkDoneProgressOptions::default(),
-                legend:                           semantic_tokens_legend(),
-                range:                            Some(false),
-                full:                             Some(SemanticTokensFullOptions::Bool(true)),
-            })
-        ),
-        document_formatting_provider:     Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                work_done_progress_options: WorkDoneProgressOptions::default(),
+                legend: semantic_tokens_legend(),
+                range: Some(false),
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+            },
+        )),
+        document_formatting_provider: Some(OneOf::Left(true)),
         document_range_formatting_provider: Some(OneOf::Left(true)),
-        completion_provider:              Some(CompletionOptions {
+        completion_provider: Some(CompletionOptions {
             // Firing on `(` gives sentence-head completion; space advances to
             // arg-position completion.
-            trigger_characters:             Some(vec![
-                "(".to_string(), " ".to_string(), "?".to_string(), "@".to_string(),
+            trigger_characters: Some(vec![
+                "(".to_string(),
+                " ".to_string(),
+                "?".to_string(),
+                "@".to_string(),
             ]),
-            resolve_provider:               Some(false),
+            resolve_provider: Some(false),
             ..Default::default()
         }),
         ..Default::default()
@@ -143,10 +148,14 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
     // Prefer `workspace_folders`; fall back to the legacy `root_uri`.
     let folders: Vec<WorkspaceFolder> = match &init.workspace_folders {
         Some(fs) if !fs.is_empty() => fs.clone(),
-        _ => {
+        _ =>
+        {
             #[allow(deprecated)]
             if let Some(root) = init.root_uri.clone() {
-                vec![WorkspaceFolder { uri: root, name: "root".to_string() }]
+                vec![WorkspaceFolder {
+                    uri: root,
+                    name: "root".to_string(),
+                }]
             } else {
                 return;
             }
@@ -154,25 +163,34 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
     };
 
     for folder in &folders {
-        let Ok(dir) = folder.uri.to_file_path() else { continue; };
+        let Ok(dir) = folder.uri.to_file_path() else {
+            continue;
+        };
         let kif_files = collect_kif_files(&dir);
         log::info!(target: "sumo_lsp",
             "workspace sweep: {} KIF files in '{}'", kif_files.len(), dir.display());
         for path in kif_files {
             if let Ok(text) = std::fs::read_to_string(&path) {
-                let Ok(uri) = Url::from_file_path(&path) else { continue; };
-                let tag      = uri_to_tag(&uri);
+                let Ok(uri) = Url::from_file_path(&path) else {
+                    continue;
+                };
+                let tag = uri_to_tag(&uri);
                 // Parse errors reject the file entirely so the rest of the
                 // workspace stays healthy; the bad file still publishes
                 // diagnostics below via `parse_document`.
                 let load_report = {
                     let mut session = state.session.write().expect("kb not poisoned");
                     let kb = session.kb_mut();
-                    let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag);
+                    let report = kb.load(
+                        SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()),
+                        &tag,
+                    );
                     // Man-page / documentation introspection reads the Base
                     // scope; a loaded file sits in its own session until
                     // promoted.
-                    if report.ok { let _ = kb.make_session_axiomatic(&tag); }
+                    if report.ok {
+                        let _ = kb.make_session_axiomatic(&tag);
+                    }
                     report
                 };
                 if !load_report.ok {
@@ -182,17 +200,25 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                         tag, load_report.errors().count());
                 }
                 let parsed = parse_document(tag.clone(), text.as_str(), Parser::Kif);
-                let rope   = Rope::from_str(&text);
+                let rope = Rope::from_str(&text);
                 // Publish diagnostics before moving `parsed` into the doc state
                 // (ParsedDocument is not Clone).
                 {
                     let session = state.session.read().expect("kb not poisoned");
-                    publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), None);
+                    publish_diagnostics(
+                        &connection.sender,
+                        &uri,
+                        &rope,
+                        &parsed,
+                        state,
+                        session.kb(),
+                        None,
+                    );
                 }
                 {
                     let mut docs = state.docs.write().expect("docs not poisoned");
-                    let mut ds   = DocState::new(&text, 0);
-                    ds.parsed    = Some(parsed);
+                    let mut ds = DocState::new(&text, 0);
+                    ds.parsed = Some(parsed);
                     docs.insert(uri.clone(), ds);
                 }
             }
@@ -202,7 +228,9 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
 
 fn collect_kif_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else { return out; };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -224,47 +252,37 @@ fn is_kif_file(path: &std::path::Path) -> bool {
 
 fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
     let resp = match req.method.as_str() {
-        HoverRequest::METHOD => {
-            dispatch::<HoverRequest, _>(req, |p| Some(handle_hover(state, p)))
-        }
+        HoverRequest::METHOD => dispatch::<HoverRequest, _>(req, |p| Some(handle_hover(state, p))),
         GotoDefinition::METHOD => {
             dispatch::<GotoDefinition, _>(req, |p| Some(handle_goto_definition(state, p)))
         }
         DocumentSymbolRequest::METHOD => {
             dispatch::<DocumentSymbolRequest, _>(req, |p| Some(handle_document_symbol(state, p)))
         }
-        References::METHOD => {
-            dispatch::<References, _>(req, |p| Some(handle_references(state, p)))
-        }
-        Rename::METHOD => {
-            dispatch::<Rename, _>(req, |p| Some(handle_rename(state, p)))
-        }
+        References::METHOD => dispatch::<References, _>(req, |p| Some(handle_references(state, p))),
+        Rename::METHOD => dispatch::<Rename, _>(req, |p| Some(handle_rename(state, p))),
         WorkspaceSymbolRequest::METHOD => {
             dispatch::<WorkspaceSymbolRequest, _>(req, |p| Some(handle_workspace_symbols(state, p)))
         }
-        SemanticTokensFullRequest::METHOD => {
-            dispatch::<SemanticTokensFullRequest, _>(req, |p| Some(handle_semantic_tokens_full(state, p)))
-        }
-        Formatting::METHOD => {
-            dispatch::<Formatting, _>(req, |p| Some(handle_formatting(state, p)))
-        }
+        SemanticTokensFullRequest::METHOD => dispatch::<SemanticTokensFullRequest, _>(req, |p| {
+            Some(handle_semantic_tokens_full(state, p))
+        }),
+        Formatting::METHOD => dispatch::<Formatting, _>(req, |p| Some(handle_formatting(state, p))),
         RangeFormatting::METHOD => {
             dispatch::<RangeFormatting, _>(req, |p| Some(handle_range_formatting(state, p)))
         }
-        Completion::METHOD => {
-            dispatch::<Completion, _>(req, |p| Some(handle_completion(state, p)))
-        }
+        Completion::METHOD => dispatch::<Completion, _>(req, |p| Some(handle_completion(state, p))),
         // Custom extension request: taxonomy graph for a symbol.
         m if m == <TaxonomyRequest as lsp_types::request::Request>::METHOD => {
             dispatch::<TaxonomyRequest, _>(req, |p| Some(handle_taxonomy(state, p)))
         }
         _ => Response {
-            id:     req.id,
+            id: req.id,
             result: None,
-            error:  Some(lsp_server::ResponseError {
-                code:    lsp_server::ErrorCode::MethodNotFound as i32,
+            error: Some(lsp_server::ResponseError {
+                code: lsp_server::ErrorCode::MethodNotFound as i32,
                 message: format!("sumo-lsp: method '{}' not implemented", req.method),
-                data:    None,
+                data: None,
             }),
         },
     };
@@ -276,9 +294,9 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
 /// encodes "no result" (empty response body, not an error).
 fn dispatch<R, F>(req: Request, handler: F) -> Response
 where
-    R:            lsp_types::request::Request,
-    R::Params:    DeserializeOwned,
-    R::Result:    serde::Serialize,
+    R: lsp_types::request::Request,
+    R::Params: DeserializeOwned,
+    R::Result: serde::Serialize,
     F: FnOnce(R::Params) -> Option<R::Result>,
 {
     match req.extract::<R::Params>(R::METHOD) {
@@ -286,30 +304,30 @@ where
             Some(result) => Response {
                 id,
                 result: Some(serde_json::to_value(&result).expect("serialisable")),
-                error:  None,
+                error: None,
             },
             None => Response {
                 id,
                 result: Some(serde_json::Value::Null),
-                error:  None,
+                error: None,
             },
         },
         Err(ExtractError::MethodMismatch(r)) => Response {
-            id:     r.id,
+            id: r.id,
             result: None,
-            error:  Some(lsp_server::ResponseError {
-                code:    lsp_server::ErrorCode::MethodNotFound as i32,
+            error: Some(lsp_server::ResponseError {
+                code: lsp_server::ErrorCode::MethodNotFound as i32,
                 message: format!("method mismatch for {}", R::METHOD),
-                data:    None,
+                data: None,
             }),
         },
         Err(ExtractError::JsonError { method: _, error }) => Response {
-            id:     lsp_server::RequestId::from(0),
+            id: lsp_server::RequestId::from(0),
             result: None,
-            error:  Some(lsp_server::ResponseError {
-                code:    lsp_server::ErrorCode::InvalidParams as i32,
+            error: Some(lsp_server::ResponseError {
+                code: lsp_server::ErrorCode::InvalidParams as i32,
                 message: format!("parse error: {}", error),
-                data:    None,
+                data: None,
             }),
         },
     }
@@ -317,7 +335,11 @@ where
 
 // -- Notification dispatch ----------------------------------------------------
 
-fn handle_notification(connection: &Connection, state: &GlobalState, not: Notification) -> Result<()> {
+fn handle_notification(
+    connection: &Connection,
+    state: &GlobalState,
+    not: Notification,
+) -> Result<()> {
     match not.method.as_str() {
         DidOpenTextDocument::METHOD => {
             let params = cast_notification::<DidOpenTextDocument>(not)?;
@@ -355,10 +377,10 @@ fn cast_notification<N: lsp_types::notification::Notification>(
 fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenTextDocumentParams) {
     use std::sync::atomic::Ordering;
 
-    let uri      = params.text_document.uri;
-    let text     = params.text_document.text;
-    let version  = params.text_document.version;
-    let tag      = uri_to_tag(&uri);
+    let uri = params.text_document.uri;
+    let text = params.text_document.text;
+    let version = params.text_document.version;
+    let tag = uri_to_tag(&uri);
 
     log::debug!(target: "sumo_lsp", "didOpen '{}' v{}", tag, version);
 
@@ -372,33 +394,50 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
     if !already_loaded && !client_managed {
         let mut session = state.session.write().expect("kb not poisoned");
         let kb = session.kb_mut();
-        let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()), &tag);
+        let report = kb.load(
+            SourceFile::kif(std::path::PathBuf::from(&tag), text.to_string()),
+            &tag,
+        );
         // Promote so man-page introspection (Base scope) sees the file.
-        if report.ok { let _ = kb.make_session_axiomatic(&tag); }
+        if report.ok {
+            let _ = kb.make_session_axiomatic(&tag);
+        }
     }
 
     let parsed = parse_document(tag.clone(), text.as_str(), Parser::Kif);
-    let rope   = Rope::from_str(&text);
+    let rope = Rope::from_str(&text);
     // Publish diagnostics before moving `parsed` into the per-doc state
     // (ParsedDocument is not Clone).
     {
         let session = state.session.read().expect("kb not poisoned");
-        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), Some(version));
+        publish_diagnostics(
+            &connection.sender,
+            &uri,
+            &rope,
+            &parsed,
+            state,
+            session.kb(),
+            Some(version),
+        );
     }
     {
         let mut docs = state.docs.write().expect("docs not poisoned");
-        let mut ds   = DocState::new(&text, version);
-        ds.parsed    = Some(parsed);
+        let mut ds = DocState::new(&text, version);
+        ds.parsed = Some(parsed);
         docs.insert(uri.clone(), ds);
     }
 }
 
 // -- didChange ----------------------------------------------------------------
 
-fn on_did_change(connection: &Connection, state: &GlobalState, params: DidChangeTextDocumentParams) {
-    let uri     = params.text_document.uri;
+fn on_did_change(
+    connection: &Connection,
+    state: &GlobalState,
+    params: DidChangeTextDocumentParams,
+) {
+    let uri = params.text_document.uri;
     let version = params.text_document.version;
-    let tag     = uri_to_tag(&uri);
+    let tag = uri_to_tag(&uri);
 
     log::debug!(target: "sumo_lsp", "didChange '{}' v{}", tag, version);
 
@@ -406,28 +445,41 @@ fn on_did_change(connection: &Connection, state: &GlobalState, params: DidChange
     // `content_changes` entry's `text` replaces the full buffer.
     let new_text = match params.content_changes.last() {
         Some(change) => change.text.clone(),
-        None         => return,
+        None => return,
     };
 
     {
         let mut session = state.session.write().expect("kb not poisoned");
         let kb = session.kb_mut();
-        let report = kb.load(SourceFile::kif(std::path::PathBuf::from(&tag), new_text.to_string()), &tag);
+        let report = kb.load(
+            SourceFile::kif(std::path::PathBuf::from(&tag), new_text.to_string()),
+            &tag,
+        );
         // Re-promote the reconciled delta so man-page introspection
         // (Base scope) keeps seeing the file's current contents.
-        if report.ok { let _ = kb.make_session_axiomatic(&tag); }
+        if report.ok {
+            let _ = kb.make_session_axiomatic(&tag);
+        }
     }
 
     let parsed = parse_document(tag.clone(), new_text.as_str(), Parser::Kif);
-    let rope   = Rope::from_str(&new_text);
+    let rope = Rope::from_str(&new_text);
     {
         let session = state.session.read().expect("kb not poisoned");
-        publish_diagnostics(&connection.sender, &uri, &rope, &parsed, state, session.kb(), Some(version));
+        publish_diagnostics(
+            &connection.sender,
+            &uri,
+            &rope,
+            &parsed,
+            state,
+            session.kb(),
+            Some(version),
+        );
     }
     {
         let mut docs = state.docs.write().expect("docs not poisoned");
-        let mut ds   = DocState::new(&new_text, version);
-        ds.parsed    = Some(parsed);
+        let mut ds = DocState::new(&new_text, version);
+        ds.parsed = Some(parsed);
         docs.insert(uri.clone(), ds);
     }
 }
@@ -450,8 +502,8 @@ fn on_did_close(state: &GlobalState, params: DidCloseTextDocumentParams) {
 /// diagnostics for every affected file.
 fn on_set_active_files(
     connection: &Connection,
-    state:      &GlobalState,
-    not:        Notification,
+    state: &GlobalState,
+    not: Notification,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
 
@@ -464,13 +516,16 @@ fn on_set_active_files(
 
     let report = handle_set_active_files(state, params);
 
-    let docs    = state.docs.read().expect("docs lock not poisoned");
+    let docs = state.docs.read().expect("docs lock not poisoned");
     let session = state.session.read().expect("kb lock not poisoned");
-    let kb      = session.kb();
+    let kb = session.kb();
     for tag in report.added.iter().chain(report.removed.iter()) {
-        let Some(uri) = uri_from_tag(tag) else { continue; };
+        let Some(uri) = uri_from_tag(tag) else {
+            continue;
+        };
         let doc = docs.get(&uri);
-        let rope = doc.map(|d| d.rope.clone())
+        let rope = doc
+            .map(|d| d.rope.clone())
             .unwrap_or_else(|| Rope::from_str(""));
         let parsed = doc.and_then(|d| d.parsed.as_ref());
 
@@ -480,7 +535,7 @@ fn on_set_active_files(
                 // No open document for this tag: reparse from disk so
                 // diagnostics reflect current state.
                 if let Ok(text) = std::fs::read_to_string(tag) {
-                    let p    = parse_document(tag.clone(), text.as_str(), Parser::Kif);
+                    let p = parse_document(tag.clone(), text.as_str(), Parser::Kif);
                     let rope = Rope::from_str(&text);
                     publish_diagnostics(&connection.sender, &uri, &rope, &p, state, kb, None);
                 }
@@ -505,8 +560,8 @@ fn uri_from_tag(tag: &str) -> Option<Url> {
 /// restart.
 fn on_set_ignored_diagnostics(
     connection: &Connection,
-    state:      &GlobalState,
-    not:        Notification,
+    state: &GlobalState,
+    not: Notification,
 ) -> Result<()> {
     let params: SetIgnoredDiagnosticsParams =
         serde_json::from_value(not.params).map_err(|e| anyhow::anyhow!(e))?;
@@ -514,12 +569,20 @@ fn on_set_ignored_diagnostics(
     handle_set_ignored_diagnostics(state, params);
 
     // Republish diagnostics for every open document.
-    let docs    = state.docs.read().expect("docs lock not poisoned");
+    let docs = state.docs.read().expect("docs lock not poisoned");
     let session = state.session.read().expect("kb lock not poisoned");
     for (uri, doc) in docs.iter() {
         let rope = doc.rope.clone();
         if let Some(parsed) = doc.parsed.as_ref() {
-            publish_diagnostics(&connection.sender, uri, &rope, parsed, state, session.kb(), Some(doc.version));
+            publish_diagnostics(
+                &connection.sender,
+                uri,
+                &rope,
+                parsed,
+                state,
+                session.kb(),
+                Some(doc.version),
+            );
         }
     }
     Ok(())

@@ -16,8 +16,7 @@ use super::term::{Term, VarId};
 /// apply light normalisation — see their individual docs. The logical
 /// meaning is preserved; only the tree shape differs. Use the enum
 /// variants directly if you want an un-normalised formula.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Formula {
     /// `p(t1, ..., tn)` — a predicate application.
     Atom { pred: Predicate, args: Vec<Term> },
@@ -83,8 +82,10 @@ impl Formula {
     /// ```
     pub fn atom(pred: Predicate, args: Vec<Term>) -> Self {
         debug_assert_eq!(
-            pred.arity() as usize, args.len(),
-            "Formula::atom arity mismatch for {}", pred.name(),
+            pred.arity() as usize,
+            args.len(),
+            "Formula::atom arity mismatch for {}",
+            pred.name(),
         );
         Self::Atom { pred, args }
     }
@@ -139,10 +140,10 @@ impl Formula {
         let mut flat: Vec<Formula> = Vec::with_capacity(fs.len());
         for f in fs {
             match f {
-                Formula::True       => continue,
-                Formula::False      => return Formula::False,
+                Formula::True => continue,
+                Formula::False => return Formula::False,
                 Formula::And(inner) => flat.extend(inner),
-                other               => flat.push(other),
+                other => flat.push(other),
             }
         }
         match flat.len() {
@@ -164,10 +165,10 @@ impl Formula {
         let mut flat: Vec<Formula> = Vec::with_capacity(fs.len());
         for f in fs {
             match f {
-                Formula::False     => continue,
-                Formula::True      => return Formula::True,
+                Formula::False => continue,
+                Formula::True => return Formula::True,
                 Formula::Or(inner) => flat.extend(inner),
-                other              => flat.push(other),
+                other => flat.push(other),
             }
         }
         match flat.len() {
@@ -195,9 +196,9 @@ impl Formula {
     pub fn not(inner: Formula) -> Self {
         match inner {
             Formula::Not(f) => *f,
-            Formula::True   => Formula::False,
-            Formula::False  => Formula::True,
-            other           => Formula::Not(Box::new(other)),
+            Formula::True => Formula::False,
+            Formula::False => Formula::True,
+            other => Formula::Not(Box::new(other)),
         }
     }
 
@@ -234,8 +235,8 @@ impl Formula {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::symbol::Function;
+    use super::*;
 
     #[test]
     fn formula_atom() {

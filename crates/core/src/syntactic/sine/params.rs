@@ -104,11 +104,11 @@ pub struct SineParams {
 impl Default for SineParams {
     fn default() -> Self {
         Self {
-            tolerance:   default_tolerance(),
+            tolerance: default_tolerance(),
             depth_limit: None,
             auto_budget: Some(default_budget()),
-            select_all:  false,
-            autoscale:   true,
+            select_all: false,
+            autoscale: true,
         }
     }
 }
@@ -117,21 +117,45 @@ impl SineParams {
     /// Strict: tolerance 1.0, unlimited depth — only least-general symbols
     /// trigger.  Disables auto-tolerance and autoscaling.
     pub fn strict() -> Self {
-        Self { tolerance: 1.0, depth_limit: None, auto_budget: None, select_all: false, autoscale: false }
+        Self {
+            tolerance: 1.0,
+            depth_limit: None,
+            auto_budget: None,
+            select_all: false,
+            autoscale: false,
+        }
     }
     /// Benevolent: a fixed user-supplied tolerance, clamped to ≥ 1.0.
     /// Disables auto-tolerance and autoscaling — the value is used verbatim.
     pub fn benevolent(tolerance: f32) -> Self {
-        Self { tolerance: tolerance.max(1.0), depth_limit: None, auto_budget: None, select_all: false, autoscale: false }
+        Self {
+            tolerance: tolerance.max(1.0),
+            depth_limit: None,
+            auto_budget: None,
+            select_all: false,
+            autoscale: false,
+        }
     }
     /// Auto-tolerance with the given starting budget, autoscaling enabled.
     pub fn auto(budget: usize) -> Self {
-        Self { tolerance: default_tolerance(), depth_limit: None, auto_budget: Some(budget), select_all: false, autoscale: true }
+        Self {
+            tolerance: default_tolerance(),
+            depth_limit: None,
+            auto_budget: Some(budget),
+            select_all: false,
+            autoscale: true,
+        }
     }
     /// No preselection: select the entire KB (every axiom).  Equivalent
     /// to the Java SigmaKEE path which hands Vampire the whole ontology.
     pub fn whole_kb() -> Self {
-        Self { tolerance: default_tolerance(), depth_limit: None, auto_budget: None, select_all: true, autoscale: false }
+        Self {
+            tolerance: default_tolerance(),
+            depth_limit: None,
+            auto_budget: None,
+            select_all: true,
+            autoscale: false,
+        }
     }
 
     /// `true` iff the prover-feedback autoscaling loop should run for these
@@ -148,7 +172,10 @@ impl SineParams {
 /// `SINE_SCALE_FACTOR`, default `2`.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub fn scale_factor() -> usize {
-    option_env!("SINE_SCALE_FACTOR").and_then(|s| s.parse().ok()).filter(|&f| f >= 2).unwrap_or(2)
+    option_env!("SINE_SCALE_FACTOR")
+        .and_then(|s| s.parse().ok())
+        .filter(|&f| f >= 2)
+        .unwrap_or(2)
 }
 
 /// Give-up threshold for the widen path: stop after this many consecutive
@@ -156,20 +183,29 @@ pub fn scale_factor() -> usize {
 /// `SINE_MAX_DISPROOFS`, default `6`.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub fn scale_max_disproofs() -> usize {
-    option_env!("SINE_MAX_DISPROOFS").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(6)
+    option_env!("SINE_MAX_DISPROOFS")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(6)
 }
 
 /// Number of full-length prover runs the total timeout is split across for
 /// the narrow path.  `SINE_MAX_TIME_RUNS`, default `4`.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub fn scale_max_time_runs() -> usize {
-    option_env!("SINE_MAX_TIME_RUNS").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(4)
+    option_env!("SINE_MAX_TIME_RUNS")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(4)
 }
 
 /// Floor on the axiom budget when narrowing.  `SINE_MIN_BUDGET`, default `64`.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub fn scale_min_budget() -> usize {
-    option_env!("SINE_MIN_BUDGET").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(64)
+    option_env!("SINE_MIN_BUDGET")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(64)
 }
 
 /// Per-schema cap for predicate-variable instantiation: skip a property
@@ -178,5 +214,8 @@ pub fn scale_min_budget() -> usize {
 /// even within a single problem).  `SINE_PREDVAR_CAP`, default `32`.
 #[cfg(feature = "ask")]
 pub fn scale_predvar_cap() -> usize {
-    option_env!("SINE_PREDVAR_CAP").and_then(|s| s.parse().ok()).filter(|&n| n >= 1).unwrap_or(32)
+    option_env!("SINE_PREDVAR_CAP")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(32)
 }

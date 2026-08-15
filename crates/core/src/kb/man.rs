@@ -10,12 +10,12 @@
 //! lookups plus a combined [`ManPage`] carrying kind / parents /
 //! signature data from the semantic layer. All queries are pure reads.
 
-use crate::SentenceId;
 use crate::layer::{Layer, TopLayer};
 use crate::semantics::consts::{DOC_RELATION, FORMAT_RELATION, TERM_RELATION};
 use crate::syntactic::SyntacticLayer;
 use crate::types::{DocEntry, RelationDomain, RelationRange};
 use crate::types::{Element, SymbolId};
+use crate::SentenceId;
 
 use super::KnowledgeBase;
 
@@ -38,11 +38,11 @@ impl ManKind {
     /// Lowercase string label for this category.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Class      => "class",
-            Self::Relation   => "relation",
-            Self::Function   => "function",
-            Self::Predicate  => "predicate",
-            Self::Instance   => "instance",
+            Self::Class => "class",
+            Self::Relation => "relation",
+            Self::Function => "function",
+            Self::Predicate => "predicate",
+            Self::Instance => "instance",
             Self::Individual => "individual",
         }
     }
@@ -51,7 +51,7 @@ impl ManKind {
 /// Signature expectation for one argument or return value of a relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortSig {
-    pub class:    String,
+    pub class: String,
     /// True for `(domainSubclass …)` / `(rangeSubclass …)` declarations --
     /// the argument is itself a *class* (not an instance of it).
     pub subclass: bool,
@@ -74,41 +74,41 @@ pub struct SentenceRef(pub usize, pub SentenceId);
 /// Everything a man-page view needs for one symbol.
 #[derive(Debug, Clone)]
 pub struct ManPage {
-    pub name:          String,
-    pub kinds:         Vec<ManKind>,
+    pub name: String,
+    pub kinds: Vec<ManKind>,
     /// All `(documentation sym _ _)` hits in KB order.
     pub documentation: Vec<DocEntry>,
     /// All `(termFormat _ sym _)` hits in KB order.
-    pub term_format:   Vec<DocEntry>,
+    pub term_format: Vec<DocEntry>,
     /// All `(format _ sym _)` hits in KB order.  Empty for non-relation symbols.
-    pub format:        Vec<DocEntry>,
+    pub format: Vec<DocEntry>,
     /// Taxonomic parents: `(subclass sym Parent)` / `(instance sym Parent)` / ...
-    pub parents:       Vec<ParentEdge>,
+    pub parents: Vec<ParentEdge>,
     /// Taxonomic children — the inverse edges: `(subclass Child sym)` /
     /// `(instance Child sym)` / `(subrelation Child sym)` /
     /// `(subAttribute Child sym)`.  In each [`ParentEdge`] here, the
     /// `parent` field holds the **child** symbol; `relation` is the KIF head.
-    pub children:      Vec<ParentEdge>,
+    pub children: Vec<ParentEdge>,
     /// Declared arity (from the `BinaryRelation` / `TernaryRelation` / ...
     /// ancestry).  `None` when unknown; `Some(-1)` for variable-arity
     /// relations.
-    pub arity:         Option<i32>,
+    pub arity: Option<i32>,
     /// Positional domains indexed by 1-based argument position.
     /// Arguments with no explicit declaration are elided.
-    pub domains:       Vec<(usize, SortSig)>,
+    pub domains: Vec<(usize, SortSig)>,
     /// Declared range (functions and relations that declare one).
-    pub range:         Option<SortSig>,
+    pub range: Option<SortSig>,
     /// Sentences where the symbol appears at the **root level** of
     /// the sentence's element list, along with the 0-based position
     /// of its first such occurrence.  One entry per sentence: if the
     /// same symbol appears at multiple root positions in one sentence,
     /// only the leftmost is recorded.
-    pub ref_args:      Vec<SentenceRef>,
+    pub ref_args: Vec<SentenceRef>,
     /// Sentences where the symbol appears **only inside a nested
     /// sub-sentence** (never at the root level).  Surfaced separately
     /// so consumers can display them under a dedicated heading without
     /// mis-reporting an argument position.
-    pub ref_nested:    Vec<SentenceId>,
+    pub ref_nested: Vec<SentenceId>,
     /// Total number of root formulas this symbol occurs in (at any
     /// depth), from the syntactic occurrence index.  Includes
     /// documentation / taxonomy / format sentences — the raw
@@ -116,13 +116,13 @@ pub struct ManPage {
     pub appears_in_count: usize,
     /// Normalized-implication root sids in which the symbol appears in
     /// the **antecedent**, derived from the CAF branch index.  Sorted.
-    pub antecedent_refs:  Vec<SentenceId>,
+    pub antecedent_refs: Vec<SentenceId>,
     /// Number of normalized-implication roots in which the symbol
     /// appears in the **consequent**.
     pub consequent_count: usize,
     /// Root sids this symbol **owns** per the SInE index — those for
     /// which it is a least-general (trigger) symbol at tolerance 1.0.
-    pub owned_sids:       std::collections::HashSet<SentenceId>,
+    pub owned_sids: std::collections::HashSet<SentenceId>,
 }
 
 /// One taxonomic parent edge from the symbol.  `relation` is the KIF
@@ -131,7 +131,7 @@ pub struct ManPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParentEdge {
     pub relation: String,
-    pub parent:   String,
+    pub parent: String,
 }
 
 // -- KnowledgeBase API --------------------------------------------------------
@@ -142,16 +142,28 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// only `Predicate` is reported).
     pub(crate) fn kinds_of(&self, sym: SymbolId) -> Vec<ManKind> {
         let mut kinds = Vec::new();
-        if self.is_class(sym)     { kinds.push(ManKind::Class); }
-        if self.is_function(sym)  { kinds.push(ManKind::Function); }
-        if self.is_predicate(sym) { kinds.push(ManKind::Predicate); }
+        if self.is_class(sym) {
+            kinds.push(ManKind::Class);
+        }
+        if self.is_function(sym) {
+            kinds.push(ManKind::Function);
+        }
+        if self.is_predicate(sym) {
+            kinds.push(ManKind::Predicate);
+        }
         if self.is_relation(sym)
-            && !kinds.iter().any(|k| matches!(k, ManKind::Function | ManKind::Predicate))
+            && !kinds
+                .iter()
+                .any(|k| matches!(k, ManKind::Function | ManKind::Predicate))
         {
             kinds.push(ManKind::Relation);
         }
-        if self.is_instance(sym)  { kinds.push(ManKind::Instance); }
-        if kinds.is_empty()       { kinds.push(ManKind::Individual); }
+        if self.is_instance(sym) {
+            kinds.push(ManKind::Instance);
+        }
+        if kinds.is_empty() {
+            kinds.push(ManKind::Individual);
+        }
         kinds
     }
 
@@ -160,8 +172,15 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// returned.
     pub fn documentation(&self, symbol: &str, language: Option<&str>) -> Vec<DocEntry> {
         let doc_hash = DOC_RELATION.id();
-        let Some(id) = self.symbol_id(symbol) else { return Vec::new(); };
-        self.layer.semantic().documentation(id, language).into_iter().filter(|d| d.rel == doc_hash).collect()
+        let Some(id) = self.symbol_id(symbol) else {
+            return Vec::new();
+        };
+        self.layer
+            .semantic()
+            .documentation(id, language)
+            .into_iter()
+            .filter(|d| d.rel == doc_hash)
+            .collect()
     }
 
     /// Return every `(termFormat <lang> <symbol> "...")` entry.  When
@@ -182,8 +201,15 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// sessions alike. Man pages use these so metadata renders immediately on
     /// ingest, before promotion; the scoped variants above serve the prover.
     fn documentation_any(&self, symbol: &str, rel: SymbolId) -> Vec<DocEntry> {
-        let Some(id) = self.symbol_id(symbol) else { return Vec::new(); };
-        self.layer.semantic().documentation_any(id, None).into_iter().filter(|d| d.rel == rel).collect()
+        let Some(id) = self.symbol_id(symbol) else {
+            return Vec::new();
+        };
+        self.layer
+            .semantic()
+            .documentation_any(id, None)
+            .into_iter()
+            .filter(|d| d.rel == rel)
+            .collect()
     }
 
     /// Build a full man-page view for `symbol`.  `None` if the symbol is not
@@ -202,9 +228,14 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// `symbol` is not interned.  (As in [`ManPage`], the downward edges reuse
     /// [`ParentEdge`] with the *child* in the `parent` field.)
     pub fn taxonomy_edges(&self, symbol: &str) -> (Vec<ParentEdge>, Vec<ParentEdge>) {
-        let Some(sym_id) = self.symbol_id(symbol) else { return (Vec::new(), Vec::new()) };
+        let Some(sym_id) = self.symbol_id(symbol) else {
+            return (Vec::new(), Vec::new());
+        };
         let store = &self.layer.semantic().syntactic;
-        (collect_parents(store, sym_id), collect_children(store, sym_id))
+        (
+            collect_parents(store, sym_id),
+            collect_children(store, sym_id),
+        )
     }
 
     /// Every symbol declared `(instance X C)` where `C` is `class` or a
@@ -213,13 +244,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// empty when `class` is not interned.
     pub fn instances_of(&self, class: &str) -> Vec<String> {
         let store = &self.layer.semantic().syntactic;
-        let Some(root) = self.symbol_id(class) else { return Vec::new() };
+        let Some(root) = self.symbol_id(class) else {
+            return Vec::new();
+        };
 
         // Downward subclass closure from `root`: (subclass CHILD PARENT).
         let mut edges: std::collections::HashMap<SymbolId, Vec<SymbolId>> =
             std::collections::HashMap::new();
         for sid in store.by_head("subclass").iter().copied() {
-            let Some(sent) = store.sentence(sid) else { continue };
+            let Some(sent) = store.sentence(sid) else {
+                continue;
+            };
             if let (Some(Element::Symbol(child)), Some(Element::Symbol(parent))) =
                 (sent.elements.get(1), sent.elements.get(2))
             {
@@ -238,7 +273,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
         let mut out: Vec<String> = Vec::new();
         for sid in store.by_head("instance").iter().copied() {
-            let Some(sent) = store.sentence(sid) else { continue };
+            let Some(sent) = store.sentence(sid) else {
+                continue;
+            };
             if let (Some(Element::Symbol(inst)), Some(Element::Symbol(class))) =
                 (sent.elements.get(1), sent.elements.get(2))
             {
@@ -254,7 +291,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 }
 
 impl KnowledgeBase {
-
     /// Run the deferred normalization + rewrite pass so that the
     /// introspection data the man page reads — `normal_implications`,
     /// the antecedent/consequent branch index, `suppressed`, and the
@@ -272,7 +308,11 @@ impl KnowledgeBase {
     /// for a suppressed sentence should fall back to
     /// [`Self::synthetic_replacements_of`].
     pub fn sentence_tptp(&self, sid: SentenceId, mode: crate::TptpLang) -> Option<String> {
-        let cf = if mode.is_typed() { self.layer.formula_tff(sid)? } else { self.layer.formula_fof(sid)? };
+        let cf = if mode.is_typed() {
+            self.layer.formula_tff(sid)?
+        } else {
+            self.layer.formula_fof(sid)?
+        };
         Some(cf.formula.to_tptp())
     }
 
@@ -288,10 +328,13 @@ impl KnowledgeBase {
     pub fn synthetic_replacements_of(&self, sid: SentenceId) -> Vec<SentenceId> {
         self.layer.synthetic_replacements(&[sid])
     }
-
 }
 
-fn build_manpage<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, sym_id: SymbolId, name: &str) -> ManPage {
+fn build_manpage<L: TopLayer + Layer>(
+    kb: &KnowledgeBase<L>,
+    sym_id: SymbolId,
+    name: &str,
+) -> ManPage {
     let kinds = kb.kinds_of(sym_id);
 
     let store = &kb.layer.semantic().syntactic;
@@ -303,8 +346,7 @@ fn build_manpage<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, sym_id: SymbolId, n
     let appears_in_count = store.axiom_sentences_of(sym_id).len();
     let (antecedent_refs, consequent_count) = antecedent_consequent(store, sym_id);
     let owned_sids = store.sine_current(|idx| {
-        let seed: std::collections::HashSet<SymbolId> =
-            std::iter::once(sym_id).collect();
+        let seed: std::collections::HashSet<SymbolId> = std::iter::once(sym_id).collect();
         idx.select(&seed, 1.0, Some(1))
     });
 
@@ -312,8 +354,8 @@ fn build_manpage<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, sym_id: SymbolId, n
         name: name.to_string(),
         kinds,
         documentation: kb.documentation_any(name, DOC_RELATION.id()),
-        term_format:   kb.documentation_any(name, TERM_RELATION.id()),
-        format:        kb.documentation_any(name, FORMAT_RELATION.id()),
+        term_format: kb.documentation_any(name, TERM_RELATION.id()),
+        format: kb.documentation_any(name, FORMAT_RELATION.id()),
         parents,
         children,
         arity,
@@ -332,17 +374,19 @@ fn build_manpage<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, sym_id: SymbolId, n
 /// (surfaced in their own DOCUMENTATION / TERM FORMAT / FORMAT sections)
 /// and the taxonomy relations (surfaced in PARENTS).
 const EXCLUDED_REF_HEADS: &[&str] = &[
-    "documentation", "termFormat", "format",
-    "subclass", "instance", "subrelation", "subAttribute",
+    "documentation",
+    "termFormat",
+    "format",
+    "subclass",
+    "instance",
+    "subrelation",
+    "subAttribute",
 ];
 
 /// Classify the symbol's occurrences into antecedent membership (sorted
 /// distinct implication roots) and a consequent count, using the
 /// normalization branch index.
-fn antecedent_consequent(
-    _store:  &SyntacticLayer,
-    _sym_id: SymbolId,
-) -> (Vec<SentenceId>, usize) {
+fn antecedent_consequent(_store: &SyntacticLayer, _sym_id: SymbolId) -> (Vec<SentenceId>, usize) {
     // TODO: restore via the normalization branch index.
     // let idx = store.impl_sym_index();
     // let mut ant_vec: Vec<SentenceId> = idx
@@ -361,17 +405,21 @@ fn collect_parents(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge> 
     let mut out = Vec::new();
     for &rel_head in TAX_RELATIONS {
         for sid in store.by_head(rel_head).iter().copied() {
-            let Some(sent) = store.sentence(sid) else { continue };
+            let Some(sent) = store.sentence(sid) else {
+                continue;
+            };
             // Shape: (rel CHILD PARENT) -- child at elements[1], parent at [2].
             let child_ok = matches!(
                 sent.elements.get(1),
                 Some(Element::Symbol(sym)) if sym.id() == sym_id
             );
-            if !child_ok { continue; }
+            if !child_ok {
+                continue;
+            }
             if let Some(Element::Symbol(parent)) = sent.elements.get(2) {
                 out.push(ParentEdge {
                     relation: rel_head.to_string(),
-                    parent:   parent.to_string(),
+                    parent: parent.to_string(),
                 });
             }
         }
@@ -387,17 +435,21 @@ fn collect_children(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge>
     let mut out = Vec::new();
     for &rel_head in TAX_RELATIONS {
         for sid in store.by_head(rel_head).iter().copied() {
-            let Some(sent) = store.sentence(sid) else { continue };
+            let Some(sent) = store.sentence(sid) else {
+                continue;
+            };
             // Shape: (rel CHILD PARENT) — parent at elements[2] must be `sym`.
             let parent_ok = matches!(
                 sent.elements.get(2),
                 Some(Element::Symbol(sym)) if sym.id() == sym_id
             );
-            if !parent_ok { continue; }
+            if !parent_ok {
+                continue;
+            }
             if let Some(Element::Symbol(child)) = sent.elements.get(1) {
                 out.push(ParentEdge {
                     relation: rel_head.to_string(),
-                    parent:   child.to_string(),
+                    parent: child.to_string(),
                 });
             }
         }
@@ -406,25 +458,37 @@ fn collect_children(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge>
 }
 
 fn signature<L: TopLayer + Layer>(
-    kb:     &KnowledgeBase<L>,
+    kb: &KnowledgeBase<L>,
     sym_id: SymbolId,
 ) -> (Option<i32>, Vec<(usize, SortSig)>, Option<SortSig>) {
     let arity = kb.layer.semantic().arity(sym_id);
     let range = sort_sig_range(kb, &kb.layer.semantic().range(sym_id));
     let domains_raw = kb.layer.semantic().domain(sym_id);
-    let domains: Vec<(usize, SortSig)> = domains_raw.iter().cloned().enumerate()
+    let domains: Vec<(usize, SortSig)> = domains_raw
+        .iter()
+        .cloned()
+        .enumerate()
         .filter_map(|(i, rd)| {
-            if matches!(rd, RelationDomain::Unknown) { return None; }
+            if matches!(rd, RelationDomain::Unknown) {
+                return None;
+            }
             Some((i + 1, sort_sig(kb, &rd)?))
         })
         .collect();
     (arity, domains, range)
 }
 
-fn sort_sig_range<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationRange) -> Option<SortSig> {
+fn sort_sig_range<L: TopLayer + Layer>(
+    kb: &KnowledgeBase<L>,
+    rd: &RelationRange,
+) -> Option<SortSig> {
     let id = rd.id()?;
     Some(SortSig {
-        class:    kb.layer.semantic().syntactic.sym_name(id)
+        class: kb
+            .layer
+            .semantic()
+            .syntactic
+            .sym_name(id)
             .map(|s| s.name().to_string())
             .unwrap_or_default(),
         subclass: matches!(rd, RelationRange::RangeSubclass(_)),
@@ -434,7 +498,11 @@ fn sort_sig_range<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationRange
 fn sort_sig<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationDomain) -> Option<SortSig> {
     let id = rd.id()?;
     Some(SortSig {
-        class:    kb.layer.semantic().syntactic.sym_name(id)
+        class: kb
+            .layer
+            .semantic()
+            .syntactic
+            .sym_name(id)
             .map(|s| s.name().to_string())
             .unwrap_or_default(),
         subclass: matches!(rd, RelationDomain::DomainSubclass(_)),
@@ -456,17 +524,16 @@ fn sort_sig<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationDomain) -> 
 /// Both lists are sorted by sid for deterministic output and
 /// deduplicated (one entry per root sid even if the symbol occurs
 /// multiple times in that sentence).
-fn collect_refs(
-    store:  &SyntacticLayer,
-    sym_id: SymbolId,
-) -> (Vec<SentenceRef>, Vec<SentenceId>) {
-    let mut args:   Vec<SentenceRef> = Vec::new();
-    let mut nested: Vec<SentenceId>  = Vec::new();
+fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, Vec<SentenceId>) {
+    let mut args: Vec<SentenceRef> = Vec::new();
+    let mut nested: Vec<SentenceId> = Vec::new();
     let mut sids: Vec<SentenceId> = store.axiom_sentences_of(sym_id).iter().copied().collect();
     sids.sort_unstable();
 
     for sid in sids {
-        let Some(sent) = store.sentence(sid) else { continue };
+        let Some(sent) = store.sentence(sid) else {
+            continue;
+        };
         if let Some(head_id) = sent.head_symbol() {
             if let Some(head_name) = store.sym_name(head_id) {
                 if EXCLUDED_REF_HEADS.contains(&head_name.name().as_ref()) {
@@ -474,12 +541,14 @@ fn collect_refs(
                 }
             }
         }
-        let root_hit = sent.elements.iter().enumerate().find_map(|(i, el)| {
-            match el {
+        let root_hit = sent
+            .elements
+            .iter()
+            .enumerate()
+            .find_map(|(i, el)| match el {
                 Element::Symbol(sym) if sym.id() == sym_id => Some(i),
                 _ => None,
-            }
-        });
+            });
         if let Some(pos) = root_hit {
             args.push(SentenceRef(pos, sid));
             continue;
@@ -499,12 +568,16 @@ fn collect_refs(
 /// Does the sentence tree rooted at `sid` contain any direct
 /// `Element::Symbol { id: sym_id }` at any depth?
 fn subtree_contains_symbol(store: &SyntacticLayer, sid: SentenceId, sym_id: SymbolId) -> bool {
-    let Some(sent) = store.sentence(sid) else { return false };
+    let Some(sent) = store.sentence(sid) else {
+        return false;
+    };
     for el in &sent.elements {
         match el {
             Element::Symbol(sym) if sym.id() == sym_id => return true,
             Element::Sub(sub_sid) => {
-                if subtree_contains_symbol(store, *sub_sid, sym_id) { return true; }
+                if subtree_contains_symbol(store, *sub_sid, sym_id) {
+                    return true;
+                }
             }
             _ => {}
         }
@@ -542,33 +615,59 @@ mod tests {
             (termFormat EnglishLanguage Widget "widget")
             (format EnglishLanguage part "%1 is a part of %2")
             "#,
-            &std::path::PathBuf::from("t.kif"), "t.kif");
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         // NOTE: deliberately NOT promoted.
 
         let page = kb.manpage("Widget").expect("Widget interned on ingest");
-        assert_eq!(page.documentation.len(), 1, "doc must show pre-promote: {:?}", page.documentation);
+        assert_eq!(
+            page.documentation.len(),
+            1,
+            "doc must show pre-promote: {:?}",
+            page.documentation
+        );
         assert_eq!(page.documentation[0].text, "A widget.");
-        assert_eq!(page.term_format.len(), 1, "termFormat must show pre-promote");
+        assert_eq!(
+            page.term_format.len(),
+            1,
+            "termFormat must show pre-promote"
+        );
         assert_eq!(page.term_format[0].text, "widget");
 
         let part = kb.manpage("part").expect("part interned on ingest");
-        assert_eq!(part.format.len(), 1, "format must show pre-promote: {:?}", part.format);
+        assert_eq!(
+            part.format.len(),
+            1,
+            "format must show pre-promote: {:?}",
+            part.format
+        );
         assert_eq!(part.format[0].text, "%1 is a part of %2");
     }
 
     #[test]
     fn documentation_round_trip() {
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human EnglishLanguage "A &%Human being.")
             (documentation Human FrenchLanguage  "Un être &%humain.")
-        "#);
+        "#,
+        );
         let all = kb.documentation("Human", None);
         assert_eq!(all.len(), 2);
-        assert!(all.iter().any(|d| d.language == "EnglishLanguage" && d.text == "A &%Human being."),
-            "expected English entry, got {:?}", all);
-        assert!(all.iter().any(|d| d.language == "FrenchLanguage" && d.text == "Un être &%humain."),
-            "expected French entry, got {:?}", all);
+        assert!(
+            all.iter()
+                .any(|d| d.language == "EnglishLanguage" && d.text == "A &%Human being."),
+            "expected English entry, got {:?}",
+            all
+        );
+        assert!(
+            all.iter()
+                .any(|d| d.language == "FrenchLanguage" && d.text == "Un être &%humain."),
+            "expected French entry, got {:?}",
+            all
+        );
         let en = kb.documentation("Human", Some("EnglishLanguage"));
         assert_eq!(en.len(), 1);
         let fr = kb.documentation("Human", Some("FrenchLanguage"));
@@ -579,20 +678,24 @@ mod tests {
     #[test]
     fn term_format_argument_order() {
         // termFormat reverses the order: (termFormat LANG SYM TEXT)
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (termFormat EnglishLanguage Human "human")
-        "#);
+        "#,
+        );
         let tf = kb.term_format("Human", None);
         assert_eq!(tf.len(), 1);
         assert_eq!(tf[0].language, "EnglishLanguage");
-        assert_eq!(tf[0].text,     "human");
+        assert_eq!(tf[0].text, "human");
     }
 
     #[test]
     fn format_string_for_relation() {
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (format EnglishLanguage subclass "%1 is a subclass of %2")
-        "#);
+        "#,
+        );
         let fmts = kb.format_string("subclass", None);
         assert_eq!(fmts.len(), 1);
         assert_eq!(fmts[0].text, "%1 is a subclass of %2");
@@ -613,9 +716,7 @@ mod tests {
         // lifted), so ingest as a real file then promote.
         let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
-        let r = kb.make_session_axiomatic(
-            "test.kif"
-        );
+        let r = kb.make_session_axiomatic("test.kif");
         assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
         kb
     }
@@ -630,20 +731,24 @@ mod tests {
         //   3. `(=> (foo ?X) (likes ?X Human))`    — only buried in the Sub
         //      (a top-level `(forall …)` would be stripped at ingest, so we
         //      nest under `=>` to keep `Human` genuinely sub-sentence-only).
-        let kb = kb_promoted_from(r#"
+        let kb = kb_promoted_from(
+            r#"
             (orientation Human Hominid Right)
             (located Socrates Human)
             (=> (foo ?X) (likes ?X Human))
-        "#);
+        "#,
+        );
         let man = kb.manpage("Human").expect("Human must resolve");
         let positions: std::collections::BTreeSet<usize> =
             man.ref_args.iter().map(|r| r.0).collect();
         assert!(
             positions.contains(&1) && positions.contains(&2),
-            "expected arg-1 and arg-2 occurrences, got {:?}", man.ref_args,
+            "expected arg-1 and arg-2 occurrences, got {:?}",
+            man.ref_args,
         );
         assert_eq!(
-            man.ref_nested.len(), 1,
+            man.ref_nested.len(),
+            1,
             "expected exactly one nested ref for the forall axiom, got {:?}",
             man.ref_nested,
         );
@@ -655,19 +760,28 @@ mod tests {
         // NOT appear in the REFERENCES listing (req 4); they're covered by
         // PARENTS / DOCUMENTATION sections.  Only the `(located …)`
         // sentence should survive as a ref.
-        let kb = kb_promoted_from(r#"
+        let kb = kb_promoted_from(
+            r#"
             (subclass Human Hominid)
             (instance Human Agent)
             (documentation Human EnglishLanguage "doc")
             (located Human Earth)
-        "#);
+        "#,
+        );
         let man = kb.manpage("Human").expect("Human must resolve");
-        assert_eq!(man.ref_args.len() + man.ref_nested.len(), 1,
+        assert_eq!(
+            man.ref_args.len() + man.ref_nested.len(),
+            1,
             "only the (located …) ref should survive, got args={:?} nested={:?}",
-            man.ref_args, man.ref_nested);
+            man.ref_args,
+            man.ref_nested
+        );
         // The surviving ref is the `located` sentence with Human at arg-1.
-        assert!(man.ref_args.iter().any(|r| r.0 == 1),
-            "expected the located sentence (arg pos 1), got {:?}", man.ref_args);
+        assert!(
+            man.ref_args.iter().any(|r| r.0 == 1),
+            "expected the located sentence (arg pos 1), got {:?}",
+            man.ref_args
+        );
     }
 
     #[test]
@@ -679,9 +793,11 @@ mod tests {
         let kb = kb_promoted_from("(=> (instance Human Agent) (instance Human Entity))");
         let man = kb.manpage("Human").expect("Human must resolve");
         assert_eq!(
-            man.ref_args.len() + man.ref_nested.len(), 1,
+            man.ref_args.len() + man.ref_nested.len(),
+            1,
             "Human referenced once per sentence: ref_args={:?}, ref_nested={:?}",
-            man.ref_args, man.ref_nested,
+            man.ref_args,
+            man.ref_nested,
         );
     }
 
@@ -693,7 +809,8 @@ mod tests {
         let man = kb.manpage("Hominid").expect("Hominid must resolve");
         assert!(
             man.ref_args.iter().any(|r| r.0 == 2),
-            "expected arg-2 position, got {:?}", man.ref_args,
+            "expected arg-2 position, got {:?}",
+            man.ref_args,
         );
         assert!(man.ref_nested.is_empty());
     }
@@ -701,62 +818,91 @@ mod tests {
     #[test]
     #[ignore = "TODO(migration): antecedent/consequent branch index (impl_sym_index) retired pending Phase-4 rewrite"]
     fn manpage_antecedent_consequent_count_and_filtered_refs() {
-        let mut kb = kb_promoted_from(r#"
+        let mut kb = kb_promoted_from(
+            r#"
             (=> (instance ?X Human) (attribute ?X Rational))
             (subclass Human Animal)
             (documentation Human EnglishLanguage "A &%Human.")
-        "#);
+        "#,
+        );
         kb.ensure_introspection();
 
         let human = kb.manpage("Human").expect("Human resolves");
         // Raw occurrence count: implication + subclass + documentation = 3.
-        assert_eq!(human.appears_in_count, 3,
-            "expected 3 raw occurrences, got {}", human.appears_in_count);
+        assert_eq!(
+            human.appears_in_count, 3,
+            "expected 3 raw occurrences, got {}",
+            human.appears_in_count
+        );
         // Human is in the antecedent `(instance ?X Human)` of the one rule.
-        assert_eq!(human.antecedent_refs.len(), 1,
-            "Human should be antecedent of 1 implication, got {:?}", human.antecedent_refs);
+        assert_eq!(
+            human.antecedent_refs.len(),
+            1,
+            "Human should be antecedent of 1 implication, got {:?}",
+            human.antecedent_refs
+        );
         assert_eq!(human.consequent_count, 0);
         // REFERENCES must exclude the subclass + documentation sentences
         // (covered by PARENTS / DOCUMENTATION).  The only non-excluded
         // sentence mentioning Human is the implication, where Human is
         // nested inside the antecedent sub → ref_nested.
-        assert!(human.ref_args.is_empty(),
-            "subclass/doc should be filtered out of ref_args, got {:?}", human.ref_args);
-        assert_eq!(human.ref_nested.len(), 1,
-            "only the implication should remain as a nested ref, got {:?}", human.ref_nested);
+        assert!(
+            human.ref_args.is_empty(),
+            "subclass/doc should be filtered out of ref_args, got {:?}",
+            human.ref_args
+        );
+        assert_eq!(
+            human.ref_nested.len(),
+            1,
+            "only the implication should remain as a nested ref, got {:?}",
+            human.ref_nested
+        );
 
         // Rational is in the consequent of the rule.
         let rational = kb.manpage("Rational").expect("Rational resolves");
         assert_eq!(rational.antecedent_refs.len(), 0);
-        assert_eq!(rational.consequent_count, 1,
-            "Rational should be consequent of 1 implication, got {}", rational.consequent_count);
+        assert_eq!(
+            rational.consequent_count, 1,
+            "Rational should be consequent of 1 implication, got {}",
+            rational.consequent_count
+        );
     }
 
     #[test]
     fn manpage_collects_parents() {
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (subclass Human  Hominid)
             (subclass Hominid Primate)
             (documentation Human EnglishLanguage "A member of species homo sapiens.")
-        "#);
+        "#,
+        );
         let man = kb.manpage("Human").expect("Human must resolve");
         // Parents include only the direct edge(s).
         assert!(
-            man.parents.iter().any(|p| p.relation == "subclass" && p.parent == "Hominid"),
-            "expected direct parent Hominid, got {:?}", man.parents
+            man.parents
+                .iter()
+                .any(|p| p.relation == "subclass" && p.parent == "Hominid"),
+            "expected direct parent Hominid, got {:?}",
+            man.parents
         );
         assert_eq!(man.documentation.len(), 1);
-        assert_eq!(man.documentation[0].text, "A member of species homo sapiens.");
+        assert_eq!(
+            man.documentation[0].text,
+            "A member of species homo sapiens."
+        );
     }
 
     #[test]
     fn non_string_slot_does_not_panic() {
         // `documentation` with a non-string third arg should be ignored,
         // not blow up the scan.
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human EnglishLanguage 42)
             (documentation Human EnglishLanguage "real doc")
-        "#);
+        "#,
+        );
         let docs = kb.documentation("Human", None);
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].text, "real doc");
@@ -766,10 +912,12 @@ mod tests {
 
     #[test]
     fn documentation_result_is_cached_on_second_call() {
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human EnglishLanguage "first")
             (documentation Human FrenchLanguage  "le premier")
-        "#);
+        "#,
+        );
         let a = kb.documentation("Human", None);
         let b = kb.documentation("Human", None);
         assert_eq!(a.len(), 2);
@@ -778,10 +926,12 @@ mod tests {
 
     #[test]
     fn language_filter_hits_cache() {
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human EnglishLanguage "en")
             (documentation Human FrenchLanguage  "fr")
-        "#);
+        "#,
+        );
         // Fill the cache via an unfiltered call.
         let _all = kb.documentation("Human", None);
         // A subsequent filtered call must still filter correctly.
@@ -794,9 +944,11 @@ mod tests {
     fn invalidate_symbols_evicts_cached_doc_entries() {
         use std::collections::HashSet;
 
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human EnglishLanguage "stale")
-        "#);
+        "#,
+        );
         // Warm the cache.
         let a = kb.documentation("Human", None);
         assert_eq!(a.len(), 1);
@@ -804,7 +956,7 @@ mod tests {
 
         // Invalidate the Human symbol specifically.
         let human_id = kb.symbol_id("Human").expect("Human interned");
-        let mut set  = HashSet::new();
+        let mut set = HashSet::new();
         set.insert(human_id);
         // kb.layer.semantic.invalidate_symbols(&set);
 
@@ -817,15 +969,17 @@ mod tests {
     fn invalidate_preserves_unrelated_symbols() {
         use std::collections::HashSet;
 
-        let kb = kb_from(r#"
+        let kb = kb_from(
+            r#"
             (documentation Human  EnglishLanguage "h")
             (documentation Animal EnglishLanguage "a")
-        "#);
+        "#,
+        );
         let _ = kb.documentation("Human", None);
         let _ = kb.documentation("Animal", None);
 
         let human_id = kb.symbol_id("Human").unwrap();
-        let mut set  = HashSet::new();
+        let mut set = HashSet::new();
         set.insert(human_id);
         // kb.layer.semantic.invalidate_symbols(&set);
 
@@ -842,31 +996,47 @@ mod tests {
 
         // File A: clean. Ingest as a FILE and promote so the Base-scoped
         // man-page accessor sees its documentation.
-        let r_a = kb.reload_kif(r#"
+        let r_a = kb.reload_kif(
+            r#"
             (subclass Hominid Primate)
             (documentation Hominid EnglishLanguage "Great apes.")
-        "#, &std::path::PathBuf::from("a.kif"), "a.kif");
+        "#,
+            &std::path::PathBuf::from("a.kif"),
+            "a.kif",
+        );
         assert!(r_a.ok);
         assert!(matches!(kb.make_session_axiomatic("a.kif"), Ok(_)));
 
         // File B: a trailing incomplete sentence plus a valid one. The parse
         // surfaces an error but the recovered valid sentence must still be
         // queryable, and A must remain untouched.
-        let r_b = kb.reload_kif(r#"
+        let r_b = kb.reload_kif(
+            r#"
             (subclass Human Hominid)
             (documentation Human EnglishLanguage
-        "#, &std::path::PathBuf::from("b.kif"), "b.kif");
+        "#,
+            &std::path::PathBuf::from("b.kif"),
+            "b.kif",
+        );
         assert!(!r_b.ok, "expected parse error");
         assert!(r_b.has_errors());
         let _ = kb.make_session_axiomatic("b.kif");
 
         // Both files' manpages resolve.
         let hominid = kb.manpage("Hominid").expect("Hominid still present");
-        assert!(hominid.documentation.iter().any(|d| d.text.contains("Great apes")));
+        assert!(hominid
+            .documentation
+            .iter()
+            .any(|d| d.text.contains("Great apes")));
 
-        let human = kb.manpage("Human").expect("Human recovered despite parse error");
+        let human = kb
+            .manpage("Human")
+            .expect("Human recovered despite parse error");
         // Human inherits from Hominid via the recovered subclass edge.
-        assert!(human.parents.iter().any(|p| p.parent == "Hominid" && p.relation == "subclass"));
+        assert!(human
+            .parents
+            .iter()
+            .any(|p| p.parent == "Hominid" && p.relation == "subclass"));
     }
 
     #[test]
@@ -875,19 +1045,26 @@ mod tests {
         // ChineseLanguage, itself a subclass of NaturalLanguage — it must
         // surface as a NaturalLanguage instance alongside the direct ones.
         let mut kb = KnowledgeBase::new();
-        let r = kb.reload_kif(r#"
+        let r = kb.reload_kif(
+            r#"
             (instance EnglishLanguage NaturalLanguage)
             (subclass ChineseLanguage NaturalLanguage)
             (instance CantoneseLanguage ChineseLanguage)
             (instance MandarinLanguage ChineseLanguage)
             (instance FrenchLanguage RomanceLanguage)
-        "#, &std::path::PathBuf::from("t.kif"), "t.kif");
+        "#,
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
         assert!(r.ok);
         assert!(matches!(kb.make_session_axiomatic("t.kif"), Ok(_)));
 
         let langs = kb.instances_of("NaturalLanguage");
         for want in ["EnglishLanguage", "CantoneseLanguage", "MandarinLanguage"] {
-            assert!(langs.contains(&want.to_string()), "missing {want} in {langs:?}");
+            assert!(
+                langs.contains(&want.to_string()),
+                "missing {want} in {langs:?}"
+            );
         }
         // RomanceLanguage was never linked under NaturalLanguage here.
         assert!(!langs.contains(&"FrenchLanguage".to_string()));

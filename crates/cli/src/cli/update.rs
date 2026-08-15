@@ -16,7 +16,7 @@ use crate::style::*;
 /// cannot be substituted as an update source.
 const REPO_OWNER: &str = "ontologyportal";
 /// GitHub repo name of the official `sumo` release stream.
-const REPO_NAME:  &str = "sigma-rs";
+const REPO_NAME: &str = "sigma-rs";
 
 /// Tag prefix used by the release workflow. Tags look like `sigmakee-vX.Y.Z`;
 /// `self_update` strips the prefix automatically.
@@ -39,12 +39,12 @@ const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// release-asset names. Returns `None` for targets with no prebuilt binary.
 fn target_to_release_label(target: &str) -> Option<&'static str> {
     match target {
-        "aarch64-apple-darwin"      => Some("darwin-arm64"),
-        "x86_64-apple-darwin"       => Some("darwin-x64"),
-        "x86_64-unknown-linux-gnu"  => Some("linux-x64-gnu"),
+        "aarch64-apple-darwin" => Some("darwin-arm64"),
+        "x86_64-apple-darwin" => Some("darwin-x64"),
+        "x86_64-unknown-linux-gnu" => Some("linux-x64-gnu"),
         "aarch64-unknown-linux-gnu" => Some("linux-arm64-gnu"),
-        "x86_64-pc-windows-msvc"    => Some("win32-x64"),
-        _                           => None,
+        "x86_64-pc-windows-msvc" => Some("win32-x64"),
+        _ => None,
     }
 }
 
@@ -67,7 +67,7 @@ pub fn run_update(check_only: bool) -> bool {
     );
 
     let latest = match query_latest_release() {
-        Ok(l)  => l,
+        Ok(l) => l,
         Err(e) => {
             log::error!("update: could not query GitHub releases: {}", e);
             return false;
@@ -91,8 +91,8 @@ pub fn run_update(check_only: bool) -> bool {
 
     match BUILD_KIND {
         "release" => apply_release_update(&latest.version),
-        "source"  => recommend_rebuild(&latest.version),
-        other     => {
+        "source" => recommend_rebuild(&latest.version),
+        other => {
             log::error!(
                 "update: unknown SUMO_BUILD_KIND `{}` embedded at compile time \
                  — this is a build-script bug",
@@ -139,7 +139,7 @@ fn apply_release_update(latest: &str) -> bool {
         .build();
 
     let updater = match result {
-        Ok(u)  => u,
+        Ok(u) => u,
         Err(e) => {
             log::error!("update: could not configure self-updater: {}", e);
             return false;
@@ -215,7 +215,11 @@ struct UpdateCache {
 }
 
 fn update_cache_path() -> Option<std::path::PathBuf> {
-    Some(crate::config::home_dir()?.join(".sigmakee").join("update-check.json"))
+    Some(
+        crate::config::home_dir()?
+            .join(".sigmakee")
+            .join("update-check.json"),
+    )
 }
 
 fn read_update_cache(path: &std::path::Path) -> Option<UpdateCache> {
@@ -250,7 +254,9 @@ fn now_secs() -> u64 {
 /// Any I/O or network failure is swallowed — this must never slow down or
 /// fail a run.
 pub fn maybe_notify_update() {
-    let Some(path) = update_cache_path() else { return };
+    let Some(path) = update_cache_path() else {
+        return;
+    };
     let cached = read_update_cache(&path);
 
     if let Some(c) = &cached {
@@ -272,7 +278,13 @@ pub fn maybe_notify_update() {
 
     std::thread::spawn(move || {
         if let Ok(latest) = query_latest_release() {
-            write_update_cache(&path, &UpdateCache { checked_at: now_secs(), latest: latest.version });
+            write_update_cache(
+                &path,
+                &UpdateCache {
+                    checked_at: now_secs(),
+                    latest: latest.version,
+                },
+            );
         }
     });
 }
@@ -336,7 +348,7 @@ fn cmp_semver(a: &str, b: &str) -> std::cmp::Ordering {
     }
     match (parts(a), parts(b)) {
         (Some(x), Some(y)) => x.cmp(&y),
-        _                  => a.cmp(b),
+        _ => a.cmp(b),
     }
 }
 
@@ -364,22 +376,34 @@ mod tests {
 
     #[test]
     fn cmp_semver_strips_tag_and_v_prefix() {
-        assert_eq!(cmp_semver("sigmakee-v1.2.3", "1.2.3"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            cmp_semver("sigmakee-v1.2.3", "1.2.3"),
+            std::cmp::Ordering::Equal
+        );
         assert_eq!(cmp_semver("v1.2.4", "v1.2.3"), std::cmp::Ordering::Greater);
-        assert_eq!(cmp_semver("sigmakee-v2.0.0", "v1.99.99"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            cmp_semver("sigmakee-v2.0.0", "v1.99.99"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
     fn cmp_semver_handles_rc_suffix() {
         // Prerelease info is ignored: `-rc.N` compares equal to the final.
         assert_eq!(cmp_semver("1.2.3-rc.1", "1.2.3"), std::cmp::Ordering::Equal);
-        assert_eq!(cmp_semver("1.2.4-rc.1", "1.2.3"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            cmp_semver("1.2.4-rc.1", "1.2.3"),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
     fn cmp_semver_falls_back_to_lex_on_parse_failure() {
         // Garbage in → lexical comparison, never panics.
-        assert_eq!(cmp_semver("not-a-version", "1.0.0"), "not-a-version".cmp("1.0.0"));
+        assert_eq!(
+            cmp_semver("not-a-version", "1.0.0"),
+            "not-a-version".cmp("1.0.0")
+        );
     }
 
     #[test]
@@ -394,11 +418,26 @@ mod tests {
         // The labels here MUST match the `matrix.label` values in
         // `.github/workflows/release-sumo.yml`.  Update both lists
         // when adding a new release platform.
-        assert_eq!(target_to_release_label("aarch64-apple-darwin"),     Some("darwin-arm64"));
-        assert_eq!(target_to_release_label("x86_64-apple-darwin"),      Some("darwin-x64"));
-        assert_eq!(target_to_release_label("x86_64-unknown-linux-gnu"), Some("linux-x64-gnu"));
-        assert_eq!(target_to_release_label("aarch64-unknown-linux-gnu"),Some("linux-arm64-gnu"));
-        assert_eq!(target_to_release_label("x86_64-pc-windows-msvc"),   Some("win32-x64"));
+        assert_eq!(
+            target_to_release_label("aarch64-apple-darwin"),
+            Some("darwin-arm64")
+        );
+        assert_eq!(
+            target_to_release_label("x86_64-apple-darwin"),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            target_to_release_label("x86_64-unknown-linux-gnu"),
+            Some("linux-x64-gnu")
+        );
+        assert_eq!(
+            target_to_release_label("aarch64-unknown-linux-gnu"),
+            Some("linux-arm64-gnu")
+        );
+        assert_eq!(
+            target_to_release_label("x86_64-pc-windows-msvc"),
+            Some("win32-x64")
+        );
     }
 
     #[test]

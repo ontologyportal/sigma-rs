@@ -24,15 +24,15 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::parse::fingerprint::canonical_sentence_fingerprint;
-use crate::{AxiomSource, AxiomSourceIndex, SentenceId};
+use crate::layer::{Layer, TopLayer};
 use crate::parse::ast::AstNode;
+use crate::parse::fingerprint::canonical_sentence_fingerprint;
 use crate::parse::OpKind;
 use crate::prover::proof::KifProofStep;
-use crate::layer::{TopLayer, Layer};
+use crate::{AxiomSource, AxiomSourceIndex, SentenceId};
 
-use super::KnowledgeBase;
 use super::natural_lang::RenderReport;
+use super::KnowledgeBase;
 
 /// Deterministic connective rotation for the derivation chain.
 const CONNECTIVES: [&str; 4] = ["Then", "Hence", "Therefore", "So"];
@@ -50,8 +50,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub fn render_proof_prose(
         &self,
         conjecture: Option<&AstNode>,
-        steps:      &[KifProofStep],
-        language:   &str,
+        steps: &[KifProofStep],
+        language: &str,
     ) -> RenderReport {
         let src_idx = self.build_axiom_source_index();
         self.render_proof_prose_with(conjecture, steps, language, &src_idx)
@@ -67,9 +67,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub fn render_proof_prose_with(
         &self,
         conjecture: Option<&AstNode>,
-        steps:      &[KifProofStep],
-        language:   &str,
-        src_idx:    &AxiomSourceIndex,
+        steps: &[KifProofStep],
+        language: &str,
+        src_idx: &AxiomSourceIndex,
     ) -> RenderReport {
         let mut missing: BTreeSet<String> = BTreeSet::new();
         let mut render = |f: &AstNode| -> String {
@@ -88,8 +88,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         };
 
         // ---- 1. document plan: partition by rhetorical role ----------
-        let mut axioms:  Vec<usize> = Vec::new();
-        let mut hyps:    Vec<usize> = Vec::new();
+        let mut axioms: Vec<usize> = Vec::new();
+        let mut hyps: Vec<usize> = Vec::new();
         let mut negconj: Vec<usize> = Vec::new();
         let mut derived: Vec<usize> = Vec::new();
         for (i, s) in steps.iter().enumerate() {
@@ -118,7 +118,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             anchor_of.insert(i, n);
             paras.push(format!(
                 "It is given that {}{}. ({n})",
-                render(&steps[i].formula), cite(&steps[i])));
+                render(&steps[i].formula),
+                cite(&steps[i])
+            ));
         }
         for &i in &hyps {
             next_anchor += 1;
@@ -141,7 +143,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             anchor_of.insert(i, n);
             paras.push(format!(
                 "Assume, for the sake of contradiction, that {}. ({n})",
-                render_assumption(&steps[i].formula, &mut render)));
+                render_assumption(&steps[i].formula, &mut render)
+            ));
         }
 
         // ---- 2. derivation chain ------------------------------------
@@ -159,12 +162,13 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     .and_then(|p| anchor_of.get(p));
                 closing = Some(match assumption_ref {
                     Some(a) => format!(
-                        "But this contradicts our assumption ({a}); hence the conjecture holds."),
-                    None if s.premises.iter().any(|p| negconj.contains(p)) =>
-                        "But this contradicts the assumption; hence the conjecture holds.".to_string(),
-                    None =>
-                        "This is a contradiction; hence the conjecture holds."
-                            .to_string(),
+                        "But this contradicts our assumption ({a}); hence the conjecture holds."
+                    ),
+                    None if s.premises.iter().any(|p| negconj.contains(p)) => {
+                        "But this contradicts the assumption; hence the conjecture holds."
+                            .to_string()
+                    }
+                    None => "This is a contradiction; hence the conjecture holds.".to_string(),
                 });
                 continue;
             }
@@ -172,9 +176,13 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             // Order premises by role: suppositions/assumptions first,
             // earlier inferences next, applied rules (axioms) last.
             let role_rank = |p: &usize| -> u8 {
-                if hyps.contains(p) || negconj.contains(p) { 0 }
-                else if axioms.contains(p) { 2 }
-                else { 1 }
+                if hyps.contains(p) || negconj.contains(p) {
+                    0
+                } else if axioms.contains(p) {
+                    2
+                } else {
+                    1
+                }
             };
             let mut prems: Vec<usize> = s.premises.clone();
             prems.sort_by_key(|p| (role_rank(p), *p));
@@ -189,7 +197,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     since.push(format!("we assumed {aref}"));
                 } else if axioms.contains(p) {
                     since.push(format!(
-                        "we know {aref} that {}", render(&steps[*p].formula)));
+                        "we know {aref} that {}",
+                        render(&steps[*p].formula)
+                    ));
                 } else if Some(*p) == prev_emitted {
                     since.push("we just inferred this".to_string());
                 } else if a.is_some() {
@@ -202,11 +212,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             anchor_of.insert(i, n);
             let body = render(&s.formula);
             let sentence = if since.is_empty() {
-                format!("{} {}. ({n})", CONNECTIVES[(n - 1) % CONNECTIVES.len()], body)
+                format!(
+                    "{} {}. ({n})",
+                    CONNECTIVES[(n - 1) % CONNECTIVES.len()],
+                    body
+                )
             } else {
                 format!(
                     "Since {}, we can infer that {}. ({n})",
-                    join_with_and(&since), body)
+                    join_with_and(&since),
+                    body
+                )
             };
             chain.push(sentence);
             prev_emitted = Some(i);
@@ -223,7 +239,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             None if immediate => paras.push(
                 "Assuming the contrary already contradicts the givens; hence the \
                  conjecture holds."
-                    .to_string()),
+                    .to_string(),
+            ),
             None => {}
         }
 
@@ -247,12 +264,12 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub fn build_axiom_source_index(&self) -> AxiomSourceIndex {
         let store = self.syntactic();
         let mut by_hash: HashMap<u64, Vec<AxiomSource>> = HashMap::new();
-        let mut by_sid:  HashMap<SentenceId, AxiomSource> = HashMap::new();
+        let mut by_sid: HashMap<SentenceId, AxiomSource> = HashMap::new();
         // Resolved in one pass over the fingerprint->roots map: per-root
         // `source_node_of` lookups scan that same map and would make this
         // builder quadratic in KB size.
         for (sid, node) in store.root_source_nodes() {
-            let h    = canonical_sentence_fingerprint(&node);
+            let h = canonical_sentence_fingerprint(&node);
             let span = node.span();
             let entry = AxiomSource {
                 sid,
@@ -281,8 +298,17 @@ fn is_false(f: &AstNode) -> bool {
 fn render_assumption(f: &AstNode, render: &mut impl FnMut(&AstNode) -> String) -> String {
     if let AstNode::List { elements, .. } = f {
         if elements.len() == 2 {
-            if matches!(&elements[0], AstNode::Operator { op: OpKind::Not, .. }) {
-                if let AstNode::List { elements: inner, .. } = &elements[1] {
+            if matches!(
+                &elements[0],
+                AstNode::Operator {
+                    op: OpKind::Not,
+                    ..
+                }
+            ) {
+                if let AstNode::List {
+                    elements: inner, ..
+                } = &elements[1]
+                {
                     let vars: Vec<&str> = inner[1..]
                         .iter()
                         .filter_map(|a| match a {
@@ -330,10 +356,7 @@ fn cleanup_tokens(text: &str) -> String {
     while i < bytes.len() {
         let c = bytes[i] as char;
         // `?Var` → `Var`.
-        if c == '?'
-            && i + 1 < bytes.len()
-            && (bytes[i + 1] as char).is_ascii_alphanumeric()
-        {
+        if c == '?' && i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_alphanumeric() {
             i += 1; // drop the sigil, keep the name
             continue;
         }
@@ -347,8 +370,10 @@ fn cleanup_tokens(text: &str) -> String {
             while j < bytes.len() && (bytes[j] as char).is_ascii_digit() {
                 j += 1;
             }
-            let is_token_end =
-                j > i + 2 && bytes.get(j).is_none_or(|b| !(*b as char).is_ascii_alphanumeric());
+            let is_token_end = j > i + 2
+                && bytes
+                    .get(j)
+                    .is_none_or(|b| !(*b as char).is_ascii_alphanumeric());
             if is_token_end {
                 let tok = &text[i..j];
                 if seen_skolems.insert(tok.to_string()) {
@@ -393,7 +418,14 @@ mod tests {
     }
 
     fn formula(kif: &str) -> AstNode {
-        crate::parse_document("t", kif, Parser::Kif).ast.into_iter().next().expect("ast").as_stmt().cloned().expect("doc stmt")
+        crate::parse_document("t", kif, Parser::Kif)
+            .ast
+            .into_iter()
+            .next()
+            .expect("ast")
+            .as_stmt()
+            .cloned()
+            .expect("doc stmt")
     }
 
     fn step(index: usize, rule: &str, kif: &str, premises: Vec<usize>) -> KifProofStep {
@@ -421,20 +453,32 @@ mod tests {
         let text = &report.rendered;
 
         assert!(text.starts_with("We want to show that"), "{text}");
-        assert!(text.contains("It is given that if B is a mother of A"), "{text}");
-        assert!(text.contains("Suppose that Bill is a mother of Jane. (2)"), "{text}");
         assert!(
-            text.contains("Assume, for the sake of contradiction, that Bill is a parent of nothing. (3)"),
-            "{text}");
+            text.contains("It is given that if B is a mother of A"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Suppose that Bill is a mother of Jane. (2)"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "Assume, for the sake of contradiction, that Bill is a parent of nothing. (3)"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains(
                 "Since we supposed (2), and since we know (1) that if B is a mother \
                  of A then B is a parent of A, we can infer that Bill is a parent \
-                 of Jane. (4)"),
-            "{text}");
+                 of Jane. (4)"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("But this contradicts our assumption (3); hence the conjecture holds."),
-            "{text}");
+            "{text}"
+        );
         // No raw sigils survive.
         assert!(!text.contains('?'), "{text}");
     }
@@ -451,7 +495,10 @@ mod tests {
         let intro = "something (call it sk0)";
         let first = text.find(intro).expect("introduction");
         // Exactly one introduction; later mentions are bare.
-        assert!(text[first + intro.len()..].find("call it sk0").is_none(), "{text}");
+        assert!(
+            text[first + intro.len()..].find("call it sk0").is_none(),
+            "{text}"
+        );
         assert!(text.matches("sk0").count() >= 2, "{text}");
     }
 }

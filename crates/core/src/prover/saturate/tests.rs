@@ -4,12 +4,12 @@ use crate::kb::KnowledgeBase;
 use crate::parse::kif::dis::AstKif;
 use crate::prover::{ProverStatus, TerminationReason};
 use crate::semantics::caches::test_support::kif_layer;
-use crate::SineParams;
 use crate::types::{Element, SentenceId};
+use crate::SineParams;
 
-use super::ProverLayer;
 use super::clause::{PClause, PLit};
 use super::prover::NativeOpts;
+use super::ProverLayer;
 
 /// ProverLayer over a one-or-more-formula KIF string, plus the root
 /// sids in the file (tag `base`, document order not guaranteed —
@@ -30,12 +30,14 @@ fn clauses_of(kif: &str) -> (ProverLayer, Arc<Vec<PClause>>) {
 
 /// Head-symbol name of a literal's atom (skolem heads included).
 fn head_of(layer: &ProverLayer, lit: &PLit) -> String {
-    let s = layer.atoms.resolve(lit.atom, &layer.semantic.syntactic)
+    let s = layer
+        .atoms
+        .resolve(lit.atom, &layer.semantic.syntactic)
         .expect("atom resolvable");
     match s.elements.first() {
         Some(Element::Symbol(sym)) => sym.name().to_string(),
-        Some(Element::Op(op))      => format!("{:?}", op),
-        other                      => format!("{:?}", other),
+        Some(Element::Op(op)) => format!("{:?}", op),
+        other => format!("{:?}", other),
     }
 }
 
@@ -43,8 +45,8 @@ fn head_of(layer: &ProverLayer, lit: &PLit) -> String {
 //    fragment computes the taxonomy closure (no allowlist, no query wiring).
 #[test]
 fn model_registry_builds_and_caches() {
-    use crate::types::Symbol;
     use super::model::DTerm;
+    use crate::types::Symbol;
     // `(instance subclass TransitiveRelation)` licenses subclass
     // transitivity by DERIVATION (no conventional seed).
     let kif = "(subclass RoadVehicle LandVehicle)\n\
@@ -60,14 +62,22 @@ fn model_registry_builds_and_caches() {
 
     // Cached: a second request returns the same Arc.
     let mp2 = layer.model_program();
-    assert!(Arc::ptr_eq(&mp, &mp2), "registry is cached for the KB's life");
+    assert!(
+        Arc::ptr_eq(&mp, &mp2),
+        "registry is cached for the KB's life"
+    );
 
     // The sound positive model (monotone + KB-derived transitivity).
     let (m, _prov) = mp.positive_model(None).expect("positive model evaluates");
     let tuple = |a: &str, b: &str| vec![Symbol::hash_name(a), Symbol::hash_name(b)];
-    let has = |p: &str, a: &str, b: &str|
-        m.get(&Symbol::hash_name(p)).is_some_and(|s| s.contains(&tuple(a, b)));
-    assert!(has("instance", "Bus1", "Vehicle"), "instance closure climbs subclass");
+    let has = |p: &str, a: &str, b: &str| {
+        m.get(&Symbol::hash_name(p))
+            .is_some_and(|s| s.contains(&tuple(a, b)))
+    };
+    assert!(
+        has("instance", "Bus1", "Vehicle"),
+        "instance closure climbs subclass"
+    );
     // Task #32 Part 2: `subclass` is transitive by DERIVATION, so it becomes
     // a BUILT-IN closure — the model materializes only its BASE edges (the
     // `instance` assertion above proves the closure still RESOLVES through
@@ -79,7 +89,14 @@ fn model_registry_builds_and_caches() {
         "builtin subclass closure is not materialized"
     );
     let rows = mp
-        .answer(sub, &[DTerm::Const(Symbol::hash_name("RoadVehicle")), DTerm::Var(0)], None)
+        .answer(
+            sub,
+            &[
+                DTerm::Const(Symbol::hash_name("RoadVehicle")),
+                DTerm::Var(0),
+            ],
+            None,
+        )
         .expect("subclass answers");
     assert!(
         rows.contains(&tuple("RoadVehicle", "Vehicle")),
@@ -87,15 +104,18 @@ fn model_registry_builds_and_caches() {
     );
 
     // The taxonomy predicates are clustered together.
-    assert!(mp.clusters.iter().any(|c| c.preds.contains(&sub)), "subclass clustered");
+    assert!(
+        mp.clusters.iter().any(|c| c.preds.contains(&sub)),
+        "subclass clustered"
+    );
 }
 
 // -- frozen background: mask (contract) + delta-load (extend) -------------
 
 #[test]
 fn retain_background_masks_excluded_roots() {
-    use crate::semantics::types::Scope;
     use super::prover::NativeProver;
+    use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("(p A)\n(q B)");
     assert_eq!(roots.len(), 2);
@@ -112,17 +132,29 @@ fn retain_background_masks_excluded_roots() {
 
     // Narrow rehydration: keep only the first root.
     let keep: std::collections::HashSet<_> = [roots[0]].into_iter().collect();
-    let mut narrow = NativeProver::from_snapshot(
-        &layer, Scope::Base, Default::default(), &snap);
+    let mut narrow = NativeProver::from_snapshot(&layer, Scope::Base, Default::default(), &snap);
     narrow.retain_background(&keep);
-    assert!(narrow.test_ground_unit(true, p_atom), "kept root stays probeable");
-    assert!(!narrow.test_ground_unit(true, q_atom), "masked root must vanish");
+    assert!(
+        narrow.test_ground_unit(true, p_atom),
+        "kept root stays probeable"
+    );
+    assert!(
+        !narrow.test_ground_unit(true, q_atom),
+        "masked root must vanish"
+    );
 
     // Extension: delta-load the second root back on top.
     narrow.add_background_root(roots[1]);
-    assert!(narrow.test_ground_unit(true, q_atom), "delta-loaded root probeable");
+    assert!(
+        narrow.test_ground_unit(true, q_atom),
+        "delta-loaded root probeable"
+    );
     let refrozen = narrow.freeze();
-    assert_eq!(refrozen.loaded_roots.len(), 2, "coverage = union after extend");
+    assert_eq!(
+        refrozen.loaded_roots.len(),
+        2,
+        "coverage = union after extend"
+    );
 }
 
 // -- backward demodulation (Strategy.bwd_demod) ----------------------------
@@ -134,7 +166,8 @@ fn root_by_head(layer: &ProverLayer, roots: &[SentenceId], head: &str) -> Senten
         .iter()
         .find(|r| {
             let cls = layer.clauses_for(**r);
-            cls.first().is_some_and(|c| head_of(layer, &c.lits[0]) == head)
+            cls.first()
+                .is_some_and(|c| head_of(layer, &c.lits[0]) == head)
         })
         .unwrap_or_else(|| panic!("no root with head {head}"))
 }
@@ -152,8 +185,8 @@ fn bwd_opts() -> NativeOpts {
 /// equation, rule tag `bwd_demod`).
 #[test]
 fn backward_demod_rewrites_and_retires_active_clause() {
-    use crate::semantics::types::Scope;
     use super::prover::NativeProver;
+    use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF A) B)");
     assert_eq!(roots.len(), 2);
@@ -162,7 +195,7 @@ fn backward_demod_rewrites_and_retires_active_clause() {
 
     let mut prover = NativeProver::new(&layer, Scope::Base, bwd_opts());
     prover.add_background_root(fact); // p(FnF A) activates first
-    prover.add_background_root(eq);   // the equation lands SECOND
+    prover.add_background_root(eq); // the equation lands SECOND
 
     assert!(prover.stats.bwd_demod_triggered >= 1, "pass must have run");
     assert_eq!(prover.stats.bwd_demod_clauses_rewritten, 1);
@@ -173,7 +206,9 @@ fn backward_demod_rewrites_and_retires_active_clause() {
     let orig = prover
         .clauses
         .iter()
-        .find(|c| c.rule == "axiom" && prover.dbg_lits(c.id) == vec![(true, "(p (FnF A))".to_string())])
+        .find(|c| {
+            c.rule == "axiom" && prover.dbg_lits(c.id) == vec![(true, "(p (FnF A))".to_string())]
+        })
         .expect("original fact clause")
         .id;
     assert!(prover.is_retired(orig), "original must be retired");
@@ -195,8 +230,8 @@ fn backward_demod_rewrites_and_retires_active_clause() {
 /// rewrites the ground instance `(FnF A)` inside an existing clause.
 #[test]
 fn backward_demod_orientation_under_instance() {
-    use crate::semantics::types::Scope;
     use super::prover::NativeProver;
+    use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("(p (FnF A))\n(equal (FnF ?X) ?X)");
     assert_eq!(roots.len(), 2);
@@ -227,8 +262,8 @@ fn backward_demod_orientation_under_instance() {
 /// interreduction is optional).
 #[test]
 fn backward_demod_cap_honored() {
-    use crate::semantics::types::Scope;
     use super::prover::NativeProver;
+    use crate::semantics::types::Scope;
 
     let (layer, roots) = layer_with("(p (FnG A))\n(q (FnG A))\n(equal (FnG ?X) ?X)");
     assert_eq!(roots.len(), 3);
@@ -259,8 +294,8 @@ fn backward_demod_cap_honored() {
 
 #[test]
 fn conjecture_distance_orders_by_shared_leaves() {
-    use crate::semantics::types::Scope;
     use super::prover::{NativeProver, BACKGROUND};
+    use crate::semantics::types::Scope;
 
     // Goal mentions Int1/Int2; one equality shares those constants,
     // the other shares only the BeginFn function symbol.
@@ -270,22 +305,28 @@ fn conjecture_distance_orders_by_shared_leaves() {
             (equal (BeginFn Far1) (BeginFn Far2))",
     );
     assert_eq!(roots.len(), 3);
-    let conj = roots.iter()
+    let conj = roots
+        .iter()
         .find(|r| head_of(&layer, &layer.clauses_for(**r)[0].lits[0]) == "overlapsTemporally")
-        .copied().expect("conjecture root");
+        .copied()
+        .expect("conjecture root");
     let mut opts = super::prover::NativeOpts::default();
     opts.strategy.goal_dist = true; // opt-in knob (default off)
     let mut prover = NativeProver::new(&layer, Scope::Base, opts);
     prover.set_goal(&layer.clauses_for(conj));
 
-    let mut factors: Vec<u64> = roots.iter()
+    let mut factors: Vec<u64> = roots
+        .iter()
         .filter(|r| **r != conj)
         .map(|r| prover.goal_distance_factor(&layer.clauses_for(*r)[0].lits, BACKGROUND))
         .collect();
     factors.sort_unstable();
     // Near equality (shares Int1/Int2): low factor.  Far equality
     // (shares only BeginFn): maximal factor 1 + GOAL_DIST_W.
-    assert!(factors[0] < factors[1], "shared leaves must rank closer: {factors:?}");
+    assert!(
+        factors[0] < factors[1],
+        "shared leaves must rank closer: {factors:?}"
+    );
     assert_eq!(factors[1], 3, "no-overlap clause sinks to 1 + GOAL_DIST_W");
     // The goal itself is distance-free.
     assert_eq!(
@@ -302,8 +343,8 @@ fn conjecture_distance_orders_by_shared_leaves() {
 // check that the rule fires and produces the Bachmair–Ganzinger shape.
 #[test]
 fn equality_factoring_merges_positive_equalities() {
+    use super::prover::{NativeOpts, NativeProver, BACKGROUND};
     use crate::semantics::types::Scope;
-    use super::prover::{NativeProver, NativeOpts, BACKGROUND};
 
     let (layer, roots) = layer_with("(or (equal (ff ?x) aa) (equal (ff ?x) bb))");
     let pc = layer.clauses_for(roots[0])[0].clone();
@@ -318,19 +359,28 @@ fn equality_factoring_merges_positive_equalities() {
         .expect("clause interned");
 
     let factored: Vec<u32> = prover.equality_factors(id).into_iter().flatten().collect();
-    assert!(!factored.is_empty(), "equality factoring produced no clause");
+    assert!(
+        !factored.is_empty(),
+        "equality factoring produced no clause"
+    );
 
     // At least one factored clause must carry a NEGATIVE equality whose
     // sides are exactly the two small sides aa/bb — the merge residue
     // that was absent from the (all-positive) input.
     let has_residue = factored.iter().any(|&cid| {
-        prover.dbg_lits(cid).iter().any(|(pos, kif)| {
-            !*pos && kif.contains("aa") && kif.contains("bb")
-        })
+        prover
+            .dbg_lits(cid)
+            .iter()
+            .any(|(pos, kif)| !*pos && kif.contains("aa") && kif.contains("bb"))
     });
-    assert!(has_residue,
+    assert!(
+        has_residue,
         "a factored clause must contain the residue disequality aa≉bb; got {:?}",
-        factored.iter().map(|&c| prover.dbg_lits(c)).collect::<Vec<_>>());
+        factored
+            .iter()
+            .map(|&c| prover.dbg_lits(c))
+            .collect::<Vec<_>>()
+    );
 }
 
 // -- clausifier ----------------------------------------------------------
@@ -355,7 +405,8 @@ fn iff_gives_two_clauses() {
     // they clausify to the two complementary clauses.
     let (layer, roots) = layer_with("(<=> (p ?X) (q ?X))");
     assert_eq!(roots.len(), 2, "parser splits <=> into two => roots");
-    let cls: Vec<_> = roots.iter()
+    let cls: Vec<_> = roots
+        .iter()
         .flat_map(|r| layer.clauses_for(*r).iter().cloned().collect::<Vec<_>>())
         .collect();
     assert_eq!(cls.len(), 2);
@@ -368,33 +419,60 @@ fn ground_exists_skolemizes_to_constant() {
     let (layer, cls) = clauses_of("(exists (?Y) (parent Fido ?Y))");
     assert_eq!(cls.len(), 1);
     let c = &cls[0];
-    assert_eq!((c.lits.len(), c.nvars), (1, 0), "ground unit after skolemization");
+    assert_eq!(
+        (c.lits.len(), c.nvars),
+        (1, 0),
+        "ground unit after skolemization"
+    );
     // Second argument is a skolem constant: a BARE symbol, like any
     // other constant — wrapping it as a 1-element App would exempt
     // skolem facts from every symbol-shaped fast path (learned
     // units, FD congruence, the decode phone book).
-    let atom = layer.atoms.resolve(c.lits[0].atom, &layer.semantic.syntactic).unwrap();
+    let atom = layer
+        .atoms
+        .resolve(c.lits[0].atom, &layer.semantic.syntactic)
+        .unwrap();
     let Some(Element::Symbol(sym)) = atom.elements.get(2) else {
-        panic!("arg 2 should be a bare skolem constant, got {:?}", atom.elements.get(2));
+        panic!(
+            "arg 2 should be a bare skolem constant, got {:?}",
+            atom.elements.get(2)
+        );
     };
-    assert!(sym.name().starts_with("sk_"), "skolem name {} has sk_ prefix", sym.name());
+    assert!(
+        sym.name().starts_with("sk_"),
+        "skolem name {} has sk_ prefix",
+        sym.name()
+    );
 }
 
 #[test]
 fn exists_under_universal_skolemizes_over_scope() {
-    let (layer, cls) =
-        clauses_of("(=> (instance ?X Human) (exists (?P) (parent ?X ?P)))");
+    let (layer, cls) = clauses_of("(=> (instance ?X Human) (exists (?P) (parent ?X ?P)))");
     assert_eq!(cls.len(), 1);
     let c = &cls[0];
     assert_eq!(c.nvars, 1);
-    let pos = c.lits.iter().find(|l| l.pos).expect("positive parent literal");
-    let atom = layer.atoms.resolve(pos.atom, &layer.semantic.syntactic).unwrap();
+    let pos = c
+        .lits
+        .iter()
+        .find(|l| l.pos)
+        .expect("positive parent literal");
+    let atom = layer
+        .atoms
+        .resolve(pos.atom, &layer.semantic.syntactic)
+        .unwrap();
     let Some(Element::Sub(sk)) = atom.elements.get(2) else {
         panic!("arg 2 should be a skolem subterm");
     };
     let sk_sent = layer.atoms.resolve(*sk, &layer.semantic.syntactic).unwrap();
-    assert_eq!(sk_sent.elements.len(), 2, "skolem function of the one universal");
-    assert!(matches!(sk_sent.elements.get(1), Some(Element::Variable { .. })));
+    assert_eq!(
+        sk_sent.elements.len(),
+        2,
+        "skolem function of the one universal"
+    );
+    assert!(matches!(
+        sk_sent.elements.get(1),
+        Some(Element::Variable { .. })
+    ));
 }
 
 #[test]
@@ -407,10 +485,12 @@ fn tautology_dropped() {
 fn alpha_equivalent_roots_share_clause_keys() {
     // Same formula under different variable names: distinct roots
     // (variable ids are scope-qualified) but identical canonical clauses.
-    let (layer, roots) = layer_with("
+    let (layer, roots) = layer_with(
+        "
         (=> (p ?A ?B) (q ?B ?A))
         (=> (p ?Y ?Z) (q ?Z ?Y))
-    ");
+    ",
+    );
     assert_eq!(roots.len(), 2, "alpha-variants are distinct roots");
     let a = layer.clauses_for(roots[0]);
     let b = layer.clauses_for(roots[1]);
@@ -426,14 +506,19 @@ fn alpha_equivalent_roots_share_clause_keys() {
 
 #[test]
 fn equality_sides_orient_canonically() {
-    let (layer, roots) = layer_with("
+    let (layer, roots) = layer_with(
+        "
         (equal (AbsFn ?X) ?Y)
         (equal ?B (AbsFn ?A))
-    ");
+    ",
+    );
     assert_eq!(roots.len(), 2);
     let a = layer.clauses_for(roots[0]);
     let b = layer.clauses_for(roots[1]);
-    assert_eq!(a[0].key, b[0].key, "flipped equality sides hash identically");
+    assert_eq!(
+        a[0].key, b[0].key,
+        "flipped equality sides hash identically"
+    );
 }
 
 #[test]
@@ -442,8 +527,10 @@ fn reclausification_is_idempotent() {
     let first = layer.clauses_for(roots[0]);
     layer.clause_store.clear();
     let second = layer.clauses_for(roots[0]);
-    assert_eq!(*first, *second,
-        "evict + regenerate must reproduce identical clauses (incl. skolem names)");
+    assert_eq!(
+        *first, *second,
+        "evict + regenerate must reproduce identical clauses (incl. skolem names)"
+    );
 }
 
 #[test]
@@ -452,12 +539,20 @@ fn conjecture_negation_flips_quantification() {
     let (layer, roots) = layer_with("(exists (?X) (instance ?X Dog))");
     let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
     let cls = super::clausify::clausify_sentence(
-        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], true);
+        &layer.semantic.syntactic,
+        &layer.atoms,
+        &sent,
+        roots[0],
+        true,
+    );
     assert_eq!(cls.len(), 1);
     let c = &cls[0];
     assert_eq!(c.lits.len(), 1);
     assert!(!c.lits[0].pos, "negated conjecture literal");
-    assert_eq!(c.nvars, 1, "∃ flips to ∀ under negation — variable stays open");
+    assert_eq!(
+        c.nvars, 1,
+        "∃ flips to ∀ under negation — variable stays open"
+    );
 }
 
 // -- definitional CNF (Plaisted–Greenbaum) rescue ---------------------------
@@ -483,19 +578,31 @@ fn defcnf_rescues_blowup_without_loss() {
     let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
     let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
     let (cls, lossy) = super::clausify::clausify_sentence_lossy(
-        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+        &layer.semantic.syntactic,
+        &layer.atoms,
+        &sent,
+        roots[0],
+        false,
+    );
     assert!(!lossy, "rescued root must count as FULLY loaded (no loss)");
     // One definition collapses the product to 1·4·4·4 = 64 occurrence
     // clauses + 4 one-sided definition clauses.
     assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
-    let defs: std::collections::HashSet<String> = cls.iter()
+    let defs: std::collections::HashSet<String> = cls
+        .iter()
         .flat_map(|c| c.lits.iter())
         .filter(|l| is_def_lit(&layer, l))
         .map(|l| head_of(&layer, l))
         .collect();
-    assert_eq!(defs.len(), 1, "smallest fix: exactly one definition, got {defs:?}");
-    assert!(cls.iter().all(|c| c.lits.len() <= 4),
-        "no clause may exceed the pre-definition width");
+    assert_eq!(
+        defs.len(),
+        1,
+        "smallest fix: exactly one definition, got {defs:?}"
+    );
+    assert!(
+        cls.iter().all(|c| c.lits.len() <= 4),
+        "no clause may exceed the pre-definition width"
+    );
     // And the root counts as loaded through the cache path too.
     assert!(!layer.root_load_failed(roots[0]));
 }
@@ -509,23 +616,33 @@ fn defcnf_positive_occurrence_gets_one_sided_definition() {
     let (layer, roots) = layer_with(BLOWUP_OR_OF_ANDS);
     let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
     let (cls, lossy) = super::clausify::clausify_sentence_lossy(
-        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+        &layer.semantic.syntactic,
+        &layer.atoms,
+        &sent,
+        roots[0],
+        false,
+    );
     assert!(!lossy);
     let mut saw_pos_def = false;
     let mut saw_neg_def = false;
     for c in &cls {
         if c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l)) {
             saw_pos_def = true;
-            assert!(c.lits.iter().all(|l| l.pos),
+            assert!(
+                c.lits.iter().all(|l| l.pos),
                 "one-sided (positive) definition violated: a clause holds a \
                  positive df_ literal next to a negative literal — the φ→d \
-                 direction leaked in");
+                 direction leaked in"
+            );
         }
         if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
             saw_neg_def = true;
         }
     }
-    assert!(saw_pos_def && saw_neg_def, "both occurrence and definition clauses exist");
+    assert!(
+        saw_pos_def && saw_neg_def,
+        "both occurrence and definition clauses exist"
+    );
 }
 
 #[test]
@@ -536,26 +653,37 @@ fn defcnf_negative_occurrence_gets_flipped_one_sided_definition() {
     // negative `df_` literal appears only in all-negative occurrence
     // clauses; the d→φ clauses — negative `df_` alongside positive body
     // atoms — must be absent).
-    let (layer, mut roots) = layer_with("
+    let (layer, mut roots) = layer_with(
+        "
         (or (p A1) (q A1) (r A1) (s A1))
         (or (p A2) (q A2) (r A2) (s A2))
         (or (p A3) (q A3) (r A3) (s A3))
         (or (p A4) (q A4) (r A4) (s A4))
-    ");
+    ",
+    );
     assert_eq!(roots.len(), 4);
     roots.sort_unstable(); // document order is not guaranteed; ids are content hashes
-    let sents: Vec<_> = roots.iter()
+    let sents: Vec<_> = roots
+        .iter()
         .map(|r| (layer.semantic.syntactic.sentence(*r).unwrap(), *r))
         .collect();
     let (cls, lossy) = super::clausify::clausify_negated_conjunction_lossy(
-        &layer.semantic.syntactic, &layer.atoms, &sents);
-    assert!(!lossy, "negated-conjunction rescue must count as fully loaded");
+        &layer.semantic.syntactic,
+        &layer.atoms,
+        &sents,
+    );
+    assert!(
+        !lossy,
+        "negated-conjunction rescue must count as fully loaded"
+    );
     assert_eq!(cls.len(), 68, "64 occurrence + 4 definition clauses");
     for c in &cls {
         if c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l)) {
-            assert!(c.lits.iter().all(|l| !l.pos),
+            assert!(
+                c.lits.iter().all(|l| !l.pos),
                 "one-sided (negative) definition violated: the d→φ direction \
-                 leaked in");
+                 leaked in"
+            );
         }
     }
 }
@@ -568,18 +696,31 @@ fn defcnf_both_polarity_occurrence_gets_two_sided_definition() {
     let (layer, roots) = layer_with(&kif);
     let sent = layer.semantic.syntactic.sentence(roots[0]).unwrap();
     let (cls, lossy) = super::clausify::clausify_sentence_lossy(
-        &layer.semantic.syntactic, &layer.atoms, &sent, roots[0], false);
+        &layer.semantic.syntactic,
+        &layer.atoms,
+        &sent,
+        roots[0],
+        false,
+    );
     assert!(!lossy);
     // d→φ clauses: negative df_ literal + positive body atom.
-    let d_implies_body = cls.iter().any(|c|
+    let d_implies_body = cls.iter().any(|c| {
         c.lits.iter().any(|l| !l.pos && is_def_lit(&layer, l))
-            && c.lits.iter().any(|l| l.pos && !is_def_lit(&layer, l)));
+            && c.lits.iter().any(|l| l.pos && !is_def_lit(&layer, l))
+    });
     // φ→d clauses: positive df_ literal + negative body atoms.
-    let body_implies_d = cls.iter().any(|c|
+    let body_implies_d = cls.iter().any(|c| {
         c.lits.iter().any(|l| l.pos && is_def_lit(&layer, l))
-            && c.lits.iter().any(|l| !l.pos && !is_def_lit(&layer, l)));
-    assert!(d_implies_body, "both-polarity occurrence must emit the d→φ side");
-    assert!(body_implies_d, "both-polarity occurrence must emit the φ→d side");
+            && c.lits.iter().any(|l| !l.pos && !is_def_lit(&layer, l))
+    });
+    assert!(
+        d_implies_body,
+        "both-polarity occurrence must emit the d→φ side"
+    );
+    assert!(
+        body_implies_d,
+        "both-polarity occurrence must emit the φ→d side"
+    );
 }
 
 #[test]
@@ -592,23 +733,35 @@ fn defcnf_is_deterministic_and_idempotent() {
     assert_eq!(ra[0], rb[0], "content-addressed roots agree");
     let a = la.clauses_for(ra[0]);
     let b = lb.clauses_for(rb[0]);
-    assert_eq!(*a, *b, "two layers over the same input must clausify identically");
+    assert_eq!(
+        *a, *b,
+        "two layers over the same input must clausify identically"
+    );
     la.clause_store.clear();
     let a2 = la.clauses_for(ra[0]);
-    assert_eq!(*a, *a2, "evict + regenerate must reproduce identical clauses");
+    assert_eq!(
+        *a, *a2,
+        "evict + regenerate must reproduce identical clauses"
+    );
 }
 
 #[test]
 fn defcnf_leaves_lossless_roots_untouched() {
     // A formula comfortably inside the caps must produce zero
     // definitions — the rescue path is strictly additive.
-    let (layer, roots) = layer_with("
+    let (layer, roots) = layer_with(
+        "
         (or (and (p A1) (q A1)) (and (p A2) (q A2)))
-    ");
+    ",
+    );
     let cls = layer.clauses_for(roots[0]);
     assert_eq!(cls.len(), 4, "2·2 distribution, no rescue");
-    assert!(cls.iter().flat_map(|c| c.lits.iter())
-        .all(|l| !is_def_lit(&layer, l)), "no df_ symbols on the lossless path");
+    assert!(
+        cls.iter()
+            .flat_map(|c| c.lits.iter())
+            .all(|l| !is_def_lit(&layer, l)),
+        "no df_ symbols on the lossless path"
+    );
 }
 
 // -- residue index / unify / units (phase 3) -------------------------------
@@ -631,19 +784,25 @@ fn all_lits(layer: &ProverLayer) -> Vec<(bool, super::clause::AtomId)> {
 fn key_equation_holds_for_matching_atoms() {
     // Pattern (p ?X b) matches fact (p a b): the fact's residue under
     // the pattern's mask must equal the pattern's own fingerprint.
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (=> (p ?X b) (q ?X))
         (p a b)
         (p a c)
-    ");
+    ",
+    );
     let lits = all_lits(&layer);
     let syn = &layer.semantic.syntactic;
     // Pick out (p V0 b) / (p a b) / (p a c) by groundness + 3rd seat.
     let (mut pat, mut fb, mut fc) = (None, None, None);
     for (_, a) in &lits {
         let s = layer.atoms.resolve(*a, syn).unwrap();
-        let Some(crate::types::Element::Symbol(h)) = s.elements.first() else { continue };
-        if &*h.name() != "p" { continue }
+        let Some(crate::types::Element::Symbol(h)) = s.elements.first() else {
+            continue;
+        };
+        if &*h.name() != "p" {
+            continue;
+        }
         let info = layer.atom_info(*a);
         let third = match s.elements.get(2) {
             Some(crate::types::Element::Symbol(sym)) => sym.name().to_string(),
@@ -651,13 +810,13 @@ fn key_equation_holds_for_matching_atoms() {
         };
         match (info.is_ground(), third.as_str()) {
             (false, "b") => pat = Some(*a),
-            (true,  "b") => fb = Some(*a),
-            (true,  "c") => fc = Some(*a),
+            (true, "b") => fb = Some(*a),
+            (true, "c") => fc = Some(*a),
             _ => {}
         }
     }
     let (pat, fb, fc) = (pat.unwrap(), fb.unwrap(), fc.unwrap());
-    let p_info  = layer.atom_info(pat);
+    let p_info = layer.atom_info(pat);
     let fb_info = layer.atom_info(fb);
     let fc_info = layer.atom_info(fc);
     assert_eq!(p_info.mask, 0b010, "seat 1 open in (p V0 b)");
@@ -684,28 +843,46 @@ fn seat_shapes_distinguish_bare_var_from_open_compound() {
     let p_fx = term_atom_info(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
     let p_ga = term_atom_info(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
     let p_fa = term_atom_info(&app(vec![s("p"), app(vec![s("f"), s("a")])]));
-    let p_y  = term_atom_info(&app(vec![s("p"), Term::Var(0)]));
-    let p_a  = term_atom_info(&app(vec![s("p"), s("a")]));
+    let p_y = term_atom_info(&app(vec![s("p"), Term::Var(0)]));
+    let p_a = term_atom_info(&app(vec![s("p"), s("a")]));
 
     // The residue channel alone cannot separate (p (f ?X)) from
     // (p (g a)): under the union mask the argument seat vanishes.
     let u = p_fx.mask | p_ga.mask;
-    assert_eq!(p_ga.residue_under(u), p_fx.residue_under(u),
-        "precondition: residues agree under the union mask");
+    assert_eq!(
+        p_ga.residue_under(u),
+        p_fx.residue_under(u),
+        "precondition: residues agree under the union mask"
+    );
 
     // Unifiability: rigid head clash rejected; wildcard and same-head
     // survive; a ground leaf never unifies with an open compound.
-    assert!(!p_fx.seats_unifiable_with(&p_ga), "f(X) vs g(a): head clash");
-    assert!(p_fx.seats_unifiable_with(&p_y), "f(X) vs bare var: wildcard");
+    assert!(
+        !p_fx.seats_unifiable_with(&p_ga),
+        "f(X) vs g(a): head clash"
+    );
+    assert!(
+        p_fx.seats_unifiable_with(&p_y),
+        "f(X) vs bare var: wildcard"
+    );
     assert!(p_fx.seats_unifiable_with(&p_fa), "f(X) vs f(a): same shape");
     assert!(!p_fx.seats_unifiable_with(&p_a), "f(X) vs leaf a: never");
 
     // Matching direction is stricter: a rigid pattern seat refutes a
     // bare-variable instance seat (unifiability tolerates it).
-    assert!(!p_fx.seats_match_onto(&p_y), "pattern f(X) cannot match a var");
+    assert!(
+        !p_fx.seats_match_onto(&p_y),
+        "pattern f(X) cannot match a var"
+    );
     assert!(p_fx.seats_match_onto(&p_fa), "pattern f(X) matches f(a)");
-    assert!(!p_a.seats_match_onto(&p_y), "ground pattern seat cannot match a var");
-    assert!(p_y.seats_match_onto(&p_a), "var pattern seat matches anything");
+    assert!(
+        !p_a.seats_match_onto(&p_y),
+        "ground pattern seat cannot match a var"
+    );
+    assert!(
+        p_y.seats_match_onto(&p_a),
+        "var pattern seat matches anything"
+    );
 
     // Arity-3 swap tolerance (resolution's symmetric retry): direct
     // seats clash, crossed seats agree.
@@ -719,8 +896,14 @@ fn seat_shapes_distinguish_bare_var_from_open_compound() {
         app(vec![s("g"), s("a")]),
         app(vec![s("f"), s("b")]),
     ]));
-    assert!(!r_fg.seats_unifiable_with(&r_gf), "direct comparison clashes");
-    assert!(r_fg.seats_unifiable_mod_swap(&r_gf), "crossed comparison passes");
+    assert!(
+        !r_fg.seats_unifiable_with(&r_gf),
+        "direct comparison clashes"
+    );
+    assert!(
+        r_fg.seats_unifiable_mod_swap(&r_gf),
+        "crossed comparison passes"
+    );
 }
 
 // The filtered probe is a pure prefilter: it keeps every truly
@@ -736,8 +919,12 @@ fn probe_rel_unifiable_drops_head_clashed_open_compounds() {
     let s = |n: &str| Term::Sym(Symbol::from(n));
     let app = |v: Vec<Term>| Term::App(v);
 
-    let p_ga = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
-    let p_fb = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), s("b")])]));
+    let p_ga = layer
+        .atoms
+        .intern_atom(&app(vec![s("p"), app(vec![s("g"), s("a")])]));
+    let p_fb = layer
+        .atoms
+        .intern_atom(&app(vec![s("p"), app(vec![s("f"), s("b")])]));
     let l = &layer;
     let src = |a| l.atom_info(a);
 
@@ -745,13 +932,22 @@ fn probe_rel_unifiable_drops_head_clashed_open_compounds() {
     idx.add(EntryRef { clause: 0, lit: 0 }, true, p_ga, &src);
     idx.add(EntryRef { clause: 1, lit: 0 }, true, p_fb, &src);
 
-    let q = layer.atoms.intern_atom(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
+    let q = layer
+        .atoms
+        .intern_atom(&app(vec![s("p"), app(vec![s("f"), Term::Var(0)])]));
     let qinfo = layer.atom_info(q);
 
     // Raw probe: both stored atoms share the query's residue under the
     // union mask (the argument seat is open on the query side).
-    let raw: Vec<u32> = idx.probe(true, &qinfo, &src).iter().map(|e| e.clause).collect();
-    assert!(raw.contains(&0) && raw.contains(&1), "raw residue superset: {raw:?}");
+    let raw: Vec<u32> = idx
+        .probe(true, &qinfo, &src)
+        .iter()
+        .map(|e| e.clause)
+        .collect();
+    assert!(
+        raw.contains(&0) && raw.contains(&1),
+        "raw residue superset: {raw:?}"
+    );
 
     // Filtered: the g-headed candidate is a sound rejection; the
     // truly unifiable f-headed one survives.
@@ -760,8 +956,14 @@ fn probe_rel_unifiable_drops_head_clashed_open_compounds() {
         .iter()
         .map(|e| e.clause)
         .collect();
-    assert!(!filtered.contains(&0), "g-headed candidate dropped: {filtered:?}");
-    assert!(filtered.contains(&1), "unifiable candidate kept: {filtered:?}");
+    assert!(
+        !filtered.contains(&0),
+        "g-headed candidate dropped: {filtered:?}"
+    );
+    assert!(
+        filtered.contains(&1),
+        "unifiable candidate kept: {filtered:?}"
+    );
 }
 
 #[test]
@@ -769,25 +971,36 @@ fn probe_returns_exactly_the_unifiable_set_after_verify() {
     use super::index::{EntryRef, LiteralIndex};
     use super::unify::{slot_atom, unify, Subst};
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (p a b)
         (p a c)
         (p ?X b)
         (q a b)
         (=> (r ?X) (p ?X ?Y))
-    ");
+    ",
+    );
     let lits = all_lits(&layer);
     let syn = &layer.semantic.syntactic;
     let src = |a| layer.atom_info(a);
 
     let mut idx = LiteralIndex::default();
     for (i, (pos, atom)) in lits.iter().enumerate() {
-        idx.add(EntryRef { clause: i as u32, lit: 0 }, *pos, *atom, &src);
+        idx.add(
+            EntryRef {
+                clause: i as u32,
+                lit: 0,
+            },
+            *pos,
+            *atom,
+            &src,
+        );
     }
 
     // Query with the open pattern (p a ?Z): unifiable with (p a b),
     // (p a c), (p V0 b), (p V0 V1) — not (q a b), not (r V0).
-    let (q_pos, q_atom) = *lits.iter()
+    let (q_pos, q_atom) = *lits
+        .iter()
         .find(|(pos, a)| {
             *pos && {
                 let info = layer.atom_info(*a);
@@ -807,7 +1020,9 @@ fn probe_returns_exactly_the_unifiable_set_after_verify() {
     let q_term = slot_atom(&layer.atoms, syn, q_atom, 0).unwrap();
     let mut truth = Vec::new();
     for (i, (pos, atom)) in lits.iter().enumerate() {
-        if !*pos { continue }
+        if !*pos {
+            continue;
+        }
         let t = slot_atom(&layer.atoms, syn, *atom, 8).unwrap();
         let mut s: Subst = vec![None; 16];
         if unify(&q_term, &t, &mut s) {
@@ -815,7 +1030,8 @@ fn probe_returns_exactly_the_unifiable_set_after_verify() {
         }
     }
     let mut got: Vec<u32> = candidates.iter().map(|e| e.clause).collect();
-    got.sort_unstable(); got.dedup();
+    got.sort_unstable();
+    got.dedup();
     let mut truth_sorted = truth.clone();
     truth_sorted.sort_unstable();
     // Probe is a superset of the unifiable set…
@@ -823,7 +1039,9 @@ fn probe_returns_exactly_the_unifiable_set_after_verify() {
         assert!(got.contains(t), "unifiable entry {} missing from probe", t);
     }
     // …and after the unify verify it is exactly the unifiable set.
-    let verified: Vec<u32> = got.iter().copied()
+    let verified: Vec<u32> = got
+        .iter()
+        .copied()
         .filter(|i| {
             let (pos, atom) = lits[*i as usize];
             assert!(pos);
@@ -832,7 +1050,10 @@ fn probe_returns_exactly_the_unifiable_set_after_verify() {
             unify(&q_term, &t, &mut s)
         })
         .collect();
-    assert_eq!(verified, truth_sorted, "verify filters probe to ground truth");
+    assert_eq!(
+        verified, truth_sorted,
+        "verify filters probe to ground truth"
+    );
 }
 
 #[test]
@@ -840,45 +1061,64 @@ fn view_derivation_equals_recompute() {
     use super::index::{EntryRef, LiteralIndex};
 
     // Open query against ground facts forces a union view (Mq ⊋ Mp=∅).
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (p a b)
         (p c b)
         (p a d)
         (=> (s ?W) (p ?W ?V))
-    ");
+    ",
+    );
     let lits = all_lits(&layer);
     let src = |a| layer.atom_info(a);
 
     let mut idx = LiteralIndex::default();
     for (i, (pos, atom)) in lits.iter().enumerate() {
-        idx.add(EntryRef { clause: i as u32, lit: 0 }, *pos, *atom, &src);
+        idx.add(
+            EntryRef {
+                clause: i as u32,
+                lit: 0,
+            },
+            *pos,
+            *atom,
+            &src,
+        );
     }
     // (p V0 V1) — the open rule head; its probe walks the ground
     // facts' group through a derived view at U = {1,2}.
-    let q_atom = lits.iter()
+    let q_atom = lits
+        .iter()
         .find(|(pos, a)| *pos && layer.atom_info(*a).mask == 0b110)
         .map(|(_, a)| *a)
         .expect("(p V0 V1) present");
     let q_info = layer.atom_info(q_atom);
 
     let via_view: Vec<u32> = {
-        let mut v: Vec<u32> = idx.probe(true, &q_info, &src)
-            .iter().map(|e| e.clause).collect();
-        v.sort_unstable(); v.dedup(); v
+        let mut v: Vec<u32> = idx
+            .probe(true, &q_info, &src)
+            .iter()
+            .map(|e| e.clause)
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     };
-    assert!(idx.view_derivations() > 0, "an actual union view was derived");
+    assert!(
+        idx.view_derivations() > 0,
+        "an actual union view was derived"
+    );
 
     // Recompute ground truth directly: same residue under U for the
     // stored atom ⇔ candidate.
     let u = q_info.mask; // Mp = 0 for ground facts, so U = Mq
     let rq = q_info.residue_under(u);
-    let mut direct: Vec<u32> = lits.iter().enumerate()
+    let mut direct: Vec<u32> = lits
+        .iter()
+        .enumerate()
         .filter(|(_, (pos, a))| {
             *pos && {
                 let info = layer.atom_info(*a);
-                info.arity == q_info.arity
-                    && info.mask == 0
-                    && info.residue_under(u) == rq
+                info.arity == q_info.arity && info.mask == 0 && info.residue_under(u) == rq
             }
         })
         .map(|(i, _)| i as u32)
@@ -886,7 +1126,9 @@ fn view_derivation_equals_recompute() {
     // Plus same-mask entries (Mp == Mq: the identity view).
     for (i, (pos, a)) in lits.iter().enumerate() {
         let info = layer.atom_info(*a);
-        if *pos && info.arity == q_info.arity && info.mask == q_info.mask
+        if *pos
+            && info.arity == q_info.arity
+            && info.mask == q_info.mask
             && info.residue_under(u) == rq
             && !direct.contains(&(i as u32))
         {
@@ -901,30 +1143,53 @@ fn view_derivation_equals_recompute() {
 fn index_add_after_view_keeps_view_fresh() {
     use super::index::{EntryRef, LiteralIndex};
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (p a b)
         (=> (s ?W) (p ?W ?V))
         (p c d)
-    ");
+    ",
+    );
     let lits = all_lits(&layer);
     let src = |a| layer.atom_info(a);
-    let q_atom = lits.iter()
+    let q_atom = lits
+        .iter()
         .find(|(pos, a)| *pos && layer.atom_info(*a).mask == 0b110)
-        .map(|(_, a)| *a).unwrap();
+        .map(|(_, a)| *a)
+        .unwrap();
     let q_info = layer.atom_info(q_atom);
 
     // Index only (p a b) first; probe (derives the view); then add
     // (p c d) and probe again — the late fact must surface.
-    let ground: Vec<(usize, super::clause::AtomId)> = lits.iter().enumerate()
+    let ground: Vec<(usize, super::clause::AtomId)> = lits
+        .iter()
+        .enumerate()
         .filter(|(_, (pos, a))| *pos && layer.atom_info(*a).is_ground())
-        .map(|(i, (_, a))| (i, *a)).collect();
+        .map(|(i, (_, a))| (i, *a))
+        .collect();
     assert_eq!(ground.len(), 2);
 
     let mut idx = LiteralIndex::default();
-    idx.add(EntryRef { clause: ground[0].0 as u32, lit: 0 }, true, ground[0].1, &src);
+    idx.add(
+        EntryRef {
+            clause: ground[0].0 as u32,
+            lit: 0,
+        },
+        true,
+        ground[0].1,
+        &src,
+    );
     let first = idx.probe(true, &q_info, &src).len();
     assert_eq!(first, 1);
-    idx.add(EntryRef { clause: ground[1].0 as u32, lit: 0 }, true, ground[1].1, &src);
+    idx.add(
+        EntryRef {
+            clause: ground[1].0 as u32,
+            lit: 0,
+        },
+        true,
+        ground[1].1,
+        &src,
+    );
     let second = idx.probe(true, &q_info, &src).len();
     assert_eq!(second, 2, "fact added after view derivation still probes");
 }
@@ -937,10 +1202,16 @@ fn unify_basic_and_occurs_check() {
 
     let sym = |n: &str| Term::Sym(Symbol::from(n));
     // unify (p ?0 (f ?1)) with (p a (f b))
-    let pat = Term::App(vec![sym("p"), Term::Var(0),
-        Term::App(vec![sym("f"), Term::Var(1)])]);
-    let tgt = Term::App(vec![sym("p"), sym("a"),
-        Term::App(vec![sym("f"), sym("b")])]);
+    let pat = Term::App(vec![
+        sym("p"),
+        Term::Var(0),
+        Term::App(vec![sym("f"), Term::Var(1)]),
+    ]);
+    let tgt = Term::App(vec![
+        sym("p"),
+        sym("a"),
+        Term::App(vec![sym("f"), sym("b")]),
+    ]);
     let mut s: Subst = vec![None; 2];
     assert!(unify(&pat, &tgt, &mut s));
     assert_eq!(apply(&Term::Var(0), &s), sym("a"));
@@ -962,17 +1233,24 @@ fn match_is_one_way() {
     let sym = |n: &str| Term::Sym(Symbol::from(n));
     let pat = Term::App(vec![sym("p"), Term::Var(0)]);
     let tgt_ground = Term::App(vec![sym("p"), sym("a")]);
-    let tgt_open   = Term::App(vec![sym("p"), Term::Var(9)]);
+    let tgt_open = Term::App(vec![sym("p"), Term::Var(9)]);
 
     let mut s: Subst = vec![None; 16];
-    assert!(match_one_way(&pat, &tgt_ground, &mut s), "pattern var binds");
+    assert!(
+        match_one_way(&pat, &tgt_ground, &mut s),
+        "pattern var binds"
+    );
     let mut s2: Subst = vec![None; 16];
-    assert!(match_one_way(&pat, &tgt_open, &mut s2),
-        "pattern var binds a target var as an opaque term");
+    assert!(
+        match_one_way(&pat, &tgt_open, &mut s2),
+        "pattern var binds a target var as an opaque term"
+    );
     // But a ground pattern never binds target variables:
     let mut s3: Subst = vec![None; 16];
-    assert!(!match_one_way(&tgt_ground, &tgt_open, &mut s3),
-        "target variables are constants to the matcher");
+    assert!(
+        !match_one_way(&tgt_ground, &tgt_open, &mut s3),
+        "target variables are constants to the matcher"
+    );
 }
 
 // THE KEY EQUATION at subterm grain: probing the TermIndex with a
@@ -994,19 +1272,33 @@ fn term_index_probes_unifiable_subterm_positions() {
     let mut ti = TermIndex::default();
     for (k, atom) in [fa, fb, ga].into_iter().enumerate() {
         let info = layer.atom_info(atom);
-        ti.add(TermPos { clause: k as u32, lit: 0, path: smallvec![] }, atom, &info);
+        ti.add(
+            TermPos {
+                clause: k as u32,
+                lit: 0,
+                path: smallvec![],
+            },
+            atom,
+            &info,
+        );
     }
 
     // Probe with (f ?X).
-    let pat = layer.atoms.intern_atom(&Term::App(vec![s("f"), Term::Var(0)]));
+    let pat = layer
+        .atoms
+        .intern_atom(&Term::App(vec![s("f"), Term::Var(0)]));
     let pinfo = layer.atom_info(pat);
     let l = &layer;
     let hits = ti.probe(&pinfo, &(|a| l.atom_info(a)));
-    let clauses: std::collections::HashSet<u32> =
-        hits.iter().map(|p| p.clause).collect();
-    assert!(clauses.contains(&0) && clauses.contains(&1),
-        "both f-subterms must surface: {clauses:?}");
-    assert!(!clauses.contains(&2), "(g a) must not match (f ?X): {clauses:?}");
+    let clauses: std::collections::HashSet<u32> = hits.iter().map(|p| p.clause).collect();
+    assert!(
+        clauses.contains(&0) && clauses.contains(&1),
+        "both f-subterms must surface: {clauses:?}"
+    );
+    assert!(
+        !clauses.contains(&2),
+        "(g a) must not match (f ?X): {clauses:?}"
+    );
 }
 
 // Index removal: a retired clause never surfaces — including through
@@ -1028,7 +1320,9 @@ fn index_removal_tombstones_through_views() {
     idx.add(EntryRef { clause: 1, lit: 0 }, true, pa, &src);
 
     // Probe with (p ?X): a DIFFERENT mask, so a union view is derived.
-    let q = layer.atoms.intern_atom(&Term::App(vec![s("p"), Term::Var(0)]));
+    let q = layer
+        .atoms
+        .intern_atom(&Term::App(vec![s("p"), Term::Var(0)]));
     let qinfo = layer.atom_info(q);
     let before = idx.probe(true, &qinfo, &src);
     assert_eq!(before.len(), 2, "both clauses before retirement");
@@ -1046,33 +1340,47 @@ fn index_removal_tombstones_through_views() {
 fn unit_stores_subsume_and_refute() {
     use super::units::{UnitHit, UnitStores};
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (holdsDuring t1 x)
         (p a)
         (p ?X)
         (not (q a))
         (q ?Y)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let lits = all_lits(&layer);
     let mut units = UnitStores::default();
     // Activate every unit literal under ids = their position.
     for (i, (pos, atom)) in lits.iter().enumerate() {
-        units.add_unit(i as u32, *pos, *atom, 4, &layer.atom_infos, &layer.atoms, syn);
+        units.add_unit(
+            i as u32,
+            *pos,
+            *atom,
+            4,
+            &layer.atom_infos,
+            &layer.atoms,
+            syn,
+        );
     }
 
     // Ground subsumption: (p a) again → Subsumes.
-    let (pa_pos, pa) = *lits.iter().find(|(pos, a)| {
-        *pos && {
-            let s = layer.atoms.resolve(*a, syn).unwrap();
-            matches!(s.elements.first(),
+    let (pa_pos, pa) = *lits
+        .iter()
+        .find(|(pos, a)| {
+            *pos && {
+                let s = layer.atoms.resolve(*a, syn).unwrap();
+                matches!(s.elements.first(),
                 Some(crate::types::Element::Symbol(h)) if &*h.name() == "p")
-                && layer.atom_info(*a).is_ground()
-        }
-    }).unwrap();
+                    && layer.atom_info(*a).is_ground()
+            }
+        })
+        .unwrap();
     assert!(matches!(
         units.check(pa_pos, pa, 0, &layer.atom_infos, &layer.atoms, syn),
-        Some(UnitHit::Subsumes(_))));
+        Some(UnitHit::Subsumes(_))
+    ));
 
     // Ground refutation: positive (q a) vs the active ¬(q a)…
     // — but (q ?Y) also subsumes it; either hit is a valid stop, the
@@ -1080,19 +1388,25 @@ fn unit_stores_subsume_and_refute() {
     // ¬(p a) is refuted by the active (p a).
     assert!(matches!(
         units.check(false, pa, 0, &layer.atom_infos, &layer.atoms, syn),
-        Some(UnitHit::Refutes(_))));
+        Some(UnitHit::Refutes(_))
+    ));
 
     // Open subsumption: ground (q a)… the (q ?Y) unit matches it.
-    let (_, qa) = *lits.iter().find(|(pos, a)| {
-        !*pos && {
-            let s = layer.atoms.resolve(*a, syn).unwrap();
-            matches!(s.elements.first(),
+    let (_, qa) = *lits
+        .iter()
+        .find(|(pos, a)| {
+            !*pos && {
+                let s = layer.atoms.resolve(*a, syn).unwrap();
+                matches!(s.elements.first(),
                 Some(crate::types::Element::Symbol(h)) if &*h.name() == "q")
-        }
-    }).unwrap();
+            }
+        })
+        .unwrap();
     // As a *positive* literal, (q a) hits ¬(q a) ground-refute or
     // (q ?Y) open-subsume; ground wins (probe order).
-    assert!(units.check(true, qa, 0, &layer.atom_infos, &layer.atoms, syn).is_some());
+    assert!(units
+        .check(true, qa, 0, &layer.atom_infos, &layer.atoms, syn)
+        .is_some());
 }
 
 #[test]
@@ -1104,7 +1418,15 @@ fn equality_units_register_both_orientations() {
     let lits = all_lits(&layer);
     assert_eq!(lits.len(), 1);
     let mut units = UnitStores::default();
-    units.add_unit(7, lits[0].0, lits[0].1, 4, &layer.atom_infos, &layer.atoms, syn);
+    units.add_unit(
+        7,
+        lits[0].0,
+        lits[0].1,
+        4,
+        &layer.atom_infos,
+        &layer.atoms,
+        syn,
+    );
     assert_eq!(units.equals.len(), 2, "l→r and r→l both present");
     assert_eq!(units.equals[0].1, units.equals[1].2);
     assert_eq!(units.equals[0].2, units.equals[1].1);
@@ -1118,11 +1440,13 @@ fn oracle_instance_chain_with_witnesses() {
     use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (subclass Dog Animal)
         (subclass Animal Entity)
         (instance Fido Dog)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let ora = SemanticOracle::new(&layer.semantic, Scope::Base);
     let id = |n: &str| syn.sym_id(n).unwrap();
@@ -1131,19 +1455,30 @@ fn oracle_instance_chain_with_witnesses() {
     assert!(ora.holds(id("instance"), id("Fido"), id("Entity"), Some(&mut why)));
     // (instance Fido Dog), (subclass Dog Animal), (subclass Animal Entity)
     assert_eq!(why.len(), 3);
-    assert_eq!((why[0].rel, why[0].x, why[0].y),
-        (id("instance"), id("Fido"), id("Dog")));
-    assert_eq!((why[1].rel, why[1].x, why[1].y),
-        (id("subclass"), id("Dog"), id("Animal")));
-    assert_eq!((why[2].rel, why[2].x, why[2].y),
-        (id("subclass"), id("Animal"), id("Entity")));
+    assert_eq!(
+        (why[0].rel, why[0].x, why[0].y),
+        (id("instance"), id("Fido"), id("Dog"))
+    );
+    assert_eq!(
+        (why[1].rel, why[1].x, why[1].y),
+        (id("subclass"), id("Dog"), id("Animal"))
+    );
+    assert_eq!(
+        (why[2].rel, why[2].x, why[2].y),
+        (id("subclass"), id("Animal"), id("Entity"))
+    );
     // Every hop cites its stored fact — provenance to file:line.
     for w in &why {
         let sid = w.sid.expect("stored witness has a sid");
-        assert!(syn.sentence(sid).is_some(), "witness sid resolves in the store");
+        assert!(
+            syn.sentence(sid).is_some(),
+            "witness sid resolves in the store"
+        );
     }
-    assert!(!ora.holds(id("instance"), id("Dog"), id("Entity"), None),
-        "Dog is a subclass, not an instance, of Entity");
+    assert!(
+        !ora.holds(id("instance"), id("Dog"), id("Entity"), None),
+        "Dog is a subclass, not an instance, of Entity"
+    );
 }
 
 #[test]
@@ -1152,30 +1487,42 @@ fn oracle_subclass_and_reflexivity() {
     use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (subclass Dog Animal)
         (equal c c)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let ora = SemanticOracle::new(&layer.semantic, Scope::Base);
     let id = |n: &str| syn.sym_id(n).unwrap();
 
     assert!(ora.holds(id("subclass"), id("Dog"), id("Animal"), None));
-    assert!(ora.holds(id("subclass"), id("Dog"), id("Dog"), None), "subclass reflexive");
-    assert!(!ora.holds(id("subclass"), id("Animal"), id("Dog"), None), "not symmetric");
+    assert!(
+        ora.holds(id("subclass"), id("Dog"), id("Dog"), None),
+        "subclass reflexive"
+    );
+    assert!(
+        !ora.holds(id("subclass"), id("Animal"), id("Dog"), None),
+        "not symmetric"
+    );
 
     // Equality reflexivity at the atom level, compounds included.
     let lits = all_lits(&layer);
-    let (_, eq_atom) = lits.iter()
+    let (_, eq_atom) = lits
+        .iter()
         .find(|(_, a)| {
             let s = layer.atoms.resolve(*a, syn).unwrap();
-            matches!(s.elements.first(),
-                Some(crate::types::Element::Op(crate::parse::OpKind::Equal)))
+            matches!(
+                s.elements.first(),
+                Some(crate::types::Element::Op(crate::parse::OpKind::Equal))
+            )
         })
         .expect("(equal c c) clausified");
     assert_eq!(
         SemanticOracle::equal_reflexive(&layer.atoms, syn, *eq_atom),
-        Some(true));
+        Some(true)
+    );
 }
 
 #[test]
@@ -1184,28 +1531,47 @@ fn oracle_mined_rule_edge_discharges_with_rule_witness() {
     use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
-    let (layer, roots) = layer_with("
+    let (layer, roots) = layer_with(
+        "
         (=> (gt ?X ?Y) (ge ?X ?Y))
         (gt five three)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let ora = SemanticOracle::new(&layer.semantic, Scope::Base);
     let id = |n: &str| syn.sym_id(n).unwrap();
 
     let mut why = Vec::new();
-    assert!(ora.holds(id("ge"), id("five"), id("three"), Some(&mut why)),
-        "(ge five three) inherited through the mined rule-edge");
+    assert!(
+        ora.holds(id("ge"), id("five"), id("three"), Some(&mut why)),
+        "(ge five three) inherited through the mined rule-edge"
+    );
     assert_eq!(why.len(), 2);
-    assert_eq!((why[0].rel, why[0].x, why[0].y), (id("gt"), id("five"), id("three")));
+    assert_eq!(
+        (why[0].rel, why[0].x, why[0].y),
+        (id("gt"), id("five"), id("three"))
+    );
     // "subrelation" is never interned by this fixture — the witness
     // carries the name-hash id (mined edges are virtual subrelations).
-    assert_eq!((why[1].rel, why[1].x, why[1].y),
-        (crate::types::Symbol::hash_name("subrelation"), id("gt"), id("ge")));
+    assert_eq!(
+        (why[1].rel, why[1].x, why[1].y),
+        (
+            crate::types::Symbol::hash_name("subrelation"),
+            id("gt"),
+            id("ge")
+        )
+    );
     // The subrelation hop cites the RULE's sid (it is mined, not declared).
-    let rule_sid = roots.iter().copied().find(|r| {
-        syn.sentence(*r).is_some_and(|s| s.is_operator())
-    }).unwrap();
-    assert_eq!(why[1].sid, Some(rule_sid), "mined hop cites the rule's source");
+    let rule_sid = roots
+        .iter()
+        .copied()
+        .find(|r| syn.sentence(*r).is_some_and(|s| s.is_operator()))
+        .unwrap();
+    assert_eq!(
+        why[1].sid,
+        Some(rule_sid),
+        "mined hop cites the rule's source"
+    );
 }
 
 #[test]
@@ -1214,12 +1580,14 @@ fn oracle_transitive_reachability_with_chain_witnesses() {
     use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (instance located TransitiveRelation)
         (located a b)
         (located b c)
         (located c d)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let ora = SemanticOracle::new(&layer.semantic, Scope::Base);
     let id = |n: &str| syn.sym_id(n).unwrap();
@@ -1231,12 +1599,17 @@ fn oracle_transitive_reachability_with_chain_witnesses() {
     assert_eq!((why[0].x, why[0].y), (id("a"), id("b")));
     assert_eq!((why[1].x, why[1].y), (id("b"), id("c")));
     assert_eq!((why[2].x, why[2].y), (id("c"), id("d")));
-    assert_eq!((why[3].rel, why[3].x, why[3].y),
-        (id("instance"), id("located"), id("TransitiveRelation")));
+    assert_eq!(
+        (why[3].rel, why[3].x, why[3].y),
+        (id("instance"), id("located"), id("TransitiveRelation"))
+    );
     // Chain hops cite stored facts.
     assert!(why[..3].iter().all(|w| w.sid.is_some()));
     // Non-transitive relations do not chain.
-    assert!(!ora.holds(id("located"), id("d"), id("a"), None), "no reverse");
+    assert!(
+        !ora.holds(id("located"), id("d"), id("a"), None),
+        "no reverse"
+    );
 }
 
 #[test]
@@ -1245,10 +1618,12 @@ fn oracle_learned_units_extend_the_closure() {
     use super::theory::TheoryOracle;
     use crate::semantics::types::Scope;
 
-    let (layer, _) = layer_with("
+    let (layer, _) = layer_with(
+        "
         (instance located TransitiveRelation)
         (located a b)
-    ");
+    ",
+    );
     let syn = &layer.semantic.syntactic;
     let mut ora = SemanticOracle::new(&layer.semantic, Scope::Base);
     let id = |n: &str| syn.sym_id(n).unwrap();
@@ -1259,12 +1634,18 @@ fn oracle_learned_units_extend_the_closure() {
     assert!(!ora.holds(id("located"), id("a"), zz9, None));
     ora.add_unit(id("located"), id("b"), zz9, None);
     let mut why = Vec::new();
-    assert!(ora.holds(id("located"), id("a"), zz9, Some(&mut why)),
-        "learned edge b→zz9 chains with the stored a→b");
-    assert!(why.iter().any(|w| w.sid.is_none()),
-        "the learned hop has no store sid");
-    assert!(why.iter().any(|w| w.sid.is_some()),
-        "the stored hop still cites its fact");
+    assert!(
+        ora.holds(id("located"), id("a"), zz9, Some(&mut why)),
+        "learned edge b→zz9 chains with the stored a→b"
+    );
+    assert!(
+        why.iter().any(|w| w.sid.is_none()),
+        "the learned hop has no store sid"
+    );
+    assert!(
+        why.iter().any(|w| w.sid.is_some()),
+        "the stored hop still cites its fact"
+    );
 }
 
 #[test]
@@ -1277,7 +1658,9 @@ fn oracle_respects_session_scope() {
     let mut kb = KnowledgeBase::new_native();
     let r = kb.reload_kif(
         "(instance located TransitiveRelation)\n(located a b)",
-        &std::path::PathBuf::from("base.kif"), "load");
+        &std::path::PathBuf::from("base.kif"),
+        "load",
+    );
     assert!(r.ok);
     kb.make_session_axiomatic("load").expect("promote");
     // Session-scoped hypothesis.
@@ -1289,21 +1672,28 @@ fn oracle_respects_session_scope() {
 
     let sem = kb.semantic();
     let base_oracle = SemanticOracle::new(sem, Scope::Base);
-    assert!(!base_oracle.holds(located, a, c, None),
-        "Base never sees the session's transient edge");
+    assert!(
+        !base_oracle.holds(located, a, c, None),
+        "Base never sees the session's transient edge"
+    );
 
     let sess_oracle = SemanticOracle::new(sem, Scope::Session(session_id("hypo")));
     let mut why = Vec::new();
-    assert!(sess_oracle.holds(located, a, c, Some(&mut why)),
-        "the session sees base ∪ its own overlay");
+    assert!(
+        sess_oracle.holds(located, a, c, Some(&mut why)),
+        "the session sees base ∪ its own overlay"
+    );
     assert_eq!(why.len(), 3, "a→b hop, b→c hop, transitivity license");
 }
 
 #[test]
 fn clause_store_evicts_on_retraction() {
     let mut kb = KnowledgeBase::new_native();
-    let r = kb.reload_kif("(=> (p ?X) (q ?X))",
-        &std::path::PathBuf::from("evict.kif"), "s1");
+    let r = kb.reload_kif(
+        "(=> (p ?X) (q ?X))",
+        &std::path::PathBuf::from("evict.kif"),
+        "s1",
+    );
     assert!(r.ok);
     let roots = kb.store_for_testing().file_root_sids("evict.kif");
     assert_eq!(roots.len(), 1);
@@ -1311,15 +1701,22 @@ fn clause_store_evicts_on_retraction() {
 
     let cls = kb.prover().clauses_for(root);
     assert_eq!(cls.len(), 1);
-    assert!(kb.prover().clause_store.peek(&root).is_some(), "cached after first ask");
+    assert!(
+        kb.prover().clause_store.peek(&root).is_some(),
+        "cached after first ask"
+    );
 
     // Retract the file (truncate re-ingest — the `remove_file` core);
     // the RootRemoved cascade must evict the entry.
     let _ = kb.ingest_source(
         crate::types::SourceFile::truncate(std::path::PathBuf::from("evict.kif")),
-        "evict.kif", true);
-    assert!(kb.prover().clause_store.peek(&root).is_none(),
-        "retraction evicts the root's clauses");
+        "evict.kif",
+        true,
+    );
+    assert!(
+        kb.prover().clause_store.peek(&root).is_none(),
+        "retraction evicts the root's clauses"
+    );
 }
 
 // The full lower stack works under the prover top layer: ingest,
@@ -1345,7 +1742,10 @@ fn native_stack_smoke() {
     let dog = syn.sym_id("Dog").expect("Dog interned");
     let animal = syn.sym_id("Animal").expect("Animal interned");
     let fido = syn.sym_id("Fido").expect("Fido interned");
-    assert!(kb.semantic().has_ancestor(dog, animal), "taxonomy edge live");
+    assert!(
+        kb.semantic().has_ancestor(dog, animal),
+        "taxonomy edge live"
+    );
     assert!(kb.semantic().has_ancestor(fido, dog), "instance live");
 
     // SInE selection over the promoted axioms.
@@ -1355,1825 +1755,2465 @@ fn native_stack_smoke() {
         .expect("sine select");
     assert!(!selected.is_empty(), "SInE selects relevant axioms");
 }
-    // Phase-3 probe: run the automatic Horn extractor on a real ontology file
-    // (`SIGMA_EXTRACT_FILE=/path/to/Merge.kif cargo test … extract_from_large_file
-    //  -- --nocapture`), reporting what the extractor recovers and whether the
-    // resulting Datalog(¬) program is stratifiable.  Skips cheaply when unset.
-    // Set `SIGMA_EXTRACT_EVAL=1` to also evaluate the program to its model
-    // (a preview of the Phase-5 scale question — may be slow on large KBs).
-    #[test]
-    fn extract_from_large_file() {
-        let Some(path) = std::env::var_os("SIGMA_EXTRACT_FILE") else {
-            eprintln!("SIGMA_EXTRACT_FILE unset — skipping large-file extraction probe");
-            return;
+// Phase-3 probe: run the automatic Horn extractor on a real ontology file
+// (`SIGMA_EXTRACT_FILE=/path/to/Merge.kif cargo test … extract_from_large_file
+//  -- --nocapture`), reporting what the extractor recovers and whether the
+// resulting Datalog(¬) program is stratifiable.  Skips cheaply when unset.
+// Set `SIGMA_EXTRACT_EVAL=1` to also evaluate the program to its model
+// (a preview of the Phase-5 scale question — may be slow on large KBs).
+#[test]
+fn extract_from_large_file() {
+    let Some(path) = std::env::var_os("SIGMA_EXTRACT_FILE") else {
+        eprintln!("SIGMA_EXTRACT_FILE unset — skipping large-file extraction probe");
+        return;
+    };
+    let text = std::fs::read_to_string(&path).expect("read SIGMA_EXTRACT_FILE");
+    let mut kb = KnowledgeBase::new_native();
+    let r = kb.reload_kif(&text, &std::path::PathBuf::from(&path), "load");
+    eprintln!("ingest: ok={} warnings={}", r.ok, r.warnings().count());
+    let _ = kb.make_session_axiomatic("load");
+
+    let syn = &kb.layer.semantic.syntactic;
+    let roots = syn.root_sids().len();
+    let prog = crate::saturate::model::extract::extract_horn_program(syn);
+
+    // Clause-signature role recognition (prototype): recover roles from the
+    // extracted Horn-clause shapes, name-independently.  Cross-check the
+    // bridge against the bespoke sentence-shape recognizer.
+    {
+        use crate::saturate::model::recognize;
+        let rp = recognize::recognize(&prog.rules);
+        let name = |p: &crate::SymbolId| {
+            syn.sym_name(*p)
+                .map(|s| s.name().to_string())
+                .unwrap_or_else(|| format!("{p:x}"))
         };
-        let text = std::fs::read_to_string(&path).expect("read SIGMA_EXTRACT_FILE");
-        let mut kb = KnowledgeBase::new_native();
-        let r = kb.reload_kif(&text, &std::path::PathBuf::from(&path), "load");
-        eprintln!("ingest: ok={} warnings={}", r.ok, r.warnings().count());
-        let _ = kb.make_session_axiomatic("load");
-
-        let syn = &kb.layer.semantic.syntactic;
-        let roots = syn.root_sids().len();
-        let prog = crate::saturate::model::extract::extract_horn_program(syn);
-
-        // Clause-signature role recognition (prototype): recover roles from the
-        // extracted Horn-clause shapes, name-independently.  Cross-check the
-        // bridge against the bespoke sentence-shape recognizer.
-        {
-            use crate::saturate::model::recognize;
-            let rp = recognize::recognize(&prog.rules);
-            let name = |p: &crate::SymbolId| syn.sym_name(*p).map(|s| s.name().to_string())
-                .unwrap_or_else(|| format!("{p:x}"));
+        eprintln!(
+            "clause-sig recognition: {} transitive, {} symmetric, {} subrelation, {} bridges",
+            rp.transitive.len(),
+            rp.symmetric.len(),
+            rp.subrelation.len(),
+            rp.bridges.len(),
+        );
+        for (i, c) in rp.bridges.iter().take(4) {
             eprintln!(
-                "clause-sig recognition: {} transitive, {} symmetric, {} subrelation, {} bridges",
-                rp.transitive.len(), rp.symmetric.len(), rp.subrelation.len(), rp.bridges.len(),
+                "  bridge: instance-like={} subclass-like={}",
+                name(i),
+                name(c)
             );
-            for (i, c) in rp.bridges.iter().take(4) {
-                eprintln!("  bridge: instance-like={} subclass-like={}", name(i), name(c));
-            }
-            for r in rp.transitive.iter().take(6) {
-                eprintln!("  transitive-rule: {}", name(r));
-            }
-            // Bespoke recognizer's roles, for comparison.
-            let roles = crate::semantics::roles::TaxonomyRoles::recognize(syn, syn.root_sids());
-            let bridge_recovers = rp.bridges.iter()
-                .any(|(i, c)| *i == roles.instance && *c == roles.subclass);
-            eprintln!("  bespoke roles: instance={} subclass={}; clause-sig bridge recovers them: {bridge_recovers}",
+        }
+        for r in rp.transitive.iter().take(6) {
+            eprintln!("  transitive-rule: {}", name(r));
+        }
+        // Bespoke recognizer's roles, for comparison.
+        let roles = crate::semantics::roles::TaxonomyRoles::recognize(syn, syn.root_sids());
+        let bridge_recovers = rp
+            .bridges
+            .iter()
+            .any(|(i, c)| *i == roles.instance && *c == roles.subclass);
+        eprintln!("  bespoke roles: instance={} subclass={}; clause-sig bridge recovers them: {bridge_recovers}",
                 name(&roles.instance), name(&roles.subclass));
-        }
-        let n_facts: usize = prog.edb.values().map(|s| s.len()).sum();
-        let head_preds: std::collections::HashSet<_> =
-            prog.rules.iter().map(|r| r.head.pred).collect();
-        eprintln!(
-            "roots={roots} → extracted {} rules ({} distinct heads), \
+    }
+    let n_facts: usize = prog.edb.values().map(|s| s.len()).sum();
+    let head_preds: std::collections::HashSet<_> = prog.rules.iter().map(|r| r.head.pred).collect();
+    eprintln!(
+        "roots={roots} → extracted {} rules ({} distinct heads), \
              {} facts over {} relations",
-            prog.rules.len(), head_preds.len(), n_facts, prog.edb.len(),
-        );
-        for name in ["instance", "subclass", "subrelation", "disjoint"] {
-            let id = crate::types::Symbol::hash_name(name);
-            let rules = prog.rules.iter().filter(|r| r.head.pred == id).count();
-            let facts = prog.edb.get(&id).map_or(0, |s| s.len());
-            eprintln!("  {name}: {rules} rules, {facts} EDB facts");
-        }
-        match prog.stratify() {
-            Ok(strata) => eprintln!("stratifiable: {} strata", strata.len()),
-            Err(e) => eprintln!("NOT stratifiable (whole-KB monolith): {e:?}"),
-        }
+        prog.rules.len(),
+        head_preds.len(),
+        n_facts,
+        prog.edb.len(),
+    );
+    for name in ["instance", "subclass", "subrelation", "disjoint"] {
+        let id = crate::types::Symbol::hash_name(name);
+        let rules = prog.rules.iter().filter(|r| r.head.pred == id).count();
+        let facts = prog.edb.get(&id).map_or(0, |s| s.len());
+        eprintln!("  {name}: {rules} rules, {facts} EDB facts");
+    }
+    match prog.stratify() {
+        Ok(strata) => eprintln!("stratifiable: {} strata", strata.len()),
+        Err(e) => eprintln!("NOT stratifiable (whole-KB monolith): {e:?}"),
+    }
 
-        // Per-cluster: restrict to the taxonomy definitional fragment
-        // (instance/subclass/subrelation) — a rule is kept only if its head AND
-        // every body predicate lie in the cluster.  This is the manual stand-in
-        // for Phase-4 cluster partitioning; it should stratify + evaluate to the
-        // taxonomy closure even though the monolith does not.
-        let allow: std::collections::HashSet<crate::SymbolId> =
-            ["instance", "subclass", "subrelation"]
-                .iter().map(|n| crate::types::Symbol::hash_name(n)).collect();
+    // Per-cluster: restrict to the taxonomy definitional fragment
+    // (instance/subclass/subrelation) — a rule is kept only if its head AND
+    // every body predicate lie in the cluster.  This is the manual stand-in
+    // for Phase-4 cluster partitioning; it should stratify + evaluate to the
+    // taxonomy closure even though the monolith does not.
+    let allow: std::collections::HashSet<crate::SymbolId> = ["instance", "subclass", "subrelation"]
+        .iter()
+        .map(|n| crate::types::Symbol::hash_name(n))
+        .collect();
 
-        // Phase 3.5: the generalized schema expander, with the transitive set
-        // DERIVED from the model (no hard-coded seed).  Base = EDB + extracted
-        // Horn rules + subrelation schema rules.  Then fixpoint: evaluate,
-        // derive `transitive(R) ⟸ (R,TransitiveRelation) ∈ instance-closure`,
-        // instantiate transitivity for the fresh ones, repeat until stable.
-        use crate::saturate::model::extract;
-        let roles = crate::semantics::roles::TaxonomyRoles::default();
-        let decls = extract::collect_role_decls(syn, &roles);
-        eprintln!(
-            "role decls: {} subrelation, {} direct-transitive, {} symmetric",
-            decls.subrelation.len(), decls.transitive.len(), decls.symmetric.len(),
-        );
+    // Phase 3.5: the generalized schema expander, with the transitive set
+    // DERIVED from the model (no hard-coded seed).  Base = EDB + extracted
+    // Horn rules + subrelation schema rules.  Then fixpoint: evaluate,
+    // derive `transitive(R) ⟸ (R,TransitiveRelation) ∈ instance-closure`,
+    // instantiate transitivity for the fresh ones, repeat until stable.
+    use crate::saturate::model::extract;
+    let roles = crate::semantics::roles::TaxonomyRoles::default();
+    let decls = extract::collect_role_decls(syn, &roles);
+    eprintln!(
+        "role decls: {} subrelation, {} direct-transitive, {} symmetric",
+        decls.subrelation.len(),
+        decls.transitive.len(),
+        decls.symmetric.len(),
+    );
 
-        let mut tax = crate::saturate::model::Program::default();
-        for (p, facts) in &prog.edb {
-            if allow.contains(p) {
-                for t in facts { tax.fact(*p, t.clone()); }
+    let mut tax = crate::saturate::model::Program::default();
+    for (p, facts) in &prog.edb {
+        if allow.contains(p) {
+            for t in facts {
+                tax.fact(*p, t.clone());
             }
         }
-        let subrel_only = extract::RoleDecls {
-            subrelation: decls.subrelation.clone(), transitive: vec![], symmetric: vec![],
-        };
-        for r in prog.rules.iter().chain(extract::schema_rules(&subrel_only, &[]).iter()) {
-            let in_cluster = allow.contains(&r.head.pred)
-                && r.body.iter().all(|l| allow.contains(&l.atom.pred));
-            if in_cluster { tax.rules.push(r.clone()); }
+    }
+    let subrel_only = extract::RoleDecls {
+        subrelation: decls.subrelation.clone(),
+        transitive: vec![],
+        symmetric: vec![],
+    };
+    for r in prog
+        .rules
+        .iter()
+        .chain(extract::schema_rules(&subrel_only, &[]).iter())
+    {
+        let in_cluster =
+            allow.contains(&r.head.pred) && r.body.iter().all(|l| allow.contains(&l.atom.pred));
+        if in_cluster {
+            tax.rules.push(r.clone());
         }
+    }
 
-        let mut known: std::collections::HashSet<crate::SymbolId> = std::collections::HashSet::new();
-        let mut model = tax.evaluate().expect("taxonomy cluster stratifiable");
-        for pass in 0.. {
-            let trans = extract::transitive_members(&model, &roles);
-            let fresh: Vec<_> = trans.into_iter().filter(|r| known.insert(*r)).collect();
-            if fresh.is_empty() {
-                eprintln!("transitive-derivation fixpoint converged after {pass} passes");
-                break;
+    let mut known: std::collections::HashSet<crate::SymbolId> = std::collections::HashSet::new();
+    let mut model = tax.evaluate().expect("taxonomy cluster stratifiable");
+    for pass in 0.. {
+        let trans = extract::transitive_members(&model, &roles);
+        let fresh: Vec<_> = trans.into_iter().filter(|r| known.insert(*r)).collect();
+        if fresh.is_empty() {
+            eprintln!("transitive-derivation fixpoint converged after {pass} passes");
+            break;
+        }
+        let fresh_pairs: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+            fresh.iter().map(|&r| (r, None)).collect();
+        for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh_pairs) {
+            if allow.contains(&r.head.pred) && r.body.iter().all(|l| allow.contains(&l.atom.pred)) {
+                tax.rules.push(r);
             }
-            let fresh_pairs: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
-                fresh.iter().map(|&r| (r, None)).collect();
-            for r in extract::schema_rules(&extract::RoleDecls::default(), &fresh_pairs) {
-                if allow.contains(&r.head.pred)
-                    && r.body.iter().all(|l| allow.contains(&l.atom.pred)) {
-                    tax.rules.push(r);
-                }
+        }
+        model = tax.evaluate().expect("stratifiable");
+    }
+    let subclass_id = crate::types::Symbol::hash_name("subclass");
+    eprintln!(
+        "DERIVED transitive relations: {} (subclass derived-transitive: {})",
+        known.len(),
+        known.contains(&subclass_id),
+    );
+    for name in ["instance", "subclass", "subrelation"] {
+        let id = crate::types::Symbol::hash_name(name);
+        eprintln!(
+            "  cluster {name}: {} tuples (closure)",
+            model.get(&id).map_or(0, |s| s.len())
+        );
+    }
+
+    // Phase 4: automatic cluster partitioning (no allowlist).  Discover the
+    // stratifiable definitional clusters of the FULL extracted program and
+    // isolate the unstratifiable parts.
+    use crate::saturate::model::cluster;
+    let clusters = cluster::partition(&prog);
+    let total_preds: std::collections::HashSet<crate::SymbolId> = prog
+        .rules
+        .iter()
+        .flat_map(|r| std::iter::once(r.head.pred).chain(r.body.iter().map(|l| l.atom.pred)))
+        .chain(prog.edb.keys().copied())
+        .collect();
+    let modelable: std::collections::HashSet<_> = clusters
+        .iter()
+        .flat_map(|c| c.preds.iter().copied())
+        .collect();
+    eprintln!(
+        "partition: {} clusters; {} of {} preds modelable ({} dropped to negation cycles)",
+        clusters.len(),
+        modelable.len(),
+        total_preds.len(),
+        total_preds.len() - modelable.len(),
+    );
+    let stratifiable = clusters
+        .iter()
+        .filter(|c| c.program.evaluate().is_ok())
+        .count();
+    eprintln!(
+        "  every cluster stratifiable: {} ({stratifiable}/{})",
+        stratifiable == clusters.len(),
+        clusters.len()
+    );
+    let sub = crate::types::Symbol::hash_name("subclass");
+    if let Some((i, c)) = clusters
+        .iter()
+        .enumerate()
+        .find(|(_, c)| c.preds.contains(&sub))
+    {
+        let inst = c
+            .preds
+            .contains(&crate::types::Symbol::hash_name("instance"));
+        eprintln!(
+            "  discovered taxonomy cluster #{i}: {} preds, {} rules (contains instance: {inst})",
+            c.preds.len(),
+            c.program.rules.len()
+        );
+    }
+    // SInE-as-demand hook: a conjecture mentioning `instance` selects only
+    // the cluster(s) it touches.  `seed` is exactly SInE's symbol output.
+    let seed: std::collections::HashSet<crate::SymbolId> =
+        [crate::types::Symbol::hash_name("instance")]
+            .into_iter()
+            .collect();
+    let rel = cluster::relevant_clusters(&clusters, &seed);
+    eprintln!(
+        "  SInE-demand: seed={{instance}} -> selects {} of {} clusters",
+        rel.len(),
+        clusters.len()
+    );
+
+    // Shared predicates (instance/subclass) get over-tainted by predicate-
+    // SCC partitioning (one giant SCC + a negation makes the whole SCC
+    // bad).  Their POSITIVE definition is still sound — recover it via the
+    // monotone (negation-free) fragment, with the derived transitivity
+    // schema rules folded in.  This reproduces the taxonomy closure with no
+    // allowlist and no manual cluster.
+    let mut mono = cluster::positive_program(&prog);
+    let known_vec: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
+        known.iter().map(|&r| (r, None)).collect();
+    for r in extract::schema_rules(&decls, &known_vec) {
+        mono.rules.push(r);
+    }
+    match mono.evaluate() {
+        Ok(m) => {
+            let total: usize = m.values().map(|s| s.len()).sum();
+            eprintln!(
+                "monotone fragment (sound positive model): {} rules, {total} tuples",
+                mono.rules.len()
+            );
+            for name in ["instance", "subclass", "subrelation"] {
+                let id = crate::types::Symbol::hash_name(name);
+                eprintln!(
+                    "  {name}: {} tuples (closure, no allowlist)",
+                    m.get(&id).map_or(0, |s| s.len())
+                );
             }
-            model = tax.evaluate().expect("stratifiable");
         }
-        let subclass_id = crate::types::Symbol::hash_name("subclass");
-        eprintln!(
-            "DERIVED transitive relations: {} (subclass derived-transitive: {})",
-            known.len(), known.contains(&subclass_id),
-        );
-        for name in ["instance", "subclass", "subrelation"] {
-            let id = crate::types::Symbol::hash_name(name);
-            eprintln!("  cluster {name}: {} tuples (closure)", model.get(&id).map_or(0, |s| s.len()));
-        }
+        Err(e) => eprintln!("monotone fragment evaluate failed: {e:?}"),
+    }
 
-        // Phase 4: automatic cluster partitioning (no allowlist).  Discover the
-        // stratifiable definitional clusters of the FULL extracted program and
-        // isolate the unstratifiable parts.
-        use crate::saturate::model::cluster;
-        let clusters = cluster::partition(&prog);
-        let total_preds: std::collections::HashSet<crate::SymbolId> = prog.rules.iter()
-            .flat_map(|r| std::iter::once(r.head.pred).chain(r.body.iter().map(|l| l.atom.pred)))
-            .chain(prog.edb.keys().copied()).collect();
-        let modelable: std::collections::HashSet<_> =
-            clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
-        eprintln!(
-            "partition: {} clusters; {} of {} preds modelable ({} dropped to negation cycles)",
-            clusters.len(), modelable.len(), total_preds.len(),
-            total_preds.len() - modelable.len(),
-        );
-        let stratifiable = clusters.iter().filter(|c| c.program.evaluate().is_ok()).count();
-        eprintln!("  every cluster stratifiable: {} ({stratifiable}/{})", stratifiable == clusters.len(), clusters.len());
-        let sub = crate::types::Symbol::hash_name("subclass");
-        if let Some((i, c)) = clusters.iter().enumerate().find(|(_, c)| c.preds.contains(&sub)) {
-            let inst = c.preds.contains(&crate::types::Symbol::hash_name("instance"));
-            eprintln!("  discovered taxonomy cluster #{i}: {} preds, {} rules (contains instance: {inst})",
-                c.preds.len(), c.program.rules.len());
-        }
-        // SInE-as-demand hook: a conjecture mentioning `instance` selects only
-        // the cluster(s) it touches.  `seed` is exactly SInE's symbol output.
-        let seed: std::collections::HashSet<crate::SymbolId> =
-            [crate::types::Symbol::hash_name("instance")].into_iter().collect();
-        let rel = cluster::relevant_clusters(&clusters, &seed);
-        eprintln!("  SInE-demand: seed={{instance}} -> selects {} of {} clusters", rel.len(), clusters.len());
-
-        // Shared predicates (instance/subclass) get over-tainted by predicate-
-        // SCC partitioning (one giant SCC + a negation makes the whole SCC
-        // bad).  Their POSITIVE definition is still sound — recover it via the
-        // monotone (negation-free) fragment, with the derived transitivity
-        // schema rules folded in.  This reproduces the taxonomy closure with no
-        // allowlist and no manual cluster.
-        let mut mono = cluster::positive_program(&prog);
-        let known_vec: Vec<(crate::SymbolId, Option<crate::types::SentenceId>)> =
-            known.iter().map(|&r| (r, None)).collect();
-        for r in extract::schema_rules(&decls, &known_vec) {
-            mono.rules.push(r);
-        }
-        match mono.evaluate() {
+    if std::env::var_os("SIGMA_EXTRACT_EVAL").is_some() {
+        match prog.evaluate() {
             Ok(m) => {
                 let total: usize = m.values().map(|s| s.len()).sum();
-                eprintln!("monotone fragment (sound positive model): {} rules, {total} tuples", mono.rules.len());
+                eprintln!("evaluated: {} relations, {total} total tuples", m.len());
                 for name in ["instance", "subclass", "subrelation"] {
                     let id = crate::types::Symbol::hash_name(name);
-                    eprintln!("  {name}: {} tuples (closure, no allowlist)", m.get(&id).map_or(0, |s| s.len()));
+                    eprintln!(
+                        "  {name}: {} tuples in model",
+                        m.get(&id).map_or(0, |s| s.len())
+                    );
                 }
             }
-            Err(e) => eprintln!("monotone fragment evaluate failed: {e:?}"),
-        }
-
-        if std::env::var_os("SIGMA_EXTRACT_EVAL").is_some() {
-            match prog.evaluate() {
-                Ok(m) => {
-                    let total: usize = m.values().map(|s| s.len()).sum();
-                    eprintln!("evaluated: {} relations, {total} total tuples", m.len());
-                    for name in ["instance", "subclass", "subrelation"] {
-                        let id = crate::types::Symbol::hash_name(name);
-                        eprintln!("  {name}: {} tuples in model", m.get(&id).map_or(0, |s| s.len()));
-                    }
-                }
-                Err(e) => eprintln!("evaluate failed: {e:?}"),
-            }
+            Err(e) => eprintln!("evaluate failed: {e:?}"),
         }
     }
+}
 
-    fn kb_from(kif: &str) -> KnowledgeBase<ProverLayer> {
-        let mut kb = KnowledgeBase::new_native();
-        let r = kb.reload_kif(kif, &std::path::PathBuf::from("base.kif"), "load");
-        assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
-        kb.make_session_axiomatic("load").expect("promote");
-        kb
+fn kb_from(kif: &str) -> KnowledgeBase<ProverLayer> {
+    let mut kb = KnowledgeBase::new_native();
+    let r = kb.reload_kif(kif, &std::path::PathBuf::from("base.kif"), "load");
+    assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
+    kb.make_session_axiomatic("load").expect("promote");
+    kb
+}
+
+fn fast() -> NativeOpts {
+    NativeOpts {
+        max_steps: 2000,
+        max_lits: 8,
+        time_limit_secs: 10,
+        forward_close: true,
+        profile: false,
+        // Tests assert on transcripts.
+        want_proof: true,
+        ..Default::default()
     }
+}
 
-    fn fast() -> NativeOpts {
-        NativeOpts {
-            max_steps: 2000, max_lits: 8, time_limit_secs: 10,
-            forward_close: true, profile: false,
-            // Tests assert on transcripts.
-            want_proof: true,
-            ..Default::default()
-        }
+// The TQG5 pattern in miniature: an equality chain bridges a gap in
+// the subclass hierarchy.  `Org` is a `Lizard ⊂ C1`, and only the
+// chain `C1 = C2 = C3 = C4` connects `C1` to `C4 ⊂ Animal`.  Without
+// ground-equality congruence closure the four C-classes stay
+// distinct and the goal is unreachable; with it they collapse to one
+// representative and the subclass chain resolves.
+#[test]
+fn equality_chain_bridges_subclass_gap() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))",
+        "(instance Org Lizard)",
+        "(subclass Lizard C1)",
+        "(equal C1 C2)",
+        "(equal C2 C3)",
+        "(equal C3 C4)",
+        "(subclass C4 Animal)",
+    ] {
+        assert!(kb.tell(ax, "h").ok, "tell {ax}");
     }
+    let res = kb.ask_query(
+        "(instance Org Animal)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // The TQG5 pattern in miniature: an equality chain bridges a gap in
-    // the subclass hierarchy.  `Org` is a `Lizard ⊂ C1`, and only the
-    // chain `C1 = C2 = C3 = C4` connects `C1` to `C4 ⊂ Animal`.  Without
-    // ground-equality congruence closure the four C-classes stay
-    // distinct and the goal is unreachable; with it they collapse to one
-    // representative and the subclass chain resolves.
-    #[test]
-    fn equality_chain_bridges_subclass_gap() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))",
-            "(instance Org Lizard)",
-            "(subclass Lizard C1)",
-            "(equal C1 C2)", "(equal C2 C3)", "(equal C3 C4)",
-            "(subclass C4 Animal)",
-        ] {
-            assert!(kb.tell(ax, "h").ok, "tell {ax}");
-        }
-        let res = kb.ask_query("(instance Org Animal)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
-
-    // TQG14 shape: a uniqueness axiom stated over `part`, facts given
-    // via the subrelation `component`.  Proving it needs the synthesized
-    // `(=> (component ?x ?y) (part ?x ?y))` rule to bind the uniqueness
-    // axiom's open part-literals, then the derived equality contradicts
-    // the negated-uniqueness query's skolem.
-    #[test]
-    fn uniqueness_via_subrelation_bridge() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(subrelation component part)",
-            "(=> (instance ?A Atom) \
+// TQG14 shape: a uniqueness axiom stated over `part`, facts given
+// via the subrelation `component`.  Proving it needs the synthesized
+// `(=> (component ?x ?y) (part ?x ?y))` rule to bind the uniqueness
+// axiom's open part-literals, then the derived equality contradicts
+// the negated-uniqueness query's skolem.
+#[test]
+fn uniqueness_via_subrelation_bridge() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(subrelation component part)",
+        "(=> (instance ?A Atom) \
                  (forall (?N1 ?N2) \
                    (=> (and (part ?N1 ?A) (part ?N2 ?A) \
                             (instance ?N1 Nucleus) (instance ?N2 Nucleus)) \
                        (equal ?N1 ?N2))))",
-            "(instance MyAtom Atom)",
-            "(instance N1 Nucleus)",
-            "(component N1 MyAtom)",
-        ] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query(
-            "(not (exists (?N) (and (instance ?N Nucleus) (component ?N MyAtom) \
+        "(instance MyAtom Atom)",
+        "(instance N1 Nucleus)",
+        "(component N1 MyAtom)",
+    ] {
+        assert!(kb.tell(ax, "h").ok);
+    }
+    let res = kb.ask_query(
+        "(not (exists (?N) (and (instance ?N Nucleus) (component ?N MyAtom) \
                                     (not (equal ?N N1)))))",
-            Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Sorted-relation filter: a ground relation atom whose argument is
-    // provably disjoint from the position's domain is ill-typed and is
-    // dropped, so nothing downstream can use it (the CellPartFn
-    // The sort filter applies to DERIVED clauses only.  An ASSERTED
-    // ill-typed fact is ground truth — SUMO itself violates its own
-    // domain declarations (Merge asserts `component` over nuclei
-    // against component's CorpuscularObject ⊥ Substance typing, which
-    // is exactly TQG14's shape) — so deleting it would silently change
-    // the problem.  Backward refutation through an asserted ill-typed
-    // fact is therefore legitimate; what the filter still prunes is
-    // FORWARD fabrication (fc conclusions, derived positive units)
-    // polluting the unit stores and oracle.
-    #[test]
-    fn sorted_filter_exempts_asserted_facts() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(domain likes 1 Person)",
-            "(disjoint Person Rock)",
-            "(instance Pebble Rock)",
-            "(=> (likes ?X ?Y) (happy ?Y))",
-            "(likes Pebble Joy)", // ill-typed per the domain — but asserted
-        ] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query("(happy Joy)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved,
-            "asserted facts are exempt from the sort filter; raw: {}", res.raw_output);
+// Sorted-relation filter: a ground relation atom whose argument is
+// provably disjoint from the position's domain is ill-typed and is
+// dropped, so nothing downstream can use it (the CellPartFn
+// The sort filter applies to DERIVED clauses only.  An ASSERTED
+// ill-typed fact is ground truth — SUMO itself violates its own
+// domain declarations (Merge asserts `component` over nuclei
+// against component's CorpuscularObject ⊥ Substance typing, which
+// is exactly TQG14's shape) — so deleting it would silently change
+// the problem.  Backward refutation through an asserted ill-typed
+// fact is therefore legitimate; what the filter still prunes is
+// FORWARD fabrication (fc conclusions, derived positive units)
+// polluting the unit stores and oracle.
+#[test]
+fn sorted_filter_exempts_asserted_facts() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(domain likes 1 Person)",
+        "(disjoint Person Rock)",
+        "(instance Pebble Rock)",
+        "(=> (likes ?X ?Y) (happy ?Y))",
+        "(likes Pebble Joy)", // ill-typed per the domain — but asserted
+    ] {
+        assert!(kb.tell(ax, "h").ok);
     }
+    let res = kb.ask_query("(happy Joy)", Some("h"), SineParams::default(), fast());
+    assert_eq!(
+        res.status,
+        ProverStatus::Proved,
+        "asserted facts are exempt from the sort filter; raw: {}",
+        res.raw_output
+    );
+}
 
-    // Control: the same shape with a well-typed actor proves normally —
-    // the filter rejects only provable type violations.
-    #[test]
-    fn sorted_filter_keeps_welltyped_atom() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(domain likes 1 Person)",
-            "(disjoint Person Rock)",
-            "(instance Alice Person)",
-            "(=> (likes ?X ?Y) (happy ?Y))",
-            "(likes Alice Joy)",
-        ] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query("(happy Joy)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+// Control: the same shape with a well-typed actor proves normally —
+// the filter rejects only provable type violations.
+#[test]
+fn sorted_filter_keeps_welltyped_atom() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(domain likes 1 Person)",
+        "(disjoint Person Rock)",
+        "(instance Alice Person)",
+        "(=> (likes ?X ?Y) (happy ?Y))",
+        "(likes Alice Joy)",
+    ] {
+        assert!(kb.tell(ax, "h").ok);
     }
+    let res = kb.ask_query("(happy Joy)", Some("h"), SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // TQG30 shape: two classes that subclass each other are equal
-    // (subclass antisymmetry, discharged by the oracle directly).
-    #[test]
-    fn mutual_subclass_proves_equality() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in ["(subclass Foo Bar)", "(subclass Bar Foo)"] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query("(equal Foo Bar)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // A one-directional subclass must NOT prove equality.
-        let mut kb2 = KnowledgeBase::new_native();
-        assert!(kb2.tell("(subclass Sub Super)", "h").ok);
-        let res2 = kb2.ask_query("(equal Sub Super)", Some("h"),
-            SineParams::default(), fast());
-        assert_ne!(res2.status, ProverStatus::Proved, "raw: {}", res2.raw_output);
+// TQG30 shape: two classes that subclass each other are equal
+// (subclass antisymmetry, discharged by the oracle directly).
+#[test]
+fn mutual_subclass_proves_equality() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in ["(subclass Foo Bar)", "(subclass Bar Foo)"] {
+        assert!(kb.tell(ax, "h").ok);
     }
+    let res = kb.ask_query("(equal Foo Bar)", Some("h"), SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // A one-directional subclass must NOT prove equality.
+    let mut kb2 = KnowledgeBase::new_native();
+    assert!(kb2.tell("(subclass Sub Super)", "h").ok);
+    let res2 = kb2.ask_query(
+        "(equal Sub Super)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(
+        res2.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        res2.raw_output
+    );
+}
 
-    // TQG9 shape: an existential whose witness is pinned by a variable
-    // equality `(equal ?E Human)`.  Equality resolution binds ?E↦Human,
-    // and the residual subclass literals discharge against the oracle.
-    #[test]
-    fn variable_equality_resolves_existential() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in ["(subclass Human Animal)", "(subclass Human CognitiveAgent)"] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query(
-            "(exists (?E) (and (subclass ?E Animal) (subclass ?E CognitiveAgent) \
+// TQG9 shape: an existential whose witness is pinned by a variable
+// equality `(equal ?E Human)`.  Equality resolution binds ?E↦Human,
+// and the residual subclass literals discharge against the oracle.
+#[test]
+fn variable_equality_resolves_existential() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in ["(subclass Human Animal)", "(subclass Human CognitiveAgent)"] {
+        assert!(kb.tell(ax, "h").ok);
+    }
+    let res = kb.ask_query(
+        "(exists (?E) (and (subclass ?E Animal) (subclass ?E CognitiveAgent) \
                                (equal ?E Human)))",
-            Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // TQG22 shape: variable equality + a transitive relation.  ?X↦Ancestor
-    // via equality resolution, then (ancestor Man Ancestor) discharges
-    // through the oracle's transitive reachability.
-    #[test]
-    fn variable_equality_with_transitive_relation() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(instance ancestor TransitiveRelation)",
-            "(ancestor Man Mid)", "(ancestor Mid Ancestor)",
-        ] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query(
-            "(exists (?X) (and (ancestor Man ?X) (equal ?X Ancestor)))",
-            Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+// TQG22 shape: variable equality + a transitive relation.  ?X↦Ancestor
+// via equality resolution, then (ancestor Man Ancestor) discharges
+// through the oracle's transitive reachability.
+#[test]
+fn variable_equality_with_transitive_relation() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(instance ancestor TransitiveRelation)",
+        "(ancestor Man Mid)",
+        "(ancestor Mid Ancestor)",
+    ] {
+        assert!(kb.tell(ax, "h").ok);
     }
+    let res = kb.ask_query(
+        "(exists (?X) (and (ancestor Man ?X) (equal ?X Ancestor)))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Congruence closure must not invent equalities: with the chain
-    // broken (no `(equal C2 C3)`), the goal stays unreachable.
-    #[test]
-    fn broken_equality_chain_does_not_prove() {
-        let mut kb = KnowledgeBase::new_native();
-        for ax in [
-            "(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))",
-            "(instance Org Lizard)",
-            "(subclass Lizard C1)",
-            "(equal C1 C2)", "(equal C3 C4)", // gap: C2 ≠ C3
-            "(subclass C4 Animal)",
-        ] {
-            assert!(kb.tell(ax, "h").ok);
-        }
-        let res = kb.ask_query("(instance Org Animal)", Some("h"),
-            SineParams::default(), fast());
-        assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+// Congruence closure must not invent equalities: with the chain
+// broken (no `(equal C2 C3)`), the goal stays unreachable.
+#[test]
+fn broken_equality_chain_does_not_prove() {
+    let mut kb = KnowledgeBase::new_native();
+    for ax in [
+        "(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))",
+        "(instance Org Lizard)",
+        "(subclass Lizard C1)",
+        "(equal C1 C2)",
+        "(equal C3 C4)", // gap: C2 ≠ C3
+        "(subclass C4 Animal)",
+    ] {
+        assert!(kb.tell(ax, "h").ok);
     }
+    let res = kb.ask_query(
+        "(instance Org Animal)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    #[test]
-    fn horn_chain_is_proved_with_proof() {
-        let kb = kb_from("
+#[test]
+fn horn_chain_is_proved_with_proof() {
+    let kb = kb_from(
+        "
             (instance Corleone Mafioso)
             (=> (instance ?X Mafioso) (criminal ?X))
             (=> (criminal ?X) (suspect ?X))
-        ");
-        let res = kb.ask_query("(suspect Corleone)", None, SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        assert!(!res.proof_kif.is_empty(), "a refutation carries a proof");
-        assert!(res.proof_kif.iter().any(|s| s.rule == "negated_conjecture"));
-        // Input steps cite their stored roots (file:line provenance).
-        let cited: Vec<_> = res.proof_kif.iter()
-            .filter(|s| s.source_sid.is_some()).collect();
-        assert!(!cited.is_empty(), "axiom steps cite source sids");
-        for s in &cited {
-            assert!(kb.store_for_testing().sentence(s.source_sid.unwrap()).is_some(),
-                "cited sid resolves in the store");
-        }
-        // The final step is the empty clause.
-        let last = res.proof_kif.last().unwrap();
-        assert!(matches!(&last.formula,
-            crate::AstNode::Symbol { name, .. } if name == "FALSE"));
+        ",
+    );
+    let res = kb.ask_query("(suspect Corleone)", None, SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    assert!(!res.proof_kif.is_empty(), "a refutation carries a proof");
+    assert!(res.proof_kif.iter().any(|s| s.rule == "negated_conjecture"));
+    // Input steps cite their stored roots (file:line provenance).
+    let cited: Vec<_> = res
+        .proof_kif
+        .iter()
+        .filter(|s| s.source_sid.is_some())
+        .collect();
+    assert!(!cited.is_empty(), "axiom steps cite source sids");
+    for s in &cited {
+        assert!(
+            kb.store_for_testing()
+                .sentence(s.source_sid.unwrap())
+                .is_some(),
+            "cited sid resolves in the store"
+        );
     }
+    // The final step is the empty clause.
+    let last = res.proof_kif.last().unwrap();
+    assert!(matches!(&last.formula,
+            crate::AstNode::Symbol { name, .. } if name == "FALSE"));
+}
 
-    #[test]
-    fn non_theorem_saturates_to_disproved() {
-        let kb = kb_from("
+#[test]
+fn non_theorem_saturates_to_disproved() {
+    let kb = kb_from(
+        "
             (instance Rex Dog)
             (=> (instance ?X Cat) (meows ?X))
-        ");
-        let res = kb.ask_query("(meows Rex)", None, SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Disproved, "raw: {}", res.raw_output);
-        assert_eq!(res.termination, Some(TerminationReason::Saturation));
-        assert!(res.proof_kif.is_empty());
-    }
+        ",
+    );
+    let res = kb.ask_query("(meows Rex)", None, SineParams::default(), fast());
+    assert_eq!(
+        res.status,
+        ProverStatus::Disproved,
+        "raw: {}",
+        res.raw_output
+    );
+    assert_eq!(res.termination, Some(TerminationReason::Saturation));
+    assert!(res.proof_kif.is_empty());
+}
 
-    #[test]
-    fn oracle_discharge_appears_in_proof_with_fact_sids() {
-        // The rule needs (instance ?X Dog); Fido is a Puppy, a subclass
-        // of Dog — only the oracle's taxonomy closure bridges the gap.
-        let kb = kb_from("
+#[test]
+fn oracle_discharge_appears_in_proof_with_fact_sids() {
+    // The rule needs (instance ?X Dog); Fido is a Puppy, a subclass
+    // of Dog — only the oracle's taxonomy closure bridges the gap.
+    let kb = kb_from(
+        "
             (subclass Puppy Dog)
             (instance Fido Puppy)
             (=> (instance ?X Dog) (barks ?X))
-        ");
-        let res = kb.ask_query("(barks Fido)", None, SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // The witnessing taxonomy facts surface as cited axiom steps.
-        let cited: std::collections::HashSet<SentenceId> = res.proof_kif.iter()
-            .filter_map(|s| s.source_sid).collect();
-        let syn = kb.store_for_testing();
-        let instance_fact = syn.file_root_sids("base.kif").into_iter()
-            .find(|sid| {
-                let s = syn.sentence(*sid).unwrap();
-                s.head_symbol_name().is_some_and(|h| &*h.name() == "instance")
-            }).unwrap();
-        let subclass_fact = syn.file_root_sids("base.kif").into_iter()
-            .find(|sid| {
-                let s = syn.sentence(*sid).unwrap();
-                s.head_symbol_name().is_some_and(|h| &*h.name() == "subclass")
-            }).unwrap();
-        assert!(cited.contains(&instance_fact),
-            "(instance Fido Puppy) cited as an oracle witness");
-        assert!(cited.contains(&subclass_fact),
-            "(subclass Puppy Dog) cited as an oracle witness");
-    }
+        ",
+    );
+    let res = kb.ask_query("(barks Fido)", None, SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // The witnessing taxonomy facts surface as cited axiom steps.
+    let cited: std::collections::HashSet<SentenceId> =
+        res.proof_kif.iter().filter_map(|s| s.source_sid).collect();
+    let syn = kb.store_for_testing();
+    let instance_fact = syn
+        .file_root_sids("base.kif")
+        .into_iter()
+        .find(|sid| {
+            let s = syn.sentence(*sid).unwrap();
+            s.head_symbol_name()
+                .is_some_and(|h| &*h.name() == "instance")
+        })
+        .unwrap();
+    let subclass_fact = syn
+        .file_root_sids("base.kif")
+        .into_iter()
+        .find(|sid| {
+            let s = syn.sentence(*sid).unwrap();
+            s.head_symbol_name()
+                .is_some_and(|h| &*h.name() == "subclass")
+        })
+        .unwrap();
+    assert!(
+        cited.contains(&instance_fact),
+        "(instance Fido Puppy) cited as an oracle witness"
+    );
+    assert!(
+        cited.contains(&subclass_fact),
+        "(subclass Puppy Dog) cited as an oracle witness"
+    );
+}
 
-    #[test]
-    fn consistency_check_native() {
-        let kb = kb_from("
+#[test]
+fn consistency_check_native() {
+    let kb = kb_from(
+        "
             (instance Rex Dog)
             (=> (instance ?X Dog) (barks ?X))
-        ");
-        let res = kb.check_satisfiable(fast());
-        assert_eq!(res.status, ProverStatus::Consistent, "raw: {}", res.raw_output);
+        ",
+    );
+    let res = kb.check_satisfiable(fast());
+    assert_eq!(
+        res.status,
+        ProverStatus::Consistent,
+        "raw: {}",
+        res.raw_output
+    );
 
-        let kb2 = kb_from("
+    let kb2 = kb_from(
+        "
             (barks Rex)
             (not (barks Rex))
-        ");
-        let res2 = kb2.check_satisfiable(fast());
-        assert_eq!(res2.status, ProverStatus::Inconsistent, "raw: {}", res2.raw_output);
-    }
+        ",
+    );
+    let res2 = kb2.check_satisfiable(fast());
+    assert_eq!(
+        res2.status,
+        ProverStatus::Inconsistent,
+        "raw: {}",
+        res2.raw_output
+    );
+}
 
-    #[test]
-    fn session_hypotheses_drive_the_support_set() {
-        let mut kb = kb_from("(=> (wet ?X) (slippery ?X))");
-        assert!(kb.tell("(wet Floor)", "hypo").ok);
-        let res = kb.ask_query(
-            "(slippery Floor)", Some("hypo"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // Without the session, the same ask saturates.
-        let res2 = kb.ask_query("(slippery Floor)", None, SineParams::default(), fast());
-        assert_ne!(res2.status, ProverStatus::Proved);
-    }
+#[test]
+fn session_hypotheses_drive_the_support_set() {
+    let mut kb = kb_from("(=> (wet ?X) (slippery ?X))");
+    assert!(kb.tell("(wet Floor)", "hypo").ok);
+    let res = kb.ask_query(
+        "(slippery Floor)",
+        Some("hypo"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // Without the session, the same ask saturates.
+    let res2 = kb.ask_query("(slippery Floor)", None, SineParams::default(), fast());
+    assert_ne!(res2.status, ProverStatus::Proved);
+}
 
-    #[test]
-    fn parse_error_maps_to_input_error() {
-        let kb = kb_from("(instance Rex Dog)");
-        let res = kb.ask_query("(broken (", None, SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::InputError);
-        // And the failed parse left no residue: a follow-up ask works.
-        let res2 = kb.ask_query("(instance Rex Dog)", None, SineParams::default(), fast());
-        assert_ne!(res2.status, ProverStatus::InputError);
-    }
+#[test]
+fn parse_error_maps_to_input_error() {
+    let kb = kb_from("(instance Rex Dog)");
+    let res = kb.ask_query("(broken (", None, SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::InputError);
+    // And the failed parse left no residue: a follow-up ask works.
+    let res2 = kb.ask_query("(instance Rex Dog)", None, SineParams::default(), fast());
+    assert_ne!(res2.status, ProverStatus::InputError);
+}
 
-    // The ingest pipeline splits a top-level `(and A B)` query into
-    // separate roots.  Negating each root independently asserts ¬A ∧ ¬B
-    // — the negation of the DISJUNCTION — so refuting one provable
-    // conjunct would "prove" the whole conjunction even when the other
-    // conjunct is false.  The negation must wrap the rebuilt
-    // conjunction (TQG7's shape, caught via a planted false conjunct).
-    #[test]
-    fn conjunction_with_unprovable_conjunct_is_not_proved() {
-        let kb = kb_from("(instance Rex Dog)");
-        let res = kb.ask_query(
-            "(and (instance Rex Dog) (instance Rex Cat))",
-            None, SineParams::default(), fast());
-        assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // Both conjuncts provable → proves.
-        let res2 = kb.ask_query(
-            "(and (instance Rex Dog) (instance Rex Dog))",
-            None, SineParams::default(), fast());
-        assert_eq!(res2.status, ProverStatus::Proved, "raw: {}", res2.raw_output);
-    }
+// The ingest pipeline splits a top-level `(and A B)` query into
+// separate roots.  Negating each root independently asserts ¬A ∧ ¬B
+// — the negation of the DISJUNCTION — so refuting one provable
+// conjunct would "prove" the whole conjunction even when the other
+// conjunct is false.  The negation must wrap the rebuilt
+// conjunction (TQG7's shape, caught via a planted false conjunct).
+#[test]
+fn conjunction_with_unprovable_conjunct_is_not_proved() {
+    let kb = kb_from("(instance Rex Dog)");
+    let res = kb.ask_query(
+        "(and (instance Rex Dog) (instance Rex Cat))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // Both conjuncts provable → proves.
+    let res2 = kb.ask_query(
+        "(and (instance Rex Dog) (instance Rex Dog))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(
+        res2.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        res2.raw_output
+    );
+}
 
-    // TQG14 in miniature: a guarded uniqueness axiom (part keyed on
-    // the whole, both sides guarded by Nucleus) + facts arriving via
-    // the subrelation component.  Proving "no OTHER nucleus" requires
-    // deriving skolem = N1 — FD congruence supplies it without
-    // saturation having to schedule the uniqueness clause.
-    #[test]
-    fn fd_congruence_proves_guarded_uniqueness() {
-        let mut kb = kb_from("
+// TQG14 in miniature: a guarded uniqueness axiom (part keyed on
+// the whole, both sides guarded by Nucleus) + facts arriving via
+// the subrelation component.  Proving "no OTHER nucleus" requires
+// deriving skolem = N1 — FD congruence supplies it without
+// saturation having to schedule the uniqueness clause.
+#[test]
+fn fd_congruence_proves_guarded_uniqueness() {
+    let mut kb = kb_from(
+        "
             (subrelation component part)
             (=> (and (instance ?A At)
                      (part ?N1 ?A)
                      (part ?N2 ?A)
                      (instance ?N1 Nuc)
                      (instance ?N2 Nuc))
-                (equal ?N1 ?N2))");
-        for f in ["(instance A1 At)", "(instance N1 Nuc)", "(component N1 A1)"] {
-            assert!(kb.tell(f, "h").ok, "tell {f}");
-        }
-        let res = kb.ask_query(
-            "(not (exists (?N) (and (instance ?N Nuc) (component ?N A1) (not (equal ?N N1)))))",
-            Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // The transcript must cite the uniqueness axiom's derivation,
-        // not a bare oracle FALSE.
-        let flat: Vec<String> =
-            res.proof_kif.iter().map(|s| s.formula.flat()).collect();
-        assert!(flat.iter().any(|f| f.contains("equal")),
-            "equality step missing from proof: {flat:?}");
+                (equal ?N1 ?N2))",
+    );
+    for f in ["(instance A1 At)", "(instance N1 Nuc)", "(component N1 A1)"] {
+        assert!(kb.tell(f, "h").ok, "tell {f}");
     }
+    let res = kb.ask_query(
+        "(not (exists (?N) (and (instance ?N Nuc) (component ?N A1) (not (equal ?N N1)))))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // The transcript must cite the uniqueness axiom's derivation,
+    // not a bare oracle FALSE.
+    let flat: Vec<String> = res.proof_kif.iter().map(|s| s.formula.flat()).collect();
+    assert!(
+        flat.iter().any(|f| f.contains("equal")),
+        "equality step missing from proof: {flat:?}"
+    );
+}
 
-    // TQG25 in miniature: a partition declares exhaustiveness; with
-    // all members but one excluded, the survivor is entailed — by
-    // oracle case-elimination, not by saturating SUMO's ListFn-based
-    // exhaustiveness axiom (which floods).
-    #[test]
-    fn exhaustiveness_case_elimination() {
-        let mut kb = kb_from("(partition Org A B C)");
-        for f in [
-            "(instance X Org)",
-            "(not (instance X A))",
-            "(not (instance X B))",
-        ] {
-            assert!(kb.tell(f, "h").ok, "tell {f}");
-        }
-        let res = kb.ask_query("(instance X C)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+// TQG25 in miniature: a partition declares exhaustiveness; with
+// all members but one excluded, the survivor is entailed — by
+// oracle case-elimination, not by saturating SUMO's ListFn-based
+// exhaustiveness axiom (which floods).
+#[test]
+fn exhaustiveness_case_elimination() {
+    let mut kb = kb_from("(partition Org A B C)");
+    for f in [
+        "(instance X Org)",
+        "(not (instance X A))",
+        "(not (instance X B))",
+    ] {
+        assert!(kb.tell(f, "h").ok, "tell {f}");
     }
+    let res = kb.ask_query("(instance X C)", Some("h"), SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // TQG36 in miniature: equality between COMPOUND terms enters the
-    // union-find by content hash, so two facts equating different
-    // arguments' images under one function connect transitively.
-    #[test]
-    fn compound_term_equality_closes_transitively() {
-        let mut kb = kb_from("(instance FooFn Function)");
-        for f in ["(equal (FooFn A) (FooFn C))", "(equal (FooFn B) (FooFn C))"] {
-            assert!(kb.tell(f, "h").ok, "tell {f}");
-        }
-        let res = kb.ask_query("(equal (FooFn A) (FooFn B))", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+// TQG36 in miniature: equality between COMPOUND terms enters the
+// union-find by content hash, so two facts equating different
+// arguments' images under one function connect transitively.
+#[test]
+fn compound_term_equality_closes_transitively() {
+    let mut kb = kb_from("(instance FooFn Function)");
+    for f in ["(equal (FooFn A) (FooFn C))", "(equal (FooFn B) (FooFn C))"] {
+        assert!(kb.tell(f, "h").ok, "tell {f}");
     }
+    let res = kb.ask_query(
+        "(equal (FooFn A) (FooFn B))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // TQG28 in miniature: an n-ary contraryAttribute fact bridges to
-    // binary pairs through inList over a ground ListFn — the list's
-    // extension is synthesized as theory units ((inList m L), (equal m
-    // (ListOrderFn L i))) the first time the ground list appears.
-    #[test]
-    fn ground_list_theory_derives_membership() {
-        let mut kb = kb_from("
+// TQG28 in miniature: an n-ary contraryAttribute fact bridges to
+// binary pairs through inList over a ground ListFn — the list's
+// extension is synthesized as theory units ((inList m L), (equal m
+// (ListOrderFn L i))) the first time the ground list appears.
+#[test]
+fn ground_list_theory_derives_membership() {
+    let mut kb = kb_from(
+        "
             (=> (and (contraryAttribute @ROW)
                      (inList ?A1 (ListFn @ROW))
                      (inList ?A2 (ListFn @ROW)))
                 (contraryAttribute ?A1 ?A2))
             (=> (and (contraryAttribute ?A1 ?A2) (attribute ?O ?A1))
-                (not (attribute ?O ?A2)))");
-        for f in [
-            "(contraryAttribute Rocky Icy Watery Gaseous)",
-            "(attribute Obj Watery)",
-        ] {
-            assert!(kb.tell(f, "h").ok, "tell {f}");
-        }
-        let res = kb.ask_query("(not (attribute Obj Gaseous))", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+                (not (attribute ?O ?A2)))",
+    );
+    for f in [
+        "(contraryAttribute Rocky Icy Watery Gaseous)",
+        "(attribute Obj Watery)",
+    ] {
+        assert!(kb.tell(f, "h").ok, "tell {f}");
     }
+    let res = kb.ask_query(
+        "(not (attribute Obj Gaseous))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Input contradictions discovered during an UNRELATED ask are
-    // harvested as citable transcripts (and the ask itself is not
-    // poisoned by them — paraconsistent set of support).
-    #[test]
-    fn input_contradictions_are_harvested_with_transcripts() {
-        let mut kb = kb_from("(=> (p ?X) (q ?X))");
-        for f in ["(p A)", "(not (q A))", "(r B)"] {
-            assert!(kb.tell(f, "h").ok, "tell {f}");
-        }
-        // (r B) is asserted, so this proves — DESPITE p/¬q contradicting.
-        let res = kb.ask_query("(r B)", Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        assert!(!res.contradiction_proofs.is_empty(),
-            "the p/q contradiction must be harvested; raw: {}", res.raw_output);
-        let flat: Vec<String> = res.contradiction_proofs[0]
-            .iter().map(|s| s.formula.flat()).collect();
-        assert!(flat.iter().any(|f| f == "FALSE"),
-            "transcript must end in FALSE: {flat:?}");
-        assert!(res.raw_output.contains("input contradiction"),
-            "stats line must warn: {}", res.raw_output);
+// Input contradictions discovered during an UNRELATED ask are
+// harvested as citable transcripts (and the ask itself is not
+// poisoned by them — paraconsistent set of support).
+#[test]
+fn input_contradictions_are_harvested_with_transcripts() {
+    let mut kb = kb_from("(=> (p ?X) (q ?X))");
+    for f in ["(p A)", "(not (q A))", "(r B)"] {
+        assert!(kb.tell(f, "h").ok, "tell {f}");
     }
+    // (r B) is asserted, so this proves — DESPITE p/¬q contradicting.
+    let res = kb.ask_query("(r B)", Some("h"), SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    assert!(
+        !res.contradiction_proofs.is_empty(),
+        "the p/q contradiction must be harvested; raw: {}",
+        res.raw_output
+    );
+    let flat: Vec<String> = res.contradiction_proofs[0]
+        .iter()
+        .map(|s| s.formula.flat())
+        .collect();
+    assert!(
+        flat.iter().any(|f| f == "FALSE"),
+        "transcript must end in FALSE: {flat:?}"
+    );
+    assert!(
+        res.raw_output.contains("input contradiction"),
+        "stats line must warn: {}",
+        res.raw_output
+    );
+}
 
-    // TQG7 in miniature: the second conjunct is only reachable through
-    // a forward-closure derivation chain (sibling shares parent; parent
-    // + Female = mother).  The discharge happens against a LEARNED
-    // oracle unit — the learned entry must carry its deriving clause as
-    // a proof-DAG parent so the chain appears in the transcript instead
-    // of a bare `[oracle] FALSE`.
-    #[test]
-    fn learned_unit_discharge_surfaces_its_derivation() {
-        let mut kb = kb_from("
+// TQG7 in miniature: the second conjunct is only reachable through
+// a forward-closure derivation chain (sibling shares parent; parent
+// + Female = mother).  The discharge happens against a LEARNED
+// oracle unit — the learned entry must carry its deriving clause as
+// a proof-DAG parent so the chain appears in the transcript instead
+// of a bare `[oracle] FALSE`.
+#[test]
+fn learned_unit_discharge_surfaces_its_derivation() {
+    let mut kb = kb_from(
+        "
             (=> (mother ?A ?B) (parent ?A ?B))
             (=> (mother ?C ?M) (attribute ?M Female))
             (=> (and (sibling ?X ?Y) (parent ?X ?P)) (parent ?Y ?P))
-            (=> (and (parent ?C ?P) (attribute ?P Female)) (mother ?C ?P))");
-        assert!(kb.tell("(mother Bill Jane)", "h").ok);
-        assert!(kb.tell("(sibling Bill Bob)", "h").ok);
-        let res = kb.ask_query(
-            "(and (mother Bill Jane) (mother Bob Jane))",
-            Some("h"), SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        // The transcript must include the derived intermediate steps,
-        // not just the conjecture and FALSE.
-        let flat: Vec<String> =
-            res.proof_kif.iter().map(|s| s.formula.flat()).collect();
-        assert!(flat.iter().any(|f| f.contains("(parent Bob Jane)")),
-            "derivation chain missing from proof: {flat:?}");
-        assert!(flat.iter().any(|f| f.contains("(mother Bob Jane)")),
-            "derived conjunct missing from proof: {flat:?}");
-    }
+            (=> (and (parent ?C ?P) (attribute ?P Female)) (mother ?C ?P))",
+    );
+    assert!(kb.tell("(mother Bill Jane)", "h").ok);
+    assert!(kb.tell("(sibling Bill Bob)", "h").ok);
+    let res = kb.ask_query(
+        "(and (mother Bill Jane) (mother Bob Jane))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    // The transcript must include the derived intermediate steps,
+    // not just the conjecture and FALSE.
+    let flat: Vec<String> = res.proof_kif.iter().map(|s| s.formula.flat()).collect();
+    assert!(
+        flat.iter().any(|f| f.contains("(parent Bob Jane)")),
+        "derivation chain missing from proof: {flat:?}"
+    );
+    assert!(
+        flat.iter().any(|f| f.contains("(mother Bob Jane)")),
+        "derived conjunct missing from proof: {flat:?}"
+    );
+}
 
-    // -- schema channel ----------------------------------------------------------
+// -- schema channel ----------------------------------------------------------
 
-    // DECLARED symmetry: the fact is stored one way round, the query
-    // asks the other.  No metaschema axiom is loaded — orientation plus
-    // the oracle's reversed-edge check must close the gap alone.
-    #[test]
-    fn declared_symmetry_proves_reversed_query() {
-        let mut kb = kb_from("(instance friendOf SymmetricRelation)");
-        assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
-        let res = kb.ask_query("(friendOf Alice Bob)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+// DECLARED symmetry: the fact is stored one way round, the query
+// asks the other.  No metaschema axiom is loaded — orientation plus
+// the oracle's reversed-edge check must close the gap alone.
+#[test]
+fn declared_symmetry_proves_reversed_query() {
+    let mut kb = kb_from("(instance friendOf SymmetricRelation)");
+    assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
+    let res = kb.ask_query(
+        "(friendOf Alice Bob)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // RULE-STATED symmetry (no SymmetricRelation declaration anywhere):
-    // the schema channel mines `(=> (R x y) (R y x))`, absorbs the rule
-    // clause, and orientation carries the proof.
-    #[test]
-    fn rule_stated_symmetry_mined_and_proved() {
-        let mut kb = kb_from("(=> (friendOf ?X ?Y) (friendOf ?Y ?X))");
-        assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
-        let res = kb.ask_query("(friendOf Alice Bob)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+// RULE-STATED symmetry (no SymmetricRelation declaration anywhere):
+// the schema channel mines `(=> (R x y) (R y x))`, absorbs the rule
+// clause, and orientation carries the proof.
+#[test]
+fn rule_stated_symmetry_mined_and_proved() {
+    let mut kb = kb_from("(=> (friendOf ?X ?Y) (friendOf ?Y ?X))");
+    assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
+    let res = kb.ask_query(
+        "(friendOf Alice Bob)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // The full SUMO configuration in miniature: metaschema + declaration
-    // + fact.  The metaschema is absorbed at load; the declaration route
-    // must still prove the reversed query (this is exactly the TQG36/8
-    // flood source — the metaschema may not be needed for ANY of it).
-    #[test]
-    fn symmetry_metaschema_absorbed_without_loss() {
-        let mut kb = kb_from("
+// The full SUMO configuration in miniature: metaschema + declaration
+// + fact.  The metaschema is absorbed at load; the declaration route
+// must still prove the reversed query (this is exactly the TQG36/8
+// flood source — the metaschema may not be needed for ANY of it).
+#[test]
+fn symmetry_metaschema_absorbed_without_loss() {
+    let mut kb = kb_from(
+        "
             (=> (and (instance ?REL SymmetricRelation) (?REL ?I1 ?I2)) (?REL ?I2 ?I1))
-            (instance friendOf SymmetricRelation)");
-        assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
-        let res = kb.ask_query("(friendOf Alice Bob)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+            (instance friendOf SymmetricRelation)",
+    );
+    assert!(kb.tell("(friendOf Bob Alice)", "h").ok);
+    let res = kb.ask_query(
+        "(friendOf Alice Bob)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Open-literal completeness across orientation: the friendOf fact
-    // is DERIVED (so it is oriented before indexing), and the rule's
-    // body literal mentions the arguments the other way round.  The
-    // symmetric dual retrieval + swap-retry unification (or the
-    // oracle's reversed-edge check, whichever fires first) must connect
-    // them — this is the case naive orientation alone gets wrong.
-    #[test]
-    fn symmetric_open_literal_resolves_across_orientation() {
-        let mut kb = kb_from("
+// Open-literal completeness across orientation: the friendOf fact
+// is DERIVED (so it is oriented before indexing), and the rule's
+// body literal mentions the arguments the other way round.  The
+// symmetric dual retrieval + swap-retry unification (or the
+// oracle's reversed-edge check, whichever fires first) must connect
+// them — this is the case naive orientation alone gets wrong.
+#[test]
+fn symmetric_open_literal_resolves_across_orientation() {
+    let mut kb = kb_from(
+        "
             (instance friendOf SymmetricRelation)
             (=> (instance ?X Greeter) (friendOf ?X Alice))
-            (=> (friendOf Bob ?P) (happyAbout ?P))");
-        assert!(kb.tell("(instance Bob Greeter)", "h").ok);
-        let res = kb.ask_query("(happyAbout Alice)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+            (=> (friendOf Bob ?P) (happyAbout ?P))",
+    );
+    assert!(kb.tell("(instance Bob Greeter)", "h").ok);
+    let res = kb.ask_query(
+        "(happyAbout Alice)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Rule-stated transitivity registers with the oracle's reachability
-    // (the clause is kept — absorption would lose open-goal
-    // enumeration); a two-hop chain must still prove.
-    #[test]
-    fn rule_stated_transitivity_proves_chain() {
-        let mut kb = kb_from("(=> (and (taller ?X ?Y) (taller ?Y ?Z)) (taller ?X ?Z))");
-        assert!(kb.tell("(taller A B)", "h").ok);
-        assert!(kb.tell("(taller B C)", "h").ok);
-        let res = kb.ask_query("(taller A C)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+// Rule-stated transitivity registers with the oracle's reachability
+// (the clause is kept — absorption would lose open-goal
+// enumeration); a two-hop chain must still prove.
+#[test]
+fn rule_stated_transitivity_proves_chain() {
+    let mut kb = kb_from("(=> (and (taller ?X ?Y) (taller ?Y ?Z)) (taller ?X ?Z))");
+    assert!(kb.tell("(taller A B)", "h").ok);
+    assert!(kb.tell("(taller B C)", "h").ok);
+    let res = kb.ask_query("(taller A C)", Some("h"), SineParams::default(), fast());
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // Without want_proof the verdict is identical (vacuity is decided
-    // on the raw derivation DAG, not on rendered steps) but no
-    // transcript is rendered.
-    #[test]
-    fn want_proof_false_drops_transcript_but_not_status() {
-        let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
-        assert!(kb.tell("(instance Rex Dog)", "h").ok);
-        let opts = NativeOpts { want_proof: false, ..fast() };
-        let res = kb.ask_query("(attribute Rex Loyal)", Some("h"),
-            SineParams::default(), opts);
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        assert!(res.proof_kif.is_empty(), "transcript must be skipped");
-    }
+// Without want_proof the verdict is identical (vacuity is decided
+// on the raw derivation DAG, not on rendered steps) but no
+// transcript is rendered.
+#[test]
+fn want_proof_false_drops_transcript_but_not_status() {
+    let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
+    assert!(kb.tell("(instance Rex Dog)", "h").ok);
+    let opts = NativeOpts {
+        want_proof: false,
+        ..fast()
+    };
+    let res = kb.ask_query(
+        "(attribute Rex Loyal)",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    assert!(res.proof_kif.is_empty(), "transcript must be skipped");
+}
 
-    // Forward demodulation by a NON-ground unit equation — the case the
-    // oracle's ground congruence closure does NOT cover, so demodulation
-    // is genuinely the mechanism.  `(equal (sideKick ?X) ?X)` is a
-    // background rule; KBO orients it `sideKick(X) → X` (heavier, still
-    // contains X), so the support fact `(admires Lois (sideKick Clark))`
-    // rewrites to `(admires Lois Clark)` — the conjecture.
-    #[test]
-    fn forward_demodulation_rewrites_function_term() {
-        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
-        assert!(kb.tell("(admires Lois (sideKick Clark))", "h").ok);
-        // demod is OFF by default (measured net-negative on TPTP
-        // pre-indexing); enable it explicitly to exercise the mechanism.
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.demod = true;
-        opts.want_proof = true;
-        let res = kb.ask_query("(admires Lois Clark)", Some("h"),
-            SineParams::default(), opts);
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        assert!(!res.raw_output.contains("0 demodulated"),
-            "demodulation must fire: {}", res.raw_output);
-    }
+// Forward demodulation by a NON-ground unit equation — the case the
+// oracle's ground congruence closure does NOT cover, so demodulation
+// is genuinely the mechanism.  `(equal (sideKick ?X) ?X)` is a
+// background rule; KBO orients it `sideKick(X) → X` (heavier, still
+// contains X), so the support fact `(admires Lois (sideKick Clark))`
+// rewrites to `(admires Lois Clark)` — the conjecture.
+#[test]
+fn forward_demodulation_rewrites_function_term() {
+    let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+    assert!(kb.tell("(admires Lois (sideKick Clark))", "h").ok);
+    // demod is OFF by default (measured net-negative on TPTP
+    // pre-indexing); enable it explicitly to exercise the mechanism.
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.demod = true;
+    opts.want_proof = true;
+    let res = kb.ask_query(
+        "(admires Lois Clark)",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    assert!(
+        !res.raw_output.contains("0 demodulated"),
+        "demodulation must fire: {}",
+        res.raw_output
+    );
+}
 
-    // The knob genuinely gates the mechanism: with demod off, no rewrite
-    // is performed (the goal may still prove by paramodulation).
-    #[test]
-    fn demod_knob_gates_the_rewrite() {
-        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
-        assert!(kb.tell("(admires Lois (sideKick Clark))", "h").ok);
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.demod = false;
-        let res = kb.ask_query("(admires Lois Clark)", Some("h"),
-            SineParams::default(), opts);
-        assert!(res.raw_output.contains("0 demodulated"),
-            "demod off must perform no rewrites: {}", res.raw_output);
-    }
+// The knob genuinely gates the mechanism: with demod off, no rewrite
+// is performed (the goal may still prove by paramodulation).
+#[test]
+fn demod_knob_gates_the_rewrite() {
+    let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+    assert!(kb.tell("(admires Lois (sideKick Clark))", "h").ok);
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.demod = false;
+    let res = kb.ask_query(
+        "(admires Lois Clark)",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert!(
+        res.raw_output.contains("0 demodulated"),
+        "demod off must perform no rewrites: {}",
+        res.raw_output
+    );
+}
 
-    // SYMBOL-SIGNATURE prefilter (`DemodIndex::possibly_matches`): a
-    // clause whose literal has TWO subterm positions — one under a head
-    // symbol with no indexed demodulator (`nemesis`, must be SKIPPED by
-    // the O(1) bucket check before any clone/match probe) nested inside
-    // one that IS indexed (`sideKick`, must still be tried and rewrite)
-    // — demodulates to exactly the same normal form the un-prefiltered
-    // walk would produce, and both counters move: the `nemesis` node is
-    // counted as `scans_skipped_by_prefilter`, the `sideKick` node as
-    // `scans_performed`.  Guards against the prefilter accidentally
-    // pruning a whole subtree (unsound here — see `find_demod_redex`'s
-    // docs on why only per-node, not per-subtree, skipping is safe
-    // without a cached per-term symbol fingerprint).
-    #[test]
-    fn demod_prefilter_skips_unindexed_head_but_still_rewrites_indexed_one() {
-        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
-        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.demod = true;
-        opts.want_proof = true;
-        let res = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
-            SineParams::default(), opts);
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-        assert!(!res.raw_output.contains("0 demodulated"),
-            "demodulation must fire: {}", res.raw_output);
-        assert!(!res.raw_output.contains("0 scans_performed"),
-            "the sideKick node must reach the candidate loop: {}", res.raw_output);
-        assert!(!res.raw_output.contains("0 scans_skipped_by_prefilter"),
-            "the nemesis node must be pruned by the prefilter: {}", res.raw_output);
-    }
+// SYMBOL-SIGNATURE prefilter (`DemodIndex::possibly_matches`): a
+// clause whose literal has TWO subterm positions — one under a head
+// symbol with no indexed demodulator (`nemesis`, must be SKIPPED by
+// the O(1) bucket check before any clone/match probe) nested inside
+// one that IS indexed (`sideKick`, must still be tried and rewrite)
+// — demodulates to exactly the same normal form the un-prefiltered
+// walk would produce, and both counters move: the `nemesis` node is
+// counted as `scans_skipped_by_prefilter`, the `sideKick` node as
+// `scans_performed`.  Guards against the prefilter accidentally
+// pruning a whole subtree (unsound here — see `find_demod_redex`'s
+// docs on why only per-node, not per-subtree, skipping is safe
+// without a cached per-term symbol fingerprint).
+#[test]
+fn demod_prefilter_skips_unindexed_head_but_still_rewrites_indexed_one() {
+    let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+    assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.demod = true;
+    opts.want_proof = true;
+    let res = kb.ask_query(
+        "(admires Lois (nemesis Clark))",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    assert!(
+        !res.raw_output.contains("0 demodulated"),
+        "demodulation must fire: {}",
+        res.raw_output
+    );
+    assert!(
+        !res.raw_output.contains("0 scans_performed"),
+        "the sideKick node must reach the candidate loop: {}",
+        res.raw_output
+    );
+    assert!(
+        !res.raw_output.contains("0 scans_skipped_by_prefilter"),
+        "the nemesis node must be pruned by the prefilter: {}",
+        res.raw_output
+    );
+}
 
-    // Same fixture with the prefilter's own knob-equivalent (there isn't
-    // one — the prefilter is unconditional whenever demod is on) turned
-    // into a direct behavior-parity check: prefiltered and reference
-    // (would-be-unfiltered) demodulation must reach the identical
-    // rewritten literal.  Exercised via the debug-only cross-check in
-    // `NativeProver::demodulate` (`cfg(test)` `debug_assert_eq!` against
-    // a reference walk with the prefilter forced off) — this test just
-    // needs to drive that code path with a mixed clause and confirm the
-    // run doesn't panic while still proving.
-    #[test]
-    fn demod_prefilter_matches_unfiltered_reference_on_mixed_clause() {
-        let mut kb = kb_from("(equal (sideKick ?X) ?X)");
-        assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
-        assert!(kb.tell("(trusts Jimmy (allyOf (sideKick Clark)))", "h").ok);
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.demod = true;
-        opts.want_proof = true;
-        // Two independent goals, each forcing demodulation through a
-        // different mix of indexed/unindexed subterm heads; the
-        // debug_assert_eq! reference check in `demodulate` runs on
-        // every literal touched by either query.
-        let res1 = kb.ask_query("(admires Lois (nemesis Clark))", Some("h"),
-            SineParams::default(), opts.clone());
-        assert_eq!(res1.status, ProverStatus::Proved, "raw: {}", res1.raw_output);
-        let res2 = kb.ask_query("(trusts Jimmy (allyOf Clark))", Some("h"),
-            SineParams::default(), opts);
-        assert_eq!(res2.status, ProverStatus::Proved, "raw: {}", res2.raw_output);
-    }
+// Same fixture with the prefilter's own knob-equivalent (there isn't
+// one — the prefilter is unconditional whenever demod is on) turned
+// into a direct behavior-parity check: prefiltered and reference
+// (would-be-unfiltered) demodulation must reach the identical
+// rewritten literal.  Exercised via the debug-only cross-check in
+// `NativeProver::demodulate` (`cfg(test)` `debug_assert_eq!` against
+// a reference walk with the prefilter forced off) — this test just
+// needs to drive that code path with a mixed clause and confirm the
+// run doesn't panic while still proving.
+#[test]
+fn demod_prefilter_matches_unfiltered_reference_on_mixed_clause() {
+    let mut kb = kb_from("(equal (sideKick ?X) ?X)");
+    assert!(kb.tell("(admires Lois (sideKick (nemesis Clark)))", "h").ok);
+    assert!(kb.tell("(trusts Jimmy (allyOf (sideKick Clark)))", "h").ok);
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.demod = true;
+    opts.want_proof = true;
+    // Two independent goals, each forcing demodulation through a
+    // different mix of indexed/unindexed subterm heads; the
+    // debug_assert_eq! reference check in `demodulate` runs on
+    // every literal touched by either query.
+    let res1 = kb.ask_query(
+        "(admires Lois (nemesis Clark))",
+        Some("h"),
+        SineParams::default(),
+        opts.clone(),
+    );
+    assert_eq!(
+        res1.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        res1.raw_output
+    );
+    let res2 = kb.ask_query(
+        "(trusts Jimmy (allyOf Clark))",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert_eq!(
+        res2.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        res2.raw_output
+    );
+}
 
-    // Ordered resolution (superposition prerequisite) restricts binary
-    // resolution to KBO-maximal literals — a complete refinement, so a
-    // provable goal stays provable.
-    #[test]
-    fn ordered_resolution_preserves_a_proof() {
-        let mut kb = kb_from(
-            "(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))");
-        assert!(kb.tell("(instance Org Lizard)", "h").ok);
-        assert!(kb.tell("(subclass Lizard Reptile)", "h").ok);
-        assert!(kb.tell("(subclass Reptile Animal)", "h").ok);
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.ordered_resolution = true;
-        let res = kb.ask_query("(instance Org Animal)", Some("h"),
-            SineParams::default(), opts);
-        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+// Ordered resolution (superposition prerequisite) restricts binary
+// resolution to KBO-maximal literals — a complete refinement, so a
+// provable goal stays provable.
+#[test]
+fn ordered_resolution_preserves_a_proof() {
+    let mut kb = kb_from("(=> (and (instance ?X ?C) (subclass ?C ?D)) (instance ?X ?D))");
+    assert!(kb.tell("(instance Org Lizard)", "h").ok);
+    assert!(kb.tell("(subclass Lizard Reptile)", "h").ok);
+    assert!(kb.tell("(subclass Reptile Animal)", "h").ok);
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.ordered_resolution = true;
+    let res = kb.ask_query(
+        "(instance Org Animal)",
+        Some("h"),
+        SineParams::default(),
+        opts,
+    );
+    assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // The frozen-background cache: an identical repeat ask hydrates
-    // the snapshot instead of rebuilding (same verdict, no new cache
-    // entry); any KB/session change reshapes the key and never hits a
-    // stale base.
-    #[test]
-    fn background_snapshot_reuses_and_invalidates() {
-        let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
-        assert!(kb.tell("(instance Rex Dog)", "h").ok);
+// The frozen-background cache: an identical repeat ask hydrates
+// the snapshot instead of rebuilding (same verdict, no new cache
+// entry); any KB/session change reshapes the key and never hits a
+// stale base.
+#[test]
+fn background_snapshot_reuses_and_invalidates() {
+    let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
+    assert!(kb.tell("(instance Rex Dog)", "h").ok);
 
-        let r1 = kb.ask_query("(attribute Rex Loyal)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(r1.status, ProverStatus::Proved, "raw: {}", r1.raw_output);
-        let after_first = kb.layer.bg_snapshots.len();
-        assert!(after_first >= 1, "miss path must freeze a snapshot");
+    let r1 = kb.ask_query(
+        "(attribute Rex Loyal)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(r1.status, ProverStatus::Proved, "raw: {}", r1.raw_output);
+    let after_first = kb.layer.bg_snapshots.len();
+    assert!(after_first >= 1, "miss path must freeze a snapshot");
 
-        // Identical repeat: hits, proves identically, adds nothing.
-        let r2 = kb.ask_query("(attribute Rex Loyal)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(r2.status, ProverStatus::Proved, "warm path: {}", r2.raw_output);
-        assert_eq!(kb.layer.bg_snapshots.len(), after_first,
-            "identical repeat must hit, not re-freeze");
+    // Identical repeat: hits, proves identically, adds nothing.
+    let r2 = kb.ask_query(
+        "(attribute Rex Loyal)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(
+        r2.status,
+        ProverStatus::Proved,
+        "warm path: {}",
+        r2.raw_output
+    );
+    assert_eq!(
+        kb.layer.bg_snapshots.len(),
+        after_first,
+        "identical repeat must hit, not re-freeze"
+    );
 
-        // Session mutation reshapes the key; the new ask must reflect
-        // the new fact (a stale hit would not know Fido).
-        assert!(kb.tell("(instance Fido Dog)", "h").ok);
-        let r3 = kb.ask_query("(attribute Fido Loyal)", Some("h"),
-            SineParams::default(), fast());
-        assert_eq!(r3.status, ProverStatus::Proved, "post-tell: {}", r3.raw_output);
-        assert!(kb.layer.bg_snapshots.len() > after_first,
-            "changed session/conjecture must be a fresh freeze");
-    }
+    // Session mutation reshapes the key; the new ask must reflect
+    // the new fact (a stale hit would not know Fido).
+    assert!(kb.tell("(instance Fido Dog)", "h").ok);
+    let r3 = kb.ask_query(
+        "(attribute Fido Loyal)",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(
+        r3.status,
+        ProverStatus::Proved,
+        "post-tell: {}",
+        r3.raw_output
+    );
+    assert!(
+        kb.layer.bg_snapshots.len() > after_first,
+        "changed session/conjecture must be a fresh freeze"
+    );
+}
 
-    // A negated EXISTENTIAL conjecture clausifies to exactly the
-    // symmetry-rule shape (`∃x y. R(x,y) ∧ ¬R(y,x)` negates to
-    // `¬R(x,y) ∨ R(y,x)`).  The CONJECTURE-tier guard must keep it out
-    // of the schema channel — absorbing it would erase the goal.  Here
-    // nothing entails the existential, so the honest answer is
-    // anything but Proved; the run must also not panic or hang.
-    #[test]
-    fn negated_existential_conjecture_is_never_absorbed() {
-        let mut kb = kb_from("(instance likes BinaryPredicate)");
-        assert!(kb.tell("(likes Bob Alice)", "h").ok);
-        assert!(kb.tell("(likes Alice Bob)", "h").ok);
-        let res = kb.ask_query(
-            "(exists (?X ?Y) (and (likes ?X ?Y) (not (likes ?Y ?X))))",
-            Some("h"), SineParams::default(), fast());
-        assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
-    }
+// A negated EXISTENTIAL conjecture clausifies to exactly the
+// symmetry-rule shape (`∃x y. R(x,y) ∧ ¬R(y,x)` negates to
+// `¬R(x,y) ∨ R(y,x)`).  The CONJECTURE-tier guard must keep it out
+// of the schema channel — absorbing it would erase the goal.  Here
+// nothing entails the existential, so the honest answer is
+// anything but Proved; the run must also not panic or hang.
+#[test]
+fn negated_existential_conjecture_is_never_absorbed() {
+    let mut kb = kb_from("(instance likes BinaryPredicate)");
+    assert!(kb.tell("(likes Bob Alice)", "h").ok);
+    assert!(kb.tell("(likes Alice Bob)", "h").ok);
+    let res = kb.ask_query(
+        "(exists (?X ?Y) (and (likes ?X ?Y) (not (likes ?Y ?X))))",
+        Some("h"),
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+}
 
-    // -- strategy / portfolio seam ----------------------------------------
+// -- strategy / portfolio seam ----------------------------------------
 
-    // The strategy rides NativeOpts into the loop: with the schema
-    // channel off, the same symmetry rule is never mined (the raw
-    // stats line says so) — and the goal still proves by ordinary
-    // resolution against the un-absorbed rule.
-    #[test]
-    fn strategy_schema_knob_reaches_the_loop() {
-        let kif = "(=> (touches ?X ?Y) (touches ?Y ?X))";
-        let q = "(touches B A)";
+// The strategy rides NativeOpts into the loop: with the schema
+// channel off, the same symmetry rule is never mined (the raw
+// stats line says so) — and the goal still proves by ordinary
+// resolution against the un-absorbed rule.
+#[test]
+fn strategy_schema_knob_reaches_the_loop() {
+    let kif = "(=> (touches ?X ?Y) (touches ?Y ?X))";
+    let q = "(touches B A)";
 
-        let mut kb_on = kb_from(kif);
-        assert!(kb_on.tell("(touches A B)", "h").ok);
-        let on = kb_on.ask_query(q, Some("h"), SineParams::default(), fast());
-        assert_eq!(on.status, ProverStatus::Proved, "schema on: {}", on.raw_output);
-        assert!(!on.raw_output.contains("mined 0 sym"),
-            "schema on must mine the symmetry rule: {}", on.raw_output);
+    let mut kb_on = kb_from(kif);
+    assert!(kb_on.tell("(touches A B)", "h").ok);
+    let on = kb_on.ask_query(q, Some("h"), SineParams::default(), fast());
+    assert_eq!(
+        on.status,
+        ProverStatus::Proved,
+        "schema on: {}",
+        on.raw_output
+    );
+    assert!(
+        !on.raw_output.contains("mined 0 sym"),
+        "schema on must mine the symmetry rule: {}",
+        on.raw_output
+    );
 
-        let mut kb_off = kb_from(kif);
-        assert!(kb_off.tell("(touches A B)", "h").ok);
-        let mut opts = fast();
-        opts.strategy = crate::saturate::strategy::Strategy::base();
-        opts.strategy.schema = false;
-        let off = kb_off.ask_query(q, Some("h"), SineParams::default(), opts);
-        assert_eq!(off.status, ProverStatus::Proved, "schema off: {}", off.raw_output);
-        assert!(off.raw_output.contains("mined 0 sym"),
-            "schema off must mine nothing: {}", off.raw_output);
-    }
+    let mut kb_off = kb_from(kif);
+    assert!(kb_off.tell("(touches A B)", "h").ok);
+    let mut opts = fast();
+    opts.strategy = crate::saturate::strategy::Strategy::base();
+    opts.strategy.schema = false;
+    let off = kb_off.ask_query(q, Some("h"), SineParams::default(), opts);
+    assert_eq!(
+        off.status,
+        ProverStatus::Proved,
+        "schema off: {}",
+        off.raw_output
+    );
+    assert!(
+        off.raw_output.contains("mined 0 sym"),
+        "schema off must mine nothing: {}",
+        off.raw_output
+    );
+}
 
-    // Semantic clause-selection guidance (Strategy.semantic_guide): the
-    // model sees Dog ⊆ Animal and Fido ∈ Dog, so a clause carrying the
-    // model-FALSE ground literal `(instance Fido Cat)` should be scored
-    // (a non-neutral literal exists — `instance` IS modeled — and the
-    // fact is absent).  Off by default: the identical query with the
-    // knob off must score nothing.
-    #[test]
-    fn semantic_guide_scores_model_false_literals() {
-        let kif = "(subclass Dog Animal)\n\
+// Semantic clause-selection guidance (Strategy.semantic_guide): the
+// model sees Dog ⊆ Animal and Fido ∈ Dog, so a clause carrying the
+// model-FALSE ground literal `(instance Fido Cat)` should be scored
+// (a non-neutral literal exists — `instance` IS modeled — and the
+// fact is absent).  Off by default: the identical query with the
+// knob off must score nothing.
+#[test]
+fn semantic_guide_scores_model_false_literals() {
+    let kif = "(subclass Dog Animal)\n\
                     (instance Fido Dog)\n\
                     (instance subclass TransitiveRelation)\n\
                     (=> (and (instance ?Z ?X) (subclass ?X ?Y)) (instance ?Z ?Y))\n\
                     (=> (instance ?X Cat) (meows ?X))";
 
-        let kb_on = kb_from(kif);
-        let mut opts_on = fast();
-        opts_on.strategy = crate::saturate::strategy::Strategy::base();
-        opts_on.strategy.semantic_guide = true;
-        let on = kb_on.ask_query("(meows Fido)", None, SineParams::default(), opts_on);
-        // Not entailed (Fido is a Dog, not a Cat) — guidance only reorders,
-        // so the verdict is unchanged from the off case below.
-        assert_eq!(on.status, ProverStatus::Disproved, "guide on: {}", on.raw_output);
-        assert!(!on.raw_output.contains("0 guided_clauses_scored"),
-            "guide on must score at least one clause: {}", on.raw_output);
-        assert!(on.raw_output.contains("0 guide_disabled_bail"),
-            "a tiny KB's model build must not bail: {}", on.raw_output);
+    let kb_on = kb_from(kif);
+    let mut opts_on = fast();
+    opts_on.strategy = crate::saturate::strategy::Strategy::base();
+    opts_on.strategy.semantic_guide = true;
+    let on = kb_on.ask_query("(meows Fido)", None, SineParams::default(), opts_on);
+    // Not entailed (Fido is a Dog, not a Cat) — guidance only reorders,
+    // so the verdict is unchanged from the off case below.
+    assert_eq!(
+        on.status,
+        ProverStatus::Disproved,
+        "guide on: {}",
+        on.raw_output
+    );
+    assert!(
+        !on.raw_output.contains("0 guided_clauses_scored"),
+        "guide on must score at least one clause: {}",
+        on.raw_output
+    );
+    assert!(
+        on.raw_output.contains("0 guide_disabled_bail"),
+        "a tiny KB's model build must not bail: {}",
+        on.raw_output
+    );
 
-        let kb_off = kb_from(kif);
-        let off = kb_off.ask_query("(meows Fido)", None, SineParams::default(), fast());
-        assert_eq!(off.status, ProverStatus::Disproved, "guide off: {}", off.raw_output);
-        assert!(off.raw_output.contains("0 guided_clauses_scored"),
-            "guide off must score nothing: {}", off.raw_output);
-    }
+    let kb_off = kb_from(kif);
+    let off = kb_off.ask_query("(meows Fido)", None, SineParams::default(), fast());
+    assert_eq!(
+        off.status,
+        ProverStatus::Disproved,
+        "guide off: {}",
+        off.raw_output
+    );
+    assert!(
+        off.raw_output.contains("0 guided_clauses_scored"),
+        "guide off must score nothing: {}",
+        off.raw_output
+    );
+}
 
-    // The portfolio seam end to end: `ask_native` is `&self`, so
-    // differently-configured lanes run CONCURRENTLY against one shared
-    // KB (scoped threads — requires KnowledgeBase<ProverLayer>: Sync).
-    #[test]
-    fn portfolio_lanes_share_one_kb_across_threads() {
-        use crate::saturate::strategy::Strategy;
+// The portfolio seam end to end: `ask_native` is `&self`, so
+// differently-configured lanes run CONCURRENTLY against one shared
+// KB (scoped threads — requires KnowledgeBase<ProverLayer>: Sync).
+#[test]
+fn portfolio_lanes_share_one_kb_across_threads() {
+    use crate::saturate::strategy::Strategy;
 
-        let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
-        assert!(kb.tell("(instance Rex Dog)", "h").ok);
-        let kb = kb; // freeze: lanes borrow immutably
+    let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
+    assert!(kb.tell("(instance Rex Dog)", "h").ok);
+    let kb = kb; // freeze: lanes borrow immutably
 
-        let lanes = Strategy::default_portfolio();
-        let results: Vec<(String, ProverStatus)> = std::thread::scope(|s| {
-            let handles: Vec<_> = lanes.into_iter().map(|strat| {
+    let lanes = Strategy::default_portfolio();
+    let results: Vec<(String, ProverStatus)> = std::thread::scope(|s| {
+        let handles: Vec<_> = lanes
+            .into_iter()
+            .map(|strat| {
                 let kb = &kb;
                 s.spawn(move || {
                     let name = strat.name.clone();
-                    let opts = NativeOpts { strategy: strat, ..fast() };
-                    let r = kb.ask_query("(attribute Rex Loyal)", Some("h"),
-                        SineParams::default(), opts);
+                    let opts = NativeOpts {
+                        strategy: strat,
+                        ..fast()
+                    };
+                    let r = kb.ask_query(
+                        "(attribute Rex Loyal)",
+                        Some("h"),
+                        SineParams::default(),
+                        opts,
+                    );
                     (name, r.status)
                 })
-            }).collect();
-            handles.into_iter().map(|h| h.join().expect("lane panicked")).collect()
-        });
-        for (name, status) in results {
-            assert_eq!(status, ProverStatus::Proved, "lane {name} failed");
-        }
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("lane panicked"))
+            .collect()
+    });
+    for (name, status) in results {
+        assert_eq!(status, ProverStatus::Proved, "lane {name} failed");
     }
+}
 
-    // `lane_max_lits` is the ONLY seam `run_portfolio_schedule` uses to let
-    // a lane's `Strategy` override `NativeOpts::max_lits` (a field that
-    // lives outside `Strategy` — see `derived_width_cap`'s doc). Every
-    // lane except `tptp-wide` must leave the caller's `max_lits` untouched;
-    // `tptp-wide` must widen it to exactly 32 regardless of the caller's
-    // base value.
-    #[test]
-    fn wide_lane_overrides_max_lits_others_pass_through() {
-        use crate::saturate::strategy::Strategy;
-        use super::prove::lane_max_lits;
+// `lane_max_lits` is the ONLY seam `run_portfolio_schedule` uses to let
+// a lane's `Strategy` override `NativeOpts::max_lits` (a field that
+// lives outside `Strategy` — see `derived_width_cap`'s doc). Every
+// lane except `tptp-wide` must leave the caller's `max_lits` untouched;
+// `tptp-wide` must widen it to exactly 32 regardless of the caller's
+// base value.
+#[test]
+fn wide_lane_overrides_max_lits_others_pass_through() {
+    use super::prove::lane_max_lits;
+    use crate::saturate::strategy::Strategy;
 
-        // No shipping lane overrides the cap (the tptp-wide LANE was
-        // measured out); every lane must pass the caller's max_lits
-        // through unchanged.
-        for lane in Strategy::tptp_lanes() {
-            assert_eq!(lane_max_lits(&lane, 8), 8,
-                "{}: must pass the caller's max_lits through unchanged", lane.name);
-        }
-        // The MECHANISM stays: a strategy carrying the cap overrides,
-        // independent of the caller's base.
-        assert_eq!(lane_max_lits(&Strategy::tptp(), 20), 20);
-        let wide = Strategy { derived_width_cap: Some(32), ..Strategy::tptp() };
-        assert_eq!(lane_max_lits(&wide, 20), 32);
+    // No shipping lane overrides the cap (the tptp-wide LANE was
+    // measured out); every lane must pass the caller's max_lits
+    // through unchanged.
+    for lane in Strategy::tptp_lanes() {
+        assert_eq!(
+            lane_max_lits(&lane, 8),
+            8,
+            "{}: must pass the caller's max_lits through unchanged",
+            lane.name
+        );
     }
+    // The MECHANISM stays: a strategy carrying the cap overrides,
+    // independent of the caller's base.
+    assert_eq!(lane_max_lits(&Strategy::tptp(), 20), 20);
+    let wide = Strategy {
+        derived_width_cap: Some(32),
+        ..Strategy::tptp()
+    };
+    assert_eq!(lane_max_lits(&wide, 20), 32);
+}
 
-    // The cooperative cancel flag: a pre-raised flag stops the run at
-    // the first loop check (Timeout verdict), the portfolio runner's
-    // kill-the-losers mechanism.
-    #[test]
-    fn cancel_flag_stops_the_run() {
-        use std::sync::{Arc, atomic::AtomicBool};
+// The cooperative cancel flag: a pre-raised flag stops the run at
+// the first loop check (Timeout verdict), the portfolio runner's
+// kill-the-losers mechanism.
+#[test]
+fn cancel_flag_stops_the_run() {
+    use std::sync::{atomic::AtomicBool, Arc};
 
-        let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
-        assert!(kb.tell("(instance Rex Dog)", "h").ok);
-        let cancel = Arc::new(AtomicBool::new(true));
-        let opts = NativeOpts {
-            cancel: Some(cancel),
-            // Autoscale would retry the cancelled run; single shot.
-            ..fast()
+    let mut kb = kb_from("(=> (instance ?X Dog) (attribute ?X Loyal))");
+    assert!(kb.tell("(instance Rex Dog)", "h").ok);
+    let cancel = Arc::new(AtomicBool::new(true));
+    let opts = NativeOpts {
+        cancel: Some(cancel),
+        // Autoscale would retry the cancelled run; single shot.
+        ..fast()
+    };
+    let res = kb.ask_query(
+        "(attribute Rex Loyal)",
+        Some("h"),
+        SineParams {
+            autoscale: false,
+            ..SineParams::default()
+        },
+        opts,
+    );
+    assert_eq!(
+        res.status,
+        ProverStatus::Timeout,
+        "pre-raised cancel must stop the loop: {}",
+        res.raw_output
+    );
+}
+
+// -- input-completeness gate ----------------------------------------------
+
+// A TPTP numeral constant survives the whole ingest path: the TPTP
+// parse produces a stored root sentence, and that root clausifies to a
+// usable clause (numerals intern as ordinary constant symbols).
+#[test]
+fn tptp_numeral_constant_round_trips_to_store() {
+    let mut kb = KnowledgeBase::new_native();
+    let src = crate::types::SourceFile {
+        parser: crate::Parser::Tptp { options: None },
+        name: "num.p".into(),
+        path: std::path::PathBuf::from("num.p"),
+        origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
+        contents: "cnf(c1, axiom, p(1)).\n".into(),
+        prebuilt: None,
+    };
+    let r = kb.load(src, "load");
+    assert!(r.ok, "TPTP numeral ingest failed: {:?}", r.diagnostics);
+    let roots = kb.store_for_testing().file_root_sids("num.p");
+    assert_eq!(roots.len(), 1, "numeral clause stored as exactly one root");
+    assert_eq!(
+        kb.prover().clauses_for(roots[0]).len(),
+        1,
+        "the stored numeral clause clausifies to one usable clause"
+    );
+}
+
+// Input-completeness gate: an input root that CANNOT be loaded must
+// poison any confident Satisfiable/Disproved verdict under the strict
+// TPTP regime — the missing formula could be the one that closes the
+// refutation.  The run must come back Unknown (SZS GaveUp) with a loud
+// "failed to load" reason, never a certified countermodel.
+//
+// A plain multiplicative CNF blow-up no longer works as the unloadable
+// fixture — the definitional-CNF rescue path now loads those in full
+// (see the `defcnf_*` tests above).  What definitions can NEVER
+// compress is a purely ADDITIVE clause count (one clause per conjunct),
+// so the fixture pushes a conjunction past the rescue path's own
+// `DEFCNF_MAX_CLAUSES_PER_FORMULA` insanity guard: the rescue is
+// attempted, bails, and the loss must still be reported.
+#[test]
+fn input_load_failure_withholds_satisfiable() {
+    // (or (p0 A) (and (q A) ×66000)) — the disjunction trips the
+    // primary distribution guard, and the 66000-conjunct body exceeds
+    // the rescue cap (65536).  The repeated `(q A)` keeps the store
+    // cheap (content-addressed: one subsentence, 66000 references).
+    let mut blowup = String::from("(or (p0 A) (and");
+    for _ in 0..66_000 {
+        blowup.push_str(" (q A)");
+    }
+    blowup.push_str("))");
+
+    // Control: without the failing root, strict saturation certifies the
+    // countermodel (Disproved) — proving the gate assertion below bites.
+    let kb = kb_from("(r A)");
+    let mut opts = fast();
+    opts.strategy = super::strategy::Strategy::tptp();
+    let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts.clone());
+    assert_eq!(
+        res.status,
+        ProverStatus::Disproved,
+        "control must certify the countermodel: {}",
+        res.raw_output
+    );
+    assert_eq!(res.complete_saturation, Some(true), "control is complete");
+
+    // Gate: the same problem plus an unloadable input root.
+    let kb = kb_from(&format!("(r A)\n{blowup}"));
+    let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+    assert_ne!(
+        res.status,
+        ProverStatus::Disproved,
+        "an input load failure must withhold Satisfiable: {}",
+        res.raw_output
+    );
+    assert_eq!(res.status, ProverStatus::Unknown, "raw: {}", res.raw_output);
+    assert_ne!(res.complete_saturation, Some(true));
+    assert!(
+        res.raw_output.contains("failed to load"),
+        "the skip reason must be LOUD: {}",
+        res.raw_output
+    );
+}
+
+// A KIF disjunction of `n` distinct unit atoms — clausifies to ONE
+// flat clause of exactly `n` literals (no distribution, no defCNF),
+// so the fixture's width is the clause's width.
+fn wide_disjunction(n: usize) -> String {
+    let mut s = String::from("(or");
+    for i in 0..n {
+        s.push_str(&format!(" (p{i} A)"));
+    }
+    s.push(')');
+    s
+}
+
+// INPUT clauses are never width-discarded under the TPTP
+// full-saturation regime: a 12-literal input (over the `max_lits: 8`
+// search-shaping cap, under the 512 backstop) loads whole, so a
+// clean saturation is a COMPLETE one — the honesty gate may certify
+// the countermodel instead of withholding it over a discard the
+// regime no longer performs.
+#[test]
+fn full_saturation_keeps_wide_input_and_certifies() {
+    let kb = kb_from(&wide_disjunction(12));
+    let mut opts = fast();
+    opts.strategy = super::strategy::Strategy::tptp();
+    let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+    assert_eq!(
+        res.complete_saturation,
+        Some(true),
+        "a wide INPUT clause must load whole under full_saturation \
+             (no discarded_long poisoning): {}",
+        res.raw_output
+    );
+    assert_eq!(
+        res.status,
+        ProverStatus::Disproved,
+        "with all inputs loaded the saturation is a certificate: {}",
+        res.raw_output
+    );
+}
+
+// The KIF/SUMO path (full_saturation off) is untouched: the same
+// 12-literal input is still discarded by the `max_lits` shaping cap,
+// and the discard still flows into the honesty accounting
+// (complete_saturation = false), exactly as before.
+#[test]
+fn kif_path_still_discards_wide_input_with_accounting() {
+    let kb = kb_from(&wide_disjunction(12));
+    let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), fast());
+    assert_eq!(
+        res.complete_saturation,
+        Some(false),
+        "the KIF path keeps the max_lits input discard, and the \
+             discard must stay accounted: {}",
+        res.raw_output
+    );
+    // Legacy mapping: non-strict saturation still reports Disproved
+    // (a strong signal, not a certificate).
+    assert_eq!(
+        res.status,
+        ProverStatus::Disproved,
+        "raw: {}",
+        res.raw_output
+    );
+}
+
+// The backstop: even under full_saturation a pathologically wide
+// input (over INPUT_WIDTH_BACKSTOP = 512) is discarded — and that
+// discard flows into `discarded_long`, so the honesty gate keeps
+// withholding the countermodel.
+#[test]
+fn full_saturation_backstop_discard_withholds_certificate() {
+    let kb = kb_from(&wide_disjunction(520));
+    let mut opts = fast();
+    opts.strategy = super::strategy::Strategy::tptp();
+    let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
+    assert_ne!(
+        res.complete_saturation,
+        Some(true),
+        "an over-backstop input discard must poison completeness: {}",
+        res.raw_output
+    );
+    assert_eq!(
+        res.status,
+        ProverStatus::Unknown,
+        "no certificate over a lossy load: {}",
+        res.raw_output
+    );
+}
+
+// The caller-side gate helper: a Disproved result with input losses is
+// demoted to Unknown/GaveUp; a Proved result stands (a missing input can
+// hide a refutation, never fabricate one).
+#[test]
+fn withhold_countermodel_demotes_only_confident_nos() {
+    use crate::prover::ProverResult;
+
+    let mut no = ProverResult {
+        status: ProverStatus::Disproved,
+        complete_saturation: Some(true),
+        ..Default::default()
+    };
+    no.withhold_countermodel(2, "test");
+    assert_eq!(no.status, ProverStatus::Unknown);
+    assert_eq!(no.termination, Some(TerminationReason::GaveUp));
+    assert_eq!(no.complete_saturation, Some(false));
+    assert!(no.raw_output.contains("2 input formula(s) failed to load"));
+
+    let mut yes = ProverResult {
+        status: ProverStatus::Proved,
+        ..Default::default()
+    };
+    yes.withhold_countermodel(2, "test");
+    assert_eq!(yes.status, ProverStatus::Proved, "Proved stands");
+
+    let mut clean = ProverResult {
+        status: ProverStatus::Disproved,
+        ..Default::default()
+    };
+    clean.withhold_countermodel(0, "test");
+    assert_eq!(
+        clean.status,
+        ProverStatus::Disproved,
+        "no losses → untouched"
+    );
+}
+
+// Parse-coverage probe (env-gated, skips when unset): for each TPTP
+// problem path in `SIGMA_TPTP_LIST` (one per line), parse with
+// `TestCase::from_tptp` and print
+//   `<path>\t<parsed stmts>\t<parse errors>\t<unaccounted>`
+// — the input-completeness audit trail.  `cargo test … tptp_parse_coverage
+//  -- --nocapture` with the env set.
+#[test]
+fn tptp_parse_coverage_probe() {
+    let Some(list) = std::env::var_os("SIGMA_TPTP_LIST") else {
+        eprintln!("SIGMA_TPTP_LIST unset — skipping parse-coverage probe");
+        return;
+    };
+    let list = std::fs::read_to_string(&list).expect("read SIGMA_TPTP_LIST");
+    for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            println!("{path}\tREAD_ERROR\t-\t-");
+            continue;
         };
-        let res = kb.ask_query("(attribute Rex Loyal)", Some("h"),
-            SineParams { autoscale: false, ..SineParams::default() }, opts);
-        assert_eq!(res.status, ProverStatus::Timeout,
-            "pre-raised cancel must stop the loop: {}", res.raw_output);
+        // Blank `include(…)` directives exactly like the SDK's include
+        // resolver does for the problem's own text (the probe audits the
+        // file's OWN statements; included axioms are separate files).
+        let text: String = text
+            .lines()
+            .map(|l| {
+                if l.trim_start().starts_with("include(") {
+                    ""
+                } else {
+                    l
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (tc, background, errors) = crate::TestCase::from_tptp(&text, path);
+        let query_stmts =
+            tc.input_formulas - background.len() - tc.axioms.len() - tc.unaccounted_inputs;
+        println!(
+            "{path}\t{}\t{}\t{}\t{}",
+            tc.input_formulas,
+            errors.len(),
+            tc.unaccounted_inputs,
+            query_stmts
+        );
     }
+}
 
-    // -- input-completeness gate ----------------------------------------------
-
-    // A TPTP numeral constant survives the whole ingest path: the TPTP
-    // parse produces a stored root sentence, and that root clausifies to a
-    // usable clause (numerals intern as ordinary constant symbols).
-    #[test]
-    fn tptp_numeral_constant_round_trips_to_store() {
+// Input-loss census (env-gated, skips when unset): load each KIF file
+// in `SIGMA_LOSS_CENSUS` (comma-separated paths) into a fresh native
+// KB and report how many roots FAIL to clausify (`root_load_failed`)
+// — the input-completeness audit trail.  `SIGMA_LOSS_VERBOSE=1` also
+// prints each failing root.  `cargo test … input_loss_census --
+// --nocapture` with the env set.
+#[test]
+fn input_loss_census() {
+    let Some(list) = std::env::var_os("SIGMA_LOSS_CENSUS") else {
+        eprintln!("SIGMA_LOSS_CENSUS unset — skipping input-loss census");
+        return;
+    };
+    let verbose = std::env::var_os("SIGMA_LOSS_VERBOSE").is_some();
+    for path in list.to_string_lossy().split(',').filter(|p| !p.is_empty()) {
+        let text = std::fs::read_to_string(path).expect("read census file");
         let mut kb = KnowledgeBase::new_native();
-        let src = crate::types::SourceFile {
-            parser:   crate::Parser::Tptp { options: None },
-            name:     "num.p".into(),
-            path:     std::path::PathBuf::from("num.p"),
-            origin:   crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-            contents: "cnf(c1, axiom, p(1)).\n".into(),
-            prebuilt: None,
-        };
-        let r = kb.load(src, "load");
-        assert!(r.ok, "TPTP numeral ingest failed: {:?}", r.diagnostics);
-        let roots = kb.store_for_testing().file_root_sids("num.p");
-        assert_eq!(roots.len(), 1, "numeral clause stored as exactly one root");
-        assert_eq!(kb.prover().clauses_for(roots[0]).len(), 1,
-            "the stored numeral clause clausifies to one usable clause");
-    }
-
-    // Input-completeness gate: an input root that CANNOT be loaded must
-    // poison any confident Satisfiable/Disproved verdict under the strict
-    // TPTP regime — the missing formula could be the one that closes the
-    // refutation.  The run must come back Unknown (SZS GaveUp) with a loud
-    // "failed to load" reason, never a certified countermodel.
-    //
-    // A plain multiplicative CNF blow-up no longer works as the unloadable
-    // fixture — the definitional-CNF rescue path now loads those in full
-    // (see the `defcnf_*` tests above).  What definitions can NEVER
-    // compress is a purely ADDITIVE clause count (one clause per conjunct),
-    // so the fixture pushes a conjunction past the rescue path's own
-    // `DEFCNF_MAX_CLAUSES_PER_FORMULA` insanity guard: the rescue is
-    // attempted, bails, and the loss must still be reported.
-    #[test]
-    fn input_load_failure_withholds_satisfiable() {
-        // (or (p0 A) (and (q A) ×66000)) — the disjunction trips the
-        // primary distribution guard, and the 66000-conjunct body exceeds
-        // the rescue cap (65536).  The repeated `(q A)` keeps the store
-        // cheap (content-addressed: one subsentence, 66000 references).
-        let mut blowup = String::from("(or (p0 A) (and");
-        for _ in 0..66_000 {
-            blowup.push_str(" (q A)");
+        let r = kb.reload_kif(&text, &std::path::PathBuf::from(path), "load");
+        if !r.ok {
+            println!("{path}\tINGEST_ERROR");
+            continue;
         }
-        blowup.push_str("))");
-
-        // Control: without the failing root, strict saturation certifies the
-        // countermodel (Disproved) — proving the gate assertion below bites.
-        let kb = kb_from("(r A)");
-        let mut opts = fast();
-        opts.strategy = super::strategy::Strategy::tptp();
-        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts.clone());
-        assert_eq!(res.status, ProverStatus::Disproved,
-            "control must certify the countermodel: {}", res.raw_output);
-        assert_eq!(res.complete_saturation, Some(true), "control is complete");
-
-        // Gate: the same problem plus an unloadable input root.
-        let kb = kb_from(&format!("(r A)\n{blowup}"));
-        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
-        assert_ne!(res.status, ProverStatus::Disproved,
-            "an input load failure must withhold Satisfiable: {}", res.raw_output);
-        assert_eq!(res.status, ProverStatus::Unknown, "raw: {}", res.raw_output);
-        assert_ne!(res.complete_saturation, Some(true));
-        assert!(res.raw_output.contains("failed to load"),
-            "the skip reason must be LOUD: {}", res.raw_output);
-    }
-
-    // A KIF disjunction of `n` distinct unit atoms — clausifies to ONE
-    // flat clause of exactly `n` literals (no distribution, no defCNF),
-    // so the fixture's width is the clause's width.
-    fn wide_disjunction(n: usize) -> String {
-        let mut s = String::from("(or");
-        for i in 0..n {
-            s.push_str(&format!(" (p{i} A)"));
-        }
-        s.push(')');
-        s
-    }
-
-    // INPUT clauses are never width-discarded under the TPTP
-    // full-saturation regime: a 12-literal input (over the `max_lits: 8`
-    // search-shaping cap, under the 512 backstop) loads whole, so a
-    // clean saturation is a COMPLETE one — the honesty gate may certify
-    // the countermodel instead of withholding it over a discard the
-    // regime no longer performs.
-    #[test]
-    fn full_saturation_keeps_wide_input_and_certifies() {
-        let kb = kb_from(&wide_disjunction(12));
-        let mut opts = fast();
-        opts.strategy = super::strategy::Strategy::tptp();
-        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
-        assert_eq!(res.complete_saturation, Some(true),
-            "a wide INPUT clause must load whole under full_saturation \
-             (no discarded_long poisoning): {}", res.raw_output);
-        assert_eq!(res.status, ProverStatus::Disproved,
-            "with all inputs loaded the saturation is a certificate: {}",
-            res.raw_output);
-    }
-
-    // The KIF/SUMO path (full_saturation off) is untouched: the same
-    // 12-literal input is still discarded by the `max_lits` shaping cap,
-    // and the discard still flows into the honesty accounting
-    // (complete_saturation = false), exactly as before.
-    #[test]
-    fn kif_path_still_discards_wide_input_with_accounting() {
-        let kb = kb_from(&wide_disjunction(12));
-        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), fast());
-        assert_eq!(res.complete_saturation, Some(false),
-            "the KIF path keeps the max_lits input discard, and the \
-             discard must stay accounted: {}", res.raw_output);
-        // Legacy mapping: non-strict saturation still reports Disproved
-        // (a strong signal, not a certificate).
-        assert_eq!(res.status, ProverStatus::Disproved, "raw: {}", res.raw_output);
-    }
-
-    // The backstop: even under full_saturation a pathologically wide
-    // input (over INPUT_WIDTH_BACKSTOP = 512) is discarded — and that
-    // discard flows into `discarded_long`, so the honesty gate keeps
-    // withholding the countermodel.
-    #[test]
-    fn full_saturation_backstop_discard_withholds_certificate() {
-        let kb = kb_from(&wide_disjunction(520));
-        let mut opts = fast();
-        opts.strategy = super::strategy::Strategy::tptp();
-        let res = kb.ask_query("(s B)", None, SineParams::whole_kb(), opts);
-        assert_ne!(res.complete_saturation, Some(true),
-            "an over-backstop input discard must poison completeness: {}",
-            res.raw_output);
-        assert_eq!(res.status, ProverStatus::Unknown,
-            "no certificate over a lossy load: {}", res.raw_output);
-    }
-
-    // The caller-side gate helper: a Disproved result with input losses is
-    // demoted to Unknown/GaveUp; a Proved result stands (a missing input can
-    // hide a refutation, never fabricate one).
-    #[test]
-    fn withhold_countermodel_demotes_only_confident_nos() {
-        use crate::prover::ProverResult;
-
-        let mut no = ProverResult {
-            status: ProverStatus::Disproved,
-            complete_saturation: Some(true),
-            ..Default::default()
-        };
-        no.withhold_countermodel(2, "test");
-        assert_eq!(no.status, ProverStatus::Unknown);
-        assert_eq!(no.termination, Some(TerminationReason::GaveUp));
-        assert_eq!(no.complete_saturation, Some(false));
-        assert!(no.raw_output.contains("2 input formula(s) failed to load"));
-
-        let mut yes = ProverResult { status: ProverStatus::Proved, ..Default::default() };
-        yes.withhold_countermodel(2, "test");
-        assert_eq!(yes.status, ProverStatus::Proved, "Proved stands");
-
-        let mut clean = ProverResult { status: ProverStatus::Disproved, ..Default::default() };
-        clean.withhold_countermodel(0, "test");
-        assert_eq!(clean.status, ProverStatus::Disproved, "no losses → untouched");
-    }
-
-    // Parse-coverage probe (env-gated, skips when unset): for each TPTP
-    // problem path in `SIGMA_TPTP_LIST` (one per line), parse with
-    // `TestCase::from_tptp` and print
-    //   `<path>\t<parsed stmts>\t<parse errors>\t<unaccounted>`
-    // — the input-completeness audit trail.  `cargo test … tptp_parse_coverage
-    //  -- --nocapture` with the env set.
-    #[test]
-    fn tptp_parse_coverage_probe() {
-        let Some(list) = std::env::var_os("SIGMA_TPTP_LIST") else {
-            eprintln!("SIGMA_TPTP_LIST unset — skipping parse-coverage probe");
-            return;
-        };
-        let list = std::fs::read_to_string(&list).expect("read SIGMA_TPTP_LIST");
-        for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let Ok(text) = std::fs::read_to_string(path) else {
-                println!("{path}\tREAD_ERROR\t-\t-");
-                continue;
-            };
-            // Blank `include(…)` directives exactly like the SDK's include
-            // resolver does for the problem's own text (the probe audits the
-            // file's OWN statements; included axioms are separate files).
-            let text: String = text.lines()
-                .map(|l| if l.trim_start().starts_with("include(") { "" } else { l })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let (tc, background, errors) = crate::TestCase::from_tptp(&text, path);
-            let query_stmts = tc.input_formulas
-                - background.len() - tc.axioms.len() - tc.unaccounted_inputs;
-            println!("{path}\t{}\t{}\t{}\t{}",
-                tc.input_formulas, errors.len(), tc.unaccounted_inputs, query_stmts);
-        }
-    }
-
-    // Input-loss census (env-gated, skips when unset): load each KIF file
-    // in `SIGMA_LOSS_CENSUS` (comma-separated paths) into a fresh native
-    // KB and report how many roots FAIL to clausify (`root_load_failed`)
-    // — the input-completeness audit trail.  `SIGMA_LOSS_VERBOSE=1` also
-    // prints each failing root.  `cargo test … input_loss_census --
-    // --nocapture` with the env set.
-    #[test]
-    fn input_loss_census() {
-        let Some(list) = std::env::var_os("SIGMA_LOSS_CENSUS") else {
-            eprintln!("SIGMA_LOSS_CENSUS unset — skipping input-loss census");
-            return;
-        };
-        let verbose = std::env::var_os("SIGMA_LOSS_VERBOSE").is_some();
-        for path in list.to_string_lossy().split(',').filter(|p| !p.is_empty()) {
-            let text = std::fs::read_to_string(path).expect("read census file");
-            let mut kb = KnowledgeBase::new_native();
-            let r = kb.reload_kif(&text, &std::path::PathBuf::from(path), "load");
-            if !r.ok {
-                println!("{path}\tINGEST_ERROR");
-                continue;
+        let _ = kb.make_session_axiomatic("load");
+        let layer = kb.prover();
+        let syn = kb.store_for_testing();
+        let roots = syn.root_sids();
+        let failed: Vec<SentenceId> = roots
+            .iter()
+            .copied()
+            .filter(|sid| layer.root_load_failed(*sid))
+            .collect();
+        println!(
+            "{path}\t{} roots\t{} load-failed",
+            roots.len(),
+            failed.len()
+        );
+        if verbose {
+            for sid in failed {
+                println!(
+                    "  {}",
+                    crate::syntactic::display::sentence_to_plain_kif(sid, syn)
+                );
             }
-            let _ = kb.make_session_axiomatic("load");
-            let layer = kb.prover();
-            let syn = kb.store_for_testing();
-            let roots = syn.root_sids();
-            let failed: Vec<SentenceId> = roots.iter().copied()
-                .filter(|sid| layer.root_load_failed(*sid))
-                .collect();
-            println!("{path}\t{} roots\t{} load-failed", roots.len(), failed.len());
-            if verbose {
-                for sid in failed {
-                    println!("  {}", crate::syntactic::display::sentence_to_plain_kif(sid, syn));
+        }
+    }
+}
+
+// -- step 0: structured quoting of embedded formulas (clausify.rs) --------
+//
+// A connective/quantifier in ARGUMENT position lifts as a quoted term:
+// reserved `_q` constructor symbols, binders alpha-normalized to
+// quote-scoped bound constants `qb<n>`.  The kernel sees ordinary FO
+// terms; top-level clausification is untouched.
+
+/// Render an interned atom back to a KIF-ish string (subterms resolved
+/// through the prover-local table; variables blanked to `?`), for
+/// structural asserts on quoted shapes.
+fn atom_kif(layer: &ProverLayer, atom: SentenceId) -> String {
+    fn go(layer: &ProverLayer, sid: SentenceId, out: &mut String) {
+        let s = layer
+            .atoms
+            .resolve(sid, &layer.semantic.syntactic)
+            .expect("atom resolvable");
+        out.push('(');
+        for (i, el) in s.elements.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            match el {
+                Element::Symbol(sym) => out.push_str(&sym.name()),
+                Element::Variable { .. } => out.push('?'),
+                Element::Op(op) => out.push_str(op.name()),
+                Element::Literal(l) => {
+                    use std::fmt::Write;
+                    let _ = write!(out, "{l:?}");
                 }
+                Element::Sub(sub) => go(layer, *sub, out),
             }
         }
+        out.push(')');
     }
+    let mut s = String::new();
+    go(layer, atom, &mut s);
+    s
+}
 
-    // -- step 0: structured quoting of embedded formulas (clausify.rs) --------
-    //
-    // A connective/quantifier in ARGUMENT position lifts as a quoted term:
-    // reserved `_q` constructor symbols, binders alpha-normalized to
-    // quote-scoped bound constants `qb<n>`.  The kernel sees ordinary FO
-    // terms; top-level clausification is untouched.
-
-    /// Render an interned atom back to a KIF-ish string (subterms resolved
-    /// through the prover-local table; variables blanked to `?`), for
-    /// structural asserts on quoted shapes.
-    fn atom_kif(layer: &ProverLayer, atom: SentenceId) -> String {
-        fn go(layer: &ProverLayer, sid: SentenceId, out: &mut String) {
-            let s = layer.atoms.resolve(sid, &layer.semantic.syntactic).expect("atom resolvable");
-            out.push('(');
-            for (i, el) in s.elements.iter().enumerate() {
-                if i > 0 { out.push(' '); }
-                match el {
-                    Element::Symbol(sym)     => out.push_str(&sym.name()),
-                    Element::Variable { .. } => out.push('?'),
-                    Element::Op(op)          => out.push_str(op.name()),
-                    Element::Literal(l)      => { use std::fmt::Write; let _ = write!(out, "{l:?}"); }
-                    Element::Sub(sub)        => go(layer, *sub, out),
-                }
-            }
-            out.push(')');
-        }
-        let mut s = String::new();
-        go(layer, atom, &mut s);
-        s
+#[test]
+fn quotes_embedded_connectives_in_argument_position() {
+    for (kif, expect) in [
+        (
+            "(believes John (and (p A) (q B)))",
+            "(believes John (and_q (p A) (q B)))",
+        ),
+        (
+            "(believes John (or (p A) (q B)))",
+            "(believes John (or_q (p A) (q B)))",
+        ),
+        (
+            "(believes John (not (p A)))",
+            "(believes John (not_q (p A)))",
+        ),
+        (
+            "(believes John (=> (p A) (q B)))",
+            "(believes John (impl_q (p A) (q B)))",
+        ),
+        (
+            "(believes John (<=> (p A) (q B)))",
+            "(believes John (iff_q (p A) (q B)))",
+        ),
+    ] {
+        let (layer, cls) = clauses_of(kif);
+        assert_eq!(cls.len(), 1, "{kif}");
+        let c = &cls[0];
+        assert!(c.is_unit() && c.lits[0].pos, "{kif}");
+        assert_eq!(atom_kif(&layer, c.lits[0].atom), expect, "{kif}");
+        assert_eq!(c.nvars, 0, "ground quote must stay ground: {kif}");
     }
+}
 
-    #[test]
-    fn quotes_embedded_connectives_in_argument_position() {
-        for (kif, expect) in [
-            ("(believes John (and (p A) (q B)))", "(believes John (and_q (p A) (q B)))"),
-            ("(believes John (or (p A) (q B)))",  "(believes John (or_q (p A) (q B)))"),
-            ("(believes John (not (p A)))",       "(believes John (not_q (p A)))"),
-            ("(believes John (=> (p A) (q B)))",  "(believes John (impl_q (p A) (q B)))"),
-            ("(believes John (<=> (p A) (q B)))", "(believes John (iff_q (p A) (q B)))"),
-        ] {
-            let (layer, cls) = clauses_of(kif);
-            assert_eq!(cls.len(), 1, "{kif}");
-            let c = &cls[0];
-            assert!(c.is_unit() && c.lits[0].pos, "{kif}");
-            assert_eq!(atom_kif(&layer, c.lits[0].atom), expect, "{kif}");
-            assert_eq!(c.nvars, 0, "ground quote must stay ground: {kif}");
-        }
-    }
+#[test]
+fn atomic_embedded_formulas_lift_unchanged() {
+    // No connective — no quoting: byte-identical to the pre-quote lift.
+    let (layer, cls) = clauses_of("(believes John (shape Earth Flat))");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (shape Earth Flat))"
+    );
+    // Embedded equality keeps its atom shape (`equal` is not a connective).
+    let (layer, cls) = clauses_of("(believes John (equal A B))");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (equal A B))"
+    );
+}
 
-    #[test]
-    fn atomic_embedded_formulas_lift_unchanged() {
-        // No connective — no quoting: byte-identical to the pre-quote lift.
-        let (layer, cls) = clauses_of("(believes John (shape Earth Flat))");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (shape Earth Flat))");
-        // Embedded equality keeps its atom shape (`equal` is not a connective).
-        let (layer, cls) = clauses_of("(believes John (equal A B))");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (equal A B))");
-    }
+#[test]
+fn quotes_embedded_quantifiers_with_alpha_normalized_binders() {
+    let (layer, cls) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (forall_q (qb0) (loves qb0 Mary)))"
+    );
+    assert_eq!(
+        cls[0].nvars, 0,
+        "bound occurrences are constants, not variables"
+    );
 
-    #[test]
-    fn quotes_embedded_quantifiers_with_alpha_normalized_binders() {
-        let (layer, cls) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (forall_q (qb0) (loves qb0 Mary)))");
-        assert_eq!(cls[0].nvars, 0, "bound occurrences are constants, not variables");
+    let (layer, cls) = clauses_of("(believes John (exists (?X ?Y) (loves ?X ?Y)))");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (exists_q (qb0 qb1) (loves qb0 qb1)))"
+    );
 
-        let (layer, cls) = clauses_of("(believes John (exists (?X ?Y) (loves ?X ?Y)))");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (exists_q (qb0 qb1) (loves qb0 qb1)))");
+    // Nested quantifiers number by first occurrence; shadowing rebinds.
+    let (layer, cls) =
+        clauses_of("(believes John (forall (?X) (and (p ?X) (exists (?X) (q ?X)))))");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (forall_q (qb0) (and_q (p qb0) (exists_q (qb1) (q qb1)))))"
+    );
+}
 
-        // Nested quantifiers number by first occurrence; shadowing rebinds.
-        let (layer, cls) = clauses_of(
-            "(believes John (forall (?X) (and (p ?X) (exists (?X) (q ?X)))))");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (forall_q (qb0) (and_q (p qb0) (exists_q (qb1) (q qb1)))))");
-    }
+#[test]
+fn alpha_variant_quotes_intern_identically() {
+    // Content-hash atom ids are layer-independent: alpha-variant quotes
+    // from two different fixtures must produce the same interned atom
+    // and the same canonical clause key.
+    let (_l1, c1) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
+    let (_l2, c2) = clauses_of("(believes John (forall (?Other) (loves ?Other Mary)))");
+    assert_eq!(
+        c1[0].lits[0].atom, c2[0].lits[0].atom,
+        "alpha-variants dedup"
+    );
+    assert_eq!(c1[0].key, c2[0].key);
+}
 
-    #[test]
-    fn alpha_variant_quotes_intern_identically() {
-        // Content-hash atom ids are layer-independent: alpha-variant quotes
-        // from two different fixtures must produce the same interned atom
-        // and the same canonical clause key.
-        let (_l1, c1) = clauses_of("(believes John (forall (?X) (loves ?X Mary)))");
-        let (_l2, c2) = clauses_of("(believes John (forall (?Other) (loves ?Other Mary)))");
-        assert_eq!(c1[0].lits[0].atom, c2[0].lits[0].atom, "alpha-variants dedup");
-        assert_eq!(c1[0].key, c2[0].key);
-    }
+#[test]
+fn quote_free_variables_stay_clause_variables() {
+    // A context variable inside the quote stays a REAL variable —
+    // implicit universal closure picks it up at clause level.
+    let (layer, cls) = clauses_of("(believes John (loves ?X Mary))");
+    assert_eq!(cls[0].nvars, 1, "free variable universally closed");
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (loves ? Mary))"
+    );
 
-    #[test]
-    fn quote_free_variables_stay_clause_variables() {
-        // A context variable inside the quote stays a REAL variable —
-        // implicit universal closure picks it up at clause level.
-        let (layer, cls) = clauses_of("(believes John (loves ?X Mary))");
-        assert_eq!(cls[0].nvars, 1, "free variable universally closed");
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (loves ? Mary))");
+    // Mixed: quote-bound ?Y is a constant, context-free ?X a variable.
+    let (layer, cls) = clauses_of("(believes John (forall (?Y) (loves ?X ?Y)))");
+    assert_eq!(cls[0].nvars, 1);
+    assert_eq!(
+        atom_kif(&layer, cls[0].lits[0].atom),
+        "(believes John (forall_q (qb0) (loves ? qb0)))"
+    );
 
-        // Mixed: quote-bound ?Y is a constant, context-free ?X a variable.
-        let (layer, cls) = clauses_of("(believes John (forall (?Y) (loves ?X ?Y)))");
-        assert_eq!(cls[0].nvars, 1);
-        assert_eq!(atom_kif(&layer, cls[0].lits[0].atom),
-            "(believes John (forall_q (qb0) (loves ? qb0)))");
+    // A top-level binder threads into the quote as a shared variable
+    // across BOTH literal positions of the rule clause.
+    let (layer, cls) =
+        clauses_of("(=> (instance ?X Human) (believes ?X (forall (?Y) (loves ?Y ?X))))");
+    assert_eq!(cls.len(), 1);
+    assert_eq!(cls[0].nvars, 1, "outer variable shared through the quote");
+    let pos = cls[0]
+        .lits
+        .iter()
+        .find(|l| l.pos)
+        .expect("conclusion literal");
+    assert_eq!(
+        atom_kif(&layer, pos.atom),
+        "(believes ? (forall_q (qb0) (loves qb0 ?)))"
+    );
+}
 
-        // A top-level binder threads into the quote as a shared variable
-        // across BOTH literal positions of the rule clause.
-        let (layer, cls) = clauses_of(
-            "(=> (instance ?X Human) (believes ?X (forall (?Y) (loves ?Y ?X))))");
-        assert_eq!(cls.len(), 1);
-        assert_eq!(cls[0].nvars, 1, "outer variable shared through the quote");
-        let pos = cls[0].lits.iter().find(|l| l.pos).expect("conclusion literal");
-        assert_eq!(atom_kif(&layer, pos.atom),
-            "(believes ? (forall_q (qb0) (loves qb0 ?)))");
-    }
+#[test]
+fn quoted_binders_resist_capture() {
+    let kb = kb_from("(believes John (forall (?X) (loves ?X Mary)))");
+    // The alpha-variant IS the same quote — proves.
+    let yes = kb.ask_query(
+        "(believes John (forall (?W) (loves ?W Mary)))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(yes.status, ProverStatus::Proved, "raw: {}", yes.raw_output);
+    // Capture attempt: unifying would need qb0 := Mary INSIDE the quote —
+    // impossible, bound occurrences are constants.
+    let no = kb.ask_query(
+        "(believes John (forall (?Z) (loves ?Z ?Z)))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+    // Nor does the quoted universal instantiate to a plain belief.
+    let no2 = kb.ask_query(
+        "(believes John (loves Bob Mary))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(no2.status, ProverStatus::Proved, "raw: {}", no2.raw_output);
+}
 
-    #[test]
-    fn quoted_binders_resist_capture() {
-        let kb = kb_from("(believes John (forall (?X) (loves ?X Mary)))");
-        // The alpha-variant IS the same quote — proves.
-        let yes = kb.ask_query("(believes John (forall (?W) (loves ?W Mary)))",
-            None, SineParams::default(), fast());
-        assert_eq!(yes.status, ProverStatus::Proved, "raw: {}", yes.raw_output);
-        // Capture attempt: unifying would need qb0 := Mary INSIDE the quote —
-        // impossible, bound occurrences are constants.
-        let no = kb.ask_query("(believes John (forall (?Z) (loves ?Z ?Z)))",
-            None, SineParams::default(), fast());
-        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
-        // Nor does the quoted universal instantiate to a plain belief.
-        let no2 = kb.ask_query("(believes John (loves Bob Mary))",
-            None, SineParams::default(), fast());
-        assert_ne!(no2.status, ProverStatus::Proved, "raw: {}", no2.raw_output);
-    }
+#[test]
+fn quoted_compound_binds_through_predicate_variable_rules() {
+    let kb = kb_from(
+        "(believes John (and (shape Earth Flat) (orbits Earth Sun)))\n\
+             (=> (believes John ?P) (interested John ?P))",
+    );
+    let asked = kb.ask_query(
+        "(believes John (and (shape Earth Flat) (orbits Earth Sun)))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(
+        asked.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        asked.raw_output
+    );
+    // The whole quote binds through ?P.
+    let derived = kb.ask_query(
+        "(interested John (and (shape Earth Flat) (orbits Earth Sun)))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(
+        derived.status,
+        ProverStatus::Proved,
+        "raw: {}",
+        derived.raw_output
+    );
+}
 
-    #[test]
-    fn quoted_compound_binds_through_predicate_variable_rules() {
-        let kb = kb_from(
-            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))\n\
-             (=> (believes John ?P) (interested John ?P))");
-        let asked = kb.ask_query(
-            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))",
-            None, SineParams::default(), fast());
-        assert_eq!(asked.status, ProverStatus::Proved, "raw: {}", asked.raw_output);
-        // The whole quote binds through ?P.
-        let derived = kb.ask_query(
-            "(interested John (and (shape Earth Flat) (orbits Earth Sun)))",
-            None, SineParams::default(), fast());
-        assert_eq!(derived.status, ProverStatus::Proved, "raw: {}", derived.raw_output);
-    }
+// -- part A: modal K-distribution schemata over quote constructors --------
+//
+// Native parity with the THF lane's K-axiom fragment: conjunction
+// distribution for `knows`/`believes`, injected at problem assembly
+// ONLY under the computed-declaration guard (argument-2 domain is
+// Formula or a descendant) — the guard the THF assembler skips.
 
-    // -- part A: modal K-distribution schemata over quote constructors --------
-    //
-    // Native parity with the THF lane's K-axiom fragment: conjunction
-    // distribution for `knows`/`believes`, injected at problem assembly
-    // ONLY under the computed-declaration guard (argument-2 domain is
-    // Formula or a descendant) — the guard the THF assembler skips.
+#[test]
+fn modal_k_distributes_believed_conjunction() {
+    // Formula domain declared → the K schema injects; each conjunct
+    // of a believed conjunction becomes derivable.
+    let kb = kb_from(
+        "(domain believes 2 Formula)\n\
+             (believes John (and (shape Earth Flat) (orbits Earth Sun)))",
+    );
+    let a = kb.ask_query(
+        "(believes John (shape Earth Flat))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
+    let b = kb.ask_query(
+        "(believes John (orbits Earth Sun))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(b.status, ProverStatus::Proved, "raw: {}", b.raw_output);
+    // Control: a conjunct John never believed stays underivable.
+    let no = kb.ask_query(
+        "(believes John (shape Earth Round))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+}
 
-    #[test]
-    fn modal_k_distributes_believed_conjunction() {
-        // Formula domain declared → the K schema injects; each conjunct
-        // of a believed conjunction becomes derivable.
-        let kb = kb_from(
-            "(domain believes 2 Formula)\n\
-             (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
-        let a = kb.ask_query("(believes John (shape Earth Flat))",
-            None, SineParams::default(), fast());
-        assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
-        let b = kb.ask_query("(believes John (orbits Earth Sun))",
-            None, SineParams::default(), fast());
-        assert_eq!(b.status, ProverStatus::Proved, "raw: {}", b.raw_output);
-        // Control: a conjunct John never believed stays underivable.
-        let no = kb.ask_query("(believes John (shape Earth Round))",
-            None, SineParams::default(), fast());
-        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
-    }
+#[test]
+fn modal_k_requires_declared_formula_domain() {
+    // No Formula domain declaration → NO injection: the THF chip's
+    // bug class (it injects on the relation NAME alone), tested
+    // natively — same KB as above minus the `domain` axiom.
+    let kb = kb_from("(believes John (and (shape Earth Flat) (orbits Earth Sun)))");
+    let no = kb.ask_query(
+        "(believes John (shape Earth Flat))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+}
 
-    #[test]
-    fn modal_k_requires_declared_formula_domain() {
-        // No Formula domain declaration → NO injection: the THF chip's
-        // bug class (it injects on the relation NAME alone), tested
-        // natively — same KB as above minus the `domain` axiom.
-        let kb = kb_from(
-            "(believes John (and (shape Earth Flat) (orbits Earth Sun)))");
-        let no = kb.ask_query("(believes John (shape Earth Flat))",
-            None, SineParams::default(), fast());
-        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
-    }
-
-    #[test]
-    fn modal_k_accepts_formula_descendant_domain_for_knows() {
-        // A Formula DESCENDANT class qualifies too (the ho_signatures
-        // `is_formula_class` rule), and `knows` gets the same schema.
-        let kb = kb_from(
-            "(subclass EpistemicFormula Formula)\n\
+#[test]
+fn modal_k_accepts_formula_descendant_domain_for_knows() {
+    // A Formula DESCENDANT class qualifies too (the ho_signatures
+    // `is_formula_class` rule), and `knows` gets the same schema.
+    let kb = kb_from(
+        "(subclass EpistemicFormula Formula)\n\
              (domain knows 2 EpistemicFormula)\n\
-             (knows Alice (and (p A) (q B)))");
-        let a = kb.ask_query("(knows Alice (p A))",
-            None, SineParams::default(), fast());
-        assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
-        let no = kb.ask_query("(knows Alice (r C))",
-            None, SineParams::default(), fast());
-        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
-    }
+             (knows Alice (and (p A) (q B)))",
+    );
+    let a = kb.ask_query("(knows Alice (p A))", None, SineParams::default(), fast());
+    assert_eq!(a.status, ProverStatus::Proved, "raw: {}", a.raw_output);
+    let no = kb.ask_query("(knows Alice (r C))", None, SineParams::default(), fast());
+    assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+}
 
-    #[test]
-    fn modal_k_strategy_off_switch_disables_injection() {
-        // The `Strategy.modal_k` knob (env: SIGMA_NO_MODAL_K) gates the
-        // whole mechanism.
-        let kb = kb_from(
-            "(domain believes 2 Formula)\n\
-             (believes John (and (shape Earth Flat) (orbits Earth Sun)))");
-        let mut opts = fast();
-        opts.strategy.modal_k = false;
-        let no = kb.ask_query("(believes John (shape Earth Flat))",
-            None, SineParams::default(), opts);
-        assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
-    }
+#[test]
+fn modal_k_strategy_off_switch_disables_injection() {
+    // The `Strategy.modal_k` knob (env: SIGMA_NO_MODAL_K) gates the
+    // whole mechanism.
+    let kb = kb_from(
+        "(domain believes 2 Formula)\n\
+             (believes John (and (shape Earth Flat) (orbits Earth Sun)))",
+    );
+    let mut opts = fast();
+    opts.strategy.modal_k = false;
+    let no = kb.ask_query(
+        "(believes John (shape Earth Flat))",
+        None,
+        SineParams::default(),
+        opts,
+    );
+    assert_ne!(no.status, ProverStatus::Proved, "raw: {}", no.raw_output);
+}
 
-    // -- part B: KappaFn per-instance comprehension (clausify.rs) -------------
-    //
-    // `(KappaFn ?V φ)` in term position lifts to a quoted class term
-    // `(kappa_q qb<n> <quoted body>)` and emits BOTH comprehension
-    // directions as auxiliary clauses on the same root, built by the
-    // unquote-with-substitution primitive (`unquote_form`).
+// -- part B: KappaFn per-instance comprehension (clausify.rs) -------------
+//
+// `(KappaFn ?V φ)` in term position lifts to a quoted class term
+// `(kappa_q qb<n> <quoted body>)` and emits BOTH comprehension
+// directions as auxiliary clauses on the same root, built by the
+// unquote-with-substitution primitive (`unquote_form`).
 
-    #[test]
-    fn kappa_lifts_to_quoted_class_term_with_comprehension() {
-        let (layer, cls) = clauses_of(
-            "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))");
-        // 1 fact + 2 elimination clauses + 1 introduction clause.
-        assert_eq!(cls.len(), 4, "clauses: {}", cls.len());
-        let fact = cls.iter().find(|c| c.is_unit()).expect("kappa fact unit");
-        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
-            "(instance Rex (kappa_q qb0 (and_q (instance qb0 Dog) (attribute qb0 Brown))))");
-        assert_eq!(fact.nvars, 0, "ground kappa term stays ground");
-        // Elimination: instance in the class term ⊢ each conjunct, with a
-        // REAL variable where the binder was (the unquote substitution).
-        let pos_atoms: Vec<String> = cls.iter()
-            .filter(|c| c.lits.len() == 2)
-            .filter_map(|c| c.lits.iter().find(|l| l.pos))
-            .map(|l| atom_kif(&layer, l.atom))
-            .collect();
-        assert!(pos_atoms.contains(&"(instance ? Dog)".to_string()), "{pos_atoms:?}");
-        assert!(pos_atoms.contains(&"(attribute ? Brown)".to_string()), "{pos_atoms:?}");
-        // Introduction: both body literals negated, class membership
-        // concluded.
-        let intro = cls.iter().find(|c| c.lits.len() == 3).expect("introduction clause");
-        assert_eq!(intro.lits.iter().filter(|l| !l.pos).count(), 2);
-        let concl = intro.lits.iter().find(|l| l.pos).expect("positive conclusion");
-        assert!(atom_kif(&layer, concl.atom).starts_with("(instance ? (kappa_q qb0"),
-            "{}", atom_kif(&layer, concl.atom));
-    }
+#[test]
+fn kappa_lifts_to_quoted_class_term_with_comprehension() {
+    let (layer, cls) =
+        clauses_of("(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))");
+    // 1 fact + 2 elimination clauses + 1 introduction clause.
+    assert_eq!(cls.len(), 4, "clauses: {}", cls.len());
+    let fact = cls.iter().find(|c| c.is_unit()).expect("kappa fact unit");
+    assert_eq!(
+        atom_kif(&layer, fact.lits[0].atom),
+        "(instance Rex (kappa_q qb0 (and_q (instance qb0 Dog) (attribute qb0 Brown))))"
+    );
+    assert_eq!(fact.nvars, 0, "ground kappa term stays ground");
+    // Elimination: instance in the class term ⊢ each conjunct, with a
+    // REAL variable where the binder was (the unquote substitution).
+    let pos_atoms: Vec<String> = cls
+        .iter()
+        .filter(|c| c.lits.len() == 2)
+        .filter_map(|c| c.lits.iter().find(|l| l.pos))
+        .map(|l| atom_kif(&layer, l.atom))
+        .collect();
+    assert!(
+        pos_atoms.contains(&"(instance ? Dog)".to_string()),
+        "{pos_atoms:?}"
+    );
+    assert!(
+        pos_atoms.contains(&"(attribute ? Brown)".to_string()),
+        "{pos_atoms:?}"
+    );
+    // Introduction: both body literals negated, class membership
+    // concluded.
+    let intro = cls
+        .iter()
+        .find(|c| c.lits.len() == 3)
+        .expect("introduction clause");
+    assert_eq!(intro.lits.iter().filter(|l| !l.pos).count(), 2);
+    let concl = intro
+        .lits
+        .iter()
+        .find(|l| l.pos)
+        .expect("positive conclusion");
+    assert!(
+        atom_kif(&layer, concl.atom).starts_with("(instance ? (kappa_q qb0"),
+        "{}",
+        atom_kif(&layer, concl.atom)
+    );
+}
 
-    #[test]
-    fn kappa_alpha_variants_intern_identically() {
-        let (_l1, c1) = clauses_of("(instance Rex (KappaFn ?X (p ?X)))");
-        let (_l2, c2) = clauses_of("(instance Rex (KappaFn ?Wholly (p ?Wholly)))");
-        let f1 = c1.iter().find(|c| c.is_unit()).unwrap();
-        let f2 = c2.iter().find(|c| c.is_unit()).unwrap();
-        assert_eq!(f1.lits[0].atom, f2.lits[0].atom, "alpha-variant kappa terms dedup");
-    }
+#[test]
+fn kappa_alpha_variants_intern_identically() {
+    let (_l1, c1) = clauses_of("(instance Rex (KappaFn ?X (p ?X)))");
+    let (_l2, c2) = clauses_of("(instance Rex (KappaFn ?Wholly (p ?Wholly)))");
+    let f1 = c1.iter().find(|c| c.is_unit()).unwrap();
+    let f2 = c2.iter().find(|c| c.is_unit()).unwrap();
+    assert_eq!(
+        f1.lits[0].atom, f2.lits[0].atom,
+        "alpha-variant kappa terms dedup"
+    );
+}
 
-    #[test]
-    fn unquote_roundtrip_rebinds_quantifiers_to_real_variables() {
-        // Quote-then-unquote = the original body up to binder renaming: a
-        // quantifier INSIDE the kappa body comes back as a real bound
-        // variable (here: implicit-universal after the implication
-        // lowers), not a qb constant.
-        let (layer, cls) = clauses_of(
-            "(instance Rex (KappaFn ?X (forall (?Z) (loves ?X ?Z))))");
-        let fact = cls.iter().find(|c| c.is_unit()).unwrap();
-        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
-            "(instance Rex (kappa_q qb0 (forall_q (qb1) (loves qb0 qb1))))");
-        // Elimination direction: ¬instance(?I, k) ∨ loves(?I, ?Z') — TWO
-        // real variables, no qb constants at assertion level.
-        let elim = cls.iter()
-            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
-                |l| l.pos && atom_kif(&layer, l.atom) == "(loves ? ?)"))
-            .expect("elimination clause with unquoted quantifier body");
-        assert_eq!(elim.nvars, 2, "binder AND rebound quantifier are real variables");
-        // Introduction direction: the universal body under negation
-        // skolemizes — ¬loves(?I, sk(?I)) ∨ instance(?I, k).
-        let intro = cls.iter()
-            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
-                |l| l.pos && atom_kif(&layer, l.atom).starts_with("(instance ? (kappa_q")))
-            .expect("introduction clause");
-        let neg = intro.lits.iter().find(|l| !l.pos).unwrap();
-        assert!(atom_kif(&layer, neg.atom).contains("(sk_"),
-            "universal body skolemizes in the introduction direction: {}",
-            atom_kif(&layer, neg.atom));
-    }
+#[test]
+fn unquote_roundtrip_rebinds_quantifiers_to_real_variables() {
+    // Quote-then-unquote = the original body up to binder renaming: a
+    // quantifier INSIDE the kappa body comes back as a real bound
+    // variable (here: implicit-universal after the implication
+    // lowers), not a qb constant.
+    let (layer, cls) = clauses_of("(instance Rex (KappaFn ?X (forall (?Z) (loves ?X ?Z))))");
+    let fact = cls.iter().find(|c| c.is_unit()).unwrap();
+    assert_eq!(
+        atom_kif(&layer, fact.lits[0].atom),
+        "(instance Rex (kappa_q qb0 (forall_q (qb1) (loves qb0 qb1))))"
+    );
+    // Elimination direction: ¬instance(?I, k) ∨ loves(?I, ?Z') — TWO
+    // real variables, no qb constants at assertion level.
+    let elim = cls
+        .iter()
+        .find(|c| {
+            c.lits.len() == 2
+                && c.lits
+                    .iter()
+                    .any(|l| l.pos && atom_kif(&layer, l.atom) == "(loves ? ?)")
+        })
+        .expect("elimination clause with unquoted quantifier body");
+    assert_eq!(
+        elim.nvars, 2,
+        "binder AND rebound quantifier are real variables"
+    );
+    // Introduction direction: the universal body under negation
+    // skolemizes — ¬loves(?I, sk(?I)) ∨ instance(?I, k).
+    let intro = cls
+        .iter()
+        .find(|c| {
+            c.lits.len() == 2
+                && c.lits
+                    .iter()
+                    .any(|l| l.pos && atom_kif(&layer, l.atom).starts_with("(instance ? (kappa_q"))
+        })
+        .expect("introduction clause");
+    let neg = intro.lits.iter().find(|l| !l.pos).unwrap();
+    assert!(
+        atom_kif(&layer, neg.atom).contains("(sk_"),
+        "universal body skolemizes in the introduction direction: {}",
+        atom_kif(&layer, neg.atom)
+    );
+}
 
-    #[test]
-    fn unquote_is_one_level_only_nested_quotes_stay_quoted() {
-        // A quote nested inside an ATOM of the kappa body survives the
-        // unquote as a quoted term — `and_q` intact at assertion level.
-        let (layer, cls) = clauses_of(
-            "(instance Rex (KappaFn ?X (believes ?X (and (p A) (q B)))))");
-        let elim_pos: Vec<String> = cls.iter()
-            .filter(|c| c.lits.len() == 2)
-            .filter_map(|c| c.lits.iter().find(|l| l.pos))
-            .map(|l| atom_kif(&layer, l.atom))
-            .collect();
-        assert!(elim_pos.contains(&"(believes ? (and_q (p A) (q B)))".to_string()),
-            "one-level unquote keeps the nested quote: {elim_pos:?}");
-    }
+#[test]
+fn unquote_is_one_level_only_nested_quotes_stay_quoted() {
+    // A quote nested inside an ATOM of the kappa body survives the
+    // unquote as a quoted term — `and_q` intact at assertion level.
+    let (layer, cls) = clauses_of("(instance Rex (KappaFn ?X (believes ?X (and (p A) (q B)))))");
+    let elim_pos: Vec<String> = cls
+        .iter()
+        .filter(|c| c.lits.len() == 2)
+        .filter_map(|c| c.lits.iter().find(|l| l.pos))
+        .map(|l| atom_kif(&layer, l.atom))
+        .collect();
+    assert!(
+        elim_pos.contains(&"(believes ? (and_q (p A) (q B)))".to_string()),
+        "one-level unquote keeps the nested quote: {elim_pos:?}"
+    );
+}
 
-    #[test]
-    fn unquote_renumbers_nested_quote_scopes_from_qb0() {
-        // In the kterm the nested quote's binder shares the kappa scope's
-        // counter (qb1); once the kappa level is unquoted, the nested
-        // quote is a maximal scope again and must number from qb0 — the
-        // exact term a direct assertion of the body would lift to.
-        let (layer, cls) = clauses_of(
-            "(instance Rex (KappaFn ?X (believes ?X (forall (?Z) (p ?Z)))))");
-        let fact = cls.iter().find(|c| c.is_unit()).unwrap();
-        assert_eq!(atom_kif(&layer, fact.lits[0].atom),
-            "(instance Rex (kappa_q qb0 (believes qb0 (forall_q (qb1) (p qb1)))))");
-        let elim_pos: Vec<String> = cls.iter()
-            .filter(|c| c.lits.len() == 2)
-            .filter_map(|c| c.lits.iter().find(|l| l.pos))
-            .map(|l| atom_kif(&layer, l.atom))
-            .collect();
-        assert!(elim_pos.contains(&"(believes ? (forall_q (qb0) (p qb0)))".to_string()),
-            "nested scope renumbered to qb0: {elim_pos:?}");
-    }
+#[test]
+fn unquote_renumbers_nested_quote_scopes_from_qb0() {
+    // In the kterm the nested quote's binder shares the kappa scope's
+    // counter (qb1); once the kappa level is unquoted, the nested
+    // quote is a maximal scope again and must number from qb0 — the
+    // exact term a direct assertion of the body would lift to.
+    let (layer, cls) = clauses_of("(instance Rex (KappaFn ?X (believes ?X (forall (?Z) (p ?Z)))))");
+    let fact = cls.iter().find(|c| c.is_unit()).unwrap();
+    assert_eq!(
+        atom_kif(&layer, fact.lits[0].atom),
+        "(instance Rex (kappa_q qb0 (believes qb0 (forall_q (qb1) (p qb1)))))"
+    );
+    let elim_pos: Vec<String> = cls
+        .iter()
+        .filter(|c| c.lits.len() == 2)
+        .filter_map(|c| c.lits.iter().find(|l| l.pos))
+        .map(|l| atom_kif(&layer, l.atom))
+        .collect();
+    assert!(
+        elim_pos.contains(&"(believes ? (forall_q (qb0) (p qb0)))".to_string()),
+        "nested scope renumbered to qb0: {elim_pos:?}"
+    );
+}
 
-    #[test]
-    fn kappa_free_variables_thread_through_comprehension() {
-        // An outer-context free variable inside the kappa body stays ONE
-        // shared real variable across the class term and the unquoted
-        // body — 2 clause variables total (?I and ?Y), not 3.
-        let (layer, cls) = clauses_of(
-            "(instance Rex (KappaFn ?X (and (p ?X ?Y) (q ?Y))))");
-        let elim = cls.iter()
-            .find(|c| c.lits.len() == 2 && c.lits.iter().any(
-                |l| l.pos && atom_kif(&layer, l.atom) == "(p ? ?)"))
-            .expect("elimination clause for the p-conjunct");
-        assert_eq!(elim.nvars, 2,
-            "free ?Y threads back as the SAME variable it is in the kterm");
-        let neg = elim.lits.iter().find(|l| !l.pos).unwrap();
-        assert_eq!(atom_kif(&layer, neg.atom),
-            "(instance ? (kappa_q qb0 (and_q (p qb0 ?) (q ?))))");
-    }
+#[test]
+fn kappa_free_variables_thread_through_comprehension() {
+    // An outer-context free variable inside the kappa body stays ONE
+    // shared real variable across the class term and the unquoted
+    // body — 2 clause variables total (?I and ?Y), not 3.
+    let (layer, cls) = clauses_of("(instance Rex (KappaFn ?X (and (p ?X ?Y) (q ?Y))))");
+    let elim = cls
+        .iter()
+        .find(|c| {
+            c.lits.len() == 2
+                && c.lits
+                    .iter()
+                    .any(|l| l.pos && atom_kif(&layer, l.atom) == "(p ? ?)")
+        })
+        .expect("elimination clause for the p-conjunct");
+    assert_eq!(
+        elim.nvars, 2,
+        "free ?Y threads back as the SAME variable it is in the kterm"
+    );
+    let neg = elim.lits.iter().find(|l| !l.pos).unwrap();
+    assert_eq!(
+        atom_kif(&layer, neg.atom),
+        "(instance ? (kappa_q qb0 (and_q (p qb0 ?) (q ?))))"
+    );
+}
 
-    #[test]
-    fn malformed_kappa_bails_to_the_lossy_path() {
-        // Non-variable binder → the whole root drops as LOSSY (documented
-        // bail — never a wrong encoding).
-        let (layer, roots) = layer_with("(instance Rex (KappaFn (FooFn ?X) (p ?X)))");
-        assert!(layer.clauses_for(roots[0]).is_empty(), "malformed kappa loads nothing");
-        assert!(layer.root_load_failed(roots[0]), "counted as input loss");
-        // Arity ≠ 3 → same bail.
-        let (layer, roots) = layer_with("(instance Rex (KappaFn ?X))");
-        assert!(layer.clauses_for(roots[0]).is_empty());
-        assert!(layer.root_load_failed(roots[0]));
-    }
+#[test]
+fn malformed_kappa_bails_to_the_lossy_path() {
+    // Non-variable binder → the whole root drops as LOSSY (documented
+    // bail — never a wrong encoding).
+    let (layer, roots) = layer_with("(instance Rex (KappaFn (FooFn ?X) (p ?X)))");
+    assert!(
+        layer.clauses_for(roots[0]).is_empty(),
+        "malformed kappa loads nothing"
+    );
+    assert!(layer.root_load_failed(roots[0]), "counted as input loss");
+    // Arity ≠ 3 → same bail.
+    let (layer, roots) = layer_with("(instance Rex (KappaFn ?X))");
+    assert!(layer.clauses_for(roots[0]).is_empty());
+    assert!(layer.root_load_failed(roots[0]));
+}
 
-    #[test]
-    fn kappa_comprehension_proves_both_directions() {
-        let kb = kb_from(
-            "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))\n\
+#[test]
+fn kappa_comprehension_proves_both_directions() {
+    let kb = kb_from(
+        "(instance Rex (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))\n\
              (instance Fido Dog)\n\
              (attribute Fido Brown)\n\
-             (instance Buddy Dog)");
-        // Elimination: membership in the class term yields each property.
-        let e1 = kb.ask_query("(instance Rex Dog)", None, SineParams::default(), fast());
-        assert_eq!(e1.status, ProverStatus::Proved, "raw: {}", e1.raw_output);
-        let e2 = kb.ask_query("(attribute Rex Brown)", None, SineParams::default(), fast());
-        assert_eq!(e2.status, ProverStatus::Proved, "raw: {}", e2.raw_output);
-        // Introduction: both properties yield membership — asked with the
-        // SAME KappaFn expression (quote dedup makes the terms identical).
-        let i1 = kb.ask_query(
-            "(instance Fido (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
-            None, SineParams::default(), fast());
-        assert_eq!(i1.status, ProverStatus::Proved, "raw: {}", i1.raw_output);
-        // Controls: Buddy lacks Brown; Rex gains nothing beyond the body.
-        let c1 = kb.ask_query(
-            "(instance Buddy (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
-            None, SineParams::default(), fast());
-        assert_ne!(c1.status, ProverStatus::Proved, "raw: {}", c1.raw_output);
-        let c2 = kb.ask_query("(instance Rex Cat)", None, SineParams::default(), fast());
-        assert_ne!(c2.status, ProverStatus::Proved, "raw: {}", c2.raw_output);
-    }
+             (instance Buddy Dog)",
+    );
+    // Elimination: membership in the class term yields each property.
+    let e1 = kb.ask_query("(instance Rex Dog)", None, SineParams::default(), fast());
+    assert_eq!(e1.status, ProverStatus::Proved, "raw: {}", e1.raw_output);
+    let e2 = kb.ask_query("(attribute Rex Brown)", None, SineParams::default(), fast());
+    assert_eq!(e2.status, ProverStatus::Proved, "raw: {}", e2.raw_output);
+    // Introduction: both properties yield membership — asked with the
+    // SAME KappaFn expression (quote dedup makes the terms identical).
+    let i1 = kb.ask_query(
+        "(instance Fido (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_eq!(i1.status, ProverStatus::Proved, "raw: {}", i1.raw_output);
+    // Controls: Buddy lacks Brown; Rex gains nothing beyond the body.
+    let c1 = kb.ask_query(
+        "(instance Buddy (KappaFn ?X (and (instance ?X Dog) (attribute ?X Brown))))",
+        None,
+        SineParams::default(),
+        fast(),
+    );
+    assert_ne!(c1.status, ProverStatus::Proved, "raw: {}", c1.raw_output);
+    let c2 = kb.ask_query("(instance Rex Cat)", None, SineParams::default(), fast());
+    assert_ne!(c2.status, ProverStatus::Proved, "raw: {}", c2.raw_output);
+}
 
-    // `ProverLayer<S>` generic parameter: `S = TranslationLayer` gets
-    // `HasTranslation` (via the blanket impl in `saturate::mod`) off the SAME
-    // shared semantic state the native prover queries — no dual KB. This is
-    // the acceptance test for that composition: both capabilities must work
-    // off one `KnowledgeBase::new_native_translating()` instance.
-    #[test]
-    fn prover_layer_over_translation_layer_proves_and_translates() {
-        use crate::TptpOptions;
+// `ProverLayer<S>` generic parameter: `S = TranslationLayer` gets
+// `HasTranslation` (via the blanket impl in `saturate::mod`) off the SAME
+// shared semantic state the native prover queries — no dual KB. This is
+// the acceptance test for that composition: both capabilities must work
+// off one `KnowledgeBase::new_native_translating()` instance.
+#[test]
+fn prover_layer_over_translation_layer_proves_and_translates() {
+    use crate::TptpOptions;
 
-        let mut kb = KnowledgeBase::new_native_translating();
-        let r = kb.reload_kif(
-            "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))",
-            &std::path::PathBuf::from("translating_base.kif"), "translating_load");
-        assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
-        kb.make_session_axiomatic("translating_load").expect("promote");
+    let mut kb = KnowledgeBase::new_native_translating();
+    let r = kb.reload_kif(
+        "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))",
+        &std::path::PathBuf::from("translating_base.kif"),
+        "translating_load",
+    );
+    assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
+    kb.make_session_axiomatic("translating_load")
+        .expect("promote");
 
-        // HasTranslation: TPTP export sees the same axioms just loaded.
-        let tptp = kb.to_tptp(&TptpOptions::default(), None);
-        assert!(tptp.contains("rex") || tptp.contains("Rex"),
-            "expected the KB's own symbols in the TPTP dump:\n{tptp}");
+    // HasTranslation: TPTP export sees the same axioms just loaded.
+    let tptp = kb.to_tptp(&TptpOptions::default(), None);
+    assert!(
+        tptp.contains("rex") || tptp.contains("Rex"),
+        "expected the KB's own symbols in the TPTP dump:\n{tptp}"
+    );
 
-        // Still proves natively — the ProvingLayer contract is unaffected by
-        // which inner layer S is.
-        let res = kb.check_satisfiable(fast());
-        assert_eq!(res.status, ProverStatus::Consistent, "raw: {}", res.raw_output);
-    }
+    // Still proves natively — the ProvingLayer contract is unaffected by
+    // which inner layer S is.
+    let res = kb.check_satisfiable(fast());
+    assert_eq!(
+        res.status,
+        ProverStatus::Consistent,
+        "raw: {}",
+        res.raw_output
+    );
+}
 
-    // `to_tptp_selected` (the Vampire-backend axiom-selection path): seeding
-    // from ONE fact among many genuinely UNRELATED ones (disjoint
-    // vocabulary, so SInE's rare-symbol trigger can't accidentally connect
-    // them) must emit the seed's own axiom while dropping at least one of
-    // the unrelated ones — proving real exclusion happened, not just that
-    // the call succeeded. `to_tptp` (no selection) is the control: it must
-    // still emit everything. Needs a corpus bigger than `SineParams::
-    // default()`'s auto-tolerance budget (2000, see sine/params.rs) — that
-    // mode picks the LARGEST tolerance whose selection count stays within
-    // budget, so on any corpus smaller than the budget it degenerates to
-    // "select everything" regardless of relevance (fine for real SUMO-scale
-    // corpora; useless for a small test fixture). Push the axiom count past
-    // the budget so selection is forced to actually discriminate.
-    #[test]
-    fn to_tptp_selected_excludes_unrelated_axioms() {
-        use crate::TptpOptions;
+// `to_tptp_selected` (the Vampire-backend axiom-selection path): seeding
+// from ONE fact among many genuinely UNRELATED ones (disjoint
+// vocabulary, so SInE's rare-symbol trigger can't accidentally connect
+// them) must emit the seed's own axiom while dropping at least one of
+// the unrelated ones — proving real exclusion happened, not just that
+// the call succeeded. `to_tptp` (no selection) is the control: it must
+// still emit everything. Needs a corpus bigger than `SineParams::
+// default()`'s auto-tolerance budget (2000, see sine/params.rs) — that
+// mode picks the LARGEST tolerance whose selection count stays within
+// budget, so on any corpus smaller than the budget it degenerates to
+// "select everything" regardless of relevance (fine for real SUMO-scale
+// corpora; useless for a small test fixture). Push the axiom count past
+// the budget so selection is forced to actually discriminate.
+#[test]
+fn to_tptp_selected_excludes_unrelated_axioms() {
+    use crate::TptpOptions;
 
-        let clusters: String = (0..2200)
-            .map(|i| format!("(instance Thing{i} Kind{i})\n"))
-            .collect();
-        let kif = format!("(instance Rex Dog)\n{clusters}");
+    let clusters: String = (0..2200)
+        .map(|i| format!("(instance Thing{i} Kind{i})\n"))
+        .collect();
+    let kif = format!("(instance Rex Dog)\n{clusters}");
 
-        let mut kb = KnowledgeBase::new_native_translating();
-        let r = kb.reload_kif(&kif, &std::path::PathBuf::from("selected_base.kif"), "selected_load");
-        assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
-        kb.make_session_axiomatic("selected_load").expect("promote");
+    let mut kb = KnowledgeBase::new_native_translating();
+    let r = kb.reload_kif(
+        &kif,
+        &std::path::PathBuf::from("selected_base.kif"),
+        "selected_load",
+    );
+    assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
+    kb.make_session_axiomatic("selected_load").expect("promote");
 
-        let seed_sid = *kb.syntactic().file_root_sids("selected_base.kif").iter()
-            .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
-            .expect("the Rex fact is a root sentence");
+    let seed_sid = *kb
+        .syntactic()
+        .file_root_sids("selected_base.kif")
+        .iter()
+        .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
+        .expect("the Rex fact is a root sentence");
 
-        let opts = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
-        let selected = kb.to_tptp_selected(&opts, &[seed_sid], None, None, None);
-        assert!(selected.to_lowercase().contains("rex"),
-            "selection must keep the seed's own axiom:\n{selected}");
-        assert!((0..2200).any(|i| !selected.contains(&format!("Thing{i}"))),
-            "selection from Rex/Dog among 2200 unrelated clusters must drop at least one:\n{selected}");
+    let opts = TptpOptions {
+        hide_numbers: true,
+        ..TptpOptions::default()
+    };
+    let selected = kb.to_tptp_selected(&opts, &[seed_sid], None, None, None);
+    assert!(
+        selected.to_lowercase().contains("rex"),
+        "selection must keep the seed's own axiom:\n{selected}"
+    );
+    assert!(
+        (0..2200).any(|i| !selected.contains(&format!("Thing{i}"))),
+        "selection from Rex/Dog among 2200 unrelated clusters must drop at least one:\n{selected}"
+    );
 
-        let unfiltered = kb.to_tptp(&opts, None);
-        assert!((0..2200).all(|i| unfiltered.contains(&format!("Thing{i}"))),
-            "the unfiltered control must still emit every cluster:\n{unfiltered}");
-    }
+    let unfiltered = kb.to_tptp(&opts, None);
+    assert!(
+        (0..2200).all(|i| unfiltered.contains(&format!("Thing{i}"))),
+        "the unfiltered control must still emit every cluster:\n{unfiltered}"
+    );
+}
 
-    // `to_tptp_selected`'s `budget_pct` resolves through a pure percentage ->
-    // absolute-count conversion (`sine_budget_from_pct` in kb/export.rs) before
-    // reaching SInE's own auto-tolerance search. Test that conversion directly
-    // rather than end-to-end: a purely disjoint-vocabulary synthetic corpus (as
-    // used above) can NEVER cross-trigger regardless of budget — nothing
-    // shares a rare symbol with anything else — so asserting on emergent
-    // selected-axiom counts there is vacuous by construction, not a real
-    // signal. `to_tptp_selected_excludes_unrelated_axioms` above already
-    // proves selection meaningfully excludes at the engine-default budget;
-    // this proves the percentage knob is correctly threaded and clamped.
-    #[test]
-    fn to_tptp_selected_budget_pct_scales_with_axiom_count() {
-        use crate::TptpOptions;
+// `to_tptp_selected`'s `budget_pct` resolves through a pure percentage ->
+// absolute-count conversion (`sine_budget_from_pct` in kb/export.rs) before
+// reaching SInE's own auto-tolerance search. Test that conversion directly
+// rather than end-to-end: a purely disjoint-vocabulary synthetic corpus (as
+// used above) can NEVER cross-trigger regardless of budget — nothing
+// shares a rare symbol with anything else — so asserting on emergent
+// selected-axiom counts there is vacuous by construction, not a real
+// signal. `to_tptp_selected_excludes_unrelated_axioms` above already
+// proves selection meaningfully excludes at the engine-default budget;
+// this proves the percentage knob is correctly threaded and clamped.
+#[test]
+fn to_tptp_selected_budget_pct_scales_with_axiom_count() {
+    use crate::TptpOptions;
 
-        let mut kb = KnowledgeBase::new_native_translating();
-        let r = kb.reload_kif("(instance Rex Dog)\n(instance Fido Dog)\n(instance Tom Cat)",
-            &std::path::PathBuf::from("budget_base.kif"), "budget_load");
-        assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
-        kb.make_session_axiomatic("budget_load").expect("promote");
-        assert_eq!(kb.sine_axiom_count(), 3);
+    let mut kb = KnowledgeBase::new_native_translating();
+    let r = kb.reload_kif(
+        "(instance Rex Dog)\n(instance Fido Dog)\n(instance Tom Cat)",
+        &std::path::PathBuf::from("budget_base.kif"),
+        "budget_load",
+    );
+    assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
+    kb.make_session_axiomatic("budget_load").expect("promote");
+    assert_eq!(kb.sine_axiom_count(), 3);
 
-        let seed_sid = *kb.syntactic().file_root_sids("budget_base.kif").iter()
-            .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
-            .expect("the Rex fact is a root sentence");
+    let seed_sid = *kb
+        .syntactic()
+        .file_root_sids("budget_base.kif")
+        .iter()
+        .find(|&&sid| kb.sentence_to_string(sid).contains("Rex"))
+        .expect("the Rex fact is a root sentence");
 
-        // No selection API surfaces the resolved budget directly, so exercise
-        // it through the one place that's actually reachable: it must not
-        // panic across the clamped range, and 0%/None must not diverge in a
-        // way that breaks the "at least the seed itself" guarantee.
-        let opts = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
-        for pct in [0.0, 0.1, 1.0, 50.0, 100.0, 250.0, -10.0] {
-            let out = kb.to_tptp_selected(&opts, &[seed_sid], None, None, Some(pct));
-            assert!(out.to_lowercase().contains("rex"),
-                "budget_pct={pct} must still keep the seed's own axiom:\n{out}");
-        }
-    }
-
-    // Regression guard for the `schedule_cell` TypeId-keying fix (see its doc
-    // in `saturate::mod`): a `ProverLayer<SemanticLayer>` KB constructed
-    // right before a DIFFERENT monomorphization, `ProverLayer<TranslationLayer>`,
-    // must not have its ingest silently swallowed by a schedule built for the
-    // other type's (differently-shaped) reactor graph.
-    #[test]
-    fn distinct_prover_layer_monomorphizations_do_not_share_a_reactor_schedule() {
-        let kb1 = kb_from("(instance Rex Dog)");
-        assert_eq!(kb1.syntactic().root_sids().len(), 1);
-
-        let mut kb2 = KnowledgeBase::new_native_translating();
-        let r2 = kb2.reload_kif("(instance Fido Cat)", &std::path::PathBuf::from("t2.kif"), "s2");
-        assert!(r2.ok, "fixture ingest failed: {:?}", r2.diagnostics);
-        assert_eq!(r2.sids.len(), 1, "the second (differently-typed) KB's ingest must not be dropped");
-    }
-
-    // The wasm-facing "jump to this axiom" flow: cursor offset -> sentence
-    // (existing source/sentence caches, via `sentence_at`) -> line number in
-    // a freshly assembled TPTP dump (the new `axiom_lines` bookkeeping in
-    // `to_tptp_indexed`/`assemble_tptp_indexed`). Checks the two halves
-    // actually compose: the resolved line's TEXT is the same axiom.
-    #[test]
-    fn sentence_at_composes_with_to_tptp_indexed_line_map() {
-        use crate::TptpOptions;
-
-        let mut kb = KnowledgeBase::new_native_translating();
-        let text = "(instance Rex Dog)\n(subclass Dog Animal)\n(instance Fido Dog)";
-        let r = kb.reload_kif(text, &std::path::PathBuf::from("pos.kif"), "s");
-        assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
-        kb.make_session_axiomatic("s").expect("promote");
-
-        // Cursor inside "(subclass Dog Animal)" (line 2, 0-based offset of
-        // the '(' plus a few chars into "subclass").
-        let offset = text.find("subclass").unwrap();
-        let sid = kb.sentence_at("pos.kif", offset).expect("sentence at offset");
-
-        let mut lines = std::collections::HashMap::new();
-        let tptp = kb.to_tptp_indexed(&TptpOptions::default(), None, Some(&mut lines));
-        let line_no = *lines.get(&sid).expect("sid present in the line map");
-
-        let rendered_line = tptp.lines().nth(line_no as usize).unwrap_or("");
+    // No selection API surfaces the resolved budget directly, so exercise
+    // it through the one place that's actually reachable: it must not
+    // panic across the clamped range, and 0%/None must not diverge in a
+    // way that breaks the "at least the seed itself" guarantee.
+    let opts = TptpOptions {
+        hide_numbers: true,
+        ..TptpOptions::default()
+    };
+    for pct in [0.0, 0.1, 1.0, 50.0, 100.0, 250.0, -10.0] {
+        let out = kb.to_tptp_selected(&opts, &[seed_sid], None, None, Some(pct));
         assert!(
+            out.to_lowercase().contains("rex"),
+            "budget_pct={pct} must still keep the seed's own axiom:\n{out}"
+        );
+    }
+}
+
+// Regression guard for the `schedule_cell` TypeId-keying fix (see its doc
+// in `saturate::mod`): a `ProverLayer<SemanticLayer>` KB constructed
+// right before a DIFFERENT monomorphization, `ProverLayer<TranslationLayer>`,
+// must not have its ingest silently swallowed by a schedule built for the
+// other type's (differently-shaped) reactor graph.
+#[test]
+fn distinct_prover_layer_monomorphizations_do_not_share_a_reactor_schedule() {
+    let kb1 = kb_from("(instance Rex Dog)");
+    assert_eq!(kb1.syntactic().root_sids().len(), 1);
+
+    let mut kb2 = KnowledgeBase::new_native_translating();
+    let r2 = kb2.reload_kif(
+        "(instance Fido Cat)",
+        &std::path::PathBuf::from("t2.kif"),
+        "s2",
+    );
+    assert!(r2.ok, "fixture ingest failed: {:?}", r2.diagnostics);
+    assert_eq!(
+        r2.sids.len(),
+        1,
+        "the second (differently-typed) KB's ingest must not be dropped"
+    );
+}
+
+// The wasm-facing "jump to this axiom" flow: cursor offset -> sentence
+// (existing source/sentence caches, via `sentence_at`) -> line number in
+// a freshly assembled TPTP dump (the new `axiom_lines` bookkeeping in
+// `to_tptp_indexed`/`assemble_tptp_indexed`). Checks the two halves
+// actually compose: the resolved line's TEXT is the same axiom.
+#[test]
+fn sentence_at_composes_with_to_tptp_indexed_line_map() {
+    use crate::TptpOptions;
+
+    let mut kb = KnowledgeBase::new_native_translating();
+    let text = "(instance Rex Dog)\n(subclass Dog Animal)\n(instance Fido Dog)";
+    let r = kb.reload_kif(text, &std::path::PathBuf::from("pos.kif"), "s");
+    assert!(r.ok, "fixture ingest failed: {:?}", r.diagnostics);
+    kb.make_session_axiomatic("s").expect("promote");
+
+    // Cursor inside "(subclass Dog Animal)" (line 2, 0-based offset of
+    // the '(' plus a few chars into "subclass").
+    let offset = text.find("subclass").unwrap();
+    let sid = kb
+        .sentence_at("pos.kif", offset)
+        .expect("sentence at offset");
+
+    let mut lines = std::collections::HashMap::new();
+    let tptp = kb.to_tptp_indexed(&TptpOptions::default(), None, Some(&mut lines));
+    let line_no = *lines.get(&sid).expect("sid present in the line map");
+
+    let rendered_line = tptp.lines().nth(line_no as usize).unwrap_or("");
+    assert!(
             rendered_line.contains(&format!("kb_{sid}")),
             "line {line_no} should be sid {sid}'s own axiom line, got: {rendered_line:?}\nfull tptp:\n{tptp}"
         );
-        // And it should be the SUBCLASS axiom, not one of the other two.
-        assert!(
-            rendered_line.to_lowercase().contains("dog") && rendered_line.to_lowercase().contains("animal"),
-            "expected the subclass axiom's own rendering, got: {rendered_line:?}"
-        );
-    }
+    // And it should be the SUBCLASS axiom, not one of the other two.
+    assert!(
+        rendered_line.to_lowercase().contains("dog")
+            && rendered_line.to_lowercase().contains("animal"),
+        "expected the subclass axiom's own rendering, got: {rendered_line:?}"
+    );
+}

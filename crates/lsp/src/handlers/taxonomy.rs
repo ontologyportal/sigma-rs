@@ -42,14 +42,14 @@ pub struct TaxonomyParams {
 #[serde(rename_all = "camelCase")]
 pub struct TaxonomyResponse {
     /// Echo of the root symbol name.
-    pub symbol:        String,
+    pub symbol: String,
     /// True iff the symbol is not interned in the KB.
-    pub unknown:       bool,
+    pub unknown: bool,
     /// Documentation entries for the root symbol, one per language.
     pub documentation: Vec<DocEntryDto>,
     /// Every edge discovered by upward BFS from the root.  `from`
     /// is the child, `to` is the parent.
-    pub edges:         Vec<TaxonomyEdgeDto>,
+    pub edges: Vec<TaxonomyEdgeDto>,
 }
 
 /// Serialisable documentation entry for the taxonomy DTO.  The `text`
@@ -64,7 +64,7 @@ pub struct DocEntryDto {
     /// `&%CrossRef` markers stripped.  Each cross-referenced
     /// symbol's bare name remains in the text where the marker
     /// used to be.
-    pub text:     String,
+    pub text: String,
 }
 
 /// One edge in the taxonomy graph.
@@ -72,9 +72,9 @@ pub struct DocEntryDto {
 #[serde(rename_all = "camelCase")]
 pub struct TaxonomyEdgeDto {
     /// The child symbol.
-    pub from:     String,
+    pub from: String,
     /// The parent symbol.
-    pub to:       String,
+    pub to: String,
     /// The KIF head that introduced the edge (`subclass` / `instance` /
     /// `subrelation` / `subAttribute`).
     pub relation: String,
@@ -96,32 +96,44 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
     let Ok(session) = state.session.read() else {
         log::warn!(target: "sumo_lsp::taxonomy", "kb lock poisoned");
         return TaxonomyResponse {
-            symbol: root, unknown: true, ..Default::default()
+            symbol: root,
+            unknown: true,
+            ..Default::default()
         };
     };
 
     let Some(root_view) = session.manpage(&root) else {
         return TaxonomyResponse {
-            symbol: root, unknown: true, ..Default::default()
+            symbol: root,
+            unknown: true,
+            ..Default::default()
         };
     };
 
-    let documentation: Vec<DocEntryDto> = root_view.documentation.iter()
+    let documentation: Vec<DocEntryDto> = root_view
+        .documentation
+        .iter()
         .map(|block| DocEntryDto {
             language: block.language.clone(),
-            text:     flatten_doc_block(block),
+            text: flatten_doc_block(block),
         })
         .collect();
 
     // `visited` protects against multi-inheritance diamonds (a class that is
     // simultaneously a subclass and an instance).
-    let mut edges:   Vec<TaxonomyEdgeDto> = Vec::new();
-    let mut visited: HashSet<String>     = HashSet::new();
-    let mut queue:   VecDeque<String>    = VecDeque::new();
+    let mut edges: Vec<TaxonomyEdgeDto> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
 
     visited.insert(root.clone());
 
-    push_parent_edges(&root, &root_view.parents, &mut edges, &mut visited, &mut queue);
+    push_parent_edges(
+        &root,
+        &root_view.parents,
+        &mut edges,
+        &mut visited,
+        &mut queue,
+    );
 
     while let Some(current) = queue.pop_front() {
         if visited.len() >= MAX_NODES {
@@ -131,8 +143,16 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
             break;
         }
 
-        let Some(view) = session.manpage(&current) else { continue; };
-        push_parent_edges(&current, &view.parents, &mut edges, &mut visited, &mut queue);
+        let Some(view) = session.manpage(&current) else {
+            continue;
+        };
+        push_parent_edges(
+            &current,
+            &view.parents,
+            &mut edges,
+            &mut visited,
+            &mut queue,
+        );
     }
 
     TaxonomyResponse {
@@ -151,8 +171,8 @@ fn flatten_doc_block(block: &DocBlock) -> String {
     let mut out = String::new();
     for span in &block.spans {
         match span {
-            DocSpan::Text(t)            => out.push_str(t),
-            DocSpan::Link { text, .. }  => out.push_str(text),
+            DocSpan::Text(t) => out.push_str(t),
+            DocSpan::Link { text, .. } => out.push_str(text),
         }
     }
     out
@@ -160,16 +180,16 @@ fn flatten_doc_block(block: &DocBlock) -> String {
 
 /// Append an edge per parent of `child` and enqueue newly-seen parents.
 fn push_parent_edges(
-    child:   &str,
+    child: &str,
     parents: &[sigmakee_rs_sdk::ParentEdge],
-    edges:   &mut Vec<TaxonomyEdgeDto>,
+    edges: &mut Vec<TaxonomyEdgeDto>,
     visited: &mut HashSet<String>,
-    queue:   &mut VecDeque<String>,
+    queue: &mut VecDeque<String>,
 ) {
     for p in parents {
         edges.push(TaxonomyEdgeDto {
-            from:     child.to_string(),
-            to:       p.parent.clone(),
+            from: child.to_string(),
+            to: p.parent.clone(),
             relation: p.relation.clone(),
         });
         if visited.insert(p.parent.clone()) {
@@ -190,7 +210,13 @@ mod tests {
         {
             let mut session = state.session.write().expect("kb not poisoned");
             let kb = session.kb_mut();
-            let _ = kb.load(sigmakee_rs_sdk::SourceFile::kif(std::path::PathBuf::from("test.kif"), kb_text.to_string()), "test.kif");
+            let _ = kb.load(
+                sigmakee_rs_sdk::SourceFile::kif(
+                    std::path::PathBuf::from("test.kif"),
+                    kb_text.to_string(),
+                ),
+                "test.kif",
+            );
             // Man-page introspection reads the `Base` scope; a freshly-loaded
             // file sits in its own session until promoted.
             let _ = kb.make_session_axiomatic("test.kif");
@@ -201,9 +227,12 @@ mod tests {
     #[test]
     fn unknown_symbol_flags_response() {
         let state = load("");
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "DoesNotExist".to_string(),
-        });
+        let resp = handle_taxonomy(
+            &state,
+            TaxonomyParams {
+                symbol: "DoesNotExist".to_string(),
+            },
+        );
         assert!(resp.unknown);
         assert!(resp.edges.is_empty());
         assert!(resp.documentation.is_empty());
@@ -219,18 +248,23 @@ mod tests {
             (subclass Mammal Animal)
         "#;
         let state = load(kb);
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "Human".into(),
-        });
+        let resp = handle_taxonomy(
+            &state,
+            TaxonomyParams {
+                symbol: "Human".into(),
+            },
+        );
         assert!(!resp.unknown);
 
-        let pairs: Vec<(String, String, String)> = resp.edges.iter()
+        let pairs: Vec<(String, String, String)> = resp
+            .edges
+            .iter()
             .map(|e| (e.from.clone(), e.to.clone(), e.relation.clone()))
             .collect();
-        assert!(pairs.contains(&("Human".into(),   "Hominid".into(),  "subclass".into())));
-        assert!(pairs.contains(&("Hominid".into(), "Primate".into(),  "subclass".into())));
-        assert!(pairs.contains(&("Primate".into(), "Mammal".into(),   "subclass".into())));
-        assert!(pairs.contains(&("Mammal".into(),  "Animal".into(),   "subclass".into())));
+        assert!(pairs.contains(&("Human".into(), "Hominid".into(), "subclass".into())));
+        assert!(pairs.contains(&("Hominid".into(), "Primate".into(), "subclass".into())));
+        assert!(pairs.contains(&("Primate".into(), "Mammal".into(), "subclass".into())));
+        assert!(pairs.contains(&("Mammal".into(), "Animal".into(), "subclass".into())));
     }
 
     #[test]
@@ -243,20 +277,24 @@ mod tests {
             (subclass Species Class)
         "#;
         let state = load(kb);
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "Dog".into(),
-        });
+        let resp = handle_taxonomy(
+            &state,
+            TaxonomyParams {
+                symbol: "Dog".into(),
+            },
+        );
         assert!(!resp.unknown);
 
         // Two outgoing edges from Dog.
-        let from_dog: Vec<&TaxonomyEdgeDto> = resp.edges.iter()
-            .filter(|e| e.from == "Dog").collect();
+        let from_dog: Vec<&TaxonomyEdgeDto> =
+            resp.edges.iter().filter(|e| e.from == "Dog").collect();
         assert_eq!(from_dog.len(), 2);
 
         // Each parent is visited at most once.
         let parent_visits: std::collections::HashMap<String, usize> =
             resp.edges.iter().fold(Default::default(), |mut acc, e| {
-                *acc.entry(e.from.clone()).or_insert(0) += 1; acc
+                *acc.entry(e.from.clone()).or_insert(0) += 1;
+                acc
             });
         assert_eq!(parent_visits.get("Mammal").copied().unwrap_or(0), 1);
         assert_eq!(parent_visits.get("Species").copied().unwrap_or(0), 1);
@@ -271,14 +309,26 @@ mod tests {
             (documentation Hominid EnglishLanguage "A family of primates.")
         "#;
         let state = load(kb);
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "Human".into(),
-        });
+        let resp = handle_taxonomy(
+            &state,
+            TaxonomyParams {
+                symbol: "Human".into(),
+            },
+        );
         assert_eq!(resp.documentation.len(), 2);
-        assert!(resp.documentation.iter().any(|d| d.language == "EnglishLanguage"));
-        assert!(resp.documentation.iter().any(|d| d.language == "FrenchLanguage"));
+        assert!(resp
+            .documentation
+            .iter()
+            .any(|d| d.language == "EnglishLanguage"));
+        assert!(resp
+            .documentation
+            .iter()
+            .any(|d| d.language == "FrenchLanguage"));
         // No Hominid doc leaked into the root's entry.
-        assert!(resp.documentation.iter().all(|d| !d.text.contains("family")));
+        assert!(resp
+            .documentation
+            .iter()
+            .all(|d| !d.text.contains("family")));
     }
 
     #[test]
@@ -290,9 +340,7 @@ mod tests {
             (subclass B A)
         "#;
         let state = load(kb);
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "A".into(),
-        });
+        let resp = handle_taxonomy(&state, TaxonomyParams { symbol: "A".into() });
         assert!(!resp.unknown);
         // Both edges present, no infinite recursion.
         assert_eq!(resp.edges.len(), 2);
@@ -310,20 +358,32 @@ mod tests {
                 "A member of the species &%HomoSapiens, distinguished from &%Plant.")
         "#;
         let state = load(kb);
-        let resp  = handle_taxonomy(&state, TaxonomyParams {
-            symbol: "Human".into(),
-        });
+        let resp = handle_taxonomy(
+            &state,
+            TaxonomyParams {
+                symbol: "Human".into(),
+            },
+        );
         assert!(!resp.unknown);
         assert_eq!(resp.documentation.len(), 1);
         let doc = &resp.documentation[0];
         // The cross-referenced symbol names survive verbatim;
         // the marker prefix does not.
-        assert!(doc.text.contains("HomoSapiens"),
-            "cross-ref label missing from rendered doc: {}", doc.text);
-        assert!(doc.text.contains("Plant"),
-            "cross-ref label missing from rendered doc: {}", doc.text);
-        assert!(!doc.text.contains("&%"),
-            "raw cross-ref marker leaked into wire DTO: {}", doc.text);
+        assert!(
+            doc.text.contains("HomoSapiens"),
+            "cross-ref label missing from rendered doc: {}",
+            doc.text
+        );
+        assert!(
+            doc.text.contains("Plant"),
+            "cross-ref label missing from rendered doc: {}",
+            doc.text
+        );
+        assert!(
+            !doc.text.contains("&%"),
+            "raw cross-ref marker leaked into wire DTO: {}",
+            doc.text
+        );
         // Surrounding prose is preserved.
         assert!(doc.text.contains("species"));
         assert!(doc.text.contains("distinguished"));

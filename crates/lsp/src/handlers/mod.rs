@@ -24,9 +24,8 @@ pub use format::{handle_formatting, handle_range_formatting};
 pub use goto::handle_goto_definition;
 pub use hover::handle_hover;
 pub use kb::{
-    handle_set_active_files, handle_set_ignored_diagnostics,
-    SetActiveFilesParams, SetActiveFilesReport, SetIgnoredDiagnosticsParams,
-    METHOD as SET_ACTIVE_FILES_METHOD,
+    handle_set_active_files, handle_set_ignored_diagnostics, SetActiveFilesParams,
+    SetActiveFilesReport, SetIgnoredDiagnosticsParams, METHOD as SET_ACTIVE_FILES_METHOD,
     SET_IGNORED_DIAGNOSTICS_METHOD,
 };
 pub use references::handle_references;

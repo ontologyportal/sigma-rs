@@ -62,11 +62,16 @@ pub fn parse_szs(raw: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn Par
     // against real Vampire/E fixtures elsewhere in this crate), so unlike
     // ordinary KB-file loading there is no reason to drop a bare
     // `conjecture`-role step.
-    let opts = TptpParseOptions { keep_conjectures: true, ..TptpParseOptions::default() };
+    let opts = TptpParseOptions {
+        keep_conjectures: true,
+        ..TptpParseOptions::default()
+    };
     let (tokens, tok_errors, extra_metas) = tptp::tokenize_with_meta(body, file);
     let (mut stmts, parse_errors) = tptp::parse(tokens, file, Some(opts.clone()));
 
-    let literal_decode_parser = crate::parse::Parser::Tptp { options: Some(opts) };
+    let literal_decode_parser = crate::parse::Parser::Tptp {
+        options: Some(opts),
+    };
     for stmt in &mut stmts {
         crate::parse::macros::decode_tptp_literals(stmt, &literal_decode_parser);
     }
@@ -98,7 +103,10 @@ fn proof_block(raw: &str) -> Option<&str> {
     if end <= start {
         return None;
     }
-    let body_start = raw[start..].find('\n').map(|nl| start + nl + 1).unwrap_or(start);
+    let body_start = raw[start..]
+        .find('\n')
+        .map(|nl| start + nl + 1)
+        .unwrap_or(start);
     Some(&raw[body_start..end])
 }
 
@@ -143,8 +151,11 @@ fn recognize_szs_pragma(text: &str, span: Span) -> Option<MetaNode> {
 
 fn meta(key: &str, word: &str, span: Span) -> MetaNode {
     MetaNode {
-        key:  key.to_string(),
-        args: vec![AstNode::Symbol { name: word.to_string(), span: span.clone() }],
+        key: key.to_string(),
+        args: vec![AstNode::Symbol {
+            name: word.to_string(),
+            span: span.clone(),
+        }],
         span,
     }
 }
@@ -157,7 +168,10 @@ mod tests {
     use crate::parse::ast::{Role, Source};
 
     fn metas<'a>(doc: &'a [DocItem], key: &str) -> Vec<&'a MetaNode> {
-        doc.iter().filter_map(DocItem::as_meta).filter(|m| m.key == key).collect()
+        doc.iter()
+            .filter_map(DocItem::as_meta)
+            .filter(|m| m.key == key)
+            .collect()
     }
 
     fn stmts(doc: &[DocItem]) -> Vec<&AstNode> {
@@ -208,7 +222,12 @@ fof(f3,plain,($false),inference(resolution,[status(thm)],[f1,f2])).
         let steps = stmts(&doc);
         assert_eq!(steps.len(), 3);
         match steps[0] {
-            AstNode::Annotated { role: Role::Axiom, name: Some(n), source: Some(Source::Input { file, name }), .. } => {
+            AstNode::Annotated {
+                role: Role::Axiom,
+                name: Some(n),
+                source: Some(Source::Input { file, name }),
+                ..
+            } => {
                 assert_eq!(n, "f1");
                 assert_eq!(file, "/dev/stdin");
                 assert_eq!(name.as_deref(), Some("kb_42"));
@@ -216,7 +235,11 @@ fof(f3,plain,($false),inference(resolution,[status(thm)],[f1,f2])).
             other => panic!("unexpected step 0: {:?}", other),
         }
         match steps[2] {
-            AstNode::Annotated { role: Role::Plain, source: Some(Source::Inference { rule, parents }), .. } => {
+            AstNode::Annotated {
+                role: Role::Plain,
+                source: Some(Source::Inference { rule, parents }),
+                ..
+            } => {
                 assert_eq!(rule, "resolution");
                 assert_eq!(parents, &vec!["f1".to_string(), "f2".to_string()]);
             }
@@ -257,7 +280,10 @@ fof(f3,plain,($false),inference(resolution,[status(thm)],[f1,f2])).
         let (doc, errors) = parse_szs(raw, "vampire");
 
         // The scaffolding is unaffected by the proof-step format.
-        assert_eq!(symbol_arg(metas(&doc, "szs_status")[0]), "ContradictoryAxioms");
+        assert_eq!(
+            symbol_arg(metas(&doc, "szs_status")[0]),
+            "ContradictoryAxioms"
+        );
         assert_eq!(symbol_arg(metas(&doc, "szs_output_start")[0]), "Proof");
         assert_eq!(symbol_arg(metas(&doc, "szs_output_end")[0]), "Proof");
 
@@ -305,33 +331,48 @@ fof(f38741,plain,(
         let (doc, errors) = parse_szs(raw, "vampire");
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
-        assert_eq!(symbol_arg(metas(&doc, "szs_status")[0]), "ContradictoryAxioms");
+        assert_eq!(
+            symbol_arg(metas(&doc, "szs_status")[0]),
+            "ContradictoryAxioms"
+        );
 
         let steps = stmts(&doc);
         assert_eq!(steps.len(), 6);
 
         match steps[0] {
-            AstNode::Annotated { role: Role::Axiom, source: Some(Source::Input { name, .. }), .. } =>
-                assert_eq!(name.as_deref(), Some("kb_7369543776367022530")),
+            AstNode::Annotated {
+                role: Role::Axiom,
+                source: Some(Source::Input { name, .. }),
+                ..
+            } => assert_eq!(name.as_deref(), Some("kb_7369543776367022530")),
             other => panic!("unexpected step 0: {:?}", other),
         }
         match steps[3] {
             // The `choice_axiom` step has no parents — `introduced`, not `inference`.
-            AstNode::Annotated { source: Some(Source::Introduced(mechanism)), .. } =>
-                assert_eq!(mechanism, "definition"),
+            AstNode::Annotated {
+                source: Some(Source::Introduced(mechanism)),
+                ..
+            } => assert_eq!(mechanism, "definition"),
             other => panic!("unexpected step 3 (introduced): {:?}", other),
         }
         match steps[4] {
             // The tricky one: middle arg is a nested list of function calls,
             // must not leak into `parents`.
-            AstNode::Annotated { source: Some(Source::Inference { rule, parents }), .. } => {
+            AstNode::Annotated {
+                source: Some(Source::Inference { rule, parents }),
+                ..
+            } => {
                 assert_eq!(rule, "skolemisation");
                 assert_eq!(parents, &vec!["f20138".to_string(), "f23100".to_string()]);
             }
             other => panic!("unexpected step 4 (skolemisation): {:?}", other),
         }
         match steps[5] {
-            AstNode::Annotated { role: Role::Plain, source: Some(Source::Inference { rule, parents }), .. } => {
+            AstNode::Annotated {
+                role: Role::Plain,
+                source: Some(Source::Inference { rule, parents }),
+                ..
+            } => {
                 assert_eq!(rule, "resolution");
                 assert_eq!(parents, &vec!["f29408".to_string(), "f38345".to_string()]);
             }

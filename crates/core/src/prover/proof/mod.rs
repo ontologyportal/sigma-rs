@@ -17,9 +17,9 @@
 // split is internal — callers' existing `crate::prover::proof::{…}` paths are
 // unchanged.
 
-mod model;
 mod emit;
 mod graphviz;
+mod model;
 // TSTP transcript parsing pulls in `regex` — a hard dependency (compiles on
 // every target including wasm32), so this is ungated: consumed by the
 // `ask`-gated subprocess backends AND by the wasm-safe `prover::vampire_proof`.
@@ -29,8 +29,8 @@ pub use model::{IrProofStep, KifProofStep};
 // Only `tstp::proof_steps_to_ir` (ask-only: needs `IrProofStep`) consumes
 // this re-export; `emit.rs` imports `parse_kb_axiom_name` from `model`
 // directly.
+pub(crate) use emit::proof_steps_to_kif_ast;
+pub use emit::{emit_proof, formula_to_ast, formula_to_kif, proof_steps_to_kif, proof_to_ast};
+pub use graphviz::render_graphviz;
 #[cfg(feature = "ask")]
 pub(crate) use model::parse_kb_axiom_name;
-pub use emit::{emit_proof, formula_to_ast, formula_to_kif, proof_steps_to_kif, proof_to_ast};
-pub(crate) use emit::proof_steps_to_kif_ast;
-pub use graphviz::render_graphviz;

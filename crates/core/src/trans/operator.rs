@@ -1,5 +1,5 @@
-use crate::OpKind;
 use super::symbol::S;
+use crate::OpKind;
 
 impl OpKind {
     /// Alphanumeric TPTP name for a KIF operator, used when the operator
@@ -9,14 +9,14 @@ impl OpKind {
     /// other names are alphanumeric and passed through unchanged.
     pub(super) fn tptp_safe_name(&self) -> &'static str {
         match self {
-            OpKind::And     => "and",
-            OpKind::Or      => "or",
-            OpKind::Not     => "not",
+            OpKind::And => "and",
+            OpKind::Or => "or",
+            OpKind::Not => "not",
             OpKind::Implies => "imp",
-            OpKind::Iff     => "iff",
-            OpKind::Equal   => "equal",
-            OpKind::ForAll  => "forall",
-            OpKind::Exists  => "exists",
+            OpKind::Iff => "iff",
+            OpKind::Equal => "equal",
+            OpKind::ForAll => "forall",
+            OpKind::Exists => "exists",
         }
     }
 

@@ -263,9 +263,7 @@ impl TermArena {
                         flags |= F_HAS_VAR;
                     }
                     match e {
-                        Term::Var(slot) => {
-                            h.variable(canonical_var_cached(*slot as usize), false)
-                        }
+                        Term::Var(slot) => h.variable(canonical_var_cached(*slot as usize), false),
                         Term::Sym(s) => h.symbol(s.id()),
                         Term::Lit(l) => h.literal(l),
                         Term::Op(op) => h.op(op),

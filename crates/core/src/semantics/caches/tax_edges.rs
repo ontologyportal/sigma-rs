@@ -15,27 +15,28 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, TaxRelation, ToDiagnostic};
-use crate::cache::EagerMapBehavior;
 use crate::cache::events::{Event, EventKind};
-use crate::semantics::SemanticLayer;
+use crate::cache::EagerMapBehavior;
 use crate::semantics::taxonomy::TaxDirection;
 use crate::semantics::types::{Scope, Scoped};
+use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
+use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, TaxRelation, ToDiagnostic};
 
 /// The keyed store: `(scope, direction) → {(neighbour, rel)}`.  `Scope::Base`
 /// holds promoted-axiom edges; `Scope::Session(X)` holds X's un-promoted
 /// transient edges (the delta only — never base ∪ overlay).
-type EdgeStore = crate::cache::EntryCache<Scoped<TaxDirection>, Arc<HashSet<(SymbolId, TaxRelation)>>>;
+type EdgeStore =
+    crate::cache::EntryCache<Scoped<TaxDirection>, Arc<HashSet<(SymbolId, TaxRelation)>>>;
 
 /// Where one tax-edge root's edge currently lives, recorded so removal and
 /// promotion-graduation touch exactly the right scope entries without a full-map
 /// scan.
 #[derive(Debug, Clone)]
 struct EdgeRecord {
-    from:   SymbolId,
-    to:     SymbolId,
-    rel:    TaxRelation,
+    from: SymbolId,
+    to: SymbolId,
+    rel: TaxRelation,
     scopes: HashSet<Scope>,
 }
 
@@ -95,12 +96,19 @@ fn bump_overlay(side: &TaxEdgesSide, scope: Scope) {
 
 /// Drop one from the per-session overlay refcount, evicting the key at zero.
 fn unbump_overlay(side: &TaxEdgesSide, scope: Scope) {
-    if !matches!(scope, Scope::Session(_)) { return; }
+    if !matches!(scope, Scope::Session(_)) {
+        return;
+    }
     let now_zero = match side.session_overlay.get_mut(&scope) {
-        Some(mut c) => { *c = c.saturating_sub(1); *c == 0 }
-        None        => false,
+        Some(mut c) => {
+            *c = c.saturating_sub(1);
+            *c == 0
+        }
+        None => false,
     };
-    if now_zero { side.session_overlay.remove(&scope); }
+    if now_zero {
+        side.session_overlay.remove(&scope);
+    }
 }
 
 /// Flat, serializable form of one `EdgeRecord`.
@@ -108,18 +116,48 @@ type EdgeSnap = (SentenceId, SymbolId, SymbolId, TaxRelation, Vec<Scope>);
 
 /// Insert edge `(from, to, rel)` into `scope`'s `To`/`From` adjacency entries.
 fn add_edge(store: &EdgeStore, scope: Scope, from: SymbolId, to: SymbolId, rel: TaxRelation) {
-    store.modify_entry(Scoped { scope, key: TaxDirection::To(to) },    |s| { Arc::make_mut(s).insert((from, rel.clone())); });
-    store.modify_entry(Scoped { scope, key: TaxDirection::From(from) }, |s| { Arc::make_mut(s).insert((to,   rel.clone())); });
+    store.modify_entry(
+        Scoped {
+            scope,
+            key: TaxDirection::To(to),
+        },
+        |s| {
+            Arc::make_mut(s).insert((from, rel.clone()));
+        },
+    );
+    store.modify_entry(
+        Scoped {
+            scope,
+            key: TaxDirection::From(from),
+        },
+        |s| {
+            Arc::make_mut(s).insert((to, rel.clone()));
+        },
+    );
 }
 
 /// Remove edge `(from, to, rel)` from `scope`, evicting now-empty adjacency keys.
 fn remove_edge(store: &EdgeStore, scope: Scope, from: SymbolId, to: SymbolId, rel: TaxRelation) {
-    let to_key = Scoped { scope, key: TaxDirection::To(to) };
-    store.modify_entry(to_key.clone(), |s| { Arc::make_mut(s).remove(&(from, rel.clone())); });
-    if store.get(&to_key).is_some_and(|s| s.is_empty()) { store.evict_keys(&[to_key]); }
-    let from_key = Scoped { scope, key: TaxDirection::From(from) };
-    store.modify_entry(from_key.clone(), |s| { Arc::make_mut(s).remove(&(to, rel.clone())); });
-    if store.get(&from_key).is_some_and(|s| s.is_empty()) { store.evict_keys(&[from_key]); }
+    let to_key = Scoped {
+        scope,
+        key: TaxDirection::To(to),
+    };
+    store.modify_entry(to_key.clone(), |s| {
+        Arc::make_mut(s).remove(&(from, rel.clone()));
+    });
+    if store.get(&to_key).is_some_and(|s| s.is_empty()) {
+        store.evict_keys(&[to_key]);
+    }
+    let from_key = Scoped {
+        scope,
+        key: TaxDirection::From(from),
+    };
+    store.modify_entry(from_key.clone(), |s| {
+        Arc::make_mut(s).remove(&(to, rel.clone()));
+    });
+    if store.get(&from_key).is_some_and(|s| s.is_empty()) {
+        store.evict_keys(&[from_key]);
+    }
 }
 
 /// The scope(s) a root `sid`'s edge belongs to: `Base` once promoted, else every
@@ -128,7 +166,12 @@ fn edge_scopes(parent: &SemanticLayer, sid: SentenceId) -> Vec<Scope> {
     if parent.syntactic.is_axiom(sid) {
         vec![Scope::Base]
     } else {
-        parent.syntactic.sessions_of(sid).into_iter().map(Scope::Session).collect()
+        parent
+            .syntactic
+            .sessions_of(sid)
+            .into_iter()
+            .map(Scope::Session)
+            .collect()
     }
 }
 
@@ -138,17 +181,21 @@ pub(crate) struct TaxEdges;
 
 impl EagerMapBehavior for TaxEdges {
     type Parent = SemanticLayer;
-    type Key    = Scoped<TaxDirection>;
-    type Value  = Arc<HashSet<(SymbolId, TaxRelation)>>;
-    type Side   = TaxEdgesSide;
+    type Key = Scoped<TaxDirection>;
+    type Value = Arc<HashSet<(SymbolId, TaxRelation)>>;
+    type Side = TaxEdgesSide;
     type SideSnapshot = Vec<EdgeSnap>;
 
     const NAME: &'static str = "semantic::tax_edges";
 
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::RelationAdded, EventKind::RelationRemoved,
-          EventKind::AxiomsPromoted, EventKind::SessionRetracted,
-          EventKind::SessionReferenced]
+        &[
+            EventKind::RelationAdded,
+            EventKind::RelationRemoved,
+            EventKind::AxiomsPromoted,
+            EventKind::SessionRetracted,
+            EventKind::SessionReferenced,
+        ]
     }
 
     fn produces(&self) -> &'static [EventKind] {
@@ -160,16 +207,35 @@ impl EagerMapBehavior for TaxEdges {
     }
 
     fn snapshot_side(&self, side: &TaxEdgesSide) -> Vec<EdgeSnap> {
-        side.edges.iter().map(|e| {
-            let r = e.value();
-            (*e.key(), r.from, r.to, r.rel.clone(), r.scopes.iter().copied().collect())
-        }).collect()
+        side.edges
+            .iter()
+            .map(|e| {
+                let r = e.value();
+                (
+                    *e.key(),
+                    r.from,
+                    r.to,
+                    r.rel.clone(),
+                    r.scopes.iter().copied().collect(),
+                )
+            })
+            .collect()
     }
 
     fn restore_side(&self, side: &TaxEdgesSide, snap: Vec<EdgeSnap>) {
         for (sid, from, to, rel, scopes) in snap {
-            for scope in &scopes { bump_overlay(side, *scope); }
-            side.edges.insert(sid, EdgeRecord { from, to, rel, scopes: scopes.into_iter().collect() });
+            for scope in &scopes {
+                bump_overlay(side, *scope);
+            }
+            side.edges.insert(
+                sid,
+                EdgeRecord {
+                    from,
+                    to,
+                    rel,
+                    scopes: scopes.into_iter().collect(),
+                },
+            );
         }
     }
 
@@ -177,14 +243,16 @@ impl EagerMapBehavior for TaxEdges {
         &self,
         parent: &SemanticLayer,
         events: &[&Event],
-        store:  &EdgeStore,
-        side:   &TaxEdgesSide,
+        store: &EdgeStore,
+        side: &TaxEdgesSide,
     ) -> Vec<Event> {
         let mut out = Vec::new();
         for event in events {
             match event {
                 Event::RelationAdded { sid, head_id } => {
-                    if parent.tax_role_of(*head_id).is_none() { continue; }
+                    if parent.tax_role_of(*head_id).is_none() {
+                        continue;
+                    }
                     match parent.try_extract_edge(*sid) {
                         Some(Ok((from, to, rel))) => {
                             let scopes = edge_scopes(parent, *sid);
@@ -192,10 +260,18 @@ impl EagerMapBehavior for TaxEdges {
                                 add_edge(store, *scope, from, to, rel.clone());
                                 bump_overlay(side, *scope);
                             }
-                            side.edges.insert(*sid, EdgeRecord {
-                                from, to, rel, scopes: scopes.into_iter().collect(),
+                            side.edges.insert(
+                                *sid,
+                                EdgeRecord {
+                                    from,
+                                    to,
+                                    rel,
+                                    scopes: scopes.into_iter().collect(),
+                                },
+                            );
+                            out.push(Event::TaxonomyChanged {
+                                syms: vec![from, to],
                             });
-                            out.push(Event::TaxonomyChanged { syms: vec![from, to] });
                         }
                         Some(Err(err)) => out.push(Event::Diagnostic(err.to_diagnostic())),
                         None => {}
@@ -206,11 +282,17 @@ impl EagerMapBehavior for TaxEdges {
                     for sid in sids {
                         let Some((from, to, rel, session_scopes)) =
                             side.edges.get(sid).map(|rec| {
-                                let ss: Vec<Scope> = rec.scopes.iter().copied()
-                                    .filter(|s| matches!(s, Scope::Session(_))).collect();
+                                let ss: Vec<Scope> = rec
+                                    .scopes
+                                    .iter()
+                                    .copied()
+                                    .filter(|s| matches!(s, Scope::Session(_)))
+                                    .collect();
                                 (rec.from, rec.to, rec.rel.clone(), ss)
                             })
-                        else { continue };
+                        else {
+                            continue;
+                        };
                         add_edge(store, Scope::Base, from, to, rel.clone());
                         for scope in &session_scopes {
                             remove_edge(store, *scope, from, to, rel.clone());
@@ -219,7 +301,9 @@ impl EagerMapBehavior for TaxEdges {
                         if let Some(mut rec) = side.edges.get_mut(sid) {
                             rec.scopes = std::iter::once(Scope::Base).collect();
                         }
-                        out.push(Event::TaxonomyChanged { syms: vec![from, to] });
+                        out.push(Event::TaxonomyChanged {
+                            syms: vec![from, to],
+                        });
                     }
                 }
                 // A dedup re-assert associates existing roots with a NEW session.
@@ -230,11 +314,15 @@ impl EagerMapBehavior for TaxEdges {
                     let scope = Scope::Session(session_id(session));
                     let mut syms = Vec::new();
                     for sid in sids {
-                        let Some(mut rec) = side.edges.get_mut(sid) else { continue };
+                        let Some(mut rec) = side.edges.get_mut(sid) else {
+                            continue;
+                        };
                         // Already in Base: the session sees it there.  A redundant
                         // overlay would wrongly mark the session active and defeat
                         // the Base fall-through.
-                        if rec.scopes.contains(&Scope::Base) { continue; }
+                        if rec.scopes.contains(&Scope::Base) {
+                            continue;
+                        }
                         if rec.scopes.insert(scope) {
                             add_edge(store, scope, rec.from, rec.to, rec.rel.clone());
                             bump_overlay(side, scope);
@@ -252,7 +340,9 @@ impl EagerMapBehavior for TaxEdges {
                 // them, keeping the edge for its other owners.
                 Event::SessionRetracted { session } => {
                     let scope = Scope::Session(session_id(session));
-                    if !side.session_overlay.contains_key(&scope) { continue; }
+                    if !side.session_overlay.contains_key(&scope) {
+                        continue;
+                    }
                     let mut syms = Vec::new();
                     side.edges.retain(|_, rec| {
                         if rec.scopes.remove(&scope) {
@@ -273,7 +363,9 @@ impl EagerMapBehavior for TaxEdges {
                             remove_edge(store, *scope, rec.from, rec.to, rec.rel.clone());
                             unbump_overlay(side, *scope);
                         }
-                        out.push(Event::TaxonomyChanged { syms: vec![rec.from, rec.to] });
+                        out.push(Event::TaxonomyChanged {
+                            syms: vec![rec.from, rec.to],
+                        });
                     }
                 }
                 _ => {}
@@ -288,7 +380,9 @@ impl EagerMapBehavior for TaxEdges {
     /// left untouched.  Each edge is scoped from the session cache so the
     /// base/overlay split is rebuilt faithfully.
     fn initialize(&self, parent: &SemanticLayer, store: &EdgeStore, side: &TaxEdgesSide) {
-        if !store.is_empty() { return; }
+        if !store.is_empty() {
+            return;
+        }
         // ROOTS ONLY — must match the reactive path, which fires `RelationAdded`
         // only for root symbol-headed sentences.  Sub-sentences would pull edges
         // out of rule hypotheses.
@@ -300,9 +394,15 @@ impl EagerMapBehavior for TaxEdges {
                     add_edge(store, *scope, from, to, rel.clone());
                     bump_overlay(side, *scope);
                 }
-                side.edges.insert(sid, EdgeRecord {
-                    from, to, rel, scopes: scopes.into_iter().collect(),
-                });
+                side.edges.insert(
+                    sid,
+                    EdgeRecord {
+                        from,
+                        to,
+                        rel,
+                        scopes: scopes.into_iter().collect(),
+                    },
+                );
             }
         }
     }
@@ -341,7 +441,9 @@ enum EdgeArg {
 fn classify_arg(el: Option<&Element>) -> EdgeArg {
     match el {
         Some(Element::Symbol(sym)) => EdgeArg::Id(sym.id()),
-        Some(Element::Variable { id, is_row: false, .. }) => EdgeArg::Id(*id),
+        Some(Element::Variable {
+            id, is_row: false, ..
+        }) => EdgeArg::Id(*id),
         Some(Element::Literal(_)) => EdgeArg::Bad,
         _ => EdgeArg::Skip, // sub-term, row-variable, op, or missing
     }
@@ -360,33 +462,43 @@ fn try_extract_edge_from(
     sentence: &Sentence,
 ) -> Option<Result<(SymbolId, SymbolId, TaxRelation), SemanticError>> {
     let head_sym = sentence.head_symbol()?;
-    let rel      = layer.tax_role_of(head_sym)?; // not a taxonomy edge → skip
+    let rel = layer.tax_role_of(head_sym)?; // not a taxonomy edge → skip
     let rel_name = || rel.as_sym().name().to_string();
 
     // Taxonomy predicates are binary: exactly two arguments after the head.
     if sentence.elements.len() != 3 {
         return Some(Err(SemanticError::ArityMismatch {
             sid,
-            rel:      rel_name(),
+            rel: rel_name(),
             expected: 2,
-            got:      sentence.elements.len().saturating_sub(1),
+            got: sentence.elements.len().saturating_sub(1),
         }));
     }
 
     // arg 1 (child / specific) and arg 2 (parent / general).
     let to = match classify_arg(sentence.elements.get(1)) {
         EdgeArg::Id(id) => id,
-        EdgeArg::Skip   => return None,
-        EdgeArg::Bad    => return Some(Err(SemanticError::DomainMismatch {
-            sid, rel: rel_name(), arg: 0, domain: "Entity".to_string(),
-        })),
+        EdgeArg::Skip => return None,
+        EdgeArg::Bad => {
+            return Some(Err(SemanticError::DomainMismatch {
+                sid,
+                rel: rel_name(),
+                arg: 0,
+                domain: "Entity".to_string(),
+            }))
+        }
     };
     let from = match classify_arg(sentence.elements.get(2)) {
         EdgeArg::Id(id) => id,
-        EdgeArg::Skip   => return None,
-        EdgeArg::Bad    => return Some(Err(SemanticError::DomainMismatch {
-            sid, rel: rel_name(), arg: 1, domain: "Entity".to_string(),
-        })),
+        EdgeArg::Skip => return None,
+        EdgeArg::Bad => {
+            return Some(Err(SemanticError::DomainMismatch {
+                sid,
+                rel: rel_name(),
+                arg: 1,
+                domain: "Entity".to_string(),
+            }))
+        }
     };
     Some(Ok((from, to, rel)))
 }

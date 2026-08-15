@@ -11,19 +11,19 @@ pub(crate) mod tax_edges;
 pub(crate) mod validate;
 
 // IS-A queries
-pub(crate) mod is_instance;
-pub(crate) mod is_class;
-pub(crate) mod is_relation;
-pub(crate) mod is_predicate;
-pub(crate) mod is_function;
 pub(crate) mod has_ancestor;
+pub(crate) mod is_class;
+pub(crate) mod is_function;
+pub(crate) mod is_instance;
+pub(crate) mod is_predicate;
+pub(crate) mod is_relation;
 
 // Relation metadata
 pub(crate) mod arity;
-pub(crate) mod subrel_lattice;
-pub(crate) mod trans_reach;
 pub(crate) mod domain;
 pub(crate) mod range;
+pub(crate) mod subrel_lattice;
+pub(crate) mod trans_reach;
 
 // Documentation
 pub(crate) mod documentation;

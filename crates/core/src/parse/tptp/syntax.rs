@@ -34,10 +34,10 @@ impl TptpLang {
     /// of its own and reports the untyped fallback `fof`.
     pub fn as_str(self) -> &'static str {
         match self {
-            TptpLang::Cnf  => "cnf",
-            TptpLang::Fof  => "fof",
-            TptpLang::Tff  => "tff",
-            TptpLang::Thf  => "thf",
+            TptpLang::Cnf => "cnf",
+            TptpLang::Fof => "fof",
+            TptpLang::Tff => "tff",
+            TptpLang::Thf => "thf",
             TptpLang::Auto => "fof",
         }
     }
@@ -62,18 +62,28 @@ pub fn detect_tptp_lang(text: &str) -> Option<TptpLang> {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'%' => while i < b.len() && b[i] != b'\n' { i += 1; },
+            b'%' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
             b'/' if i + 1 < b.len() && b[i + 1] == b'*' => {
                 i += 2;
-                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') { i += 1; }
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
                 i += 2;
             }
             c if c.is_ascii_alphabetic() => {
                 let start = i;
-                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
                 let word = &text[start..i];
                 let mut j = i;
-                while j < b.len() && b[j].is_ascii_whitespace() { j += 1; }
+                while j < b.len() && b[j].is_ascii_whitespace() {
+                    j += 1;
+                }
                 // The first `keyword(` token at top level is the language.
                 if j < b.len() && b[j] == b'(' {
                     match word {
@@ -97,17 +107,17 @@ pub fn detect_tptp_lang(text: &str) -> Option<TptpLang> {
 // spaces so callers can `join`/concatenate without re-deciding spacing.
 
 /// `$true` / `$false` propositional constants.
-pub const TRUE:  &str = "$true";
+pub const TRUE: &str = "$true";
 pub const FALSE: &str = "$false";
 
 /// Negation prefix.
 pub const NOT: &str = "~";
 /// Conjunction / disjunction separators (spaced).
 pub const AND: &str = " & ";
-pub const OR:  &str = " | ";
+pub const OR: &str = " | ";
 /// Implication / biconditional connectives (spaced).
 pub const IMPLIES: &str = " => ";
-pub const IFF:     &str = " <=> ";
+pub const IFF: &str = " <=> ";
 /// Equality connective (spaced).
 pub const EQ: &str = " = ";
 /// Universal / existential quantifier prefixes.
@@ -137,7 +147,10 @@ pub fn variable(name: &str) -> String {
     {
         name.to_string()
     } else {
-        format!("X_{}", name.replace(|c: char| !c.is_ascii_alphanumeric(), "_"))
+        format!(
+            "X_{}",
+            name.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+        )
     }
 }
 
@@ -166,10 +179,15 @@ mod tests {
     fn detect_lang_picks_first_keyword() {
         assert_eq!(detect_tptp_lang("fof(a, axiom, p)."), Some(TptpLang::Fof));
         assert_eq!(detect_tptp_lang("cnf(c, axiom, p)."), Some(TptpLang::Cnf));
-        assert_eq!(detect_tptp_lang("tff(t, type, p: $o)."), Some(TptpLang::Tff));
+        assert_eq!(
+            detect_tptp_lang("tff(t, type, p: $o)."),
+            Some(TptpLang::Tff)
+        );
         // Comments are skipped; the first real statement wins.
-        assert_eq!(detect_tptp_lang("% fof(x) in a comment\n/* tff */\ncnf(c, axiom, p)."),
-            Some(TptpLang::Cnf));
+        assert_eq!(
+            detect_tptp_lang("% fof(x) in a comment\n/* tff */\ncnf(c, axiom, p)."),
+            Some(TptpLang::Cnf)
+        );
         // Non-TPTP input → None (caller defaults to fof).
         assert_eq!(detect_tptp_lang("(instance Foo Bar)"), None);
         assert_eq!(detect_tptp_lang(""), None);

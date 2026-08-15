@@ -27,7 +27,7 @@ use crate::parse::Span;
 pub struct MetaNode {
     /// Directive keyword — the head symbol (`note` / `time` / `answer` /
     /// `file` / later `status` / `lint` / …).
-    pub key:  String,
+    pub key: String,
     /// The directive's operands, parsed but uninterpreted.
     pub args: Vec<AstNode>,
     /// Source span of the whole directive form.
@@ -46,10 +46,16 @@ pub enum DocItem {
 impl DocItem {
     /// The statement, if this item is one.
     pub fn as_stmt(&self) -> Option<&AstNode> {
-        match self { DocItem::Stmt(n) => Some(n), _ => None }
+        match self {
+            DocItem::Stmt(n) => Some(n),
+            _ => None,
+        }
     }
     /// The directive, if this item is one.
     pub fn as_meta(&self) -> Option<&MetaNode> {
-        match self { DocItem::Meta(m) => Some(m), _ => None }
+        match self {
+            DocItem::Meta(m) => Some(m),
+            _ => None,
+        }
     }
 }

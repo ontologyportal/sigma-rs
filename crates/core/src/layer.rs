@@ -14,9 +14,9 @@
 
 use std::sync::OnceLock;
 
-use crate::cache::events::{build_schedule_indexed, CycleError, ReactorDecl, Event};
-use crate::cache::router::{route_with_schedule, ReactorEntry, RouteOutcome};
+use crate::cache::events::{build_schedule_indexed, CycleError, Event, ReactorDecl};
 use crate::cache::persistence::PersistableCache;
+use crate::cache::router::{route_with_schedule, ReactorEntry, RouteOutcome};
 use crate::persist::PersistenceBackend;
 
 /// A layer's reactor schedule, computed once and memoised.  The schedule (which
@@ -78,7 +78,7 @@ pub(crate) trait Layer {
     /// (classification, `&mut self`) and structural steps (`prime_caches`, …)
     /// bracket this call; this is just the fan-out.
     /// The `retain` argument controls which intermediate event types are collected
-    /// and returned (useful for collecting intermediate results from the event 
+    /// and returned (useful for collecting intermediate results from the event
     /// responses)
     fn cascade(&self, seed: Vec<Event>) -> RouteOutcome {
         let entries = self.reactors();
@@ -88,7 +88,12 @@ pub(crate) trait Layer {
         let schedule = self.schedule_cell().get_or_init(|| {
             let decls: Vec<ReactorDecl> = entries
                 .iter()
-                .map(|e| ReactorDecl { name: e.name, consumes: e.consumes, produces: e.produces, reads: e.reads })
+                .map(|e| ReactorDecl {
+                    name: e.name,
+                    consumes: e.consumes,
+                    produces: e.produces,
+                    reads: e.reads,
+                })
                 .collect();
             build_schedule_indexed(&decls)
         });
@@ -214,12 +219,22 @@ pub(crate) enum NoLayer {}
 impl Layer for NoLayer {
     type Inner = NoLayer;
     type Outer = NoLayer;
-    fn inner(&self) -> Option<&Self::Inner> { None }
-    fn outer(&self) -> Option<&Self::Outer> { None }
+    fn inner(&self) -> Option<&Self::Inner> {
+        None
+    }
+    fn outer(&self) -> Option<&Self::Outer> {
+        None
+    }
     // `NoLayer` is uninhabited, so these are never called.
-    fn own_reactors(&self) -> Vec<ReactorEntry<'_>> { match *self {} }
-    fn schedule_cell(&self) -> &'static ScheduleCell { match *self {} }
-    fn cache_config(&self) -> &crate::cache::CacheConfig { match *self {} }
+    fn own_reactors(&self) -> Vec<ReactorEntry<'_>> {
+        match *self {}
+    }
+    fn schedule_cell(&self) -> &'static ScheduleCell {
+        match *self {}
+    }
+    fn cache_config(&self) -> &crate::cache::CacheConfig {
+        match *self {}
+    }
 }
 // Persistence is now the unified cache-snapshot seam: `Layer::snapshot_caches`
 // / `Layer::restore_caches_from` (above) freeze/thaw every `own_persistable()`

@@ -9,19 +9,23 @@ pub mod backends;
 pub(crate) mod consistency;
 pub(crate) mod prove;
 
-pub use backends::{ProverRunner, Prover};
+pub use backends::{Prover, ProverRunner};
 
 use std::sync::Arc;
 
 use super::ProvingLayer;
 
-use crate::{TranslationLayer, cache::CacheConfig, layer::{Layer, NoLayer, TopLayer}};
+use super::result::ProverResult;
 use crate::cache::events::Event;
 use crate::kb::session_tags::SESSION_QUERY;
-use crate::types::{FileOrigin, SentenceId, SourceFile};
-use crate::{Parser, ProveCtx, SineParams, TptpLang};
 use crate::prover::CommonProverOpts;
-use super::result::ProverResult;
+use crate::types::{FileOrigin, SentenceId, SourceFile};
+use crate::{
+    cache::CacheConfig,
+    layer::{Layer, NoLayer, TopLayer},
+    TranslationLayer,
+};
+use crate::{Parser, ProveCtx, SineParams, TptpLang};
 
 /// The external prover layer's single consolidated params struct — the shared
 /// cross-backend inputs (SInE `selection`, `session`, wall-clock budget, TPTP
@@ -34,25 +38,33 @@ use super::result::ProverResult;
 #[derive(Debug, Clone, Default)]
 pub struct ExternalOpts {
     /// SInE axiom-selection seed (the autoscaling loop's base selection).
-    pub selection:    SineParams,
+    pub selection: SineParams,
     /// Optional in-memory session whose assertions ride in as hypotheses.
-    pub session:      Option<String>,
+    pub session: Option<String>,
     /// Wall-clock budget in seconds (0 = unlimited).
     pub timeout_secs: u64,
     /// TPTP language for the generated problem file (FOF / TFF).
-    pub mode:         TptpLang,
+    pub mode: TptpLang,
     /// Higher-order mode: assemble a THF problem through the translation
     /// layer's HO pipeline instead of `mode`'s first-order one.  A separate
     /// flag (rather than a `TptpLang` variant) so the parse subsystem's
     /// dialect enum stays untouched.
-    pub hol:          bool,
+    pub hol: bool,
 }
 
 impl CommonProverOpts for ExternalOpts {
-    fn selection(&self) -> SineParams { self.selection }
-    fn timeout(&self) -> u64 { self.timeout_secs }
-    fn set_timeout(&mut self, secs: u64) { self.timeout_secs = secs; }
-    fn set_session(&mut self, session: Option<String>) { self.session = session; }
+    fn selection(&self) -> SineParams {
+        self.selection
+    }
+    fn timeout(&self) -> u64 {
+        self.timeout_secs
+    }
+    fn set_timeout(&mut self, secs: u64) {
+        self.timeout_secs = secs;
+    }
+    fn set_session(&mut self, session: Option<String>) {
+        self.session = session;
+    }
 }
 
 // The conjecture is the shared [`crate::prover::Conjecture`].  External interns
@@ -67,13 +79,17 @@ pub struct ExternalProverLayer {
     /// The translation sublayer
     translation: TranslationLayer,
     /// The cache config object
-    config: crate::cache::CacheConfig
+    config: crate::cache::CacheConfig,
 }
 
 impl ExternalProverLayer {
     /// Create a new external prover layer from a backend and translation layer
     pub(crate) fn new(backend: Prover, translation: TranslationLayer) -> Self {
-        Self { backend, translation, config: CacheConfig::default() }
+        Self {
+            backend,
+            translation,
+            config: CacheConfig::default(),
+        }
     }
 
     /// Override the configured prover backend (e.g. after opening a persisted KB,
@@ -88,10 +104,12 @@ impl Layer for ExternalProverLayer {
 
     type Outer = NoLayer;
 
-    fn inner(&self) -> Option<&Self::Inner> { Some(&self.translation) }
+    fn inner(&self) -> Option<&Self::Inner> {
+        Some(&self.translation)
+    }
 
     fn own_reactors(&self) -> Vec<crate::cache::router::ReactorEntry<'_>> {
-       vec![]
+        vec![]
     }
 
     fn schedule_cell(&self) -> &'static crate::layer::ScheduleCell {
@@ -102,8 +120,10 @@ impl Layer for ExternalProverLayer {
     fn cache_config(&self) -> &crate::cache::CacheConfig {
         &self.config
     }
-    
-    fn outer(&self) -> Option<&NoLayer> { None }
+
+    fn outer(&self) -> Option<&NoLayer> {
+        None
+    }
 }
 
 impl ProvingLayer for ExternalProverLayer {
@@ -118,16 +138,18 @@ impl ProvingLayer for ExternalProverLayer {
     /// `&self` cascade) so the TPTP builder can resolve + mark it, and resolve
     /// its roots into `Conjecture.sents`.  The shared `prepare` default wraps
     /// this and errors on an empty result; `cleanup` truncates the tag.
-    fn intern_conjecture(&self, asts: &[crate::AstNode])
-        -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
+    fn intern_conjecture(
+        &self,
+        asts: &[crate::AstNode],
+    ) -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
         let tag = SESSION_QUERY;
         let _ = self.cascade(vec![Event::SourceAdded {
             session: Arc::new(tag.to_owned()),
-            file:    SourceFile {
-                parser:   Parser::Kif,
-                name:     tag.to_string(),
-                path:     std::path::PathBuf::new(),
-                origin:   FileOrigin::Inline,
+            file: SourceFile {
+                parser: Parser::Kif,
+                name: tag.to_string(),
+                path: std::path::PathBuf::new(),
+                origin: FileOrigin::Inline,
                 contents: String::new(),
                 prebuilt: Some(asts.to_vec()),
             },
@@ -135,7 +157,8 @@ impl ProvingLayer for ExternalProverLayer {
         }]);
         // Full tag membership (new + content-addressed dups alike), resolved.
         let syn = &self.translation.semantic.syntactic;
-        syn.file_root_sids(tag).into_iter()
+        syn.file_root_sids(tag)
+            .into_iter()
             .filter_map(|sid| syn.sentence(sid).map(|arc| (arc, sid)))
             .collect()
     }
@@ -145,25 +168,27 @@ impl ProvingLayer for ExternalProverLayer {
         let tag = SESSION_QUERY;
         let _ = self.cascade(vec![Event::SourceAdded {
             session: Arc::new(tag.to_owned()),
-            file:    SourceFile::truncate(std::path::PathBuf::from(tag)),
-            staged:  false,
+            file: SourceFile::truncate(std::path::PathBuf::from(tag)),
+            staged: false,
         }]);
     }
 
     fn prove_once(
         &self,
-        conj:     &Conjecture,
-        params:   SineParams,
-        slice:    u32,
-        opts:     &ExternalOpts,
-        ctx:      &ProveCtx,
+        conj: &Conjecture,
+        params: SineParams,
+        slice: u32,
+        opts: &ExternalOpts,
+        ctx: &ProveCtx,
     ) -> (ProverResult, usize) {
         self.ext_prove_once(conj, params, slice, opts, ctx)
     }
 
-    fn check_consistency(&self, opts: &Self::Opts, ctx: &crate::ProveCtx)
-        -> super::result::ProverResult
-    {
+    fn check_consistency(
+        &self,
+        opts: &Self::Opts,
+        ctx: &crate::ProveCtx,
+    ) -> super::result::ProverResult {
         self.ext_check_consistency(opts, ctx)
     }
 }
@@ -173,7 +198,7 @@ impl TopLayer for ExternalProverLayer {
         Self {
             translation: TranslationLayer::from_semantic(semantic),
             backend: Prover::default(),
-            config: crate::cache::CacheConfig::default()
+            config: crate::cache::CacheConfig::default(),
         }
     }
 
@@ -188,7 +213,7 @@ impl TopLayer for ExternalProverLayer {
         Self {
             translation,
             backend: self.backend.clone(),
-            config:  self.config.clone(),
+            config: self.config.clone(),
         }
     }
 
@@ -201,7 +226,12 @@ impl TopLayer for ExternalProverLayer {
     }
 }
 
-impl crate::trans::HasTranslation for ExternalProverLayer {        // trans is one hop down
-    fn translation(&self) -> &TranslationLayer { &self.translation }
-    fn translation_mut(&mut self) -> &mut TranslationLayer { &mut self.translation }
+impl crate::trans::HasTranslation for ExternalProverLayer {
+    // trans is one hop down
+    fn translation(&self) -> &TranslationLayer {
+        &self.translation
+    }
+    fn translation_mut(&mut self) -> &mut TranslationLayer {
+        &mut self.translation
+    }
 }

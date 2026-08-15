@@ -1,9 +1,9 @@
 use log;
-use sigmakee_rs_sdk::{KnowledgeBase, ProvingLayer};
 use sigmakee_rs_sdk::manager::KBManager;
 use sigmakee_rs_sdk::{Diagnostic, SdkError, Session};
+use sigmakee_rs_sdk::{KnowledgeBase, ProvingLayer};
 
-use crate::cli::util::{read_stdin};
+use crate::cli::util::read_stdin;
 
 /// Entry point for `sumo validate`.
 ///
@@ -16,24 +16,26 @@ use crate::cli::util::{read_stdin};
 /// applied as a post-hoc severity flip via [`apply_severity_overrides`], since
 /// `SemanticError` severity is no longer global mutable state.
 pub fn run_validate<L>(
-    session:       Session<L>,
-    _manager:       KBManager,
-    formula:       Option<String>,
-    parse_only:    bool,
-    suppress:      &[String],
+    session: Session<L>,
+    _manager: KBManager,
+    formula: Option<String>,
+    parse_only: bool,
+    suppress: &[String],
 ) -> bool
 where
-    L: ProvingLayer {
+    L: ProvingLayer,
+{
     log::debug!(
         "run_validate: formula={:?}, parse_only={}",
-        formula.is_some(), parse_only,
+        formula.is_some(),
+        parse_only,
     );
 
     let formula = formula.or_else(read_stdin);
 
     match formula {
         Some(text) => validate_single_formula(session, &text, parse_only, suppress),
-        None       => {
+        None => {
             let mut diagnostics = if !parse_only {
                 session.validate()
             } else {
@@ -45,7 +47,12 @@ where
             let (errs, warns) = split_severity(diagnostics);
             let (n_err, n_warn) = print_diags(session.kb(), &errs, &warns);
 
-            println!("Validated {} constituents: {}, {}", scope, count_phrase(n_err, "error"), count_phrase(n_warn, "warning"));
+            println!(
+                "Validated {} constituents: {}, {}",
+                scope,
+                count_phrase(n_err, "error"),
+                count_phrase(n_warn, "warning")
+            );
             n_err > 0
         }
     }
@@ -61,7 +68,9 @@ where
 /// advisory by design, and `-Wall` promoting a documentation hint to a
 /// build-breaking error would defeat the point of giving it that severity.
 pub fn apply_severity_overrides(diags: &mut [Diagnostic], suppress: &[String]) {
-    if suppress.is_empty() { return; }
+    if suppress.is_empty() {
+        return;
+    }
     let promote_all = suppress.iter().any(|s| s == "all");
     for d in diags.iter_mut() {
         if d.severity == sigmakee_rs_sdk::Severity::Warning
@@ -80,15 +89,18 @@ pub fn apply_severity_overrides(diags: &mut [Diagnostic], suppress: &[String]) {
 /// `parse_only`), and prints the findings.  Returns `true` if any hard error
 /// was found.
 pub fn validate_single_formula<L>(
-    mut session:   Session<L>,
-    text:          &str,
-    parse_only:    bool,
-    suppress:      &[String],
+    mut session: Session<L>,
+    text: &str,
+    parse_only: bool,
+    suppress: &[String],
 ) -> bool
-where L: ProvingLayer {
+where
+    L: ProvingLayer,
+{
     log::debug!(
         "validate_single_formula: text={}, parse_only={}",
-        text, parse_only,
+        text,
+        parse_only,
     );
 
     let mut open_session = match session.tell(text) {
@@ -96,42 +108,56 @@ where L: ProvingLayer {
             for e in errs {
                 match e {
                     SdkError::Kb(e) => session.kb().pretty_print_error(&e, log::Level::Error),
-                    _ => log::error!("{}", e)
+                    _ => log::error!("{}", e),
                 }
             }
             return false;
-        },
-        Ok(s) => s
+        }
+        Ok(s) => s,
     };
 
     if parse_only {
         return true;
     }
 
-    let mut diags: Vec<Diagnostic> = open_session.validate().into_iter().filter_map(|e| {
-        match e {
+    let mut diags: Vec<Diagnostic> = open_session
+        .validate()
+        .into_iter()
+        .filter_map(|e| match e {
             SdkError::Kb(e) => Some(e),
-            _ => None
-        }
-    }).collect();
+            _ => None,
+        })
+        .collect();
     apply_severity_overrides(&mut diags, suppress);
 
     let (errs, warns) = split_severity(diags);
     let (n_err, n_warn) = print_diags(session.kb(), &errs, &warns);
-            
-    println!("Validated formula: {}: {}, {}", text, count_phrase(n_err, "error"), count_phrase(n_warn, "warning"));
+
+    println!(
+        "Validated formula: {}: {}, {}",
+        text,
+        count_phrase(n_err, "error"),
+        count_phrase(n_warn, "warning")
+    );
     n_err > 0
 }
 
 /// Pluralised `"N thing(s)"` for summary lines (e.g. `1 error`, `3 warnings`).
 fn count_phrase(n: usize, noun: &str) -> String {
-    if n == 1 { format!("1 {}", noun) } else { format!("{} {}s", n, noun) }
+    if n == 1 {
+        format!("1 {}", noun)
+    } else {
+        format!("{} {}s", n, noun)
+    }
 }
 
 /// Split diagnostics into (hard errors, advisories) by severity.
 fn split_severity(
     diags: Vec<sigmakee_rs_sdk::Diagnostic>,
-) -> (Vec<sigmakee_rs_sdk::Diagnostic>, Vec<sigmakee_rs_sdk::Diagnostic>) {
+) -> (
+    Vec<sigmakee_rs_sdk::Diagnostic>,
+    Vec<sigmakee_rs_sdk::Diagnostic>,
+) {
     diags
         .into_iter()
         .partition(|d| matches!(d.severity, sigmakee_rs_sdk::Severity::Error))
@@ -146,8 +172,10 @@ fn print_diags<L>(
     kb: &KnowledgeBase<L>,
     errors: &[sigmakee_rs_sdk::Diagnostic],
     warnings: &[sigmakee_rs_sdk::Diagnostic],
-) -> (usize, usize) 
-where L : ProvingLayer {
+) -> (usize, usize)
+where
+    L: ProvingLayer,
+{
     let mut seen = std::collections::HashSet::new();
     let mut n_err = 0;
     for d in errors {

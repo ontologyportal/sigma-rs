@@ -9,6 +9,6 @@
 // is consumed by any standard LSP client.
 
 pub mod conv;
-pub mod state;
-pub mod server;
 pub mod handlers;
+pub mod server;
+pub mod state;

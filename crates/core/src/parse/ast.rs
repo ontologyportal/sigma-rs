@@ -1,6 +1,6 @@
+pub use super::Span;
 use core::fmt;
 use serde::{Deserialize, Serialize};
-pub use super::Span;
 
 /// Logical operators that are keywords in KIF.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,14 +19,14 @@ impl OpKind {
     /// The KIF keyword for this operator (e.g. `"and"`, `"=>"`).
     pub fn name(&self) -> &'static str {
         match self {
-            OpKind::And     => "and",
-            OpKind::Or      => "or",
-            OpKind::Not     => "not",
+            OpKind::And => "and",
+            OpKind::Or => "or",
+            OpKind::Not => "not",
             OpKind::Implies => "=>",
-            OpKind::Iff     => "<=>",
-            OpKind::Equal   => "equal",
-            OpKind::ForAll  => "forall",
-            OpKind::Exists  => "exists",
+            OpKind::Iff => "<=>",
+            OpKind::Equal => "equal",
+            OpKind::ForAll => "forall",
+            OpKind::Exists => "exists",
         }
     }
 
@@ -35,13 +35,13 @@ impl OpKind {
         match self {
             OpKind::Not => 1,
             OpKind::And | OpKind::Or => 0,
-            _ => 2
+            _ => 2,
         }
     }
 
     /// Whether this operator is a quantifier (`ForAll` or `Exists`).
     pub fn is_quantifier(&self) -> bool {
-        return matches!(self, OpKind::ForAll | OpKind::Exists)
+        return matches!(self, OpKind::ForAll | OpKind::Exists);
     }
 }
 
@@ -98,17 +98,17 @@ pub enum Source {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AstNode {
     /// Corresponds to a sentence
-    List     { elements: Vec<AstNode>, span: Span },
+    List { elements: Vec<AstNode>, span: Span },
     /// Corresponds to a symbol
-    Symbol   { name: String, span: Span },
+    Symbol { name: String, span: Span },
     /// Corresponds to a variable
-    Variable { name: String, span: Span },   // includes leading `?`
+    Variable { name: String, span: Span }, // includes leading `?`
     /// Corresponds to a row variable
     RowVariable { name: String, span: Span }, // includes leading `@`
     /// Corresponds to a string literal
-    Str      { value: String, span: Span },  // includes surrounding `"`
+    Str { value: String, span: Span }, // includes surrounding `"`
     /// Corresponds to a numerical literal
-    Number   { value: String, span: Span },
+    Number { value: String, span: Span },
     /// Corresponds to an operator
     Operator { op: OpKind, span: Span },
     /// A top-level statement wrapping a formula with its dialect-level
@@ -119,11 +119,11 @@ pub enum AstNode {
     /// term. Term-level code strips it first via [`AstNode::strip_annotation`]
     /// / [`AstNode::formula`].
     Annotated {
-        role:    Role,
-        name:    Option<String>,
-        source:  Option<Source>,
+        role: Role,
+        name: Option<String>,
+        source: Option<Source>,
         formula: Box<AstNode>,
-        span:    Span,
+        span: Span,
     },
 }
 
@@ -131,14 +131,14 @@ impl AstNode {
     /// The source [`Span`] of this node.
     pub fn span(&self) -> &Span {
         match self {
-            AstNode::List { span, .. }        => span,
-            AstNode::Symbol { span, .. }      => span,
-            AstNode::Variable { span, .. }    => span,
+            AstNode::List { span, .. } => span,
+            AstNode::Symbol { span, .. } => span,
+            AstNode::Variable { span, .. } => span,
             AstNode::RowVariable { span, .. } => span,
-            AstNode::Str { span, .. }         => span,
-            AstNode::Number { span, .. }      => span,
-            AstNode::Operator { span, .. }    => span,
-            AstNode::Annotated { span, .. }   => span,
+            AstNode::Str { span, .. } => span,
+            AstNode::Number { span, .. } => span,
+            AstNode::Operator { span, .. } => span,
+            AstNode::Annotated { span, .. } => span,
         }
     }
 
@@ -167,7 +167,6 @@ impl AstNode {
             other => other,
         }
     }
-
 }
 
 // -- Tests --------------------------------------------------------------------
@@ -186,29 +185,71 @@ mod tests {
 
     #[test]
     fn join_covers_both() {
-        let a = Span { file: "f".into(), line: 1, col: 1, offset: 0, end_line: 1, end_col: 4, end_offset: 3 };
-        let b = Span { file: "f".into(), line: 1, col: 5, offset: 4, end_line: 1, end_col: 9, end_offset: 8 };
+        let a = Span {
+            file: "f".into(),
+            line: 1,
+            col: 1,
+            offset: 0,
+            end_line: 1,
+            end_col: 4,
+            end_offset: 3,
+        };
+        let b = Span {
+            file: "f".into(),
+            line: 1,
+            col: 5,
+            offset: 4,
+            end_line: 1,
+            end_col: 9,
+            end_offset: 8,
+        };
         let j = a.join(&b);
-        assert_eq!(j.offset,     0);
+        assert_eq!(j.offset, 0);
         assert_eq!(j.end_offset, 8);
-        assert_eq!(j.col,        1);
-        assert_eq!(j.end_col,    9);
+        assert_eq!(j.col, 1);
+        assert_eq!(j.end_col, 9);
     }
 
     #[test]
     fn join_is_order_insensitive() {
-        let a = Span { file: "f".into(), line: 2, col: 3, offset: 10, end_line: 2, end_col: 7, end_offset: 14 };
-        let b = Span { file: "f".into(), line: 1, col: 1, offset:  0, end_line: 1, end_col: 2, end_offset:  1 };
+        let a = Span {
+            file: "f".into(),
+            line: 2,
+            col: 3,
+            offset: 10,
+            end_line: 2,
+            end_col: 7,
+            end_offset: 14,
+        };
+        let b = Span {
+            file: "f".into(),
+            line: 1,
+            col: 1,
+            offset: 0,
+            end_line: 1,
+            end_col: 2,
+            end_offset: 1,
+        };
         let ab = a.join(&b);
         let ba = b.join(&a);
-        assert_eq!(ab.offset,     ba.offset);
+        assert_eq!(ab.offset, ba.offset);
         assert_eq!(ab.end_offset, ba.end_offset);
     }
 
     fn parse_one(src: &str) -> AstNode {
         let doc = crate::parse::parse_document("t", src, crate::Parser::Kif);
-        assert!(doc.parse_errors.is_empty(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().expect("at least one node").as_stmt().cloned().expect("a stmt item")
+        assert!(
+            doc.parse_errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_errors
+        );
+        doc.ast
+            .into_iter()
+            .next()
+            .expect("at least one node")
+            .as_stmt()
+            .cloned()
+            .expect("a stmt item")
     }
 
     #[test]
@@ -216,17 +257,20 @@ mod tests {
         use crate::parse::kif::dis::AstKif;
         let inner = parse_one("(represents ?STRING ?USER)");
         let ann = AstNode::Annotated {
-            role:    Role::Conjecture,
-            name:    Some("c1".into()),
-            source:  None,
+            role: Role::Conjecture,
+            name: Some("c1".into()),
+            source: None,
             formula: Box::new(inner.clone()),
-            span:    Span::default(),
+            span: Span::default(),
         };
         assert_eq!(ann.role(), Some(&Role::Conjecture));
         assert_eq!(ann.formula().to_string(), inner.to_string());
-        assert_eq!(ann.clone().strip_annotation().to_string(), inner.to_string());
-        assert_eq!(ann.to_string(), inner.to_string());           // Display
-        assert_eq!(ann.format_plain(0), inner.format_plain(0));    // AstKif
+        assert_eq!(
+            ann.clone().strip_annotation().to_string(),
+            inner.to_string()
+        );
+        assert_eq!(ann.to_string(), inner.to_string()); // Display
+        assert_eq!(ann.format_plain(0), inner.format_plain(0)); // AstKif
         assert_eq!(inner.role(), None);
         assert_eq!(inner.formula().to_string(), inner.to_string());
     }
@@ -236,10 +280,26 @@ mod tests {
         let p = Span::point("f".into(), 3, 5, 42);
         assert_eq!(p.to_string(), "f:3:5");
 
-        let inline = Span { file: "f".into(), line: 3, col: 5, offset: 42, end_line: 3, end_col: 11, end_offset: 48 };
+        let inline = Span {
+            file: "f".into(),
+            line: 3,
+            col: 5,
+            offset: 42,
+            end_line: 3,
+            end_col: 11,
+            end_offset: 48,
+        };
         assert_eq!(inline.to_string(), "f:3:5-11");
 
-        let multi = Span { file: "f".into(), line: 3, col: 5, offset: 42, end_line: 4, end_col: 2, end_offset: 60 };
+        let multi = Span {
+            file: "f".into(),
+            line: 3,
+            col: 5,
+            offset: 42,
+            end_line: 4,
+            end_col: 2,
+            end_offset: 60,
+        };
         assert_eq!(multi.to_string(), "f:3:5-4:2");
     }
 }

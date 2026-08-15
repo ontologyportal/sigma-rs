@@ -22,12 +22,12 @@
 
 use std::collections::HashMap;
 
-use crate::{Element, Literal, SymbolId};
 use crate::semantics::types::Scope;
 use crate::trans::builtins::{numeric_constant_value, SumoArith};
 use crate::trans::ir::{Function, Interp, Term};
 use crate::trans::sort::numeric_literal_sort;
 use crate::trans::{Sort, SortAnnotation, TranslationLayer};
+use crate::{Element, Literal, SymbolId};
 
 /// Per-root variable sorts, precomputed once per sentence from
 /// [`classify_formula`](crate::semantics::SemanticLayer::classify_formula).
@@ -75,12 +75,19 @@ impl TranslationLayer {
     /// Best-effort static inference of the TFF sort an element will emit at,
     /// kept in lockstep with what `element_to_term` produces so equality
     /// coercion and predicate-variant naming never disagree with a term's type.
-    pub(in crate::trans) fn infer_term_sort(&self, el: &Element, scope: Scope, vars: &VarSorts) -> Option<Sort> {
+    pub(in crate::trans) fn infer_term_sort(
+        &self,
+        el: &Element,
+        scope: Scope,
+        vars: &VarSorts,
+    ) -> Option<Sort> {
         match el {
             Element::Sub(sid) => {
                 let sentence = self.semantic.syntactic.sentence(*sid)?;
                 let head = match sentence.elements.first()? {
-                    Element::Symbol(sym) if self.semantic.is_function_scoped(sym.id(), scope) => sym,
+                    Element::Symbol(sym) if self.semantic.is_function_scoped(sym.id(), scope) => {
+                        sym
+                    }
                     _ => return None,
                 };
                 if let Some(arith) = SumoArith::from_sumo_name(&head.name()) {
@@ -111,7 +118,10 @@ impl TranslationLayer {
                 } else if self.semantic.is_relation_scoped(id, scope) {
                     Some(Sort::Individual)
                 } else {
-                    Some(self.typed_constant_sort(id, scope).unwrap_or(Sort::Individual))
+                    Some(
+                        self.typed_constant_sort(id, scope)
+                            .unwrap_or(Sort::Individual),
+                    )
                 }
             }
             Element::Literal(Literal::Number(n)) => {
@@ -160,9 +170,9 @@ impl TranslationLayer {
     /// coercion exists; emitting the declared sort there would be ill-typed).
     pub(in crate::trans) fn resolve_call_sorts(
         &self,
-        rel:    SymbolId,
+        rel: SymbolId,
         actual: &[Option<Sort>],
-        scope:  Scope,
+        scope: Scope,
     ) -> Vec<Sort> {
         let declared = self.declared_arg_sorts(rel, scope);
         actual
@@ -183,7 +193,10 @@ impl TranslationLayer {
     /// Collapse a [`ClassInference`](crate::types::ClassInference) to the TFF
     /// [`Sort`] it types at: the most specific numeric-sorted candidate, or
     /// `$i` when none is numeric.
-    pub(in crate::trans) fn class_inference_to_sort(&self, inf: &crate::types::ClassInference) -> Sort {
+    pub(in crate::trans) fn class_inference_to_sort(
+        &self,
+        inf: &crate::types::ClassInference,
+    ) -> Sort {
         use crate::types::ClassInference;
         match inf {
             ClassInference::Single(c) => self.numeric_sort_of_class(*c).unwrap_or(Sort::Individual),
@@ -202,7 +215,9 @@ impl TranslationLayer {
 pub(in crate::trans) fn widens_to(from: Sort, to: Sort) -> bool {
     matches!(
         (from, to),
-        (Sort::Integer, Sort::Real) | (Sort::Rational, Sort::Real) | (Sort::Integer, Sort::Rational)
+        (Sort::Integer, Sort::Real)
+            | (Sort::Rational, Sort::Real)
+            | (Sort::Integer, Sort::Rational)
     )
 }
 
@@ -231,7 +246,11 @@ fn numeric_max(sorts: &[Sort]) -> Option<Sort> {
         Sort::Rational => 2,
         Sort::Real => 3,
     };
-    sorts.iter().copied().filter(|s| rank(*s) > 0).max_by_key(|s| rank(*s))
+    sorts
+        .iter()
+        .copied()
+        .filter(|s| rank(*s) > 0)
+        .max_by_key(|s| rank(*s))
 }
 
 /// `Some(widest)` when every position of a call is numeric — the shared

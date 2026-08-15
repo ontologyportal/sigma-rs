@@ -95,7 +95,11 @@ impl ProveCtx {
     /// Emit a log event at `level`.
     #[inline(always)]
     pub fn log(&self, level: LogLevel, message: String) {
-        self.emit(ProgressEvent::Log { level, target: "sigmakee_rs_core::kb", message });
+        self.emit(ProgressEvent::Log {
+            level,
+            target: "sigmakee_rs_core::kb",
+            message,
+        });
     }
 
     /// Emit an info-level log event.
@@ -174,58 +178,88 @@ macro_rules! emit_event {
 #[non_exhaustive]
 pub enum ProgressEvent {
     // -- KB lifecycle --------------------------------------------------------
-
     /// LMDB-backed KB opened from disk.
-    KbOpened          { path: PathBuf, formulas: usize, dedup_enabled: bool },
+    KbOpened {
+        path: PathBuf,
+        formulas: usize,
+        dedup_enabled: bool,
+    },
 
     /// Schema migration detected on open.
-    SchemaMismatch    { detail: String },
+    SchemaMismatch { detail: String },
 
     /// New session started or asserted into.
-    SessionTold       { session: String, formulas: usize },
+    SessionTold { session: String, formulas: usize },
 
     /// Session promoted to axiomatic status.
-    SessionPromoted   { session: String, promoted: usize, duplicates: usize },
+    SessionPromoted {
+        session: String,
+        promoted: usize,
+        duplicates: usize,
+    },
 
     /// Session flushed (sentences removed from the KB).
-    SessionFlushed    { session: String, removed: usize },
+    SessionFlushed { session: String, removed: usize },
 
     // -- Reconcile -----------------------------------------------------------
-
     /// One file's reconcile pass finished.  `is_noop` is `true` iff
     /// `added == 0 && removed == 0`.
-    Reconciled        { tag: String, added: usize, removed: usize, retained: usize, is_noop: bool },
+    Reconciled {
+        tag: String,
+        added: usize,
+        removed: usize,
+        retained: usize,
+        is_noop: bool,
+    },
 
     // -- Persist -------------------------------------------------------------
-
     /// LMDB write transaction committed.
-    Committed         { added: usize, removed: usize, elapsed: Duration },
+    Committed {
+        added: usize,
+        removed: usize,
+        elapsed: Duration,
+    },
 
     /// One sentence's row was deleted from LMDB.
-    PersistDeleted    { sid: SentenceId },
+    PersistDeleted { sid: SentenceId },
 
     /// A duplicate axiom was dropped during promote.
-    DuplicateDropped  { sid: SentenceId },
+    DuplicateDropped { sid: SentenceId },
 
     /// Per-symbol DB write (gated behind `cfg(debug_assertions)`).
-    PersistedSymbol   { name: String, id: u64, was_present: bool },
+    PersistedSymbol {
+        name: String,
+        id: u64,
+        was_present: bool,
+    },
 
     /// Per-formula DB write.
-    PersistedFormula  { id: u64 },
+    PersistedFormula { id: u64 },
 
     /// Per-clause hash interned.
-    PersistedClause   { hash: u64, id: u64, was_present: bool },
+    PersistedClause {
+        hash: u64,
+        id: u64,
+        was_present: bool,
+    },
 
     // -- Parse & ingest ------------------------------------------------------
-
     /// File ingested into the KB (parse → intern → axiomatic).
-    KifLoaded         { tag: String, sentences: usize, errors: usize },
+    KifLoaded {
+        tag: String,
+        sentences: usize,
+        errors: usize,
+    },
 
     /// Tokenizer finished one file.
-    Tokenized         { tag: String, tokens: usize, errors: usize },
+    Tokenized {
+        tag: String,
+        tokens: usize,
+        errors: usize,
+    },
 
     /// Symbol interned.
-    SymbolInterned    { name: String, id: u64 },
+    SymbolInterned { name: String, id: u64 },
 
     /// Sentence allocated.
     SentenceAllocated { sid: SentenceId },
@@ -234,107 +268,129 @@ pub enum ProgressEvent {
     ElementBuilt,
 
     /// Macro expansion (row variable).
-    MacroExpanded     { input: String, output_count: usize },
+    MacroExpanded { input: String, output_count: usize },
 
     /// Sentence pruned from the store (e.g. orphaned symbol).
-    SentencesPruned   { kept: usize, dropped: usize },
+    SentencesPruned { kept: usize, dropped: usize },
 
     // -- SInE / clausify -----------------------------------------------------
-
     /// SInE index rebuilt.  `axioms` is the count of SInE-eligible
     /// axioms after rebuild.
-    SineRebuilt       { axioms: usize },
+    SineRebuilt { axioms: usize },
 
     /// SInE incremental update.  `delta` is the count added since
     /// the last rebuild; `total` is the running axiom count.
-    SineIncremental   { delta: usize, total: usize },
+    SineIncremental { delta: usize, total: usize },
 
     /// CNF clausification pass started for a batch.
-    ClausifyStarted   { sentences: usize },
+    ClausifyStarted { sentences: usize },
 
     /// CNF clausification finished.
-    ClausifyFinished  { clauses: usize, elapsed: Duration },
+    ClausifyFinished { clauses: usize, elapsed: Duration },
 
     // -- Prover (cfg(feature = "ask")) ---------------------------------------
-
     /// Ask query started.  `backend` is `"subprocess"` or `"embedded"`.
     #[cfg(feature = "ask")]
-    AskInvoked        { backend: &'static str, query: String },
+    AskInvoked {
+        backend: &'static str,
+        query: String,
+    },
 
     /// Ask query returned.
     #[cfg(feature = "ask")]
-    AskReturned       { status: ProverStatus, elapsed: Duration },
+    AskReturned {
+        status: ProverStatus,
+        elapsed: Duration,
+    },
 
     /// Vampire subprocess spawned.
     #[cfg(feature = "ask")]
-    ProverSpawned     { binary: PathBuf, timeout_secs: u32 },
+    ProverSpawned { binary: PathBuf, timeout_secs: u32 },
 
     // -- Diagnostics (warnings) ---------------------------------------------
-
     /// Domain assertion couldn't be checked (warning).
     DomainCheckFailed { detail: String },
 
     /// Symbol redefined (warning).
-    SymbolRedefined   { name: String },
+    SymbolRedefined { name: String },
 
     /// Generic warning surfaced from the parse / semantic layer.
     /// `detail` carries the human-readable explanation; consumers
     /// who want strongly-typed diagnostics should inspect
     /// `SemanticError` from the operation's report instead.
-    Warning           { code: &'static str, detail: String },
+    Warning { code: &'static str, detail: String },
 
     /// Hard semantic error surfaced through the event stream
     /// (in addition to the `Result` path).  Carried by-clone so
     /// consumers needn't lock on the KB to read it.
-    SemanticErrorEv   { error: Box<SemanticError> },
+    SemanticErrorEv { error: Box<SemanticError> },
 
     // -- Phase timing --------------------------------------------------------
-
     /// A named phase in the KB's work has started. Consumers that want timing
     /// capture `Instant::now()` here and pair with the matching
     /// [`Self::PhaseFinished`] (same `name`).
-    PhaseStarted     {
+    PhaseStarted {
         /// Compile-time phase identifier (e.g. `"ingest.parse"`).
         name: &'static str,
     },
 
     /// A named phase has finished. Pairs with [`Self::PhaseStarted`] of the
     /// same `name`. Consumers do their own elapsed-time subtraction.
-    PhaseFinished    {
+    PhaseFinished {
         /// Compile-time phase identifier matching the prior `PhaseStarted`.
         name: &'static str,
     },
 
     // -- SDK-level -----------------------------------------------------------
-
     /// SDK read a file from disk.
-    FileRead          { path: PathBuf, idx: usize, total: usize, bytes: usize },
+    FileRead {
+        path: PathBuf,
+        idx: usize,
+        total: usize,
+        bytes: usize,
+    },
 
     /// SDK started a multi-source load / ingest pass. `total_sources` is the
     /// count after directory expansion.
-    LoadStarted       { total_sources: usize },
+    LoadStarted { total_sources: usize },
 
     /// SDK ingested one source.
-    SourceIngested    { tag: String, added: usize, removed: usize, retained: usize },
+    SourceIngested {
+        tag: String,
+        added: usize,
+        removed: usize,
+        retained: usize,
+    },
 
     /// SDK promote phase started.
-    PromoteStarted    { session: String },
+    PromoteStarted { session: String },
 
     /// SDK promote phase finished.
-    PromoteFinished   { promoted: usize, duplicates: usize, elapsed: Duration },
+    PromoteFinished {
+        promoted: usize,
+        duplicates: usize,
+        elapsed: Duration,
+    },
 
     /// SDK started an ask op.
-    AskStarted     { backend: &'static str },
+    AskStarted { backend: &'static str },
 
     /// SDK ask op returned.
     #[cfg(feature = "ask")]
-    AskFinished    { status: ProverStatus, elapsed: Duration },
+    AskFinished {
+        status: ProverStatus,
+        elapsed: Duration,
+    },
 
     /// SDK test-case completed.
-    TestCase { idx: usize, total: usize, tag: String, brief: &'static str },
+    TestCase {
+        idx: usize,
+        total: usize,
+        tag: String,
+        brief: &'static str,
+    },
 
     // -- Generic fallback ---------------------------------------------------
-
     /// Fallback for instrumentation that has no typed variant. `target`
     /// mirrors the `log::*` `target:` field; `level` is the severity;
     /// `message` is the formatted payload. Consumers can route these into a
@@ -348,8 +404,8 @@ pub enum ProgressEvent {
     /// }
     /// ```
     Log {
-        level:   LogLevel,
-        target:  &'static str,
+        level: LogLevel,
+        target: &'static str,
         message: String,
     },
 }
@@ -360,12 +416,22 @@ pub enum ProgressEvent {
 /// the `log` crate to match on it.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogLevel { Trace, Debug, Info, Warn, Error }
+pub enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
 
 /// Emit a [`ProgressEvent::Log`] through the current thread-local sink.
 #[macro_export]
 macro_rules! log {
     ($level:ident, $target:literal, $message:expr) => {
-        crate::emit_event!(crate::progress::ProgressEvent::Log { level: crate::progress::LogLevel::$level, target: $target, message: $message });
+        crate::emit_event!(crate::progress::ProgressEvent::Log {
+            level: crate::progress::LogLevel::$level,
+            target: $target,
+            message: $message
+        });
     };
 }

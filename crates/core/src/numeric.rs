@@ -26,8 +26,8 @@ pub(crate) fn format_num(v: f64) -> String {
 /// by zero, or a non-finite result — the term stays symbolic.
 pub(crate) fn eval_binary_fn(name: &str, x: f64, y: f64) -> Option<f64> {
     let v = match name {
-        "AdditionFn"       => x + y,
-        "SubtractionFn"    => x - y,
+        "AdditionFn" => x + y,
+        "SubtractionFn" => x - y,
         "MultiplicationFn" => x * y,
         "DivisionFn" if y != 0.0 => x / y,
         _ => return None,
@@ -40,10 +40,10 @@ pub(crate) fn eval_binary_fn(name: &str, x: f64, y: f64) -> Option<f64> {
 #[cfg_attr(not(feature = "native-prover"), allow(dead_code))]
 pub(crate) fn eval_compare(name: &str, x: f64, y: f64) -> Option<bool> {
     Some(match name {
-        "greaterThan"          => x > y,
-        "lessThan"             => x < y,
+        "greaterThan" => x > y,
+        "lessThan" => x < y,
         "greaterThanOrEqualTo" => x >= y,
-        "lessThanOrEqualTo"    => x <= y,
+        "lessThanOrEqualTo" => x <= y,
         _ => return None,
     })
 }
@@ -65,7 +65,12 @@ mod tests {
 
     #[test]
     fn canonical_rendering_collapses_spellings() {
-        for (a, b) in [("8", "8.0"), ("8.0", "8.00"), ("40", "40.0"), ("-3.5", "-3.50")] {
+        for (a, b) in [
+            ("8", "8.0"),
+            ("8.0", "8.00"),
+            ("40", "40.0"),
+            ("-3.5", "-3.50"),
+        ] {
             assert_eq!(
                 format_num(parse_num(a).unwrap()),
                 format_num(parse_num(b).unwrap()),

@@ -132,13 +132,27 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             self.seen.entry(key).or_insert(id);
             let lits = self.clauses[id as usize].lits.clone();
             for (i, l) in lits.iter().enumerate() {
-                self.idx.add(EntryRef { clause: id, lit: i as u8 }, l.pos, l.atom, &src);
+                self.idx.add(
+                    EntryRef {
+                        clause: id,
+                        lit: i as u8,
+                    },
+                    l.pos,
+                    l.atom,
+                    &src,
+                );
             }
             if lits.len() == 1 {
                 let nv = self.clauses[id as usize].nvars;
                 self.units.add_unit(
-                    id, lits[0].pos, lits[0].atom, nv,
-                    &layer.atom_infos, &layer.atoms, &layer.semantic().syntactic);
+                    id,
+                    lits[0].pos,
+                    lits[0].atom,
+                    nv,
+                    &layer.atom_infos,
+                    &layer.atoms,
+                    &layer.semantic().syntactic,
+                );
                 // Re-registration of an already-active equation: no
                 // backward pass (that ran at its original activation).
                 let _ = self.index_demodulator(id);

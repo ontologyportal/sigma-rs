@@ -1,12 +1,10 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use crate::layer::{Layer, TopLayer};
 use crate::types::SourceFile;
-use crate::{
-    SentenceId, SineParams, SymbolId,
-};
-use crate::layer::{TopLayer, Layer};
 use crate::Diagnostic;
+use crate::{SentenceId, SineParams, SymbolId};
 
 use super::KnowledgeBase;
 
@@ -16,13 +14,18 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
 
     /// Number of axioms currently tracked by the SInE index.
     pub fn sine_axiom_count(&self) -> usize {
-        self.layer.semantic().syntactic
+        self.layer
+            .semantic()
+            .syntactic
             .sine_current(|idx| idx.axiom_count())
     }
 
     /// The default SInE tolerance factor.
     pub fn sine_tolerance(&self) -> f32 {
-        self.layer.semantic().syntactic.sine
+        self.layer
+            .semantic()
+            .syntactic
+            .sine
             .with_ref(|idx| idx.tolerance())
     }
 
@@ -45,11 +48,19 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     pub fn query_symbols(&mut self, query_kif: &str) -> Result<HashSet<SymbolId>, Diagnostic> {
         let query_tag = crate::kb::session_tags::SESSION_SINE_QUERY;
 
-        let outcome = self.ingest_source(SourceFile::inline_kif(query_tag, query_kif.to_string()), query_tag, true);
+        let outcome = self.ingest_source(
+            SourceFile::inline_kif(query_tag, query_kif.to_string()),
+            query_tag,
+            true,
+        );
         if !outcome.errors.is_empty() {
             // Roll back the partial parse; the truncate re-ingest's cascade
             // reverts every derived cache (taxonomy edges + lazy caches) on its own.
-            let _ = self.ingest_source(SourceFile::truncate(PathBuf::from(query_tag)), query_tag, true);
+            let _ = self.ingest_source(
+                SourceFile::truncate(PathBuf::from(query_tag)),
+                query_tag,
+                true,
+            );
             return Err(outcome.errors.into_iter().next().unwrap());
         }
 
@@ -69,9 +80,17 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
         // Roll back the temporary parse.  The SInE index is unaffected — we only
         // mutated file-tag-scoped state that re-ingesting empty undoes, and the
         // truncate's cascade reverts the taxonomy/semantic caches automatically.
-        let _ = self.ingest_source(SourceFile::truncate(PathBuf::from(query_tag)), query_tag, true);
+        let _ = self.ingest_source(
+            SourceFile::truncate(PathBuf::from(query_tag)),
+            query_tag,
+            true,
+        );
 
-        self.debug(format!("query_symbols: extracted {} syms from {} query sentence(s)", syms.len(), query_sids.len()));
+        self.debug(format!(
+            "query_symbols: extracted {} syms from {} query sentence(s)",
+            syms.len(),
+            query_sids.len()
+        ));
         Ok(syms)
     }
 
@@ -120,10 +139,12 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     /// the legacy path.
     pub fn sine_select_for_sids(
         &self,
-        sids:   &[SentenceId],
+        sids: &[SentenceId],
         params: SineParams,
     ) -> HashSet<SentenceId> {
-        self.layer.semantic().syntactic
+        self.layer
+            .semantic()
+            .syntactic
             .sine_select_for_sids(sids, params, &self.prove_ctx())
     }
 
@@ -138,10 +159,12 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     /// stay consistent across call sites.
     pub fn sine_select_with_seed(
         &self,
-        seed:   HashSet<SymbolId>,
+        seed: HashSet<SymbolId>,
         params: SineParams,
     ) -> HashSet<SentenceId> {
-        self.layer.semantic().syntactic
+        self.layer
+            .semantic()
+            .syntactic
             .sine_select_with_seed(seed, params, &self.prove_ctx())
     }
 
@@ -152,5 +175,4 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     pub fn filter_excluded_heads(&self, sids: &[SentenceId]) -> Vec<SentenceId> {
         self.layer.semantic().syntactic.filter_excluded_heads(sids)
     }
-
 }

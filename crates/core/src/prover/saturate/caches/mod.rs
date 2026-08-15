@@ -4,5 +4,5 @@
 // mirroring `semantics/caches/` and `trans/caches/`.
 
 pub(crate) mod clause_store;
-pub(crate) mod model_registry;
 pub(crate) mod fingerprint;
+pub(crate) mod model_registry;

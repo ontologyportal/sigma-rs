@@ -35,20 +35,36 @@ fn decode_tptp_literals_inner(node: &mut AstNode) {
 }
 
 fn decode_encoded_literal(name: &str, span: &Span) -> Option<AstNode> {
-    if name == "$true"  { return Some(AstNode::Symbol { name: "True".to_owned(),  span: span.clone() }); }
-    if name == "$false" { return Some(AstNode::Symbol { name: "False".to_owned(), span: span.clone() }); }
+    if name == "$true" {
+        return Some(AstNode::Symbol {
+            name: "True".to_owned(),
+            span: span.clone(),
+        });
+    }
+    if name == "$false" {
+        return Some(AstNode::Symbol {
+            name: "False".to_owned(),
+            span: span.clone(),
+        });
+    }
     if let Some(n) = name.strip_prefix("n__") {
         let value = if let Some(pos) = n.strip_prefix("neg_") {
             format!("-{}", pos.replace('_', "."))
         } else {
             n.replace('_', ".")
         };
-        return Some(AstNode::Number { value, span: span.clone() });
+        return Some(AstNode::Number {
+            value,
+            span: span.clone(),
+        });
     }
     if let Some(content) = name.strip_prefix("str__") {
         // `AstNode::Str` stores the value with surrounding double-quotes,
         // matching the KIF tokenizer convention.
-        return Some(AstNode::Str { value: format!("\"{}\"", content), span: span.clone() });
+        return Some(AstNode::Str {
+            value: format!("\"{}\"", content),
+            span: span.clone(),
+        });
     }
     None
 }
@@ -67,7 +83,10 @@ mod tests {
     }
 
     fn dummy_symbol(name: &str) -> AstNode {
-        AstNode::Symbol { name: name.to_owned(), span: dummy_span() }
+        AstNode::Symbol {
+            name: name.to_owned(),
+            span: dummy_span(),
+        }
     }
 
     // ── decode_encoded_literal ────────────────────────────────────────────
@@ -141,10 +160,7 @@ mod tests {
     #[test]
     fn literal_in_list_replaced() {
         let mut node = AstNode::List {
-            elements: vec![
-                dummy_symbol("p"),
-                dummy_symbol("n__7"),
-            ],
+            elements: vec![dummy_symbol("p"), dummy_symbol("n__7")],
             span: dummy_span(),
         };
         decode_tptp_literals(&mut node, &tptp_parser());

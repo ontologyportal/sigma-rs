@@ -1,8 +1,8 @@
 //! The [`Sentence`] type (a flat list of [`Element`]s) and its accessors.
 
 mod element;
-mod literal;
 mod hash;
+mod literal;
 
 // The incremental content-hasher is only consumed outside this module by
 // the native prover's derived-term keying (`saturate::terms`).
@@ -10,18 +10,18 @@ mod hash;
 pub(crate) use hash::ElementHasher;
 
 pub use element::Element;
-pub use literal::Literal;
-pub use element::{InternedSym, Symbol, SymbolId};
 pub(crate) use element::{clear_thaw_pool, seed_thaw_pool};
+pub use element::{InternedSym, Symbol, SymbolId};
+pub use literal::Literal;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::AstNode;
 use crate::parse::OpKind;
+use crate::AstNode;
 
 /// Inline capacity for [`ElementVec`].
 ///
@@ -98,15 +98,32 @@ impl Sentence {
     ///
     /// Returns the root sentence, its sub-sentences, and the symbols
     /// collected during the walk. Returns `None` when `node` is not a list.
-    pub(crate) fn from_node(node: &AstNode, ctx: &ScopeCtx) -> Option<(Self, Vec<Self>, Vec<Symbol>)> {
-        let AstNode::List { elements: elements_ast, .. } = node else { return None };
+    pub(crate) fn from_node(
+        node: &AstNode,
+        ctx: &ScopeCtx,
+    ) -> Option<(Self, Vec<Self>, Vec<Symbol>)> {
+        let AstNode::List {
+            elements: elements_ast,
+            ..
+        } = node
+        else {
+            return None;
+        };
 
         let Some(first) = elements_ast.get(0) else {
             unreachable!("The parser should have found and rejected empty sentences");
         };
-        
-        if !matches!(first, AstNode::Symbol { .. } | AstNode::Variable { .. } | AstNode::RowVariable { .. } | AstNode::Operator { .. }) {
-            unreachable!("The parser should have caught sentences which did not start with a symbol");
+
+        if !matches!(
+            first,
+            AstNode::Symbol { .. }
+                | AstNode::Variable { .. }
+                | AstNode::RowVariable { .. }
+                | AstNode::Operator { .. }
+        ) {
+            unreachable!(
+                "The parser should have caught sentences which did not start with a symbol"
+            );
         }
 
         for (i, el) in elements_ast.iter().enumerate() {
@@ -120,15 +137,25 @@ impl Sentence {
         // A quantifier body inherits the free-variable scope but overrides its
         // bound variables to a freshly minted scope.
         let child_ctx;
-        let body_ctx = if matches!(elements_ast.get(0), Some(AstNode::Operator { op: OpKind::Exists | OpKind::ForAll, .. })) {
+        let body_ctx = if matches!(
+            elements_ast.get(0),
+            Some(AstNode::Operator {
+                op: OpKind::Exists | OpKind::ForAll,
+                ..
+            })
+        ) {
             let bound: Vec<String> = match elements_ast.get(1) {
-                Some(AstNode::List { elements, .. }) => {
-                    elements.iter().map(|e| match e {
-                        AstNode::Variable { name, .. }
-                        | AstNode::RowVariable { name, .. } => name.clone(),
-                        _ => unreachable!("The parser should have caught a quantifier variable sentence"),
-                    }).collect()
-                }
+                Some(AstNode::List { elements, .. }) => elements
+                    .iter()
+                    .map(|e| match e {
+                        AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => {
+                            name.clone()
+                        }
+                        _ => unreachable!(
+                            "The parser should have caught a quantifier variable sentence"
+                        ),
+                    })
+                    .collect(),
                 _ => unreachable!("The parser should have caught a quantifier variable sentence"),
             };
             child_ctx = ctx.child_for_quantifier(bound);
@@ -146,14 +173,20 @@ impl Sentence {
             collected_syms.extend(syms);
             elements.push(elem);
         }
-        let new_sent = Sentence { parent: Vec::new(), elements };
+        let new_sent = Sentence {
+            parent: Vec::new(),
+            elements,
+        };
         let new_id = new_sent.hash();
-        let sub_sentences = sub_sentences.into_iter().map(|mut sent| {
-            if sent.parent.is_empty() {
-                sent.parent = vec![new_id];
-            }
-            sent
-        }).collect();
+        let sub_sentences = sub_sentences
+            .into_iter()
+            .map(|mut sent| {
+                if sent.parent.is_empty() {
+                    sent.parent = vec![new_id];
+                }
+                sent
+            })
+            .collect();
         Some((new_sent, sub_sentences, collected_syms))
     }
 }
@@ -178,9 +211,9 @@ pub(crate) fn build_detached(node: &AstNode) -> Option<(Sentence, Vec<Sentence>)
 /// of `?X` in a root shares one scoped id while different roots get distinct ones.
 pub(in super::super) struct ScopeCtx {
     /// Shared scope-id allocator (the store's `scope_counter`).
-    counter:   Arc<AtomicU64>,
+    counter: Arc<AtomicU64>,
     /// This root's free-variable scope (fixed).
-    default:   u64,
+    default: u64,
     /// Quantifier-bound variable name → its minted scope id.
     overrides: HashMap<String, u64>,
 }
@@ -189,13 +222,20 @@ impl ScopeCtx {
     /// Start a fresh root context, minting this root's free-variable scope.
     pub(in super::super) fn new(counter: Arc<AtomicU64>) -> Self {
         let default = counter.fetch_add(1, Ordering::Relaxed);
-        Self { counter, default, overrides: HashMap::new() }
+        Self {
+            counter,
+            default,
+            overrides: HashMap::new(),
+        }
     }
 
     /// Scope id for `var_name`: a quantifier override if bound, else this root's
     /// free-variable scope.
     fn scope_for(&self, var_name: &str) -> u64 {
-        self.overrides.get(var_name).copied().unwrap_or(self.default)
+        self.overrides
+            .get(var_name)
+            .copied()
+            .unwrap_or(self.default)
     }
 
     /// Child context for a quantifier body: same free-var `default`, with each
@@ -204,6 +244,10 @@ impl ScopeCtx {
         let q = self.counter.fetch_add(1, Ordering::Relaxed);
         let mut overrides = self.overrides.clone();
         overrides.extend(bound.into_iter().map(|v| (v, q)));
-        Self { counter: self.counter.clone(), default: self.default, overrides }
+        Self {
+            counter: self.counter.clone(),
+            default: self.default,
+            overrides,
+        }
     }
 }

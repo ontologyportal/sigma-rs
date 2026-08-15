@@ -5,8 +5,8 @@
 
 #![cfg(test)]
 
-use super::SyntacticLayer;
 use super::sentence::Symbol;
+use super::SyntacticLayer;
 use crate::cache::events::Event;
 use crate::layer::Layer;
 use crate::types::SentenceId;
@@ -29,7 +29,10 @@ fn source_ingests_into_ast_then_sentences_and_symbols() {
     // AST node landed in the source cache (keyed by content fingerprint).
     let fps = layer.file_fingerprints("a.kif");
     assert_eq!(fps.len(), 1, "one formula → one source fingerprint");
-    assert!(layer.source_ast(fps[0]).is_some(), "source AST node retained");
+    assert!(
+        layer.source_ast(fps[0]).is_some(),
+        "source AST node retained"
+    );
     assert_eq!(layer.source_files(), vec!["a.kif".to_string()]);
 
     // Sentence built.
@@ -46,13 +49,21 @@ fn source_ingests_into_ast_then_sentences_and_symbols() {
 fn duplicate_symbols_intern_once() {
     let mut layer = SyntacticLayer::default();
     // `Animal` appears 3×, `subclass` 2×.
-    layer.load_kif_assert("(subclass Human Animal)(subclass Dog Animal)(instance Animal Class)", "a.kif");
+    layer.load_kif_assert(
+        "(subclass Human Animal)(subclass Dog Animal)(instance Animal Class)",
+        "a.kif",
+    );
 
     let animal = layer.sym_id("Animal").expect("Animal interned");
     // Every mention resolves to the same id, and the id is exactly hash(name).
     assert_eq!(animal, Symbol::hash_name("Animal"));
     // The symbol table holds exactly one entry per distinct name (not per mention).
-    let names: Vec<String> = layer.symbols.snapshot().values().map(|n| n.to_string()).collect();
+    let names: Vec<String> = layer
+        .symbols
+        .snapshot()
+        .values()
+        .map(|n| n.to_string())
+        .collect();
     let animal_entries = names.iter().filter(|n| n.as_str() == "Animal").count();
     assert_eq!(animal_entries, 1, "Animal interned once despite 3 mentions");
 }
@@ -67,7 +78,11 @@ fn root_sentences_interned_and_concrete_facts_dedup() {
     // The same concrete fact, twice in one file, is one root (the map IS the dedup).
     let mut l2 = SyntacticLayer::default();
     l2.load_kif_assert("(instance Fido Dog)(instance Fido Dog)", "b.kif");
-    assert_eq!(l2.num_roots(), 1, "identical concrete fact dedups to one root");
+    assert_eq!(
+        l2.num_roots(),
+        1,
+        "identical concrete fact dedups to one root"
+    );
 }
 
 // 4 ─ Re-ingesting a file diffs against its previous contents (add/keep/remove).
@@ -85,10 +100,16 @@ fn source_update_diff_is_handled() {
     // The kept root (A B) keeps its (content-hash) id; (C D)'s id is gone; (E F) is new.
     let after = roots(&layer);
     let kept: Vec<_> = before.iter().filter(|s| after.contains(s)).collect();
-    assert_eq!(kept.len(), 1, "exactly the unchanged sentence is retained by id");
+    assert_eq!(
+        kept.len(),
+        1,
+        "exactly the unchanged sentence is retained by id"
+    );
     assert!(layer.sym_id("E").is_some(), "added symbol E interned");
-    assert!(layer.sym_id("C").is_none() || layer.by_head("subclass").len() == 2,
-        "C/D no longer referenced (orphan symbols pruned)");
+    assert!(
+        layer.sym_id("C").is_none() || layer.by_head("subclass").len() == 2,
+        "C/D no longer referenced (orphan symbols pruned)"
+    );
 }
 
 // 5 ─ Passing an empty file clears all of that file's axioms.
@@ -99,8 +120,15 @@ fn empty_file_clears_its_axioms() {
     assert_eq!(layer.num_roots(), 2);
 
     layer.load_kif_assert("", "f.kif");
-    assert_eq!(layer.num_roots(), 0, "empty re-ingest removes the file's roots");
-    assert!(layer.file_fingerprints("f.kif").is_empty(), "file has no fingerprints");
+    assert_eq!(
+        layer.num_roots(),
+        0,
+        "empty re-ingest removes the file's roots"
+    );
+    assert!(
+        layer.file_fingerprints("f.kif").is_empty(),
+        "file has no fingerprints"
+    );
 }
 
 // 6a ─ Reference counters: a fact in two files survives removal of one (the
@@ -133,11 +161,19 @@ fn refcount_one_sentence_from_two_formulas() {
     // `(<=> (foo a) (bar a))` normalizes to `(=> (foo a) (bar a))` + `(=> (bar a) (foo a))`.
     // The first coincides with the existing root (same content hash).
     layer.load_kif_assert("(<=> (foo a) (bar a))", "iff.kif");
-    assert_eq!(layer.num_roots(), 2, "shared `(=> foo bar)` + the new reverse implication");
+    assert_eq!(
+        layer.num_roots(),
+        2,
+        "shared `(=> foo bar)` + the new reverse implication"
+    );
 
     // Drop the plain implication file: `(=> foo bar)` still produced by the <=>.
     layer.load_kif_assert("", "imp.kif");
-    assert_eq!(layer.num_roots(), 2, "shared sentence survives — still produced by the <=>");
+    assert_eq!(
+        layer.num_roots(),
+        2,
+        "shared sentence survives — still produced by the <=>"
+    );
 
     // Drop the <=> file: both implications gone.
     layer.load_kif_assert("", "iff.kif");
@@ -169,11 +205,17 @@ fn refcount_shared_sub_sentence() {
     // Remove the compound file: the `and` root goes, but `(instance A B)` survives
     // (still a root via y.kif).
     layer.load_kif_assert("", "x.kif");
-    assert!(layer.sentence(inst_ab).is_some(), "shared sub survives — still a standalone root");
+    assert!(
+        layer.sentence(inst_ab).is_some(),
+        "shared sub survives — still a standalone root"
+    );
 
     // Remove the standalone file: now nothing references it → gone.
     layer.load_kif_assert("", "y.kif");
-    assert!(layer.sentence(inst_ab).is_none(), "removed once neither root nor sub references it");
+    assert!(
+        layer.sentence(inst_ab).is_none(),
+        "removed once neither root nor sub references it"
+    );
 }
 
 // 7 ─ Sentence and symbol hashing is consistent across independent layers.
@@ -187,7 +229,10 @@ fn hashing_is_consistent() {
     // Same concrete sentence → identical content-hash SentenceId across layers.
     let s1 = roots(&l1);
     let s2 = roots(&l2);
-    assert_eq!(s1, s2, "identical concrete sentence → identical SentenceId across layers");
+    assert_eq!(
+        s1, s2,
+        "identical concrete sentence → identical SentenceId across layers"
+    );
 
     // SymbolId is the content hash of the name — stable across layers and equal
     // to `Symbol::hash_name`.
@@ -209,15 +254,30 @@ fn promotion_populates_axiom_index_and_sine() {
 
     // Before promotion: a transient assertion, unknown to axiom_index + SInE.
     assert!(!layer.is_axiom(sid), "transient before promotion");
-    assert!(layer.axiom_sentences_of(sub).is_empty(), "axiom_index empty pre-promotion");
-    assert_eq!(layer.sine.with_ref(|idx| idx.generality(sub)), 0, "SInE empty pre-promotion");
+    assert!(
+        layer.axiom_sentences_of(sub).is_empty(),
+        "axiom_index empty pre-promotion"
+    );
+    assert_eq!(
+        layer.sine.with_ref(|idx| idx.generality(sub)),
+        0,
+        "SInE empty pre-promotion"
+    );
 
     // Promote the session → AxiomsPromoted cascade.
-    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
+    let _ = layer.cascade(vec![Event::SessionAxiomatized {
+        session: "a.kif".to_string(),
+    }]);
 
     assert!(layer.is_axiom(sid), "axiom after promotion");
-    assert!(layer.axiom_sentences_of(sub).contains(&sid), "axiom_index indexes the promoted axiom");
-    assert!(layer.sine.with_ref(|idx| idx.generality(sub)) > 0, "SInE indexes the promoted axiom");
+    assert!(
+        layer.axiom_sentences_of(sub).contains(&sid),
+        "axiom_index indexes the promoted axiom"
+    );
+    assert!(
+        layer.sine.with_ref(|idx| idx.generality(sub)) > 0,
+        "SInE indexes the promoted axiom"
+    );
 }
 
 // 9 ─ Retracting a promoted axiom (empty re-ingest → RootRemoved) drops it from
@@ -226,7 +286,9 @@ fn promotion_populates_axiom_index_and_sine() {
 fn retracting_axiom_drops_it_from_axiom_index_and_sine() {
     let mut layer = SyntacticLayer::default();
     layer.load_kif_assert("(subclass Human Animal)", "a.kif");
-    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
+    let _ = layer.cascade(vec![Event::SessionAxiomatized {
+        session: "a.kif".to_string(),
+    }]);
     let sub = layer.sym_id("subclass").unwrap();
     let sid = roots(&layer)[0];
     assert!(layer.axiom_sentences_of(sub).contains(&sid));
@@ -234,8 +296,15 @@ fn retracting_axiom_drops_it_from_axiom_index_and_sine() {
     // Empty the file: the source diff retracts the sentence (RootRemoved).
     layer.load_kif_assert("", "a.kif");
 
-    assert!(!layer.axiom_sentences_of(sub).contains(&sid), "dropped from axiom_index");
-    assert_eq!(layer.sine.with_ref(|idx| idx.generality(sub)), 0, "dropped from SInE");
+    assert!(
+        !layer.axiom_sentences_of(sub).contains(&sid),
+        "dropped from axiom_index"
+    );
+    assert_eq!(
+        layer.sine.with_ref(|idx| idx.generality(sub)),
+        0,
+        "dropped from SInE"
+    );
     assert!(!layer.is_axiom(sid), "no longer an axiom");
 }
 
@@ -252,29 +321,51 @@ fn shared_axiom_promoted_once_and_survives_until_last_ref() {
     let inst = layer.sym_id("instance").unwrap();
     let sid = roots(&layer)[0];
 
-    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]);
+    let _ = layer.cascade(vec![Event::SessionAxiomatized {
+        session: "a.kif".to_string(),
+    }]);
     assert!(layer.axiom_sentences_of(inst).contains(&sid));
 
     // Promoting b.kif must NOT re-emit the already-axiom sid (the filter). Drive
     // the cascade directly so we can inspect the emitted events.
-    let outcome = layer.cascade(vec![Event::SessionAxiomatized { session: "b.kif".to_string() }]);
-    let re_promoted: Vec<SentenceId> = outcome.emitted.iter()
-        .filter_map(|e| match e { Event::AxiomsPromoted { sids } => Some(sids.clone()), _ => None })
+    let outcome = layer.cascade(vec![Event::SessionAxiomatized {
+        session: "b.kif".to_string(),
+    }]);
+    let re_promoted: Vec<SentenceId> = outcome
+        .emitted
+        .iter()
+        .filter_map(|e| match e {
+            Event::AxiomsPromoted { sids } => Some(sids.clone()),
+            _ => None,
+        })
         .flatten()
         .collect();
-    assert!(!re_promoted.contains(&sid), "already-axiom sid filtered out of b.kif's AxiomsPromoted");
+    assert!(
+        !re_promoted.contains(&sid),
+        "already-axiom sid filtered out of b.kif's AxiomsPromoted"
+    );
 
     // Still one axiom occurrence, not double-counted.
     assert!(layer.axiom_sentences_of(inst).contains(&sid));
 
     // Drop one file: the fact is still produced by the other → survives.
     layer.load_kif_assert("", "a.kif");
-    assert!(layer.axiom_sentences_of(inst).contains(&sid), "still referenced by b.kif");
+    assert!(
+        layer.axiom_sentences_of(inst).contains(&sid),
+        "still referenced by b.kif"
+    );
 
     // Drop the last file: RootRemoved retracts it everywhere.
     layer.load_kif_assert("", "b.kif");
-    assert!(!layer.axiom_sentences_of(inst).contains(&sid), "gone from axiom_index");
-    assert_eq!(layer.sine.with_ref(|idx| idx.generality(inst)), 0, "gone from SInE");
+    assert!(
+        !layer.axiom_sentences_of(inst).contains(&sid),
+        "gone from axiom_index"
+    );
+    assert_eq!(
+        layer.sine.with_ref(|idx| idx.generality(inst)),
+        0,
+        "gone from SInE"
+    );
 }
 
 // 11 ─ The whole store round-trips through the unified cache-snapshot seam:
@@ -288,7 +379,9 @@ fn cache_snapshot_round_trips_the_store() {
 
     let mut layer = SyntacticLayer::default();
     layer.load_kif_assert("(subclass Human Animal)(instance Fido Dog)", "a.kif");
-    let _ = layer.cascade(vec![Event::SessionAxiomatized { session: "a.kif".to_string() }]); // promote → sine + axiom_index + promoted set
+    let _ = layer.cascade(vec![Event::SessionAxiomatized {
+        session: "a.kif".to_string(),
+    }]); // promote → sine + axiom_index + promoted set
     let roots_before = roots(&layer);
     let sub = layer.sym_id("subclass").unwrap();
     let gen_before = layer.sine.with_ref(|idx| idx.generality(sub));
@@ -301,7 +394,11 @@ fn cache_snapshot_round_trips_the_store() {
     restored.restore_caches_from(&backend).expect("restore");
 
     // Sentences + provenance side (roots set) round-trip.
-    assert_eq!(roots(&restored), roots_before, "roots round-trip by content-hash id");
+    assert_eq!(
+        roots(&restored),
+        roots_before,
+        "roots round-trip by content-hash id"
+    );
     assert_eq!(restored.num_roots(), 2);
     for &sid in &roots_before {
         assert!(restored.sentence(sid).is_some(), "sentence body restored");
@@ -309,32 +406,40 @@ fn cache_snapshot_round_trips_the_store() {
         assert!(restored.is_axiom(sid), "axiom status round-trips");
     }
     // SInE index (eager value) round-trips.
-    assert_eq!(restored.sine.with_ref(|idx| idx.generality(sub)), gen_before,
-        "SInE generality round-trips");
+    assert_eq!(
+        restored.sine.with_ref(|idx| idx.generality(sub)),
+        gen_before,
+        "SInE generality round-trips"
+    );
     // axiom_index round-trips.
-    assert!(restored.axiom_sentences_of(sub).iter().any(|s| roots_before.contains(s)),
-        "axiom_index round-trips");
+    assert!(
+        restored
+            .axiom_sentences_of(sub)
+            .iter()
+            .any(|s| roots_before.contains(s)),
+        "axiom_index round-trips"
+    );
 }
 
 /// Drive a raw `SourceAdded` cascade and return the whole outcome so a test can
 /// inspect the emitted events (`load_kif_assert` discards them).
 fn ingest_outcome(
     layer: &mut SyntacticLayer,
-    text:  &str,
-    file:  &str,
+    text: &str,
+    file: &str,
 ) -> crate::cache::router::RouteOutcome {
     let source = crate::types::SourceFile {
-        parser:   crate::Parser::Kif,
-        name:     file.to_owned(),
-        path:     std::path::PathBuf::from(file),
-        origin:   crate::types::FileOrigin::Inline,
+        parser: crate::Parser::Kif,
+        name: file.to_owned(),
+        path: std::path::PathBuf::from(file),
+        origin: crate::types::FileOrigin::Inline,
         contents: text.to_owned(),
         prebuilt: None,
     };
     layer.cascade(vec![Event::SourceAdded {
         session: std::sync::Arc::new(file.to_owned()),
-        file:    source,
-        staged:  false,
+        file: source,
+        staged: false,
     }])
 }
 
@@ -346,14 +451,16 @@ fn ingest_outcome(
 fn removal_events_carry_sentence_bodies() {
     let mut layer = SyntacticLayer::default();
     layer.load_kif_assert("(subclass Dog Animal)", "a.kif");
-    let sid      = roots(&layer)[0];
+    let sid = roots(&layer)[0];
     let subclass = layer.sym_id("subclass").expect("subclass interned");
 
     // Empty the file via a raw cascade so the emitted events are observable.
     let outcome = ingest_outcome(&mut layer, "", "a.kif");
 
     // `RootRemoved` moves the removed root body into the event.
-    let root_removed: Vec<(SentenceId, Vec<_>)> = outcome.emitted.iter()
+    let root_removed: Vec<(SentenceId, Vec<_>)> = outcome
+        .emitted
+        .iter()
         .filter_map(|e| match e {
             Event::RootRemoved { sid, sentences } => Some((*sid, sentences.clone())),
             _ => None,
@@ -362,11 +469,19 @@ fn removal_events_carry_sentence_bodies() {
     assert_eq!(root_removed.len(), 1, "one root retracted");
     let (rsid, sentences) = &root_removed[0];
     assert_eq!(*rsid, sid);
-    let root = sentences.iter().find(|s| s.hash() == sid)
+    let root = sentences
+        .iter()
+        .find(|s| s.hash() == sid)
         .expect("removed root body rides on the event");
-    assert_eq!(root.head_symbol(), Some(subclass), "moved body still resolves its head");
+    assert_eq!(
+        root.head_symbol(),
+        Some(subclass),
+        "moved body still resolves its head"
+    );
 
-    let rel_removed: Vec<(SentenceId, _)> = outcome.emitted.iter()
+    let rel_removed: Vec<(SentenceId, _)> = outcome
+        .emitted
+        .iter()
         .filter_map(|e| match e {
             Event::RelationRemoved { sid, sentence } => Some((*sid, sentence.clone())),
             _ => None,
@@ -374,8 +489,11 @@ fn removal_events_carry_sentence_bodies() {
         .collect();
     assert_eq!(rel_removed.len(), 1, "one relation retracted");
     assert_eq!(rel_removed[0].0, sid);
-    assert_eq!(rel_removed[0].1.head_symbol(), Some(subclass),
-        "RelationRemoved carries the relation's sentence");
+    assert_eq!(
+        rel_removed[0].1.head_symbol(),
+        Some(subclass),
+        "RelationRemoved carries the relation's sentence"
+    );
 
     assert_eq!(layer.num_roots(), 0, "store is empty afterwards");
 }

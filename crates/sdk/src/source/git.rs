@@ -29,14 +29,19 @@ pub fn remote_branch_head(url: &str, branch: Option<&str>) -> Result<GitProvenan
     remote.connect(Direction::Fetch).map_err(SdkError::Git)?;
     let heads = remote.list().map_err(SdkError::Git)?;
     let wanted = format!("refs/heads/{branch}");
-    let commit = heads.iter()
+    let commit = heads
+        .iter()
         .find(|h| h.name() == wanted)
         .map(|h| h.oid().to_string());
     let _ = remote.disconnect();
 
-    let commit = commit.ok_or_else(|| SdkError::Config(format!(
-        "branch '{branch}' not found on {url}")))?;
-    Ok(GitProvenance { uri: url.to_string(), branch, commit })
+    let commit =
+        commit.ok_or_else(|| SdkError::Config(format!("branch '{branch}' not found on {url}")))?;
+    Ok(GitProvenance {
+        uri: url.to_string(),
+        branch,
+        commit,
+    })
 }
 
 /// Fetch `url` at depth=1 into a fresh temporary directory, then write
@@ -61,18 +66,12 @@ pub fn fetch_repo_sparse(
     sparse_paths: &[String],
     branch: Option<&str>,
 ) -> Result<(TempDir, PathBuf, GitProvenance), SdkError> {
-    let tmp = TempDir::new().map_err(|e| {
-        SdkError::TempDir(PathBuf::new(), e)
-    })?;
+    let tmp = TempDir::new().map_err(|e| SdkError::TempDir(PathBuf::new(), e))?;
     let dest = tmp.path();
 
-    let repo = Repository::init(dest).map_err(|e| {
-        SdkError::Git(e)
-    })?;
+    let repo = Repository::init(dest).map_err(|e| SdkError::Git(e))?;
 
-    let mut remote = repo.remote("origin", url).map_err(|e| {
-        SdkError::Git(e)
-    })?;
+    let mut remote = repo.remote("origin", url).map_err(|e| SdkError::Git(e))?;
 
     let branch = match branch {
         Some(b) => b.to_string(),
@@ -99,27 +98,23 @@ pub fn fetch_repo_sparse(
             Some(&mut fetch_opts),
             None,
         )
-        .map_err(|e| {
-            SdkError::Git(e)
-        })?;
+        .map_err(|e| SdkError::Git(e))?;
 
     // bar.finish_and_clear();
 
     let reference = repo
         .find_reference(&local_ref)
-        .map_err(|e| {
-            SdkError::Git(e)
-        })?;
-    let commit = reference.peel_to_commit().map_err(|e| {
-        SdkError::Git(e)
-    })?;
-    let tree = commit.tree().map_err(|e| {
-        SdkError::Git(e)
-    })?;
+        .map_err(|e| SdkError::Git(e))?;
+    let commit = reference.peel_to_commit().map_err(|e| SdkError::Git(e))?;
+    let tree = commit.tree().map_err(|e| SdkError::Git(e))?;
 
     checkout_paths(&repo, &tree, dest, sparse_paths)?;
 
-    let provenance = GitProvenance { uri: url.to_string(), branch, commit: commit.id().to_string() };
+    let provenance = GitProvenance {
+        uri: url.to_string(),
+        branch,
+        commit: commit.id().to_string(),
+    };
     let root = dest.to_path_buf();
     Ok((tmp, root, provenance))
 }
@@ -135,8 +130,7 @@ fn resolve_default_branch(remote: &mut git2::Remote<'_>, url: &str) -> Result<St
         .ok()
         .and_then(|s| s.strip_prefix("refs/heads/"))
         .map(str::to_string)
-        .ok_or_else(|| SdkError::Config(format!(
-            "could not resolve a default branch for {url}")))
+        .ok_or_else(|| SdkError::Config(format!("could not resolve a default branch for {url}")))
 }
 
 /// Write each requested path from the git tree to `dest`.
@@ -155,23 +149,17 @@ fn checkout_paths(
         match tree.get_path(path) {
             Ok(entry) => match entry.kind() {
                 Some(ObjectType::Blob) => {
-                    let blob = repo.find_blob(entry.id()).map_err(|e| {
-                        SdkError::Git(e)
-                    })?;
+                    let blob = repo.find_blob(entry.id()).map_err(|e| SdkError::Git(e))?;
                     let out = dest.join(path);
                     if let Some(parent) = out.parent() {
-                        fs::create_dir_all(parent).map_err(|e| {
-                            SdkError::TempDir(parent.into(), e)
-                        })?;
+                        fs::create_dir_all(parent)
+                            .map_err(|e| SdkError::TempDir(parent.into(), e))?;
                     }
-                    fs::write(&out, blob.content()).map_err(|e| {
-                        SdkError::TempDir(out.into(), e)
-                    })?;
+                    fs::write(&out, blob.content())
+                        .map_err(|e| SdkError::TempDir(out.into(), e))?;
                 }
                 Some(ObjectType::Tree) => {
-                    let subtree = repo.find_tree(entry.id()).map_err(|e| {
-                        SdkError::Git(e)
-                    })?;
+                    let subtree = repo.find_tree(entry.id()).map_err(|e| SdkError::Git(e))?;
                     extract_tree(repo, &subtree, &dest.join(path))?;
                 }
                 _ => {
@@ -188,9 +176,7 @@ fn checkout_paths(
 
 /// Recursively write all blobs in `tree` under `dest`.
 fn extract_tree(repo: &Repository, tree: &Tree, dest: &Path) -> Result<(), SdkError> {
-    fs::create_dir_all(dest).map_err(|e| {
-        SdkError::TempDir(dest.into(), e)
-    })?;
+    fs::create_dir_all(dest).map_err(|e| SdkError::TempDir(dest.into(), e))?;
     for entry in tree.iter() {
         let name = match entry.name() {
             Ok(n) => n,
@@ -198,17 +184,12 @@ fn extract_tree(repo: &Repository, tree: &Tree, dest: &Path) -> Result<(), SdkEr
         };
         match entry.kind() {
             Some(ObjectType::Blob) => {
-                let blob = repo.find_blob(entry.id()).map_err(|e| {
-                    SdkError::Git(e)
-                })?;
-                fs::write(dest.join(name), blob.content()).map_err(|e| {
-                    SdkError::TempDir(dest.join(name).into(), e)
-                })?;
+                let blob = repo.find_blob(entry.id()).map_err(|e| SdkError::Git(e))?;
+                fs::write(dest.join(name), blob.content())
+                    .map_err(|e| SdkError::TempDir(dest.join(name).into(), e))?;
             }
             Some(ObjectType::Tree) => {
-                let subtree = repo.find_tree(entry.id()).map_err(|e| {
-                    SdkError::Git(e)
-                })?;
+                let subtree = repo.find_tree(entry.id()).map_err(|e| SdkError::Git(e))?;
                 extract_tree(repo, &subtree, &dest.join(name))?;
             }
             _ => {}

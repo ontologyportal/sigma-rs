@@ -29,22 +29,11 @@ use std::collections::HashSet;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-
-use super::super::{ProverMode, ProverOpts, ProverRunner};
 use super::super::super::super::{
-    result::{
-        ProverResult,
-        ProverStatus,
-        ProverTimings,
-        TerminationReason
-    },
-    tptp_proof::{
-        ProofStep,
-        TptpProofProcessor,
-        kif_proof_inputs,
-        proof_steps_to_ir
-    }
+    result::{ProverResult, ProverStatus, ProverTimings, TerminationReason},
+    tptp_proof::{kif_proof_inputs, proof_steps_to_ir, ProofStep, TptpProofProcessor},
 };
+use super::super::{ProverMode, ProverOpts, ProverRunner};
 
 // -- Pre-compiled regexes ------------------------------------------------------
 
@@ -54,9 +43,8 @@ static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*"
 /// Our `kb_<sid>` axiom name, as preserved in E's leaf source annotation
 /// `file('<stdin>', kb_42)`.  Mirrors the Vampire runner's regex; E preserves
 /// input formula names automatically (no flag needed).
-static RE_AXIOM_NAME: Lazy<Regex> = Lazy::new(|| Regex::new(
-    r"file\('[^']*',\s*(kb_\d+)\s*\)"
-).unwrap());
+static RE_AXIOM_NAME: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"file\('[^']*',\s*(kb_\d+)\s*\)").unwrap());
 
 // -- EproverRunner -------------------------------------------------------------
 
@@ -72,7 +60,7 @@ pub struct EproverRunner {
 impl Default for EproverRunner {
     fn default() -> Self {
         Self {
-            eprover_path:   PathBuf::from("eprover"),
+            eprover_path: PathBuf::from("eprover"),
             tptp_dump_path: None,
         }
     }
@@ -107,9 +95,17 @@ impl ProverRunner for EproverRunner {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult {
         if let Some(path) = &self.tptp_dump_path {
             if let Err(e) = write_file(path, tptp) {
-                crate::log!(Warn, "sigmakee_rs_core::prover", format!("failed to write TPTP dump to {}: {}", path.display(), e));
+                crate::log!(
+                    Warn,
+                    "sigmakee_rs_core::prover",
+                    format!("failed to write TPTP dump to {}: {}", path.display(), e)
+                );
             } else {
-                crate::log!(Info, "sigmakee_rs_core::prover", format!("wrote TPTP dump: {}", path.display()));
+                crate::log!(
+                    Info,
+                    "sigmakee_rs_core::prover",
+                    format!("wrote TPTP dump: {}", path.display())
+                );
             }
         }
 
@@ -118,8 +114,20 @@ impl ProverRunner for EproverRunner {
         let secs = opts.timeout();
         let args = build_eprover_args(secs);
 
-        crate::log!(Debug, "sigmakee_rs_core::prover", format!("eprover: {} {} -", self.eprover_path.display(), args.join(" ")));
-        crate::log!(Info, "sigmakee_rs_core::prover", "starting eprover prover".to_string());
+        crate::log!(
+            Debug,
+            "sigmakee_rs_core::prover",
+            format!(
+                "eprover: {} {} -",
+                self.eprover_path.display(),
+                args.join(" ")
+            )
+        );
+        crate::log!(
+            Info,
+            "sigmakee_rs_core::prover",
+            "starting eprover prover".to_string()
+        );
 
         // E reads the problem from stdin when handed the filename `-`.
         let mut child = match Command::new(&self.eprover_path)
@@ -130,17 +138,23 @@ impl ProverRunner for EproverRunner {
             .stderr(Stdio::piped())
             .spawn()
         {
-            Ok(c)  => c,
-            Err(e) => return ProverResult {
-                status:     ProverStatus::Unknown,
-                raw_output: format!("Failed to spawn eprover: {}", e),
-                ..Default::default()
-            },
+            Ok(c) => c,
+            Err(e) => {
+                return ProverResult {
+                    status: ProverStatus::Unknown,
+                    raw_output: format!("Failed to spawn eprover: {}", e),
+                    ..Default::default()
+                }
+            }
         };
 
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(tptp.as_bytes()) {
-                crate::log!(Warn, "sigmakee_rs_core::prover", format!("failed to write to eprover stdin: {}", e));
+                crate::log!(
+                    Warn,
+                    "sigmakee_rs_core::prover",
+                    format!("failed to write to eprover stdin: {}", e)
+                );
             }
         }
 
@@ -150,29 +164,43 @@ impl ProverRunner for EproverRunner {
 
         match output {
             Err(e) => ProverResult {
-                status:     ProverStatus::Unknown,
+                status: ProverStatus::Unknown,
                 raw_output: format!("Failed to run eprover: {}", e),
-                timings:    ProverTimings { prover_run, ..Default::default() },
+                timings: ProverTimings {
+                    prover_run,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             Ok(out) => {
-                let t_parse  = Instant::now();
-                let stdout   = String::from_utf8_lossy(&out.stdout).into_owned();
-                let stderr   = String::from_utf8_lossy(&out.stderr).into_owned();
+                let t_parse = Instant::now();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
                 let combined = format!("{}{}", stdout, stderr);
 
                 let status = determine_status(&combined, &opts.mode);
-                crate::log!(Info, "sigmakee_rs_core::prover", format!("eprover result: {:?}", status));
+                crate::log!(
+                    Info,
+                    "sigmakee_rs_core::prover",
+                    format!("eprover result: {:?}", status)
+                );
 
                 if matches!(status, ProverStatus::InputError) {
                     let detail = extract_input_error(&combined)
                         .unwrap_or_else(|| combined.trim().to_string());
-                    crate::log!(Warn, "sigmakee_rs_core::prover",
-                        format!("eprover rejected the input: {}", detail));
+                    crate::log!(
+                        Warn,
+                        "sigmakee_rs_core::prover",
+                        format!("eprover rejected the input: {}", detail)
+                    );
                 }
 
                 let has_proof = combined.contains("SZS output start");
-                let proof_steps = if has_proof { parse_eprover_proof(&combined) } else { Vec::new() };
+                let proof_steps = if has_proof {
+                    parse_eprover_proof(&combined)
+                } else {
+                    Vec::new()
+                };
 
                 // Only extract bindings from a genuine refutation of the
                 // (negated) conjecture.  ContradictoryAxioms proofs carry no
@@ -215,16 +243,25 @@ impl ProverRunner for EproverRunner {
                 };
 
                 let output_parse = t_parse.elapsed();
-                let termination  = extract_termination_reason(&combined);
+                let termination = extract_termination_reason(&combined);
                 ProverResult {
                     complete_saturation: None,
                     given_steps: None,
                     phase_profile: Vec::new(),
-                contradiction_proofs: Vec::new(),
-                    status, raw_output: combined, termination, bindings, proof_kif, ir_proof,
+                    contradiction_proofs: Vec::new(),
+                    status,
+                    raw_output: combined,
+                    termination,
+                    bindings,
+                    proof_kif,
+                    ir_proof,
                     proof_tptp,
                     proof_tptp_lang: crate::parse::dialect::TptpLang::default(),
-                    timings: ProverTimings { prover_run, output_parse, ..Default::default() },
+                    timings: ProverTimings {
+                        prover_run,
+                        output_parse,
+                        ..Default::default()
+                    },
                 }
             }
         }
@@ -242,8 +279,7 @@ fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
 /// this as `# Failure: Resource limit exceeded (time)` (it does *not* emit an
 /// `SZS status Timeout` line in 3.x); the SZS check is a defensive fallback.
 fn is_timeout(output: &str) -> bool {
-    output.contains("Resource limit exceeded (time)")
-        || output.contains("SZS status Timeout")
+    output.contains("Resource limit exceeded (time)") || output.contains("SZS status Timeout")
 }
 
 /// `true` if E rejected the input as malformed.  E does not emit an
@@ -267,10 +303,13 @@ fn is_input_error(output: &str) -> bool {
 
 /// Pull out the most informative line of an E input-error report for logging.
 fn extract_input_error(output: &str) -> Option<String> {
-    output.lines()
+    output
+        .lines()
         .map(str::trim)
-        .find(|l| l.starts_with("eprover:")
-            && (l.contains("expected") || l.contains("Syntax") || l.contains("read '")))
+        .find(|l| {
+            l.starts_with("eprover:")
+                && (l.contains("expected") || l.contains("Syntax") || l.contains("read '"))
+        })
         .map(|l| l.to_string())
 }
 
@@ -316,8 +355,7 @@ fn determine_status(output: &str, mode: &ProverMode) -> ProverStatus {
     }
     match mode {
         ProverMode::Prove => {
-            if output.contains("SZS status Theorem")
-                || output.contains("SZS status Unsatisfiable")
+            if output.contains("SZS status Theorem") || output.contains("SZS status Unsatisfiable")
             {
                 ProverStatus::Proved
             } else if output.contains("SZS status ContradictoryAxioms") {
@@ -372,20 +410,20 @@ fn parse_eprover_proof(input: &str) -> Vec<ProofStep> {
     // Second pass: resolve parents + source name now that all names are known.
     raws.iter()
         .map(|r| ProofStep {
-            id:          r.id.clone(),
-            role:        r.role.clone(),
-            formula:     r.formula.clone(),
-            parents:     resolve_parents(&r.source, &r.id, &names),
+            id: r.id.clone(),
+            role: r.role.clone(),
+            formula: r.formula.clone(),
+            parents: resolve_parents(&r.source, &r.id, &names),
             source_name: RE_AXIOM_NAME.captures(&r.source).map(|c| c[1].to_string()),
         })
         .collect()
 }
 
 struct RawStep {
-    id:      String,
-    role:    String,
+    id: String,
+    role: String,
     formula: String,
-    source:  String,
+    source: String,
 }
 
 /// Split a proof section into individual `cnf(…).` / `fof(…).` statements.
@@ -403,7 +441,9 @@ fn split_statements(section: &str) -> Vec<String> {
                 continue;
             }
         }
-        if !buf.is_empty() { buf.push(' '); }
+        if !buf.is_empty() {
+            buf.push(' ');
+        }
         buf.push_str(trimmed);
         if buf.trim_end().ends_with(").") {
             out.push(std::mem::take(&mut buf));
@@ -424,43 +464,66 @@ fn parse_statement(stmt: &str) -> Option<RawStep> {
         .strip_suffix(')')?;
 
     let fields = split_top_level_commas(inner);
-    if fields.len() < 3 { return None; }
+    if fields.len() < 3 {
+        return None;
+    }
 
-    let id      = fields[0].trim().to_string();
-    let role    = fields[1].trim().to_string();
+    let id = fields[0].trim().to_string();
+    let role = fields[1].trim().to_string();
     let formula = strip_outer_parens(fields[2].trim()).to_string();
     // Everything after the formula is the source annotation (inference/file
     // term, plus any trailing `['proof']`).  Re-join with commas.
-    let source  = fields[3..].join(",").trim().to_string();
+    let source = fields[3..].join(",").trim().to_string();
 
-    Some(RawStep { id, role, formula, source })
+    Some(RawStep {
+        id,
+        role,
+        formula,
+        source,
+    })
 }
 
 /// Split on top-level commas, ignoring commas nested inside `()`/`[]` or single
 /// quotes.
 fn split_top_level_commas(s: &str) -> Vec<String> {
-    let mut out     = Vec::new();
-    let mut depth   = 0i32;
-    let mut quoted  = false;
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quoted = false;
     let mut current = String::new();
     for c in s.chars() {
         match c {
-            '\'' => { quoted = !quoted; current.push(c); }
-            '(' | '[' if !quoted => { depth += 1; current.push(c); }
-            ')' | ']' if !quoted => { depth -= 1; current.push(c); }
-            ',' if depth == 0 && !quoted => { out.push(current.trim().to_string()); current.clear(); }
+            '\'' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            '(' | '[' if !quoted => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' | ']' if !quoted => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 && !quoted => {
+                out.push(current.trim().to_string());
+                current.clear();
+            }
             _ => current.push(c),
         }
     }
     let tail = current.trim().to_string();
-    if !tail.is_empty() { out.push(tail); }
+    if !tail.is_empty() {
+        out.push(tail);
+    }
     out
 }
 
 /// Strip one balanced outer `(…)` pair if it wraps the entire string.
 fn strip_outer_parens(s: &str) -> &str {
     let s = s.trim();
-    if !(s.starts_with('(') && s.ends_with(')')) { return s; }
+    if !(s.starts_with('(') && s.ends_with(')')) {
+        return s;
+    }
     let mut depth = 0i32;
     for (i, c) in s.char_indices() {
         match c {
@@ -469,7 +532,9 @@ fn strip_outer_parens(s: &str) -> &str {
                 depth -= 1;
                 // If the opening paren closes before the final char, the outer
                 // pair does not wrap the whole expression (e.g. `(a)|(b)`).
-                if depth == 0 { return if i == s.len() - 1 { s[1..i].trim() } else { s }; }
+                if depth == 0 {
+                    return if i == s.len() - 1 { s[1..i].trim() } else { s };
+                }
             }
             _ => {}
         }
@@ -486,7 +551,9 @@ fn resolve_parents(source: &str, self_id: &str, names: &HashSet<&str>) -> Vec<St
     let mut seen = HashSet::new();
     for m in RE_IDENT.find_iter(source) {
         let tok = m.as_str();
-        if tok == self_id { continue; }
+        if tok == self_id {
+            continue;
+        }
         if names.contains(tok) && seen.insert(tok.to_string()) {
             parents.push(tok.to_string());
         }
@@ -505,78 +572,126 @@ mod args_tests {
     #[test]
     fn args_use_single_strategy_auto() {
         let args = build_eprover_args(60);
-        assert!(args.iter().any(|a| a == "--auto"),
-            "must use single-strategy --auto (not the --auto-schedule portfolio): {:?}", args);
-        assert!(!args.iter().any(|a| a == "--auto-schedule"),
-            "must not invoke the portfolio schedule: {:?}", args);
+        assert!(
+            args.iter().any(|a| a == "--auto"),
+            "must use single-strategy --auto (not the --auto-schedule portfolio): {:?}",
+            args
+        );
+        assert!(
+            !args.iter().any(|a| a == "--auto-schedule"),
+            "must not invoke the portfolio schedule: {:?}",
+            args
+        );
     }
 
     #[test]
     fn args_request_tstp_proof_object() {
         let args = build_eprover_args(60);
-        assert!(args.iter().any(|a| a == "--proof-object"),
-            "proof object must be requested so a refutation transcript is emitted: {:?}", args);
-        assert!(args.iter().any(|a| a == "--tstp-format"),
-            "TPTP-3/TSTP I/O must be forced so the proof object is parseable: {:?}", args);
+        assert!(
+            args.iter().any(|a| a == "--proof-object"),
+            "proof object must be requested so a refutation transcript is emitted: {:?}",
+            args
+        );
+        assert!(
+            args.iter().any(|a| a == "--tstp-format"),
+            "TPTP-3/TSTP I/O must be forced so the proof object is parseable: {:?}",
+            args
+        );
     }
 
     #[test]
     fn args_include_cpu_limit_when_set() {
         let args = build_eprover_args(42);
-        assert!(args.iter().any(|a| a == "--cpu-limit=42"),
-            "timeout must map to --cpu-limit=<secs>: {:?}", args);
+        assert!(
+            args.iter().any(|a| a == "--cpu-limit=42"),
+            "timeout must map to --cpu-limit=<secs>: {:?}",
+            args
+        );
     }
 
     #[test]
     fn args_omit_cpu_limit_when_zero() {
         let args = build_eprover_args(0);
-        assert!(!args.iter().any(|a| a.starts_with("--cpu-limit")),
-            "no time budget means no --cpu-limit flag: {:?}", args);
+        assert!(
+            !args.iter().any(|a| a.starts_with("--cpu-limit")),
+            "no time budget means no --cpu-limit flag: {:?}",
+            args
+        );
     }
 }
 
 #[cfg(test)]
 mod status_tests {
-    use super::{determine_status, is_input_error, ProverStatus};
     use super::ProverMode;
+    use super::{determine_status, is_input_error, ProverStatus};
 
     #[test]
     fn theorem_is_proved() {
         let out = "# Proof found!\n# SZS status Theorem\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Proved));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Proved
+        ));
         // The same run, asked for consistency, means the axioms+~conj are
         // unsatisfiable → the set is Inconsistent.
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::Inconsistent));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::Inconsistent
+        ));
     }
 
     #[test]
     fn countersatisfiable_is_disproved_or_consistent() {
         let out = "# No proof found!\n# SZS status CounterSatisfiable\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Disproved));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::Consistent));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Disproved
+        ));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::Consistent
+        ));
     }
 
     #[test]
     fn satisfiable_is_consistent() {
         let out = "# SZS status Satisfiable\n";
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::Consistent));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::Consistent
+        ));
         // No conjecture to prove → not Proved/Disproved in Prove mode.
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Unknown));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Unknown
+        ));
     }
 
     #[test]
     fn resource_limit_time_is_timeout() {
         // E's actual time-budget marker — note: no `SZS status Timeout` line.
         let out = "# Failure: Resource limit exceeded (time)\n# SZS status GaveUp\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Timeout));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::Timeout));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Timeout
+        ));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::Timeout
+        ));
     }
 
     #[test]
     fn contradictory_axioms_is_inconsistent() {
         let out = "# SZS status ContradictoryAxioms\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Inconsistent));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::Inconsistent));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Inconsistent
+        ));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::Inconsistent
+        ));
     }
 
     #[test]
@@ -584,14 +699,23 @@ mod status_tests {
         // Verbatim E 3.2.5 stderr for a malformed `fof(a,axiom, p .`.
         let out = "eprover: <stdin>:1:(Column 16):(just read '.'): Closing bracket (')') expected, but Fullstop ('.') read \n";
         assert!(is_input_error(out));
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::InputError));
-        assert!(matches!(determine_status(out, &ProverMode::CheckConsistency), ProverStatus::InputError));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::InputError
+        ));
+        assert!(matches!(
+            determine_status(out, &ProverMode::CheckConsistency),
+            ProverStatus::InputError
+        ));
     }
 
     #[test]
     fn timeout_does_not_misclassify_proved_run() {
         let out = "# Failure: Resource limit exceeded (time)\n# SZS status Theorem\n";
-        assert!(matches!(determine_status(out, &ProverMode::Prove), ProverStatus::Proved));
+        assert!(matches!(
+            determine_status(out, &ProverMode::Prove),
+            ProverStatus::Proved
+        ));
     }
 }
 
@@ -620,7 +744,10 @@ cnf(c_0_9, plain, ($false), inference(sr,[status(thm)],[inference(spm,[status(th
 ";
 
     fn step<'a>(steps: &'a [ProofStep], id: &str) -> &'a ProofStep {
-        steps.iter().find(|s| s.id == id).unwrap_or_else(|| panic!("no step {id}"))
+        steps
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("no step {id}"))
     }
 
     #[test]
@@ -658,7 +785,10 @@ cnf(c_0_9, plain, ($false), inference(sr,[status(thm)],[inference(spm,[status(th
         // The final `$false` step: real clause parents are the three clauses,
         // NOT the trailing `['proof']` annotation that a naive "last bracket"
         // rule would grab.
-        assert_eq!(step(&steps, "c_0_9").parents, vec!["c_0_6", "c_0_7", "c_0_8"]);
+        assert_eq!(
+            step(&steps, "c_0_9").parents,
+            vec!["c_0_6", "c_0_7", "c_0_8"]
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub use super::tptp::syntax::TptpLang;
 /// the output was filtered rather than silently truncated.
 #[derive(Debug, Clone)]
 pub struct DroppedStmt {
-    pub name:   Option<String>,
+    pub name: Option<String>,
     pub reason: String,
 }
 
@@ -25,12 +25,14 @@ pub struct DroppedStmt {
 /// that did not conform to the chosen dialect/language and were skipped.
 #[derive(Debug, Clone, Default)]
 pub struct EmitResult {
-    pub text:    String,
+    pub text: String,
     pub dropped: Vec<DroppedStmt>,
 }
 
 impl EmitResult {
-    pub fn is_complete(&self) -> bool { self.dropped.is_empty() }
+    pub fn is_complete(&self) -> bool {
+        self.dropped.is_empty()
+    }
 }
 
 /// Public dispatch over output dialects.  Config rides in the variant.
@@ -45,7 +47,7 @@ impl Emitter {
     /// [`AstNode::Annotated`]) in this dialect.
     pub fn emit(&self, doc: &[AstNode]) -> EmitResult {
         match self {
-            Emitter::Kif        => super::kif::dis::KifEmit.emit_document(doc),
+            Emitter::Kif => super::kif::dis::KifEmit.emit_document(doc),
             Emitter::Tptp(lang) => super::tptp::dis::TptpEmit { lang: *lang }.emit_document(doc),
         }
     }
@@ -60,8 +62,10 @@ impl Emitter {
     /// `color` toggles ANSI leaf styling where the dialect defines any.
     pub fn emit_pretty(&self, node: &AstNode, indent: usize, color: bool) -> String {
         match self {
-            Emitter::Kif        => super::kif::dis::KifEmit.emit_pretty(node, indent, color),
-            Emitter::Tptp(lang) => super::tptp::dis::TptpEmit { lang: *lang }.emit_pretty(node, indent, color),
+            Emitter::Kif => super::kif::dis::KifEmit.emit_pretty(node, indent, color),
+            Emitter::Tptp(lang) => {
+                super::tptp::dis::TptpEmit { lang: *lang }.emit_pretty(node, indent, color)
+            }
         }
     }
 }
@@ -84,8 +88,14 @@ pub(crate) trait Emit {
         let mut out = EmitResult::default();
         for stmt in doc {
             match self.emit_statement(stmt) {
-                Ok(t)  => { out.text.push_str(&t); out.text.push('\n'); }
-                Err(reason) => out.dropped.push(DroppedStmt { name: stmt_name(stmt), reason }),
+                Ok(t) => {
+                    out.text.push_str(&t);
+                    out.text.push('\n');
+                }
+                Err(reason) => out.dropped.push(DroppedStmt {
+                    name: stmt_name(stmt),
+                    reason,
+                }),
             }
         }
         out

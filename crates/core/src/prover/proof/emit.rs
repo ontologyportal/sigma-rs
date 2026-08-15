@@ -33,7 +33,9 @@ pub fn formula_to_ast(tptp: &str) -> Option<AstNode> {
         }),
     };
     let (nodes, _) = parser.parse(tptp.trim(), "");
-    let DocItem::Stmt(node) = nodes.into_iter().next()? else { return None };
+    let DocItem::Stmt(node) = nodes.into_iter().next()? else {
+        return None;
+    };
     Some(normalize_display_quantifiers(node))
 }
 
@@ -54,7 +56,10 @@ fn normalize_display_quantifiers(node: AstNode) -> AstNode {
 fn quant_kind(elements: &[AstNode]) -> Option<OpKind> {
     match elements {
         [AstNode::Operator { op, .. }, AstNode::List { .. }, _]
-            if matches!(op, OpKind::ForAll | OpKind::Exists) => Some(op.clone()),
+            if matches!(op, OpKind::ForAll | OpKind::Exists) =>
+        {
+            Some(op.clone())
+        }
         _ => None,
     }
 }
@@ -62,17 +67,28 @@ fn quant_kind(elements: &[AstNode]) -> Option<OpKind> {
 /// Bottom-up: `(Q (v1…) (Q (v2…) body))` → `(Q (v1… v2…) body)` for the
 /// SAME quantifier `Q` only.
 fn collapse_like_quantifiers(node: AstNode) -> AstNode {
-    let AstNode::List { elements, span } = node else { return node };
-    let mut elements: Vec<AstNode> =
-        elements.into_iter().map(collapse_like_quantifiers).collect();
+    let AstNode::List { elements, span } = node else {
+        return node;
+    };
+    let mut elements: Vec<AstNode> = elements
+        .into_iter()
+        .map(collapse_like_quantifiers)
+        .collect();
     if let Some(q) = quant_kind(&elements) {
         let body = elements.pop().expect("quantifier has a body");
-        if let AstNode::List { elements: mut inner, span: inner_span } = body {
+        if let AstNode::List {
+            elements: mut inner,
+            span: inner_span,
+        } = body
+        {
             if quant_kind(&inner) == Some(q) {
                 let inner_body = inner.pop().expect("inner quantifier has a body");
                 let inner_vars = inner.pop().expect("inner quantifier has vars");
                 if let (
-                    AstNode::List { elements: outer_vars, .. },
+                    AstNode::List {
+                        elements: outer_vars,
+                        ..
+                    },
                     AstNode::List { elements: iv, .. },
                 ) = (&mut elements[1], inner_vars)
                 {
@@ -81,7 +97,10 @@ fn collapse_like_quantifiers(node: AstNode) -> AstNode {
                 elements.push(inner_body);
                 return AstNode::List { elements, span };
             }
-            elements.push(AstNode::List { elements: inner, span: inner_span });
+            elements.push(AstNode::List {
+                elements: inner,
+                span: inner_span,
+            });
             return AstNode::List { elements, span };
         }
         elements.push(body);
@@ -93,9 +112,7 @@ fn collapse_like_quantifiers(node: AstNode) -> AstNode {
 fn strip_top_level_foralls(mut node: AstNode) -> AstNode {
     loop {
         match node {
-            AstNode::List { mut elements, .. }
-                if quant_kind(&elements) == Some(OpKind::ForAll) =>
-            {
+            AstNode::List { mut elements, .. } if quant_kind(&elements) == Some(OpKind::ForAll) => {
                 node = elements.pop().expect("quantifier has a body");
             }
             other => return other,
@@ -128,47 +145,54 @@ pub fn formula_to_kif(tptp: &str) -> String {
 /// resolve.
 pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
     use crate::parse::ast::{Role, Source};
-    steps.iter().map(|s| {
-        let role = match s.rule.as_str() {
-            "axiom"              => Role::Axiom,
-            "hypothesis"         => Role::Hypothesis,
-            "conjecture"         => Role::Conjecture,
-            "negated_conjecture" => Role::NegatedConjecture,
-            _                    => Role::Plain,
-        };
-        let source = if s.premises.is_empty() {
-            match s.rule.as_str() {
-                "negated_conjecture" =>
-                    Source::Inference { rule: "negate_conjecture".into(), parents: Vec::new() },
-                // Genuine inputs cite the problem; any other premise-less
-                // step is prover-synthesized (subrel_schema, list_theory,
-                // modal_k, …) and must not masquerade as a stated axiom.
-                "axiom" | "hypothesis" | "conjecture" =>
-                    Source::Input { file: problem.to_string(), name: None },
-                other => Source::Introduced(other.to_string()),
-            }
-        } else {
-            // The negated conjecture cites the `negate_conjecture` inference
-            // (whose TPTP status is `cth`, see `render_source`) over its
-            // conjecture parent — not its own role word as a rule name.
-            let rule = if s.rule == "negated_conjecture" {
-                "negate_conjecture".to_string()
-            } else {
-                s.rule.clone()
+    steps
+        .iter()
+        .map(|s| {
+            let role = match s.rule.as_str() {
+                "axiom" => Role::Axiom,
+                "hypothesis" => Role::Hypothesis,
+                "conjecture" => Role::Conjecture,
+                "negated_conjecture" => Role::NegatedConjecture,
+                _ => Role::Plain,
             };
-            Source::Inference {
-                rule,
-                parents: s.premises.iter().map(|p| format!("f{}", p + 1)).collect(),
+            let source = if s.premises.is_empty() {
+                match s.rule.as_str() {
+                    "negated_conjecture" => Source::Inference {
+                        rule: "negate_conjecture".into(),
+                        parents: Vec::new(),
+                    },
+                    // Genuine inputs cite the problem; any other premise-less
+                    // step is prover-synthesized (subrel_schema, list_theory,
+                    // modal_k, …) and must not masquerade as a stated axiom.
+                    "axiom" | "hypothesis" | "conjecture" => Source::Input {
+                        file: problem.to_string(),
+                        name: None,
+                    },
+                    other => Source::Introduced(other.to_string()),
+                }
+            } else {
+                // The negated conjecture cites the `negate_conjecture` inference
+                // (whose TPTP status is `cth`, see `render_source`) over its
+                // conjecture parent — not its own role word as a rule name.
+                let rule = if s.rule == "negated_conjecture" {
+                    "negate_conjecture".to_string()
+                } else {
+                    s.rule.clone()
+                };
+                Source::Inference {
+                    rule,
+                    parents: s.premises.iter().map(|p| format!("f{}", p + 1)).collect(),
+                }
+            };
+            AstNode::Annotated {
+                role,
+                name: Some(format!("f{}", s.index + 1)),
+                source: Some(source),
+                formula: Box::new(s.formula.clone()),
+                span: crate::parse::Span::synthetic(),
             }
-        };
-        AstNode::Annotated {
-            role,
-            name:    Some(format!("f{}", s.index + 1)),
-            source:  Some(source),
-            formula: Box::new(s.formula.clone()),
-            span:    crate::parse::Span::synthetic(),
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Render a proof transcript in any output dialect — the unified proof-emission
@@ -181,7 +205,7 @@ pub fn proof_to_ast(steps: &[KifProofStep], problem: &str) -> Vec<AstNode> {
 /// `$i` type preamble.  The returned [`EmitResult`] reports any steps a dialect
 /// could not represent (e.g. a non-clausal step under `Cnf`).
 pub fn emit_proof(
-    steps:   &[KifProofStep],
+    steps: &[KifProofStep],
     problem: &str,
     dialect: crate::parse::dialect::Emitter,
 ) -> crate::parse::dialect::EmitResult {
@@ -206,11 +230,10 @@ pub fn proof_steps_to_kif(
             index: i,
             rule: rule.clone(),
             premises: premises.clone(),
-            formula: formula_to_ast(formula)
-                .unwrap_or_else(|| AstNode::Symbol {
-                    name: format!("; [unparseable] {}", formula),
-                    span: crate::parse::ast::Span::point(String::new(), 0, 0, 0),
-                }),
+            formula: formula_to_ast(formula).unwrap_or_else(|| AstNode::Symbol {
+                name: format!("; [unparseable] {}", formula),
+                span: crate::parse::ast::Span::point(String::new(), 0, 0, 0),
+            }),
             source_sid: source_name.as_deref().and_then(parse_kb_axiom_name),
         })
         .collect()
@@ -266,10 +289,7 @@ mod tests {
 
     #[test]
     fn forall_top_level_stripped() {
-        assert_eq!(
-            kif("! [X0] : s__likes(s__John, X0)"),
-            "(likes John ?X0)"
-        );
+        assert_eq!(kif("! [X0] : s__likes(s__John, X0)"), "(likes John ?X0)");
     }
 
     #[test]
@@ -371,10 +391,7 @@ mod tests {
     #[test]
     fn nested_forall_inside_implies_collapsed() {
         let tptp = "! [X0] : (s__foo(X0) => ! [X1] : ! [X2] : s__bar(X1, X2))";
-        assert_eq!(
-            kif(tptp),
-            "(=> (foo ?X0) (forall (?X1 ?X2) (bar ?X1 ?X2)))"
-        );
+        assert_eq!(kif(tptp), "(=> (foo ?X0) (forall (?X1 ?X2) (bar ?X1 ?X2)))");
     }
 
     #[test]
@@ -408,8 +425,17 @@ mod tests {
     fn step(index: usize, rule: &str, kif: &str, premises: Vec<usize>) -> KifProofStep {
         let doc = crate::parse::parse_document("t", kif, crate::Parser::Kif);
         KifProofStep {
-            index, rule: rule.into(), premises,
-            formula: doc.ast.into_iter().next().unwrap().as_stmt().cloned().unwrap(),
+            index,
+            rule: rule.into(),
+            premises,
+            formula: doc
+                .ast
+                .into_iter()
+                .next()
+                .unwrap()
+                .as_stmt()
+                .cloned()
+                .unwrap(),
             source_sid: None,
         }
     }
@@ -430,18 +456,41 @@ mod tests {
         // KIF: no statement framing — each step's bare formula.
         let kif = emit_proof(&p, "demo", Emitter::Kif);
         assert!(kif.is_complete());
-        assert!(kif.text.contains("(=>\n  (human ?X)\n  (mortal ?X))"), "{}", kif.text);
-        assert!(!kif.text.contains("fof("), "kif must not frame: {}", kif.text);
+        assert!(
+            kif.text.contains("(=>\n  (human ?X)\n  (mortal ?X))"),
+            "{}",
+            kif.text
+        );
+        assert!(
+            !kif.text.contains("fof("),
+            "kif must not frame: {}",
+            kif.text
+        );
 
         // FOF: framed, untyped, free variables universally closed (fof
         // formulas must be closed — GDV rejects unquantified variables).
         let fof = emit_proof(&p, "demo", Emitter::Tptp(TptpLang::Fof));
-        assert!(fof.text.contains("fof(f1, axiom, (! [X] : (human(X) => mortal(X))), file('demo'))."), "{}", fof.text);
-        assert!(fof.text.contains("inference(resolve, [status(thm)], [f1,f2])"), "{}", fof.text);
+        assert!(
+            fof.text
+                .contains("fof(f1, axiom, (! [X] : (human(X) => mortal(X))), file('demo'))."),
+            "{}",
+            fof.text
+        );
+        assert!(
+            fof.text
+                .contains("inference(resolve, [status(thm)], [f1,f2])"),
+            "{}",
+            fof.text
+        );
 
         // TFF: typed preamble + the same closure with a typed binder.
         let tff = emit_proof(&p, "demo", Emitter::Tptp(TptpLang::Tff));
         assert!(tff.text.contains("type, human: $i > $o)."), "{}", tff.text);
-        assert!(tff.text.contains("tff(f1, axiom, (! [X: $i] : (human(X) => mortal(X))), file('demo'))."), "{}", tff.text);
+        assert!(
+            tff.text
+                .contains("tff(f1, axiom, (! [X: $i] : (human(X) => mortal(X))), file('demo'))."),
+            "{}",
+            tff.text
+        );
     }
 }

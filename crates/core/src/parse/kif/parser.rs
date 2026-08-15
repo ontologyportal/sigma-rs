@@ -1,37 +1,55 @@
 //! KIF token-to-AST parser.
 use super::error::KifParseError;
-use super::tokenizer::{Token, TokenKind, OpTok};
+use super::tokenizer::{OpTok, Token, TokenKind};
 
 use super::super::{AstNode, OpKind, Span};
 
 /// Recursive-descent parser over a stream of KIF tokens.
 pub struct KifParser {
     tokens: Vec<Token>,
-    pos:    usize,
-    file:   String,
+    pos: usize,
+    file: String,
 }
 
 impl KifParser {
     fn new(tokens: Vec<Token>, file: &str) -> Self {
-        Self { tokens, pos: 0, file: file.to_owned() }
+        Self {
+            tokens,
+            pos: 0,
+            file: file.to_owned(),
+        }
     }
 
-    fn peek(&self) -> Option<&Token> { self.tokens.get(self.pos) }
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
+    }
 
     fn advance(&mut self) -> Option<&Token> {
         let tok = self.tokens.get(self.pos);
-        if tok.is_some() { self.pos += 1; }
+        if tok.is_some() {
+            self.pos += 1;
+        }
         tok
     }
 
     fn eof_span(&self) -> Span {
-        if let Some(t) = self.tokens.last() { t.span.clone() }
-        else { Span::point(self.file.clone(), 1, 1, 0) }
+        if let Some(t) = self.tokens.last() {
+            t.span.clone()
+        } else {
+            Span::point(self.file.clone(), 1, 1, 0)
+        }
     }
 
     fn parse_node(&mut self) -> Result<AstNode, (Span, KifParseError)> {
         let tok = match self.peek() {
-            None => return Err((self.eof_span(), KifParseError::UnexpectedEof { span: self.eof_span() })),
+            None => {
+                return Err((
+                    self.eof_span(),
+                    KifParseError::UnexpectedEof {
+                        span: self.eof_span(),
+                    },
+                ))
+            }
             Some(t) => t,
         };
         match &tok.kind {
@@ -45,7 +63,12 @@ impl KifParser {
                 let close_span: Span = loop {
                     match self.peek() {
                         Some(t) if matches!(t.kind, TokenKind::RParen) && idx == 0 => {
-                            return Err((start_span.clone(), KifParseError::EmptySentence { span: start_span.clone() }));
+                            return Err((
+                                start_span.clone(),
+                                KifParseError::EmptySentence {
+                                    span: start_span.clone(),
+                                },
+                            ));
                         }
                         Some(t) if matches!(t.kind, TokenKind::RParen) && idx > 0 => {
                             let close = t.span.clone();
@@ -53,33 +76,55 @@ impl KifParser {
                             break close;
                         }
                         None => {
-                            return Err((start_span.clone(), KifParseError::UnbalancedParens { span: start_span }))
-                        },
-                        Some(Token { kind: TokenKind::Operator(op_tok), span, .. }) if idx > 0 => {
+                            return Err((
+                                start_span.clone(),
+                                KifParseError::UnbalancedParens { span: start_span },
+                            ))
+                        }
+                        Some(Token {
+                            kind: TokenKind::Operator(op_tok),
+                            span,
+                            ..
+                        }) if idx > 0 => {
                             // Alphanumeric operator keywords in argument position are plain
                             // symbols (e.g. `(instance equal BinaryRelation)`). The
                             // non-alphanumeric operators `=>` and `<=>` are not valid symbol
                             // names, so they are a parse error here.
                             match op_tok {
-                                OpTok::And | OpTok::Or | OpTok::Not
-                                | OpTok::Equal | OpTok::ForAll | OpTok::Exists => {
+                                OpTok::And
+                                | OpTok::Or
+                                | OpTok::Not
+                                | OpTok::Equal
+                                | OpTok::ForAll
+                                | OpTok::Exists => {
                                     let sym_name = op_tok.name().to_string();
                                     let sym_span = span.clone();
                                     self.advance();
-                                    elements.push(AstNode::Symbol { name: sym_name, span: sym_span });
+                                    elements.push(AstNode::Symbol {
+                                        name: sym_name,
+                                        span: sym_span,
+                                    });
                                 }
                                 OpTok::Implies | OpTok::Iff => {
                                     let op_str = op_tok.to_string();
-                                    return Err((span.clone(), KifParseError::OperatorOutOfPosition {
-                                        op: op_str,
-                                        span: span.clone(),
-                                    }));
+                                    return Err((
+                                        span.clone(),
+                                        KifParseError::OperatorOutOfPosition {
+                                            op: op_str,
+                                            span: span.clone(),
+                                        },
+                                    ));
                                 }
                             }
-                        },
-                        Some(t) if idx == 0 &&  !t.kind.can_head() => {
-                            return Err((t.span.clone(), KifParseError::FirstTerm { span: t.span.clone() }));
-                        },
+                        }
+                        Some(t) if idx == 0 && !t.kind.can_head() => {
+                            return Err((
+                                t.span.clone(),
+                                KifParseError::FirstTerm {
+                                    span: t.span.clone(),
+                                },
+                            ));
+                        }
                         _ => elements.push(self.parse_node()?),
                     }
                     idx += 1;
@@ -89,11 +134,15 @@ impl KifParser {
                 // Variable-headed single-element lists are exempt: they are valid
                 // quantifier variable lists, e.g. `(?X)` in `(forall (?X) body)`.
                 if elements.len() == 1
-                    && !matches!(elements[0], AstNode::Variable { .. } | AstNode::RowVariable { .. })
+                    && !matches!(
+                        elements[0],
+                        AstNode::Variable { .. } | AstNode::RowVariable { .. }
+                    )
                 {
-                    return Err((start_span.clone(), KifParseError::SingleTermSentence {
-                        span: start_span,
-                    }));
+                    return Err((
+                        start_span.clone(),
+                        KifParseError::SingleTermSentence { span: start_span },
+                    ));
                 }
 
                 // QuantifierArg: `(forall VAR_LIST BODY)` and `(exists VAR_LIST BODY)`.
@@ -101,27 +150,44 @@ impl KifParser {
                 //   * Every element of VAR_LIST must be a plain or row variable.
                 if matches!(
                     elements.first(),
-                    Some(AstNode::Operator { op: OpKind::ForAll | OpKind::Exists, .. })
+                    Some(AstNode::Operator {
+                        op: OpKind::ForAll | OpKind::Exists,
+                        ..
+                    })
                 ) {
                     match elements.get(1) {
-                        Some(AstNode::List { elements: var_els, .. }) => {
+                        Some(AstNode::List {
+                            elements: var_els, ..
+                        }) => {
                             for el in var_els {
-                                if !matches!(el, AstNode::Variable { .. } | AstNode::RowVariable { .. }) {
-                                    return Err((el.span().clone(), KifParseError::QuantifierArg {
-                                        span: el.span().clone(),
-                                    }));
+                                if !matches!(
+                                    el,
+                                    AstNode::Variable { .. } | AstNode::RowVariable { .. }
+                                ) {
+                                    return Err((
+                                        el.span().clone(),
+                                        KifParseError::QuantifierArg {
+                                            span: el.span().clone(),
+                                        },
+                                    ));
                                 }
                             }
                         }
                         Some(other) => {
-                            return Err((other.span().clone(), KifParseError::QuantifierArg {
-                                span: other.span().clone(),
-                            }));
+                            return Err((
+                                other.span().clone(),
+                                KifParseError::QuantifierArg {
+                                    span: other.span().clone(),
+                                },
+                            ));
                         }
                         None => {
-                            return Err((start_span.clone(), KifParseError::QuantifierArg {
-                                span: start_span.clone(),
-                            }));
+                            return Err((
+                                start_span.clone(),
+                                KifParseError::QuantifierArg {
+                                    span: start_span.clone(),
+                                },
+                            ));
                         }
                     }
                 }
@@ -136,31 +202,37 @@ impl KifParser {
                 // | `and`, `or`       | at least 2     |
                 // | `forall`, `exists`| already checked above (QuantifierArg) |
                 if let Some(AstNode::Operator { op, span: op_span }) = elements.first() {
-                    let n_args  = elements.len() - 1; // elements[0] is the operator
+                    let n_args = elements.len() - 1; // elements[0] is the operator
                     let op_name = op.name().to_string();
                     let op_span = op_span.clone();
                     let arity_err: Option<&'static str> = match op {
                         OpKind::Not => (n_args != 1).then_some("exactly 1"),
-                        OpKind::Implies | OpKind::Iff | OpKind::Equal
-                            => (n_args != 2).then_some("exactly 2"),
-                        OpKind::And | OpKind::Or
-                            => (n_args < 2).then_some("at least 2"),
+                        OpKind::Implies | OpKind::Iff | OpKind::Equal => {
+                            (n_args != 2).then_some("exactly 2")
+                        }
+                        OpKind::And | OpKind::Or => (n_args < 2).then_some("at least 2"),
                         // ForAll / Exists are handled by the QuantifierArg check above.
                         OpKind::ForAll | OpKind::Exists => None,
                     };
                     if let Some(expected) = arity_err {
-                        return Err((op_span.clone(), KifParseError::OperatorArityMismatch {
-                            op:       op_name,
-                            expected: expected.to_string(),
-                            actual:   n_args,
-                            span:     op_span,
-                        }));
+                        return Err((
+                            op_span.clone(),
+                            KifParseError::OperatorArityMismatch {
+                                op: op_name,
+                                expected: expected.to_string(),
+                                actual: n_args,
+                                span: op_span,
+                            },
+                        ));
                     }
                 }
 
                 // The list span runs from `(` through `)`.
                 let full_span = start_span.join(&close_span);
-                Ok(AstNode::List { elements, span: full_span })
+                Ok(AstNode::List {
+                    elements,
+                    span: full_span,
+                })
             }
             TokenKind::RParen => {
                 let span = tok.span.clone();
@@ -168,26 +240,46 @@ impl KifParser {
                 Err((span.clone(), KifParseError::UnbalancedParens { span }))
             }
             TokenKind::Symbol(name) => {
-                let node = AstNode::Symbol { name: name.clone(), span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::Symbol {
+                    name: name.clone(),
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
             TokenKind::Variable(name) => {
                 let name = name.trim_start_matches('?').to_string();
-                let node = AstNode::Variable { name, span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::Variable {
+                    name,
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
             TokenKind::RowVariable(name) => {
                 let name = name.trim_start_matches('@').to_string();
-                let node = AstNode::RowVariable { name, span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::RowVariable {
+                    name,
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
             TokenKind::Str(s) => {
-                let node = AstNode::Str { value: s.clone(), span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::Str {
+                    value: s.clone(),
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
             TokenKind::Number(n) => {
-                let node = AstNode::Number { value: n.clone(), span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::Number {
+                    value: n.clone(),
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
             TokenKind::Operator(op_tok) => {
                 let op: OpKind = match op_tok {
@@ -200,14 +292,18 @@ impl KifParser {
                     OpTok::ForAll => OpKind::ForAll,
                     OpTok::Exists => OpKind::Exists,
                 };
-                let node = AstNode::Operator { op, span: tok.span.clone() };
-                self.advance(); Ok(node)
+                let node = AstNode::Operator {
+                    op,
+                    span: tok.span.clone(),
+                };
+                self.advance();
+                Ok(node)
             }
         }
     }
 
     fn parse_all(&mut self) -> (Vec<AstNode>, Vec<(Span, KifParseError)>) {
-        let mut nodes  = Vec::new();
+        let mut nodes = Vec::new();
         let mut errors = Vec::new();
         while self.peek().is_some() {
             // If parse_node consumed tokens before failing, do not advance
@@ -238,11 +334,10 @@ pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<(Span, KifPar
 
 // Tests
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::tokenizer::tokenize;
+    use super::*;
     use crate::parse::ast::OpKind;
 
     fn parse_kif(src: &str) -> Vec<AstNode> {
@@ -264,10 +359,18 @@ mod tests {
         let nodes = parse_kif("(=> (instance ?X Human) (instance ?X Animal))");
         assert_eq!(nodes.len(), 1);
         if let AstNode::List { elements, .. } = &nodes[0] {
-            assert!(matches!(&elements[0], AstNode::Operator { op: OpKind::Implies, .. }));
+            assert!(matches!(
+                &elements[0],
+                AstNode::Operator {
+                    op: OpKind::Implies,
+                    ..
+                }
+            ));
             assert!(matches!(&elements[1], AstNode::List { .. }));
             assert!(matches!(&elements[2], AstNode::List { .. }));
-        } else { panic!("expected List"); }
+        } else {
+            panic!("expected List");
+        }
     }
 
     #[test]
@@ -297,8 +400,10 @@ mod tests {
     fn empty_sentence_is_an_error() {
         let errs = parse_errors("()");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::EmptySentence { .. })),
-            "expected EmptySentence, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::EmptySentence { .. })),
+            "expected EmptySentence, got: {:?}",
+            errs
         );
     }
 
@@ -308,7 +413,9 @@ mod tests {
         // must still be parsed.
         let (tokens, _) = tokenize("() (subclass Human Animal)", "test");
         let (nodes, errors) = parse(tokens, "test");
-        assert!(errors.iter().any(|e| matches!(e.1, KifParseError::EmptySentence { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e.1, KifParseError::EmptySentence { .. })));
         assert_eq!(nodes.len(), 1, "the valid sentence after () should survive");
     }
 
@@ -316,8 +423,10 @@ mod tests {
     fn first_term_number_is_an_error() {
         let errs = parse_errors("(42 ?X)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
-            "expected FirstTerm, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}",
+            errs
         );
     }
 
@@ -325,8 +434,10 @@ mod tests {
     fn first_term_string_is_an_error() {
         let errs = parse_errors("(\"hello\" ?X)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
-            "expected FirstTerm, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}",
+            errs
         );
     }
 
@@ -335,8 +446,10 @@ mod tests {
         // A sub-list as the head of a top-level sentence is invalid.
         let errs = parse_errors("((P ?X) Foo)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::FirstTerm { .. })),
-            "expected FirstTerm, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::FirstTerm { .. })),
+            "expected FirstTerm, got: {:?}",
+            errs
         );
     }
 
@@ -349,7 +462,9 @@ mod tests {
         if let AstNode::List { elements, .. } = &nodes[0] {
             assert_eq!(elements.len(), 3);
             assert!(matches!(&elements[1], AstNode::Symbol { name, .. } if name == "and"));
-        } else { panic!("expected List"); }
+        } else {
+            panic!("expected List");
+        }
     }
 
     #[test]
@@ -361,8 +476,12 @@ mod tests {
         if let AstNode::List { elements, .. } = &nodes[0] {
             assert_eq!(elements.len(), 3);
             assert!(matches!(&elements[1], AstNode::Symbol { name, .. } if name == "equal"));
-            assert!(matches!(&elements[2], AstNode::Symbol { name, .. } if name == "BinaryRelation"));
-        } else { panic!("expected List"); }
+            assert!(
+                matches!(&elements[2], AstNode::Symbol { name, .. } if name == "BinaryRelation")
+            );
+        } else {
+            panic!("expected List");
+        }
     }
 
     #[test]
@@ -372,11 +491,18 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         // Inner `(Q and ?Y)` should parse as a 3-element list with symbol `and`.
         if let AstNode::List { elements, .. } = &nodes[0] {
-            if let AstNode::List { elements: inner, .. } = &elements[2] {
+            if let AstNode::List {
+                elements: inner, ..
+            } = &elements[2]
+            {
                 assert_eq!(inner.len(), 3);
                 assert!(matches!(&inner[1], AstNode::Symbol { name, .. } if name == "and"));
-            } else { panic!("expected inner List"); }
-        } else { panic!("expected outer List"); }
+            } else {
+                panic!("expected inner List");
+            }
+        } else {
+            panic!("expected outer List");
+        }
     }
 
     #[test]
@@ -385,8 +511,16 @@ mod tests {
         let nodes = parse_kif("(equal ?X ?Y)");
         assert_eq!(nodes.len(), 1);
         if let AstNode::List { elements, .. } = &nodes[0] {
-            assert!(matches!(&elements[0], AstNode::Operator { op: OpKind::Equal, .. }));
-        } else { panic!("expected List"); }
+            assert!(matches!(
+                &elements[0],
+                AstNode::Operator {
+                    op: OpKind::Equal,
+                    ..
+                }
+            ));
+        } else {
+            panic!("expected List");
+        }
     }
 
     #[test]
@@ -394,8 +528,10 @@ mod tests {
         // `(Foo)` — a symbol head with no arguments — is not valid SUMO KIF.
         let errs = parse_errors("(Foo)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
-            "expected SingleTermSentence, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
+            "expected SingleTermSentence, got: {:?}",
+            errs
         );
     }
 
@@ -404,8 +540,10 @@ mod tests {
         // `(and)` — zero arguments to `and` — is not valid.
         let errs = parse_errors("(and)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
-            "expected SingleTermSentence for (and), got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
+            "expected SingleTermSentence for (and), got: {:?}",
+            errs
         );
     }
 
@@ -414,8 +552,10 @@ mod tests {
         // `(or)` — zero arguments to `or` — is not valid.
         let errs = parse_errors("(or)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
-            "expected SingleTermSentence for (or), got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
+            "expected SingleTermSentence for (or), got: {:?}",
+            errs
         );
     }
 
@@ -424,7 +564,11 @@ mod tests {
         // `(?X)` inside a forall is a legal single-variable var-list; the
         // single-term check must not fire for Variable-headed 1-element lists.
         let nodes = parse_kif("(forall (?X) (instance ?X Human))");
-        assert_eq!(nodes.len(), 1, "forall with single-var list must parse: {nodes:?}");
+        assert_eq!(
+            nodes.len(),
+            1,
+            "forall with single-var list must parse: {nodes:?}"
+        );
     }
 
     #[test]
@@ -433,8 +577,11 @@ mod tests {
         // become a symbol when used in argument position.
         let errs = parse_errors("(instance => BinaryRelation)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::OperatorOutOfPosition { op, .. } if op == "=>")),
-            "expected OperatorOutOfPosition for `=>`, got: {:?}", errs
+            errs.iter().any(
+                |e| matches!(e, KifParseError::OperatorOutOfPosition { op, .. } if op == "=>")
+            ),
+            "expected OperatorOutOfPosition for `=>`, got: {:?}",
+            errs
         );
     }
 
@@ -443,8 +590,11 @@ mod tests {
         // `<=>` is not a valid SUMO or TPTP symbol name.
         let errs = parse_errors("(instance <=> BinaryRelation)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::OperatorOutOfPosition { op, .. } if op == "<=>")),
-            "expected OperatorOutOfPosition for `<=>`, got: {:?}", errs
+            errs.iter().any(
+                |e| matches!(e, KifParseError::OperatorOutOfPosition { op, .. } if op == "<=>")
+            ),
+            "expected OperatorOutOfPosition for `<=>`, got: {:?}",
+            errs
         );
     }
 
@@ -453,8 +603,10 @@ mod tests {
         // `(forall ?X body)` -- variable list must be wrapped in parens.
         let errs = parse_errors("(forall ?X (instance ?X Human))");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
-            "expected QuantifierArg, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
+            "expected QuantifierArg, got: {:?}",
+            errs
         );
     }
 
@@ -463,8 +615,10 @@ mod tests {
         // A symbol inside the variable list is invalid.
         let errs = parse_errors("(forall (?X Human) (instance ?X Human))");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
-            "expected QuantifierArg, got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::QuantifierArg { .. })),
+            "expected QuantifierArg, got: {:?}",
+            errs
         );
     }
 
@@ -474,10 +628,12 @@ mod tests {
         // sentence before the QuantifierArg check even runs.
         let errs = parse_errors("(forall)");
         assert!(
-            errs.iter().any(|e| matches!(e,
+            errs.iter().any(|e| matches!(
+                e,
                 KifParseError::SingleTermSentence { .. } | KifParseError::QuantifierArg { .. }
             )),
-            "expected SingleTermSentence or QuantifierArg, got: {:?}", errs
+            "expected SingleTermSentence or QuantifierArg, got: {:?}",
+            errs
         );
     }
 
@@ -509,10 +665,22 @@ mod tests {
     fn not_too_many_args_is_error() {
         // `(not X Y)` — `not` requires exactly 1 argument.
         let errs = arity_errors("(not X Y)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (not X Y)");
-        if let KifParseError::OperatorArityMismatch { op, expected, actual, .. } = &errs[0] {
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (not X Y)"
+        );
+        if let KifParseError::OperatorArityMismatch {
+            op,
+            expected,
+            actual,
+            ..
+        } = &errs[0]
+        {
             assert_eq!(op, "not");
-            assert!(expected.contains("1"), "expected '1' in message, got '{expected}'");
+            assert!(
+                expected.contains("1"),
+                "expected '1' in message, got '{expected}'"
+            );
             assert_eq!(*actual, 2);
         }
     }
@@ -522,8 +690,10 @@ mod tests {
         // `(not)` — caught by SingleTermSentence before arity check.
         let errs = parse_errors("(not)");
         assert!(
-            errs.iter().any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
-            "expected SingleTermSentence for (not), got: {:?}", errs
+            errs.iter()
+                .any(|e| matches!(e, KifParseError::SingleTermSentence { .. })),
+            "expected SingleTermSentence for (not), got: {:?}",
+            errs
         );
     }
 
@@ -537,10 +707,22 @@ mod tests {
     fn implies_one_arg_is_error() {
         // `(=> A)` — `=>` requires exactly 2 arguments.
         let errs = arity_errors("(=> A)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (=> A)");
-        if let KifParseError::OperatorArityMismatch { op, expected, actual, .. } = &errs[0] {
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (=> A)"
+        );
+        if let KifParseError::OperatorArityMismatch {
+            op,
+            expected,
+            actual,
+            ..
+        } = &errs[0]
+        {
             assert_eq!(op, "=>");
-            assert!(expected.contains("2"), "expected '2' in message, got '{expected}'");
+            assert!(
+                expected.contains("2"),
+                "expected '2' in message, got '{expected}'"
+            );
             assert_eq!(*actual, 1);
         }
     }
@@ -549,7 +731,10 @@ mod tests {
     fn implies_three_args_is_error() {
         // `(=> A B C)` — `=>` requires exactly 2 arguments.
         let errs = arity_errors("(=> A B C)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (=> A B C)");
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (=> A B C)"
+        );
         if let KifParseError::OperatorArityMismatch { op, actual, .. } = &errs[0] {
             assert_eq!(op, "=>");
             assert_eq!(*actual, 3);
@@ -565,7 +750,10 @@ mod tests {
     #[test]
     fn iff_one_arg_is_error() {
         let errs = arity_errors("(<=> A)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (<=> A)");
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (<=> A)"
+        );
         if let KifParseError::OperatorArityMismatch { op, actual, .. } = &errs[0] {
             assert_eq!(op, "<=>");
             assert_eq!(*actual, 1);
@@ -575,7 +763,10 @@ mod tests {
     #[test]
     fn equal_one_arg_is_error() {
         let errs = arity_errors("(equal A)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (equal A)");
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (equal A)"
+        );
         if let KifParseError::OperatorArityMismatch { op, actual, .. } = &errs[0] {
             assert_eq!(op, "equal");
             assert_eq!(*actual, 1);
@@ -586,10 +777,22 @@ mod tests {
     fn and_one_arg_is_error() {
         // `(and X)` — `and` requires at least 2 arguments.
         let errs = arity_errors("(and X)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (and X)");
-        if let KifParseError::OperatorArityMismatch { op, expected, actual, .. } = &errs[0] {
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (and X)"
+        );
+        if let KifParseError::OperatorArityMismatch {
+            op,
+            expected,
+            actual,
+            ..
+        } = &errs[0]
+        {
             assert_eq!(op, "and");
-            assert!(expected.contains("2"), "expected '2' in message, got '{expected}'");
+            assert!(
+                expected.contains("2"),
+                "expected '2' in message, got '{expected}'"
+            );
             assert_eq!(*actual, 1);
         }
     }
@@ -610,7 +813,10 @@ mod tests {
     #[test]
     fn or_one_arg_is_error() {
         let errs = arity_errors("(or X)");
-        assert!(!errs.is_empty(), "expected OperatorArityMismatch for (or X)");
+        assert!(
+            !errs.is_empty(),
+            "expected OperatorArityMismatch for (or X)"
+        );
         if let KifParseError::OperatorArityMismatch { op, actual, .. } = &errs[0] {
             assert_eq!(op, "or");
             assert_eq!(*actual, 1);
@@ -631,7 +837,7 @@ mod tests {
         let nodes = parse_kif(src);
         let span = nodes[0].span();
         // `(` starts at byte 0, `)` ends at byte 23 (exclusive).
-        assert_eq!(span.offset,     0);
+        assert_eq!(span.offset, 0);
         assert_eq!(span.end_offset, src.len());
         assert_eq!(span.byte_len(), src.len());
     }
@@ -641,14 +847,16 @@ mod tests {
         let src = "(=> (P ?X) (Q ?X))";
         let nodes = parse_kif(src);
         let outer = nodes[0].span();
-        assert_eq!(outer.offset,     0);
+        assert_eq!(outer.offset, 0);
         assert_eq!(outer.end_offset, src.len());
 
         // Inner (P ?X) starts at byte 4, ends at 10 (exclusive).
         if let AstNode::List { elements, .. } = &nodes[0] {
             let inner_p = elements[1].span();
-            assert_eq!(inner_p.offset,     4);
+            assert_eq!(inner_p.offset, 4);
             assert_eq!(inner_p.end_offset, 10);
-        } else { panic!("expected List"); }
+        } else {
+            panic!("expected List");
+        }
     }
 }

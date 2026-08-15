@@ -24,32 +24,32 @@ use crate::semantics::SemanticLayer;
 use crate::types::{ElementVec, SentenceId};
 
 use caches::axiom_index::AxiomIndex;
-use caches::residue_index::ResidueCache;
 use caches::occurrences::OccurrenceIndex;
+use caches::residue_index::ResidueCache;
 use caches::sentence_symbols::SentenceSymbols;
 use caches::sentence_vars::SentenceVars;
-use caches::term_facts::TermFactsCache;
+use caches::sentences::SentenceCache;
 use caches::session::SessionCache;
 use caches::sine_index::SineCache;
-use caches::sentences::SentenceCache;
 use caches::source::SourceCache;
 use caches::symbol::SymbolCache;
+use caches::term_facts::TermFactsCache;
 
 pub mod collect;
+pub mod display;
 #[cfg(test)]
 #[path = "tests.rs"]
 mod e2e;
-pub mod sentence;
 pub mod position;
-pub mod display;
-pub mod sine;
 mod select;
+pub mod sentence;
+pub mod sine;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) use select::SelectionParams;
 pub mod caches;
 pub(crate) mod pattern;
 
-pub(crate) use display::{SourceMode, sentence_to_plain_kif};
+pub(crate) use display::{sentence_to_plain_kif, SourceMode};
 
 /// The parsed store containing parsed sentences, symbols, and literals.
 ///
@@ -61,39 +61,39 @@ pub(crate) use display::{SourceMode, sentence_to_plain_kif};
 pub(crate) struct SyntacticLayer {
     /// Store for all AST Source node information.  Disabled when source caching
     /// is off.
-    pub source:                     EagerMap<SourceCache>,
+    pub source: EagerMap<SourceCache>,
     /// Primary sentence store: content-addressed `EagerMap`
     /// (`SentenceId → Arc<Sentence>`) with provenance / refcount / scope
     /// companion state in its `Side`.
-    pub sentences:                  EagerMap<SentenceCache>,
+    pub sentences: EagerMap<SentenceCache>,
     /// Symbol table: content-addressed (`SymbolId = hash(name)`) name store with
     /// sparse Skolem side-data.  Written imperatively by the sentence build path
     /// (`intern`); reacts to no events.
-    pub symbols:                    EagerMap<SymbolCache>,
+    pub symbols: EagerMap<SymbolCache>,
     /// Per-session sentence membership + axiom status.  Membership is written
     /// imperatively by the build path (`register`); the cache reacts to
     /// `SessionAxiomatized` to flip a session's axiom flag.
-    pub(crate) sessions:            EagerMap<SessionCache>,
+    pub(crate) sessions: EagerMap<SessionCache>,
     /// Reverse index: SymbolId -> every occurrence of that symbol in the KB.
-    pub occurrences:                EagerMap<OccurrenceIndex>,
+    pub occurrences: EagerMap<OccurrenceIndex>,
     /// Root sentences indexed by residue fingerprints — the view lattice
     /// unifying head/subject/partial-pattern lookup, with decodable two-word
     /// sketches.  See [`caches::residue_index`].
-    pub residue:                    Eager<ResidueCache>,
+    pub residue: Eager<ResidueCache>,
     /// Axiom-occurrence reverse index: symbol -> axiom SentenceIds it appears in.
-    pub(crate) axiom_index:         EagerMap<AxiomIndex>,
+    pub(crate) axiom_index: EagerMap<AxiomIndex>,
     /// Compute cache listing all symbols inside a sentence (recursive).
     /// Memoization and persistence disabled by default.
-    pub(crate) sentence_symbols:    Cache<SentenceSymbols>,
+    pub(crate) sentence_symbols: Cache<SentenceSymbols>,
     /// Compute cache listing all variables inside a sentence (recursive).
     /// Memoization and persistence disabled by default.
-    pub(crate) sentence_vars:       Cache<SentenceVars>,
+    pub(crate) sentence_vars: Cache<SentenceVars>,
     /// Lazy per-sid structural term facts (ground / size / depth /
     /// symbol Bloom), content-addressed and reactive on `RootRemoved`.
     /// See [`caches::term_facts`].
-    pub(crate) term_facts:          Cache<TermFactsCache>,
+    pub(crate) term_facts: Cache<TermFactsCache>,
     /// Synthetic SentenceId → origin root.
-    pub(crate) synthetic_origin:    HashMap<SentenceId, SentenceId>,
+    pub(crate) synthetic_origin: HashMap<SentenceId, SentenceId>,
 
     /// Eagerly-maintained SInE (Sine Qua Non) axiom-selection index.
     ///
@@ -103,10 +103,10 @@ pub(crate) struct SyntacticLayer {
     /// Use the `sine_add_axiom` / `sine_remove_axiom` / `sine_add_axioms` /
     /// `sine_rebuild` wrapper methods, which handle symbol extraction.
     /// For read-only access use `sine.with_ref(|opt| …)`.  See [`caches::sine_index`].
-    pub(crate) sine:                Eager<SineCache>,
+    pub(crate) sine: Eager<SineCache>,
 
     /// Shared cache config (an `Arc`-backed clone every cache here also holds).
-    pub(crate) config:             CacheConfig,
+    pub(crate) config: CacheConfig,
 }
 
 impl SyntacticLayer {
@@ -125,7 +125,9 @@ impl SyntacticLayer {
     /// rest of its symbols even when one sentence fails to parse.
     pub(crate) fn load_kif(&mut self, text: &str, file: &str) -> Vec<crate::Diagnostic> {
         let errors = self.load_kif_assert(text, file);
-        let _ = self.cascade(vec![Event::SessionAxiomatized { session: file.to_owned() }]);
+        let _ = self.cascade(vec![Event::SessionAxiomatized {
+            session: file.to_owned(),
+        }]);
         errors
     }
 
@@ -141,29 +143,31 @@ impl SyntacticLayer {
     /// `Event::Diagnostic`.
     pub(crate) fn load_kif_assert(&mut self, text: &str, file: &str) -> Vec<crate::Diagnostic> {
         let source = crate::types::SourceFile {
-            parser:   crate::Parser::Kif,
-            name:     file.to_owned(),
+            parser: crate::Parser::Kif,
+            name: file.to_owned(),
             // `path` is stamped into each node's `span.file`; keep it equal to
             // the file tag.
-            path:     std::path::PathBuf::from(file),
-            origin:   crate::types::FileOrigin::Inline,
+            path: std::path::PathBuf::from(file),
+            origin: crate::types::FileOrigin::Inline,
             contents: text.to_owned(),
             prebuilt: None,
         };
         let outcome = self.cascade(vec![Event::SourceAdded {
             session: std::sync::Arc::new(file.to_owned()),
-            file:    source,
-            staged:  false,
+            file: source,
+            staged: false,
         }]);
         let errors = outcome.errors;
 
         crate::log!(
             Info,
             "sigmakee_rs_core::syntactic",
-            format!("loaded '{}': {} root sentences, {} errors",
+            format!(
+                "loaded '{}': {} root sentences, {} errors",
                 file,
                 self.num_roots(),
-                errors.len())
+                errors.len()
+            )
         );
         errors
     }
@@ -175,19 +179,19 @@ impl SyntacticLayer {
         cfg.disable(SentenceSymbols::NAME);
         cfg.disable(SentenceVars::NAME);
         Self {
-            source:              EagerMap::new(cfg, SourceCache),
-            sentences:           EagerMap::new(cfg, SentenceCache),
-            symbols:             EagerMap::new(cfg, SymbolCache),
-            sessions:            EagerMap::new(cfg, SessionCache),
-            occurrences:         EagerMap::new(cfg, OccurrenceIndex),
-            residue:             Eager::new(cfg, ResidueCache),
-            axiom_index:         EagerMap::new(cfg, AxiomIndex),
-            sentence_symbols:    Cache::new(cfg, SentenceSymbols),
-            sentence_vars:       Cache::new(cfg, SentenceVars),
-            term_facts:          Cache::new(cfg, TermFactsCache),
-            synthetic_origin:    HashMap::new(),
-            sine:                Eager::new(cfg, SineCache),
-            config:              cfg.clone(),
+            source: EagerMap::new(cfg, SourceCache),
+            sentences: EagerMap::new(cfg, SentenceCache),
+            symbols: EagerMap::new(cfg, SymbolCache),
+            sessions: EagerMap::new(cfg, SessionCache),
+            occurrences: EagerMap::new(cfg, OccurrenceIndex),
+            residue: Eager::new(cfg, ResidueCache),
+            axiom_index: EagerMap::new(cfg, AxiomIndex),
+            sentence_symbols: Cache::new(cfg, SentenceSymbols),
+            sentence_vars: Cache::new(cfg, SentenceVars),
+            term_facts: Cache::new(cfg, TermFactsCache),
+            synthetic_origin: HashMap::new(),
+            sine: Eager::new(cfg, SineCache),
+            config: cfg.clone(),
         }
     }
 }
@@ -203,16 +207,23 @@ impl SyntacticLayer {
     /// All implication-shaped roots.  Every root is CAF-normalized, so this is a
     /// straight scan for `(=> …)`-headed roots.
     pub(crate) fn normal_implications(&self) -> Vec<SentenceId> {
-        self.root_sids().into_iter()
-            .filter(|&sid| self.sentence(sid)
-                .is_some_and(|s| matches!(s.op(), Some(crate::parse::OpKind::Implies))))
+        self.root_sids()
+            .into_iter()
+            .filter(|&sid| {
+                self.sentence(sid)
+                    .is_some_and(|s| matches!(s.op(), Some(crate::parse::OpKind::Implies)))
+            })
             .collect()
     }
 
     /// Allocate a synthetic (rewritten) sentence from `elements` into the main
     /// sentence store, returning its content-hash id.  `_origin` is the root the
     /// rewrite derived it from; the synthetic is stored parent-less.
-    pub(crate) fn push_synthetic_sentence(&self, elements: ElementVec, _origin: SentenceId) -> SentenceId {
+    pub(crate) fn push_synthetic_sentence(
+        &self,
+        elements: ElementVec,
+        _origin: SentenceId,
+    ) -> SentenceId {
         self.sentences.push_sentence(elements)
     }
 }
@@ -221,15 +232,21 @@ impl Layer for SyntacticLayer {
     type Inner = NoLayer;
     type Outer = SemanticLayer;
 
-    fn inner(&self) -> Option<&NoLayer> { None }
-    fn outer(&self) -> Option<&SemanticLayer> { None }
+    fn inner(&self) -> Option<&NoLayer> {
+        None
+    }
+    fn outer(&self) -> Option<&SemanticLayer> {
+        None
+    }
 
     fn schedule_cell(&self) -> &'static crate::layer::ScheduleCell {
         static CELL: crate::layer::ScheduleCell = std::sync::OnceLock::new();
         &CELL
     }
 
-    fn cache_config(&self) -> &CacheConfig { &self.config }
+    fn cache_config(&self) -> &CacheConfig {
+        &self.config
+    }
 
     fn initialize_own_caches(&self) {
         // The residue index is a derived view not in `own_persistable`; the
@@ -248,14 +265,14 @@ impl Layer for SyntacticLayer {
         //   sessions  SessionAxiomatized -> AxiomsPromoted; RootRemoved cleanup.
         //   axiom_index / sine  react to AxiomsPromoted (add) / RootRemoved (drop).
         vec![
-            bind(&self.source,      self),
-            bind(&self.sentences,       self),
-            bind(&self.sessions,    self),
+            bind(&self.source, self),
+            bind(&self.sentences, self),
+            bind(&self.sessions, self),
             bind(&self.occurrences, self),
-            bind(&self.residue,     self),
+            bind(&self.residue, self),
             bind(&self.axiom_index, self),
-            bind(&self.sine,        self),
-            bind(&self.term_facts,  self),
+            bind(&self.sine, self),
+            bind(&self.term_facts, self),
         ]
     }
 
@@ -295,7 +312,9 @@ impl Layer for SyntacticLayer {
         let symbols_key = self.symbols.cache_key();
         let result = (|| -> Result<(), crate::Diagnostic> {
             for cache in self.own_persistable() {
-                if cache.cache_key() == symbols_key { continue; }
+                if cache.cache_key() == symbols_key {
+                    continue;
+                }
                 cache.thaw(backend)?;
             }
             Ok(())

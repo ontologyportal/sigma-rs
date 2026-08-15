@@ -27,10 +27,14 @@ impl SyntacticLayer {
     /// caller's perspective. Idempotent.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn sine_add_axiom(&mut self, sid: SentenceId) {
-        if !self.has_sentence(sid) { return; }
+        if !self.has_sentence(sid) {
+            return;
+        }
         let syms = self.sentence_symbols(sid);
         for &s in &syms {
-            self.axiom_index.modify_entry(s, |set| { Arc::make_mut(set).insert(sid); });
+            self.axiom_index.modify_entry(s, |set| {
+                Arc::make_mut(set).insert(sid);
+            });
         }
         self.sine.modify(|idx| idx.add_axiom(sid, syms));
     }
@@ -42,7 +46,9 @@ impl SyntacticLayer {
         // Sentence body must still be intact for symbol extraction.
         let syms = self.sentence_symbols(sid);
         for &s in &syms {
-            self.axiom_index.modify_entry(s, |set| { Arc::make_mut(set).remove(&sid); });
+            self.axiom_index.modify_entry(s, |set| {
+                Arc::make_mut(set).remove(&sid);
+            });
         }
         self.sine.modify(|idx| idx.remove_axiom(sid));
     }
@@ -60,7 +66,9 @@ impl SyntacticLayer {
         I: IntoIterator<Item = SentenceId>,
     {
         let sids: Vec<SentenceId> = sids.into_iter().collect();
-        if sids.is_empty() { return; }
+        if sids.is_empty() {
+            return;
+        }
 
         // The size heuristic and the `axiom_sids` collection below must see the
         // full index, so fold in any deferred promotions first.
@@ -97,7 +105,9 @@ impl SyntacticLayer {
         // Keep the axiom-occurrence index in sync for every sid in this rebuild.
         for (sid, syms) in &pairs {
             for &s in syms {
-                self.axiom_index.modify_entry(s, |set| { Arc::make_mut(set).insert(*sid); });
+                self.axiom_index.modify_entry(s, |set| {
+                    Arc::make_mut(set).insert(*sid);
+                });
             }
         }
         self.sine.modify(|idx| idx.rebuild_from(pairs));
@@ -118,8 +128,8 @@ impl SyntacticLayer {
     /// [`KnowledgeBase::sine_tolerance`] reflects the last-used value.
     pub fn select_axioms(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        tolerance:   f32,
+        seed_syms: &HashSet<SymbolId>,
+        tolerance: f32,
         depth_limit: Option<usize>,
     ) -> HashSet<SentenceId> {
         let result = self.sine_current(|idx| idx.select(seed_syms, tolerance, depth_limit));
@@ -136,12 +146,12 @@ impl SyntacticLayer {
     /// Returns an empty set when the SInE index is disabled.
     pub fn select_axioms_within_budget(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        budget:      usize,
+        seed_syms: &HashSet<SymbolId>,
+        budget: usize,
         depth_limit: Option<usize>,
     ) -> (f32, HashSet<SentenceId>) {
-        let (chosen_t, result) = self.sine_current(|idx|
-            idx.select_within_budget(seed_syms, budget, depth_limit));
+        let (chosen_t, result) =
+            self.sine_current(|idx| idx.select_within_budget(seed_syms, budget, depth_limit));
         self.sine.modify(|idx| idx.tolerance = chosen_t.max(1.0));
         (chosen_t, result)
     }

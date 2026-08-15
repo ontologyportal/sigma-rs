@@ -54,7 +54,7 @@ pub struct AxiomSource {
 #[derive(Debug, Clone, Default)]
 pub struct AxiomSourceIndex {
     pub(crate) by_hash: HashMap<u64, Vec<AxiomSource>>,
-    pub(crate) by_sid:  HashMap<SentenceId, AxiomSource>,
+    pub(crate) by_sid: HashMap<SentenceId, AxiomSource>,
 }
 
 impl AxiomSourceIndex {
@@ -99,7 +99,13 @@ mod tests {
     fn parse_one(kif: &str) -> AstNode {
         let doc = parse_document("test", kif, Parser::Kif);
         assert!(!doc.has_errors(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().expect("at least one root").as_stmt().cloned().expect("doc stmt")
+        doc.ast
+            .into_iter()
+            .next()
+            .expect("at least one root")
+            .as_stmt()
+            .cloned()
+            .expect("doc stmt")
     }
 
     fn kb_with(kif: &str) -> KnowledgeBase {
@@ -108,9 +114,7 @@ mod tests {
         // (span.file == "test.kif"), then promote.
         let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
-        let r = kb.make_session_axiomatic(
-            "test.kif"
-        );
+        let r = kb.make_session_axiomatic("test.kif");
         matches!(r, Ok(_));
         kb
     }
@@ -144,17 +148,16 @@ mod tests {
         // nested, one variable per `forall`.  The source axiom leaves
         // them implicit (KIF convention).  The forall-strip layer in
         // the canonical fingerprint means these match.
-        let kb = kb_with(
-            "(=> (equal ?P (equilibriumPriceFn ?THING ?M)) (member ?THING ?M))"
-        );
+        let kb = kb_with("(=> (equal ?P (equilibriumPriceFn ?THING ?M)) (member ?THING ?M))");
         let idx = kb.build_axiom_source_index();
         let vampire_style = parse_one(
             "(forall (?X1) (forall (?X2) (forall (?X3) \
-             (=> (equal ?X3 (equilibriumPriceFn ?X1 ?X2)) (member ?X1 ?X2)))))"
+             (=> (equal ?X3 (equilibriumPriceFn ?X1 ?X2)) (member ?X1 ?X2)))))",
         );
         let sources = idx.lookup(&vampire_style);
         assert_eq!(
-            sources.len(), 1,
+            sources.len(),
+            1,
             "nested-forall Vampire output must match implicit-universal source: {:?}",
             sources
         );
@@ -255,13 +258,17 @@ mod tests {
         // lines is exactly {1,2,3} rather than relying on enumeration order.
         let roots = kb.file_roots("test.kif");
         assert_eq!(roots.len(), 3);
-        let mut lines: Vec<u32> = roots.iter().map(|&sid| {
-            let got = idx.lookup_by_sid(sid)
-                .unwrap_or_else(|| panic!("sid {} missing from sid index", sid));
-            assert_eq!(got.sid, sid);
-            assert_eq!(got.file, "test.kif");
-            got.line
-        }).collect();
+        let mut lines: Vec<u32> = roots
+            .iter()
+            .map(|&sid| {
+                let got = idx
+                    .lookup_by_sid(sid)
+                    .unwrap_or_else(|| panic!("sid {} missing from sid index", sid));
+                assert_eq!(got.sid, sid);
+                assert_eq!(got.file, "test.kif");
+                got.line
+            })
+            .collect();
         lines.sort_unstable();
         assert_eq!(lines, vec![1, 2, 3]);
     }
@@ -281,7 +288,7 @@ mod tests {
             (subclass Dog Mammal)\n\
         ";
         // First and third are dup — canonical hash is the same.
-        let _p = Parser::Kif;  // silences unused-import warnings if the parse path changes
+        let _p = Parser::Kif; // silences unused-import warnings if the parse path changes
         let kb = kb_with(src);
         let idx = kb.build_axiom_source_index();
         // 2 distinct alpha-classes (Dog/Mammal, Cat/Mammal).

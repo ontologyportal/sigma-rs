@@ -80,42 +80,43 @@ compile_error!(
 
 pub mod error;
 pub mod freshness;
+pub mod manager;
 pub mod session;
 pub mod source;
-pub mod manager;
 
 // -- Re-exports (crate root) -------------------------------------------------
 
 pub use error::{SdkError, SdkResult};
 pub use freshness::{
-    check_freshness, check_local_freshness, check_git_freshness,
-    snapshot_git_tracked, check_git_tracked, Freshness, FreshnessReport,
+    check_freshness, check_git_freshness, check_git_tracked, check_local_freshness,
+    snapshot_git_tracked, Freshness, FreshnessReport,
 };
 pub use session::man::{
-    parse_doc_spans, view_from_manpage, DocBlock, DocSpan, ManPageView,
-    ReferenceSet, SignatureView,
+    parse_doc_spans, view_from_manpage, DocBlock, DocSpan, ManPageView, ReferenceSet, SignatureView,
 };
 pub use sigmakee_rs_core::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 
-pub use session::{Backend, Session};
 #[cfg(feature = "native-prover")]
-pub use session::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
+pub use session::{
+    szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome,
+};
+pub use session::{Backend, Session};
 pub use source::Source;
 
 pub use sigmakee_rs_core::{
-    Diagnostic, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
-    SortSig, TptpLang, TptpOptions,
+    Diagnostic, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId, SortSig,
+    TptpLang, TptpOptions,
 };
 
 // Layer stack: the concrete top layers plus the traits downstream backend
 // dispatch bounds on.
-pub use sigmakee_rs_core::{HasTranslation, TopLayer, TranslationLayer};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use sigmakee_rs_core::ProvingLayer;
-#[cfg(feature = "native-prover")]
-pub use sigmakee_rs_core::ProverLayer;
 #[cfg(feature = "ask")]
 pub use sigmakee_rs_core::ExternalProverLayer;
+#[cfg(feature = "native-prover")]
+pub use sigmakee_rs_core::ProverLayer;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use sigmakee_rs_core::ProvingLayer;
+pub use sigmakee_rs_core::{HasTranslation, TopLayer, TranslationLayer};
 
 // Parsing / AST surface: document parsing, the KIF renderer, and the node types.
 pub use sigmakee_rs_core::{
@@ -139,13 +140,13 @@ pub use sigmakee_rs_core::{
 pub use sigmakee_rs_core::{Severity, TellResult, ToDiagnostic};
 
 // Proof-source indexing + search + shared prover opts.
-pub use sigmakee_rs_core::{SearchOpts, SearchSource};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
 #[cfg(feature = "ask")]
 pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::Strategy;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
+pub use sigmakee_rs_core::{SearchOpts, SearchSource};
 
 // The whole prover module (backends, runners, result types) for path-style
 // access (`sigmakee_rs_sdk::prover::external::backends::…`).
@@ -154,9 +155,9 @@ pub use sigmakee_rs_core::prover;
 
 // The external-backend selector + the trait for plugging in a custom runner.
 #[cfg(feature = "ask")]
-pub use sigmakee_rs_core::Prover;
-#[cfg(feature = "ask")]
 pub use sigmakee_rs_core::prover::ProverRunner;
+#[cfg(feature = "ask")]
+pub use sigmakee_rs_core::Prover;
 
 // Prover-facing types for the native-prover proving ops.
 #[cfg(feature = "native-prover")]
@@ -169,10 +170,10 @@ pub use sigmakee_rs_core::{
 // verbatim prover transcript of its own (native `ProverLayer`, embedded FFI
 // Vampire).
 #[cfg(feature = "native-prover")]
-pub use sigmakee_rs_core::{tptp_highlight, Emitter};
-#[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::prover::proof::emit_proof;
+#[cfg(feature = "native-prover")]
+pub use sigmakee_rs_core::prover::ProverTimings;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::render_graphviz;
 #[cfg(feature = "native-prover")]
-pub use sigmakee_rs_core::prover::ProverTimings;
+pub use sigmakee_rs_core::{tptp_highlight, Emitter};

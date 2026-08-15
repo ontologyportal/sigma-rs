@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
-use sigmakee_rs_sdk::{DynSink, ProgressEvent, ProgressSink};
 use sigmakee_rs_sdk::LogLevel;
+use sigmakee_rs_sdk::{DynSink, ProgressEvent, ProgressSink};
 
 /// Process-wide [`MultiProgress`] that serialises draws between the file-load
 /// bar and the phase spinner so overlapping bars overwrite cleanly.
@@ -35,11 +35,9 @@ pub fn file_load_bar(total: u64) -> Option<ProgressBar> {
     }
     let bar = multi().add(ProgressBar::new(total));
     bar.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.cyan} [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
+        ProgressStyle::with_template("{spinner:.cyan} [{bar:40.cyan/blue}] {pos}/{len} {wide_msg}")
+            .unwrap()
+            .progress_chars("=>-"),
     );
     Some(bar)
 }
@@ -58,7 +56,7 @@ pub fn file_load_bar(total: u64) -> Option<ProgressBar> {
 /// does not land on a stale spinner line. When stderr is not a TTY, `try_new`
 /// returns `None` and nothing draws.
 pub struct PhaseSpinner {
-    bar:   Mutex<Option<ProgressBar>>,
+    bar: Mutex<Option<ProgressBar>>,
     stack: Mutex<Vec<&'static str>>,
 }
 
@@ -74,7 +72,7 @@ impl PhaseSpinner {
             return None;
         }
         Some(Arc::new(PhaseSpinner {
-            bar:   Mutex::new(None),
+            bar: Mutex::new(None),
             stack: Mutex::new(Vec::new()),
         }))
     }
@@ -97,10 +95,9 @@ impl PhaseSpinner {
     /// - non-empty → non-empty: update the existing bar's message
     /// - non-empty → empty: `finish_and_clear` the bar and drop it
     fn refresh_from_stack(&self) {
-        let top: Option<&'static str> =
-            self.stack.lock().ok().and_then(|s| s.last().copied());
+        let top: Option<&'static str> = self.stack.lock().ok().and_then(|s| s.last().copied());
         let mut bar_slot = match self.bar.lock() {
-            Ok(g)  => g,
+            Ok(g) => g,
             Err(_) => return,
         };
         match (top, bar_slot.as_ref()) {
@@ -201,11 +198,15 @@ static GLOBAL: OnceLock<Arc<CliSink>> = OnceLock::new();
 /// `main` before any KB is built. The spinner is included whenever stderr is a
 /// TTY and `--ugly` is off; the profiler only when `profile` is set.
 pub fn init(profile: bool) {
-    let spinner  = PhaseSpinner::try_new();
+    let spinner = PhaseSpinner::try_new();
     let profiler = profile.then(|| Arc::new(PhaseAggregator::new()));
     let logger: Arc<LogBridgeSink> = Arc::new(LogBridgeSink);
     if spinner.is_some() || profiler.is_some() {
-        let _ = GLOBAL.set(Arc::new(CliSink { spinner, profiler, logger }));
+        let _ = GLOBAL.set(Arc::new(CliSink {
+            spinner,
+            profiler,
+            logger,
+        }));
     }
 }
 
@@ -228,11 +229,16 @@ struct LogBridgeSink;
 
 impl ProgressSink for LogBridgeSink {
     fn emit(&self, event: &ProgressEvent) {
-        if let ProgressEvent::Log { level, target, message } = event {
+        if let ProgressEvent::Log {
+            level,
+            target,
+            message,
+        } = event
+        {
             let l = match level {
                 LogLevel::Error => log::Level::Error,
-                LogLevel::Warn  => log::Level::Warn,
-                LogLevel::Info  => log::Level::Info,
+                LogLevel::Warn => log::Level::Warn,
+                LogLevel::Info => log::Level::Info,
                 LogLevel::Debug => log::Level::Debug,
                 LogLevel::Trace => log::Level::Trace,
             };
@@ -244,15 +250,19 @@ impl ProgressSink for LogBridgeSink {
 /// The one CLI sink: fans each progress event into the (optional) live spinner
 /// and the (optional) `--profile` aggregator.
 pub struct CliSink {
-    spinner:  Option<Arc<PhaseSpinner>>,
+    spinner: Option<Arc<PhaseSpinner>>,
     profiler: Option<Arc<PhaseAggregator>>,
-    logger:   Arc<LogBridgeSink>
+    logger: Arc<LogBridgeSink>,
 }
 
 impl ProgressSink for CliSink {
     fn emit(&self, event: &ProgressEvent) {
-        if let Some(s) = &self.spinner  { s.emit(event); }
-        if let Some(p) = &self.profiler { p.emit(event); }
+        if let Some(s) = &self.spinner {
+            s.emit(event);
+        }
+        if let Some(p) = &self.profiler {
+            p.emit(event);
+        }
         if matches!(event, ProgressEvent::Log { .. }) {
             self.logger.emit(event);
         }
@@ -274,13 +284,17 @@ impl CliSink {
     /// Clear the live spinner (no-op when there isn't one).  Call before
     /// printing the final result so output doesn't land on the spinner's row.
     pub fn finish(&self) {
-        if let Some(s) = &self.spinner { s.finish(); }
+        if let Some(s) = &self.spinner {
+            s.finish();
+        }
     }
 
     /// Fold a pre-measured phase duration into the `--profile` aggregator —
     /// a no-op when profiling is off.  See [`PhaseAggregator::record`].
     pub fn record(&self, name: &'static str, dur: Duration) {
-        if let Some(p) = &self.profiler { p.record(name, dur); }
+        if let Some(p) = &self.profiler {
+            p.record(name, dur);
+        }
     }
 }
 
@@ -297,14 +311,14 @@ impl CliSink {
 pub fn record_mechanism_profile(sink: &CliSink, profile: &[(String, Duration)]) {
     for (name, dur) in profile {
         let static_name = match name.as_str() {
-            "saturate.select"       => "saturate.select",
-            "saturate.resimplify"   => "saturate.resimplify",
-            "saturate.factor"       => "saturate.factor",
-            "saturate.eq_resolve"   => "saturate.eq_resolve",
+            "saturate.select" => "saturate.select",
+            "saturate.resimplify" => "saturate.resimplify",
+            "saturate.factor" => "saturate.factor",
+            "saturate.eq_resolve" => "saturate.eq_resolve",
             "saturate.paramodulate" => "saturate.paramodulate",
-            "saturate.resolve"      => "saturate.resolve",
-            "saturate.activate"     => "saturate.activate",
-            _                       => "saturate.other",
+            "saturate.resolve" => "saturate.resolve",
+            "saturate.activate" => "saturate.activate",
+            _ => "saturate.other",
         };
         sink.record(static_name, *dur);
     }
@@ -316,11 +330,11 @@ pub fn record_mechanism_profile(sink: &CliSink, profile: &[(String, Duration)]) 
 struct Inner {
     /// Open phases waiting for their `PhaseFinished`, keyed by phase name. A
     /// re-entrant phase pushes onto its Vec so each end matches its own start.
-    starts:  HashMap<&'static str, Vec<Instant>>,
+    starts: HashMap<&'static str, Vec<Instant>>,
     /// Aggregate durations per phase.
-    totals:  HashMap<&'static str, Duration>,
+    totals: HashMap<&'static str, Duration>,
     /// Call count per phase.
-    counts:  HashMap<&'static str, usize>,
+    counts: HashMap<&'static str, usize>,
 }
 
 /// `ProgressSink` that accumulates phase timings. Drive an op with it
@@ -332,7 +346,9 @@ pub struct PhaseAggregator {
 impl PhaseAggregator {
     /// Create an empty aggregator.
     pub fn new() -> Self {
-        Self { inner: Mutex::new(Inner::default()) }
+        Self {
+            inner: Mutex::new(Inner::default()),
+        }
     }
 
     /// Format a per-phase report, descending by total duration.
@@ -341,7 +357,8 @@ impl PhaseAggregator {
         if inner.totals.is_empty() {
             return "(no phase events recorded — sink installed too late?)".into();
         }
-        let mut entries: Vec<(&'static str, Duration, usize)> = inner.totals
+        let mut entries: Vec<(&'static str, Duration, usize)> = inner
+            .totals
             .iter()
             .map(|(name, dur)| (*name, *dur, *inner.counts.get(name).unwrap_or(&0)))
             .collect();
@@ -350,10 +367,17 @@ impl PhaseAggregator {
         let max_name_len = entries.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
         let mut out = String::new();
         for (name, total, count) in &entries {
-            let avg = if *count > 0 { total.as_secs_f64() * 1000.0 / *count as f64 } else { 0.0 };
+            let avg = if *count > 0 {
+                total.as_secs_f64() * 1000.0 / *count as f64
+            } else {
+                0.0
+            };
             out.push_str(&format!(
                 "  {:<width$}  {:>10.3} ms   ({} call(s), avg {:.3} ms)\n",
-                name, total.as_secs_f64() * 1000.0, count, avg,
+                name,
+                total.as_secs_f64() * 1000.0,
+                count,
+                avg,
                 width = max_name_len,
             ));
         }
@@ -362,7 +386,12 @@ impl PhaseAggregator {
 
     /// `true` if any phase events were recorded.
     pub fn has_data(&self) -> bool {
-        !self.inner.lock().expect("PhaseAggregator mutex poisoned").totals.is_empty()
+        !self
+            .inner
+            .lock()
+            .expect("PhaseAggregator mutex poisoned")
+            .totals
+            .is_empty()
     }
 
     /// Drain everything (for reuse across multiple ops).
@@ -391,7 +420,9 @@ impl PhaseAggregator {
 }
 
 impl Default for PhaseAggregator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProgressSink for PhaseAggregator {

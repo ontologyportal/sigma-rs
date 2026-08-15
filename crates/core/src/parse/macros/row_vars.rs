@@ -122,7 +122,11 @@ pub fn expand_row_vars(node: &mut AstNode) -> Option<Vec<AstNode>> {
 
     let row_vars = find_row_var_names(&node.to_string());
 
-    crate::log!(Trace, "sigmakee_rs_core::parse", format!("row-var expansion of {}", node));
+    crate::log!(
+        Trace,
+        "sigmakee_rs_core::parse",
+        format!("row-var expansion of {}", node)
+    );
 
     let mut result: Vec<AstNode> = vec![node.clone()];
     for row_var in &row_vars {
@@ -137,7 +141,11 @@ pub fn expand_row_vars(node: &mut AstNode) -> Option<Vec<AstNode>> {
         result = next;
     }
 
-    crate::log!(Debug, "sigmakee_rs_core::parse", format!("row-var expansion produced {} sentences", result.len()));
+    crate::log!(
+        Debug,
+        "sigmakee_rs_core::parse",
+        format!("row-var expansion produced {} sentences", result.len())
+    );
     Some(result)
 }
 
@@ -147,13 +155,18 @@ pub fn expand_row_vars(node: &mut AstNode) -> Option<Vec<AstNode>> {
 /// the KIF parser.  Other row variables are left untouched — each is handled in
 /// its own pass of the cross-product loop.
 fn splice_row_var(node: &mut AstNode, row_var: &str, arity: usize) {
-    let AstNode::List { elements, .. } = node else { return };
+    let AstNode::List { elements, .. } = node else {
+        return;
+    };
     let mut expanded: Vec<AstNode> = Vec::with_capacity(elements.len());
     for el in std::mem::take(elements) {
         match el {
             AstNode::RowVariable { name, span } if name == row_var => {
                 for n in 2..=(arity + 1) {
-                    expanded.push(AstNode::Variable { name: format!("{}{}", row_var, n), span: span.clone() });
+                    expanded.push(AstNode::Variable {
+                        name: format!("{}{}", row_var, n),
+                        span: span.clone(),
+                    });
                 }
             }
             mut other => {
@@ -174,7 +187,7 @@ mod tests {
         // macros::expand(), consuming the row variables before the test can
         // exercise expand_row_vars itself.
         let (tokens, _) = crate::parse::kif::tokenize(kif, "__inline__");
-        let (nodes, _)  = crate::parse::kif::parse(tokens, "__inline__");
+        let (nodes, _) = crate::parse::kif::parse(tokens, "__inline__");
         nodes.into_iter().next().unwrap()
     }
 
@@ -190,7 +203,11 @@ mod tests {
         let mut node = kif("(P @ROW)");
         let expanded = expand_row_vars(&mut node);
         assert!(expanded.is_some());
-        let expanded: Vec<String> = expanded.unwrap().into_iter().map(|n| { n.to_string() }).collect();
+        let expanded: Vec<String> = expanded
+            .unwrap()
+            .into_iter()
+            .map(|n| n.to_string())
+            .collect();
         assert_eq!(expanded.len(), 5);
         assert_eq!(expanded[0], "(P ?ROW2)");
         assert_eq!(expanded[1], "(P ?ROW2 ?ROW3)");
@@ -207,7 +224,10 @@ mod tests {
         let expanded = expanded.unwrap();
         assert_eq!(expanded.len(), MAX_ARITY);
         assert_eq!(expanded[0].to_string(), "(forall (?ROW2) (P ?ROW2))");
-        assert_eq!(expanded[1].to_string(), "(forall (?ROW2 ?ROW3) (P ?ROW2 ?ROW3))");
+        assert_eq!(
+            expanded[1].to_string(),
+            "(forall (?ROW2 ?ROW3) (P ?ROW2 ?ROW3))"
+        );
     }
 
     #[test]
@@ -226,7 +246,10 @@ mod tests {
         assert_eq!(expanded.len(), MAX_ARITY * MAX_ARITY);
         assert_eq!(expanded[0].to_string(), "(=> (P ?ROW2) (Q ?ARGS2))");
         assert_eq!(expanded[1].to_string(), "(=> (P ?ROW2) (Q ?ARGS2 ?ARGS3))");
-        assert_eq!(expanded[MAX_ARITY].to_string(), "(=> (P ?ROW2 ?ROW3) (Q ?ARGS2))");
+        assert_eq!(
+            expanded[MAX_ARITY].to_string(),
+            "(=> (P ?ROW2 ?ROW3) (Q ?ARGS2))"
+        );
     }
 
     #[test]
@@ -239,7 +262,7 @@ mod tests {
     fn contains_row_var_detects_nested() {
         let kif = "(=> (P @ROW) true)";
         let (tokens, _) = crate::parse::kif::tokenize(kif, "<test>");
-        let (nodes, _)  = crate::parse::kif::parse(tokens, "<test>");
+        let (nodes, _) = crate::parse::kif::parse(tokens, "<test>");
         assert!(nodes.iter().any(contains_row_var));
     }
 }

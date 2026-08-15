@@ -23,12 +23,12 @@
 // *learned overlay*; base closures stay untouched (they are shared,
 // memoized semantic caches).
 
+use super::hash64::{Map64, Set64};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use super::hash64::{Map64, Set64};
 
-use crate::semantics::SemanticLayer;
 use crate::semantics::types::{RelationDomain, Scope};
+use crate::semantics::SemanticLayer;
 use crate::types::{Element, Sentence, SentenceId, SymbolId, TaxRelation};
 
 use super::clause::{AtomId, AtomTable};
@@ -73,7 +73,9 @@ impl DisjointSets {
         };
         // (disjoint A B)
         for sid in sem.syntactic.by_head_id(&disjoint_id).iter() {
-            let Some(s) = sem.syntactic.sentence(*sid) else { continue };
+            let Some(s) = sem.syntactic.sentence(*sid) else {
+                continue;
+            };
             if s.elements.len() == 3 {
                 if let (Some(a), Some(b)) = (sym(s.elements.get(1)), sym(s.elements.get(2))) {
                     pairs.insert(norm(a, b));
@@ -87,9 +89,15 @@ impl DisjointSets {
         let dd = crate::types::Symbol::hash_name("disjointDecomposition");
         for head in [partition_id, dd] {
             for sid in sem.syntactic.by_head_id(&head).iter() {
-                let Some(s) = sem.syntactic.sentence(*sid) else { continue };
-                let parts: Vec<SymbolId> =
-                    s.elements.iter().skip(2).filter_map(|e| sym(Some(e))).collect();
+                let Some(s) = sem.syntactic.sentence(*sid) else {
+                    continue;
+                };
+                let parts: Vec<SymbolId> = s
+                    .elements
+                    .iter()
+                    .skip(2)
+                    .filter_map(|e| sym(Some(e)))
+                    .collect();
                 for i in 0..parts.len() {
                     for j in (i + 1)..parts.len() {
                         pairs.insert(norm(parts[i], parts[j]));
@@ -121,7 +129,11 @@ impl DisjointSets {
             discover_decomposition_pairs(sem, disjoint_id, &norm, &sym, &mut pairs, &mut meaning);
         }
 
-        Self { pairs, src, meaning }
+        Self {
+            pairs,
+            src,
+            meaning,
+        }
     }
 
     fn directly_disjoint(&self, a: SymbolId, b: SymbolId) -> bool {
@@ -133,7 +145,9 @@ impl DisjointSets {
         self.src.get(&if a <= b { (a, b) } else { (b, a) }).copied()
     }
 
-    fn is_empty(&self) -> bool { self.pairs.is_empty() }
+    fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
 }
 
 /// Discover "disjoint-decomposition" relations by the shape of their
@@ -143,12 +157,12 @@ impl DisjointSets {
 /// `disjointDecompositionN` family (and any renamed analogue) that the
 /// single `partition_id` lookup cannot reach.  Mutates `pairs` in place.
 fn discover_decomposition_pairs(
-    sem:         &SemanticLayer,
+    sem: &SemanticLayer,
     disjoint_id: SymbolId,
-    norm:        &dyn Fn(SymbolId, SymbolId) -> (SymbolId, SymbolId),
-    sym:         &dyn Fn(Option<&Element>) -> Option<SymbolId>,
-    pairs:       &mut Set64<(SymbolId, SymbolId)>,
-    meaning:     &mut Vec<SentenceId>,
+    norm: &dyn Fn(SymbolId, SymbolId) -> (SymbolId, SymbolId),
+    sym: &dyn Fn(Option<&Element>) -> Option<SymbolId>,
+    pairs: &mut Set64<(SymbolId, SymbolId)>,
+    meaning: &mut Vec<SentenceId>,
 ) {
     use crate::parse::OpKind;
     let syn = &sem.syntactic;
@@ -165,7 +179,9 @@ fn discover_decomposition_pairs(
     // (R v1 … vn) with all-variable args → (R, [var ids]); element index
     // of arg k is k+1.
     let atom_vars = |s: &Sentence| -> Option<(SymbolId, Vec<SymbolId>)> {
-        let Some(Element::Symbol(h)) = s.elements.first() else { return None };
+        let Some(Element::Symbol(h)) = s.elements.first() else {
+            return None;
+        };
         let mut vs = Vec::with_capacity(s.elements.len().saturating_sub(1));
         for e in &s.elements[1..] {
             match e {
@@ -193,20 +209,29 @@ fn discover_decomposition_pairs(
     // (root, antecedent, consequent) — `root` is the top-level axiom the
     // edge came from, so a flooding meaning axiom can be omitted whole.
     fn collect_edges(
-        syn:  &crate::syntactic::SyntacticLayer,
+        syn: &crate::syntactic::SyntacticLayer,
         root: SentenceId,
-        sid:  SentenceId,
-        out:  &mut Vec<(SentenceId, SentenceId, SentenceId)>,
+        sid: SentenceId,
+        out: &mut Vec<(SentenceId, SentenceId, SentenceId)>,
     ) {
         use crate::parse::OpKind;
         let Some(s) = syn.sentence(sid) else { return };
         if s.elements.len() == 3 {
-            let a = match &s.elements[1] { Element::Sub(x) => Some(*x), _ => None };
-            let b = match &s.elements[2] { Element::Sub(x) => Some(*x), _ => None };
+            let a = match &s.elements[1] {
+                Element::Sub(x) => Some(*x),
+                _ => None,
+            };
+            let b = match &s.elements[2] {
+                Element::Sub(x) => Some(*x),
+                _ => None,
+            };
             if let (Some(a), Some(b)) = (a, b) {
                 match s.op() {
                     Some(OpKind::Implies) => out.push((root, a, b)),
-                    Some(OpKind::Iff) => { out.push((root, a, b)); out.push((root, b, a)); }
+                    Some(OpKind::Iff) => {
+                        out.push((root, a, b));
+                        out.push((root, b, a));
+                    }
                     _ => {}
                 }
             }
@@ -228,8 +253,12 @@ fn discover_decomposition_pairs(
 
     // Pass A — base: (R …) ⟹ (disjoint xi xj).
     for &(_root, ant, con) in &edges {
-        let (Some(ant_s), Some(con_s)) = (syn.sentence(ant), syn.sentence(con)) else { continue };
-        let Some((rh, rargs)) = atom_vars(&ant_s) else { continue };
+        let (Some(ant_s), Some(con_s)) = (syn.sentence(ant), syn.sentence(con)) else {
+            continue;
+        };
+        let Some((rh, rargs)) = atom_vars(&ant_s) else {
+            continue;
+        };
         if rh == disjoint_id {
             continue;
         }
@@ -246,21 +275,35 @@ fn discover_decomposition_pairs(
     for _ in 0..6 {
         let mut added = false;
         for &(_root, ant, con) in &edges {
-            let Some(ant_s) = syn.sentence(ant) else { continue };
-            let Some((rh, rargs)) = atom_vars(&ant_s) else { continue };
+            let Some(ant_s) = syn.sentence(ant) else {
+                continue;
+            };
+            let Some((rh, rargs)) = atom_vars(&ant_s) else {
+                continue;
+            };
             if rh == disjoint_id {
                 continue;
             }
             for csid in conjuncts(con) {
-                let Some(cs) = syn.sentence(csid) else { continue };
-                let Some((ch, cargs)) = atom_vars(&cs) else { continue };
-                let Some(child) = decomp.get(&ch).cloned() else { continue };
+                let Some(cs) = syn.sentence(csid) else {
+                    continue;
+                };
+                let Some((ch, cargs)) = atom_vars(&cs) else {
+                    continue;
+                };
+                let Some(child) = decomp.get(&ch).cloned() else {
+                    continue;
+                };
                 for (ci, cj) in child {
                     let (Some(&cvi), Some(&cvj)) = (cargs.get(ci - 1), cargs.get(cj - 1)) else {
                         continue;
                     };
                     if let (Some(ri), Some(rj)) = (pos(&rargs, cvi), pos(&rargs, cvj)) {
-                        if decomp.entry(rh).or_default().insert((ri.min(rj), ri.max(rj))) {
+                        if decomp
+                            .entry(rh)
+                            .or_default()
+                            .insert((ri.min(rj), ri.max(rj)))
+                        {
                             added = true;
                         }
                     }
@@ -276,7 +319,9 @@ fn discover_decomposition_pairs(
     let mut harvested = 0usize;
     for (r, poss) in &decomp {
         for sid in syn.by_head_id(r).iter() {
-            let Some(s) = syn.sentence(*sid) else { continue };
+            let Some(s) = syn.sentence(*sid) else {
+                continue;
+            };
             for &(i, j) in poss {
                 if let (Some(a), Some(b)) = (sym(s.elements.get(i)), sym(s.elements.get(j))) {
                     pairs.insert(norm(a, b));
@@ -297,7 +342,9 @@ fn discover_decomposition_pairs(
     let mut meaning_set: HashSet<SentenceId> = HashSet::new();
     for &(root, ant, con) in &edges {
         let hit = [ant, con].iter().any(|&sid| {
-            syn.sentence(sid).and_then(|s| head_of(&s)).is_some_and(|h| theory.contains(&h))
+            syn.sentence(sid)
+                .and_then(|s| head_of(&s))
+                .is_some_and(|h| theory.contains(&h))
         });
         if hit {
             meaning_set.insert(root);
@@ -307,7 +354,10 @@ fn discover_decomposition_pairs(
     if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
         eprintln!(
             "DECOMP discover: {} relations, {} pairs harvested, {} meaning axioms ({} edges)",
-            decomp.len(), harvested, meaning.len(), edges.len(),
+            decomp.len(),
+            harvested,
+            meaning.len(),
+            edges.len(),
         );
     }
 }
@@ -319,8 +369,8 @@ fn discover_decomposition_pairs(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Witness {
     pub(crate) rel: SymbolId,
-    pub(crate) x:   SymbolId,
-    pub(crate) y:   SymbolId,
+    pub(crate) x: SymbolId,
+    pub(crate) y: SymbolId,
     pub(crate) sid: Option<SentenceId>,
 }
 
@@ -363,7 +413,7 @@ pub(crate) struct EqJust {
 
 /// The semantic-layer-backed oracle, scoped to one problem.
 pub(crate) struct SemanticOracle<'a> {
-    sem:   &'a SemanticLayer,
+    sem: &'a SemanticLayer,
     scope: Scope,
     /// Learned ground edges from derived units: rel → x → y → source
     /// clause id.  `instance` / `subclass` / `subrelation` edges land
@@ -424,15 +474,15 @@ pub(crate) struct SemanticOracle<'a> {
     trans_mined: Map64<SymbolId, Option<SentenceId>>,
     // Well-known ids.  `SymbolId` is the name's content hash, so these
     // are correct whether or not the KB ever interned the names.
-    instance_id:   SymbolId,
-    subclass_id:   SymbolId,
+    instance_id: SymbolId,
+    subclass_id: SymbolId,
     subrelation_id: SymbolId,
     transitive_id: SymbolId,
-    symmetric_id:  SymbolId,
+    symmetric_id: SymbolId,
     /// Class-disjointness / exhaustive-decomposition heads (recognized
     /// or default); drive `DisjointSets` and the `exhaustive` map.
-    disjoint_id:   SymbolId,
-    partition_id:  SymbolId,
+    disjoint_id: SymbolId,
+    partition_id: SymbolId,
     /// Lazily-built temporal point network (best-effort interval/point
     /// reasoning over `before`/`meets`/`during`/…); `None` until the
     /// first temporal query.  `RefCell` because `holds` is `&self`; not
@@ -468,15 +518,14 @@ pub(crate) struct OracleSnapshot {
 }
 
 impl<'a> SemanticOracle<'a> {
-
     /// Rehydrate an oracle from a snapshot, re-supplying the layer
     /// borrow.  `DisjointSets::build` is skipped — the snapshot's copy
     /// is authoritative for its key (the KB fingerprint is part of the
     /// snapshot cache key).
     pub(crate) fn from_snapshot(
-        sem:   &'a SemanticLayer,
+        sem: &'a SemanticLayer,
         scope: Scope,
-        snap:  &OracleSnapshot,
+        snap: &OracleSnapshot,
     ) -> Self {
         Self {
             sem,
@@ -495,14 +544,14 @@ impl<'a> SemanticOracle<'a> {
             epoch: std::cell::Cell::new(snap.epoch),
             sym_mined: snap.sym_mined.clone(),
             trans_mined: snap.trans_mined.clone(),
-            instance_id:    snap.roles.instance,
-            subclass_id:    snap.roles.subclass,
+            instance_id: snap.roles.instance,
+            subclass_id: snap.roles.subclass,
             subrelation_id: snap.roles.subrelation,
-            transitive_id:  snap.roles.transitive,
-            symmetric_id:   snap.roles.symmetric,
-            disjoint_id:    snap.roles.disjoint,
-            partition_id:   snap.roles.partition,
-            temporal:       std::cell::RefCell::new(None),
+            transitive_id: snap.roles.transitive,
+            symmetric_id: snap.roles.symmetric,
+            disjoint_id: snap.roles.disjoint,
+            partition_id: snap.roles.partition,
+            temporal: std::cell::RefCell::new(None),
         }
     }
 
@@ -525,16 +574,16 @@ impl<'a> SemanticOracle<'a> {
             fd_facts: Map64::default(),
             pending_eq: Vec::new(),
             eq_just: Map64::default(),
-            sym_mined:   Map64::default(),
+            sym_mined: Map64::default(),
             trans_mined: Map64::default(),
-            instance_id:    roles.instance,
-            subclass_id:    roles.subclass,
+            instance_id: roles.instance,
+            subclass_id: roles.subclass,
             subrelation_id: roles.subrelation,
-            transitive_id:  roles.transitive,
-            symmetric_id:   roles.symmetric,
-            disjoint_id:    roles.disjoint,
-            partition_id:   roles.partition,
-            temporal:       std::cell::RefCell::new(None),
+            transitive_id: roles.transitive,
+            symmetric_id: roles.symmetric,
+            disjoint_id: roles.disjoint,
+            partition_id: roles.partition,
+            temporal: std::cell::RefCell::new(None),
         };
         oracle.build_exhaustive(sem);
         oracle
@@ -550,12 +599,23 @@ impl<'a> SemanticOracle<'a> {
         let ed = crate::types::Symbol::hash_name("exhaustiveDecomposition");
         for head in [self.partition_id, ed] {
             for sid in sem.syntactic.by_head_id(&head).iter() {
-                let Some(s) = sem.syntactic.sentence(*sid) else { continue };
-                let Some(class) = sym(s.elements.get(1)) else { continue };
-                let members: Vec<SymbolId> =
-                    s.elements.iter().skip(2).filter_map(|e| sym(Some(e))).collect();
+                let Some(s) = sem.syntactic.sentence(*sid) else {
+                    continue;
+                };
+                let Some(class) = sym(s.elements.get(1)) else {
+                    continue;
+                };
+                let members: Vec<SymbolId> = s
+                    .elements
+                    .iter()
+                    .skip(2)
+                    .filter_map(|e| sym(Some(e)))
+                    .collect();
                 if members.len() >= 2 {
-                    self.exhaustive.entry(class).or_default().push((members, *sid));
+                    self.exhaustive
+                        .entry(class)
+                        .or_default()
+                        .push((members, *sid));
                 }
             }
         }
@@ -618,7 +678,10 @@ impl<'a> SemanticOracle<'a> {
             }
             'decomp: for (members, decl_sid) in decomps {
                 let mut survivor: Option<SymbolId> = None;
-                let mut just = EqJust { axiom: Some(decl_sid), ..Default::default() };
+                let mut just = EqJust {
+                    axiom: Some(decl_sid),
+                    ..Default::default()
+                };
                 for &m in &members {
                     if self.holds_instance(x, m, None) {
                         continue 'decomp; // already settled
@@ -630,7 +693,9 @@ impl<'a> SemanticOracle<'a> {
                         .and_then(|by_y| by_y.get(&m));
                     let excluded = match excluded_neg {
                         Some(src) => {
-                            if let Some(c) = src { just.clause_parents.push(*c); }
+                            if let Some(c) = src {
+                                just.clause_parents.push(*c);
+                            }
                             true
                         }
                         None => {
@@ -673,7 +738,9 @@ impl<'a> SemanticOracle<'a> {
     /// surfacing as a unit clause.  Internal to the FD fixpoint.
     fn union_just(&mut self, a: SymbolId, b: SymbolId, just: EqJust) {
         let (ra, rb) = (self.eq_rep(a), self.eq_rep(b));
-        if ra == rb { return; }
+        if ra == rb {
+            return;
+        }
         self.epoch.set(self.epoch.get() + 1);
         let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
         self.eq.insert(child, root);
@@ -697,24 +764,43 @@ impl<'a> SemanticOracle<'a> {
         loop {
             let mut merges: Vec<(SymbolId, SymbolId, EqJust)> = Vec::new();
             for (rel, decls) in self.fd_decls.iter() {
-                let Some(facts) = self.fd_facts.get(rel) else { continue };
+                let Some(facts) = self.fd_facts.get(rel) else {
+                    continue;
+                };
                 for decl in decls {
                     let mut by_key: Map64<SymbolId, (SymbolId, &FdFact)> = Map64::default();
                     for f in facts {
-                        let (key, val) = if decl.key_pos == 1 { (f.x, f.y) } else { (f.y, f.x) };
-                        if !decl.key_guards.iter().all(|c| self.holds_instance(key, *c, None))
-                            || !decl.val_guards.iter().all(|c| self.holds_instance(val, *c, None))
+                        let (key, val) = if decl.key_pos == 1 {
+                            (f.x, f.y)
+                        } else {
+                            (f.y, f.x)
+                        };
+                        if !decl
+                            .key_guards
+                            .iter()
+                            .all(|c| self.holds_instance(key, *c, None))
+                            || !decl
+                                .val_guards
+                                .iter()
+                                .all(|c| self.holds_instance(val, *c, None))
                         {
                             continue;
                         }
                         let (krep, vrep) = (self.eq_rep(key), self.eq_rep(val));
                         match by_key.get(&krep) {
-                            None => { by_key.insert(krep, (vrep, f)); }
+                            None => {
+                                by_key.insert(krep, (vrep, f));
+                            }
                             Some(&(prev_vrep, prev_f)) => {
                                 if prev_vrep != vrep {
-                                    let mut j = EqJust { axiom: decl.axiom, ..Default::default() };
+                                    let mut j = EqJust {
+                                        axiom: decl.axiom,
+                                        ..Default::default()
+                                    };
                                     for g in [prev_f, f] {
-                                        if let Some(c) = g.clause { j.clause_parents.push(c); }
+                                        if let Some(c) = g.clause {
+                                            j.clause_parents.push(c);
+                                        }
                                     }
                                     merges.push((prev_vrep, vrep, j));
                                 }
@@ -744,7 +830,9 @@ impl<'a> SemanticOracle<'a> {
     /// `(a1, a2)` (with `a1` an ancestor of `c1`, `a2` of `c2`) and the sid
     /// of the declaration that made them disjoint.  `None` if not disjoint.
     fn provably_disjoint_chain(
-        &self, c1: SymbolId, c2: SymbolId,
+        &self,
+        c1: SymbolId,
+        c2: SymbolId,
     ) -> Option<(SymbolId, SymbolId, Option<SentenceId>)> {
         if self.disjoint.is_empty() {
             return None;
@@ -774,14 +862,19 @@ impl<'a> SemanticOracle<'a> {
         let mut queue = std::collections::VecDeque::from([from]);
         let mut found = false;
         while let Some(cur) = queue.pop_front() {
-            if cur == to { found = true; break; }
+            if cur == to {
+                found = true;
+                break;
+            }
             for (p, rel) in self.sem.parents_of_scoped(cur, self.scope) {
                 if matches!(rel, TaxRelation::Subclass) && !prev.contains_key(&p) && p != from {
                     prev.insert(p, cur);
                     queue.push_back(p);
                 }
             }
-            if prev.len() > 256 { break; }
+            if prev.len() > 256 {
+                break;
+            }
         }
         if !found {
             return;
@@ -800,7 +893,9 @@ impl<'a> SemanticOracle<'a> {
         }
         for (child, parent) in edges.into_iter().rev() {
             w.push(Witness {
-                rel: self.subclass_id, x: child, y: parent,
+                rel: self.subclass_id,
+                x: child,
+                y: parent,
                 sid: self.edge_fact_sid(self.subclass_id, child, parent),
             });
         }
@@ -815,7 +910,8 @@ impl<'a> SemanticOracle<'a> {
         }
         let a1 = self.ancestors_incl(c1);
         let a2 = self.ancestors_incl(c2);
-        a1.iter().any(|x| a2.iter().any(|y| self.disjoint.directly_disjoint(*x, *y)))
+        a1.iter()
+            .any(|x| a2.iter().any(|y| self.disjoint.directly_disjoint(*x, *y)))
     }
 
     /// `c` and its subclass ancestors (inclusive), in the problem scope.
@@ -830,7 +926,9 @@ impl<'a> SemanticOracle<'a> {
                     out.push(p);
                 }
             }
-            if out.len() > 256 { break; } // defensive bound
+            if out.len() > 256 {
+                break;
+            } // defensive bound
         }
         out
     }
@@ -849,7 +947,9 @@ impl<'a> SemanticOracle<'a> {
     fn ground_pairs(&self, rel: SymbolId) -> Vec<(SymbolId, SymbolId, Option<SentenceId>)> {
         let mut out = Vec::new();
         for sid in self.sem.syntactic.by_head_id(&rel).iter() {
-            let Some(s) = self.sem.syntactic.sentence(*sid) else { continue };
+            let Some(s) = self.sem.syntactic.sentence(*sid) else {
+                continue;
+            };
             if s.elements.len() == 3 {
                 if let (Some(Element::Symbol(a)), Some(Element::Symbol(b))) =
                     (s.elements.get(1), s.elements.get(2))
@@ -868,8 +968,8 @@ impl<'a> SemanticOracle<'a> {
     fn temporal_entails(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         why: Option<&mut Vec<Witness>>,
     ) -> bool {
         if std::env::var_os("SIGMA_TEMPORAL").is_none() {
@@ -884,8 +984,8 @@ impl<'a> SemanticOracle<'a> {
     fn temporal_entails_ungated(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         why: Option<&mut Vec<Witness>>,
     ) -> bool {
         let ids = super::temporal::TemporalRelIds::standard();
@@ -903,7 +1003,8 @@ impl<'a> SemanticOracle<'a> {
         }
         let mut guard = self.temporal.borrow_mut();
         let net = guard.as_mut().expect("temporal net built above");
-        let held = super::temporal::query(net, &ids, rel, x, y, |s| self.holds_instance(s, tp, None));
+        let held =
+            super::temporal::query(net, &ids, rel, x, y, |s| self.holds_instance(s, tp, None));
         if held {
             if let Some(w) = why {
                 // The temporal facts (starts/meets/finishes/temporalPart/…)
@@ -911,7 +1012,12 @@ impl<'a> SemanticOracle<'a> {
                 for sid in super::temporal::query_witness(net, &ids, rel, x, y, |s| {
                     self.holds_instance(s, tp, None)
                 }) {
-                    w.push(Witness { rel, x, y, sid: Some(sid) });
+                    w.push(Witness {
+                        rel,
+                        x,
+                        y,
+                        sid: Some(sid),
+                    });
                 }
             }
         }
@@ -921,8 +1027,8 @@ impl<'a> SemanticOracle<'a> {
     fn holds_uncached(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         mut why: Option<&mut Vec<Witness>>,
     ) -> bool {
         // Best-effort temporal point-network discharge (cross-relation
@@ -934,10 +1040,14 @@ impl<'a> SemanticOracle<'a> {
             return self.holds_instance(x, y, why);
         }
         if rel == self.subclass_id {
-            if x == y { return true; }
+            if x == y {
+                return true;
+            }
             return match self.sub_chain(x, y) {
                 Some(chain) => {
-                    if let Some(w) = why.as_deref_mut() { w.extend(chain); }
+                    if let Some(w) = why.as_deref_mut() {
+                        w.extend(chain);
+                    }
                     true
                 }
                 None => false,
@@ -947,7 +1057,9 @@ impl<'a> SemanticOracle<'a> {
         // Generic relation: direct (possibly subrelation-inherited) edge…
         let below = self.sem.subrel_below(rel, self.scope);
         if let Some(ws) = self.edge_why(&below, rel, x, y) {
-            if let Some(w) = why.as_deref_mut() { w.extend(ws); }
+            if let Some(w) = why.as_deref_mut() {
+                w.extend(ws);
+            }
             return true;
         }
         // …the REVERSED edge when rel is symmetric (stored facts keep
@@ -958,7 +1070,9 @@ impl<'a> SemanticOracle<'a> {
                 if let Some(w) = why.as_deref_mut() {
                     w.extend(ws);
                     w.push(Witness {
-                        rel: self.instance_id, x: rel, y: self.symmetric_id,
+                        rel: self.instance_id,
+                        x: rel,
+                        y: self.symmetric_id,
                         sid: self.symmetric_source(rel),
                     });
                 }
@@ -980,7 +1094,12 @@ impl<'a> SemanticOracle<'a> {
                 let mut cur = y;
                 while cur != x {
                     let (prev, sid) = reach[&cur];
-                    hops.push(Witness { rel, x: prev, y: cur, sid: Some(sid) });
+                    hops.push(Witness {
+                        rel,
+                        x: prev,
+                        y: cur,
+                        sid: Some(sid),
+                    });
                     cur = prev;
                 }
                 hops.reverse();
@@ -993,10 +1112,13 @@ impl<'a> SemanticOracle<'a> {
                     w.extend(hops);
                     let (inst, tr) = (self.instance_id, self.transitive_id);
                     w.push(Witness {
-                        rel: inst, x: rel, y: tr,
+                        rel: inst,
+                        x: rel,
+                        y: tr,
                         // Declared: the declaration fact.  Rule-mined:
                         // the transitivity axiom itself.
-                        sid: self.edge_fact_sid(inst, rel, tr)
+                        sid: self
+                            .edge_fact_sid(inst, rel, tr)
                             .or_else(|| self.trans_mined.get(&rel).copied().flatten()),
                     });
                 }
@@ -1020,14 +1142,24 @@ impl<'a> SemanticOracle<'a> {
             .collect();
         if direct.contains(&y) {
             if let Some(w) = why.as_deref_mut() {
-                w.push(Witness { rel: inst, x, y, sid: self.edge_fact_sid(inst, x, y) });
+                w.push(Witness {
+                    rel: inst,
+                    x,
+                    y,
+                    sid: self.edge_fact_sid(inst, x, y),
+                });
             }
             return true;
         }
         for c in direct {
             if let Some(chain) = self.sub_chain(c, y) {
                 if let Some(w) = why.as_deref_mut() {
-                    w.push(Witness { rel: inst, x, y: c, sid: self.edge_fact_sid(inst, x, c) });
+                    w.push(Witness {
+                        rel: inst,
+                        x,
+                        y: c,
+                        sid: self.edge_fact_sid(inst, x, c),
+                    });
                     w.extend(chain);
                 }
                 return true;
@@ -1040,7 +1172,9 @@ impl<'a> SemanticOracle<'a> {
     /// `y` is not up `c`'s chain.  Parent-pointer BFS over the scoped
     /// subclass edges ∪ the learned subclass overlay.
     fn sub_chain(&self, c: SymbolId, y: SymbolId) -> Option<Vec<Witness>> {
-        if c == y { return Some(Vec::new()); }
+        if c == y {
+            return Some(Vec::new());
+        }
         let sub = self.subclass_id;
         let mut par: Map64<SymbolId, SymbolId> = Map64::default();
         par.insert(c, c);
@@ -1063,7 +1197,9 @@ impl<'a> SemanticOracle<'a> {
                         while par[&cur] != cur {
                             let p = par[&cur];
                             chain.push(Witness {
-                                rel: sub, x: p, y: cur,
+                                rel: sub,
+                                x: p,
+                                y: cur,
                                 sid: self.edge_fact_sid(sub, p, cur),
                             });
                             cur = p;
@@ -1083,9 +1219,9 @@ impl<'a> SemanticOracle<'a> {
     fn edge_why(
         &self,
         below: &crate::semantics::caches::subrel_lattice::BelowMap,
-        _rel:  SymbolId,
-        x:     SymbolId,
-        y:     SymbolId,
+        _rel: SymbolId,
+        x: SymbolId,
+        y: SymbolId,
     ) -> Option<Vec<Witness>> {
         for (&r, _) in below.iter() {
             // Stored facts…
@@ -1096,9 +1232,7 @@ impl<'a> SemanticOracle<'a> {
                 .find(|(obj, _)| *obj == y)
                 .map(|(_, sid)| Some(sid));
             // …or a learned edge.
-            let hit = stored.or_else(|| {
-                self.learned_objects(r, x).any(|b| b == y).then_some(None)
-            });
+            let hit = stored.or_else(|| self.learned_objects(r, x).any(|b| b == y).then_some(None));
             let Some(sid) = hit else { continue };
             let mut ws = vec![Witness { rel: r, x, y, sid }];
             // The chain r → … → rel through the lattice's parent pointers.
@@ -1106,7 +1240,9 @@ impl<'a> SemanticOracle<'a> {
             let mut cur = r;
             while let Some(Some((up, rule_sid))) = below.get(&cur) {
                 ws.push(Witness {
-                    rel: sr, x: cur, y: *up,
+                    rel: sr,
+                    x: cur,
+                    y: *up,
                     sid: rule_sid.or_else(|| self.edge_fact_sid(sr, cur, *up)),
                 });
                 cur = *up;
@@ -1122,17 +1258,21 @@ impl<'a> SemanticOracle<'a> {
     fn reach_with_learned(
         &self,
         below: &crate::semantics::caches::subrel_lattice::BelowMap,
-        x:     SymbolId,
-        y:     SymbolId,
+        x: SymbolId,
+        y: SymbolId,
     ) -> Option<Vec<Witness>> {
         let mut par: Map64<SymbolId, (SymbolId, SymbolId, Option<SentenceId>)> = Map64::default();
         let mut stack = vec![x];
         let mut seen: HashSet<SymbolId> = HashSet::from([x]);
         while let Some(a) = stack.pop() {
             for (&r, _) in below.iter() {
-                let stored = self.sem.ground_binary_objects(r, a, self.scope)
-                    .into_iter().map(move |(b, sid)| (b, r, Some(sid)));
-                let learned = self.learned_objects(r, a)
+                let stored = self
+                    .sem
+                    .ground_binary_objects(r, a, self.scope)
+                    .into_iter()
+                    .map(move |(b, sid)| (b, r, Some(sid)));
+                let learned = self
+                    .learned_objects(r, a)
                     .map(move |b| (b, r, None))
                     .collect::<Vec<_>>();
                 for (b, r2, sid) in stored.chain(learned) {
@@ -1143,7 +1283,12 @@ impl<'a> SemanticOracle<'a> {
                             let mut cur = y;
                             while cur != x {
                                 let (prev, r3, s3) = par[&cur];
-                                hops.push(Witness { rel: r3, x: prev, y: cur, sid: s3 });
+                                hops.push(Witness {
+                                    rel: r3,
+                                    x: prev,
+                                    y: cur,
+                                    sid: s3,
+                                });
                                 cur = prev;
                             }
                             hops.reverse();
@@ -1160,8 +1305,7 @@ impl<'a> SemanticOracle<'a> {
     /// Is `rel` a TransitiveRelation (direct, inherited, learned, or
     /// rule-mined)?
     fn is_transitive(&self, rel: SymbolId) -> bool {
-        self.trans_mined.contains_key(&rel)
-            || self.holds_instance(rel, self.transitive_id, None)
+        self.trans_mined.contains_key(&rel) || self.holds_instance(rel, self.transitive_id, None)
     }
 
     /// The sid of the stored fact `(head x y)` visible in scope, if any
@@ -1202,13 +1346,13 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
             sym_mined: self.sym_mined.clone(),
             trans_mined: self.trans_mined.clone(),
             roles: crate::semantics::roles::TaxonomyRoles {
-                instance:    self.instance_id,
-                subclass:    self.subclass_id,
+                instance: self.instance_id,
+                subclass: self.subclass_id,
                 subrelation: self.subrelation_id,
-                transitive:  self.transitive_id,
-                symmetric:   self.symmetric_id,
-                disjoint:    self.disjoint_id,
-                partition:   self.partition_id,
+                transitive: self.transitive_id,
+                symmetric: self.symmetric_id,
+                disjoint: self.disjoint_id,
+                partition: self.partition_id,
                 // domain/range live on the semantic layer, not the oracle —
                 // defaults here (never read through the oracle's snapshot).
                 ..Default::default()
@@ -1222,13 +1366,13 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// renamed dialects too.
     fn roles(&self) -> crate::semantics::roles::TaxonomyRoles {
         crate::semantics::roles::TaxonomyRoles {
-            instance:    self.instance_id,
-            subclass:    self.subclass_id,
+            instance: self.instance_id,
+            subclass: self.subclass_id,
             subrelation: self.subrelation_id,
-            transitive:  self.transitive_id,
-            symmetric:   self.symmetric_id,
-            disjoint:    self.disjoint_id,
-            partition:   self.partition_id,
+            transitive: self.transitive_id,
+            symmetric: self.symmetric_id,
+            disjoint: self.disjoint_id,
+            partition: self.partition_id,
             // domain/range are the semantic layer's; not used via the oracle.
             ..Default::default()
         }
@@ -1243,16 +1387,16 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// same `&SemanticLayer` its constructor captured.)
     fn set_roles(&mut self, roles: crate::semantics::roles::TaxonomyRoles) {
         let sem = self.sem;
-        self.instance_id    = roles.instance;
-        self.subclass_id    = roles.subclass;
+        self.instance_id = roles.instance;
+        self.subclass_id = roles.subclass;
         self.subrelation_id = roles.subrelation;
-        self.transitive_id  = roles.transitive;
-        self.symmetric_id   = roles.symmetric;
+        self.transitive_id = roles.transitive;
+        self.symmetric_id = roles.symmetric;
         // Disjointness / exhaustive decomposition are keyed on the
         // `disjoint` / `partition` heads — rebuild against the recognized
         // ones (cheap; only runs under `recognize_roles`).
         if self.disjoint_id != roles.disjoint || self.partition_id != roles.partition {
-            self.disjoint_id  = roles.disjoint;
+            self.disjoint_id = roles.disjoint;
             self.partition_id = roles.partition;
             self.disjoint = DisjointSets::build(sem, self.disjoint_id, self.partition_id);
             self.exhaustive = Map64::default();
@@ -1263,11 +1407,20 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// Extend the learned overlay with a derived ground unit.
     fn add_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
         self.epoch.set(self.epoch.get() + 1);
-        let slot = self.learned.entry(rel).or_default().entry(x).or_default().entry(y).or_insert(src);
+        let slot = self
+            .learned
+            .entry(rel)
+            .or_default()
+            .entry(x)
+            .or_default()
+            .entry(y)
+            .or_insert(src);
         // A later registration may carry provenance an earlier one lacked
         // (e.g. assumption pre-pass, then the made clause) — upgrade, never
         // downgrade to None.
-        if src.is_some() { *slot = src; }
+        if src.is_some() {
+            *slot = src;
+        }
         // FD congruence: facts of a functional relation feed the
         // fixpoint; new `instance` facts can satisfy an FD guard, so
         // they trigger a recheck too.
@@ -1278,7 +1431,10 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
             if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
                 eprintln!("FD-OBSERVE rel={rel:?} x={x:?} y={y:?} src={src:?}");
             }
-            self.fd_facts.entry(rel).or_default().push(FdFact { x, y, clause: src });
+            self.fd_facts
+                .entry(rel)
+                .or_default()
+                .push(FdFact { x, y, clause: src });
             self.fd_fixpoint();
         } else if rel == self.instance_id && !self.fd_decls.is_empty() {
             self.fd_fixpoint();
@@ -1303,7 +1459,9 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// expire.  Re-sightings (the same derived rule re-made) are no-ops.
     fn register_symmetric(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
         if let Some(slot) = self.sym_mined.get_mut(&rel) {
-            if slot.is_none() && sid.is_some() { *slot = sid; }
+            if slot.is_none() && sid.is_some() {
+                *slot = sid;
+            }
             return;
         }
         self.sym_mined.insert(rel, sid);
@@ -1313,7 +1471,9 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// Register a rule-mined transitive relation (schema channel).
     fn register_transitive(&mut self, rel: SymbolId, sid: Option<SentenceId>) {
         if let Some(slot) = self.trans_mined.get_mut(&rel) {
-            if slot.is_none() && sid.is_some() { *slot = sid; }
+            if slot.is_none() && sid.is_some() {
+                *slot = sid;
+            }
             return;
         }
         self.trans_mined.insert(rel, sid);
@@ -1349,9 +1509,14 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
             let (root, child) = if ra <= rb { (ra, rb) } else { (rb, ra) };
             self.eq.insert(child, root);
             if let Some(cid) = src {
-                self.eq_just.insert(child, EqJust {
-                    fact_sids: Vec::new(), clause_parents: vec![cid], axiom: None,
-                });
+                self.eq_just.insert(
+                    child,
+                    EqJust {
+                        fact_sids: Vec::new(),
+                        clause_parents: vec![cid],
+                        axiom: None,
+                    },
+                );
             }
             // An external merge can collapse two FD keys.
             self.fd_fixpoint();
@@ -1363,9 +1528,17 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     /// may leave exactly one candidate.
     fn add_neg_unit(&mut self, rel: SymbolId, x: SymbolId, y: SymbolId, src: Option<u32>) {
         self.epoch.set(self.epoch.get() + 1);
-        let slot = self.neg_learned.entry(rel).or_default()
-            .entry(x).or_default().entry(y).or_insert(src);
-        if src.is_some() { *slot = src; }
+        let slot = self
+            .neg_learned
+            .entry(rel)
+            .or_default()
+            .entry(x)
+            .or_default()
+            .entry(y)
+            .or_insert(src);
+        if src.is_some() {
+            *slot = src;
+        }
         if rel == self.instance_id && !self.exhaustive.is_empty() {
             self.exh_propagate(x);
         }
@@ -1407,19 +1580,27 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
             let mut s = start;
             let mut guard = 0u32;
             while let Some(&p) = self.eq.get(&s) {
-                if p == s { break; }
+                if p == s {
+                    break;
+                }
                 if let Some(j) = self.eq_just.get(&s) {
                     sids.extend(j.fact_sids.iter().copied());
                     clauses.extend(j.clause_parents.iter().copied());
-                    if let Some(ax) = j.axiom { sids.push(ax); }
+                    if let Some(ax) = j.axiom {
+                        sids.push(ax);
+                    }
                 }
                 s = p;
                 guard += 1;
-                if guard > 1 << 20 { break; }
+                if guard > 1 << 20 {
+                    break;
+                }
             }
         }
-        sids.sort_unstable(); sids.dedup();
-        clauses.sort_unstable(); clauses.dedup();
+        sids.sort_unstable();
+        sids.dedup();
+        clauses.sort_unstable();
+        clauses.dedup();
         (sids, clauses)
     }
 
@@ -1432,9 +1613,14 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
         if rr != rc {
             self.eq.insert(rc, rr);
             if let Some(cid) = src {
-                self.eq_just.insert(rc, EqJust {
-                    fact_sids: Vec::new(), clause_parents: vec![cid], axiom: None,
-                });
+                self.eq_just.insert(
+                    rc,
+                    EqJust {
+                        fact_sids: Vec::new(),
+                        clause_parents: vec![cid],
+                        axiom: None,
+                    },
+                );
             }
             self.fd_fixpoint();
         }
@@ -1444,19 +1630,27 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     fn eq_rep(&self, mut s: SymbolId) -> SymbolId {
         let mut guard = 0u32;
         while let Some(&p) = self.eq.get(&s) {
-            if p == s { break; }
+            if p == s {
+                break;
+            }
             s = p;
             guard += 1;
-            if guard > 1 << 20 { break; } // defensive: chains are short
+            if guard > 1 << 20 {
+                break;
+            } // defensive: chains are short
         }
         s
     }
 
     /// Whether any ground equality has been registered.
-    fn has_equalities(&self) -> bool { !self.eq.is_empty() }
+    fn has_equalities(&self) -> bool {
+        !self.eq.is_empty()
+    }
 
     /// Whether any class-disjointness is declared (gates the sorted filter).
-    fn has_disjointness(&self) -> bool { !self.disjoint.is_empty() }
+    fn has_disjointness(&self) -> bool {
+        !self.disjoint.is_empty()
+    }
 
     /// Entailment of a ground symbol equality `(equal x y)`:
     ///   * reflexivity / equality-class congruence (the union-find), or
@@ -1464,12 +1658,7 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     ///     axiom (`subclass` is a partial order), so two mutually-
     ///     subclassing classes are equal.
     /// When `why` is `Some`, the two subclass chains are appended.
-    fn equal_holds(
-        &self,
-        x: SymbolId,
-        y: SymbolId,
-        mut why: Option<&mut Vec<Witness>>,
-    ) -> bool {
+    fn equal_holds(&self, x: SymbolId, y: SymbolId, mut why: Option<&mut Vec<Witness>>) -> bool {
         if x == y {
             return true;
         }
@@ -1480,7 +1669,12 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
                 // `eq_explain` at the discharge site.
                 let (sids, _) = self.eq_explain(x, y);
                 for sid in sids {
-                    w.push(Witness { rel: self.subclass_id, x, y, sid: Some(sid) });
+                    w.push(Witness {
+                        rel: self.subclass_id,
+                        x,
+                        y,
+                        sid: Some(sid),
+                    });
                 }
             }
             return true;
@@ -1499,8 +1693,8 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     fn refutes_instance(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        c:   SymbolId,
+        x: SymbolId,
+        c: SymbolId,
         mut why: Option<&mut Vec<Witness>>,
     ) -> bool {
         if rel != self.instance_id || self.disjoint.is_empty() {
@@ -1512,14 +1706,19 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
             .into_iter()
             .filter(|(_, r)| matches!(r, TaxRelation::Instance))
             .map(|(d, _)| d)
-            .chain(self.learned_objects(self.instance_id, x).collect::<Vec<_>>())
+            .chain(
+                self.learned_objects(self.instance_id, x)
+                    .collect::<Vec<_>>(),
+            )
             .collect();
         for d in direct {
             if let Some((a1, a2, decl)) = self.provably_disjoint_chain(d, c) {
                 if let Some(w) = why.as_deref_mut() {
                     // The membership that conflicts: `(instance x d)`.
                     w.push(Witness {
-                        rel: self.instance_id, x, y: d,
+                        rel: self.instance_id,
+                        x,
+                        y: d,
                         sid: self.edge_fact_sid(self.instance_id, x, d),
                     });
                     // The subclass chains up to the disjoint ancestors, so the
@@ -1528,7 +1727,12 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
                     self.push_subclass_path(c, a2, w);
                     // … and the partition/disjoint declaration that makes
                     // a1 and a2 disjoint — the referee, as a full proof step.
-                    w.push(Witness { rel: self.disjoint_id, x: a1, y: a2, sid: decl });
+                    w.push(Witness {
+                        rel: self.disjoint_id,
+                        x: a1,
+                        y: a2,
+                        sid: decl,
+                    });
                 }
                 return true;
             }
@@ -1558,8 +1762,7 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
                     // `arg` must be an instance of `c`: ill-sorted if any
                     // class `arg` is an instance of is disjoint from `c`.
                     for (cls, rel2) in self.sem.parents_of_scoped(*arg, self.scope) {
-                        if matches!(rel2, TaxRelation::Instance)
-                            && self.provably_disjoint(cls, *c)
+                        if matches!(rel2, TaxRelation::Instance) && self.provably_disjoint(cls, *c)
                         {
                             return true;
                         }
@@ -1583,8 +1786,8 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     fn holds(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         why: Option<&mut Vec<Witness>>,
     ) -> bool {
         // Witness-collecting calls bypass the memo (a hit cannot
@@ -1615,8 +1818,8 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     fn temporal_holds(
         &self,
         rel: SymbolId,
-        x:   SymbolId,
-        y:   SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         why: Option<&mut Vec<Witness>>,
     ) -> bool {
         self.temporal_entails_ungated(rel, x, y, why)
@@ -1635,18 +1838,33 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
         let mut claims: Vec<RelationClaim> = Vec::new();
         let mut claim = |rel: SymbolId| {
             if !claims.iter().any(|c| c.rel == rel) {
-                claims.push(RelationClaim { rel, coverage: Coverage::Complete });
+                claims.push(RelationClaim {
+                    rel,
+                    coverage: Coverage::Complete,
+                });
             }
         };
         for rel in [
-            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
-            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
+            roles.instance,
+            roles.subclass,
+            roles.subrelation,
+            roles.transitive,
+            roles.symmetric,
+            roles.domain,
+            roles.range,
+            roles.disjoint,
+            roles.partition,
         ] {
             claim(rel);
         }
         for rel in [
-            tids.before, tids.earlier, tids.meets, tids.during, tids.starts,
-            tids.finishes, tids.temporal_part,
+            tids.before,
+            tids.earlier,
+            tids.meets,
+            tids.during,
+            tids.starts,
+            tids.finishes,
+            tids.temporal_part,
         ] {
             claim(rel);
         }

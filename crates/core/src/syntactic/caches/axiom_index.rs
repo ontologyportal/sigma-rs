@@ -9,11 +9,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::cache::{EagerMapBehavior};
-use crate::cache::events::{EventKind, Event};
-use crate::syntactic::SyntacticLayer;
+use crate::cache::events::{Event, EventKind};
+use crate::cache::EagerMapBehavior;
 use crate::syntactic::caches::sentences::SentenceCache;
 use crate::syntactic::sentence::Sentence;
+use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, SentenceId, SymbolId};
 
 /// Behavior for the `syntactic::axiom_index` eager keyed index.
@@ -22,9 +22,9 @@ pub(crate) struct AxiomIndex;
 
 impl EagerMapBehavior for AxiomIndex {
     type Parent = SyntacticLayer;
-    type Key    = SymbolId;
-    type Value  = Arc<HashSet<SentenceId>>;
-    type Side   = ();
+    type Key = SymbolId;
+    type Value = Arc<HashSet<SentenceId>>;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "syntactic::axiom_index";
@@ -38,16 +38,17 @@ impl EagerMapBehavior for AxiomIndex {
         &[SentenceCache::NAME]
     }
 
-    fn event_parallel(&self) -> bool { true }
+    fn event_parallel(&self) -> bool {
+        true
+    }
 
     fn react(
         &self,
         parent: &Self::Parent,
         events: &[&crate::cache::events::Event],
-        axiom_index:  &crate::cache::EntryCache<Self::Key, Self::Value>,
-        _side:  &(),
-    ) -> Vec<Event>
-    {
+        axiom_index: &crate::cache::EntryCache<Self::Key, Self::Value>,
+        _side: &(),
+    ) -> Vec<Event> {
         for event in events {
             match event {
                 Event::AxiomsPromoted { sids } => {
@@ -55,16 +56,22 @@ impl EagerMapBehavior for AxiomIndex {
                         let mut ids = parent.sentence_symbols(*sid);
                         ids.extend(parent.sentence_vars(*sid).into_iter().map(|(id, _)| id));
                         for s in ids {
-                            axiom_index.modify_entry(s, |set| { Arc::make_mut(set).insert(*sid); });
+                            axiom_index.modify_entry(s, |set| {
+                                Arc::make_mut(set).insert(*sid);
+                            });
                         }
                     }
-                },
+                }
                 Event::RootRemoved { sid, sentences } => {
-                    let Some(root) = sentences.iter().find(|s| s.hash() == *sid) else { continue };
+                    let Some(root) = sentences.iter().find(|s| s.hash() == *sid) else {
+                        continue;
+                    };
                     for s in parent.transitive_symbols_of(root, sentences) {
-                        axiom_index.modify_entry(s, |set| { Arc::make_mut(set).remove(sid); });
+                        axiom_index.modify_entry(s, |set| {
+                            Arc::make_mut(set).remove(sid);
+                        });
                     }
-                },
+                }
                 _ => {}
             }
         }
@@ -86,24 +93,31 @@ impl SyntacticLayer {
     /// via [`Self::sentence_symbols`].
     pub(crate) fn transitive_symbols_of(
         &self,
-        root:    &Sentence,
+        root: &Sentence,
         removed: &[Sentence],
     ) -> HashSet<SymbolId> {
-        let by_id: HashMap<SentenceId, &Sentence> =
-            removed.iter().map(|s| (s.hash(), s)).collect();
-        let mut out:   HashSet<SymbolId>   = HashSet::new();
-        let mut seen:  HashSet<SentenceId> = HashSet::new();
-        let mut stack: Vec<&Sentence>      = vec![root];
+        let by_id: HashMap<SentenceId, &Sentence> = removed.iter().map(|s| (s.hash(), s)).collect();
+        let mut out: HashSet<SymbolId> = HashSet::new();
+        let mut seen: HashSet<SentenceId> = HashSet::new();
+        let mut stack: Vec<&Sentence> = vec![root];
         while let Some(s) = stack.pop() {
             for el in &s.elements {
                 match el {
-                    Element::Symbol(sym) => { out.insert(sym.id()); }
-                    Element::Variable { id, is_row: false, .. } => { out.insert(*id); }
+                    Element::Symbol(sym) => {
+                        out.insert(sym.id());
+                    }
+                    Element::Variable {
+                        id, is_row: false, ..
+                    } => {
+                        out.insert(*id);
+                    }
                     Element::Sub(c) => {
-                        if !seen.insert(*c) { continue; }
+                        if !seen.insert(*c) {
+                            continue;
+                        }
                         match by_id.get(c) {
                             Some(sub) => stack.push(sub),
-                            None      => {
+                            None => {
                                 out.extend(self.sentence_symbols(*c));
                                 out.extend(self.sentence_vars(*c).into_iter().map(|(id, _)| id));
                             }

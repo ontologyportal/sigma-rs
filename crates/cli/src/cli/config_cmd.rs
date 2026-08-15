@@ -12,9 +12,9 @@
 
 use std::path::{Path, PathBuf};
 
-use sigmakee_rs_sdk::Source;
-use sigmakee_rs_sdk::manager::{Constituent, KBManager};
 use sigmakee_rs_sdk::manager::meta::{OptionMeta, Scope};
+use sigmakee_rs_sdk::manager::{Constituent, KBManager};
+use sigmakee_rs_sdk::Source;
 
 use crate::style::*;
 
@@ -26,7 +26,10 @@ use crate::style::*;
 pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: bool) -> bool {
     let doc = match serde_json::to_value(manager) {
         Ok(v) => v,
-        Err(e) => { log::error!("config: cannot serialize manager: {e}"); return false; }
+        Err(e) => {
+            log::error!("config: cannot serialize manager: {e}");
+            return false;
+        }
     };
 
     match (&config_path, loaded) {
@@ -41,17 +44,35 @@ pub fn run_config(manager: &KBManager, config_path: Option<PathBuf>, loaded: boo
     println!("{color_bright_black}Each row: CLI flag = configured value   [config.xml key(s)]{color_reset}");
 
     let opts = KBManager::options();
-    group("Global flags",
-        opts.iter().filter(|o| matches!(o.scope, Scope::Global)), &doc);
-    group("Native prover options (NativeProverConfig)",
-        opts.iter().filter(|o| prover_category(o) == Some(ProverCategory::Native)), &doc);
-    group("External prover options (ExternalProverConfig)",
-        opts.iter().filter(|o| prover_category(o) == Some(ProverCategory::External)), &doc);
-    group("Other subcommand flags",
-        opts.iter().filter(|o| matches!(o.scope, Scope::Subsystems(_)) && prover_category(o).is_none()), &doc);
+    group(
+        "Global flags",
+        opts.iter().filter(|o| matches!(o.scope, Scope::Global)),
+        &doc,
+    );
+    group(
+        "Native prover options (NativeProverConfig)",
+        opts.iter()
+            .filter(|o| prover_category(o) == Some(ProverCategory::Native)),
+        &doc,
+    );
+    group(
+        "External prover options (ExternalProverConfig)",
+        opts.iter()
+            .filter(|o| prover_category(o) == Some(ProverCategory::External)),
+        &doc,
+    );
+    group(
+        "Other subcommand flags",
+        opts.iter()
+            .filter(|o| matches!(o.scope, Scope::Subsystems(_)) && prover_category(o).is_none()),
+        &doc,
+    );
     print_kbs(manager);
-    group("Config-file only (no CLI flag)",
-        opts.iter().filter(|o| matches!(o.scope, Scope::ConfigOnly)), &doc);
+    group(
+        "Config-file only (no CLI flag)",
+        opts.iter().filter(|o| matches!(o.scope, Scope::ConfigOnly)),
+        &doc,
+    );
 
     true
 }
@@ -82,7 +103,10 @@ pub fn run_config_write(
     let mut manager = if target.exists() {
         match KBManager::from_config_xml_path_lenient(target) {
             Ok(m) => m,
-            Err(e) => { log::error!("config: cannot parse {}: {e}", target.display()); return false; }
+            Err(e) => {
+                log::error!("config: cannot parse {}: {e}", target.display());
+                return false;
+            }
         }
     } else {
         KBManager::default()
@@ -90,35 +114,60 @@ pub fn run_config_write(
 
     // Snapshot "before" values for the confirmation summary.
     let before = serde_json::to_value(&manager).unwrap_or_default();
-    let changed: Vec<(&str, String, String)> = overrides.iter()
+    let changed: Vec<(&str, String, String)> = overrides
+        .iter()
         .map(|(o, v)| {
-            let old = o.json_paths.first().and_then(|p| resolve(&before, p))
-                .map(fmt_value).unwrap_or_else(|| "—".to_string());
+            let old = o
+                .json_paths
+                .first()
+                .and_then(|p| resolve(&before, p))
+                .map(fmt_value)
+                .unwrap_or_else(|| "—".to_string());
             (o.long, old, fmt_value(v))
         })
         .collect();
 
     let mut constituent_summary: Vec<String> = Vec::new();
     if let Some(edit) = constituents {
-        let before_count = manager.kbs.iter().find(|kb| kb.name() == edit.kb)
-            .map(|kb| kb.constituents().len()).unwrap_or(0);
+        let before_count = manager
+            .kbs
+            .iter()
+            .find(|kb| kb.name() == edit.kb)
+            .map(|kb| kb.constituents().len())
+            .unwrap_or(0);
         if !edit.add_files.is_empty() || !edit.add_dirs.is_empty() {
-            if let Err(e) = manager.add_constituents_to_kb(&edit.kb, edit.add_files, edit.add_dirs, !edit.declare) {
+            if let Err(e) = manager.add_constituents_to_kb(
+                &edit.kb,
+                edit.add_files,
+                edit.add_dirs,
+                !edit.declare,
+            ) {
                 log::error!("config: {e}");
                 return false;
             }
         }
         if !edit.remove.is_empty() {
             match manager.remove_constituents_from_kb(&edit.kb, edit.remove) {
-                Ok(n) => constituent_summary.push(format!("removed {n} constituent(s) from `{}`", edit.kb)),
-                Err(e) => { log::error!("config: {e}"); return false; }
+                Ok(n) => constituent_summary
+                    .push(format!("removed {n} constituent(s) from `{}`", edit.kb)),
+                Err(e) => {
+                    log::error!("config: {e}");
+                    return false;
+                }
             }
         }
-        let after_count = manager.kbs.iter().find(|kb| kb.name() == edit.kb)
-            .map(|kb| kb.constituents().len()).unwrap_or(0);
+        let after_count = manager
+            .kbs
+            .iter()
+            .find(|kb| kb.name() == edit.kb)
+            .map(|kb| kb.constituents().len())
+            .unwrap_or(0);
         if after_count > before_count {
             constituent_summary.push(format!(
-                "added {} constituent(s) to `{}`", after_count - before_count, edit.kb));
+                "added {} constituent(s) to `{}`",
+                after_count - before_count,
+                edit.kb
+            ));
         }
     }
 
@@ -139,7 +188,10 @@ pub fn run_config_write(
         return false;
     }
 
-    println!("{style_bold}Wrote config:{style_reset} {color_bright_green}{}{color_reset}", target.display());
+    println!(
+        "{style_bold}Wrote config:{style_reset} {color_bright_green}{}{color_reset}",
+        target.display()
+    );
     for (flag, old, new) in changed {
         println!("  {color_bright_cyan}--{flag}{color_reset}  {color_bright_black}{old}{color_reset} → {color_bright_green}{new}{color_reset}");
     }
@@ -166,7 +218,9 @@ pub(crate) fn prover_category(o: &OptionMeta) -> Option<ProverCategory> {
     if o.json_paths.iter().any(|p| p.starts_with("native_prover")) {
         return Some(ProverCategory::Native);
     }
-    if o.json_paths.iter().any(|p| p.starts_with("external_prover"))
+    if o.json_paths
+        .iter()
+        .any(|p| p.starts_with("external_prover"))
         || matches!(o.field, "vampire" | "eprover" | "leo" | "backend")
     {
         return Some(ProverCategory::External);
@@ -190,19 +244,29 @@ fn print_kbs(manager: &KBManager) {
     for kb in &manager.kbs {
         let active = kb.name() == manager.sumokbname;
         let (marker, tag) = if active {
-            (format!("{color_bright_green}●{color_reset}"), format!("  {color_bright_green}(active){color_reset}"))
+            (
+                format!("{color_bright_green}●{color_reset}"),
+                format!("  {color_bright_green}(active){color_reset}"),
+            )
         } else {
             (format!("{color_bright_black}○{color_reset}"), String::new())
         };
-        println!("  {marker} {color_bright_cyan}{}{color_reset}{tag}  \
+        println!(
+            "  {marker} {color_bright_cyan}{}{color_reset}{tag}  \
                   {color_bright_black}({} constituent(s)){color_reset}",
-            kb.name(), kb.constituents().len());
+            kb.name(),
+            kb.constituents().len()
+        );
         for c in kb.constituents() {
             match c {
-                Constituent::Named(p) =>
-                    println!("      {}  {color_bright_black}[relative → kbDir]{color_reset}", p.display()),
-                Constituent::Source(s) =>
-                    println!("      {}  {color_bright_black}[pinned]{color_reset}", render_source(s)),
+                Constituent::Named(p) => println!(
+                    "      {}  {color_bright_black}[relative → kbDir]{color_reset}",
+                    p.display()
+                ),
+                Constituent::Source(s) => println!(
+                    "      {}  {color_bright_black}[pinned]{color_reset}",
+                    render_source(s)
+                ),
             }
         }
     }
@@ -212,8 +276,11 @@ fn print_kbs(manager: &KBManager) {
 /// local absolute / `..`-bearing path).
 fn render_source(s: &Source) -> String {
     match s {
-        Source::Local(paths) =>
-            paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+        Source::Local(paths) => paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
         _ => "<non-local source>".to_string(),
     }
 }
@@ -221,7 +288,9 @@ fn render_source(s: &Source) -> String {
 /// Print one scope group: a header, then `flag = value [keys]` + help per option.
 fn group<'a>(title: &str, opts: impl Iterator<Item = &'a OptionMeta>, doc: &serde_json::Value) {
     let rows: Vec<&OptionMeta> = opts.collect();
-    if rows.is_empty() { return; }
+    if rows.is_empty() {
+        return;
+    }
     println!("\n{style_bold}{title}{style_reset}");
     for o in rows {
         // The CLI flag this option maps to (config-only options have none — show
@@ -230,28 +299,44 @@ fn group<'a>(title: &str, opts: impl Iterator<Item = &'a OptionMeta>, doc: &serd
             Scope::ConfigOnly => o.field.to_string(),
             _ => {
                 let mut s = format!("--{}", o.long);
-                if let Some(c) = o.short { s.push_str(&format!(" -{c}")); }
+                if let Some(c) = o.short {
+                    s.push_str(&format!(" -{c}"));
+                }
                 s
             }
         };
         // The configured value: resolve the first json-path against the manager.
-        let value = o.json_paths.first()
+        let value = o
+            .json_paths
+            .first()
             .and_then(|p| resolve(doc, p))
             .map(fmt_value)
             .unwrap_or_else(|| "—".to_string());
         // Which subcommands surface the flag (subsystem-scoped only).
         let scope_note = match o.scope {
-            Scope::Subsystems(subs) => format!("  {color_bright_black}({}){color_reset}",
-                subs.iter().map(|s| format!("{s:?}").to_lowercase()).collect::<Vec<_>>().join("/")),
+            Scope::Subsystems(subs) => format!(
+                "  {color_bright_black}({}){color_reset}",
+                subs.iter()
+                    .map(|s| format!("{s:?}").to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            ),
             _ => String::new(),
         };
-        let env_note = o.env
+        let env_note = o
+            .env
             .map(|e| format!("  {color_bright_black}[env {e}]{color_reset}"))
             .unwrap_or_default();
 
-        println!("  {color_bright_cyan}{:<26}{color_reset} = {color_bright_green}{}{color_reset}{}{}",
-            flag, value, scope_note, env_note);
-        println!("      {color_bright_black}{}  [{}]{color_reset}", o.help, o.json_paths.join(", "));
+        println!(
+            "  {color_bright_cyan}{:<26}{color_reset} = {color_bright_green}{}{color_reset}{}{}",
+            flag, value, scope_note, env_note
+        );
+        println!(
+            "      {color_bright_black}{}  [{}]{color_reset}",
+            o.help,
+            o.json_paths.join(", ")
+        );
     }
 }
 

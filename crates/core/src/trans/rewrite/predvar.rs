@@ -3,19 +3,19 @@ use std::collections::HashSet;
 #[cfg(feature = "ask")]
 use smallvec::smallvec;
 
-use crate::parse::ast::OpKind;
-#[cfg(feature = "ask")]
-use crate::types::TaxRelation;
-use crate::trans::TranslationLayer;
-#[cfg(feature = "ask")]
-use crate::types::{ElementVec, InternedSym};
-use crate::types::{Element, SentenceId, SymbolId};
-use crate::syntactic::SyntacticLayer;
-use super::preprocess::decompose_implication;
-use super::extract::var_appears_as_predicate;
 use super::augment::collect_conjuncts;
 #[cfg(feature = "ask")]
 use super::augment::substitute_var;
+use super::extract::var_appears_as_predicate;
+use super::preprocess::decompose_implication;
+use crate::parse::ast::OpKind;
+use crate::syntactic::SyntacticLayer;
+use crate::trans::TranslationLayer;
+#[cfg(feature = "ask")]
+use crate::types::TaxRelation;
+use crate::types::{Element, SentenceId, SymbolId};
+#[cfg(feature = "ask")]
+use crate::types::{ElementVec, InternedSym};
 
 // ---------------------------------------------------------------------------
 // Stage 4 — Predicate-variable instantiation (per-problem, lazy)
@@ -50,9 +50,9 @@ pub(crate) struct PredVarSchema {
     /// The (CAF-normalized) implication carrying the schema.
     pub schema_sid: SentenceId,
     /// The predicate variables (head-position), in a deterministic order.
-    pub pred_vars:  Vec<SymbolId>,
+    pub pred_vars: Vec<SymbolId>,
     /// The taxonomy guards constraining `pred_vars`.
-    guards:         Vec<PvGuard>,
+    guards: Vec<PvGuard>,
     /// The arity at which the predicate variables are *applied* in the schema
     /// body (row-var expansion stamps each variant at a fixed arity).  A
     /// concrete relation is only eligible for this variant when its declared
@@ -62,38 +62,60 @@ pub(crate) struct PredVarSchema {
 
 /// The taxonomy relation symbol ids used in guards (`instance`, `subrelation`).
 fn taxonomy_guard_ids(syntactic: &SyntacticLayer) -> (Option<SymbolId>, Option<SymbolId>) {
-    (syntactic.sym_id("instance"), syntactic.sym_id("subrelation"))
+    (
+        syntactic.sym_id("instance"),
+        syntactic.sym_id("subrelation"),
+    )
 }
 
 /// Scan `implications` for predicate-variable schemas (see [`PredVarSchema`]).
 pub(crate) fn detect_predvar_schemas(
-    syntactic:    &SyntacticLayer,
+    syntactic: &SyntacticLayer,
     implications: &[SentenceId],
 ) -> Vec<PredVarSchema> {
     let mut out = Vec::new();
     let (instance_id, subrelation_id) = taxonomy_guard_ids(syntactic);
-    if instance_id.is_none() && subrelation_id.is_none() { return out; }
-    let tax_ids: HashSet<SymbolId> = [instance_id, subrelation_id].into_iter().flatten().collect();
+    if instance_id.is_none() && subrelation_id.is_none() {
+        return out;
+    }
+    let tax_ids: HashSet<SymbolId> = [instance_id, subrelation_id]
+        .into_iter()
+        .flatten()
+        .collect();
 
     for &sid in implications {
-        let Some((ant_sid, _con)) = decompose_implication(syntactic, sid) else { continue };
+        let Some((ant_sid, _con)) = decompose_implication(syntactic, sid) else {
+            continue;
+        };
 
         let mut guards: Vec<PvGuard> = Vec::new();
         let mut guard_vars: HashSet<SymbolId> = HashSet::new();
         for csid in collect_conjuncts(syntactic, ant_sid) {
-            let Some(s) = syntactic.sentence(csid) else { continue };
-            if s.elements.len() != 3 { continue; }
-            let head = match s.elements.first() { Some(Element::Symbol(sym)) => sym.id(), _ => continue };
+            let Some(s) = syntactic.sentence(csid) else {
+                continue;
+            };
+            if s.elements.len() != 3 {
+                continue;
+            }
+            let head = match s.elements.first() {
+                Some(Element::Symbol(sym)) => sym.id(),
+                _ => continue,
+            };
             if Some(head) == instance_id {
-                if let (Some(Element::Variable { id: v, .. }), Some(Element::Symbol(c)))
-                    = (s.elements.get(1), s.elements.get(2))
+                if let (Some(Element::Variable { id: v, .. }), Some(Element::Symbol(c))) =
+                    (s.elements.get(1), s.elements.get(2))
                 {
-                    guards.push(PvGuard::Instance { var: *v, class: c.id() });
+                    guards.push(PvGuard::Instance {
+                        var: *v,
+                        class: c.id(),
+                    });
                     guard_vars.insert(*v);
                 }
             } else if Some(head) == subrelation_id {
-                if let (Some(Element::Variable { id: v1, .. }), Some(Element::Variable { id: v2, .. }))
-                    = (s.elements.get(1), s.elements.get(2))
+                if let (
+                    Some(Element::Variable { id: v1, .. }),
+                    Some(Element::Variable { id: v2, .. }),
+                ) = (s.elements.get(1), s.elements.get(2))
                 {
                     guards.push(PvGuard::Subrelation { v1: *v1, v2: *v2 });
                     guard_vars.insert(*v1);
@@ -101,29 +123,50 @@ pub(crate) fn detect_predvar_schemas(
                 }
             }
         }
-        if guards.is_empty() { continue; }
+        if guards.is_empty() {
+            continue;
+        }
 
         // Predicate variables = guarded vars that appear in predicate-head
         // position.  Every guarded var must be a predicate var, else reject.
-        let mut pred_vars: Vec<SymbolId> = guard_vars.iter().copied()
+        let mut pred_vars: Vec<SymbolId> = guard_vars
+            .iter()
+            .copied()
             .filter(|&v| var_appears_as_predicate(syntactic, sid, v))
             .collect();
-        if pred_vars.len() != guard_vars.len() || pred_vars.is_empty() { continue; }
+        if pred_vars.len() != guard_vars.len() || pred_vars.is_empty() {
+            continue;
+        }
         pred_vars.sort_unstable();
 
         // Two accepted shapes: a single instance-guarded property schema, or
         // the two-variable subrelation-propagation shape.
-        let has_subrel = guards.iter().any(|g| matches!(g, PvGuard::Subrelation { .. }));
-        let ok_shape = if has_subrel { pred_vars.len() == 2 } else { pred_vars.len() == 1 };
-        if !ok_shape { continue; }
+        let has_subrel = guards
+            .iter()
+            .any(|g| matches!(g, PvGuard::Subrelation { .. }));
+        let ok_shape = if has_subrel {
+            pred_vars.len() == 2
+        } else {
+            pred_vars.len() == 1
+        };
+        if !ok_shape {
+            continue;
+        }
 
         // Purity: every atom is either a taxonomy guard or headed by a
         // predicate variable (no other relation symbols, no `exists`).
         let pv_set: HashSet<SymbolId> = pred_vars.iter().copied().collect();
-        if !is_pure_predvar_schema(syntactic, sid, &pv_set, &tax_ids) { continue; }
+        if !is_pure_predvar_schema(syntactic, sid, &pv_set, &tax_ids) {
+            continue;
+        }
 
         let body_arity = predvar_call_arity(syntactic, sid, &pv_set);
-        out.push(PredVarSchema { schema_sid: sid, pred_vars, guards, body_arity });
+        out.push(PredVarSchema {
+            schema_sid: sid,
+            pred_vars,
+            guards,
+            body_arity,
+        });
     }
     out
 }
@@ -134,12 +177,13 @@ pub(crate) fn detect_predvar_schemas(
 /// the first occurrence is representative.
 fn predvar_call_arity(
     syntactic: &SyntacticLayer,
-    sid:       SentenceId,
-    pv_set:    &HashSet<SymbolId>,
+    sid: SentenceId,
+    pv_set: &HashSet<SymbolId>,
 ) -> Option<usize> {
     let sentence = syntactic.sentence(sid)?;
     // Direct application: (?REL a b …).
-    if matches!(sentence.elements.first(), Some(Element::Variable { id, .. }) if pv_set.contains(id)) {
+    if matches!(sentence.elements.first(), Some(Element::Variable { id, .. }) if pv_set.contains(id))
+    {
         return Some(sentence.elements.len().saturating_sub(1));
     }
     // holds-style: (holds ?REL a b …).
@@ -161,22 +205,21 @@ fn predvar_call_arity(
 /// with propositional connectives / `forall` (no `exists`, no other symbols).
 fn is_pure_predvar_schema(
     syntactic: &SyntacticLayer,
-    sid:       SentenceId,
-    pv_set:    &HashSet<SymbolId>,
-    tax_ids:   &HashSet<SymbolId>,
+    sid: SentenceId,
+    pv_set: &HashSet<SymbolId>,
+    tax_ids: &HashSet<SymbolId>,
 ) -> bool {
-    let Some(s) = syntactic.sentence(sid) else { return false };
+    let Some(s) = syntactic.sentence(sid) else {
+        return false;
+    };
     match s.elements.first() {
         // `forall` binds the tuple variables — recurse only into the body
         // (last Sub), not the bound-variable list (which structurally looks
         // like a predicate-var atom).
-        Some(Element::Op(OpKind::ForAll)) => {
-            match s.elements.last() {
-                Some(Element::Sub(body)) =>
-                    is_pure_predvar_schema(syntactic, *body, pv_set, tax_ids),
-                _ => false,
-            }
-        }
+        Some(Element::Op(OpKind::ForAll)) => match s.elements.last() {
+            Some(Element::Sub(body)) => is_pure_predvar_schema(syntactic, *body, pv_set, tax_ids),
+            _ => false,
+        },
         Some(Element::Op(OpKind::Exists)) => false,
         Some(Element::Op(_)) => s.elements.iter().all(|e| match e {
             Element::Sub(c) => is_pure_predvar_schema(syntactic, *c, pv_set, tax_ids),
@@ -196,15 +239,19 @@ fn is_pure_predvar_schema(
 #[cfg(feature = "ask")]
 fn is_taxonomy_guard_atom(
     syntactic: &SyntacticLayer,
-    csid:      SentenceId,
-    pv_set:    &HashSet<SymbolId>,
-    tax_ids:   &HashSet<SymbolId>,
+    csid: SentenceId,
+    pv_set: &HashSet<SymbolId>,
+    tax_ids: &HashSet<SymbolId>,
 ) -> bool {
-    let Some(s) = syntactic.sentence(csid) else { return false };
+    let Some(s) = syntactic.sentence(csid) else {
+        return false;
+    };
     if !matches!(s.elements.first(), Some(Element::Symbol(sym)) if tax_ids.contains(&sym.id())) {
         return false;
     }
-    s.elements[1..].iter().any(|e| matches!(e, Element::Variable { id, .. } if pv_set.contains(id)))
+    s.elements[1..]
+        .iter()
+        .any(|e| matches!(e, Element::Variable { id, .. } if pv_set.contains(id)))
 }
 
 /// `true` iff `sid` is a **bare positive relation assertion** — a (possibly
@@ -215,7 +262,9 @@ fn is_taxonomy_guard_atom(
 /// taxonomy guards, instantiation reduces the body to its consequent, and a
 /// bare atom asserted for *all* arguments would hold the relation universally.
 pub(crate) fn is_bare_positive_assertion(syntactic: &SyntacticLayer, sid: SentenceId) -> bool {
-    let Some(s) = syntactic.sentence(sid) else { return false };
+    let Some(s) = syntactic.sentence(sid) else {
+        return false;
+    };
     match s.elements.first() {
         // Strip universal quantifiers — recurse into the body (last Sub).
         Some(Element::Op(OpKind::ForAll)) => match s.elements.last() {
@@ -234,9 +283,9 @@ pub(crate) fn is_bare_positive_assertion(syntactic: &SyntacticLayer, sid: Senten
 #[cfg(feature = "ask")]
 fn instantiate_schema(
     syntactic: &SyntacticLayer,
-    schema:    &PredVarSchema,
-    binding:   &[(SymbolId, SymbolId)],
-    tax_ids:   &HashSet<SymbolId>,
+    schema: &PredVarSchema,
+    binding: &[(SymbolId, SymbolId)],
+    tax_ids: &HashSet<SymbolId>,
 ) -> Option<SentenceId> {
     let pv_set: HashSet<SymbolId> = schema.pred_vars.iter().copied().collect();
     let (ant_sid, con_sid) = decompose_implication(syntactic, schema.schema_sid)?;
@@ -244,7 +293,9 @@ fn instantiate_schema(
     // Substitute the binding (all predicate vars) through a sentence.
     let subst_all = |syntactic: &SyntacticLayer, mut s: SentenceId| -> SentenceId {
         for &(var, rel) in binding {
-            let rel_sym = syntactic.sym_name(rel).expect("bound relation symbol interned");
+            let rel_sym = syntactic
+                .sym_name(rel)
+                .expect("bound relation symbol interned");
             let rel_elem = Element::Symbol(InternedSym(rel_sym));
             s = substitute_var(syntactic, s, var, &rel_elem, schema.schema_sid);
         }
@@ -253,7 +304,9 @@ fn instantiate_schema(
 
     let mut new_conjuncts: Vec<SentenceId> = Vec::new();
     for csid in collect_conjuncts(syntactic, ant_sid) {
-        if is_taxonomy_guard_atom(syntactic, csid, &pv_set, tax_ids) { continue; }
+        if is_taxonomy_guard_atom(syntactic, csid, &pv_set, tax_ids) {
+            continue;
+        }
         new_conjuncts.push(subst_all(syntactic, csid));
     }
     let new_con = subst_all(syntactic, con_sid);
@@ -308,12 +361,14 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     pub(crate) fn instantiate_predvars(
         &self,
-        seed_sids:    &[SentenceId],
+        seed_sids: &[SentenceId],
         problem_sids: &[SentenceId],
-        scope:        crate::semantics::types::Scope,
+        scope: crate::semantics::types::Scope,
     ) -> Vec<SentenceId> {
         let prog = self.rewrite_program();
-        if prog.predvar_schemas.is_empty() { return Vec::new(); }
+        if prog.predvar_schemas.is_empty() {
+            return Vec::new();
+        }
         // Suppress the schema templates (and their originals): per-problem
         // instantiations stand in for them.  Rule-source suppression stays
         // with `run_rewrite_pass`.
@@ -321,8 +376,12 @@ impl TranslationLayer {
             let mut suppressed = self.suppressed.write().unwrap();
             for sc in &prog.predvar_schemas {
                 suppressed.insert(sc.schema_sid);
-                if let Some(origin) =
-                    self.semantic.syntactic.synthetic_origin.get(&sc.schema_sid).copied()
+                if let Some(origin) = self
+                    .semantic
+                    .syntactic
+                    .synthetic_origin
+                    .get(&sc.schema_sid)
+                    .copied()
                 {
                     suppressed.insert(origin);
                 }
@@ -347,34 +406,58 @@ impl TranslationLayer {
         ordered_syms.extend(rest);
 
         let (instance_id, subrelation_id) = taxonomy_guard_ids(&self.semantic.syntactic);
-        let tax_ids: HashSet<SymbolId> = [instance_id, subrelation_id].into_iter().flatten().collect();
+        let tax_ids: HashSet<SymbolId> = [instance_id, subrelation_id]
+            .into_iter()
+            .flatten()
+            .collect();
         let cap = crate::syntactic::sine::scale_predvar_cap();
         let mut out: Vec<SentenceId> = Vec::new();
 
         for schema in &prog.predvar_schemas {
-            let bindings = self.find_predvar_bindings(schema, &ordered_syms, &seed_syms, cap, scope);
+            let bindings =
+                self.find_predvar_bindings(schema, &ordered_syms, &seed_syms, cap, scope);
 
             for binding in bindings {
                 // binding[i] is the concrete relation for schema.pred_vars[i].
-                let cached = self.predvar_cache.read().unwrap()
-                    .get(&(schema.schema_sid, binding.clone())).copied();
+                let cached = self
+                    .predvar_cache
+                    .read()
+                    .unwrap()
+                    .get(&(schema.schema_sid, binding.clone()))
+                    .copied();
                 if let Some(cached) = cached {
                     self.predvar_instances.write().unwrap().insert(cached);
                     out.push(cached);
                     continue;
                 }
-                let pairs: Vec<(SymbolId, SymbolId)> = schema.pred_vars.iter()
-                    .copied().zip(binding.iter().copied()).collect();
-                if let Some(sid) = instantiate_schema(&self.semantic.syntactic, schema, &pairs, &tax_ids) {
-                    self.predvar_cache.write().unwrap().insert((schema.schema_sid, binding), sid);
+                let pairs: Vec<(SymbolId, SymbolId)> = schema
+                    .pred_vars
+                    .iter()
+                    .copied()
+                    .zip(binding.iter().copied())
+                    .collect();
+                if let Some(sid) =
+                    instantiate_schema(&self.semantic.syntactic, schema, &pairs, &tax_ids)
+                {
+                    self.predvar_cache
+                        .write()
+                        .unwrap()
+                        .insert((schema.schema_sid, binding), sid);
                     self.predvar_instances.write().unwrap().insert(sid);
                     out.push(sid);
                 }
             }
         }
-        crate::log!(Debug, "sigmakee_rs_core::trans", format!(
-            "instantiate_predvars: {} schema(s), {} problem syms -> {} instantiated rule(s)",
-            prog.predvar_schemas.len(), ordered_syms.len(), out.len()));
+        crate::log!(
+            Debug,
+            "sigmakee_rs_core::trans",
+            format!(
+                "instantiate_predvars: {} schema(s), {} problem syms -> {} instantiated rule(s)",
+                prog.predvar_schemas.len(),
+                ordered_syms.len(),
+                out.len()
+            )
+        );
         out
     }
 
@@ -396,11 +479,11 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     fn find_predvar_bindings(
         &self,
-        schema:       &PredVarSchema,
+        schema: &PredVarSchema,
         ordered_syms: &[SymbolId],
-        seed_syms:    &HashSet<SymbolId>,
-        cap:          usize,
-        scope:        crate::semantics::types::Scope,
+        seed_syms: &HashSet<SymbolId>,
+        cap: usize,
+        scope: crate::semantics::types::Scope,
     ) -> Vec<Vec<SymbolId>> {
         use std::collections::HashMap;
         let pred_vars = &schema.pred_vars;
@@ -434,19 +517,27 @@ impl TranslationLayer {
 
         if let Some((gv1, gv2)) = subrel_guard {
             // Only the two-variable subrelation shape is handled here.
-            if pred_vars.len() != 2 { return Vec::new(); }
+            if pred_vars.len() != 2 {
+                return Vec::new();
+            }
             for &r1 in sorted_syms {
-                if !arity_ok(r1) { continue; }
+                if !arity_ok(r1) {
+                    continue;
+                }
                 let mut parents = self.semantic.parents_of_scoped(r1, scope);
                 parents.sort_unstable_by_key(|(p, _)| *p);
                 for (parent, rel) in parents {
-                    if !matches!(rel, TaxRelation::Subrelation) { continue; }
+                    if !matches!(rel, TaxRelation::Subrelation) {
+                        continue;
+                    }
                     let mut b = HashMap::new();
                     b.insert(gv1, r1);
                     b.insert(gv2, parent);
                     candidates.push(b);
                 }
-                if candidates.len() > collect_max { break; }
+                if candidates.len() > collect_max {
+                    break;
+                }
             }
         } else {
             // Instance-guard-only: per-var domain, cross product.
@@ -456,11 +547,17 @@ impl TranslationLayer {
                     PvGuard::Instance { var, class } if *var == v => Some(*class),
                     _ => None,
                 });
-                let Some(class) = class else { return Vec::new() };
-                let dom: Vec<SymbolId> = sorted_syms.iter().copied()
-                    .filter(|&r| r != class
-                        && arity_ok(r)
-                        && self.reaches_via_instance_scoped(r, class, scope))
+                let Some(class) = class else {
+                    return Vec::new();
+                };
+                let dom: Vec<SymbolId> = sorted_syms
+                    .iter()
+                    .copied()
+                    .filter(|&r| {
+                        r != class
+                            && arity_ok(r)
+                            && self.reaches_via_instance_scoped(r, class, scope)
+                    })
                     .collect();
                 domains.push((v, dom));
             }
@@ -473,9 +570,13 @@ impl TranslationLayer {
                         let mut b = base.clone();
                         b.insert(*v, r);
                         next.push(b);
-                        if next.len() > collect_max { break; }
+                        if next.len() > collect_max {
+                            break;
+                        }
                     }
-                    if next.len() > collect_max { break; }
+                    if next.len() > collect_max {
+                        break;
+                    }
                 }
                 candidates = next;
             }
@@ -485,7 +586,9 @@ impl TranslationLayer {
         let mut out: Vec<Vec<SymbolId>> = Vec::new();
         let mut seen: HashSet<Vec<SymbolId>> = HashSet::new();
         for b in candidates {
-            if !self.binding_satisfies_guards(schema, &b, scope) { continue; }
+            if !self.binding_satisfies_guards(schema, &b, scope) {
+                continue;
+            }
             let key: Vec<SymbolId> = pred_vars.iter().map(|v| b[v]).collect();
             if seen.insert(key.clone()) {
                 out.push(key);
@@ -502,20 +605,22 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     fn binding_satisfies_guards(
         &self,
-        schema:  &PredVarSchema,
+        schema: &PredVarSchema,
         binding: &std::collections::HashMap<SymbolId, SymbolId>,
-        scope:   crate::semantics::types::Scope,
+        scope: crate::semantics::types::Scope,
     ) -> bool {
         schema.guards.iter().all(|g| match g {
-            PvGuard::Instance { var, class } => binding.get(var)
-                .map_or(false, |&r| self.reaches_via_instance_scoped(r, *class, scope)),
-            PvGuard::Subrelation { v1, v2 } => {
-                match (binding.get(v1), binding.get(v2)) {
-                    (Some(&r1), Some(&r2)) => self.semantic.parents_of_scoped(r1, scope).into_iter()
-                        .any(|(p, rel)| matches!(rel, TaxRelation::Subrelation) && p == r2),
-                    _ => false,
-                }
-            }
+            PvGuard::Instance { var, class } => binding.get(var).map_or(false, |&r| {
+                self.reaches_via_instance_scoped(r, *class, scope)
+            }),
+            PvGuard::Subrelation { v1, v2 } => match (binding.get(v1), binding.get(v2)) {
+                (Some(&r1), Some(&r2)) => self
+                    .semantic
+                    .parents_of_scoped(r1, scope)
+                    .into_iter()
+                    .any(|(p, rel)| matches!(rel, TaxRelation::Subrelation) && p == r2),
+                _ => false,
+            },
         })
     }
 
@@ -527,14 +632,16 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     fn reaches_via_instance_scoped(
         &self,
-        sym:   SymbolId,
+        sym: SymbolId,
         class: SymbolId,
         scope: crate::semantics::types::Scope,
     ) -> bool {
-        self.semantic.parents_of_scoped(sym, scope).into_iter().any(|(k, rel)| {
-            matches!(rel, TaxRelation::Instance)
-                && (k == class || self.semantic.has_ancestor_scoped(k, class, scope))
-        })
+        self.semantic
+            .parents_of_scoped(sym, scope)
+            .into_iter()
+            .any(|(k, rel)| {
+                matches!(rel, TaxRelation::Instance)
+                    && (k == class || self.semantic.has_ancestor_scoped(k, class, scope))
+            })
     }
 }
-

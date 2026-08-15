@@ -6,15 +6,15 @@
 use sigmakee_rs_core::DynSink;
 #[cfg(feature = "ask")]
 use sigmakee_rs_core::ExternalOpts;
-use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions};
 #[cfg(feature = "persist")]
 use sigmakee_rs_core::TranslationLayer;
+use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions};
 
 #[cfg(feature = "ask")]
 use crate::Source;
 
-use super::Session;
 use super::super::{SdkError, SdkResult};
+use super::Session;
 
 impl<L: TopLayer> Session<L> {
     /// Run semantic validation over the whole KB and return the findings.
@@ -53,14 +53,19 @@ impl<L: TopLayer> Session<L> {
     /// crate-private).  For a prover-backed open, see the per-layer variants
     /// (`open_native`).
     #[cfg(feature = "persist")]
-    pub fn open(path: impl AsRef<std::path::Path>, session: String, sink: Option<DynSink>) -> SdkResult<Session<TranslationLayer>> {
-        let kb = sigmakee_rs_core::KnowledgeBase::open(path.as_ref(), sink).map_err(SdkError::Kb)?;
+    pub fn open(
+        path: impl AsRef<std::path::Path>,
+        session: String,
+        sink: Option<DynSink>,
+    ) -> SdkResult<Session<TranslationLayer>> {
+        let kb =
+            sigmakee_rs_core::KnowledgeBase::open(path.as_ref(), sink).map_err(SdkError::Kb)?;
         Ok(Session { kb, name: session })
     }
 
     /// Store an open session to the LMDB backend at the given path. Importantly:
-    /// this does NOT create a new backend if it does not exist. You must first 
-    /// call [`Session::open()`] to create the backend, then you can use this 
+    /// this does NOT create a new backend if it does not exist. You must first
+    /// call [`Session::open()`] to create the backend, then you can use this
     /// method. The path is the same path the LMDB was opened from.
     #[cfg(feature = "persist")]
     pub fn persist(&self) -> SdkResult<()> {
@@ -91,7 +96,10 @@ impl<L: HasTranslation> Session<L> {
                 SdkError::Config("inline translate: formula failed to parse".into())
             }));
         }
-        let opts = TptpOptions { lang, ..TptpOptions::default() };
+        let opts = TptpOptions {
+            lang,
+            ..TptpOptions::default()
+        };
         let mut out = String::new();
         for sid in self.kb.session_sids(TAG) {
             out.push_str(&self.kb.format_sentence_tptp(sid, &opts));
@@ -103,14 +111,17 @@ impl<L: HasTranslation> Session<L> {
 
     /// Translate a [`TestCase`] into TPTP
     #[cfg(feature = "ask")]
-    pub fn translate_test(&mut self, src: Source, opts: TptpOptions, prover_opts: ExternalOpts) -> Result<String, Vec<SdkError>> {
+    pub fn translate_test(
+        &mut self,
+        src: Source,
+        opts: TptpOptions,
+        prover_opts: ExternalOpts,
+    ) -> Result<String, Vec<SdkError>> {
         let tc = self.source_to_test_case(src)?;
-        Ok(self.kb.tc_to_tptp(
-            tc, 
-            &opts, 
-            Some(&self.name), 
-            Some(prover_opts)
-        ).map_err(|e| -> Vec<SdkError> { e.into_iter().map(|e| SdkError::Kb(e)).collect() })?)
+        Ok(self
+            .kb
+            .tc_to_tptp(tc, &opts, Some(&self.name), Some(prover_opts))
+            .map_err(|e| -> Vec<SdkError> { e.into_iter().map(|e| SdkError::Kb(e)).collect() })?)
     }
 }
 
@@ -121,7 +132,10 @@ mod tests {
     use sigmakee_rs_core::{TptpLang, TptpOptions, TranslationLayer};
 
     fn reader(name: &str, kif: &str) -> Source {
-        Source::Reader { name: name.into(), reader: Box::new(std::io::Cursor::new(Vec::from(kif))) }
+        Source::Reader {
+            name: name.into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(kif))),
+        }
     }
 
     #[test]
@@ -137,11 +151,19 @@ mod tests {
         let mut s = Session::<TranslationLayer>::new("ops-validate".into());
         // Mammal must reach Entity: argument symbols are entity-checked too
         // (E001), so an unclosed chain would correctly flag Dog and Mammal.
-        s.ingest(reader("t.kif", "(subclass Dog Mammal)\n(subclass Mammal Entity)"), true);
-        let bad: Vec<_> = s.validate().into_iter()
+        s.ingest(
+            reader("t.kif", "(subclass Dog Mammal)\n(subclass Mammal Entity)"),
+            true,
+        );
+        let bad: Vec<_> = s
+            .validate()
+            .into_iter()
             .filter(|d| d.is_err() && (d.message.contains("Dog") || d.message.contains("Mammal")))
             .collect();
-        assert!(bad.is_empty(), "Dog/Mammal's own taxonomy should be error-free; got {bad:?}");
+        assert!(
+            bad.is_empty(),
+            "Dog/Mammal's own taxonomy should be error-free; got {bad:?}"
+        );
     }
 
     #[test]
@@ -149,14 +171,22 @@ mod tests {
         let mut s = Session::<TranslationLayer>::new("ops-vf".into());
         // A parse failure is a finding (diagnostic in the vec), never `Err`.
         let diags = s.validate_formula("(broken (").unwrap();
-        assert!(!diags.is_empty(), "malformed formula should yield diagnostics");
+        assert!(
+            !diags.is_empty(),
+            "malformed formula should yield diagnostics"
+        );
     }
 
     #[test]
     fn translate_emits_tptp() {
         let mut s = Session::<TranslationLayer>::new("ops-translate".into());
         s.ingest(reader("t.kif", "(subclass Dog Mammal)"), true);
-        let tptp = s.translate(TptpOptions { lang: TptpLang::Fof, ..TptpOptions::default() }).unwrap();
+        let tptp = s
+            .translate(TptpOptions {
+                lang: TptpLang::Fof,
+                ..TptpOptions::default()
+            })
+            .unwrap();
         assert!(tptp.contains("fof"), "expected FOF output, got: {tptp}");
     }
 
@@ -165,10 +195,14 @@ mod tests {
         let mut s = Session::<TranslationLayer>::new("ops-tf".into());
         // `translate_formula` renders the bare TPTP term per sentence (not a full
         // `fof(name, role, …)` statement like whole-KB `translate`).
-        let line = s.translate_formula("(instance Rex Dog)", TptpLang::Fof).unwrap();
+        let line = s
+            .translate_formula("(instance Rex Dog)", TptpLang::Fof)
+            .unwrap();
         let low = line.to_lowercase();
-        assert!(low.contains("instance") && low.contains("rex"),
-            "expected the rendered relation, got: {line}");
+        assert!(
+            low.contains("instance") && low.contains("rex"),
+            "expected the rendered relation, got: {line}"
+        );
     }
 
     #[cfg(feature = "persist")]

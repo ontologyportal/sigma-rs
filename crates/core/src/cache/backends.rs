@@ -43,7 +43,7 @@ pub(in crate::cache) fn cache_key_hash<K: Hash>(k: &K) -> u64 {
 /// RAII guard tracking a `(name, key_hash)` pair as in-progress on the current
 /// thread; removes it on drop.
 struct InProgressGuard {
-    name:     &'static str,
+    name: &'static str,
     key_hash: u64,
 }
 
@@ -52,7 +52,11 @@ impl InProgressGuard {
     /// if it is already in-progress on this thread (cycle detected).
     fn try_acquire(name: &'static str, key_hash: u64) -> Option<Self> {
         let inserted = CACHE_IN_PROGRESS.with(|s| s.borrow_mut().insert((name, key_hash)));
-        if inserted { Some(Self { name, key_hash }) } else { None }
+        if inserted {
+            Some(Self { name, key_hash })
+        } else {
+            None
+        }
     }
 }
 
@@ -100,7 +104,7 @@ struct ParallelCfg {
     /// Minimum number of work-units (events, or reactors) one task must carry
     /// for fanning out to be worth the spawn + lock-contention cost.  A batch
     /// smaller than this runs serially regardless of `max_threads`.
-    floor:       AtomicUsize,
+    floor: AtomicUsize,
 }
 
 /// Default minimum batch size before the router fans out.
@@ -113,7 +117,7 @@ impl Default for ParallelCfg {
             .unwrap_or(1);
         Self {
             max_threads: AtomicUsize::new(cores),
-            floor:       AtomicUsize::new(DEFAULT_PARALLEL_FLOOR),
+            floor: AtomicUsize::new(DEFAULT_PARALLEL_FLOOR),
         }
     }
 }
@@ -176,7 +180,9 @@ impl CacheConfig {
     #[allow(dead_code)] // TODO: consume in KB
     pub(crate) fn with_disabled(names: &[&'static str]) -> Self {
         let cfg = Self::default();
-        for &n in names { cfg.disable(n); }
+        for &n in names {
+            cfg.disable(n);
+        }
         cfg
     }
 
@@ -237,23 +243,23 @@ impl CacheConfig {
 /// concurrent rayon workers (≤ NUM_CPUS).
 #[derive(Debug)]
 pub(crate) struct EntryCache<K: Eq + Hash, V> {
-    map:    DashMap<K, V>,
+    map: DashMap<K, V>,
     config: CacheConfig,
-    name:   &'static str,
+    name: &'static str,
     /// Invalidation clock, bumped when the store is marked stale
     /// (`clear`/`evict_keys`/`retain`/`update`/`restore`), so a lazy fill that
     /// overlapped such a mutation refuses to memoise.  See [`Epoch`].
-    epoch:  Epoch,
+    epoch: Epoch,
 }
 
 impl<K: Eq + Hash, V> EntryCache<K, V> {
     /// Create a new, empty cache sharing `config`, identified by `name`.
     pub(crate) fn new(config: &CacheConfig, name: &'static str) -> Self {
         Self {
-            map:    DashMap::new(),
+            map: DashMap::new(),
             config: config.clone(),
             name,
-            epoch:  Epoch::default(),
+            epoch: Epoch::default(),
         }
     }
 
@@ -277,7 +283,9 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     /// Return a clone of the cached value for `key`, or `None` if absent
     /// or if the cache is disabled.
     pub(crate) fn get(&self, key: &K) -> Option<V> {
-        if !self.enabled() { return None; }
+        if !self.enabled() {
+            return None;
+        }
         self.map.get(key).map(|r| r.value().clone())
     }
 
@@ -309,7 +317,8 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
                 "cache '{}' detected recursive `get_or_insert_with` entry for the same key \
                  (key hash {}); use `get_or_insert_with_cycle_safe(key, compute, on_cycle)` \
                  if this cycle is expected",
-                self.name, cache_key_hash(k),
+                self.name,
+                cache_key_hash(k),
             );
         })
     }
@@ -323,12 +332,7 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     /// return a domain-appropriate sentinel ("no information yet").  The
     /// result of `on_cycle` is not cached — the outer call's eventual real
     /// value is the one that gets stored.
-    pub(crate) fn get_or_insert_with_cycle_safe<F, G>(
-        &self,
-        key:      K,
-        f:        F,
-        on_cycle: G,
-    ) -> V
+    pub(crate) fn get_or_insert_with_cycle_safe<F, G>(&self, key: K, f: F, on_cycle: G) -> V
     where
         F: FnOnce(&K) -> V,
         G: FnOnce(&K) -> V,
@@ -354,7 +358,7 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
         let key_hash = cache_key_hash(&key);
         let _guard = match InProgressGuard::try_acquire(self.name, key_hash) {
             Some(g) => g,
-            None    => return on_cycle(&key),
+            None => return on_cycle(&key),
         };
         // Epoch-guarded (see [`Epoch`]): if a mutation batch overlapped the
         // compute the value is still returned but NOT stored, so the next miss
@@ -409,7 +413,10 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
 
     /// Clone the entire map for serialisation.
     pub(crate) fn snapshot(&self) -> HashMap<K, V> {
-        self.map.iter().map(|r| (r.key().clone(), r.value().clone())).collect()
+        self.map
+            .iter()
+            .map(|r| (r.key().clone(), r.value().clone()))
+            .collect()
     }
 
     /// Replace the entire map from a deserialised snapshot.
@@ -417,7 +424,9 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     pub(crate) fn restore(&self, map: HashMap<K, V>) {
         if self.enabled() {
             self.map.clear();
-            for (k, v) in map { self.map.insert(k, v); }
+            for (k, v) in map {
+                self.map.insert(k, v);
+            }
             self.epoch.bump();
         }
     }
@@ -438,20 +447,23 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     pub(crate) fn find(&self, mut f: impl FnMut((&K, &V)) -> bool) -> Option<(K, V)> {
         for r in self.map.iter() {
             if f((r.key(), r.value())) {
-                return Some((r.key().clone(), r.value().clone()))
+                return Some((r.key().clone(), r.value().clone()));
             }
         }
-        return None
+        return None;
     }
 
     /// Return clones of all `(key, value)` pairs for which `f` returns `true`.
     pub(crate) fn filter(&self, mut f: impl FnMut((&K, &V)) -> bool) -> Vec<(K, V)> {
-        self.map.iter().filter_map(|r| {
-            if f((r.key(), r.value())) {
-                return Some((r.key().clone(), r.value().clone()))
-            }
-            return None
-        }).collect()
+        self.map
+            .iter()
+            .filter_map(|r| {
+                if f((r.key(), r.value())) {
+                    return Some((r.key().clone(), r.value().clone()));
+                }
+                return None;
+            })
+            .collect()
     }
 
     /// Returns `true` if the map contains no entries.
@@ -523,19 +535,24 @@ impl Epoch {
 /// no-ops when disabled (though `invalidate` always clears — see docs).
 #[derive(Debug)]
 pub(crate) struct LayerCache<T> {
-    inner:  RwLock<Option<T>>,
+    inner: RwLock<Option<T>>,
     config: CacheConfig,
-    name:   &'static str,
+    name: &'static str,
     /// Invalidation clock (see [`Epoch`]); bumped on `install` / `invalidate` /
     /// `modify`.
-    epoch:  Epoch,
+    epoch: Epoch,
 }
 
 #[allow(dead_code)]
 impl<T: Clone> LayerCache<T> {
     /// Create a new, empty cache sharing `config`, identified by `name`.
     pub(crate) fn new(config: &CacheConfig, name: &'static str) -> Self {
-        Self { inner: RwLock::new(None), config: config.clone(), name, epoch: Epoch::default() }
+        Self {
+            inner: RwLock::new(None),
+            config: config.clone(),
+            name,
+            epoch: Epoch::default(),
+        }
     }
 
     /// Returns `true` when this cache's name is enabled in the shared config.
@@ -595,7 +612,7 @@ impl<T: Clone> LayerCache<T> {
         // for a given instance.
         let _guard = match InProgressGuard::try_acquire(self.name, 0) {
             Some(g) => g,
-            None    => return on_cycle(),
+            None => return on_cycle(),
         };
         // Epoch-guarded memoisation (see [`Epoch`]): persist only if no mutation
         // batch overlapped the compute; otherwise return the value un-cached.
@@ -744,9 +761,9 @@ impl<T: Clone> LayerCache<Vec<T>> {
 /// | Invalidation         | `invalidate()` → recompute   | No invalidation concept     |
 #[derive(Debug)]
 pub(crate) struct EagerIndex<T> {
-    inner:  RwLock<T>,
+    inner: RwLock<T>,
     config: CacheConfig,
-    name:   &'static str,
+    name: &'static str,
 }
 
 #[allow(dead_code)]
@@ -756,7 +773,11 @@ impl<T> EagerIndex<T> {
     /// path (`install`), not initialization or in-memory mutation.
     pub(crate) fn new(config: &CacheConfig, name: &'static str, initial: T) -> Self {
         let value = initial;
-        Self { inner: RwLock::new(value), config: config.clone(), name }
+        Self {
+            inner: RwLock::new(value),
+            config: config.clone(),
+            name,
+        }
     }
 
     fn enabled(&self) -> bool {
@@ -826,8 +847,14 @@ mod tests {
         let cfg = CacheConfig::default();
         let cache: EntryCache<u32, u32> = EntryCache::new(&cfg, "test");
         let mut calls = 0u32;
-        let v1 = cache.get_or_insert_with(1, |_| { calls += 1; 42 });
-        let v2 = cache.get_or_insert_with(1, |_| { calls += 1; 99 }); // should hit cache
+        let v1 = cache.get_or_insert_with(1, |_| {
+            calls += 1;
+            42
+        });
+        let v2 = cache.get_or_insert_with(1, |_| {
+            calls += 1;
+            99
+        }); // should hit cache
         assert_eq!(v1, 42);
         assert_eq!(v2, 42);
         assert_eq!(calls, 1, "compute fn should be called exactly once");
@@ -845,27 +872,54 @@ mod tests {
         // A derived fill whose compute is interrupted by an invalidation of this
         // cache (here `clear()` bumps its epoch — modelling a concurrent cascade
         // clearing it mid-fill) is RETURNED but NOT memoised.
-        let v = cache.get_or_insert_with_cycle_safe(2, |_| { cache.clear(); 20 }, |_| 0);
+        let v = cache.get_or_insert_with_cycle_safe(
+            2,
+            |_| {
+                cache.clear();
+                20
+            },
+            |_| 0,
+        );
         assert_eq!(v, 20, "the freshly-computed value is still returned");
-        assert_eq!(cache.get(&2), None,
-            "a derived fill invalidated mid-compute must not be memoised");
+        assert_eq!(
+            cache.get(&2),
+            None,
+            "a derived fill invalidated mid-compute must not be memoised"
+        );
 
         // The authoritative interning variant ignores the epoch — it always
         // persists, even if a mutation lands during its compute.
-        cache.get_or_insert_with(3, |_| { cache.clear(); 30 });
-        assert_eq!(cache.get(&3), Some(30), "authoritative inserts persist regardless");
+        cache.get_or_insert_with(3, |_| {
+            cache.clear();
+            30
+        });
+        assert_eq!(
+            cache.get(&3),
+            Some(30),
+            "authoritative inserts persist regardless"
+        );
 
         // With no mid-compute invalidation, derived fills memoise again.
         assert_eq!(cache.get_or_insert_with_cycle_safe(4, |_| 40, |_| 0), 40);
-        assert_eq!(cache.get(&4), Some(40), "settled fill memoises once the cache is quiescent");
+        assert_eq!(
+            cache.get(&4),
+            Some(40),
+            "settled fill memoises once the cache is quiescent"
+        );
     }
 
     #[test]
     fn entry_cache_disabled_always_computes() {
         let cache: EntryCache<u32, u32> = EntryCache::new(&disabled_cfg("test"), "test");
         let mut calls = 0u32;
-        cache.get_or_insert_with(1, |_| { calls += 1; 42 });
-        cache.get_or_insert_with(1, |_| { calls += 1; 42 });
+        cache.get_or_insert_with(1, |_| {
+            calls += 1;
+            42
+        });
+        cache.get_or_insert_with(1, |_| {
+            calls += 1;
+            42
+        });
         assert_eq!(calls, 2, "disabled cache must always call compute fn");
         assert!(cache.is_empty(), "disabled cache must store nothing");
     }
@@ -874,7 +928,7 @@ mod tests {
     fn entry_cache_disabled_get_returns_none() {
         let cache: EntryCache<u32, u32> = EntryCache::new(&disabled_cfg("test"), "test");
         cache.map.insert(1, 42); // bypass enabled check
-        // get should still return None when disabled
+                                 // get should still return None when disabled
         assert_eq!(cache.get(&1), None);
     }
 
@@ -962,8 +1016,14 @@ mod tests {
         let cfg = CacheConfig::default();
         let cache: LayerCache<u32> = LayerCache::new(&cfg, "test");
         let mut calls = 0u32;
-        let v1 = cache.get_or_init(|| { calls += 1; 42 });
-        let v2 = cache.get_or_init(|| { calls += 1; 99 }); // should hit
+        let v1 = cache.get_or_init(|| {
+            calls += 1;
+            42
+        });
+        let v2 = cache.get_or_init(|| {
+            calls += 1;
+            99
+        }); // should hit
         assert_eq!(v1, 42);
         assert_eq!(v2, 42);
         assert_eq!(calls, 1);
@@ -973,8 +1033,14 @@ mod tests {
     fn layer_cache_disabled_always_computes() {
         let cache: LayerCache<u32> = LayerCache::new(&disabled_cfg("test"), "test");
         let mut calls = 0u32;
-        cache.get_or_init(|| { calls += 1; 42 });
-        cache.get_or_init(|| { calls += 1; 42 });
+        cache.get_or_init(|| {
+            calls += 1;
+            42
+        });
+        cache.get_or_init(|| {
+            calls += 1;
+            42
+        });
         assert_eq!(calls, 2);
         assert!(!cache.is_populated());
     }
@@ -1095,10 +1161,7 @@ mod tests {
 
     #[test]
     fn cache_config_with_disabled_list() {
-        let cfg = CacheConfig::with_disabled(&[
-            "semantic::is_instance",
-            "semantic::is_class",
-        ]);
+        let cfg = CacheConfig::with_disabled(&["semantic::is_instance", "semantic::is_class"]);
         assert!(!cfg.is_enabled("semantic::is_instance"));
         assert!(!cfg.is_enabled("semantic::is_class"));
         assert!(cfg.is_enabled("semantic::domain"));
@@ -1110,11 +1173,15 @@ mod tests {
         let cfg2 = cfg.clone();
         // Disabling via the clone is visible through the original
         cfg2.disable("semantic::is_instance");
-        assert!(!cfg.is_enabled("semantic::is_instance"),
-            "shared Arc: disable on clone must be visible on original");
+        assert!(
+            !cfg.is_enabled("semantic::is_instance"),
+            "shared Arc: disable on clone must be visible on original"
+        );
         cfg.enable("semantic::is_instance");
-        assert!(cfg2.is_enabled("semantic::is_instance"),
-            "enable on original must be visible on clone");
+        assert!(
+            cfg2.is_enabled("semantic::is_instance"),
+            "enable on original must be visible on clone"
+        );
     }
 
     // -- EagerIndex -----------------------------------------------------------
@@ -1176,7 +1243,10 @@ mod tests {
         let cfg = CacheConfig::default();
         cfg.disable("test");
         let idx: EagerIndex<u32> = EagerIndex::new(&cfg, "test", 7);
-        let result = idx.update_with(|v| { *v += 1; *v });
+        let result = idx.update_with(|v| {
+            *v += 1;
+            *v
+        });
         assert_eq!(result, 8);
         assert_eq!(idx.with_ref(|v| *v), 8);
     }
@@ -1196,8 +1266,11 @@ mod tests {
         cfg.disable("test");
         let idx: EagerIndex<u32> = EagerIndex::new(&cfg, "test", 1);
         idx.install(42);
-        assert_eq!(idx.with_ref(|v| *v), 1,
-            "install is gated by `enabled`; the value stays at its initial");
+        assert_eq!(
+            idx.with_ref(|v| *v),
+            1,
+            "install is gated by `enabled`; the value stays at its initial"
+        );
     }
 
     #[test]

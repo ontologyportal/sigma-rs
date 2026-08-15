@@ -143,8 +143,13 @@ pub(crate) trait TheoryOracle {
 
     /// Entailment of the ground binary atom `(rel x y)`.  On success
     /// with `why = Some`, appends the witnessing facts.
-    fn holds(&self, rel: SymbolId, x: SymbolId, y: SymbolId, why: Option<&mut Vec<Witness>>)
-        -> bool;
+    fn holds(
+        &self,
+        rel: SymbolId,
+        x: SymbolId,
+        y: SymbolId,
+        why: Option<&mut Vec<Witness>>,
+    ) -> bool;
 
     /// Temporal point-network entailment of `(rel x y)`, bypassing the
     /// global `SIGMA_TEMPORAL` gate — for callers (the join passes)

@@ -3,8 +3,8 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use regex::Regex;
-use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
+use sigmakee_rs_sdk::{KnowledgeBase, Parser, ProverStatus, ProvingLayer};
 use sigmakee_rs_sdk::{Session, Source, TestCaseOutcome, TestOutcome};
 
 use crate::cli::proof::{is_quiet_proof_format, print_proof};
@@ -24,9 +24,9 @@ use crate::style::*;
 pub fn run_test<L>(
     session: Session<L>,
     manager: KBManager,
-    paths:   Vec<String>,
-    keep:    Option<PathBuf>,
-    branch:  Option<&str>,
+    paths: Vec<String>,
+    keep: Option<PathBuf>,
+    branch: Option<&str>,
 ) -> bool
 where
     L: ProvingLayer,
@@ -59,12 +59,16 @@ where
     let t_all = Instant::now();
 
     for (label, src) in test_sources {
-        if !quiet { println!("Running test: {label}"); }
+        if !quiet {
+            println!("Running test: {label}");
+        }
         let mut case = match session.fork() {
             Ok(c) => c,
             Err(e) => {
                 if !quiet {
-                    println!("  {color_bright_red}ERROR{color_reset}  (could not fork session: {e})");
+                    println!(
+                        "  {color_bright_red}ERROR{color_reset}  (could not fork session: {e})"
+                    );
                 }
                 all_passed = false;
                 continue;
@@ -72,17 +76,22 @@ where
         };
         let t_case = Instant::now();
         match case.test(src, Some(opts.clone())) {
-            Ok(outcome) => {
-                match render_case(&outcome, t_case.elapsed(), &manager, case.kb()) {
-                    CaseVerdict::Passed        => passed += 1,
-                    CaseVerdict::Informational => informational += 1,
-                    CaseVerdict::FalseVerdict  => { false_verdicts += 1; all_passed = false; }
-                    CaseVerdict::Failed        => all_passed = false,
+            Ok(outcome) => match render_case(&outcome, t_case.elapsed(), &manager, case.kb()) {
+                CaseVerdict::Passed => passed += 1,
+                CaseVerdict::Informational => informational += 1,
+                CaseVerdict::FalseVerdict => {
+                    false_verdicts += 1;
+                    all_passed = false;
                 }
-            }
+                CaseVerdict::Failed => all_passed = false,
+            },
             Err(errs) => {
-                if !quiet { println!("  {color_bright_red}ERROR{color_reset}"); }
-                for e in errs { log::error!("  {e}"); }
+                if !quiet {
+                    println!("  {color_bright_red}ERROR{color_reset}");
+                }
+                for e in errs {
+                    log::error!("  {e}");
+                }
                 all_passed = false;
             }
         }
@@ -95,8 +104,10 @@ where
             print!("  ({informational} informational, not graded)");
         }
         if false_verdicts > 0 {
-            print!("  {color_bright_red}{false_verdicts} FALSE VERDICT{}{color_reset}",
-                if false_verdicts == 1 { "" } else { "S" });
+            print!(
+                "  {color_bright_red}{false_verdicts} FALSE VERDICT{}{color_reset}",
+                if false_verdicts == 1 { "" } else { "S" }
+            );
         }
         println!("  (tests {:.2}s)", t_all.elapsed().as_secs_f64());
     }
@@ -151,17 +162,34 @@ fn parse_git_arg(raw: &str) -> Result<(String, PathBuf), String> {
 /// as one test case — `branch` selects which branch when the reference
 /// doesn't carry its own), or a plain URL (fetched directly as one test
 /// case). See [`GIT_RE`]/[`HTTP_RE`] for the exact shapes recognized.
-fn discover_test_sources(paths: &[String], branch: Option<&str>) -> Result<Vec<(String, Source)>, ()> {
+fn discover_test_sources(
+    paths: &[String],
+    branch: Option<&str>,
+) -> Result<Vec<(String, Source)>, ()> {
     let mut out: Vec<(String, Source)> = Vec::new();
     for raw in paths {
         if GIT_RE.is_match(raw) {
             let (uri, path) = parse_git_arg(raw).map_err(|e| log::error!("{e}"))?;
-            push_if_test_labeled(raw.clone(), path, |p| {
-                Source::Git { uri, paths: vec![p], branch: branch.map(str::to_string) }
-            }, &mut out);
+            push_if_test_labeled(
+                raw.clone(),
+                path,
+                |p| Source::Git {
+                    uri,
+                    paths: vec![p],
+                    branch: branch.map(str::to_string),
+                },
+                &mut out,
+            );
         } else if HTTP_RE.is_match(raw) {
-            let uri = raw.parse().map_err(|e| log::error!("invalid URL `{raw}`: {e}"))?;
-            push_if_test_labeled(raw.clone(), PathBuf::from(raw), |_| Source::Http { uri }, &mut out);
+            let uri = raw
+                .parse()
+                .map_err(|e| log::error!("invalid URL `{raw}`: {e}"))?;
+            push_if_test_labeled(
+                raw.clone(),
+                PathBuf::from(raw),
+                |_| Source::Http { uri },
+                &mut out,
+            );
         } else {
             let path = PathBuf::from(raw);
             if path.is_dir() {
@@ -170,7 +198,9 @@ fn discover_test_sources(paths: &[String], branch: Option<&str>) -> Result<Vec<(
                 })?;
                 for entry in entries.flatten() {
                     let p = entry.path();
-                    if p.is_file() { push_if_test(p, &mut out); }
+                    if p.is_file() {
+                        push_if_test(p, &mut out);
+                    }
                 }
             } else if path.is_file() {
                 push_if_test(path, &mut out);
@@ -186,8 +216,8 @@ fn discover_test_sources(paths: &[String], branch: Option<&str>) -> Result<Vec<(
 }
 
 fn push_if_test(p: PathBuf, out: &mut Vec<(String, Source)>) {
-    let is_test = Parser::from_filename(&p.to_string_lossy())
-        .map_or(false, |parser| parser.is_test());
+    let is_test =
+        Parser::from_filename(&p.to_string_lossy()).map_or(false, |parser| parser.is_test());
     if is_test {
         out.push((p.display().to_string(), Source::Local(vec![p])));
     }
@@ -200,12 +230,12 @@ fn push_if_test(p: PathBuf, out: &mut Vec<(String, Source)>) {
 /// plain local path.
 fn push_if_test_labeled(
     label: String,
-    path:  PathBuf,
+    path: PathBuf,
     build: impl FnOnce(PathBuf) -> Source,
-    out:   &mut Vec<(String, Source)>,
+    out: &mut Vec<(String, Source)>,
 ) {
-    let is_test = Parser::from_filename(&path.to_string_lossy())
-        .map_or(false, |parser| parser.is_test());
+    let is_test =
+        Parser::from_filename(&path.to_string_lossy()).map_or(false, |parser| parser.is_test());
     if is_test {
         out.push((label, build(path)));
     } else {
@@ -218,10 +248,10 @@ fn push_if_test_labeled(
 /// Rendered against the fork's KB, so proof citations resolve to the test's
 /// own axioms.
 fn render_case<L>(
-    oc:      &TestCaseOutcome,
+    oc: &TestCaseOutcome,
     elapsed: Duration,
     manager: &KBManager,
-    kb:      &KnowledgeBase<L>,
+    kb: &KnowledgeBase<L>,
 ) -> CaseVerdict
 where
     L: ProvingLayer,
@@ -243,7 +273,9 @@ where
     let note = format!("(total {:.2}s)", elapsed.as_secs_f64());
     let verdict = match &oc.outcome {
         TestOutcome::Passed => {
-            if !quiet { println!("  {color_bright_green}PASSED{color_reset}  {note}"); }
+            if !quiet {
+                println!("  {color_bright_green}PASSED{color_reset}  {note}");
+            }
             CaseVerdict::Passed
         }
         TestOutcome::Incomplete { inferred, missing } => {
@@ -256,13 +288,19 @@ where
             }
             CaseVerdict::Passed
         }
-        TestOutcome::Failed { expected, got, status } => {
+        TestOutcome::Failed {
+            expected,
+            got,
+            status,
+        } => {
             if !quiet {
                 println!("  {color_bright_red}FAILED{color_reset}  {note}");
-                println!("    expected: {}, got: {} ({})",
+                println!(
+                    "    expected: {}, got: {} ({})",
                     if *expected { "yes" } else { "no" },
-                    if *got      { "yes" } else { "no" },
-                    reason_tag(*status));
+                    if *got { "yes" } else { "no" },
+                    reason_tag(*status)
+                );
             }
             CaseVerdict::Failed
         }
@@ -272,14 +310,19 @@ where
             // Status` header — the harness's most serious finding.
             if !quiet {
                 println!("  {color_bright_red}{style_bold}FALSE VERDICT{style_reset}{color_reset}  {note}");
-                println!("    expected: {expected:?}, got: {status:?} ({})", reason_tag(*status));
+                println!(
+                    "    expected: {expected:?}, got: {status:?} ({})",
+                    reason_tag(*status)
+                );
             }
             CaseVerdict::FalseVerdict
         }
         TestOutcome::Informational => {
             if !quiet {
                 println!("  {color_bright_cyan}INFO{color_reset}      {note}");
-                println!("    no graded expectation (Open/Unknown status, or none) — reporting only");
+                println!(
+                    "    no graded expectation (Open/Unknown status, or none) — reporting only"
+                );
             }
             CaseVerdict::Informational
         }
@@ -299,7 +342,10 @@ where
     }
     if manager.prose && !quiet && !oc.result.proof_kif.is_empty() {
         let report = kb.render_proof_prose(None, &oc.result.proof_kif, "EnglishLanguage");
-        println!("\n    {style_bold}Proof (prose):{style_reset}\n\n{}", report.rendered);
+        println!(
+            "\n    {style_bold}Proof (prose):{style_reset}\n\n{}",
+            report.rendered
+        );
     }
     verdict
 }
@@ -318,13 +364,13 @@ fn basename(name: &str) -> String {
 /// countermodel from contradictory axioms.
 fn reason_tag(status: ProverStatus) -> &'static str {
     match status {
-        ProverStatus::Proved       => "refutation",
-        ProverStatus::Disproved    => "disproved",
-        ProverStatus::Consistent   => "countermodel",
+        ProverStatus::Proved => "refutation",
+        ProverStatus::Disproved => "disproved",
+        ProverStatus::Consistent => "countermodel",
         ProverStatus::Inconsistent => "inconsistent",
-        ProverStatus::Timeout      => "timeout",
-        ProverStatus::InputError   => "input error",
-        ProverStatus::Unknown      => "gave up",
+        ProverStatus::Timeout => "timeout",
+        ProverStatus::InputError => "input error",
+        ProverStatus::Unknown => "gave up",
     }
 }
 
@@ -400,11 +446,19 @@ mod source_classification_tests {
                 && branch.as_deref() == Some("dev")
         ));
         assert!(matches!(
-            &sources.iter().find(|(l, _)| l.starts_with("https://example.com")).unwrap().1,
+            &sources
+                .iter()
+                .find(|(l, _)| l.starts_with("https://example.com"))
+                .unwrap()
+                .1,
             Source::Http { .. }
         ));
         assert!(matches!(
-            &sources.iter().find(|(l, _)| l.contains("case.p")).unwrap().1,
+            &sources
+                .iter()
+                .find(|(l, _)| l.contains("case.p"))
+                .unwrap()
+                .1,
             Source::Local(_)
         ));
 

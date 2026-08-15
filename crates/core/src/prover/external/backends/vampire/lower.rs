@@ -19,13 +19,8 @@
 #![cfg(feature = "integrated-prover")]
 
 use vampire_prover::ffi::{
-    Formula   as SysFormula,
-    Function  as SysFunction,
-    Interp    as SysInterp,
-    Predicate as SysPredicate,
-    Problem   as SysProblem,
-    Sort      as SysSort,
-    Term      as SysTerm,
+    Formula as SysFormula, Function as SysFunction, Interp as SysInterp, Predicate as SysPredicate,
+    Problem as SysProblem, Sort as SysSort, Term as SysTerm,
 };
 use vampire_prover::Options;
 
@@ -64,11 +59,11 @@ pub(crate) fn lower_problem(p: &ir::Problem, opts: Options) -> SysProblem {
 
 fn lower_sort(s: &ir::Sort) -> SysSort {
     match s.tptp_name() {
-        "$i"    => SysSort::default_sort(),
-        "$int"  => SysSort::int(),
+        "$i" => SysSort::default_sort(),
+        "$int" => SysSort::int(),
         "$real" => SysSort::real(),
-        "$rat"  => SysSort::rational(),
-        name    => SysSort::new(name),
+        "$rat" => SysSort::rational(),
+        name => SysSort::new(name),
     }
 }
 
@@ -100,66 +95,66 @@ fn lower_predicate(p: &ir::Predicate) -> SysPredicate {
 
 fn lower_interp(i: ir::Interp) -> SysInterp {
     match i {
-        ir::Interp::Equal            => SysInterp::Equal,
-        ir::Interp::IntGreater       => SysInterp::IntGreater,
-        ir::Interp::IntGreaterEqual  => SysInterp::IntGreaterEqual,
-        ir::Interp::IntLess          => SysInterp::IntLess,
-        ir::Interp::IntLessEqual     => SysInterp::IntLessEqual,
-        ir::Interp::IntDivides       => SysInterp::IntDivides,
-        ir::Interp::IntSuccessor     => SysInterp::IntSuccessor,
-        ir::Interp::IntUnaryMinus    => SysInterp::IntUnaryMinus,
-        ir::Interp::IntPlus          => SysInterp::IntPlus,
-        ir::Interp::IntMinus         => SysInterp::IntMinus,
-        ir::Interp::IntMultiply      => SysInterp::IntMultiply,
-        ir::Interp::IntAbs           => SysInterp::IntAbs,
-        ir::Interp::RatGreater       => SysInterp::RatGreater,
-        ir::Interp::RatGreaterEqual  => SysInterp::RatGreaterEqual,
-        ir::Interp::RatLess          => SysInterp::RatLess,
-        ir::Interp::RatLessEqual     => SysInterp::RatLessEqual,
-        ir::Interp::RatPlus          => SysInterp::RatPlus,
-        ir::Interp::RatMinus         => SysInterp::RatMinus,
-        ir::Interp::RatMultiply      => SysInterp::RatMultiply,
-        ir::Interp::RatQuotient      => SysInterp::RatQuotient,
-        ir::Interp::RealGreater      => SysInterp::RealGreater,
+        ir::Interp::Equal => SysInterp::Equal,
+        ir::Interp::IntGreater => SysInterp::IntGreater,
+        ir::Interp::IntGreaterEqual => SysInterp::IntGreaterEqual,
+        ir::Interp::IntLess => SysInterp::IntLess,
+        ir::Interp::IntLessEqual => SysInterp::IntLessEqual,
+        ir::Interp::IntDivides => SysInterp::IntDivides,
+        ir::Interp::IntSuccessor => SysInterp::IntSuccessor,
+        ir::Interp::IntUnaryMinus => SysInterp::IntUnaryMinus,
+        ir::Interp::IntPlus => SysInterp::IntPlus,
+        ir::Interp::IntMinus => SysInterp::IntMinus,
+        ir::Interp::IntMultiply => SysInterp::IntMultiply,
+        ir::Interp::IntAbs => SysInterp::IntAbs,
+        ir::Interp::RatGreater => SysInterp::RatGreater,
+        ir::Interp::RatGreaterEqual => SysInterp::RatGreaterEqual,
+        ir::Interp::RatLess => SysInterp::RatLess,
+        ir::Interp::RatLessEqual => SysInterp::RatLessEqual,
+        ir::Interp::RatPlus => SysInterp::RatPlus,
+        ir::Interp::RatMinus => SysInterp::RatMinus,
+        ir::Interp::RatMultiply => SysInterp::RatMultiply,
+        ir::Interp::RatQuotient => SysInterp::RatQuotient,
+        ir::Interp::RealGreater => SysInterp::RealGreater,
         ir::Interp::RealGreaterEqual => SysInterp::RealGreaterEqual,
-        ir::Interp::RealLess         => SysInterp::RealLess,
-        ir::Interp::RealLessEqual    => SysInterp::RealLessEqual,
-        ir::Interp::RealPlus         => SysInterp::RealPlus,
-        ir::Interp::RealMinus        => SysInterp::RealMinus,
-        ir::Interp::RealMultiply     => SysInterp::RealMultiply,
-        ir::Interp::RealQuotient     => SysInterp::RealQuotient,
-        ir::Interp::IntQuotientE  => SysInterp::IntQuotientE,
+        ir::Interp::RealLess => SysInterp::RealLess,
+        ir::Interp::RealLessEqual => SysInterp::RealLessEqual,
+        ir::Interp::RealPlus => SysInterp::RealPlus,
+        ir::Interp::RealMinus => SysInterp::RealMinus,
+        ir::Interp::RealMultiply => SysInterp::RealMultiply,
+        ir::Interp::RealQuotient => SysInterp::RealQuotient,
+        ir::Interp::IntQuotientE => SysInterp::IntQuotientE,
         ir::Interp::IntRemainderT => SysInterp::IntRemainderT,
-        ir::Interp::IntFloor      => SysInterp::IntFloor,
-        ir::Interp::IntCeiling    => SysInterp::IntCeiling,
-        ir::Interp::IntTruncate   => SysInterp::IntTruncate,
-        ir::Interp::IntRound      => SysInterp::IntRound,
-        ir::Interp::RatFloor      => SysInterp::RatFloor,
-        ir::Interp::RatCeiling    => SysInterp::RatCeiling,
-        ir::Interp::RatTruncate   => SysInterp::RatTruncate,
-        ir::Interp::RatRound      => SysInterp::RatRound,
-        ir::Interp::RealFloor     => SysInterp::RealFloor,
-        ir::Interp::RealCeiling   => SysInterp::RealCeiling,
-        ir::Interp::RealTruncate  => SysInterp::RealTruncate,
-        ir::Interp::RealRound     => SysInterp::RealRound,
-        ir::Interp::IntToInt      => SysInterp::IntToInt,
-        ir::Interp::IntToRat      => SysInterp::IntToRat,
-        ir::Interp::IntToReal     => SysInterp::IntToReal,
-        ir::Interp::RatToInt      => SysInterp::RatToInt,
-        ir::Interp::RatToRat      => SysInterp::RatToRat,
-        ir::Interp::RatToReal     => SysInterp::RatToReal,
-        ir::Interp::RealToInt     => SysInterp::RealToInt,
-        ir::Interp::RealToRat     => SysInterp::RealToRat,
-        ir::Interp::RealToReal    => SysInterp::RealToReal,
+        ir::Interp::IntFloor => SysInterp::IntFloor,
+        ir::Interp::IntCeiling => SysInterp::IntCeiling,
+        ir::Interp::IntTruncate => SysInterp::IntTruncate,
+        ir::Interp::IntRound => SysInterp::IntRound,
+        ir::Interp::RatFloor => SysInterp::RatFloor,
+        ir::Interp::RatCeiling => SysInterp::RatCeiling,
+        ir::Interp::RatTruncate => SysInterp::RatTruncate,
+        ir::Interp::RatRound => SysInterp::RatRound,
+        ir::Interp::RealFloor => SysInterp::RealFloor,
+        ir::Interp::RealCeiling => SysInterp::RealCeiling,
+        ir::Interp::RealTruncate => SysInterp::RealTruncate,
+        ir::Interp::RealRound => SysInterp::RealRound,
+        ir::Interp::IntToInt => SysInterp::IntToInt,
+        ir::Interp::IntToRat => SysInterp::IntToRat,
+        ir::Interp::IntToReal => SysInterp::IntToReal,
+        ir::Interp::RatToInt => SysInterp::RatToInt,
+        ir::Interp::RatToRat => SysInterp::RatToRat,
+        ir::Interp::RatToReal => SysInterp::RatToReal,
+        ir::Interp::RealToInt => SysInterp::RealToInt,
+        ir::Interp::RealToRat => SysInterp::RealToRat,
+        ir::Interp::RealToReal => SysInterp::RealToReal,
     }
 }
 
 fn lower_term(t: &ir::Term) -> SysTerm {
     match t {
-        ir::Term::Var(v)       => SysTerm::new_var(v.index()),
-        ir::Term::Int(s)       => SysTerm::int(s),
-        ir::Term::Real(s)      => SysTerm::real(s),
-        ir::Term::Rational(s)  => SysTerm::rational(s),
+        ir::Term::Var(v) => SysTerm::new_var(v.index()),
+        ir::Term::Int(s) => SysTerm::int(s),
+        ir::Term::Real(s) => SysTerm::real(s),
+        ir::Term::Rational(s) => SysTerm::rational(s),
         ir::Term::Apply(func, args) => {
             let ffi_func = lower_function(func);
             if args.is_empty() {
@@ -174,7 +169,7 @@ fn lower_term(t: &ir::Term) -> SysTerm {
 
 fn lower_formula(f: &ir::Formula) -> SysFormula {
     match f {
-        ir::Formula::True  => SysFormula::new_true(),
+        ir::Formula::True => SysFormula::new_true(),
         ir::Formula::False => SysFormula::new_false(),
 
         ir::Formula::Atom { pred, args } => {
@@ -183,9 +178,7 @@ fn lower_formula(f: &ir::Formula) -> SysFormula {
             ffi_pred.with(lowered.as_slice())
         }
 
-        ir::Formula::Eq(lhs, rhs) => {
-            SysFormula::new_eq(lower_term(lhs), lower_term(rhs))
-        }
+        ir::Formula::Eq(lhs, rhs) => SysFormula::new_eq(lower_term(lhs), lower_term(rhs)),
         ir::Formula::EqTyped { lhs, rhs, sort } => {
             SysFormula::new_eq_typed(lower_term(lhs), lower_term(rhs), lower_sort(sort))
         }

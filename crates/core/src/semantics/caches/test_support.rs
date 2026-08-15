@@ -34,7 +34,9 @@ pub(crate) fn kif_layer(kif_str: &str) -> SemanticLayer {
 }
 
 /// A `SemanticLayer` over [`BASE`].
-pub(crate) fn base_layer() -> SemanticLayer { kif_layer(BASE) }
+pub(crate) fn base_layer() -> SemanticLayer {
+    kif_layer(BASE)
+}
 
 /// Build a `SemanticLayer` by ingesting `text` (tagged `file`) through the
 /// TPTP parser (CNF `cnf(...)` / FOF `fof(...)`), driving the same
@@ -52,9 +54,13 @@ pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
 
     let store = SyntacticLayer::default();
     let source = SourceFile {
-        parser: Parser::Tptp { options: Some(TptpParseOptions {
-            formulas_only: false, keep_conjectures: true, ..TptpParseOptions::default()
-        }) },
+        parser: Parser::Tptp {
+            options: Some(TptpParseOptions {
+                formulas_only: false,
+                keep_conjectures: true,
+                ..TptpParseOptions::default()
+            }),
+        },
         name: file.to_owned(),
         path: std::path::PathBuf::from(file),
         origin: FileOrigin::Local(LocalProvenance::UNKNOWN),
@@ -63,9 +69,11 @@ pub(crate) fn tptp_layer(text: &str, file: &str) -> SemanticLayer {
     };
     let _ = store.cascade(vec![Event::SourceAdded {
         session: std::sync::Arc::new(file.to_owned()),
-        file:    source,
-        staged:  false,
+        file: source,
+        staged: false,
     }]);
-    let _ = store.cascade(vec![Event::SessionAxiomatized { session: file.to_owned() }]);
+    let _ = store.cascade(vec![Event::SessionAxiomatized {
+        session: file.to_owned(),
+    }]);
     SemanticLayer::new(store)
 }

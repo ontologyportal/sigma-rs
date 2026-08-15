@@ -28,13 +28,13 @@
 // store.  `SyntacticLayer` owns a `sine: Eager<SineCache>` field and exposes the
 // `sine_*` / `select_axioms*` wrapper methods.
 
-mod params;
 mod index;
-mod select;
 mod layer;
+mod params;
+mod select;
 
-pub use params::*;
 pub use index::SineIndex;
+pub use params::*;
 
 #[cfg(test)]
 mod tests;

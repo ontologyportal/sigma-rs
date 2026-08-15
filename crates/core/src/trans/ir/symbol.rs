@@ -24,8 +24,7 @@
 /// let z = Sort::int();
 /// assert!(i.is_builtin() && z.is_builtin());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Sort {
     name: String,
     is_builtin: bool,
@@ -44,27 +43,43 @@ impl Sort {
     /// ```
     #[cfg(feature = "ask")]
     pub fn new(name: &str) -> Self {
-        Self { name: name.to_string(), is_builtin: false }
+        Self {
+            name: name.to_string(),
+            is_builtin: false,
+        }
     }
 
     /// Returns the default individual sort (`$i`).
-    pub fn default_sort() -> Self { Self::builtin("$i") }
+    pub fn default_sort() -> Self {
+        Self::builtin("$i")
+    }
 
     /// Returns the integer sort (`$int`).
-    pub fn int() -> Self { Self::builtin("$int") }
+    pub fn int() -> Self {
+        Self::builtin("$int")
+    }
 
     /// Returns the real number sort (`$real`).
-    pub fn real() -> Self { Self::builtin("$real") }
+    pub fn real() -> Self {
+        Self::builtin("$real")
+    }
 
     /// Returns the rational number sort (`$rat`).
-    pub fn rational() -> Self { Self::builtin("$rat") }
+    pub fn rational() -> Self {
+        Self::builtin("$rat")
+    }
 
     /// Returns the Boolean sort (`$o`).
     #[cfg(feature = "ask")]
-    pub fn bool() -> Self { Self::builtin("$o") }
+    pub fn bool() -> Self {
+        Self::builtin("$o")
+    }
 
     fn builtin(name: &str) -> Self {
-        Self { name: name.to_string(), is_builtin: true }
+        Self {
+            name: name.to_string(),
+            is_builtin: true,
+        }
     }
 
     /// Returns the TPTP identifier for this sort (e.g. `"$int"`, or a
@@ -78,11 +93,15 @@ impl Sort {
     /// assert_eq!(Sort::int().tptp_name(),        "$int");
     /// assert_eq!(Sort::new("person").tptp_name(), "person");
     /// ```
-    pub fn tptp_name(&self) -> &str { &self.name }
+    pub fn tptp_name(&self) -> &str {
+        &self.name
+    }
 
     /// Returns `true` for the five built-in TPTP sorts (`$i`, `$int`,
     /// `$real`, `$rat`, `$o`).
-    pub fn is_builtin(&self) -> bool { self.is_builtin }
+    pub fn is_builtin(&self) -> bool {
+        self.is_builtin
+    }
 
     /// Returns the TPTP type declaration line for this sort, or `None` for
     /// built-in sorts that need no declaration.
@@ -137,8 +156,7 @@ impl Sort {
 /// assert_eq!(alice.arity(), 0);
 /// assert_eq!(alice.ret_sort(), Some(&person));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Function {
     name: String,
     arity: u32,
@@ -147,8 +165,7 @@ pub struct Function {
     kind: FuncKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum FuncKind {
     Untyped,
     Typed,
@@ -222,19 +239,29 @@ impl Function {
     }
 
     /// The function's name.
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     /// The function's arity (number of arguments).
-    pub fn arity(&self) -> u32 { self.arity }
+    pub fn arity(&self) -> u32 {
+        self.arity
+    }
 
     /// The argument sorts. Empty for untyped or interpreted functions.
-    pub fn arg_sorts(&self) -> &[Sort] { &self.arg_sorts }
+    pub fn arg_sorts(&self) -> &[Sort] {
+        &self.arg_sorts
+    }
 
     /// The return sort. `None` for untyped or interpreted functions.
-    pub fn ret_sort(&self) -> Option<&Sort> { self.ret_sort.as_ref() }
+    pub fn ret_sort(&self) -> Option<&Sort> {
+        self.ret_sort.as_ref()
+    }
 
     /// `true` if the function was constructed via [`Function::typed`].
-    pub fn is_typed(&self) -> bool { matches!(self.kind, FuncKind::Typed) }
+    pub fn is_typed(&self) -> bool {
+        matches!(self.kind, FuncKind::Typed)
+    }
 
     /// The interpretation, if any, attached to this function.
     pub fn interp(&self) -> Option<Interp> {
@@ -279,7 +306,8 @@ impl Function {
         if self.arg_sorts.is_empty() {
             return Some(format!(
                 "tff(fn_{name}, type, {name}: {ret}).",
-                name = self.name, ret = ret,
+                name = self.name,
+                ret = ret,
             ));
         }
         let args: Vec<&str> = self.arg_sorts.iter().map(|s| s.tptp_name()).collect();
@@ -290,7 +318,9 @@ impl Function {
         };
         Some(format!(
             "tff(fn_{name}, type, {name}: {args} > {ret}).",
-            name = self.name, args = args_str, ret = ret,
+            name = self.name,
+            args = args_str,
+            ret = ret,
         ))
     }
 }
@@ -312,8 +342,7 @@ impl Function {
 /// assert_eq!(likes.arity(), 2);
 /// assert!(likes.is_typed());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Predicate {
     name: String,
     arity: u32,
@@ -321,8 +350,7 @@ pub struct Predicate {
     kind: PredKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum PredKind {
     Untyped,
     Typed,
@@ -361,16 +389,24 @@ impl Predicate {
     }
 
     /// The predicate's name.
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     /// The predicate's arity (number of arguments).
-    pub fn arity(&self) -> u32 { self.arity }
+    pub fn arity(&self) -> u32 {
+        self.arity
+    }
 
     /// The argument sorts. Empty for untyped or interpreted predicates.
-    pub fn arg_sorts(&self) -> &[Sort] { &self.arg_sorts }
+    pub fn arg_sorts(&self) -> &[Sort] {
+        &self.arg_sorts
+    }
 
     /// `true` if the predicate was constructed via [`Predicate::typed`].
-    pub fn is_typed(&self) -> bool { matches!(self.kind, PredKind::Typed) }
+    pub fn is_typed(&self) -> bool {
+        matches!(self.kind, PredKind::Typed)
+    }
 
     /// The interpretation, if any, attached to this predicate.
     pub fn interp(&self) -> Option<Interp> {
@@ -404,7 +440,8 @@ impl Predicate {
         if self.arg_sorts.is_empty() {
             return Some(format!(
                 "tff(pred_{name}_{arity}, type, {name}: $o).",
-                name = self.name, arity = self.arity,
+                name = self.name,
+                arity = self.arity,
             ));
         }
         let args: Vec<&str> = self.arg_sorts.iter().map(|s| s.tptp_name()).collect();
@@ -415,14 +452,15 @@ impl Predicate {
         };
         Some(format!(
             "tff(pred_{name}_{arity}, type, {name}: {args} > $o).",
-            name = self.name, arity = self.arity, args = args_str,
+            name = self.name,
+            arity = self.arity,
+            args = args_str,
         ))
     }
 }
 
 /// Interpreted theory symbols for arithmetic and comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Interp {
     Equal,
     // Integer comparisons
@@ -495,13 +533,30 @@ impl Interp {
     /// functions, and the type-coercion functions. All others are binary.
     pub fn default_arity(self) -> u32 {
         match self {
-            Interp::IntUnaryMinus | Interp::IntSuccessor | Interp::IntAbs
-            | Interp::IntFloor    | Interp::IntCeiling   | Interp::IntTruncate  | Interp::IntRound
-            | Interp::RatFloor    | Interp::RatCeiling   | Interp::RatTruncate  | Interp::RatRound
-            | Interp::RealFloor   | Interp::RealCeiling  | Interp::RealTruncate | Interp::RealRound
-            | Interp::IntToInt    | Interp::IntToRat     | Interp::IntToReal
-            | Interp::RatToInt    | Interp::RatToRat     | Interp::RatToReal
-            | Interp::RealToInt   | Interp::RealToRat    | Interp::RealToReal => 1,
+            Interp::IntUnaryMinus
+            | Interp::IntSuccessor
+            | Interp::IntAbs
+            | Interp::IntFloor
+            | Interp::IntCeiling
+            | Interp::IntTruncate
+            | Interp::IntRound
+            | Interp::RatFloor
+            | Interp::RatCeiling
+            | Interp::RatTruncate
+            | Interp::RatRound
+            | Interp::RealFloor
+            | Interp::RealCeiling
+            | Interp::RealTruncate
+            | Interp::RealRound
+            | Interp::IntToInt
+            | Interp::IntToRat
+            | Interp::IntToReal
+            | Interp::RatToInt
+            | Interp::RatToRat
+            | Interp::RatToReal
+            | Interp::RealToInt
+            | Interp::RealToRat
+            | Interp::RealToReal => 1,
             _ => 2,
         }
     }
@@ -509,28 +564,30 @@ impl Interp {
     /// The TPTP symbol name for this interpreted operation.
     pub fn tptp_name(self) -> &'static str {
         match self {
-            Interp::Equal                                            => "=",
-            Interp::IntGreater    | Interp::RatGreater    | Interp::RealGreater    => "$greater",
-            Interp::IntGreaterEqual | Interp::RatGreaterEqual | Interp::RealGreaterEqual => "$greatereq",
-            Interp::IntLess       | Interp::RatLess       | Interp::RealLess       => "$less",
-            Interp::IntLessEqual  | Interp::RatLessEqual  | Interp::RealLessEqual  => "$lesseq",
-            Interp::IntDivides                                       => "$divides",
-            Interp::IntSuccessor                                     => "$succ",
-            Interp::IntUnaryMinus                                    => "$uminus",
-            Interp::IntPlus       | Interp::RatPlus       | Interp::RealPlus       => "$sum",
-            Interp::IntMinus      | Interp::RatMinus      | Interp::RealMinus      => "$difference",
-            Interp::IntMultiply   | Interp::RatMultiply   | Interp::RealMultiply   => "$product",
-            Interp::IntAbs                                           => "$abs",
-            Interp::IntQuotientE                                     => "$quotient_e",
-            Interp::IntRemainderT                                    => "$remainder_t",
-            Interp::RatQuotient   | Interp::RealQuotient             => "$quotient",
-            Interp::IntFloor    | Interp::RatFloor    | Interp::RealFloor    => "$floor",
-            Interp::IntCeiling  | Interp::RatCeiling  | Interp::RealCeiling  => "$ceiling",
+            Interp::Equal => "=",
+            Interp::IntGreater | Interp::RatGreater | Interp::RealGreater => "$greater",
+            Interp::IntGreaterEqual | Interp::RatGreaterEqual | Interp::RealGreaterEqual => {
+                "$greatereq"
+            }
+            Interp::IntLess | Interp::RatLess | Interp::RealLess => "$less",
+            Interp::IntLessEqual | Interp::RatLessEqual | Interp::RealLessEqual => "$lesseq",
+            Interp::IntDivides => "$divides",
+            Interp::IntSuccessor => "$succ",
+            Interp::IntUnaryMinus => "$uminus",
+            Interp::IntPlus | Interp::RatPlus | Interp::RealPlus => "$sum",
+            Interp::IntMinus | Interp::RatMinus | Interp::RealMinus => "$difference",
+            Interp::IntMultiply | Interp::RatMultiply | Interp::RealMultiply => "$product",
+            Interp::IntAbs => "$abs",
+            Interp::IntQuotientE => "$quotient_e",
+            Interp::IntRemainderT => "$remainder_t",
+            Interp::RatQuotient | Interp::RealQuotient => "$quotient",
+            Interp::IntFloor | Interp::RatFloor | Interp::RealFloor => "$floor",
+            Interp::IntCeiling | Interp::RatCeiling | Interp::RealCeiling => "$ceiling",
             Interp::IntTruncate | Interp::RatTruncate | Interp::RealTruncate => "$truncate",
-            Interp::IntRound    | Interp::RatRound    | Interp::RealRound    => "$round",
-            Interp::IntToInt    | Interp::RatToInt    | Interp::RealToInt    => "$to_int",
-            Interp::IntToRat    | Interp::RatToRat    | Interp::RealToRat    => "$to_rat",
-            Interp::IntToReal   | Interp::RatToReal   | Interp::RealToReal   => "$to_real",
+            Interp::IntRound | Interp::RatRound | Interp::RealRound => "$round",
+            Interp::IntToInt | Interp::RatToInt | Interp::RealToInt => "$to_int",
+            Interp::IntToRat | Interp::RatToRat | Interp::RealToRat => "$to_rat",
+            Interp::IntToReal | Interp::RatToReal | Interp::RealToReal => "$to_real",
         }
     }
 }

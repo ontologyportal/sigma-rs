@@ -21,7 +21,7 @@ const TAG_ROW: u8 = b'R';
 const TAG_NUM: u8 = b'N';
 const TAG_STR: u8 = b'T';
 const TAG_SUB: u8 = b'L';
-const TAG_OP:  u8 = b'O';
+const TAG_OP: u8 = b'O';
 
 /// Content hash of a sentence's element list — its `SentenceId`.
 pub(super) fn content_hash(elements: &[Element]) -> SentenceId {
@@ -110,14 +110,14 @@ impl ElementHasher {
 
 fn op_byte(op: &OpKind) -> &'static [u8] {
     match op {
-        OpKind::And     => b"a",
-        OpKind::Or      => b"o",
-        OpKind::Not     => b"n",
+        OpKind::And => b"a",
+        OpKind::Or => b"o",
+        OpKind::Not => b"n",
         OpKind::Implies => b"i",
-        OpKind::Iff     => b"f",
-        OpKind::Equal   => b"e",
-        OpKind::ForAll  => b"A",
-        OpKind::Exists  => b"E",
+        OpKind::Iff => b"f",
+        OpKind::Equal => b"e",
+        OpKind::ForAll => b"A",
+        OpKind::Exists => b"E",
     }
 }
 
@@ -132,8 +132,12 @@ fn element_eq(a: &Element, b: &Element) -> bool {
     match (a, b) {
         (Element::Symbol(x), Element::Symbol(y)) => x == y,
         (
-            Element::Variable { id: xi, is_row: xr, .. },
-            Element::Variable { id: yi, is_row: yr, .. },
+            Element::Variable {
+                id: xi, is_row: xr, ..
+            },
+            Element::Variable {
+                id: yi, is_row: yr, ..
+            },
         ) => xi == yi && xr == yr,
         (Element::Literal(x), Element::Literal(y)) => x == y,
         (Element::Sub(x), Element::Sub(y)) => x == y,

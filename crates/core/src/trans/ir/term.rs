@@ -18,17 +18,20 @@ use super::symbol::Function;
 /// assert_eq!(v.index(),      3);
 /// assert_eq!(v.tptp_name(),  "X3");
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VarId(pub u32);
 
 impl VarId {
     /// The raw variable index.
-    pub fn index(self) -> u32 { self.0 }
+    pub fn index(self) -> u32 {
+        self.0
+    }
 
     /// The TPTP identifier for this variable (`X0`, `X1`, ...).
     #[cfg(feature = "ask")]
-    pub fn tptp_name(self) -> String { format!("X{}", self.0) }
+    pub fn tptp_name(self) -> String {
+        format!("X{}", self.0)
+    }
 }
 
 /// A first-order term.
@@ -55,8 +58,7 @@ impl VarId {
 /// // A numeric literal.
 /// let two = Term::int("2");
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Term {
     /// A variable reference, e.g. `X0`.
     Var(VarId),
@@ -118,8 +120,10 @@ impl Term {
     /// ```
     pub fn apply(func: Function, args: Vec<Term>) -> Self {
         debug_assert_eq!(
-            func.arity() as usize, args.len(),
-            "Term::apply arity mismatch for {}", func.name(),
+            func.arity() as usize,
+            args.len(),
+            "Term::apply arity mismatch for {}",
+            func.name(),
         );
         Self::Apply(func, args)
     }
@@ -205,7 +209,10 @@ mod tests {
 
         assert_eq!(x, Term::Var(VarId(0)));
         assert_eq!(zero, Term::Apply(Function::new("zero", 0), vec![]));
-        assert_eq!(succ_x, Term::Apply(Function::new("succ", 1), vec![Term::var(0)]));
+        assert_eq!(
+            succ_x,
+            Term::Apply(Function::new("succ", 1), vec![Term::var(0)])
+        );
         assert_eq!(two, Term::Int("2".to_string()));
     }
 

@@ -15,9 +15,9 @@
 // fewest index candidates (linear-resolution flavor — skipped literals
 // reappear in resolvents, and stay indexed as passive partners).
 
+use crate::clock::Instant;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
-use crate::clock::Instant;
 
 use smallvec::SmallVec;
 
@@ -27,22 +27,23 @@ use crate::semantics::types::Scope;
 use crate::types::{Element, Literal, SentenceId, Symbol, SymbolId};
 use crate::SineParams;
 
-use crate::layer::TopLayer;
-use crate::semantics::SemanticLayer;
-use super::ProverLayer;
-use super::parked;
 use super::clause::{AtomId, ClauseKey, PClause, PLit, Term};
-use super::AtomInfo;
+use super::hash64::{Map64, Set64};
 use super::index::{EntryRef, LiteralIndex};
 use super::oracle::{SemanticOracle, Witness};
-use super::theory::TheoryOracle;
-use super::hash64::{Map64, Set64};
+use super::parked;
 use super::strategy::Strategy;
-use super::unify::{apply, apply_off, match_one_way, shift_slots, slot_atom, unify, unify_off, Subst};
+use super::theory::TheoryOracle;
+use super::unify::{
+    apply, apply_off, match_one_way, shift_slots, slot_atom, unify, unify_off, Subst,
+};
 use super::units::UnitStores;
+use super::AtomInfo;
+use super::ProverLayer;
+use crate::layer::TopLayer;
+use crate::semantics::SemanticLayer;
 
 mod discharge;
-mod term_arena;
 mod ej;
 mod forward;
 mod fvi;
@@ -52,6 +53,7 @@ mod rows;
 mod schema_apply;
 mod snapshot;
 mod stats;
+mod term_arena;
 
 pub(crate) use fvi::{ClauseBlooms, ClauseFv, SubsRec};
 pub(crate) use snapshot::ProverSnapshot;
@@ -201,43 +203,76 @@ pub struct NativeOpts {
 impl Default for NativeOpts {
     fn default() -> Self {
         Self {
-            selection: SineParams::default(), session: None,
-            max_steps: 4000, max_lits: 8, time_limit_secs: 30,
-            forward_close: true, profile: false, want_proof: false,
-            strategy: Strategy::default(), cancel: None, step: false,
+            selection: SineParams::default(),
+            session: None,
+            max_steps: 4000,
+            max_lits: 8,
+            time_limit_secs: 30,
+            forward_close: true,
+            profile: false,
+            want_proof: false,
+            strategy: Strategy::default(),
+            cancel: None,
+            step: false,
             model: std::env::var_os("SIGMA_MODEL").is_some(),
-            model_budget: std::env::var("SIGMA_MODEL_BUDGET").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(250_000),
-            model_ms: std::env::var("SIGMA_MODEL_MS").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(800),
+            model_budget: std::env::var("SIGMA_MODEL_BUDGET")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(250_000),
+            model_ms: std::env::var("SIGMA_MODEL_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800),
             ec: std::env::var_os("SIGMA_EC").is_some(),
             backward: std::env::var_os("SIGMA_BACKWARD").is_some(),
-            backward_ms: std::env::var("SIGMA_BACKWARD_MS").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(800),
-            backward_nodes: std::env::var("SIGMA_BACKWARD_NODES").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(200_000),
-            cores: std::env::var("SIGMA_CORES").ok().and_then(|v| v.parse().ok())
-                .unwrap_or_else(|| std::thread::available_parallelism()
-                    .map(std::num::NonZeroUsize::get).unwrap_or(1)),
+            backward_ms: std::env::var("SIGMA_BACKWARD_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800),
+            backward_nodes: std::env::var("SIGMA_BACKWARD_NODES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(200_000),
+            cores: std::env::var("SIGMA_CORES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| {
+                    std::thread::available_parallelism()
+                        .map(std::num::NonZeroUsize::get)
+                        .unwrap_or(1)
+                }),
             chase: std::env::var_os("SIGMA_CHASE").is_some(),
-            chase_ms: std::env::var("SIGMA_CHASE_MS").ok()
-                .and_then(|v| v.parse().ok()).unwrap_or(10_000),
+            chase_ms: std::env::var("SIGMA_CHASE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000),
             chase_lane: std::env::var_os("SIGMA_CHASE_LANE").is_some(),
             roles_lane: std::env::var_os("SIGMA_ROLES_LANE").is_some(),
-            lane_budgets: std::env::var("SIGMA_LANE_BUDGETS").ok()
-                .map(|s| s.split(',')
-                    .map(|t| t.trim().parse().unwrap_or(0))
-                    .collect())
+            lane_budgets: std::env::var("SIGMA_LANE_BUDGETS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|t| t.trim().parse().unwrap_or(0))
+                        .collect()
+                })
                 .unwrap_or_default(),
         }
     }
 }
 
 impl CommonProverOpts for NativeOpts {
-    fn selection(&self) -> SineParams { self.selection }
-    fn timeout(&self) -> u64 { self.time_limit_secs }
-    fn set_timeout(&mut self, secs: u64) { self.time_limit_secs = secs; }
-    fn set_session(&mut self, session: Option<String>) { self.session = session; }
+    fn selection(&self) -> SineParams {
+        self.selection
+    }
+    fn timeout(&self) -> u64 {
+        self.time_limit_secs
+    }
+    fn set_timeout(&mut self, secs: u64) {
+        self.time_limit_secs = secs;
+    }
+    fn set_session(&mut self, session: Option<String>) {
+        self.session = session;
+    }
     /// Standalone TPTP problem: swap in the complete-calculus,
     /// full-saturation strategy ([`Strategy::tptp`]) — set-of-support
     /// tiering can't prove axiom-case-split Theorems, and an incomplete
@@ -258,7 +293,8 @@ impl NativeOpts {
     /// `true` once the caller's cancellation flag is raised.
     #[inline]
     fn cancelled(&self) -> bool {
-        self.cancel.as_ref()
+        self.cancel
+            .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
@@ -305,7 +341,7 @@ pub(crate) struct ClauseRec {
 /// the trail re-establishes both invariants — clear-don't-free.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct MatchScratch {
-    pub(super) s:     Subst,
+    pub(super) s: Subst,
     pub(super) trail: Vec<usize>,
 }
 
@@ -348,12 +384,21 @@ enum RecipeRule {
     /// duplicate-literal pass — the partner is a ground unit) from the
     /// general path's, so replay is bit-faithful to whichever path
     /// deferred it.
-    Resolve { gi: u16, pi: u16, sym: Option<SymbolId>, decoded: bool },
+    Resolve {
+        gi: u16,
+        pi: u16,
+        sym: Option<SymbolId>,
+        decoded: bool,
+    },
     /// Ordered superposition: equation clause's literal `e_li` rewrites
     /// target clause's literal `t_li` at `path`.  The equation's KBO
     /// orientation is recomputed at materialization (deterministic:
     /// memoized content-keyed compares, per-run precedence).
-    Superpose { e_li: u16, t_li: u16, path: SmallVec<[u16; 8]> },
+    Superpose {
+        e_li: u16,
+        t_li: u16,
+        path: SmallVec<[u16; 8]>,
+    },
 }
 
 /// The pre-queue dedup key for a recipe: (rule tag, parents, packed
@@ -435,9 +480,11 @@ fn compose_term(t: &Term, off: u64, s: &Subst, acc: &mut ComposeAcc) {
 /// `apply(&replace(t, path, &shift_slots(repl, repl_off)), s)` without
 /// building either tree.
 fn compose_term_at(
-    t: &Term, off: u64,
+    t: &Term,
+    off: u64,
     path: &[u16],
-    repl: &Term, repl_off: u64,
+    repl: &Term,
+    repl_off: u64,
     s: &Subst,
     acc: &mut ComposeAcc,
 ) {
@@ -508,7 +555,10 @@ pub(crate) enum RunVerdict {
 /// How a driver consumes a [`RunVerdict`]: `Ask` maps saturation onto the
 /// Disproved family, `Consistency` onto Consistent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VerdictMode { Ask, Consistency }
+pub(crate) enum VerdictMode {
+    Ask,
+    Consistency,
+}
 
 /// The one `RunVerdict` → `(ProverStatus, TerminationReason)` ladder,
 /// shared by `prove_one_driver`, `check_consistency_driver`, and
@@ -525,31 +575,33 @@ pub(crate) enum VerdictMode { Ask, Consistency }
 /// - Saturated + `Consistency`: Consistent is inherently a certificate —
 ///   ALWAYS gated on `complete_saturation`, strict or not.
 pub(crate) fn map_verdict(
-    verdict:             RunVerdict,
-    conjecture_used:     bool,
-    strict_saturation:   bool,
+    verdict: RunVerdict,
+    conjecture_used: bool,
+    strict_saturation: bool,
     complete_saturation: Option<bool>,
-    mode:                VerdictMode,
-) -> (crate::prover::ProverStatus, Option<crate::prover::TerminationReason>) {
+    mode: VerdictMode,
+) -> (
+    crate::prover::ProverStatus,
+    Option<crate::prover::TerminationReason>,
+) {
     use crate::prover::{ProverStatus as S, TerminationReason as TR};
     match verdict {
         RunVerdict::Refutation(_) if conjecture_used => (S::Proved, None),
         RunVerdict::Refutation(_) => (S::Inconsistent, None),
         RunVerdict::Saturated => match mode {
-            VerdictMode::Ask if strict_saturation && complete_saturation != Some(true) =>
-                (S::Unknown, Some(TR::Saturation)),
-            VerdictMode::Ask =>
-                (S::Disproved, Some(TR::Saturation)),
-            VerdictMode::Consistency if complete_saturation != Some(true) =>
-                (S::Unknown, Some(TR::GaveUp)),
-            VerdictMode::Consistency =>
-                (S::Consistent, Some(TR::Saturation)),
+            VerdictMode::Ask if strict_saturation && complete_saturation != Some(true) => {
+                (S::Unknown, Some(TR::Saturation))
+            }
+            VerdictMode::Ask => (S::Disproved, Some(TR::Saturation)),
+            VerdictMode::Consistency if complete_saturation != Some(true) => {
+                (S::Unknown, Some(TR::GaveUp))
+            }
+            VerdictMode::Consistency => (S::Consistent, Some(TR::Saturation)),
         },
         RunVerdict::StepsExhausted => (S::Unknown, Some(TR::GaveUp)),
         RunVerdict::TimedOut => (S::Timeout, Some(TR::TimeLimit)),
     }
 }
-
 
 pub(crate) struct NativeProver<'a, S: TopLayer + 'static = SemanticLayer> {
     layer: &'a ProverLayer<S>,
@@ -905,8 +957,8 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     pub(crate) fn from_snapshot(
         layer: &'a ProverLayer<S>,
         scope: Scope,
-        opts:  NativeOpts,
-        snap:  &ProverSnapshot,
+        opts: NativeOpts,
+        snap: &ProverSnapshot,
     ) -> Self {
         let mut p = Self::new(layer, scope, opts);
         p.oracle = SemanticOracle::from_snapshot(layer.semantic(), scope, &snap.oracle);
@@ -925,9 +977,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         } else {
             p.arena_roots = vec![Default::default(); p.clauses.len()];
         }
-        debug_assert_eq!(p.subs.len(), p.clauses.len(), "SoA/arena lockstep (hydrate)");
         debug_assert_eq!(
-            p.retired_bits.len(), p.clauses.len().div_ceil(64),
+            p.subs.len(),
+            p.clauses.len(),
+            "SoA/arena lockstep (hydrate)"
+        );
+        debug_assert_eq!(
+            p.retired_bits.len(),
+            p.clauses.len().div_ceil(64),
             "retired bitmap/arena lockstep (hydrate)",
         );
         p.seen = snap.seen.clone();
@@ -967,7 +1024,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         self.units.ground_unit(pos, atom).is_some()
     }
 
-    fn syn(&self) -> &crate::syntactic::SyntacticLayer { &self.layer.semantic().syntactic }
+    fn syn(&self) -> &crate::syntactic::SyntacticLayer {
+        &self.layer.semantic().syntactic
+    }
 
     /// The reduction ordering for this run — the per-prover permuted KBO
     /// when `prec_seed != 0`, else the shared layer KBO (warm memo).
@@ -977,7 +1036,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     }
 
     /// The owning layer (proof extraction resolves atoms through it).
-    pub(crate) fn layer(&self) -> &'a ProverLayer<S> { self.layer }
+    pub(crate) fn layer(&self) -> &'a ProverLayer<S> {
+        self.layer
+    }
 
     /// Whether clause `id` was retired by backward demodulation — one
     /// bitmap-word read (the SoA home of the former `ClauseRec.retired`
@@ -1007,13 +1068,17 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// across `make`/index calls.)
     fn take_scratch(&mut self, n: usize) -> Subst {
         let mut s = std::mem::take(&mut self.scratch);
-        if s.len() < n { s.resize(n, None); }
+        if s.len() < n {
+            s.resize(n, None);
+        }
         s
     }
 
     fn put_scratch(&mut self, mut s: Subst, used: usize) {
         let end = used.min(s.len());
-        for slot in &mut s[..end] { *slot = None; }
+        for slot in &mut s[..end] {
+            *slot = None;
+        }
         self.scratch = s;
     }
 
@@ -1045,9 +1110,15 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 "ROLES instance={:#x} subclass={:#x} subrelation={:#x} \
                  transitive={:#x} symmetric={:#x} domain={:#x} range={:#x} \
                  disjoint={:#x} partition={:#x}",
-                roles.instance, roles.subclass, roles.subrelation,
-                roles.transitive, roles.symmetric, roles.domain, roles.range,
-                roles.disjoint, roles.partition,
+                roles.instance,
+                roles.subclass,
+                roles.subrelation,
+                roles.transitive,
+                roles.symmetric,
+                roles.domain,
+                roles.range,
+                roles.disjoint,
+                roles.partition,
             );
         }
         self.oracle.set_roles(roles);
@@ -1072,18 +1143,23 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         'clauses: for c in clauses {
             // -- Declaration form.
             if c.lits.len() == 1 && c.lits[0].pos {
-                let Some(sent) = self.layer.atoms.resolve(c.lits[0].atom, self.syn()) else { continue };
+                let Some(sent) = self.layer.atoms.resolve(c.lits[0].atom, self.syn()) else {
+                    continue;
+                };
                 if sent.elements.len() == 3 {
                     if let (Some(Element::Symbol(h)), Element::Symbol(r), Element::Symbol(cl)) =
                         (sent.elements.first(), &sent.elements[1], &sent.elements[2])
                     {
                         if h.id() == instance && cl.id() == single_valued {
-                            self.oracle.register_fd(r.id(), FdDecl {
-                                key_pos: 1,
-                                key_guards: Vec::new(),
-                                val_guards: Vec::new(),
-                                axiom: Some(root),
-                            });
+                            self.oracle.register_fd(
+                                r.id(),
+                                FdDecl {
+                                    key_pos: 1,
+                                    key_guards: Vec::new(),
+                                    val_guards: Vec::new(),
+                                    axiom: Some(root),
+                                },
+                            );
                         }
                     }
                 }
@@ -1096,29 +1172,46 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             }
             // Exactly one positive literal: (equal ?a ?b).
             let mut pos_iter = c.lits.iter().filter(|l| l.pos);
-            let (Some(pos), None) = (pos_iter.next(), pos_iter.next()) else { continue };
-            let Some(eq_sent) = self.layer.atoms.resolve(pos.atom, self.syn()) else { continue };
+            let (Some(pos), None) = (pos_iter.next(), pos_iter.next()) else {
+                continue;
+            };
+            let Some(eq_sent) = self.layer.atoms.resolve(pos.atom, self.syn()) else {
+                continue;
+            };
             if eq_sent.elements.len() != 3
                 || !matches!(eq_sent.elements.first(), Some(Element::Op(OpKind::Equal)))
             {
                 continue;
             }
             let (Element::Variable { id: va, .. }, Element::Variable { id: vb, .. }) =
-                (&eq_sent.elements[1], &eq_sent.elements[2]) else { continue };
+                (&eq_sent.elements[1], &eq_sent.elements[2])
+            else {
+                continue;
+            };
             let (va, vb) = (*va, *vb);
-            if va == vb { continue; }
+            if va == vb {
+                continue;
+            }
 
             // Negative literals: two same-relation binary atoms over
             // the equated variables + instance guards.  Anything else
             // disqualifies the clause.
             let mut rel_atoms: Vec<(SymbolId, u64, u64)> = Vec::new(); // (rel, arg1 var, arg2 var)
-            let mut guards: Vec<(u64, SymbolId)> = Vec::new();         // (var, class)
+            let mut guards: Vec<(u64, SymbolId)> = Vec::new(); // (var, class)
             for l in c.lits.iter().filter(|l| !l.pos) {
-                let Some(sent) = self.layer.atoms.resolve(l.atom, self.syn()) else { continue 'clauses };
-                if sent.elements.len() != 3 { continue 'clauses; }
-                let Some(Element::Symbol(h)) = sent.elements.first() else { continue 'clauses };
+                let Some(sent) = self.layer.atoms.resolve(l.atom, self.syn()) else {
+                    continue 'clauses;
+                };
+                if sent.elements.len() != 3 {
+                    continue 'clauses;
+                }
+                let Some(Element::Symbol(h)) = sent.elements.first() else {
+                    continue 'clauses;
+                };
                 match (&sent.elements[1], &sent.elements[2]) {
-                    (Element::Variable { id: x, .. }, Element::Symbol(class)) if h.id() == instance => {
+                    (Element::Variable { id: x, .. }, Element::Symbol(class))
+                        if h.id() == instance =>
+                    {
                         guards.push((*x, class.id()));
                     }
                     (Element::Variable { id: x, .. }, Element::Variable { id: y, .. }) => {
@@ -1147,28 +1240,47 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             } else {
                 continue;
             };
-            let key_guards: Vec<SymbolId> = guards.iter()
-                .filter(|(v, _)| *v == key_var).map(|(_, c)| *c).collect();
-            let val_guards_a: Vec<SymbolId> = guards.iter()
-                .filter(|(v, _)| *v == va).map(|(_, c)| *c).collect();
-            let val_guards_b: Vec<SymbolId> = guards.iter()
-                .filter(|(v, _)| *v == vb).map(|(_, c)| *c).collect();
+            let key_guards: Vec<SymbolId> = guards
+                .iter()
+                .filter(|(v, _)| *v == key_var)
+                .map(|(_, c)| *c)
+                .collect();
+            let val_guards_a: Vec<SymbolId> = guards
+                .iter()
+                .filter(|(v, _)| *v == va)
+                .map(|(_, c)| *c)
+                .collect();
+            let val_guards_b: Vec<SymbolId> = guards
+                .iter()
+                .filter(|(v, _)| *v == vb)
+                .map(|(_, c)| *c)
+                .collect();
             // Sound only if both equated sides carry the SAME guard
             // set (the axiom constrains both symmetrically).
-            let mut ga = val_guards_a.clone(); ga.sort_unstable();
-            let mut gb = val_guards_b.clone(); gb.sort_unstable();
-            if ga != gb { continue; }
-            // Guards on unrelated variables would make the clause more
-            // restrictive than our check — disqualify.
-            if guards.iter().any(|(v, _)| *v != key_var && *v != va && *v != vb) {
+            let mut ga = val_guards_a.clone();
+            ga.sort_unstable();
+            let mut gb = val_guards_b.clone();
+            gb.sort_unstable();
+            if ga != gb {
                 continue;
             }
-            self.oracle.register_fd(rel, FdDecl {
-                key_pos,
-                key_guards,
-                val_guards: val_guards_a,
-                axiom: Some(root),
-            });
+            // Guards on unrelated variables would make the clause more
+            // restrictive than our check — disqualify.
+            if guards
+                .iter()
+                .any(|(v, _)| *v != key_var && *v != va && *v != vb)
+            {
+                continue;
+            }
+            self.oracle.register_fd(
+                rel,
+                FdDecl {
+                    key_pos,
+                    key_guards,
+                    val_guards: val_guards_a,
+                    axiom: Some(root),
+                },
+            );
         }
     }
 
@@ -1240,8 +1352,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             eprintln!(
                 "[SIGMA_MODEL_TRACE] ensure_guide_model: monotone.rules={} monotone.edb_preds={} \
                  program.rules={} clusters={}",
-                mp.monotone.rules.len(), mp.monotone.edb.len(),
-                mp.program.rules.len(), mp.clusters.len()
+                mp.monotone.rules.len(),
+                mp.monotone.edb.len(),
+                mp.program.rules.len(),
+                mp.clusters.len()
             );
         }
         // Whole-KB monotone evaluation has no SInE-style scoping, so on a KB
@@ -1306,7 +1420,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// literals the scoring treats as neutral.
     fn guide_lit_pattern(t: &Term) -> Option<(SymbolId, Vec<SymbolId>)> {
         let Term::App(elems) = t else { return None };
-        let Term::Sym(rel) = elems.first()? else { return None };
+        let Term::Sym(rel) = elems.first()? else {
+            return None;
+        };
         let mut args = Vec::with_capacity(elems.len() - 1);
         for e in &elems[1..] {
             match e {
@@ -1359,7 +1475,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         for l in lits {
             if let Some(is_false) = self.guide_lit_false(l.pos, l.atom) {
                 total += 1;
-                if is_false { false_n += 1; }
+                if is_false {
+                    false_n += 1;
+                }
             }
         }
         if total == 0 {
@@ -1437,8 +1555,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // path read (`AtomInfos::info`), minus the memo/phone-book side
         // effects; the index side (`src`) still resolves through the
         // layer memo — only the query side is transient.
-        let tinfos: smallvec::SmallVec<[super::AtomInfo; 4]> =
-            terms.iter().map(|(_, t)| super::term_atom_info(t)).collect();
+        let tinfos: smallvec::SmallVec<[super::AtomInfo; 4]> = terms
+            .iter()
+            .map(|(_, t)| super::term_atom_info(t))
+            .collect();
         #[cfg(any(test, debug_assertions))]
         for (l, (_, t)) in lits.iter().zip(terms) {
             // Twin (debug builds only): the transient info must be
@@ -1446,7 +1566,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             // the hash-only id must be the intern id.  (This twin DOES
             // intern — acceptable in debug, like the KBO fast-path twins.)
             let id = self.layer.atoms.intern_slot_atom(t);
-            debug_assert_eq!(id, l.atom, "hash-only atom id diverged from intern for {t:?}");
+            debug_assert_eq!(
+                id, l.atom,
+                "hash-only atom id diverged from intern for {t:?}"
+            );
             debug_assert_eq!(
                 super::term_atom_info(t),
                 *self.layer.atom_info(l.atom),
@@ -1460,19 +1583,29 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             // one-way matches some D-literal, so C still surfaces on
             // that literal's probe — the direction-strict seat filter
             // only drops candidates the exact matcher would refuse.
-            for at in self.idx.probe_rel(l.pos, info, &src, super::index::SeatRel::MatchStored) {
+            for at in self
+                .idx
+                .probe_rel(l.pos, info, &src, super::index::SeatRel::MatchStored)
+            {
                 cand.insert(at.clause);
             }
         }
         let d_fv = ClauseFv::compute_from_terms(
-            lits, terms, &tinfos, self.kbo(),
+            lits,
+            terms,
+            &tinfos,
+            self.kbo(),
             self.opts.strategy.demod.then_some(&self.layer.term_facts),
         );
         #[cfg(any(test, debug_assertions))]
         debug_assert_eq!(
             d_fv,
             ClauseFv::compute(
-                lits, self.kbo(), &src, &self.layer.atoms, self.syn(),
+                lits,
+                self.kbo(),
+                &src,
+                &self.layer.atoms,
+                self.syn(),
                 self.opts.strategy.demod.then_some(&self.layer.term_facts),
             ),
             "transient feature vector diverged from the memoized compute",
@@ -1526,8 +1659,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     !clause_subsumes(&self.clauses[cid as usize].terms, terms),
                     "leaf bloom rejected {:?} but clause_subsumes({:?}, {:?}) \
                      would have accepted it (blooms {:#x} vs {:#x})",
-                    cid, self.clauses[cid as usize].terms, terms,
-                    rec.blooms.leaf, d_blooms.leaf,
+                    cid,
+                    self.clauses[cid as usize].terms,
+                    terms,
+                    rec.blooms.leaf,
+                    d_blooms.leaf,
                 );
                 continue;
             }
@@ -1547,8 +1683,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                         "ground-literal bloom rejected {:?} but \
                          clause_subsumes({:?}, {:?}) would have accepted it \
                          (blooms {:#x} vs {:#x})",
-                        cid, self.clauses[cid as usize].terms, terms,
-                        rec.blooms.glit, d_blooms.glit,
+                        cid,
+                        self.clauses[cid as usize].terms,
+                        terms,
+                        rec.blooms.glit,
+                        d_blooms.glit,
                     );
                     continue;
                 }
@@ -1563,7 +1702,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     !clause_subsumes(&self.clauses[cid as usize].terms, terms),
                     "FV prefilter rejected {:?} but clause_subsumes({:?}, {:?}) \
                      would have accepted it (fv {:?} vs {:?})",
-                    cid, self.clauses[cid as usize].terms, terms, rec.fv, d_fv,
+                    cid,
+                    self.clauses[cid as usize].terms,
+                    terms,
+                    rec.fv,
+                    d_fv,
                 );
                 continue;
             }
@@ -1581,8 +1724,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             let c_infos: SmallVec<[std::sync::Arc<AtomInfo>; 4]> =
                 c.lits.iter().map(|l| layer.atom_info(l.atom)).collect();
             let mut pair_tests = 0u64;
-            let keq_rejected =
-                keq_unpartnered(&c.lits, &c_infos, lits, &tinfos, &mut pair_tests);
+            let keq_rejected = keq_unpartnered(&c.lits, &c_infos, lits, &tinfos, &mut pair_tests);
             self.stats.keq_pair_tests += pair_tests;
             if keq_rejected {
                 self.stats.subs_rejected_by_keq += 1;
@@ -1593,7 +1735,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     !clause_subsumes(&c.terms, terms),
                     "Key-Equation counting filter rejected {:?} but \
                      clause_subsumes({:?}, {:?}) would have accepted it",
-                    cid, c.terms, terms,
+                    cid,
+                    c.terms,
+                    terms,
                 );
                 continue;
             }
@@ -1603,9 +1747,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             // is a sound rejection (necessary-condition machinery,
             // twin-verified against the reference matcher in
             // debug/test builds); `false` says nothing.
-            if self.opts.strategy.subs_join
-                && self.ej_reject(cid, lits, &tinfos, terms, &c_infos)
-            {
+            if self.opts.strategy.subs_join && self.ej_reject(cid, lits, &tinfos, terms, &c_infos) {
                 continue;
             }
             self.stats.subs_full_checks += 1;
@@ -1650,7 +1792,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             );
             self.ej_plans[cid as usize] = Some(Box::new(plans));
         }
-        let plans = self.ej_plans[cid as usize].as_deref().expect("compiled above");
+        let plans = self.ej_plans[cid as usize]
+            .as_deref()
+            .expect("compiled above");
         let c = &self.clauses[cid as usize];
         ej::filter(
             plans,
@@ -1708,7 +1852,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             if sent.elements.len() != 3 {
                 return None;
             }
-            let Element::Symbol(h) = sent.elements.first()? else { return None };
+            let Element::Symbol(h) = sent.elements.first()? else {
+                return None;
+            };
             if !self.oracle.is_symmetric(h.id()) {
                 return None;
             }
@@ -1717,10 +1863,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             let id = self.layer.atoms.intern_sentence(sw);
             (id != atom).then_some(id) // palindromes swap to themselves
         })();
-        self.sym_swap_memo.insert(atom, (self.oracle.epoch(), swapped));
+        self.sym_swap_memo
+            .insert(atom, (self.oracle.epoch(), swapped));
         swapped.map(|id| self.layer.atom_info(id))
     }
-
 
     // -- make: simplify + canonicalize + register ------------------------------
 
@@ -1733,7 +1879,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         lits.iter()
             .map(|(pos, t)| {
                 let k = term_kif(t, self.syn());
-                if *pos { k } else { format!("(not {k})") }
+                if *pos {
+                    k
+                } else {
+                    format!("(not {k})")
+                }
             })
             .collect::<Vec<_>>()
             .join("  ∨  ")
@@ -1749,7 +1899,6 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         };
         format!("({tier}) {}", self.dbg_lits_kif(&c.terms))
     }
-
 
     // -- verified dedup -----------------------------------------------------------
     //
@@ -1767,7 +1916,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// Probe only (no insert): is the arena clause `id` a structurally
     /// verified duplicate of the first clause accepted under `key`?
     fn seen_duplicate(&mut self, key: ClauseKey, id: u32) -> bool {
-        let Some(&first) = self.seen.get(&key) else { return false };
+        let Some(&first) = self.seen.get(&key) else {
+            return false;
+        };
         if self.clauses[first as usize].lits == self.clauses[id as usize].lits {
             true
         } else {
@@ -1780,7 +1931,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// not yet) in the arena, e.g. the demod duplicate-hit stats probe
     /// in `make`.
     pub(super) fn seen_duplicate_lits(&mut self, key: ClauseKey, lits: &[PLit]) -> bool {
-        let Some(&first) = self.seen.get(&key) else { return false };
+        let Some(&first) = self.seen.get(&key) else {
+            return false;
+        };
         if self.clauses[first as usize].lits.as_slice() == lits {
             true
         } else {
@@ -1864,7 +2017,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     fn push_capped(&mut self, id: Option<u32>, max_lits: usize) -> Option<u32> {
         let id = id?;
         let key = self.clauses[id as usize].key;
-        if self.seen_duplicate(key, id) { return None; }
+        if self.seen_duplicate(key, id) {
+            return None;
+        }
         if self.clauses[id as usize].lits.len() > max_lits {
             // Naming-split rescue: instead of the silent discard, split
             // a variable-disjoint over-wide clause into guarded pieces
@@ -1881,10 +2036,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // DECOMPOSABLE clauses above the split_width threshold so width
         // headroom is spent on connected clauses only.
         let sw = self.opts.strategy.split_width as usize;
-        if self.opts.strategy.split_naming
-            && sw > 0
-            && self.clauses[id as usize].lits.len() > sw
-        {
+        if self.opts.strategy.split_naming && sw > 0 && self.clauses[id as usize].lits.len() > sw {
             if let Some(sel) = self.try_split(id, max_lits.min(sw.max(2))) {
                 return Some(sel);
             }
@@ -1893,7 +2045,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // case globally — the split-does-logical-work signal.
         if self.opts.strategy.split_naming
             && self.clauses[id as usize].lits.len() == 1
-            && self.split_guard_atoms.contains(&self.clauses[id as usize].lits[0].atom)
+            && self
+                .split_guard_atoms
+                .contains(&self.clauses[id as usize].lits[0].atom)
         {
             self.stats.split_guard_units += 1;
         }
@@ -1960,12 +2114,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         }
         let mut selector: Vec<(bool, Term)> = Vec::with_capacity(comps.len());
         for comp in &comps {
-            let lits: Vec<(bool, Term)> =
-                comp.iter().map(|&i| terms[i].clone()).collect();
+            let lits: Vec<(bool, Term)> = comp.iter().map(|&i| terms[i].clone()).collect();
             let (pc, _) = super::canon::canonical_clause_hashed(lits.clone());
-            let guard = Term::Sym(Symbol::from(
-                format!("sp_{:016x}", pc.key.0).as_str(),
-            ));
+            let guard = Term::Sym(Symbol::from(format!("sp_{:016x}", pc.key.0).as_str()));
             let mut piece: Vec<(bool, Term)> = Vec::with_capacity(lits.len() + 1);
             piece.push((false, guard.clone()));
             piece.extend(lits);
@@ -2016,7 +2167,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// so knob-off heap keys stay byte-identical.
     #[inline]
     fn recipe_guide_key(&self) -> u64 {
-        if self.opts.strategy.semantic_guide { 500 } else { 0 }
+        if self.opts.strategy.semantic_guide {
+            500
+        } else {
+            0
+        }
     }
 
     /// OR of both parents' literal leaf signatures — the conservative
@@ -2038,11 +2193,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// tier weight × goal-distance factor), fed the composed scalars.
     fn recipe_weight(&self, acc: &ComposeAcc, nlits: u64, tier: u8, sig: u64) -> u64 {
         let st = &self.opts.strategy;
-        let base = (st.cw_lits * nlits
-            + st.cw_size * acc.size
-            + st.cw_vars * acc.vars.len() as u64)
-            .max(1)
-            * (1 + st.cw_skolem * acc.skolems);
+        let base =
+            (st.cw_lits * nlits + st.cw_size * acc.size + st.cw_vars * acc.vars.len() as u64)
+                .max(1)
+                * (1 + st.cw_skolem * acc.skolems);
         base * st.tier_weight[tier as usize] * self.goal_distance_factor_sig(sig, tier)
     }
 
@@ -2143,7 +2297,13 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// the eager code would have built it.
     fn materialize_resolve(&mut self, rp: &Recipe) -> Option<u32> {
         let [given, partner] = rp.parents;
-        let RecipeRule::Resolve { gi, pi, sym, decoded } = rp.rule else {
+        let RecipeRule::Resolve {
+            gi,
+            pi,
+            sym,
+            decoded,
+        } = rp.rule
+        else {
             unreachable!("materialize_resolve on a non-resolve recipe")
         };
         let (g_nvars, p_nvars) = {
@@ -2174,10 +2334,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 let mut new: Vec<(bool, Term)> =
                     Vec::with_capacity(g.terms.len() + p.terms.len() - 2);
                 for (k, (pos, t)) in g.terms.iter().enumerate() {
-                    if k != gi as usize { new.push((*pos, apply(t, &s))); }
+                    if k != gi as usize {
+                        new.push((*pos, apply(t, &s)));
+                    }
                 }
                 for (k, (pos, t)) in p.terms.iter().enumerate() {
-                    if k != pi as usize { new.push((*pos, apply_off(t, off, &s))); }
+                    if k != pi as usize {
+                        new.push((*pos, apply_off(t, off, &s)));
+                    }
                 }
                 // Drop duplicate literals (the eager path's pass).
                 let mut out: Vec<(bool, Term)> = Vec::with_capacity(new.len());
@@ -2190,7 +2354,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             }
         };
         self.put_scratch(s, n);
-        let rule = if sym.is_some() { "resolve_sym" } else { "resolve" };
+        let rule = if sym.is_some() {
+            "resolve_sym"
+        } else {
+            "resolve"
+        };
         let made = self.make(out, vec![given, partner], rule, rp.tier, None, true);
         if let (Some(id), Some(rel)) = (made, sym) {
             self.stats.sym_resolutions += 1;
@@ -2207,7 +2375,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// the conclusion is constructed exactly as `superpose` builds it.
     fn materialize_superpose(&mut self, rp: &Recipe) -> Option<u32> {
         let [e_cid, t_cid] = rp.parents;
-        let RecipeRule::Superpose { e_li, t_li, ref path } = rp.rule else {
+        let RecipeRule::Superpose {
+            e_li,
+            t_li,
+            ref path,
+        } = rp.rule
+        else {
             unreachable!("materialize_superpose on a non-superpose recipe")
         };
         let (e_terms, e_tier) = {
@@ -2227,15 +2400,19 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             subst[*slot as usize] = Some(b.clone());
         }
         let path: Vec<usize> = path.iter().map(|&p| p as usize).collect();
-        let mut lits: Vec<(bool, Term)> =
-            Vec::with_capacity(e_terms.len() + t_terms.len());
+        let mut lits: Vec<(bool, Term)> = Vec::with_capacity(e_terms.len() + t_terms.len());
         for (k, (pos, term)) in e_terms.iter().enumerate() {
-            if k == e_li as usize { continue; }
+            if k == e_li as usize {
+                continue;
+            }
             lits.push((*pos, apply(&shift_slots(term, off), &subst)));
         }
         for (k, (pos, term)) in t_terms.iter().enumerate() {
-            let rewritten =
-                if k == t_li as usize { replace(term, &path, &t2) } else { term.clone() };
+            let rewritten = if k == t_li as usize {
+                replace(term, &path, &t2)
+            } else {
+                term.clone()
+            };
             lits.push((*pos, apply(&rewritten, &subst)));
         }
         debug_assert_eq!(e_tier.min(t_tier), rp.tier, "recipe tier drifted");
@@ -2280,14 +2457,18 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             if from_age {
                 while let Some(Reverse((_, id))) = self.h_age.pop() {
                     if self.popped.insert(id) {
-                        if id & RECIPE_TAG == 0 && self.is_retired(id) { continue; }
+                        if id & RECIPE_TAG == 0 && self.is_retired(id) {
+                            continue;
+                        }
                         return Some(id);
                     }
                 }
             } else {
                 while let Some(Reverse((_, _, _, id))) = self.h_weight.pop() {
                     if self.popped.insert(id) {
-                        if id & RECIPE_TAG == 0 && self.is_retired(id) { continue; }
+                        if id & RECIPE_TAG == 0 && self.is_retired(id) {
+                            continue;
+                        }
                         return Some(id);
                     }
                 }
@@ -2298,20 +2479,36 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
 
     /// Index a clause's literals and register unit facts.
     pub(crate) fn activate(&mut self, id: u32) {
-        if self.clauses[id as usize].activated { return; }
+        if self.clauses[id as usize].activated {
+            return;
+        }
         self.clauses[id as usize].activated = true;
         let lits = self.clauses[id as usize].lits.clone();
         let layer = self.layer;
         let src = move |a| layer.atom_info(a);
         for (i, l) in lits.iter().enumerate() {
-            self.idx.add(EntryRef { clause: id, lit: i as u8 }, l.pos, l.atom, &src);
+            self.idx.add(
+                EntryRef {
+                    clause: id,
+                    lit: i as u8,
+                },
+                l.pos,
+                l.atom,
+                &src,
+            );
         }
         if lits.len() == 1 {
             let layer = self.layer;
             let nv = self.clauses[id as usize].nvars;
             self.units.add_unit(
-                id, lits[0].pos, lits[0].atom, nv,
-                &layer.atom_infos, &layer.atoms, &layer.semantic().syntactic);
+                id,
+                lits[0].pos,
+                lits[0].atom,
+                nv,
+                &layer.atom_infos,
+                &layer.atoms,
+                &layer.semantic().syntactic,
+            );
             let demod = self.index_demodulator(id);
             // Backward demodulation: the NEWLY oriented equation
             // re-normalizes the EXISTING clause sets (interreduction).
@@ -2352,16 +2549,23 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             if li >= 64 || (max_mask >> li) & 1 == 0 {
                 continue; // non-maximal literals are not inference-eligible
             }
-            let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else { continue };
+            let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else {
+                continue;
+            };
             // Subterm positions (non-var, non-top) → the "into" index.
             for (path, sub) in positions(&t) {
                 let sub_atom = self.layer.atoms.intern_atom(&sub);
                 let info = self.layer.atom_info(sub_atom);
-                let path: smallvec::SmallVec<[u8; 4]> =
-                    path.iter().map(|&p| p as u8).collect();
+                let path: smallvec::SmallVec<[u8; 4]> = path.iter().map(|&p| p as u8).collect();
                 self.term_idx.add(
-                    super::index::TermPos { clause: id, lit: li as u8, path },
-                    sub_atom, &info);
+                    super::index::TermPos {
+                        clause: id,
+                        lit: li as u8,
+                        path,
+                    },
+                    sub_atom,
+                    &info,
+                );
             }
             // Maximal positive equality oriented s ≻ t → the "from" set.
             if l.pos && is_equality_atom(&t) {
@@ -2455,8 +2659,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// run minutes past the budget.
     #[inline]
     pub(super) fn out_of_time(&self) -> bool {
-        self.opts.cancelled()
-            || self.run_deadline.is_some_and(|d| Instant::now() >= d)
+        self.opts.cancelled() || self.run_deadline.is_some_and(|d| Instant::now() >= d)
     }
 
     /// One ordered-superposition inference: rewrite clause `t_cid`'s
@@ -2471,8 +2674,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// inapplicable (non-unifiable, into a variable, unorientable).
     fn superpose(
         &mut self,
-        e_cid: u32, e_li: usize,
-        t_cid: u32, t_li: usize,
+        e_cid: u32,
+        e_li: usize,
+        t_cid: u32,
+        t_li: usize,
         t_path: &[usize],
     ) -> Option<u32> {
         // Orient the "from" equation and locate the rewrite target `u`
@@ -2490,7 +2695,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // The rewrite target `u` — never a variable (superposition into
         // variables is unsound for completeness and explosive).
         let u = subterm_at(&self.clauses[t_cid as usize].terms[t_li].1, t_path)?.clone();
-        if matches!(u, Term::Var(_)) { return None; }
+        if matches!(u, Term::Var(_)) {
+            return None;
+        }
 
         // Rename-apart is VIRTUAL (`unify_off`): the equation's slots
         // ride at `off`, nothing is shifted before the mgu succeeds.
@@ -2503,7 +2710,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let mut subst: Subst = vec![None; (off + u64::from(e_nvars) + 1) as usize];
 
         // σ = mgu(s, u).
-        if !unify_off(&s, off, &u, 0, &mut subst) { return None; }
+        if !unify_off(&s, off, &u, 0, &mut subst) {
+            return None;
+        }
 
         // The mgu holds — NOW materialize the copies the construction
         // below consumes (bindings from `unify_off` are absolute, byte-
@@ -2526,11 +2735,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             // Composed scalars of the raw conclusion, no terms built.
             let mut acc = ComposeAcc::default();
             for (k, (_, term)) in e_terms.iter().enumerate() {
-                if k == e_li { continue; }
+                if k == e_li {
+                    continue;
+                }
                 compose_term(term, off, &subst, &mut acc);
             }
-            let path16: SmallVec<[u16; 8]> =
-                t_path.iter().map(|&p| p as u16).collect();
+            let path16: SmallVec<[u16; 8]> = t_path.iter().map(|&p| p as u16).collect();
             for (k, (_, term)) in t_terms.iter().enumerate() {
                 if k == t_li {
                     compose_term_at(term, 0, &path16, &t, off, &subst, &mut acc);
@@ -2558,7 +2768,11 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             self.push_recipe(
                 Recipe {
                     parents: [e_cid, t_cid],
-                    rule: RecipeRule::Superpose { e_li: e_li as u16, t_li: t_li as u16, path: path16 },
+                    rule: RecipeRule::Superpose {
+                        e_li: e_li as u16,
+                        t_li: t_li as u16,
+                        path: path16,
+                    },
                     binding,
                     tier,
                     weight,
@@ -2570,18 +2784,29 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
 
         // Resolvent: rest of E (renamed, σ) ∨ T with its `u` subterm
         // replaced by `t` (renamed, σ).
-        let mut lits: Vec<(bool, Term)> =
-            Vec::with_capacity(e_terms.len() + t_terms.len());
+        let mut lits: Vec<(bool, Term)> = Vec::with_capacity(e_terms.len() + t_terms.len());
         for (k, (pos, term)) in e_terms.iter().enumerate() {
-            if k == e_li { continue; }
+            if k == e_li {
+                continue;
+            }
             lits.push((*pos, apply(&shift_slots(term, off), &subst)));
         }
         for (k, (pos, term)) in t_terms.iter().enumerate() {
-            let rewritten =
-                if k == t_li { replace(term, t_path, &t2) } else { term.clone() };
+            let rewritten = if k == t_li {
+                replace(term, t_path, &t2)
+            } else {
+                term.clone()
+            };
             lits.push((*pos, apply(&rewritten, &subst)));
         }
-        self.make(lits, vec![e_cid, t_cid], "superpos", e_tier.min(t_tier), None, true)
+        self.make(
+            lits,
+            vec![e_cid, t_cid],
+            "superpos",
+            e_tier.min(t_tier),
+            None,
+            true,
+        )
     }
 
     /// Ordered superposition for the given clause `given`, both
@@ -2616,7 +2841,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             .filter(|&(c, _)| !self.is_retired(c))
             .collect();
         for (li, (_, atom)) in g_terms.iter().enumerate() {
-            if li >= 64 || (g_max >> li) & 1 == 0 { continue; }
+            if li >= 64 || (g_max >> li) & 1 == 0 {
+                continue;
+            }
             for path in positions_paths(atom) {
                 for &(e_cid, e_li) in &eqns {
                     // Wall-clock poll per attempt: a mega-term clause
@@ -2638,7 +2865,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     }
                     self.push(made);
                     n += 1;
-                    if n >= cap { self.stats.gen_capped += 1; return None; }
+                    if n >= cap {
+                        self.stats.gen_capped += 1;
+                        return None;
+                    }
                 }
             }
         }
@@ -2646,8 +2876,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // -- from: `given`'s maximal positive equalities rewrite active
         // subterms (probe the "into" TermIndex with the larger side `s`).
         for (li, (pos, atom)) in g_terms.iter().enumerate() {
-            if li >= 64 || (g_max >> li) & 1 == 0 || !*pos { continue; }
-            let Some((s, _t)) = self.equality_oriented(atom) else { continue };
+            if li >= 64 || (g_max >> li) & 1 == 0 || !*pos {
+                continue;
+            }
+            let Some((s, _t)) = self.equality_oriented(atom) else {
+                continue;
+            };
             let s_atom = self.layer.atoms.intern_atom(&s);
             let qi = self.layer.atom_info(s_atom);
             let layer = self.layer;
@@ -2675,7 +2909,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 }
                 self.push(made);
                 n += 1;
-                if n >= cap { self.stats.gen_capped += 1; return None; }
+                if n >= cap {
+                    self.stats.gen_capped += 1;
+                    return None;
+                }
             }
         }
         None
@@ -2740,7 +2977,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     pub(crate) fn add_injected_clauses(
         &mut self,
         clauses: &[super::clause::PClause],
-        rule:    &'static str,
+        rule: &'static str,
     ) {
         for pc in clauses {
             let Some(terms) = self.pclause_terms(pc) else {
@@ -2837,9 +3074,8 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         // `run()` keeps this anchor when set, bounding the WHOLE attempt
         // by one budget instead of load+run each getting a fresh one.
         if self.run_deadline.is_none() && !self.opts.step && self.opts.time_limit_secs > 0 {
-            self.run_deadline = Some(
-                Instant::now() + std::time::Duration::from_secs(self.opts.time_limit_secs),
-            );
+            self.run_deadline =
+                Some(Instant::now() + std::time::Duration::from_secs(self.opts.time_limit_secs));
         }
         // No source clause id yet — `make` below re-registers each unit
         // with its clause id (add_unit upgrades None → Some).
@@ -2861,7 +3097,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 self.stats.slot_lift_failures += 1;
                 continue;
             };
-            let id = self.make(terms, vec![], "negated_conjecture", CONJECTURE, conjecture_root, false);
+            let id = self.make(
+                terms,
+                vec![],
+                "negated_conjecture",
+                CONJECTURE,
+                conjecture_root,
+                false,
+            );
             self.push_input(id);
         }
     }
@@ -2952,10 +3195,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 let tier = g.tier.min(p.tier);
                 let mut acc = ComposeAcc::default();
                 for (k, (_, t)) in g.terms.iter().enumerate() {
-                    if k != gi { compose_term(t, 0, &s, &mut acc); }
+                    if k != gi {
+                        compose_term(t, 0, &s, &mut acc);
+                    }
                 }
                 for (k, (_, t)) in p.terms.iter().enumerate() {
-                    if k != pi { compose_term(t, off, &s, &mut acc); }
+                    if k != pi {
+                        compose_term(t, off, &s, &mut acc);
+                    }
                 }
                 let nlits = (g.terms.len() + p.terms.len() - 2) as u64;
                 let sig = if self.opts.strategy.goal_dist && self.conj_sig != 0 {
@@ -2990,10 +3237,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 let mut new: Vec<(bool, Term)> =
                     Vec::with_capacity(g.terms.len() + p.terms.len() - 2);
                 for (k, (pos, t)) in g.terms.iter().enumerate() {
-                    if k != gi { new.push((*pos, apply(t, &s))); }
+                    if k != gi {
+                        new.push((*pos, apply(t, &s)));
+                    }
                 }
                 for (k, (pos, t)) in p.terms.iter().enumerate() {
-                    if k != pi { new.push((*pos, apply_off(t, off, &s))); }
+                    if k != pi {
+                        new.push((*pos, apply_off(t, off, &s)));
+                    }
                 }
                 // Drop duplicate literals.
                 let mut out: Vec<(bool, Term)> = Vec::with_capacity(new.len());
@@ -3022,8 +3273,14 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let Some(out) = resolvent else { return None };
         self.stats.resolve_unify_hits += 1;
         self.stats.resolvents += 1;
-        let tier = self.clauses[given as usize].tier.min(self.clauses[partner as usize].tier);
-        let rule = if via_symmetry.is_some() { "resolve_sym" } else { "resolve" };
+        let tier = self.clauses[given as usize]
+            .tier
+            .min(self.clauses[partner as usize].tier);
+        let rule = if via_symmetry.is_some() {
+            "resolve_sym"
+        } else {
+            "resolve"
+        };
         let made = self.make(out, vec![given, partner], rule, tier, None, true);
         if let (Some(id), Some(rel)) = (made, via_symmetry) {
             self.stats.sym_resolutions += 1;
@@ -3059,11 +3316,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// literal's whole candidate set to the one shape cause.  Identical
     /// checks in identical order; `Err` maps exactly onto the old
     /// `None`s.
-    fn decode_given_shape_cause(
-        &self,
-        given: u32,
-        gi: usize,
-    ) -> Result<DecodeShape, DecodeBail> {
+    fn decode_given_shape_cause(&self, given: u32, gi: usize) -> Result<DecodeShape, DecodeBail> {
         // A/B kill switch for benchmarking the algebraic fast path
         // (`SIGMA_NO_DECODE` via `Strategy::default`, or per lane).
         if !self.opts.strategy.decode {
@@ -3077,7 +3330,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         }
         // Every open seat must be a simple variable in the pattern term
         // (a compound-with-variable seat needs real unification).
-        let Term::App(p_elems) = &g.terms[gi].1 else { return Err(DecodeBail::Other) };
+        let Term::App(p_elems) = &g.terms[gi].1 else {
+            return Err(DecodeBail::Other);
+        };
         let mut open_slots: SmallVec<[(u8, u64); 2]> = SmallVec::new(); // (seat, slot)
         let mut bits = gi_info.mask;
         while bits != 0 {
@@ -3155,7 +3410,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             Decoded::Two(a, b) => SmallVec::from_slice(&[a, b]),
             Decoded::Fail => {
                 // The residual sketch itself failed to decode.
-                if count { self.stats.decode_bail_phonebook_or_collision += 1; }
+                if count {
+                    self.stats.decode_bail_phonebook_or_collision += 1;
+                }
                 return None;
             }
         };
@@ -3165,19 +3422,24 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let mut s: Subst = vec![None; shape.g_nvars as usize + 1];
         let mut seen_seats: SmallVec<[u8; 2]> = SmallVec::new();
         for c in coins {
-            let Some((seat, term)) =
-                self.layer.atom_infos.coin_term(c, &self.layer.atoms, syn)
+            let Some((seat, term)) = self.layer.atom_infos.coin_term(c, &self.layer.atoms, syn)
             else {
                 // Unknown coin — not in the phone book (collision).
-                if count { self.stats.decode_bail_phonebook_or_collision += 1; }
+                if count {
+                    self.stats.decode_bail_phonebook_or_collision += 1;
+                }
                 return None;
             };
             let Some(&(_, slot)) = shape.open_slots.iter().find(|(st, _)| *st == seat) else {
-                if count { self.stats.decode_bail_other += 1; }
+                if count {
+                    self.stats.decode_bail_other += 1;
+                }
                 return None; // decoded a seat the pattern didn't open
             };
             if seen_seats.contains(&seat) {
-                if count { self.stats.decode_bail_other += 1; }
+                if count {
+                    self.stats.decode_bail_other += 1;
+                }
                 return None;
             }
             seen_seats.push(seat);
@@ -3186,14 +3448,18 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 // Repeated variable: both seats must decode equal fillers.
                 Some(prev) if *prev == term => {}
                 Some(_) => {
-                    if count { self.stats.decode_bail_other += 1; }
+                    if count {
+                        self.stats.decode_bail_other += 1;
+                    }
                     return None; // genuinely no resolvent — but let
                                  // unify reach the same verdict
                 }
             }
         }
         if seen_seats.len() != shape.open_slots.len() {
-            if count { self.stats.decode_bail_other += 1; }
+            if count {
+                self.stats.decode_bail_other += 1;
+            }
             return None; // every open seat must receive exactly one binding
         }
 
@@ -3216,7 +3482,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             let g = &self.clauses[given as usize];
             let mut acc = ComposeAcc::default();
             for (k, (_, t)) in g.terms.iter().enumerate() {
-                if k != gi { compose_term(t, 0, &s, &mut acc); }
+                if k != gi {
+                    compose_term(t, 0, &s, &mut acc);
+                }
             }
             let nlits = (g.terms.len() - 1) as u64;
             let sig = if self.opts.strategy.goal_dist && self.conj_sig != 0 {
@@ -3228,7 +3496,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             let binding = Self::snapshot_binding(&s, s.len());
             self.stats.resolvents += 1;
             self.stats.decoded_resolutions += 1;
-            if count { self.stats.decode_bindings_extracted += 1; }
+            if count {
+                self.stats.decode_bindings_extracted += 1;
+            }
             self.push_recipe(
                 Recipe {
                     parents: [given, partner],
@@ -3261,7 +3531,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             .collect();
         self.stats.resolvents += 1;
         self.stats.decoded_resolutions += 1;
-        if count { self.stats.decode_bindings_extracted += 1; }
+        if count {
+            self.stats.decode_bindings_extracted += 1;
+        }
         Some(self.make(lits, vec![given, partner], "resolve", tier, None, true))
     }
 
@@ -3291,13 +3563,13 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             (c.terms.clone(), c.nvars, c.tier, c.lits.clone())
         };
         // Memoized per-literal sketch info for the coin-level guard.
-        let infos: Vec<_> = lits.iter()
-            .map(|l| self.layer.atom_info(l.atom))
-            .collect();
+        let infos: Vec<_> = lits.iter().map(|l| self.layer.atom_info(l.atom)).collect();
         let mut out = Vec::new();
         for i in 0..terms.len() {
             for j in (i + 1)..terms.len() {
-                if terms[i].0 != terms[j].0 { continue; }
+                if terms[i].0 != terms[j].0 {
+                    continue;
+                }
                 self.stats.factor_attempts += 1;
                 // lits² unify/make attempts with no output cap — poll the
                 // wall clock like `paramodulants`; the truncation counts
@@ -3312,7 +3584,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 // unifier; arity mismatch likewise.  Seats open on
                 // either side are unconstrained.
                 if infos[i].arity != infos[j].arity
-                    || infos[i].seat_coins.iter().zip(infos[j].seat_coins.iter())
+                    || infos[i]
+                        .seat_coins
+                        .iter()
+                        .zip(infos[j].seat_coins.iter())
                         .any(|(&a, &b)| a != 0 && b != 0 && a != b)
                 {
                     self.stats.factor_prefiltered += 1;
@@ -3320,17 +3595,18 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 }
                 let n = nvars as usize + 1;
                 let mut s = self.take_scratch(n);
-                let lits: Option<Vec<(bool, Term)>> =
-                    if unify(&terms[i].1, &terms[j].1, &mut s) {
-                        Some(terms
+                let lits: Option<Vec<(bool, Term)>> = if unify(&terms[i].1, &terms[j].1, &mut s) {
+                    Some(
+                        terms
                             .iter()
                             .enumerate()
                             .filter(|(k, _)| *k != j)
                             .map(|(_, (pos, t))| (*pos, apply(t, &s)))
-                            .collect())
-                    } else {
-                        None
-                    };
+                            .collect(),
+                    )
+                } else {
+                    None
+                };
                 self.put_scratch(s, n);
                 if let Some(lits) = lits {
                     self.stats.factor_hits += 1;
@@ -3354,7 +3630,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         };
         let mut out = Vec::new();
         for (i, (pos, t)) in terms.iter().enumerate() {
-            if *pos { continue; } // negative literals only
+            if *pos {
+                continue;
+            } // negative literals only
             let Term::App(elems) = t else { continue };
             if elems.len() != 3 || !matches!(elems[0], Term::Op(OpKind::Equal)) {
                 continue;
@@ -3376,7 +3654,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
     /// Test-only: the rendered `(polarity, KIF)` literals of a clause.
     #[cfg(test)]
     pub(crate) fn dbg_lits(&self, id: u32) -> Vec<(bool, String)> {
-        self.clauses[id as usize].terms.iter()
+        self.clauses[id as usize]
+            .terms
+            .iter()
             .map(|(p, t)| (*p, term_kif(t, self.syn())))
             .collect()
     }
@@ -3412,11 +3692,19 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let mut polls = 0u32;
         for i in 0..terms.len() {
             // `s ≈ t` must be a positive, eligible (maximal) equality.
-            if !terms[i].0 || (i < 64 && (max_mask >> i) & 1 == 0) { continue; }
-            let Some((ai, bi)) = eq_sides(&terms[i].1) else { continue };
+            if !terms[i].0 || (i < 64 && (max_mask >> i) & 1 == 0) {
+                continue;
+            }
+            let Some((ai, bi)) = eq_sides(&terms[i].1) else {
+                continue;
+            };
             for j in 0..terms.len() {
-                if j == i || !terms[j].0 { continue; }
-                let Some((aj, bj)) = eq_sides(&terms[j].1) else { continue };
+                if j == i || !terms[j].0 {
+                    continue;
+                }
+                let Some((aj, bj)) = eq_sides(&terms[j].1) else {
+                    continue;
+                };
                 // Orient `i` so `s` is the larger side (skip the pairing
                 // where `t ≻ s` — `s ≈ t` would not be the maximal side).
                 for (s, t) in [(&ai, &bi), (&bi, &ai)] {
@@ -3435,14 +3723,18 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                             return out;
                         }
                         let mut sub: Subst = vec![None; nvars as usize + 1];
-                        if !unify(s, u, &mut sub) { continue; }
+                        if !unify(s, u, &mut sub) {
+                            continue;
+                        }
                         // Build (s ≈ v ∨ t ≉ v ∨ rest)σ.
                         let eq = |x: &Term, y: &Term| {
                             Term::App(vec![Term::Op(OpKind::Equal), x.clone(), y.clone()])
                         };
                         let mut lits: Vec<(bool, Term)> = Vec::with_capacity(terms.len() + 1);
                         for (k, (pos, lt)) in terms.iter().enumerate() {
-                            if k == j { continue; }            // merged away
+                            if k == j {
+                                continue;
+                            } // merged away
                             let lit = if k == i { eq(s, v) } else { lt.clone() };
                             lits.push((*pos, apply(&lit, &sub)));
                         }
@@ -3467,8 +3759,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let mut n = 0;
         let mut polls = 0u32;
         for (eq_cid, l, r) in &equals {
-            if matches!(l, Term::Var(_)) { continue; }
-            if self.is_retired(*eq_cid) { continue; }
+            if matches!(l, Term::Var(_)) {
+                continue;
+            }
+            if self.is_retired(*eq_cid) {
+                continue;
+            }
             let off = nvars as u64 + 1;
             let l2 = shift_slots(l, off);
             let r2 = shift_slots(r, off);
@@ -3487,13 +3783,18 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                         return None;
                     }
                     let mut s: Subst = vec![None; (max_slot + 1) as usize];
-                    if !unify(&l2, &sub, &mut s) { continue; }
+                    if !unify(&l2, &sub, &mut s) {
+                        continue;
+                    }
                     let lits: Vec<(bool, Term)> = terms
                         .iter()
                         .enumerate()
                         .map(|(k, (pos, t))| {
-                            let rewritten =
-                                if k == li { replace(t, &path, &r2) } else { t.clone() };
+                            let rewritten = if k == li {
+                                replace(t, &path, &r2)
+                            } else {
+                                t.clone()
+                            };
                             (*pos, apply(&rewritten, &s))
                         })
                         .collect();
@@ -3508,7 +3809,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     }
                     self.push(made);
                     n += 1;
-                    if n >= self.opts.strategy.para_cap { return None; }
+                    if n >= self.opts.strategy.para_cap {
+                        return None;
+                    }
                 }
             }
         }
@@ -3600,11 +3903,15 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 e.2 += 1;
             }
         }
-        let mut out = String::from("width	input	generated	decomposable
-");
+        let mut out = String::from(
+            "width	input	generated	decomposable
+",
+        );
         for (w, (i, g, d)) in bands {
-            out.push_str(&format!("{w}	{i}	{g}	{d}
-"));
+            out.push_str(&format!(
+                "{w}	{i}	{g}	{d}
+"
+            ));
         }
         out.push_str(&format!(
             "discarded_long {} discarded_deep {} max_lits {}
@@ -3653,7 +3960,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         let mut stack = vec![id];
         let mut seen: Set64<u32> = Set64::default();
         while let Some(c) = stack.pop() {
-            if !seen.insert(c) { continue; }
+            if !seen.insert(c) {
+                continue;
+            }
             let rec = &self.clauses[c as usize];
             if rec.rule == "negated_conjecture" {
                 return true;
@@ -3714,11 +4023,15 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     return true;
                 }
                 if let Some((rel, x, y)) = term_binary_ids(&c.terms[i].1) {
-                    if self.oracle.holds(rel, x, y, None) { return true; }
+                    if self.oracle.holds(rel, x, y, None) {
+                        return true;
+                    }
                 }
                 if !own_eq_source {
                     if let Some((_, _, ka, kb)) = self.ground_equality(l.atom) {
-                        if self.oracle.equal_holds(ka, kb, None) { return true; }
+                        if self.oracle.equal_holds(ka, kb, None) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -3795,7 +4108,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             let prof = self.opts.profile;
             let t_select = prof.then(Instant::now);
             let popped = self.pop_given();
-            if let Some(t) = t_select { self.stats.t_select += t.elapsed(); }
+            if let Some(t) = t_select {
+                self.stats.t_select += t.elapsed();
+            }
             let Some(mut given) = popped else {
                 // `pop_given` also returns None on a mid-materialization
                 // deadline bail — that must grade as TimedOut, never as
@@ -3822,7 +4137,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     }
                 }
             }
-            if let Some(t) = t_mech { self.stats.t_resimplify += t.elapsed(); }
+            if let Some(t) = t_mech {
+                self.stats.t_resimplify += t.elapsed();
+            }
             if self.clauses[given as usize].lits.is_empty() {
                 match self.reportable_refutation(given) {
                     Some(e) => return (RunVerdict::Refutation(e), steps),
@@ -3851,7 +4168,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             for f in self.factors(given) {
                 self.push(f);
             }
-            if let Some(t) = t_mech { self.stats.t_factors += t.elapsed(); }
+            if let Some(t) = t_mech {
+                self.stats.t_factors += t.elapsed();
+            }
 
             // Equality resolution: from `C ∨ s≠t`, unify s and t and emit
             // `Cσ` — the rule that lets a negative equality literal bind a
@@ -3869,7 +4188,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 }
                 self.push(e);
             }
-            if let Some(t) = t_mech { self.stats.t_eq_resolve += t.elapsed(); }
+            if let Some(t) = t_mech {
+                self.stats.t_eq_resolve += t.elapsed();
+            }
 
             let has_fn = self.clauses[given as usize].terms.iter().any(|(_, t)| {
                 matches!(t, Term::App(elems)
@@ -3892,7 +4213,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     return (RunVerdict::Refutation(empty), steps);
                 }
             }
-            if let Some(t) = t_mech { self.stats.t_paramod += t.elapsed(); }
+            if let Some(t) = t_mech {
+                self.stats.t_paramod += t.elapsed();
+            }
 
             // A mega-clause iteration can spend the whole remaining budget
             // inside one generation stage; the loop-top check alone would
@@ -3972,9 +4295,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     }
                     let better = match (lit_select, best) {
                         (_, None) => true,
-                        (1, Some((bn, _))) => n > bn,  // most candidates
-                        (2, Some(_)) => false,         // first eligible wins
-                        (_, Some((bn, _))) => n < bn,  // fewest (default)
+                        (1, Some((bn, _))) => n > bn, // most candidates
+                        (2, Some(_)) => false,        // first eligible wins
+                        (_, Some((bn, _))) => n < bn, // fewest (default)
                     };
                     if better {
                         best = Some((n, i));
@@ -4018,9 +4341,12 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                 // other `max_mask` consumer) — without the guard the
                 // shift overflows on 65+-literal partners.
                 let cands: Vec<EntryRef> = if ordered {
-                    cands.into_iter()
-                        .filter(|at| at.lit as usize >= 64
-                            || (self.clauses[at.clause as usize].max_mask >> at.lit) & 1 == 1)
+                    cands
+                        .into_iter()
+                        .filter(|at| {
+                            at.lit as usize >= 64
+                                || (self.clauses[at.clause as usize].max_mask >> at.lit) & 1 == 1
+                        })
                         .collect()
                 } else {
                     cands
@@ -4049,7 +4375,10 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                         for at in cands {
                             self.stats.decode_attempts += 1;
                             match self.partner_residual(&shape, at.clause, at.lit as usize) {
-                                Some(r) => { eligible.push(at); residuals.push(r); }
+                                Some(r) => {
+                                    eligible.push(at);
+                                    residuals.push(r);
+                                }
                                 None => {
                                     // Non-ground / non-unit / arity-
                                     // mismatched partner.
@@ -4061,8 +4390,8 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                         let mut decoded = Vec::new();
                         crate::gf64::decode_batch(&residuals, shape.m, &mut decoded);
                         for (at, dec) in eligible.into_iter().zip(decoded) {
-                            let r = match self.resolve_from_decoded(
-                                given, gi, at.clause, &shape, dec, true)
+                            let r = match self
+                                .resolve_from_decoded(given, gi, at.clause, &shape, dec, true)
                             {
                                 Some(r) => r,
                                 None => self.resolve(given, gi, at.clause, at.lit as usize),
@@ -4125,7 +4454,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
                     }
                 }
             }
-            if let Some(t) = t_mech { self.stats.t_resolve += t.elapsed(); }
+            if let Some(t) = t_mech {
+                self.stats.t_resolve += t.elapsed();
+            }
             // Activation indexes every subterm position of the given
             // clause (superposition targets) — seconds of work for a
             // mega-term clause, and pointless once the budget is spent:
@@ -4135,7 +4466,9 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             }
             let t_activate = prof.then(Instant::now);
             self.activate(given);
-            if let Some(t) = t_activate { self.stats.t_activate += t.elapsed(); }
+            if let Some(t) = t_activate {
+                self.stats.t_activate += t.elapsed();
+            }
         }
         (RunVerdict::StepsExhausted, steps)
     }
@@ -4151,22 +4484,24 @@ fn classify_seats(t: &Term) -> (usize, SmallVec<[super::units::SeatK; 8]>) {
     let Term::App(elems) = t else {
         return (1, SmallVec::from_slice(&[SeatK::Compound(None)]));
     };
-    let seats = elems.iter().enumerate().map(|(i, el)| match el {
-        Term::Var(_) => SeatK::Var,
-        Term::App(_) => SeatK::Compound(super::units::seat_shape_coin(i, el)),
-        leaf => SeatK::Leaf(
-            super::slot_term_seat_coin(i, leaf)
-                .expect("leaf terms always coin")),
-    }).collect();
+    let seats = elems
+        .iter()
+        .enumerate()
+        .map(|(i, el)| match el {
+            Term::Var(_) => SeatK::Var,
+            Term::App(_) => SeatK::Compound(super::units::seat_shape_coin(i, el)),
+            leaf => {
+                SeatK::Leaf(super::slot_term_seat_coin(i, leaf).expect("leaf terms always coin"))
+            }
+        })
+        .collect();
     (elems.len(), seats)
 }
 
 /// Term depth: leaf = 0, compound = 1 + max child depth.
 pub(crate) fn term_depth(t: &Term) -> u8 {
     match t {
-        Term::App(elems) => {
-            1 + elems.iter().map(term_depth).max().unwrap_or(0)
-        }
+        Term::App(elems) => 1 + elems.iter().map(term_depth).max().unwrap_or(0),
         _ => 0,
     }
 }
@@ -4201,8 +4536,12 @@ fn is_equality_atom(t: &Term) -> bool {
 /// `(rel, x, y)` ids for a symbol-triple ground binary atom term.
 fn term_binary_ids(t: &Term) -> Option<(SymbolId, SymbolId, SymbolId)> {
     let Term::App(elems) = t else { return None };
-    if elems.len() != 3 { return None; }
-    let Term::Sym(rel) = &elems[0] else { return None };
+    if elems.len() != 3 {
+        return None;
+    }
+    let Term::Sym(rel) = &elems[0] else {
+        return None;
+    };
     let Term::Sym(x) = &elems[1] else { return None };
     let Term::Sym(y) = &elems[2] else { return None };
     Some((rel.id(), x.id(), y.id()))
@@ -4509,7 +4848,7 @@ fn clause_subsumes(sub: &[(bool, Term)], sup: &[(bool, Term)]) -> bool {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct SubsScratch {
     subst: Subst,
-    used:  Vec<bool>,
+    used: Vec<bool>,
     trail: Vec<usize>,
 }
 
@@ -4518,15 +4857,15 @@ pub(crate) struct SubsScratch {
 /// per-candidate allocation once the buffers are warm.  Backtracking is
 /// trail-based — a failed branch rolls back exactly its own bindings —
 /// instead of the reference's clone/restore of the whole substitution.
-fn clause_subsumes_in(
-    sub: &[(bool, Term)],
-    sup: &[(bool, Term)],
-    scr: &mut SubsScratch,
-) -> bool {
+fn clause_subsumes_in(sub: &[(bool, Term)], sup: &[(bool, Term)], scr: &mut SubsScratch) -> bool {
     if sub.len() > sup.len() {
         return false;
     }
-    let nslots = sub.iter().map(|(_, t)| term_slots_end(t)).max().unwrap_or(0);
+    let nslots = sub
+        .iter()
+        .map(|(_, t)| term_slots_end(t))
+        .max()
+        .unwrap_or(0);
     if scr.subst.len() < nslots {
         scr.subst.resize(nslots, None);
     }
@@ -4682,7 +5021,9 @@ fn replace(t: &Term, path: &[usize], new: &Term) -> Term {
     if path.is_empty() {
         return new.clone();
     }
-    let Term::App(elems) = t else { return t.clone() };
+    let Term::App(elems) = t else {
+        return t.clone();
+    };
     let mut out = elems.clone();
     out[path[0]] = replace(&elems[path[0]], &path[1..], new);
     Term::App(out)
@@ -4729,8 +5070,7 @@ pub(crate) fn arith_norm(t: &mut Term) {
         if let (Term::Sym(f), Term::Lit(Literal::Number(a)), Term::Lit(Literal::Number(b))) =
             (&elems[0], &elems[1], &elems[2])
         {
-            if let (Some(x), Some(y)) =
-                (crate::numeric::parse_num(a), crate::numeric::parse_num(b))
+            if let (Some(x), Some(y)) = (crate::numeric::parse_num(a), crate::numeric::parse_num(b))
             {
                 if let Some(v) = crate::numeric::eval_binary_fn(&f.name(), x, y) {
                     *t = Term::Lit(Literal::Number(crate::numeric::format_num(v)));
@@ -4756,7 +5096,11 @@ pub(crate) fn term_kif(t: &Term, syn: &crate::syntactic::SyntacticLayer) -> Stri
 }
 
 fn lit_kif(pos: bool, t: &Term, syn: &crate::syntactic::SyntacticLayer) -> String {
-    if pos { term_kif(t, syn) } else { format!("(not {})", term_kif(t, syn)) }
+    if pos {
+        term_kif(t, syn)
+    } else {
+        format!("(not {})", term_kif(t, syn))
+    }
 }
 
 fn witnesses_kif(why: &[Witness], syn: &crate::syntactic::SyntacticLayer) -> String {
@@ -4764,7 +5108,9 @@ fn witnesses_kif(why: &[Witness], syn: &crate::syntactic::SyntacticLayer) -> Str
         return "x = x".to_string();
     }
     let name = |id: SymbolId| {
-        syn.sym_name(id).map(|s| s.name().to_string()).unwrap_or_else(|| format!("#{:x}", id))
+        syn.sym_name(id)
+            .map(|s| s.name().to_string())
+            .unwrap_or_else(|| format!("#{:x}", id))
     };
     why.iter()
         .map(|w| format!("({} {} {})", name(w.rel), name(w.x), name(w.y)))
@@ -4774,12 +5120,20 @@ fn witnesses_kif(why: &[Witness], syn: &crate::syntactic::SyntacticLayer) -> Str
 
 #[cfg(test)]
 mod subsumption_tests {
-    use super::{clause_subsumes, clause_subsumes_in, replace, replace_in_place, SubsScratch, Term};
+    use super::{
+        clause_subsumes, clause_subsumes_in, replace, replace_in_place, SubsScratch, Term,
+    };
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn v(n: u64) -> Term { Term::Var(n) }
+    fn s(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn v(n: u64) -> Term {
+        Term::Var(n)
+    }
 
     #[test]
     fn general_subsumes_specific_not_vice_versa() {
@@ -4794,12 +5148,12 @@ mod subsumption_tests {
         // (¬q ?0 ∨ p ?0) ⊑ (¬q a ∨ p a ∨ r b)
         let sub = vec![
             (false, app(vec![s("q"), v(0)])),
-            (true,  app(vec![s("p"), v(0)])),
+            (true, app(vec![s("p"), v(0)])),
         ];
         let sup = vec![
             (false, app(vec![s("q"), s("a")])),
-            (true,  app(vec![s("p"), s("a")])),
-            (true,  app(vec![s("r"), s("b")])),
+            (true, app(vec![s("p"), s("a")])),
+            (true, app(vec![s("r"), s("b")])),
         ];
         assert!(clause_subsumes(&sub, &sup));
     }
@@ -4808,8 +5162,14 @@ mod subsumption_tests {
     fn shared_variable_must_bind_consistently() {
         // (p ?0 ?0) can't subsume (p a b) but does subsume (p a a).
         let sub = vec![(true, app(vec![s("p"), v(0), v(0)]))];
-        assert!(!clause_subsumes(&sub, &vec![(true, app(vec![s("p"), s("a"), s("b")]))]));
-        assert!(clause_subsumes(&sub, &vec![(true, app(vec![s("p"), s("a"), s("a")]))]));
+        assert!(!clause_subsumes(
+            &sub,
+            &vec![(true, app(vec![s("p"), s("a"), s("b")]))]
+        ));
+        assert!(clause_subsumes(
+            &sub,
+            &vec![(true, app(vec![s("p"), s("a"), s("a")]))]
+        ));
     }
 
     #[test]
@@ -4826,32 +5186,67 @@ mod subsumption_tests {
     #[test]
     fn clause_subsumes_in_agrees_with_reference_and_keeps_scratch_clean() {
         let pairs: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
-            (vec![(true, app(vec![s("p"), v(0)]))],
-             vec![(true, app(vec![s("p"), s("a")]))]),
-            (vec![(true, app(vec![s("p"), s("a")]))],
-             vec![(true, app(vec![s("p"), v(0)]))]),
-            (vec![(true, app(vec![s("p"), v(0), v(0)]))],
-             vec![(true, app(vec![s("p"), s("a"), s("b")]))]),
-            (vec![(true, app(vec![s("p"), v(0), v(0)]))],
-             vec![(true, app(vec![s("p"), s("a"), s("a")]))]),
+            (
+                vec![(true, app(vec![s("p"), v(0)]))],
+                vec![(true, app(vec![s("p"), s("a")]))],
+            ),
+            (
+                vec![(true, app(vec![s("p"), s("a")]))],
+                vec![(true, app(vec![s("p"), v(0)]))],
+            ),
+            (
+                vec![(true, app(vec![s("p"), v(0), v(0)]))],
+                vec![(true, app(vec![s("p"), s("a"), s("b")]))],
+            ),
+            (
+                vec![(true, app(vec![s("p"), v(0), v(0)]))],
+                vec![(true, app(vec![s("p"), s("a"), s("a")]))],
+            ),
             // Backtracking: (p ?0) must first try (p a), fail the SECOND
             // literal under ?0=a, back off, and succeed with ?0=b.
-            (vec![(true, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), v(0)]))],
-             vec![(true, app(vec![s("p"), s("a")])), (true, app(vec![s("p"), s("b")])),
-                  (true, app(vec![s("q"), s("b")]))]),
-            (vec![(false, app(vec![s("q"), v(1)])), (true, app(vec![s("p"), v(1)]))],
-             vec![(false, app(vec![s("q"), s("a")])), (true, app(vec![s("p"), s("a")])),
-                  (true, app(vec![s("r"), s("b")]))]),
-            (vec![(true, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), v(0)]))],
-             vec![(true, app(vec![s("p"), s("a")]))]),
+            (
+                vec![
+                    (true, app(vec![s("p"), v(0)])),
+                    (true, app(vec![s("q"), v(0)])),
+                ],
+                vec![
+                    (true, app(vec![s("p"), s("a")])),
+                    (true, app(vec![s("p"), s("b")])),
+                    (true, app(vec![s("q"), s("b")])),
+                ],
+            ),
+            (
+                vec![
+                    (false, app(vec![s("q"), v(1)])),
+                    (true, app(vec![s("p"), v(1)])),
+                ],
+                vec![
+                    (false, app(vec![s("q"), s("a")])),
+                    (true, app(vec![s("p"), s("a")])),
+                    (true, app(vec![s("r"), s("b")])),
+                ],
+            ),
+            (
+                vec![
+                    (true, app(vec![s("p"), v(0)])),
+                    (true, app(vec![s("q"), v(0)])),
+                ],
+                vec![(true, app(vec![s("p"), s("a")]))],
+            ),
         ];
         let mut scr = SubsScratch::default();
         for (sub, sup) in pairs {
             let reference = clause_subsumes(&sub, &sup);
             let scratch = clause_subsumes_in(&sub, &sup, &mut scr);
-            assert_eq!(reference, scratch, "verdict diverged for {sub:?} vs {sup:?}");
+            assert_eq!(
+                reference, scratch,
+                "verdict diverged for {sub:?} vs {sup:?}"
+            );
             assert!(scr.trail.is_empty(), "trail must drain between calls");
-            assert!(scr.subst.iter().all(Option::is_none), "subst must reset between calls");
+            assert!(
+                scr.subst.iter().all(Option::is_none),
+                "subst must reset between calls"
+            );
         }
     }
 
@@ -4879,16 +5274,27 @@ mod deferred_tests {
     use crate::semantics::caches::test_support::kif_layer;
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn v(n: u64) -> Term { Term::Var(n) }
-    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+    fn s(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn v(n: u64) -> Term {
+        Term::Var(n)
+    }
+    fn eq(l: Term, r: Term) -> Term {
+        app(vec![Term::Op(OpKind::Equal), l, r])
+    }
 
     fn prover(layer: &ProverLayer, deferred: bool, superposition: bool) -> NativeProver<'_> {
         let mut strategy = Strategy::base();
         strategy.deferred_passive = deferred;
         strategy.superposition = superposition;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         let mut p = NativeProver::new(layer, Scope::Base, opts);
         // Tests drive `resolve`/`superpose` directly (no `run()` loop),
         // so arm the in-loop gate by hand.
@@ -4928,18 +5334,30 @@ mod deferred_tests {
         // weight factor), and a ground-unit partner (the decoded path).
         let fixtures: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
             (
-                vec![(false, app(vec![s("p"), v(0), s("b")])), (true, app(vec![s("q"), v(0)]))],
-                vec![(true, app(vec![s("p"), s("a"), s("b")])), (true, app(vec![s("r"), s("c")]))],
+                vec![
+                    (false, app(vec![s("p"), v(0), s("b")])),
+                    (true, app(vec![s("q"), v(0)])),
+                ],
+                vec![
+                    (true, app(vec![s("p"), s("a"), s("b")])),
+                    (true, app(vec![s("r"), s("c")])),
+                ],
             ),
             (
                 vec![
                     (false, app(vec![s("p"), v(0), s("b")])),
                     (true, app(vec![s("q"), app(vec![s("sk_w"), v(0)])])),
                 ],
-                vec![(true, app(vec![s("p"), s("a"), s("b")])), (true, app(vec![s("r"), s("c")]))],
+                vec![
+                    (true, app(vec![s("p"), s("a"), s("b")])),
+                    (true, app(vec![s("r"), s("c")])),
+                ],
             ),
             (
-                vec![(false, app(vec![s("p"), v(0), s("b")])), (true, app(vec![s("q"), v(0)]))],
+                vec![
+                    (false, app(vec![s("p"), v(0), s("b")])),
+                    (true, app(vec![s("q"), v(0)])),
+                ],
                 vec![(true, app(vec![s("p"), s("a"), s("b")]))],
             ),
         ];
@@ -4959,7 +5377,8 @@ mod deferred_tests {
             let gi_d = lit_idx(&defer, gd, false, "p");
             let pi_d = lit_idx(&defer, pd, true, "p");
             assert_eq!(
-                defer.resolve(gd, gi_d, pd, pi_d), None,
+                defer.resolve(gd, gi_d, pd, pi_d),
+                None,
                 "knob on: resolve defers instead of materializing",
             );
             assert_eq!(defer.stats.recipes_queued, 1);
@@ -4993,12 +5412,18 @@ mod deferred_tests {
         let mut eager = prover(&layer, false, true);
         let ee = add(&mut eager, e_lits.clone());
         let te = add(&mut eager, t_lits.clone());
-        let eid = eager.superpose(ee, 0, te, 0, &[1]).expect("eager superposition");
+        let eid = eager
+            .superpose(ee, 0, te, 0, &[1])
+            .expect("eager superposition");
 
         let mut defer = prover(&layer, true, true);
         let ed = add(&mut defer, e_lits);
         let td = add(&mut defer, t_lits);
-        assert_eq!(defer.superpose(ed, 0, td, 0, &[1]), None, "knob on: superpose defers");
+        assert_eq!(
+            defer.superpose(ed, 0, td, 0, &[1]),
+            None,
+            "knob on: superpose defers"
+        );
         assert_eq!(defer.stats.recipes_queued, 1);
         let composed = defer.recipes[0].as_ref().expect("recipe queued").weight;
         let mid = defer.pop_given().expect("recipe materializes on selection");
@@ -5009,7 +5434,10 @@ mod deferred_tests {
         assert_eq!(e.terms, m.terms, "slot terms diverged");
         assert_eq!(e.key, m.key, "clause key diverged");
         assert_eq!(e.weight, m.weight, "queue weight diverged");
-        assert_eq!(composed, e.weight, "composed weight exact on unsimplified conclusion");
+        assert_eq!(
+            composed, e.weight,
+            "composed weight exact on unsimplified conclusion"
+        );
         assert_eq!(defer.stats.composed_weight_exact, 1);
     }
 
@@ -5020,22 +5448,42 @@ mod deferred_tests {
     #[test]
     fn composed_weight_overestimates_on_literal_merge() {
         let layer = ProverLayer::new(kif_layer(""));
-        let g_lits = vec![(false, app(vec![s("p"), v(0)])), (true, app(vec![s("q"), s("b")]))];
-        let p_lits = vec![(true, app(vec![s("p"), s("b")])), (true, app(vec![s("q"), s("b")]))];
+        let g_lits = vec![
+            (false, app(vec![s("p"), v(0)])),
+            (true, app(vec![s("q"), s("b")])),
+        ];
+        let p_lits = vec![
+            (true, app(vec![s("p"), s("b")])),
+            (true, app(vec![s("q"), s("b")])),
+        ];
 
         let mut eager = prover(&layer, false, false);
         let ge = add(&mut eager, g_lits.clone());
         let pe = add(&mut eager, p_lits.clone());
         let eid = eager
-            .resolve(ge, lit_idx(&eager, ge, false, "p"), pe, lit_idx(&eager, pe, true, "p"))
+            .resolve(
+                ge,
+                lit_idx(&eager, ge, false, "p"),
+                pe,
+                lit_idx(&eager, pe, true, "p"),
+            )
             .expect("eager resolvent");
-        assert_eq!(eager.clauses[eid as usize].lits.len(), 1, "merged to a unit");
+        assert_eq!(
+            eager.clauses[eid as usize].lits.len(),
+            1,
+            "merged to a unit"
+        );
 
         let mut defer = prover(&layer, true, false);
         let gd = add(&mut defer, g_lits);
         let pd = add(&mut defer, p_lits);
         assert_eq!(
-            defer.resolve(gd, lit_idx(&defer, gd, false, "p"), pd, lit_idx(&defer, pd, true, "p")),
+            defer.resolve(
+                gd,
+                lit_idx(&defer, gd, false, "p"),
+                pd,
+                lit_idx(&defer, pd, true, "p")
+            ),
             None,
         );
         let composed = defer.recipes[0].as_ref().expect("recipe").weight;
@@ -5060,20 +5508,33 @@ mod deferred_tests {
     fn duplicate_recipe_rejected_at_materialization() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = prover(&layer, true, false);
-        let g = add(&mut p, vec![
-            (false, app(vec![s("p"), v(0), s("b")])),
-            (true, app(vec![s("q"), v(0)])),
-        ]);
-        let pt = add(&mut p, vec![
-            (true, app(vec![s("p"), s("a"), s("b")])),
-            (true, app(vec![s("r"), s("c")])),
-        ]);
+        let g = add(
+            &mut p,
+            vec![
+                (false, app(vec![s("p"), v(0), s("b")])),
+                (true, app(vec![s("q"), v(0)])),
+            ],
+        );
+        let pt = add(
+            &mut p,
+            vec![
+                (true, app(vec![s("p"), s("a"), s("b")])),
+                (true, app(vec![s("r"), s("c")])),
+            ],
+        );
         // Pre-accept the exact resolvent through the eager queue path,
         // so `seen` holds its key (what `push` records at generation).
         let dup = p
             .make(
-                vec![(true, app(vec![s("q"), s("a")])), (true, app(vec![s("r"), s("c")]))],
-                vec![], "hypothesis", SUPPORT, None, false,
+                vec![
+                    (true, app(vec![s("q"), s("a")])),
+                    (true, app(vec![s("r"), s("c")])),
+                ],
+                vec![],
+                "hypothesis",
+                SUPPORT,
+                None,
+                false,
             )
             .expect("made");
         p.push(Some(dup));
@@ -5087,7 +5548,10 @@ mod deferred_tests {
         assert_eq!(p.pop_given(), None);
         assert_eq!(p.stats.recipes_materialized, 1);
         assert_eq!(p.stats.act_dedup_hits, 1);
-        assert_eq!(p.stats.composed_weight_samples, 0, "rejects are not weight-sampled");
+        assert_eq!(
+            p.stats.composed_weight_samples, 0,
+            "rejects are not weight-sampled"
+        );
     }
 
     /// `make`-level rejects (tautology here) are counted as
@@ -5096,14 +5560,20 @@ mod deferred_tests {
     fn tautology_recipe_rejected_by_make_at_materialization() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = prover(&layer, true, false);
-        let g = add(&mut p, vec![
-            (false, app(vec![s("p"), s("a")])),
-            (true, app(vec![s("q"), s("c")])),
-        ]);
-        let pt = add(&mut p, vec![
-            (true, app(vec![s("p"), s("a")])),
-            (false, app(vec![s("q"), s("c")])),
-        ]);
+        let g = add(
+            &mut p,
+            vec![
+                (false, app(vec![s("p"), s("a")])),
+                (true, app(vec![s("q"), s("c")])),
+            ],
+        );
+        let pt = add(
+            &mut p,
+            vec![
+                (true, app(vec![s("p"), s("a")])),
+                (false, app(vec![s("q"), s("c")])),
+            ],
+        );
         let gi = lit_idx(&p, g, false, "p");
         let pi = lit_idx(&p, pt, true, "p");
         assert_eq!(p.resolve(g, gi, pt, pi), None, "deferred");
@@ -5120,19 +5590,28 @@ mod deferred_tests {
     fn prequeue_dedup_drops_rederivation() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = prover(&layer, true, false);
-        let g = add(&mut p, vec![
-            (false, app(vec![s("p"), v(0), s("b")])),
-            (true, app(vec![s("q"), v(0)])),
-        ]);
-        let pt = add(&mut p, vec![
-            (true, app(vec![s("p"), s("a"), s("b")])),
-            (true, app(vec![s("r"), s("c")])),
-        ]);
+        let g = add(
+            &mut p,
+            vec![
+                (false, app(vec![s("p"), v(0), s("b")])),
+                (true, app(vec![s("q"), v(0)])),
+            ],
+        );
+        let pt = add(
+            &mut p,
+            vec![
+                (true, app(vec![s("p"), s("a"), s("b")])),
+                (true, app(vec![s("r"), s("c")])),
+            ],
+        );
         let gi = lit_idx(&p, g, false, "p");
         let pi = lit_idx(&p, pt, true, "p");
         assert_eq!(p.resolve(g, gi, pt, pi), None);
         assert_eq!(p.resolve(g, gi, pt, pi), None);
-        assert_eq!(p.stats.recipes_queued, 1, "second derivation dropped pre-queue");
+        assert_eq!(
+            p.stats.recipes_queued, 1,
+            "second derivation dropped pre-queue"
+        );
         assert_eq!(p.stats.recipes_prequeue_deduped, 1);
     }
 
@@ -5233,33 +5712,47 @@ mod deferred_tests {
     fn cap_slot_frees_on_materialization_and_deferral_resumes() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = prover_capped(&layer, 1);
-        let g = add(&mut p, vec![
-            (false, app(vec![s("p"), v(0), s("b")])),
-            (true, app(vec![s("q"), v(0)])),
-        ]);
+        let g = add(
+            &mut p,
+            vec![
+                (false, app(vec![s("p"), v(0), s("b")])),
+                (true, app(vec![s("q"), v(0)])),
+            ],
+        );
         let partners: Vec<u32> = ["a", "d", "e"]
             .iter()
             .map(|c| {
-                add(&mut p, vec![
-                    (true, app(vec![s("p"), s(c), s("b")])),
-                    (true, app(vec![s("r"), s(c)])),
-                ])
+                add(
+                    &mut p,
+                    vec![
+                        (true, app(vec![s("p"), s(c), s("b")])),
+                        (true, app(vec![s("r"), s(c)])),
+                    ],
+                )
             })
             .collect();
         let gi = lit_idx(&p, g, false, "p");
 
         // Slot free ⇒ defers.
-        assert_eq!(p.resolve(g, gi, partners[0], lit_idx(&p, partners[0], true, "p")), None);
+        assert_eq!(
+            p.resolve(g, gi, partners[0], lit_idx(&p, partners[0], true, "p")),
+            None
+        );
         assert_eq!(p.stats.recipes_queued, 1);
         // At the cap ⇒ eager fallback.
-        assert!(p.resolve(g, gi, partners[1], lit_idx(&p, partners[1], true, "p")).is_some());
+        assert!(p
+            .resolve(g, gi, partners[1], lit_idx(&p, partners[1], true, "p"))
+            .is_some());
         assert_eq!(p.stats.deferred_cap_fallbacks, 1);
         assert_eq!(p.stats.recipes_queued, 1);
         // Materializing the queued recipe frees its slot…
         assert!(p.pop_given().is_some());
         assert_eq!(p.stats.recipes_materialized, 1);
         // …so the next product defers again.
-        assert_eq!(p.resolve(g, gi, partners[2], lit_idx(&p, partners[2], true, "p")), None);
+        assert_eq!(
+            p.resolve(g, gi, partners[2], lit_idx(&p, partners[2], true, "p")),
+            None
+        );
         assert_eq!(p.stats.recipes_queued, 2);
         assert_eq!(p.stats.deferred_cap_fallbacks, 1);
     }
@@ -5286,14 +5779,20 @@ mod deferred_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = prover(&layer, false, false);
         p.defer_active = true; // even with the loop gate armed
-        let g = add(&mut p, vec![
-            (false, app(vec![s("p"), v(0), s("b")])),
-            (true, app(vec![s("q"), v(0)])),
-        ]);
-        let pt = add(&mut p, vec![
-            (true, app(vec![s("p"), s("a"), s("b")])),
-            (true, app(vec![s("r"), s("c")])),
-        ]);
+        let g = add(
+            &mut p,
+            vec![
+                (false, app(vec![s("p"), v(0), s("b")])),
+                (true, app(vec![s("q"), v(0)])),
+            ],
+        );
+        let pt = add(
+            &mut p,
+            vec![
+                (true, app(vec![s("p"), s("a"), s("b")])),
+                (true, app(vec![s("r"), s("c")])),
+            ],
+        );
         let gi = lit_idx(&p, g, false, "p");
         let pi = lit_idx(&p, pt, true, "p");
         assert!(p.resolve(g, gi, pt, pi).is_some(), "eager resolvent");

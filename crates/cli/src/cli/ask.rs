@@ -1,18 +1,18 @@
 use std::path::PathBuf;
 
-use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer};
-use sigmakee_rs_sdk::Session;
-use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
-use crate::style::*;
 use crate::cli::proof::{is_quiet_proof_format, print_proof};
 use crate::cli::util::read_stdin;
+use crate::style::*;
+use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
+use sigmakee_rs_sdk::Session;
+use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer};
 
 pub fn run_ask<L>(
     mut session: Session<L>,
-    manager:     &KBManager,
-    formula:     Option<String>,
-    tell:        Vec<String>,
-    _keep:       Option<PathBuf>,
+    manager: &KBManager,
+    formula: Option<String>,
+    tell: Vec<String>,
+    _keep: Option<PathBuf>,
 ) -> bool
 where
     // `ProvingLayer: TopLayer: Layer`, so the KB renderers (which want
@@ -21,7 +21,11 @@ where
     L: ProvingLayer,
     L::Opts: ProverOptsFor,
 {
-    log::debug!("run_ask: formula={:?}, tell={}", formula.is_some(), tell.len());
+    log::debug!(
+        "run_ask: formula={:?}, tell={}",
+        formula.is_some(),
+        tell.len()
+    );
 
     // Fail fast on a missing conjecture.  `read_stdin` checks `is_terminal()`
     // and returns None on a TTY, so this is safe when run interactively.
@@ -39,11 +43,13 @@ where
     // Consulted below when `proof_kif` comes back empty: did we even ask the
     // prover to record a proof?  (Native: only with `--want-proof true`.)
     let proof_recorded = opts.records_proof();
-    let open = tell.iter().try_fold(session.open_session(), |s, t| s.tell(t));
+    let open = tell
+        .iter()
+        .try_fold(session.open_session(), |s, t| s.tell(t));
     let open = match open {
-        Ok(o)  => o,
-        Err(errs) => { 
-            log::error!("tell errors:"); 
+        Ok(o) => o,
+        Err(errs) => {
+            log::error!("tell errors:");
             for e in errs {
                 log::error!("{}", e);
             }
@@ -80,15 +86,18 @@ where
     // `print_proof`'s own branch for each already reports the SZS status.
     if !is_quiet_proof_format(format) {
         let (verdict, colour) = match result.status {
-            ProverStatus::Proved       => ("Proved",       color_bright_green),
-            ProverStatus::Disproved    => ("Disproved",    color_bright_yellow),
-            ProverStatus::Consistent   => ("Consistent",   color_bright_green),
+            ProverStatus::Proved => ("Proved", color_bright_green),
+            ProverStatus::Disproved => ("Disproved", color_bright_yellow),
+            ProverStatus::Consistent => ("Consistent", color_bright_green),
             ProverStatus::Inconsistent => ("Inconsistent", color_bright_red),
-            ProverStatus::Timeout      => ("Timeout",      color_bright_yellow),
-            ProverStatus::InputError   => ("Input Error",  color_bright_red),
-            ProverStatus::Unknown      => ("Unknown",      color_bright_red),
+            ProverStatus::Timeout => ("Timeout", color_bright_yellow),
+            ProverStatus::InputError => ("Input Error", color_bright_red),
+            ProverStatus::Unknown => ("Unknown", color_bright_red),
         };
-        println!("{style_bold}Result:{style_reset} {colour}{}{color_reset}", verdict);
+        println!(
+            "{style_bold}Result:{style_reset} {colour}{}{color_reset}",
+            verdict
+        );
 
         if !result.bindings.is_empty() {
             for b in &result.bindings {
@@ -98,30 +107,41 @@ where
     }
 
     if format != "none" {
-        if format != "tptp" && format != "casc" && format != "graphviz" && result.proof_kif.is_empty() {
+        if format != "tptp"
+            && format != "casc"
+            && format != "graphviz"
+            && result.proof_kif.is_empty()
+        {
             // Say WHY there are no steps to render, per verdict.  Proved and
             // Inconsistent mean a refutation WAS found — a proof exists, we
             // just don't have a transcript.  Disproved and Consistent are
             // saturation certificates — no refutation exists, so there is
             // genuinely nothing to render.
             let note = match result.status {
-                ProverStatus::Proved | ProverStatus::Inconsistent if !proof_recorded =>
-                    "(proof not recorded — rerun with --want-proof true to render it)",
-                ProverStatus::Proved | ProverStatus::Inconsistent =>
-                    "(proof found, but the prover returned no renderable transcript)",
-                ProverStatus::Disproved | ProverStatus::Consistent =>
-                    "(no proof exists: the prover saturated without finding a refutation)",
-                ProverStatus::Timeout =>
-                    "(no proof: the prover timed out before finding a refutation)",
-                ProverStatus::InputError =>
-                    "(no proof: the prover rejected the input before running)",
-                ProverStatus::Unknown =>
-                    "(no proof: the prover found no refutation)",
+                ProverStatus::Proved | ProverStatus::Inconsistent if !proof_recorded => {
+                    "(proof not recorded — rerun with --want-proof true to render it)"
+                }
+                ProverStatus::Proved | ProverStatus::Inconsistent => {
+                    "(proof found, but the prover returned no renderable transcript)"
+                }
+                ProverStatus::Disproved | ProverStatus::Consistent => {
+                    "(no proof exists: the prover saturated without finding a refutation)"
+                }
+                ProverStatus::Timeout => {
+                    "(no proof: the prover timed out before finding a refutation)"
+                }
+                ProverStatus::InputError => {
+                    "(no proof: the prover rejected the input before running)"
+                }
+                ProverStatus::Unknown => "(no proof: the prover found no refutation)",
             };
             println!("{}", note);
         } else {
             if !is_quiet_proof_format(format) {
-                println!("\n{style_bold}Conjecture:{style_reset} {}", conjecture.trim());
+                println!(
+                    "\n{style_bold}Conjecture:{style_reset} {}",
+                    conjecture.trim()
+                );
             }
             let status = szs_status(&result, true);
             print_proof(session.kb(), &result, format, "problem", status);
@@ -135,12 +155,17 @@ where
     if manager.prose && !is_quiet_proof_format(format) && !result.proof_kif.is_empty() {
         let lang = match format {
             "kif" | "tptp" | "none" => "EnglishLanguage",
-            other                   => other,
+            other => other,
         };
         let goal_doc = sigmakee_rs_sdk::parse_document(
-            "__prose_goal__", conjecture.to_string(), sigmakee_rs_sdk::Parser::Kif);
+            "__prose_goal__",
+            conjecture.to_string(),
+            sigmakee_rs_sdk::Parser::Kif,
+        );
         let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
-        let report = session.kb().render_proof_prose(goal_ast, &result.proof_kif, lang);
+        let report = session
+            .kb()
+            .render_proof_prose(goal_ast, &result.proof_kif, lang);
         println!("\n{style_bold}Proof (prose, {}):{style_reset}\n", lang);
         println!("{}", report.rendered);
         if !report.missing.is_empty() {
@@ -154,18 +179,34 @@ where
         log::warn!(
             "{} input contradiction(s) detected — the axioms/hypotheses are \
              mutually inconsistent (rerun with --proof kif to see the derivations)",
-            result.contradiction_proofs.len());
+            result.contradiction_proofs.len()
+        );
         if format != "none" && !is_quiet_proof_format(format) {
             let src_idx = session.kb().build_axiom_source_index();
             for (n, steps) in result.contradiction_proofs.iter().enumerate() {
-                println!("\n{style_bold}Input contradiction #{} ({} steps):{style_reset}",
-                    n + 1, steps.len());
+                println!(
+                    "\n{style_bold}Input contradiction #{} ({} steps):{style_reset}",
+                    n + 1,
+                    steps.len()
+                );
                 for s in steps {
-                    let trace = s.source_sid
+                    let trace = s
+                        .source_sid
                         .and_then(|sid| src_idx.lookup_by_sid(sid))
-                        .map(|a| format!("   {color_bright_black}[{}:{}]{color_reset}", a.file, a.line))
+                        .map(|a| {
+                            format!(
+                                "   {color_bright_black}[{}:{}]{color_reset}",
+                                a.file, a.line
+                            )
+                        })
                         .unwrap_or_default();
-                    println!("  {:>3}. [{:<18}] {}{}", s.index, s.rule, s.formula.flat(), trace);
+                    println!(
+                        "  {:>3}. [{:<18}] {}{}",
+                        s.index,
+                        s.rule,
+                        s.formula.flat(),
+                        trace
+                    );
                 }
             }
         }

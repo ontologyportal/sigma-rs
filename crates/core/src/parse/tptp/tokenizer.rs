@@ -5,10 +5,10 @@
 
 use std::fmt::Display;
 
-use super::error::TptpParseError;
-use super::super::Span;
-use super::super::doc::MetaNode;
 use super::super::ast::AstNode;
+use super::super::doc::MetaNode;
+use super::super::Span;
+use super::error::TptpParseError;
 
 /// TPTP multi-character connective tokens.
 ///
@@ -18,16 +18,16 @@ use super::super::ast::AstNode;
 /// introducers from connectives.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TptpOpTok {
-    Implies,      // =>
-    RevImplies,   // <=
-    Iff,          // <=>
-    Xor,          // <~>
-    Nor,          // ~|
-    Nand,         // ~&
-    NotEqual,     // !=
+    Implies,    // =>
+    RevImplies, // <=
+    Iff,        // <=>
+    Xor,        // <~>
+    Nor,        // ~|
+    Nand,       // ~&
+    NotEqual,   // !=
     // THF only
-    Choice,       // @+
-    Description,  // @-
+    Choice,      // @+
+    Description, // @-
 }
 
 impl Display for TptpOpTok {
@@ -164,17 +164,17 @@ impl Display for Token {
 
 /// Streaming lexer over TPTP source that yields [`Token`]s.
 pub struct Tokenizer<'src> {
-    chars:   std::str::CharIndices<'src>,
-    peeked:  Option<(usize, char)>,
-    file:    String,
-    line:    u32,
-    col:     u32,
+    chars: std::str::CharIndices<'src>,
+    peeked: Option<(usize, char)>,
+    file: String,
+    line: u32,
+    col: u32,
     src_len: usize,
     /// Header pragma comments recognized while skipping `%`-comments (today:
     /// `% Status : <word>`) — the side-channel that lets the SZS expected
     /// outcome ride out of the tokenizer alongside the token stream, without
     /// giving line comments a token of their own.
-    metas:   Vec<MetaNode>,
+    metas: Vec<MetaNode>,
 }
 
 impl<'src> Tokenizer<'src> {
@@ -201,8 +201,8 @@ impl<'src> Tokenizer<'src> {
 
     fn seal(&self, mut start: Span) -> Span {
         let off = self.peeked.map(|(o, _)| o).unwrap_or(self.src_len);
-        start.end_line   = self.line;
-        start.end_col    = self.col;
+        start.end_line = self.line;
+        start.end_col = self.col;
         start.end_offset = off;
         start
     }
@@ -249,22 +249,28 @@ impl<'src> Tokenizer<'src> {
     /// push a `status` [`MetaNode`] onto the side channel — the SDK's SZS
     /// grading path reads this back off the parsed document.
     fn record_status_pragma(&mut self, text: &str, span: Span) {
-        let Some(rest) = text.trim_start().strip_prefix("Status") else { return };
-        let Some(word) = rest.trim_start().strip_prefix(':') else { return };
-        let Some(status) = word.split_whitespace().next() else { return };
+        let Some(rest) = text.trim_start().strip_prefix("Status") else {
+            return;
+        };
+        let Some(word) = rest.trim_start().strip_prefix(':') else {
+            return;
+        };
+        let Some(status) = word.split_whitespace().next() else {
+            return;
+        };
         self.metas.push(MetaNode {
-            key:  "status".into(),
-            args: vec![AstNode::Symbol { name: status.to_string(), span: span.clone() }],
+            key: "status".into(),
+            args: vec![AstNode::Symbol {
+                name: status.to_string(),
+                span: span.clone(),
+            }],
             span,
         });
     }
 
     /// Skip a `/* … */` block comment (TPTP extension).
     /// Returns an error if EOF is reached before `*/`.
-    fn skip_block_comment(
-        &mut self,
-        start: Span,
-    ) -> Result<(), (Span, TptpParseError)> {
+    fn skip_block_comment(&mut self, start: Span) -> Result<(), (Span, TptpParseError)> {
         loop {
             match self.advance() {
                 None => {
@@ -286,10 +292,7 @@ impl<'src> Tokenizer<'src> {
 
     /// Read a single-quoted atom `'…'` (TPTP *single_quoted*).
     /// The outer quotes are retained: `'Socrates'` → `"'Socrates'"`.
-    fn read_single_quoted(
-        &mut self,
-        start: Span,
-    ) -> Result<Token, (Span, TptpParseError)> {
+    fn read_single_quoted(&mut self, start: Span) -> Result<Token, (Span, TptpParseError)> {
         let mut s = String::from('\'');
         loop {
             match self.advance() {
@@ -329,14 +332,14 @@ impl<'src> Tokenizer<'src> {
             }
         }
         let span = self.seal(start);
-        Ok(Token { kind: TokenKind::SingleQuoted(s), span })
+        Ok(Token {
+            kind: TokenKind::SingleQuoted(s),
+            span,
+        })
     }
 
     /// Read a double-quoted string `"…"` (TPTP *double_quoted*).
-    fn read_double_quoted(
-        &mut self,
-        start: Span,
-    ) -> Result<Token, (Span, TptpParseError)> {
+    fn read_double_quoted(&mut self, start: Span) -> Result<Token, (Span, TptpParseError)> {
         let mut s = String::from('"');
         loop {
             match self.advance() {
@@ -346,27 +349,25 @@ impl<'src> Tokenizer<'src> {
                         TptpParseError::UnterminatedString { span: start },
                     ))
                 }
-                Some('\\') => {
-                    match self.advance() {
-                        Some(esc @ ('\\' | '"')) => {
-                            s.push('\\');
-                            s.push(esc);
-                        }
-                        Some(bad) => {
-                            let sp = self.seal(start.clone());
-                            return Err((
-                                sp.clone(),
-                                TptpParseError::InvalidEscape { ch: bad, span: sp },
-                            ));
-                        }
-                        None => {
-                            return Err((
-                                start.clone(),
-                                TptpParseError::UnterminatedString { span: start },
-                            ))
-                        }
+                Some('\\') => match self.advance() {
+                    Some(esc @ ('\\' | '"')) => {
+                        s.push('\\');
+                        s.push(esc);
                     }
-                }
+                    Some(bad) => {
+                        let sp = self.seal(start.clone());
+                        return Err((
+                            sp.clone(),
+                            TptpParseError::InvalidEscape { ch: bad, span: sp },
+                        ));
+                    }
+                    None => {
+                        return Err((
+                            start.clone(),
+                            TptpParseError::UnterminatedString { span: start },
+                        ))
+                    }
+                },
                 Some('"') => {
                     s.push('"');
                     break;
@@ -375,7 +376,10 @@ impl<'src> Tokenizer<'src> {
             }
         }
         let span = self.seal(start);
-        Ok(Token { kind: TokenKind::DoubleQuoted(s), span })
+        Ok(Token {
+            kind: TokenKind::DoubleQuoted(s),
+            span,
+        })
     }
 
     // ── Word / number readers ─────────────────────────────────────
@@ -449,7 +453,7 @@ impl<'src> Tokenizer<'src> {
 
         let start = self.point();
         let ch = match self.advance() {
-            None    => return Ok(None),
+            None => return Ok(None),
             Some(c) => c,
         };
 
@@ -466,30 +470,72 @@ impl<'src> Tokenizer<'src> {
             }
 
             // ── Parentheses / brackets ────────────────────────────
-            '(' => Ok(Some(Token { kind: TokenKind::LParen,    span: self.seal(start) })),
-            ')' => Ok(Some(Token { kind: TokenKind::RParen,    span: self.seal(start) })),
-            '[' => Ok(Some(Token { kind: TokenKind::LBracket,  span: self.seal(start) })),
-            ']' => Ok(Some(Token { kind: TokenKind::RBracket,  span: self.seal(start) })),
+            '(' => Ok(Some(Token {
+                kind: TokenKind::LParen,
+                span: self.seal(start),
+            })),
+            ')' => Ok(Some(Token {
+                kind: TokenKind::RParen,
+                span: self.seal(start),
+            })),
+            '[' => Ok(Some(Token {
+                kind: TokenKind::LBracket,
+                span: self.seal(start),
+            })),
+            ']' => Ok(Some(Token {
+                kind: TokenKind::RBracket,
+                span: self.seal(start),
+            })),
 
             // ── Mundane punctuation ───────────────────────────────
-            ',' => Ok(Some(Token { kind: TokenKind::Comma,     span: self.seal(start) })),
-            '.' => Ok(Some(Token { kind: TokenKind::Dot,       span: self.seal(start) })),
-            ':' => Ok(Some(Token { kind: TokenKind::Colon,     span: self.seal(start) })),
-            ';' => Ok(Some(Token { kind: TokenKind::Semicolon, span: self.seal(start) })),
+            ',' => Ok(Some(Token {
+                kind: TokenKind::Comma,
+                span: self.seal(start),
+            })),
+            '.' => Ok(Some(Token {
+                kind: TokenKind::Dot,
+                span: self.seal(start),
+            })),
+            ':' => Ok(Some(Token {
+                kind: TokenKind::Colon,
+                span: self.seal(start),
+            })),
+            ';' => Ok(Some(Token {
+                kind: TokenKind::Semicolon,
+                span: self.seal(start),
+            })),
 
             // ── Simple connectives ────────────────────────────────
-            '|' => Ok(Some(Token { kind: TokenKind::Pipe,      span: self.seal(start) })),
-            '&' => Ok(Some(Token { kind: TokenKind::Ampersand, span: self.seal(start) })),
-            '^' => Ok(Some(Token { kind: TokenKind::Caret,     span: self.seal(start) })),
+            '|' => Ok(Some(Token {
+                kind: TokenKind::Pipe,
+                span: self.seal(start),
+            })),
+            '&' => Ok(Some(Token {
+                kind: TokenKind::Ampersand,
+                span: self.seal(start),
+            })),
+            '^' => Ok(Some(Token {
+                kind: TokenKind::Caret,
+                span: self.seal(start),
+            })),
 
             // ── `~`  →  `~`, `~|` (NOR), or `~&` (NAND) ─────────
             '~' => {
                 let kind = match self.peek() {
-                    Some('|') => { self.advance(); TokenKind::Operator(TptpOpTok::Nor)  }
-                    Some('&') => { self.advance(); TokenKind::Operator(TptpOpTok::Nand) }
-                    _         => TokenKind::Tilde,
+                    Some('|') => {
+                        self.advance();
+                        TokenKind::Operator(TptpOpTok::Nor)
+                    }
+                    Some('&') => {
+                        self.advance();
+                        TokenKind::Operator(TptpOpTok::Nand)
+                    }
+                    _ => TokenKind::Tilde,
                 };
-                Ok(Some(Token { kind, span: self.seal(start) }))
+                Ok(Some(Token {
+                    kind,
+                    span: self.seal(start),
+                }))
             }
 
             // ── `=`  →  `=` (equality) or `=>` (implication) ────
@@ -500,7 +546,10 @@ impl<'src> Tokenizer<'src> {
                 } else {
                     TokenKind::Equals
                 };
-                Ok(Some(Token { kind, span: self.seal(start) }))
+                Ok(Some(Token {
+                    kind,
+                    span: self.seal(start),
+                }))
             }
 
             // ── `!`  →  `!` or `!=` ──────────────────────────────
@@ -511,24 +560,42 @@ impl<'src> Tokenizer<'src> {
                 } else {
                     TokenKind::Bang
                 };
-                Ok(Some(Token { kind, span: self.seal(start) }))
+                Ok(Some(Token {
+                    kind,
+                    span: self.seal(start),
+                }))
             }
 
             // ── `?`  →  bare `?` (existential) ───────────────────
-            '?' => Ok(Some(Token { kind: TokenKind::Question, span: self.seal(start) })),
+            '?' => Ok(Some(Token {
+                kind: TokenKind::Question,
+                span: self.seal(start),
+            })),
 
             // ── `@`  →  `@`, `@+` (choice), `@-` (description) ──
             '@' => {
                 let kind = match self.peek() {
-                    Some('+') => { self.advance(); TokenKind::Operator(TptpOpTok::Choice)      }
-                    Some('-') => { self.advance(); TokenKind::Operator(TptpOpTok::Description) }
-                    _         => TokenKind::At,
+                    Some('+') => {
+                        self.advance();
+                        TokenKind::Operator(TptpOpTok::Choice)
+                    }
+                    Some('-') => {
+                        self.advance();
+                        TokenKind::Operator(TptpOpTok::Description)
+                    }
+                    _ => TokenKind::At,
                 };
-                Ok(Some(Token { kind, span: self.seal(start) }))
+                Ok(Some(Token {
+                    kind,
+                    span: self.seal(start),
+                }))
             }
 
             // ── `>`  →  type-arrow in TFF/THF  ────────────────────
-            '>' => Ok(Some(Token { kind: TokenKind::TypeArrow, span: self.seal(start) })),
+            '>' => Ok(Some(Token {
+                kind: TokenKind::TypeArrow,
+                span: self.seal(start),
+            })),
 
             // ── `<`  →  `<=>` (iff), `<=` (rev-implies), `<~>` (xor) ─
             '<' => {
@@ -549,15 +616,24 @@ impl<'src> Tokenizer<'src> {
                             TokenKind::Operator(TptpOpTok::Xor)
                         } else {
                             let sp = self.seal(start.clone());
-                            return Err((sp.clone(), TptpParseError::UnexpectedChar { ch: '~', span: sp }));
+                            return Err((
+                                sp.clone(),
+                                TptpParseError::UnexpectedChar { ch: '~', span: sp },
+                            ));
                         }
                     }
                     _ => {
                         let sp = self.seal(start.clone());
-                        return Err((sp.clone(), TptpParseError::UnexpectedChar { ch: '<', span: sp }));
+                        return Err((
+                            sp.clone(),
+                            TptpParseError::UnexpectedChar { ch: '<', span: sp },
+                        ));
                     }
                 };
-                Ok(Some(Token { kind, span: self.seal(start) }))
+                Ok(Some(Token {
+                    kind,
+                    span: self.seal(start),
+                }))
             }
 
             // ── `$` words — defined and system ───────────────────
@@ -570,12 +646,18 @@ impl<'src> Tokenizer<'src> {
                             self.advance();
                             let rest = self.read_word_rest();
                             let span = self.seal(start);
-                            let name = format!("$${}{}",  c, rest);
-                            Ok(Some(Token { kind: TokenKind::DollarDollarWord(name), span }))
+                            let name = format!("$${}{}", c, rest);
+                            Ok(Some(Token {
+                                kind: TokenKind::DollarDollarWord(name),
+                                span,
+                            }))
                         }
                         _ => {
                             let sp = self.seal(start.clone());
-                            Err((sp.clone(), TptpParseError::UnexpectedChar { ch: '$', span: sp }))
+                            Err((
+                                sp.clone(),
+                                TptpParseError::UnexpectedChar { ch: '$', span: sp },
+                            ))
                         }
                     }
                 } else {
@@ -585,12 +667,18 @@ impl<'src> Tokenizer<'src> {
                             self.advance();
                             let rest = self.read_word_rest();
                             let span = self.seal(start);
-                            let name = format!("${}{}",  c, rest);
-                            Ok(Some(Token { kind: TokenKind::DollarWord(name), span }))
+                            let name = format!("${}{}", c, rest);
+                            Ok(Some(Token {
+                                kind: TokenKind::DollarWord(name),
+                                span,
+                            }))
                         }
                         _ => {
                             let sp = self.seal(start.clone());
-                            Err((sp.clone(), TptpParseError::UnexpectedChar { ch: '$', span: sp }))
+                            Err((
+                                sp.clone(),
+                                TptpParseError::UnexpectedChar { ch: '$', span: sp },
+                            ))
                         }
                     }
                 }
@@ -598,7 +686,7 @@ impl<'src> Tokenizer<'src> {
 
             // ── Quoted atoms and strings ──────────────────────────
             '\'' => self.read_single_quoted(start).map(Some),
-            '"'  => self.read_double_quoted(start).map(Some),
+            '"' => self.read_double_quoted(start).map(Some),
 
             // ── Numbers and identifiers ───────────────────────────
             c => {
@@ -607,7 +695,10 @@ impl<'src> Tokenizer<'src> {
                     let rest = self.read_word_rest();
                     let name = format!("{}{}", c, rest);
                     let span = self.seal(start);
-                    return Ok(Some(Token { kind: TokenKind::UpperWord(name), span }));
+                    return Ok(Some(Token {
+                        kind: TokenKind::UpperWord(name),
+                        span,
+                    }));
                 }
 
                 // Lower-word: alphanumeric words starting with a letter.
@@ -630,7 +721,10 @@ impl<'src> Tokenizer<'src> {
 
                 // Anything else is an unexpected character.
                 let sp = self.seal(start.clone());
-                Err((sp.clone(), TptpParseError::UnexpectedChar { ch: c, span: sp }))
+                Err((
+                    sp.clone(),
+                    TptpParseError::UnexpectedChar { ch: c, span: sp },
+                ))
             }
         }
     }
@@ -682,26 +776,30 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, TptpParseError
 /// while skipping `%`-comments (today: `% Status : <word>`) — the TPTP
 /// document parser folds these into its `Vec<DocItem>` output alongside the
 /// parsed statements.
-pub fn tokenize_with_meta(src: &str, file: &str)
-    -> (Vec<Token>, Vec<(Span, TptpParseError)>, Vec<MetaNode>)
-{
+pub fn tokenize_with_meta(
+    src: &str,
+    file: &str,
+) -> (Vec<Token>, Vec<(Span, TptpParseError)>, Vec<MetaNode>) {
     let mut tok = Tokenizer::new(src, file);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
 
     loop {
         match tok.next_token() {
-            Ok(None)    => break,
+            Ok(None) => break,
             Ok(Some(t)) => tokens.push(t),
-            Err(e)      => errors.push(e),
+            Err(e) => errors.push(e),
         }
     }
 
-    crate::log!(Trace,
+    crate::log!(
+        Trace,
         "sigmakee_rs_core::tptp_tokenizer",
         format!(
             "tokenized {} tokens, {} errors from '{}'",
-            tokens.len(), errors.len(), file
+            tokens.len(),
+            errors.len(),
+            file
         )
     );
 
@@ -825,11 +923,17 @@ mod tests {
     fn compound_connectives() {
         let kinds = toks("<=> <= <~> ~| ~& !=");
         assert!(matches!(&kinds[0], TokenKind::Operator(TptpOpTok::Iff)));
-        assert!(matches!(&kinds[1], TokenKind::Operator(TptpOpTok::RevImplies)));
+        assert!(matches!(
+            &kinds[1],
+            TokenKind::Operator(TptpOpTok::RevImplies)
+        ));
         assert!(matches!(&kinds[2], TokenKind::Operator(TptpOpTok::Xor)));
         assert!(matches!(&kinds[3], TokenKind::Operator(TptpOpTok::Nor)));
         assert!(matches!(&kinds[4], TokenKind::Operator(TptpOpTok::Nand)));
-        assert!(matches!(&kinds[5], TokenKind::Operator(TptpOpTok::NotEqual)));
+        assert!(matches!(
+            &kinds[5],
+            TokenKind::Operator(TptpOpTok::NotEqual)
+        ));
     }
 
     #[test]
@@ -860,7 +964,10 @@ mod tests {
         let kinds = toks("@ @+ @-");
         assert_eq!(kinds[0], TokenKind::At);
         assert!(matches!(&kinds[1], TokenKind::Operator(TptpOpTok::Choice)));
-        assert!(matches!(&kinds[2], TokenKind::Operator(TptpOpTok::Description)));
+        assert!(matches!(
+            &kinds[2],
+            TokenKind::Operator(TptpOpTok::Description)
+        ));
     }
 
     // ── Comments ─────────────────────────────────────────────────
@@ -884,7 +991,10 @@ mod tests {
     fn unterminated_block_comment_is_error() {
         let (_, errors) = tokenize("/* oops", "test");
         assert!(!errors.is_empty());
-        assert!(matches!(&errors[0].1, TptpParseError::UnterminatedBlockComment { .. }));
+        assert!(matches!(
+            &errors[0].1,
+            TptpParseError::UnterminatedBlockComment { .. }
+        ));
     }
 
     // ── A real-ish TPTP formula ───────────────────────────────────
@@ -896,15 +1006,15 @@ mod tests {
         // fof ( ax1 , axiom , ! [ X ] : p ( X ) ) .
         //  0   1  2  3   4   5 6  7 8  9 10 11 12 13
         assert!(matches!(&kinds[0],  TokenKind::LowerWord(s) if s == "fof"));
-        assert_eq!(kinds[1],  TokenKind::LParen);
+        assert_eq!(kinds[1], TokenKind::LParen);
         assert!(matches!(&kinds[2],  TokenKind::LowerWord(s) if s == "ax1"));
-        assert_eq!(kinds[3],  TokenKind::Comma);
+        assert_eq!(kinds[3], TokenKind::Comma);
         assert!(matches!(&kinds[4],  TokenKind::LowerWord(s) if s == "axiom"));
-        assert_eq!(kinds[5],  TokenKind::Comma);
-        assert_eq!(kinds[6],  TokenKind::Bang);
-        assert_eq!(kinds[7],  TokenKind::LBracket);
+        assert_eq!(kinds[5], TokenKind::Comma);
+        assert_eq!(kinds[6], TokenKind::Bang);
+        assert_eq!(kinds[7], TokenKind::LBracket);
         assert!(matches!(&kinds[8],  TokenKind::UpperWord(s) if s == "X"));
-        assert_eq!(kinds[9],  TokenKind::RBracket);
+        assert_eq!(kinds[9], TokenKind::RBracket);
         assert_eq!(kinds[10], TokenKind::Colon);
         assert!(matches!(&kinds[11], TokenKind::LowerWord(s) if s == "p"));
         assert_eq!(kinds[12], TokenKind::LParen);
@@ -920,13 +1030,13 @@ mod tests {
     fn spans_cover_token_width() {
         let (tokens, _) = tokenize("fof(a)", "test");
         // fof ( a )
-        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.offset, 0);
         assert_eq!(tokens[0].span.end_offset, 3);
-        assert_eq!(tokens[1].span.offset,     3);
+        assert_eq!(tokens[1].span.offset, 3);
         assert_eq!(tokens[1].span.end_offset, 4);
-        assert_eq!(tokens[2].span.offset,     4);
+        assert_eq!(tokens[2].span.offset, 4);
         assert_eq!(tokens[2].span.end_offset, 5);
-        assert_eq!(tokens[3].span.offset,     5);
+        assert_eq!(tokens[3].span.offset, 5);
         assert_eq!(tokens[3].span.end_offset, 6);
     }
 
@@ -935,14 +1045,14 @@ mod tests {
         let (tokens, _) = tokenize("fof\n  bar", "test");
         assert_eq!(tokens[0].span.line, 1);
         assert_eq!(tokens[1].span.line, 2);
-        assert_eq!(tokens[1].span.col,  3);
+        assert_eq!(tokens[1].span.col, 3);
     }
 
     #[test]
     fn compound_connective_span() {
         // `<=>` at offset 0 should span 3 bytes.
         let (tokens, _) = tokenize("<=>", "test");
-        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.offset, 0);
         assert_eq!(tokens[0].span.end_offset, 3);
     }
 

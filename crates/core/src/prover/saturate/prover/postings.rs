@@ -138,7 +138,9 @@ impl SubtermPostings {
         let mut path: PathBytes = SmallVec::new();
         for (li, (_, t)) in terms.iter().enumerate().take(256) {
             debug_assert!(path.is_empty());
-            self.walk(id, li as u8, t, true, true, &mut path, facts, kbo, store_rows, &mut n);
+            self.walk(
+                id, li as u8, t, true, true, &mut path, facts, kbo, store_rows, &mut n,
+            );
         }
         if n > 0 {
             self.total += u64::from(n);
@@ -242,9 +244,7 @@ impl SubtermPostings {
                     };
                     ground &= g;
                     match e {
-                        Term::Var(slot) => {
-                            h.variable(canonical_var_cached(*slot as usize), false)
-                        }
+                        Term::Var(slot) => h.variable(canonical_var_cached(*slot as usize), false),
                         Term::Sym(s) => h.symbol(s.id()),
                         Term::Lit(l) => h.literal(l),
                         Term::Op(op) => h.op(op),
@@ -383,12 +383,26 @@ impl SubtermPostings {
         let mut out = Vec::new();
         for (k, ps) in &self.exact {
             for p in ps {
-                out.push((0u8, *k, 0u8, self.paths[p.path as usize].to_vec(), p.clause, p.lit));
+                out.push((
+                    0u8,
+                    *k,
+                    0u8,
+                    self.paths[p.path as usize].to_vec(),
+                    p.clause,
+                    p.lit,
+                ));
             }
         }
         for ((hk, ar), b) in &self.heads {
             for p in &b.posts {
-                out.push((1u8, *hk, *ar, self.paths[p.path as usize].to_vec(), p.clause, p.lit));
+                out.push((
+                    1u8,
+                    *hk,
+                    *ar,
+                    self.paths[p.path as usize].to_vec(),
+                    p.clause,
+                    p.lit,
+                ));
             }
         }
         out.sort();
@@ -405,7 +419,11 @@ impl SubtermPostings {
                 id
             }
         };
-        Posting { clause, lit, path: pid }
+        Posting {
+            clause,
+            lit,
+            path: pid,
+        }
     }
 
     /// The interned argument path of `p`.
@@ -430,7 +448,9 @@ impl SubtermPostings {
     pub(crate) fn head_postings(&self, head: u64, len: u8) -> (&[Posting], &[rows::Row]) {
         self.heads
             .get(&(head, len))
-            .map_or((&[][..], &[][..]), |b| (b.posts.as_slice(), b.rows.as_slice()))
+            .map_or((&[][..], &[][..]), |b| {
+                (b.posts.as_slice(), b.rows.as_slice())
+            })
     }
 
     /// The content-keyed row table — the decode chain's registered-term
@@ -509,11 +529,7 @@ impl SubtermPostings {
 /// derivation [`SubtermPostings::walk`] used at registration (compound:
 /// shared content key; bare symbol: symbol id).  `None` for shapes that
 /// are never registered (defensive — `DemodIndex` never produces them).
-pub(crate) fn ground_lhs_key(
-    l: &Term,
-    facts: &TermFactsTable,
-    kbo: &KboOrdering,
-) -> Option<u64> {
+pub(crate) fn ground_lhs_key(l: &Term, facts: &TermFactsTable, kbo: &KboOrdering) -> Option<u64> {
     match l {
         Term::App(_) => facts.ground_key_facts(l, kbo).map(|(k, _)| k),
         Term::Sym(s) => Some(s.id()),
@@ -617,11 +633,17 @@ mod tests {
 
         // Exact postings: (f a) under its shared content key, a and b
         // under their symbol ids; the head symbols never post.
-        let fa_key = facts.ground_key_facts(&app(vec![sym("f"), sym("a")]), &kbo).unwrap().0;
+        let fa_key = facts
+            .ground_key_facts(&app(vec![sym("f"), sym("a")]), &kbo)
+            .unwrap()
+            .0;
         assert_eq!(po.exact_postings(fa_key).len(), 1);
         assert_eq!(po.exact_postings(Symbol::from("a").id()).len(), 1);
         assert_eq!(po.exact_postings(Symbol::from("b").id()).len(), 1);
-        assert!(po.exact_postings(Symbol::from("p").id()).is_empty(), "head seat never posts");
+        assert!(
+            po.exact_postings(Symbol::from("p").id()).is_empty(),
+            "head seat never posts"
+        );
         // The a-occurrence path is [1, 1] (argument 1 of (f a), which
         // itself sits at argument 1 of the atom).
         let pa = po.exact_postings(Symbol::from("a").id())[0];
@@ -660,9 +682,16 @@ mod tests {
         // Every exact posting bucket is identical.
         let f_id = Symbol::from("f").id();
         let g_id = Symbol::from("g").id();
-        let fa_key = facts.ground_key_facts(&app(vec![sym("f"), sym("a")]), &kbo).unwrap().0;
+        let fa_key = facts
+            .ground_key_facts(&app(vec![sym("f"), sym("a")]), &kbo)
+            .unwrap()
+            .0;
         for key in [fa_key, Symbol::from("a").id(), Symbol::from("b").id()] {
-            assert_eq!(off.exact_postings(key), on.exact_postings(key), "exact posting parity");
+            assert_eq!(
+                off.exact_postings(key),
+                on.exact_postings(key),
+                "exact posting parity"
+            );
         }
         // Every head bucket's POSTINGS are identical...
         for (h, ar) in [(f_id, 2u8), (g_id, 3u8)] {
@@ -713,23 +742,40 @@ mod tests {
     fn seat_prefilter_matching_table() {
         // Pattern (f ?0 (g ?1) a) — per-seat classes: head handled by
         // the bucket, then Var / open-compound g / leaf a.
-        let l = app(vec![sym("f"), Term::Var(0), app(vec![sym("g"), Term::Var(1)]), sym("a")]);
-        let ok = app(vec![sym("f"), sym("x"), app(vec![sym("g"), sym("y")]), sym("a")]);
+        let l = app(vec![
+            sym("f"),
+            Term::Var(0),
+            app(vec![sym("g"), Term::Var(1)]),
+            sym("a"),
+        ]);
+        let ok = app(vec![
+            sym("f"),
+            sym("x"),
+            app(vec![sym("g"), sym("y")]),
+            sym("a"),
+        ]);
         assert!(seat_prefilter_match(&l, &ok));
 
         // Occurrence variable under the rigid compound seat: refuted.
-        let var_under_rigid =
-            app(vec![sym("f"), sym("x"), Term::Var(5), sym("a")]);
+        let var_under_rigid = app(vec![sym("f"), sym("x"), Term::Var(5), sym("a")]);
         assert!(!seat_prefilter_match(&l, &var_under_rigid));
 
         // Head clash inside the compound seat: refuted.
-        let head_clash =
-            app(vec![sym("f"), sym("x"), app(vec![sym("h"), sym("y")]), sym("a")]);
+        let head_clash = app(vec![
+            sym("f"),
+            sym("x"),
+            app(vec![sym("h"), sym("y")]),
+            sym("a"),
+        ]);
         assert!(!seat_prefilter_match(&l, &head_clash));
 
         // Leaf clash at the ground leaf seat: refuted.
-        let leaf_clash =
-            app(vec![sym("f"), sym("x"), app(vec![sym("g"), sym("y")]), sym("b")]);
+        let leaf_clash = app(vec![
+            sym("f"),
+            sym("x"),
+            app(vec![sym("g"), sym("y")]),
+            sym("b"),
+        ]);
         assert!(!seat_prefilter_match(&l, &leaf_clash));
 
         // The Var pattern seat is a true wildcard.
@@ -808,13 +854,20 @@ mod tests {
             ]),
             app(vec![
                 sym("q"),
-                app(vec![sym("h"), app(vec![sym("f"), app(vec![sym("f"), sym("a")]), sym("b")])]),
+                app(vec![
+                    sym("h"),
+                    app(vec![sym("f"), app(vec![sym("f"), sym("a")]), sym("b")]),
+                ]),
                 Term::Lit(Literal::Number("3".into())),
                 Term::Var(1),
             ]),
             app(vec![
                 Term::Op(crate::parse::OpKind::Equal),
-                app(vec![sym("mult"), Term::Var(0), app(vec![sym("inv"), Term::Var(0)])]),
+                app(vec![
+                    sym("mult"),
+                    Term::Var(0),
+                    app(vec![sym("inv"), Term::Var(0)]),
+                ]),
                 sym("e"),
             ]),
         ];
@@ -851,7 +904,9 @@ mod tests {
                     }
                     let mut occ = &fixtures[p.clause as usize];
                     for &step in po.path(p) {
-                        let Term::App(es) = occ else { panic!("path resolves") };
+                        let Term::App(es) = occ else {
+                            panic!("path resolves")
+                        };
                         occ = &es[step as usize];
                     }
                     assert_eq!(*r, brute_row(occ), "bucket row parity at {:?}", po.path(p));
@@ -866,9 +921,19 @@ mod tests {
         let kbo = KboOrdering::new();
         let fa = app(vec![sym("f"), sym("a")]);
         let mut po = SubtermPostings::default();
-        po.register_clause(3, &[(true, app(vec![sym("p"), fa.clone()]))], &facts, &kbo, true);
+        po.register_clause(
+            3,
+            &[(true, app(vec![sym("p"), fa.clone()]))],
+            &facts,
+            &kbo,
+            true,
+        );
         let k = ground_lhs_key(&fa, &facts, &kbo).unwrap();
-        assert_eq!(po.exact_postings(k).len(), 1, "query key == registration key");
+        assert_eq!(
+            po.exact_postings(k).len(),
+            1,
+            "query key == registration key"
+        );
         let ks = ground_lhs_key(&sym("a"), &facts, &kbo).unwrap();
         assert_eq!(po.exact_postings(ks).len(), 1, "leaf key == symbol id");
         assert_eq!(head_lhs_key(&fa), Some((Symbol::from("f").id(), 2)));

@@ -74,14 +74,14 @@ pub struct SineIndex {
 impl Default for SineIndex {
     fn default() -> Self {
         Self {
-            tolerance:    default_tolerance(),
-            axiom_syms:   HashMap::new(),
-            sym_occ:      HashMap::new(),
-            axiom_g_min:  HashMap::new(),
+            tolerance: default_tolerance(),
+            axiom_syms: HashMap::new(),
+            sym_occ: HashMap::new(),
+            axiom_g_min: HashMap::new(),
             sym_to_axioms: HashMap::new(),
             sym_to_owned: HashMap::new(),
-            stats:        AddAxiomStats::default(),
-            pending:      Vec::new(),
+            stats: AddAxiomStats::default(),
+            pending: Vec::new(),
         }
     }
 }
@@ -91,14 +91,14 @@ impl Default for SineIndex {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AddAxiomStats {
     /// Number of `add_axiom` calls.
-    pub calls:           usize,
+    pub calls: usize,
     /// Number of full threshold-recompute calls (entry insertions / updates).
     pub recompute_calls: usize,
     /// Number of times `rebuild_from` fired (at most once per
     /// `sine_add_axioms` call, and only when the batch is large).
-    pub bulk_rebuilds:   usize,
+    pub bulk_rebuilds: usize,
     /// Number of `remove_axiom` calls.
-    pub removes:         usize,
+    pub removes: usize,
 }
 
 impl SineIndex {
@@ -107,7 +107,10 @@ impl SineIndex {
     /// is needed.
     #[allow(dead_code)]
     pub(crate) fn new(tolerance: f32) -> Self {
-        Self { tolerance: tolerance.max(1.0), ..Self::default() }
+        Self {
+            tolerance: tolerance.max(1.0),
+            ..Self::default()
+        }
     }
 
     /// Take-and-reset the which-path counters.  Test-only.
@@ -126,7 +129,10 @@ impl SineIndex {
     }
 
     /// Number of axioms currently tracked.
-    #[inline] pub fn axiom_count(&self) -> usize { self.axiom_syms.len() }
+    #[inline]
+    pub fn axiom_count(&self) -> usize {
+        self.axiom_syms.len()
+    }
 
     /// The sids of every axiom currently tracked (for bulk-rebuild planning).
     /// Sorted: `axiom_syms` is a `HashMap` (RandomState), and this feeds
@@ -140,13 +146,15 @@ impl SineIndex {
     }
 
     /// Is `sid` currently tracked as an axiom in this index?
-    #[inline] pub fn contains(&self, sid: SentenceId) -> bool {
+    #[inline]
+    pub fn contains(&self, sid: SentenceId) -> bool {
         self.axiom_syms.contains_key(&sid)
     }
 
     /// Generality of `s`: number of axioms in which it appears.  `0` for
     /// symbols absent from the axiom set.
-    #[inline] pub fn generality(&self, s: SymbolId) -> usize {
+    #[inline]
+    pub fn generality(&self, s: SymbolId) -> usize {
         self.sym_occ.get(&s).copied().unwrap_or(0)
     }
 
@@ -172,13 +180,17 @@ impl SineIndex {
     }
 
     fn sta_remove(&mut self, s: SymbolId, g_min: usize, aid: SentenceId) {
-        let Some(v) = self.sym_to_axioms.get_mut(&s) else { return };
+        let Some(v) = self.sym_to_axioms.get_mut(&s) else {
+            return;
+        };
         let lo = v.partition_point(|&(gm, _)| gm > g_min);
         let hi = v.partition_point(|&(gm, _)| gm >= g_min);
         if let Some(i) = v[lo..hi].iter().position(|&(_, a)| a == aid) {
             v.remove(lo + i);
         }
-        if v.is_empty() { self.sym_to_axioms.remove(&s); }
+        if v.is_empty() {
+            self.sym_to_axioms.remove(&s);
+        }
     }
 
     fn sta_reposition(&mut self, s: SymbolId, old_g_min: usize, new_g_min: usize, aid: SentenceId) {
@@ -221,7 +233,9 @@ impl SineIndex {
     /// pending set takes the two-pass bulk rebuild, a small one the
     /// incremental per-axiom path.
     pub(crate) fn flush_pending(&mut self) {
-        if self.pending.is_empty() { return; }
+        if self.pending.is_empty() {
+            return;
+        }
         let pending = std::mem::take(&mut self.pending);
         if pending.len() >= self.bulk_threshold() {
             // Existing entries must precede pending ones so rebuild_from's
@@ -244,7 +258,9 @@ impl SineIndex {
     /// which handles symbol extraction from the store.
     pub(crate) fn add_axiom(&mut self, sid: SentenceId, syms: HashSet<SymbolId>) {
         self.stats.calls += 1;
-        if self.axiom_syms.contains_key(&sid) { return; }
+        if self.axiom_syms.contains_key(&sid) {
+            return;
+        }
         if syms.is_empty() {
             self.axiom_syms.insert(sid, syms);
             return;
@@ -260,8 +276,10 @@ impl SineIndex {
         updated.insert(sid);
 
         for &s in &syms {
-            let owned: Vec<SentenceId> = self.sym_to_owned
-                .get(&s).map(|set| set.iter().copied().collect())
+            let owned: Vec<SentenceId> = self
+                .sym_to_owned
+                .get(&s)
+                .map(|set| set.iter().copied().collect())
                 .unwrap_or_default();
             for a in owned {
                 if updated.insert(a) {
@@ -283,7 +301,9 @@ impl SineIndex {
         if !self.pending.is_empty() {
             self.pending.retain(|(p, _)| *p != sid);
         }
-        let Some(syms) = self.axiom_syms.remove(&sid) else { return };
+        let Some(syms) = self.axiom_syms.remove(&sid) else {
+            return;
+        };
 
         let old_g_min = self.axiom_g_min.remove(&sid).unwrap_or(0);
         for &s in &syms {
@@ -292,11 +312,15 @@ impl SineIndex {
             }
             if let Some(set) = self.sym_to_owned.get_mut(&s) {
                 set.remove(&sid);
-                if set.is_empty() { self.sym_to_owned.remove(&s); }
+                if set.is_empty() {
+                    self.sym_to_owned.remove(&s);
+                }
             }
         }
 
-        if syms.is_empty() { return; }
+        if syms.is_empty() {
+            return;
+        }
 
         // Other axioms whose g_min may drop now that `sid` is gone: those
         // sharing a symbol with it. The `sta_remove` loop above already
@@ -313,7 +337,9 @@ impl SineIndex {
         for &s in &syms {
             if let Some(c) = self.sym_occ.get_mut(&s) {
                 *c -= 1;
-                if *c == 0 { self.sym_occ.remove(&s); }
+                if *c == 0 {
+                    self.sym_occ.remove(&s);
+                }
             }
         }
 
@@ -364,7 +390,9 @@ impl SineIndex {
         // matters; this pass just refrains from re-scrambling it.
         let mut axiom_sids: Vec<SentenceId> = Vec::new();
         for (sid, syms) in pairs {
-            if self.axiom_syms.contains_key(&sid) { continue; } // dedup
+            if self.axiom_syms.contains_key(&sid) {
+                continue;
+            } // dedup
             for &s in &syms {
                 *self.sym_occ.entry(s).or_insert(0) += 1;
             }
@@ -379,8 +407,8 @@ impl SineIndex {
         }
 
         crate::emit_event!(crate::progress::ProgressEvent::Log {
-            level:   crate::progress::LogLevel::Debug,
-            target:  "sigmakee_rs_core::sine",
+            level: crate::progress::LogLevel::Debug,
+            target: "sigmakee_rs_core::sine",
             message: format!(
                 "SineIndex::rebuild_from: {} axioms, {} symbols",
                 self.axiom_count(),
@@ -402,13 +430,18 @@ impl SineIndex {
     // -- Internal helpers ----------------------------------------------------
 
     fn insert_entry(&mut self, sid: SentenceId, syms: &HashSet<SymbolId>) {
-        if syms.is_empty() { return; }
+        if syms.is_empty() {
+            return;
+        }
 
-        let g_min = syms.iter()
+        let g_min = syms
+            .iter()
             .map(|&s| self.sym_occ.get(&s).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
-        if g_min == 0 { return; }
+        if g_min == 0 {
+            return;
+        }
 
         self.axiom_g_min.insert(sid, g_min);
 
@@ -422,10 +455,15 @@ impl SineIndex {
     }
 
     fn update_entry_g_min(&mut self, a: SentenceId) {
-        let Some(a_syms) = self.axiom_syms.get(&a).cloned() else { return };
-        if a_syms.is_empty() { return; }
+        let Some(a_syms) = self.axiom_syms.get(&a).cloned() else {
+            return;
+        };
+        if a_syms.is_empty() {
+            return;
+        }
 
-        let new_g_min = a_syms.iter()
+        let new_g_min = a_syms
+            .iter()
             .map(|&s| self.sym_occ.get(&s).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
@@ -438,7 +476,9 @@ impl SineIndex {
                     self.sta_remove(s, old_g_min, a);
                     if let Some(set) = self.sym_to_owned.get_mut(&s) {
                         set.remove(&a);
-                        if set.is_empty() { self.sym_to_owned.remove(&s); }
+                        if set.is_empty() {
+                            self.sym_to_owned.remove(&s);
+                        }
                     }
                 }
                 self.axiom_g_min.remove(&a);
@@ -460,14 +500,20 @@ impl SineIndex {
         for &s in &a_syms {
             let occ_s = self.sym_occ.get(&s).copied().unwrap_or(0);
             let should_own = occ_s == new_g_min;
-            let currently_owns = self.sym_to_owned.get(&s)
+            let currently_owns = self
+                .sym_to_owned
+                .get(&s)
                 .map_or(false, |set| set.contains(&a));
             match (currently_owns, should_own) {
-                (false, true)  => { self.sym_to_owned.entry(s).or_default().insert(a); }
-                (true,  false) => {
+                (false, true) => {
+                    self.sym_to_owned.entry(s).or_default().insert(a);
+                }
+                (true, false) => {
                     if let Some(set) = self.sym_to_owned.get_mut(&s) {
                         set.remove(&a);
-                        if set.is_empty() { self.sym_to_owned.remove(&s); }
+                        if set.is_empty() {
+                            self.sym_to_owned.remove(&s);
+                        }
                     }
                 }
                 _ => {}

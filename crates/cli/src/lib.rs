@@ -1,11 +1,9 @@
-pub mod config;
 pub mod cli;
+pub mod config;
 pub mod progress;
 pub mod style;
 
-pub use sigmakee_rs_sdk::{
-    KnowledgeBase as Kb, SemanticError, TellResult,
-};
+pub use sigmakee_rs_sdk::{KnowledgeBase as Kb, SemanticError, TellResult};
 
 // Error reporting macros
 
@@ -53,14 +51,12 @@ macro_rules! parse_error {
 /// Usage: `semantic_error!(e, kb)`.
 #[macro_export]
 macro_rules! semantic_error {
-    ($e:expr, $kb:expr) => {
-        {
-            use sigmakee_rs_sdk::ToDiagnostic;
-            let _d = ($e).clone().to_diagnostic();
-            $kb.pretty_print_error(&_d, log::Level::Error);
-            eprintln!();
-        }
-    };
+    ($e:expr, $kb:expr) => {{
+        use sigmakee_rs_sdk::ToDiagnostic;
+        let _d = ($e).clone().to_diagnostic();
+        $kb.pretty_print_error(&_d, log::Level::Error);
+        eprintln!();
+    }};
 }
 
 /// Print a semantic *warning* using the KB's built-in pretty-printer.
@@ -70,14 +66,12 @@ macro_rules! semantic_error {
 /// Usage: `semantic_warning!(e, kb)` where `e: &SemanticError`.
 #[macro_export]
 macro_rules! semantic_warning {
-    ($e:expr, $kb:expr) => {
-        {
-            if !sigmakee_rs_sdk::warnings_suppressed() {
-                use sigmakee_rs_sdk::ToDiagnostic;
-                let _d = ($e).clone().to_diagnostic();
-                $kb.pretty_print_error(&_d, log::Level::Warn);
-                eprintln!();
-            }
+    ($e:expr, $kb:expr) => {{
+        if !sigmakee_rs_sdk::warnings_suppressed() {
+            use sigmakee_rs_sdk::ToDiagnostic;
+            let _d = ($e).clone().to_diagnostic();
+            $kb.pretty_print_error(&_d, log::Level::Warn);
+            eprintln!();
         }
-    };
+    }};
 }

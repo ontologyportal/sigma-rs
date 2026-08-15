@@ -18,7 +18,7 @@ use crate::parse::tptp::syntax;
 enum Prec {
     Iff = 0,
     Imp = 1,
-    Or  = 2,
+    Or = 2,
     And = 3,
     Not = 4,
     Quant = 5,
@@ -29,14 +29,18 @@ fn top_prec(f: &Formula) -> Prec {
     match f {
         Formula::Iff(..) => Prec::Iff,
         Formula::Imp(..) => Prec::Imp,
-        Formula::Or(..)  => Prec::Or,
+        Formula::Or(..) => Prec::Or,
         Formula::And(..) => Prec::And,
-        Formula::Not(_)  => Prec::Not,
-        Formula::Forall(..)      | Formula::ForallTyped(..)
-        | Formula::Exists(..)    | Formula::ExistsTyped(..) => Prec::Quant,
-        Formula::Atom { .. }     | Formula::Eq(..)
+        Formula::Not(_) => Prec::Not,
+        Formula::Forall(..)
+        | Formula::ForallTyped(..)
+        | Formula::Exists(..)
+        | Formula::ExistsTyped(..) => Prec::Quant,
+        Formula::Atom { .. }
+        | Formula::Eq(..)
         | Formula::EqTyped { .. }
-        | Formula::True          | Formula::False          => Prec::Atom,
+        | Formula::True
+        | Formula::False => Prec::Atom,
     }
 }
 
@@ -101,7 +105,7 @@ pub(crate) fn formula_to_tptp(f: &Formula) -> String {
 
 fn emit_formula(out: &mut String, f: &Formula) {
     match f {
-        Formula::True  => out.push_str(syntax::TRUE),
+        Formula::True => out.push_str(syntax::TRUE),
         Formula::False => out.push_str(syntax::FALSE),
 
         Formula::Atom { pred, args } => {
@@ -140,7 +144,7 @@ fn emit_formula(out: &mut String, f: &Formula) {
         }
 
         Formula::And(parts) => emit_nary(out, parts, syntax::AND, Prec::And),
-        Formula::Or(parts)  => emit_nary(out, parts, syntax::OR, Prec::Or),
+        Formula::Or(parts) => emit_nary(out, parts, syntax::OR, Prec::Or),
 
         Formula::Imp(a, b) => {
             emit_sub(out, a, Prec::Imp);
@@ -159,7 +163,13 @@ fn emit_formula(out: &mut String, f: &Formula) {
             emit_sub(out, body, Prec::Quant);
         }
         Formula::ForallTyped(v, sort, body) => {
-            let _ = write!(out, "{}[X{}: {}] : ", syntax::FORALL, v.index(), sort.tptp_name());
+            let _ = write!(
+                out,
+                "{}[X{}: {}] : ",
+                syntax::FORALL,
+                v.index(),
+                sort.tptp_name()
+            );
             emit_sub(out, body, Prec::Quant);
         }
         Formula::Exists(v, body) => {
@@ -167,7 +177,13 @@ fn emit_formula(out: &mut String, f: &Formula) {
             emit_sub(out, body, Prec::Quant);
         }
         Formula::ExistsTyped(v, sort, body) => {
-            let _ = write!(out, "{}[X{}: {}] : ", syntax::EXISTS, v.index(), sort.tptp_name());
+            let _ = write!(
+                out,
+                "{}[X{}: {}] : ",
+                syntax::EXISTS,
+                v.index(),
+                sort.tptp_name()
+            );
             emit_sub(out, body, Prec::Quant);
         }
     }
@@ -223,8 +239,8 @@ impl Formula {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::symbol::{Function, Predicate};
+    use super::*;
 
     #[test]
     #[cfg(feature = "ask")]

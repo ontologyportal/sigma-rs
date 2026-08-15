@@ -33,12 +33,12 @@ pub const METHOD: &str = "sumo/setActiveFiles";
 /// Returns the files that were added and those that were removed so callers
 /// can republish diagnostics for each.
 pub fn handle_set_active_files(
-    state:  &GlobalState,
+    state: &GlobalState,
     params: SetActiveFilesParams,
 ) -> SetActiveFilesReport {
+    use sigmakee_rs_sdk::{FileOrigin, LocalProvenance, Severity, SourceFile};
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use sigmakee_rs_sdk::{FileOrigin, LocalProvenance, Severity, SourceFile};
 
     let requested: HashSet<String> = params.files.into_iter().collect();
 
@@ -49,7 +49,7 @@ pub fn handle_set_active_files(
         session.kb().iter_files().into_iter().collect()
     };
 
-    let to_add:    Vec<String> = requested.difference(&currently_loaded).cloned().collect();
+    let to_add: Vec<String> = requested.difference(&currently_loaded).cloned().collect();
     let to_remove: Vec<String> = currently_loaded.difference(&requested).cloned().collect();
 
     // `KnowledgeBase::remove_file` is O(total occurrences in the KB) per call,
@@ -67,7 +67,9 @@ pub fn handle_set_active_files(
     let mut session = state.session.write().expect("kb lock not poisoned");
 
     let files_to_ingest: Vec<String> = if rebuild_is_cheaper {
-        *session = sigmakee_rs_sdk::Session::<sigmakee_rs_sdk::TranslationLayer>::new(crate::state::LSP_SESSION.to_string());
+        *session = sigmakee_rs_sdk::Session::<sigmakee_rs_sdk::TranslationLayer>::new(
+            crate::state::LSP_SESSION.to_string(),
+        );
         report.removed = currently_loaded.into_iter().collect();
         requested.into_iter().collect()
     } else {
@@ -91,18 +93,27 @@ pub fn handle_set_active_files(
             }
         };
         let Some(src) = SourceFile::from_file(
-            PathBuf::from(&tag), contents, FileOrigin::Local(LocalProvenance::UNKNOWN),
+            PathBuf::from(&tag),
+            contents,
+            FileOrigin::Local(LocalProvenance::UNKNOWN),
         ) else {
             log::warn!(target: "sumo_lsp::kb",
                 "setActiveFiles: cannot determine a parser for '{}'", tag);
-            report.failed.push((tag, "no parser could be determined for this file".to_string()));
+            report.failed.push((
+                tag,
+                "no parser could be determined for this file".to_string(),
+            ));
             continue;
         };
 
         let result = session.kb_mut().load(src, &tag);
         // Promote so man-page introspection (Base scope) sees the file.
-        if result.ok { let _ = session.kb_mut().make_session_axiomatic(&tag); }
-        let warnings = result.diagnostics.iter()
+        if result.ok {
+            let _ = session.kb_mut().make_session_axiomatic(&tag);
+        }
+        let warnings = result
+            .diagnostics
+            .iter()
             .filter(|d| matches!(d.severity, Severity::Warning))
             .count();
         if warnings > 0 {
@@ -127,9 +138,9 @@ pub fn handle_set_active_files(
 /// affected files without holding any KB lock.
 #[derive(Debug, Default, Clone)]
 pub struct SetActiveFilesReport {
-    pub added:   Vec<String>,
+    pub added: Vec<String>,
     pub removed: Vec<String>,
-    pub failed:  Vec<(String, String)>,
+    pub failed: Vec<(String, String)>,
 }
 
 // -- sumo/setIgnoredDiagnostics ----------------------------------------------
@@ -159,7 +170,7 @@ pub struct SetIgnoredDiagnosticsParams {
 /// re-publishing diagnostics for every open document so the UI
 /// reflects the change immediately.
 pub fn handle_set_ignored_diagnostics(
-    state:  &crate::state::GlobalState,
+    state: &crate::state::GlobalState,
     params: SetIgnoredDiagnosticsParams,
 ) {
     use std::collections::HashSet;
@@ -170,4 +181,3 @@ pub fn handle_set_ignored_diagnostics(
         *guard = new;
     }
 }
-

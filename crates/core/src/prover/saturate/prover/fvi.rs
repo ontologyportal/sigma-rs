@@ -105,7 +105,11 @@ impl ClauseFv {
         let mut weight = 0u64;
         for l in lits {
             n_lits += 1;
-            if l.pos { n_pos += 1; } else { n_neg += 1; }
+            if l.pos {
+                n_pos += 1;
+            } else {
+                n_neg += 1;
+            }
             let info = atom_info(l.atom);
             let w = ground_weights
                 .filter(|_| info.is_ground())
@@ -114,13 +118,14 @@ impl ClauseFv {
             #[cfg(any(test, debug_assertions))]
             if let Some(w) = w {
                 debug_assert_eq!(
-                    w, kbo.info(l.atom, atoms, syn).weight,
+                    w,
+                    kbo.info(l.atom, atoms, syn).weight,
                     "ground facts weight diverged from the KBO memo for atom {:#x}",
                     l.atom,
                 );
             }
-            weight = weight
-                .saturating_add(w.unwrap_or_else(|| kbo.info(l.atom, atoms, syn).weight));
+            weight =
+                weight.saturating_add(w.unwrap_or_else(|| kbo.info(l.atom, atoms, syn).weight));
             size = size.saturating_add(u64::from(info.size));
         }
         Self([
@@ -156,7 +161,11 @@ impl ClauseFv {
         let mut weight = 0u64;
         for ((l, (_, t)), info) in lits.iter().zip(terms).zip(infos) {
             n_lits += 1;
-            if l.pos { n_pos += 1; } else { n_neg += 1; }
+            if l.pos {
+                n_pos += 1;
+            } else {
+                n_neg += 1;
+            }
             // Mirrors `compute`'s ground-weight arm: the facts walk only
             // answers for truly ground terms (`compute`'s
             // `facts_for_atom` bails the same way on the mask-blind
@@ -347,14 +356,20 @@ pub(crate) fn fv_from_terms(terms: &[(bool, Term)]) -> ClauseFv {
     let mut weight = 0u64;
     fn term_size_and_weight(t: &Term) -> (u64, u64) {
         match t {
-            Term::App(elems) => elems.iter().map(term_size_and_weight)
+            Term::App(elems) => elems
+                .iter()
+                .map(term_size_and_weight)
                 .fold((0, 0), |(sa, wa), (sb, wb)| (sa + sb, wa + wb)),
             _ => (1, 1),
         }
     }
     for (pos, t) in terms {
         n_lits += 1;
-        if *pos { n_pos += 1; } else { n_neg += 1; }
+        if *pos {
+            n_pos += 1;
+        } else {
+            n_neg += 1;
+        }
         let (s, w) = term_size_and_weight(t);
         size = size.saturating_add(s);
         weight = weight.saturating_add(w);
@@ -373,9 +388,15 @@ mod tests {
     use super::*;
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn v(n: u64) -> Term { Term::Var(n) }
+    fn s(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn v(n: u64) -> Term {
+        Term::Var(n)
+    }
 
     #[test]
     fn subset_instance_clause_pair_is_pointwise_le() {
@@ -396,12 +417,12 @@ mod tests {
     fn multi_literal_subset_pair_is_pointwise_le() {
         let sub = vec![
             (false, app(vec![s("q"), v(0)])),
-            (true,  app(vec![s("p"), v(0)])),
+            (true, app(vec![s("p"), v(0)])),
         ];
         let sup = vec![
             (false, app(vec![s("q"), s("a")])),
-            (true,  app(vec![s("p"), s("a")])),
-            (true,  app(vec![s("r"), s("b")])),
+            (true, app(vec![s("p"), s("a")])),
+            (true, app(vec![s("r"), s("b")])),
         ];
         let fv_sub = fv_from_terms(&sub);
         let fv_sup = fv_from_terms(&sup);
@@ -435,7 +456,12 @@ mod tests {
         let sup = vec![(true, app(vec![s("p"), s("a")]))];
         let fv_sub = fv_from_terms(&sub);
         let fv_sup = fv_from_terms(&sup);
-        assert!(!fv_sub.le(&fv_sup), "expected rejection: {:?} vs {:?}", fv_sub, fv_sup);
+        assert!(
+            !fv_sub.le(&fv_sup),
+            "expected rejection: {:?} vs {:?}",
+            fv_sub,
+            fv_sup
+        );
         // Twin-check: the exact routine must also say no.
         assert!(!super::super::clause_subsumes(&sub, &sup));
     }

@@ -27,20 +27,23 @@ use crate::parse::dialect::{Emit, PrettyEmit};
 /// on one line; longer ones break with each argument indented two further.
 const LINE_WIDTH: usize = 72;
 
-
 /// Compact flat KIF — `(op a b)` with no extra spaces.
 pub(crate) fn flat(node: &AstNode) -> String {
     match node {
         AstNode::List { elements, .. } => {
-            if elements.is_empty() { return "()".into(); }
-            format!("({})", elements.iter().map(flat).collect::<Vec<_>>().join(" "))
+            if elements.is_empty() {
+                return "()".into();
+            }
+            format!(
+                "({})",
+                elements.iter().map(flat).collect::<Vec<_>>().join(" ")
+            )
         }
-        AstNode::Symbol { name, .. }      => name.clone(),
-        AstNode::Variable { name, .. }    => format!("?{}", name),
+        AstNode::Symbol { name, .. } => name.clone(),
+        AstNode::Variable { name, .. } => format!("?{}", name),
         AstNode::RowVariable { name, .. } => format!("@{}", name),
-        AstNode::Str { value, .. }
-        | AstNode::Number { value, .. }   => value.clone(),
-        AstNode::Operator { op, .. }      => op.name().to_owned(),
+        AstNode::Str { value, .. } | AstNode::Number { value, .. } => value.clone(),
+        AstNode::Operator { op, .. } => op.name().to_owned(),
         AstNode::Annotated { formula, .. } => flat(formula),
     }
 }
@@ -53,9 +56,17 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
     if let AstNode::Annotated { formula, .. } = node {
         return styled(formula, indent, color);
     }
-    let leaf = |n: &AstNode| if color { Pretty(n).to_string() } else { flat(n) };
+    let leaf = |n: &AstNode| {
+        if color {
+            Pretty(n).to_string()
+        } else {
+            flat(n)
+        }
+    };
 
-    let AstNode::List { elements, .. } = node else { return leaf(node); };
+    let AstNode::List { elements, .. } = node else {
+        return leaf(node);
+    };
     if elements.len() < 2 {
         return leaf(node);
     }
@@ -75,7 +86,10 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
     let inline_rendered = inline_idx.map(|idx| styled(&elements[idx], indent, color));
 
     let forces_break = inline_rendered.as_deref().is_some_and(|s| s.contains('\n'))
-        || elements.iter().enumerate().skip(1)
+        || elements
+            .iter()
+            .enumerate()
+            .skip(1)
             .any(|(i, e)| Some(i) != inline_idx && is_compound(e));
 
     let f = flat(node);
@@ -83,7 +97,7 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
         return leaf(node);
     }
 
-    let pad  = " ".repeat(indent + 2);
+    let pad = " ".repeat(indent + 2);
     let head = styled(&elements[0], 0, color);
 
     let (prefix, body_start) = match (inline_idx, inline_rendered) {
@@ -91,7 +105,8 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
         _ => (format!("({}", head), 1),
     };
 
-    let body: Vec<String> = elements[body_start..].iter()
+    let body: Vec<String> = elements[body_start..]
+        .iter()
         .map(|e| format!("{}{}", pad, styled(e, indent + 2, color)))
         .collect();
 
@@ -119,7 +134,6 @@ fn is_compound(node: &AstNode) -> bool {
     matches!(node, AstNode::List { elements, .. } if !elements.is_empty())
 }
 
-
 /// KIF rendering methods on [`AstNode`].  `use` this (re-exported at the crate
 /// root as `sigmakee_rs_core::AstKif`) where the method syntax is wanted; the
 /// implementation lives here, not on the type.
@@ -130,14 +144,19 @@ pub trait AstKif {
 }
 
 impl AstKif for AstNode {
-    fn flat(&self) -> String { flat(self) }
+    fn flat(&self) -> String {
+        flat(self)
+    }
     // The two styled views route through the `PrettyEmit` dialect seam (whose
     // sole implementation is `KifEmit`), so there is one rendering path: AstKif
     // is just the method-syntax facade over it.
-    fn pretty_print(&self, indent: usize) -> String { KifEmit.emit_pretty(self, indent, true) }
-    fn format_plain(&self, indent: usize) -> String { KifEmit.emit_pretty(self, indent, false) }
+    fn pretty_print(&self, indent: usize) -> String {
+        KifEmit.emit_pretty(self, indent, true)
+    }
+    fn format_plain(&self, indent: usize) -> String {
+        KifEmit.emit_pretty(self, indent, false)
+    }
 }
-
 
 /// The KIF output dialect.  Stateless (no per-format options).
 pub(crate) struct KifEmit;
@@ -176,18 +195,21 @@ impl fmt::Display for Pretty<'_> {
                 f.write_str("(")?;
                 let mut first = true;
                 for el in elements {
-                    if !first { f.write_str(" ")?; }
+                    if !first {
+                        f.write_str(" ")?;
+                    }
                     first = false;
                     write!(f, "{}", Pretty(el))?;
                 }
                 f.write_str(")")
             }
-            AstNode::Operator { op, .. } =>
-                write!(f, "{color_cyan}{}{color_reset}", op.name()),
-            AstNode::Number { value, .. }
-            | AstNode::Str { value, .. } => write!(f, "{color_green}{}{color_reset}", value),
-            AstNode::Variable { .. }
-            | AstNode::RowVariable { .. } => write!(f, "{color_magenta}{}{color_reset}", flat(self.0)),
+            AstNode::Operator { op, .. } => write!(f, "{color_cyan}{}{color_reset}", op.name()),
+            AstNode::Number { value, .. } | AstNode::Str { value, .. } => {
+                write!(f, "{color_green}{}{color_reset}", value)
+            }
+            AstNode::Variable { .. } | AstNode::RowVariable { .. } => {
+                write!(f, "{color_magenta}{}{color_reset}", flat(self.0))
+            }
             AstNode::Symbol { name, .. } => {
                 if name.chars().next().map_or(false, |c| c.is_lowercase()) {
                     write!(f, "{color_bright_blue}{}{color_reset}", name)
@@ -208,16 +230,34 @@ mod tests {
 
     fn parse_one(src: &str) -> AstNode {
         let doc = crate::parse::parse_document("t", src, crate::Parser::Kif);
-        assert!(doc.parse_errors.is_empty(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().unwrap().as_stmt().cloned().unwrap()
+        assert!(
+            doc.parse_errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_errors
+        );
+        doc.ast
+            .into_iter()
+            .next()
+            .unwrap()
+            .as_stmt()
+            .cloned()
+            .unwrap()
     }
 
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut in_esc = false;
         for c in s.chars() {
-            if c == '\x1B' { in_esc = true; continue; }
-            if in_esc { if c == 'm' { in_esc = false; } continue; }
+            if c == '\x1B' {
+                in_esc = true;
+                continue;
+            }
+            if in_esc {
+                if c == 'm' {
+                    in_esc = false;
+                }
+                continue;
+            }
             out.push(c);
         }
         out
@@ -225,15 +265,18 @@ mod tests {
 
     #[test]
     fn display_has_no_internal_padding() {
-        assert_eq!(parse_one("(and (instance Foo Bar) (instance Foo Baz))").to_string(),
-            "(and (instance Foo Bar) (instance Foo Baz))");
+        assert_eq!(
+            parse_one("(and (instance Foo Bar) (instance Foo Baz))").to_string(),
+            "(and (instance Foo Bar) (instance Foo Baz))"
+        );
     }
 
     #[test]
     fn format_plain_inlines_quantifier_vars() {
         let n = parse_one(
             "(exists (?A ?B) (and (member ?A ?P) (member ?B ?P) \
-             (not (equal ?A ?B)) (instance ?A SomeLongClassName)))");
+             (not (equal ?A ?B)) (instance ?A SomeLongClassName)))",
+        );
         let out = n.format_plain(0);
         assert_eq!(out.lines().next().unwrap(), "(exists (?A ?B)");
         assert!(out.lines().nth(1).unwrap().starts_with("  "));
@@ -243,7 +286,8 @@ mod tests {
     fn pretty_print_matches_plain_layout_ignoring_color() {
         let n = parse_one(
             "(and (instance Foo Bar) (instance Foo Baz) \
-             (instance Foo VeryLongClassName) (instance Foo AnotherLong))");
+             (instance Foo VeryLongClassName) (instance Foo AnotherLong))",
+        );
         assert_eq!(strip_ansi(&n.pretty_print(0)), n.format_plain(0));
     }
 
@@ -259,10 +303,16 @@ mod tests {
     fn kif_strips_annotation_framing() {
         let inner = parse_one("(instance Foo Bar)");
         let ann = AstNode::Annotated {
-            role: Role::Conjecture, name: Some("c".into()), source: None,
-            formula: Box::new(inner.clone()), span: Span::default(),
+            role: Role::Conjecture,
+            name: Some("c".into()),
+            source: None,
+            formula: Box::new(inner.clone()),
+            span: Span::default(),
         };
-        assert_eq!(Emitter::Kif.emit_one(&ann).text.trim_end(), inner.format_plain(0));
+        assert_eq!(
+            Emitter::Kif.emit_one(&ann).text.trim_end(),
+            inner.format_plain(0)
+        );
         assert_eq!(ann.flat(), inner.flat());
     }
 
@@ -279,7 +329,8 @@ mod tests {
             let trimmed = line.trim_start();
             // Skip the one inline pair a quantifier var-list or `not` may
             // introduce right after the head symbol.
-            let rest = if let Some(after) = trimmed.strip_prefix("(forall (")
+            let rest = if let Some(after) = trimmed
+                .strip_prefix("(forall (")
                 .or_else(|| trimmed.strip_prefix("(exists ("))
             {
                 after
@@ -290,8 +341,10 @@ mod tests {
             } else {
                 trimmed
             };
-            assert!(!rest.trim_start().starts_with('('),
-                "stacked opens on line: {line:?}");
+            assert!(
+                !rest.trim_start().starts_with('('),
+                "stacked opens on line: {line:?}"
+            );
         }
     }
 
@@ -331,8 +384,9 @@ mod tests {
     #[test]
     fn and_with_compound_args_always_breaks() {
         let n = parse_one("(and (instance Foo Bar) (instance Foo Baz))");
-        assert_eq!(n.format_plain(0),
-            "(and\n  (instance Foo Bar)\n  (instance Foo Baz))");
+        assert_eq!(
+            n.format_plain(0),
+            "(and\n  (instance Foo Bar)\n  (instance Foo Baz))"
+        );
     }
 }
-

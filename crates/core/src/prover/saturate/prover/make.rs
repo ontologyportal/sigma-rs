@@ -19,13 +19,14 @@ use super::super::hash64::Set64;
 use super::super::kbo::KboCmp;
 use super::super::oracle::Witness;
 use super::super::theory::TheoryOracle;
-use super::super::unify::{apply, apply_off, match_one_way, match_one_way_off, shift_slots, slot_atom, Subst};
+use super::super::unify::{
+    apply, apply_off, match_one_way, match_one_way_off, shift_slots, slot_atom, Subst,
+};
 use super::{
-    arith_norm, classify_seats, eq_key, eq_sides,
-    is_equality_atom, lit_kif, max_slot, replace_in_place, stepdbg, term_binary_ids,
-    term_depth, term_ground_equality_sides, term_head_key, term_kif, term_size,
-    term_skolem_apps, witnesses_kif, ClauseRec, MatchScratch, NativeProver, BACKGROUND,
-    CONJECTURE, MATCH_TARGET_OFF, SUPPORT,
+    arith_norm, classify_seats, eq_key, eq_sides, is_equality_atom, lit_kif, max_slot,
+    replace_in_place, stepdbg, term_binary_ids, term_depth, term_ground_equality_sides,
+    term_head_key, term_kif, term_size, term_skolem_apps, witnesses_kif, ClauseRec, MatchScratch,
+    NativeProver, BACKGROUND, CONJECTURE, MATCH_TARGET_OFF, SUPPORT,
 };
 // The per-step reference engine (debug twins) still splices with the
 // allocating `replace` — deliberately untouched.
@@ -77,14 +78,24 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// this, a clause could silently rename a constant (e.g. a problem's
     /// own named constant collapsing into an unrelated Skolem witness) with
     /// no trace of why in the proof DAG.
-    fn normalize_eq(&self, t: &mut Term, just_sids: &mut Vec<SentenceId>, just_clauses: &mut Vec<u32>) {
+    fn normalize_eq(
+        &self,
+        t: &mut Term,
+        just_sids: &mut Vec<SentenceId>,
+        just_clauses: &mut Vec<u32>,
+    ) {
         if !self.oracle.has_equalities() {
             return;
         }
         self.normalize_eq_rec(t, just_sids, just_clauses);
     }
 
-    fn normalize_eq_rec(&self, t: &mut Term, just_sids: &mut Vec<SentenceId>, just_clauses: &mut Vec<u32>) {
+    fn normalize_eq_rec(
+        &self,
+        t: &mut Term,
+        just_sids: &mut Vec<SentenceId>,
+        just_clauses: &mut Vec<u32>,
+    ) {
         match t {
             Term::Sym(_) | Term::Lit(Literal::Number(_)) => {
                 let Some(key) = eq_key(t) else { return };
@@ -202,8 +213,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             // one-way matching never confuses a rule variable with a
             // target variable (mirrors `paramodulants`' offset trick).
             let off = max_slot(t).map_or(0, |m| m + 1);
-            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites, &mut scr)
-            else {
+            let Some(step) = self.find_demod_step(t, off, demod_cap - rewrites, &mut scr) else {
                 break;
             };
             rewrites += step.used.len() as u64;
@@ -361,7 +371,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 self.subtree_redex_unfiltered(g, off).is_none(),
                 "bloom prune claimed redex-free, but the reference walk \
                  found a redex in {g:?} (head_bits {:#x}, bloom {:#x})",
-                self.demods.head_bits(), facts.sym_bloom,
+                self.demods.head_bits(),
+                facts.sym_bloom,
             );
             return GroundOutcome::Clean;
         }
@@ -406,7 +417,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             }
             Probe::Rewritten(term, used) => {
                 self.stats.nf_hits_rewritten += 1;
-                return GroundOutcome::Step(DemodStep { path: path.to_vec(), term, used });
+                return GroundOutcome::Step(DemodStep {
+                    path: path.to_vec(),
+                    term,
+                    used,
+                });
             }
             Probe::Miss => {
                 self.stats.nf_misses += 1;
@@ -419,29 +434,47 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let (nf, used, complete) = self.normalize_ground(g, off, budget, scr);
         if complete {
             if used.is_empty() {
-                self.nf_memo.insert(key, super::super::terms::NfEntry {
-                    gen, used: SmallVec::new(), term: None,
-                });
+                self.nf_memo.insert(
+                    key,
+                    super::super::terms::NfEntry {
+                        gen,
+                        used: SmallVec::new(),
+                        term: None,
+                    },
+                );
                 return GroundOutcome::Clean;
             }
             // Record the outcome under the ORIGINAL key, and the normal
             // form's own key as "unchanged" — the fixpoint restart
             // re-probes the spliced subtree on the very next pass.
-            if let Some((nf_key, _)) =
-                self.layer.term_facts.ground_key_facts(&nf, &self.layer.kbo)
+            if let Some((nf_key, _)) = self.layer.term_facts.ground_key_facts(&nf, &self.layer.kbo)
             {
-                self.nf_memo.insert(nf_key, super::super::terms::NfEntry {
-                    gen, used: SmallVec::new(), term: None,
-                });
+                self.nf_memo.insert(
+                    nf_key,
+                    super::super::terms::NfEntry {
+                        gen,
+                        used: SmallVec::new(),
+                        term: None,
+                    },
+                );
             }
-            self.nf_memo.insert(key, super::super::terms::NfEntry {
-                gen, used: used.clone(), term: Some(nf.clone()),
-            });
+            self.nf_memo.insert(
+                key,
+                super::super::terms::NfEntry {
+                    gen,
+                    used: used.clone(),
+                    term: Some(nf.clone()),
+                },
+            );
         }
         if used.is_empty() {
             GroundOutcome::Clean
         } else {
-            GroundOutcome::Step(DemodStep { path: path.to_vec(), term: nf, used })
+            GroundOutcome::Step(DemodStep {
+                path: path.to_vec(),
+                term: nf,
+                used,
+            })
         }
     }
 
@@ -507,7 +540,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// `self.demods.candidates` — no prefilter, no bloom, no memo, no
     /// stats.  Exists ONLY for the debug twins.
     #[cfg(any(test, debug_assertions))]
-    fn find_demod_redex_unfiltered(&self, atom: &Term, off: u64) -> Option<(Vec<usize>, Term, u32)> {
+    fn find_demod_redex_unfiltered(
+        &self,
+        atom: &Term,
+        off: u64,
+    ) -> Option<(Vec<usize>, Term, u32)> {
         let mut path = Vec::new();
         self.unfiltered_walk(atom, &mut path, off, true)
     }
@@ -658,7 +695,12 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     "arena registration walk diverged from tree walk on clause {id}",
                 );
             }
-            let Self { bwd_postings, arena, arena_roots, .. } = self;
+            let Self {
+                bwd_postings,
+                arena,
+                arena_roots,
+                ..
+            } = self;
             bwd_postings.register_clause_arena(
                 id,
                 &arena_roots[id as usize],
@@ -718,11 +760,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Guards mirror forward demodulation exactly: CONJECTURE-tier
     /// clauses are only rewritten under the superposition regime, and
     /// the demodulator clause never rewrites itself.
-    pub(super) fn backward_demodulate(
-        &mut self,
-        demod_id: u32,
-        d: &super::super::units::Demod,
-    ) {
+    pub(super) fn backward_demodulate(&mut self, demod_id: u32, d: &super::super::units::Demod) {
         use super::postings::{ground_lhs_key, head_lhs_key, seat_prefilter_match};
 
         self.stats.bwd_demod_triggered += 1;
@@ -833,11 +871,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     let pass = ar.seat_prefilter_match(lt, ot);
                     #[cfg(any(test, debug_assertions))]
                     {
-                        let occ = subterm_at_bytes(
-                            &c.terms[p.lit as usize].1,
-                            self.bwd_postings.path(p),
-                        )
-                        .expect("posting path must resolve");
+                        let occ =
+                            subterm_at_bytes(&c.terms[p.lit as usize].1, self.bwd_postings.path(p))
+                                .expect("posting path must resolve");
                         debug_assert_eq!(
                             pass,
                             seat_prefilter_match(&d.l, occ),
@@ -861,11 +897,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     id_trail.clear();
                     #[cfg(any(test, debug_assertions))]
                     {
-                        let occ = subterm_at_bytes(
-                            &c.terms[p.lit as usize].1,
-                            self.bwd_postings.path(p),
-                        )
-                        .expect("posting path must resolve");
+                        let occ =
+                            subterm_at_bytes(&c.terms[p.lit as usize].1, self.bwd_postings.path(p))
+                                .expect("posting path must resolve");
                         if scr.s.len() < need {
                             scr.s.resize(need, None);
                         }
@@ -903,8 +937,12 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     // Bindings are rolled back per candidate: decoded
                     // blank keys are never joined across clauses.
                     self.stats.bwd_decode_swept += 1;
-                    let verdict =
-                        plan.eval(&brows[bi], self.bwd_postings.row_table(), &mut bind, &mut btrail);
+                    let verdict = plan.eval(
+                        &brows[bi],
+                        self.bwd_postings.row_table(),
+                        &mut bind,
+                        &mut btrail,
+                    );
                     for &s in &btrail {
                         bind[s as usize] = None;
                     }
@@ -1137,7 +1175,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if c.lits.len() != 1 || !c.lits[0].pos {
                 continue;
             }
-            let Some(sent) = self.layer.atoms.resolve(c.lits[0].atom, self.syn()) else { continue };
+            let Some(sent) = self.layer.atoms.resolve(c.lits[0].atom, self.syn()) else {
+                continue;
+            };
             if sent.elements.len() != 3 {
                 continue;
             }
@@ -1156,9 +1196,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             }
             let body = Term::App(vec![Term::Sym(r), Term::Var(0), Term::Var(1)]);
             let head = Term::App(vec![Term::Sym(s), Term::Var(0), Term::Var(1)]);
-            if let Some(id) =
-                self.make(vec![(false, body), (true, head)], vec![], "subrel_schema", BACKGROUND, None, false)
-            {
+            if let Some(id) = self.make(
+                vec![(false, body), (true, head)],
+                vec![],
+                "subrel_schema",
+                BACKGROUND,
+                None,
+                false,
+            ) {
                 // Cite the `(subrelation R S)` fact this rule reifies —
                 // without it the synthesized clause is an unjustified
                 // proof leaf.
@@ -1209,7 +1254,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let order_fn = crate::types::Symbol::from("ListOrderFn");
         for (i, m) in elems.iter().enumerate().skip(1) {
             self.pending_list_units.push(Term::App(vec![
-                Term::Sym(in_list.clone()), m.clone(), t.clone(),
+                Term::Sym(in_list.clone()),
+                m.clone(),
+                t.clone(),
             ]));
             self.pending_list_units.push(Term::App(vec![
                 Term::Op(OpKind::Equal),
@@ -1232,7 +1279,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let list_units = std::mem::take(&mut self.pending_list_units);
         for term in list_units {
             let made = self.make(
-                vec![(true, term)], Vec::new(), "list_theory", BACKGROUND, None, true);
+                vec![(true, term)],
+                Vec::new(),
+                "list_theory",
+                BACKGROUND,
+                None,
+                true,
+            );
             let Some(id) = made else { continue };
             let key = self.clauses[id as usize].key;
             if self.seen_insert(key, id) {
@@ -1243,17 +1296,27 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // Exhaustiveness-derived positive facts → activated units.
         for (rel, x, y, just) in self.oracle.take_pending_facts() {
             let term_of = |key: u64| -> Option<Term> {
-                self.eq_terms.get(&key).cloned()
+                self.eq_terms
+                    .get(&key)
+                    .cloned()
                     .or_else(|| self.syn().sym_name(key).map(Term::Sym))
             };
-            let (Some(tr), Some(tx), Some(ty)) = (term_of(rel), term_of(x), term_of(y))
-            else { continue };
+            let (Some(tr), Some(tx), Some(ty)) = (term_of(rel), term_of(x), term_of(y)) else {
+                continue;
+            };
             let term = Term::App(vec![tr, tx, ty]);
             let made = self.make(
-                vec![(true, term)], just.clause_parents.clone(),
-                "exhaustive", SUPPORT, None, true);
+                vec![(true, term)],
+                just.clause_parents.clone(),
+                "exhaustive",
+                SUPPORT,
+                None,
+                true,
+            );
             let Some(id) = made else { continue };
-            self.clauses[id as usize].fact_parents.extend(just.fact_sids.iter().copied());
+            self.clauses[id as usize]
+                .fact_parents
+                .extend(just.fact_sids.iter().copied());
             if let Some(ax) = just.axiom {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
@@ -1265,16 +1328,27 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         }
         for (a, b, just) in self.oracle.take_pending_eq() {
             let term_of = |key: u64| -> Option<Term> {
-                self.eq_terms.get(&key).cloned()
+                self.eq_terms
+                    .get(&key)
+                    .cloned()
                     .or_else(|| self.syn().sym_name(key).map(Term::Sym))
             };
-            let (Some(ta), Some(tb)) = (term_of(a), term_of(b)) else { continue };
+            let (Some(ta), Some(tb)) = (term_of(a), term_of(b)) else {
+                continue;
+            };
             let term = Term::App(vec![Term::Op(OpKind::Equal), ta, tb]);
             let made = self.make(
-                vec![(true, term)], just.clause_parents.clone(),
-                "fd_congruence", SUPPORT, None, true);
+                vec![(true, term)],
+                just.clause_parents.clone(),
+                "fd_congruence",
+                SUPPORT,
+                None,
+                true,
+            );
             let Some(id) = made else { continue };
-            self.clauses[id as usize].fact_parents.extend(just.fact_sids.iter().copied());
+            self.clauses[id as usize]
+                .fact_parents
+                .extend(just.fact_sids.iter().copied());
             if let Some(ax) = just.axiom {
                 self.clauses[id as usize].fact_parents.push(ax);
             }
@@ -1328,7 +1402,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// constant with no trace in the proof DAG.  `None` for the pre-search
     /// bulk pass ([`Self::register_equalities`]), which runs before any
     /// clause has an arena id to cite.
-    fn register_equality(&mut self, ta: Term, tb: Term, ka: u64, kb: u64, source_clause: Option<u32>) {
+    fn register_equality(
+        &mut self,
+        ta: Term,
+        tb: Term,
+        ka: u64,
+        kb: u64,
+        source_clause: Option<u32>,
+    ) {
         if matches!(ta, Term::App(_)) || matches!(tb, Term::App(_)) {
             self.has_compound_eqs = true;
         }
@@ -1363,7 +1444,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// ill-sorted (an argument disjoint from its declared domain).
     fn atom_ill_sorted(&self, t: &Term) -> bool {
         let Term::App(elems) = t else { return false };
-        let Some(Term::Sym(rel)) = elems.first() else { return false };
+        let Some(Term::Sym(rel)) = elems.first() else {
+            return false;
+        };
         let args: Vec<Option<SymbolId>> = elems
             .iter()
             .skip(1)
@@ -1394,10 +1477,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // semantics — there is no model where 1 = 2).  Symbols never
         // get the refuted arm (no unique-names assumption for them).
         if let (Term::Lit(Literal::Number(a)), Term::Lit(Literal::Number(b))) = (l, r) {
-            if let (Some(x), Some(y)) =
-                (crate::numeric::parse_num(a), crate::numeric::parse_num(b))
+            if let (Some(x), Some(y)) = (crate::numeric::parse_num(a), crate::numeric::parse_num(b))
             {
-                let d = if x == y { EqDecision::Entailed } else { EqDecision::Refuted };
+                let d = if x == y {
+                    EqDecision::Entailed
+                } else {
+                    EqDecision::Refuted
+                };
                 return Some((d, Vec::new(), Vec::new()));
             }
         }
@@ -1414,7 +1500,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 }
             }
             _ => {
-                let d = if l == r { EqDecision::Entailed } else { EqDecision::Unknown };
+                let d = if l == r {
+                    EqDecision::Entailed
+                } else {
+                    EqDecision::Unknown
+                };
                 Some((d, Vec::new(), Vec::new()))
             }
         }
@@ -1425,9 +1515,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// term isn't a comparison over two numeric literals.
     fn ground_compare(t: &Term) -> Option<bool> {
         let Term::App(elems) = t else { return None };
-        if elems.len() != 3 { return None; }
+        if elems.len() != 3 {
+            return None;
+        }
         let (Term::Sym(p), Term::Lit(Literal::Number(a)), Term::Lit(Literal::Number(b))) =
-            (&elems[0], &elems[1], &elems[2]) else { return None };
+            (&elems[0], &elems[1], &elems[2])
+        else {
+            return None;
+        };
         let (x, y) = (crate::numeric::parse_num(a)?, crate::numeric::parse_num(b)?);
         crate::numeric::eval_compare(&p.name(), x, y)
     }
@@ -1538,9 +1633,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let mp = self.layer.model_program();
         let (model, prov) = self.guide_model.as_ref()?;
         let tuples = model.get(&rel)?; // relation absent from the model: no decision
-        // EGD-canonicalize the probe constants the same way the model's OWN
-        // tuples are stored — an evaluation that merged two symbols via an
-        // EGD stores facts under their shared representative.
+                                       // EGD-canonicalize the probe constants the same way the model's OWN
+                                       // tuples are stored — an evaluation that merged two symbols via an
+                                       // EGD stores facts under their shared representative.
         let canon_args: Vec<SymbolId> = args.iter().map(|&a| mp.eq_rep(prov, a)).collect();
         if !tuples.contains(&canon_args) {
             return None;
@@ -1555,11 +1650,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn make(
         &mut self,
-        lits:    Vec<(bool, Term)>,
+        lits: Vec<(bool, Term)>,
         parents: Vec<u32>,
-        rule:    &'static str,
-        tier:    u8,
-        source:  Option<SentenceId>,
+        rule: &'static str,
+        tier: u8,
+        source: Option<SentenceId>,
         derived: bool,
     ) -> Option<u32> {
         // Interactive single-step: show the proposed derivation (the "match")
@@ -1646,7 +1741,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             demod_used.sort_unstable();
             demod_used.dedup();
             if self.want_notes() {
-                notes.push(format!("demodulated by {} unit equation(s)", demod_used.len()));
+                notes.push(format!(
+                    "demodulated by {} unit equation(s)",
+                    demod_used.len()
+                ));
             }
             parents.extend(demod_used);
         }
@@ -1736,7 +1834,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if self.want_notes() {
                         notes.push(format!(
                             "{} -- ill-sorted (argument disjoint from declared domain)",
-                            term_kif(t, self.syn())));
+                            term_kif(t, self.syn())
+                        ));
                     }
                     dropped_positive = true;
                     continue;
@@ -1763,8 +1862,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if truth != *pos {
                     self.stats.oracle_discharges += 1;
                     if self.want_notes() {
-                        notes.push(format!(
-                            "{} -- arithmetic", lit_kif(*pos, t, self.syn())));
+                        notes.push(format!("{} -- arithmetic", lit_kif(*pos, t, self.syn())));
                     }
                     continue;
                 }
@@ -1780,11 +1878,17 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                 notes.push(format!(
                                     "(not {}) -- oracle: {}",
                                     term_kif(t, self.syn()),
-                                    if why.is_empty() { "x = x".to_string() }
-                                    else { witnesses_kif(&why, self.syn()) }));
+                                    if why.is_empty() {
+                                        "x = x".to_string()
+                                    } else {
+                                        witnesses_kif(&why, self.syn())
+                                    }
+                                ));
                             }
                             for w in &why {
-                                if let Some(sid) = w.sid { fact_parents.push(sid); }
+                                if let Some(sid) = w.sid {
+                                    fact_parents.push(sid);
+                                }
                             }
                             parents.extend(eq_clauses);
                             continue;
@@ -1803,7 +1907,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             if self.want_notes() {
                                 notes.push(format!(
                                     "{} -- numeric disequality",
-                                    term_kif(t, self.syn())));
+                                    term_kif(t, self.syn())
+                                ));
                             }
                             continue;
                         }
@@ -1831,10 +1936,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             notes.push(format!(
                                 "{} -- oracle refutes: {}",
                                 term_kif(t, self.syn()),
-                                witnesses_kif(&why_r, self.syn())));
+                                witnesses_kif(&why_r, self.syn())
+                            ));
                         }
                         for w in &why_r {
-                            if let Some(sid) = w.sid { fact_parents.push(sid); }
+                            if let Some(sid) = w.sid {
+                                fact_parents.push(sid);
+                            }
                         }
                         continue;
                     }
@@ -1862,7 +1970,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             notes.push(format!(
                                 "(not {}) -- oracle: {}",
                                 term_kif(t, self.syn()),
-                                witnesses_kif(&why, self.syn())));
+                                witnesses_kif(&why, self.syn())
+                            ));
                         }
                         for w in &why {
                             // Stored facts cite their sid; learned units
@@ -1870,9 +1979,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             // derivation chain stays in the proof DAG.
                             if let Some(sid) = w.sid {
                                 fact_parents.push(sid);
-                            } else if let Some(cid) =
-                                self.oracle.learned_src(w.rel, w.x, w.y)
-                            {
+                            } else if let Some(cid) = self.oracle.learned_src(w.rel, w.x, w.y) {
                                 parents.push(cid);
                             }
                         }
@@ -1895,7 +2002,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if self.want_notes() {
                         notes.push(format!(
                             "(not {}) -- model: entailed true",
-                            term_kif(t, self.syn())));
+                            term_kif(t, self.syn())
+                        ));
                     }
                     fact_parents.extend(sids);
                     continue;
@@ -1919,10 +2027,12 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // recursive list machinery can grow term WIDTH without bound
         // (a 52 GB / 7-hour intern_atom death spiral at full-config
         // scale found this the hard way).
-        if derived && lits.iter().any(|(_, t)| {
-            term_depth(t) > self.opts.strategy.max_depth
-                || term_size(t) > self.opts.strategy.max_term_size
-        }) {
+        if derived
+            && lits.iter().any(|(_, t)| {
+                term_depth(t) > self.opts.strategy.max_depth
+                    || term_size(t) > self.opts.strategy.max_term_size
+            })
+        {
             self.stats.discarded_deep += 1;
             return None;
         }
@@ -1954,7 +2064,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if self.want_notes() {
                         notes.push(format!(
                             "{} -- refuted by unit clause {}",
-                            lit_kif(*pos, t, self.syn()), cid));
+                            lit_kif(*pos, t, self.syn()),
+                            cid
+                        ));
                     }
                     parents.push(cid);
                     continue;
@@ -1998,7 +2110,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             if self.want_notes() {
                                 notes.push(format!(
                                     "{} -- refuted by unit clause {}",
-                                    lit_kif(*pos, t, self.syn()), u.clause));
+                                    lit_kif(*pos, t, self.syn()),
+                                    u.clause
+                                ));
                             }
                             parents.push(u.clause);
                             dropped = true;
@@ -2006,7 +2120,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         }
                     }
                 }
-                if dropped { continue; }
+                if dropped {
+                    continue;
+                }
             }
             kept.push((*pos, t.clone()));
         }
@@ -2080,16 +2196,22 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // (verified like every `seen` consumer — a true key collision counts
         // as a collision, not a dup hit): `push()` still does the real
         // dedup itself, so this changes no behavior, only counts.
-        if demod_eligible && was_demodulated
-            && self.seen_duplicate_lits(clause.key, &clause.lits)
-        {
+        if demod_eligible && was_demodulated && self.seen_duplicate_lits(clause.key, &clause.lits) {
             self.stats.demod_dup_hits += 1;
         }
 
         // Tautology check on the canonical literals.
-        let pos_atoms: Set64<AtomId> =
-            clause.lits.iter().filter(|l| l.pos).map(|l| l.atom).collect();
-        if clause.lits.iter().any(|l| !l.pos && pos_atoms.contains(&l.atom)) {
+        let pos_atoms: Set64<AtomId> = clause
+            .lits
+            .iter()
+            .filter(|l| l.pos)
+            .map(|l| l.atom)
+            .collect();
+        if clause
+            .lits
+            .iter()
+            .any(|l| !l.pos && pos_atoms.contains(&l.atom))
+        {
             return None;
         }
 
@@ -2159,7 +2281,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let base = (st.cw_lits * clause.lits.len() as u64
             + st.cw_size * size
             + st.cw_vars * u64::from(clause.nvars))
-            .max(1)
+        .max(1)
             * (1 + st.cw_skolem * skolems);
         // Conjecture-distance factor: structurally goal-near clauses
         // keep their base weight; goal-far ones sink (×1..×1+W).
@@ -2175,17 +2297,19 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // candidate subsumer without a special first-use path.
         let layer = self.layer;
         let fv = super::fvi::ClauseFv::compute(
-            &clause.lits, self.kbo(),
-            |a| layer.atom_info(a), &self.layer.atoms, self.syn(),
+            &clause.lits,
+            self.kbo(),
+            |a| layer.atom_info(a),
+            &self.layer.atoms,
+            self.syn(),
             self.opts.strategy.demod.then_some(&layer.term_facts),
         );
         // Bloom subsumption prefilter words (fvi.rs), same discipline as
         // `fv`: computed unconditionally at birth from the already-warm
         // `AtomInfos` memo (one OR per literal), so the arena record can
         // serve as a `forward_subsumed` candidate subsumer immediately.
-        let blooms = super::fvi::ClauseBlooms::compute(
-            &clause.lits, &terms, |a| layer.atom_info(a),
-        );
+        let blooms =
+            super::fvi::ClauseBlooms::compute(&clause.lits, &terms, |a| layer.atom_info(a));
         let id = self.clauses.len() as u32;
         // SoA twin first (`subs` + retirement bitmap grow in lockstep
         // with the arena — the scan-side invariant `forward_subsumed`
@@ -2216,7 +2340,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         });
         debug_assert_eq!(self.subs.len(), self.clauses.len(), "SoA/arena lockstep");
         debug_assert_eq!(
-            self.retired_bits.len(), self.clauses.len().div_ceil(64),
+            self.retired_bits.len(),
+            self.clauses.len().div_ceil(64),
             "retired bitmap/arena lockstep",
         );
         // Watchlist coverage at ACCEPT: every clause passes here —
@@ -2235,7 +2360,12 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // (arena off, or a >255-arity literal) leave this clause on the
         // owned-tree fallback paths.
         {
-            let Self { arena, arena_roots, clauses, .. } = self;
+            let Self {
+                arena,
+                arena_roots,
+                clauses,
+                ..
+            } = self;
             let roots = match arena.as_mut() {
                 Some(ar) => {
                     let c = &clauses[id as usize];
@@ -2355,7 +2485,9 @@ fn bwd_demodulate_term(d: &super::super::units::Demod, t: &mut Term, cap: u64) -
     let mut rewrites = 0u64;
     while rewrites < cap {
         let off = max_slot(t).map_or(0, |m| m + 1);
-        let Some((path, rr)) = bwd_find_redex(d, t, off) else { break };
+        let Some((path, rr)) = bwd_find_redex(d, t, off) else {
+            break;
+        };
         replace_in_place(t, &path, rr);
         rewrites += 1;
     }
@@ -2373,12 +2505,24 @@ mod hash_before_intern_tests {
     use crate::syntactic::SyntacticLayer;
     use crate::types::{Literal, Symbol};
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn num(v: &str) -> Term { Term::Lit(Literal::Number(v.to_string())) }
-    fn strv(v: &str) -> Term { Term::Lit(Literal::Str(v.to_string())) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn var(v: u64) -> Term { Term::Var(v) }
-    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn num(v: &str) -> Term {
+        Term::Lit(Literal::Number(v.to_string()))
+    }
+    fn strv(v: &str) -> Term {
+        Term::Lit(Literal::Str(v.to_string()))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn var(v: u64) -> Term {
+        Term::Var(v)
+    }
+    fn eq(l: Term, r: Term) -> Term {
+        app(vec![Term::Op(OpKind::Equal), l, r])
+    }
 
     /// The literal-list fixture family: every shape the canonicalizer
     /// meets — shared variables across literals (first-occurrence
@@ -2397,17 +2541,55 @@ mod hash_before_intern_tests {
             ],
             vec![
                 (true, eq(app(vec![sym("f"), var(3)]), var(3))),
-                (false, app(vec![sym("r"), app(vec![sym("g"), var(3), sym("c")])])),
+                (
+                    false,
+                    app(vec![sym("r"), app(vec![sym("g"), var(3), sym("c")])]),
+                ),
             ],
             vec![(true, eq(sym("b"), sym("a")))], // orients
-            vec![(true, eq(app(vec![sym("f"), sym("z")]), app(vec![sym("f"), sym("a")])))],
+            vec![(
+                true,
+                eq(app(vec![sym("f"), sym("z")]), app(vec![sym("f"), sym("a")])),
+            )],
             vec![
-                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
-                (true, app(vec![sym("wide"), num("3.5"), strv("s"), var(0), var(1), var(2)])),
+                (
+                    true,
+                    app(vec![
+                        sym("wide"),
+                        num("3.5"),
+                        strv("s"),
+                        var(0),
+                        var(1),
+                        var(2),
+                    ]),
+                ),
+                (
+                    true,
+                    app(vec![
+                        sym("wide"),
+                        num("3.5"),
+                        strv("s"),
+                        var(0),
+                        var(1),
+                        var(2),
+                    ]),
+                ),
             ],
             vec![
-                (false, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), var(5)])])])),
-                (true, app(vec![sym("deep"), app(vec![sym("g"), app(vec![sym("h"), sym("k")])])])),
+                (
+                    false,
+                    app(vec![
+                        sym("deep"),
+                        app(vec![sym("g"), app(vec![sym("h"), var(5)])]),
+                    ]),
+                ),
+                (
+                    true,
+                    app(vec![
+                        sym("deep"),
+                        app(vec![sym("g"), app(vec![sym("h"), sym("k")])]),
+                    ]),
+                ),
             ],
             vec![(true, app(vec![var(2), var(1), var(2)]))], // predicate-variable head
         ]
@@ -2434,8 +2616,16 @@ mod hash_before_intern_tests {
                 assert_eq!(*t, lifted, "slot term diverged from the slot_atom lift");
                 // The accept-point intern reproduces the id (and the
                 // stored sentence, by content addressing).
-                assert_eq!(atoms.intern_slot_atom(t), l.atom, "intern_slot_atom id diverged");
-                assert_eq!(slot_atom_content_id(t), l.atom, "slot hash-only id diverged");
+                assert_eq!(
+                    atoms.intern_slot_atom(t),
+                    l.atom,
+                    "intern_slot_atom id diverged"
+                );
+                assert_eq!(
+                    slot_atom_content_id(t),
+                    l.atom,
+                    "slot hash-only id diverged"
+                );
             }
         }
     }
@@ -2455,7 +2645,11 @@ mod hash_before_intern_tests {
             var(12),
         ];
         for t in terms {
-            assert_eq!(atom_content_id(&t), atoms.intern_atom(&t), "id diverged for {t:?}");
+            assert_eq!(
+                atom_content_id(&t),
+                atoms.intern_atom(&t),
+                "id diverged for {t:?}"
+            );
         }
     }
 
@@ -2488,9 +2682,9 @@ mod hash_before_intern_tests {
 
 #[cfg(test)]
 mod model_true_negative_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
-    use super::{CONJECTURE, SUPPORT, Term};
+    use super::super::NativeProver;
+    use super::{Term, CONJECTURE, SUPPORT};
     use crate::semantics::caches::test_support::kif_layer;
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
@@ -2510,9 +2704,16 @@ mod model_true_negative_tests {
         let layer = ProverLayer::new(kif_layer(kif));
         let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
 
-        let rule_sid = layer.semantic.syntactic.root_sids().into_iter()
+        let rule_sid = layer
+            .semantic
+            .syntactic
+            .root_sids()
+            .into_iter()
             .find(|sid| {
-                layer.semantic.syntactic.sentence(*sid)
+                layer
+                    .semantic
+                    .syntactic
+                    .sentence(*sid)
                     .is_some_and(|s| s.op() == Some(&crate::parse::OpKind::Implies))
             })
             .expect("the (=> (instance ?X Dog) (mammal ?X)) root is stored");
@@ -2529,14 +2730,19 @@ mod model_true_negative_tests {
             sids.contains(&rule_sid),
             "citation must include the defining rule's sid: {sids:?}"
         );
-        assert_eq!(prover.guide_attempted, true, "the shared model was materialized on demand");
+        assert_eq!(
+            prover.guide_attempted, true,
+            "the shared model was materialized on demand"
+        );
 
         // CONJECTURE tier: the paraconsistent guard — never delete from a
         // conjecture-tier clause this way, even though the model still
         // entails the same fact (mirrors the oracle disjointness guard
         // just above `model_true_negative`'s call site in `make`).
         assert!(
-            prover.model_true_negative_forced(&not_mammal_fido, CONJECTURE).is_none(),
+            prover
+                .model_true_negative_forced(&not_mammal_fido, CONJECTURE)
+                .is_none(),
             "a CONJECTURE-tier clause must NOT be simplified via the model"
         );
     }
@@ -2562,7 +2768,9 @@ mod model_true_negative_tests {
             Term::Sym(Symbol::from("Rex")),
         ]);
         assert!(
-            prover.model_true_negative_forced(&not_mammal_rex, SUPPORT).is_none(),
+            prover
+                .model_true_negative_forced(&not_mammal_rex, SUPPORT)
+                .is_none(),
             "mammal(Rex) is not entailed: nothing to delete"
         );
     }
@@ -2570,8 +2778,8 @@ mod model_true_negative_tests {
 
 #[cfg(test)]
 mod ground_term_identity_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
+    use super::super::NativeProver;
     use super::{Term, BACKGROUND, SUPPORT};
     use crate::parse::OpKind;
     use crate::prover::saturate::prover::NativeOpts;
@@ -2580,14 +2788,23 @@ mod ground_term_identity_tests {
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn eq(l: Term, r: Term) -> Term { app(vec![Term::Op(OpKind::Equal), l, r]) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn eq(l: Term, r: Term) -> Term {
+        app(vec![Term::Op(OpKind::Equal), l, r])
+    }
 
     fn demod_prover(layer: &ProverLayer) -> NativeProver<'_> {
         let mut strategy = Strategy::base();
         strategy.demod = true;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         NativeProver::new(layer, Scope::Base, opts)
     }
 
@@ -2598,7 +2815,11 @@ mod ground_term_identity_tests {
         let id = p
             .make(
                 vec![(true, eq(app(vec![sym(head), Term::Var(0)]), Term::Var(0)))],
-                vec![], "input", BACKGROUND, None, false,
+                vec![],
+                "input",
+                BACKGROUND,
+                None,
+                false,
             )
             .expect("rule clause made");
         p.activate(id);
@@ -2621,46 +2842,80 @@ mod ground_term_identity_tests {
         //             bloom passes, memo records "unchanged";
         //   redex   — (wrap2 (shrink c)) ⇒ normalizes to (wrap2 c).
         let inert = app(vec![sym("boxCar"), sym("axle"), sym("wheel")]);
-        let noredex = app(vec![sym("wrap"), app(vec![sym("shrink"), sym("a"), sym("b")])]);
+        let noredex = app(vec![
+            sym("wrap"),
+            app(vec![sym("shrink"), sym("a"), sym("b")]),
+        ]);
         let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
 
         // Precondition (deterministic — content-hash bits): the inert
         // subtree's bloom really misses the rule's head bit.
         let shrink_bit = 1u64 << (Symbol::hash_name("shrink") & 63);
-        let (_, inert_facts) = layer.term_facts.ground_key_facts(&inert, &layer.kbo)
+        let (_, inert_facts) = layer
+            .term_facts
+            .ground_key_facts(&inert, &layer.kbo)
             .expect("inert fixture is ground");
-        assert_eq!(inert_facts.sym_bloom & shrink_bit, 0,
-            "fixture names must not collide with the rule head bit");
+        assert_eq!(
+            inert_facts.sym_bloom & shrink_bit,
+            0,
+            "fixture names must not collide with the rule head bit"
+        );
 
         // Clause 1: all three subtrees under one literal.
-        let lit = app(vec![sym("p"), inert.clone(), noredex.clone(), redex.clone()]);
-        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+        let lit = app(vec![
+            sym("p"),
+            inert.clone(),
+            noredex.clone(),
+            redex.clone(),
+        ]);
+        let id = p
+            .make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
             .expect("clause kept");
         let expect = app(vec![
-            sym("p"), inert.clone(), noredex.clone(),
+            sym("p"),
+            inert.clone(),
+            noredex.clone(),
             app(vec![sym("wrap2"), sym("c")]),
         ]);
-        assert_eq!(p.clauses[id as usize].terms[0].1, expect, "demod normalized the redex");
-        assert!(p.clauses[id as usize].parents.contains(&rule), "demodulator cited");
-        assert!(p.stats.bloom_subtrees_pruned >= 1, "inert subtree bloom-pruned");
+        assert_eq!(
+            p.clauses[id as usize].terms[0].1, expect,
+            "demod normalized the redex"
+        );
+        assert!(
+            p.clauses[id as usize].parents.contains(&rule),
+            "demodulator cited"
+        );
+        assert!(
+            p.stats.bloom_subtrees_pruned >= 1,
+            "inert subtree bloom-pruned"
+        );
         assert!(p.stats.nf_probes >= 2, "noredex + redex probed");
         assert!(p.stats.nf_misses >= 2, "first sighting misses");
-        assert!(p.stats.nf_hits_unchanged >= 1,
-            "the restarted fixpoint re-probes recorded unchanged entries");
+        assert!(
+            p.stats.nf_hits_unchanged >= 1,
+            "the restarted fixpoint re-probes recorded unchanged entries"
+        );
         assert_eq!(p.stats.nf_hits_rewritten, 0, "nothing to replay yet");
 
         // Clause 2: the same redex subtree in a different literal —
         // the recorded normal form is spliced without a redex search.
         let lit2 = app(vec![sym("q"), noredex.clone(), redex.clone()]);
-        let id2 = p.make(vec![(false, lit2)], vec![], "test", SUPPORT, None, true)
+        let id2 = p
+            .make(vec![(false, lit2)], vec![], "test", SUPPORT, None, true)
             .expect("clause kept");
         assert_eq!(
             p.clauses[id2 as usize].terms[0].1,
-            app(vec![sym("q"), noredex.clone(), app(vec![sym("wrap2"), sym("c")])]),
+            app(vec![
+                sym("q"),
+                noredex.clone(),
+                app(vec![sym("wrap2"), sym("c")])
+            ]),
         );
         assert!(p.stats.nf_hits_rewritten >= 1, "cached NF spliced");
-        assert!(p.clauses[id2 as usize].parents.contains(&rule),
-            "the splice replays the demodulator citation");
+        assert!(
+            p.clauses[id2 as usize].parents.contains(&rule),
+            "the splice replays the demodulator citation"
+        );
         assert_eq!(p.stats.nf_stale_discards, 0, "no generation change yet");
     }
 
@@ -2675,7 +2930,8 @@ mod ground_term_identity_tests {
 
         let redex = app(vec![sym("wrap2"), app(vec![sym("shrink"), sym("c")])]);
         let lit = app(vec![sym("p"), redex.clone()]);
-        let id = p.make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
+        let id = p
+            .make(vec![(false, lit)], vec![], "test", SUPPORT, None, true)
             .expect("kept");
         assert_eq!(
             p.clauses[id as usize].terms[0].1,
@@ -2689,18 +2945,23 @@ mod ground_term_identity_tests {
         let stale_before = p.stats.nf_stale_discards;
 
         let lit3 = app(vec![sym("r"), redex.clone()]);
-        let id3 = p.make(vec![(false, lit3)], vec![], "test", SUPPORT, None, true)
+        let id3 = p
+            .make(vec![(false, lit3)], vec![], "test", SUPPORT, None, true)
             .expect("kept");
         assert_eq!(
             p.clauses[id3 as usize].terms[0].1,
             app(vec![sym("r"), sym("c")]),
             "the stale NF was discarded and the subtree renormalized to c",
         );
-        assert!(p.stats.nf_stale_discards > stale_before,
-            "the old-generation entry was lazily discarded");
+        assert!(
+            p.stats.nf_stale_discards > stale_before,
+            "the old-generation entry was lazily discarded"
+        );
         let parents = &p.clauses[id3 as usize].parents;
-        assert!(parents.contains(&r1) && parents.contains(&r2),
-            "both demodulators cited on the renormalized clause");
+        assert!(
+            parents.contains(&r1) && parents.contains(&r2),
+            "both demodulators cited on the renormalized clause"
+        );
     }
 
     // Part 3.3: the ground weight fast path must agree with the full
@@ -2726,8 +2987,8 @@ mod ground_term_identity_tests {
 
 #[cfg(test)]
 mod bloom_subsumption_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
+    use super::super::NativeProver;
     use super::{Term, SUPPORT};
     use crate::prover::saturate::prover::NativeOpts;
     use crate::prover::saturate::strategy::Strategy;
@@ -2735,13 +2996,20 @@ mod bloom_subsumption_tests {
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
 
     fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
         let mut strategy = Strategy::base();
         strategy.subsumption = true;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         NativeProver::new(layer, Scope::Base, opts)
     }
 
@@ -2754,21 +3022,31 @@ mod bloom_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         // C = ¬(q a) ∨ (p ?0)  — one ground literal, one open literal.
-        let c = p.make(
-            vec![
-                (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), Term::Var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (false, app(vec![sym("q"), sym("a")])),
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
         let made = p.make(
             vec![
                 (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), sym("b")])),
+                (true, app(vec![sym("p"), sym("b")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_none(), "D is forward-subsumed by C");
         assert_eq!(p.stats.subsumed, 1);
@@ -2790,23 +3068,35 @@ mod bloom_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         // C = (p ?0) ∨ (q c) — active candidate subsumer.
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), Term::Var(0)])),
-                (true, app(vec![sym("q"), sym("c")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                    (true, app(vec![sym("q"), sym("c")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         p.activate(c);
         // D = (p a) ∨ (q b) — C's (p ?0) makes it an index candidate,
         // but (q c) has no counterpart in D.
-        let d = p.make(
-            vec![
-                (true, app(vec![sym("p"), sym("a")])),
-                (true, app(vec![sym("q"), sym("b")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("NOT subsumed — kept");
+        let d = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), sym("a")])),
+                    (true, app(vec![sym("q"), sym("b")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("NOT subsumed — kept");
         // Precondition (deterministic content-hash bits): C really has
         // a leaf bit outside D's word — i.e. this pair exercises the
         // leaf channel, not a later one.  If a name reshuffle ever
@@ -2816,10 +3106,16 @@ mod bloom_subsumption_tests {
         let d_leaf = p.subs[d as usize].blooms.leaf;
         assert_ne!(c_leaf & !d_leaf, 0, "fixture: leaf bit of `c` must miss D");
         assert_eq!(p.stats.subs_checks_attempted, 1);
-        assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 1, "leaf channel fired first");
+        assert_eq!(
+            p.stats.subs_rejected_by_bloom_leaf, 1,
+            "leaf channel fired first"
+        );
         assert_eq!(p.stats.subs_rejected_by_bloom_glit, 0);
         assert_eq!(p.stats.subs_rejected_by_fv, 0);
-        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+        assert_eq!(
+            p.stats.subs_full_checks, 0,
+            "the expensive matcher never ran"
+        );
     }
 
     // Ground-literal-bloom rejection: every ground leaf of C appears in
@@ -2831,28 +3127,47 @@ mod bloom_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         // C = (q c) ∨ (p ?0).
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("q"), sym("c")])),
-                (true, app(vec![sym("p"), Term::Var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("q"), sym("c")])),
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         p.activate(c);
         // D = (p (f q c)) ∨ (r a): the leaves q and c DO occur in D
         // (under a compound — leaf_sig counts those), so the leaf
         // channel passes; but the literal (q c) itself is absent.
-        let d = p.make(
-            vec![
-                (true, app(vec![sym("p"), app(vec![sym("f"), sym("q"), sym("c")])])),
-                (true, app(vec![sym("r"), sym("a")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("NOT subsumed — kept");
+        let d = p
+            .make(
+                vec![
+                    (
+                        true,
+                        app(vec![sym("p"), app(vec![sym("f"), sym("q"), sym("c")])]),
+                    ),
+                    (true, app(vec![sym("r"), sym("a")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("NOT subsumed — kept");
         // Preconditions: leaf channel really passes, glit really differs.
         let (cb, db) = (p.subs[c as usize].blooms, p.subs[d as usize].blooms);
         assert_eq!(cb.leaf & !db.leaf, 0, "fixture: every C leaf occurs in D");
-        assert_ne!(cb.glit & !db.glit, 0, "fixture: C's ground-literal bit misses D");
+        assert_ne!(
+            cb.glit & !db.glit,
+            0,
+            "fixture: C's ground-literal bit misses D"
+        );
         assert_eq!(p.stats.subs_checks_attempted, 1);
         assert_eq!(p.stats.subs_rejected_by_bloom_leaf, 0);
         assert_eq!(p.stats.subs_glit_applicable, 1, "C has a ground literal");
@@ -2867,13 +3182,19 @@ mod bloom_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         // C = (p ?0) ∨ (q ?0) — no ground literal.
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), Term::Var(0)])),
-                (true, app(vec![sym("q"), Term::Var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                    (true, app(vec![sym("q"), Term::Var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         p.activate(c);
         assert_eq!(p.subs[c as usize].blooms.glit, 0, "no ground literals");
         // D = (p a) ∨ (q a): subsumed via {?0 ↦ a}.
@@ -2882,7 +3203,11 @@ mod bloom_subsumption_tests {
                 (true, app(vec![sym("p"), sym("a")])),
                 (true, app(vec![sym("q"), sym("a")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_none(), "D is subsumed");
         assert_eq!(p.stats.subs_glit_applicable, 0, "channel never applicable");
@@ -2894,8 +3219,8 @@ mod bloom_subsumption_tests {
 
 #[cfg(test)]
 mod keq_subsumption_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
+    use super::super::NativeProver;
     use super::{Term, SUPPORT};
     use crate::prover::saturate::prover::NativeOpts;
     use crate::prover::saturate::strategy::Strategy;
@@ -2903,13 +3228,20 @@ mod keq_subsumption_tests {
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
 
     fn subs_prover(layer: &ProverLayer) -> NativeProver<'_> {
         let mut strategy = Strategy::base();
         strategy.subsumption = true;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         NativeProver::new(layer, Scope::Base, opts)
     }
 
@@ -2922,21 +3254,31 @@ mod keq_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         // C = ¬(q a) ∨ (p ?0).
-        let c = p.make(
-            vec![
-                (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), Term::Var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (false, app(vec![sym("q"), sym("a")])),
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         // D = ¬(q a) ∨ (p b) — C subsumes D via {?0 ↦ b}.
         let made = p.make(
             vec![
                 (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), sym("b")])),
+                (true, app(vec![sym("p"), sym("b")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_none(), "D is forward-subsumed by C");
         assert_eq!(p.stats.subs_checks_attempted, 1);
@@ -2944,7 +3286,10 @@ mod keq_subsumption_tests {
         // (soundness), and it DID run (the pair reached it: both blooms
         // and FV passed).
         assert_eq!(p.stats.subs_rejected_by_keq, 0);
-        assert!(p.stats.keq_pair_tests > 0, "the filter actually scanned pairs");
+        assert!(
+            p.stats.keq_pair_tests > 0,
+            "the filter actually scanned pairs"
+        );
         assert_eq!(p.stats.subs_full_checks, 1);
     }
 
@@ -2961,24 +3306,36 @@ mod keq_subsumption_tests {
         let mut p = subs_prover(&layer);
         // C = (p ?0) ∨ (q a ?0) — both literals open, so the
         // ground-literal bloom is inapplicable by construction.
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), Term::Var(0)])),
-                (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), Term::Var(0)])),
+                    (true, app(vec![sym("q"), sym("a"), Term::Var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         p.activate(c);
         // D = (p a) ∨ (q b a) — C's (p ?0) makes it an index candidate,
         // but (q a ?0) matches neither literal: (p a) has the wrong
         // arity, (q b a) the wrong ground seat-1 content.
-        let d = p.make(
-            vec![
-                (true, app(vec![sym("p"), sym("a")])),
-                (true, app(vec![sym("q"), sym("b"), sym("a")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("NOT subsumed — kept");
+        let d = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), sym("a")])),
+                    (true, app(vec![sym("q"), sym("b"), sym("a")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("NOT subsumed — kept");
         // Fixture preconditions: the pair genuinely reaches the keq
         // channel, i.e. every earlier channel passes.  C's leaves
         // {p, q, a} all occur in D, so the leaf subset holds bit-wise
@@ -2998,7 +3355,10 @@ mod keq_subsumption_tests {
         assert_eq!(p.stats.subs_rejected_by_fv, 0);
         assert_eq!(p.stats.subs_rejected_by_keq, 1, "the keq filter fired");
         assert!(p.stats.keq_pair_tests > 0);
-        assert_eq!(p.stats.subs_full_checks, 0, "the expensive matcher never ran");
+        assert_eq!(
+            p.stats.subs_full_checks, 0,
+            "the expensive matcher never ran"
+        );
     }
 
     // The sum invariant on live traffic: a mixed batch of candidate
@@ -3025,11 +3385,13 @@ mod keq_subsumption_tests {
             // (polarity counts) against all-positive probes.
             vec![
                 (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), Term::Var(0)])),
+                (true, app(vec![sym("p"), Term::Var(0)])),
             ],
         ];
         for lits in actives {
-            let id = p.make(lits, vec![], "test", SUPPORT, None, true).expect("kept");
+            let id = p
+                .make(lits, vec![], "test", SUPPORT, None, true)
+                .expect("kept");
             p.activate(id);
         }
         let probes = vec![
@@ -3043,7 +3405,7 @@ mod keq_subsumption_tests {
             ],
             vec![
                 (false, app(vec![sym("q"), sym("a")])),
-                (true,  app(vec![sym("p"), sym("b")])),
+                (true, app(vec![sym("p"), sym("b")])),
             ],
         ];
         for lits in probes {
@@ -3051,8 +3413,14 @@ mod keq_subsumption_tests {
         }
         let s = &p.stats;
         assert!(s.subs_checks_attempted > 0, "traffic actually flowed");
-        assert!(s.subs_rejected_by_keq >= 1, "the keq channel fired at least once");
-        assert!(s.subs_full_checks >= 1, "at least one pair reached the exact check");
+        assert!(
+            s.subs_rejected_by_keq >= 1,
+            "the keq channel fired at least once"
+        );
+        assert!(
+            s.subs_full_checks >= 1,
+            "at least one pair reached the exact check"
+        );
         assert_eq!(
             s.subs_checks_attempted,
             s.subs_rejected_by_bloom_leaf
@@ -3077,7 +3445,8 @@ mod keq_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = subs_prover(&layer);
         let mk = |names: &[(&str, bool)]| -> Vec<(bool, Term)> {
-            names.iter()
+            names
+                .iter()
                 .map(|(n, ground)| {
                     let arg = if *ground { sym("a") } else { Term::Var(0) };
                     (true, app(vec![sym(n), arg]))
@@ -3114,15 +3483,21 @@ mod keq_subsumption_tests {
             let rec = p.subs[c.id as usize];
             assert_eq!(rec.nlits as usize, c.lits.len(), "clause {}", c.id);
             let fv = super::super::fvi::ClauseFv::compute(
-                &c.lits, p.kbo(),
-                |a| layer.atom_info(a), &layer.atoms, &layer.semantic.syntactic,
+                &c.lits,
+                p.kbo(),
+                |a| layer.atom_info(a),
+                &layer.atoms,
+                &layer.semantic.syntactic,
                 p.opts.strategy.demod.then_some(&layer.term_facts),
             );
             assert_eq!(rec.fv, fv, "fv recompute drifted for clause {}", c.id);
-            let blooms = super::super::fvi::ClauseBlooms::compute(
-                &c.lits, &c.terms, |a| layer.atom_info(a),
+            let blooms =
+                super::super::fvi::ClauseBlooms::compute(&c.lits, &c.terms, |a| layer.atom_info(a));
+            assert_eq!(
+                rec.blooms, blooms,
+                "bloom recompute drifted for clause {}",
+                c.id
             );
-            assert_eq!(rec.blooms, blooms, "bloom recompute drifted for clause {}", c.id);
             assert!(!p.is_retired(c.id), "no retirement without bwd_demod");
         }
     }
@@ -3130,8 +3505,8 @@ mod keq_subsumption_tests {
 
 #[cfg(test)]
 mod ej_subsumption_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
+    use super::super::NativeProver;
     use super::{Term, SUPPORT};
     use crate::prover::saturate::prover::NativeOpts;
     use crate::prover::saturate::strategy::Strategy;
@@ -3139,9 +3514,15 @@ mod ej_subsumption_tests {
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn var(s: u64) -> Term { Term::Var(s) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn var(s: u64) -> Term {
+        Term::Var(s)
+    }
 
     /// Subsumption + the equality-join channel, EXPLICITLY on (immune
     /// to default flips of the `subs_join` knob).
@@ -3149,7 +3530,10 @@ mod ej_subsumption_tests {
         let mut strategy = Strategy::base();
         strategy.subsumption = true;
         strategy.subs_join = true;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         NativeProver::new(layer, Scope::Base, opts)
     }
 
@@ -3164,13 +3548,19 @@ mod ej_subsumption_tests {
         let mut p = ej_prover(&layer);
         // C = (p ?0 k) ∨ (q ?0 m) — both literals ground-anchored
         // (Active plans), ?0 shared and joinable.
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), var(0), sym("k")])),
-                (true, app(vec![sym("q"), var(0), sym("m")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), var(0), sym("k")])),
+                    (true, app(vec![sym("q"), var(0), sym("m")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         // D = (p a k) ∨ (q b m): literal-wise partnered, jointly
         // unsatisfiable (?0 ↦ a vs ?0 ↦ b).
@@ -3179,11 +3569,18 @@ mod ej_subsumption_tests {
                 (true, app(vec![sym("p"), sym("a"), sym("k")])),
                 (true, app(vec![sym("q"), sym("b"), sym("m")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_some(), "NOT subsumed — the exact check would agree");
         assert_eq!(p.stats.subs_checks_attempted, 1);
-        assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq cannot see the disagreement");
+        assert_eq!(
+            p.stats.subs_rejected_by_keq, 0,
+            "keq cannot see the disagreement"
+        );
         assert_eq!(p.stats.ej_candidates, 1);
         assert_eq!(p.stats.ej_rej_join, 1, "the equality join fired");
         assert_eq!(p.stats.ej_rej_no_partner, 0);
@@ -3203,13 +3600,19 @@ mod ej_subsumption_tests {
         let mut p = ej_prover(&layer);
         // C = (p ?0 ?1) ∨ (p ?1 ?0)  (two Trivial plans — their whole
         // channel value IS the join keys they decode).
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), var(0), var(1)])),
-                (true, app(vec![sym("p"), var(1), var(0)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), var(0), var(1)])),
+                    (true, app(vec![sym("p"), var(1), var(0)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         // D = (p a b) ∨ (p b a) — subsumed via {?0 ↦ a, ?1 ↦ b}.
         let made = p.make(
@@ -3217,9 +3620,16 @@ mod ej_subsumption_tests {
                 (true, app(vec![sym("p"), sym("a"), sym("b")])),
                 (true, app(vec![sym("p"), sym("b"), sym("a")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
-        assert!(made.is_none(), "genuinely subsumed — the join must not block it");
+        assert!(
+            made.is_none(),
+            "genuinely subsumed — the join must not block it"
+        );
         assert_eq!(p.stats.subsumed, 1);
         assert_eq!(p.stats.ej_candidates, 1);
         assert_eq!(p.stats.ej_rej_join, 0);
@@ -3235,13 +3645,19 @@ mod ej_subsumption_tests {
     fn cap_overflow_treated_as_unknown_not_reject() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = ej_prover(&layer);
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), var(0)])),
-                (true, app(vec![sym("q"), var(0), sym("c")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), var(0)])),
+                    (true, app(vec![sym("q"), var(0), sym("c")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         // D = (p a1) ∨ … ∨ (p a9) ∨ (q b c).
         let mut d_lits: Vec<(bool, Term)> = (1..=9)
@@ -3249,7 +3665,10 @@ mod ej_subsumption_tests {
             .collect();
         d_lits.push((true, app(vec![sym("q"), sym("b"), sym("c")])));
         let made = p.make(d_lits, vec![], "test", SUPPORT, None, true);
-        assert!(made.is_some(), "not subsumed (no (p b) in D) — exact check decides");
+        assert!(
+            made.is_some(),
+            "not subsumed (no (p b) in D) — exact check decides"
+        );
         assert_eq!(p.stats.ej_candidates, 1);
         assert_eq!(p.stats.ej_pairs_decoded, 10, "9 p-partners + 1 q-partner");
         assert_eq!(
@@ -3269,24 +3688,40 @@ mod ej_subsumption_tests {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = ej_prover(&layer);
         // C = (f ?0 ?1 ?2 ?3) ∨ (p ?0 k) ∨ (q ?0 m).
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
-                (true, app(vec![sym("p"), var(0), sym("k")])),
-                (true, app(vec![sym("q"), var(0), sym("m")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                    (true, app(vec![sym("p"), var(0), sym("k")])),
+                    (true, app(vec![sym("q"), var(0), sym("m")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         let made = p.make(
             vec![
-                (true, app(vec![sym("f"), sym("w"), sym("x"), sym("y"), sym("z")])),
+                (
+                    true,
+                    app(vec![sym("f"), sym("w"), sym("x"), sym("y"), sym("z")]),
+                ),
                 (true, app(vec![sym("p"), sym("a"), sym("k")])),
                 (true, app(vec![sym("q"), sym("b"), sym("m")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
-        assert!(made.is_some(), "not subsumed — but only the exact check may say so");
+        assert!(
+            made.is_some(),
+            "not subsumed — but only the exact check may say so"
+        );
         assert_eq!(p.stats.ej_candidates, 1, "the Active literals still ran");
         assert_eq!(
             p.stats.ej_rej_join, 0,
@@ -3304,19 +3739,32 @@ mod ej_subsumption_tests {
     fn zero_partner_literal_rejects_before_full_check() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = ej_prover(&layer);
-        let c = p.make(
-            vec![(true, app(vec![sym("p"), var(0), var(0)]))],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![(true, app(vec![sym("p"), var(0), var(0)]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         let made = p.make(
             vec![(true, app(vec![sym("p"), sym("a"), sym("b")]))],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_some(), "(p ?0 ?0) does not subsume (p a b)");
         assert_eq!(p.stats.subs_rejected_by_keq, 0, "keq passes this pair");
         assert_eq!(p.stats.ej_candidates, 1);
-        assert_eq!(p.stats.ej_rej_no_partner, 1, "the decode refuted every partner");
+        assert_eq!(
+            p.stats.ej_rej_no_partner, 1,
+            "the decode refuted every partner"
+        );
         assert_eq!(p.stats.ej_full_checks_saved, 1);
         assert_eq!(p.stats.subs_full_checks, 0);
     }
@@ -3331,25 +3779,44 @@ mod ej_subsumption_tests {
         // C = (f ?0 ?1 ?2 ?3) ∨ (g ?0 ?1 ?2 ?3): v = 4 at both roots ⇒
         // root fallback ⇒ unusable (two literals, so the probe goes
         // through CLAUSE subsumption, not the unit-store channel).
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
-                (true, app(vec![sym("g"), var(0), var(1), var(2), var(3)])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("f"), var(0), var(1), var(2), var(3)])),
+                    (true, app(vec![sym("g"), var(0), var(1), var(2), var(3)])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         let made = p.make(
             vec![
-                (true, app(vec![sym("f"), sym("a"), sym("b"), sym("c"), sym("d")])),
-                (true, app(vec![sym("g"), sym("a"), sym("b"), sym("c"), sym("d")])),
+                (
+                    true,
+                    app(vec![sym("f"), sym("a"), sym("b"), sym("c"), sym("d")]),
+                ),
+                (
+                    true,
+                    app(vec![sym("g"), sym("a"), sym("b"), sym("c"), sym("d")]),
+                ),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_none(), "genuinely subsumed via the exact check");
         assert_eq!(p.stats.subsumed, 1);
         assert_eq!(p.stats.ej_skipped_unusable, 1);
-        assert_eq!(p.stats.ej_candidates, 0, "nothing runnable — never evaluated");
+        assert_eq!(
+            p.stats.ej_candidates, 0,
+            "nothing runnable — never evaluated"
+        );
         assert_eq!(p.stats.ej_full_checks_saved, 0);
         assert_eq!(p.stats.subs_full_checks, 1);
     }
@@ -3363,35 +3830,51 @@ mod ej_subsumption_tests {
         let mut strategy = Strategy::base();
         strategy.subsumption = true;
         strategy.subs_join = false;
-        let opts = NativeOpts { strategy, ..Default::default() };
+        let opts = NativeOpts {
+            strategy,
+            ..Default::default()
+        };
         let mut p = NativeProver::new(&layer, Scope::Base, opts);
-        let c = p.make(
-            vec![
-                (true, app(vec![sym("p"), var(0), sym("k")])),
-                (true, app(vec![sym("q"), var(0), sym("m")])),
-            ],
-            vec![], "test", SUPPORT, None, true,
-        ).expect("subsumer kept");
+        let c = p
+            .make(
+                vec![
+                    (true, app(vec![sym("p"), var(0), sym("k")])),
+                    (true, app(vec![sym("q"), var(0), sym("m")])),
+                ],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("subsumer kept");
         p.activate(c);
         let made = p.make(
             vec![
                 (true, app(vec![sym("p"), sym("a"), sym("k")])),
                 (true, app(vec![sym("q"), sym("b"), sym("m")])),
             ],
-            vec![], "test", SUPPORT, None, true,
+            vec![],
+            "test",
+            SUPPORT,
+            None,
+            true,
         );
         assert!(made.is_some());
         assert_eq!(p.stats.ej_candidates, 0);
         assert_eq!(p.stats.ej_pairs_decoded, 0);
         assert_eq!(p.stats.ej_full_checks_saved, 0);
-        assert_eq!(p.stats.subs_full_checks, 1, "the exact check carried it alone");
+        assert_eq!(
+            p.stats.subs_full_checks, 1,
+            "the exact check carried it alone"
+        );
     }
 }
 
 #[cfg(test)]
 mod verified_dedup_tests {
-    use super::super::NativeProver;
     use super::super::super::ProverLayer;
+    use super::super::NativeProver;
     use super::{Term, SUPPORT};
     use crate::prover::saturate::prover::NativeOpts;
     use crate::prover::saturate::strategy::Strategy;
@@ -3399,11 +3882,18 @@ mod verified_dedup_tests {
     use crate::semantics::types::Scope;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
 
     fn base_prover(layer: &ProverLayer) -> NativeProver<'_> {
-        let opts = NativeOpts { strategy: Strategy::base(), ..Default::default() };
+        let opts = NativeOpts {
+            strategy: Strategy::base(),
+            ..Default::default()
+        };
         NativeProver::new(layer, Scope::Base, opts)
     }
 
@@ -3413,10 +3903,26 @@ mod verified_dedup_tests {
     fn genuine_duplicate_still_drops_at_push() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = base_prover(&layer);
-        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
-        let a2 = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
+        let a = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("a")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
+        let a2 = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("a")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         assert_eq!(p.clauses[a as usize].key, p.clauses[a2 as usize].key);
         assert!(p.push(Some(a)).is_some(), "first copy queues");
         assert!(p.push(Some(a2)).is_none(), "verified duplicate drops");
@@ -3431,16 +3937,34 @@ mod verified_dedup_tests {
     fn true_collision_is_counted_and_the_clause_is_accepted_not_dropped() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = base_prover(&layer);
-        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
-        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
+        let a = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("a")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
+        let b = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("b")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         let bkey = p.clauses[b as usize].key;
         // Inject the collision: b's key already "seen" — by a clause
         // with different canonical literals.
         p.seen.insert(bkey, a);
-        assert!(p.push(Some(b)).is_some(),
-            "a colliding non-duplicate must be ACCEPTED, not silently dropped");
+        assert!(
+            p.push(Some(b)).is_some(),
+            "a colliding non-duplicate must be ACCEPTED, not silently dropped"
+        );
         assert_eq!(p.stats.dedup_collisions_detected, 1);
         assert_eq!(p.seen.get(&bkey), Some(&a), "the map keeps the FIRST id");
         // Collision-mates bypass dedup from then on (documented, sound):
@@ -3455,13 +3979,32 @@ mod verified_dedup_tests {
     fn seen_insert_guard_verifies_and_counts_collisions() {
         let layer = ProverLayer::new(kif_layer(""));
         let mut p = base_prover(&layer);
-        let a = p.make(vec![(true, app(vec![sym("p"), sym("a")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
-        let b = p.make(vec![(true, app(vec![sym("p"), sym("b")]))],
-            vec![], "test", SUPPORT, None, true).expect("kept");
+        let a = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("a")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
+        let b = p
+            .make(
+                vec![(true, app(vec![sym("p"), sym("b")]))],
+                vec![],
+                "test",
+                SUPPORT,
+                None,
+                true,
+            )
+            .expect("kept");
         let akey = p.clauses[a as usize].key;
         assert!(p.seen_insert(akey, a), "first sighting records");
-        assert!(!p.seen_insert(akey, a), "same clause again: verified duplicate");
+        assert!(
+            !p.seen_insert(akey, a),
+            "same clause again: verified duplicate"
+        );
         // b under a's key: structural mismatch ⇒ collision ⇒ NEW.
         assert!(p.seen_insert(akey, b), "collision-mate counts as new");
         assert_eq!(p.stats.dedup_collisions_detected, 1);

@@ -4,8 +4,7 @@ use super::formula::Formula;
 use super::symbol::{Function, Predicate, Sort};
 
 /// TPTP logic dialect used when this problem is serialised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LogicMode {
     /// First-order form (`fof(...)`).
     Fof,
@@ -14,7 +13,9 @@ pub enum LogicMode {
 }
 
 impl Default for LogicMode {
-    fn default() -> Self { LogicMode::Fof }
+    fn default() -> Self {
+        LogicMode::Fof
+    }
 }
 
 /// A pure-Rust TPTP problem.
@@ -40,28 +41,33 @@ impl Default for LogicMode {
 /// assert!(tptp.contains("fof(axiom_0, axiom, P(socrates))."));
 /// assert!(tptp.contains("fof(conjecture, conjecture, P(socrates))."));
 /// ```
-#[derive(Debug, Clone, Default)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Problem {
     mode: LogicMode,
     sort_decls: Vec<Sort>,
-    fn_decls:   Vec<Function>,
+    fn_decls: Vec<Function>,
     pred_decls: Vec<Predicate>,
-    axioms:     Vec<Formula>,
+    axioms: Vec<Formula>,
     conjecture: Option<Formula>,
 }
 
 impl Problem {
     /// Creates a new FOF problem.
     pub fn new() -> Self {
-        Self { mode: LogicMode::Fof, ..Self::default() }
+        Self {
+            mode: LogicMode::Fof,
+            ..Self::default()
+        }
     }
 
     /// Creates a new TFF problem. Type declarations added via
     /// [`Problem::declare_sort`], [`Problem::declare_function`], and
     /// [`Problem::declare_predicate`] are emitted before axioms.
     pub fn new_tff() -> Self {
-        Self { mode: LogicMode::Tff, ..Self::default() }
+        Self {
+            mode: LogicMode::Tff,
+            ..Self::default()
+        }
     }
 
     /// The logic mode this problem is emitted in.
@@ -194,8 +200,8 @@ impl Problem {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::term::Term;
+    use super::*;
 
     #[test]
     #[cfg(feature = "ask")]

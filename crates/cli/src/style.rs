@@ -48,22 +48,35 @@ impl fmt::Display for Style {
 // `allow(non_upper_case_globals)` keeps the lowercase names the format strings
 // embed in `{…}` syntax.
 
-#[allow(non_upper_case_globals)] pub const style_bold:           Style = Style("\x1B[1m");
-#[allow(non_upper_case_globals)] pub const style_reset:          Style = Style("\x1B[0m");
+#[allow(non_upper_case_globals)]
+pub const style_bold: Style = Style("\x1B[1m");
+#[allow(non_upper_case_globals)]
+pub const style_reset: Style = Style("\x1B[0m");
 
-#[allow(non_upper_case_globals)] pub const color_blue:           Style = Style("\x1B[34m");
-#[allow(non_upper_case_globals)] pub const color_cyan:           Style = Style("\x1B[36m");
-#[allow(non_upper_case_globals)] pub const color_magenta:        Style = Style("\x1B[35m");
-#[allow(non_upper_case_globals)] pub const color_white:          Style = Style("\x1B[37m");
-#[allow(non_upper_case_globals)] pub const color_yellow:         Style = Style("\x1B[33m");
+#[allow(non_upper_case_globals)]
+pub const color_blue: Style = Style("\x1B[34m");
+#[allow(non_upper_case_globals)]
+pub const color_cyan: Style = Style("\x1B[36m");
+#[allow(non_upper_case_globals)]
+pub const color_magenta: Style = Style("\x1B[35m");
+#[allow(non_upper_case_globals)]
+pub const color_white: Style = Style("\x1B[37m");
+#[allow(non_upper_case_globals)]
+pub const color_yellow: Style = Style("\x1B[33m");
 
-#[allow(non_upper_case_globals)] pub const color_bright_black:   Style = Style("\x1B[90m");
-#[allow(non_upper_case_globals)] pub const color_bright_red:     Style = Style("\x1B[91m");
-#[allow(non_upper_case_globals)] pub const color_bright_green:   Style = Style("\x1B[92m");
-#[allow(non_upper_case_globals)] pub const color_bright_yellow:  Style = Style("\x1B[93m");
-#[allow(non_upper_case_globals)] pub const color_bright_cyan:    Style = Style("\x1B[96m");
+#[allow(non_upper_case_globals)]
+pub const color_bright_black: Style = Style("\x1B[90m");
+#[allow(non_upper_case_globals)]
+pub const color_bright_red: Style = Style("\x1B[91m");
+#[allow(non_upper_case_globals)]
+pub const color_bright_green: Style = Style("\x1B[92m");
+#[allow(non_upper_case_globals)]
+pub const color_bright_yellow: Style = Style("\x1B[93m");
+#[allow(non_upper_case_globals)]
+pub const color_bright_cyan: Style = Style("\x1B[96m");
 
-#[allow(non_upper_case_globals)] pub const color_reset:          Style = Style("\x1B[39m");
+#[allow(non_upper_case_globals)]
+pub const color_reset: Style = Style("\x1B[39m");
 
 #[cfg(test)]
 mod tests {
@@ -78,12 +91,12 @@ mod tests {
         // Default phase: escapes emitted.
         set_ugly(false);
         assert_eq!(format!("{color_bright_red}"), "\x1B[91m");
-        assert_eq!(format!("{style_bold}"),       "\x1B[1m");
+        assert_eq!(format!("{style_bold}"), "\x1B[1m");
 
         // Ugly phase: escapes suppressed.
         set_ugly(true);
         assert_eq!(format!("{color_bright_red}"), "");
-        assert_eq!(format!("{style_bold}"),       "");
+        assert_eq!(format!("{style_bold}"), "");
 
         // Restore default for any other tests in this binary.
         set_ugly(false);

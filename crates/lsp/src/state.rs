@@ -1,8 +1,8 @@
 //! Per-server and per-document state.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
 
 use lsp_types::Url;
 use ropey::Rope;
@@ -13,22 +13,22 @@ use sigmakee_rs_sdk::{ParsedDocument, Session, TranslationLayer};
 pub struct DocState {
     /// Authoritative text buffer. LSP incremental changes are applied to this
     /// rope; `String::from(&rope)` is fed into `parse_document` on reparse.
-    pub rope:    Rope,
+    pub rope: Rope,
     /// The LSP client's last-seen version number for this document. Diagnostics
     /// carry the same version so stale results can be discarded.
     pub version: i32,
     /// Most recent parse, corresponding to `rope` at `version`. `None` on
     /// freshly-opened docs until the first parse completes.
-    pub parsed:  Option<ParsedDocument>,
+    pub parsed: Option<ParsedDocument>,
 }
 
 impl DocState {
     /// Create a new document state from initial text and version.
     pub fn new(text: &str, version: i32) -> Self {
         Self {
-            rope:    Rope::from_str(text),
+            rope: Rope::from_str(text),
             version,
-            parsed:  None,
+            parsed: None,
         }
     }
 
@@ -68,14 +68,18 @@ impl GlobalState {
     /// Create a new, empty server state.
     pub fn new() -> Self {
         Self {
-            session: Arc::new(RwLock::new(Session::<TranslationLayer>::new(LSP_SESSION.to_string()))),
+            session: Arc::new(RwLock::new(Session::<TranslationLayer>::new(
+                LSP_SESSION.to_string(),
+            ))),
             docs: Arc::new(RwLock::new(HashMap::new())),
-            client_manages_files:     Arc::new(AtomicBool::new(false)),
+            client_manages_files: Arc::new(AtomicBool::new(false)),
             ignored_diagnostic_codes: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }
 
 impl Default for GlobalState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

@@ -30,14 +30,10 @@ use super::term::Term;
 /// as a binary predicate call, because equality has its own normalisation
 /// and canonicalisation rules (for instance `lhs = rhs` is symmetric and
 /// is treated as unordered in dedup hashing).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LitKind {
     /// An ordinary predicate application `p(t1, ..., tn)`.
-    Atom {
-        pred: Predicate,
-        args: Vec<Term>,
-    },
+    Atom { pred: Predicate, args: Vec<Term> },
     /// An equality `lhs = rhs`.  The sign on the containing [`Literal`]
     /// distinguishes `=` (`positive = true`) from `!=` (`positive = false`).
     Eq(Term, Term),
@@ -47,11 +43,10 @@ pub enum LitKind {
 ///
 /// `positive == true` means the literal appears as `p(...)` or `l = r`;
 /// `positive == false` means `~p(...)` or `l != r`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Literal {
     pub positive: bool,
-    pub kind:     LitKind,
+    pub kind: LitKind,
 }
 
 impl Literal {
@@ -106,8 +101,7 @@ impl Literal {
 /// An empty clause (`literals.is_empty()`) represents the empty disjunction
 /// `⊥`, the canonical refutation witness produced by a complete saturation
 /// run.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 pub struct Clause {
     pub literals: Vec<Literal>,
 }
@@ -122,7 +116,9 @@ impl Clause {
     /// The empty clause — the canonical `⊥`.
     #[allow(dead_code)] // IR builder (cnf clausifier + tests)
     pub fn empty() -> Self {
-        Self { literals: Vec::new() }
+        Self {
+            literals: Vec::new(),
+        }
     }
 
     /// Number of literals in this clause.
@@ -140,15 +136,15 @@ impl Clause {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::symbol::Function;
+    use super::*;
 
     #[test]
     fn literal_atom_constructors() {
-        let p  = Predicate::new("P", 2);
-        let x  = Term::var(0);
-        let a  = Term::constant(Function::new("a", 0));
-        let l  = Literal::atom(true, p.clone(), vec![x.clone(), a.clone()]);
+        let p = Predicate::new("P", 2);
+        let x = Term::var(0);
+        let a = Term::constant(Function::new("a", 0));
+        let l = Literal::atom(true, p.clone(), vec![x.clone(), a.clone()]);
         assert!(l.positive);
         assert!(!l.is_equality());
         assert_eq!(l.predicate().unwrap().name(), "P");
@@ -182,7 +178,7 @@ mod tests {
         let p = Predicate::new("P", 0);
         let q = Predicate::new("Q", 0);
         let c = Clause::new(vec![
-            Literal::atom(true,  p, vec![]),
+            Literal::atom(true, p, vec![]),
             Literal::atom(false, q, vec![]),
         ]);
         assert_eq!(c.len(), 2);

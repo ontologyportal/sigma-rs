@@ -212,7 +212,13 @@ impl HoProblem {
     pub fn to_thf(&self, sid_map: &[SentenceId], conjecture_name: &str) -> String {
         let mut out = String::new();
         for d in &self.decls {
-            let _ = writeln!(out, "thf({}_tp, type, {}: {}).", d.name, d.name, d.sort.thf());
+            let _ = writeln!(
+                out,
+                "thf({}_tp, type, {}: {}).",
+                d.name,
+                d.name,
+                d.sort.thf()
+            );
         }
         let mut seen: std::collections::HashMap<SentenceId, u32> = std::collections::HashMap::new();
         for (i, ax) in self.axioms.iter().enumerate() {
@@ -264,10 +270,7 @@ mod tests {
 
     #[test]
     fn lambda_and_quantifiers() {
-        let body = ThfExpr::apply(
-            ThfExpr::Const("s__p".into()),
-            vec![ThfExpr::Var(1)],
-        );
+        let body = ThfExpr::apply(ThfExpr::Const("s__p".into()), vec![ThfExpr::Var(1)]);
         let lam = ThfExpr::Lam(1, HoSort::I, Box::new(body.clone()));
         assert_eq!(lam.thf(), "(^ [X1: $i] : (s__p @ X1))");
         let q = ThfExpr::Exists(2, HoSort::O, Box::new(ThfExpr::Var(2)));
@@ -277,8 +280,14 @@ mod tests {
     #[test]
     fn connectives_and_problem_assembly() {
         let mut p = HoProblem::new();
-        p.declare(ThfConst { name: "s__q".into(), sort: HoSort::O });
-        p.declare(ThfConst { name: "s__q".into(), sort: HoSort::I }); // deduped
+        p.declare(ThfConst {
+            name: "s__q".into(),
+            sort: HoSort::O,
+        });
+        p.declare(ThfConst {
+            name: "s__q".into(),
+            sort: HoSort::I,
+        }); // deduped
         p.with_axiom(ThfExpr::And(vec![
             ThfExpr::Const("s__q".into()),
             ThfExpr::Not(Box::new(ThfExpr::False)),
@@ -286,8 +295,15 @@ mod tests {
         p.conjecture(ThfExpr::Const("s__q".into()));
         let text = p.to_thf(&[SentenceId::from(7u64)], "query_0");
         assert!(text.contains("thf(s__q_tp, type, s__q: $o)."), "{text}");
-        assert_eq!(text.matches("_tp, type,").count(), 1, "dedup failed: {text}");
-        assert!(text.contains("thf(kb_7, axiom, (s__q & (~ $false)))."), "{text}");
+        assert_eq!(
+            text.matches("_tp, type,").count(),
+            1,
+            "dedup failed: {text}"
+        );
+        assert!(
+            text.contains("thf(kb_7, axiom, (s__q & (~ $false)))."),
+            "{text}"
+        );
         assert!(text.contains("thf(query_0, conjecture, s__q)."), "{text}");
     }
 }

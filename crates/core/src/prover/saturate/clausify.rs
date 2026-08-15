@@ -83,23 +83,28 @@ pub(crate) enum Form {
 /// collects the per-instance comprehension units minted while lifting,
 /// numbered deterministically per root.
 pub(crate) struct LiftCtx {
-    root:    SentenceId,
+    root: SentenceId,
     /// Comprehension units in traversal (mint) order — lowered alongside
     /// the root's main formula by `clausify_form` under the SAME per-root
     /// skolem context (the defCNF auxiliary-clause pattern: deterministic
     /// order ⇒ deterministic names, byte-identical re-clausification).
-    units:   Vec<Form>,
+    units: Vec<Form>,
     /// Next kappa sequence number within this root (names the fresh
     /// instance/binder variables deterministically).
     kappa_n: u32,
     /// Comprehension was SKIPPED for a kappa term because the per-root
     /// cap was hit — input loss the completeness gate must see.
-    capped:  bool,
+    capped: bool,
 }
 
 impl LiftCtx {
     fn new(root: SentenceId) -> Self {
-        LiftCtx { root, units: Vec::new(), kappa_n: 0, capped: false }
+        LiftCtx {
+            root,
+            units: Vec::new(),
+            kappa_n: 0,
+            capped: false,
+        }
     }
 }
 
@@ -108,10 +113,10 @@ impl LiftCtx {
 /// handle (malformed quantifiers, malformed KappaFn, unresolvable
 /// subterms) — the caller skips the formula rather than guessing.
 pub(crate) fn lift_form(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    sent:  &Sentence,
-    lctx:  &mut LiftCtx,
+    sent: &Sentence,
+    lctx: &mut LiftCtx,
 ) -> Option<Form> {
     let op = match sent.elements.first() {
         Some(Element::Op(op)) if *op != OpKind::Equal => op.clone(),
@@ -126,7 +131,11 @@ pub(crate) fn lift_form(
             for el in args {
                 fs.push(lift_subform(syn, atoms, el, lctx)?);
             }
-            Some(if op == OpKind::And { Form::And(fs) } else { Form::Or(fs) })
+            Some(if op == OpKind::And {
+                Form::And(fs)
+            } else {
+                Form::Or(fs)
+            })
         }
         OpKind::Not => {
             let f = lift_subform(syn, atoms, args.next()?, lctx)?;
@@ -145,11 +154,15 @@ pub(crate) fn lift_form(
         OpKind::ForAll | OpKind::Exists => {
             // Shape: (forall (?X ?Y) body) — elements[1] is the varlist
             // sub-sentence (all Variables), elements[2] the body.
-            let Some(Element::Sub(vl_sid)) = args.next() else { return None };
+            let Some(Element::Sub(vl_sid)) = args.next() else {
+                return None;
+            };
             let vl = atoms.resolve(*vl_sid, syn)?;
             let mut vars = Vec::with_capacity(vl.elements.len());
             for el in vl.elements.iter() {
-                let Element::Variable { id, .. } = el else { return None };
+                let Element::Variable { id, .. } = el else {
+                    return None;
+                };
                 vars.push(*id);
             }
             let body = lift_subform(syn, atoms, args.next()?, lctx)?;
@@ -164,10 +177,10 @@ pub(crate) fn lift_form(
 }
 
 fn lift_subform(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    el:    &Element,
-    lctx:  &mut LiftCtx,
+    el: &Element,
+    lctx: &mut LiftCtx,
 ) -> Option<Form> {
     match el {
         Element::Sub(sid) => lift_form(syn, atoms, atoms.resolve(*sid, syn)?.as_ref(), lctx),
@@ -181,10 +194,10 @@ fn lift_subform(
 
 /// Lift a sentence in *term/atom* position into a [`Term::App`].
 fn lift_term_of(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    sent:  &Sentence,
-    lctx:  &mut LiftCtx,
+    sent: &Sentence,
+    lctx: &mut LiftCtx,
 ) -> Option<Term> {
     let mut elems = Vec::with_capacity(sent.elements.len());
     for el in sent.elements.iter() {
@@ -194,17 +207,17 @@ fn lift_term_of(
 }
 
 fn lift_term_el(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    el:    &Element,
-    lctx:  &mut LiftCtx,
+    el: &Element,
+    lctx: &mut LiftCtx,
 ) -> Option<Term> {
     Some(match el {
-        Element::Symbol(s)           => Term::Sym(s.0.clone()),
+        Element::Symbol(s) => Term::Sym(s.0.clone()),
         Element::Variable { id, .. } => Term::Var(*id),
-        Element::Literal(l)          => Term::Lit(l.clone()),
-        Element::Op(op)              => Term::Op(op.clone()),
-        Element::Sub(sid)            => {
+        Element::Literal(l) => Term::Lit(l.clone()),
+        Element::Op(op) => Term::Op(op.clone()),
+        Element::Sub(sid) => {
             let sent = atoms.resolve(*sid, syn)?;
             match kappa_shape(sent.as_ref()) {
                 KappaShape::Kappa { binder, body } => {
@@ -213,7 +226,14 @@ fn lift_term_el(
                     // formula-shaped argument) AND emits its per-instance
                     // comprehension units (`emit = true`).
                     lift_kappa_term(
-                        syn, atoms, binder, body, &mut QuoteEnv::default(), lctx, true)?
+                        syn,
+                        atoms,
+                        binder,
+                        body,
+                        &mut QuoteEnv::default(),
+                        lctx,
+                        true,
+                    )?
                 }
                 KappaShape::Malformed => {
                     // Documented bail: a malformed KappaFn (arity ≠ 3 or
@@ -233,7 +253,12 @@ fn lift_term_el(
                         // formula-shaped argument opens its own quote
                         // scope (`QuoteEnv::default`).
                         lift_quote_sentence(
-                            syn, atoms, sent.as_ref(), &mut QuoteEnv::default(), lctx)?
+                            syn,
+                            atoms,
+                            sent.as_ref(),
+                            &mut QuoteEnv::default(),
+                            lctx,
+                        )?
                     } else {
                         lift_term_of(syn, atoms, sent.as_ref(), lctx)?
                     }
@@ -284,14 +309,14 @@ fn is_formula_shaped(sent: &Sentence) -> bool {
 /// The reserved quote-constructor symbol for a connective/quantifier.
 pub(crate) fn quote_ctor_name(op: &OpKind) -> Option<&'static str> {
     Some(match op {
-        OpKind::And     => "and_q",
-        OpKind::Or      => "or_q",
-        OpKind::Not     => "not_q",
+        OpKind::And => "and_q",
+        OpKind::Or => "or_q",
+        OpKind::Not => "not_q",
         OpKind::Implies => "impl_q",
-        OpKind::Iff     => "iff_q",
-        OpKind::ForAll  => "forall_q",
-        OpKind::Exists  => "exists_q",
-        OpKind::Equal   => return None,
+        OpKind::Iff => "iff_q",
+        OpKind::ForAll => "forall_q",
+        OpKind::Exists => "exists_q",
+        OpKind::Equal => return None,
     })
 }
 
@@ -308,14 +333,15 @@ fn quote_bound_sym(n: u32) -> Symbol {
 #[derive(Default)]
 struct QuoteEnv {
     frames: Vec<Vec<(SymbolId, u32)>>,
-    next:   u32,
+    next: u32,
 }
 
 impl QuoteEnv {
     fn lookup(&self, id: SymbolId) -> Option<u32> {
-        self.frames.iter().rev().find_map(|f| {
-            f.iter().find(|(v, _)| *v == id).map(|(_, n)| *n)
-        })
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|f| f.iter().find(|(v, _)| *v == id).map(|(_, n)| *n))
     }
 }
 
@@ -324,11 +350,11 @@ impl QuoteEnv {
 /// (non-variable varlist entries, missing body) — a documented bail: the
 /// axiom then drops as lossy rather than loading a wrong encoding.
 fn lift_quote_sentence(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    sent:  &Sentence,
-    env:   &mut QuoteEnv,
-    lctx:  &mut LiftCtx,
+    sent: &Sentence,
+    env: &mut QuoteEnv,
+    lctx: &mut LiftCtx,
 ) -> Option<Term> {
     let op = match sent.elements.first() {
         Some(Element::Op(op)) if *op != OpKind::Equal => op.clone(),
@@ -347,13 +373,19 @@ fn lift_quote_sentence(
         OpKind::ForAll | OpKind::Exists => {
             // Shape: (forall (?X ?Y) body) — mirror `lift_form`'s
             // recognizer, bail on anything else.
-            if sent.elements.len() != 3 { return None; }
-            let Some(Element::Sub(vl_sid)) = sent.elements.get(1) else { return None };
+            if sent.elements.len() != 3 {
+                return None;
+            }
+            let Some(Element::Sub(vl_sid)) = sent.elements.get(1) else {
+                return None;
+            };
             let vl = atoms.resolve(*vl_sid, syn)?;
             let mut frame = Vec::with_capacity(vl.elements.len());
             let mut vl_elems = Vec::with_capacity(vl.elements.len());
             for el in vl.elements.iter() {
-                let Element::Variable { id, .. } = el else { return None };
+                let Element::Variable { id, .. } = el else {
+                    return None;
+                };
                 // Rebinding the same name within ONE varlist keeps the
                 // first slot (degenerate source; lookup finds it either
                 // way).  Shadowing across NESTED quantifiers works via
@@ -383,21 +415,21 @@ fn lift_quote_sentence(
 /// free variables stay variables, nested sub-sentences recurse under the
 /// same quote environment.
 fn lift_quote_el(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
-    el:    &Element,
-    env:   &mut QuoteEnv,
-    lctx:  &mut LiftCtx,
+    el: &Element,
+    env: &mut QuoteEnv,
+    lctx: &mut LiftCtx,
 ) -> Option<Term> {
     Some(match el {
-        Element::Symbol(s)  => Term::Sym(s.0.clone()),
+        Element::Symbol(s) => Term::Sym(s.0.clone()),
         Element::Variable { id, .. } => match env.lookup(*id) {
             Some(n) => Term::Sym(quote_bound_sym(n)),
-            None    => Term::Var(*id),
+            None => Term::Var(*id),
         },
         Element::Literal(l) => Term::Lit(l.clone()),
-        Element::Op(op)     => Term::Op(op.clone()),
-        Element::Sub(sid)   => {
+        Element::Op(op) => Term::Op(op.clone()),
+        Element::Sub(sid) => {
             let sent = atoms.resolve(*sid, syn)?;
             match kappa_shape(sent.as_ref()) {
                 KappaShape::Kappa { binder, body } => {
@@ -413,9 +445,7 @@ fn lift_quote_el(
                     KAPPA_MALFORMED_BAILS.fetch_add(1, Ordering::Relaxed);
                     return None;
                 }
-                KappaShape::NotKappa => {
-                    lift_quote_sentence(syn, atoms, sent.as_ref(), env, lctx)?
-                }
+                KappaShape::NotKappa => lift_quote_sentence(syn, atoms, sent.as_ref(), env, lctx)?,
             }
         }
     })
@@ -450,13 +480,15 @@ fn lift_quote_el(
 
 /// Process-cumulative part-B counters, surfaced by `SIGMA_STATS`
 /// (prove.rs) when nonzero — same regime as `defcnf_counters`.
-static KAPPA_COMPREHENSIONS:  AtomicU64 = AtomicU64::new(0);
+static KAPPA_COMPREHENSIONS: AtomicU64 = AtomicU64::new(0);
 static KAPPA_MALFORMED_BAILS: AtomicU64 = AtomicU64::new(0);
 
 /// (comprehensions_emitted, malformed_bails) — process-cumulative.
 pub(crate) fn kappa_counters() -> (u64, u64) {
-    (KAPPA_COMPREHENSIONS.load(Ordering::Relaxed),
-     KAPPA_MALFORMED_BAILS.load(Ordering::Relaxed))
+    (
+        KAPPA_COMPREHENSIONS.load(Ordering::Relaxed),
+        KAPPA_MALFORMED_BAILS.load(Ordering::Relaxed),
+    )
 }
 
 /// Recognizer for `(KappaFn ?V φ)` sub-sentences.
@@ -472,15 +504,22 @@ enum KappaShape<'a> {
 }
 
 fn kappa_shape(sent: &Sentence) -> KappaShape<'_> {
-    let Some(Element::Symbol(h)) = sent.elements.first() else { return KappaShape::NotKappa };
+    let Some(Element::Symbol(h)) = sent.elements.first() else {
+        return KappaShape::NotKappa;
+    };
     if &*h.name() != KAPPA_FN {
         return KappaShape::NotKappa;
     }
     if sent.elements.len() != 3 {
         return KappaShape::Malformed;
     }
-    let Element::Variable { id, .. } = &sent.elements[1] else { return KappaShape::Malformed };
-    KappaShape::Kappa { binder: *id, body: &sent.elements[2] }
+    let Element::Variable { id, .. } = &sent.elements[1] else {
+        return KappaShape::Malformed;
+    };
+    KappaShape::Kappa {
+        binder: *id,
+        body: &sent.elements[2],
+    }
 }
 
 /// Lift a well-formed `(KappaFn ?V body)` into `(kappa_q qb<n> <quoted
@@ -489,13 +528,13 @@ fn kappa_shape(sent: &Sentence) -> KappaShape<'_> {
 /// position only) — mint the per-instance comprehension units into
 /// `lctx`, capped per root.
 fn lift_kappa_term(
-    syn:    &SyntacticLayer,
-    atoms:  &AtomTable,
+    syn: &SyntacticLayer,
+    atoms: &AtomTable,
     binder: SymbolId,
-    body:   &Element,
-    env:    &mut QuoteEnv,
-    lctx:   &mut LiftCtx,
-    emit:   bool,
+    body: &Element,
+    env: &mut QuoteEnv,
+    lctx: &mut LiftCtx,
+    emit: bool,
 ) -> Option<Term> {
     let n = env.next;
     env.next += 1;
@@ -555,9 +594,11 @@ fn lift_kappa_term(
         kterm.clone(),
     ]));
     lctx.units.push(Form::Implies(
-        Box::new(inst_atom.clone()), Box::new(body_form.clone())));
-    lctx.units.push(Form::Implies(
-        Box::new(body_form), Box::new(inst_atom)));
+        Box::new(inst_atom.clone()),
+        Box::new(body_form.clone()),
+    ));
+    lctx.units
+        .push(Form::Implies(Box::new(body_form), Box::new(inst_atom)));
     KAPPA_COMPREHENSIONS.fetch_add(1, Ordering::Relaxed);
     Some(kterm)
 }
@@ -566,11 +607,11 @@ fn lift_kappa_term(
 /// constructor symbol encodes.
 fn unquote_op(h: &Symbol) -> Option<OpKind> {
     Some(match &*h.name() {
-        "and_q"    => OpKind::And,
-        "or_q"     => OpKind::Or,
-        "not_q"    => OpKind::Not,
-        "impl_q"   => OpKind::Implies,
-        "iff_q"    => OpKind::Iff,
+        "and_q" => OpKind::And,
+        "or_q" => OpKind::Or,
+        "not_q" => OpKind::Not,
+        "impl_q" => OpKind::Implies,
+        "iff_q" => OpKind::Iff,
         "forall_q" => OpKind::ForAll,
         "exists_q" => OpKind::Exists,
         _ => return None,
@@ -603,27 +644,37 @@ fn unquote_op(h: &Symbol) -> Option<OpKind> {
 /// per-instance comprehension path for a SPECIFIC kappa term met at
 /// clausification time — never as a rule over quantified quote variables.
 fn unquote_form<F: FnMut() -> SymbolId>(
-    t:     &Term,
-    sub:   &mut HashMap<SymbolId, Term>,
+    t: &Term,
+    sub: &mut HashMap<SymbolId, Term>,
     fresh: &mut F,
 ) -> Option<Form> {
     if let Term::App(elems) = t {
         if let Some(Term::Sym(h)) = elems.first() {
             match unquote_op(h) {
                 Some(op @ (OpKind::And | OpKind::Or)) => {
-                    if elems.len() < 2 { return None; }
+                    if elems.len() < 2 {
+                        return None;
+                    }
                     let mut fs = Vec::with_capacity(elems.len() - 1);
                     for e in &elems[1..] {
                         fs.push(unquote_form(e, sub, fresh)?);
                     }
-                    return Some(if op == OpKind::And { Form::And(fs) } else { Form::Or(fs) });
+                    return Some(if op == OpKind::And {
+                        Form::And(fs)
+                    } else {
+                        Form::Or(fs)
+                    });
                 }
                 Some(OpKind::Not) => {
-                    if elems.len() != 2 { return None; }
+                    if elems.len() != 2 {
+                        return None;
+                    }
                     return Some(Form::Not(Box::new(unquote_form(&elems[1], sub, fresh)?)));
                 }
                 Some(op @ (OpKind::Implies | OpKind::Iff)) => {
-                    if elems.len() != 3 { return None; }
+                    if elems.len() != 3 {
+                        return None;
+                    }
                     let a = Box::new(unquote_form(&elems[1], sub, fresh)?);
                     let b = Box::new(unquote_form(&elems[2], sub, fresh)?);
                     return Some(if op == OpKind::Implies {
@@ -633,8 +684,12 @@ fn unquote_form<F: FnMut() -> SymbolId>(
                     });
                 }
                 Some(op @ (OpKind::ForAll | OpKind::Exists)) => {
-                    if elems.len() != 3 { return None; }
-                    let Term::App(vl) = &elems[1] else { return None };
+                    if elems.len() != 3 {
+                        return None;
+                    }
+                    let Term::App(vl) = &elems[1] else {
+                        return None;
+                    };
                     let mut vars = Vec::with_capacity(vl.len());
                     for b in vl {
                         let Term::Sym(qb) = b else { return None };
@@ -685,7 +740,9 @@ fn is_scope_head(t: &Term) -> bool {
 /// `Some(n)` when `name` is a quote bound-constant `qb<n>`.
 fn qb_slot(name: &str) -> Option<u32> {
     let digits = name.strip_prefix("qb")?;
-    if digits.is_empty() { return None; }
+    if digits.is_empty() {
+        return None;
+    }
     digits.parse::<u32>().ok()
 }
 
@@ -699,9 +756,17 @@ fn qb_slot(name: &str) -> Option<u32> {
 /// remaining inside a nested scope belongs to that scope.)
 fn renumber_nested_scopes(t: &Term) -> Term {
     match t {
-        Term::App(es) => Term::App(es.iter().map(|e| {
-            if is_scope_head(e) { renumber_scope(e) } else { renumber_nested_scopes(e) }
-        }).collect()),
+        Term::App(es) => Term::App(
+            es.iter()
+                .map(|e| {
+                    if is_scope_head(e) {
+                        renumber_scope(e)
+                    } else {
+                        renumber_nested_scopes(e)
+                    }
+                })
+                .collect(),
+        ),
         _ => t.clone(),
     }
 }
@@ -712,11 +777,17 @@ fn renumber_scope(t: &Term) -> Term {
     // First-occurrence order over the scope's term equals the walker's
     // numbering order (each quantifier's varlist precedes its body), so
     // position i renumbers to `qb<i>`; skip already-canonical slots.
-    let map: HashMap<SymbolId, Term> = order.iter().enumerate()
+    let map: HashMap<SymbolId, Term> = order
+        .iter()
+        .enumerate()
         .filter(|(i, (_, slot))| *slot != *i as u32)
         .map(|(i, (id, _))| (*id, Term::Sym(quote_bound_sym(i as u32))))
         .collect();
-    if map.is_empty() { t.clone() } else { subst_qb(t, &map) }
+    if map.is_empty() {
+        t.clone()
+    } else {
+        subst_qb(t, &map)
+    }
 }
 
 /// Quote bound-constants of `t` in first-occurrence order, with their
@@ -777,7 +848,11 @@ pub(crate) fn modal_k_clauses(rel: &str, atoms: &AtomTable) -> Vec<PClause> {
     let q = Term::Var(Symbol::hash_name("?Q__modal_k"));
     let att = |x: Term| Term::App(vec![Term::Sym(Symbol::from(rel)), a.clone(), x]);
     let and_q = quote_ctor_name(&OpKind::And).expect("And always has a quote ctor");
-    let conj = att(Term::App(vec![Term::Sym(Symbol::from(and_q)), p.clone(), q.clone()]));
+    let conj = att(Term::App(vec![
+        Term::Sym(Symbol::from(and_q)),
+        p.clone(),
+        q.clone(),
+    ]));
     let raw = vec![
         vec![(false, conj.clone()), (true, att(p))],
         vec![(false, conj), (true, att(q))],
@@ -790,10 +865,7 @@ pub(crate) fn modal_k_clauses(rel: &str, atoms: &AtomTable) -> Vec<PClause> {
 /// Eliminate `=>` and `<=>` (prototype `elim`).
 fn elim(f: Form) -> Form {
     match f {
-        Form::Implies(a, b) => Form::Or(vec![
-            Form::Not(Box::new(elim(*a))),
-            elim(*b),
-        ]),
+        Form::Implies(a, b) => Form::Or(vec![Form::Not(Box::new(elim(*a))), elim(*b)]),
         Form::Iff(a, b) => {
             let a = elim(*a);
             let b = elim(*b);
@@ -802,11 +874,11 @@ fn elim(f: Form) -> Form {
                 Form::Or(vec![Form::Not(Box::new(b)), a]),
             ])
         }
-        Form::And(fs)        => Form::And(fs.into_iter().map(elim).collect()),
-        Form::Or(fs)         => Form::Or(fs.into_iter().map(elim).collect()),
-        Form::Not(g)         => Form::Not(Box::new(elim(*g))),
-        Form::ForAll(vs, g)  => Form::ForAll(vs, Box::new(elim(*g))),
-        Form::Exists(vs, g)  => Form::Exists(vs, Box::new(elim(*g))),
+        Form::And(fs) => Form::And(fs.into_iter().map(elim).collect()),
+        Form::Or(fs) => Form::Or(fs.into_iter().map(elim).collect()),
+        Form::Not(g) => Form::Not(Box::new(elim(*g))),
+        Form::ForAll(vs, g) => Form::ForAll(vs, Box::new(elim(*g))),
+        Form::Exists(vs, g) => Form::Exists(vs, Box::new(elim(*g))),
         atom @ Form::Atom(_) => atom,
     }
 }
@@ -818,22 +890,42 @@ fn nnf(f: Form, neg: bool) -> Form {
         Form::Not(g) => nnf(*g, !neg),
         Form::And(fs) => {
             let fs = fs.into_iter().map(|x| nnf(x, neg)).collect();
-            if neg { Form::Or(fs) } else { Form::And(fs) }
+            if neg {
+                Form::Or(fs)
+            } else {
+                Form::And(fs)
+            }
         }
         Form::Or(fs) => {
             let fs = fs.into_iter().map(|x| nnf(x, neg)).collect();
-            if neg { Form::And(fs) } else { Form::Or(fs) }
+            if neg {
+                Form::And(fs)
+            } else {
+                Form::Or(fs)
+            }
         }
         Form::ForAll(vs, g) => {
             let g = Box::new(nnf(*g, neg));
-            if neg { Form::Exists(vs, g) } else { Form::ForAll(vs, g) }
+            if neg {
+                Form::Exists(vs, g)
+            } else {
+                Form::ForAll(vs, g)
+            }
         }
         Form::Exists(vs, g) => {
             let g = Box::new(nnf(*g, neg));
-            if neg { Form::ForAll(vs, g) } else { Form::Exists(vs, g) }
+            if neg {
+                Form::ForAll(vs, g)
+            } else {
+                Form::Exists(vs, g)
+            }
         }
         atom @ Form::Atom(_) => {
-            if neg { Form::Not(Box::new(atom)) } else { atom }
+            if neg {
+                Form::Not(Box::new(atom))
+            } else {
+                atom
+            }
         }
         Form::Implies(..) | Form::Iff(..) => {
             unreachable!("elim runs before nnf")
@@ -850,7 +942,9 @@ fn freevars(f: &Form, bound: &BTreeSet<SymbolId>, out: &mut BTreeSet<SymbolId>) 
         Form::Atom(t) => term_vars(t, bound, out),
         Form::Not(g) => freevars(g, bound, out),
         Form::And(fs) | Form::Or(fs) => {
-            for g in fs { freevars(g, bound, out); }
+            for g in fs {
+                freevars(g, bound, out);
+            }
         }
         Form::ForAll(vs, g) | Form::Exists(vs, g) => {
             let mut b2 = bound.clone();
@@ -866,9 +960,13 @@ fn freevars(f: &Form, bound: &BTreeSet<SymbolId>, out: &mut BTreeSet<SymbolId>) 
 
 fn term_vars(t: &Term, bound: &BTreeSet<SymbolId>, out: &mut BTreeSet<SymbolId>) {
     match t {
-        Term::Var(v) if !bound.contains(v) => { out.insert(*v); }
+        Term::Var(v) if !bound.contains(v) => {
+            out.insert(*v);
+        }
         Term::App(elems) => {
-            for e in elems { term_vars(e, bound, out); }
+            for e in elems {
+                term_vars(e, bound, out);
+            }
         }
         _ => {}
     }
@@ -890,7 +988,7 @@ struct SkolemCtx {
     /// The root sentence id — baked into every skolem/fresh name so
     /// re-clausifying the same root is idempotent and two roots can
     /// never share a skolem.
-    root:    SentenceId,
+    root: SentenceId,
     /// Goal-mode (negated conjecture) clausification.  SentenceIds are
     /// content hashes, so a conjecture CONTAINING a KB axiom (a
     /// conjunction whose first conjunct is content-identical to it)
@@ -898,9 +996,9 @@ struct SkolemCtx {
     /// split, the axiom's existential witness and the goal's
     /// counterexample witness both mint `sk_<root>_0` and a resolution
     /// between them fabricates a refutation (a false Proved).
-    goal:    bool,
+    goal: bool,
     fresh_n: u64,
-    sk_n:    u64,
+    sk_n: u64,
 }
 
 impl SkolemCtx {
@@ -930,12 +1028,7 @@ impl SkolemCtx {
 /// Walk an NNF form: rename universals fresh, replace existentials with
 /// skolem terms over the enclosing universal scope, drop the quantifiers
 /// (prototype `skolemize`).
-fn skolemize(
-    f:     Form,
-    scope: &[Term],
-    sub:   &HashMap<SymbolId, Term>,
-    ctx:   &mut SkolemCtx,
-) -> Form {
+fn skolemize(f: Form, scope: &[Term], sub: &HashMap<SymbolId, Term>, ctx: &mut SkolemCtx) -> Form {
     match f {
         Form::ForAll(vs, g) => {
             let mut sub2 = sub.clone();
@@ -969,8 +1062,16 @@ fn skolemize(
             }
             skolemize(*g, scope, &sub2, ctx)
         }
-        Form::And(fs) => Form::And(fs.into_iter().map(|x| skolemize(x, scope, sub, ctx)).collect()),
-        Form::Or(fs)  => Form::Or(fs.into_iter().map(|x| skolemize(x, scope, sub, ctx)).collect()),
+        Form::And(fs) => Form::And(
+            fs.into_iter()
+                .map(|x| skolemize(x, scope, sub, ctx))
+                .collect(),
+        ),
+        Form::Or(fs) => Form::Or(
+            fs.into_iter()
+                .map(|x| skolemize(x, scope, sub, ctx))
+                .collect(),
+        ),
         // NNF: `not` wraps an atom.
         Form::Not(g) => match *g {
             Form::Atom(t) => Form::Not(Box::new(Form::Atom(subst(&t, sub)))),
@@ -994,7 +1095,9 @@ fn distribute(f: &Form, cap: usize) -> Option<Vec<Vec<(bool, Term)>>> {
             let mut out = Vec::new();
             for x in fs {
                 out.extend(distribute(x, cap)?);
-                if out.len() > cap { return None; }
+                if out.len() > cap {
+                    return None;
+                }
             }
             Some(out)
         }
@@ -1010,7 +1113,9 @@ fn distribute(f: &Form, cap: usize) -> Option<Vec<Vec<(bool, Term)>>> {
                         next.push(cl);
                     }
                 }
-                if next.len() > cap { return None; }
+                if next.len() > cap {
+                    return None;
+                }
                 prod = next;
             }
             Some(prod)
@@ -1036,10 +1141,10 @@ fn distribute(f: &Form, cap: usize) -> Option<Vec<Vec<(bool, Term)>>> {
 /// means the formula produced nothing usable (or blew the distribution
 /// guard); callers needing the distinction can check `lift_form` first.
 pub(crate) fn clausify_sentence(
-    syn:    &SyntacticLayer,
-    atoms:  &AtomTable,
-    sent:   &Sentence,
-    root:   SentenceId,
+    syn: &SyntacticLayer,
+    atoms: &AtomTable,
+    sent: &Sentence,
+    root: SentenceId,
     negate: bool,
 ) -> Vec<PClause> {
     clausify_sentence_lossy(syn, atoms, sent, root, negate).0
@@ -1054,15 +1159,21 @@ pub(crate) fn clausify_sentence(
 /// withhold confident Disproved/Satisfiable verdicts when an input formula
 /// failed to load.
 pub(crate) fn clausify_sentence_lossy(
-    syn:    &SyntacticLayer,
-    atoms:  &AtomTable,
-    sent:   &Sentence,
-    root:   SentenceId,
+    syn: &SyntacticLayer,
+    atoms: &AtomTable,
+    sent: &Sentence,
+    root: SentenceId,
     negate: bool,
 ) -> (Vec<PClause>, bool) {
     let mut lctx = LiftCtx::new(root);
-    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (Vec::new(), true) };
-    let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
+    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else {
+        return (Vec::new(), true);
+    };
+    let f = if negate {
+        Form::Not(Box::new(lifted))
+    } else {
+        lifted
+    };
     let units = std::mem::take(&mut lctx.units);
     // `negate` doubles as the skolem-namespace mode: goal skolems must
     // never collide with the axiom skolems of a content-identical root.
@@ -1081,8 +1192,14 @@ pub(crate) fn clausify_sentence_lossy(
     // Plaisted–Greenbaum definitions; on any rescue bail, the primary
     // path's lossy result stands unchanged.
     let mut lctx = LiftCtx::new(root);
-    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else { return (out, true) };
-    let f = if negate { Form::Not(Box::new(lifted)) } else { lifted };
+    let Some(lifted) = lift_form(syn, atoms, sent, &mut lctx) else {
+        return (out, true);
+    };
+    let f = if negate {
+        Form::Not(Box::new(lifted))
+    } else {
+        lifted
+    };
     defcnf_rescue(f, &lctx.units, atoms, root, negate)
         .map(|(o, l)| (o, l || lctx.capped))
         .unwrap_or((out, true))
@@ -1101,11 +1218,13 @@ pub(crate) fn clausify_sentence_lossy(
 /// dropped for capacity reasons — the refutation set is then missing goal
 /// clauses, so a saturation over it certifies nothing.
 pub(crate) fn clausify_negated_conjunction_lossy(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     atoms: &AtomTable,
     sents: &[(std::sync::Arc<Sentence>, SentenceId)],
 ) -> (Vec<PClause>, bool) {
-    let Some(root) = sents.first().map(|(_, sid)| *sid) else { return (Vec::new(), false) };
+    let Some(root) = sents.first().map(|(_, sid)| *sid) else {
+        return (Vec::new(), false);
+    };
     // Kappa comprehension units mint across ALL conjuncts into one
     // context (they attach to the shared skolem root), and are NOT
     // negated below: they are definitional axioms of the class terms the
@@ -1115,11 +1234,17 @@ pub(crate) fn clausify_negated_conjunction_lossy(
         for (sent, _) in sents {
             parts.push(lift_form(syn, atoms, sent, lctx)?);
         }
-        let conj = if parts.len() == 1 { parts.pop().unwrap() } else { Form::And(parts) };
+        let conj = if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            Form::And(parts)
+        };
         Some(Form::Not(Box::new(conj)))
     };
     let mut lctx = LiftCtx::new(root);
-    let Some(f) = lift_conj(&mut lctx) else { return (Vec::new(), true) };
+    let Some(f) = lift_conj(&mut lctx) else {
+        return (Vec::new(), true);
+    };
     let units = std::mem::take(&mut lctx.units);
     // Always goal mode: the root is the FIRST conjunct's content sid,
     // which a loaded KB axiom can share — the namespaces must not.
@@ -1131,7 +1256,9 @@ pub(crate) fn clausify_negated_conjunction_lossy(
     // already returned above, so a lossy result here is a capacity loss
     // the definitional path may be able to repair.
     let mut lctx = LiftCtx::new(root);
-    let Some(f) = lift_conj(&mut lctx) else { return (out, true) };
+    let Some(f) = lift_conj(&mut lctx) else {
+        return (out, true);
+    };
     defcnf_rescue(f, &lctx.units, atoms, root, true)
         .map(|(o, l)| (o, l || lctx.capped))
         .unwrap_or((out, true))
@@ -1148,13 +1275,18 @@ pub(crate) fn clausify_negated_conjunction_lossy(
 /// distribution cap drops ALONE, recorded as loss; the main formula's
 /// blow-up still fails the whole root (rescue path).
 fn clausify_form(
-    f:      Form,
+    f: Form,
     kunits: Vec<Form>,
-    atoms:  &AtomTable,
-    root:   SentenceId,
-    goal:   bool,
+    atoms: &AtomTable,
+    root: SentenceId,
+    goal: bool,
 ) -> (Vec<PClause>, bool) {
-    let mut ctx = SkolemCtx { root, goal, fresh_n: 0, sk_n: 0 };
+    let mut ctx = SkolemCtx {
+        root,
+        goal,
+        fresh_n: 0,
+        sk_n: 0,
+    };
     let Some(mut raw) = lower_form(f, &mut ctx, MAX_CLAUSES_PER_FORMULA) else {
         return (Vec::new(), true);
     };
@@ -1162,7 +1294,7 @@ fn clausify_form(
     for u in kunits {
         match lower_form(u, &mut ctx, MAX_CLAUSES_PER_FORMULA) {
             Some(r) => raw.extend(r),
-            None    => lossy = true,
+            None => lossy = true,
         }
     }
     let (out, l2) = filter_canonicalize(raw, atoms);
@@ -1172,11 +1304,7 @@ fn clausify_form(
 /// NNF, implicit universal closure of free variables, skolemization
 /// (names drawn from the shared per-root `ctx`), and CNF distribution
 /// under `cap`.  `None` = distribution blew the cap.
-fn lower_form(
-    f:   Form,
-    ctx: &mut SkolemCtx,
-    cap: usize,
-) -> Option<Vec<Vec<(bool, Term)>>> {
+fn lower_form(f: Form, ctx: &mut SkolemCtx, cap: usize) -> Option<Vec<Vec<(bool, Term)>>> {
     let f = nnf(elim(f), false);
 
     // Implicit universal closure over the (sorted) free variables.
@@ -1195,15 +1323,15 @@ fn lower_form(
 /// The shared filtering tail: over-cap clause drop (the LOSS flag),
 /// in-clause literal dedup, tautology deletion, canonicalization, and
 /// clause-key dedup.
-fn filter_canonicalize(
-    raw:   Vec<Vec<(bool, Term)>>,
-    atoms: &AtomTable,
-) -> (Vec<PClause>, bool) {
+fn filter_canonicalize(raw: Vec<Vec<(bool, Term)>>, atoms: &AtomTable) -> (Vec<PClause>, bool) {
     let mut lossy = false;
     let mut out: Vec<PClause> = Vec::with_capacity(raw.len());
     let mut seen_keys = std::collections::HashSet::new();
     'clauses: for cl in raw {
-        if cl.len() > MAX_LITS_PER_CLAUSE { lossy = true; continue; }
+        if cl.len() > MAX_LITS_PER_CLAUSE {
+            lossy = true;
+            continue;
+        }
         // In-clause literal dedup + tautology check on the raw terms
         // (same var names within one clause, so plain equality works —
         // mirrors the prototype's `seen` / `pos_atoms` passes).
@@ -1268,24 +1396,30 @@ fn filter_canonicalize(
 /// when nonzero.  Cumulative over the process lifetime: clausification
 /// runs inside cache generation, which has no per-run stats handle.
 static DEFCNF_DEFINITIONS_INTRODUCED: AtomicU64 = AtomicU64::new(0);
-static DEFCNF_ROOTS_RESCUED:          AtomicU64 = AtomicU64::new(0);
+static DEFCNF_ROOTS_RESCUED: AtomicU64 = AtomicU64::new(0);
 
 /// (definitions_introduced, roots_rescued) — process-cumulative.
 pub(crate) fn defcnf_counters() -> (u64, u64) {
-    (DEFCNF_DEFINITIONS_INTRODUCED.load(Ordering::Relaxed),
-     DEFCNF_ROOTS_RESCUED.load(Ordering::Relaxed))
+    (
+        DEFCNF_DEFINITIONS_INTRODUCED.load(Ordering::Relaxed),
+        DEFCNF_ROOTS_RESCUED.load(Ordering::Relaxed),
+    )
 }
 
 /// Occurrence polarity, tracked through the un-eliminated connectives
 /// (`Not`/`Implies` antecedent flip, `Iff` makes both sides both-polar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pol { Pos, Neg, Both }
+enum Pol {
+    Pos,
+    Neg,
+    Both,
+}
 
 impl Pol {
     fn flip(self) -> Pol {
         match self {
-            Pol::Pos  => Pol::Neg,
-            Pol::Neg  => Pol::Pos,
+            Pol::Pos => Pol::Neg,
+            Pol::Neg => Pol::Pos,
             Pol::Both => Pol::Both,
         }
     }
@@ -1304,7 +1438,9 @@ struct Cost {
 
 impl Cost {
     const ONE: Cost = Cost { n: 1, w: 1 };
-    fn fits(self, b: Budget) -> bool { self.n <= b.n && self.w <= b.w }
+    fn fits(self, b: Budget) -> bool {
+        self.n <= b.n && self.w <= b.w
+    }
 }
 
 /// A subformula's [`Cost`] at both polarities, computed in one walk
@@ -1318,12 +1454,18 @@ struct CostPair {
 
 /// Conjunctive composition: clause sets concatenate.
 fn and2(a: Cost, b: Cost) -> Cost {
-    Cost { n: a.n.saturating_add(b.n), w: a.w.max(b.w) }
+    Cost {
+        n: a.n.saturating_add(b.n),
+        w: a.w.max(b.w),
+    }
 }
 
 /// Disjunctive composition: clause sets cross-product, widths add.
 fn or2(a: Cost, b: Cost) -> Cost {
-    Cost { n: a.n.saturating_mul(b.n), w: a.w.saturating_add(b.w) }
+    Cost {
+        n: a.n.saturating_mul(b.n),
+        w: a.w.saturating_add(b.w),
+    }
 }
 
 /// Estimate a formula's distribution cost at both polarities.  Mirrors
@@ -1332,13 +1474,19 @@ fn or2(a: Cost, b: Cost) -> Cost {
 ///   * `Iff(a,b)`⁺ = `(¬a∨b) ∧ (¬b∨a)`;  `Iff(a,b)`⁻ = `(a∧¬b) ∨ (b∧¬a)`
 fn est(f: &Form) -> CostPair {
     match f {
-        Form::Atom(_) => CostPair { pos: Cost::ONE, neg: Cost::ONE },
+        Form::Atom(_) => CostPair {
+            pos: Cost::ONE,
+            neg: Cost::ONE,
+        },
         Form::Not(g) => {
             let c = est(g);
-            CostPair { pos: c.neg, neg: c.pos }
+            CostPair {
+                pos: c.neg,
+                neg: c.pos,
+            }
         }
-        Form::And(fs) => fold_children(fs, /*and_is_pos=*/true),
-        Form::Or(fs)  => fold_children(fs, /*and_is_pos=*/false),
+        Form::And(fs) => fold_children(fs, /*and_is_pos=*/ true),
+        Form::Or(fs) => fold_children(fs, /*and_is_pos=*/ false),
         Form::Implies(a, b) => {
             let (ca, cb) = (est(a), est(b));
             CostPair {
@@ -1360,8 +1508,16 @@ fn est(f: &Form) -> CostPair {
 /// `And` composes conjunctively at Pos and disjunctively at Neg
 /// (de Morgan); `Or` mirrors.
 fn fold_children(fs: &[Form], and_is_pos: bool) -> CostPair {
-    let mut pos = if and_is_pos { Cost { n: 0, w: 0 } } else { Cost { n: 1, w: 0 } };
-    let mut neg = if and_is_pos { Cost { n: 1, w: 0 } } else { Cost { n: 0, w: 0 } };
+    let mut pos = if and_is_pos {
+        Cost { n: 0, w: 0 }
+    } else {
+        Cost { n: 1, w: 0 }
+    };
+    let mut neg = if and_is_pos {
+        Cost { n: 1, w: 0 }
+    } else {
+        Cost { n: 0, w: 0 }
+    };
     for f in fs {
         let c = est(f);
         if and_is_pos {
@@ -1379,8 +1535,8 @@ fn fold_children(fs: &[Form], and_is_pos: bool) -> CostPair {
 
 fn fits_at(pair: CostPair, pol: Pol, b: Budget) -> bool {
     match pol {
-        Pol::Pos  => pair.pos.fits(b),
-        Pol::Neg  => pair.neg.fits(b),
+        Pol::Pos => pair.pos.fits(b),
+        Pol::Neg => pair.neg.fits(b),
         Pol::Both => pair.pos.fits(b) && pair.neg.fits(b),
     }
 }
@@ -1389,8 +1545,8 @@ fn fits_at(pair: CostPair, pol: Pol, b: Budget) -> bool {
 /// the componentwise-max over the polarities in play.
 fn occ_size(pair: CostPair, pol: Pol) -> (u64, u64) {
     match pol {
-        Pol::Pos  => (pair.pos.n, pair.pos.w),
-        Pol::Neg  => (pair.neg.n, pair.neg.w),
+        Pol::Pos => (pair.pos.n, pair.pos.w),
+        Pol::Neg => (pair.neg.n, pair.neg.w),
         Pol::Both => (pair.pos.n.max(pair.neg.n), pair.pos.w.max(pair.neg.w)),
     }
 }
@@ -1420,24 +1576,30 @@ enum Seg {
 /// Rescue-shared state: the definition units introduced so far (in
 /// deterministic introduction order) plus the naming context.
 struct DefCtx {
-    root:   SentenceId,
+    root: SentenceId,
     /// Goal-mode namespace split — same rule as [`SkolemCtx::goal`]: an
     /// axiom and a conjecture sharing a content root must never share a
     /// definitional predicate.
-    goal:   bool,
-    units:  Vec<Form>,
+    goal: bool,
+    units: Vec<Form>,
     n_defs: u64,
     /// Defensive path-collision net — paths are unique by construction
     /// (each tree position is defined at most once; chunk groups carry
     /// per-node sequence numbers), but a collision must never silently
     /// CONFLATE two definitions, so names are checked and deterministically
     /// disambiguated anyway.
-    used:   std::collections::HashSet<String>,
+    used: std::collections::HashSet<String>,
 }
 
 impl DefCtx {
     fn new(root: SentenceId, goal: bool) -> Self {
-        DefCtx { root, goal, units: Vec::new(), n_defs: 0, used: std::collections::HashSet::new() }
+        DefCtx {
+            root,
+            goal,
+            units: Vec::new(),
+            n_defs: 0,
+            used: std::collections::HashSet::new(),
+        }
     }
 
     /// `df_<root_hex>_<path>` (axiom) / `df_g<root_hex>_<path>` (goal) —
@@ -1450,10 +1612,16 @@ impl DefCtx {
             format!("df_{:x}_", self.root)
         };
         for (i, seg) in path.iter().enumerate() {
-            if i > 0 { name.push('_'); }
+            if i > 0 {
+                name.push('_');
+            }
             match seg {
-                Seg::Child(k) => { let _ = write!(name, "{k}"); }
-                Seg::Chunk(k) => { let _ = write!(name, "c{k}"); }
+                Seg::Child(k) => {
+                    let _ = write!(name, "{k}");
+                }
+                Seg::Chunk(k) => {
+                    let _ = write!(name, "c{k}");
+                }
             }
         }
         if !self.used.insert(name.clone()) {
@@ -1474,14 +1642,10 @@ impl DefCtx {
 ///   * Both: both units.
 /// The body is first (recursively) squeezed to fit one literal less than
 /// the parent budget, so each unit itself distributes within the caps.
-fn define(
-    body: Form,
-    pol:  Pol,
-    b:    Budget,
-    path: &mut Vec<Seg>,
-    dc:   &mut DefCtx,
-) -> Option<Form> {
-    if b.w < 2 { return None; }
+fn define(body: Form, pol: Pol, b: Budget, path: &mut Vec<Seg>, dc: &mut DefCtx) -> Option<Form> {
+    if b.w < 2 {
+        return None;
+    }
     let body = pg(body, pol, Budget { n: b.n, w: b.w - 1 }, path, dc)?;
 
     let mut fv = BTreeSet::new();
@@ -1494,19 +1658,17 @@ fn define(
 
     let datom = |d: &Term| Form::Atom(d.clone());
     match pol {
-        Pol::Pos => dc.units.push(Form::Or(vec![
-            Form::Not(Box::new(datom(&d))), body,
-        ])),
-        Pol::Neg => dc.units.push(Form::Or(vec![
-            Form::Not(Box::new(body)), datom(&d),
-        ])),
+        Pol::Pos => dc
+            .units
+            .push(Form::Or(vec![Form::Not(Box::new(datom(&d))), body])),
+        Pol::Neg => dc
+            .units
+            .push(Form::Or(vec![Form::Not(Box::new(body)), datom(&d)])),
         Pol::Both => {
-            dc.units.push(Form::Or(vec![
-                Form::Not(Box::new(datom(&d))), body.clone(),
-            ]));
-            dc.units.push(Form::Or(vec![
-                Form::Not(Box::new(body)), datom(&d),
-            ]));
+            dc.units
+                .push(Form::Or(vec![Form::Not(Box::new(datom(&d))), body.clone()]));
+            dc.units
+                .push(Form::Or(vec![Form::Not(Box::new(body)), datom(&d)]));
         }
     }
     dc.n_defs += 1;
@@ -1527,13 +1689,7 @@ fn define(
 ///     pathological end.
 /// `None` = unfixable within the width floor; the caller abandons the
 /// rescue (the primary path's lossy result stands).
-fn pg(
-    f:    Form,
-    pol:  Pol,
-    b:    Budget,
-    path: &mut Vec<Seg>,
-    dc:   &mut DefCtx,
-) -> Option<Form> {
+fn pg(f: Form, pol: Pol, b: Budget, path: &mut Vec<Seg>, dc: &mut DefCtx) -> Option<Form> {
     if fits_at(est(&f), pol, b) {
         return Some(f);
     }
@@ -1595,7 +1751,9 @@ fn pg(
                         pos: or2(ca.neg, cc.pos),
                         neg: and2(ca.pos, cc.neg),
                     };
-                    if fits_at(node, pol, b) { break; }
+                    if fits_at(node, pol, b) {
+                        break;
+                    }
                     let sa = occ_size(ca, pol.flip());
                     let sc = occ_size(cc, pol);
                     if sa >= sc && sa > (1, 1) {
@@ -1632,7 +1790,9 @@ fn pg(
                     pos: and2(or2(ca.neg, cc.pos), or2(cc.neg, ca.pos)),
                     neg: or2(and2(ca.pos, cc.neg), and2(cc.pos, ca.neg)),
                 };
-                if fits_at(node, pol, b) { break; }
+                if fits_at(node, pol, b) {
+                    break;
+                }
                 let sa = occ_size(ca, Pol::Both);
                 let sc = occ_size(cc, Pol::Both);
                 if sa >= sc && sa > (1, 1) {
@@ -1656,11 +1816,11 @@ fn pg(
 
 /// Repair every child at its (unchanged) occurrence polarity.
 fn pg_children(
-    fs:   Vec<Form>,
-    pol:  Pol,
-    b:    Budget,
+    fs: Vec<Form>,
+    pol: Pol,
+    b: Budget,
     path: &mut Vec<Seg>,
-    dc:   &mut DefCtx,
+    dc: &mut DefCtx,
 ) -> Option<Vec<Form>> {
     let mut out = Vec::with_capacity(fs.len());
     for (i, f) in fs.into_iter().enumerate() {
@@ -1679,12 +1839,12 @@ fn pg_children(
 /// WIDTH still overflows, split the children into balanced defined
 /// groups.  Children arrive already individually within budget.
 fn fix_multiplicative(
-    or_node:  bool,
+    or_node: bool,
     mut kids: Vec<Form>,
-    pol:      Pol,
-    b:        Budget,
-    path:     &mut Vec<Seg>,
-    dc:       &mut DefCtx,
+    pol: Pol,
+    b: Budget,
+    path: &mut Vec<Seg>,
+    dc: &mut DefCtx,
 ) -> Option<Vec<Form>> {
     // The multiplicative side of each child's cost: `Or`⁺ multiplies the
     // POS costs, `And`⁻ multiplies the NEG costs.  (For a Both-polarity
@@ -1705,8 +1865,7 @@ fn fix_multiplicative(
         // `>` keeps the FIRST of equals (deterministic).
         let mut victim: Option<usize> = None;
         for (i, c) in costs.iter().enumerate() {
-            if (c.n > 1 || c.w > 1)
-                && victim.is_none_or(|j| (c.n, c.w) > (costs[j].n, costs[j].w))
+            if (c.n > 1 || c.w > 1) && victim.is_none_or(|j| (c.n, c.w) > (costs[j].n, costs[j].w))
             {
                 victim = Some(i);
             }
@@ -1723,7 +1882,9 @@ fn fix_multiplicative(
             // definition — group bodies fit (b.n, b.w - 1) outright, so
             // no definition chains form.
             let group = b.w.saturating_sub(1) as usize;
-            if group < 2 { return None; }
+            if group < 2 {
+                return None;
+            }
             let old = std::mem::take(&mut kids);
             let mut it = old.into_iter().peekable();
             while it.peek().is_some() {
@@ -1731,7 +1892,11 @@ fn fix_multiplicative(
                 if chunk.len() == 1 {
                     kids.extend(chunk);
                 } else {
-                    let body = if or_node { Form::Or(chunk) } else { Form::And(chunk) };
+                    let body = if or_node {
+                        Form::Or(chunk)
+                    } else {
+                        Form::And(chunk)
+                    };
                     path.push(Seg::Chunk(chunk_seq));
                     chunk_seq += 1;
                     let d = define(body, pol, b, path, dc);
@@ -1756,11 +1921,11 @@ fn fix_multiplicative(
 /// defects, so they ride the returned LOSS flag instead of tripping the
 /// rescue-width assert.
 fn defcnf_rescue(
-    f:      Form,
+    f: Form,
     kunits: &[Form],
-    atoms:  &AtomTable,
-    root:   SentenceId,
-    goal:   bool,
+    atoms: &AtomTable,
+    root: SentenceId,
+    goal: bool,
 ) -> Option<(Vec<PClause>, bool)> {
     let mut dc = DefCtx::new(root, goal);
     let mut path = Vec::new();
@@ -1771,7 +1936,12 @@ fn defcnf_rescue(
     // distinct units must never share a skolem symbol.  Unit order is
     // deterministic (main first, then definitions in introduction
     // order, then kappa units in mint order), so the names are too.
-    let mut ctx = SkolemCtx { root, goal, fresh_n: 0, sk_n: 0 };
+    let mut ctx = SkolemCtx {
+        root,
+        goal,
+        fresh_n: 0,
+        sk_n: 0,
+    };
     let mut raw = lower_form(main, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?;
     for unit in dc.units {
         raw.extend(lower_form(unit, &mut ctx, DEFCNF_MAX_CLAUSES_PER_FORMULA)?);
@@ -1791,7 +1961,7 @@ fn defcnf_rescue(
     for u in kunits {
         match lower_form(u.clone(), &mut ctx, MAX_CLAUSES_PER_FORMULA) {
             Some(r) => kraw.extend(r),
-            None    => klossy = true,
+            None => klossy = true,
         }
     }
     let (kout, kl2) = filter_canonicalize(kraw, atoms);

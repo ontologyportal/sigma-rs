@@ -14,12 +14,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use log::LevelFilter;
-use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
+use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
-use sigmakee_rs_core::{SineParams, TptpLang, TptpOptions};
 #[cfg(feature = "native-prover")]
 use sigmakee_rs_core::Strategy;
+use sigmakee_rs_core::{SineParams, TptpLang, TptpOptions};
 
 use crate::{SdkError, SdkResult, Source};
 
@@ -122,44 +122,44 @@ pub struct KBManager {
     pub unknown_preferences: HashMap<String, String>,
     /// The currently selected KB
     #[serde(skip)]
-    selected_kb: Option<usize>
+    selected_kb: Option<usize>,
 }
 
 impl Default for KBManager {
     fn default() -> Self {
         Self {
-            base_dir:           PathBuf::new(),
-            cache:              false,
-            default_backend:    "native".into(),
-            disable_selection:  false,
-            edit_dir:           PathBuf::new(),
-            elevate_warnings:   ElevateWarnings::None,
-            eprover:            PathBuf::new(),
-            graphviz_dir:       PathBuf::new(),
-            holds_prefix:       false,
+            base_dir: PathBuf::new(),
+            cache: false,
+            default_backend: "native".into(),
+            disable_selection: false,
+            edit_dir: PathBuf::new(),
+            elevate_warnings: ElevateWarnings::None,
+            eprover: PathBuf::new(),
+            graphviz_dir: PathBuf::new(),
+            holds_prefix: false,
             inference_test_dir: PathBuf::new(),
-            kb_dir:             PathBuf::new(),
-            language:           "EnglishLanguage".into(),
-            leo_executable:     PathBuf::new(),
-            limit:              64,
-            log_dir:            PathBuf::new(),
-            log_level:          LevelFilter::Warn,
-            ollama_host:        String::new(),
-            proof:              "kif".into(),
-            prose:              false,
-            show_kif:           true,
-            sumokbname:         String::new(),
-            systems_dir:        PathBuf::new(),
-            thoroughness:       1.0,
-            tptp:               false,
-            tptp_lang:          "auto".into(),
-            real_numbers:       None,
-            vampire:            PathBuf::new(),
-            kbs:                Vec::new(),
-            native_prover:      NativeProverConfig::default(),
-            external_prover:    ExternalProverConfig::default(),
+            kb_dir: PathBuf::new(),
+            language: "EnglishLanguage".into(),
+            leo_executable: PathBuf::new(),
+            limit: 64,
+            log_dir: PathBuf::new(),
+            log_level: LevelFilter::Warn,
+            ollama_host: String::new(),
+            proof: "kif".into(),
+            prose: false,
+            show_kif: true,
+            sumokbname: String::new(),
+            systems_dir: PathBuf::new(),
+            thoroughness: 1.0,
+            tptp: false,
+            tptp_lang: "auto".into(),
+            real_numbers: None,
+            vampire: PathBuf::new(),
+            kbs: Vec::new(),
+            native_prover: NativeProverConfig::default(),
+            external_prover: ExternalProverConfig::default(),
             unknown_preferences: HashMap::new(),
-            selected_kb:        None
+            selected_kb: None,
         }
     }
 }
@@ -191,16 +191,16 @@ impl Default for NativeProverConfig {
     fn default() -> Self {
         // Mirrors `NativeOpts::default()`.
         Self {
-            max_steps:       4000,
-            max_lits:        8,
+            max_steps: 4000,
+            max_lits: 8,
             time_limit_secs: 30,
-            forward_close:   true,
-            profile:         false,
-            want_proof:      false,
-            step:            false,
-            selection:       SineParams::default(),
+            forward_close: true,
+            profile: false,
+            want_proof: false,
+            step: false,
+            selection: SineParams::default(),
             #[cfg(feature = "native-prover")]
-            strategy:        Strategy::default(),
+            strategy: Strategy::default(),
         }
     }
 }
@@ -212,15 +212,15 @@ impl Default for NativeProverConfig {
 impl NativeProverConfig {
     pub fn to_native_opts(&self) -> sigmakee_rs_core::NativeOpts {
         sigmakee_rs_core::NativeOpts {
-            selection:       self.selection,
-            max_steps:       self.max_steps,
-            max_lits:        self.max_lits,
+            selection: self.selection,
+            max_steps: self.max_steps,
+            max_lits: self.max_lits,
             time_limit_secs: self.time_limit_secs,
-            forward_close:   self.forward_close,
-            profile:         self.profile,
-            want_proof:      self.want_proof,
-            strategy:        self.strategy.clone(),
-            step:            self.step,
+            forward_close: self.forward_close,
+            profile: self.profile,
+            want_proof: self.want_proof,
+            strategy: self.strategy.clone(),
+            step: self.step,
             ..Default::default()
         }
     }
@@ -233,8 +233,8 @@ impl NativeProverConfig {
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalProverConfig {
     pub timeout_secs: u64,
-    pub tptp_lang:    String,
-    pub selection:    SineParams
+    pub tptp_lang: String,
+    pub selection: SineParams,
 }
 
 impl Default for ExternalProverConfig {
@@ -245,8 +245,8 @@ impl Default for ExternalProverConfig {
             // reverting to an empty string, which `to_prover_opts`'s match
             // also treats as Auto today but with no self-documentation —
             // see `KBManager::default`'s `tptp_lang`.
-            tptp_lang:    "auto".into(),
-            selection:    SineParams::default(),
+            tptp_lang: "auto".into(),
+            selection: SineParams::default(),
         }
     }
 }
@@ -258,17 +258,17 @@ impl ExternalProverConfig {
     pub fn to_prover_opts(&self) -> sigmakee_rs_core::prover::ExternalOpts {
         sigmakee_rs_core::prover::ExternalOpts {
             timeout_secs: self.timeout_secs,
-            selection:    self.selection,
-            mode:    match self.tptp_lang.as_str() {
+            selection: self.selection,
+            mode: match self.tptp_lang.as_str() {
                 "fof" => TptpLang::Fof,
                 "tff" => TptpLang::Tff,
                 "cnf" => TptpLang::Cnf,
                 // Higher-order rides the `hol` flag; `mode` is inert then.
                 "thf" => TptpLang::Fof,
-                _     => TptpLang::Auto
+                _ => TptpLang::Auto,
             },
             hol: self.tptp_lang.eq_ignore_ascii_case("thf"),
-            session: None
+            session: None,
         }
     }
 }
@@ -290,28 +290,40 @@ pub trait ProverOptsFor: Sized {
     /// output we parse; the native prover only records one when `want_proof`
     /// is set.  Lets the CLI distinguish "no proof was recorded" from "no
     /// proof exists" when deciding what to print for an empty `proof_kif`.
-    fn records_proof(&self) -> bool { true }
+    fn records_proof(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(feature = "native-prover")]
 impl ProverOptsFor for sigmakee_rs_core::NativeOpts {
-    fn from_manager(manager: &KBManager) -> Self { manager.native_opts() }
-    fn records_proof(&self) -> bool { self.want_proof }
+    fn from_manager(manager: &KBManager) -> Self {
+        manager.native_opts()
+    }
+    fn records_proof(&self) -> bool {
+        self.want_proof
+    }
 }
 
 #[cfg(feature = "ask")]
 impl ProverOptsFor for sigmakee_rs_core::prover::ExternalOpts {
-    fn from_manager(manager: &KBManager) -> Self { manager.external_prover().to_prover_opts() }
+    fn from_manager(manager: &KBManager) -> Self {
+        manager.external_prover().to_prover_opts()
+    }
 }
 
 impl KBManager {
     /// The configured native-prover defaults (`<prover type="native">`).
     /// Call [`NativeProverConfig::to_native_opts`] for a runtime `NativeOpts`.
-    pub fn native_prover(&self) -> &NativeProverConfig { &self.native_prover }
+    pub fn native_prover(&self) -> &NativeProverConfig {
+        &self.native_prover
+    }
 
     /// The configured external-prover defaults (`<prover type="external">`).
     /// Call [`ExternalProverConfig::to_prover_opts`] for a runtime `ProverOpts`.
-    pub fn external_prover(&self) -> &ExternalProverConfig { &self.external_prover }
+    pub fn external_prover(&self) -> &ExternalProverConfig {
+        &self.external_prover
+    }
 
     /// Build runtime native-prover opts from the configured defaults, folding
     /// in the top-level [`disable_selection`](Self::disable_selection) toggle.
@@ -332,15 +344,25 @@ impl KBManager {
     /// Resolve the configured Vampire binary to an existing path, or `Err`.
     /// See [`resolve_executable`] for the resolution order.
     pub fn resolve_vampire(&self) -> SdkResult<PathBuf> {
-        resolve_executable(&self.vampire, "vampire", &self.systems_dir)
-            .ok_or_else(|| SdkError::Config(missing_binary_msg("vampire", &self.vampire, &self.systems_dir)))
+        resolve_executable(&self.vampire, "vampire", &self.systems_dir).ok_or_else(|| {
+            SdkError::Config(missing_binary_msg(
+                "vampire",
+                &self.vampire,
+                &self.systems_dir,
+            ))
+        })
     }
 
     /// Resolve the configured E (`eprover`) binary to an existing path, or `Err`.
     /// See [`resolve_executable`] for the resolution order.
     pub fn resolve_eprover(&self) -> SdkResult<PathBuf> {
-        resolve_executable(&self.eprover, "eprover", &self.systems_dir)
-            .ok_or_else(|| SdkError::Config(missing_binary_msg("eprover", &self.eprover, &self.systems_dir)))
+        resolve_executable(&self.eprover, "eprover", &self.systems_dir).ok_or_else(|| {
+            SdkError::Config(missing_binary_msg(
+                "eprover",
+                &self.eprover,
+                &self.systems_dir,
+            ))
+        })
     }
 
     /// Validate that the configured prover binaries exist: both `vampire` and
@@ -354,8 +376,12 @@ impl KBManager {
     /// point you're about to actually invoke a prover.
     pub fn validate_prover_paths(&self) -> SdkResult<()> {
         let mut errs = Vec::new();
-        if let Err(e) = self.resolve_vampire() { errs.push(e.to_string()); }
-        if let Err(e) = self.resolve_eprover() { errs.push(e.to_string()); }
+        if let Err(e) = self.resolve_vampire() {
+            errs.push(e.to_string());
+        }
+        if let Err(e) = self.resolve_eprover() {
+            errs.push(e.to_string());
+        }
         if errs.is_empty() {
             Ok(())
         } else {
@@ -399,32 +425,88 @@ impl KBManager {
         let get = |k: &str| prefs.get(k).map(String::as_str);
         use pref_keys::*;
 
-        if let Some(v) = get(BASE_DIR)           { m.base_dir = PathBuf::from(v); }
-        if let Some(v) = get(CACHE)              { m.cache = parse_bool(v); }
-        if let Some(v) = get(DEFAULT_BACKEND)    { m.default_backend = v.to_string(); }
-        if let Some(v) = get(DISABLE_SELECTION)  { m.disable_selection = parse_bool(v); }
-        if let Some(v) = get(EDIT_DIR)           { m.edit_dir = PathBuf::from(v); }
-        if let Some(v) = get(EPROVER)            { m.eprover = PathBuf::from(v); }
-        if let Some(v) = get(GRAPHVIZ_DIR)       { m.graphviz_dir = PathBuf::from(v); }
-        if let Some(v) = get(HOLDS_PREFIX)       { m.holds_prefix = parse_bool(v); }
-        if let Some(v) = get(INFERENCE_TEST_DIR) { m.inference_test_dir = PathBuf::from(v); }
-        if let Some(v) = get(KB_DIR)             { m.kb_dir = PathBuf::from(v); }
-        if let Some(v) = get(LANGUAGE)           { m.language = v.to_string(); }
-        if let Some(v) = get(LEO_EXECUTABLE)     { m.leo_executable = PathBuf::from(v); }
-        if let Some(v) = get(LIMIT)              { if let Ok(n) = v.parse() { m.limit = n; } }
-        if let Some(v) = get(LOG_DIR)            { m.log_dir = PathBuf::from(v); }
-        if let Some(v) = get(LOG_LEVEL)          { m.log_level = parse_severity(v); }
-        if let Some(v) = get(OLLAMA_HOST)        { m.ollama_host = v.to_string(); }
-        if let Some(v) = get(PROOF)              { m.proof = v.to_string(); }
-        if let Some(v) = get(PROSE)              { m.prose = parse_bool(v); }
-        if let Some(v) = get(REAL_NUMBERS)       { m.real_numbers = Some(parse_bool(v)); }
-        if let Some(v) = get(SHOW_KIF)           { m.show_kif = parse_bool(v); }
-        if let Some(v) = get(SUMOKBNAME)         { m.sumokbname = v.to_string(); }
-        if let Some(v) = get(SYSTEMS_DIR)        { m.systems_dir = PathBuf::from(v); }
-        if let Some(v) = get(THOROUGHNESS)       { if let Ok(f) = v.parse() { m.thoroughness = f; } }
-        if let Some(v) = get(TPTP)               { m.tptp = parse_bool(v); }
-        if let Some(v) = get(TPTP_LANG)          { m.tptp_lang = v.to_string(); }
-        if let Some(v) = get(VAMPIRE)            { m.vampire = PathBuf::from(v); }
+        if let Some(v) = get(BASE_DIR) {
+            m.base_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(CACHE) {
+            m.cache = parse_bool(v);
+        }
+        if let Some(v) = get(DEFAULT_BACKEND) {
+            m.default_backend = v.to_string();
+        }
+        if let Some(v) = get(DISABLE_SELECTION) {
+            m.disable_selection = parse_bool(v);
+        }
+        if let Some(v) = get(EDIT_DIR) {
+            m.edit_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(EPROVER) {
+            m.eprover = PathBuf::from(v);
+        }
+        if let Some(v) = get(GRAPHVIZ_DIR) {
+            m.graphviz_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(HOLDS_PREFIX) {
+            m.holds_prefix = parse_bool(v);
+        }
+        if let Some(v) = get(INFERENCE_TEST_DIR) {
+            m.inference_test_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(KB_DIR) {
+            m.kb_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(LANGUAGE) {
+            m.language = v.to_string();
+        }
+        if let Some(v) = get(LEO_EXECUTABLE) {
+            m.leo_executable = PathBuf::from(v);
+        }
+        if let Some(v) = get(LIMIT) {
+            if let Ok(n) = v.parse() {
+                m.limit = n;
+            }
+        }
+        if let Some(v) = get(LOG_DIR) {
+            m.log_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(LOG_LEVEL) {
+            m.log_level = parse_severity(v);
+        }
+        if let Some(v) = get(OLLAMA_HOST) {
+            m.ollama_host = v.to_string();
+        }
+        if let Some(v) = get(PROOF) {
+            m.proof = v.to_string();
+        }
+        if let Some(v) = get(PROSE) {
+            m.prose = parse_bool(v);
+        }
+        if let Some(v) = get(REAL_NUMBERS) {
+            m.real_numbers = Some(parse_bool(v));
+        }
+        if let Some(v) = get(SHOW_KIF) {
+            m.show_kif = parse_bool(v);
+        }
+        if let Some(v) = get(SUMOKBNAME) {
+            m.sumokbname = v.to_string();
+        }
+        if let Some(v) = get(SYSTEMS_DIR) {
+            m.systems_dir = PathBuf::from(v);
+        }
+        if let Some(v) = get(THOROUGHNESS) {
+            if let Ok(f) = v.parse() {
+                m.thoroughness = f;
+            }
+        }
+        if let Some(v) = get(TPTP) {
+            m.tptp = parse_bool(v);
+        }
+        if let Some(v) = get(TPTP_LANG) {
+            m.tptp_lang = v.to_string();
+        }
+        if let Some(v) = get(VAMPIRE) {
+            m.vampire = PathBuf::from(v);
+        }
         m.kbs = kbs;
 
         // Classify constituents now that baseDir/kbDir are known: clean
@@ -436,7 +518,9 @@ impl KBManager {
             for c in &mut kb.constituents {
                 if let Constituent::Named(p) = c {
                     if !is_named(p) {
-                        *c = Constituent::Source(Source::Local(vec![resolve_constituent(p, &base, &kbd)]));
+                        *c = Constituent::Source(Source::Local(vec![resolve_constituent(
+                            p, &base, &kbd,
+                        )]));
                     }
                 }
             }
@@ -446,15 +530,17 @@ impl KBManager {
         // `<preference name="error" value="all">` both feed the token list;
         // `from_tokens` resolves "all" → All, codes → Codes, empty → None.
         let mut warn_tokens = errors;
-        if let Some(v) = get(ERROR) { warn_tokens.push(v.to_string()); }
+        if let Some(v) = get(ERROR) {
+            warn_tokens.push(v.to_string());
+        }
         m.elevate_warnings = ElevateWarnings::from_tokens(warn_tokens);
 
         // `<prover type="native|external">` sections.  Unknown types are ignored.
         for (kind, pp) in &provers {
             match kind.as_str() {
-                "native"   => m.native_prover   = prover_config_from_prefs(pp)?,
+                "native" => m.native_prover = prover_config_from_prefs(pp)?,
                 "external" => m.external_prover = prover_config_from_prefs(pp)?,
-                _          => {}
+                _ => {}
             }
         }
 
@@ -462,7 +548,8 @@ impl KBManager {
         // (or by "error", handled separately just above) is preserved
         // verbatim so `to_config_xml` can round-trip it — see
         // `unknown_preferences`'s doc comment.
-        m.unknown_preferences = prefs.into_iter()
+        m.unknown_preferences = prefs
+            .into_iter()
             .filter(|(k, _)| !KNOWN_PREFERENCES.contains(&k.as_str()))
             .collect();
 
@@ -472,8 +559,10 @@ impl KBManager {
     /// Read a `config.xml` from disk and parse it (see [`from_config_xml`](Self::from_config_xml)).
     pub fn from_config_xml_path(path: impl AsRef<Path>) -> SdkResult<Self> {
         let path = path.as_ref();
-        let xml = std::fs::read_to_string(path)
-            .map_err(|source| SdkError::Io { path: path.to_path_buf(), source })?;
+        let xml = std::fs::read_to_string(path).map_err(|source| SdkError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Self::from_config_xml(&xml)
     }
 
@@ -481,8 +570,10 @@ impl KBManager {
     /// (no `validate()`) — for editing tools.
     pub fn from_config_xml_path_lenient(path: impl AsRef<Path>) -> SdkResult<Self> {
         let path = path.as_ref();
-        let xml = std::fs::read_to_string(path)
-            .map_err(|source| SdkError::Io { path: path.to_path_buf(), source })?;
+        let xml = std::fs::read_to_string(path).map_err(|source| SdkError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Self::parse_config_xml_lenient(&xml)
     }
 
@@ -513,13 +604,16 @@ impl KBManager {
 
         if self.sumokbname.trim().is_empty() {
             return Err(SdkError::Config(
-                "config: `sumokbname` (the default KB) is required".into()));
+                "config: `sumokbname` (the default KB) is required".into(),
+            ));
         }
         if !self.kbs.iter().any(|kb| kb.name == self.sumokbname) {
             let defined: Vec<&str> = self.kbs.iter().map(|kb| kb.name.as_str()).collect();
             return Err(SdkError::Config(format!(
                 "config: `sumokbname` = \"{}\" does not match any defined <kb> (defined: [{}])",
-                self.sumokbname, defined.join(", "))));
+                self.sumokbname,
+                defined.join(", ")
+            )));
         }
 
         // (4) Every *local* constituent of the active KB must exist on disk.
@@ -534,7 +628,9 @@ impl KBManager {
                     for p in &paths {
                         if !p.exists() {
                             return Err(SdkError::Config(format!(
-                                "constituent file not found: `{}`", p.display())));
+                                "constituent file not found: `{}`",
+                                p.display()
+                            )));
                         }
                     }
                 }
@@ -545,11 +641,11 @@ impl KBManager {
 
     /// Select a KB to use for this manager instance
     pub fn set_current_kb(&mut self, kb: &str) {
-        self.selected_kb = self.kbs
-            .iter()
-            .enumerate()
-            .find_map(|(i, v)| 
-                if v.name == kb { Some(i) } else { None });
+        self.selected_kb =
+            self.kbs
+                .iter()
+                .enumerate()
+                .find_map(|(i, v)| if v.name == kb { Some(i) } else { None });
     }
 
     /// Select a KB to use for this manager instance
@@ -588,10 +684,15 @@ impl KBManager {
     /// the config declared.  With `git` set, all `-f`/`-d` paths become the
     /// in-repo paths of a single [`Source::Git`]; otherwise they become one
     /// [`Source::Local`].  No-op when no KB is selected.
-    pub fn add_cli_sources(&mut self, files: Vec<PathBuf>, dirs: Vec<PathBuf>, git: Option<String>)
-        -> SdkResult<()>
-    {
-        let Some(idx) = self.selected_kb else { return Ok(()) };
+    pub fn add_cli_sources(
+        &mut self,
+        files: Vec<PathBuf>,
+        dirs: Vec<PathBuf>,
+        git: Option<String>,
+    ) -> SdkResult<()> {
+        let Some(idx) = self.selected_kb else {
+            return Ok(());
+        };
         let mut paths = files;
         paths.extend(dirs);
         match git {
@@ -603,7 +704,9 @@ impl KBManager {
                     if is_named(&p) {
                         self.kbs[idx].constituents.push(Constituent::Named(p));
                     } else {
-                        self.kbs[idx].constituents.push(Constituent::Source(Source::Local(vec![p])));
+                        self.kbs[idx]
+                            .constituents
+                            .push(Constituent::Source(Source::Local(vec![p])));
                     }
                 }
             }
@@ -613,11 +716,15 @@ impl KBManager {
                 for p in &paths {
                     if !p.exists() {
                         return Err(SdkError::Config(format!(
-                            "source path not found: `{}`", p.display())));
+                            "source path not found: `{}`",
+                            p.display()
+                        )));
                     }
                 }
                 if !paths.is_empty() {
-                    self.kbs[idx].constituents.push(Constituent::Source(Source::Local(paths)));
+                    self.kbs[idx]
+                        .constituents
+                        .push(Constituent::Source(Source::Local(paths)));
                 }
             }
         }
@@ -635,7 +742,10 @@ impl KBManager {
         if self.kbs.iter().any(|k| k.name == kb_name) {
             return;
         }
-        self.kbs.push(KB { name: kb_name.to_string(), constituents: Vec::new() });
+        self.kbs.push(KB {
+            name: kb_name.to_string(),
+            constituents: Vec::new(),
+        });
         if self.sumokbname.trim().is_empty() {
             self.sumokbname = kb_name.to_string();
         }
@@ -662,7 +772,11 @@ impl KBManager {
     /// for declaring constituents ahead of actually fetching them (e.g. an
     /// installer seeding a starter KB before the ontology is cloned).
     pub fn add_constituents_to_kb(
-        &mut self, kb_name: &str, files: Vec<PathBuf>, dirs: Vec<PathBuf>, verify_exists: bool,
+        &mut self,
+        kb_name: &str,
+        files: Vec<PathBuf>,
+        dirs: Vec<PathBuf>,
+        verify_exists: bool,
     ) -> SdkResult<()> {
         // Classify (and existence-check) every path FIRST, before mutating
         // anything — a rejected path must leave the manager untouched (no
@@ -685,19 +799,29 @@ impl KBManager {
             if is_named(&p) && resolve_constituent(&p, &base, &kbd).exists() {
                 candidates.push(Constituent::Named(p));
             } else if p.exists() {
-                candidates.push(Constituent::Source(Source::Local(vec![p.canonicalize().unwrap_or(p)])));
+                candidates.push(Constituent::Source(Source::Local(vec![p
+                    .canonicalize()
+                    .unwrap_or(p)])));
             } else {
                 return Err(SdkError::Config(format!(
                     "source path not found: `{}` (checked as given, and under kbDir `{}`)",
-                    p.display(), kbd.display())));
+                    p.display(),
+                    kbd.display()
+                )));
             }
         }
 
         self.create_kb(kb_name);
-        let idx = self.kbs.iter().position(|k| k.name == kb_name).expect("just created");
+        let idx = self
+            .kbs
+            .iter()
+            .position(|k| k.name == kb_name)
+            .expect("just created");
 
         for candidate in candidates {
-            let already_present = self.kbs[idx].constituents.iter()
+            let already_present = self.kbs[idx]
+                .constituents
+                .iter()
                 .any(|c| constituent_path(c) == constituent_path(&candidate));
             if !already_present {
                 self.kbs[idx].constituents.push(candidate);
@@ -714,16 +838,23 @@ impl KBManager {
     /// in `sumo config`'s "Knowledge bases" listing. Returns how many
     /// constituents were removed (0 if none matched). `Err` only when
     /// `kb_name` itself doesn't exist.
-    pub fn remove_constituents_from_kb(&mut self, kb_name: &str, paths: Vec<PathBuf>) -> SdkResult<usize> {
-        let idx = self.kbs.iter().position(|k| k.name == kb_name)
+    pub fn remove_constituents_from_kb(
+        &mut self,
+        kb_name: &str,
+        paths: Vec<PathBuf>,
+    ) -> SdkResult<usize> {
+        let idx = self
+            .kbs
+            .iter()
+            .position(|k| k.name == kb_name)
             .ok_or_else(|| SdkError::Config(format!("no such KB: `{kb_name}`")))?;
         let before = self.kbs[idx].constituents.len();
-        self.kbs[idx].constituents.retain(|c| {
-            match constituent_path(c) {
+        self.kbs[idx]
+            .constituents
+            .retain(|c| match constituent_path(c) {
                 Some(p) => !paths.iter().any(|rp| rp == p),
                 None => true,
-            }
-        });
+            });
         Ok(before - self.kbs[idx].constituents.len())
     }
 }
@@ -762,7 +893,9 @@ pub enum Constituent {
 /// and `..`-bearing paths are pinned local.
 fn is_named(p: &Path) -> bool {
     p.is_relative()
-        && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
+        && !p
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// An individual KnowledgeBase, comprised of its member
@@ -776,10 +909,14 @@ pub struct KB {
 
 impl KB {
     /// This KB's name (the `<kb name="…">` from config.xml).
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     /// This KB's declared constituents, in order.
-    pub fn constituents(&self) -> &[Constituent] { &self.constituents }
+    pub fn constituents(&self) -> &[Constituent] {
+        &self.constituents
+    }
 
     /// Resolve the constituents into concrete [`Source`]s for ingestion.
     ///
@@ -791,21 +928,32 @@ impl KB {
     ///   through verbatim — absolute / `..` paths are *omitted from the swap*.
     ///   `branch` is only meaningful here: `None` defers to the remote's own
     ///   default branch, `Some(name)` pins it (see [`Source::Git`]).
-    pub fn resolve(&self, base_dir: &Path, kb_dir: &Path, git: Option<&str>, branch: Option<&str>) -> Vec<Source> {
+    pub fn resolve(
+        &self,
+        base_dir: &Path,
+        kb_dir: &Path,
+        git: Option<&str>,
+        branch: Option<&str>,
+    ) -> Vec<Source> {
         #[cfg(feature = "git")]
         if let Some(uri) = git {
             let mut named: Vec<PathBuf> = Vec::new();
-            let mut out:   Vec<Source>  = Vec::new();
+            let mut out: Vec<Source> = Vec::new();
             for c in &self.constituents {
                 match c {
                     Constituent::Named(name) => named.push(name.clone()),
-                    Constituent::Source(s)   => out.extend(s.try_clone()),
+                    Constituent::Source(s) => out.extend(s.try_clone()),
                 }
             }
             if !named.is_empty() {
-                out.insert(0, Source::Git {
-                    uri: uri.to_string(), paths: named, branch: branch.map(str::to_string),
-                });
+                out.insert(
+                    0,
+                    Source::Git {
+                        uri: uri.to_string(),
+                        paths: named,
+                        branch: branch.map(str::to_string),
+                    },
+                );
             }
             return out;
         }
@@ -814,8 +962,10 @@ impl KB {
         self.constituents
             .iter()
             .filter_map(|c| match c {
-                Constituent::Named(name) => Some(Source::Local(vec![resolve_constituent(name, base_dir, kb_dir)])),
-                Constituent::Source(s)   => s.try_clone(),
+                Constituent::Named(name) => Some(Source::Local(vec![resolve_constituent(
+                    name, base_dir, kb_dir,
+                )])),
+                Constituent::Source(s) => s.try_clone(),
             })
             .collect()
     }
@@ -846,7 +996,9 @@ pub enum ElevateWarnings {
 }
 
 impl Default for ElevateWarnings {
-    fn default() -> Self { ElevateWarnings::None }
+    fn default() -> Self {
+        ElevateWarnings::None
+    }
 }
 
 impl ElevateWarnings {
@@ -868,8 +1020,8 @@ impl ElevateWarnings {
     /// Is warning `code` elevated to an error under this policy?
     pub fn elevates(&self, code: &str) -> bool {
         match self {
-            Self::None      => false,
-            Self::All       => true,
+            Self::None => false,
+            Self::All => true,
             Self::Codes(cs) => cs.iter().any(|c| c.eq_ignore_ascii_case(code)),
         }
     }
@@ -883,43 +1035,65 @@ impl ElevateWarnings {
 /// ..)`) read from, so renaming a key only means changing it here.
 /// [`KNOWN_PREFERENCES`] is generated from this same list.
 pub(crate) mod pref_keys {
-    pub const BASE_DIR:            &str = "baseDir";
-    pub const CACHE:               &str = "cache";
-    pub const DEFAULT_BACKEND:     &str = "defaultBackend";
-    pub const DISABLE_SELECTION:   &str = "disableSelection";
-    pub const EDIT_DIR:            &str = "editDir";
-    pub const EPROVER:             &str = "eproverExec";
-    pub const GRAPHVIZ_DIR:        &str = "graphDir";
-    pub const HOLDS_PREFIX:        &str = "holdsPrefix";
-    pub const INFERENCE_TEST_DIR:  &str = "inferenceTestDir";
-    pub const KB_DIR:              &str = "kbDir";
-    pub const LANGUAGE:            &str = "language";
-    pub const LEO_EXECUTABLE:      &str = "leoExec";
-    pub const LIMIT:               &str = "limit";
-    pub const LOG_DIR:             &str = "logDir";
-    pub const LOG_LEVEL:           &str = "logLevel";
-    pub const OLLAMA_HOST:         &str = "ollamaHost";
-    pub const PROOF:               &str = "proof";
-    pub const PROSE:               &str = "prose";
-    pub const REAL_NUMBERS:        &str = "realNumbers";
-    pub const SHOW_KIF:            &str = "showKif";
-    pub const SUMOKBNAME:          &str = "sumokbname";
-    pub const SYSTEMS_DIR:         &str = "systemsDir";
-    pub const THOROUGHNESS:        &str = "thoroughness";
-    pub const TPTP:                &str = "TPTP";
-    pub const TPTP_LANG:           &str = "tptpLang";
-    pub const VAMPIRE:             &str = "vampireExec";
+    pub const BASE_DIR: &str = "baseDir";
+    pub const CACHE: &str = "cache";
+    pub const DEFAULT_BACKEND: &str = "defaultBackend";
+    pub const DISABLE_SELECTION: &str = "disableSelection";
+    pub const EDIT_DIR: &str = "editDir";
+    pub const EPROVER: &str = "eproverExec";
+    pub const GRAPHVIZ_DIR: &str = "graphDir";
+    pub const HOLDS_PREFIX: &str = "holdsPrefix";
+    pub const INFERENCE_TEST_DIR: &str = "inferenceTestDir";
+    pub const KB_DIR: &str = "kbDir";
+    pub const LANGUAGE: &str = "language";
+    pub const LEO_EXECUTABLE: &str = "leoExec";
+    pub const LIMIT: &str = "limit";
+    pub const LOG_DIR: &str = "logDir";
+    pub const LOG_LEVEL: &str = "logLevel";
+    pub const OLLAMA_HOST: &str = "ollamaHost";
+    pub const PROOF: &str = "proof";
+    pub const PROSE: &str = "prose";
+    pub const REAL_NUMBERS: &str = "realNumbers";
+    pub const SHOW_KIF: &str = "showKif";
+    pub const SUMOKBNAME: &str = "sumokbname";
+    pub const SYSTEMS_DIR: &str = "systemsDir";
+    pub const THOROUGHNESS: &str = "thoroughness";
+    pub const TPTP: &str = "TPTP";
+    pub const TPTP_LANG: &str = "tptpLang";
+    pub const VAMPIRE: &str = "vampireExec";
     /// Warning-elevation policy (`-W all` / `ElevateWarnings::All`), not a
     /// `KBManager` field directly, but still a "known" top-level key.
-    pub const ERROR:               &str = "error";
+    pub const ERROR: &str = "error";
 
     /// Every key above, for the `unknown_preferences` classification —
     /// generated (not hand-duplicated) so it can't drift from the constants.
     pub const ALL: &[&str] = &[
-        BASE_DIR, CACHE, DEFAULT_BACKEND, DISABLE_SELECTION, EDIT_DIR, EPROVER,
-        GRAPHVIZ_DIR, HOLDS_PREFIX, INFERENCE_TEST_DIR, KB_DIR, LANGUAGE, LEO_EXECUTABLE,
-        LIMIT, LOG_DIR, LOG_LEVEL, OLLAMA_HOST, PROOF, PROSE, REAL_NUMBERS, SHOW_KIF,
-        SUMOKBNAME, SYSTEMS_DIR, THOROUGHNESS, TPTP, TPTP_LANG, VAMPIRE,
+        BASE_DIR,
+        CACHE,
+        DEFAULT_BACKEND,
+        DISABLE_SELECTION,
+        EDIT_DIR,
+        EPROVER,
+        GRAPHVIZ_DIR,
+        HOLDS_PREFIX,
+        INFERENCE_TEST_DIR,
+        KB_DIR,
+        LANGUAGE,
+        LEO_EXECUTABLE,
+        LIMIT,
+        LOG_DIR,
+        LOG_LEVEL,
+        OLLAMA_HOST,
+        PROOF,
+        PROSE,
+        REAL_NUMBERS,
+        SHOW_KIF,
+        SUMOKBNAME,
+        SYSTEMS_DIR,
+        THOROUGHNESS,
+        TPTP,
+        TPTP_LANG,
+        VAMPIRE,
         ERROR,
     ];
 }
@@ -936,9 +1110,14 @@ type ProverSection = (String, HashMap<String, String>);
 
 /// Parse a `config.xml` into its top-level `<preference>` map, its `<kb>` list,
 /// and its `<prover type="..">` sections.
-fn parse_config_xml(xml: &str)
-    -> SdkResult<(HashMap<String, String>, Vec<KB>, Vec<ProverSection>, Vec<String>)>
-{
+fn parse_config_xml(
+    xml: &str,
+) -> SdkResult<(
+    HashMap<String, String>,
+    Vec<KB>,
+    Vec<ProverSection>,
+    Vec<String>,
+)> {
     let mut reader = Reader::from_str(xml);
     let mut prefs: HashMap<String, String> = HashMap::new();
     let mut kbs: Vec<KB> = Vec::new();
@@ -951,7 +1130,10 @@ fn parse_config_xml(xml: &str)
 
     loop {
         let event = reader.read_event_into(&mut buf).map_err(|e| {
-            SdkError::Config(format!("config.xml parse error at byte {}: {e}", reader.buffer_position()))
+            SdkError::Config(format!(
+                "config.xml parse error at byte {}: {e}",
+                reader.buffer_position()
+            ))
         })?;
         match event {
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
@@ -960,20 +1142,28 @@ fn parse_config_xml(xml: &str)
                         // A preference inside a <prover> belongs to that prover;
                         // otherwise it is a top-level configuration preference.
                         match cur_prover.as_mut() {
-                            Some((_, pp)) => { pp.insert(name, value); }
-                            None          => { prefs.insert(name, value); }
+                            Some((_, pp)) => {
+                                pp.insert(name, value);
+                            }
+                            None => {
+                                prefs.insert(name, value);
+                            }
                         }
                     }
                 }
                 b"kb" => {
-                    cur_kb = Some(KB { name: attr(&e, b"name").unwrap_or_default(), constituents: Vec::new() });
+                    cur_kb = Some(KB {
+                        name: attr(&e, b"name").unwrap_or_default(),
+                        constituents: Vec::new(),
+                    });
                 }
                 b"constituent" => {
                     if let (Some(kb), Some(file)) = (cur_kb.as_mut(), attr(&e, b"filename")) {
                         // Provisionally a Named (root-relative) constituent; the
                         // post-pass in `from_config_xml` pins absolute / `..`
                         // ones to their frozen local form.
-                        kb.constituents.push(Constituent::Named(PathBuf::from(file)));
+                        kb.constituents
+                            .push(Constituent::Named(PathBuf::from(file)));
                     }
                 }
                 b"prover" => {
@@ -991,8 +1181,16 @@ fn parse_config_xml(xml: &str)
                 _ => {} // `configuration` and anything else: ignored
             },
             Event::End(e) => match e.name().as_ref() {
-                b"kb"     => { if let Some(kb) = cur_kb.take() { kbs.push(kb); } }
-                b"prover" => { if let Some(p) = cur_prover.take() { provers.push(p); } }
+                b"kb" => {
+                    if let Some(kb) = cur_kb.take() {
+                        kbs.push(kb);
+                    }
+                }
+                b"prover" => {
+                    if let Some(p) = cur_prover.take() {
+                        provers.push(p);
+                    }
+                }
                 _ => {}
             },
             Event::Eof => break,
@@ -1028,7 +1226,11 @@ where
 /// a dotted path merges into any object already present at its prefix (so
 /// `selection.tolerance` and a legacy JSON-valued `selection` compose,
 /// dotted leaves winning).
-fn insert_dotted(obj: &mut serde_json::Map<String, serde_json::Value>, name: &str, value: serde_json::Value) {
+fn insert_dotted(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    value: serde_json::Value,
+) {
     let mut parts = name.split('.');
     let first = parts.next().expect("split yields at least one part");
     let rest: Vec<&str> = parts.collect();
@@ -1041,7 +1243,9 @@ fn insert_dotted(obj: &mut serde_json::Map<String, serde_json::Value>, name: &st
                     existing.entry(k.clone()).or_insert_with(|| v.clone());
                 }
             }
-            _ => { obj.insert(first.to_string(), value); }
+            _ => {
+                obj.insert(first.to_string(), value);
+            }
         }
         return;
     }
@@ -1073,16 +1277,22 @@ fn insert_dotted(obj: &mut serde_json::Map<String, serde_json::Value>, name: &st
 fn json_value_of(v: &str) -> serde_json::Value {
     let t = v.trim();
     match t.to_ascii_lowercase().as_str() {
-        "true" | "yes" | "on"  => return serde_json::Value::Bool(true),
+        "true" | "yes" | "on" => return serde_json::Value::Bool(true),
         "false" | "no" | "off" => return serde_json::Value::Bool(false),
         _ => {}
     }
-    if let Ok(i) = t.parse::<i64>() { return serde_json::Value::from(i); }
+    if let Ok(i) = t.parse::<i64>() {
+        return serde_json::Value::from(i);
+    }
     if let Ok(f) = t.parse::<f64>() {
-        if let Some(n) = serde_json::Number::from_f64(f) { return serde_json::Value::Number(n); }
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return serde_json::Value::Number(n);
+        }
     }
     if matches!(t.as_bytes().first(), Some(b'{') | Some(b'[')) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(t) { return val; }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(t) {
+            return val;
+        }
     }
     serde_json::Value::String(v.to_string())
 }
@@ -1092,12 +1302,19 @@ fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned()))
+        .and_then(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|v| v.into_owned())
+        })
 }
 
 /// Parse a SUMO boolean preference: `yes` / `true` / `1` (any case) are true.
 fn parse_bool(v: &str) -> bool {
-    matches!(v.trim().to_ascii_lowercase().as_str(), "yes" | "true" | "1" | "on")
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "yes" | "true" | "1" | "on"
+    )
 }
 
 /// Resolve a configured executable to an existing path:
@@ -1108,7 +1325,11 @@ fn parse_bool(v: &str) -> bool {
 ///   `systems_dir` is set), then search each `$PATH` entry.
 ///
 /// Returns the first existing candidate, or `None` if nothing resolves.
-fn resolve_executable(configured: &Path, default_name: &str, systems_dir: &Path) -> Option<PathBuf> {
+fn resolve_executable(
+    configured: &Path,
+    default_name: &str,
+    systems_dir: &Path,
+) -> Option<PathBuf> {
     let target: &Path = if configured.as_os_str().is_empty() {
         Path::new(default_name)
     } else {
@@ -1165,24 +1386,24 @@ fn resolve_constituent(filename: &Path, base_dir: &Path, kb_dir: &Path) -> PathB
 /// and `trace` collapse to `Hint`, the lowest core severity.
 fn parse_severity(v: &str) -> log::LevelFilter {
     match v.trim().to_ascii_lowercase().as_str() {
-        "error"                   => log::LevelFilter::Error,
-        "warning" | "warn"        => log::LevelFilter::Warn,
-        "info"                    => log::LevelFilter::Info,
-        "hint" | "debug"          => log::LevelFilter::Debug,
-        "trace"                   => log::LevelFilter::Trace,
-        "none"                    => log::LevelFilter::Off,
-        _                         => log::LevelFilter::Warn,
+        "error" => log::LevelFilter::Error,
+        "warning" | "warn" => log::LevelFilter::Warn,
+        "info" => log::LevelFilter::Info,
+        "hint" | "debug" => log::LevelFilter::Debug,
+        "trace" => log::LevelFilter::Trace,
+        "none" => log::LevelFilter::Off,
+        _ => log::LevelFilter::Warn,
     }
 }
 
 fn severity_str(s: LevelFilter) -> &'static str {
     match s {
-        LevelFilter::Error   => "error",
-        LevelFilter::Warn    => "warning",
-        LevelFilter::Info    => "info",
-        LevelFilter::Debug   => "debug",
-        LevelFilter::Trace   => "trace",
-        LevelFilter::Off     => "none",
+        LevelFilter::Error => "error",
+        LevelFilter::Warn => "warning",
+        LevelFilter::Info => "info",
+        LevelFilter::Debug => "debug",
+        LevelFilter::Trace => "trace",
+        LevelFilter::Off => "none",
     }
 }
 
@@ -1209,11 +1430,11 @@ impl Into<TptpOptions> for KBManager {
                 "fof" => TptpLang::Fof,
                 "tff" => TptpLang::Tff,
                 "cnf" => TptpLang::Cnf,
-                _ => TptpLang::Auto
+                _ => TptpLang::Auto,
             },
             excluded: HashSet::new(),
             show_kif_comment: self.show_kif,
-            .. TptpOptions::default()
+            ..TptpOptions::default()
         }
     }
 }
@@ -1301,10 +1522,14 @@ mod tests {
         let mut m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
         m.native_prover.selection.tolerance = 4.25;
         let xml = m.to_config_xml();
-        assert!(xml.contains(r#"<preference name="selection.tolerance" value="4.25"/>"#),
-            "nested prover config flattens to dotted names:\n{xml}");
-        assert!(!xml.contains("&quot;"),
-            "no JSON-in-attribute values remain:\n{xml}");
+        assert!(
+            xml.contains(r#"<preference name="selection.tolerance" value="4.25"/>"#),
+            "nested prover config flattens to dotted names:\n{xml}"
+        );
+        assert!(
+            !xml.contains("&quot;"),
+            "no JSON-in-attribute values remain:\n{xml}"
+        );
         let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
         assert!((reparsed.native_prover.selection.tolerance - 4.25).abs() < 1e-6);
         assert_structurally_eq(&m, &reparsed);
@@ -1323,10 +1548,14 @@ mod tests {
   </prover>
 </configuration>"#;
         let m = KBManager::parse_config_xml_lenient(legacy).unwrap();
-        assert!((m.native_prover.selection.tolerance - 9.0).abs() < 1e-6,
-            "dotted leaf wins over the legacy JSON object");
-        assert!(m.native_prover.selection.autoscale,
-            "legacy JSON fields still land");
+        assert!(
+            (m.native_prover.selection.tolerance - 9.0).abs() < 1e-6,
+            "dotted leaf wins over the legacy JSON object"
+        );
+        assert!(
+            m.native_prover.selection.autoscale,
+            "legacy JSON fields still land"
+        );
     }
 
     #[test]
@@ -1335,8 +1564,18 @@ mod tests {
         // maps to a KBManager field, so they used to be silently dropped by
         // `to_config_xml`. They must now round-trip via `unknown_preferences`.
         let m = KBManager::parse_config_xml_lenient(SAMPLE).unwrap();
-        assert_eq!(m.unknown_preferences.get("adminBrowserLimit").map(String::as_str), Some("200"));
-        assert_eq!(m.unknown_preferences.get("someUnknownOption").map(String::as_str), Some("ignore me"));
+        assert_eq!(
+            m.unknown_preferences
+                .get("adminBrowserLimit")
+                .map(String::as_str),
+            Some("200")
+        );
+        assert_eq!(
+            m.unknown_preferences
+                .get("someUnknownOption")
+                .map(String::as_str),
+            Some("ignore me")
+        );
 
         // A `sumo config --<setting> ...` regenerate must not lose them.
         let xml = m.to_config_xml();
@@ -1357,8 +1596,9 @@ mod tests {
         let by = |id: &str| opts.iter().find(|o| o.field == id).unwrap();
         m.apply_overrides([
             (by("thoroughness"), serde_json::json!(0.5)),
-            (by("backend"),      serde_json::json!("subprocess")),
-        ]).unwrap();
+            (by("backend"), serde_json::json!("subprocess")),
+        ])
+        .unwrap();
 
         let xml = m.to_config_xml();
         let reparsed = KBManager::parse_config_xml_lenient(&xml).unwrap();
@@ -1391,7 +1631,10 @@ mod tests {
     fn kb_with(name: &str) -> KBManager {
         let mut m = KBManager::default();
         m.sumokbname = name.into();
-        m.kbs.push(KB { name: name.into(), constituents: vec![] });
+        m.kbs.push(KB {
+            name: name.into(),
+            constituents: vec![],
+        });
         m.set_current_kb(name);
         m
     }
@@ -1433,20 +1676,32 @@ mod tests {
 
         let mut m = kb_with("K");
         // Local: an existing file + an existing dir → one pinned local source.
-        m.add_cli_sources(vec![f.clone()], vec![dir.clone()], None).unwrap();
+        m.add_cli_sources(vec![f.clone()], vec![dir.clone()], None)
+            .unwrap();
         // Git: a clean-relative in-repo name → Named (joins the git swap in
         // `resolve`); not existence-checked on disk.
-        m.add_cli_sources(vec!["in/repo.kif".into()], vec![], Some("https://example/repo".into())).unwrap();
+        m.add_cli_sources(
+            vec!["in/repo.kif".into()],
+            vec![],
+            Some("https://example/repo".into()),
+        )
+        .unwrap();
         let kb = m.current_kb().unwrap();
         assert_eq!(kb.constituents.len(), 2);
-        assert!(matches!(&kb.constituents[0], Constituent::Source(Source::Local(p)) if p.len() == 2));
-        assert!(matches!(&kb.constituents[1], Constituent::Named(p) if p == Path::new("in/repo.kif")));
+        assert!(
+            matches!(&kb.constituents[0], Constituent::Source(Source::Local(p)) if p.len() == 2)
+        );
+        assert!(
+            matches!(&kb.constituents[1], Constituent::Named(p) if p == Path::new("in/repo.kif"))
+        );
     }
 
     #[test]
     fn add_cli_sources_rejects_a_missing_local_path() {
         let mut m = kb_with("K");
-        let err = m.add_cli_sources(vec!["/no/such/file.kif".into()], vec![], None).unwrap_err();
+        let err = m
+            .add_cli_sources(vec!["/no/such/file.kif".into()], vec![], None)
+            .unwrap_err();
         assert!(matches!(err, SdkError::Config(_)));
     }
 
@@ -1478,7 +1733,8 @@ mod tests {
 
         let mut m = KBManager::default();
         assert!(m.sumokbname.is_empty());
-        m.add_constituents_to_kb("NEW", vec![f.clone()], vec![], true).unwrap();
+        m.add_constituents_to_kb("NEW", vec![f.clone()], vec![], true)
+            .unwrap();
         assert_eq!(m.kbs.len(), 1);
         assert_eq!(m.kbs[0].name(), "NEW");
         assert_eq!(m.kbs[0].constituents().len(), 1);
@@ -1487,7 +1743,8 @@ mod tests {
 
         // A second `add_constituents_to_kb` on a DIFFERENT kb must not steal
         // the already-set default.
-        m.add_constituents_to_kb("OTHER", vec![f.clone()], vec![], true).unwrap();
+        m.add_constituents_to_kb("OTHER", vec![f.clone()], vec![], true)
+            .unwrap();
         assert_eq!(m.sumokbname, "NEW");
     }
 
@@ -1497,7 +1754,7 @@ mod tests {
         // directly (not the process CWD), so this needs no `set_current_dir`
         // (unsafe to do in a parallel test run anyway).
         let root = std::env::temp_dir().join("sdk_add_constituents_classify");
-        let kbd  = root.join("kbdir");
+        let kbd = root.join("kbdir");
         std::fs::create_dir_all(&kbd).unwrap();
         std::fs::write(kbd.join("InKbDir.kif"), "").unwrap();
         let outside = root.join("Outside.kif");
@@ -1507,13 +1764,19 @@ mod tests {
         m.kb_dir = kbd.clone();
 
         // A clean-relative name that resolves under kbDir → Named.
-        m.add_constituents_to_kb("K", vec![PathBuf::from("InKbDir.kif")], vec![], true).unwrap();
+        m.add_constituents_to_kb("K", vec![PathBuf::from("InKbDir.kif")], vec![], true)
+            .unwrap();
         // An absolute path outside kbDir → pinned, regardless of kbDir.
-        m.add_constituents_to_kb("K", vec![outside.clone()], vec![], true).unwrap();
+        m.add_constituents_to_kb("K", vec![outside.clone()], vec![], true)
+            .unwrap();
 
         let kb = &m.kbs[0];
-        assert!(matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("InKbDir.kif")));
-        assert!(matches!(&kb.constituents()[1], Constituent::Source(Source::Local(p)) if p[0] == outside.canonicalize().unwrap()));
+        assert!(
+            matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("InKbDir.kif"))
+        );
+        assert!(
+            matches!(&kb.constituents()[1], Constituent::Source(Source::Local(p)) if p[0] == outside.canonicalize().unwrap())
+        );
     }
 
     #[test]
@@ -1524,15 +1787,23 @@ mod tests {
         std::fs::write(&f, "").unwrap();
 
         let mut m = KBManager::default();
-        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true).unwrap();
-        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true).unwrap();
-        assert_eq!(m.kbs[0].constituents().len(), 1, "re-adding the same path is a no-op");
+        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true)
+            .unwrap();
+        m.add_constituents_to_kb("K", vec![f.clone()], vec![], true)
+            .unwrap();
+        assert_eq!(
+            m.kbs[0].constituents().len(),
+            1,
+            "re-adding the same path is a no-op"
+        );
     }
 
     #[test]
     fn add_constituents_to_kb_rejects_a_missing_path() {
         let mut m = KBManager::default();
-        let err = m.add_constituents_to_kb("K", vec!["/no/such/file.kif".into()], vec![], true).unwrap_err();
+        let err = m
+            .add_constituents_to_kb("K", vec!["/no/such/file.kif".into()], vec![], true)
+            .unwrap_err();
         assert!(matches!(err, SdkError::Config(_)));
         assert!(m.kbs.is_empty(), "KB is not created on a failed add");
     }
@@ -1547,12 +1818,17 @@ mod tests {
             vec!["Merge.kif".into(), "Mid-level-ontology.kif".into()],
             vec![],
             false,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(m.sumokbname, "SUMO");
         let kb = &m.kbs[0];
         assert_eq!(kb.constituents().len(), 2);
-        assert!(matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("Merge.kif")));
-        assert!(matches!(&kb.constituents()[1], Constituent::Named(p) if p == Path::new("Mid-level-ontology.kif")));
+        assert!(
+            matches!(&kb.constituents()[0], Constituent::Named(p) if p == Path::new("Merge.kif"))
+        );
+        assert!(
+            matches!(&kb.constituents()[1], Constituent::Named(p) if p == Path::new("Mid-level-ontology.kif"))
+        );
     }
 
     #[test]
@@ -1565,10 +1841,13 @@ mod tests {
         std::fs::write(&b, "").unwrap();
 
         let mut m = KBManager::default();
-        m.add_constituents_to_kb("K", vec![a.clone(), b.clone()], vec![], true).unwrap();
+        m.add_constituents_to_kb("K", vec![a.clone(), b.clone()], vec![], true)
+            .unwrap();
         assert_eq!(m.kbs[0].constituents().len(), 2);
 
-        let removed = m.remove_constituents_from_kb("K", vec![a.canonicalize().unwrap()]).unwrap();
+        let removed = m
+            .remove_constituents_from_kb("K", vec![a.canonicalize().unwrap()])
+            .unwrap();
         assert_eq!(removed, 1);
         assert_eq!(m.kbs[0].constituents().len(), 1);
     }
@@ -1576,7 +1855,9 @@ mod tests {
     #[test]
     fn remove_constituents_from_kb_errors_on_unknown_kb() {
         let mut m = KBManager::default();
-        let err = m.remove_constituents_from_kb("NOPE", vec!["x.kif".into()]).unwrap_err();
+        let err = m
+            .remove_constituents_from_kb("NOPE", vec!["x.kif".into()])
+            .unwrap_err();
         assert!(matches!(err, SdkError::Config(_)));
     }
 
@@ -1590,11 +1871,17 @@ mod tests {
 
     /// Extract the single path from a resolved `Source::Local`.
     fn local_one(s: &Source) -> &Path {
-        match s { Source::Local(p) => p[0].as_path(), other => panic!("expected Local, got {other:?}") }
+        match s {
+            Source::Local(p) => p[0].as_path(),
+            other => panic!("expected Local, got {other:?}"),
+        }
     }
 
     fn kb_with_constituents(cs: Vec<Constituent>) -> KB {
-        KB { name: "K".into(), constituents: cs }
+        KB {
+            name: "K".into(),
+            constituents: cs,
+        }
     }
 
     // -- existing behavior: the dynamic local cascade -----------------------
@@ -1602,13 +1889,16 @@ mod tests {
     fn resolve_local_uses_dynamic_cascade() {
         let kb = kb_with_constituents(vec![
             Constituent::Named("Merge.kif".into()),
-            Constituent::Named("development/Muscles.kif".into()),   // subdir preserved
+            Constituent::Named("development/Muscles.kif".into()), // subdir preserved
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])), // pinned absolute
         ]);
         // kbDir absolute → kbDir/name; baseDir ignored.
         let abs = kb.resolve(Path::new("/base"), Path::new("/sumo"), None, None);
         assert_eq!(local_one(&abs[0]), Path::new("/sumo/Merge.kif"));
-        assert_eq!(local_one(&abs[1]), Path::new("/sumo/development/Muscles.kif"));
+        assert_eq!(
+            local_one(&abs[1]),
+            Path::new("/sumo/development/Muscles.kif")
+        );
         assert_eq!(local_one(&abs[2]), Path::new("/abs/Other.kif"));
         // kbDir relative → baseDir/kbDir/name.
         let rel = kb.resolve(Path::new("/base"), Path::new("kbs"), None, None);
@@ -1625,12 +1915,26 @@ mod tests {
             Constituent::Named("development/Muscles.kif".into()),
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])),
         ]);
-        let srcs = kb.resolve(Path::new("/base"), Path::new("/sumo"), Some("https://example/repo"), None);
+        let srcs = kb.resolve(
+            Path::new("/base"),
+            Path::new("/sumo"),
+            Some("https://example/repo"),
+            None,
+        );
         match &srcs[0] {
             Source::Git { uri, paths, branch } => {
                 assert_eq!(uri, "https://example/repo");
-                assert_eq!(paths, &[PathBuf::from("Merge.kif"), PathBuf::from("development/Muscles.kif")]);
-                assert_eq!(branch, &None, "no branch pinned defers to the remote's default");
+                assert_eq!(
+                    paths,
+                    &[
+                        PathBuf::from("Merge.kif"),
+                        PathBuf::from("development/Muscles.kif")
+                    ]
+                );
+                assert_eq!(
+                    branch, &None,
+                    "no branch pinned defers to the remote's default"
+                );
             }
             other => panic!("expected Git, got {other:?}"),
         }
@@ -1638,7 +1942,12 @@ mod tests {
         assert_eq!(local_one(&srcs[1]), Path::new("/abs/Other.kif"));
 
         // A pinned branch reaches `Source::Git` unmodified.
-        let pinned = kb.resolve(Path::new("/base"), Path::new("/sumo"), Some("https://example/repo"), Some("dev"));
+        let pinned = kb.resolve(
+            Path::new("/base"),
+            Path::new("/sumo"),
+            Some("https://example/repo"),
+            Some("dev"),
+        );
         match &pinned[0] {
             Source::Git { branch, .. } => assert_eq!(branch.as_deref(), Some("dev")),
             other => panic!("expected Git, got {other:?}"),
@@ -1652,12 +1961,12 @@ mod tests {
             Constituent::Named("Merge.kif".into()),
             Constituent::Source(Source::Local(vec!["/abs/Other.kif".into()])),
         ]);
-        let a = kb.resolve(Path::new("/base"), Path::new("/sumo"),  None, None);
+        let a = kb.resolve(Path::new("/base"), Path::new("/sumo"), None, None);
         let b = kb.resolve(Path::new("/base"), Path::new("/other"), None, None);
         assert_eq!(local_one(&a[0]), Path::new("/sumo/Merge.kif"));
         assert_eq!(local_one(&b[0]), Path::new("/other/Merge.kif")); // Named follows kbDir
         assert_eq!(local_one(&a[1]), Path::new("/abs/Other.kif"));
-        assert_eq!(local_one(&b[1]), Path::new("/abs/Other.kif"));   // pinned, didn't move
+        assert_eq!(local_one(&b[1]), Path::new("/abs/Other.kif")); // pinned, didn't move
     }
 
     #[test]
@@ -1677,8 +1986,12 @@ mod tests {
         let m = KBManager::from_config_xml(xml).unwrap();
         let kb = m.current_kb().unwrap();
         assert!(matches!(&kb.constituents[0], Constituent::Named(p) if p == Path::new("A.kif")));
-        assert!(matches!(&kb.constituents[1], Constituent::Source(Source::Local(p)) if p[0] == Path::new("/abs/X.kif")));
-        assert!(matches!(&kb.constituents[2], Constituent::Source(Source::Local(p)) if p[0] == Path::new("/sumo/../up.kif")));
+        assert!(
+            matches!(&kb.constituents[1], Constituent::Source(Source::Local(p)) if p[0] == Path::new("/abs/X.kif"))
+        );
+        assert!(
+            matches!(&kb.constituents[2], Constituent::Source(Source::Local(p)) if p[0] == Path::new("/sumo/../up.kif"))
+        );
     }
 
     const WITH_PROVERS: &str = r#"<configuration>
@@ -1748,8 +2061,10 @@ mod tests {
   <error name="E010"/>
 </configuration>"#;
         let m = KBManager::from_config_xml(xml).unwrap();
-        assert_eq!(m.elevate_warnings,
-            ElevateWarnings::Codes(vec!["E005".into(), "E010".into()]));
+        assert_eq!(
+            m.elevate_warnings,
+            ElevateWarnings::Codes(vec!["E005".into(), "E010".into()])
+        );
         assert!(m.elevate_warnings.elevates("e005"), "case-insensitive");
         assert!(!m.elevate_warnings.elevates("E999"));
     }
@@ -1785,7 +2100,7 @@ mod tests {
         assert!(!opts.forward_close);
         assert!(opts.want_proof);
         assert_eq!(opts.max_lits, 8); // default carried through
-        // Per-query runtime fields are left default for the caller to set.
+                                      // Per-query runtime fields are left default for the caller to set.
         assert!(opts.session.is_none());
         assert!(opts.cancel.is_none());
     }
@@ -1813,7 +2128,9 @@ mod tests {
         m.vampire = PathBuf::from("/definitely/not/here/vampire");
         m.eprover = PathBuf::from("/definitely/not/here/eprover");
         let err = m.validate_prover_paths().unwrap_err();
-        let SdkError::Config(msg) = err else { panic!("expected Config error") };
+        let SdkError::Config(msg) = err else {
+            panic!("expected Config error")
+        };
         // Both failures surface in one message.
         assert!(msg.contains("vampire binary not found"), "{msg}");
         assert!(msg.contains("eprover binary not found"), "{msg}");
@@ -1838,15 +2155,20 @@ mod tests {
         let mut m = KBManager::default();
         assert!(!m.native_opts().selection.select_all, "off by default");
         m.disable_selection = true;
-        assert!(m.native_opts().selection.select_all,
-            "disable_selection forces whole-KB (select_all)");
+        assert!(
+            m.native_opts().selection.select_all,
+            "disable_selection forces whole-KB (select_all)"
+        );
     }
 
     #[test]
     fn serde_roundtrips_through_json() {
         let m = KBManager::from_config_xml(SAMPLE).unwrap();
         let json = serde_json::to_string(&m).unwrap();
-        assert!(json.contains("\"warning\""), "log_level serializes as a lowercase string");
+        assert!(
+            json.contains("\"warning\""),
+            "log_level serializes as a lowercase string"
+        );
         let mut back: KBManager = serde_json::from_str(&json).unwrap();
         // `selected_kb` is `#[serde(skip)]` (transient runtime state), so it does
         // not survive the round-trip — re-derive it from `sumokbname`, exactly as
@@ -1872,7 +2194,8 @@ mod tests {
         // No `sumokbname` at all.
         assert!(matches!(
             KBManager::from_config_xml("<configuration/>").unwrap_err(),
-            SdkError::Config(_)));
+            SdkError::Config(_)
+        ));
     }
 
     #[test]
@@ -1884,8 +2207,10 @@ mod tests {
         let err = KBManager::from_config_xml(xml).unwrap_err();
         match err {
             SdkError::Config(msg) => {
-                assert!(msg.contains("SUMO") && msg.contains("OtherKB"),
-                    "message should name the missing default and the defined KBs: {msg}");
+                assert!(
+                    msg.contains("SUMO") && msg.contains("OtherKB"),
+                    "message should name the missing default and the defined KBs: {msg}"
+                );
             }
             other => panic!("expected Config error, got {other:?}"),
         }
@@ -1911,12 +2236,18 @@ mod tests {
 
         // Existing local constituent → ok.
         let mut m = kb_with("K");
-        m.kbs[0].constituents.push(Constituent::Source(Source::Local(vec![real])));
+        m.kbs[0]
+            .constituents
+            .push(Constituent::Source(Source::Local(vec![real])));
         assert!(m.validate(None).is_ok());
 
         // Missing local constituent → error.
         let mut m = kb_with("K");
-        m.kbs[0].constituents.push(Constituent::Source(Source::Local(vec!["/no/such/Merge.kif".into()])));
+        m.kbs[0]
+            .constituents
+            .push(Constituent::Source(Source::Local(vec![
+                "/no/such/Merge.kif".into(),
+            ])));
         assert!(matches!(m.validate(None).unwrap_err(), SdkError::Config(_)));
 
         // Remote (Git) constituents are not disk-checked.
@@ -1939,11 +2270,17 @@ mod tests {
         // they need not exist locally — `sumo -c --git <url> load` must work
         // on a machine that has never had the ontology files on disk.
         let mut m = kb_with("K");
-        m.kbs[0].constituents.push(Constituent::Named("no/such/Merge.kif".into()));
-        assert!(matches!(m.validate(None).unwrap_err(), SdkError::Config(_)),
-            "without --git the Named constituent must exist locally");
-        assert!(m.validate(Some("https://example/repo")).is_ok(),
-            "with --git the Named constituent resolves remotely and is not disk-checked");
+        m.kbs[0]
+            .constituents
+            .push(Constituent::Named("no/such/Merge.kif".into()));
+        assert!(
+            matches!(m.validate(None).unwrap_err(), SdkError::Config(_)),
+            "without --git the Named constituent must exist locally"
+        );
+        assert!(
+            m.validate(Some("https://example/repo")).is_ok(),
+            "with --git the Named constituent resolves remotely and is not disk-checked"
+        );
     }
 
     #[test]
@@ -1964,6 +2301,9 @@ mod tests {
         assert_eq!(m.sumokbname, "SUMO");
         assert_eq!(m.log_level, LevelFilter::Warn);
         assert_eq!(m.kbs.len(), 1);
-        assert!(m.kbs[0].constituents.len() > 10, "the SUMO KB has many constituents");
+        assert!(
+            m.kbs[0].constituents.len() > 10,
+            "the SUMO KB has many constituents"
+        );
     }
 }

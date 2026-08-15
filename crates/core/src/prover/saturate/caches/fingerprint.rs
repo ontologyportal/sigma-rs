@@ -85,7 +85,11 @@ pub(crate) fn coin(seat: usize, key: u64) -> u64 {
 #[inline]
 fn fold_shape(h: u64) -> u32 {
     let f = ((h >> 32) as u32) ^ (h as u32);
-    if f == 0 { 1 } else { f }
+    if f == 0 {
+        1
+    } else {
+        f
+    }
 }
 
 /// The (head, len) SHAPE hash of a compound with a concrete head —
@@ -174,7 +178,9 @@ pub(crate) struct AtomInfo {
 
 impl AtomInfo {
     #[inline]
-    pub(crate) fn is_ground(&self) -> bool { self.mask == 0 }
+    pub(crate) fn is_ground(&self) -> bool {
+        self.mask == 0
+    }
 
     /// MATCHING-direction seat filter: can `self` (the PATTERN — its
     /// variables may bind) possibly one-way match `other` (the
@@ -245,7 +251,9 @@ impl AtomInfo {
         let mut extra = u & !self.mask;
         while extra != 0 {
             let i = extra.trailing_zeros() as usize;
-            if i >= self.seat_coins.len() { break; }
+            if i >= self.seat_coins.len() {
+                break;
+            }
             r ^= self.seat_coins[i];
             extra &= extra - 1;
         }
@@ -285,10 +293,10 @@ fn coin_val(el: &Element) -> CoinVal {
 /// What one *seat term* contributes to its enclosing atom.
 struct SeatMeta {
     ground: bool,
-    depth:  u8,
-    size:   u16,
+    depth: u8,
+    size: u16,
     /// Coin key — meaningful only when `ground`.
-    key:    u64,
+    key: u64,
     /// Ground-leaf signature of the seat (leaf: its own bit; compound:
     /// the subterm's accumulated signature — ground leaves under an
     /// open compound still count; variable: 0).
@@ -306,9 +314,9 @@ impl AtomInfos {
     /// info memoizes under their own ids on the way).
     pub(crate) fn info(
         &self,
-        id:    AtomId,
+        id: AtomId,
         atoms: &AtomTable,
-        syn:   &SyntacticLayer,
+        syn: &SyntacticLayer,
     ) -> Arc<AtomInfo> {
         if let Some(hit) = self.map.get(&id) {
             return hit.value().clone();
@@ -322,9 +330,16 @@ impl AtomInfos {
             // Unresolvable atom: treat as a fully-masked zero-arity husk;
             // probes degrade to "verify everything", never to wrong answers.
             return AtomInfo {
-                arity: 0, mask: 0, base_residue: arity_tag(0),
-                seat_coins: SmallVec::new(), s3: 0, depth: 0, size: 0,
-                leaf_sig: 0, seat_shapes: SmallVec::new(), self_shape: 0,
+                arity: 0,
+                mask: 0,
+                base_residue: arity_tag(0),
+                seat_coins: SmallVec::new(),
+                s3: 0,
+                depth: 0,
+                size: 0,
+                leaf_sig: 0,
+                seat_shapes: SmallVec::new(),
+                self_shape: 0,
             };
         };
         let n = sent.elements.len();
@@ -372,7 +387,9 @@ impl AtomInfos {
                 // Read-first (see `AtomTable::intern_atom`'s comment):
                 // most coins recur, so skip the write-lock path on a hit.
                 if !self.dict.contains_key(&c) {
-                    self.dict.entry(c).or_insert_with(|| (i as u8, coin_val(el)));
+                    self.dict
+                        .entry(c)
+                        .or_insert_with(|| (i as u8, coin_val(el)));
                 }
             }
         }
@@ -400,22 +417,50 @@ impl AtomInfos {
         let leaf_bit = |key: u64| 1u64 << (key & 63);
         match el {
             Element::Variable { .. } => SeatMeta {
-                ground: false, depth: 0, size: 1, key: 0, leaf_sig: 0, head_shape: 0,
+                ground: false,
+                depth: 0,
+                size: 1,
+                key: 0,
+                leaf_sig: 0,
+                head_shape: 0,
             },
             Element::Symbol(s) => {
                 let key = xxh64(&s.id().to_be_bytes(), u64::from(b'S'));
-                SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+                SeatMeta {
+                    ground: true,
+                    depth: 0,
+                    size: 1,
+                    key,
+                    leaf_sig: leaf_bit(key),
+                    head_shape: 0,
+                }
             }
             Element::Literal(Literal::Str(v)) => {
                 let key = xxh64(v.as_bytes(), u64::from(b'T'));
-                SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+                SeatMeta {
+                    ground: true,
+                    depth: 0,
+                    size: 1,
+                    key,
+                    leaf_sig: leaf_bit(key),
+                    head_shape: 0,
+                }
             }
             Element::Literal(Literal::Number(v)) => {
                 let key = xxh64(v.as_bytes(), u64::from(b'N'));
-                SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+                SeatMeta {
+                    ground: true,
+                    depth: 0,
+                    size: 1,
+                    key,
+                    leaf_sig: leaf_bit(key),
+                    head_shape: 0,
+                }
             }
             Element::Op(op) => SeatMeta {
-                ground: true, depth: 0, size: 1,
+                ground: true,
+                depth: 0,
+                size: 1,
                 key: xxh64(&[op_byte(op)], u64::from(b'O')),
                 leaf_sig: 0,
                 head_shape: 0,
@@ -424,12 +469,12 @@ impl AtomInfos {
                 let info = self.info(*sid, atoms, syn);
                 SeatMeta {
                     ground: info.is_ground(),
-                    depth:  info.depth,
-                    size:   info.size,
+                    depth: info.depth,
+                    size: info.size,
                     // The subterm's identity IS its content hash — the
                     // structural-equality coin key, like the prototype's
                     // whole-term tuples.
-                    key:    *sid,
+                    key: *sid,
                     // Leaves under an open compound still count: the
                     // signature tracks CONTENT overlap, not groundness.
                     leaf_sig: info.leaf_sig,
@@ -548,12 +593,11 @@ pub(crate) fn term_atom_info(t: &Term) -> AtomInfo {
 /// otherwise.  [`terms_self_shape`] is its byte-for-byte `Term` twin.
 fn elements_self_shape(elements: &[Element]) -> u64 {
     match elements.first() {
-        Some(Element::Symbol(s)) => {
-            shape_hash(xxh64(&s.id().to_be_bytes(), u64::from(b'S')), elements.len())
-        }
-        Some(Element::Op(op)) => {
-            shape_hash(xxh64(&[op_byte(op)], u64::from(b'O')), elements.len())
-        }
+        Some(Element::Symbol(s)) => shape_hash(
+            xxh64(&s.id().to_be_bytes(), u64::from(b'S')),
+            elements.len(),
+        ),
+        Some(Element::Op(op)) => shape_hash(xxh64(&[op_byte(op)], u64::from(b'O')), elements.len()),
         _ => 0,
     }
 }
@@ -564,9 +608,7 @@ fn terms_self_shape(elems: &[Term]) -> u64 {
         Some(Term::Sym(s)) => {
             shape_hash(xxh64(&s.id().to_be_bytes(), u64::from(b'S')), elems.len())
         }
-        Some(Term::Op(op)) => {
-            shape_hash(xxh64(&[op_byte(op)], u64::from(b'O')), elems.len())
-        }
+        Some(Term::Op(op)) => shape_hash(xxh64(&[op_byte(op)], u64::from(b'O')), elems.len()),
         _ => 0,
     }
 }
@@ -576,18 +618,46 @@ fn terms_self_shape(elems: &[Term]) -> u64 {
 fn term_seat_meta(el: &Term) -> SeatMeta {
     let leaf_bit = |key: u64| 1u64 << (key & 63);
     match el {
-        Term::Var(_) => SeatMeta { ground: false, depth: 0, size: 1, key: 0, leaf_sig: 0, head_shape: 0 },
+        Term::Var(_) => SeatMeta {
+            ground: false,
+            depth: 0,
+            size: 1,
+            key: 0,
+            leaf_sig: 0,
+            head_shape: 0,
+        },
         Term::Sym(s) => {
             let key = xxh64(&s.id().to_be_bytes(), u64::from(b'S'));
-            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+            SeatMeta {
+                ground: true,
+                depth: 0,
+                size: 1,
+                key,
+                leaf_sig: leaf_bit(key),
+                head_shape: 0,
+            }
         }
         Term::Lit(Literal::Str(v)) => {
             let key = xxh64(v.as_bytes(), u64::from(b'T'));
-            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+            SeatMeta {
+                ground: true,
+                depth: 0,
+                size: 1,
+                key,
+                leaf_sig: leaf_bit(key),
+                head_shape: 0,
+            }
         }
         Term::Lit(Literal::Number(v)) => {
             let key = xxh64(v.as_bytes(), u64::from(b'N'));
-            SeatMeta { ground: true, depth: 0, size: 1, key, leaf_sig: leaf_bit(key), head_shape: 0 }
+            SeatMeta {
+                ground: true,
+                depth: 0,
+                size: 1,
+                key,
+                leaf_sig: leaf_bit(key),
+                head_shape: 0,
+            }
         }
         Term::Op(op) => SeatMeta {
             ground: true,
@@ -607,7 +677,11 @@ fn term_seat_meta(el: &Term) -> SeatMeta {
                 // The subterm's identity IS its would-be content hash —
                 // the id `Element::Sub` would carry after interning.
                 // Only meaningful (and only computed) when ground.
-                key: if ground { super::super::clause::slot_atom_content_id(el) } else { 0 },
+                key: if ground {
+                    super::super::clause::slot_atom_content_id(el)
+                } else {
+                    0
+                },
                 leaf_sig: info.leaf_sig,
                 head_shape: info.self_shape,
             }
@@ -633,7 +707,13 @@ pub(crate) fn slot_term_seat_coin(seat: usize, t: &Term) -> Option<u64> {
 fn op_byte(op: &crate::parse::OpKind) -> u8 {
     use crate::parse::OpKind::*;
     match op {
-        And => b'a', Or => b'o', Not => b'n', Implies => b'i',
-        Iff => b'f', Equal => b'e', ForAll => b'A', Exists => b'E',
+        And => b'a',
+        Or => b'o',
+        Not => b'n',
+        Implies => b'i',
+        Iff => b'f',
+        Equal => b'e',
+        ForAll => b'A',
+        Exists => b'E',
     }
 }

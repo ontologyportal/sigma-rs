@@ -139,11 +139,9 @@ impl<'a> LowerCx<'a> {
             ThfExpr::Imp(a, b) => self.formula(a)?.imp(self.formula(b)?),
             ThfExpr::Iff(a, b) => self.formula(a)?.iff(self.formula(b)?),
             // THF equalities from our lowering are between `$i` terms.
-            ThfExpr::Eq(a, b) => SysFormula::new_eq_typed(
-                self.term(a)?,
-                self.term(b)?,
-                SysSort::default_sort(),
-            ),
+            ThfExpr::Eq(a, b) => {
+                SysFormula::new_eq_typed(self.term(a)?, self.term(b)?, SysSort::default_sort())
+            }
             ThfExpr::Forall(v, sort, body) => {
                 let s = self.sort(sort);
                 let saved = self.var_sorts.insert(*v, sort.clone());

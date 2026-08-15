@@ -17,8 +17,8 @@ pub(crate) struct FormulasTff;
 
 impl CacheBehavior for FormulasTff {
     type Parent = TranslationLayer;
-    type Key    = SentenceId;
-    type Value  = Option<CachedFormula>;
+    type Key = SentenceId;
+    type Value = Option<CachedFormula>;
     type Side = ();
     type SideSnapshot = ();
 
@@ -46,24 +46,35 @@ impl CacheBehavior for FormulasTff {
     // sorts from `sort_annotations`, and consults the semantic classifiers
     // (`arity`, `is_relation`, `is_function`).
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences",
-          "translation::lazy_sort", "translation::numeric_sorts", "translation::sort_annotations",
-          "semantic::arity", "semantic::is_relation", "semantic::is_predicate", "semantic::is_function"]
+        &[
+            "syntactic::sentences",
+            "translation::lazy_sort",
+            "translation::numeric_sorts",
+            "translation::sort_annotations",
+            "semantic::arity",
+            "semantic::is_relation",
+            "semantic::is_predicate",
+            "semantic::is_function",
+        ]
     }
 
     fn react(
         &self,
         _parent: &TranslationLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<SentenceId, Option<CachedFormula>>,
-        _side:   &Self::Side,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<SentenceId, Option<CachedFormula>>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
         // Structural invalidation first (see `formulas_fof`): taxonomy /
         // domain-range shifts can change any cached formula, so clear.
-        let tax  = events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. }));
+        let tax = events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }));
         let pure = events.iter().any(|e| matches!(e, Event::PureAddition));
-        let dr   = events.iter().any(|e| matches!(e, Event::DomainRangeChanged { .. }));
+        let dr = events
+            .iter()
+            .any(|e| matches!(e, Event::DomainRangeChanged { .. }));
         if (tax && !pure) || dr {
             store.clear();
         }

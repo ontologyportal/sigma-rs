@@ -34,9 +34,9 @@ pub(crate) type Subst = Vec<Option<Term>>;
 /// unresolvable or carries a non-canonical variable (every atom that
 /// goes through `canonical_clause` is canonical by construction).
 pub(crate) fn slot_atom(
-    atoms:  &AtomTable,
-    syn:    &SyntacticLayer,
-    atom:   AtomId,
+    atoms: &AtomTable,
+    syn: &SyntacticLayer,
+    atom: AtomId,
     offset: u32,
 ) -> Option<Term> {
     let t = atoms.term_of(atom, syn)?;
@@ -132,12 +132,7 @@ pub(crate) fn unify_off(a: &Term, ao: u64, b: &Term, bo: u64, s: &mut Subst) -> 
     }
 }
 
-fn unify_off_inner(
-    a: &Term, ao: u64,
-    b: &Term, bo: u64,
-    s: &mut Subst,
-    trail: &mut Trail,
-) -> bool {
+fn unify_off_inner(a: &Term, ao: u64, b: &Term, bo: u64, s: &mut Subst, trail: &mut Trail) -> bool {
     // Bound variables resolve by cloning the bound FRAGMENT (usually a
     // constant or small term) — a borrow into `s` cannot live across
     // the recursion's `&mut s`.  The structural spine of both input
@@ -168,9 +163,10 @@ fn unify_off_inner(
         return bind_off(bslot as u64, a, ao, s, trail);
     }
     match (a, b) {
-        (Term::App(xs), Term::App(ys)) if xs.len() == ys.len() => {
-            xs.iter().zip(ys).all(|(x, y)| unify_off_inner(x, ao, y, bo, s, trail))
-        }
+        (Term::App(xs), Term::App(ys)) if xs.len() == ys.len() => xs
+            .iter()
+            .zip(ys)
+            .all(|(x, y)| unify_off_inner(x, ao, y, bo, s, trail)),
         // Ground leaves (Sym/Lit/Op) and shape mismatches.
         _ => a == b,
     }
@@ -184,7 +180,11 @@ fn bind_off(slot: u64, t: &Term, toff: u64, s: &mut Subst, trail: &mut Trail) ->
     debug_assert!(s[i].is_none(), "walk left an unbound representative");
     // Bindings are stored ABSOLUTE: shift the bound fragment (and only
     // the fragment) when it comes from the offset side.
-    s[i] = Some(if toff == 0 { t.clone() } else { shift_slots(t, toff) });
+    s[i] = Some(if toff == 0 {
+        t.clone()
+    } else {
+        shift_slots(t, toff)
+    });
     trail.push(i);
     true
 }
@@ -267,9 +267,10 @@ fn match_off_inner(p: &Term, poff: u64, t: &Term, s: &mut Subst, trail: &mut Vec
         };
     }
     match (p, t) {
-        (Term::App(xs), Term::App(ys)) if xs.len() == ys.len() => {
-            xs.iter().zip(ys).all(|(x, y)| match_off_inner(x, poff, y, s, trail))
-        }
+        (Term::App(xs), Term::App(ys)) if xs.len() == ys.len() => xs
+            .iter()
+            .zip(ys)
+            .all(|(x, y)| match_off_inner(x, poff, y, s, trail)),
         _ => p == t,
     }
 }
@@ -297,9 +298,13 @@ fn match_inner(p: &Term, t: &Term, s: &mut Subst, trail: &mut Trail) -> bool {
 /// Distinct slot variables in `t` — `nvars` recovery for derived terms.
 pub(crate) fn term_slots(t: &Term, out: &mut std::collections::BTreeSet<u64>) {
     match t {
-        Term::Var(v) => { out.insert(*v); }
+        Term::Var(v) => {
+            out.insert(*v);
+        }
         Term::App(elems) => {
-            for e in elems { term_slots(e, out); }
+            for e in elems {
+                term_slots(e, out);
+            }
         }
         _ => {}
     }
@@ -318,9 +323,15 @@ mod match_off_tests {
     use super::*;
     use crate::types::Symbol;
 
-    fn sym(n: &str) -> Term { Term::Sym(Symbol::from(n)) }
-    fn app(v: Vec<Term>) -> Term { Term::App(v) }
-    fn var(v: u64) -> Term { Term::Var(v) }
+    fn sym(n: &str) -> Term {
+        Term::Sym(Symbol::from(n))
+    }
+    fn app(v: Vec<Term>) -> Term {
+        Term::App(v)
+    }
+    fn var(v: u64) -> Term {
+        Term::Var(v)
+    }
 
     // `match_one_way_off(p, off, t, ..)` must agree with the reference
     // composition `match_one_way(&shift_slots(p, off), t, ..)` — result
@@ -329,9 +340,21 @@ mod match_off_tests {
     #[test]
     fn match_off_agrees_with_shifted_reference() {
         let cases: Vec<(Term, u64, Term)> = vec![
-            (app(vec![sym("f"), var(0)]), 3, app(vec![sym("f"), sym("a")])),
-            (app(vec![sym("f"), var(0), var(0)]), 2, app(vec![sym("f"), sym("a"), sym("a")])),
-            (app(vec![sym("f"), var(0), var(0)]), 2, app(vec![sym("f"), sym("a"), sym("b")])),
+            (
+                app(vec![sym("f"), var(0)]),
+                3,
+                app(vec![sym("f"), sym("a")]),
+            ),
+            (
+                app(vec![sym("f"), var(0), var(0)]),
+                2,
+                app(vec![sym("f"), sym("a"), sym("a")]),
+            ),
+            (
+                app(vec![sym("f"), var(0), var(0)]),
+                2,
+                app(vec![sym("f"), sym("a"), sym("b")]),
+            ),
             // Partial bind then structural failure: rollback exercised.
             (
                 app(vec![sym("f"), var(0), sym("z")]),
@@ -341,10 +364,22 @@ mod match_off_tests {
             // Pattern var binds a target VARIABLE (open target).
             (app(vec![sym("f"), var(1)]), 4, app(vec![sym("f"), var(0)])),
             // Ground pattern, exact / mismatching targets.
-            (app(vec![sym("f"), sym("a")]), 7, app(vec![sym("f"), sym("a")])),
-            (app(vec![sym("f"), sym("a")]), 7, app(vec![sym("f"), sym("b")])),
+            (
+                app(vec![sym("f"), sym("a")]),
+                7,
+                app(vec![sym("f"), sym("a")]),
+            ),
+            (
+                app(vec![sym("f"), sym("a")]),
+                7,
+                app(vec![sym("f"), sym("b")]),
+            ),
             // Arity mismatch.
-            (app(vec![sym("f"), var(0)]), 1, app(vec![sym("f"), sym("a"), sym("b")])),
+            (
+                app(vec![sym("f"), var(0)]),
+                1,
+                app(vec![sym("f"), sym("a"), sym("b")]),
+            ),
         ];
         for (p, off, t) in cases {
             let n = 16usize;
@@ -357,11 +392,16 @@ mod match_off_tests {
             assert_eq!(s_ref, s_off, "bindings diverged for {p:?} @{off} vs {t:?}");
             if r_off {
                 // Trail rollback restores the all-None invariant.
-                for &slot in &trail { s_off[slot] = None; }
+                for &slot in &trail {
+                    s_off[slot] = None;
+                }
                 assert!(s_off.iter().all(Option::is_none), "trail missed a binding");
             } else {
                 assert!(trail.is_empty(), "failed match must leave the trail empty");
-                assert!(s_off.iter().all(Option::is_none), "failed match must roll back");
+                assert!(
+                    s_off.iter().all(Option::is_none),
+                    "failed match must roll back"
+                );
             }
         }
     }

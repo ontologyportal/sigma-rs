@@ -55,7 +55,7 @@ rm -f "$lint_log"
 
 echo -n "📎 Running Static Code Check: cargo clippy (pre-commit check)..."
 clippy_log=$(mktemp)
-if ! cargo clippy >"$clippy_log" 2>&1; then
+if ! cargo clippy --workspace --all-features --tests -- -D warnings >"$clippy_log" 2>&1; then
     echo -e "${RED}failed${NC}"
     echo "⚠️  cargo clippy failed:" >&2
     echo "----------------------------------------" >&2

@@ -17,11 +17,11 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use super::super::model::ModelProgram;
+use super::super::ProverLayer;
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{LayerCache, WholeCacheBehavior};
 use crate::layer::TopLayer;
-use super::super::ProverLayer;
-use super::super::model::ModelProgram;
 
 /// Behavior for the `saturate::model_registry` whole-KB cache.  Carries `S`
 /// only as a marker — see [`ClauseStore`](super::clause_store::ClauseStore)'s
@@ -30,7 +30,9 @@ use super::super::model::ModelProgram;
 pub(crate) struct ModelRegistry<S = crate::semantics::SemanticLayer>(PhantomData<fn() -> S>);
 
 impl<S> Default for ModelRegistry<S> {
-    fn default() -> Self { Self(PhantomData) }
+    fn default() -> Self {
+        Self(PhantomData)
+    }
 }
 
 impl<S: TopLayer + 'static> WholeCacheBehavior for ModelRegistry<S> {
@@ -58,12 +60,12 @@ impl<S: TopLayer + 'static> WholeCacheBehavior for ModelRegistry<S> {
     fn react(
         &self,
         _parent: &ProverLayer<S>,
-        events:  &[&Event],
-        store:   &LayerCache<Arc<ModelProgram>>,
+        events: &[&Event],
+        store: &LayerCache<Arc<ModelProgram>>,
     ) -> Vec<Event> {
-        let changed = events.iter().any(|e| {
-            matches!(e, Event::RootAdded { .. } | Event::RootRemoved { .. })
-        });
+        let changed = events
+            .iter()
+            .any(|e| matches!(e, Event::RootAdded { .. } | Event::RootRemoved { .. }));
         if changed {
             store.invalidate();
         }

@@ -54,7 +54,13 @@ fn atom_of(s: &Sentence, vars: &mut HashMap<SymbolId, u32>) -> Option<(Atom, boo
     let pred = s.head_symbol()?;
     if s.elements.len() < 2 {
         // A nullary/propositional atom — represent as a 0-ary relation.
-        return Some((Atom { pred, args: Vec::new() }, true));
+        return Some((
+            Atom {
+                pred,
+                args: Vec::new(),
+            },
+            true,
+        ));
     }
     let mut args = Vec::with_capacity(s.elements.len() - 1);
     let mut ground = true;
@@ -75,8 +81,8 @@ fn atom_of(s: &Sentence, vars: &mut HashMap<SymbolId, u32>) -> Option<(Atom, boo
 
 /// Parse one body element into a [`Literal`] (handling a leading `(not …)`).
 fn literal_of(
-    syn:  &SyntacticLayer,
-    sid:  SentenceId,
+    syn: &SyntacticLayer,
+    sid: SentenceId,
     vars: &mut HashMap<SymbolId, u32>,
 ) -> Option<Literal> {
     let s = syn.sentence(sid)?;
@@ -84,10 +90,16 @@ fn literal_of(
         let inner = sub(&s.elements[1])?;
         let inner_s = syn.sentence(inner)?;
         let (atom, _) = atom_of(&inner_s, vars)?;
-        Some(Literal { atom, negated: true })
+        Some(Literal {
+            atom,
+            negated: true,
+        })
     } else {
         let (atom, _) = atom_of(&s, vars)?;
-        Some(Literal { atom, negated: false })
+        Some(Literal {
+            atom,
+            negated: false,
+        })
     }
 }
 
@@ -131,9 +143,9 @@ pub(crate) struct ExtractStats {
 /// here), two-or-more positive literals (non-Horn), or a literal whose atom
 /// isn't representable as a Datalog atom.
 fn horn_rule_of_or(
-    syn:   &SyntacticLayer,
-    root:  SentenceId,
-    s:     &Sentence,
+    syn: &SyntacticLayer,
+    root: SentenceId,
+    s: &Sentence,
     stats: &mut ExtractStats,
 ) -> Option<Rule> {
     let lit_ids: Vec<SentenceId> = s.elements[1..].iter().filter_map(sub).collect();
@@ -156,7 +168,9 @@ fn horn_rule_of_or(
         }
     }
 
-    let positives: Vec<usize> = literals.iter().enumerate()
+    let positives: Vec<usize> = literals
+        .iter()
+        .enumerate()
         .filter(|(_, l)| !l.negated)
         .map(|(i, _)| i)
         .collect();
@@ -174,12 +188,21 @@ fn horn_rule_of_or(
             // Every other literal was NEGATED in the clause (¬ai) — the
             // clause ¬a1 ∨ … ∨ ¬an ∨ c is (a1 ∧ … ∧ an) → c, so each ai
             // becomes a POSITIVE rule-body premise, not a negated one.
-            let body: Vec<Literal> = literals.into_iter().enumerate()
+            let body: Vec<Literal> = literals
+                .into_iter()
+                .enumerate()
                 .filter(|(i, _)| *i != head_idx)
-                .map(|(_, mut l)| { l.negated = false; l })
+                .map(|(_, mut l)| {
+                    l.negated = false;
+                    l
+                })
                 .collect();
             stats.or_rules += 1;
-            Some(Rule { head, body, sid: Some(root) })
+            Some(Rule {
+                head,
+                body,
+                sid: Some(root),
+            })
         }
         _ => {
             // ≥2 positive literals: non-Horn (a real disjunctive head).
@@ -198,7 +221,7 @@ fn horn_rule_of_or(
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Extraction {
     pub(crate) program: Program,
-    pub(crate) stats:   ExtractStats,
+    pub(crate) stats: ExtractStats,
     /// Relations a SKIPPED root might still derive atoms of:
     ///   * skipped `(=> ant con)` → the head positions of `con`'s subtree
     ///     (just `con`'s head when it is a flat atom);
@@ -229,11 +252,11 @@ pub(crate) struct Extraction {
 /// existential variables (indices `>= n_body_vars`).
 #[derive(Debug, Clone)]
 pub(crate) struct Tgd {
-    pub(crate) body:        Vec<Literal>,
-    pub(crate) heads:       Vec<Atom>,
+    pub(crate) body: Vec<Literal>,
+    pub(crate) heads: Vec<Atom>,
     pub(crate) n_body_vars: u32,
-    pub(crate) n_vars:      u32,
-    pub(crate) sid:         SentenceId,
+    pub(crate) n_vars: u32,
+    pub(crate) sid: SentenceId,
 }
 
 /// Parse `(=> ant (exists (?E…) con))` into a [`Tgd`]: positive flat-atom
@@ -265,7 +288,9 @@ fn tgd_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<Tgd>
     // Declared existentials claim the next indices.
     let vl = syn.sentence(sub(&con.elements[1])?)?;
     for el in vl.elements.iter() {
-        let Element::Variable { id, .. } = el else { return None };
+        let Element::Variable { id, .. } = el else {
+            return None;
+        };
         let next = vars.len() as u32;
         vars.entry(*id).or_insert(next);
     }
@@ -288,7 +313,13 @@ fn tgd_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<Tgd>
     if vars.len() != n_before_heads {
         return None; // a head used a variable that is neither body nor declared
     }
-    Some(Tgd { body, heads, n_body_vars, n_vars: vars.len() as u32, sid: root })
+    Some(Tgd {
+        body,
+        heads,
+        n_body_vars,
+        n_vars: vars.len() as u32,
+        sid: root,
+    })
 }
 
 parked! {
@@ -343,7 +374,9 @@ pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
         if !base_visible(syn, root) {
             continue;
         }
-        let Some(s) = syn.sentence(root) else { continue };
+        let Some(s) = syn.sentence(root) else {
+            continue;
+        };
         match s.op() {
             // Rule: (=> ant con)
             Some(&OpKind::Implies) if s.elements.len() == 3 => {
@@ -413,10 +446,14 @@ pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
                 let mut vars = HashMap::new();
                 match atom_of(&s, &mut vars) {
                     Some((atom, true)) => {
-                        let tuple: Vec<SymbolId> = atom.args.iter().filter_map(|a| match a {
-                            DTerm::Const(c) => Some(*c),
-                            DTerm::Var(_) => None,
-                        }).collect();
+                        let tuple: Vec<SymbolId> = atom
+                            .args
+                            .iter()
+                            .filter_map(|a| match a {
+                                DTerm::Const(c) => Some(*c),
+                                DTerm::Var(_) => None,
+                            })
+                            .collect();
                         if tuple.len() == atom.args.len() {
                             ex.program.fact_src(atom.pred, tuple, root);
                         } else {
@@ -431,7 +468,9 @@ pub(crate) fn extract_horn_program_full(syn: &SyntacticLayer) -> Extraction {
                     // the model cannot represent: p's definition escapes
                     // the program — certification bookkeeping (a).
                     _ => match s.head_symbol() {
-                        Some(h) => { ex.skipped_heads.insert(h); }
+                        Some(h) => {
+                            ex.skipped_heads.insert(h);
+                        }
                         None => {
                             ex.wildcard_skip |=
                                 collect_head_positions(syn, root, &mut ex.skipped_heads);
@@ -477,7 +516,11 @@ fn implies_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<
         body.push(literal_of(syn, bid, &mut vars)?);
     }
     let (head, _) = atom_of(&con, &mut vars)?;
-    Some(Rule { head, body, sid: Some(root) })
+    Some(Rule {
+        head,
+        body,
+        sid: Some(root),
+    })
 }
 
 /// Skipped-`(or …)` head bookkeeping: collect the head of every POSITIVE
@@ -485,25 +528,23 @@ fn implies_rule(syn: &SyntacticLayer, root: SentenceId, s: &Sentence) -> Option<
 /// Falls back to whole-root [`collect_head_positions`] on any disjunct
 /// whose shape is not a (possibly negated) flat symbol-headed atom.
 fn collect_or_positive_heads(
-    syn:  &SyntacticLayer,
+    syn: &SyntacticLayer,
     root: SentenceId,
-    s:    &Sentence,
-    ex:   &mut Extraction,
+    s: &Sentence,
+    ex: &mut Extraction,
 ) {
     for el in &s.elements[1..] {
         match el {
             Element::Sub(lid) => {
                 let Some(lit) = syn.sentence(*lid) else {
-                    ex.wildcard_skip |=
-                        collect_head_positions(syn, root, &mut ex.skipped_heads);
+                    ex.wildcard_skip |= collect_head_positions(syn, root, &mut ex.skipped_heads);
                     return;
                 };
                 if lit.op() == Some(&OpKind::Not) && lit.elements.len() == 2 {
                     // Negative disjunct: nothing derivable — unless the
                     // negated body is itself complex.
                     match sub(&lit.elements[1]).and_then(|i| syn.sentence(i)) {
-                        Some(inner) if inner.op().is_none()
-                            && inner.head_symbol().is_some() => {}
+                        Some(inner) if inner.op().is_none() && inner.head_symbol().is_some() => {}
                         _ => {
                             ex.wildcard_skip |=
                                 collect_head_positions(syn, *lid, &mut ex.skipped_heads);
@@ -512,17 +553,17 @@ fn collect_or_positive_heads(
                 } else if let Some(h) = lit.head_symbol() {
                     ex.skipped_heads.insert(h); // positive literal's head
                 } else {
-                    ex.wildcard_skip |=
-                        collect_head_positions(syn, *lid, &mut ex.skipped_heads);
+                    ex.wildcard_skip |= collect_head_positions(syn, *lid, &mut ex.skipped_heads);
                 }
             }
             // A bare-symbol disjunct is a positive nullary atom.
-            Element::Symbol(sym) => { ex.skipped_heads.insert(sym.id()); }
+            Element::Symbol(sym) => {
+                ex.skipped_heads.insert(sym.id());
+            }
             // Variable / literal / operator disjuncts: unrecognizable —
             // whole-root conservative collection.
             _ => {
-                ex.wildcard_skip |=
-                    collect_head_positions(syn, root, &mut ex.skipped_heads);
+                ex.wildcard_skip |= collect_head_positions(syn, root, &mut ex.skipped_heads);
                 return;
             }
         }
@@ -538,9 +579,9 @@ fn collect_or_positive_heads(
 /// such a sentence could derive atoms of ANY relation, and the caller
 /// must poison certification wholesale.
 fn collect_head_positions(
-    syn:  &SyntacticLayer,
+    syn: &SyntacticLayer,
     root: SentenceId,
-    out:  &mut HashSet<SymbolId>,
+    out: &mut HashSet<SymbolId>,
 ) -> bool {
     let mut var_head = false;
     let mut seen: HashSet<SentenceId> = HashSet::new();
@@ -551,7 +592,9 @@ fn collect_head_positions(
         }
         let Some(s) = syn.sentence(sid) else { continue };
         match s.elements.first() {
-            Some(Element::Symbol(sym)) => { out.insert(sym.id()); }
+            Some(Element::Symbol(sym)) => {
+                out.insert(sym.id());
+            }
             Some(Element::Variable { .. }) => var_head = true,
             _ => {}
         }
@@ -602,9 +645,9 @@ pub(crate) struct RoleDecls {
     /// `(subrelation R S)` pairs (sub `R`, super `S`) + the declaring root.
     pub subrelation: Vec<(SymbolId, SymbolId, Option<SentenceId>)>,
     /// Relations declared `(instance R TransitiveRelation)` + the declaration.
-    pub transitive:  Vec<(SymbolId, Option<SentenceId>)>,
+    pub transitive: Vec<(SymbolId, Option<SentenceId>)>,
     /// Relations declared `(instance R SymmetricRelation)` + the declaration.
-    pub symmetric:   Vec<(SymbolId, Option<SentenceId>)>,
+    pub symmetric: Vec<(SymbolId, Option<SentenceId>)>,
 }
 
 /// A binary symbol-headed fact's two symbol arguments.
@@ -650,27 +693,42 @@ pub(crate) fn collect_role_decls(syn: &SyntacticLayer, roles: &TaxonomyRoles) ->
 /// rule carries its declaring sentence as `sid`, so a proof using the rule
 /// can cite the declaration it was instantiated from.
 pub(crate) fn schema_rules(
-    decls:            &RoleDecls,
+    decls: &RoleDecls,
     extra_transitive: &[(SymbolId, Option<SentenceId>)],
 ) -> Vec<Rule> {
-    let app = |p: SymbolId, a: u32, b: u32| Atom { pred: p, args: vec![DTerm::Var(a), DTerm::Var(b)] };
+    let app = |p: SymbolId, a: u32, b: u32| Atom {
+        pred: p,
+        args: vec![DTerm::Var(a), DTerm::Var(b)],
+    };
     let mut out = Vec::new();
 
     for &(r, s, sid) in &decls.subrelation {
         // S(x,y) :- R(x,y)
         out.push(Rule {
             head: app(s, 0, 1),
-            body: vec![Literal { atom: app(r, 0, 1), negated: false }],
+            body: vec![Literal {
+                atom: app(r, 0, 1),
+                negated: false,
+            }],
             sid,
         });
     }
     for &(r, sid) in decls.transitive.iter().chain(extra_transitive.iter()) {
         // R(x,z) :- R(x,y), R(y,z)
         out.push(Rule {
-            head: Atom { pred: r, args: vec![DTerm::Var(0), DTerm::Var(2)] },
+            head: Atom {
+                pred: r,
+                args: vec![DTerm::Var(0), DTerm::Var(2)],
+            },
             body: vec![
-                Literal { atom: app(r, 0, 1), negated: false },
-                Literal { atom: app(r, 1, 2), negated: false },
+                Literal {
+                    atom: app(r, 0, 1),
+                    negated: false,
+                },
+                Literal {
+                    atom: app(r, 1, 2),
+                    negated: false,
+                },
             ],
             sid,
         });
@@ -679,7 +737,10 @@ pub(crate) fn schema_rules(
         // R(y,x) :- R(x,y)
         out.push(Rule {
             head: app(r, 1, 0),
-            body: vec![Literal { atom: app(r, 0, 1), negated: false }],
+            body: vec![Literal {
+                atom: app(r, 0, 1),
+                negated: false,
+            }],
             sid,
         });
     }
@@ -710,7 +771,7 @@ pub(crate) fn schema_rules(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Denial {
     pub classes: (SymbolId, SymbolId),
-    pub sid:     SentenceId,
+    pub sid: SentenceId,
 }
 
 /// Scan the store for disjointness declarations under the recognized role
@@ -723,7 +784,10 @@ pub(crate) fn collect_denials(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Ve
     let mut out: Vec<Denial> = Vec::new();
     let mut push = |a: SymbolId, b: SymbolId, sid: SentenceId, out: &mut Vec<Denial>| {
         if a != b && seen.insert(norm(a, b)) {
-            out.push(Denial { classes: norm(a, b), sid });
+            out.push(Denial {
+                classes: norm(a, b),
+                sid,
+            });
         }
     };
 
@@ -801,9 +865,9 @@ pub(crate) fn collect_denials(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Ve
 /// still skip the sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Egd {
-    pub rel:        super::Pred,
-    pub key_pos:    u8,
-    pub val_pos:    u8,
+    pub rel: super::Pred,
+    pub key_pos: u8,
+    pub val_pos: u8,
     /// Instance-typing guards on the KEY variable (classes it must belong to).
     pub key_guards: Vec<SymbolId>,
     /// Instance-typing guards on the equated VALUE variables (the axiom
@@ -811,7 +875,7 @@ pub(crate) struct Egd {
     pub val_guards: Vec<SymbolId>,
     /// The declaring root — the uniqueness clause / `SingleValuedRelation`
     /// declaration a merge cites.
-    pub sid:        Option<SentenceId>,
+    pub sid: Option<SentenceId>,
 }
 
 /// One (possibly negated) literal of a candidate uniqueness sentence,
@@ -832,7 +896,9 @@ fn uniq_body_atom(s: &Sentence, instance: SymbolId) -> Option<UniqLit> {
     if s.elements.len() != 3 {
         return None;
     }
-    let Some(Element::Symbol(h)) = s.elements.first() else { return None };
+    let Some(Element::Symbol(h)) = s.elements.first() else {
+        return None;
+    };
     match (&s.elements[1], &s.elements[2]) {
         (Element::Variable { id: x, .. }, Element::Symbol(class)) if h.id() == instance => {
             Some(UniqLit::Guard(*x, class.id()))
@@ -850,7 +916,10 @@ fn uniq_equal(s: &Sentence) -> Option<UniqLit> {
         return None;
     }
     let (Element::Variable { id: a, .. }, Element::Variable { id: b, .. }) =
-        (&s.elements[1], &s.elements[2]) else { return None };
+        (&s.elements[1], &s.elements[2])
+    else {
+        return None;
+    };
     (a != b).then_some(UniqLit::Equal(*a, *b))
 }
 
@@ -881,19 +950,29 @@ fn orient_egd(lits: Vec<UniqLit>, root: SentenceId) -> Option<Egd> {
     }
     let rel = rel_atoms[0].0;
     let ((_, x1, y1), (_, x2, y2)) = (rel_atoms[0], rel_atoms[1]);
-    let (key_pos, val_pos, key_var) = if x1 == x2 && [y1, y2].contains(&va) && [y1, y2].contains(&vb) {
-        (0u8, 1u8, x1)
-    } else if y1 == y2 && [x1, x2].contains(&va) && [x1, x2].contains(&vb) {
-        (1u8, 0u8, y1)
-    } else {
-        return None;
-    };
-    let key_guards: Vec<SymbolId> =
-        guards.iter().filter(|(v, _)| *v == key_var).map(|(_, c)| *c).collect();
-    let val_guards_a: Vec<SymbolId> =
-        guards.iter().filter(|(v, _)| *v == va).map(|(_, c)| *c).collect();
-    let val_guards_b: Vec<SymbolId> =
-        guards.iter().filter(|(v, _)| *v == vb).map(|(_, c)| *c).collect();
+    let (key_pos, val_pos, key_var) =
+        if x1 == x2 && [y1, y2].contains(&va) && [y1, y2].contains(&vb) {
+            (0u8, 1u8, x1)
+        } else if y1 == y2 && [x1, x2].contains(&va) && [x1, x2].contains(&vb) {
+            (1u8, 0u8, y1)
+        } else {
+            return None;
+        };
+    let key_guards: Vec<SymbolId> = guards
+        .iter()
+        .filter(|(v, _)| *v == key_var)
+        .map(|(_, c)| *c)
+        .collect();
+    let val_guards_a: Vec<SymbolId> = guards
+        .iter()
+        .filter(|(v, _)| *v == va)
+        .map(|(_, c)| *c)
+        .collect();
+    let val_guards_b: Vec<SymbolId> = guards
+        .iter()
+        .filter(|(v, _)| *v == vb)
+        .map(|(_, c)| *c)
+        .collect();
     // Sound only when both equated sides carry the SAME guard set.
     let mut ga = val_guards_a.clone();
     ga.sort_unstable();
@@ -904,10 +983,20 @@ fn orient_egd(lits: Vec<UniqLit>, root: SentenceId) -> Option<Egd> {
     }
     // Guards on unrelated variables make the axiom more restrictive than
     // this check — skip the sentence.
-    if guards.iter().any(|(v, _)| *v != key_var && *v != va && *v != vb) {
+    if guards
+        .iter()
+        .any(|(v, _)| *v != key_var && *v != va && *v != vb)
+    {
         return None;
     }
-    Some(Egd { rel, key_pos, val_pos, key_guards, val_guards: val_guards_a, sid: Some(root) })
+    Some(Egd {
+        rel,
+        key_pos,
+        val_pos,
+        key_guards,
+        val_guards: val_guards_a,
+        sid: Some(root),
+    })
 }
 
 /// Scan the store for EGD-shaped axioms (see the module note above):
@@ -925,8 +1014,11 @@ pub(crate) fn collect_egds(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<E
         if let Some((r, c)) = binary_syms(syn, sid) {
             if c == single_valued {
                 out.push(Egd {
-                    rel: r, key_pos: 0, val_pos: 1,
-                    key_guards: Vec::new(), val_guards: Vec::new(),
+                    rel: r,
+                    key_pos: 0,
+                    val_pos: 1,
+                    key_guards: Vec::new(),
+                    val_guards: Vec::new(),
                     sid: Some(sid),
                 });
             }
@@ -938,7 +1030,9 @@ pub(crate) fn collect_egds(syn: &SyntacticLayer, roles: &TaxonomyRoles) -> Vec<E
         if !base_visible(syn, root) {
             continue; // same base-only rule as the program extraction
         }
-        let Some(s) = syn.sentence(root) else { continue };
+        let Some(s) = syn.sentence(root) else {
+            continue;
+        };
         let lits: Option<Vec<UniqLit>> = match s.op() {
             // (=> (and B1 … Bn) (equal v1 v2))
             Some(&OpKind::Implies) if s.elements.len() == 3 => (|| {
@@ -1017,7 +1111,7 @@ pub(crate) fn symbol_is_numeric(name: &str) -> bool {
 /// numeric-shaped names as symbols.)
 pub(crate) fn collect_rigid(
     program: &Program,
-    syn:     &SyntacticLayer,
+    syn: &SyntacticLayer,
 ) -> crate::prover::saturate::hash64::Set64<SymbolId> {
     let mut universe: HashSet<SymbolId> = HashSet::new();
     for rows in program.edb.values() {
@@ -1036,7 +1130,10 @@ pub(crate) fn collect_rigid(
     }
     universe
         .into_iter()
-        .filter(|id| syn.sym_name(*id).is_some_and(|s| symbol_is_numeric(&s.name())))
+        .filter(|id| {
+            syn.sym_name(*id)
+                .is_some_and(|s| symbol_is_numeric(&s.name()))
+        })
         .collect()
 }
 
@@ -1050,8 +1147,14 @@ pub(crate) fn collect_rigid(
 /// recognized taxonomy roles — with no hard-coded seed.  Feed the result back
 /// as `schema_rules`' `extra_transitive` and re-evaluate to a fixpoint (a
 /// newly-transitive relation can deepen the subclass closure, revealing more).
-fn role_members(model: &super::Model, roles: &TaxonomyRoles, role_class: SymbolId) -> Vec<SymbolId> {
-    let Some(inst) = model.get(&roles.instance) else { return Vec::new() };
+fn role_members(
+    model: &super::Model,
+    roles: &TaxonomyRoles,
+    role_class: SymbolId,
+) -> Vec<SymbolId> {
+    let Some(inst) = model.get(&roles.instance) else {
+        return Vec::new();
+    };
     inst.iter()
         .filter(|t| t.len() == 2 && t[1] == role_class)
         .map(|t| t[0])
@@ -1077,13 +1180,23 @@ mod tests {
     use crate::semantics::caches::test_support::{kif_layer, tptp_layer};
     use crate::types::Symbol;
 
-    fn s(name: &str) -> SymbolId { Symbol::hash_name(name) }
+    fn s(name: &str) -> SymbolId {
+        Symbol::hash_name(name)
+    }
 
     /// Find the one extracted rule whose head predicate is `head_pred`
     /// (panics if there isn't exactly one — tests target a single clause).
     fn only_rule_for<'a>(p: &'a Program, head_pred: SymbolId) -> &'a Rule {
-        let matches: Vec<&Rule> = p.rules.iter().filter(|r| r.head.pred == head_pred).collect();
-        assert_eq!(matches.len(), 1, "expected exactly one rule headed by {head_pred:?}, got {matches:?}");
+        let matches: Vec<&Rule> = p
+            .rules
+            .iter()
+            .filter(|r| r.head.pred == head_pred)
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly one rule headed by {head_pred:?}, got {matches:?}"
+        );
         matches[0]
     }
 
@@ -1106,20 +1219,35 @@ mod tests {
         assert_eq!(rule.head.pred, s("hates"));
         assert_eq!(rule.body.len(), 1);
         assert_eq!(rule.body[0].atom.pred, s("killed"));
-        assert!(!rule.body[0].negated,
+        assert!(
+            !rule.body[0].negated,
             "the clause's negated literal becomes a POSITIVE rule-body premise \
-             (¬killed(X,Y) ∨ hates(X,Y)  ==  hates(X,Y) :- killed(X,Y))");
+             (¬killed(X,Y) ∨ hates(X,Y)  ==  hates(X,Y) :- killed(X,Y))"
+        );
         // Head and body share the same two rule-local variables (X, Y),
         // just at different argument positions.
-        let head_vars: Vec<u32> = rule.head.args.iter().map(|a| match a {
-            DTerm::Var(v) => *v,
-            DTerm::Const(_) => panic!("expected a variable"),
-        }).collect();
-        let body_vars: Vec<u32> = rule.body[0].atom.args.iter().map(|a| match a {
-            DTerm::Var(v) => *v,
-            DTerm::Const(_) => panic!("expected a variable"),
-        }).collect();
-        assert_eq!(head_vars, body_vars, "X,Y map to the same rule-local indices in head and body");
+        let head_vars: Vec<u32> = rule
+            .head
+            .args
+            .iter()
+            .map(|a| match a {
+                DTerm::Var(v) => *v,
+                DTerm::Const(_) => panic!("expected a variable"),
+            })
+            .collect();
+        let body_vars: Vec<u32> = rule.body[0]
+            .atom
+            .args
+            .iter()
+            .map(|a| match a {
+                DTerm::Var(v) => *v,
+                DTerm::Const(_) => panic!("expected a variable"),
+            })
+            .collect();
+        assert_eq!(
+            head_vars, body_vars,
+            "X,Y map to the same rule-local indices in head and body"
+        );
     }
 
     // The rule discharges correctly once evaluated: killed(a,b) entails
@@ -1179,7 +1307,10 @@ mod tests {
         let (p, stats) = extract_horn_program_stats(&sem.syntactic);
         assert_eq!(stats.or_all_negative_skipped, 1);
         assert_eq!(stats.or_rules, 0);
-        assert!(p.rules.is_empty(), "all-negative clause contributes no rule");
+        assert!(
+            p.rules.is_empty(),
+            "all-negative clause contributes no rule"
+        );
     }
 
     // A ground single-literal negative unit clause `(not (rel c1 … ck))`
@@ -1205,7 +1336,10 @@ mod tests {
         let (p, stats) = extract_horn_program_stats(&sem.syntactic);
         assert_eq!(stats.or_rules, 0);
         assert_eq!(stats.negative_unit_skipped, 0);
-        assert!(p.edb.get(&s("lives")).is_some_and(|rows| rows.contains(&vec![s("agatha")])));
+        assert!(p
+            .edb
+            .get(&s("lives"))
+            .is_some_and(|rows| rows.contains(&vec![s("agatha")])));
     }
 
     // -- (4) TPTP CNF end-to-end: PUZ001-1.p yields a non-empty program ----
@@ -1218,9 +1352,8 @@ mod tests {
         let text = match std::env::var("TPTP") {
             Ok(tptp) => {
                 let path = format!("{tptp}/Problems/PUZ/PUZ001-1.p");
-                std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                    panic!("$TPTP set but failed to read {path}: {e}")
-                })
+                std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("$TPTP set but failed to read {path}: {e}"))
             }
             Err(_) => {
                 // Inline excerpt of PUZ001-1.p covering unit facts, a
@@ -1237,28 +1370,47 @@ mod tests {
         let sem = tptp_layer(&text, "PUZ001-1.p");
         let (p, stats) = extract_horn_program_stats(&sem.syntactic);
 
-        assert!(!p.rules.is_empty(), "PUZ001-1.p must yield a non-empty Horn program");
-        assert!(stats.or_rules > 0, "at least one or-clause extracted as a rule");
+        assert!(
+            !p.rules.is_empty(),
+            "PUZ001-1.p must yield a non-empty Horn program"
+        );
+        assert!(
+            stats.or_rules > 0,
+            "at least one or-clause extracted as a rule"
+        );
         // Every extracted rule is well-shaped: a symbol-headed atom head, a
         // body of symbol-headed literals, and a citation back to its
         // declaring root.
         for rule in &p.rules {
-            assert!(rule.sid.is_some(), "extracted rule cites its source sentence");
+            assert!(
+                rule.sid.is_some(),
+                "extracted rule cites its source sentence"
+            );
             for lit in &rule.body {
-                assert!(!lit.atom.args.is_empty() || lit.atom.args.is_empty(), "atom shape sane");
+                assert!(
+                    !lit.atom.args.is_empty() || lit.atom.args.is_empty(),
+                    "atom shape sane"
+                );
             }
         }
         // The known Horn clause from this problem: hates(X,Y) :- killed(X,Y)
         // ("a killer always hates his victim").  Real PUZ001-1.p has a
         // second `hates`-headed rule too (`same_hates`), so look for the one
         // whose body is `killed` rather than assuming a unique head.
-        let killer_rule = p.rules.iter()
-            .find(|r| r.head.pred == s("hates") && r.body.len() == 1 && r.body[0].atom.pred == s("killed"))
+        let killer_rule = p
+            .rules
+            .iter()
+            .find(|r| {
+                r.head.pred == s("hates") && r.body.len() == 1 && r.body[0].atom.pred == s("killed")
+            })
             .expect("killer_hates_victim clause extracted as a rule");
         assert!(!killer_rule.body[0].negated);
 
         // At least one ground fact from the unit clauses (`lives(agatha)`).
-        assert!(p.edb.get(&s("lives")).is_some_and(|rows| rows.contains(&vec![s("agatha")])));
+        assert!(p
+            .edb
+            .get(&s("lives"))
+            .is_some_and(|rows| rows.contains(&vec![s("agatha")])));
     }
 
     // -- Certification bookkeeping: the skipped-head set -------------------
@@ -1326,7 +1478,10 @@ mod tests {
         let sem = kif_layer("(age Bob 40)\n(parent Alice Bob)\n");
         let ex = extract_horn_program_full(&sem.syntactic);
         assert!(ex.skipped_heads.contains(&s("age")));
-        assert!(!ex.skipped_heads.contains(&s("parent")), "the clean fact extracted");
+        assert!(
+            !ex.skipped_heads.contains(&s("parent")),
+            "the clean fact extracted"
+        );
         assert!(ex.program.edb.contains_key(&s("parent")));
         assert!(!ex.program.edb.contains_key(&s("age")));
     }
@@ -1364,8 +1519,9 @@ mod tests {
         assert_eq!(stats.negative_unit_skipped, 0);
         // The pre-existing (=>) extraction still works unchanged.
         assert_eq!(p.rules.len(), 1);
-        assert!(p.edb.get(&s("instance")).is_some_and(|rows| rows.contains(&vec![s("Rex"), s("Dog")])));
+        assert!(p
+            .edb
+            .get(&s("instance"))
+            .is_some_and(|rows| rows.contains(&vec![s("Rex"), s("Dog")])));
     }
 }
-
-

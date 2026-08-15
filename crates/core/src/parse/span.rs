@@ -15,17 +15,17 @@ use serde::{Deserialize, Serialize};
 /// when mapping to `Range { start, end }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub struct Span {
-    pub file:       String,
+    pub file: String,
     /// Start line (1-based).
-    pub line:       u32,
+    pub line: u32,
     /// Start column (1-based).
-    pub col:        u32,
+    pub col: u32,
     /// Start byte offset (0-based, inclusive).
-    pub offset:     usize,
+    pub offset: usize,
     /// End line (1-based).  Point-spans have `end_line == line`.
-    pub end_line:   u32,
+    pub end_line: u32,
     /// End column (1-based, exclusive -- one past the last byte).
-    pub end_col:    u32,
+    pub end_col: u32,
     /// End byte offset (0-based, exclusive).
     pub end_offset: usize,
 }
@@ -37,9 +37,11 @@ impl Span {
     pub fn point(file: String, line: u32, col: u32, offset: usize) -> Self {
         Self {
             file,
-            line, col, offset,
-            end_line:   line,
-            end_col:    col,
+            line,
+            col,
+            offset,
+            end_line: line,
+            end_col: col,
             end_offset: offset,
         }
     }
@@ -55,9 +57,13 @@ impl Span {
     /// `file == "<synthetic>"` is synthetic.
     pub fn synthetic() -> Self {
         Self {
-            file:       "<synthetic>".to_string(),
-            line:       0, col: 0, offset: 0,
-            end_line:   0, end_col: 0, end_offset: 0,
+            file: "<synthetic>".to_string(),
+            line: 0,
+            col: 0,
+            offset: 0,
+            end_line: 0,
+            end_col: 0,
+            end_offset: 0,
         }
     }
 
@@ -85,12 +91,11 @@ impl Span {
     /// still returns `self`'s file unchanged -- merging across files
     /// is meaningless.
     pub fn join(&self, other: &Span) -> Span {
-        let (s_line, s_col, s_off) =
-            if (self.line, self.col) <= (other.line, other.col) {
-                (self.line, self.col, self.offset)
-            } else {
-                (other.line, other.col, other.offset)
-            };
+        let (s_line, s_col, s_off) = if (self.line, self.col) <= (other.line, other.col) {
+            (self.line, self.col, self.offset)
+        } else {
+            (other.line, other.col, other.offset)
+        };
         let (e_line, e_col, e_off) =
             if (self.end_line, self.end_col) >= (other.end_line, other.end_col) {
                 (self.end_line, self.end_col, self.end_offset)
@@ -98,12 +103,12 @@ impl Span {
                 (other.end_line, other.end_col, other.end_offset)
             };
         Span {
-            file:       self.file.clone(),
-            line:       s_line,
-            col:        s_col,
-            offset:     s_off,
-            end_line:   e_line,
-            end_col:    e_col,
+            file: self.file.clone(),
+            line: s_line,
+            col: s_col,
+            offset: s_off,
+            end_line: e_line,
+            end_col: e_col,
             end_offset: e_off,
         }
     }
@@ -116,9 +121,17 @@ impl std::fmt::Display for Span {
         if self.is_point() || (self.line == self.end_line && self.col == self.end_col) {
             write!(f, "{}:{}:{}", self.file, self.line, self.col)
         } else if self.line == self.end_line {
-            write!(f, "{}:{}:{}-{}", self.file, self.line, self.col, self.end_col)
+            write!(
+                f,
+                "{}:{}:{}-{}",
+                self.file, self.line, self.col, self.end_col
+            )
         } else {
-            write!(f, "{}:{}:{}-{}:{}", self.file, self.line, self.col, self.end_line, self.end_col)
+            write!(
+                f,
+                "{}:{}:{}-{}:{}",
+                self.file, self.line, self.col, self.end_line, self.end_col
+            )
         }
     }
 }

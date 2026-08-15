@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{LayerCache, WholeCacheBehavior};
-use crate::trans::TranslationLayer;
 use crate::trans::rewrite::RewriteProgram;
+use crate::trans::TranslationLayer;
 
 /// Behavior for the `translation::rewrite_rules` cache.
 #[derive(Debug, Default)]
@@ -28,7 +28,7 @@ pub(crate) struct RewriteRulesCache;
 
 impl WholeCacheBehavior for RewriteRulesCache {
     type Parent = TranslationLayer;
-    type Value  = Arc<RewriteProgram>;
+    type Value = Arc<RewriteProgram>;
 
     const NAME: &'static str = "translation::rewrite_rules";
 
@@ -41,7 +41,11 @@ impl WholeCacheBehavior for RewriteRulesCache {
     // changes).  It does NOT read domain/range — that feeds guard injection, not
     // rule extraction — so `DomainRangeChanged` is deliberately absent.
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::TaxonomyChanged, EventKind::RootAdded, EventKind::RootRemoved]
+        &[
+            EventKind::TaxonomyChanged,
+            EventKind::RootAdded,
+            EventKind::RootRemoved,
+        ]
     }
 
     fn reads(&self) -> &'static [&'static str] {
@@ -54,13 +58,15 @@ impl WholeCacheBehavior for RewriteRulesCache {
     fn react(
         &self,
         _parent: &TranslationLayer,
-        events:  &[&Event],
-        store:   &LayerCache<Arc<RewriteProgram>>,
+        events: &[&Event],
+        store: &LayerCache<Arc<RewriteProgram>>,
     ) -> Vec<Event> {
-        let relevant = events.iter().any(|e| matches!(
-            e,
-            Event::TaxonomyChanged { .. } | Event::RootAdded { .. } | Event::RootRemoved { .. }
-        ));
+        let relevant = events.iter().any(|e| {
+            matches!(
+                e,
+                Event::TaxonomyChanged { .. } | Event::RootAdded { .. } | Event::RootRemoved { .. }
+            )
+        });
         if relevant {
             store.invalidate();
         }
@@ -85,10 +91,10 @@ mod tests {
 
     use crate::semantics::SemanticLayer;
     use crate::syntactic::SyntacticLayer;
-    use crate::trans::TranslationLayer;
     use crate::trans::rewrite::{
         detect_predvar_schemas, extract_case1_rules, extract_case2_rules, RewriteRule,
     };
+    use crate::trans::TranslationLayer;
     use crate::types::{SentenceId, SymbolId};
 
     fn make_trans(kif: &str) -> TranslationLayer {
@@ -102,8 +108,10 @@ mod tests {
     /// Project rules to a comparable, order-independent key (the pattern has no
     /// `PartialEq`, so compare the identifying fields).
     fn proj(rules: &[RewriteRule]) -> Vec<(SentenceId, SymbolId, SentenceId)> {
-        let mut v: Vec<(SentenceId, SymbolId, SentenceId)> =
-            rules.iter().map(|r| (r.source_sid, r.template_var, r.consequent_sid)).collect();
+        let mut v: Vec<(SentenceId, SymbolId, SentenceId)> = rules
+            .iter()
+            .map(|r| (r.source_sid, r.template_var, r.consequent_sid))
+            .collect();
         v.sort();
         v
     }
@@ -134,7 +142,11 @@ mod tests {
     fn extracts_case2_predicate_rule() {
         let trans = make_trans("(=> (instance ?REL SymmetricRelation) (?REL ?X ?Y))");
         // SymmetricRelation is not numeric, so this is Case-2, not Case-1.
-        let sr = trans.semantic.syntactic.sym_id("SymmetricRelation").unwrap();
+        let sr = trans
+            .semantic
+            .syntactic
+            .sym_id("SymmetricRelation")
+            .unwrap();
         assert!(trans.numeric_sorts.get(&sr).is_none());
 
         let prog = trans.rewrite_program();
@@ -215,7 +227,11 @@ mod tests {
         let expect = detect_predvar_schemas(syntactic, &impls);
 
         assert_eq!(prog.predvar_schemas.len(), expect.len());
-        assert_eq!(prog.predvar_schemas.len(), 1, "transitivity yields one schema");
+        assert_eq!(
+            prog.predvar_schemas.len(),
+            1,
+            "transitivity yields one schema"
+        );
 
         let mut a: Vec<SentenceId> = prog.predvar_schemas.iter().map(|s| s.schema_sid).collect();
         let mut b: Vec<SentenceId> = expect.iter().map(|s| s.schema_sid).collect();
@@ -232,7 +248,10 @@ mod tests {
         );
         let a = trans.rewrite_program();
         let b = trans.rewrite_program();
-        assert!(Arc::ptr_eq(&a, &b), "second get must return the memoized Arc");
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "second get must return the memoized Arc"
+        );
 
         // generate is deterministic (pure): a fresh, uncached build matches.
         let fresh = trans.build_rewrite_program();

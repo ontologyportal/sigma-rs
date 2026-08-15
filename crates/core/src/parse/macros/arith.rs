@@ -21,19 +21,31 @@ use super::super::AstNode;
 
 /// Fold ground arithmetic subtrees in place, bottom-up.
 pub(crate) fn fold_arithmetic(node: &mut AstNode) {
-    let AstNode::List { elements, span } = node else { return };
+    let AstNode::List { elements, span } = node else {
+        return;
+    };
     for el in elements.iter_mut() {
         fold_arithmetic(el);
     }
     if elements.len() != 3 {
         return;
     }
-    let (AstNode::Symbol { name, .. }, AstNode::Number { value: a, .. }, AstNode::Number { value: b, .. }) =
-        (&elements[0], &elements[1], &elements[2])
+    let (
+        AstNode::Symbol { name, .. },
+        AstNode::Number { value: a, .. },
+        AstNode::Number { value: b, .. },
+    ) = (&elements[0], &elements[1], &elements[2])
     else {
         return;
     };
-    let (Some(x), Some(y)) = (parse_num(a), parse_num(b)) else { return };
-    let Some(v) = eval_binary_fn(name, x, y) else { return };
-    *node = AstNode::Number { value: format_num(v), span: span.clone() };
+    let (Some(x), Some(y)) = (parse_num(a), parse_num(b)) else {
+        return;
+    };
+    let Some(v) = eval_binary_fn(name, x, y) else {
+        return;
+    };
+    *node = AstNode::Number {
+        value: format_num(v),
+        span: span.clone(),
+    };
 }

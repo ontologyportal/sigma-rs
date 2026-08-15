@@ -14,9 +14,12 @@
 use crate::style::*;
 use sigmakee_rs_sdk::AstKif;
 
-use sigmakee_rs_sdk::{emit_proof, render_graphviz, tptp_highlight, AxiomSourceIndex, Emitter, KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus};
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
+use sigmakee_rs_sdk::{
+    emit_proof, render_graphviz, tptp_highlight, AxiomSourceIndex, Emitter, KifProofStep,
+    KnowledgeBase, ProverResult, RenderReport, SzsStatus,
+};
 
 /// `true` for the "machine-readable, nothing else on stdout" formats —
 /// `casc` (strict SZS/TPTP) and `graphviz` (strict DOT) — both of which
@@ -47,10 +50,10 @@ pub fn is_quiet_proof_format(format: &str) -> bool {
 /// Unknown values fall through to the language branch, which renders via
 /// `termFormat`/`format` and warns about any unrecognised language.
 pub fn print_proof<L: TopLayer>(
-    kb:     &KnowledgeBase<L>,
+    kb: &KnowledgeBase<L>,
     result: &ProverResult,
     format: &str,
-    name:   &str,
+    name: &str,
     status: SzsStatus,
 ) {
     print_proof_impl(
@@ -65,10 +68,10 @@ pub fn print_proof<L: TopLayer>(
 
 /// Native-prover twin of [`print_proof`], taking a `KnowledgeBase<ProverLayer>`.
 pub fn print_proof_native(
-    kb:     &KnowledgeBase<sigmakee_rs_sdk::ProverLayer>,
+    kb: &KnowledgeBase<sigmakee_rs_sdk::ProverLayer>,
     result: &ProverResult,
     format: &str,
-    name:   &str,
+    name: &str,
     status: SzsStatus,
 ) {
     print_proof_impl(
@@ -92,7 +95,11 @@ fn resolve_tptp_proof_text(result: &ProverResult) -> Option<String> {
     if result.proof_kif.is_empty() {
         return None;
     }
-    let emitted = emit_proof(&result.proof_kif, "problem", Emitter::Tptp(result.proof_tptp_lang));
+    let emitted = emit_proof(
+        &result.proof_kif,
+        "problem",
+        Emitter::Tptp(result.proof_tptp_lang),
+    );
     if !emitted.is_complete() {
         eprintln!(
             "{color_bright_yellow}warning:{color_reset} {} proof step(s) could not be represented in TPTP:",
@@ -118,11 +125,11 @@ fn print_step(text: &str) {
 
 fn print_proof_impl(
     src_idx: &AxiomSourceIndex,
-    result:  &ProverResult,
-    format:  &str,
-    name:    &str,
-    status:  SzsStatus,
-    render:  &dyn Fn(&AstNode, &str) -> RenderReport,
+    result: &ProverResult,
+    format: &str,
+    name: &str,
+    status: SzsStatus,
+    render: &dyn Fn(&AstNode, &str) -> RenderReport,
 ) {
     match format {
         "casc" => {
@@ -134,7 +141,11 @@ fn print_proof_impl(
             }
         }
         "graphviz" => {
-            print_step(&render_graphviz(&result.proof_kif, name, &status.to_string()));
+            print_step(&render_graphviz(
+                &result.proof_kif,
+                name,
+                &status.to_string(),
+            ));
         }
         "tptp" => {
             match resolve_tptp_proof_text(result) {
@@ -181,7 +192,8 @@ fn print_proof_impl(
                 return;
             }
             println!("\n{style_bold}Proof ({}):{style_reset}", lang);
-            let mut all_missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut all_missing: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
             for step in &result.proof_kif {
                 print_step_header(step);
                 let report = render(&step.formula, lang);
@@ -218,7 +230,11 @@ fn print_step_header(step: &KifProofStep) {
     } else {
         format!(
             " <- [{}]",
-            step.premises.iter().map(|p| (p + 1).to_string()).collect::<Vec<_>>().join(", ")
+            step.premises
+                .iter()
+                .map(|p| (p + 1).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     };
     println!("  {:>3}. [{}]{}", step.index + 1, step.rule, premises);

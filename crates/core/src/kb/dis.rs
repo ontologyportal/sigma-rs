@@ -2,9 +2,9 @@
 //
 // Display focused function implementations
 
-use crate::SentenceId;
 use crate::parse::doc::DocItem;
-use crate::parse::kif::dis::AstKif; // `.flat()` / `.pretty_print()` / `.format_plain()`
+use crate::parse::kif::dis::AstKif;
+use crate::SentenceId; // `.flat()` / `.pretty_print()` / `.format_plain()`
 
 use super::KnowledgeBase;
 use crate::Diagnostic;
@@ -16,11 +16,13 @@ use crate::Diagnostic;
 impl<L: crate::layer::TopLayer> crate::diagnostic::DiagnosticSource for KnowledgeBase<L> {
     fn render_sentence(
         &self,
-        sid:            crate::types::SentenceId,
+        sid: crate::types::SentenceId,
         _highlight_arg: i32,
     ) -> Option<String> {
         let store = &self.layer.semantic().syntactic;
-        if !store.has_sentence(sid) { return None; }
+        if !store.has_sentence(sid) {
+            return None;
+        }
         // Diagnostics want the *source* formula(s) the user wrote — the
         // normalized sentence carries no source syntax (spans were dropped at
         // build).  Falls back to the normalized form for synthetic sentences.
@@ -40,21 +42,25 @@ impl<L: crate::layer::TopLayer> crate::diagnostic::DiagnosticSource for Knowledg
     /// checks.
     fn highlight_span(&self, sid: crate::types::SentenceId, arg: i32) -> Option<(usize, usize)> {
         use crate::types::{Element, Literal};
-        if arg < 0 { return None; }
+        if arg < 0 {
+            return None;
+        }
         let store = &self.layer.semantic().syntactic;
         let sentence = store.sentence(sid)?;
         let hi = arg as usize;
-        if hi >= sentence.elements.len() { return None; }
+        if hi >= sentence.elements.len() {
+            return None;
+        }
 
         // Char length of one element in flat KIF (matches `sentence_to_plain_kif`).
         let flat_len = |el: &Element| -> usize {
             match el {
-                Element::Symbol(s)                  => s.name().chars().count(),
-                Element::Variable { name, .. }      => 1 + name.chars().count(), // ? or @
-                Element::Literal(Literal::Str(s))   => s.chars().count(),        // quotes included
-                Element::Literal(Literal::Number(n))=> n.chars().count(),
-                Element::Op(op)                     => op.name().chars().count(),
-                Element::Sub(sub)                   => store.display_normalized(*sub).chars().count(),
+                Element::Symbol(s) => s.name().chars().count(),
+                Element::Variable { name, .. } => 1 + name.chars().count(), // ? or @
+                Element::Literal(Literal::Str(s)) => s.chars().count(),     // quotes included
+                Element::Literal(Literal::Number(n)) => n.chars().count(),
+                Element::Op(op) => op.name().chars().count(),
+                Element::Sub(sub) => store.display_normalized(*sub).chars().count(),
             }
         };
 
@@ -80,14 +86,18 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
             return format!("<sid:{}>", sid);
         }
         let sentence = &self.layer.semantic().syntactic.sentence(sid).unwrap();
-        let parts: Vec<String> = sentence.elements.iter().map(|e| match e {
-            Element::Symbol(sym)                                    => sym.to_string(),
-            Element::Variable { name, .. }                       => name.clone(),
-            Element::Literal(crate::types::Literal::Str(s))      => s.clone(),
-            Element::Literal(crate::types::Literal::Number(n))   => n.clone(),
-            Element::Op(op)                                      => op.name().to_owned(),
-            Element::Sub(sub_id)                                    => format!("({})", self.sentence_to_string(*sub_id)),
-        }).collect();
+        let parts: Vec<String> = sentence
+            .elements
+            .iter()
+            .map(|e| match e {
+                Element::Symbol(sym) => sym.to_string(),
+                Element::Variable { name, .. } => name.clone(),
+                Element::Literal(crate::types::Literal::Str(s)) => s.clone(),
+                Element::Literal(crate::types::Literal::Number(n)) => n.clone(),
+                Element::Op(op) => op.name().to_owned(),
+                Element::Sub(sub_id) => format!("({})", self.sentence_to_string(*sub_id)),
+            })
+            .collect();
         format!("({})", parts.join(" "))
     }
 
@@ -106,7 +116,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         let doc = crate::parse::parse_document("<display>", kif.as_str(), crate::Parser::Kif);
         match doc.ast.into_iter().next() {
             Some(DocItem::Stmt(node)) => node.pretty_print(base_indent),
-            _       => kif,
+            _ => kif,
         }
     }
 
@@ -118,7 +128,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         let doc = crate::parse::parse_document("<display>", kif.as_str(), crate::Parser::Kif);
         match doc.ast.into_iter().next() {
             Some(DocItem::Stmt(node)) => node.format_plain(base_indent),
-            _       => kif,
+            _ => kif,
         }
     }
 
@@ -139,7 +149,9 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Produce a short human-readable preview of a sentence.
     pub fn formula_preview(&self, sid: SentenceId) -> String {
         let store = &self.layer.semantic().syntactic;
-        if !store.has_sentence(sid) { return format!("<sid:{}>", sid); }
+        if !store.has_sentence(sid) {
+            return format!("<sid:{}>", sid);
+        }
         let sentence = store.sentence(sid).unwrap();
         let display = format!("{:?}", sentence.elements);
         if display.chars().count() > 60 {

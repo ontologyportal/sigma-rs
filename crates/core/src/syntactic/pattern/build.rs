@@ -23,10 +23,12 @@ pub(crate) enum PatternFromKifError {
 impl std::fmt::Display for PatternFromKifError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PatternFromKifError::NoRootSentence =>
-                write!(f, "KIF pattern produced no root sentence"),
-            PatternFromKifError::UnknownSymbol(name) =>
-                write!(f, "unknown symbol '{name}' in KIF pattern"),
+            PatternFromKifError::NoRootSentence => {
+                write!(f, "KIF pattern produced no root sentence")
+            }
+            PatternFromKifError::UnknownSymbol(name) => {
+                write!(f, "unknown symbol '{name}' in KIF pattern")
+            }
         }
     }
 }
@@ -41,14 +43,13 @@ impl std::fmt::Display for PatternFromKifError {
 /// Returns `Err(name)` where `name` is the first ground symbol that could not
 /// be resolved against `real`.
 fn sentence_to_pattern(
-    temp:      &SyntacticLayer,
-    real:      &SyntacticLayer,
-    sid:       SentenceId,
-    slot_map:  &mut HashMap<SymbolId, usize>,
+    temp: &SyntacticLayer,
+    real: &SyntacticLayer,
+    sid: SentenceId,
+    slot_map: &mut HashMap<SymbolId, usize>,
     next_slot: &mut usize,
 ) -> Result<SentencePattern, String> {
-    let sentence = temp.sentence(sid)
-        .ok_or_else(|| format!("<sid {sid}>"))?;
+    let sentence = temp.sentence(sid).ok_or_else(|| format!("<sid {sid}>"))?;
     let mut elems: Vec<PatternElement> = Vec::with_capacity(sentence.elements.len());
 
     // Snapshot to release the borrow before the recursive calls below.
@@ -74,12 +75,8 @@ fn sentence_to_pattern(
                 });
                 PatternElement::AnyElement(slot)
             }
-            Element::Op(op) => {
-                PatternElement::Exact(MatchKey::Op(op.clone()))
-            }
-            Element::Literal(lit) => {
-                PatternElement::Exact(MatchKey::Literal(lit.clone()))
-            }
+            Element::Op(op) => PatternElement::Exact(MatchKey::Op(op.clone())),
+            Element::Literal(lit) => PatternElement::Exact(MatchKey::Literal(lit.clone())),
             Element::Sub(sub_sid) => {
                 let inner = sentence_to_pattern(temp, real, *sub_sid, slot_map, next_slot)?;
                 PatternElement::SubPattern(Box::new(inner))
@@ -111,13 +108,18 @@ impl<'a> PatternMatcher<'a> {
     ///   parse into a root sentence.
     /// - [`PatternFromKifError::UnknownSymbol`] — a ground symbol in `kif` is
     ///   absent from `self`'s symbol table.
-    pub(crate) fn pattern_from_kif(&self, kif: &str) -> Result<SentencePattern, PatternFromKifError> {
-
+    pub(crate) fn pattern_from_kif(
+        &self,
+        kif: &str,
+    ) -> Result<SentencePattern, PatternFromKifError> {
         let mut temp = SyntacticLayer::default();
         temp.load_kif(kif, "_pattern_");
 
         // A single-formula pattern has exactly one root.
-        let root_sid = temp.root_sids().into_iter().next()
+        let root_sid = temp
+            .root_sids()
+            .into_iter()
+            .next()
             .ok_or(PatternFromKifError::NoRootSentence)?;
 
         let mut slot_map: HashMap<SymbolId, usize> = HashMap::new();

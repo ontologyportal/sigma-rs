@@ -1,20 +1,21 @@
+mod arith;
+mod caf;
+mod literals;
+mod quantifiers;
 /// macros.rs
-/// 
+///
 /// This module provides parse time macros or functions run on post-parsed nodes
 /// but pre-symbol resolved statements
-
 mod row_vars;
-mod quantifiers;
-mod arith;
-mod literals;
-mod caf;
 
-pub(crate) use row_vars::expand_row_vars;
+pub(crate) use arith::fold_arithmetic;
+pub(crate) use caf::{
+    flatten_connectives, normalize_ast, push_negation_inward, split_top_level_and,
+};
+pub(crate) use literals::decode_tptp_literals;
 pub(crate) use quantifiers::collapse_quantifiers;
 pub(crate) use quantifiers::strip_top_level_forall;
-pub(crate) use literals::decode_tptp_literals;
-pub(crate) use arith::fold_arithmetic;
-pub(crate) use caf::{normalize_ast, flatten_connectives, split_top_level_and, push_negation_inward};
+pub(crate) use row_vars::expand_row_vars;
 
 use crate::AstNode;
 
@@ -57,7 +58,7 @@ fn expand_node_inner(mut node: AstNode, strip_forall: bool) -> Vec<AstNode> {
     flatten_connectives(&mut node);
     let expanded = match expand_row_vars(&mut node) {
         Some(expanded) => expanded,
-        None           => vec![node],
+        None => vec![node],
     };
     // Split top-level conjunctions into independent roots (after row-var fan-out,
     // before CAF) so each conjunct is its own assertion.

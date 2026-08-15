@@ -28,12 +28,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(feature = "native-prover")]
 pub use ask::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome};
 
-use sigmakee_rs_core::{DynSink, KnowledgeBase, TranslationLayer};
 #[cfg(feature = "native-prover")]
 use sigmakee_rs_core::ProverLayer;
+use sigmakee_rs_core::TopLayer;
+use sigmakee_rs_core::{DynSink, KnowledgeBase, TranslationLayer};
 #[cfg(feature = "ask")]
 use sigmakee_rs_core::{ExternalProverLayer, Prover};
-use sigmakee_rs_core::{TopLayer};
 
 /// Which top layer (and prover) backs a [`Session`].
 pub enum Backend {
@@ -59,7 +59,10 @@ pub struct Session<L: TopLayer> {
 impl Session<ProverLayer> {
     /// Open a new session of a KB using the native prover backend
     pub fn new(session: String) -> Self {
-        Self { kb: KnowledgeBase::new_native(), name: session }
+        Self {
+            kb: KnowledgeBase::new_native(),
+            name: session,
+        }
     }
 }
 
@@ -67,7 +70,10 @@ impl Session<ProverLayer> {
 impl Session<ExternalProverLayer> {
     /// Open a new session of a KB using the external prover backend
     pub fn new(session: String, prover: Prover) -> Self {
-        Self { kb: KnowledgeBase::new_external(prover), name: session }
+        Self {
+            kb: KnowledgeBase::new_external(prover),
+            name: session,
+        }
     }
 
     /// Override the prover backend on an external session — e.g. after
@@ -81,7 +87,10 @@ impl Session<ExternalProverLayer> {
 impl Session<TranslationLayer> {
     /// Open a new session of a KB without a prover backend
     pub fn new(session: String) -> Self {
-        Self { kb: KnowledgeBase::new(), name: session }
+        Self {
+            kb: KnowledgeBase::new(),
+            name: session,
+        }
     }
 }
 
@@ -93,7 +102,7 @@ impl<L: TopLayer> Session<L> {
         self
     }
 
-    pub(crate) fn sink(&self)-> Option<DynSink> {
+    pub(crate) fn sink(&self) -> Option<DynSink> {
         self.kb.progress_sink().cloned()
     }
 
@@ -116,10 +125,11 @@ impl<L: TopLayer> Session<L> {
     /// persistent DB.  The layer-specific `Session::new` constructors build an
     /// *empty* KB; this is the generic "I already have a loaded KB" entry point.
     pub fn from_kb(kb: KnowledgeBase<L>, name: Option<String>) -> Self {
-        let session_name = name.unwrap_or_else(|| {
-            Self::uuid()
-        });
-        Self { kb, name: session_name }
+        let session_name = name.unwrap_or_else(|| Self::uuid());
+        Self {
+            kb,
+            name: session_name,
+        }
     }
 
     /// Fork an independent, in-memory copy of this session for isolated work —
@@ -133,7 +143,10 @@ impl<L: TopLayer> Session<L> {
     #[cfg(feature = "persist")]
     pub fn fork(&self) -> crate::SdkResult<Self> {
         let kb = self.kb.snapshot_clone().map_err(crate::SdkError::Kb)?;
-        Ok(Self { kb, name: self.name.clone() })
+        Ok(Self {
+            kb,
+            name: self.name.clone(),
+        })
     }
 
     fn uuid() -> String {
@@ -144,54 +157,100 @@ impl<L: TopLayer> Session<L> {
 
 #[cfg(all(test, feature = "native-prover"))]
 mod tests {
-    use super::*;
     use super::super::Source;
+    use super::*;
     use sigmakee_rs_core::NativeOpts;
 
     static SESSION: &str = "test-session";
 
     fn reader(name: &str, kif: &str) -> Source {
-        Source::Reader { name: name.into(), reader: Box::new(std::io::Cursor::new(Vec::from(kif))) }
+        Source::Reader {
+            name: name.into(),
+            reader: Box::new(std::io::Cursor::new(Vec::from(kif))),
+        }
     }
-    fn fast() -> NativeOpts { NativeOpts { time_limit_secs: 10, ..Default::default() } }
+    fn fast() -> NativeOpts {
+        NativeOpts {
+            time_limit_secs: 10,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn native_session_ingests_then_proves() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("t.kif",
-            "(subclass Dog Mammal) (subclass Mammal Animal) (instance Rex Dog)"), true);
+        s.ingest(
+            reader(
+                "t.kif",
+                "(subclass Dog Mammal) (subclass Mammal Animal) (instance Rex Dog)",
+            ),
+            true,
+        );
         let r = s.ask("(instance Rex Animal)", Some(fast())).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Proved, "{}", r.raw_output);
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]
     fn doxastic_ask_closes_belief_context_and_stays_read_only() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("dox.kif",
-            "(domain believes 2 Formula)\n\
+        s.ingest(
+            reader(
+                "dox.kif",
+                "(domain believes 2 Formula)\n\
              (believes John (p a))\n\
-             (believes John (=> (p a) (q a)))"), true);
+             (believes John (=> (p a) (q a)))",
+            ),
+            true,
+        );
         // Full closure inside the context: modus ponens over the beliefs.
         let r = s.doxastic_ask("John", "(q a)", Some(fast())).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Proved, "{}", r.raw_output);
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "{}",
+            r.raw_output
+        );
         // Outer control: `(believes John (q a))` is NOT derivable outside
         // the projection — inner conclusions are never fed back.
         let outer = s.ask("(believes John (q a))", Some(fast())).unwrap();
-        assert_ne!(outer.status, sigmakee_rs_core::ProverStatus::Proved,
-            "guardrail: outer ask must stay unproven: {}", outer.raw_output);
+        assert_ne!(
+            outer.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "guardrail: outer ask must stay unproven: {}",
+            outer.raw_output
+        );
         // Consistency surface.
         let c = s.doxastic_consistent("John", Some(fast())).unwrap();
-        assert_eq!(c.status, sigmakee_rs_core::ProverStatus::Consistent, "{}", c.raw_output);
+        assert_eq!(
+            c.status,
+            sigmakee_rs_core::ProverStatus::Consistent,
+            "{}",
+            c.raw_output
+        );
     }
 
     #[test]
     fn tell_accumulates_hypotheses_then_ask() {
         // No base axioms — the chained hypotheses alone must discharge the goal.
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        let r = s.tell("(=> (p ?x) (q ?x))").unwrap()
-                 .tell("(p a)").unwrap()
-                 .ask("(q a)", Some(fast())).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Proved, "{}", r.raw_output);
+        let r = s
+            .tell("(=> (p ?x) (q ?x))")
+            .unwrap()
+            .tell("(p a)")
+            .unwrap()
+            .ask("(q a)", Some(fast()))
+            .unwrap();
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]
@@ -214,14 +273,22 @@ mod tests {
         // theory.
         let dir = std::env::temp_dir().join("sdk_session_tptp_include");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("zoo.ax"), "\
+        std::fs::write(
+            dir.join("zoo.ax"),
+            "\
 fof(a1, axiom, ![X] : (dog(X) => mammal(X))).\n\
 fof(a2, axiom, ![X] : (mammal(X) => animal(X))).\n\
-fof(a3, axiom, dog(rex)).\n").unwrap();
+fof(a3, axiom, dog(rex)).\n",
+        )
+        .unwrap();
         let prob = dir.join("zoo.p");
-        std::fs::write(&prob, "\
+        std::fs::write(
+            &prob,
+            "\
 include('zoo.ax').\n\
-fof(goal, conjecture, animal(rex)).\n").unwrap();
+fof(goal, conjecture, animal(rex)).\n",
+        )
+        .unwrap();
 
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         let r = s.test(Source::Local(vec![prob]), None).unwrap();
@@ -243,14 +310,24 @@ fof(a1, axiom, ![X] : (dog(X) => mammal(X))).\n\
 fof(a2, axiom, ![X] : (mammal(X) => animal(X))).\n\
 fof(a3, axiom, dog(rex)).\n\
 fof(goal, conjecture, animal(rex)).\n";
-        let r = fork.test(reader("zoo.p", problem), Some(fast())).expect("test ran");
-        assert_eq!(r.outcome, TestOutcome::Passed,
-            "fork proves animal(rex) from its promoted background: {}", r.result.raw_output);
+        let r = fork
+            .test(reader("zoo.p", problem), Some(fast()))
+            .expect("test ran");
+        assert_eq!(
+            r.outcome,
+            TestOutcome::Passed,
+            "fork proves animal(rex) from its promoted background: {}",
+            r.result.raw_output
+        );
 
         // Isolation: the fork's promoted axioms never reached the master.
         let m = master.ask("(animal rex)", Some(fast())).expect("ask ran");
-        assert_ne!(m.status, sigmakee_rs_core::ProverStatus::Proved,
-            "master must not see the fork's axioms; got {:?}", m.status);
+        assert_ne!(
+            m.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "master must not see the fork's axioms; got {:?}",
+            m.status
+        );
     }
 
     #[test]
@@ -260,20 +337,33 @@ fof(goal, conjecture, animal(rex)).\n";
         s.ingest(reader("p.p", "fof(a, axiom, mammal(rex))."), true);
     }
 
-
     #[test]
     fn undetectable_source_is_an_error() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         // No extension, no `(`/`fof(` head → detection fails → hard error.
-        assert!(s.ingest(reader("noext", "just some prose"), true).iter().any(|e| e.is_err()));
+        assert!(s
+            .ingest(reader("noext", "just some prose"), true)
+            .iter()
+            .any(|e| e.is_err()));
     }
 
     #[test]
     fn check_consistency_passes_a_clean_kb() {
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        s.ingest(reader("c.kif", "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))"), true);
+        s.ingest(
+            reader(
+                "c.kif",
+                "(instance Rex Dog)\n(=> (instance ?X Dog) (barks ?X))",
+            ),
+            true,
+        );
         let r = s.check_consistency(fast()).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Consistent, "{}", r.raw_output);
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Consistent,
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]
@@ -281,7 +371,12 @@ fof(goal, conjecture, animal(rex)).\n";
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"), true);
         let r = s.check_consistency(fast()).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Inconsistent, "{}", r.raw_output);
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Inconsistent,
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]
@@ -289,7 +384,12 @@ fof(goal, conjecture, animal(rex)).\n";
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
         s.ingest(reader("c.kif", "(barks Rex)\n(not (barks Rex))"), true);
         let r = s.audit(fast(), 4).unwrap();
-        assert_eq!(r.status, sigmakee_rs_core::ProverStatus::Inconsistent, "{}", r.raw_output);
+        assert_eq!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Inconsistent,
+            "{}",
+            r.raw_output
+        );
     }
 
     #[test]
@@ -304,8 +404,12 @@ fof(goal, conjecture, animal(rex)).\n";
         // Guards the session-scoping fix: the goal must NOT prove when the
         // enabling hypothesis was never told.
         let mut s = Session::<ProverLayer>::new(SESSION.to_string());
-        let r = s.tell("(p a)").unwrap()
-                 .ask("(q a)", Some(fast())).unwrap();
-        assert_ne!(r.status, sigmakee_rs_core::ProverStatus::Proved, "{}", r.raw_output);
+        let r = s.tell("(p a)").unwrap().ask("(q a)", Some(fast())).unwrap();
+        assert_ne!(
+            r.status,
+            sigmakee_rs_core::ProverStatus::Proved,
+            "{}",
+            r.raw_output
+        );
     }
 }

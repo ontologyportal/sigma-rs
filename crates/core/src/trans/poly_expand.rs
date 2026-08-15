@@ -21,10 +21,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::types::Element;
 use crate::semantics::types::Scope;
 use crate::trans::term_sorts::VarSorts;
 use crate::trans::{Sort, SortAnnotation, TranslationLayer};
+use crate::types::Element;
 use crate::{SentenceId, SymbolId};
 
 /// Cap on per-variant copies of one rule (3 sorts ^ 2 vars = 9 covers every
@@ -90,9 +90,15 @@ impl TranslationLayer {
                 }
                 assignments = next;
                 if assignments.len() > MAX_ASSIGNMENTS_PER_RULE {
-                    crate::log!(Debug, "sigmakee_rs_core::trans", format!(
-                        "poly_expansions: sid {sid} capped at {MAX_ASSIGNMENTS_PER_RULE} \
-                         of {} variant assignments", assignments.len()));
+                    crate::log!(
+                        Debug,
+                        "sigmakee_rs_core::trans",
+                        format!(
+                            "poly_expansions: sid {sid} capped at {MAX_ASSIGNMENTS_PER_RULE} \
+                         of {} variant assignments",
+                            assignments.len()
+                        )
+                    );
                     assignments.truncate(MAX_ASSIGNMENTS_PER_RULE);
                 }
             }
@@ -108,10 +114,10 @@ impl TranslationLayer {
     /// left at `$i`, with the position's numeric sort options.
     fn collect_poly_candidates(
         &self,
-        sid:        SentenceId,
-        polys:      &HashSet<SymbolId>,
-        var_sorts:  &VarSorts,
-        scope:      Scope,
+        sid: SentenceId,
+        polys: &HashSet<SymbolId>,
+        var_sorts: &VarSorts,
+        scope: Scope,
         candidates: &mut BTreeMap<SymbolId, BTreeSet<Sort>>,
     ) {
         let mut stack = vec![sid];
@@ -120,13 +126,17 @@ impl TranslationLayer {
             if !seen.insert(s) {
                 continue;
             }
-            let Some(sentence) = self.semantic.syntactic.sentence(s) else { continue };
+            let Some(sentence) = self.semantic.syntactic.sentence(s) else {
+                continue;
+            };
             for el in sentence.elements.iter() {
                 if let Element::Sub(sub) = el {
                     stack.push(*sub);
                 }
             }
-            let Some(Element::Symbol(head)) = sentence.elements.first() else { continue };
+            let Some(Element::Symbol(head)) = sentence.elements.first() else {
+                continue;
+            };
             if !polys.contains(&head.id()) {
                 continue;
             }
@@ -139,7 +149,9 @@ impl TranslationLayer {
             };
             let args = &sentence.elements[1..];
             for (i, arg) in args.iter().enumerate() {
-                let Element::Variable { id, .. } = arg else { continue };
+                let Element::Variable { id, .. } = arg else {
+                    continue;
+                };
                 if var_sorts.get(id).copied().unwrap_or(Sort::Individual) != Sort::Individual {
                     continue; // already numerically classified — base copy has it
                 }

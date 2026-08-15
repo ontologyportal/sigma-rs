@@ -44,9 +44,9 @@
 // magic-scoped programs the answer paths evaluate are negation-free, so
 // they are unaffected).
 
+use crate::clock::Instant;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use crate::clock::Instant;
 
 use smallvec::SmallVec;
 
@@ -70,7 +70,7 @@ type Parents = SmallVec<[(Pred, Tuple); 4]>;
 /// firing asserted it and the two witness tuples that matched its key.
 #[derive(Clone, Debug)]
 pub(crate) struct EqEdge {
-    pub egd_sid:   Option<SentenceId>,
+    pub egd_sid: Option<SentenceId>,
     pub witness_a: (Pred, Tuple),
     pub witness_b: (Pred, Tuple),
 }
@@ -100,9 +100,9 @@ pub(super) enum UnionOutcome {
 pub(crate) struct EqClasses {
     /// Compressed union-find parents (absent key ⇒ self-parented).
     parent: HashMap<SymbolId, SymbolId>,
-    rank:   HashMap<SymbolId, u32>,
+    rank: HashMap<SymbolId, u32>,
     /// The proof forest: NEVER path-compressed; edges are original unions.
-    proof:  HashMap<SymbolId, SymbolId>,
+    proof: HashMap<SymbolId, SymbolId>,
     /// Edge labels, keyed by the normalized (min, max) endpoint pair.
     pub(crate) edges: HashMap<(SymbolId, SymbolId), EqEdge>,
     /// Per-class numeric (rigid) member, keyed by current rep — the rigid-
@@ -163,7 +163,10 @@ impl EqClasses {
     /// The rigid member of `rep`'s class, if any: the recorded numeric
     /// member, or `rep` itself when it is rigid.
     fn numeric_member(&self, rep: SymbolId, rigid: &Set64<SymbolId>) -> Option<SymbolId> {
-        self.numeric.get(&rep).copied().or_else(|| rigid.contains(&rep).then_some(rep))
+        self.numeric
+            .get(&rep)
+            .copied()
+            .or_else(|| rigid.contains(&rep).then_some(rep))
     }
 
     /// Record the ORIGINAL union edge `x = y` in the proof forest: reverse
@@ -189,9 +192,9 @@ impl EqClasses {
     /// class's rigid member.
     pub(super) fn union(
         &mut self,
-        x:     SymbolId,
-        y:     SymbolId,
-        edge:  EqEdge,
+        x: SymbolId,
+        y: SymbolId,
+        edge: EqEdge,
         rigid: &Set64<SymbolId>,
     ) -> UnionOutcome {
         let rx = self.find_mut(x);
@@ -254,10 +257,18 @@ impl EqClasses {
         }
         let lca = cur;
         let mut out: Vec<(SymbolId, SymbolId)> = Vec::new();
-        for w in a_chain.iter().take_while(|&&n| n != lca).zip(a_chain.iter().skip(1)) {
+        for w in a_chain
+            .iter()
+            .take_while(|&&n| n != lca)
+            .zip(a_chain.iter().skip(1))
+        {
             out.push(norm(*w.0, *w.1));
         }
-        for w in b_chain.iter().take_while(|&&n| n != lca).zip(b_chain.iter().skip(1)) {
+        for w in b_chain
+            .iter()
+            .take_while(|&&n| n != lca)
+            .zip(b_chain.iter().skip(1))
+        {
             out.push(norm(*w.0, *w.1));
         }
         out
@@ -266,7 +277,11 @@ impl EqClasses {
 
 #[inline]
 fn norm(a: SymbolId, b: SymbolId) -> (SymbolId, SymbolId) {
-    if a <= b { (a, b) } else { (b, a) }
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -276,8 +291,8 @@ fn norm(a: SymbolId, b: SymbolId) -> (SymbolId, SymbolId) {
 /// One relation: its tuples, a membership set, and a per-position value index.
 #[derive(Default)]
 struct Rel {
-    rows:   Vec<Tuple>,
-    set:    HashSet<Tuple>,
+    rows: Vec<Tuple>,
+    set: HashSet<Tuple>,
     /// `by_pos[i][value]` = indices into `rows` whose position `i` is `value`.
     by_pos: Vec<HashMap<SymbolId, Vec<u32>>>,
 }
@@ -317,7 +332,9 @@ impl Store {
     /// Candidate tuples for `atom` under the current binding: the index bucket
     /// of the most selective bound position, or every row if nothing is bound.
     fn candidates(&self, atom: &Atom, binding: &HashMap<u32, SymbolId>) -> Vec<Tuple> {
-        let Some(rel) = self.rels.get(&atom.pred) else { return Vec::new() };
+        let Some(rel) = self.rels.get(&atom.pred) else {
+            return Vec::new();
+        };
         let mut best: Option<(usize, SymbolId, usize)> = None; // (pos, val, bucket size)
         for (i, a) in atom.args.iter().enumerate() {
             let val = match a {
@@ -325,7 +342,11 @@ impl Store {
                 DTerm::Var(v) => binding.get(v).copied(),
             };
             if let Some(v) = val {
-                let sz = rel.by_pos.get(i).and_then(|m| m.get(&v)).map_or(0, Vec::len);
+                let sz = rel
+                    .by_pos
+                    .get(i)
+                    .and_then(|m| m.get(&v))
+                    .map_or(0, Vec::len);
                 if best.is_none_or(|(_, _, bs)| sz < bs) {
                     best = Some((i, v, sz));
                 }
@@ -357,15 +378,15 @@ impl Store {
 #[derive(Default)]
 struct ReachIndex {
     version: usize,
-    adj:     HashMap<SymbolId, Vec<SymbolId>>,
-    memo:    HashMap<SymbolId, Reached>,
+    adj: HashMap<SymbolId, Vec<SymbolId>>,
+    memo: HashMap<SymbolId, Reached>,
 }
 
 /// One BFS result: the reached nodes (seed excluded) and the BFS-tree parent
 /// of each — enough to reconstruct the path for provenance.
 #[derive(Clone, Default)]
 struct Reached {
-    nodes:  Vec<SymbolId>,
+    nodes: Vec<SymbolId>,
     parent: HashMap<SymbolId, SymbolId>,
 }
 
@@ -378,12 +399,12 @@ struct Reached {
 /// caches.  `fire`/`join_rec` take `&Kernel` (BFS memos live behind
 /// `RefCell`/`Cell`); insertion takes `&mut Kernel`.
 struct Kernel<'p> {
-    prog:        &'p Program,
-    store:       Store,
-    prov:        Provenance,
-    egd_idx:     HashMap<Pred, Vec<usize>>,
-    total:       usize,
-    max_tuples:  usize,
+    prog: &'p Program,
+    store: Store,
+    prov: Provenance,
+    egd_idx: HashMap<Pred, Vec<usize>>,
+    total: usize,
+    max_tuples: usize,
     /// Any rule carries a negated body literal — an EGD merge then aborts
     /// (`Unstratifiable`): a merge can retroactively change an earlier
     /// absence check, and refusing is the sound response.
@@ -391,7 +412,7 @@ struct Kernel<'p> {
     /// An EGD merge happened since the last `take_merged` — the semi-naive
     /// loop runs a full catch-up pass (re-canonicalized rows of other
     /// strata's relations are not delta-driven).
-    merged:      bool,
+    merged: bool,
     /// A BUILTIN-transitive relation gained base edges since the last
     /// `take_builtin_grew` — a new edge extends the CLOSURE by pairs no
     /// delta tuple represents, so the semi-naive loop runs a full catch-up
@@ -400,11 +421,11 @@ struct Kernel<'p> {
     builtin_grew: bool,
     /// Auxiliary budget: builtin-BFS nodes visited + expanded closure driver
     /// tuples.  Charged against `max_tuples` alongside stored rows.
-    aux:         Cell<usize>,
-    reach:       RefCell<HashMap<(Pred, bool), ReachIndex>>,
+    aux: Cell<usize>,
+    reach: RefCell<HashMap<(Pred, bool), ReachIndex>>,
     /// Wall-clock deadline for the WHOLE evaluation (not just between-rule
     /// checks) — see `join_rec`'s tick counter below.  `None` ⇒ unbounded.
-    deadline:    Option<Instant>,
+    deadline: Option<Instant>,
     /// Ticks since `Instant::now()` was last consulted inside `join_rec`'s
     /// candidate-tuple loop.  A single `fire` call for ONE rule can recurse
     /// through a huge join (e.g. a dense transitive `sub`/`subclass` body) —
@@ -415,7 +436,7 @@ struct Kernel<'p> {
     /// clock is sampled only every `DEADLINE_CHECK_TICKS` expansions — cheap
     /// (a `Cell` increment) on every tuple, an actual syscall-ish read only
     /// every Nth.
-    join_ticks:  Cell<u64>,
+    join_ticks: Cell<u64>,
     /// Set once `join_rec` samples the clock past `deadline` — `join_rec`
     /// checks this at recursion entry to unwind immediately (every stack
     /// frame stops iterating its candidates) rather than only stopping the
@@ -437,9 +458,9 @@ impl<'p> Kernel<'p> {
         }
         let prov = Provenance {
             rule_sids: prog.rules.iter().map(|r| r.sid).collect(),
-            edb_sids:  prog.edb_sids.clone(),
-            derived:   HashMap::new(),
-            eq:        EqClasses::default(),
+            edb_sids: prog.edb_sids.clone(),
+            derived: HashMap::new(),
+            eq: EqClasses::default(),
             builtin_sids: prog
                 .builtin_transitive
                 .iter()
@@ -499,7 +520,9 @@ impl<'p> Kernel<'p> {
         if self.deadline_hit.get() {
             return true;
         }
-        let Some(dl) = self.deadline else { return false };
+        let Some(dl) = self.deadline else {
+            return false;
+        };
         let t = self.join_ticks.get() + 1;
         self.join_ticks.set(t);
         if t % DEADLINE_CHECK_TICKS != 0 {
@@ -546,7 +569,11 @@ impl<'p> Kernel<'p> {
             if let Some(rel) = self.store.rels.get(&pred) {
                 for row in &rel.rows {
                     if row.len() == 2 {
-                        let (a, b) = if rev { (row[1], row[0]) } else { (row[0], row[1]) };
+                        let (a, b) = if rev {
+                            (row[1], row[0])
+                        } else {
+                            (row[0], row[1])
+                        };
                         e.adj.entry(a).or_default().push(b);
                     }
                 }
@@ -589,7 +616,9 @@ impl<'p> Kernel<'p> {
         let mut edges: Vec<(Pred, Tuple)> = Vec::new();
         let mut cur = y;
         while cur != x {
-            let Some(&p) = r.parent.get(&cur) else { return Parents::new() };
+            let Some(&p) = r.parent.get(&cur) else {
+                return Parents::new();
+            };
             edges.push((pred, vec![p, cur]));
             cur = p;
         }
@@ -661,10 +690,10 @@ impl<'p> Kernel<'p> {
     /// current delta — the semi-naive integration).
     fn insert_row(
         &mut self,
-        pred:  Pred,
+        pred: Pred,
         tuple: Tuple,
         deriv: Option<(u32, Parents)>,
-        news:  &mut Vec<(Pred, Tuple)>,
+        news: &mut Vec<(Pred, Tuple)>,
     ) -> Result<(), ModelError> {
         self.insert_row_inner(pred, tuple, deriv, news, true)
     }
@@ -675,10 +704,10 @@ impl<'p> Kernel<'p> {
     /// order — the probe pass then sees the complete EDB deterministically.
     fn insert_row_inner(
         &mut self,
-        pred:  Pred,
+        pred: Pred,
         tuple: Tuple,
         deriv: Option<(u32, Parents)>,
-        news:  &mut Vec<(Pred, Tuple)>,
+        news: &mut Vec<(Pred, Tuple)>,
         probe: bool,
     ) -> Result<(), ModelError> {
         let mut tuple = tuple;
@@ -712,9 +741,13 @@ impl<'p> Kernel<'p> {
                         && !self.prov.derived.contains_key(&(*bp, bt.clone()))
                     {
                         let path = self.builtin_path(*bp, bt[0], bt[1]);
-                        self.prov
-                            .derived
-                            .insert((*bp, bt.clone()), Derivation { rule: BUILTIN_RULE, parents: path });
+                        self.prov.derived.insert(
+                            (*bp, bt.clone()),
+                            Derivation {
+                                rule: BUILTIN_RULE,
+                                parents: path,
+                            },
+                        );
                     }
                 }
                 self.prov
@@ -727,10 +760,13 @@ impl<'p> Kernel<'p> {
                 // canonical row back to the original (whose sid lives in
                 // `edb_sids`) so the citation resolves.
                 if let Some(orig) = orig {
-                    self.prov.derived.entry((pred, tuple.clone())).or_insert(Derivation {
-                        rule:    EQ_CANON_RULE,
-                        parents: std::iter::once((pred, orig)).collect(),
-                    });
+                    self.prov
+                        .derived
+                        .entry((pred, tuple.clone()))
+                        .or_insert(Derivation {
+                            rule: EQ_CANON_RULE,
+                            parents: std::iter::once((pred, orig)).collect(),
+                        });
                 }
             }
         }
@@ -749,10 +785,13 @@ impl<'p> Kernel<'p> {
         if guards.is_empty() {
             return true;
         }
-        let Some(inst) = self.prog.instance_pred else { return false };
-        guards
-            .iter()
-            .all(|c| self.store.contains(inst, &vec![self.prov.eq.find(val), self.prov.eq.find(*c)]))
+        let Some(inst) = self.prog.instance_pred else {
+            return false;
+        };
+        guards.iter().all(|c| {
+            self.store
+                .contains(inst, &vec![self.prov.eq.find(val), self.prov.eq.find(*c)])
+        })
     }
 
     /// Fire the EGDs of `pred` against a freshly inserted tuple: probe the
@@ -762,13 +801,15 @@ impl<'p> Kernel<'p> {
     fn egd_probe(
         &mut self,
         pred: Pred,
-        t:    &Tuple,
+        t: &Tuple,
         news: &mut Vec<(Pred, Tuple)>,
     ) -> Result<(), ModelError> {
         if t.len() != 2 {
             return Ok(());
         }
-        let Some(ids) = self.egd_idx.get(&pred) else { return Ok(()) };
+        let Some(ids) = self.egd_idx.get(&pred) else {
+            return Ok(());
+        };
         let ids = ids.clone();
         for ei in ids {
             let (kp, vp, sid) = {
@@ -815,7 +856,7 @@ impl<'p> Kernel<'p> {
                     va,
                     vb,
                     EqEdge {
-                        egd_sid:   sid,
+                        egd_sid: sid,
                         witness_a: (pred, t.clone()),
                         witness_b: (pred, r.clone()),
                     },
@@ -834,8 +875,8 @@ impl<'p> Kernel<'p> {
     /// literals.
     fn apply_union(
         &mut self,
-        x:    SymbolId,
-        y:    SymbolId,
+        x: SymbolId,
+        y: SymbolId,
         edge: EqEdge,
         news: &mut Vec<(Pred, Tuple)>,
     ) -> Result<(), ModelError> {
@@ -862,7 +903,7 @@ impl<'p> Kernel<'p> {
     fn recanon(
         &mut self,
         absorbed: SymbolId,
-        news:     &mut Vec<(Pred, Tuple)>,
+        news: &mut Vec<(Pred, Tuple)>,
     ) -> Result<(), ModelError> {
         let mut work: Vec<(Pred, Tuple)> = Vec::new();
         for (p, rel) in &self.store.rels {
@@ -899,17 +940,20 @@ impl<'p> Kernel<'p> {
     /// full store (the round-0 / exhaustive / merge-catch-up pass).
     fn fire(
         &self,
-        body:   &[Literal],
-        head:   &Atom,
+        body: &[Literal],
+        head: &Atom,
         driver: Option<(usize, &[Tuple])>,
-        out:    &mut Vec<(Tuple, Parents)>,
+        out: &mut Vec<(Tuple, Parents)>,
     ) {
         // After a merge, rule constants may be stale — canonicalize copies.
         let canon_store: (Vec<Literal>, Atom);
         let (body, head) = if self.prov.eq.merged() {
             canon_store = (
                 body.iter()
-                    .map(|l| Literal { atom: self.canon_atom(&l.atom), negated: l.negated })
+                    .map(|l| Literal {
+                        atom: self.canon_atom(&l.atom),
+                        negated: l.negated,
+                    })
                     .collect(),
                 self.canon_atom(head),
             );
@@ -937,21 +981,31 @@ impl<'p> Kernel<'p> {
         }
         let mut binding: HashMap<u32, SymbolId> = HashMap::new();
         let mut trail: Vec<(Pred, Tuple)> = Vec::with_capacity(body.len());
-        join_rec(self, body, &order, 0, driver, &mut binding, &mut trail, head, out);
+        join_rec(
+            self,
+            body,
+            &order,
+            0,
+            driver,
+            &mut binding,
+            &mut trail,
+            head,
+            out,
+        );
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn join_rec(
-    k:       &Kernel,
-    body:    &[Literal],
-    order:   &[usize],
-    oi:      usize,
-    driver:  Option<(usize, &[Tuple])>,
+    k: &Kernel,
+    body: &[Literal],
+    order: &[usize],
+    oi: usize,
+    driver: Option<(usize, &[Tuple])>,
     binding: &mut HashMap<u32, SymbolId>,
-    trail:   &mut Vec<(Pred, Tuple)>,
-    head:    &Atom,
-    out:     &mut Vec<(Tuple, Parents)>,
+    trail: &mut Vec<(Pred, Tuple)>,
+    head: &Atom,
+    out: &mut Vec<(Tuple, Parents)>,
 ) {
     // Finer-grained deadline check (task: "checked every N join-branch
     // expansions, N~1000, via a cheap counter — do NOT call Instant::now()
@@ -1013,10 +1067,10 @@ fn join_rec(
 /// rule/EDB source sentences and the evaluation's equality classes —
 /// everything `Provenance::cite` needs.
 pub(super) fn run(
-    prog:       &Program,
-    strata:     &[Vec<Pred>],
+    prog: &Program,
+    strata: &[Vec<Pred>],
     max_tuples: usize,
-    deadline:   Option<Instant>,
+    deadline: Option<Instant>,
 ) -> Result<(Model, Provenance), ModelError> {
     let mut k = Kernel::new(prog, max_tuples, deadline);
     // Between-rule deadline check (cheap: at most once per rule per round).
@@ -1118,7 +1172,11 @@ pub(super) fn run(
                     .collect();
                 eprintln!(
                     "KERNEL round {round}: total={} aux={} delta={} catchup={} top=[{}]",
-                    k.total, k.aux.get(), dsz, catchup, top.join(", "),
+                    k.total,
+                    k.aux.get(),
+                    dsz,
+                    catchup,
+                    top.join(", "),
                 );
             }
             let have_delta = delta.values().any(|v| !v.is_empty());
@@ -1135,7 +1193,9 @@ pub(super) fn run(
                         if lit.negated || !in_stratum.contains(&lit.atom.pred) {
                             continue;
                         }
-                        let Some(drv) = delta.get(&lit.atom.pred) else { continue };
+                        let Some(drv) = delta.get(&lit.atom.pred) else {
+                            continue;
+                        };
                         if drv.is_empty() {
                             continue;
                         }
@@ -1178,7 +1238,13 @@ pub(super) fn run(
     }
 
     // Ensure every head predicate is present (empty if nothing derived).
-    let Kernel { store, mut prov, total, aux, .. } = k;
+    let Kernel {
+        store,
+        mut prov,
+        total,
+        aux,
+        ..
+    } = k;
     prov.budget_used = total + aux.get();
     let mut model = store.into_model();
     for r in &prog.rules {

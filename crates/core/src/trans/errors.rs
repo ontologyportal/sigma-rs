@@ -1,7 +1,7 @@
 use thiserror::Error;
 
-use crate::{Diagnostic, Severity, Span, ToDiagnostic, SymbolId};
 use super::Sort;
+use crate::{Diagnostic, Severity, Span, SymbolId, ToDiagnostic};
 
 #[derive(Debug, Clone, Error)]
 pub enum TranslationError {
@@ -14,14 +14,18 @@ pub enum TranslationError {
     AmbiguousSort {
         /// The symbol whose class inference returned `ClassInference::Multiple`
         /// with conflicting TFF sorts.
-        sym:   SymbolId,
+        sym: SymbolId,
         /// The distinct sorts that were found, one per incompatible class.
         sorts: Vec<Sort>,
     },
 }
 
 fn format_sorts(sorts: &[Sort]) -> String {
-    sorts.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ")
+    sorts
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl ToDiagnostic for TranslationError {

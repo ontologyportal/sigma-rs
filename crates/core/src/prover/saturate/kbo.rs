@@ -81,7 +81,10 @@ pub(crate) struct KboInfo {
 impl KboInfo {
     #[inline]
     fn count_of(&self, v: SymbolId) -> u32 {
-        self.vars.iter().find(|(s, _)| *s == v).map_or(0, |(_, c)| *c)
+        self.vars
+            .iter()
+            .find(|(s, _)| *s == v)
+            .map_or(0, |(_, c)| *c)
     }
 }
 
@@ -145,7 +148,10 @@ impl KboOrdering {
     /// A KBO with a permuted symbol precedence (same uniform weights).
     /// `seed == 0` is just the default id-order.
     pub(crate) fn with_prec_seed(seed: u64) -> Self {
-        Self { prec_seed: seed, ..Self::default() }
+        Self {
+            prec_seed: seed,
+            ..Self::default()
+        }
     }
 
     /// Install a symbol weight (clamped to ≥ `w0` to preserve
@@ -165,7 +171,11 @@ impl KboOrdering {
 
     #[inline]
     fn weight_of_sym(&self, s: SymbolId) -> u64 {
-        self.sym_weight.get(&s).copied().unwrap_or(self.default_weight).max(self.w0)
+        self.sym_weight
+            .get(&s)
+            .copied()
+            .unwrap_or(self.default_weight)
+            .max(self.w0)
     }
 
     /// The KBO weight of one LEAF slot-form term — the weight-memo hook
@@ -232,10 +242,12 @@ impl KboOrdering {
                 (3, rank)
             }
             Element::Op(op) => (2, u64::from(op_byte(op))),
-            Element::Literal(Literal::Str(v)) =>
-                (1, xxhash_rust::xxh64::xxh64(v.as_bytes(), 0x5712)),
-            Element::Literal(Literal::Number(v)) =>
-                (0, xxhash_rust::xxh64::xxh64(v.as_bytes(), 0x5713)),
+            Element::Literal(Literal::Str(v)) => {
+                (1, xxhash_rust::xxh64::xxh64(v.as_bytes(), 0x5712))
+            }
+            Element::Literal(Literal::Number(v)) => {
+                (0, xxhash_rust::xxh64::xxh64(v.as_bytes(), 0x5713))
+            }
             // A variable has no precedence; callers treat a variable head
             // as conservatively incomparable before reaching here.
             Element::Variable { id, .. } => (4, *id),
@@ -244,12 +256,7 @@ impl KboOrdering {
     }
 
     /// The memoized info for an interned atom or subterm.
-    pub(crate) fn info(
-        &self,
-        id: AtomId,
-        atoms: &AtomTable,
-        syn: &SyntacticLayer,
-    ) -> Arc<KboInfo> {
+    pub(crate) fn info(&self, id: AtomId, atoms: &AtomTable, syn: &SyntacticLayer) -> Arc<KboInfo> {
         if let Some(hit) = self.memo.get(&id) {
             return hit.value().clone();
         }
@@ -259,16 +266,21 @@ impl KboOrdering {
 
     fn compute(&self, id: AtomId, atoms: &AtomTable, syn: &SyntacticLayer) -> KboInfo {
         let Some(sent) = atoms.resolve(id, syn) else {
-            return KboInfo { weight: 0, vars: SmallVec::new(), var_mask: 0 };
+            return KboInfo {
+                weight: 0,
+                vars: SmallVec::new(),
+                var_mask: 0,
+            };
         };
         let mut weight = 0u64;
         let mut vars: SmallVec<[(SymbolId, u32); 4]> = SmallVec::new();
         let mut var_mask = 0u64;
-        let bump = |v: SymbolId, vars: &mut SmallVec<[(SymbolId, u32); 4]>| {
-            match vars.iter_mut().find(|(s, _)| *s == v) {
-                Some((_, c)) => *c += 1,
-                None => vars.push((v, 1)),
-            }
+        let bump = |v: SymbolId, vars: &mut SmallVec<[(SymbolId, u32); 4]>| match vars
+            .iter_mut()
+            .find(|(s, _)| *s == v)
+        {
+            Some((_, c)) => *c += 1,
+            None => vars.push((v, 1)),
         };
         for el in sent.elements.iter() {
             match el {
@@ -277,10 +289,10 @@ impl KboOrdering {
                     bump(*id, &mut vars);
                     var_mask |= 1u64 << (id & 63);
                 }
-                Element::Symbol(s) =>
-                    weight = weight.saturating_add(self.weight_of_sym(s.id())),
-                Element::Op(_) | Element::Literal(_) =>
-                    weight = weight.saturating_add(self.default_weight.max(self.w0)),
+                Element::Symbol(s) => weight = weight.saturating_add(self.weight_of_sym(s.id())),
+                Element::Op(_) | Element::Literal(_) => {
+                    weight = weight.saturating_add(self.default_weight.max(self.w0))
+                }
                 Element::Sub(sid) => {
                     let ci = self.info(*sid, atoms, syn);
                     weight = weight.saturating_add(ci.weight);
@@ -294,7 +306,11 @@ impl KboOrdering {
                 }
             }
         }
-        KboInfo { weight, vars, var_mask }
+        KboInfo {
+            weight,
+            vars,
+            var_mask,
+        }
     }
 
     /// The variable condition `a ⊒ b`: every variable occurs in `a` at
@@ -327,10 +343,18 @@ impl KboOrdering {
 
         // Weight first — the monotone scalar decides most comparisons.
         if ia.weight > ib.weight {
-            return if vc_ab { KboCmp::Greater } else { KboCmp::Incomparable };
+            return if vc_ab {
+                KboCmp::Greater
+            } else {
+                KboCmp::Incomparable
+            };
         }
         if ia.weight < ib.weight {
-            return if vc_ba { KboCmp::Less } else { KboCmp::Incomparable };
+            return if vc_ba {
+                KboCmp::Less
+            } else {
+                KboCmp::Incomparable
+            };
         }
         // Equal weight: structural tie-break.
         self.struct_cmp(a, b, vc_ab, vc_ba, atoms, syn)
@@ -363,7 +387,11 @@ impl KboOrdering {
         let (pa, pb) = (self.prec_key(ha), self.prec_key(hb));
         if pa != pb {
             return if pa > pb {
-                if vc_ab { KboCmp::Greater } else { KboCmp::Incomparable }
+                if vc_ab {
+                    KboCmp::Greater
+                } else {
+                    KboCmp::Incomparable
+                }
             } else if vc_ba {
                 KboCmp::Less
             } else {
@@ -383,10 +411,20 @@ impl KboOrdering {
             }
             return match self.cmp_elem(la, lb, atoms, syn) {
                 KboCmp::Equal => continue,
-                KboCmp::Greater =>
-                    if vc_ab { KboCmp::Greater } else { KboCmp::Incomparable },
-                KboCmp::Less =>
-                    if vc_ba { KboCmp::Less } else { KboCmp::Incomparable },
+                KboCmp::Greater => {
+                    if vc_ab {
+                        KboCmp::Greater
+                    } else {
+                        KboCmp::Incomparable
+                    }
+                }
+                KboCmp::Less => {
+                    if vc_ba {
+                        KboCmp::Less
+                    } else {
+                        KboCmp::Incomparable
+                    }
+                }
                 KboCmp::Incomparable => KboCmp::Incomparable,
             };
         }
@@ -411,17 +449,27 @@ impl KboOrdering {
         let vc_ab = Self::var_dominates(&va, &vb);
         let vc_ba = Self::var_dominates(&vb, &va);
         if wa > wb {
-            return if vc_ab { KboCmp::Greater } else { KboCmp::Incomparable };
+            return if vc_ab {
+                KboCmp::Greater
+            } else {
+                KboCmp::Incomparable
+            };
         }
         if wa < wb {
-            return if vc_ba { KboCmp::Less } else { KboCmp::Incomparable };
+            return if vc_ba {
+                KboCmp::Less
+            } else {
+                KboCmp::Incomparable
+            };
         }
         // Equal weight at a leaf/var position.  A variable on either side
         // (and not structurally equal, already handled by the caller's
         // skip) is incomparable under positive weights; two ground leaves
         // decide by precedence.
-        if matches!(ea, Element::Variable { .. }) || matches!(eb, Element::Variable { .. })
-            || matches!(ea, Element::Sub(_)) || matches!(eb, Element::Sub(_))
+        if matches!(ea, Element::Variable { .. })
+            || matches!(eb, Element::Variable { .. })
+            || matches!(ea, Element::Sub(_))
+            || matches!(eb, Element::Sub(_))
         {
             return KboCmp::Incomparable;
         }
@@ -449,15 +497,33 @@ impl KboOrdering {
             Element::Variable { id, .. } => {
                 let mut vars: SmallVec<[(SymbolId, u32); 4]> = SmallVec::new();
                 vars.push((*id, 1));
-                (self.w0, KboInfo { weight: self.w0, vars, var_mask: 1u64 << (id & 63) })
+                (
+                    self.w0,
+                    KboInfo {
+                        weight: self.w0,
+                        vars,
+                        var_mask: 1u64 << (id & 63),
+                    },
+                )
             }
             Element::Symbol(s) => (
                 self.weight_of_sym(s.id()),
-                KboInfo { weight: self.weight_of_sym(s.id()), vars: SmallVec::new(), var_mask: 0 },
+                KboInfo {
+                    weight: self.weight_of_sym(s.id()),
+                    vars: SmallVec::new(),
+                    var_mask: 0,
+                },
             ),
             Element::Op(_) | Element::Literal(_) => {
                 let w = self.default_weight.max(self.w0);
-                (w, KboInfo { weight: w, vars: SmallVec::new(), var_mask: 0 })
+                (
+                    w,
+                    KboInfo {
+                        weight: w,
+                        vars: SmallVec::new(),
+                        var_mask: 0,
+                    },
+                )
             }
         }
     }
@@ -473,9 +539,12 @@ impl KboOrdering {
     /// literals compare by their atoms.
     pub(crate) fn compare_lits(
         &self,
-        a_pos: bool, a_atom: AtomId,
-        b_pos: bool, b_atom: AtomId,
-        atoms: &AtomTable, syn: &SyntacticLayer,
+        a_pos: bool,
+        a_atom: AtomId,
+        b_pos: bool,
+        b_atom: AtomId,
+        atoms: &AtomTable,
+        syn: &SyntacticLayer,
     ) -> KboCmp {
         let ma = self.literal_multiset(a_pos, a_atom, atoms, syn);
         let mb = self.literal_multiset(b_pos, b_atom, atoms, syn);
@@ -483,13 +552,19 @@ impl KboOrdering {
     }
 
     fn literal_multiset(
-        &self, pos: bool, atom: AtomId, atoms: &AtomTable, syn: &SyntacticLayer,
+        &self,
+        pos: bool,
+        atom: AtomId,
+        atoms: &AtomTable,
+        syn: &SyntacticLayer,
     ) -> SmallVec<[LitTerm; 4]> {
         let mut m: SmallVec<[LitTerm; 4]> = SmallVec::new();
         let eq_sides = atoms.resolve(atom, syn).filter(|s| {
             s.elements.len() == 3
-                && matches!(s.elements.first(),
-                    Some(Element::Op(crate::parse::OpKind::Equal)))
+                && matches!(
+                    s.elements.first(),
+                    Some(Element::Op(crate::parse::OpKind::Equal))
+                )
         });
         match eq_sides {
             Some(sent) => {
@@ -497,20 +572,30 @@ impl KboOrdering {
                 let t = LitTerm::Elem(sent.elements[2].clone());
                 m.push(s.clone());
                 m.push(t.clone());
-                if !pos { m.push(s); m.push(t); }
+                if !pos {
+                    m.push(s);
+                    m.push(t);
+                }
             }
             None => {
                 let a = LitTerm::Elem(Element::Sub(atom));
                 m.push(a.clone());
                 m.push(LitTerm::Top);
-                if !pos { m.push(a); m.push(LitTerm::Top); }
+                if !pos {
+                    m.push(a);
+                    m.push(LitTerm::Top);
+                }
             }
         }
         m
     }
 
     fn cmp_litterm(
-        &self, a: &LitTerm, b: &LitTerm, atoms: &AtomTable, syn: &SyntacticLayer,
+        &self,
+        a: &LitTerm,
+        b: &LitTerm,
+        atoms: &AtomTable,
+        syn: &SyntacticLayer,
     ) -> KboCmp {
         match (a, b) {
             (LitTerm::Top, LitTerm::Top) => KboCmp::Equal,
@@ -522,14 +607,19 @@ impl KboOrdering {
 
     /// Dershowitz–Manna multiset extension of [`Self::cmp_litterm`].
     fn multiset_cmp(
-        &self, ma: &[LitTerm], mb: &[LitTerm], atoms: &AtomTable, syn: &SyntacticLayer,
+        &self,
+        ma: &[LitTerm],
+        mb: &[LitTerm],
+        atoms: &AtomTable,
+        syn: &SyntacticLayer,
     ) -> KboCmp {
         let mut a: Vec<&LitTerm> = ma.iter().collect();
         let mut b: Vec<&LitTerm> = mb.iter().collect();
         // Strip pairwise-equal elements (the multiset difference).
         let mut i = 0;
         while i < a.len() {
-            if let Some(j) = b.iter()
+            if let Some(j) = b
+                .iter()
                 .position(|y| self.cmp_litterm(a[i], y, atoms, syn) == KboCmp::Equal)
             {
                 b.swap_remove(j);
@@ -543,14 +633,22 @@ impl KboOrdering {
             (false, true) => KboCmp::Greater,
             (true, false) => KboCmp::Less,
             (false, false) => {
-                let a_dom = b.iter().all(|n|
-                    a.iter().any(|m| self.cmp_litterm(m, n, atoms, syn) == KboCmp::Greater));
+                let a_dom = b.iter().all(|n| {
+                    a.iter()
+                        .any(|m| self.cmp_litterm(m, n, atoms, syn) == KboCmp::Greater)
+                });
                 if a_dom {
                     return KboCmp::Greater;
                 }
-                let b_dom = a.iter().all(|m|
-                    b.iter().any(|n| self.cmp_litterm(n, m, atoms, syn) == KboCmp::Greater));
-                if b_dom { KboCmp::Less } else { KboCmp::Incomparable }
+                let b_dom = a.iter().all(|m| {
+                    b.iter()
+                        .any(|n| self.cmp_litterm(n, m, atoms, syn) == KboCmp::Greater)
+                });
+                if b_dom {
+                    KboCmp::Less
+                } else {
+                    KboCmp::Incomparable
+                }
             }
         }
     }
@@ -573,15 +671,21 @@ fn elem_eq(a: &Element, b: &Element) -> bool {
 fn op_byte(op: &crate::parse::OpKind) -> u8 {
     use crate::parse::OpKind::*;
     match op {
-        And => b'a', Or => b'o', Not => b'n', Implies => b'i',
-        Iff => b'f', Equal => b'e', ForAll => b'A', Exists => b'E',
+        And => b'a',
+        Or => b'o',
+        Not => b'n',
+        Implies => b'i',
+        Iff => b'f',
+        Equal => b'e',
+        ForAll => b'A',
+        Exists => b'E',
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::clause::Term;
+    use super::*;
     use crate::types::Symbol;
 
     /// Intern `(head args...)` and return its atom id, building it
@@ -617,10 +721,19 @@ mod tests {
         let kbo = KboOrdering::new();
         // (p a) as a literal: negative {A,A,⊤,⊤} ≻ positive {A,⊤}.
         let pa = atom(&atoms, &app(vec![sym("p"), sym("a")]));
-        assert_eq!(kbo.compare_lits(false, pa, true, pa, &atoms, &syn), KboCmp::Greater);
-        assert_eq!(kbo.compare_lits(true, pa, false, pa, &atoms, &syn), KboCmp::Less);
+        assert_eq!(
+            kbo.compare_lits(false, pa, true, pa, &atoms, &syn),
+            KboCmp::Greater
+        );
+        assert_eq!(
+            kbo.compare_lits(true, pa, false, pa, &atoms, &syn),
+            KboCmp::Less
+        );
         // Same literal: equal.
-        assert_eq!(kbo.compare_lits(true, pa, true, pa, &atoms, &syn), KboCmp::Equal);
+        assert_eq!(
+            kbo.compare_lits(true, pa, true, pa, &atoms, &syn),
+            KboCmp::Equal
+        );
     }
 
     #[test]
@@ -632,8 +745,14 @@ mod tests {
         // literal order reduces to the atom order.
         let heavy = atom(&atoms, &app(vec![sym("p"), app(vec![sym("f"), sym("a")])]));
         let light = atom(&atoms, &app(vec![sym("p"), sym("a")]));
-        assert_eq!(kbo.compare_lits(true, heavy, true, light, &atoms, &syn), KboCmp::Greater);
-        assert_eq!(kbo.compare_lits(true, light, true, heavy, &atoms, &syn), KboCmp::Less);
+        assert_eq!(
+            kbo.compare_lits(true, heavy, true, light, &atoms, &syn),
+            KboCmp::Greater
+        );
+        assert_eq!(
+            kbo.compare_lits(true, light, true, heavy, &atoms, &syn),
+            KboCmp::Less
+        );
     }
 
     #[test]
@@ -645,7 +764,10 @@ mod tests {
         // b cancels.
         let big = atom(&atoms, &eq(app(vec![sym("f"), sym("a")]), sym("b")));
         let small = atom(&atoms, &eq(sym("a"), sym("b")));
-        assert_eq!(kbo.compare_lits(true, big, true, small, &atoms, &syn), KboCmp::Greater);
+        assert_eq!(
+            kbo.compare_lits(true, big, true, small, &atoms, &syn),
+            KboCmp::Greater
+        );
     }
 
     #[test]
@@ -734,13 +856,15 @@ mod tests {
         let r = app(vec![sym("g"), var("x")]);
         assert_eq!(
             kbo.compare(atom(&atoms, &l), atom(&atoms, &r), &atoms, &syn),
-            KboCmp::Greater);
+            KboCmp::Greater
+        );
         let big = app(vec![sym("h"), app(vec![sym("h"), sym("c")])]);
         let li = app(vec![sym("f"), app(vec![sym("g"), big.clone()])]);
         let ri = app(vec![sym("g"), big.clone()]);
         assert_eq!(
             kbo.compare(atom(&atoms, &li), atom(&atoms, &ri), &atoms, &syn),
-            KboCmp::Greater);
+            KboCmp::Greater
+        );
 
         // (2) The duplicated-variable case — where a naive "weight of the
         // pattern" argument would go wrong if stability failed: f(x,x) ≻
@@ -750,12 +874,14 @@ mod tests {
         let r2 = app(vec![sym("g"), var("x")]);
         assert_eq!(
             kbo.compare(atom(&atoms, &l2), atom(&atoms, &r2), &atoms, &syn),
-            KboCmp::Greater);
+            KboCmp::Greater
+        );
         let l2i = app(vec![sym("f"), big.clone(), big.clone()]);
         let r2i = app(vec![sym("g"), big]);
         assert_eq!(
             kbo.compare(atom(&atoms, &l2i), atom(&atoms, &r2i), &atoms, &syn),
-            KboCmp::Greater);
+            KboCmp::Greater
+        );
     }
 
     #[test]
@@ -773,6 +899,9 @@ mod tests {
         let w2 = kbo.info(a, &atoms, &syn).weight;
         assert_eq!(w1, w2);
         // x occurs twice (once bare, once under g) ⇒ recorded multiplicity.
-        assert_eq!(kbo.info(a, &atoms, &syn).count_of(Symbol::hash_name("x")), 2);
+        assert_eq!(
+            kbo.info(a, &atoms, &syn).count_of(Symbol::hash_name("x")),
+            2
+        );
     }
 }

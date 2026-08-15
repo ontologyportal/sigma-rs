@@ -19,24 +19,24 @@
 
 use std::collections::HashSet;
 
-use clap::{Arg, ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches};
 use clap::parser::ValueSource;
-use sigmakee_rs_sdk::manager::KBManager;
+use clap::{Arg, ArgAction, ArgMatches, Command, CommandFactory, FromArgMatches};
 use sigmakee_rs_sdk::manager::meta::{Kind, OptionMeta, Scope, Subsystem};
+use sigmakee_rs_sdk::manager::KBManager;
 
 use super::args::Cli;
 
 /// Clap subcommand name → the option [`Subsystem`] it maps to.
 const SUBCOMMANDS: &[(&str, Subsystem)] = &[
-    ("validate",  Subsystem::Validate),
-    ("ask",       Subsystem::Ask),
+    ("validate", Subsystem::Validate),
+    ("ask", Subsystem::Ask),
     ("translate", Subsystem::Translate),
-    ("test",      Subsystem::Test),
-    ("load",      Subsystem::Load),
-    ("man",       Subsystem::Man),
-    ("search",    Subsystem::Search),
-    ("audit",     Subsystem::Audit),
-    ("sweep",     Subsystem::Sweep),
+    ("test", Subsystem::Test),
+    ("load", Subsystem::Load),
+    ("man", Subsystem::Man),
+    ("search", Subsystem::Search),
+    ("audit", Subsystem::Audit),
+    ("sweep", Subsystem::Sweep),
 ];
 
 /// Parse argv with the table projected onto the derived command.  Returns the
@@ -57,8 +57,12 @@ pub fn parse() -> (Cli, ArgMatches) {
 /// table option of the same name on the others (`test`/`ask`/`translate`).
 pub fn overrides(matches: &ArgMatches) -> Vec<(&'static OptionMeta, serde_json::Value)> {
     let root = Cli::command();
-    let Some((sub_name, sub_m)) = matches.subcommand() else { return Vec::new() };
-    let Some(subsystem) = subsystem_of(sub_name) else { return Vec::new() };
+    let Some((sub_name, sub_m)) = matches.subcommand() else {
+        return Vec::new();
+    };
+    let Some(subsystem) = subsystem_of(sub_name) else {
+        return Vec::new();
+    };
     let whole_tree = collect_longs(&root);
     let mut root_and_sub = shallow_longs(&root);
     if let Some(sc) = root.find_subcommand(sub_name) {
@@ -98,7 +102,9 @@ fn is_projected(
 fn collect_longs(cmd: &Command) -> HashSet<String> {
     let mut out = HashSet::new();
     for a in cmd.get_arguments() {
-        if let Some(l) = a.get_long() { out.insert(l.to_string()); }
+        if let Some(l) = a.get_long() {
+            out.insert(l.to_string());
+        }
     }
     for sc in cmd.get_subcommands() {
         out.extend(collect_longs(sc));
@@ -128,7 +134,9 @@ fn augment(mut cmd: Command, declared: &HashSet<String>) -> Command {
         }
     }
     for (name, subsystem) in SUBCOMMANDS {
-        let Some(sc_ref) = cmd.find_subcommand(name) else { continue }; // feature-gated off
+        let Some(sc_ref) = cmd.find_subcommand(name) else {
+            continue;
+        }; // feature-gated off
         let mut local: HashSet<String> = shallow_longs(sc_ref);
         local.extend(root_longs.iter().cloned());
         cmd = cmd.mut_subcommand(name, |sc| {
@@ -151,22 +159,37 @@ fn augment(mut cmd: Command, declared: &HashSet<String>) -> Command {
 /// default — an absent flag means "no override" (config/default stands).
 fn arg_of(o: &'static OptionMeta) -> Arg {
     let mut a = Arg::new(o.field).long(o.long).help(o.help);
-    if let Some(c) = o.short { a = a.short(c); }
-    if let Some(e) = o.env   { a = a.env(e); }
+    if let Some(c) = o.short {
+        a = a.short(c);
+    }
+    if let Some(e) = o.env {
+        a = a.env(e);
+    }
     match o.kind {
-        Kind::Bool  => a.value_parser(clap::value_parser!(bool)).value_name("BOOL").action(ArgAction::Set),
-        Kind::Int   => a.value_parser(clap::value_parser!(u64)).value_name("N").action(ArgAction::Set),
-        Kind::Float => a.value_parser(clap::value_parser!(f64)).value_name("F").action(ArgAction::Set),
-        Kind::Str   => a.value_name("STR").action(ArgAction::Set),
-        Kind::Path  => a.value_name("PATH").action(ArgAction::Set),
+        Kind::Bool => a
+            .value_parser(clap::value_parser!(bool))
+            .value_name("BOOL")
+            .action(ArgAction::Set),
+        Kind::Int => a
+            .value_parser(clap::value_parser!(u64))
+            .value_name("N")
+            .action(ArgAction::Set),
+        Kind::Float => a
+            .value_parser(clap::value_parser!(f64))
+            .value_name("F")
+            .action(ArgAction::Set),
+        Kind::Str => a.value_name("STR").action(ArgAction::Set),
+        Kind::Path => a.value_name("PATH").action(ArgAction::Set),
         // Repeatable string list (e.g. `-W E005 -W E010`).  Not generically
         // projected today (the only one, `--warning`, is hand-declared), but the
         // arm keeps `arg_of` total for any future list option.
-        Kind::List  => a.value_name("VAL").action(ArgAction::Append),
+        Kind::List => a.value_name("VAL").action(ArgAction::Append),
         // Resolved (file read, if it names one) and JSON-validated at parse
         // time, so a bad --strategy fails like any other clap arg error
         // rather than surfacing later out of apply_overrides.
-        Kind::Json  => a.value_name("JSON|FILE").action(ArgAction::Set)
+        Kind::Json => a
+            .value_name("JSON|FILE")
+            .action(ArgAction::Set)
             .value_parser(resolve_json_arg),
     }
 }
@@ -183,7 +206,11 @@ fn resolve_json_arg(raw: &str) -> Result<String, String> {
         raw.to_string()
     };
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
-        if is_file { format!("invalid JSON in '{raw}': {e}") } else { format!("invalid JSON: {e}") }
+        if is_file {
+            format!("invalid JSON in '{raw}': {e}")
+        } else {
+            format!("invalid JSON: {e}")
+        }
     })?;
     Ok(text)
 }
@@ -196,23 +223,26 @@ fn extract(o: &OptionMeta, m: &ArgMatches) -> Option<serde_json::Value> {
         _ => return None,
     }
     Some(match o.kind {
-        Kind::Bool             => serde_json::json!(m.get_one::<bool>(o.field)?),
-        Kind::Int              => serde_json::json!(m.get_one::<u64>(o.field)?),
-        Kind::Float            => serde_json::json!(m.get_one::<f64>(o.field)?),
+        Kind::Bool => serde_json::json!(m.get_one::<bool>(o.field)?),
+        Kind::Int => serde_json::json!(m.get_one::<u64>(o.field)?),
+        Kind::Float => serde_json::json!(m.get_one::<f64>(o.field)?),
         Kind::Str | Kind::Path => serde_json::json!(m.get_one::<String>(o.field)?),
         // Already validated + resolved to plain JSON text by `resolve_json_arg`
         // at parse time — parse it into the object itself (NOT wrapped as a
         // JSON string like Str/Path above), since it patches a nested struct
         // (`native_prover.strategy`), not a scalar leaf.
-        Kind::Json             => serde_json::from_str(m.get_one::<String>(o.field)?).ok()?,
+        Kind::Json => serde_json::from_str(m.get_one::<String>(o.field)?).ok()?,
         // Not projected today (the only list option is hand-declared); a future
         // one would need a target-typed mapping, so refuse rather than guess.
-        Kind::List             => return None,
+        Kind::List => return None,
     })
 }
 
 fn subsystem_of(name: &str) -> Option<Subsystem> {
-    SUBCOMMANDS.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+    SUBCOMMANDS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
 }
 
 /// Project *every* non-global option onto the `config` subcommand — `sumo
@@ -222,7 +252,9 @@ fn subsystem_of(name: &str) -> Option<Subsystem> {
 /// subcommand, `config` included. `Scope::ConfigOnly` options, by contrast,
 /// have no flag anywhere else — `config` is the *only* place they surface.
 fn augment_config(mut cmd: Command) -> Command {
-    let Some(sc_ref) = cmd.find_subcommand("config") else { return cmd }; // feature-gated off
+    let Some(sc_ref) = cmd.find_subcommand("config") else {
+        return cmd;
+    }; // feature-gated off
     let local: HashSet<String> = shallow_longs(sc_ref);
     cmd = cmd.mut_subcommand("config", |sc| {
         let mut sc = sc;
@@ -250,7 +282,9 @@ fn augment_config(mut cmd: Command) -> Command {
 /// being nothing hand-declared on the empty `Cmd::Config {}` to collide
 /// with).
 pub fn config_overrides(matches: &ArgMatches) -> Vec<(&'static OptionMeta, serde_json::Value)> {
-    let Some(("config", sub_m)) = matches.subcommand() else { return Vec::new() };
+    let Some(("config", sub_m)) = matches.subcommand() else {
+        return Vec::new();
+    };
     let whole_tree = collect_longs(&Cli::command());
     KBManager::options()
         .iter()
@@ -284,24 +318,40 @@ mod tests {
         // `--max-steps` is in the OptionMeta table but NOT hand-declared, so it
         // must project onto `ask`, extract as an override, and patch the manager.
         let declared = collect_longs(&Cli::command());
-        assert!(!declared.contains("max-steps"), "precondition: --max-steps is table-only");
+        assert!(
+            !declared.contains("max-steps"),
+            "precondition: --max-steps is table-only"
+        );
 
-        let m = matches_for(&["sumo", "ask", "(instance Rex Animal)", "--max-steps", "9999"]);
+        let m = matches_for(&[
+            "sumo",
+            "ask",
+            "(instance Rex Animal)",
+            "--max-steps",
+            "9999",
+        ]);
         let ov = overrides(&m);
-        let hit = ov.iter().find(|(o, _)| o.field == "max_steps")
+        let hit = ov
+            .iter()
+            .find(|(o, _)| o.field == "max_steps")
             .expect("max_steps should be extracted as an override");
         assert_eq!(hit.1, serde_json::json!(9999u64));
 
         let mut mgr = KBManager::default();
         mgr.apply_overrides(ov).expect("apply_overrides");
-        assert_eq!(mgr.native_prover.max_steps, 9999, "override must reach the manager field");
+        assert_eq!(
+            mgr.native_prover.max_steps, 9999,
+            "override must reach the manager field"
+        );
     }
 
     #[test]
     fn unsupplied_flag_produces_no_override() {
         let m = matches_for(&["sumo", "ask", "(instance Rex Animal)"]);
-        assert!(overrides(&m).iter().all(|(o, _)| o.field != "max_steps"),
-            "an absent flag must not produce an override");
+        assert!(
+            overrides(&m).iter().all(|(o, _)| o.field != "max_steps"),
+            "an absent flag must not produce an override"
+        );
     }
 
     #[test]
@@ -310,7 +360,9 @@ mod tests {
         // every non-global option regardless of subsystem.
         let m = config_matches_for(&["sumo", "config", "--thoroughness", "0.5"]);
         let ov = config_overrides(&m);
-        let hit = ov.iter().find(|(o, _)| o.field == "thoroughness")
+        let hit = ov
+            .iter()
+            .find(|(o, _)| o.field == "thoroughness")
             .expect("thoroughness should be extracted as a config override");
         assert_eq!(hit.1, serde_json::json!(0.5));
     }
@@ -336,7 +388,9 @@ mod tests {
         // surface (otherwise it could never be set at all).
         let m = config_matches_for(&["sumo", "config", "--graphviz-dir", "/tmp/gv"]);
         let ov = config_overrides(&m);
-        let hit = ov.iter().find(|(o, _)| o.field == "graphviz_dir")
+        let hit = ov
+            .iter()
+            .find(|(o, _)| o.field == "graphviz_dir")
             .expect("graphviz_dir should be extracted as a config override");
         assert_eq!(hit.1, serde_json::json!("/tmp/gv"));
     }

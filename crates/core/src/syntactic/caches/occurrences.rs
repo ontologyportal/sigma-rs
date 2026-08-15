@@ -13,12 +13,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::syntactic::caches::source::SourceCache;
-use crate::{AstNode, OccurrenceKind};
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{EagerMapBehavior, EntryCache};
+use crate::syntactic::caches::source::SourceCache;
 use crate::syntactic::SyntacticLayer;
 use crate::types::Occurrence;
+use crate::{AstNode, OccurrenceKind};
 
 /// Behavior for the `syntactic::occurrences` eager keyed index.
 #[derive(Debug, Default)]
@@ -26,9 +26,9 @@ pub(crate) struct OccurrenceIndex;
 
 impl EagerMapBehavior for OccurrenceIndex {
     type Parent = SyntacticLayer;
-    type Key    = String;
-    type Value  = Arc<HashSet<Occurrence>>;
-    type Side   = ();
+    type Key = String;
+    type Value = Arc<HashSet<Occurrence>>;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "syntactic::occurrences";
@@ -45,18 +45,21 @@ impl EagerMapBehavior for OccurrenceIndex {
         &self,
         parent: &SyntacticLayer,
         events: &[&Event],
-        store:  &EntryCache<String, Arc<HashSet<Occurrence>>>,
-        _side:  &(),
+        store: &EntryCache<String, Arc<HashSet<Occurrence>>>,
+        _side: &(),
     ) -> Vec<Event> {
         for e in events {
             match e {
                 Event::FormulaAdded { node, .. } => {
-                    let Some(ast) = parent.source.get(node)
-                    else { continue };
+                    let Some(ast) = parent.source.get(node) else {
+                        continue;
+                    };
                     let mut entries: Vec<(String, Occurrence)> = Vec::new();
                     index_ast(*node, &ast, &mut entries);
                     for (name, occ) in entries {
-                        store.modify_entry(name, |v| { Arc::make_mut(v).insert(occ); });
+                        store.modify_entry(name, |v| {
+                            Arc::make_mut(v).insert(occ);
+                        });
                     }
                 }
                 Event::FormulaRemoved { node } => {
@@ -79,12 +82,25 @@ impl EagerMapBehavior for OccurrenceIndex {
 /// for the first element of a list, `Arg` otherwise.  Lists recurse; variables,
 /// operators, and literals are not indexed.
 fn index_ast(node: u64, ast: &AstNode, out: &mut Vec<(String, Occurrence)>) {
-    let AstNode::List { elements, .. } = ast else { return };
+    let AstNode::List { elements, .. } = ast else {
+        return;
+    };
     for (i, el) in elements.iter().enumerate() {
         match el {
             AstNode::Symbol { name, span } if !span.is_synthetic() => {
-                let kind = if i == 0 { OccurrenceKind::Head } else { OccurrenceKind::Arg };
-                out.push((name.clone(), Occurrence { node, span: span.clone(), kind }));
+                let kind = if i == 0 {
+                    OccurrenceKind::Head
+                } else {
+                    OccurrenceKind::Arg
+                };
+                out.push((
+                    name.clone(),
+                    Occurrence {
+                        node,
+                        span: span.clone(),
+                        kind,
+                    },
+                ));
             }
             AstNode::List { .. } => index_ast(node, el, out),
             _ => {}
@@ -105,19 +121,39 @@ mod tests {
     // `HashSet`.
 
     fn sp(file: &str, offset: usize) -> Span {
-        Span { file: file.into(), line: 1, col: 1, offset, end_line: 1, end_col: 1, end_offset: offset + 1 }
+        Span {
+            file: file.into(),
+            line: 1,
+            col: 1,
+            offset,
+            end_line: 1,
+            end_col: 1,
+            end_offset: offset + 1,
+        }
     }
     fn sym(name: &str, file: &str, offset: usize) -> AstNode {
-        AstNode::Symbol { name: name.into(), span: sp(file, offset) }
+        AstNode::Symbol {
+            name: name.into(),
+            span: sp(file, offset),
+        }
     }
     fn var(name: &str, file: &str, offset: usize) -> AstNode {
-        AstNode::Variable { name: name.into(), span: sp(file, offset) }
+        AstNode::Variable {
+            name: name.into(),
+            span: sp(file, offset),
+        }
     }
     fn op(kind: OpKind, file: &str, offset: usize) -> AstNode {
-        AstNode::Operator { op: kind, span: sp(file, offset) }
+        AstNode::Operator {
+            op: kind,
+            span: sp(file, offset),
+        }
     }
     fn list(elems: Vec<AstNode>) -> AstNode {
-        AstNode::List { elements: elems, span: sp("x", 0) }
+        AstNode::List {
+            elements: elems,
+            span: sp("x", 0),
+        }
     }
 
     /// Sorted names extracted from an `index_ast` result.
@@ -135,12 +171,19 @@ mod tests {
     #[test]
     fn indexes_head_and_args_with_node_fingerprint() {
         // (subclass Human Animal)
-        let ast = list(vec![sym("subclass", "f", 1), sym("Human", "f", 2), sym("Animal", "f", 3)]);
+        let ast = list(vec![
+            sym("subclass", "f", 1),
+            sym("Human", "f", 2),
+            sym("Animal", "f", 3),
+        ]);
         let mut out = Vec::new();
         index_ast(7, &ast, &mut out);
 
         assert_eq!(names(&out), ["Animal", "Human", "subclass"]);
-        assert!(out.iter().all(|(_, o)| o.node == 7), "every occurrence carries the formula fingerprint");
+        assert!(
+            out.iter().all(|(_, o)| o.node == 7),
+            "every occurrence carries the formula fingerprint"
+        );
         assert_eq!(kind_of(&out, "subclass"), OccurrenceKind::Head);
         assert_eq!(kind_of(&out, "Human"), OccurrenceKind::Arg);
         assert_eq!(kind_of(&out, "Animal"), OccurrenceKind::Arg);
@@ -149,9 +192,13 @@ mod tests {
     #[test]
     fn recurses_into_nested_lists_skipping_operators_and_variables() {
         // (=> (instance ?X Dog) (barks ?X))
-        let inner1 = list(vec![sym("instance", "f", 10), var("X", "f", 11), sym("Dog", "f", 12)]);
+        let inner1 = list(vec![
+            sym("instance", "f", 10),
+            var("X", "f", 11),
+            sym("Dog", "f", 12),
+        ]);
         let inner2 = list(vec![sym("barks", "f", 13), var("X", "f", 14)]);
-        let ast    = list(vec![op(OpKind::Implies, "f", 9), inner1, inner2]);
+        let ast = list(vec![op(OpKind::Implies, "f", 9), inner1, inner2]);
         let mut out = Vec::new();
         index_ast(1, &ast, &mut out);
 
@@ -168,14 +215,27 @@ mod tests {
         // (foo "str" 42 Ghost) where Ghost carries a synthetic span.
         let ast = list(vec![
             sym("foo", "f", 1),
-            AstNode::Str    { value: "str".into(), span: sp("f", 2) },
-            AstNode::Number { value: "42".into(),  span: sp("f", 3) },
-            AstNode::Symbol { name: "Ghost".into(), span: Span::synthetic() },
+            AstNode::Str {
+                value: "str".into(),
+                span: sp("f", 2),
+            },
+            AstNode::Number {
+                value: "42".into(),
+                span: sp("f", 3),
+            },
+            AstNode::Symbol {
+                name: "Ghost".into(),
+                span: Span::synthetic(),
+            },
         ]);
         let mut out = Vec::new();
         index_ast(1, &ast, &mut out);
 
-        assert_eq!(names(&out), ["foo"], "literals and synthetic-span symbols are not indexed");
+        assert_eq!(
+            names(&out),
+            ["foo"],
+            "literals and synthetic-span symbols are not indexed"
+        );
     }
 
     // -- the reactor (FormulaAdded / FormulaRemoved) --------------------------
@@ -189,22 +249,41 @@ mod tests {
         }
         layer
     }
-    fn sess() -> Arc<String> { Arc::new("t".to_string()) }
+    fn sess() -> Arc<String> {
+        Arc::new("t".to_string())
+    }
 
     #[test]
     fn formula_added_indexes_the_resolved_ast() {
-        let layer = layer_with(&[(1, list(vec![
-            sym("subclass", "a", 1), sym("Human", "a", 2), sym("Animal", "a", 3),
-        ]))]);
+        let layer = layer_with(&[(
+            1,
+            list(vec![
+                sym("subclass", "a", 1),
+                sym("Human", "a", 2),
+                sym("Animal", "a", 3),
+            ]),
+        )]);
         let store: EntryCache<String, Arc<HashSet<Occurrence>>> = EntryCache::default();
 
-        OccurrenceIndex.react(&layer, &[&Event::FormulaAdded { node: 1, session: sess() }], &store, &());
+        OccurrenceIndex.react(
+            &layer,
+            &[&Event::FormulaAdded {
+                node: 1,
+                session: sess(),
+            }],
+            &store,
+            &(),
+        );
 
         assert_eq!(store.get(&"subclass".to_string()).unwrap().len(), 1);
         assert_eq!(store.get(&"Animal".to_string()).unwrap().len(), 1);
         let human = store.get(&"Human".to_string()).expect("Human indexed");
         assert_eq!(human.len(), 1);
-        assert_eq!(human.iter().next().unwrap().node, 1, "occurrence carries its formula fingerprint");
+        assert_eq!(
+            human.iter().next().unwrap().node,
+            1,
+            "occurrence carries its formula fingerprint"
+        );
     }
 
     #[test]
@@ -213,7 +292,15 @@ mod tests {
         let store: EntryCache<String, Arc<HashSet<Occurrence>>> = EntryCache::default();
 
         // The formula was removed between emit and now — nothing to index.
-        OccurrenceIndex.react(&layer, &[&Event::FormulaAdded { node: 99, session: sess() }], &store, &());
+        OccurrenceIndex.react(
+            &layer,
+            &[&Event::FormulaAdded {
+                node: 99,
+                session: sess(),
+            }],
+            &store,
+            &(),
+        );
 
         assert!(store.is_empty());
     }
@@ -222,25 +309,62 @@ mod tests {
     fn formula_removed_purges_only_that_node() {
         // Two formulas both mention `Human`.
         let layer = layer_with(&[
-            (1, list(vec![sym("subclass", "a", 1), sym("Human", "a", 2), sym("Animal", "a", 3)])),
-            (2, list(vec![sym("instance", "b", 10), sym("Human", "b", 11), sym("Thing", "b", 12)])),
+            (
+                1,
+                list(vec![
+                    sym("subclass", "a", 1),
+                    sym("Human", "a", 2),
+                    sym("Animal", "a", 3),
+                ]),
+            ),
+            (
+                2,
+                list(vec![
+                    sym("instance", "b", 10),
+                    sym("Human", "b", 11),
+                    sym("Thing", "b", 12),
+                ]),
+            ),
         ]);
         let store: EntryCache<String, Arc<HashSet<Occurrence>>> = EntryCache::default();
-        OccurrenceIndex.react(&layer, &[
-            &Event::FormulaAdded { node: 1, session: sess() },
-            &Event::FormulaAdded { node: 2, session: sess() },
-        ], &store, &());
-        assert_eq!(store.get(&"Human".to_string()).unwrap().len(), 2, "Human referenced by both formulas");
+        OccurrenceIndex.react(
+            &layer,
+            &[
+                &Event::FormulaAdded {
+                    node: 1,
+                    session: sess(),
+                },
+                &Event::FormulaAdded {
+                    node: 2,
+                    session: sess(),
+                },
+            ],
+            &store,
+            &(),
+        );
+        assert_eq!(
+            store.get(&"Human".to_string()).unwrap().len(),
+            2,
+            "Human referenced by both formulas"
+        );
 
         // Drop formula 1.
         OccurrenceIndex.react(&layer, &[&Event::FormulaRemoved { node: 1 }], &store, &());
 
-        let human = store.get(&"Human".to_string()).expect("Human still referenced by formula 2");
+        let human = store
+            .get(&"Human".to_string())
+            .expect("Human still referenced by formula 2");
         assert_eq!(human.len(), 1);
         assert!(human.iter().all(|o| o.node == 2));
-        assert!(store.get(&"Animal".to_string()).is_none(), "Animal was only in formula 1 — its now-empty key is dropped");
+        assert!(
+            store.get(&"Animal".to_string()).is_none(),
+            "Animal was only in formula 1 — its now-empty key is dropped"
+        );
         assert!(store.get(&"subclass".to_string()).is_none());
-        assert!(store.get(&"Thing".to_string()).is_some(), "formula 2's symbols are untouched");
+        assert!(
+            store.get(&"Thing".to_string()).is_some(),
+            "formula 2's symbols are untouched"
+        );
     }
 
     // -- full load pipeline (cascade-driven indexing) -------------------------
@@ -249,11 +373,17 @@ mod tests {
     fn occurrences_indexed_for_root_symbols() {
         let mut store = SyntacticLayer::default();
         store.load_kif("(subclass Human Animal)", "t.kif");
-        let occs = store.occurrences.get(&"Human".to_string()).expect("Human has occurrences");
+        let occs = store
+            .occurrences
+            .get(&"Human".to_string())
+            .expect("Human has occurrences");
         assert_eq!(occs.len(), 1);
         assert_eq!(occs.iter().next().unwrap().kind, OccurrenceKind::Arg);
 
-        let sub_occs = store.occurrences.get(&"subclass".to_string()).expect("subclass has occurrences");
+        let sub_occs = store
+            .occurrences
+            .get(&"subclass".to_string())
+            .expect("subclass has occurrences");
         assert_eq!(sub_occs.iter().next().unwrap().kind, OccurrenceKind::Head);
     }
 
@@ -261,8 +391,14 @@ mod tests {
     fn occurrences_indexed_through_sub_sentences() {
         let mut store = SyntacticLayer::default();
         store.load_kif("(=> (P ?X) (Q ?X))", "t.kif");
-        let p_occs = store.occurrences.get(&"P".to_string()).expect("P has occurrences");
-        let q_occs = store.occurrences.get(&"Q".to_string()).expect("Q has occurrences");
+        let p_occs = store
+            .occurrences
+            .get(&"P".to_string())
+            .expect("P has occurrences");
+        let q_occs = store
+            .occurrences
+            .get(&"Q".to_string())
+            .expect("Q has occurrences");
         assert_eq!(p_occs.len(), 1);
         assert_eq!(q_occs.len(), 1);
         assert_eq!(p_occs.iter().next().unwrap().kind, OccurrenceKind::Head);

@@ -8,9 +8,9 @@
 // nothing).  See `caches::sentence_symbols` for the rationale and the
 // enable-time `react_to_delta` caveat.
 
-use std::collections::{HashMap};
+use std::collections::HashMap;
 
-use crate::cache::{CacheBehavior};
+use crate::cache::CacheBehavior;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{SentenceId, SymbolId};
 
@@ -20,8 +20,8 @@ pub(crate) struct SentenceVars;
 
 impl CacheBehavior for SentenceVars {
     type Parent = SyntacticLayer;
-    type Key    = SentenceId;
-    type Value  = HashMap<SymbolId, u32>;
+    type Key = SentenceId;
+    type Value = HashMap<SymbolId, u32>;
     type Side = ();
     type SideSnapshot = ();
 

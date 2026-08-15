@@ -2,8 +2,8 @@
 
 use std::fmt::Display;
 
-use super::error::KifParseError;
 use super::super::Span;
+use super::error::KifParseError;
 
 // -- Token types ---------------------------------------------------------------
 
@@ -13,10 +13,10 @@ pub enum OpTok {
     And,
     Or,
     Not,
-    Implies,  // =>
-    Iff,      // <=>
-    Equal,    // equal
-    ForAll,   // forall
+    Implies, // =>
+    Iff,     // <=>
+    Equal,   // equal
+    ForAll,  // forall
     Exists,
 }
 
@@ -24,14 +24,14 @@ impl OpTok {
     /// The canonical operator name for classification and display.
     pub fn name(&self) -> &'static str {
         match self {
-            OpTok::And     => "and",
-            OpTok::Or      => "or",
-            OpTok::Not     => "not",
+            OpTok::And => "and",
+            OpTok::Or => "or",
+            OpTok::Not => "not",
             OpTok::Implies => "imp",
-            OpTok::Iff     => "iff",
-            OpTok::Equal   => "equal",
-            OpTok::ForAll  => "forall",
-            OpTok::Exists  => "exists",
+            OpTok::Iff => "iff",
+            OpTok::Equal => "equal",
+            OpTok::ForAll => "forall",
+            OpTok::Exists => "exists",
         }
     }
 }
@@ -78,7 +78,7 @@ impl TokenKind {
             | TokenKind::Variable(_)
             | TokenKind::RowVariable(_)
             | TokenKind::Operator(_) => return true,
-            _ => return false
+            _ => return false,
         }
     }
 }
@@ -117,11 +117,11 @@ impl Display for Token {
 
 /// Incremental tokenizer over a KIF source string.
 pub struct Tokenizer<'src> {
-    chars:  std::str::CharIndices<'src>,
+    chars: std::str::CharIndices<'src>,
     peeked: Option<(usize, char)>,
-    file:   String,
-    line:   u32,
-    col:    u32,
+    file: String,
+    line: u32,
+    col: u32,
     // Byte length of the source; closes the final span's end offset when the
     // tokenizer runs off the end of input.
     src_len: usize,
@@ -132,9 +132,11 @@ impl<'src> Tokenizer<'src> {
         let mut chars = src.char_indices();
         let peeked = chars.next();
         Self {
-            chars, peeked,
+            chars,
+            peeked,
             file: file.to_owned(),
-            line: 1, col: 1,
+            line: 1,
+            col: 1,
             src_len: src.len(),
         }
     }
@@ -144,7 +146,7 @@ impl<'src> Tokenizer<'src> {
     fn point(&self) -> Span {
         let off = match self.peeked {
             Some((off, _)) => off,
-            None           => self.src_len,
+            None => self.src_len,
         };
         Span::point(self.file.clone(), self.line, self.col, off)
     }
@@ -154,10 +156,10 @@ impl<'src> Tokenizer<'src> {
     fn seal(&self, mut start: Span) -> Span {
         let off = match self.peeked {
             Some((off, _)) => off,
-            None           => self.src_len,
+            None => self.src_len,
         };
-        start.end_line   = self.line;
-        start.end_col    = self.col;
+        start.end_line = self.line;
+        start.end_col = self.col;
         start.end_offset = off;
         start
     }
@@ -166,19 +168,28 @@ impl<'src> Tokenizer<'src> {
         let cur = self.peeked.take();
         self.peeked = self.chars.next();
         if let Some((_, ch)) = cur {
-            if ch == '\n' { self.line += 1; self.col = 1; } else { self.col += 1; }
+            if ch == '\n' {
+                self.line += 1;
+                self.col = 1;
+            } else {
+                self.col += 1;
+            }
             Some(ch)
         } else {
             None
         }
     }
 
-    fn peek(&self) -> Option<char> { self.peeked.map(|(_, ch)| ch) }
+    fn peek(&self) -> Option<char> {
+        self.peeked.map(|(_, ch)| ch)
+    }
 
     fn skip_line_comment(&mut self) {
         while let Some(ch) = self.peek() {
             self.advance();
-            if ch == '\n' { break; }
+            if ch == '\n' {
+                break;
+            }
         }
     }
 
@@ -186,13 +197,24 @@ impl<'src> Tokenizer<'src> {
         let mut s = String::from('"');
         loop {
             match self.advance() {
-                None => return Err((start_span.clone(), KifParseError::UnterminatedString { span: start_span })),
-                Some('"') => { s.push('"'); break; }
-                Some(ch)  => s.push(ch),
+                None => {
+                    return Err((
+                        start_span.clone(),
+                        KifParseError::UnterminatedString { span: start_span },
+                    ))
+                }
+                Some('"') => {
+                    s.push('"');
+                    break;
+                }
+                Some(ch) => s.push(ch),
             }
         }
         let span = self.seal(start_span);
-        Ok(Token { kind: TokenKind::Str(s), span })
+        Ok(Token {
+            kind: TokenKind::Str(s),
+            span,
+        })
     }
 
     /// Read a single-quoted atom `'…'` into a `Symbol`, quotes retained
@@ -201,25 +223,39 @@ impl<'src> Tokenizer<'src> {
         let mut s = String::from('\'');
         loop {
             match self.advance() {
-                None => return Err((start_span.clone(),
-                    KifParseError::UnterminatedString { span: start_span })),
+                None => {
+                    return Err((
+                        start_span.clone(),
+                        KifParseError::UnterminatedString { span: start_span },
+                    ))
+                }
                 Some('\\') => {
                     s.push('\\');
-                    if let Some(c) = self.advance() { s.push(c); }
+                    if let Some(c) = self.advance() {
+                        s.push(c);
+                    }
                 }
-                Some('\'') => { s.push('\''); break; }
-                Some(ch)   => s.push(ch),
+                Some('\'') => {
+                    s.push('\'');
+                    break;
+                }
+                Some(ch) => s.push(ch),
             }
         }
         let span = self.seal(start_span);
-        Ok(Token { kind: TokenKind::Symbol(s), span })
+        Ok(Token {
+            kind: TokenKind::Symbol(s),
+            span,
+        })
     }
 
     fn read_word(&mut self, first: char) -> String {
         let mut w = String::new();
         w.push(first);
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '"' || ch == ';' { break; }
+            if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '"' || ch == ';' {
+                break;
+            }
             self.advance();
             w.push(ch);
         }
@@ -229,7 +265,9 @@ impl<'src> Tokenizer<'src> {
     fn read_word_rest(&mut self) -> String {
         let mut w = String::new();
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '"' || ch == ';' { break; }
+            if ch.is_whitespace() || ch == '(' || ch == ')' || ch == '"' || ch == ';' {
+                break;
+            }
             self.advance();
             w.push(ch);
         }
@@ -238,42 +276,76 @@ impl<'src> Tokenizer<'src> {
 
     fn classify_word(w: String) -> TokenKind {
         match w.as_str() {
-            "and"    => TokenKind::Operator(OpTok::And),
-            "or"     => TokenKind::Operator(OpTok::Or),
-            "not"    => TokenKind::Operator(OpTok::Not),
-            "=>"     => TokenKind::Operator(OpTok::Implies),
-            "<=>"    => TokenKind::Operator(OpTok::Iff),
-            "equal"  => TokenKind::Operator(OpTok::Equal),
+            "and" => TokenKind::Operator(OpTok::And),
+            "or" => TokenKind::Operator(OpTok::Or),
+            "not" => TokenKind::Operator(OpTok::Not),
+            "=>" => TokenKind::Operator(OpTok::Implies),
+            "<=>" => TokenKind::Operator(OpTok::Iff),
+            "equal" => TokenKind::Operator(OpTok::Equal),
             "forall" => TokenKind::Operator(OpTok::ForAll),
             "exists" => TokenKind::Operator(OpTok::Exists),
-            _ => if is_numeric(&w) { TokenKind::Number(w) } else { TokenKind::Symbol(w) },
+            _ => {
+                if is_numeric(&w) {
+                    TokenKind::Number(w)
+                } else {
+                    TokenKind::Symbol(w)
+                }
+            }
         }
     }
 
     fn next_token(&mut self) -> Result<Option<Token>, (Span, KifParseError)> {
         while let Some(ch) = self.peek() {
-            if ch.is_whitespace() { self.advance(); } else { break; }
+            if ch.is_whitespace() {
+                self.advance();
+            } else {
+                break;
+            }
         }
         // Start position must be captured before consuming the first char.
         let start = self.point();
-        let ch = match self.advance() { None => return Ok(None), Some(c) => c };
+        let ch = match self.advance() {
+            None => return Ok(None),
+            Some(c) => c,
+        };
         match ch {
-            ';'  => { self.skip_line_comment(); self.next_token() }
-            '('  => { let span = self.seal(start); Ok(Some(Token { kind: TokenKind::LParen, span })) }
-            ')'  => { let span = self.seal(start); Ok(Some(Token { kind: TokenKind::RParen, span })) }
-            '"'  => Ok(Some(self.read_string(start)?)),
+            ';' => {
+                self.skip_line_comment();
+                self.next_token()
+            }
+            '(' => {
+                let span = self.seal(start);
+                Ok(Some(Token {
+                    kind: TokenKind::LParen,
+                    span,
+                }))
+            }
+            ')' => {
+                let span = self.seal(start);
+                Ok(Some(Token {
+                    kind: TokenKind::RParen,
+                    span,
+                }))
+            }
+            '"' => Ok(Some(self.read_string(start)?)),
             '\'' => Ok(Some(self.read_single_quoted(start)?)),
-            '?'  => {
+            '?' => {
                 let rest = self.read_word_rest();
                 let span = self.seal(start);
-                Ok(Some(Token { kind: TokenKind::Variable(format!("?{}", rest)), span }))
+                Ok(Some(Token {
+                    kind: TokenKind::Variable(format!("?{}", rest)),
+                    span,
+                }))
             }
-            '@'  => {
+            '@' => {
                 let rest = self.read_word_rest();
                 let span = self.seal(start);
-                Ok(Some(Token { kind: TokenKind::RowVariable(format!("@{}", rest)), span }))
+                Ok(Some(Token {
+                    kind: TokenKind::RowVariable(format!("@{}", rest)),
+                    span,
+                }))
             }
-            _    => {
+            _ => {
                 let word = self.read_word(ch);
                 let kind = Self::classify_word(word);
                 let span = self.seal(start);
@@ -290,11 +362,19 @@ impl<'src> Tokenizer<'src> {
 
 fn is_numeric(s: &str) -> bool {
     let s = if s.starts_with('-') { &s[1..] } else { s };
-    if s.is_empty() { return false; }
+    if s.is_empty() {
+        return false;
+    }
     let mut has_dot = false;
     for ch in s.chars() {
-        if ch == '.' { if has_dot { return false; } has_dot = true; }
-        else if !ch.is_ascii_digit() { return false; }
+        if ch == '.' {
+            if has_dot {
+                return false;
+            }
+            has_dot = true;
+        } else if !ch.is_ascii_digit() {
+            return false;
+        }
     }
     true
 }
@@ -307,12 +387,21 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, KifParseError)
     let mut errors = Vec::new();
     loop {
         match tok.next_token() {
-            Ok(None)    => break,
+            Ok(None) => break,
             Ok(Some(t)) => tokens.push(t),
-            Err(e)      => errors.push(e),
+            Err(e) => errors.push(e),
         }
     }
-    crate::log!(Trace, "sigmakee_rs_core::tokenizer", format!("tokenized {} tokens, {} errors from '{}'", tokens.len(), errors.len(), file));
+    crate::log!(
+        Trace,
+        "sigmakee_rs_core::tokenizer",
+        format!(
+            "tokenized {} tokens, {} errors from '{}'",
+            tokens.len(),
+            errors.len(),
+            file
+        )
+    );
     (tokens, errors)
 }
 
@@ -339,10 +428,16 @@ mod tests {
         // quotes retained so it matches the TPTP-ingested axiom symbol.
         let kinds = toks("(p 's__attribute(a,b)' 'with spaces')");
         assert_eq!(kinds[0], TokenKind::LParen);
-        assert!(matches!(&kinds[2], TokenKind::Symbol(s) if s == "'s__attribute(a,b)'"),
-            "got {:?}", kinds[2]);
-        assert!(matches!(&kinds[3], TokenKind::Symbol(s) if s == "'with spaces'"),
-            "got {:?}", kinds[3]);
+        assert!(
+            matches!(&kinds[2], TokenKind::Symbol(s) if s == "'s__attribute(a,b)'"),
+            "got {:?}",
+            kinds[2]
+        );
+        assert!(
+            matches!(&kinds[3], TokenKind::Symbol(s) if s == "'with spaces'"),
+            "got {:?}",
+            kinds[3]
+        );
     }
 
     #[test]
@@ -394,7 +489,10 @@ mod tests {
         // Symbols must begin with a letter; `_test` should produce an error.
         let (_, errors) = tokenize("_test", "test");
         assert!(!errors.is_empty(), "expected tokenizer error for '_test'");
-        assert!(matches!(&errors[0].1, KifParseError::UnexpectedChar { ch: '_', .. }));
+        assert!(matches!(
+            &errors[0].1,
+            KifParseError::UnexpectedChar { ch: '_', .. }
+        ));
     }
 
     // -- Span end-position coverage ------------------------------------------
@@ -405,20 +503,20 @@ mod tests {
         let (tokens, _) = tokenize("(subclass Human Animal)", "test");
         assert_eq!(tokens.len(), 5);
         // `(`  at offset 0 .. 1
-        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.offset, 0);
         assert_eq!(tokens[0].span.end_offset, 1);
         // `subclass`  at offset 1 .. 9
-        assert_eq!(tokens[1].span.offset,     1);
+        assert_eq!(tokens[1].span.offset, 1);
         assert_eq!(tokens[1].span.end_offset, 9);
         assert_eq!(tokens[1].span.byte_len(), "subclass".len());
         // `Human`  at offset 10 .. 15
-        assert_eq!(tokens[2].span.offset,     10);
+        assert_eq!(tokens[2].span.offset, 10);
         assert_eq!(tokens[2].span.end_offset, 15);
         // `Animal`  at offset 16 .. 22
-        assert_eq!(tokens[3].span.offset,     16);
+        assert_eq!(tokens[3].span.offset, 16);
         assert_eq!(tokens[3].span.end_offset, 22);
         // `)`  at offset 22 .. 23
-        assert_eq!(tokens[4].span.offset,     22);
+        assert_eq!(tokens[4].span.offset, 22);
         assert_eq!(tokens[4].span.end_offset, 23);
     }
 
@@ -426,7 +524,7 @@ mod tests {
     fn string_span_includes_quotes() {
         let (tokens, _) = tokenize("\"hi\"", "test");
         assert_eq!(tokens.len(), 1);
-        assert_eq!(tokens[0].span.offset,     0);
+        assert_eq!(tokens[0].span.offset, 0);
         assert_eq!(tokens[0].span.end_offset, 4);
     }
 
@@ -442,10 +540,10 @@ mod tests {
         let (tokens, _) = tokenize("(a\n  b)", "test");
         // tokens: ( a b )
         assert_eq!(tokens.len(), 4);
-        assert_eq!(tokens[1].span.line,     1);          // `a` on line 1
+        assert_eq!(tokens[1].span.line, 1); // `a` on line 1
         assert_eq!(tokens[1].span.end_line, 1);
-        assert_eq!(tokens[2].span.line,     2);          // `b` on line 2
+        assert_eq!(tokens[2].span.line, 2); // `b` on line 2
         assert_eq!(tokens[2].span.end_line, 2);
-        assert_eq!(tokens[2].span.col,      3);          // indented 2 cols
+        assert_eq!(tokens[2].span.col, 3); // indented 2 cols
     }
 }

@@ -21,13 +21,13 @@ pub mod vampire;
 pub mod eprover;
 
 #[cfg(feature = "ask")]
-pub use vampire::VampireRunner;
-#[cfg(feature = "ask")]
 pub use eprover::EproverRunner;
 #[cfg(feature = "integrated-prover")]
 pub use vampire::IntegratedVampireRunner;
+#[cfg(feature = "ask")]
+pub use vampire::VampireRunner;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use super::super::result::ProverResult;
 
@@ -46,10 +46,10 @@ pub trait ProverRunner: Send + Sync {
     /// (`--keep`) behavior.
     fn prove_ir(
         &self,
-        problem:         &crate::trans::ir::Problem,
-        sid_map:         &[crate::types::SentenceId],
+        problem: &crate::trans::ir::Problem,
+        sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
-        opts:            &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         let tptp = crate::kb::assemble::assemble_tptp_indexed(
             problem,
@@ -72,10 +72,10 @@ pub trait ProverRunner: Send + Sync {
     /// [`Self::prove_ir`].
     fn prove_ho(
         &self,
-        problem:         &crate::trans::ir::HoProblem,
-        sid_map:         &[crate::types::SentenceId],
+        problem: &crate::trans::ir::HoProblem,
+        sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
-        opts:            &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         let text = problem.to_thf(sid_map, conjecture_name);
         self.prove(&text, opts)
@@ -83,7 +83,9 @@ pub trait ProverRunner: Send + Sync {
 
     /// The timeout this runner will apply to the prover, in seconds.
     /// Returns 0 if the runner manages its own timeout independently.
-    fn timeout_secs(&self) -> u32 { 0 }
+    fn timeout_secs(&self) -> u32 {
+        0
+    }
 }
 
 // `ProverMode` lives in `prover::result` (ungated) — the wasm-safe
@@ -105,7 +107,9 @@ pub struct ProverOpts {
 impl ProverOpts {
     /// The per-attempt wall-clock budget in seconds the runner should apply.
     #[inline]
-    pub fn timeout(&self) -> u64 { self.timeout_secs }
+    pub fn timeout(&self) -> u64 {
+        self.timeout_secs
+    }
 }
 
 /// High-level backend selector.
@@ -142,18 +146,18 @@ pub enum Prover {
     VampireIntegrated(IntegratedVampireRunner),
     /// Default option, error on ask
     #[default]
-    None
+    None,
 }
 
 #[cfg(feature = "ask")]
 impl ProverRunner for Prover {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult {
         match self {
-            Prover::VampireSubprocess(r)  => r.prove(tptp, opts),
-            Prover::Eprover(r)            => r.prove(tptp, opts),
+            Prover::VampireSubprocess(r) => r.prove(tptp, opts),
+            Prover::Eprover(r) => r.prove(tptp, opts),
             #[cfg(feature = "integrated-prover")]
-            Prover::VampireIntegrated(r)  => r.prove(tptp, opts),
-            Prover::None => ProverResult::default()
+            Prover::VampireIntegrated(r) => r.prove(tptp, opts),
+            Prover::None => ProverResult::default(),
         }
     }
 
@@ -162,43 +166,43 @@ impl ProverRunner for Prover {
     // direct-IR path).
     fn prove_ir(
         &self,
-        problem:         &crate::trans::ir::Problem,
-        sid_map:         &[crate::types::SentenceId],
+        problem: &crate::trans::ir::Problem,
+        sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
-        opts:            &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         match self {
-            Prover::VampireSubprocess(r)  => r.prove_ir(problem, sid_map, conjecture_name, opts),
-            Prover::Eprover(r)            => r.prove_ir(problem, sid_map, conjecture_name, opts),
+            Prover::VampireSubprocess(r) => r.prove_ir(problem, sid_map, conjecture_name, opts),
+            Prover::Eprover(r) => r.prove_ir(problem, sid_map, conjecture_name, opts),
             #[cfg(feature = "integrated-prover")]
-            Prover::VampireIntegrated(r)  => r.prove_ir(problem, sid_map, conjecture_name, opts),
-            Prover::None => ProverResult::default()
+            Prover::VampireIntegrated(r) => r.prove_ir(problem, sid_map, conjecture_name, opts),
+            Prover::None => ProverResult::default(),
         }
     }
 
     fn prove_ho(
         &self,
-        problem:         &crate::trans::ir::HoProblem,
-        sid_map:         &[crate::types::SentenceId],
+        problem: &crate::trans::ir::HoProblem,
+        sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
-        opts:            &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         match self {
-            Prover::VampireSubprocess(r)  => r.prove_ho(problem, sid_map, conjecture_name, opts),
-            Prover::Eprover(r)            => r.prove_ho(problem, sid_map, conjecture_name, opts),
+            Prover::VampireSubprocess(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
+            Prover::Eprover(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
             #[cfg(feature = "integrated-prover")]
-            Prover::VampireIntegrated(r)  => r.prove_ho(problem, sid_map, conjecture_name, opts),
-            Prover::None => ProverResult::default()
+            Prover::VampireIntegrated(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
+            Prover::None => ProverResult::default(),
         }
     }
 
     fn timeout_secs(&self) -> u32 {
         match self {
-            Prover::VampireSubprocess(r)  => r.timeout_secs(),
-            Prover::Eprover(r)            => r.timeout_secs(),
+            Prover::VampireSubprocess(r) => r.timeout_secs(),
+            Prover::Eprover(r) => r.timeout_secs(),
             #[cfg(feature = "integrated-prover")]
-            Prover::VampireIntegrated(r)  => r.timeout_secs(),
-            Prover::None => 0
+            Prover::VampireIntegrated(r) => r.timeout_secs(),
+            Prover::None => 0,
         }
     }
 }

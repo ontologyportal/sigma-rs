@@ -8,8 +8,8 @@
 //! Only top-level implication / biconditional roots are transformed; ground
 //! assertions and other forms pass through unchanged.
 
-use crate::OpKind;
 use crate::parse::{AstNode, Span};
+use crate::OpKind;
 
 /// Associatively flatten nested `and` / `or` connectives throughout the tree:
 /// `(and (and (and A B) C) D)` → `(and A B C D)`, `(or (or A B) C)` →
@@ -20,13 +20,17 @@ use crate::parse::{AstNode, Span};
 /// same-op nesting collapses in a single pass.  Spans on retained nodes are
 /// preserved.
 pub(crate) fn flatten_connectives(node: &mut AstNode) {
-    let AstNode::List { elements, .. } = node else { return };
+    let AstNode::List { elements, .. } = node else {
+        return;
+    };
 
     for child in elements.iter_mut() {
         flatten_connectives(child);
     }
 
-    let Some(op) = list_connective(elements) else { return };
+    let Some(op) = list_connective(elements) else {
+        return;
+    };
 
     let mut merged: Vec<AstNode> = Vec::with_capacity(elements.len());
     for (i, child) in elements.drain(..).enumerate() {
@@ -36,7 +40,11 @@ pub(crate) fn flatten_connectives(node: &mut AstNode) {
         }
         // Same-op child is already flat (bottom-up); splice its args, skipping
         // the child's own head operator.
-        if let AstNode::List { elements: child_els, .. } = &child {
+        if let AstNode::List {
+            elements: child_els,
+            ..
+        } = &child
+        {
             if list_connective(child_els).as_ref() == Some(&op) {
                 merged.extend(child_els.iter().skip(1).cloned());
                 continue;
@@ -52,7 +60,10 @@ pub(crate) fn flatten_connectives(node: &mut AstNode) {
 /// are never flattened.
 fn list_connective(elements: &[AstNode]) -> Option<OpKind> {
     match elements.first() {
-        Some(AstNode::Operator { op: op @ (OpKind::And | OpKind::Or), .. }) => Some(op.clone()),
+        Some(AstNode::Operator {
+            op: op @ (OpKind::And | OpKind::Or),
+            ..
+        }) => Some(op.clone()),
         _ => None,
     }
 }
@@ -77,7 +88,11 @@ pub(crate) fn push_negation_inward(node: &mut AstNode) {
             match top_op(arg) {
                 Some(OpKind::Not) => not_argument(arg).cloned(),
                 Some(op @ (OpKind::And | OpKind::Or)) => {
-                    let dual = if matches!(op, OpKind::And) { OpKind::Or } else { OpKind::And };
+                    let dual = if matches!(op, OpKind::And) {
+                        OpKind::Or
+                    } else {
+                        OpKind::And
+                    };
                     match arg {
                         AstNode::List { elements, .. } => Some(operator_list(
                             dual,
@@ -91,7 +106,7 @@ pub(crate) fn push_negation_inward(node: &mut AstNode) {
         };
         match replacement {
             Some(r) => *node = r,
-            None    => break,
+            None => break,
         }
     }
     if let AstNode::List { elements, .. } = node {
@@ -103,10 +118,16 @@ pub(crate) fn push_negation_inward(node: &mut AstNode) {
 
 /// If `node` is a unary `(not X)`, return `&X`; else `None`.
 fn not_argument(node: &AstNode) -> Option<&AstNode> {
-    let AstNode::List { elements, .. } = node else { return None };
-    if elements.len() != 2 { return None; }
+    let AstNode::List { elements, .. } = node else {
+        return None;
+    };
+    if elements.len() != 2 {
+        return None;
+    }
     match elements.first() {
-        Some(AstNode::Operator { op: OpKind::Not, .. }) => elements.get(1),
+        Some(AstNode::Operator {
+            op: OpKind::Not, ..
+        }) => elements.get(1),
         _ => None,
     }
 }
@@ -119,9 +140,15 @@ fn wrap_not(node: AstNode) -> AstNode {
 /// Build `(op args…)` with synthetic operator + list spans.
 fn operator_list(op: OpKind, args: Vec<AstNode>) -> AstNode {
     let mut elements = Vec::with_capacity(args.len() + 1);
-    elements.push(AstNode::Operator { op, span: Span::synthetic() });
+    elements.push(AstNode::Operator {
+        op,
+        span: Span::synthetic(),
+    });
     elements.extend(args);
-    AstNode::List { elements, span: Span::synthetic() }
+    AstNode::List {
+        elements,
+        span: Span::synthetic(),
+    }
 }
 
 /// Split a top-level `(and A B …)` assertion into one independent root per
@@ -131,22 +158,37 @@ fn operator_list(op: OpKind, args: Vec<AstNode>) -> AstNode {
 /// node passes through as a one-element vec; a degenerate empty `(and)` is kept
 /// rather than dropped.
 pub(crate) fn split_top_level_and(node: AstNode) -> Vec<AstNode> {
-    let AstNode::List { elements, .. } = &node else { return vec![node] };
-    if !matches!(elements.first(), Some(AstNode::Operator { op: OpKind::And, .. })) {
+    let AstNode::List { elements, .. } = &node else {
+        return vec![node];
+    };
+    if !matches!(
+        elements.first(),
+        Some(AstNode::Operator {
+            op: OpKind::And,
+            ..
+        })
+    ) {
         return vec![node];
     }
-    let conjuncts: Vec<AstNode> =
-        elements[1..].iter().cloned().flat_map(split_top_level_and).collect();
-    if conjuncts.is_empty() { vec![node] } else { conjuncts }
+    let conjuncts: Vec<AstNode> = elements[1..]
+        .iter()
+        .cloned()
+        .flat_map(split_top_level_and)
+        .collect();
+    if conjuncts.is_empty() {
+        vec![node]
+    } else {
+        conjuncts
+    }
 }
 
 /// Normalize one (already macro-expanded) root AST node into CAF, returning the
 /// one-or-more normalized roots.
 pub(crate) fn normalize_ast(node: &AstNode) -> Vec<AstNode> {
     match top_op(node) {
-        Some(OpKind::Iff)     => expand_biconditional(node),
+        Some(OpKind::Iff) => expand_biconditional(node),
         Some(OpKind::Implies) => normalize_implication(node.clone()),
-        _                     => vec![node.clone()],
+        _ => vec![node.clone()],
     }
 }
 
@@ -165,17 +207,32 @@ fn top_op(node: &AstNode) -> Option<OpKind> {
 /// they carry synthetic spans; `a`/`b` keep their original source spans.
 fn binary(op: OpKind, a: AstNode, b: AstNode) -> AstNode {
     AstNode::List {
-        elements: vec![AstNode::Operator { op, span: Span::synthetic() }, a, b],
+        elements: vec![
+            AstNode::Operator {
+                op,
+                span: Span::synthetic(),
+            },
+            a,
+            b,
+        ],
         span: Span::synthetic(),
     }
 }
 
 /// T1: `(<=> A B)` → `(=> A B)` and `(=> B A)`, each then normalized.
 fn expand_biconditional(node: &AstNode) -> Vec<AstNode> {
-    let AstNode::List { elements, .. } = node else { return vec![node.clone()] };
-    let (Some(a), Some(b)) = (elements.get(1), elements.get(2)) else { return vec![node.clone()] };
+    let AstNode::List { elements, .. } = node else {
+        return vec![node.clone()];
+    };
+    let (Some(a), Some(b)) = (elements.get(1), elements.get(2)) else {
+        return vec![node.clone()];
+    };
     let mut out = normalize_implication(binary(OpKind::Implies, a.clone(), b.clone()));
-    out.extend(normalize_implication(binary(OpKind::Implies, b.clone(), a.clone())));
+    out.extend(normalize_implication(binary(
+        OpKind::Implies,
+        b.clone(),
+        a.clone(),
+    )));
     out
 }
 
@@ -186,7 +243,7 @@ fn normalize_implication(node: AstNode) -> Vec<AstNode> {
     while let Some(cur) = worklist.pop() {
         match try_normalize_one(&cur) {
             Some(transformed) => worklist.extend(transformed),
-            None              => done.push(cur),
+            None => done.push(cur),
         }
     }
     done
@@ -195,22 +252,47 @@ fn normalize_implication(node: AstNode) -> Vec<AstNode> {
 /// One normalization step; `Some(new_nodes)` if a transform fired, `None` if
 /// already in CAF.
 fn try_normalize_one(node: &AstNode) -> Option<Vec<AstNode>> {
-    let AstNode::List { elements, .. } = node else { return None };
-    if !matches!(elements.first(), Some(AstNode::Operator { op: OpKind::Implies, .. })) {
+    let AstNode::List { elements, .. } = node else {
+        return None;
+    };
+    if !matches!(
+        elements.first(),
+        Some(AstNode::Operator {
+            op: OpKind::Implies,
+            ..
+        })
+    ) {
         return None;
     }
     let ant = elements.get(1)?;
     let con = elements.get(2)?;
-    if let Some(t2) = try_t2(ant, con) { return Some(vec![t2]); }
-    if let Some(t3) = try_t3(ant, con) { return Some(t3); }
-    if let Some(t4) = try_t4(ant, con) { return Some(vec![t4]); }
+    if let Some(t2) = try_t2(ant, con) {
+        return Some(vec![t2]);
+    }
+    if let Some(t3) = try_t3(ant, con) {
+        return Some(t3);
+    }
+    if let Some(t4) = try_t4(ant, con) {
+        return Some(vec![t4]);
+    }
     None
 }
 
 /// T2: `(=> A (=> B C))` → `(=> (and A B) C)`.
 fn try_t2(ant: &AstNode, con: &AstNode) -> Option<AstNode> {
-    let AstNode::List { elements: con_els, .. } = con else { return None };
-    if !matches!(con_els.first(), Some(AstNode::Operator { op: OpKind::Implies, .. })) {
+    let AstNode::List {
+        elements: con_els, ..
+    } = con
+    else {
+        return None;
+    };
+    if !matches!(
+        con_els.first(),
+        Some(AstNode::Operator {
+            op: OpKind::Implies,
+            ..
+        })
+    ) {
         return None;
     }
     let b = con_els.get(1)?.clone();
@@ -221,29 +303,63 @@ fn try_t2(ant: &AstNode, con: &AstNode) -> Option<AstNode> {
 
 /// T3: `(=> (or A B …) C)` → one implication per branch, `C` cloned into each.
 fn try_t3(ant: &AstNode, con: &AstNode) -> Option<Vec<AstNode>> {
-    let AstNode::List { elements: ant_els, .. } = ant else { return None };
-    if !matches!(ant_els.first(), Some(AstNode::Operator { op: OpKind::Or, .. })) {
+    let AstNode::List {
+        elements: ant_els, ..
+    } = ant
+    else {
+        return None;
+    };
+    if !matches!(
+        ant_els.first(),
+        Some(AstNode::Operator { op: OpKind::Or, .. })
+    ) {
         return None;
     }
     let branches = &ant_els[1..];
-    if branches.is_empty() { return None; }
-    Some(branches.iter()
-        .map(|branch| binary(OpKind::Implies, branch.clone(), con.clone()))
-        .collect())
+    if branches.is_empty() {
+        return None;
+    }
+    Some(
+        branches
+            .iter()
+            .map(|branch| binary(OpKind::Implies, branch.clone(), con.clone()))
+            .collect(),
+    )
 }
 
 /// T4: `(=> (and A (and B C) …) D)` → `(=> (and A B C …) D)` — flatten one
 /// level of nested ands in the antecedent.  `None` if already flat.
 fn try_t4(ant: &AstNode, con: &AstNode) -> Option<AstNode> {
-    let AstNode::List { elements: ant_els, .. } = ant else { return None };
-    if !matches!(ant_els.first(), Some(AstNode::Operator { op: OpKind::And, .. })) {
+    let AstNode::List {
+        elements: ant_els, ..
+    } = ant
+    else {
+        return None;
+    };
+    if !matches!(
+        ant_els.first(),
+        Some(AstNode::Operator {
+            op: OpKind::And,
+            ..
+        })
+    ) {
         return None;
     }
     let mut flat: Vec<AstNode> = Vec::new();
     let mut had_nested = false;
     for child in &ant_els[1..] {
-        if let AstNode::List { elements: child_els, .. } = child {
-            if matches!(child_els.first(), Some(AstNode::Operator { op: OpKind::And, .. })) {
+        if let AstNode::List {
+            elements: child_els,
+            ..
+        } = child
+        {
+            if matches!(
+                child_els.first(),
+                Some(AstNode::Operator {
+                    op: OpKind::And,
+                    ..
+                })
+            ) {
                 had_nested = true;
                 flat.extend(child_els[1..].iter().cloned());
                 continue;
@@ -251,11 +367,19 @@ fn try_t4(ant: &AstNode, con: &AstNode) -> Option<AstNode> {
         }
         flat.push(child.clone());
     }
-    if !had_nested { return None; }
+    if !had_nested {
+        return None;
+    }
     let mut and_els: Vec<AstNode> = Vec::with_capacity(flat.len() + 1);
-    and_els.push(AstNode::Operator { op: OpKind::And, span: Span::synthetic() });
+    and_els.push(AstNode::Operator {
+        op: OpKind::And,
+        span: Span::synthetic(),
+    });
     and_els.extend(flat);
-    let and = AstNode::List { elements: and_els, span: Span::synthetic() };
+    let and = AstNode::List {
+        elements: and_els,
+        span: Span::synthetic(),
+    };
     Some(binary(OpKind::Implies, and, con.clone()))
 }
 
@@ -268,23 +392,45 @@ mod tests {
 
     fn parse_one(kif: &str) -> AstNode {
         let doc = parse_document("test", kif, Parser::Kif);
-        assert!(doc.parse_errors.is_empty(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().expect("one root sentence").as_stmt().cloned().expect("a stmt item")
+        assert!(
+            doc.parse_errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_errors
+        );
+        doc.ast
+            .into_iter()
+            .next()
+            .expect("one root sentence")
+            .as_stmt()
+            .cloned()
+            .expect("a stmt item")
     }
-    fn norm(kif: &str) -> Vec<AstNode> { normalize_ast(&parse_one(kif)) }
+    fn norm(kif: &str) -> Vec<AstNode> {
+        normalize_ast(&parse_one(kif))
+    }
 
     /// Conjunct count if `node` is `(and …)`, else `None`.
     fn and_arity(node: &AstNode) -> Option<usize> {
         match node {
             AstNode::List { elements, .. }
-                if matches!(elements.first(), Some(AstNode::Operator { op: OpKind::And, .. })) =>
-                Some(elements.len() - 1),
+                if matches!(
+                    elements.first(),
+                    Some(AstNode::Operator {
+                        op: OpKind::And,
+                        ..
+                    })
+                ) =>
+            {
+                Some(elements.len() - 1)
+            }
             _ => None,
         }
     }
     /// The antecedent (arg 1) of an implication node.
     fn antecedent(node: &AstNode) -> &AstNode {
-        let AstNode::List { elements, .. } = node else { panic!("not a list: {node:?}") };
+        let AstNode::List { elements, .. } = node else {
+            panic!("not a list: {node:?}")
+        };
         &elements[1]
     }
 
@@ -300,7 +446,10 @@ mod tests {
         let out = norm("(=> (P ?X) (Q ?X))");
         assert_eq!(out.len(), 1);
         assert_eq!(top_op(&out[0]), Some(OpKind::Implies));
-        assert!(and_arity(antecedent(&out[0])).is_none(), "antecedent untouched");
+        assert!(
+            and_arity(antecedent(&out[0])).is_none(),
+            "antecedent untouched"
+        );
     }
 
     #[test]
@@ -308,7 +457,11 @@ mod tests {
         let out = norm("(=> (P ?X) (=> (Q ?X) (R ?X)))");
         assert_eq!(out.len(), 1);
         assert_eq!(top_op(&out[0]), Some(OpKind::Implies));
-        assert_eq!(and_arity(antecedent(&out[0])), Some(2), "antecedent should be (and A B)");
+        assert_eq!(
+            and_arity(antecedent(&out[0])),
+            Some(2),
+            "antecedent should be (and A B)"
+        );
     }
 
     #[test]
@@ -342,15 +495,21 @@ mod tests {
         let out = norm("(<=> (P ?X) (=> (Q ?X) (R ?X)))");
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|n| top_op(n) == Some(OpKind::Implies)));
-        assert!(out.iter().any(|n| and_arity(antecedent(n)) == Some(2)),
-            "forward branch should flatten to an (and _ _) antecedent");
+        assert!(
+            out.iter().any(|n| and_arity(antecedent(n)) == Some(2)),
+            "forward branch should flatten to an (and _ _) antecedent"
+        );
     }
 
     #[test]
     fn ground_assertion_passes_through_unchanged() {
         let out = norm("(instance Fido Dog)");
         assert_eq!(out.len(), 1);
-        assert_eq!(top_op(&out[0]), None, "a ground relation has no top operator");
+        assert_eq!(
+            top_op(&out[0]),
+            None,
+            "a ground relation has no top operator"
+        );
     }
 
     // -- flatten_connectives --------------------------------------------------
@@ -358,9 +517,9 @@ mod tests {
     /// Arity of `node` if it is a list headed by `op`, else `None`.
     fn conn_arity(node: &AstNode, op: OpKind) -> Option<usize> {
         match node {
-            AstNode::List { elements, .. }
-                if matches!(elements.first(), Some(AstNode::Operator { op: o, .. }) if *o == op) =>
-                Some(elements.len() - 1),
+            AstNode::List { elements, .. } if matches!(elements.first(), Some(AstNode::Operator { op: o, .. }) if *o == op) => {
+                Some(elements.len() - 1)
+            }
             _ => None,
         }
     }
@@ -386,8 +545,14 @@ mod tests {
     fn flatten_does_not_cross_connectives() {
         let n = flat("(and (p ?x) (or (q ?x) (r ?x)))");
         assert_eq!(conn_arity(&n, OpKind::And), Some(2));
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
-        assert_eq!(conn_arity(&elements[2], OpKind::Or), Some(2), "inner or untouched");
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
+        assert_eq!(
+            conn_arity(&elements[2], OpKind::Or),
+            Some(2),
+            "inner or untouched"
+        );
     }
 
     #[test]
@@ -432,7 +597,9 @@ mod tests {
     fn triple_negation_reduces_to_single() {
         let n = nnf("(not (not (not (p ?x))))");
         assert!(is_not(&n), "odd stack leaves one `not`");
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
         assert!(!is_not(&elements[1]), "single not over the atom");
     }
 
@@ -440,8 +607,14 @@ mod tests {
     fn double_negation_cancels_when_nested() {
         // (=> A (not (not B))) → (=> A B)
         let n = nnf("(=> (p ?x) (not (not (q ?x))))");
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
-        assert!(!is_not(&elements[2]), "consequent un-negated, got {:?}", elements[2]);
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
+        assert!(
+            !is_not(&elements[2]),
+            "consequent un-negated, got {:?}",
+            elements[2]
+        );
     }
 
     #[test]
@@ -454,16 +627,23 @@ mod tests {
     fn de_morgan_not_and_becomes_or_of_nots() {
         let n = nnf("(not (and (p ?x) (q ?x)))");
         assert_eq!(top_op(&n), Some(OpKind::Or), "top becomes `or`, got {n:?}");
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
         assert_eq!(elements.len(), 3);
-        assert!(is_not(&elements[1]) && is_not(&elements[2]), "each disjunct is `(not …)`");
+        assert!(
+            is_not(&elements[1]) && is_not(&elements[2]),
+            "each disjunct is `(not …)`"
+        );
     }
 
     #[test]
     fn de_morgan_not_or_becomes_and_of_nots() {
         let n = nnf("(not (or (p ?x) (q ?x)))");
         assert_eq!(top_op(&n), Some(OpKind::And));
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
         assert!(is_not(&elements[1]) && is_not(&elements[2]));
     }
 
@@ -471,10 +651,24 @@ mod tests {
     fn de_morgan_drives_negation_to_literals() {
         let n = nnf("(not (and (or (a ?x) (b ?x)) (c ?x)))");
         assert_eq!(top_op(&n), Some(OpKind::Or));
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
-        assert_eq!(top_op(&elements[1]), Some(OpKind::And), "inner `or` De-Morganed to `and`");
-        let AstNode::List { elements: inner, .. } = &elements[1] else { panic!("list") };
-        assert!(is_not(&inner[1]) && is_not(&inner[2]), "negation reached the atoms");
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
+        assert_eq!(
+            top_op(&elements[1]),
+            Some(OpKind::And),
+            "inner `or` De-Morganed to `and`"
+        );
+        let AstNode::List {
+            elements: inner, ..
+        } = &elements[1]
+        else {
+            panic!("list")
+        };
+        assert!(
+            is_not(&inner[1]) && is_not(&inner[2]),
+            "negation reached the atoms"
+        );
         assert!(is_not(&elements[2]), "(not C) literal");
     }
 
@@ -482,8 +676,14 @@ mod tests {
     fn de_morgan_cancels_introduced_double_negation() {
         let n = nnf("(not (and (not (a ?x)) (b ?x)))");
         assert_eq!(top_op(&n), Some(OpKind::Or));
-        let AstNode::List { elements, .. } = &n else { panic!("list") };
-        assert!(!is_not(&elements[1]), "first disjunct is the positive atom A, got {:?}", elements[1]);
+        let AstNode::List { elements, .. } = &n else {
+            panic!("list")
+        };
+        assert!(
+            !is_not(&elements[1]),
+            "first disjunct is the positive atom A, got {:?}",
+            elements[1]
+        );
         assert!(is_not(&elements[2]), "second disjunct is (not B)");
     }
 
@@ -495,13 +695,18 @@ mod tests {
 
     // -- split_top_level_and --------------------------------------------------
 
-    fn split(kif: &str) -> Vec<AstNode> { split_top_level_and(parse_one(kif)) }
+    fn split(kif: &str) -> Vec<AstNode> {
+        split_top_level_and(parse_one(kif))
+    }
 
     #[test]
     fn split_top_level_and_into_conjuncts() {
         let out = split("(and (p ?x) (q ?x))");
         assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|n| top_op(n).is_none()), "each conjunct is a bare atom");
+        assert!(
+            out.iter().all(|n| top_op(n).is_none()),
+            "each conjunct is a bare atom"
+        );
     }
 
     #[test]

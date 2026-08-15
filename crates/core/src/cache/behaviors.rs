@@ -39,21 +39,29 @@ pub(crate) trait CacheBehavior: Send + Sync + Sized {
     const NAME: &'static str;
 
     /// Event kinds this cache reacts to (reactive graph; default: none).
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Event kinds this cache may emit (reactive graph; default: none).
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Cache names this reactor's `react` READS.  The writer of each named cache
     /// (the reactor whose `NAME` equals it) is ordered strictly before this
     /// reactor.  A reactor's write is implicitly its own cache (`NAME`).
     /// Default: reads nothing.
-    fn reads(&self) -> &'static [&'static str] { &[] }
+    fn reads(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether this reactor's `react` may run on disjoint shards of its event
     /// slice concurrently (Axis-B event parallelism).  Safe to enable **iff**
     /// `react` is a commutative per-event fold over distinct keys with no
     /// whole-store operation (`clear` / `retain` / early-return-on-presence) —
     /// those would observe a different result under partition.  Default: serial.
-    fn event_parallel(&self) -> bool { false }
+    fn event_parallel(&self) -> bool {
+        false
+    }
 
     /// Compute the value for `key` on a miss, using `parent` to reach sibling
     /// caches and inner layers.  Must be a pure function of read-only parent
@@ -85,8 +93,8 @@ pub(crate) trait CacheBehavior: Send + Sync + Sized {
         &self,
         _parent: &Self::Parent,
         _events: &[&crate::cache::events::Event],
-        _store:  &EntryCache<Self::Key, Self::Value>,
-        _side:   &Self::Side,
+        _store: &EntryCache<Self::Key, Self::Value>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         Vec::new()
     }
@@ -113,21 +121,29 @@ pub(crate) trait WholeCacheBehavior: Send + Sync + Sized {
     const NAME: &'static str;
 
     /// Event kinds this cache reacts to (reactive graph; default: none).
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Event kinds this cache may emit (reactive graph; default: none).
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Cache names this reactor's `react` READS.  The writer of each named cache
     /// (the reactor whose `NAME` equals it) is ordered strictly before this
     /// reactor.  A reactor's write is implicitly its own cache (`NAME`).
     /// Default: reads nothing.
-    fn reads(&self) -> &'static [&'static str] { &[] }
+    fn reads(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether this reactor's `react` may run on disjoint shards of its event
     /// slice concurrently (Axis-B event parallelism).  Safe to enable **iff**
     /// `react` is a commutative per-event fold over distinct keys with no
     /// whole-store operation (`clear` / `retain` / early-return-on-presence) —
     /// those would observe a different result under partition.  Default: serial.
-    fn event_parallel(&self) -> bool { false }
+    fn event_parallel(&self) -> bool {
+        false
+    }
 
     /// Compute the whole value on a miss, using `parent` to reach sibling
     /// caches and inner layers.
@@ -149,7 +165,7 @@ pub(crate) trait WholeCacheBehavior: Send + Sync + Sized {
         &self,
         _parent: &Self::Parent,
         _events: &[&crate::cache::events::Event],
-        _store:  &LayerCache<Self::Value>,
+        _store: &LayerCache<Self::Value>,
     ) -> Vec<crate::cache::events::Event> {
         Vec::new()
     }
@@ -167,21 +183,29 @@ pub(crate) trait EagerBehavior: Send + Sync + Sized {
     const NAME: &'static str;
 
     /// Event kinds this cache reacts to (reactive graph; default: none).
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Event kinds this cache may emit (reactive graph; default: none).
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Cache names this reactor's `react` READS.  The writer of each named cache
     /// (the reactor whose `NAME` equals it) is ordered strictly before this
     /// reactor.  A reactor's write is implicitly its own cache (`NAME`).
     /// Default: reads nothing.
-    fn reads(&self) -> &'static [&'static str] { &[] }
+    fn reads(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether this reactor's `react` may run on disjoint shards of its event
     /// slice concurrently (Axis-B event parallelism).  Safe to enable **iff**
     /// `react` is a commutative per-event fold over distinct keys with no
     /// whole-store operation (`clear` / `retain` / early-return-on-presence) —
     /// those would observe a different result under partition.  Default: serial.
-    fn event_parallel(&self) -> bool { false }
+    fn event_parallel(&self) -> bool {
+        false
+    }
 
     /// The value the index is seeded with at construction.  (There is no
     /// compute-on-miss; the index is built up afterwards via `modify`.)
@@ -193,7 +217,7 @@ pub(crate) trait EagerBehavior: Send + Sync + Sized {
         &self,
         _parent: &Self::Parent,
         _events: &[&crate::cache::events::Event],
-        _store:  &EagerIndex<Self::Value>,
+        _store: &EagerIndex<Self::Value>,
     ) -> Vec<crate::cache::events::Event> {
         Vec::new()
     }
@@ -231,21 +255,29 @@ pub(crate) trait EagerMapBehavior: Send + Sync + Sized {
     const NAME: &'static str;
 
     /// Event kinds this cache reacts to (reactive graph; default: none).
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Event kinds this cache may emit (reactive graph; default: none).
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { &[] }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        &[]
+    }
     /// Cache names this reactor's `react` READS.  The writer of each named cache
     /// (the reactor whose `NAME` equals it) is ordered strictly before this
     /// reactor.  A reactor's write is implicitly its own cache (`NAME`).
     /// Default: reads nothing.
-    fn reads(&self) -> &'static [&'static str] { &[] }
+    fn reads(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether this reactor's `react` may run on disjoint shards of its event
     /// slice concurrently (Axis-B event parallelism).  Safe to enable **iff**
     /// `react` is a commutative per-event fold over distinct keys with no
     /// whole-store operation (`clear` / `retain` / early-return-on-presence) —
     /// those would observe a different result under partition.  Default: serial.
-    fn event_parallel(&self) -> bool { false }
+    fn event_parallel(&self) -> bool {
+        false
+    }
 
     /// React to a batch of change `events`, returning any follow-on events.
     /// `store` is the keyed map; `side` is the companion state.  Default inert.
@@ -253,8 +285,8 @@ pub(crate) trait EagerMapBehavior: Send + Sync + Sized {
         &self,
         _parent: &Self::Parent,
         _events: &[&crate::cache::events::Event],
-        _store:  &EntryCache<Self::Key, Self::Value>,
-        _side:   &Self::Side,
+        _store: &EntryCache<Self::Key, Self::Value>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         Vec::new()
     }
@@ -277,8 +309,8 @@ pub(crate) trait EagerMapBehavior: Send + Sync + Sized {
     fn initialize(
         &self,
         _parent: &Self::Parent,
-        _store:  &EntryCache<Self::Key, Self::Value>,
-        _side:   &Self::Side,
-    ) {}
+        _store: &EntryCache<Self::Key, Self::Value>,
+        _side: &Self::Side,
+    ) {
+    }
 }
-

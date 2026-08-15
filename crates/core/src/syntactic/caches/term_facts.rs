@@ -59,7 +59,12 @@ impl TermFacts {
     /// The "unresolvable sid" husk: never ground (nobody treats it as a
     /// prunable ground subtree) and an all-ones bloom (never prunes).
     pub(crate) fn unknown() -> Self {
-        TermFacts { ground: false, size: 0, depth: 0, sym_bloom: !0u64 }
+        TermFacts {
+            ground: false,
+            size: 0,
+            depth: 0,
+            sym_bloom: !0u64,
+        }
     }
 }
 
@@ -85,9 +90,14 @@ pub(crate) fn bloom_bit_op(op: &OpKind) -> u64 {
 #[inline]
 pub(crate) fn op_bloom_key(op: &OpKind) -> u64 {
     u64::from(match op {
-        OpKind::And => b'a', OpKind::Or => b'o', OpKind::Not => b'n',
-        OpKind::Implies => b'i', OpKind::Iff => b'f', OpKind::Equal => b'e',
-        OpKind::ForAll => b'A', OpKind::Exists => b'E',
+        OpKind::And => b'a',
+        OpKind::Or => b'o',
+        OpKind::Not => b'n',
+        OpKind::Implies => b'i',
+        OpKind::Iff => b'f',
+        OpKind::Equal => b'e',
+        OpKind::ForAll => b'A',
+        OpKind::Exists => b'E',
     })
 }
 
@@ -98,8 +108,8 @@ pub(crate) struct TermFactsCache;
 
 impl CacheBehavior for TermFactsCache {
     type Parent = SyntacticLayer;
-    type Key    = SentenceId;
-    type Value  = TermFacts;
+    type Key = SentenceId;
+    type Value = TermFacts;
     type Side = ();
     type SideSnapshot = ();
 
@@ -145,7 +155,12 @@ impl CacheBehavior for TermFactsCache {
                 }
             }
         }
-        TermFacts { ground, size, depth: depth.saturating_add(1), sym_bloom }
+        TermFacts {
+            ground,
+            size,
+            depth: depth.saturating_add(1),
+            sym_bloom,
+        }
     }
 
     /// Evict the removed root and every removed body it carried (the
@@ -157,8 +172,8 @@ impl CacheBehavior for TermFactsCache {
         &self,
         _parent: &SyntacticLayer,
         events: &[&Event],
-        store:  &EntryCache<SentenceId, TermFacts>,
-        _side:  &(),
+        store: &EntryCache<SentenceId, TermFacts>,
+        _side: &(),
     ) -> Vec<Event> {
         let mut evict: Vec<SentenceId> = Vec::new();
         for ev in events {
@@ -194,10 +209,13 @@ mod tests {
     /// The sid of the first `Element::Sub` child of `sid`'s sentence.
     fn first_sub(layer: &SyntacticLayer, sid: SentenceId) -> SentenceId {
         let sent = layer.sentence(sid).expect("sentence resolves");
-        sent.elements.iter().find_map(|el| match el {
-            Element::Sub(s) => Some(*s),
-            _ => None,
-        }).expect("a Sub child exists")
+        sent.elements
+            .iter()
+            .find_map(|el| match el {
+                Element::Sub(s) => Some(*s),
+                _ => None,
+            })
+            .expect("a Sub child exists")
     }
 
     #[test]
@@ -243,12 +261,18 @@ mod tests {
         // Warm both entries (the root recurses through the sub).
         let _ = layer.term_facts(sid);
         assert!(layer.term_facts.peek(&sid).is_some(), "root memoized");
-        assert!(layer.term_facts.peek(&sub).is_some(), "sub memoized on the way up");
+        assert!(
+            layer.term_facts.peek(&sub).is_some(),
+            "sub memoized on the way up"
+        );
 
         // Empty re-ingest of the file retracts the root (RootRemoved,
         // carrying the root + orphaned sub bodies).
         layer.load_kif_assert("", "a.kif");
         assert!(layer.term_facts.peek(&sid).is_none(), "root entry evicted");
-        assert!(layer.term_facts.peek(&sub).is_none(), "orphaned sub entry evicted");
+        assert!(
+            layer.term_facts.peek(&sub).is_none(),
+            "orphaned sub entry evicted"
+        );
     }
 }

@@ -5,14 +5,14 @@
 
 use std::collections::HashSet;
 
-use crate::SymbolId;
+use crate::cache::events::EventKind;
 use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache, WholeCacheBehavior};
 use crate::semantics::caches::inferred_class::InferredClass;
 use crate::trans::caches::numeric_ancestor_set::NumericAncestorSet;
 use crate::trans::caches::numeric_sorts::NumericSorts;
-use crate::trans::{TranslationError, TranslationLayer};
 use crate::trans::Sort;
-use crate::cache::events::EventKind;
+use crate::trans::{TranslationError, TranslationLayer};
+use crate::SymbolId;
 
 /// Behavior for the `translation::lazy_sort` cache.
 #[derive(Debug, Default)]
@@ -20,14 +20,18 @@ pub(crate) struct SymbolSort;
 
 impl CacheBehavior for SymbolSort {
     type Parent = TranslationLayer;
-    type Key    = SymbolId;
-    type Value  = Result<Sort, TranslationError>;
+    type Key = SymbolId;
+    type Value = Result<Sort, TranslationError>;
     type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "translation::lazy_sort";
 
-    fn generate(&self, parent: &TranslationLayer, &sym: &SymbolId) -> Result<Sort, TranslationError> {
+    fn generate(
+        &self,
+        parent: &TranslationLayer,
+        &sym: &SymbolId,
+    ) -> Result<Sort, TranslationError> {
         compute_sort_scoped(parent, sym, crate::semantics::types::Scope::Base)
     }
 
@@ -39,15 +43,19 @@ impl CacheBehavior for SymbolSort {
     // `generate` first consults `numeric_sorts`, then falls back to the symbol's
     // inferred class (`semantic::inferred_class`).
     fn reads(&self) -> &'static [&'static str] {
-        &[NumericSorts::NAME, InferredClass::NAME, NumericAncestorSet::NAME]
+        &[
+            NumericSorts::NAME,
+            InferredClass::NAME,
+            NumericAncestorSet::NAME,
+        ]
     }
 
     fn react(
         &self,
         _parent: &TranslationLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<SymbolId, Result<Sort, TranslationError>>,
-        _side:   &Self::Side,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<SymbolId, Result<Sort, TranslationError>>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
         // Wholesale clear rather than `evict_keys(syms)`.  A cached sort is keyed
@@ -70,8 +78,12 @@ impl CacheBehavior for SymbolSort {
         // numeric membership of an existing class and so changes the cached sort
         // of every existing instance under it.  A taxonomy change therefore must
         // clear whether or not the batch was addition-only.
-        let tax = events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. }));
-        let dr  = events.iter().any(|e| matches!(e, Event::DomainRangeChanged { .. }));
+        let tax = events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }));
+        let dr = events
+            .iter()
+            .any(|e| matches!(e, Event::DomainRangeChanged { .. }));
         if tax || dr {
             store.clear();
         }
@@ -90,34 +102,42 @@ impl CacheBehavior for SymbolSort {
 /// maps to `$i`.
 pub(crate) fn compute_sort_scoped(
     parent: &TranslationLayer,
-    sym:    SymbolId,
-    scope:  crate::semantics::types::Scope,
+    sym: SymbolId,
+    scope: crate::semantics::types::Scope,
 ) -> Result<Sort, TranslationError> {
     use crate::types::ClassInference;
     match parent.semantic.infer_class_scoped(sym, scope) {
-        ClassInference::Single(class_id) => {
-            Ok(parent.numeric_sort_of_class(class_id).unwrap_or(Sort::Individual))
-        },
+        ClassInference::Single(class_id) => Ok(parent
+            .numeric_sort_of_class(class_id)
+            .unwrap_or(Sort::Individual)),
         ClassInference::Multiple(class_ids) => {
-            let (numeric_sort_classes, other_classes) : (Vec<_>, Vec<_>) =
-                class_ids.iter().partition(|&id| parent.numeric_sort_of_class(*id).is_some());
+            let (numeric_sort_classes, other_classes): (Vec<_>, Vec<_>) = class_ids
+                .iter()
+                .partition(|&id| parent.numeric_sort_of_class(*id).is_some());
             if numeric_sort_classes.len() == 0 {
                 Ok(Sort::Individual)
             } else {
                 // All non-numeric classes must be superclasses of the numeric
                 // ones for this to resolve; dedupe the numeric sorts and take
                 // the most specific.
-                let numeric_sorts: HashSet<Sort> = HashSet::from_iter(numeric_sort_classes
-                    .iter()
-                    .map(|c: &&SymbolId| parent.numeric_sort_of_class(**c).unwrap()));
+                let numeric_sorts: HashSet<Sort> = HashSet::from_iter(
+                    numeric_sort_classes
+                        .iter()
+                        .map(|c: &&SymbolId| parent.numeric_sort_of_class(**c).unwrap()),
+                );
                 let sort = numeric_sorts.into_iter().max().unwrap();
 
-                if other_classes.iter().all(|id|
-                    parent.numeric_ancestor_set.with_ref(|a|
-                        a.is_some() && a.unwrap().get(id).is_some())) {
+                if other_classes.iter().all(|id| {
+                    parent
+                        .numeric_ancestor_set
+                        .with_ref(|a| a.is_some() && a.unwrap().get(id).is_some())
+                }) {
                     Ok(sort)
                 } else {
-                    Err(TranslationError::AmbiguousSort { sym, sorts: vec![Sort::Individual, sort] })
+                    Err(TranslationError::AmbiguousSort {
+                        sym,
+                        sorts: vec![Sort::Individual, sort],
+                    })
                 }
             }
         }
@@ -138,7 +158,7 @@ impl TranslationLayer {
     /// rather than growing a scope-keyed cache).
     pub(crate) fn sort_for_symbol_scoped(
         &self,
-        sym:   SymbolId,
+        sym: SymbolId,
         scope: crate::semantics::types::Scope,
     ) -> Result<Sort, TranslationError> {
         match scope {

@@ -1,15 +1,18 @@
 //! Tests for the pattern-matching subsystem.
 
-use super::types::{Bindings, MatchKey, PatternElement, SentencePattern, instantiate_pattern};
 use super::build::PatternFromKifError;
+use super::types::{instantiate_pattern, Bindings, MatchKey, PatternElement, SentencePattern};
 use crate::parse::ast::OpKind;
-use crate::syntactic::SyntacticLayer;
 use crate::syntactic::sentence::Sentence;
+use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, ElementVec, InternedSym, Literal, SentenceId, Symbol};
 use smallvec::smallvec;
 
 fn make_sentence(elements: ElementVec) -> Sentence {
-    Sentence { parent: Vec::new(), elements }
+    Sentence {
+        parent: Vec::new(),
+        elements,
+    }
 }
 
 /// A symbol element from a name.
@@ -34,66 +37,75 @@ fn is_sym(el: Option<&Element>, name: &str) -> bool {
 #[test]
 fn match_pattern_exact_symbol_succeeds() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
     let pattern = SentencePattern(vec![PatternElement::Exact(mkey("Foo"))]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn match_pattern_exact_symbol_mismatch() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
     let pattern = SentencePattern(vec![PatternElement::Exact(mkey("Bar"))]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_none());
 }
 
 #[test]
 fn match_pattern_exact_op_succeeds() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        Element::Op(OpKind::And),
-    ]);
+    let sentence = make_sentence(smallvec![Element::Op(OpKind::And),]);
     let pattern = SentencePattern(vec![PatternElement::Exact(MatchKey::Op(OpKind::And))]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn match_pattern_exact_literal_succeeds() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        Element::Literal(Literal::Number("0".to_string())),
-    ]);
-    let pattern = SentencePattern(vec![
-        PatternElement::Exact(MatchKey::Literal(Literal::Number("0".to_string()))),
-    ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    let sentence = make_sentence(smallvec![Element::Literal(Literal::Number(
+        "0".to_string()
+    )),]);
+    let pattern = SentencePattern(vec![PatternElement::Exact(MatchKey::Literal(
+        Literal::Number("0".to_string()),
+    ))]);
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn match_pattern_exact_literal_mismatch() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        Element::Literal(Literal::Number("1".to_string())),
-    ]);
-    let pattern = SentencePattern(vec![
-        PatternElement::Exact(MatchKey::Literal(Literal::Number("0".to_string()))),
-    ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none());
+    let sentence = make_sentence(smallvec![Element::Literal(Literal::Number(
+        "1".to_string()
+    )),]);
+    let pattern = SentencePattern(vec![PatternElement::Exact(MatchKey::Literal(
+        Literal::Number("0".to_string()),
+    ))]);
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_none());
 }
 
 #[test]
 fn match_pattern_length_mismatch_returns_none() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("A"),
-        esym("B"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("A"), esym("B"),]);
     let pattern = SentencePattern(vec![PatternElement::Exact(mkey("A"))]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_none());
 }
 
 // -------------------------------------------------------------------------
@@ -103,41 +115,44 @@ fn match_pattern_length_mismatch_returns_none() {
 #[test]
 fn match_pattern_any_capture_binds_element() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
     let pattern = SentencePattern(vec![PatternElement::AnyCapture(0)]);
-    let bindings = store.patterns().match_pattern(&pattern, &sentence).expect("should match");
+    let bindings = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match");
     assert!(is_sym(bindings.elements.get(&0), "Foo"));
 }
 
 #[test]
 fn match_pattern_any_capture_consistency_same_element_passes() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"), esym("Foo"),]);
     let pattern = SentencePattern(vec![
         PatternElement::AnyCapture(0),
         PatternElement::AnyCapture(0),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn match_pattern_any_capture_consistency_different_elements_fails() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-        esym("Bar"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"), esym("Bar"),]);
     let pattern = SentencePattern(vec![
         PatternElement::AnyCapture(0),
         PatternElement::AnyCapture(0),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none(),
-        "inconsistent capture slot should fail");
+    assert!(
+        store
+            .patterns()
+            .match_pattern(&pattern, &sentence)
+            .is_none(),
+        "inconsistent capture slot should fail"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -148,22 +163,24 @@ fn match_pattern_any_capture_consistency_different_elements_fails() {
 fn match_pattern_any_sub_sentence_binds_sid() {
     let store = SyntacticLayer::default();
     let sub_sid: SentenceId = 999;
-    let sentence = make_sentence(smallvec![
-        Element::Sub(sub_sid),
-    ]);
+    let sentence = make_sentence(smallvec![Element::Sub(sub_sid),]);
     let pattern = SentencePattern(vec![PatternElement::AnySubSentence(0)]);
-    let bindings = store.patterns().match_pattern(&pattern, &sentence).expect("should match");
+    let bindings = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match");
     assert_eq!(bindings.sub_sids.get(&0), Some(&sub_sid));
 }
 
 #[test]
 fn match_pattern_any_sub_sentence_rejects_non_sub() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
     let pattern = SentencePattern(vec![PatternElement::AnySubSentence(0)]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_none());
 }
 
 // -------------------------------------------------------------------------
@@ -172,7 +189,7 @@ fn match_pattern_any_sub_sentence_rejects_non_sub() {
 
 #[test]
 fn instantiate_pattern_exact_produces_correct_element() {
-    let pattern  = SentencePattern(vec![PatternElement::Exact(mkey("Foo"))]);
+    let pattern = SentencePattern(vec![PatternElement::Exact(mkey("Foo"))]);
     let bindings = Bindings::default();
     let elems = instantiate_pattern(&pattern, &bindings).expect("should instantiate");
     assert!(is_sym(elems.get(0), "Foo"));
@@ -180,7 +197,7 @@ fn instantiate_pattern_exact_produces_correct_element() {
 
 #[test]
 fn instantiate_pattern_any_capture_uses_binding() {
-    let pattern  = SentencePattern(vec![PatternElement::AnyCapture(0)]);
+    let pattern = SentencePattern(vec![PatternElement::AnyCapture(0)]);
     let mut bindings = Bindings::default();
     bindings.elements.insert(0, esym("Foo"));
     let elems = instantiate_pattern(&pattern, &bindings).expect("should instantiate");
@@ -189,7 +206,7 @@ fn instantiate_pattern_any_capture_uses_binding() {
 
 #[test]
 fn instantiate_pattern_missing_capture_returns_none() {
-    let pattern  = SentencePattern(vec![PatternElement::AnyCapture(0)]);
+    let pattern = SentencePattern(vec![PatternElement::AnyCapture(0)]);
     let bindings = Bindings::default();
     assert!(instantiate_pattern(&pattern, &bindings).is_none());
 }
@@ -197,7 +214,7 @@ fn instantiate_pattern_missing_capture_returns_none() {
 #[test]
 fn instantiate_pattern_any_sub_sentence_uses_binding() {
     let sub_sid: SentenceId = 42;
-    let pattern  = SentencePattern(vec![PatternElement::AnySubSentence(0)]);
+    let pattern = SentencePattern(vec![PatternElement::AnySubSentence(0)]);
     let mut bindings = Bindings::default();
     bindings.sub_sids.insert(0, sub_sid);
     let elems = instantiate_pattern(&pattern, &bindings).expect("should instantiate");
@@ -212,7 +229,9 @@ fn instantiate_pattern_any_sub_sentence_uses_binding() {
 fn sub_pattern_matches_nested_antecedent_by_structure() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
-        "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))", "test");
+        "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))",
+        "test",
+    );
 
     let pat = SentencePattern(vec![
         PatternElement::Exact(MatchKey::Op(OpKind::Implies)),
@@ -227,10 +246,14 @@ fn sub_pattern_matches_nested_antecedent_by_structure() {
     let results = store.patterns().find_by_pattern(&pat, None, None);
     assert_eq!(results.len(), 1, "should match the implication");
     let (_, ref bindings) = results[0];
-    assert!(bindings.elements.contains_key(&0),
-        "slot 0 should be bound to the typed variable (?X)");
-    assert!(bindings.sub_sids.contains_key(&1),
-        "slot 1 should be bound to the consequent SentenceId");
+    assert!(
+        bindings.elements.contains_key(&0),
+        "slot 0 should be bound to the typed variable (?X)"
+    );
+    assert!(
+        bindings.sub_sids.contains_key(&1),
+        "slot 1 should be bound to the consequent SentenceId"
+    );
 }
 
 #[test]
@@ -248,23 +271,24 @@ fn sub_pattern_does_not_match_wrong_class() {
         PatternElement::AnySubSentence(1),
     ]);
 
-    assert_eq!(store.patterns().find_by_pattern(&pat, None, None).len(), 0,
-        "Dog ≠ PositiveInteger; should not match");
+    assert_eq!(
+        store.patterns().find_by_pattern(&pat, None, None).len(),
+        0,
+        "Dog ≠ PositiveInteger; should not match"
+    );
 }
 
 #[test]
 fn sub_pattern_rejects_non_sub_element() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
-    let pat = SentencePattern(vec![
-        PatternElement::SubPattern(Box::new(SentencePattern(vec![
-            PatternElement::AnyCapture(0),
-        ]))),
-    ]);
-    assert!(store.patterns().match_pattern(&pat, &sentence).is_none(),
-        "SubPattern on a non-Sub element must fail");
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
+    let pat = SentencePattern(vec![PatternElement::SubPattern(Box::new(SentencePattern(
+        vec![PatternElement::AnyCapture(0)],
+    )))]);
+    assert!(
+        store.patterns().match_pattern(&pat, &sentence).is_none(),
+        "SubPattern on a non-Sub element must fail"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -274,11 +298,12 @@ fn sub_pattern_rejects_non_sub_element() {
 #[test]
 fn any_element_matches_non_sub() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"),]);
     let pattern = SentencePattern(vec![PatternElement::AnyElement(0)]);
-    let bindings = store.patterns().match_pattern(&pattern, &sentence).expect("should match");
+    let bindings = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match");
     assert!(is_sym(bindings.elements.get(&0), "Foo"));
 }
 
@@ -286,56 +311,61 @@ fn any_element_matches_non_sub() {
 fn any_element_matches_sub() {
     let store = SyntacticLayer::default();
     let sub_sid: SentenceId = 42;
-    let sentence = make_sentence(smallvec![
-        Element::Sub(sub_sid),
-    ]);
+    let sentence = make_sentence(smallvec![Element::Sub(sub_sid),]);
     let pattern = SentencePattern(vec![PatternElement::AnyElement(0)]);
-    let bindings = store.patterns().match_pattern(&pattern, &sentence).expect("should match Sub");
+    let bindings = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match Sub");
     assert!(matches!(bindings.elements.get(&0), Some(Element::Sub(sid)) if *sid == sub_sid));
 }
 
 #[test]
 fn any_element_consistency_same_symbol_passes() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-        esym("Foo"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"), esym("Foo"),]);
     let pattern = SentencePattern(vec![
         PatternElement::AnyElement(0),
         PatternElement::AnyElement(0),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn any_element_consistency_different_symbols_fails() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        esym("Foo"),
-        esym("Bar"),
-    ]);
+    let sentence = make_sentence(smallvec![esym("Foo"), esym("Bar"),]);
     let pattern = SentencePattern(vec![
         PatternElement::AnyElement(0),
         PatternElement::AnyElement(0),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none(),
-        "inconsistent AnyElement slot should fail");
+    assert!(
+        store
+            .patterns()
+            .match_pattern(&pattern, &sentence)
+            .is_none(),
+        "inconsistent AnyElement slot should fail"
+    );
 }
 
 #[test]
 fn any_element_consistency_different_subs_fails() {
     let store = SyntacticLayer::default();
-    let sentence = make_sentence(smallvec![
-        Element::Sub(1),
-        Element::Sub(2),
-    ]);
+    let sentence = make_sentence(smallvec![Element::Sub(1), Element::Sub(2),]);
     let pattern = SentencePattern(vec![
         PatternElement::AnyElement(0),
         PatternElement::AnyElement(0),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none(),
-        "different Sub sids in same slot should fail");
+    assert!(
+        store
+            .patterns()
+            .match_pattern(&pattern, &sentence)
+            .is_none(),
+        "different Sub sids in same slot should fail"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -347,10 +377,16 @@ fn pattern_from_kif_simple_match() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
         "(instance Dog Animal)(instance Cat Animal)(instance subclass BinaryRelation)",
-        "test");
+        "test",
+    );
 
-    let pat = store.patterns().pattern_from_kif("(instance ?X Animal)").expect("should parse");
-    let results = store.patterns().find_by_pattern(&pat, Some("instance"), None);
+    let pat = store
+        .patterns()
+        .pattern_from_kif("(instance ?X Animal)")
+        .expect("should parse");
+    let results = store
+        .patterns()
+        .find_by_pattern(&pat, Some("instance"), None);
     assert_eq!(results.len(), 2, "Dog and Cat are both instances of Animal");
 }
 
@@ -379,11 +415,13 @@ fn pattern_from_kif_nested_subformula() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
         "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))",
-        "test");
+        "test",
+    );
 
-    let pat = store.patterns().pattern_from_kif(
-        "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))"
-    ).expect("should parse");
+    let pat = store
+        .patterns()
+        .pattern_from_kif("(=> (instance ?X PositiveInteger) (greaterThan ?X 0))")
+        .expect("should parse");
     let results = store.patterns().find_by_pattern(&pat, None, None);
     assert_eq!(results.len(), 1, "pattern should match the exact sentence");
 }
@@ -393,22 +431,31 @@ fn pattern_from_kif_variable_wildcard() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
         "(instance Dog Animal)(instance Cat Animal)(instance subclass BinaryRelation)",
-        "test");
+        "test",
+    );
 
-    let pat = store.patterns().pattern_from_kif("(instance ?X ?C)").expect("should parse");
-    let results = store.patterns().find_by_pattern(&pat, Some("instance"), None);
+    let pat = store
+        .patterns()
+        .pattern_from_kif("(instance ?X ?C)")
+        .expect("should parse");
+    let results = store
+        .patterns()
+        .find_by_pattern(&pat, Some("instance"), None);
     assert_eq!(results.len(), 3);
 }
 
 #[test]
 fn pattern_from_kif_same_variable_consistency_check() {
     let mut store = SyntacticLayer::default();
-    store.load_kif(
-        "(instance Dog Dog)(instance Dog Animal)",
-        "test");
+    store.load_kif("(instance Dog Dog)(instance Dog Animal)", "test");
 
-    let pat = store.patterns().pattern_from_kif("(instance ?X ?X)").expect("should parse");
-    let results = store.patterns().find_by_pattern(&pat, Some("instance"), None);
+    let pat = store
+        .patterns()
+        .pattern_from_kif("(instance ?X ?X)")
+        .expect("should parse");
+    let results = store
+        .patterns()
+        .find_by_pattern(&pat, Some("instance"), None);
     assert_eq!(results.len(), 1);
 }
 
@@ -421,14 +468,17 @@ fn find_by_pattern_with_head_filter_returns_matching_sentences() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
         "(instance subclass BinaryRelation)\n(instance instance BinaryPredicate)",
-        "test");
+        "test",
+    );
 
     let pat = SentencePattern(vec![
         PatternElement::Exact(mkey("instance")),
         PatternElement::AnyCapture(0),
         PatternElement::Exact(mkey("BinaryRelation")),
     ]);
-    let results = store.patterns().find_by_pattern(&pat, Some("instance"), None);
+    let results = store
+        .patterns()
+        .find_by_pattern(&pat, Some("instance"), None);
     assert_eq!(results.len(), 1);
 }
 
@@ -437,21 +487,25 @@ fn find_by_pattern_any_captures_all_instance_sentences() {
     let mut store = SyntacticLayer::default();
     store.load_kif(
         "(instance subclass BinaryRelation)\n(instance instance BinaryPredicate)",
-        "test");
+        "test",
+    );
 
     let pat = SentencePattern(vec![
         PatternElement::Exact(mkey("instance")),
         PatternElement::AnyCapture(0),
         PatternElement::AnyCapture(1),
     ]);
-    let results = store.patterns().find_by_pattern(&pat, Some("instance"), None);
+    let results = store
+        .patterns()
+        .find_by_pattern(&pat, Some("instance"), None);
     assert_eq!(results.len(), 2);
 }
 
 #[test]
 fn find_recurssive_and_root_level_patterns() {
     let mut store = SyntacticLayer::default();
-    store.load_kif("
+    store.load_kif(
+        "
       (instance GeorgeWashington President)
       (subclass President Human)
       (instance GeorgeWashington Man)
@@ -467,24 +521,34 @@ fn find_recurssive_and_root_level_patterns() {
             (married ?W ?H)
             (mother ?W ?C))
         (father ?H ?C))
-    ", "test");
+    ",
+        "test",
+    );
 
     let pat = SentencePattern(vec![
         PatternElement::Exact(mkey("instance")),
         PatternElement::Exact(mkey("GeorgeWashington")),
-        PatternElement::AnyElement(0)
+        PatternElement::AnyElement(0),
     ]);
 
     let results = store.patterns().find_by_pattern(
         &pat,
-        Some("instance"), 
-        Some(vec![Symbol::hash_name("GeorgeWashington")].into_iter().collect())
+        Some("instance"),
+        Some(
+            vec![Symbol::hash_name("GeorgeWashington")]
+                .into_iter()
+                .collect(),
+        ),
     );
     assert_eq!(results.len(), 2);
 
     let results = store.patterns().find_by_pattern_sub(
         &pat,
-        Some(vec![Symbol::hash_name("GeorgeWashington")].into_iter().collect())
+        Some(
+            vec![Symbol::hash_name("GeorgeWashington")]
+                .into_iter()
+                .collect(),
+        ),
     );
     assert_eq!(results.len(), 2)
 }
@@ -497,7 +561,11 @@ fn find_recurssive_and_root_level_patterns() {
 fn glob_matches_target_anywhere() {
     let store = SyntacticLayer::default();
     let sentence = make_sentence(smallvec![
-        esym("R"), esym("a"), esym("b"), esym("T"), esym("c"),
+        esym("R"),
+        esym("a"),
+        esym("b"),
+        esym("T"),
+        esym("c"),
     ]);
     let pattern = SentencePattern(vec![
         PatternElement::Exact(mkey("R")),
@@ -505,7 +573,10 @@ fn glob_matches_target_anywhere() {
         PatternElement::Exact(mkey("T")),
         PatternElement::Glob,
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
@@ -517,18 +588,21 @@ fn glob_consumes_zero() {
         PatternElement::Glob,
         PatternElement::Exact(mkey("T")),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
 fn glob_trailing_consumes_rest() {
     let store = SyntacticLayer::default();
     let sentence = make_sentence(smallvec![esym("R"), esym("a"), esym("b"), esym("c")]);
-    let pattern = SentencePattern(vec![
-        PatternElement::Exact(mkey("R")),
-        PatternElement::Glob,
-    ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    let pattern = SentencePattern(vec![PatternElement::Exact(mkey("R")), PatternElement::Glob]);
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
@@ -536,7 +610,10 @@ fn glob_alone_matches_any_sentence() {
     let store = SyntacticLayer::default();
     let sentence = make_sentence(smallvec![esym("a"), esym("b")]);
     let pattern = SentencePattern(vec![PatternElement::Glob]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_some());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_some());
 }
 
 #[test]
@@ -548,7 +625,10 @@ fn glob_fails_when_next_absent() {
         PatternElement::Glob,
         PatternElement::Exact(mkey("T")),
     ]);
-    assert!(store.patterns().match_pattern(&pattern, &sentence).is_none());
+    assert!(store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .is_none());
 }
 
 #[test]
@@ -562,7 +642,10 @@ fn glob_then_capture_binds_last_element() {
         PatternElement::Glob,
         PatternElement::AnyCapture(0),
     ]);
-    let b = store.patterns().match_pattern(&pattern, &sentence).expect("should match");
+    let b = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match");
     assert!(is_sym(b.elements.get(&0), "X"));
 }
 
@@ -575,11 +658,17 @@ fn glob_capture_records_consumed_count() {
         PatternElement::GlobCapture(0),
         PatternElement::Exact(mkey("T")),
     ]);
-    let b = store.patterns().match_pattern(&pattern, &sentence).expect("should match");
+    let b = store
+        .patterns()
+        .match_pattern(&pattern, &sentence)
+        .expect("should match");
     assert_eq!(b.glob_lens.get(&0), Some(&2));
 
     let s2 = make_sentence(smallvec![esym("R"), esym("T")]);
-    let b2 = store.patterns().match_pattern(&pattern, &s2).expect("should match");
+    let b2 = store
+        .patterns()
+        .match_pattern(&pattern, &s2)
+        .expect("should match");
     assert_eq!(b2.glob_lens.get(&0), Some(&0));
 }
 
@@ -592,7 +681,13 @@ fn glob_consistency_check_holds_across_span() {
         PatternElement::AnyCapture(0),
     ]);
     let ok = make_sentence(smallvec![esym("S"), esym("a"), esym("b"), esym("S")]);
-    assert!(store.patterns().match_pattern(&pattern, &ok).is_some(), "matching ends → match");
+    assert!(
+        store.patterns().match_pattern(&pattern, &ok).is_some(),
+        "matching ends → match"
+    );
     let bad = make_sentence(smallvec![esym("S"), esym("a"), esym("b"), esym("Z")]);
-    assert!(store.patterns().match_pattern(&pattern, &bad).is_none(), "mismatched ends → no match");
+    assert!(
+        store.patterns().match_pattern(&pattern, &bad).is_none(),
+        "mismatched ends → no match"
+    );
 }

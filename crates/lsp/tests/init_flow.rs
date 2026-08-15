@@ -14,13 +14,13 @@ use std::time::Duration;
 
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::{
-    notification::{DidChangeTextDocument, DidOpenTextDocument, Initialized,
-                   Notification as _, PublishDiagnostics},
+    notification::{
+        DidChangeTextDocument, DidOpenTextDocument, Initialized, Notification as _,
+        PublishDiagnostics,
+    },
     request::{Initialize, Shutdown},
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializedParams,
-    PublishDiagnosticsParams, TextDocumentContentChangeEvent,
-    TextDocumentItem, Url,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, InitializedParams,
+    PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentItem, Url,
     VersionedTextDocumentIdentifier, WorkspaceFolder,
 };
 
@@ -37,8 +37,8 @@ fn spawn_server(connection: Connection) -> thread::JoinHandle<()> {
 
 fn send_request<R: lsp_types::request::Request>(
     client: &Connection,
-    id:      impl Into<RequestId>,
-    params:  R::Params,
+    id: impl Into<RequestId>,
+    params: R::Params,
 ) -> RequestId {
     let id: RequestId = id.into();
     let req = Request {
@@ -46,7 +46,10 @@ fn send_request<R: lsp_types::request::Request>(
         method: R::METHOD.to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    client.sender.send(Message::Request(req)).expect("request sent");
+    client
+        .sender
+        .send(Message::Request(req))
+        .expect("request sent");
     id
 }
 
@@ -58,12 +61,17 @@ fn send_notification<N: lsp_types::notification::Notification>(
         method: N::METHOD.to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    client.sender.send(Message::Notification(not)).expect("notification sent");
+    client
+        .sender
+        .send(Message::Notification(not))
+        .expect("notification sent");
 }
 
 fn recv_response(client: &Connection) -> lsp_server::Response {
     loop {
-        let m = client.receiver.recv_timeout(Duration::from_secs(5))
+        let m = client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
             .expect("response within 5s");
         match m {
             Message::Response(r) => return r,
@@ -78,7 +86,9 @@ fn recv_response(client: &Connection) -> lsp_server::Response {
 
 fn recv_publish_diagnostics(client: &Connection) -> PublishDiagnosticsParams {
     loop {
-        let m = client.receiver.recv_timeout(Duration::from_secs(5))
+        let m = client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
             .expect("publishDiagnostics within 5s");
         if let Message::Notification(not) = m {
             if not.method == PublishDiagnostics::METHOD {
@@ -90,10 +100,12 @@ fn recv_publish_diagnostics(client: &Connection) -> PublishDiagnosticsParams {
 }
 
 fn initialize(client: &Connection, root_dir: Option<&std::path::Path>) {
-    let workspace_folders = root_dir.map(|d| vec![WorkspaceFolder {
-        uri:  Url::from_file_path(d).expect("dir URL"),
-        name: "test".to_string(),
-    }]);
+    let workspace_folders = root_dir.map(|d| {
+        vec![WorkspaceFolder {
+            uri: Url::from_file_path(d).expect("dir URL"),
+            name: "test".to_string(),
+        }]
+    });
 
     let params = InitializeParams {
         workspace_folders,
@@ -101,7 +113,11 @@ fn initialize(client: &Connection, root_dir: Option<&std::path::Path>) {
     };
     send_request::<Initialize>(client, 1, params);
     let r = recv_response(client);
-    assert!(r.error.is_none(), "initialize returned error: {:?}", r.error);
+    assert!(
+        r.error.is_none(),
+        "initialize returned error: {:?}",
+        r.error
+    );
     // After initialize we must send `initialized` before any other
     // message.
     send_notification::<Initialized>(client, InitializedParams {});
@@ -111,10 +127,13 @@ fn shutdown(client: &Connection) {
     send_request::<Shutdown>(client, 999, ());
     let r = recv_response(client);
     assert!(r.error.is_none(), "shutdown returned error: {:?}", r.error);
-    client.sender.send(Message::Notification(Notification {
-        method: lsp_types::notification::Exit::METHOD.to_string(),
-        params: serde_json::Value::Null,
-    })).expect("exit notification sent");
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: lsp_types::notification::Exit::METHOD.to_string(),
+            params: serde_json::Value::Null,
+        }))
+        .expect("exit notification sent");
 }
 
 // -- Tests --------------------------------------------------------------------
@@ -142,14 +161,17 @@ fn did_open_publishes_diagnostics_for_malformed_kif() {
     // the malformed sentence while preserving the valid one.
     let uri = Url::parse("file:///tmp/test.kif").expect("url");
     let text = "(\n(subclass Human Animal)".to_string();
-    send_notification::<DidOpenTextDocument>(&client, DidOpenTextDocumentParams {
-        text_document: TextDocumentItem {
-            uri:         uri.clone(),
-            language_id: "kif".to_string(),
-            version:     1,
-            text,
+    send_notification::<DidOpenTextDocument>(
+        &client,
+        DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "kif".to_string(),
+                version: 1,
+                text,
+            },
         },
-    });
+    );
 
     let diag = recv_publish_diagnostics(&client);
     assert_eq!(diag.uri, uri);
@@ -181,14 +203,17 @@ fn did_open_then_did_change_updates_diagnostics() {
     let uri = Url::parse("file:///tmp/evolving.kif").expect("url");
 
     // Start with a valid file.  Expect no parse diagnostics.
-    send_notification::<DidOpenTextDocument>(&client, DidOpenTextDocumentParams {
-        text_document: TextDocumentItem {
-            uri:         uri.clone(),
-            language_id: "kif".to_string(),
-            version:     1,
-            text:        "(subclass Human Animal)".to_string(),
+    send_notification::<DidOpenTextDocument>(
+        &client,
+        DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "kif".to_string(),
+                version: 1,
+                text: "(subclass Human Animal)".to_string(),
+            },
         },
-    });
+    );
     let diag1 = recv_publish_diagnostics(&client);
     assert_eq!(diag1.version, Some(1));
     assert!(
@@ -200,17 +225,20 @@ fn did_open_then_did_change_updates_diagnostics() {
 
     // didChange: introduce a syntax error.  Expect a parse
     // diagnostic on version 2.
-    send_notification::<DidChangeTextDocument>(&client, DidChangeTextDocumentParams {
-        text_document: VersionedTextDocumentIdentifier {
-            uri: uri.clone(),
-            version: 2,
+    send_notification::<DidChangeTextDocument>(
+        &client,
+        DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "(subclass Human\n".to_string(),
+            }],
         },
-        content_changes: vec![TextDocumentContentChangeEvent {
-            range:        None,
-            range_length: None,
-            text:         "(subclass Human\n".to_string(),
-        }],
-    });
+    );
     let diag2 = recv_publish_diagnostics(&client);
     assert_eq!(diag2.version, Some(2));
     assert!(
@@ -243,7 +271,7 @@ fn workspace_sweep_loads_directory_kifs() {
     // Collect diagnostics for both files (initial sweep publishes
     // one per file).  We don't care about ordering -- just that
     // two arrive within timeout.
-    let first  = recv_publish_diagnostics(&client);
+    let first = recv_publish_diagnostics(&client);
     let second = recv_publish_diagnostics(&client);
 
     let uris = [first.uri.clone(), second.uri.clone()];
@@ -264,7 +292,9 @@ struct TempDir {
 }
 
 impl TempDir {
-    fn path(&self) -> &std::path::Path { &self.path }
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 impl Drop for TempDir {
@@ -275,8 +305,11 @@ impl Drop for TempDir {
 
 fn tempdir_with(files: &[(&str, &str)]) -> TempDir {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let path  = std::env::temp_dir().join(format!("sumo-lsp-test-{}", nanos));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("sumo-lsp-test-{}", nanos));
     std::fs::create_dir_all(&path).expect("mkdir tempdir");
     for (name, content) in files {
         std::fs::write(path.join(name), content).expect("write file");

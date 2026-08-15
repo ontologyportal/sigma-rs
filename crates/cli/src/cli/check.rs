@@ -7,8 +7,8 @@
 
 use crate::style::*;
 use sigmakee_rs_sdk::{
-    check_freshness, check_local_freshness, check_git_tracked, snapshot_git_tracked,
-    Freshness, KnowledgeBase, Session, TopLayer, TranslationLayer,
+    check_freshness, check_git_tracked, check_local_freshness, snapshot_git_tracked, Freshness,
+    KnowledgeBase, Session, TopLayer, TranslationLayer,
 };
 
 /// Run `sumo check` against an opened (read-only) KB. `kb` is `None` when no
@@ -16,8 +16,10 @@ use sigmakee_rs_sdk::{
 /// nothing to check.
 pub fn run_check(kb: Option<KnowledgeBase<TranslationLayer>>) -> bool {
     let Some(kb) = kb else {
-        println!("{color_bright_black}(no database found — nothing has been loaded yet; \
-                  run `sumo -c load` or `sumo --git ... load` first){color_reset}");
+        println!(
+            "{color_bright_black}(no database found — nothing has been loaded yet; \
+                  run `sumo -c load` or `sumo --git ... load` first){color_reset}"
+        );
         return true;
     };
 
@@ -26,21 +28,31 @@ pub fn run_check(kb: Option<KnowledgeBase<TranslationLayer>>) -> bool {
     reports.sort_by(|a, b| a.label.cmp(&b.label));
 
     if reports.is_empty() {
-        println!("{color_bright_black}(no tracked sources in this database — local/git \
-                  provenance is only recorded going forward from this feature){color_reset}");
+        println!(
+            "{color_bright_black}(no tracked sources in this database — local/git \
+                  provenance is only recorded going forward from this feature){color_reset}"
+        );
         return true;
     }
 
     let mut notable = 0usize;
     for r in &reports {
-        if r.freshness.is_notable() { notable += 1; }
+        if r.freshness.is_notable() {
+            notable += 1;
+        }
         let (marker, detail) = describe(&r.freshness);
-        println!("  {marker} {color_bright_cyan}{}{color_reset}  {detail}", r.label);
+        println!(
+            "  {marker} {color_bright_cyan}{}{color_reset}  {detail}",
+            r.label
+        );
     }
 
     println!();
     if notable == 0 {
-        println!("{color_bright_green}all {} tracked source(s) up to date{color_reset}", reports.len());
+        println!(
+            "{color_bright_green}all {} tracked source(s) up to date{color_reset}",
+            reports.len()
+        );
     } else {
         println!(
             "{color_bright_yellow}{notable} of {} tracked source(s) need attention{color_reset} \
@@ -54,20 +66,37 @@ pub fn run_check(kb: Option<KnowledgeBase<TranslationLayer>>) -> bool {
 /// A colored marker plus a human-readable detail line for one verdict.
 fn describe(f: &Freshness) -> (String, String) {
     match f {
-        Freshness::Unchanged =>
-            (format!("{color_bright_green}✓{color_reset}"), "unchanged".to_string()),
-        Freshness::Modified =>
-            (format!("{color_bright_yellow}●{color_reset}"), "modified on disk since last load".to_string()),
-        Freshness::Missing =>
-            (format!("{color_bright_red}✗{color_reset}"), "no longer exists on disk".to_string()),
-        Freshness::Behind { local_commit, remote_commit } => (
-            format!("{color_bright_yellow}●{color_reset}"),
-            format!("branch has moved: {} → {}", short(local_commit), short(remote_commit)),
+        Freshness::Unchanged => (
+            format!("{color_bright_green}✓{color_reset}"),
+            "unchanged".to_string(),
         ),
-        Freshness::Unreachable =>
-            (format!("{color_bright_black}?{color_reset}"), "could not reach the remote to check".to_string()),
-        Freshness::Unknown =>
-            (format!("{color_bright_black}?{color_reset}"), "no baseline recorded".to_string()),
+        Freshness::Modified => (
+            format!("{color_bright_yellow}●{color_reset}"),
+            "modified on disk since last load".to_string(),
+        ),
+        Freshness::Missing => (
+            format!("{color_bright_red}✗{color_reset}"),
+            "no longer exists on disk".to_string(),
+        ),
+        Freshness::Behind {
+            local_commit,
+            remote_commit,
+        } => (
+            format!("{color_bright_yellow}●{color_reset}"),
+            format!(
+                "branch has moved: {} → {}",
+                short(local_commit),
+                short(remote_commit)
+            ),
+        ),
+        Freshness::Unreachable => (
+            format!("{color_bright_black}?{color_reset}"),
+            "could not reach the remote to check".to_string(),
+        ),
+        Freshness::Unknown => (
+            format!("{color_bright_black}?{color_reset}"),
+            "no baseline recorded".to_string(),
+        ),
     }
 }
 
@@ -104,12 +133,16 @@ const GIT_CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 #[derive(serde::Serialize, serde::Deserialize)]
 struct GitCheckCache {
     checked_at: u64,
-    stale:      usize,
-    total:      usize,
+    stale: usize,
+    total: usize,
 }
 
 fn git_cache_path() -> Option<std::path::PathBuf> {
-    Some(crate::config::home_dir()?.join(".sigmakee").join("git-freshness-check.json"))
+    Some(
+        crate::config::home_dir()?
+            .join(".sigmakee")
+            .join("git-freshness-check.json"),
+    )
 }
 
 fn read_git_cache(path: &std::path::Path) -> Option<GitCheckCache> {
@@ -177,6 +210,13 @@ pub fn maybe_notify_stale_git<L: TopLayer>(session: &Session<L>) {
     std::thread::spawn(move || {
         let reports = check_git_tracked(&snapshot);
         let stale = reports.iter().filter(|r| r.freshness.is_notable()).count();
-        write_git_cache(&path, &GitCheckCache { checked_at: now_secs(), stale, total: reports.len() });
+        write_git_cache(
+            &path,
+            &GitCheckCache {
+                checked_at: now_secs(),
+                stale,
+                total: reports.len(),
+            },
+        );
     });
 }

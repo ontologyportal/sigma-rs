@@ -4,14 +4,20 @@ use crate::syntactic::SyntacticLayer;
 use crate::{Element, Literal, OpKind, SentenceId, SymbolId, TptpLang};
 
 impl SyntacticLayer {
-     /// Collect every symbol id mentioned in `sent_id` (recursing into subs).
+    /// Collect every symbol id mentioned in `sent_id` (recursing into subs).
     pub(crate) fn collect_symbols(&self, sent_id: SentenceId, out: &mut HashSet<SymbolId>) {
-        let Some(sentence) = self.sentence(sent_id) else { return };
+        let Some(sentence) = self.sentence(sent_id) else {
+            return;
+        };
         for el in &sentence.elements {
             match el {
-                Element::Sub(sid) => { self.collect_symbols(*sid, out); },
-                Element::Symbol(sym) => { out.insert(sym.id()); },
-                _ => continue
+                Element::Sub(sid) => {
+                    self.collect_symbols(*sid, out);
+                }
+                Element::Symbol(sym) => {
+                    out.insert(sym.id());
+                }
+                _ => continue,
             };
         }
     }
@@ -26,7 +32,9 @@ impl SyntacticLayer {
     /// literal instead. See `sigma-rs` memory `typed-suite-tff-gate` for
     /// the concrete failure mode this exists to route around.
     pub(crate) fn sentence_has_numeral(&self, sent_id: SentenceId) -> bool {
-        let Some(sentence) = self.sentence(sent_id) else { return false };
+        let Some(sentence) = self.sentence(sent_id) else {
+            return false;
+        };
         sentence.elements.iter().any(|el| match el {
             Element::Sub(sid) => self.sentence_has_numeral(*sid),
             Element::Literal(Literal::Number(_)) => true,
@@ -61,12 +69,18 @@ impl SyntacticLayer {
 
     /// Collect all the variable mentioned in a sentence (recurse if needed)
     pub(crate) fn collect_vars(&self, sent_id: SentenceId, out: &mut HashMap<SymbolId, u32>) {
-        let Some(sentence) = self.sentence(sent_id) else { return };
+        let Some(sentence) = self.sentence(sent_id) else {
+            return;
+        };
         for el in &sentence.elements {
             match el {
-                Element::Sub(sid) => { self.collect_vars(*sid, out); },
-                Element::Variable { id, var_index, .. } => { out.insert(*id, *var_index); },
-                _ => continue
+                Element::Sub(sid) => {
+                    self.collect_vars(*sid, out);
+                }
+                Element::Variable { id, var_index, .. } => {
+                    out.insert(*id, *var_index);
+                }
+                _ => continue,
             };
         }
     }
@@ -74,10 +88,10 @@ impl SyntacticLayer {
     /// Collect the variables that are bound by a FOL quantifier in the formula.
     /// Unbound variables are collected into a top level quanitifier
     ///
-    /// If `in_formula_pos` if specified, variables bound in a formula which 
-    /// appears nested inside a non-logical relation — 
+    /// If `in_formula_pos` if specified, variables bound in a formula which
+    /// appears nested inside a non-logical relation —
     /// e.g. `(hasPurpose ?X (exists (?Y) ...))` — are returned as first order
-    /// translation reifies the existential into a pseudo-relation and therefore 
+    /// translation reifies the existential into a pseudo-relation and therefore
     /// `?Y` becomes unbound in the process
     pub(crate) fn collect_bound_vars(
         &self,
@@ -85,7 +99,9 @@ impl SyntacticLayer {
         in_formula_pos: bool,
         out: &mut HashSet<SymbolId>,
     ) {
-        let Some(sentence) = self.sentence(sid) else { return };
+        let Some(sentence) = self.sentence(sid) else {
+            return;
+        };
 
         if in_formula_pos {
             if let Some(op) = sentence.op() {
@@ -96,7 +112,7 @@ impl SyntacticLayer {
                                 if let Element::Variable { id, .. } = e {
                                     out.insert(*id);
                                 }
-                            }   
+                            }
                         }
                     }
                 }
@@ -110,8 +126,11 @@ impl SyntacticLayer {
         let op = sentence.op();
         let sub_in_formula_pos = match op {
             // Logical connectives keep their children in formula position.
-            Some(OpKind::And) | Some(OpKind::Or) | Some(OpKind::Not)
-            | Some(OpKind::Implies) | Some(OpKind::Iff) => in_formula_pos,
+            Some(OpKind::And)
+            | Some(OpKind::Or)
+            | Some(OpKind::Not)
+            | Some(OpKind::Implies)
+            | Some(OpKind::Iff) => in_formula_pos,
 
             // Quantifiers are formula-level when we're at a formula site;
             // their body (and the var-list sub, which collect_all_var_ids
@@ -181,23 +200,44 @@ mod tests {
         let s = store("(instance Fido Dog)\n(greaterThan ?X 5)");
         let roots = s.root_sids();
         assert_eq!(roots.len(), 2);
-        let plain = *roots.iter().find(|&&sid| !s.sentence_has_numeral(sid)).unwrap();
-        let numeric = *roots.iter().find(|&&sid| s.sentence_has_numeral(sid)).unwrap();
+        let plain = *roots
+            .iter()
+            .find(|&&sid| !s.sentence_has_numeral(sid))
+            .unwrap();
+        let numeric = *roots
+            .iter()
+            .find(|&&sid| s.sentence_has_numeral(sid))
+            .unwrap();
 
-        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&plain]), TptpLang::Fof,
-            "no numeral in the selected set -> untyped fallback");
-        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&numeric]), TptpLang::Tff,
-            "a numeral in the selected set -> typed");
-        assert_eq!(s.resolve_tptp_lang(TptpLang::Auto, [&plain, &numeric]), TptpLang::Tff,
-            "one numeral anywhere in the set is enough to upgrade the whole problem");
+        assert_eq!(
+            s.resolve_tptp_lang(TptpLang::Auto, [&plain]),
+            TptpLang::Fof,
+            "no numeral in the selected set -> untyped fallback"
+        );
+        assert_eq!(
+            s.resolve_tptp_lang(TptpLang::Auto, [&numeric]),
+            TptpLang::Tff,
+            "a numeral in the selected set -> typed"
+        );
+        assert_eq!(
+            s.resolve_tptp_lang(TptpLang::Auto, [&plain, &numeric]),
+            TptpLang::Tff,
+            "one numeral anywhere in the set is enough to upgrade the whole problem"
+        );
     }
 
     #[test]
     fn resolve_tptp_lang_never_overrides_an_explicit_choice() {
         let s = store("(greaterThan ?X 5)");
         let numeric = root_sid(&s, 0);
-        assert_eq!(s.resolve_tptp_lang(TptpLang::Fof, [&numeric]), TptpLang::Fof,
-            "an explicit --lang fof is never second-guessed, even with a numeral present");
-        assert_eq!(s.resolve_tptp_lang(TptpLang::Tff, [&numeric]), TptpLang::Tff);
+        assert_eq!(
+            s.resolve_tptp_lang(TptpLang::Fof, [&numeric]),
+            TptpLang::Fof,
+            "an explicit --lang fof is never second-guessed, even with a numeral present"
+        );
+        assert_eq!(
+            s.resolve_tptp_lang(TptpLang::Tff, [&numeric]),
+            TptpLang::Tff
+        );
     }
 }

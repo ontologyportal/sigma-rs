@@ -8,28 +8,30 @@
 // options, run the query, and render the result.
 
 use crate::style::*;
+use sigmakee_rs_sdk::{manager::KBManager, Session};
 use sigmakee_rs_sdk::{ManKind, SearchOpts, SearchSource, TopLayer};
-use sigmakee_rs_sdk::{Session, manager::KBManager};
 
 pub fn run_search<L>(
     session: Session<L>,
     _manager: KBManager,
-    query:   String,
-    kind:    Option<String>,
-    lang:    Option<String>,
-    limit:   usize,
-) -> bool 
-where L: TopLayer {
+    query: String,
+    kind: Option<String>,
+    lang: Option<String>,
+    limit: usize,
+) -> bool
+where
+    L: TopLayer,
+{
     // Parse --kind into the typed enum, or bail with a clear error if
     // the user typo'd a value clap can't validate (we accept the same
     // strings ManKind::as_str produces).
     let kind_filter = match kind.as_deref() {
-        None              => None,
-        Some("class")     => Some(ManKind::Class),
-        Some("relation")  => Some(ManKind::Relation),
-        Some("function")  => Some(ManKind::Function),
+        None => None,
+        Some("class") => Some(ManKind::Class),
+        Some("relation") => Some(ManKind::Relation),
+        Some("function") => Some(ManKind::Function),
         Some("predicate") => Some(ManKind::Predicate),
-        Some("instance")  => Some(ManKind::Instance),
+        Some("instance") => Some(ManKind::Instance),
         Some("individual") => Some(ManKind::Individual),
         Some(other) => {
             log::error!(
@@ -42,9 +44,9 @@ where L: TopLayer {
     };
 
     let opts = SearchOpts {
-        kind:     kind_filter,
+        kind: kind_filter,
         language: lang.as_deref(),
-        limit:    if limit == 0 { None } else { Some(limit) },
+        limit: if limit == 0 { None } else { Some(limit) },
     };
 
     let Ok(hits) = session.search(&query, &opts) else {
@@ -59,22 +61,27 @@ where L: TopLayer {
     // Compute alignment widths once so the columns line up.  Symbol
     // and kind columns get fixed widths; the snippet wraps at terminal
     // width minus the prefix.
-    let max_sym  = hits.iter().map(|h| h.symbol.len()).max().unwrap_or(0);
-    let max_kind = hits.iter()
-        .map(|h| h.kinds.iter().map(|k| k.as_str().len()).sum::<usize>()
-                 + h.kinds.len().saturating_sub(1))
+    let max_sym = hits.iter().map(|h| h.symbol.len()).max().unwrap_or(0);
+    let max_kind = hits
+        .iter()
+        .map(|h| {
+            h.kinds.iter().map(|k| k.as_str().len()).sum::<usize>()
+                + h.kinds.len().saturating_sub(1)
+        })
         .max()
         .unwrap_or(0);
 
     for hit in &hits {
-        let kinds_str: String = hit.kinds.iter()
+        let kinds_str: String = hit
+            .kinds
+            .iter()
             .map(|k| k.as_str())
             .collect::<Vec<_>>()
             .join(",");
         let src_label = match hit.source {
-            SearchSource::TermFormat    => "term  ",
+            SearchSource::TermFormat => "term  ",
             SearchSource::Documentation => "doc   ",
-            SearchSource::Format        => "format",
+            SearchSource::Format => "format",
         };
 
         // Truncate long snippets and inline the language tag for
@@ -93,7 +100,7 @@ where L: TopLayer {
             src_label,
             hit.language,
             snippet,
-            sym_w  = max_sym,
+            sym_w = max_sym,
             kind_w = max_kind,
         );
     }
@@ -102,7 +109,11 @@ where L: TopLayer {
     println!(
         "{color_bright_black}{} hit(s){}{color_reset}",
         hits.len(),
-        if limit > 0 && hits.len() == limit { " (limit reached — pass --limit 0 for all)" } else { "" }
+        if limit > 0 && hits.len() == limit {
+            " (limit reached — pass --limit 0 for all)"
+        } else {
+            ""
+        }
     );
 
     true
@@ -116,7 +127,9 @@ fn collapse_ws(s: &str) -> String {
 
 /// Truncate at character boundary with an ellipsis when over `max`.
 fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { return s.to_string(); }
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
     let cut: String = s.chars().take(max.saturating_sub(1)).collect();
     format!("{cut}…")
 }

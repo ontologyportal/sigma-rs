@@ -1,34 +1,30 @@
 //! sumo-parser command-line interface.
+use sigmakee::style::*;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process;
-use std::io::{IsTerminal, Write};
-use sigmakee::style::*;
 
-use sigmakee::cli::{Cli, Cmd};
-use sigmakee::cli::{
-    run_flush, run_load, run_load_warm, run_validate,
-    run_translate, run_man, run_search, run_update, run_config, run_config_write,
-    run_config_tui, run_check, ConstituentEdit,
-    maybe_notify_update,
-};
 use sigmakee::cli::args_project;
+use sigmakee::cli::{
+    maybe_notify_update, run_check, run_config, run_config_tui, run_config_write, run_flush,
+    run_load, run_load_warm, run_man, run_search, run_translate, run_update, run_validate,
+    ConstituentEdit,
+};
 #[cfg(feature = "ask")]
-use sigmakee::cli::{run_ask, run_ask_tui, run_test, run_audit};
+use sigmakee::cli::{run_ask, run_ask_tui, run_audit, run_test};
+use sigmakee::cli::{Cli, Cmd};
 // #[cfg(feature = "server")]
 // use sigmakee::cli::run_serve;
 
-use sigmakee_rs_sdk::{
-    DynSink, KnowledgeBase, ProverLayer,
-    ExternalProverLayer, ProvingLayer, TranslationLayer, TopLayer
-};
-use sigmakee_rs_sdk::prover::external::backends::{
-    EproverRunner,
-    VampireRunner,
-};
+use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 #[cfg(feature = "integrated-prover")]
 use sigmakee_rs_sdk::prover::external::backends::IntegratedVampireRunner;
+use sigmakee_rs_sdk::prover::external::backends::{EproverRunner, VampireRunner};
+use sigmakee_rs_sdk::{
+    DynSink, ExternalProverLayer, KnowledgeBase, ProverLayer, ProvingLayer, TopLayer,
+    TranslationLayer,
+};
 use sigmakee_rs_sdk::{Prover, Session};
-use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 
 /// `alloc-mi`: mimalloc as the process-global allocator.  Post-de-alloc
 /// profiles still attribute 15-30% of equational-grind CPU to
@@ -48,7 +44,7 @@ fn main() {
         .spawn(main_worker)
         .expect("spawn sumo-main worker thread");
     match handle.join() {
-        Ok(_)  => (),
+        Ok(_) => (),
         Err(_) => process::exit(101),
     }
 }
@@ -102,7 +98,9 @@ fn main_worker() {
     // under a completely different (and stricter, non-`--declare`-aware)
     // code path before `Cmd::Config` ever runs.
     if !matches!(cli.command, Cmd::Config { .. }) {
-        if let Err(e) = manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone()) {
+        if let Err(e) =
+            manager.add_cli_sources(cli.files.clone(), cli.dirs.clone(), cli.git.clone())
+        {
             log::error!("error: {e}");
             process::exit(2);
         }
@@ -122,25 +120,34 @@ fn main_worker() {
         // KB's constituent list instead of (or alongside) the scalar
         // `--<setting>` overrides above.
         let constituent_edit = match &cli.kb {
-            Some(name) if !cli.files.is_empty() || !cli.dirs.is_empty() || !cli.exclude.is_empty() =>
+            Some(name)
+                if !cli.files.is_empty() || !cli.dirs.is_empty() || !cli.exclude.is_empty() =>
+            {
                 Some(ConstituentEdit {
-                    kb:        name.clone(),
+                    kb: name.clone(),
                     add_files: cli.files.clone(),
-                    add_dirs:  cli.dirs.clone(),
-                    remove:    cli.exclude.clone(),
-                    declare:   cli.declare,
-                }),
+                    add_dirs: cli.dirs.clone(),
+                    remove: cli.exclude.clone(),
+                    declare: cli.declare,
+                })
+            }
             _ => None,
         };
         let ok = if !overrides.is_empty() || constituent_edit.is_some() {
             let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
                 .or_else(sigmakee::config::default_config_write_path)
-                .unwrap_or_else(|| { log::error!("config: could not resolve $HOME to locate config.xml"); process::exit(2); });
+                .unwrap_or_else(|| {
+                    log::error!("config: could not resolve $HOME to locate config.xml");
+                    process::exit(2);
+                });
             run_config_write(&target, overrides, constituent_edit)
         } else if std::io::stdout().is_terminal() && !sigmakee::style::is_ugly() {
             let target = sigmakee::config::resolve_config_path(cli.config.as_deref())
                 .or_else(sigmakee::config::default_config_write_path)
-                .unwrap_or_else(|| { log::error!("config: could not resolve $HOME to locate config.xml"); process::exit(2); });
+                .unwrap_or_else(|| {
+                    log::error!("config: could not resolve $HOME to locate config.xml");
+                    process::exit(2);
+                });
             run_config_tui(&target)
         } else {
             let cfg = sigmakee::config::resolve_config_path(cli.config.as_deref());
@@ -157,7 +164,13 @@ fn main_worker() {
             let dump_manager = if loaded {
                 match KBManager::from_config_xml_path_lenient(cfg.as_deref().unwrap()) {
                     Ok(m) => m,
-                    Err(e) => { log::error!("config: cannot parse {}: {e}", cfg.as_deref().unwrap().display()); process::exit(2); }
+                    Err(e) => {
+                        log::error!(
+                            "config: cannot parse {}: {e}",
+                            cfg.as_deref().unwrap().display()
+                        );
+                        process::exit(2);
+                    }
                 }
             } else {
                 KBManager::default()
@@ -175,7 +188,14 @@ fn main_worker() {
     // it never touches the configured ontology.
     #[cfg(feature = "ask")]
     if matches!(cli.command, Cmd::Casc { .. }) {
-        let Cmd::Casc { path, timeout, jobs } = cli.command else { unreachable!() };
+        let Cmd::Casc {
+            path,
+            timeout,
+            jobs,
+        } = cli.command
+        else {
+            unreachable!()
+        };
         let ok = sigmakee::cli::run_casc(&manager, path, timeout, jobs);
         process::exit(if ok { 0 } else { 1 });
     }
@@ -188,12 +208,12 @@ fn main_worker() {
     // ontology underneath every problem.  A mixed invocation (any `.kif.tq`
     // / directory path) still requires the base KB and validates as before.
     let tptp_only_test = matches!(&cli.command, Cmd::Test { paths, .. }
-        if !paths.is_empty() && paths.iter().all(|p| {
-            // Extension check on the whole argument — works unchanged for a
-            // git/http reference too (e.g. `repo.git#Axioms/T.ax` or
-            // `https://…/PUZ001+1.p` both end with the right suffix).
-            p.ends_with(".p") || p.ends_with(".tptp") || p.ends_with(".ax")
-        }));
+    if !paths.is_empty() && paths.iter().all(|p| {
+        // Extension check on the whole argument — works unchanged for a
+        // git/http reference too (e.g. `repo.git#Axioms/T.ax` or
+        // `https://…/PUZ001+1.p` both end with the right suffix).
+        p.ends_with(".p") || p.ends_with(".tptp") || p.ends_with(".ax")
+    }));
     if !tptp_only_test {
         if let Err(e) = manager.validate(cli.git.as_deref()) {
             log::error!("config error: {e}");
@@ -223,8 +243,13 @@ fn main_worker() {
     // ingest/dispatch machinery below — no constituents get (re-)loaded.
     if matches!(cli.command, Cmd::Check { .. }) {
         let kb = if use_db {
-            Some(KnowledgeBase::<TranslationLayer>::open(db.as_deref().unwrap(), sink.clone())
-                .unwrap_or_else(|d| { log::error!("failed to open DB: {d}"); process::exit(1); }))
+            Some(
+                KnowledgeBase::<TranslationLayer>::open(db.as_deref().unwrap(), sink.clone())
+                    .unwrap_or_else(|d| {
+                        log::error!("failed to open DB: {d}");
+                        process::exit(1);
+                    }),
+            )
         } else {
             None
         };
@@ -236,9 +261,39 @@ fn main_worker() {
     // before the generic backend dispatch.
     #[cfg(feature = "sweep")]
     if matches!(cli.command, Cmd::Sweep { .. }) {
-        let Cmd::Sweep { paths, configs, random, seed, budget, steps, timeout, jobs, out, lanes, portfolio_out, kb: _ } = cli.command else { unreachable!() };
+        let Cmd::Sweep {
+            paths,
+            configs,
+            random,
+            seed,
+            budget,
+            steps,
+            timeout,
+            jobs,
+            out,
+            lanes,
+            portfolio_out,
+            kb: _,
+        } = cli.command
+        else {
+            unreachable!()
+        };
         let session = Session::from_kb(KnowledgeBase::new_native(), session_name);
-        let ok = sigmakee::cli::run_sweep(session, &manager, paths, configs, random, seed, budget, steps, timeout, jobs, out, lanes, portfolio_out);
+        let ok = sigmakee::cli::run_sweep(
+            session,
+            &manager,
+            paths,
+            configs,
+            random,
+            seed,
+            budget,
+            steps,
+            timeout,
+            jobs,
+            out,
+            lanes,
+            portfolio_out,
+        );
         process::exit(if ok { 0 } else { 1 });
     }
 
@@ -248,7 +303,9 @@ fn main_worker() {
     // (db or fresh + constituents) since it clausifies the loaded KB.
     #[cfg(feature = "ask")]
     if matches!(cli.command, Cmd::Clausify { .. }) {
-        let Cmd::Clausify { formula } = cli.command else { unreachable!() };
+        let Cmd::Clausify { formula } = cli.command else {
+            unreachable!()
+        };
         let kb = open_or_new(
             use_db,
             || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
@@ -258,7 +315,13 @@ fn main_worker() {
         if let Some(s) = sink.clone() {
             session.set_progress_sink(s);
         }
-        ingest_constituents(&mut session, &manager, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats);
+        ingest_constituents(
+            &mut session,
+            &manager,
+            cli.git.as_deref(),
+            cli.branch.as_deref(),
+            &mut ingest_stats,
+        );
         for clause in session.clausify(formula.as_deref()) {
             println!("{clause}");
         }
@@ -276,7 +339,16 @@ fn main_worker() {
         if manager.real_numbers == Some(true) {
             kb.set_reals_only(true);
         }
-        dispatch_translation(Session::from_kb(kb, session_name), manager, cli.command, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats)
+        dispatch_translation(
+            Session::from_kb(kb, session_name),
+            manager,
+            cli.command,
+            sink,
+            profile,
+            cli.git.as_deref(),
+            cli.branch.as_deref(),
+            &mut ingest_stats,
+        )
     } else {
         match manager.default_backend.as_str() {
             "native" => {
@@ -285,7 +357,18 @@ fn main_worker() {
                     || KnowledgeBase::<ProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
                     KnowledgeBase::new_native,
                 );
-                dispatch(Session::from_kb(kb, session_name), manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats, &cli.suppress)
+                dispatch(
+                    Session::from_kb(kb, session_name),
+                    manager,
+                    cli.command,
+                    &arg_matches,
+                    sink,
+                    profile,
+                    cli.git.as_deref(),
+                    cli.branch.as_deref(),
+                    &mut ingest_stats,
+                    &cli.suppress,
+                )
             }
             // e / eprover / subprocess / embedded → external layer.
             _ => {
@@ -293,14 +376,20 @@ fn main_worker() {
                 // into the external runner.
                 let keep = match &cli.command {
                     #[cfg(feature = "ask")]
-                    Cmd::Ask { keep, .. } | Cmd::Test { keep, .. } | Cmd::Audit { keep, .. } =>
-                        keep.clone(),
+                    Cmd::Ask { keep, .. } | Cmd::Test { keep, .. } | Cmd::Audit { keep, .. } => {
+                        keep.clone()
+                    }
                     _ => None,
                 };
                 let runner = build_runner(&manager, keep);
                 let kb = open_or_new(
                     use_db,
-                    || KnowledgeBase::<ExternalProverLayer>::open(db.as_deref().unwrap(), sink.clone()),
+                    || {
+                        KnowledgeBase::<ExternalProverLayer>::open(
+                            db.as_deref().unwrap(),
+                            sink.clone(),
+                        )
+                    },
                     || KnowledgeBase::new_external(runner.clone()),
                 );
                 let mut session = Session::from_kb(kb, session_name);
@@ -319,10 +408,27 @@ fn main_worker() {
                     session.kb().set_reals_only(true);
                 }
                 if matches!(cli.command, Cmd::Load { .. }) {
-                    ingest_constituents(&mut session, &manager, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats);
+                    ingest_constituents(
+                        &mut session,
+                        &manager,
+                        cli.git.as_deref(),
+                        cli.branch.as_deref(),
+                        &mut ingest_stats,
+                    );
                     run_load_warm(session, manager)
                 } else {
-                    dispatch(session, manager, cli.command, &arg_matches, sink, profile, cli.git.as_deref(), cli.branch.as_deref(), &mut ingest_stats, &cli.suppress)
+                    dispatch(
+                        session,
+                        manager,
+                        cli.command,
+                        &arg_matches,
+                        sink,
+                        profile,
+                        cli.git.as_deref(),
+                        cli.branch.as_deref(),
+                        &mut ingest_stats,
+                        &cli.suppress,
+                    )
                 }
             }
         }
@@ -356,23 +462,28 @@ fn main_worker() {
 /// without re-walking `manager.current_sources_owned()`.
 #[derive(Default)]
 struct IngestStats {
-    sources:  usize,
-    errors:   usize,
+    sources: usize,
+    errors: usize,
     warnings: usize,
-    infos:    usize,
-    hints:    usize,
+    infos: usize,
+    hints: usize,
 }
 
 /// Print the final success/failure line for `sumo load`. Always names the DB
 /// path and the ingest diagnostic counts so a failure (or a load that limped
 /// through with warnings) is legible without re-running with more logging.
 fn report_load(ok: bool, db: Option<&std::path::Path>, stats: &IngestStats) {
-    let where_ = db.map(|p| p.display().to_string()).unwrap_or_else(|| "<in-memory, no --db>".to_string());
+    let where_ = db
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<in-memory, no --db>".to_string());
     let counts = format!(
         "{} source{} ingested, {} error{}, {} warning{}",
-        stats.sources,  if stats.sources  == 1 { "" } else { "s" },
-        stats.errors,   if stats.errors   == 1 { "" } else { "s" },
-        stats.warnings, if stats.warnings == 1 { "" } else { "s" },
+        stats.sources,
+        if stats.sources == 1 { "" } else { "s" },
+        stats.errors,
+        if stats.errors == 1 { "" } else { "s" },
+        stats.warnings,
+        if stats.warnings == 1 { "" } else { "s" },
     );
     if ok {
         eprintln!(
@@ -389,15 +500,18 @@ fn report_load(ok: bool, db: Option<&std::path::Path>, stats: &IngestStats) {
 /// fresh in-memory one when `use_db` is false.
 fn open_or_new<L, E: std::fmt::Display>(
     use_db: bool,
-    open:   impl FnOnce() -> Result<KnowledgeBase<L>, E>,
-    fresh:  impl FnOnce() -> KnowledgeBase<L>,
+    open: impl FnOnce() -> Result<KnowledgeBase<L>, E>,
+    fresh: impl FnOnce() -> KnowledgeBase<L>,
 ) -> KnowledgeBase<L> {
     if !use_db {
         return fresh();
     }
     match open() {
         Ok(kb) => kb,
-        Err(d) => { log::error!("failed to open DB: {d}"); process::exit(1); }
+        Err(d) => {
+            log::error!("failed to open DB: {d}");
+            process::exit(1);
+        }
     }
 }
 
@@ -431,14 +545,20 @@ where
     }
 
     match cmd {
-        Cmd::Load { flush: _ } =>
-            run_load(session, manager),
+        Cmd::Load { flush: _ } => run_load(session, manager),
 
-        Cmd::Validate { formula, parse } =>
-            run_validate(session, manager, formula, parse, suppress),
+        Cmd::Validate { formula, parse } => {
+            run_validate(session, manager, formula, parse, suppress)
+        }
 
         #[cfg(feature = "ask")]
-        Cmd::Ask { formula, tell, interactive, kb: _, keep } => {
+        Cmd::Ask {
+            formula,
+            tell,
+            interactive,
+            kb: _,
+            keep,
+        } => {
             if interactive {
                 if std::io::stdout().is_terminal() && !sigmakee::style::is_ugly() {
                     // The interactive editor's result overlay always renders
@@ -459,21 +579,35 @@ where
         }
 
         #[cfg(feature = "ask")]
-        Cmd::Test { paths, kb: _, keep, step, full_kb } => {
-            if full_kb { manager.disable_selection = true; }
+        Cmd::Test {
+            paths,
+            kb: _,
+            keep,
+            step,
+            full_kb,
+        } => {
+            if full_kb {
+                manager.disable_selection = true;
+            }
             manager.native_prover.step = step;
             // An explicit `--timeout` overrides every case; its absence means
             // "use each case's own `(time N)`". Clear the global budget so
             // `Session::test` stamps `tc.timeout` per case.
             if !supplied(arg_matches, "timeout") {
                 manager.native_prover.time_limit_secs = 0;
-                manager.external_prover.timeout_secs  = 0;
+                manager.external_prover.timeout_secs = 0;
             }
             run_test(session, manager, paths, keep, branch)
         }
 
         #[cfg(feature = "ask")]
-        Cmd::Audit { file, thoroughness, limit, keep, kb: _ } => {
+        Cmd::Audit {
+            file,
+            thoroughness,
+            limit,
+            keep,
+            kb: _,
+        } => {
             manager.thoroughness = thoroughness;
             manager.limit = limit;
             // `--scope` pins a fixed tolerance (no auto-budget) for the audit.
@@ -484,21 +618,24 @@ where
                 manager.native_prover.time_limit_secs = 60;
             }
             manager.native_prover.want_proof = true;
-            manager.native_prover.max_steps  = 500_000;
-            manager.native_prover.max_lits   = 12;
+            manager.native_prover.max_steps = 500_000;
+            manager.native_prover.max_lits = 12;
             manager.native_prover.forward_close = true;
             run_audit(session, &manager, file, keep)
         }
 
-        Cmd::Search { query, kind, lang, limit } =>
-            run_search(session, manager, query, kind, lang, limit),
+        Cmd::Search {
+            query,
+            kind,
+            lang,
+            limit,
+        } => run_search(session, manager, query, kind, lang, limit),
 
         // #[cfg(feature = "server")]
         // Cmd::Serve { kb: _ } => run_serve(session, &manager),
-
         Cmd::Update { check } => run_update(check),
 
-        _ => false
+        _ => false,
     }
 }
 
@@ -508,12 +645,12 @@ where
 fn dispatch_translation(
     mut session: Session<TranslationLayer>,
     mut manager: KBManager,
-    cmd:         Cmd,
-    sink:        Option<DynSink>,
-    _profile:    bool,
-    git:         Option<&str>,
-    branch:      Option<&str>,
-    stats:       &mut IngestStats,
+    cmd: Cmd,
+    sink: Option<DynSink>,
+    _profile: bool,
+    git: Option<&str>,
+    branch: Option<&str>,
+    stats: &mut IngestStats,
 ) -> bool {
     if let Some(s) = sink {
         session.set_progress_sink(s);
@@ -523,15 +660,27 @@ fn dispatch_translation(
     sigmakee::cli::maybe_notify_stale_git(&session);
 
     match cmd {
-        Cmd::Translate { formula, show_numbers, show_kif, test, full_kb, keep: _ } => {
+        Cmd::Translate {
+            formula,
+            show_numbers,
+            show_kif,
+            test,
+            full_kb,
+            keep: _,
+        } => {
             // Translation never runs the prover-feedback autoscaling ladder.
             manager.show_kif = show_kif;
-            if full_kb { manager.disable_selection = true; }
+            if full_kb {
+                manager.disable_selection = true;
+            }
             manager.native_prover.selection.autoscale = false;
             run_translate(session, manager, formula, show_numbers, test)
         }
-        Cmd::Man { symbol, lang, no_pager } =>
-            run_man(session, manager, symbol, lang, no_pager),
+        Cmd::Man {
+            symbol,
+            lang,
+            no_pager,
+        } => run_man(session, manager, symbol, lang, no_pager),
         _ => unreachable!("dispatch_translation only handles Translate/Man"),
     }
 }
@@ -542,16 +691,32 @@ fn dispatch_translation(
 /// re-roots the constituents onto that repo (see
 /// `KBManager::resolve_sources`); `branch` only matters alongside it.
 fn ingest_constituents<L: TopLayer>(
-    session: &mut Session<L>, manager: &KBManager, git: Option<&str>, branch: Option<&str>, stats: &mut IngestStats,
+    session: &mut Session<L>,
+    manager: &KBManager,
+    git: Option<&str>,
+    branch: Option<&str>,
+    stats: &mut IngestStats,
 ) {
     for src in manager.resolve_sources(git, branch) {
         stats.sources += 1;
         for e in session.ingest(src, false) {
             match e.severity() {
-                sigmakee_rs_sdk::Severity::Error   => { stats.errors   += 1; log::error!("ingest: {e}"); }
-                sigmakee_rs_sdk::Severity::Warning => { stats.warnings += 1; log::warn!("ingest: {e}"); }
-                sigmakee_rs_sdk::Severity::Info    => { stats.infos    += 1; log::info!("ingest: {e}"); }
-                sigmakee_rs_sdk::Severity::Hint    => { stats.hints    += 1; log::debug!("ingest: {e}"); }
+                sigmakee_rs_sdk::Severity::Error => {
+                    stats.errors += 1;
+                    log::error!("ingest: {e}");
+                }
+                sigmakee_rs_sdk::Severity::Warning => {
+                    stats.warnings += 1;
+                    log::warn!("ingest: {e}");
+                }
+                sigmakee_rs_sdk::Severity::Info => {
+                    stats.infos += 1;
+                    log::info!("ingest: {e}");
+                }
+                sigmakee_rs_sdk::Severity::Hint => {
+                    stats.hints += 1;
+                    log::debug!("ingest: {e}");
+                }
             }
         }
     }
@@ -591,8 +756,13 @@ fn build_manager(cli: &Cli) -> KBManager {
             if matches!(cli.command, Cmd::Config { .. }) {
                 return KBManager::default();
             }
-            eprintln!("Could not locate config.xml from `--config {}`",
-                cli.config.as_deref().map(|p| p.display().to_string()).unwrap_or_default());
+            eprintln!(
+                "Could not locate config.xml from `--config {}`",
+                cli.config
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
             process::exit(2);
         }
         // No explicit `--config` and no config.xml at the default location:
@@ -604,7 +774,11 @@ fn build_manager(cli: &Cli) -> KBManager {
 /// `-v`/`-q` override the configured level; install the env_logger format.
 fn init_logging(cli: &Cli, manager: &KBManager) {
     let level = if cli.verbose > 0 {
-        match cli.verbose { 1 => log::LevelFilter::Info, 2 => log::LevelFilter::Debug, _ => log::LevelFilter::Trace }
+        match cli.verbose {
+            1 => log::LevelFilter::Info,
+            2 => log::LevelFilter::Debug,
+            _ => log::LevelFilter::Trace,
+        }
     } else if cli.quiet {
         log::LevelFilter::Error
     } else {
@@ -614,14 +788,22 @@ fn init_logging(cli: &Cli, manager: &KBManager) {
         .filter_level(level)
         .format(|f, record| {
             let lc = match record.level() {
-                log::Level::Error => color_bright_red,  log::Level::Warn => color_bright_yellow,
-                log::Level::Info  => color_cyan,        log::Level::Debug => color_blue,
+                log::Level::Error => color_bright_red,
+                log::Level::Warn => color_bright_yellow,
+                log::Level::Info => color_cyan,
+                log::Level::Debug => color_blue,
                 log::Level::Trace => color_white,
             };
             if record.target() == "clean" {
                 writeln!(f, "{}", record.args())
             } else {
-                writeln!(f, "[{} {lc}{}{color_reset}] {}", f.timestamp(), record.level(), record.args())
+                writeln!(
+                    f,
+                    "[{} {lc}{}{color_reset}] {}",
+                    f.timestamp(),
+                    record.level(),
+                    record.args()
+                )
             }
         })
         .init();
@@ -648,7 +830,10 @@ fn apply_global_overrides(cli: &Cli, manager: &mut KBManager) {
 fn supplied(matches: &clap::ArgMatches, field: &str) -> bool {
     use clap::parser::ValueSource;
     matches.subcommand().is_some_and(|(_, sm)| {
-        matches!(sm.value_source(field), Some(ValueSource::CommandLine) | Some(ValueSource::EnvVariable))
+        matches!(
+            sm.value_source(field),
+            Some(ValueSource::CommandLine) | Some(ValueSource::EnvVariable)
+        )
     })
 }
 
@@ -680,14 +865,19 @@ fn build_runner(manager: &KBManager, keep: Option<PathBuf>) -> Prover {
     }
 }
 
-
 #[cfg(test)]
 mod report_load_tests {
     use super::*;
 
     #[test]
     fn report_load_formats_without_panicking() {
-        let stats = IngestStats { sources: 3, errors: 1, warnings: 2, infos: 0, hints: 0 };
+        let stats = IngestStats {
+            sources: 3,
+            errors: 1,
+            warnings: 2,
+            infos: 0,
+            hints: 0,
+        };
         report_load(true, Some(std::path::Path::new("/tmp/x.lmdb")), &stats);
         report_load(false, None, &stats);
     }

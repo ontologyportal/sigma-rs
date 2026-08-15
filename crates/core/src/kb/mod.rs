@@ -5,11 +5,11 @@
 
 use std::collections::HashMap;
 
-use crate::layer::{TopLayer, Layer};
+use crate::layer::{Layer, TopLayer};
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 use crate::prover::ProvingLayer;
-use crate::syntactic::SyntacticLayer;
 use crate::semantics::SemanticLayer;
+use crate::syntactic::SyntacticLayer;
 use crate::trans::{HasTranslation, TranslationLayer};
 use crate::types::SentenceId;
 
@@ -18,23 +18,23 @@ use crate::persist::LmdbEnv;
 
 #[macro_use]
 pub mod progress;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub mod prove;
+pub(crate) mod assemble;
 #[cfg(feature = "native-prover")]
 pub mod clausify;
-pub mod export;
-#[cfg(any(feature = "snapshot", feature = "persist"))]
-pub mod persist;
-pub mod man;
-pub mod search;
-pub mod ingest;
-pub mod store;
-pub mod semantics;
-pub mod sine;
 pub mod dis;
 pub mod doxastic;
+pub mod export;
+pub mod ingest;
+pub mod man;
+#[cfg(any(feature = "snapshot", feature = "persist"))]
+pub mod persist;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub mod prove;
+pub mod search;
+pub mod semantics;
 pub mod session_tags;
-pub(crate) mod assemble;
+pub mod sine;
+pub mod store;
 // Pure prose/AST rendering (no subprocess or regex deps); `proof_prose` below
 // consumes it to narrate proofs, which the native prover also produces.  Both
 // need a prover backend present (they import `KifProofStep`/`AxiomSource`), so
@@ -88,28 +88,40 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     // -- Layer accessors -------------------------------------------------------
 
     /// Middle layer (semantic).
-    pub(crate) fn semantic(&self) -> &SemanticLayer { self.layer.semantic() }
+    pub(crate) fn semantic(&self) -> &SemanticLayer {
+        self.layer.semantic()
+    }
 
     /// Bottom layer (raw parse store).
-    pub(crate) fn syntactic(&self) -> &SyntacticLayer { &self.layer.semantic().syntactic }
+    pub(crate) fn syntactic(&self) -> &SyntacticLayer {
+        &self.layer.semantic().syntactic
+    }
 
     /// Mut access to the middle layer.
-    pub(crate) fn semantic_mut(&mut self) -> &mut SemanticLayer { self.layer.semantic_mut() }
+    pub(crate) fn semantic_mut(&mut self) -> &mut SemanticLayer {
+        self.layer.semantic_mut()
+    }
 
     /// Mut access to the bottom layer.
-    pub(crate) fn syntactic_mut(&mut self) -> &mut SyntacticLayer { &mut self.layer.semantic_mut().syntactic }
+    pub(crate) fn syntactic_mut(&mut self) -> &mut SyntacticLayer {
+        &mut self.layer.semantic_mut().syntactic
+    }
 
     /// Crate-internal read-only access to the underlying [`SyntacticLayer`].
     /// New code should prefer [`Self::syntactic`].
     #[allow(dead_code)]
-    pub(crate) fn store_for_testing(&self) -> &SyntacticLayer { self.syntactic() }
+    pub(crate) fn store_for_testing(&self) -> &SyntacticLayer {
+        self.syntactic()
+    }
 
     /// The stack's shared cache/parallelism config. Public so embedders that
     /// spin up their own thread pool (wasm-bindgen-rayon on a threads-enabled
     /// wasm32 build) can call [`crate::cache::CacheConfig::set_max_threads`]
     /// with `navigator.hardwareConcurrency` — `std::thread::available_parallelism`,
     /// the non-wasm default, is unavailable there and falls back to `1`.
-    pub fn cache_config(&self) -> &crate::cache::CacheConfig { self.layer.cache_config() }
+    pub fn cache_config(&self) -> &crate::cache::CacheConfig {
+        self.layer.cache_config()
+    }
 
     // -- Construction ----------------------------------------------------------
 
@@ -118,29 +130,35 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub(in crate::kb) fn from_layer(layer: L) -> Self {
         Self {
             layer,
-            sessions:                       HashMap::new(),
-            syntax_fingerprints:            HashMap::new(),
-            #[cfg(feature = "persist")]     db:   None,
-            progress:                       None,
+            sessions: HashMap::new(),
+            syntax_fingerprints: HashMap::new(),
+            #[cfg(feature = "persist")]
+            db: None,
+            progress: None,
         }
     }
 }
 
 impl<L: HasTranslation + TopLayer> KnowledgeBase<L> {
     /// Top layer (translation).
-    pub(crate) fn translation(&self) -> &TranslationLayer { &self.layer.translation() }
+    pub(crate) fn translation(&self) -> &TranslationLayer {
+        &self.layer.translation()
+    }
 }
 
 impl KnowledgeBase {
     /// Constructs a new KnowledgeBase over the translation (TPTP) stack.
     pub fn new() -> Self {
-        Self::from_layer(TranslationLayer::new(
-            SemanticLayer::new(SyntacticLayer::default())))
+        Self::from_layer(TranslationLayer::new(SemanticLayer::new(
+            SyntacticLayer::default(),
+        )))
     }
 }
 
 impl Default for KnowledgeBase {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -159,8 +177,9 @@ impl KnowledgeBase<crate::prover::ProverLayer> {
     ///
     /// [`ProverLayer`]: crate::saturate::ProverLayer
     pub fn new_native() -> Self {
-        Self::from_layer(crate::prover::ProverLayer::new(
-            SemanticLayer::new(SyntacticLayer::default())))
+        Self::from_layer(crate::prover::ProverLayer::new(SemanticLayer::new(
+            SyntacticLayer::default(),
+        )))
     }
 }
 
@@ -175,9 +194,9 @@ impl KnowledgeBase<crate::prover::ProverLayer<TranslationLayer>> {
     /// [`ProverLayer`]: crate::saturate::ProverLayer
     /// [`ProverLayer<S>`]: crate::saturate::ProverLayer
     pub fn new_native_translating() -> Self {
-        Self::from_layer(crate::prover::ProverLayer::new(
-            TranslationLayer::new(
-                SemanticLayer::new(SyntacticLayer::default()))))
+        Self::from_layer(crate::prover::ProverLayer::new(TranslationLayer::new(
+            SemanticLayer::new(SyntacticLayer::default()),
+        )))
     }
 }
 
@@ -188,9 +207,10 @@ impl KnowledgeBase<crate::prover::ExternalProverLayer> {
     ///
     /// [`ExternalProverLayer`]: crate::prover::ExternalProverLayer
     pub fn new_external(backend: crate::prover::external::Prover) -> Self {
-        Self::from_layer(crate::prover::ExternalProverLayer::new(backend,
-            TranslationLayer::new(
-                SemanticLayer::new(SyntacticLayer::default()))))
+        Self::from_layer(crate::prover::ExternalProverLayer::new(
+            backend,
+            TranslationLayer::new(SemanticLayer::new(SyntacticLayer::default())),
+        ))
     }
 
     /// Swaps the external prover backend (e.g. E or a custom Vampire path)

@@ -57,8 +57,8 @@ pub(crate) fn canonical_clause(mut lits: Vec<(bool, Term)>, atoms: &AtomTable) -
     }
 
     PClause {
-        key:   ClauseKey(key_hash.digest()),
-        lits:  plits,
+        key: ClauseKey(key_hash.digest()),
+        lits: plits,
         nvars: map.len() as u32,
     }
 }
@@ -112,9 +112,7 @@ pub(crate) fn canonical_slot(id: SymbolId) -> Option<u32> {
 /// actually accepted (`make`'s accept point), so the clauses that die
 /// at the dedup/tautology/schema/subsumption gates never pay
 /// `Sentence` construction or `DashMap` traffic at all.
-pub(crate) fn canonical_clause_hashed(
-    mut lits: Vec<(bool, Term)>,
-) -> (PClause, Vec<(bool, Term)>) {
+pub(crate) fn canonical_clause_hashed(mut lits: Vec<(bool, Term)>) -> (PClause, Vec<(bool, Term)>) {
     // 1. Orient equality literals (identical to `canonical_clause`).
     for (_, t) in lits.iter_mut() {
         orient_equality(t);
@@ -142,8 +140,8 @@ pub(crate) fn canonical_clause_hashed(
 
     (
         PClause {
-            key:   ClauseKey(key_hash.digest()),
-            lits:  plits,
+            key: ClauseKey(key_hash.digest()),
+            lits: plits,
             nvars: map.len() as u32,
         },
         terms,
@@ -155,10 +153,7 @@ pub(crate) fn canonical_clause_hashed(
 /// single-element sentence `intern_atom` builds — and its slot form is
 /// the single-element `App` that `slot_atom` (term_of of a one-element
 /// sentence) would lift.
-fn slot_and_hash_atom(
-    t: &Term,
-    map: &mut super::hash64::Map64<SymbolId, u32>,
-) -> (Term, u64) {
+fn slot_and_hash_atom(t: &Term, map: &mut super::hash64::Map64<SymbolId, u32>) -> (Term, u64) {
     match t {
         Term::App(elems) => {
             let (children, h) = slot_hash_children(elems, map);
@@ -256,9 +251,17 @@ fn blank_into(t: &Term, out: &mut String) {
             out.push('s');
             out.push_str(&sym.name());
         }
-        Term::Lit(Literal::Str(v)) => { out.push('t'); out.push_str(v); }
-        Term::Lit(Literal::Number(v)) => { out.push('n'); out.push_str(v); }
-        Term::Op(op) => { let _ = write!(out, "o{:?}", op); }
+        Term::Lit(Literal::Str(v)) => {
+            out.push('t');
+            out.push_str(v);
+        }
+        Term::Lit(Literal::Number(v)) => {
+            out.push('n');
+            out.push_str(v);
+        }
+        Term::Op(op) => {
+            let _ = write!(out, "o{:?}", op);
+        }
         Term::App(elems) => {
             out.push('(');
             for e in elems {

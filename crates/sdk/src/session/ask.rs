@@ -8,12 +8,12 @@
 use std::path::PathBuf;
 
 use sigmakee_rs_core::{
-    AstNode, CommonProverOpts, Parser, ProverResult, ProverStatus, ProvingLayer, SourceFile,
-    TestCase, parse_document
+    parse_document, AstNode, CommonProverOpts, Parser, ProverResult, ProverStatus, ProvingLayer,
+    SourceFile, TestCase,
 };
 
-use super::Session;
 use super::super::{SdkError, SdkResult, Source};
+use super::Session;
 
 /// The SZS ("Success/Zero-info Status") ontology's outcome words, restricted
 /// to the ones this harness ever reports — the six the CLI prints on the
@@ -44,12 +44,12 @@ pub enum SzsStatus {
 impl std::fmt::Display for SzsStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            SzsStatus::Theorem            => "Theorem",
-            SzsStatus::Unsatisfiable      => "Unsatisfiable",
+            SzsStatus::Theorem => "Theorem",
+            SzsStatus::Unsatisfiable => "Unsatisfiable",
             SzsStatus::CounterSatisfiable => "CounterSatisfiable",
-            SzsStatus::Satisfiable        => "Satisfiable",
-            SzsStatus::GaveUp             => "GaveUp",
-            SzsStatus::Timeout            => "Timeout",
+            SzsStatus::Satisfiable => "Satisfiable",
+            SzsStatus::GaveUp => "GaveUp",
+            SzsStatus::Timeout => "Timeout",
         };
         f.write_str(s)
     }
@@ -65,14 +65,14 @@ impl std::fmt::Display for SzsStatus {
 pub fn szs_status(result: &ProverResult, has_fof_conjecture: bool) -> SzsStatus {
     match result.status {
         ProverStatus::Proved if has_fof_conjecture => SzsStatus::Theorem,
-        ProverStatus::Proved                       => SzsStatus::Unsatisfiable,
+        ProverStatus::Proved => SzsStatus::Unsatisfiable,
         // A refutation not rooted in the conjecture: the background theory
         // alone is unsatisfiable.
-        ProverStatus::Inconsistent                 => SzsStatus::Unsatisfiable,
+        ProverStatus::Inconsistent => SzsStatus::Unsatisfiable,
         ProverStatus::Disproved if has_fof_conjecture => SzsStatus::CounterSatisfiable,
-        ProverStatus::Disproved                       => SzsStatus::Satisfiable,
-        ProverStatus::Consistent                   => SzsStatus::Satisfiable,
-        ProverStatus::Timeout                      => SzsStatus::Timeout,
+        ProverStatus::Disproved => SzsStatus::Satisfiable,
+        ProverStatus::Consistent => SzsStatus::Satisfiable,
+        ProverStatus::Timeout => SzsStatus::Timeout,
         // `Unknown` (incomplete search / step exhaustion / no verdict) and
         // `InputError` (malformed input — nothing better to report on this
         // 6-word scale) both fall through to GaveUp.
@@ -107,10 +107,10 @@ pub enum ExpectedOutcome {
 fn classify_expected_status(status: Option<&str>) -> ExpectedOutcome {
     match status {
         None => ExpectedOutcome::Proved,
-        Some("Theorem") | Some("Unsatisfiable") | Some("ContradictoryAxioms") =>
-            ExpectedOutcome::Proved,
-        Some("Satisfiable") | Some("CounterSatisfiable") =>
-            ExpectedOutcome::NotProved,
+        Some("Theorem") | Some("Unsatisfiable") | Some("ContradictoryAxioms") => {
+            ExpectedOutcome::Proved
+        }
+        Some("Satisfiable") | Some("CounterSatisfiable") => ExpectedOutcome::NotProved,
         Some(_) => ExpectedOutcome::Informational,
     }
 }
@@ -123,7 +123,7 @@ fn classify_expected_status(status: Option<&str>) -> ExpectedOutcome {
 /// prover: a `Consistent` audit result counts too (whole-theory satisfiable).
 fn is_confident_disproof(result: &ProverResult) -> bool {
     match result.status {
-        ProverStatus::Disproved  => result.complete_saturation != Some(false),
+        ProverStatus::Disproved => result.complete_saturation != Some(false),
         ProverStatus::Consistent => true,
         _ => false,
     }
@@ -139,18 +139,28 @@ pub enum TestOutcome {
     Passed,
     /// Provability matched, but some expected `(answer …)` bindings were not
     /// among the prover's results.
-    Incomplete { inferred: Vec<String>, missing: Vec<String> },
+    Incomplete {
+        inferred: Vec<String>,
+        missing: Vec<String>,
+    },
     /// The prover's verdict contradicted the case's expectation — an
     /// ordinary failure (timeout / gave-up / wrong side of an honest
     /// countermodel), not a confidently wrong claim.
-    Failed { expected: bool, got: bool, status: ProverStatus },
+    Failed {
+        expected: bool,
+        got: bool,
+        status: ProverStatus,
+    },
     /// The prover made a CONFIDENT claim that contradicts the case's
     /// `% Status` header — proved a problem whose header says
     /// Satisfiable/CounterSatisfiable, or produced a certified disproof of
     /// one whose header says Theorem/Unsatisfiable.  Distinct from
     /// `Failed`: this is not "ran out of budget", it's "got the wrong
     /// answer with confidence" — the harness's most serious finding.
-    FalseVerdict { expected: ExpectedOutcome, status: ProverStatus },
+    FalseVerdict {
+        expected: ExpectedOutcome,
+        status: ProverStatus,
+    },
     /// The case's expectation is merely informational (`Open`/`Unknown`
     /// header, or no header at all beyond the `.tq` yes/no directive) — the
     /// prover ran and reported an outcome, but it is neither a pass nor a
@@ -163,22 +173,22 @@ pub enum TestOutcome {
 #[derive(Debug, Clone)]
 pub struct TestCaseOutcome {
     /// The test's file name (`TestCase::file_name`).
-    pub name:    String,
+    pub name: String,
     /// The verdict, derived from the case's expectations.
     pub outcome: TestOutcome,
     /// The underlying prover result.
-    pub result:  ProverResult,
+    pub result: ProverResult,
     /// The `% SZS status <X> for <name>` word this case's result maps to —
     /// always populated (independent of whether the case carried a `%
     /// Status` header), so the CLI can print the line unconditionally.
-    pub szs:     SzsStatus,
+    pub szs: SzsStatus,
 }
 
 /// A `Session` with accumulated hypotheses, returned by [`Session::tell`].  Add
 /// more with [`OpenSession::tell`], then discharge a conjecture with
 /// [`OpenSession::ask`] — the hypotheses ride in as the `TestCase`'s support.
 pub struct OpenSession<'a, L: ProvingLayer> {
-    session:    &'a mut Session<L>,
+    session: &'a mut Session<L>,
     hypotheses: Vec<AstNode>,
 }
 
@@ -187,20 +197,30 @@ impl<L: ProvingLayer> Session<L> {
     /// [`OpenSession`] carrying them.  Chain more [`tell`](OpenSession::tell)s
     /// and finish with [`ask`](OpenSession::ask).
     pub fn tell(&mut self, kif: &str) -> Result<OpenSession<'_, L>, Vec<SdkError>> {
-        Ok(OpenSession { session: self, hypotheses: parse_formulas(kif)? })
+        Ok(OpenSession {
+            session: self,
+            hypotheses: parse_formulas(kif)?,
+        })
     }
 
     /// Create an empty [`OpenSession`] for this session, used mainly for type
     /// checking convenience
     pub fn open_session(&mut self) -> OpenSession<'_, L> {
-        OpenSession { session: self, hypotheses: vec![] }
+        OpenSession {
+            session: self,
+            hypotheses: vec![],
+        }
     }
 
     /// Prove a KIF conjecture against the KB.  Builds a synthetic [`TestCase`]
     /// (the conjecture, no hypotheses) and calls the core `ask` primitive.
     /// Selection / session ride in on `opts` — the layer's consolidated params.
     /// Errors on non-proving backends.
-    pub fn ask(&self, query_kif: &str, opts: Option<L::Opts>) -> Result<ProverResult, Vec<SdkError>> {
+    pub fn ask(
+        &self,
+        query_kif: &str,
+        opts: Option<L::Opts>,
+    ) -> Result<ProverResult, Vec<SdkError>> {
         let tc = synthetic_case(parse_one(query_kif)?, Vec::new());
         self.ask_case(tc, opts)
     }
@@ -247,7 +267,10 @@ impl<L: ProvingLayer> Session<L> {
         // complete-calculus configuration (native: full saturation +
         // superposition with strict, honest saturation verdicts).  `.tq` KIF
         // tests keep the backend's configured strategy.
-        let is_tptp = matches!(Parser::from_filename(&tc.file_name), Some(Parser::Tptp { .. }));
+        let is_tptp = matches!(
+            Parser::from_filename(&tc.file_name),
+            Some(Parser::Tptp { .. })
+        );
         if is_tptp {
             prover_opts.set_tptp_problem();
         }
@@ -263,7 +286,7 @@ impl<L: ProvingLayer> Session<L> {
         } else {
             match tc.expected_proof {
                 Some(true) | None => ExpectedOutcome::Proved,
-                Some(false)       => ExpectedOutcome::NotProved,
+                Some(false) => ExpectedOutcome::NotProved,
             }
         };
         // Peel the `.tq`/TPTP `Annotated{Conjecture}` wrapper to the bare
@@ -284,16 +307,26 @@ impl<L: ProvingLayer> Session<L> {
                     // A CERTIFIED disproof/countermodel of a problem the
                     // header claims is a Theorem — confidently wrong, not
                     // merely "ran out of budget".
-                    TestOutcome::FalseVerdict { expected, status: result.status }
+                    TestOutcome::FalseVerdict {
+                        expected,
+                        status: result.status,
+                    }
                 } else {
-                    TestOutcome::Failed { expected: true, got: false, status: result.status.clone() }
+                    TestOutcome::Failed {
+                        expected: true,
+                        got: false,
+                        status: result.status.clone(),
+                    }
                 }
             }
             ExpectedOutcome::NotProved => {
                 if proved {
                     // Claimed a proof of a problem the header says is
                     // Satisfiable/CounterSatisfiable — confidently wrong.
-                    TestOutcome::FalseVerdict { expected, status: result.status }
+                    TestOutcome::FalseVerdict {
+                        expected,
+                        status: result.status,
+                    }
                 } else {
                     // Any honest non-proof passes: a certified countermodel,
                     // a gave-up, or an honest timeout are all the designed
@@ -302,13 +335,22 @@ impl<L: ProvingLayer> Session<L> {
                 }
             }
         };
-        Ok(TestCaseOutcome { name, outcome, result, szs })
+        Ok(TestCaseOutcome {
+            name,
+            outcome,
+            result,
+            szs,
+        })
     }
 
     // -- internals -----------------------------------------------------------
 
     /// Discharge a fully-assembled `TestCase` through the core `ask` primitive.
-    fn ask_case(&self, mut tc: TestCase, opts: Option<L::Opts>) -> Result<ProverResult, Vec<SdkError>> {
+    fn ask_case(
+        &self,
+        mut tc: TestCase,
+        opts: Option<L::Opts>,
+    ) -> Result<ProverResult, Vec<SdkError>> {
         // `ask`'s conjecture normalizer interns the bare formula; the `.tq` /
         // TPTP parsers attach an `Annotated{Conjecture}` wrapper it doesn't peel
         // (a negated conjecture's extra `not` is already baked into the formula
@@ -335,11 +377,13 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     /// proof steps ride in `proof_kif` when `opts.want_proof` is set.
     pub fn doxastic_ask(
         &self,
-        agent:     &str,
+        agent: &str,
         query_kif: &str,
-        opts:      Option<sigmakee_rs_core::NativeOpts>,
+        opts: Option<sigmakee_rs_core::NativeOpts>,
     ) -> SdkResult<ProverResult> {
-        Ok(self.kb.doxastic_ask(agent, query_kif, opts.unwrap_or_default()))
+        Ok(self
+            .kb
+            .doxastic_ask(agent, query_kif, opts.unwrap_or_default()))
     }
 
     /// Is `agent`'s belief base consistent under full consequence
@@ -349,7 +393,7 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     pub fn doxastic_consistent(
         &self,
         agent: &str,
-        opts:  Option<sigmakee_rs_core::NativeOpts>,
+        opts: Option<sigmakee_rs_core::NativeOpts>,
     ) -> SdkResult<ProverResult> {
         Ok(self.kb.doxastic_consistent(agent, opts.unwrap_or_default()))
     }
@@ -362,7 +406,7 @@ impl Session<sigmakee_rs_core::ProverLayer> {
     pub fn clausify(&self, formula: Option<&str>) -> Vec<String> {
         match formula {
             Some(kif) => self.kb.clausify_formula(kif),
-            None      => self.kb.clausify_all(),
+            None => self.kb.clausify_all(),
         }
     }
 }
@@ -380,7 +424,11 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
 
     /// Discharge `query_kif` against the KB with the accumulated hypotheses as
     /// force-included support.
-    pub fn ask(self, query_kif: &str, opts: Option<L::Opts>) -> Result<ProverResult, Vec<SdkError>> {
+    pub fn ask(
+        self,
+        query_kif: &str,
+        opts: Option<L::Opts>,
+    ) -> Result<ProverResult, Vec<SdkError>> {
         let tc = synthetic_case(parse_one(query_kif)?, self.hypotheses);
         self.session.ask_case(tc, opts)
     }
@@ -390,20 +438,31 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
         let session_name = format!("__inline_validation({})__", self.session.name);
         let hypotheses = self.hypotheses.clone();
         let kb = self.session_mut().kb_mut();
-        let res = kb.load(SourceFile {
-            parser: Parser::Kif,
-            name: session_name.clone(),
-            path: PathBuf::new(),
-            origin: sigmakee_rs_core::FileOrigin::Inline,
-            contents: String::new(),
-            prebuilt: Some(hypotheses),
-        }, &session_name);
+        let res = kb.load(
+            SourceFile {
+                parser: Parser::Kif,
+                name: session_name.clone(),
+                path: PathBuf::new(),
+                origin: sigmakee_rs_core::FileOrigin::Inline,
+                contents: String::new(),
+                prebuilt: Some(hypotheses),
+            },
+            &session_name,
+        );
 
         if res.has_errors() {
-            return res.diagnostics.into_iter().map(|d| SdkError::Kb(d)).collect();
+            return res
+                .diagnostics
+                .into_iter()
+                .map(|d| SdkError::Kb(d))
+                .collect();
         }
 
-        let diag = kb.validate_session(&session_name).into_iter().map(|d| SdkError::Kb(d)).collect();
+        let diag = kb
+            .validate_session(&session_name)
+            .into_iter()
+            .map(|d| SdkError::Kb(d))
+            .collect();
 
         kb.flush_session(&session_name);
 
@@ -415,31 +474,40 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
 fn parse_formulas(kif: &str) -> Result<Vec<AstNode>, Vec<SdkError>> {
     let doc = parse_document("sdk::session", kif.to_string(), Parser::Kif);
     if doc.has_errors() {
-        return Err(doc.parse_errors.iter().map(|(_, e)| SdkError::Kb(e.to_diagnostic())).collect());
+        return Err(doc
+            .parse_errors
+            .iter()
+            .map(|(_, e)| SdkError::Kb(e.to_diagnostic()))
+            .collect());
     }
-    Ok(doc.ast.iter().filter_map(|d| d.as_stmt().cloned()).collect())
+    Ok(doc
+        .ast
+        .iter()
+        .filter_map(|d| d.as_stmt().cloned())
+        .collect())
 }
 
 /// Parse exactly one formula (the conjecture).
 fn parse_one(kif: &str) -> Result<AstNode, Vec<SdkError>> {
     parse_formulas(kif)?
-        .into_iter().next()
+        .into_iter()
+        .next()
         .ok_or_else(|| vec![SdkError::Config("query parsed to no formula".into())])
 }
 
 fn synthetic_case(query: AstNode, hypotheses: Vec<AstNode>) -> TestCase {
     TestCase {
-        file_name:       "sdk::session".into(),
-        note:            String::new(),
-        timeout:         0,
-        query:           Some(query),
-        expected_proof:  None,
+        file_name: "sdk::session".into(),
+        note: String::new(),
+        timeout: 0,
+        query: Some(query),
+        expected_proof: None,
         expected_answer: None,
-        axioms:          hypotheses,
-        extra_files:     Vec::new(),
+        axioms: hypotheses,
+        extra_files: Vec::new(),
         expected_status: None,
         has_fof_conjecture: false,
-        input_formulas:     0,
+        input_formulas: 0,
         unaccounted_inputs: 0,
     }
 }

@@ -56,17 +56,13 @@ pub fn tag_to_uri(tag: &str) -> Option<Url> {
 ///    references into files not yet opened.
 /// 3. An empty rope as a last resort (malformed URI, unreadable
 ///    file, permissions error).
-pub fn span_to_range_with_fallback(
-    docs: &HashMap<Url, DocState>,
-    uri:  &Url,
-    span: &Span,
-) -> Range {
+pub fn span_to_range_with_fallback(docs: &HashMap<Url, DocState>, uri: &Url, span: &Span) -> Range {
     if let Some(doc) = docs.get(uri) {
         return span_to_range(&doc.rope, span);
     }
     let rope = match read_rope_from_disk(uri) {
         Some(r) => r,
-        None    => Rope::new(),
+        None => Rope::new(),
     };
     span_to_range(&rope, span)
 }
@@ -77,7 +73,7 @@ pub fn span_to_range_with_fallback(
 /// read fails.
 fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
     let path = match uri.to_file_path() {
-        Ok(p)  => p,
+        Ok(p) => p,
         Err(_) => {
             log::debug!(target: "sumo_lsp::conv",
                 "non-file URI '{}' in cross-file range lookup; using empty rope", uri);
@@ -86,7 +82,7 @@ fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
     };
     match std::fs::read_to_string(&path) {
         Ok(text) => Some(Rope::from_str(&text)),
-        Err(e)   => {
+        Err(e) => {
             log::debug!(target: "sumo_lsp::conv",
                 "cross-file read of '{}' failed ({}); using empty rope",
                 path.display(), e);
@@ -104,12 +100,12 @@ fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
 pub fn offset_to_position(rope: &Rope, byte_offset: usize) -> Position {
     // Clamp to buffer -- defensive against stale spans after an edit.
     let byte_offset = byte_offset.min(rope.len_bytes());
-    let line_idx    = rope.byte_to_line(byte_offset);
-    let line_start  = rope.line_to_byte(line_idx);
+    let line_idx = rope.byte_to_line(byte_offset);
+    let line_start = rope.line_to_byte(line_idx);
     let line_prefix = rope.byte_slice(line_start..byte_offset);
-    let utf16_col   = line_prefix.chars().map(|c| c.len_utf16() as u32).sum();
+    let utf16_col = line_prefix.chars().map(|c| c.len_utf16() as u32).sum();
     Position {
-        line:      line_idx as u32,
+        line: line_idx as u32,
         character: utf16_col,
     }
 }
@@ -121,24 +117,28 @@ pub fn offset_to_position(rope: &Rope, byte_offset: usize) -> Position {
 /// line is out of range.
 pub fn position_to_offset(rope: &Rope, pos: Position) -> usize {
     let line = pos.line as usize;
-    if line >= rope.len_lines() { return rope.len_bytes(); }
+    if line >= rope.len_lines() {
+        return rope.len_bytes();
+    }
     let line_start = rope.line_to_byte(line);
-    let line_len   = rope.line(line).len_bytes();
-    let line_end   = line_start + line_len;
+    let line_len = rope.line(line).len_bytes();
+    let line_end = line_start + line_len;
 
     // Walk the line char-by-char, consuming `pos.character` UTF-16 units.
     let line_slice = rope.byte_slice(line_start..line_end);
     let mut remaining = pos.character as usize;
-    let mut byte_off  = line_start;
+    let mut byte_off = line_start;
     for c in line_slice.chars() {
-        if remaining == 0 { break; }
+        if remaining == 0 {
+            break;
+        }
         let u16_len = c.len_utf16();
         if remaining < u16_len {
             // Position splits a surrogate pair; round up to the char boundary.
             break;
         }
         remaining -= u16_len;
-        byte_off  += c.len_utf8();
+        byte_off += c.len_utf8();
     }
     byte_off
 }
@@ -147,7 +147,7 @@ pub fn position_to_offset(rope: &Rope, pos: Position) -> usize {
 pub fn span_to_range(rope: &Rope, span: &Span) -> Range {
     Range {
         start: offset_to_position(rope, span.offset),
-        end:   offset_to_position(rope, span.end_offset),
+        end: offset_to_position(rope, span.end_offset),
     }
 }
 
@@ -161,22 +161,27 @@ pub fn span_to_range(rope: &Rope, span: &Span) -> Range {
 pub fn kb_diagnostic_to_lsp(rope: &Rope, d: &KbDiagnostic) -> LspDiagnostic {
     let code = format!("{}/{}", d.kind, d.code);
     LspDiagnostic {
-        range:    span_to_range(rope, &d.range),
+        range: span_to_range(rope, &d.range),
         severity: Some(severity_to_lsp(d.severity)),
-        code:     Some(lsp_types::NumberOrString::String(code)),
+        code: Some(lsp_types::NumberOrString::String(code)),
         code_description: None,
-        source:   Some("sumo-lsp".to_string()),
-        message:  d.message.clone(),
+        source: Some("sumo-lsp".to_string()),
+        message: d.message.clone(),
         related_information: if d.related.is_empty() {
             None
         } else {
-            Some(d.related.iter().map(|r| lsp_types::DiagnosticRelatedInformation {
-                location: lsp_types::Location {
-                    uri:   tag_to_uri(&r.range.file).unwrap_or_else(placeholder_url),
-                    range: span_to_range(rope, &r.range),
-                },
-                message: r.message.clone(),
-            }).collect())
+            Some(
+                d.related
+                    .iter()
+                    .map(|r| lsp_types::DiagnosticRelatedInformation {
+                        location: lsp_types::Location {
+                            uri: tag_to_uri(&r.range.file).unwrap_or_else(placeholder_url),
+                            range: span_to_range(rope, &r.range),
+                        },
+                        message: r.message.clone(),
+                    })
+                    .collect(),
+            )
         },
         tags: None,
         data: None,
@@ -185,10 +190,10 @@ pub fn kb_diagnostic_to_lsp(rope: &Rope, d: &KbDiagnostic) -> LspDiagnostic {
 
 fn severity_to_lsp(s: Severity) -> DiagnosticSeverity {
     match s {
-        Severity::Error   => DiagnosticSeverity::ERROR,
+        Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
-        Severity::Info    => DiagnosticSeverity::INFORMATION,
-        Severity::Hint    => DiagnosticSeverity::HINT,
+        Severity::Info => DiagnosticSeverity::INFORMATION,
+        Severity::Hint => DiagnosticSeverity::HINT,
     }
 }
 
@@ -208,8 +213,7 @@ mod tests {
         // A file:// URL should round-trip.  We don't compare to the
         // original string (platform-dependent) but the round-trip
         // must be stable.
-        let url = Url::from_file_path("/tmp/foo.kif")
-            .expect("constructible file url");
+        let url = Url::from_file_path("/tmp/foo.kif").expect("constructible file url");
         let tag = uri_to_tag(&url);
         let back = tag_to_uri(&tag).expect("tag parseable");
         assert_eq!(back, url);
@@ -218,10 +222,34 @@ mod tests {
     #[test]
     fn offset_to_position_ascii() {
         let rope = Rope::from_str("abc\ndef\n");
-        assert_eq!(offset_to_position(&rope, 0), Position { line: 0, character: 0 });
-        assert_eq!(offset_to_position(&rope, 3), Position { line: 0, character: 3 });
-        assert_eq!(offset_to_position(&rope, 4), Position { line: 1, character: 0 });
-        assert_eq!(offset_to_position(&rope, 7), Position { line: 1, character: 3 });
+        assert_eq!(
+            offset_to_position(&rope, 0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 3),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 4),
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 7),
+            Position {
+                line: 1,
+                character: 3
+            }
+        );
     }
 
     #[test]
@@ -230,23 +258,53 @@ mod tests {
         // (2 code units).  Byte length is 4 in UTF-8.
         let rope = Rope::from_str("a😀b");
         // Byte positions: a=0, 😀=1..5, b=5
-        assert_eq!(offset_to_position(&rope, 0), Position { line: 0, character: 0 });
-        assert_eq!(offset_to_position(&rope, 1), Position { line: 0, character: 1 });
-        assert_eq!(offset_to_position(&rope, 5), Position { line: 0, character: 3 });
-        assert_eq!(offset_to_position(&rope, 6), Position { line: 0, character: 4 });
+        assert_eq!(
+            offset_to_position(&rope, 0),
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 1),
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 5),
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+        assert_eq!(
+            offset_to_position(&rope, 6),
+            Position {
+                line: 0,
+                character: 4
+            }
+        );
     }
 
     #[test]
     fn position_to_offset_inverse_ascii() {
         let rope = Rope::from_str("abc\ndef\n");
-        let p    = Position { line: 1, character: 2 };
+        let p = Position {
+            line: 1,
+            character: 2,
+        };
         assert_eq!(position_to_offset(&rope, p), 6);
     }
 
     #[test]
     fn position_to_offset_beyond_end_clamps() {
         let rope = Rope::from_str("abc");
-        let p    = Position { line: 9, character: 9 };
+        let p = Position {
+            line: 9,
+            character: 9,
+        };
         assert_eq!(position_to_offset(&rope, p), rope.len_bytes());
     }
 
@@ -255,11 +313,27 @@ mod tests {
         let rope = Rope::from_str("(subclass Human Animal)");
         let span = Span {
             file: "t".into(),
-            line: 1, col: 1, offset: 0,
-            end_line: 1, end_col: 24, end_offset: 23,
+            line: 1,
+            col: 1,
+            offset: 0,
+            end_line: 1,
+            end_col: 24,
+            end_offset: 23,
         };
         let r = span_to_range(&rope, &span);
-        assert_eq!(r.start, Position { line: 0, character: 0 });
-        assert_eq!(r.end,   Position { line: 0, character: 23 });
+        assert_eq!(
+            r.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
+        assert_eq!(
+            r.end,
+            Position {
+                line: 0,
+                character: 23
+            }
+        );
     }
 }

@@ -142,16 +142,32 @@ parked! {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{Atom, Literal};
+    use super::*;
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Pred { Symbol::hash_name(n) }
-    fn atom(p: Pred, a: &[u32]) -> Atom {
-        Atom { pred: p, args: a.iter().map(|i| DTerm::Var(*i)).collect() }
+    fn s(n: &str) -> Pred {
+        Symbol::hash_name(n)
     }
-    fn lit(p: Pred, a: &[u32]) -> Literal { Literal { atom: atom(p, a), negated: false } }
-    fn rule(head: Atom, body: Vec<Literal>) -> Rule { Rule { head, body, sid: None } }
+    fn atom(p: Pred, a: &[u32]) -> Atom {
+        Atom {
+            pred: p,
+            args: a.iter().map(|i| DTerm::Var(*i)).collect(),
+        }
+    }
+    fn lit(p: Pred, a: &[u32]) -> Literal {
+        Literal {
+            atom: atom(p, a),
+            negated: false,
+        }
+    }
+    fn rule(head: Atom, body: Vec<Literal>) -> Rule {
+        Rule {
+            head,
+            body,
+            sid: None,
+        }
+    }
 
     // The signatures are NAME-INDEPENDENT: the same pattern recognizes the
     // role whatever the relation is called (`genls`, `subPlanOf`, …).
@@ -178,10 +194,20 @@ mod tests {
 
         let (inst, sub) = (s("instance"), s("subclass"));
         // instance(z,y) :- instance(z,x), subclass(x,y)
-        let br = rule(atom(inst, &[0, 2]), vec![lit(inst, &[0, 1]), lit(sub, &[1, 2])]);
-        assert_eq!(is_bridge(&br), Some((inst, sub)), "bridge recovers (instance, subclass)");
+        let br = rule(
+            atom(inst, &[0, 2]),
+            vec![lit(inst, &[0, 1]), lit(sub, &[1, 2])],
+        );
+        assert_eq!(
+            is_bridge(&br),
+            Some((inst, sub)),
+            "bridge recovers (instance, subclass)"
+        );
         // body order swapped still matches
-        let br2 = rule(atom(inst, &[0, 2]), vec![lit(sub, &[1, 2]), lit(inst, &[0, 1])]);
+        let br2 = rule(
+            atom(inst, &[0, 2]),
+            vec![lit(sub, &[1, 2]), lit(inst, &[0, 1])],
+        );
         assert_eq!(is_bridge(&br2), Some((inst, sub)));
     }
 

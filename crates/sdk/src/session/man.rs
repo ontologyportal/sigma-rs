@@ -35,7 +35,9 @@
 //! # }
 //! ```
 
-use sigmakee_rs_core::{ManKind, ManPage, ParentEdge, SearchHit, SearchOpts, SentenceId, SortSig, TopLayer};
+use sigmakee_rs_core::{
+    ManKind, ManPage, ParentEdge, SearchHit, SearchOpts, SentenceId, SortSig, TopLayer,
+};
 
 use crate::SdkResult;
 
@@ -85,12 +87,12 @@ pub struct DocBlock {
 pub struct SignatureView {
     /// Declared arity.  `None` if unknown; `Some(-1)` for variable-arity
     /// relations.
-    pub arity:   Option<i32>,
+    pub arity: Option<i32>,
     /// Positional domain declarations, indexed by 1-based argument
     /// position.  Arguments without an explicit declaration are elided.
     pub domains: Vec<(usize, SortSig)>,
     /// Declared range (functions and relations that declare one).
-    pub range:   Option<SortSig>,
+    pub range: Option<SortSig>,
 }
 
 /// Sentences where the symbol appears as an axiom argument or head.
@@ -111,21 +113,21 @@ pub struct ReferenceSet {
 #[derive(Debug, Clone)]
 pub struct ManPageView {
     /// Symbol name this view describes.
-    pub name:          String,
+    pub name: String,
     /// All categories the symbol belongs to (class, relation, function, …).
-    pub kinds:         Vec<ManKind>,
+    pub kinds: Vec<ManKind>,
     /// Taxonomic parents (`(subclass X P)` / `(instance X P)` / …).
-    pub parents:       Vec<ParentEdge>,
+    pub parents: Vec<ParentEdge>,
     /// Arity / domain / range declarations.
-    pub signature:     SignatureView,
+    pub signature: SignatureView,
     /// `(documentation X <lang> "...")` blocks, cross-refs resolved.
     pub documentation: Vec<DocBlock>,
     /// `(termFormat <lang> X "...")` blocks, cross-refs resolved.
-    pub term_format:   Vec<DocBlock>,
+    pub term_format: Vec<DocBlock>,
     /// `(format <lang> X "...")` blocks (relations only).
-    pub format:        Vec<DocBlock>,
+    pub format: Vec<DocBlock>,
     /// Sentences referencing this symbol, bucketed by where it appears.
-    pub references:    ReferenceSet,
+    pub references: ReferenceSet,
 }
 
 impl ManPageView {
@@ -167,7 +169,7 @@ impl<L: TopLayer> Session<L> {
     }
 
     /// Search for a symbol by a broad query.
-    /// 
+    ///
     /// This will find symbols whose name or documentation entries somehow
     /// match the query
     pub fn search(&self, query: &str, opts: &SearchOpts) -> SdkResult<Vec<SearchHit>> {
@@ -180,19 +182,34 @@ impl<L: TopLayer> Session<L> {
 /// [`Session::manpage`].
 pub fn view_from_manpage(raw: ManPage) -> ManPageView {
     let signature = SignatureView {
-        arity:   raw.arity,
+        arity: raw.arity,
         domains: raw.domains,
-        range:   raw.range,
+        range: raw.range,
     };
 
-    let documentation = raw.documentation.into_iter()
-        .map(|d| DocBlock { language: d.language, spans: parse_doc_spans(&d.text) })
+    let documentation = raw
+        .documentation
+        .into_iter()
+        .map(|d| DocBlock {
+            language: d.language,
+            spans: parse_doc_spans(&d.text),
+        })
         .collect();
-    let term_format = raw.term_format.into_iter()
-        .map(|d| DocBlock { language: d.language, spans: parse_doc_spans(&d.text) })
+    let term_format = raw
+        .term_format
+        .into_iter()
+        .map(|d| DocBlock {
+            language: d.language,
+            spans: parse_doc_spans(&d.text),
+        })
         .collect();
-    let format = raw.format.into_iter()
-        .map(|d| DocBlock { language: d.language, spans: parse_doc_spans(&d.text) })
+    let format = raw
+        .format
+        .into_iter()
+        .map(|d| DocBlock {
+            language: d.language,
+            spans: parse_doc_spans(&d.text),
+        })
         .collect();
 
     // Bucket SentenceRefs by their root-level position.  Position 0
@@ -209,7 +226,10 @@ pub fn view_from_manpage(raw: ManPage) -> ManPageView {
         for r in raw.ref_args {
             by_position[r.0].push(r.1);
         }
-        ReferenceSet { by_position, nested: raw.ref_nested }
+        ReferenceSet {
+            by_position,
+            nested: raw.ref_nested,
+        }
     };
 
     ManPageView {
@@ -246,7 +266,7 @@ pub fn parse_doc_spans(text: &str) -> Vec<DocSpan> {
     let mut out: Vec<DocSpan> = Vec::new();
     let bytes = text.as_bytes();
     let mut start = 0usize;
-    let mut i     = 0usize;
+    let mut i = 0usize;
 
     while i < bytes.len() {
         if i + 2 < bytes.len() && bytes[i] == b'&' && bytes[i + 1] == b'%' {
@@ -254,7 +274,11 @@ pub fn parse_doc_spans(text: &str) -> Vec<DocSpan> {
             let mut sym_end = sym_start;
             while sym_end < bytes.len() {
                 let c = bytes[sym_end];
-                if c.is_ascii_alphanumeric() || c == b'_' { sym_end += 1; } else { break; }
+                if c.is_ascii_alphanumeric() || c == b'_' {
+                    sym_end += 1;
+                } else {
+                    break;
+                }
             }
             if sym_end > sym_start {
                 if i > start {
@@ -262,7 +286,7 @@ pub fn parse_doc_spans(text: &str) -> Vec<DocSpan> {
                 }
                 let label: String = text[sym_start..sym_end].to_string();
                 out.push(DocSpan::Link {
-                    text:   label.clone(),
+                    text: label.clone(),
                     target: label,
                 });
                 i = sym_end;
@@ -339,17 +363,26 @@ mod session_tests {
     #[test]
     fn manpage_projects_a_view_and_resolves_cross_refs() {
         let mut s = Session::<ProverLayer>::new("man".into());
-        let _ = s.ingest(Source::Reader {
-            name: "d.kif".into(),
-            reader: Box::new(std::io::Cursor::new(
-                br#"(documentation Dog EnglishLanguage "A &%Mammal that barks.")"#.to_vec())),
-        }, true);
+        let _ = s.ingest(
+            Source::Reader {
+                name: "d.kif".into(),
+                reader: Box::new(std::io::Cursor::new(
+                    br#"(documentation Dog EnglishLanguage "A &%Mammal that barks.")"#.to_vec(),
+                )),
+            },
+            true,
+        );
 
         let view = s.manpage("Dog").expect("Dog has a man page");
         assert_eq!(view.name, "Dog");
-        let linked_mammal = view.documentation.iter()
+        let linked_mammal = view
+            .documentation
+            .iter()
             .flat_map(|b| &b.spans)
             .any(|sp| matches!(sp, DocSpan::Link { target, .. } if target == "Mammal"));
-        assert!(linked_mammal, "the `&%Mammal` cross-ref resolves to a DocSpan::Link");
+        assert!(
+            linked_mammal,
+            "the `&%Mammal` cross-ref resolves to a DocSpan::Link"
+        );
     }
 }

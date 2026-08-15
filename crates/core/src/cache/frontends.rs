@@ -20,15 +20,19 @@ use super::behaviors::{CacheBehavior, EagerBehavior, EagerMapBehavior, WholeCach
 /// [`get`](Self::get) / [`react`](Self::react).
 pub(crate) struct Cache<B: CacheBehavior> {
     behavior: B,
-    store:    EntryCache<B::Key, B::Value>,
-    side:     B::Side,
+    store: EntryCache<B::Key, B::Value>,
+    side: B::Side,
 }
 
 #[allow(dead_code)] // full cache API; not every method is consumed yet
 impl<B: CacheBehavior> Cache<B> {
     /// Create a cache sharing `config`, named by `B::NAME`.
     pub(crate) fn new(config: &CacheConfig, behavior: B) -> Self {
-        Self { store: EntryCache::new(config, B::NAME), side: B::Side::default(), behavior }
+        Self {
+            store: EntryCache::new(config, B::NAME),
+            side: B::Side::default(),
+            behavior,
+        }
     }
 
     /// The non-keyed companion state (interior-mutable).  Mirrors
@@ -111,7 +115,7 @@ impl<B: CacheBehavior> Cache<B> {
 
 impl<B: CacheBehavior> std::fmt::Debug for Cache<B>
 where
-    B::Key:   std::fmt::Debug,
+    B::Key: std::fmt::Debug,
     B::Value: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,14 +129,17 @@ where
 /// A single, self-contained whole-value cache: behavior + `LayerCache` store.
 pub(crate) struct WholeCache<B: WholeCacheBehavior> {
     behavior: B,
-    store:    LayerCache<B::Value>,
+    store: LayerCache<B::Value>,
 }
 
 #[allow(dead_code)] // full cache API; not every method is consumed yet
 impl<B: WholeCacheBehavior> WholeCache<B> {
     /// Create a cache sharing `config`, named by `B::NAME`.
     pub(crate) fn new(config: &CacheConfig, behavior: B) -> Self {
-        Self { store: LayerCache::new(config, B::NAME), behavior }
+        Self {
+            store: LayerCache::new(config, B::NAME),
+            behavior,
+        }
     }
 
     /// Return the value, computing it via `B::generate` on a miss.  Cycle-safe.
@@ -195,7 +202,7 @@ where
 /// A single, self-contained eager index: behavior + `EagerIndex` store.
 pub(crate) struct Eager<B: EagerBehavior> {
     behavior: B,
-    store:    EagerIndex<B::Value>,
+    store: EagerIndex<B::Value>,
 }
 
 #[allow(dead_code)] // full index API; not every method is consumed yet
@@ -204,7 +211,10 @@ impl<B: EagerBehavior> Eager<B> {
     /// `B::initial()` (stored immediately if the cache is enabled).
     pub(crate) fn new(config: &CacheConfig, behavior: B) -> Self {
         let initial = behavior.initial();
-        Self { store: EagerIndex::new(config, B::NAME, initial), behavior }
+        Self {
+            store: EagerIndex::new(config, B::NAME, initial),
+            behavior,
+        }
     }
 
     /// Read the value without cloning.  `Some(&value)` when enabled+populated.
@@ -266,15 +276,19 @@ where
 /// optional non-keyed companion `side` state.
 pub(crate) struct EagerMap<B: EagerMapBehavior> {
     behavior: B,
-    store:    EntryCache<B::Key, B::Value>,
-    side:     B::Side,
+    store: EntryCache<B::Key, B::Value>,
+    side: B::Side,
 }
 
 #[allow(dead_code)] // full index API; not every method is consumed yet
 impl<B: EagerMapBehavior> EagerMap<B> {
     /// Create an index sharing `config`, named by `B::NAME`.
     pub(crate) fn new(config: &CacheConfig, behavior: B) -> Self {
-        Self { store: EntryCache::new(config, B::NAME), side: B::Side::default(), behavior }
+        Self {
+            store: EntryCache::new(config, B::NAME),
+            side: B::Side::default(),
+            behavior,
+        }
     }
 
     /// The keyed store (interior-mutable).  For caches that expose their own
@@ -386,7 +400,7 @@ where
 
 impl<B: EagerMapBehavior> std::fmt::Debug for EagerMap<B>
 where
-    B::Key:   std::fmt::Debug,
+    B::Key: std::fmt::Debug,
     B::Value: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -403,11 +417,21 @@ where
 
 impl<B: CacheBehavior> super::router::CacheLike for Cache<B> {
     type Parent = B::Parent;
-    fn name(&self) -> &'static str { B::NAME }
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.consumes() }
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.produces() }
-    fn reads(&self) -> &'static [&'static str] { self.behavior.reads() }
-    fn event_parallel(&self) -> bool { self.behavior.event_parallel() }
+    fn name(&self) -> &'static str {
+        B::NAME
+    }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.consumes()
+    }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.produces()
+    }
+    fn reads(&self) -> &'static [&'static str] {
+        self.behavior.reads()
+    }
+    fn event_parallel(&self) -> bool {
+        self.behavior.event_parallel()
+    }
     fn react(
         &self,
         parent: &B::Parent,
@@ -419,11 +443,21 @@ impl<B: CacheBehavior> super::router::CacheLike for Cache<B> {
 
 impl<B: WholeCacheBehavior> super::router::CacheLike for WholeCache<B> {
     type Parent = B::Parent;
-    fn name(&self) -> &'static str { B::NAME }
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.consumes() }
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.produces() }
-    fn reads(&self) -> &'static [&'static str] { self.behavior.reads() }
-    fn event_parallel(&self) -> bool { self.behavior.event_parallel() }
+    fn name(&self) -> &'static str {
+        B::NAME
+    }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.consumes()
+    }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.produces()
+    }
+    fn reads(&self) -> &'static [&'static str] {
+        self.behavior.reads()
+    }
+    fn event_parallel(&self) -> bool {
+        self.behavior.event_parallel()
+    }
     fn react(
         &self,
         parent: &B::Parent,
@@ -435,11 +469,21 @@ impl<B: WholeCacheBehavior> super::router::CacheLike for WholeCache<B> {
 
 impl<B: EagerBehavior> super::router::CacheLike for Eager<B> {
     type Parent = B::Parent;
-    fn name(&self) -> &'static str { B::NAME }
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.consumes() }
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.produces() }
-    fn reads(&self) -> &'static [&'static str] { self.behavior.reads() }
-    fn event_parallel(&self) -> bool { self.behavior.event_parallel() }
+    fn name(&self) -> &'static str {
+        B::NAME
+    }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.consumes()
+    }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.produces()
+    }
+    fn reads(&self) -> &'static [&'static str] {
+        self.behavior.reads()
+    }
+    fn event_parallel(&self) -> bool {
+        self.behavior.event_parallel()
+    }
     fn react(
         &self,
         parent: &B::Parent,
@@ -451,11 +495,21 @@ impl<B: EagerBehavior> super::router::CacheLike for Eager<B> {
 
 impl<B: EagerMapBehavior> super::router::CacheLike for EagerMap<B> {
     type Parent = B::Parent;
-    fn name(&self) -> &'static str { B::NAME }
-    fn consumes(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.consumes() }
-    fn produces(&self) -> &'static [crate::cache::events::EventKind] { self.behavior.produces() }
-    fn reads(&self) -> &'static [&'static str] { self.behavior.reads() }
-    fn event_parallel(&self) -> bool { self.behavior.event_parallel() }
+    fn name(&self) -> &'static str {
+        B::NAME
+    }
+    fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.consumes()
+    }
+    fn produces(&self) -> &'static [crate::cache::events::EventKind] {
+        self.behavior.produces()
+    }
+    fn reads(&self) -> &'static [&'static str] {
+        self.behavior.reads()
+    }
+    fn event_parallel(&self) -> bool {
+        self.behavior.event_parallel()
+    }
     fn react(
         &self,
         parent: &B::Parent,
@@ -464,7 +518,6 @@ impl<B: EagerMapBehavior> super::router::CacheLike for EagerMap<B> {
         self.behavior.react(parent, events, &self.store, &self.side)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -489,15 +542,21 @@ mod tests {
         generate_calls: AtomicUsize,
     }
     impl DemoParent {
-        fn new() -> Self { Self { generate_calls: AtomicUsize::new(0) } }
-        fn calls(&self) -> usize { self.generate_calls.load(Ordering::SeqCst) }
+        fn new() -> Self {
+            Self {
+                generate_calls: AtomicUsize::new(0),
+            }
+        }
+        fn calls(&self) -> usize {
+            self.generate_calls.load(Ordering::SeqCst)
+        }
     }
 
     /// Whole-value behavior: computes a `Vec` once, recomputes after a delta.
     struct DemoNumericAncestors;
     impl WholeCacheBehavior for DemoNumericAncestors {
         type Parent = DemoParent;
-        type Value  = Vec<u32>;
+        type Value = Vec<u32>;
         const NAME: &'static str = "demo::whole";
 
         fn generate(&self, parent: &DemoParent) -> Vec<u32> {
@@ -524,7 +583,11 @@ mod tests {
 
         assert_eq!(cache.get(&parent), vec![1, 2, 3]);
         assert_eq!(cache.get(&parent), vec![1, 2, 3]); // hit, no recompute
-        assert_eq!(parent.calls(), 1, "generate runs once; second get is opaque hit");
+        assert_eq!(
+            parent.calls(),
+            1,
+            "generate runs once; second get is opaque hit"
+        );
         assert!(cache.is_populated());
         // clone-free read sees the same value
         assert_eq!(cache.with_ref(|o| o.cloned()), Some(vec![1, 2, 3]));
@@ -561,7 +624,11 @@ mod tests {
         let parent = DemoParent::new();
         cache.get(&parent);
         cache.get(&parent);
-        assert_eq!(parent.calls(), 2, "disabled whole-cache recomputes every get");
+        assert_eq!(
+            parent.calls(),
+            2,
+            "disabled whole-cache recomputes every get"
+        );
         assert!(!cache.is_populated());
     }
 
@@ -569,10 +636,12 @@ mod tests {
     struct DemoSine;
     impl EagerBehavior for DemoSine {
         type Parent = DemoParent;
-        type Value  = Vec<u32>;
+        type Value = Vec<u32>;
         const NAME: &'static str = "demo::eager";
 
-        fn initial(&self) -> Vec<u32> { Vec::new() }
+        fn initial(&self) -> Vec<u32> {
+            Vec::new()
+        }
 
         fn react(
             &self,
@@ -621,10 +690,16 @@ mod tests {
         // Disabled gates persistence (`install`), not initialization or
         // in-memory mutation: the index is live and `modify` still applies.
         let idx = Eager::new(&disabled_cfg("demo::eager"), DemoSine);
-        assert_eq!(idx.with_ref(|v| v.clone()), Vec::<u32>::new(),
-            "disabled eager index is still seeded with initial()");
+        assert_eq!(
+            idx.with_ref(|v| v.clone()),
+            Vec::<u32>::new(),
+            "disabled eager index is still seeded with initial()"
+        );
         idx.modify(|v| v.push(1));
-        assert_eq!(idx.with_ref(|v| v.clone()), vec![1],
-            "modify is an in-memory mutation, unaffected by the persistence gate");
+        assert_eq!(
+            idx.with_ref(|v| v.clone()),
+            vec![1],
+            "modify is an in-memory mutation, unaffected by the persistence gate"
+        );
     }
 }

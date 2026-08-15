@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use sigmakee_rs_sdk::{NativeOpts, ProverLayer, Session, Source, SzsStatus, TestOutcome};
 use sigmakee_rs_sdk::manager::KBManager;
+use sigmakee_rs_sdk::{NativeOpts, ProverLayer, Session, Source, SzsStatus, TestOutcome};
 
 use super::proof::print_proof;
 
@@ -92,7 +92,7 @@ pub fn run_casc(manager: &KBManager, path: PathBuf, timeout: u32, jobs: usize) -
                 // but never WITHIN a `println!` call, so each printed line
                 // stays intact.
                 // println!("% SZS status {} for {}", row.szs, row.name);
-                
+
                 rows.lock().unwrap().push(row);
             });
         }
@@ -107,8 +107,8 @@ pub fn run_casc(manager: &KBManager, path: PathBuf, timeout: u32, jobs: usize) -
 }
 
 struct Row {
-    name:   String,
-    szs:    SzsStatus,
+    name: String,
+    szs: SzsStatus,
     solved: bool,
 }
 
@@ -166,14 +166,21 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
             Row {
                 name,
                 szs: oc.szs,
-                solved: matches!(oc.outcome, TestOutcome::Passed | TestOutcome::Incomplete { .. }),
+                solved: matches!(
+                    oc.outcome,
+                    TestOutcome::Passed | TestOutcome::Incomplete { .. }
+                ),
             }
-        },
+        }
         Ok(Err(errs)) => {
             for e in &errs {
                 log::error!("casc: {name}: {e}");
             }
-            Row { name, szs: SzsStatus::GaveUp, solved: false }
+            Row {
+                name,
+                szs: SzsStatus::GaveUp,
+                solved: false,
+            }
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             log::error!(
@@ -182,11 +189,19 @@ fn run_one(path: &Path, base_opts: &NativeOpts, timeout: u32) -> Row {
                  has no deadline check; reporting Timeout and abandoning the still-running thread",
                 grace.as_secs() - u64::from(timeout),
             );
-            Row { name, szs: SzsStatus::Timeout, solved: false }
+            Row {
+                name,
+                szs: SzsStatus::Timeout,
+                solved: false,
+            }
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             log::error!("casc: {name}: worker thread died without a result (panic?)");
-            Row { name, szs: SzsStatus::GaveUp, solved: false }
+            Row {
+                name,
+                szs: SzsStatus::GaveUp,
+                solved: false,
+            }
         }
     }
 }
@@ -294,7 +309,12 @@ fn print_summary(rows: &[Row], wall_secs: f64) {
             continue;
         }
         let class_solved = in_class.iter().filter(|r| r.solved).count();
-        eprintln!("  {:<18} {:>4} / {}", class.to_string(), class_solved, in_class.len());
+        eprintln!(
+            "  {:<18} {:>4} / {}",
+            class.to_string(),
+            class_solved,
+            in_class.len()
+        );
     }
     eprintln!("Total wall time: {wall_secs:.2}s");
 }

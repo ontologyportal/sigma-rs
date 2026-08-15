@@ -35,7 +35,6 @@ pub struct Strategy {
     pub name: String,
 
     // -- given-clause queue -------------------------------------------------
-
     /// Per-tier weight multiplier, indexed by tier
     /// (CONJECTURE=0 / SUPPORT=1 / BACKGROUND=2).  Lower = picked
     /// sooner; the default mildly prefers conjecture descendants.
@@ -75,7 +74,6 @@ pub struct Strategy {
     pub lit_select: u8,
 
     // -- derived-clause caps ------------------------------------------------
-
     /// Term-depth cap for derived clauses (deeper → discarded_deep).
     pub max_depth: u8,
     /// Term-width cap (leaf count) for derived clauses.  Depth alone
@@ -120,7 +118,6 @@ pub struct Strategy {
     pub prec_seed: u64,
 
     // -- forward closure (bounded hyperresolution) ----------------------------
-
     /// Premise clauses longer than this never join.
     pub fc_max_premise_lits: usize,
     /// New units derived per (unit, premise) pair.
@@ -147,7 +144,6 @@ pub struct Strategy {
     pub fc_max_pos: usize,
 
     // -- inference channels ---------------------------------------------------
-
     /// The schema channel: algebraic pattern mining (symmetry /
     /// transitivity / metaschemas / Leibniz equality), ground
     /// symmetric orientation, rule absorption, symmetric dual
@@ -291,7 +287,6 @@ pub struct Strategy {
     pub modal_k: bool,
 
     // -- saturation regime ----------------------------------------------------
-
     /// Full-saturation regime: background (KB axiom) clauses enter the
     /// passive queue as given-clause candidates too, so axiom×axiom
     /// inference happens.  OFF by default = classic set-of-support
@@ -317,7 +312,6 @@ pub struct Strategy {
     pub strict_saturation: bool,
 
     // -- selection pipeline (read by `ask_native`, not the loop) -------------
-
     /// Liu & Xu structural rescue: after SInE, pull goal-near axioms
     /// by IDF-weighted shared content that the trigger relation
     /// missed.  `SIGMA_NO_LIU` turns it off (with `def_completion`).
@@ -353,7 +347,6 @@ pub struct Strategy {
     pub bg_snapshot: bool,
 
     // -- semantic guidance (E/Vampire-style) ---------------------------------
-
     /// Semantic clause selection: score each passive clause by the
     /// fraction of its ground, model-checkable literals that are FALSE
     /// in the KB's positive model (a clause whose literals are false in
@@ -558,16 +551,37 @@ impl Strategy {
     pub fn from_env() -> Self {
         let mut s = Self::base();
         let on = |k: &str| std::env::var_os(k).is_some();
-        if on("SIGMA_NO_SCHEMA") { s.schema = false; }
-        if on("SIGMA_NO_DECODE") { s.decode = false; }
-        if on("SIGMA_GOALDIST")  { s.goal_dist = true; }
-        if on("SIGMA_NO_LIU")    { s.liu_rescue = false; s.def_completion = false; }
-        if on("SIGMA_HEADFILTER") { s.head_filter = true; }
-        if on("SIGMA_NO_BG_SNAPSHOT") { s.bg_snapshot = false; }
-        if on("SIGMA_GUIDE")     { s.semantic_guide = true; }
-        if on("SIGMA_NO_MODAL_K") { s.modal_k = false; }
-        if on("SIGMA_RECOGNIZE_ROLES") { s.recognize_roles = true; }
-        if on("SIGMA_DISJOINT_DECOMP") { s.disjoint_decomp = true; }
+        if on("SIGMA_NO_SCHEMA") {
+            s.schema = false;
+        }
+        if on("SIGMA_NO_DECODE") {
+            s.decode = false;
+        }
+        if on("SIGMA_GOALDIST") {
+            s.goal_dist = true;
+        }
+        if on("SIGMA_NO_LIU") {
+            s.liu_rescue = false;
+            s.def_completion = false;
+        }
+        if on("SIGMA_HEADFILTER") {
+            s.head_filter = true;
+        }
+        if on("SIGMA_NO_BG_SNAPSHOT") {
+            s.bg_snapshot = false;
+        }
+        if on("SIGMA_GUIDE") {
+            s.semantic_guide = true;
+        }
+        if on("SIGMA_NO_MODAL_K") {
+            s.modal_k = false;
+        }
+        if on("SIGMA_RECOGNIZE_ROLES") {
+            s.recognize_roles = true;
+        }
+        if on("SIGMA_DISJOINT_DECOMP") {
+            s.disjoint_decomp = true;
+        }
         s.liu_rounds = Self::liu_rounds_env_override(s.liu_rounds);
         s.liu_top_k = Self::liu_top_k_env_override(s.liu_top_k);
         s.defcomp_global = Self::defcomp_global_env_override(s.defcomp_global);
@@ -594,7 +608,11 @@ impl Strategy {
     /// `tptp()` so the override works on the TPTP path too (`tptp()` builds
     /// from `base()` directly and does not otherwise read the environment).
     fn demod_env_override(default: bool) -> bool {
-        if std::env::var_os("SIGMA_DEMOD").is_some() { true } else { default }
+        if std::env::var_os("SIGMA_DEMOD").is_some() {
+            true
+        } else {
+            default
+        }
     }
 
     /// `SIGMA_LIU_ROUNDS=N` / `SIGMA_LIU_TOP_K=N`: A/B overrides for the
@@ -604,24 +622,37 @@ impl Strategy {
     /// CSR "prove the KB inconsistent" family plants its contradiction
     /// symbol-disjoint from the conjecture).
     fn liu_rounds_env_override(default: usize) -> usize {
-        std::env::var("SIGMA_LIU_ROUNDS").ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+        std::env::var("SIGMA_LIU_ROUNDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
     }
 
     fn liu_top_k_env_override(default: usize) -> usize {
-        std::env::var("SIGMA_LIU_TOP_K").ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+        std::env::var("SIGMA_LIU_TOP_K")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
     }
 
     /// `SIGMA_DEFCOMP_GLOBAL=1` forces the goal-backward provider chase on
     /// (same opt-in override style as `demod_env_override`, shared by
     /// `from_env()` and `tptp()`).
     fn defcomp_global_env_override(default: bool) -> bool {
-        if std::env::var_os("SIGMA_DEFCOMP_GLOBAL").is_some() { true } else { default }
+        if std::env::var_os("SIGMA_DEFCOMP_GLOBAL").is_some() {
+            true
+        } else {
+            default
+        }
     }
 
     /// Generic numeric env override for the completion caps
     /// (`SIGMA_DEFCOMP_ROUNDS` / `SIGMA_DEFCOMP_ADDS` / `SIGMA_DEFCOMP_PER_SYM`).
     fn usize_env_override(key: &str, default: usize) -> usize {
-        std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+        std::env::var(key)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default)
     }
 
     /// `SIGMA_NO_BWD_DEMOD=1` forces backward demodulation OFF,
@@ -749,55 +780,61 @@ impl Strategy {
     /// is untouched.
     pub fn tptp() -> Self {
         Self {
-            full_saturation:   true,
+            full_saturation: true,
             strict_saturation: true,
-            superposition:     true,
-            eq_factoring:      true,
-            subsumption:       true,
-            liu_rounds:        Self::liu_rounds_env_override(Self::base().liu_rounds),
-            liu_top_k:         Self::liu_top_k_env_override(Self::base().liu_top_k),
-            defcomp_global:    Self::defcomp_global_env_override(false),
-            defcomp_rounds:    Self::usize_env_override(
-                                   "SIGMA_DEFCOMP_ROUNDS", Self::base().defcomp_rounds),
-            defcomp_max_adds:  Self::usize_env_override(
-                                   "SIGMA_DEFCOMP_ADDS", Self::base().defcomp_max_adds),
-            defcomp_per_sym:   Self::usize_env_override(
-                                   "SIGMA_DEFCOMP_PER_SYM", Self::base().defcomp_per_sym),
-            demod:             Self::demod_env_override(false),
+            superposition: true,
+            eq_factoring: true,
+            subsumption: true,
+            liu_rounds: Self::liu_rounds_env_override(Self::base().liu_rounds),
+            liu_top_k: Self::liu_top_k_env_override(Self::base().liu_top_k),
+            defcomp_global: Self::defcomp_global_env_override(false),
+            defcomp_rounds: Self::usize_env_override(
+                "SIGMA_DEFCOMP_ROUNDS",
+                Self::base().defcomp_rounds,
+            ),
+            defcomp_max_adds: Self::usize_env_override(
+                "SIGMA_DEFCOMP_ADDS",
+                Self::base().defcomp_max_adds,
+            ),
+            defcomp_per_sym: Self::usize_env_override(
+                "SIGMA_DEFCOMP_PER_SYM",
+                Self::base().defcomp_per_sym,
+            ),
+            demod: Self::demod_env_override(false),
             // ON by default under the TPTP regime: retrieval is now
             // posting-indexed (exact ground keys + (head, len) buckets
             // + seat prefilter), so a backward pass touches only
             // verified redex holders instead of scanning bucket
             // clauses.  `SIGMA_NO_BWD_DEMOD=1` is the off switch.
-            bwd_demod:         Self::bwd_demod_env_override(true),
+            bwd_demod: Self::bwd_demod_env_override(true),
             // The equality-join channel's A/B override must reach the
             // TPTP path too (its regime is where subsumption — and so
             // the channel — actually runs).
-            subs_join:         Self::subs_join_env_override(Self::base().subs_join),
+            subs_join: Self::subs_join_env_override(Self::base().subs_join),
             // The k-channel row machinery's A/B override must reach the
             // TPTP path too (its regime is where backward demodulation —
             // and so the decode chain — actually runs).
-            subterm_rows:      Self::subterm_rows_env_override(Self::base().subterm_rows),
+            subterm_rows: Self::subterm_rows_env_override(Self::base().subterm_rows),
             // Same A/B convention as demod: `SIGMA_GUIDE=1` lets the
             // semantic-guide tie-break be measured on the TPTP path too
             // (`from_env()` is not consulted here, so without this the
             // knob was unreachable for standalone `.p` runs).
-            semantic_guide:    std::env::var_os("SIGMA_GUIDE").is_some(),
+            semantic_guide: std::env::var_os("SIGMA_GUIDE").is_some(),
             // The deferred-passive discipline's A/B override must reach
             // the TPTP path too (its regime is where the generation
             // volume the discipline attacks actually exists).
-            deferred_passive:  Self::deferred_passive_env_override(false),
-            deferred_cap:      Self::deferred_cap_env_override(Self::base().deferred_cap),
+            deferred_passive: Self::deferred_passive_env_override(false),
+            deferred_cap: Self::deferred_cap_env_override(Self::base().deferred_cap),
             // Same reachability concern as `semantic_guide` above:
             // `from_env()` is not consulted here.
-            recognize_roles:   std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some(),
-            disjoint_decomp:   std::env::var_os("SIGMA_DISJOINT_DECOMP").is_some(),
-            rule_join:         Self::rule_join_env_override(Self::base().rule_join),
+            recognize_roles: std::env::var_os("SIGMA_RECOGNIZE_ROLES").is_some(),
+            disjoint_decomp: std::env::var_os("SIGMA_DISJOINT_DECOMP").is_some(),
+            rule_join: Self::rule_join_env_override(Self::base().rule_join),
             // Naming-split rescue: reachable on the TPTP path for the
             // funded-problem A/B (its regime is where the width cap
             // excludes reference proofs).
-            split_naming:      Self::split_naming_env_override(false),
-            split_width:       Self::split_width_env_override(0),
+            split_naming: Self::split_naming_env_override(false),
+            split_width: Self::split_width_env_override(0),
             ..Self::base()
         }
         .named("tptp-complete")
@@ -947,7 +984,10 @@ impl Strategy {
     pub fn tptp_lane_specs(chase_lane: bool, roles_lane: bool) -> Vec<TptpLaneSpec> {
         let mut specs: Vec<TptpLaneSpec> = Self::tptp_lanes()
             .into_iter()
-            .map(|strategy| TptpLaneSpec { strategy, chase: false })
+            .map(|strategy| TptpLaneSpec {
+                strategy,
+                chase: false,
+            })
             .collect();
         if roles_lane {
             specs.push(TptpLaneSpec {
@@ -1221,7 +1261,10 @@ mod tests {
 
         let mut no_schema = base;
         no_schema.schema = false;
-        assert_ne!(no_schema.bg_fingerprint(), Strategy::base().bg_fingerprint());
+        assert_ne!(
+            no_schema.bg_fingerprint(),
+            Strategy::base().bg_fingerprint()
+        );
     }
 
     #[test]
@@ -1374,10 +1417,18 @@ mod tests {
         // schedules use: a Strategy carrying the cap must round-trip and
         // differ from tptp() in exactly that field.
         let complete = Strategy::tptp();
-        let wide = Strategy { derived_width_cap: Some(32), ..complete.clone() };
+        let wide = Strategy {
+            derived_width_cap: Some(32),
+            ..complete.clone()
+        };
         assert_eq!(wide.derived_width_cap, Some(32));
-        let reset = Strategy { derived_width_cap: None, ..wide };
+        let reset = Strategy {
+            derived_width_cap: None,
+            ..wide
+        };
         assert_eq!(reset, complete);
-        assert!(Strategy::tptp_lanes().iter().all(|l| l.derived_width_cap.is_none()));
+        assert!(Strategy::tptp_lanes()
+            .iter()
+            .all(|l| l.derived_width_cap.is_none()));
     }
 }

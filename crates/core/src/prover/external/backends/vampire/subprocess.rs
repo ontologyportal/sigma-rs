@@ -8,16 +8,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use super::super::{ProverMode, ProverOpts, ProverRunner};
 use super::super::super::super::result::{
-    ProverResult,
-    ProverStatus,
-    ProverTimings,
-    TerminationReason
+    ProverResult, ProverStatus, ProverTimings, TerminationReason,
 };
+use super::super::{ProverMode, ProverOpts, ProverRunner};
 
-use crate::prover::tptp_proof::{TptpProofProcessor, kif_proof_inputs, proof_steps_to_ir};
-use crate::prover::vampire_proof::{determine_status, docitems_to_proof_steps, is_timeout, szs_status_word};
+use crate::prover::tptp_proof::{kif_proof_inputs, proof_steps_to_ir, TptpProofProcessor};
+use crate::prover::vampire_proof::{
+    determine_status, docitems_to_proof_steps, is_timeout, szs_status_word,
+};
 
 // -- VampireRunner -------------------------------------------------------------
 
@@ -35,7 +34,7 @@ impl Default for VampireRunner {
     fn default() -> Self {
         Self {
             vampire_path: PathBuf::from("vampire"),
-            tptp_dump_path: None
+            tptp_dump_path: None,
         }
     }
 }
@@ -69,9 +68,12 @@ impl Default for VampireRunner {
 ///   strategies still receive the full external-SInE set).
 fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
     vec![
-        "--mode".into(),            "vampire".into(),
-        "--input_syntax".into(),    "tptp".into(),
-        "--sine_selection".into(),  "off".into(),
+        "--mode".into(),
+        "vampire".into(),
+        "--input_syntax".into(),
+        "tptp".into(),
+        "--sine_selection".into(),
+        "off".into(),
         // Emit proofs in TSTP/TPTP format.  Without this Vampire
         // defaults to `--proof on` which prints steps as
         //     `36373. FORMULA [input(axiom)]`
@@ -83,8 +85,10 @@ fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
         // that parse succeeding.  Kept on unconditionally: proof-
         // parsing is cheap and only happens when Vampire actually
         // emitted an "SZS output start" block.
-        "-p".into(),                "tptp".into(),
-        "-t".into(),                timeout_secs.into(),
+        "-p".into(),
+        "tptp".into(),
+        "-t".into(),
+        timeout_secs.into(),
         // Preserve our `kb_<sid>` axiom names in the proof
         // transcript's source annotation.  Vampire's default strips
         // them (axiom tails become `file('/dev/stdin', unknown)`);
@@ -94,7 +98,8 @@ fn build_vampire_args(timeout_secs: &str) -> Vec<String> {
         // O(1) via `AxiomSourceIndex::lookup_by_sid` — much cheaper
         // and more robust (survives CNF transforms and alpha-
         // renaming) than the canonical-fingerprint fallback.
-        "--output_axiom_names".into(), "on".into(),
+        "--output_axiom_names".into(),
+        "on".into(),
     ]
 }
 
@@ -103,21 +108,41 @@ impl ProverRunner for VampireRunner {
         // Optionally dump TPTP to a file for inspection.
         if let Some(path) = &self.tptp_dump_path {
             if let Err(e) = write_file(path, tptp) {
-                crate::log!(Warn, "sigmakee_rs_core::prover", format!("failed to write TPTP dump to {}: {}", path.display(), e));
+                crate::log!(
+                    Warn,
+                    "sigmakee_rs_core::prover",
+                    format!("failed to write TPTP dump to {}: {}", path.display(), e)
+                );
             } else {
-                crate::log!(Info, "sigmakee_rs_core::prover", format!("wrote TPTP dump: {}", path.display()));
+                crate::log!(
+                    Info,
+                    "sigmakee_rs_core::prover",
+                    format!("wrote TPTP dump: {}", path.display())
+                );
             }
         }
 
         // Per-call timeout from `opts` takes precedence (the autoscaling
         // loop varies it run-to-run); fall back to the runner's own field
         // when the caller left it at 0.
-        let secs    = opts.timeout();
+        let secs = opts.timeout();
         let timeout = secs.to_string();
-        let args    = build_vampire_args(&timeout);
+        let args = build_vampire_args(&timeout);
 
-        crate::log!(Debug, "sigmakee_rs_core::prover", format!("vampire: {} {} /dev/stdin", self.vampire_path.display(), args.join(" ")));
-        crate::log!(Info, "sigmakee_rs_core::prover", format!("starting vampire prover"));
+        crate::log!(
+            Debug,
+            "sigmakee_rs_core::prover",
+            format!(
+                "vampire: {} {} /dev/stdin",
+                self.vampire_path.display(),
+                args.join(" ")
+            )
+        );
+        crate::log!(
+            Info,
+            "sigmakee_rs_core::prover",
+            format!("starting vampire prover")
+        );
 
         let mut child = match Command::new(&self.vampire_path)
             .args(&args)
@@ -127,18 +152,24 @@ impl ProverRunner for VampireRunner {
             .stderr(Stdio::piped())
             .spawn()
         {
-            Ok(c)  => c,
-            Err(e) => return ProverResult {
-                status:     ProverStatus::Unknown,
-                raw_output: format!("Failed to spawn vampire: {}", e),
-                ..Default::default()
-            },
+            Ok(c) => c,
+            Err(e) => {
+                return ProverResult {
+                    status: ProverStatus::Unknown,
+                    raw_output: format!("Failed to spawn vampire: {}", e),
+                    ..Default::default()
+                }
+            }
         };
 
         // Write TPTP to Vampire's stdin then close it so Vampire sees EOF.
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(tptp.as_bytes()) {
-                crate::log!(Warn, "sigmakee_rs_core::prover", format!("failed to write to vampire stdin: {}", e));
+                crate::log!(
+                    Warn,
+                    "sigmakee_rs_core::prover",
+                    format!("failed to write to vampire stdin: {}", e)
+                );
             }
         }
 
@@ -148,15 +179,18 @@ impl ProverRunner for VampireRunner {
 
         match output {
             Err(e) => ProverResult {
-                status:     ProverStatus::Unknown,
+                status: ProverStatus::Unknown,
                 raw_output: format!("Failed to run vampire: {}", e),
-                timings:    ProverTimings { prover_run, ..Default::default() },
+                timings: ProverTimings {
+                    prover_run,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             Ok(out) => {
                 let t_parse = Instant::now();
-                let stdout   = String::from_utf8_lossy(&out.stdout).into_owned();
-                let stderr   = String::from_utf8_lossy(&out.stderr).into_owned();
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
                 let combined = format!("{}{}", stdout, stderr);
 
                 let (doc, _parse_errors) = crate::parse::szs::parse_szs(&combined, "vampire");
@@ -182,15 +216,22 @@ impl ProverRunner for VampireRunner {
                 } else {
                     status
                 };
-                crate::log!(Info, "sigmakee_rs_core::prover", format!("vampire result: {:?}", status_label(&status)));
+                crate::log!(
+                    Info,
+                    "sigmakee_rs_core::prover",
+                    format!("vampire result: {:?}", status_label(&status))
+                );
 
                 // Surface Vampire's `User error: …` (parse/type-check) detail
                 // that would otherwise be buried in raw_output behind `Unknown`.
                 if matches!(status, ProverStatus::InputError) {
                     let detail = extract_input_error(&combined)
                         .unwrap_or_else(|| combined.trim().to_string());
-                    crate::log!(Warn, "sigmakee_rs_core::prover",
-                        format!("vampire rejected the input: {}", detail));
+                    crate::log!(
+                        Warn,
+                        "sigmakee_rs_core::prover",
+                        format!("vampire rejected the input: {}", detail)
+                    );
                 }
 
                 // Only extract bindings when Vampire proved the conjecture via
@@ -198,15 +239,14 @@ impl ProverRunner for VampireRunner {
                 // Unsatisfiable proofs derive contradiction purely from the
                 // axioms and carry no negated-conjecture steps, so the
                 // TptpProofProcessor cannot find any variable bindings there.
-                let bindings = if matches!(opts.mode, ProverMode::Prove)
-                    && status_word == Some("Theorem")
-                {
-                    let mut proc = TptpProofProcessor::new();
-                    proc.load_proof(&parsed_steps);
-                    proc.extract_answers()
-                } else {
-                    Vec::new()
-                };
+                let bindings =
+                    if matches!(opts.mode, ProverMode::Prove) && status_word == Some("Theorem") {
+                        let mut proc = TptpProofProcessor::new();
+                        proc.load_proof(&parsed_steps);
+                        proc.extract_answers()
+                    } else {
+                        Vec::new()
+                    };
 
                 // Preserve the raw SZS proof section verbatim so the
                 // `--proof tptp` CLI path can emit Vampire's output
@@ -248,11 +288,20 @@ impl ProverRunner for VampireRunner {
                     complete_saturation: None,
                     given_steps: None,
                     phase_profile: Vec::new(),
-                contradiction_proofs: Vec::new(),
-                    status, raw_output: combined, termination, bindings, proof_kif, ir_proof,
+                    contradiction_proofs: Vec::new(),
+                    status,
+                    raw_output: combined,
+                    termination,
+                    bindings,
+                    proof_kif,
+                    ir_proof,
                     proof_tptp,
                     proof_tptp_lang: crate::parse::dialect::TptpLang::default(),
-                    timings: ProverTimings { prover_run, output_parse, ..Default::default() },
+                    timings: ProverTimings {
+                        prover_run,
+                        output_parse,
+                        ..Default::default()
+                    },
                 }
             }
         }
@@ -293,9 +342,7 @@ fn extract_termination_reason(output: &str) -> Option<TerminationReason> {
     {
         return Some(TerminationReason::Saturation);
     }
-    if output.contains("SZS status GaveUp")
-        || output.contains("Termination reason:")
-    {
+    if output.contains("SZS status GaveUp") || output.contains("Termination reason:") {
         return Some(TerminationReason::GaveUp);
     }
     None
@@ -330,13 +377,13 @@ fn extract_input_error(output: &str) -> Option<String> {
 
 fn status_label(s: &ProverStatus) -> &'static str {
     match s {
-        ProverStatus::Proved       => "Proved",
-        ProverStatus::Disproved    => "Disproved",
-        ProverStatus::Consistent   => "Consistent",
+        ProverStatus::Proved => "Proved",
+        ProverStatus::Disproved => "Disproved",
+        ProverStatus::Consistent => "Consistent",
         ProverStatus::Inconsistent => "Inconsistent",
-        ProverStatus::Timeout      => "Timeout",
-        ProverStatus::InputError   => "InputError",
-        ProverStatus::Unknown      => "Unknown",
+        ProverStatus::Timeout => "Timeout",
+        ProverStatus::InputError => "InputError",
+        ProverStatus::Unknown => "Unknown",
     }
 }
 
@@ -359,13 +406,21 @@ mod args_tests {
         // single-strategy `vampire` mode so SInE is genuinely disabled
         // across the entire run.
         let args = build_vampire_args("60");
-        let mode_idx = args.iter().position(|a| a == "--mode")
+        let mode_idx = args
+            .iter()
+            .position(|a| a == "--mode")
             .expect("--mode flag must be present");
-        assert_eq!(args[mode_idx + 1], "vampire",
+        assert_eq!(
+            args[mode_idx + 1],
+            "vampire",
             "must use vampire mode to prevent CASC portfolio strategies \
-             from re-applying SInE on our already-filtered input");
-        assert!(!args.iter().any(|a| a == "casc"),
-            "must not invoke CASC portfolio: {:?}", args);
+             from re-applying SInE on our already-filtered input"
+        );
+        assert!(
+            !args.iter().any(|a| a == "casc"),
+            "must not invoke CASC portfolio: {:?}",
+            args
+        );
     }
 
     #[test]
@@ -374,17 +429,24 @@ mod args_tests {
         // spell it out so the intent survives any future default change
         // and is self-documenting in logs.
         let args = build_vampire_args("60");
-        let ss_idx = args.iter().position(|a| a == "--sine_selection")
+        let ss_idx = args
+            .iter()
+            .position(|a| a == "--sine_selection")
             .expect("--sine_selection flag must be present");
-        assert_eq!(args[ss_idx + 1], "off",
+        assert_eq!(
+            args[ss_idx + 1],
+            "off",
             "SInE must be explicitly disabled on Vampire's side; \
-             the KB applies its own SInE filter before invoking the prover");
+             the KB applies its own SInE filter before invoking the prover"
+        );
     }
 
     #[test]
     fn args_include_timeout() {
         let args = build_vampire_args("42");
-        let t_idx = args.iter().position(|a| a == "-t")
+        let t_idx = args
+            .iter()
+            .position(|a| a == "-t")
             .expect("-t flag must be present");
         assert_eq!(args[t_idx + 1], "42");
     }
@@ -392,7 +454,9 @@ mod args_tests {
     #[test]
     fn args_use_tptp_input_syntax() {
         let args = build_vampire_args("60");
-        let is_idx = args.iter().position(|a| a == "--input_syntax")
+        let is_idx = args
+            .iter()
+            .position(|a| a == "--input_syntax")
             .expect("--input_syntax flag must be present");
         assert_eq!(args[is_idx + 1], "tptp");
     }
@@ -403,7 +467,9 @@ mod args_tests {
         // `file('/dev/stdin', unknown)` and we lose the mapping from
         // proof step back to input sid.  Must stay on.
         let args = build_vampire_args("60");
-        let idx = args.iter().position(|a| a == "--output_axiom_names")
+        let idx = args
+            .iter()
+            .position(|a| a == "--output_axiom_names")
             .expect("--output_axiom_names flag must be present");
         assert_eq!(args[idx + 1], "on");
     }
@@ -485,17 +551,21 @@ fof(f1,axiom,(
 // as "prover error" again.
 #[cfg(test)]
 mod status_tests {
-    use super::{determine_status, ProverStatus};
     use super::ProverMode;
+    use super::{determine_status, ProverStatus};
     use crate::prover::vampire_proof::is_input_error;
 
     #[test]
     fn timeout_via_szs_line() {
         let out = "% SZS status Timeout for stdin\n";
-        assert!(matches!(determine_status(out, Some("Timeout"), &ProverMode::Prove),
-            ProverStatus::Timeout));
-        assert!(matches!(determine_status(out, Some("Timeout"), &ProverMode::CheckConsistency),
-            ProverStatus::Timeout));
+        assert!(matches!(
+            determine_status(out, Some("Timeout"), &ProverMode::Prove),
+            ProverStatus::Timeout
+        ));
+        assert!(matches!(
+            determine_status(out, Some("Timeout"), &ProverMode::CheckConsistency),
+            ProverStatus::Timeout
+        ));
     }
 
     #[test]
@@ -511,12 +581,20 @@ mod status_tests {
 % Peak memory usage: 186 MB
 % ------------------------------
 ";
-        assert!(matches!(determine_status(out, None, &ProverMode::Prove),
-            ProverStatus::Timeout),
-            "Prove mode must classify Termination-reason output as Timeout");
-        assert!(matches!(determine_status(out, None, &ProverMode::CheckConsistency),
-            ProverStatus::Timeout),
-            "CheckConsistency mode must classify Termination-reason output as Timeout");
+        assert!(
+            matches!(
+                determine_status(out, None, &ProverMode::Prove),
+                ProverStatus::Timeout
+            ),
+            "Prove mode must classify Termination-reason output as Timeout"
+        );
+        assert!(
+            matches!(
+                determine_status(out, None, &ProverMode::CheckConsistency),
+                ProverStatus::Timeout
+            ),
+            "CheckConsistency mode must classify Termination-reason output as Timeout"
+        );
     }
 
     #[test]
@@ -524,10 +602,14 @@ mod status_tests {
         // Some preprocessing-phase timeouts emit only the banner
         // without the Termination block.
         let out = "% Time limit reached!\n";
-        assert!(matches!(determine_status(out, None, &ProverMode::Prove),
-            ProverStatus::Timeout));
-        assert!(matches!(determine_status(out, None, &ProverMode::CheckConsistency),
-            ProverStatus::Timeout));
+        assert!(matches!(
+            determine_status(out, None, &ProverMode::Prove),
+            ProverStatus::Timeout
+        ));
+        assert!(matches!(
+            determine_status(out, None, &ProverMode::CheckConsistency),
+            ProverStatus::Timeout
+        ));
     }
 
     #[test]
@@ -542,8 +624,10 @@ mod status_tests {
 % ------------------------------
 % Termination reason: Time limit
 ";
-        assert!(matches!(determine_status(out, Some("Theorem"), &ProverMode::Prove),
-            ProverStatus::Proved));
+        assert!(matches!(
+            determine_status(out, Some("Theorem"), &ProverMode::Prove),
+            ProverStatus::Proved
+        ));
     }
 
     #[test]
@@ -556,17 +640,23 @@ The sort $int of the intended term argument 2500000 (at index 0) is not an insta
 ";
         // Both modes must report InputError, not Unknown — the prover
         // never produced a verdict.
-        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
-            ProverStatus::InputError));
-        assert!(matches!(super::determine_status(out, None, &ProverMode::CheckConsistency),
-            ProverStatus::InputError));
+        assert!(matches!(
+            super::determine_status(out, None, &ProverMode::Prove),
+            ProverStatus::InputError
+        ));
+        assert!(matches!(
+            super::determine_status(out, None, &ProverMode::CheckConsistency),
+            ProverStatus::InputError
+        ));
     }
 
     #[test]
     fn input_error_detected_for_parse_error() {
         let out = "Parse error: unexpected token ')' at line 5\n";
-        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
-            ProverStatus::InputError));
+        assert!(matches!(
+            super::determine_status(out, None, &ProverMode::Prove),
+            ProverStatus::InputError
+        ));
     }
 
     #[test]
@@ -576,10 +666,14 @@ User error: Cannot create equality between terms of different types.
 X0 is $real (detected at or around line 27602)
 ";
         let msg = super::extract_input_error(out).expect("should extract a message");
-        assert!(msg.contains("Cannot create equality between terms of different types"),
-            "extracted message should carry the User error header: {msg}");
-        assert!(msg.contains("X0 is $real"),
-            "extracted message should also carry the follow-up detail line: {msg}");
+        assert!(
+            msg.contains("Cannot create equality between terms of different types"),
+            "extracted message should carry the User error header: {msg}"
+        );
+        assert!(
+            msg.contains("X0 is $real"),
+            "extracted message should also carry the follow-up detail line: {msg}"
+        );
     }
 
     #[test]
@@ -588,8 +682,10 @@ X0 is $real (detected at or around line 27602)
         // InputError — the detector only fires on actual rejection text.
         let out = "% Termination reason: Time limit\n";
         assert!(!is_input_error(out));
-        assert!(matches!(super::determine_status(out, None, &ProverMode::Prove),
-            ProverStatus::Timeout));
+        assert!(matches!(
+            super::determine_status(out, None, &ProverMode::Prove),
+            ProverStatus::Timeout
+        ));
     }
 
     #[test]
@@ -603,7 +699,13 @@ X0 is $real (detected at or around line 27602)
 % Time limit reached!
 % Termination reason: Time limit
 ";
-        assert!(matches!(determine_status(out, Some("ContradictoryAxioms"), &ProverMode::CheckConsistency),
-            ProverStatus::Inconsistent));
+        assert!(matches!(
+            determine_status(
+                out,
+                Some("ContradictoryAxioms"),
+                &ProverMode::CheckConsistency
+            ),
+            ProverStatus::Inconsistent
+        ));
     }
 }

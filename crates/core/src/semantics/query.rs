@@ -3,12 +3,12 @@
 
 use std::collections::HashSet;
 
-#[cfg(feature = "ask")]
-use crate::Element;
-use crate::{SymbolId, types::TaxRelation};
-use crate::types::SentenceId;
 use super::taxonomy::TaxDirection;
 use super::types::{Scope, Scoped};
+use crate::types::SentenceId;
+#[cfg(feature = "ask")]
+use crate::Element;
+use crate::{types::TaxRelation, SymbolId};
 
 use super::SemanticLayer;
 
@@ -19,10 +19,15 @@ impl SemanticLayer {
     }
 
     /// [`Self::has_ancestor_by_name`] in an explicit [`Scope`].
-    pub(crate) fn has_ancestor_by_name_scoped(&self, sym: SymbolId, ancestor: &str, scope: Scope) -> bool {
+    pub(crate) fn has_ancestor_by_name_scoped(
+        &self,
+        sym: SymbolId,
+        ancestor: &str,
+        scope: Scope,
+    ) -> bool {
         let anc_id = match self.syntactic.sym_id(ancestor) {
             Some(id) => id,
-            None     => return false,
+            None => return false,
         };
         self.has_ancestor_scoped(sym, anc_id, scope)
     }
@@ -34,14 +39,18 @@ impl SemanticLayer {
     pub(crate) fn walk_subclass_closure(
         &self,
         start: SymbolId,
-        up:    bool,
+        up: bool,
         mut visit: impl FnMut(SymbolId) -> bool,
     ) {
         let mut stack = vec![start];
         let mut seen: HashSet<SymbolId> = HashSet::new();
         seen.insert(start);
         while let Some(n) = stack.pop() {
-            let next = if up { self.parents_of(n) } else { self.children_of(n) };
+            let next = if up {
+                self.parents_of(n)
+            } else {
+                self.children_of(n)
+            };
             for (m, rel) in next {
                 if !matches!(rel, crate::TaxRelation::Subclass) || !seen.insert(m) {
                     continue;
@@ -65,13 +74,17 @@ impl SemanticLayer {
     pub(crate) fn taxonomy_closure_facts_scoped(
         &self,
         seed_syms: &HashSet<SymbolId>,
-        cap:       usize,
-        scope:     Scope,
+        cap: usize,
+        scope: Scope,
     ) -> HashSet<SentenceId> {
         let mut out: HashSet<SentenceId> = HashSet::new();
         let roles = self.recognized_roles();
-        let subclass_id = roles.map(|r| r.subclass).or_else(|| self.syntactic.sym_id("subclass"));
-        let instance_id = roles.map(|r| r.instance).or_else(|| self.syntactic.sym_id("instance"));
+        let subclass_id = roles
+            .map(|r| r.subclass)
+            .or_else(|| self.syntactic.sym_id("subclass"));
+        let instance_id = roles
+            .map(|r| r.instance)
+            .or_else(|| self.syntactic.sym_id("instance"));
         if subclass_id.is_none() && instance_id.is_none() {
             return out;
         }
@@ -79,10 +92,16 @@ impl SemanticLayer {
         let mut seen: HashSet<SymbolId> = HashSet::new();
         let mut frontier: Vec<SymbolId> = seed_syms.iter().copied().collect();
         while let Some(c) = frontier.pop() {
-            if !seen.insert(c) { continue; }
-            if out.len() >= cap { break; }
+            if !seen.insert(c) {
+                continue;
+            }
+            if out.len() >= cap {
+                break;
+            }
             for (parent, rel) in self.parents_of_scoped(c, scope) {
-                if !matches!(rel, TaxRelation::Subclass | TaxRelation::Instance) { continue; }
+                if !matches!(rel, TaxRelation::Subclass | TaxRelation::Instance) {
+                    continue;
+                }
                 let head_id = match rel {
                     TaxRelation::Subclass => subclass_id,
                     TaxRelation::Instance => instance_id,
@@ -91,7 +110,9 @@ impl SemanticLayer {
                 let Some(head_id) = head_id else { continue };
                 // Find the fact sentence `(head c parent)` among `c`'s sentences.
                 for sid in self.syntactic.axiom_sentences_of(c).iter().copied() {
-                    let Some(s) = self.syntactic.sentence(sid) else { continue };
+                    let Some(s) = self.syntactic.sentence(sid) else {
+                        continue;
+                    };
                     if s.elements.len() == 3
                         && matches!(s.elements.first(), Some(Element::Symbol(sym)) if sym.id() == head_id)
                         && matches!(s.elements.get(1), Some(Element::Symbol(sym)) if sym.id() == c)
@@ -117,25 +138,30 @@ impl SemanticLayer {
     #[allow(dead_code)]
     pub(crate) fn nearest_ancestor_among(
         &self,
-        sym:        SymbolId,
+        sym: SymbolId,
         candidates: &[&str],
     ) -> Option<String> {
-        if candidates.is_empty() { return None; }
+        if candidates.is_empty() {
+            return None;
+        }
 
         let cand_ids: Vec<(SymbolId, &str)> = candidates
             .iter()
             .filter_map(|n| self.syntactic.sym_id(n).map(|id| (id, *n)))
             .collect();
-        if cand_ids.is_empty() { return None; }
+        if cand_ids.is_empty() {
+            return None;
+        }
 
         // BFS via `parents_of`, which manages the `tax_edges` lock internally —
         // do not nest a second `tax_edges` read-lock here.
         let mut visited: HashSet<SymbolId> = HashSet::new();
-        let mut queue: std::collections::VecDeque<SymbolId> =
-            std::collections::VecDeque::new();
+        let mut queue: std::collections::VecDeque<SymbolId> = std::collections::VecDeque::new();
         queue.push_back(sym);
         while let Some(cur) = queue.pop_front() {
-            if !visited.insert(cur) { continue; }
+            if !visited.insert(cur) {
+                continue;
+            }
             if let Some((_, name)) = cand_ids.iter().find(|(id, _)| *id == cur) {
                 return Some((*name).to_string());
             }
@@ -155,7 +181,11 @@ impl SemanticLayer {
 
     /// `parents_of` in an explicit [`Scope`]: `Base` axioms unioned with the
     /// session's transient overlay when `scope` is a session.
-    pub(crate) fn parents_of_scoped(&self, sym: SymbolId, scope: Scope) -> Vec<(SymbolId, TaxRelation)> {
+    pub(crate) fn parents_of_scoped(
+        &self,
+        sym: SymbolId,
+        scope: Scope,
+    ) -> Vec<(SymbolId, TaxRelation)> {
         self.tax_neighbours(TaxDirection::To(sym), scope)
     }
 
@@ -166,7 +196,11 @@ impl SemanticLayer {
     }
 
     /// `children_of` in an explicit [`Scope`] (see [`Self::parents_of_scoped`]).
-    pub(crate) fn children_of_scoped(&self, sym: SymbolId, scope: Scope) -> Vec<(SymbolId, TaxRelation)> {
+    pub(crate) fn children_of_scoped(
+        &self,
+        sym: SymbolId,
+        scope: Scope,
+    ) -> Vec<(SymbolId, TaxRelation)> {
         self.tax_neighbours(TaxDirection::From(sym), scope)
     }
 
@@ -183,11 +217,18 @@ impl SemanticLayer {
             Scope::Session(s) => {
                 let has_overlay = self
                     .tax_edges
-                    .get(&Scoped { scope, key: TaxDirection::To(sym) })
+                    .get(&Scoped {
+                        scope,
+                        key: TaxDirection::To(sym),
+                    })
                     .is_some_and(|s| !s.is_empty());
                 // A session that hides an edge (tombstone) must not fold onto Base.
                 let hides = !self.syntactic.sessions.active_tombstones(s).is_empty();
-                if has_overlay || hides { scope } else { Scope::Base }
+                if has_overlay || hides {
+                    scope
+                } else {
+                    Scope::Base
+                }
             }
         }
     }
@@ -202,7 +243,11 @@ impl SemanticLayer {
     /// the taxonomy get their own entries.
     pub(crate) fn closure_scope(&self, scope: Scope) -> Scope {
         let hides = matches!(scope, Scope::Session(s) if !self.syntactic.sessions.active_tombstones(s).is_empty());
-        if self.tax_session_active(scope) || hides { scope } else { Scope::Base }
+        if self.tax_session_active(scope) || hides {
+            scope
+        } else {
+            Scope::Base
+        }
     }
 
     /// Given a candidate set of root sids, keep only those visible in `scope`:
@@ -213,7 +258,7 @@ impl SemanticLayer {
     pub(crate) fn scope_filter_sids(
         &self,
         candidates: impl IntoIterator<Item = SentenceId>,
-        scope:      Scope,
+        scope: Scope,
     ) -> Vec<SentenceId> {
         match scope {
             Scope::Base => candidates
@@ -221,8 +266,12 @@ impl SemanticLayer {
                 .filter(|sid| self.syntactic.is_axiom(*sid))
                 .collect(),
             Scope::Session(s) => {
-                let tombstoned: HashSet<SentenceId> =
-                    self.syntactic.sessions.active_tombstones(s).into_iter().collect();
+                let tombstoned: HashSet<SentenceId> = self
+                    .syntactic
+                    .sessions
+                    .active_tombstones(s)
+                    .into_iter()
+                    .collect();
                 candidates
                     .into_iter()
                     .filter(|sid| !tombstoned.contains(sid))
@@ -241,9 +290,9 @@ impl SemanticLayer {
     /// [scope-filtered]: Self::scope_filter_sids
     pub(crate) fn subject_sids_scoped(
         &self,
-        head:    SymbolId,
+        head: SymbolId,
         subject: SymbolId,
-        scope:   Scope,
+        scope: Scope,
     ) -> Vec<SentenceId> {
         self.scope_filter_sids(self.syntactic.by_head_arg1(head, subject), scope)
     }
@@ -255,12 +304,18 @@ impl SemanticLayer {
         // subtracted below.
         let mut out: HashSet<(SymbolId, TaxRelation)> = self
             .tax_edges
-            .get(&Scoped { scope: Scope::Base, key: dir.clone() })
+            .get(&Scoped {
+                scope: Scope::Base,
+                key: dir.clone(),
+            })
             .map(|a| (*a).clone())
             .unwrap_or_default();
         if let Scope::Session(s) = scope {
             // Additive overlay.
-            if let Some(overlay) = self.tax_edges.get(&Scoped { scope, key: dir.clone() }) {
+            if let Some(overlay) = self.tax_edges.get(&Scoped {
+                scope,
+                key: dir.clone(),
+            }) {
                 out.extend(overlay.iter().cloned());
             }
             // Tombstones: subtract the edges this session's staged removals would
@@ -268,8 +323,12 @@ impl SemanticLayer {
             for tsid in self.syntactic.sessions.active_tombstones(s) {
                 if let Some((from, to, rel)) = self.tax_edge_of(tsid) {
                     match &dir {
-                        TaxDirection::To(x)   if *x == to   => { out.remove(&(from, rel)); }
-                        TaxDirection::From(x) if *x == from => { out.remove(&(to,   rel)); }
+                        TaxDirection::To(x) if *x == to => {
+                            out.remove(&(from, rel));
+                        }
+                        TaxDirection::From(x) if *x == from => {
+                            out.remove(&(to, rel));
+                        }
                         _ => {}
                     }
                 }
@@ -287,15 +346,20 @@ mod tests {
 
     #[test]
     fn nearest_ancestor_among_finds_closest() {
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (subclass A B)
             (subclass B C)
             (subclass C D)
-        ");
+        ",
+        );
         let a = layer.syntactic.sym_id("A").unwrap();
         let result = layer.nearest_ancestor_among(a, &["C", "B", "D"]);
-        assert_eq!(result.as_deref(), Some("B"),
-            "B is the immediate parent of A, the closest among {{B, C, D}}");
+        assert_eq!(
+            result.as_deref(),
+            Some("B"),
+            "B is the immediate parent of A, the closest among {{B, C, D}}"
+        );
     }
 
     #[test]
@@ -324,10 +388,12 @@ mod tests {
 
     #[test]
     fn nearest_ancestor_among_unreachable_candidate_returns_none() {
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (subclass Dog Animal)
             (subclass Cat Animal)
-        ");
+        ",
+        );
         let dog = layer.syntactic.sym_id("Dog").unwrap();
         assert_eq!(layer.nearest_ancestor_among(dog, &["Cat"]), None);
     }

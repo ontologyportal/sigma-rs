@@ -9,7 +9,7 @@
 
 use std::collections::HashSet;
 
-use crate::cache::{CacheBehavior};
+use crate::cache::CacheBehavior;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{SentenceId, SymbolId};
 
@@ -19,8 +19,8 @@ pub(crate) struct SentenceSymbols;
 
 impl CacheBehavior for SentenceSymbols {
     type Parent = SyntacticLayer;
-    type Key    = SentenceId;
-    type Value  = HashSet<SymbolId>;
+    type Key = SentenceId;
+    type Value = HashSet<SymbolId>;
     type Side = ();
     type SideSnapshot = ();
 

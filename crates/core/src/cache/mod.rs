@@ -22,10 +22,10 @@
 
 mod backends;
 mod behaviors;
-mod frontends;
 pub(crate) mod events;
-pub(crate) mod router;
+mod frontends;
 pub(crate) mod persistence;
+pub(crate) mod router;
 
 // `Epoch` lives in `backends` (defined for a later phase, not yet consumed); it
 // is reachable as `backends::Epoch` and re-exported here once a caller needs it.

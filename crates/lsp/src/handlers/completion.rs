@@ -12,8 +12,8 @@
 //!     an empty response.
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse,
-    Documentation, MarkupContent, MarkupKind,
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Documentation,
+    MarkupContent, MarkupKind,
 };
 
 use sigmakee_rs_sdk::{KnowledgeBase, TokenKind};
@@ -26,29 +26,28 @@ use crate::state::GlobalState;
 /// Handle a `textDocument/completion` request, returning context-aware
 /// completion items or `None` when the document or KB is unavailable.
 pub fn handle_completion(
-    state:  &GlobalState,
+    state: &GlobalState,
     params: CompletionParams,
 ) -> Option<CompletionResponse> {
-    let uri      = params.text_document_position.text_document.uri;
+    let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
 
-    let docs   = state.docs.read().ok()?;
-    let doc    = docs.get(&uri)?;
+    let docs = state.docs.read().ok()?;
+    let doc = docs.get(&uri)?;
     let offset = position_to_offset(&doc.rope, position);
-    let tag    = uri_to_tag(&uri);
+    let tag = uri_to_tag(&uri);
 
     let session = state.session.read().ok()?;
     let kb = session.kb();
 
-    let text         = String::from(&doc.rope);
+    let text = String::from(&doc.rope);
     let (tokens, _e) = sigmakee_rs_sdk::tokenize_kif(&text, &tag);
 
     let ctx = classify_cursor_context(&tokens, offset);
     let items = match ctx {
-        CompletionCtx::SentenceHead  => suggest_heads(kb),
-        CompletionCtx::ArgPosition { head, arg_idx } =>
-            suggest_args(kb, &head, arg_idx),
-        CompletionCtx::Free          => Vec::new(),
+        CompletionCtx::SentenceHead => suggest_heads(kb),
+        CompletionCtx::ArgPosition { head, arg_idx } => suggest_args(kb, &head, arg_idx),
+        CompletionCtx::Free => Vec::new(),
     };
 
     Some(CompletionResponse::Array(items))
@@ -64,10 +63,7 @@ enum CompletionCtx {
     /// Inside a list whose head is already determined, at argument
     /// position `arg_idx` (1-based element index: head is 0,
     /// first arg is 1, etc.).
-    ArgPosition {
-        head:    String,
-        arg_idx: usize,
-    },
+    ArgPosition { head: String, arg_idx: usize },
     /// Top-level (between forms), inside a string, or any other
     /// non-completable position.
     Free,
@@ -78,21 +74,28 @@ enum CompletionCtx {
 /// Tracks a paren stack where each frame records the head name (`None` until
 /// the first non-paren token is consumed) and the argument count seen so far;
 /// the topmost frame at the cursor determines the context.
-fn classify_cursor_context(tokens: &[sigmakee_rs_sdk::Token], cursor_offset: usize) -> CompletionCtx {
+fn classify_cursor_context(
+    tokens: &[sigmakee_rs_sdk::Token],
+    cursor_offset: usize,
+) -> CompletionCtx {
     #[derive(Default)]
     struct Frame {
-        head:     Option<String>,
+        head: Option<String>,
         arg_count: usize,
     }
     let mut stack: Vec<Frame> = Vec::new();
 
     for tok in tokens {
         // A token starting at the cursor offset is "at" the cursor and excluded.
-        if tok.span.offset >= cursor_offset { break; }
+        if tok.span.offset >= cursor_offset {
+            break;
+        }
 
         match &tok.kind {
             TokenKind::LParen => stack.push(Frame::default()),
-            TokenKind::RParen => { stack.pop(); }
+            TokenKind::RParen => {
+                stack.pop();
+            }
             TokenKind::Operator(op) => {
                 if let Some(top) = stack.last_mut() {
                     if top.head.is_none() {
@@ -133,7 +136,7 @@ fn classify_cursor_context(tokens: &[sigmakee_rs_sdk::Token], cursor_offset: usi
         None => CompletionCtx::Free,
         Some(f) if f.head.is_none() => CompletionCtx::SentenceHead,
         Some(f) => CompletionCtx::ArgPosition {
-            head:    f.head.clone().unwrap_or_default(),
+            head: f.head.clone().unwrap_or_default(),
             arg_idx: f.arg_count + 1,
         },
     }
@@ -144,24 +147,27 @@ fn classify_cursor_context(tokens: &[sigmakee_rs_sdk::Token], cursor_offset: usi
 /// Offer every logical operator plus every relation name that appears as a
 /// sentence head in the KB (Skolem symbols excluded).
 fn suggest_heads(kb: &KnowledgeBase) -> Vec<CompletionItem> {
-    let mut out: Vec<CompletionItem> = OP_KEYWORDS.iter().map(|op| CompletionItem {
-        label:  op.to_string(),
-        kind:   Some(CompletionItemKind::KEYWORD),
-        detail: Some("logical operator".to_string()),
-        ..Default::default()
-    }).collect();
+    let mut out: Vec<CompletionItem> = OP_KEYWORDS
+        .iter()
+        .map(|op| CompletionItem {
+            label: op.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("logical operator".to_string()),
+            ..Default::default()
+        })
+        .collect();
 
     for name in kb.head_names() {
-        if kb.symbol_is_skolem(&name) { continue; }
+        if kb.symbol_is_skolem(&name) {
+            continue;
+        }
         out.push(item_for_symbol(kb, &name));
     }
 
     out
 }
 
-const OP_KEYWORDS: &[&str] = &[
-    "and", "or", "not", "=>", "<=>", "equal", "forall", "exists",
-];
+const OP_KEYWORDS: &[&str] = &["and", "or", "not", "=>", "<=>", "equal", "forall", "exists"];
 
 // -- Argument suggestions ----------------------------------------------------
 
@@ -174,11 +180,15 @@ fn suggest_args(kb: &KnowledgeBase, head: &str, arg_idx: usize) -> Vec<Completio
 
     for (_id, name) in kb.iter_symbols() {
         let name = name.as_str();
-        if kb.symbol_is_skolem(name) { continue; }
+        if kb.symbol_is_skolem(name) {
+            continue;
+        }
         if let Some(class) = &expected {
             // Keep only symbols that are `class` itself or have `class` in
             // their ancestor chain.
-            let Some(id) = kb.symbol_id(name) else { continue; };
+            let Some(id) = kb.symbol_id(name) else {
+                continue;
+            };
             if !(kb.has_ancestor(id, class) || name == class.as_str()) {
                 continue;
             }
@@ -192,27 +202,43 @@ fn suggest_args(kb: &KnowledgeBase, head: &str, arg_idx: usize) -> Vec<Completio
 
 fn item_for_symbol(kb: &KnowledgeBase, name: &str) -> CompletionItem {
     let kind = classify_completion_kind(kb, name);
-    let documentation = kb.documentation(name, Some("EnglishLanguage")).into_iter()
+    let documentation = kb
+        .documentation(name, Some("EnglishLanguage"))
+        .into_iter()
         .next()
-        .map(|d| Documentation::MarkupContent(MarkupContent {
-            kind:  MarkupKind::Markdown,
-            value: d.text,
-        }));
+        .map(|d| {
+            Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: d.text,
+            })
+        });
     CompletionItem {
-        label:  name.to_string(),
-        kind:   Some(kind),
+        label: name.to_string(),
+        kind: Some(kind),
         documentation,
         ..Default::default()
     }
 }
 
 fn classify_completion_kind(kb: &KnowledgeBase, name: &str) -> CompletionItemKind {
-    let Some(id) = kb.symbol_id(name) else { return CompletionItemKind::TEXT; };
-    if kb.is_class(id)      { return CompletionItemKind::CLASS; }
-    if kb.is_function(id)   { return CompletionItemKind::FUNCTION; }
-    if kb.is_predicate(id)  { return CompletionItemKind::INTERFACE; }
-    if kb.is_relation(id)   { return CompletionItemKind::INTERFACE; }
-    if kb.is_instance(id)   { return CompletionItemKind::CONSTANT; }
+    let Some(id) = kb.symbol_id(name) else {
+        return CompletionItemKind::TEXT;
+    };
+    if kb.is_class(id) {
+        return CompletionItemKind::CLASS;
+    }
+    if kb.is_function(id) {
+        return CompletionItemKind::FUNCTION;
+    }
+    if kb.is_predicate(id) {
+        return CompletionItemKind::INTERFACE;
+    }
+    if kb.is_relation(id) {
+        return CompletionItemKind::INTERFACE;
+    }
+    if kb.is_instance(id) {
+        return CompletionItemKind::CONSTANT;
+    }
     CompletionItemKind::VARIABLE
 }
 

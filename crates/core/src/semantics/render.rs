@@ -53,7 +53,9 @@ pub struct RenderReport {
 impl SemanticLayer {
     /// Every `(format <lang> <relation> "...")` entry for `relation`.
     pub(crate) fn format_string(&self, relation: &str, language: Option<&str>) -> Vec<DocEntry> {
-        let Some(id) = self.syntactic.sym_id(relation) else { return Vec::new(); };
+        let Some(id) = self.syntactic.sym_id(relation) else {
+            return Vec::new();
+        };
         self.documentation(id, language)
             .into_iter()
             .filter(|d| d.rel == FORMAT_RELATION.id())
@@ -62,7 +64,9 @@ impl SemanticLayer {
 
     /// Every `(termFormat <lang> <symbol> "...")` entry for `symbol`.
     pub(crate) fn term_format_named(&self, symbol: &str, language: Option<&str>) -> Vec<DocEntry> {
-        let Some(id) = self.syntactic.sym_id(symbol) else { return Vec::new(); };
+        let Some(id) = self.syntactic.sym_id(symbol) else {
+            return Vec::new();
+        };
         self.documentation(id, language)
             .into_iter()
             .filter(|d| d.rel == TERM_RELATION.id())
@@ -86,7 +90,12 @@ impl SemanticLayer {
     }
 
     #[cfg(any(feature = "ask", feature = "native-prover"))]
-    fn render_formula_impl(&self, formula: &AstNode, language: &str, coloured: bool) -> RenderReport {
+    fn render_formula_impl(
+        &self,
+        formula: &AstNode,
+        language: &str,
+        coloured: bool,
+    ) -> RenderReport {
         let mut ctx = RenderCtx {
             sem: self,
             language,
@@ -107,17 +116,17 @@ impl SemanticLayer {
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub(crate) use inline_colorization::{
     color_bright_blue as ANSI_LINKED, // `&%Symbol` cross-references
-    color_bright_red  as ANSI_NEG,    // negations
-    color_cyan        as ANSI_OP,     // structural connectives
-    color_magenta     as ANSI_VAR,    // variables
-    color_reset       as ANSI_RESET,
+    color_bright_red as ANSI_NEG,     // negations
+    color_cyan as ANSI_OP,            // structural connectives
+    color_magenta as ANSI_VAR,        // variables
+    color_reset as ANSI_RESET,
 };
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 struct RenderCtx<'a> {
-    sem:      &'a SemanticLayer,
+    sem: &'a SemanticLayer,
     language: &'a str,
-    missing:  BTreeSet<String>,
+    missing: BTreeSet<String>,
     coloured: bool,
 }
 
@@ -142,12 +151,12 @@ impl<'a> RenderCtx<'a> {
     fn render(&mut self, node: &AstNode, negated: bool) -> String {
         match node {
             AstNode::List { elements, .. } => self.render_list(elements, negated),
-            AstNode::Symbol { name, .. }   => self.render_term_symbol(name),
+            AstNode::Symbol { name, .. } => self.render_term_symbol(name),
             AstNode::Variable { name, .. } => self.col(&format!("?{}", name), ANSI_VAR),
             AstNode::RowVariable { name, .. } => self.col(&format!("@{}", name), ANSI_VAR),
-            AstNode::Str { value, .. }     => value.clone(),
-            AstNode::Number { value, .. }  => value.clone(),
-            AstNode::Operator { op, .. }   => op.name().to_owned(),
+            AstNode::Str { value, .. } => value.clone(),
+            AstNode::Number { value, .. } => value.clone(),
+            AstNode::Operator { op, .. } => op.name().to_owned(),
             AstNode::Annotated { formula, .. } => self.render(formula, negated),
         }
     }
@@ -197,15 +206,23 @@ impl<'a> RenderCtx<'a> {
         match op {
             OpKind::And => {
                 let parts = self.render_args(args);
-                if parts.is_empty() { return "true".into(); }
-                if parts.len() == 1 { return parts.into_iter().next().unwrap(); }
+                if parts.is_empty() {
+                    return "true".into();
+                }
+                if parts.len() == 1 {
+                    return parts.into_iter().next().unwrap();
+                }
                 let sep = format!(" {} ", self.col("and", ANSI_OP));
                 parts.join(&sep)
             }
             OpKind::Or => {
                 let parts = self.render_args(args);
-                if parts.is_empty() { return "false".into(); }
-                if parts.len() == 1 { return parts.into_iter().next().unwrap(); }
+                if parts.is_empty() {
+                    return "false".into();
+                }
+                if parts.len() == 1 {
+                    return parts.into_iter().next().unwrap();
+                }
                 let sep = format!(" {} ", self.col("or", ANSI_OP));
                 parts.join(&sep)
             }
@@ -220,7 +237,11 @@ impl<'a> RenderCtx<'a> {
                             if let Some(entry) = fmt.into_iter().next() {
                                 if entry.text.contains("%n") {
                                     let inner_args: Vec<AstNode> = elements[1..].to_vec();
-                                    return self.apply_template(&entry.text, &inner_args, /*negated=*/ true);
+                                    return self.apply_template(
+                                        &entry.text,
+                                        &inner_args,
+                                        /*negated=*/ true,
+                                    );
                                 }
                             }
                         }
@@ -270,7 +291,8 @@ impl<'a> RenderCtx<'a> {
                 let vars_txt = if var_names.is_empty() {
                     String::new()
                 } else {
-                    var_names.into_iter()
+                    var_names
+                        .into_iter()
                         .map(|v| self.col(&format!("?{}", v), ANSI_VAR))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -284,7 +306,9 @@ impl<'a> RenderCtx<'a> {
                 if vars_txt.is_empty() {
                     body_txt
                 } else {
-                    format!("{} {} {} {}", lead, vars_txt, connector, body_txt).trim().to_string()
+                    format!("{} {} {} {}", lead, vars_txt, connector, body_txt)
+                        .trim()
+                        .to_string()
                 }
             }
         }
@@ -319,16 +343,24 @@ impl<'a> RenderCtx<'a> {
                                     let last = m.end.unwrap_or(args.len() + 1);
                                     let mut first = true;
                                     for n in m.start..last {
-                                        let Some(idx) = n.checked_sub(1) else { continue };
+                                        let Some(idx) = n.checked_sub(1) else {
+                                            continue;
+                                        };
                                         let Some(arg) = args.get(idx) else { break };
-                                        if !first { out.push_str(&m.sep); }
+                                        if !first {
+                                            out.push_str(&m.sep);
+                                        }
                                         out.push_str(&self.render(arg, false));
                                         first = false;
                                     }
                                     i += m.len;
                                 }
                                 // Malformed — leave literal so template bugs show.
-                                None => { out.push('%'); out.push('*'); i += 2; }
+                                None => {
+                                    out.push('%');
+                                    out.push('*');
+                                    i += 2;
+                                }
                             }
                         }
                         b'n' => {
@@ -358,10 +390,11 @@ impl<'a> RenderCtx<'a> {
                 }
                 b'&' if i + 1 < bytes.len() && bytes[i + 1] == b'%' => {
                     let start = i + 2;
-                    let end = start + bytes[start..]
-                        .iter()
-                        .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                        .count();
+                    let end = start
+                        + bytes[start..]
+                            .iter()
+                            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                            .count();
                     if end > start {
                         let sym = &template[start..end];
                         let rendered = self.render_term_symbol(sym);
@@ -389,12 +422,13 @@ impl<'a> RenderCtx<'a> {
         // literally without recording a miss.
         match name {
             "false" | "False" | "$false" => return "false".to_owned(),
-            "true"  | "True"  | "$true"  => return "true".to_owned(),
+            "true" | "True" | "$true" => return "true".to_owned(),
             "FALSE" => return "a contradiction".to_owned(),
             _ => {}
         }
         // Proof-local skolem witnesses (`sk0`, …) aren't ontology terms either.
-        if name.strip_prefix("sk")
+        if name
+            .strip_prefix("sk")
             .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
         {
             return name.to_owned();
@@ -437,11 +471,11 @@ struct MultiMarker {
     /// First argument token number, numbered as in `%N`.
     start: usize,
     /// Exclusive upper bound; `None` for an open `{N-}` (rest of the arguments).
-    end:   Option<usize>,
+    end: Option<usize>,
     /// Text inserted *between* rendered arguments.
-    sep:   String,
+    sep: String,
     /// Bytes consumed, including the leading `%*`.
-    len:   usize,
+    len: usize,
 }
 
 /// Parse a `%*{N-Z}[sep]` marker at `bytes[i..]`, where `bytes[i] == b'%'` and
@@ -456,29 +490,44 @@ struct MultiMarker {
 /// Returns `None` for a malformed marker so the caller can leave it literal.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 fn parse_multi_marker(bytes: &[u8], i: usize) -> Option<MultiMarker> {
-    let mut p = i + 2;                                        // past "%*"
-    if *bytes.get(p)? != b'{' { return None; }
+    let mut p = i + 2; // past "%*"
+    if *bytes.get(p)? != b'{' {
+        return None;
+    }
     let close = bytes[p + 1..].iter().position(|&b| b == b'}')?;
     let range = std::str::from_utf8(&bytes[p + 1..p + 1 + close]).ok()?;
-    p += 1 + close + 1;                                       // past "{…}"
+    p += 1 + close + 1; // past "{…}"
 
     let (lo, hi) = range.split_once('-')?;
     let start: usize = lo.trim().parse().ok()?;
     let end = match hi.trim() {
-        ""  => None,
-        z   => Some(z.parse().ok()?),
+        "" => None,
+        z => Some(z.parse().ok()?),
     };
 
     // A backslash before `[` drops the space that otherwise follows the separator.
     let tight = *bytes.get(p)? == b'\\';
-    if tight { p += 1; }
-    if *bytes.get(p)? != b'[' { return None; }
+    if tight {
+        p += 1;
+    }
+    if *bytes.get(p)? != b'[' {
+        return None;
+    }
     let rclose = bytes[p + 1..].iter().position(|&b| b == b']')?;
     let raw = std::str::from_utf8(&bytes[p + 1..p + 1 + rclose]).ok()?;
-    p += 1 + rclose + 1;                                      // past "[…]"
+    p += 1 + rclose + 1; // past "[…]"
 
-    let sep = if tight { raw.to_string() } else { format!("{raw} ") };
-    Some(MultiMarker { start, end, sep, len: p - i })
+    let sep = if tight {
+        raw.to_string()
+    } else {
+        format!("{raw} ")
+    };
+    Some(MultiMarker {
+        start,
+        end,
+        sep,
+        len: p - i,
+    })
 }
 
 /// Byte offset of the next `target`, ignoring nested `{…}` groups (so `%n{TEXT}`
@@ -487,9 +536,12 @@ fn parse_multi_marker(bytes: &[u8], i: usize) -> Option<MultiMarker> {
 fn find_matching(bytes: &[u8], target: u8) -> Option<usize> {
     let mut depth: usize = 0;
     for (i, &b) in bytes.iter().enumerate() {
-        if b == b'{' { depth += 1; }
-        else if b == target {
-            if depth == 0 { return Some(i); }
+        if b == b'{' {
+            depth += 1;
+        } else if b == target {
+            if depth == 0 {
+                return Some(i);
+            }
             depth -= 1;
         }
     }

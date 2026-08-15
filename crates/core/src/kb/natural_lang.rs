@@ -72,7 +72,9 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// `&%Symbol` cross-references, negations, and structural operators in ANSI
     /// colour escapes for terminal output.
     pub fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.layer.semantic().render_formula_colored(formula, language)
+        self.layer
+            .semantic()
+            .render_formula_colored(formula, language)
     }
 }
 
@@ -87,7 +89,8 @@ mod tests {
     /// `termFormat` to exercise the template DSL.
     fn kb_with_english_templates(extras: &str) -> KnowledgeBase {
         let mut kb = KnowledgeBase::new();
-        let kif = format!(r#"
+        let kif = format!(
+            r#"
             (termFormat EnglishLanguage Dog "dog")
             (termFormat EnglishLanguage Animal "animal")
             (termFormat EnglishLanguage Fido "fido")
@@ -102,7 +105,8 @@ mod tests {
             (format EnglishLanguage likes "%1 %n{{does not}} &%likes %2")
             (termFormat EnglishLanguage likes "likes")
             {extras}
-        "#);
+        "#
+        );
         // Ingest as a *file* source (not `tell`): `tell` registers an inline
         // (`__inline(N)__`) source, and inline assertions are transient
         // super-hypotheses that `make_session_axiomatic` refuses to promote
@@ -111,9 +115,7 @@ mod tests {
         // become base axioms the renderer reads.
         let r = kb.reload_kif(&kif, &std::path::PathBuf::from("tests.kif"), "tests.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
-        let r = kb.make_session_axiomatic(
-            "tests.kif"
-        );
+        let r = kb.make_session_axiomatic("tests.kif");
         assert!(matches!(r, Ok(_)), "promote failed: {r:?}");
         kb
     }
@@ -122,7 +124,13 @@ mod tests {
         use crate::parse::parse_document;
         let doc = parse_document("test", kif, crate::Parser::Kif);
         assert!(!doc.has_errors(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().expect("at least one root").as_stmt().cloned().expect("doc stmt")
+        doc.ast
+            .into_iter()
+            .next()
+            .expect("at least one root")
+            .as_stmt()
+            .cloned()
+            .expect("doc stmt")
     }
 
     #[test]
@@ -140,11 +148,14 @@ mod tests {
     fn multi_arg_bounded_range() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage between "%1 sits between %*{2-4}[,]")
-               (termFormat EnglishLanguage between "between")"#);
+               (termFormat EnglishLanguage between "between")"#,
+        );
         let f = parse_kif_formula("(between Fido Juno Dog Animal)");
         let r = kb.render_formula(&f, "EnglishLanguage");
-        assert_eq!(r.rendered, "fido sits between juno, dog",
-            "{{2-4}} is exclusive of 4, so `animal` (arg 4) must NOT appear");
+        assert_eq!(
+            r.rendered, "fido sits between juno, dog",
+            "{{2-4}} is exclusive of 4, so `animal` (arg 4) must NOT appear"
+        );
     }
 
     /// An open `{N-}` consumes the remaining arguments.
@@ -152,7 +163,8 @@ mod tests {
     fn multi_arg_open_range_consumes_rest() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage listing "the list holds %*{2-}[,]")
-               (termFormat EnglishLanguage listing "listing")"#);
+               (termFormat EnglishLanguage listing "listing")"#,
+        );
         let f = parse_kif_formula("(listing Fido Juno Dog Animal)");
         let r = kb.render_formula(&f, "EnglishLanguage");
         assert_eq!(r.rendered, "the list holds juno, dog, animal");
@@ -163,7 +175,8 @@ mod tests {
     fn multi_arg_backslash_omits_space() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage tight "%1 :: %*{2-}\[,]")
-               (termFormat EnglishLanguage tight "tight")"#);
+               (termFormat EnglishLanguage tight "tight")"#,
+        );
         let f = parse_kif_formula("(tight Fido Juno Dog)");
         let r = kb.render_formula(&f, "EnglishLanguage");
         assert_eq!(r.rendered, "fido :: juno,dog");
@@ -174,7 +187,8 @@ mod tests {
     fn multi_arg_multichar_separator() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage anyof "either %*{1-}[ or]")
-               (termFormat EnglishLanguage anyof "anyof")"#);
+               (termFormat EnglishLanguage anyof "anyof")"#,
+        );
         let f = parse_kif_formula("(anyof Fido Juno Dog)");
         let r = kb.render_formula(&f, "EnglishLanguage");
         assert_eq!(r.rendered, "either fido or juno or dog");
@@ -187,11 +201,15 @@ mod tests {
             r#"(format EnglishLanguage empt "[%*{3-3}[,]]")
                (termFormat EnglishLanguage empt "empt")
                (format EnglishLanguage over "[%*{2-9}[,]]")
-               (termFormat EnglishLanguage over "over")"#);
+               (termFormat EnglishLanguage over "over")"#,
+        );
         let empty = kb.render_formula(&parse_kif_formula("(empt Fido Juno)"), "EnglishLanguage");
         assert_eq!(empty.rendered, "[]", "3-3 selects nothing");
         // Upper bound past the real arity stops at the last argument.
-        let over = kb.render_formula(&parse_kif_formula("(over Fido Juno Dog)"), "EnglishLanguage");
+        let over = kb.render_formula(
+            &parse_kif_formula("(over Fido Juno Dog)"),
+            "EnglishLanguage",
+        );
         assert_eq!(over.rendered, "[juno, dog]");
     }
 
@@ -201,9 +219,14 @@ mod tests {
     fn malformed_multi_arg_marker_stays_literal() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage broke "%1 %*{2-} then")
-               (termFormat EnglishLanguage broke "broke")"#);
+               (termFormat EnglishLanguage broke "broke")"#,
+        );
         let r = kb.render_formula(&parse_kif_formula("(broke Fido Juno)"), "EnglishLanguage");
-        assert!(r.rendered.contains("%*"), "expected literal marker, got {:?}", r.rendered);
+        assert!(
+            r.rendered.contains("%*"),
+            "expected literal marker, got {:?}",
+            r.rendered
+        );
     }
 
     /// The real SUMO templates that use this marker (Merge.kif) render correctly.
@@ -213,12 +236,20 @@ mod tests {
             r#"(format EnglishLanguage partition "%1 is %n &%exhaustively &%partitioned into %*{2-}[,]")
                (termFormat EnglishLanguage partition "partition")
                (format EnglishLanguage AssignmentFn "%1(%*{2-}[,])")
-               (termFormat EnglishLanguage AssignmentFn "AssignmentFn")"#);
+               (termFormat EnglishLanguage AssignmentFn "AssignmentFn")"#,
+        );
         let r = kb.render_formula(
-            &parse_kif_formula("(partition Animal Dog Fido Juno)"), "EnglishLanguage");
-        assert_eq!(r.rendered, "animal is exhaustively partitioned into dog, fido, juno");
+            &parse_kif_formula("(partition Animal Dog Fido Juno)"),
+            "EnglishLanguage",
+        );
+        assert_eq!(
+            r.rendered,
+            "animal is exhaustively partitioned into dog, fido, juno"
+        );
         let a = kb.render_formula(
-            &parse_kif_formula("(AssignmentFn Dog Fido Juno)"), "EnglishLanguage");
+            &parse_kif_formula("(AssignmentFn Dog Fido Juno)"),
+            "EnglishLanguage",
+        );
         assert_eq!(a.rendered, "dog(fido, juno)");
     }
 
@@ -247,7 +278,7 @@ mod tests {
         // string injected via `extras`.
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage hasAttr "%1 has the &%attribute %2")
-               (termFormat EnglishLanguage hasAttr "has attribute")"#
+               (termFormat EnglishLanguage hasAttr "has attribute")"#,
         );
         let f = parse_kif_formula("(hasAttr Fido Friendly)");
         let r = kb.render_formula(&f, "EnglishLanguage");
@@ -281,10 +312,7 @@ mod tests {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(forall (?X) (instance ?X Animal))");
         let r = kb.render_formula(&f, "EnglishLanguage");
-        assert_eq!(
-            r.rendered,
-            "for every ?X , ?X is an instance of animal"
-        );
+        assert_eq!(r.rendered, "for every ?X , ?X is an instance of animal");
     }
 
     #[test]
@@ -292,12 +320,16 @@ mod tests {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(undefinedRel Fido Dog)");
         let r = kb.render_formula(&f, "EnglishLanguage");
-        assert!(r.missing.iter().any(|m| m.starts_with("format:")
-            && m.contains("undefinedRel")),
-            "expected format:undefinedRel miss, got: {:?}", r.missing);
+        assert!(
+            r.missing
+                .iter()
+                .any(|m| m.starts_with("format:") && m.contains("undefinedRel")),
+            "expected format:undefinedRel miss, got: {:?}",
+            r.missing
+        );
         // Best-effort rendering still includes the args.
         assert!(r.rendered.contains("fido"), "got: {}", r.rendered);
-        assert!(r.rendered.contains("dog"),  "got: {}", r.rendered);
+        assert!(r.rendered.contains("dog"), "got: {}", r.rendered);
     }
 
     #[test]
@@ -307,7 +339,8 @@ mod tests {
         let r = kb.render_formula(&f, "EnglishLanguage");
         assert!(
             r.missing.iter().any(|m| m == "termFormat:UnknownThing"),
-            "expected termFormat:UnknownThing miss, got: {:?}", r.missing
+            "expected termFormat:UnknownThing miss, got: {:?}",
+            r.missing
         );
     }
 
@@ -328,12 +361,14 @@ mod tests {
             let expected = name.to_lowercase();
             assert_eq!(
                 r.rendered, expected,
-                "expected {} → {:?}, got {:?}", name, expected, r.rendered
+                "expected {} → {:?}, got {:?}",
+                name, expected, r.rendered
             );
             assert!(
                 !r.missing.iter().any(|m| m.contains(name)),
                 "logical constant `{}` should not register as missing: {:?}",
-                name, r.missing,
+                name,
+                r.missing,
             );
         }
         // Direct-construction path for the `$`-prefixed variants.
@@ -347,11 +382,14 @@ mod tests {
             let expected = name.trim_start_matches('$').to_lowercase();
             assert_eq!(
                 r.rendered, expected,
-                "expected {} → {:?}, got {:?}", name, expected, r.rendered
+                "expected {} → {:?}, got {:?}",
+                name, expected, r.rendered
             );
-            assert!(r.missing.is_empty(),
+            assert!(
+                r.missing.is_empty(),
                 "logical constant `{}` should not register as missing: {:?}",
-                name, r.missing,
+                name,
+                r.missing,
             );
         }
     }
@@ -376,7 +414,9 @@ mod tests {
             if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'[') {
                 // Skip CSI sequence: ESC [ ... m
                 let mut j = i + 2;
-                while j < bytes.len() && bytes[j] != b'm' { j += 1; }
+                while j < bytes.len() && bytes[j] != b'm' {
+                    j += 1;
+                }
                 i = j + 1;
                 continue;
             }
@@ -406,8 +446,10 @@ mod tests {
             let plain = kb.render_formula(&f, "EnglishLanguage").rendered;
             let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
             assert_eq!(
-                strip_ansi(&coloured), plain,
-                "colour stripping must recover plain output for {}", kif
+                strip_ansi(&coloured),
+                plain,
+                "colour stripping must recover plain output for {}",
+                kif
             );
         }
     }
@@ -431,17 +473,21 @@ mod tests {
             let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
             assert!(
                 coloured.contains("\x1b["),
-                "expected ANSI colour in {}: {:?}", kif, coloured
+                "expected ANSI colour in {}: {:?}",
+                kif,
+                coloured
             );
         }
 
         // Conversely, a bare predicate with no variables, `&%`, or
         // connectives has nothing to colour — coloured == plain.
         let f = parse_kif_formula("(instance Fido Dog)");
-        let plain    = kb.render_formula(&f, "EnglishLanguage").rendered;
+        let plain = kb.render_formula(&f, "EnglishLanguage").rendered;
         let coloured = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
-        assert_eq!(plain, coloured,
-            "bare predicate with no colourable class should render identically");
+        assert_eq!(
+            plain, coloured,
+            "bare predicate with no colourable class should render identically"
+        );
     }
 
     #[test]
@@ -452,8 +498,13 @@ mod tests {
         // `?X` appears twice (once in the quantifier list, once in the
         // body).  Each occurrence must be wrapped in a matched pair.
         let magenta_opens = r.matches(super::ANSI_VAR).count();
-        let resets        = r.matches(super::ANSI_RESET).count();
-        assert!(magenta_opens >= 2, "expected ≥2 magenta opens, got {}: {:?}", magenta_opens, r);
+        let resets = r.matches(super::ANSI_RESET).count();
+        assert!(
+            magenta_opens >= 2,
+            "expected ≥2 magenta opens, got {}: {:?}",
+            magenta_opens,
+            r
+        );
         assert!(resets >= magenta_opens, "resets must cover opens: {:?}", r);
     }
 
@@ -465,12 +516,21 @@ mod tests {
         );
         let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
         // `and`, `if`, `then` should all be coloured.
-        assert!(r.contains(&format!("{}and{}", super::ANSI_OP, super::ANSI_RESET)),
-            "missing cyan `and`: {:?}", r);
-        assert!(r.contains(&format!("{}if{}", super::ANSI_OP, super::ANSI_RESET)),
-            "missing cyan `if`: {:?}", r);
-        assert!(r.contains(&format!("{}then{}", super::ANSI_OP, super::ANSI_RESET)),
-            "missing cyan `then`: {:?}", r);
+        assert!(
+            r.contains(&format!("{}and{}", super::ANSI_OP, super::ANSI_RESET)),
+            "missing cyan `and`: {:?}",
+            r
+        );
+        assert!(
+            r.contains(&format!("{}if{}", super::ANSI_OP, super::ANSI_RESET)),
+            "missing cyan `if`: {:?}",
+            r
+        );
+        assert!(
+            r.contains(&format!("{}then{}", super::ANSI_OP, super::ANSI_RESET)),
+            "missing cyan `then`: {:?}",
+            r
+        );
     }
 
     #[test]
@@ -478,8 +538,11 @@ mod tests {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (instance Fido Dog))");
         let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
-        assert!(r.contains(&format!("{}not{}", super::ANSI_NEG, super::ANSI_RESET)),
-            "missing red `not`: {:?}", r);
+        assert!(
+            r.contains(&format!("{}not{}", super::ANSI_NEG, super::ANSI_RESET)),
+            "missing red `not`: {:?}",
+            r
+        );
     }
 
     #[test]
@@ -487,20 +550,30 @@ mod tests {
         let kb = kb_with_english_templates("");
         let f = parse_kif_formula("(not (likes Fido Juno))");
         let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
-        assert!(r.contains(&format!("{}does not{}", super::ANSI_NEG, super::ANSI_RESET)),
-            "missing red `does not`: {:?}", r);
+        assert!(
+            r.contains(&format!("{}does not{}", super::ANSI_NEG, super::ANSI_RESET)),
+            "missing red `does not`: {:?}",
+            r
+        );
     }
 
     #[test]
     fn cross_reference_is_wrapped_in_bright_blue() {
         let kb = kb_with_english_templates(
             r#"(format EnglishLanguage hasAttr "%1 has the &%attribute %2")
-               (termFormat EnglishLanguage hasAttr "has attribute")"#
+               (termFormat EnglishLanguage hasAttr "has attribute")"#,
         );
         let f = parse_kif_formula("(hasAttr Fido Friendly)");
         let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
-        assert!(r.contains(&format!("{}attribute{}", super::ANSI_LINKED, super::ANSI_RESET)),
-            "missing bright-blue `attribute`: {:?}", r);
+        assert!(
+            r.contains(&format!(
+                "{}attribute{}",
+                super::ANSI_LINKED,
+                super::ANSI_RESET
+            )),
+            "missing bright-blue `attribute`: {:?}",
+            r
+        );
     }
 
     #[test]
@@ -514,8 +587,13 @@ mod tests {
         let f = parse_kif_formula("(not (bareRel Fido Dog))");
         let r = kb.render_formula_colored(&f, "EnglishLanguage").rendered;
         assert!(
-            r.contains(&format!("{}it is not the case that{}", super::ANSI_NEG, super::ANSI_RESET)),
-            "missing red `it is not the case that`: {:?}", r
+            r.contains(&format!(
+                "{}it is not the case that{}",
+                super::ANSI_NEG,
+                super::ANSI_RESET
+            )),
+            "missing red `it is not the case that`: {:?}",
+            r
         );
     }
 

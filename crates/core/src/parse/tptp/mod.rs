@@ -2,11 +2,11 @@
 //
 // TPTP (Thousand Problems) parsing submodule.
 
+pub(crate) mod dis;
 pub mod error;
-pub(crate) mod tokenizer;
 pub mod parser;
 pub mod syntax;
-pub(crate) mod dis;
+pub(crate) mod tokenizer;
 
-pub(crate) use tokenizer::{tokenize, tokenize_with_meta};
 pub use parser::parse;
+pub(crate) use tokenizer::{tokenize, tokenize_with_meta};

@@ -2,22 +2,22 @@
 //
 // Proving driver
 
-use std::collections::HashSet;
 use crate::clock::Instant;
+use std::collections::HashSet;
 
-use crate::{SentenceId, SymbolId, profile_span};
 use crate::prover::{ProverResult, ProverStatus, TerminationReason};
 use crate::semantics::types::Scope;
 use crate::syntactic::caches::session::session_id;
 use crate::types::Element;
+use crate::{profile_span, SentenceId, SymbolId};
 
-use crate::layer::TopLayer;
-use super::{ProverLayer, Conjecture};
 use super::clause::{AtomId, PClause};
 use super::clausify::clausify_negated_conjunction_lossy;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
 use super::strategy::Strategy;
 use super::theory::TheoryOracle;
+use super::{Conjecture, ProverLayer};
+use crate::layer::TopLayer;
 
 /// The one `NativeOpts` field a portfolio lane's `Strategy` can override:
 /// `max_lits` (the derived-clause literal-count ceiling) lives on
@@ -29,7 +29,9 @@ use super::theory::TheoryOracle;
 /// existed; `Some(n)` overrides it for that lane only. Consumed exactly
 /// once, here, at lane-build time in `run_portfolio_schedule`.
 pub(super) fn lane_max_lits(lane: &Strategy, base_max_lits: usize) -> usize {
-    lane.derived_width_cap.map(usize::from).unwrap_or(base_max_lits)
+    lane.derived_width_cap
+        .map(usize::from)
+        .unwrap_or(base_max_lits)
 }
 
 impl<S: TopLayer + 'static> ProverLayer<S> {
@@ -37,18 +39,22 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     /// tag-free → sweep-safe; no shared-store churn/rollback, plan D5) and
     /// resolve the roots.  The `&self` core behind both the trait
     /// `intern_conjecture` and the `&self` `ask_native`.
-    pub(super) fn intern_conjecture_native(&self, asts: &[crate::AstNode])
-        -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
+    pub(super) fn intern_conjecture_native(
+        &self,
+        asts: &[crate::AstNode],
+    ) -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
         let mut sents = Vec::new();
         for n in asts {
-            let Some((root, subs)) =
-                crate::syntactic::sentence::build_detached(n) else { continue };
+            let Some((root, subs)) = crate::syntactic::sentence::build_detached(n) else {
+                continue;
+            };
             for sub in subs {
                 self.atoms.intern_sentence(sub);
             }
             let sid = self.atoms.intern_sentence(root);
-            let Some(arc) = self.atoms
-                .resolve(sid, &self.semantic().syntactic) else { continue };
+            let Some(arc) = self.atoms.resolve(sid, &self.semantic().syntactic) else {
+                continue;
+            };
             sents.push((arc, sid));
         }
         sents
@@ -62,9 +68,17 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     pub(crate) fn clausify_asts(&self, asts: Vec<crate::AstNode>) -> Vec<PClause> {
         let (normalized, _dropped) = Conjecture::normalize(asts);
         let sents = self.intern_conjecture_native(&normalized);
-        sents.iter()
-            .flat_map(|(sent, sid)| super::clausify::clausify_sentence(
-                &self.semantic().syntactic, &self.atoms, sent, *sid, false))
+        sents
+            .iter()
+            .flat_map(|(sent, sid)| {
+                super::clausify::clausify_sentence(
+                    &self.semantic().syntactic,
+                    &self.atoms,
+                    sent,
+                    *sid,
+                    false,
+                )
+            })
             .collect()
     }
 
@@ -76,17 +90,17 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     /// is a thin wrapper that parses KIF text and supplies the `ProveCtx`.
     pub(crate) fn prove_native(
         &self,
-        asts:        Vec<crate::AstNode>,
-        opts:        NativeOpts,
-        ctx:         &crate::ProveCtx,
+        asts: Vec<crate::AstNode>,
+        opts: NativeOpts,
+        ctx: &crate::ProveCtx,
     ) -> ProverResult {
         // Prepare: normalize + seed + intern into the atom table (all `&self`).
         let (normalized, norm_dropped) = Conjecture::normalize(asts);
-        let seed_syms  = Conjecture::seed(&normalized);
-        let sents      = self.intern_conjecture_native(&normalized);
+        let seed_syms = Conjecture::seed(&normalized);
+        let sents = self.intern_conjecture_native(&normalized);
         if sents.is_empty() {
             return ProverResult {
-                status:     ProverStatus::Unknown,
+                status: ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
                 ..Default::default()
             };
@@ -94,13 +108,19 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // Intern/build failures surface as a shortfall (`intern_conjecture_native`
         // yields at most one entry per normalized ast, skipping failures).
         let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
-        let conj = Conjecture { sents, seed_syms, dropped };
+        let conj = Conjecture {
+            sents,
+            seed_syms,
+            dropped,
+        };
 
-        let selection     = opts.selection;
+        let selection = opts.selection;
         let total_timeout = opts.time_limit_secs.min(u64::from(u32::MAX)) as u32;
 
         if !selection.autoscaling() {
-            return self.prove_one_driver(&conj, selection, total_timeout, &opts, ctx).0;
+            return self
+                .prove_one_driver(&conj, selection, total_timeout, &opts, ctx)
+                .0;
         }
 
         // TPTP regime (standalone `.p`/`.tptp` problem — `set_tptp_problem`
@@ -117,27 +137,31 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
 
         // Prover-feedback autoscaling — the same shared planner the trait
         // `prove` uses, driven here directly so the path stays `&self`.
-        use crate::prover::scale::{adaptive_start_budget, drive, effective_max_time_runs, ScaleConfig};
+        use crate::prover::scale::{
+            adaptive_start_budget, drive, effective_max_time_runs, ScaleConfig,
+        };
         use crate::syntactic::sine::{
             default_budget, scale_factor, scale_max_disproofs, scale_max_time_runs,
             scale_min_budget,
         };
         // Don't climb from a budget the indexed universe could never fill —
         // see `adaptive_start_budget`'s doc.
-        let total_axioms = self.semantic().syntactic.sine_current(|idx| idx.axiom_count());
+        let total_axioms = self
+            .semantic()
+            .syntactic
+            .sine_current(|idx| idx.axiom_count());
         let min_budget = scale_min_budget();
         let cfg = ScaleConfig {
-            factor:        scale_factor(),
+            factor: scale_factor(),
             max_disproofs: scale_max_disproofs(),
             // Don't starve the one attempt that matters of most of its
             // slice when there's no budget-search left to do — see
             // `effective_max_time_runs`'s doc.
-            max_time_runs: effective_max_time_runs(
-                scale_max_time_runs(), total_axioms, min_budget),
+            max_time_runs: effective_max_time_runs(scale_max_time_runs(), total_axioms, min_budget),
             min_budget,
             total_timeout,
         };
-        let requested     = selection.auto_budget.unwrap_or_else(default_budget);
+        let requested = selection.auto_budget.unwrap_or_else(default_budget);
         let selection = crate::SineParams {
             auto_budget: Some(adaptive_start_budget(requested, total_axioms, &cfg)),
             ..selection
@@ -157,7 +181,7 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     /// `ProvingLayer::remap` override for `ProverLayer`).
     fn remap_native(
         _status: ProverStatus,
-        term:    Option<TerminationReason>,
+        term: Option<TerminationReason>,
     ) -> Option<TerminationReason> {
         match term {
             Some(TerminationReason::GaveUp) => Some(TerminationReason::ResourceOut),
@@ -196,10 +220,10 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     ///   raced this way instead).
     pub(super) fn run_portfolio_schedule(
         &self,
-        conj:          &Conjecture,
+        conj: &Conjecture,
         total_timeout: u32,
-        opts:          &NativeOpts,
-        ctx:           &crate::ProveCtx,
+        opts: &NativeOpts,
+        ctx: &crate::ProveCtx,
     ) -> ProverResult {
         use crate::prover::scale::{
             adaptive_lane_count, adaptive_start_budget, drive, drive_portfolio,
@@ -243,10 +267,16 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // fill" adjustment as the plain (non-portfolio) path above — every
         // lane shares one selection start point, so it's computed once here
         // rather than per lane.
-        let total_axioms = self.semantic().syntactic.sine_current(|idx| idx.axiom_count());
+        let total_axioms = self
+            .semantic()
+            .syntactic
+            .sine_current(|idx| idx.axiom_count());
         let probe_cfg = ScaleConfig {
-            factor: scale_factor(), max_disproofs: 0, max_time_runs: 0,
-            min_budget: scale_min_budget(), total_timeout: 0,
+            factor: scale_factor(),
+            max_disproofs: 0,
+            max_time_runs: 0,
+            min_budget: scale_min_budget(),
+            total_timeout: 0,
         };
         let requested = opts.selection.auto_budget.unwrap_or_else(default_budget);
         let selection = crate::SineParams {
@@ -261,8 +291,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // out on a fraction of its budget for no reason. Bites hardest in
         // the parallel path, where a lane that gives up early has no
         // sequential carry-forward to fall back on.
-        let max_time_runs = effective_max_time_runs(
-            scale_max_time_runs(), total_axioms, min_budget);
+        let max_time_runs =
+            effective_max_time_runs(scale_max_time_runs(), total_axioms, min_budget);
 
         // `NativeOpts::lane_budgets` (env `SIGMA_LANE_BUDGETS`): per-lane
         // SInE start budgets by lane index (`0`/missing keeps the shared
@@ -281,10 +311,10 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             let lane_opts = NativeOpts {
                 strategy: spec.strategy.clone(),
                 max_lits: lane_max_lits(&spec.strategy, opts.max_lits),
-                cancel:   lane_cancel,
+                cancel: lane_cancel,
                 // A spec row's subsystem delta applies to ITSELF only.
-                model:    opts.model || spec.chase,
-                chase:    opts.chase || spec.chase,
+                model: opts.model || spec.chase,
+                chase: opts.chase || spec.chase,
                 ..opts.clone()
             };
             let lane_selection = match lane_budgets.get(idx).copied().filter(|&b| b > 0) {
@@ -295,13 +325,18 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 None => selection,
             };
             let cfg = ScaleConfig {
-                factor: scale_factor(), max_disproofs: scale_max_disproofs(),
-                max_time_runs, min_budget,
+                factor: scale_factor(),
+                max_disproofs: scale_max_disproofs(),
+                max_time_runs,
+                min_budget,
                 total_timeout: slice,
             };
-            drive(lane_selection, cfg, Self::remap_native, |params, per_run| {
-                self.prove_one_driver(conj, params, per_run, &lane_opts, ctx)
-            })
+            drive(
+                lane_selection,
+                cfg,
+                Self::remap_native,
+                |params, per_run| self.prove_one_driver(conj, params, per_run, &lane_opts, ctx),
+            )
         };
 
         let (winner, mut result) = if use_parallel {
@@ -321,14 +356,17 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             ctx.debug(format!(
                 "portfolio: lane {winner} ({lane_name}) reported the final verdict"
             ));
-            result.raw_output =
-                format!("portfolio: winning lane = {lane_name}\n{}", result.raw_output);
+            result.raw_output = format!(
+                "portfolio: winning lane = {lane_name}\n{}",
+                result.raw_output
+            );
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("PORTFOLIO winning lane: {lane_name}");
             }
         } else {
             ctx.debug(format!(
-                "portfolio: no conclusive verdict across {} lanes", lanes.len()
+                "portfolio: no conclusive verdict across {} lanes",
+                lanes.len()
             ));
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("PORTFOLIO exhausted {} lanes", lanes.len());
@@ -339,18 +377,22 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
 
     pub(super) fn prove_one_driver(
         &self,
-        conj:        &Conjecture,
+        conj: &Conjecture,
         sine_params: crate::SineParams,
-        slice:       u32,
-        opts:        &super::prover::NativeOpts,
-        ctx:         &crate::ProveCtx,
+        slice: u32,
+        opts: &super::prover::NativeOpts,
+        ctx: &crate::ProveCtx,
     ) -> (ProverResult, usize) {
         let session = opts.session.as_deref();
         // Apply the autoscale slice as this attempt's wall-clock budget (the
         // scaled loop hands a per-run slice; a fixed shot passes the full
         // timeout).  `opts` is owned from here — it's moved into `NativeProver`.
         let opts = super::prover::NativeOpts {
-            time_limit_secs: if slice > 0 { u64::from(slice) } else { opts.time_limit_secs },
+            time_limit_secs: if slice > 0 {
+                u64::from(slice)
+            } else {
+                opts.time_limit_secs
+            },
             ..opts.clone()
         };
         let t0 = Instant::now();
@@ -375,18 +417,22 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // TQG52 — but kept as a portfolio axis.)
         let sel = crate::syntactic::SelectionParams {
             head_filter: opts.strategy.head_filter,
-            liu_rescue:  opts.strategy.liu_rescue,
-            liu_rounds:  opts.strategy.liu_rounds,
-            liu_top_k:   opts.strategy.liu_top_k,
+            liu_rescue: opts.strategy.liu_rescue,
+            liu_rounds: opts.strategy.liu_rounds,
+            liu_top_k: opts.strategy.liu_top_k,
         };
         let (mut selected, goal_frontier) = {
             profile_span!(ctx, "ask.sine_select");
-            self.semantic().syntactic.select_relevant(&seed, sine_params, &sel, ctx)
+            self.semantic()
+                .syntactic
+                .select_relevant(&seed, sine_params, &sel, ctx)
         };
         let raw_selected = selected.len();
         if !goal_frontier.is_empty() {
             ctx.debug(format!(
-                "structural_include: +{} goal-near axioms SInE missed", goal_frontier.len()));
+                "structural_include: +{} goal-near axioms SInE missed",
+                goal_frontier.len()
+            ));
         }
         // SIGMA_SELECT_GREP=<substr>[,<substr>…]: print which selected roots'
         // KIF contains each substring — "is the proof axiom even in the
@@ -400,24 +446,36 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 let mut w = std::io::BufWriter::new(f);
                 for sid in &selected {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic().syntactic);
+                        *sid,
+                        &self.semantic().syntactic,
+                    );
                     let _ = writeln!(w, "{kif}");
                 }
                 for (_, sid) in conjecture_sents {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic().syntactic);
+                        *sid,
+                        &self.semantic().syntactic,
+                    );
                     let _ = writeln!(w, "# conj\t{kif}");
                 }
             }
         }
         if let Ok(pats) = std::env::var("SIGMA_SELECT_GREP") {
             for pat in pats.split(',').filter(|p| !p.is_empty()) {
-                let n = selected.iter().filter(|sid| {
-                    crate::syntactic::display::sentence_to_plain_kif(
-                        **sid, &self.semantic().syntactic)
+                let n = selected
+                    .iter()
+                    .filter(|sid| {
+                        crate::syntactic::display::sentence_to_plain_kif(
+                            **sid,
+                            &self.semantic().syntactic,
+                        )
                         .contains(pat)
-                }).count();
-                eprintln!("SELECT-GREP {pat:?}: {n} of {} selected roots", selected.len());
+                    })
+                    .count();
+                eprintln!(
+                    "SELECT-GREP {pat:?}: {n} of {} selected roots",
+                    selected.len()
+                );
             }
         }
 
@@ -430,7 +488,10 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = {
             profile_span!(ctx, "ask.clausify_conjecture");
             clausify_negated_conjunction_lossy(
-                &self.semantic().syntactic, &self.atoms, conjecture_sents)
+                &self.semantic().syntactic,
+                &self.atoms,
+                conjecture_sents,
+            )
         };
 
         // Definitional completion: polarity-aware selection repair.
@@ -446,7 +507,12 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         if opts.strategy.def_completion && !sine_params.select_all {
             profile_span!(ctx, "ask.definitional_completion");
             self.definitional_completion(
-                &conjecture_clauses, &goal_frontier, &mut selected, &opts.strategy, ctx);
+                &conjecture_clauses,
+                &goal_frontier,
+                &mut selected,
+                &opts.strategy,
+                ctx,
+            );
         }
         // Deterministic clause-registration order: `selected` is a HashSet
         // whose RandomState iteration order otherwise seeds the given-clause
@@ -470,7 +536,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 let mut w = std::io::BufWriter::new(f);
                 for sid in &selected {
                     let kif = crate::syntactic::display::sentence_to_plain_kif(
-                        *sid, &self.semantic().syntactic);
+                        *sid,
+                        &self.semantic().syntactic,
+                    );
                     let _ = writeln!(w, "{kif}");
                 }
             }
@@ -488,12 +556,12 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // saturation (the TPTP path) demotes Disproved/Satisfiable to
         // Unknown/GaveUp — silent drops become verdict-poisoning by
         // construction.
-        let failed_roots: usize = selected.iter()
+        let failed_roots: usize = selected
+            .iter()
             .chain(session_sids.iter())
             .filter(|sid| self.root_load_failed(**sid))
             .count();
-        let input_load_failures =
-            conj.dropped + usize::from(conj_lossy) + failed_roots;
+        let input_load_failures = conj.dropped + usize::from(conj_lossy) + failed_roots;
 
         // Goal-targeted disjointness activation.  The disjointness oracle
         // only discharges inequality / disjoint goals; activating it for a
@@ -509,21 +577,23 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         {
             let goal_needs_disjoint = {
                 let syn = &self.semantic().syntactic;
-                conjecture_clauses.iter().flat_map(|c| c.lits.iter()).any(|l| {
-                    self.atoms.resolve(l.atom, syn).is_some_and(|s| {
-                        match s.elements.first() {
-                            Some(Element::Op(crate::parse::OpKind::Equal)) => true,
-                            Some(Element::Symbol(h)) => {
-                                h.name().to_ascii_lowercase().contains("disjoint")
-                            }
-                            _ => false,
-                        }
+                conjecture_clauses
+                    .iter()
+                    .flat_map(|c| c.lits.iter())
+                    .any(|l| {
+                        self.atoms
+                            .resolve(l.atom, syn)
+                            .is_some_and(|s| match s.elements.first() {
+                                Some(Element::Op(crate::parse::OpKind::Equal)) => true,
+                                Some(Element::Symbol(h)) => {
+                                    h.name().to_ascii_lowercase().contains("disjoint")
+                                }
+                                _ => false,
+                            })
                     })
-                })
             };
             let active = opts.strategy.disjoint_decomp
-                && (goal_needs_disjoint
-                    || std::env::var_os("SIGMA_DISJOINT_ALWAYS").is_some());
+                && (goal_needs_disjoint || std::env::var_os("SIGMA_DISJOINT_ALWAYS").is_some());
             crate::semantics::roles::set_disjoint_decomp_override(Some(active));
         }
         struct DisjointOverrideGuard;
@@ -574,16 +644,22 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // passive-queue state, so a rehydrated background would silently
         // lose its given-candidate entries (and `freeze` asserts the queues
         // are empty).
-        let snap_enabled = opts.strategy.bg_snapshot
-            && !opts.strategy.goal_dist
-            && !opts.strategy.full_saturation;
+        let snap_enabled =
+            opts.strategy.bg_snapshot && !opts.strategy.goal_dist && !opts.strategy.full_saturation;
         let snap_key = {
             use xxhash_rust::xxh64::xxh64;
             let mix = |sid: u64| xxh64(&sid.to_be_bytes(), 0x5AFE_BA5E);
-            let roots: u64 = self.semantic().syntactic.root_sids()
-                .into_iter().map(mix).fold(0, |a, b| a ^ b);
+            let roots: u64 = self
+                .semantic()
+                .syntactic
+                .root_sids()
+                .into_iter()
+                .map(mix)
+                .fold(0, |a, b| a ^ b);
             let sess: u64 = session_sids.iter().copied().map(mix).fold(0, |a, b| a ^ b);
-            let conj: u64 = conjecture_sents.iter().map(|(_, sid)| mix(*sid))
+            let conj: u64 = conjecture_sents
+                .iter()
+                .map(|(_, sid)| mix(*sid))
                 .fold(0, |a, b| a ^ b);
             let (stag, sid) = match scope {
                 Scope::Base => (0u64, 0u64),
@@ -596,9 +672,16 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             // fingerprint covers every knob `make` consults while
             // loading background, so portfolio lanes with different
             // generation caps / channels never share a frozen base.
-            let words = [roots, sess, conj, stag, sid,
-                         opts.max_lits as u64, u64::from(opts.want_proof),
-                         opts.strategy.bg_fingerprint()];
+            let words = [
+                roots,
+                sess,
+                conj,
+                stag,
+                sid,
+                opts.max_lits as u64,
+                u64::from(opts.want_proof),
+                opts.strategy.bg_fingerprint(),
+            ];
             let mut buf = [0u8; 64];
             for (i, w) in words.iter().enumerate() {
                 buf[i * 8..(i + 1) * 8].copy_from_slice(&w.to_be_bytes());
@@ -615,7 +698,10 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         enum BgPlan {
             Fresh,
             Hit(std::sync::Arc<crate::saturate::prover::ProverSnapshot>),
-            Extend(std::sync::Arc<crate::saturate::prover::ProverSnapshot>, Vec<SentenceId>),
+            Extend(
+                std::sync::Arc<crate::saturate::prover::ProverSnapshot>,
+                Vec<SentenceId>,
+            ),
         }
         let plan = if !snap_enabled {
             BgPlan::Fresh
@@ -623,7 +709,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             match self.bg_snapshots.get(&snap_key).map(|e| e.value().clone()) {
                 None => BgPlan::Fresh,
                 Some(snap) => {
-                    let delta: Vec<SentenceId> = selected.iter().copied()
+                    let delta: Vec<SentenceId> = selected
+                        .iter()
+                        .copied()
                         .filter(|s| !snap.loaded_roots.contains(s))
                         .collect();
                     if delta.is_empty() {
@@ -638,7 +726,16 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         };
 
         let recognize_roles = opts.strategy.recognize_roles;
-        let (verdict, steps, proof_kif, raw, phase_profile, contradiction_proofs, conjecture_used, complete_saturation) = {
+        let (
+            verdict,
+            steps,
+            proof_kif,
+            raw,
+            phase_profile,
+            contradiction_proofs,
+            conjecture_used,
+            complete_saturation,
+        ) = {
             let mut prover = match &plan {
                 BgPlan::Hit(snap) | BgPlan::Extend(snap, _) => {
                     profile_span!(ctx, "ask.bg_snapshot_hydrate");
@@ -678,15 +775,22 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     };
                     let (items, _errs) = parser.parse(&text, "hints");
                     for item in items {
-                        let Some(ast) = item.as_stmt().cloned() else { continue };
+                        let Some(ast) = item.as_stmt().cloned() else {
+                            continue;
+                        };
                         // TPTP items arrive annotation-wrapped; the
                         // downstream pipeline expects bare formulas.
                         let ast = ast.strip_annotation();
                         let (normalized, _) = Conjecture::normalize(vec![ast]);
                         let sents = self.intern_conjecture_native(&normalized);
-                        if sents.is_empty() { continue; }
+                        if sents.is_empty() {
+                            continue;
+                        }
                         let (cls, _) = clausify_negated_conjunction_lossy(
-                            &self.semantic().syntactic, &self.atoms, &sents);
+                            &self.semantic().syntactic,
+                            &self.atoms,
+                            &sents,
+                        );
                         for c in cls {
                             if std::env::var_os("SIGMA_HINTS_DEBUG").is_some() {
                                 eprintln!("HINT {:016x} {:?}", c.key.0, c.lits);
@@ -734,8 +838,11 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 // disjointness, or `holds` decision reads them.
                 if recognize_roles {
                     profile_span!(ctx, "ask.recognize_roles");
-                    let roots: Vec<_> =
-                        selected.iter().chain(session_sids.iter()).copied().collect();
+                    let roots: Vec<_> = selected
+                        .iter()
+                        .chain(session_sids.iter())
+                        .copied()
+                        .collect();
                     prover.recognize_roles(&roots);
                 }
                 // Congruence-closure pre-pass: register every input ground
@@ -847,7 +954,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             if let Ok(probes) = std::env::var("SIGMA_ORACLE_PROBE") {
                 use super::theory::TheoryOracle;
                 for p in probes.split(';').filter(|p| !p.is_empty()) {
-                    let Some((rel, rest)) = p.split_once('(') else { continue };
+                    let Some((rel, rest)) = p.split_once('(') else {
+                        continue;
+                    };
                     let args: Vec<&str> = rest.trim_end_matches(')').split(',').collect();
                     if args.len() != 2 {
                         continue;
@@ -905,26 +1014,29 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                         && prover.stats.slot_lift_failures == 0
                         && prover.stats.input_contradictions == 0
                         && input_load_failures == 0;
-                    Some(no_drops && (!strict_saturation || {
-                        let st = &prover.opts.strategy;
-                        let eq_ok = !prover.stats.saw_equality
-                            || (st.superposition
-                                && st.eq_factoring
-                                && prover.stats.unorientable_eqs == 0);
-                        let whole_theory = selected.len()
-                            >= self.semantic().syntactic.root_sids().len();
-                        // Schema absorption replaces the absorbed axiom at
-                        // inference level ONLY for binary resolution (the
-                        // swap retry in `resolve`); factoring and the unit
-                        // open-match channel have no symmetric handling, so
-                        // a saturation after any absorption is not
-                        // refutation-complete and must not certify.
-                        st.full_saturation
-                            && eq_ok
-                            && prover.stats.gen_capped == 0
-                            && prover.stats.schema_absorbed == 0
-                            && whole_theory
-                    }))
+                    Some(
+                        no_drops
+                            && (!strict_saturation || {
+                                let st = &prover.opts.strategy;
+                                let eq_ok = !prover.stats.saw_equality
+                                    || (st.superposition
+                                        && st.eq_factoring
+                                        && prover.stats.unorientable_eqs == 0);
+                                let whole_theory =
+                                    selected.len() >= self.semantic().syntactic.root_sids().len();
+                                // Schema absorption replaces the absorbed axiom at
+                                // inference level ONLY for binary resolution (the
+                                // swap retry in `resolve`); factoring and the unit
+                                // open-match channel have no symmetric handling, so
+                                // a saturation after any absorption is not
+                                // refutation-complete and must not certify.
+                                st.full_saturation
+                                    && eq_ok
+                                    && prover.stats.gen_capped == 0
+                                    && prover.stats.schema_absorbed == 0
+                                    && whole_theory
+                            }),
+                    )
                 }
                 _ => None,
             };
@@ -986,9 +1098,13 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                  proof-DAG reach: {} model, {} model_join, {} rule_join, \
                  {} event_calculus, {} oracle\n\
                  guide: {} guided_clauses_scored, {} guide_disabled_bail",
-                verdict, steps, prover.clauses.len(), prover.stats.resolvents,
+                verdict,
+                steps,
+                prover.clauses.len(),
+                prover.stats.resolvents,
                 prover.stats.decoded_resolutions,
-                prover.stats.oracle_discharges, prover.stats.unit_subsumed,
+                prover.stats.oracle_discharges,
+                prover.stats.unit_subsumed,
                 prover.stats.subsumed,
                 prover.stats.demod_rewrites,
                 prover.stats.forward_closed,
@@ -998,27 +1114,38 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                         "; WARNING: {} input contradiction(s) suppressed (the \
                          axioms/hypotheses are mutually inconsistent — verdicts \
                          are relative to the conjecture-relevant fragment)",
-                        prover.stats.input_contradictions)
+                        prover.stats.input_contradictions
+                    )
                 } else {
                     String::new()
                 },
-                prover.stats.resolve_unify_hits, prover.stats.resolve_unify_attempts,
+                prover.stats.resolve_unify_hits,
+                prover.stats.resolve_unify_attempts,
                 prover.stats.resolve_ground_partner,
-                prover.stats.fc_unify_hits, prover.stats.fc_unify_attempts,
+                prover.stats.fc_unify_hits,
+                prover.stats.fc_unify_attempts,
                 prover.stats.fc_ground_candidate,
-                prover.stats.open_match_hits, prover.stats.open_match_attempts,
+                prover.stats.open_match_hits,
+                prover.stats.open_match_attempts,
                 prover.stats.open_match_prefiltered,
-                prover.stats.factor_hits, prover.stats.factor_attempts,
+                prover.stats.factor_hits,
+                prover.stats.factor_attempts,
                 prover.stats.factor_prefiltered,
-                prover.stats.schema_hits, prover.stats.schema_absorbed,
-                prover.stats.sym_oriented, prover.stats.sym_resolutions,
-                prover.stats.mined_symmetric, prover.stats.mined_transitive,
+                prover.stats.schema_hits,
+                prover.stats.schema_absorbed,
+                prover.stats.sym_oriented,
+                prover.stats.sym_resolutions,
+                prover.stats.mined_symmetric,
+                prover.stats.mined_transitive,
                 prover.stats.mined_other,
-                prover.stats.model_atoms_seen, prover.stats.model_atoms_rejected,
+                prover.stats.model_atoms_seen,
+                prover.stats.model_atoms_rejected,
                 prover.stats.model_arg_collapsed_compound,
                 prover.stats.model_arg_collapsed_repeated_var,
-                prover.stats.model_atoms_answered, prover.stats.model_atoms_unanswered,
-                prover.stats.model_unsafe_bails, prover.stats.model_unstratifiable_bails,
+                prover.stats.model_atoms_answered,
+                prover.stats.model_atoms_unanswered,
+                prover.stats.model_unsafe_bails,
+                prover.stats.model_unstratifiable_bails,
                 prover.stats.model_budget_or_deadline_overflows,
                 prover.stats.model_undefined_relation,
                 prover.stats.model_literals_deleted,
@@ -1028,14 +1155,19 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 prover.stats.model_cert_blocked_unstratifiable,
                 prover.stats.model_cert_blocked_body_chain,
                 prover.stats.model_cert_blocked_role,
-                prover.stats.demod_rewrite_attempts, prover.stats.demod_rewrites_applied,
+                prover.stats.demod_rewrite_attempts,
+                prover.stats.demod_rewrites_applied,
                 prover.stats.demod_dup_hits,
                 prover.stats.demod_scans_performed,
                 prover.stats.demod_scans_skipped_by_prefilter,
-                prover.stats.proof_tag_model, prover.stats.proof_tag_model_join,
-                prover.stats.proof_tag_join, prover.stats.proof_tag_event_calculus,
+                prover.stats.proof_tag_model,
+                prover.stats.proof_tag_model_join,
+                prover.stats.proof_tag_join,
+                prover.stats.proof_tag_event_calculus,
                 prover.stats.proof_tag_oracle,
-                prover.stats.guided_clauses_scored, prover.stats.guide_disabled_bail);
+                prover.stats.guided_clauses_scored,
+                prover.stats.guide_disabled_bail
+            );
             // Input-completeness gate: say LOUDLY when input formulas never
             // made it into the clause set — the line every consumer of a
             // withheld Satisfiable/Disproved verdict needs to see.
@@ -1048,12 +1180,15 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     "\nWARNING: {input_load_failures} input formula(s) failed to load \
                      (conjecture roots dropped: {}, goal clausification lossy: {}, \
                      background/support roots failed: {}) — {}",
-                    conj.dropped, conj_lossy, failed_roots,
+                    conj.dropped,
+                    conj_lossy,
+                    failed_roots,
                     if strict_saturation {
                         "Satisfiable/countermodel verdicts withheld (GaveUp)"
                     } else {
                         "Saturated verdicts are heuristic (loaded theory incomplete)"
-                    }));
+                    }
+                ));
             }
             // Ground-term identity line (NF memo + subtree bloom prune)
             // only when demod is on: the default-path SIGMA_STATS output
@@ -1067,7 +1202,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     prover.stats.nf_hits_rewritten,
                     prover.stats.nf_misses,
                     prover.stats.nf_stale_discards,
-                    prover.stats.bloom_subtrees_pruned));
+                    prover.stats.bloom_subtrees_pruned
+                ));
             }
             // Backward-demodulation line only when the knob is on: the
             // default-path SIGMA_STATS output stays byte-identical.
@@ -1084,7 +1220,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     prover.stats.bwd_postings_queries,
                     prover.stats.bwd_postings_hits,
                     prover.stats.bwd_bucket_scanned,
-                    prover.stats.bwd_postings_compactions));
+                    prover.stats.bwd_postings_compactions
+                ));
                 // Phase-2 decode chain, its OWN line, printed ONLY when
                 // `Strategy.subterm_rows` is on (the same convention as
                 // the subs-ej sub-line under subs_join): off (the
@@ -1104,7 +1241,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                         prover.stats.bwd_decode_rej_binding,
                         prover.stats.bwd_decode_fallbacks,
                         prover.stats.bwd_decode_trivial,
-                        prover.stats.bwd_verify_calls));
+                        prover.stats.bwd_verify_calls
+                    ));
                 }
             }
             // Rigid-conflict (EGD inconsistency) line only when one occurred:
@@ -1112,7 +1250,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             if prover.stats.model_rigid_conflicts > 0 {
                 raw.push_str(&format!(
                     "\nmodel-egd: {} rigid_conflicts (evaluation aborted Inconsistent)",
-                    prover.stats.model_rigid_conflicts));
+                    prover.stats.model_rigid_conflicts
+                ));
             }
             // Subsumption feature-vector prefilter line only when
             // subsumption is on (KIF default has it off): default-path
@@ -1130,7 +1269,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     prover.stats.subs_rejected_by_fv,
                     prover.stats.subs_rejected_by_keq,
                     prover.stats.keq_pair_tests,
-                    prover.stats.subs_full_checks));
+                    prover.stats.subs_full_checks
+                ));
                 // Phase-2b equality-join channel, its OWN line (a pure
                 // counter line — byte-identity diffs drop it; the
                 // subs-fvi line above keeps its exact format, with only
@@ -1146,7 +1286,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                         prover.stats.ej_rej_no_partner,
                         prover.stats.ej_rej_join,
                         prover.stats.ej_skipped_unusable,
-                        prover.stats.ej_full_checks_saved));
+                        prover.stats.ej_full_checks_saved
+                    ));
                 }
             }
             // Deferred-passive discipline line only when the knob is
@@ -1189,7 +1330,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     s.deferred_cap_fallbacks,
                     s.composed_weight_exact,
                     s.composed_weight_samples,
-                    s.composed_weight_drift_sum / s.composed_weight_samples.max(1)));
+                    s.composed_weight_drift_sum / s.composed_weight_samples.max(1)
+                ));
             }
             // Decode fast-path cause profile (Step-2; always printed —
             // the ONE new line in a SIGMA_STATS capture diff.  All-zero
@@ -1203,7 +1345,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 prover.stats.decode_bail_too_many_open,
                 prover.stats.decode_bail_partner_shape,
                 prover.stats.decode_bail_phonebook_or_collision,
-                prover.stats.decode_bail_other));
+                prover.stats.decode_bail_other
+            ));
             // Definitional-CNF rescue line only when a rescue actually
             // ran (process-cumulative — clausification lives inside
             // cache generation, which has no per-run stats handle):
@@ -1214,7 +1357,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 if defcnf_roots > 0 {
                     raw.push_str(&format!(
                         "\ndefcnf: {defcnf_defs} definitions_introduced, \
-                         {defcnf_roots} roots_rescued"));
+                         {defcnf_roots} roots_rescued"
+                    ));
                 }
             }
             // KappaFn comprehension line only when a kappa term was
@@ -1225,7 +1369,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 if kappa_comp > 0 || kappa_bails > 0 {
                     raw.push_str(&format!(
                         "\nkappa: {kappa_comp} comprehensions_emitted, \
-                         {kappa_bails} malformed_bails"));
+                         {kappa_bails} malformed_bails"
+                    ));
                 }
             }
             // Verified-dedup collision line only when one actually
@@ -1235,7 +1380,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 raw.push_str(&format!(
                     "\ndedup: {} true ClauseKey collision(s) detected — colliding \
                      clauses accepted, never dropped",
-                    prover.stats.dedup_collisions_detected));
+                    prover.stats.dedup_collisions_detected
+                ));
             }
             if std::env::var_os("SIGMA_STATS").is_some() {
                 eprintln!("{raw}");
@@ -1256,10 +1402,18 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             } else {
                 Vec::new()
             };
-            (verdict, steps, proof, raw, mechanisms, contradiction_proofs, conjecture_used, complete_saturation)
+            (
+                verdict,
+                steps,
+                proof,
+                raw,
+                mechanisms,
+                contradiction_proofs,
+                conjecture_used,
+                complete_saturation,
+            )
         };
         let prover_run = t1.elapsed();
-
 
         // Status mapping — the shared ladder (`map_verdict`).  A
         // refutation whose proof never touches the negated conjecture
@@ -1275,8 +1429,12 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // still `Saturation`-flagged so the autoscale loop widens rather
         // than giving up.
         let (status, termination) = super::prover::map_verdict(
-            verdict, conjecture_used, strict_saturation, complete_saturation,
-            super::prover::VerdictMode::Ask);
+            verdict,
+            conjecture_used,
+            strict_saturation,
+            complete_saturation,
+            super::prover::VerdictMode::Ask,
+        );
 
         let mut result = ProverResult {
             status,
@@ -1301,11 +1459,15 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         use crate::parse::OpKind;
         delta.iter().any(|sid| {
             self.clauses_for(*sid).iter().any(|pc| {
-                pc.nvars == 0 && pc.lits.len() == 1 && pc.lits[0].pos
-                    && self.atoms
+                pc.nvars == 0
+                    && pc.lits.len() == 1
+                    && pc.lits[0].pos
+                    && self
+                        .atoms
                         .resolve(pc.lits[0].atom, &self.semantic().syntactic)
-                        .is_some_and(|sent| matches!(
-                            sent.elements.first(), Some(Element::Op(OpKind::Equal))))
+                        .is_some_and(|sent| {
+                            matches!(sent.elements.first(), Some(Element::Op(OpKind::Equal)))
+                        })
             })
         })
     }
@@ -1327,13 +1489,15 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     /// `selected` must be sorted (binary search).
     fn modal_k_qualifying(
         &self,
-        scope:    Scope,
+        scope: Scope,
         selected: &[SentenceId],
-        seed:     &HashSet<SymbolId>,
+        seed: &HashSet<SymbolId>,
     ) -> Vec<&'static str> {
         use crate::semantics::types::RelationDomain;
         let syn = &self.semantic().syntactic;
-        let Some(formula) = syn.sym_id("Formula") else { return Vec::new() };
+        let Some(formula) = syn.sym_id("Formula") else {
+            return Vec::new();
+        };
         let mut out = Vec::new();
         for rel in ["knows", "believes"] {
             let Some(sym) = syn.sym_id(rel) else { continue };
@@ -1369,10 +1533,10 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     fn definitional_completion(
         &self,
         conjecture: &[PClause],
-        frontier:   &[SentenceId],
-        selected:   &mut HashSet<SentenceId>,
-        strategy:   &Strategy,
-        ctx:        &crate::ProveCtx,
+        frontier: &[SentenceId],
+        selected: &mut HashSet<SentenceId>,
+        strategy: &Strategy,
+        ctx: &crate::ProveCtx,
     ) {
         let max_rounds = strategy.defcomp_rounds;
         let max_adds = strategy.defcomp_max_adds;
@@ -1414,7 +1578,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             for pc in conjecture {
                 for l in &pc.lits {
                     if !l.pos {
-                        if let Some(h) = lit_head(l.atom) { required.insert(h); }
+                        if let Some(h) = lit_head(l.atom) {
+                            required.insert(h);
+                        }
                     }
                 }
             }
@@ -1422,7 +1588,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 for pc in self.clauses_for(*sid).iter() {
                     for l in &pc.lits {
                         if !l.pos {
-                            if let Some(h) = lit_head(l.atom) { required.insert(h); }
+                            if let Some(h) = lit_head(l.atom) {
+                                required.insert(h);
+                            }
                         }
                     }
                 }
@@ -1432,7 +1600,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             for pc in conjecture {
                 for l in &pc.lits {
                     if l.pos {
-                        if let Some(h) = lit_head(l.atom) { provided.insert(h); }
+                        if let Some(h) = lit_head(l.atom) {
+                            provided.insert(h);
+                        }
                     }
                 }
             }
@@ -1440,7 +1610,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 for pc in self.clauses_for(*sid).iter() {
                     for l in &pc.lits {
                         if l.pos {
-                            if let Some(h) = lit_head(l.atom) { provided.insert(h); }
+                            if let Some(h) = lit_head(l.atom) {
+                                provided.insert(h);
+                            }
                         }
                     }
                 }
@@ -1479,32 +1651,49 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     let candidates = missing
                         .iter()
                         .map(|&(_, p)| {
-                            idx.axioms_of_symbol(p).iter().map(|&(_, aid)| aid).collect()
+                            idx.axioms_of_symbol(p)
+                                .iter()
+                                .map(|&(_, aid)| aid)
+                                .collect()
                         })
                         .collect();
                     (missing, candidates)
                 });
-            if missing.is_empty() || adds >= max_adds { break; }
+            if missing.is_empty() || adds >= max_adds {
+                break;
+            }
 
             let mut round_adds = 0usize;
             let mut next_frontier: Vec<SentenceId> = Vec::new();
             for ((_, p), candidates) in missing.into_iter().zip(candidates_by_sym) {
-                if adds >= max_adds { break; }
+                if adds >= max_adds {
+                    break;
+                }
                 let mut pulled = 0usize;
                 for aid in candidates {
-                    if pulled >= per_sym || adds >= max_adds { break; }
-                    if selected.contains(&aid) { continue; }
+                    if pulled >= per_sym || adds >= max_adds {
+                        break;
+                    }
+                    if selected.contains(&aid) {
+                        continue;
+                    }
                     // A provider must CONCLUDE p: a clause with a positive
                     // p-headed literal.
-                    let provides = self.clauses_for(aid).iter().any(|pc| {
-                        pc.lits.iter().any(|l| l.pos && lit_head(l.atom) == Some(p))
-                    });
-                    if !provides { continue; }
+                    let provides = self
+                        .clauses_for(aid)
+                        .iter()
+                        .any(|pc| pc.lits.iter().any(|l| l.pos && lit_head(l.atom) == Some(p)));
+                    if !provides {
+                        continue;
+                    }
                     if trace {
                         eprintln!(
                             "COMPLETION: {} <- {}",
-                            syn.sym_name(p).map(|s| s.name().to_string()).unwrap_or_default(),
-                            crate::syntactic::display::sentence_to_plain_kif(aid, syn));
+                            syn.sym_name(p)
+                                .map(|s| s.name().to_string())
+                                .unwrap_or_default(),
+                            crate::syntactic::display::sentence_to_plain_kif(aid, syn)
+                        );
                     }
                     selected.insert(aid);
                     next_frontier.push(aid);

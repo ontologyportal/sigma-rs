@@ -15,15 +15,15 @@
 // variable, so it types as `($i > $o) > $i` and the lowering builds the
 // lambda syntactically.
 
-use crate::SymbolId;
-use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
 use crate::cache::events::EventKind;
+use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::caches::domain::Domain;
 use crate::semantics::caches::range::Range;
 use crate::semantics::caches::tax_edges::TaxEdges;
 use crate::semantics::types::Scope;
 use crate::trans::ir::HoSort;
 use crate::trans::TranslationLayer;
+use crate::SymbolId;
 
 /// The SUMO class whose (sub)class-declared positions carry `$o`.
 pub(crate) const FORMULA_CLASS: &str = "Formula";
@@ -62,9 +62,9 @@ pub(crate) struct HoSignatures;
 
 impl CacheBehavior for HoSignatures {
     type Parent = TranslationLayer;
-    type Key    = SymbolId;
-    type Value  = Option<HoSignature>;
-    type Side   = ();
+    type Key = SymbolId;
+    type Value = Option<HoSignature>;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "translation::ho_signatures";
@@ -84,16 +84,20 @@ impl CacheBehavior for HoSignatures {
     fn react(
         &self,
         _parent: &TranslationLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<SymbolId, Option<HoSignature>>,
-        _side:   &Self::Side,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<SymbolId, Option<HoSignature>>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
         // Wholesale clear, same reasoning as `symbol_sort`: the events name the
         // changed classes/relations, but a Formula-subclass edge change flips
         // the `$o`-ness of positions on relations the event does not name.
-        let tax = events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. }));
-        let dr  = events.iter().any(|e| matches!(e, Event::DomainRangeChanged { .. }));
+        let tax = events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }));
+        let dr = events
+            .iter()
+            .any(|e| matches!(e, Event::DomainRangeChanged { .. }));
         if tax || dr {
             store.clear();
         }
@@ -107,8 +111,8 @@ impl CacheBehavior for HoSignatures {
 /// constants).
 pub(crate) fn compute_ho_signature_scoped(
     parent: &TranslationLayer,
-    sym:    SymbolId,
-    scope:  Scope,
+    sym: SymbolId,
+    scope: Scope,
 ) -> Option<HoSignature> {
     use crate::types::{RelationDomain, RelationRange};
     let syn = &parent.semantic.syntactic;
@@ -117,7 +121,7 @@ pub(crate) fn compute_ho_signature_scoped(
     if syn.sym_name(sym).is_some_and(|n| &*n.name() == KAPPA_FN) {
         return Some(HoSignature {
             args: vec![HoSort::Fn(Box::new(HoSort::I), Box::new(HoSort::O))],
-            ret:  Some(HoSort::I),
+            ret: Some(HoSort::I),
         });
     }
 
@@ -158,11 +162,7 @@ pub(crate) fn compute_ho_signature_scoped(
 impl TranslationLayer {
     /// The THF signature for `sym` (Base memoised; session scopes compute
     /// directly — transient and small, like `sort_for_symbol_scoped`).
-    pub(crate) fn ho_signature_scoped(
-        &self,
-        sym:   SymbolId,
-        scope: Scope,
-    ) -> Option<HoSignature> {
+    pub(crate) fn ho_signature_scoped(&self, sym: SymbolId, scope: Scope) -> Option<HoSignature> {
         match scope {
             Scope::Base => self.ho_signatures.get(self, sym),
             _ => compute_ho_signature_scoped(self, sym, scope),

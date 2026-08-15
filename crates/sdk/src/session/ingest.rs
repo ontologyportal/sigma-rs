@@ -13,8 +13,8 @@ use sigmakee_rs_core::TopLayer;
 
 use crate::SdkResult;
 
+use super::super::{SdkError, Source};
 use super::Session;
-use super::super::{Source, SdkError};
 
 impl<L: TopLayer> Session<L> {
     /// Read a [`Source`], auto-detect its parser, ingest it, and promote it to
@@ -23,7 +23,7 @@ impl<L: TopLayer> Session<L> {
     pub fn ingest(&mut self, src: Source, abort: bool) -> Vec<SdkError> {
         let sources = match src.read(self.sink().as_ref()).map_err(|e| vec![e]) {
             Err(e) => return e,
-            Ok(sources) => sources
+            Ok(sources) => sources,
         };
         let mut errs = vec![];
         // Load (reconcile) + promote.  `load` is layer-agnostic; promotion is
@@ -35,7 +35,9 @@ impl<L: TopLayer> Session<L> {
         if abort && errs.iter().any(|e| e.is_err()) {
             return errs;
         }
-        let Err(e) = self.after_ingest() else { return errs };
+        let Err(e) = self.after_ingest() else {
+            return errs;
+        };
         errs.push(e);
         errs
     }
@@ -44,22 +46,22 @@ impl<L: TopLayer> Session<L> {
     /// is:
     /// - flush any session assertions from the KB
     /// - rollback uncommitted changes to existing axiom constituents
-    /// 
+    ///
     /// **WARNING**: This is currently untested. The only way to ensure a full
     /// rollback would be to just not persist the change, and just drop the session
     pub fn rollback(&mut self) -> Vec<SdkError> {
         todo!("I have to implement Session::rollback()")
     }
-    
+
     pub(super) fn ingest_inner(&mut self, src: SourceFile) -> Vec<SdkError> {
         let r = self.kb.load(src, &self.name);
         r.diagnostics.into_iter().map(|d| SdkError::Kb(d)).collect()
     }
 
     pub(super) fn after_ingest(&mut self) -> SdkResult<()> {
-        self.kb.make_session_axiomatic(&self.name).map_err(|e: PromoteError| {
-            SdkError::Kb(e.to_diagnostic())
-        })?;
+        self.kb
+            .make_session_axiomatic(&self.name)
+            .map_err(|e: PromoteError| SdkError::Kb(e.to_diagnostic()))?;
         Ok(())
     }
 
@@ -78,7 +80,10 @@ impl<L: TopLayer> Session<L> {
     /// stages those session-scoped. (`include` directives were already spliced by
     /// [`Source::read`].)
     #[cfg(any(feature = "ask", feature = "native-prover"))]
-    pub(super) fn source_to_test_case(&mut self, test_src: Source) -> Result<TestCase, Vec<SdkError>> {
+    pub(super) fn source_to_test_case(
+        &mut self,
+        test_src: Source,
+    ) -> Result<TestCase, Vec<SdkError>> {
         let sources = test_src.read(self.sink().as_ref()).map_err(|e| vec![e])?;
         let mut errs = vec![];
         let mut tcs = vec![];
@@ -86,7 +91,8 @@ impl<L: TopLayer> Session<L> {
         // `axiom`-role statements) that need promoting to selectable axioms?
         let mut ingested_axioms = false;
         for sf in sources {
-            if !sf.parser.is_test() { // not a test → a linked axiom library: ingest it
+            if !sf.parser.is_test() {
+                // not a test → a linked axiom library: ingest it
                 errs.extend(self.ingest_inner(sf));
                 ingested_axioms = true;
                 continue;
@@ -94,17 +100,21 @@ impl<L: TopLayer> Session<L> {
             if matches!(sf.parser, Parser::Tptp { .. }) {
                 let (tc, background, parse_errs) = TestCase::from_tptp(&sf.contents, &sf.name);
                 if !parse_errs.is_empty() {
-                    errs.extend(parse_errs.into_iter().map(|(_, p)| SdkError::Kb(p.to_diagnostic())));
+                    errs.extend(
+                        parse_errs
+                            .into_iter()
+                            .map(|(_, p)| SdkError::Kb(p.to_diagnostic())),
+                    );
                     continue;
                 }
                 // Background theory is NOT the test obligation: ingest it as
                 // ordinary, promotable axioms — not as `tc.axioms` support.
                 if !background.is_empty() {
                     errs.extend(self.ingest_inner(SourceFile {
-                        parser:   Parser::Kif,
-                        name:     sf.name.clone(),
-                        path:     sf.path.clone(),
-                        origin:   sf.origin,
+                        parser: Parser::Kif,
+                        name: sf.name.clone(),
+                        path: sf.path.clone(),
+                        origin: sf.origin,
                         contents: String::new(),
                         prebuilt: Some(background),
                     }));
@@ -117,7 +127,11 @@ impl<L: TopLayer> Session<L> {
             let (docs, parse_errs) = sf.parser.parse(&sf.contents, &sf.name);
             if parse_errs.len() > 0 {
                 // Skip tests with parse errors
-                errs.extend(parse_errs.into_iter().map(|(_, p)| SdkError::Kb(p.to_diagnostic())));
+                errs.extend(
+                    parse_errs
+                        .into_iter()
+                        .map(|(_, p)| SdkError::Kb(p.to_diagnostic())),
+                );
                 continue;
             }
             let (tc, _) = TestCase::from_doc_items(&docs, &sf.name);
@@ -134,7 +148,7 @@ impl<L: TopLayer> Session<L> {
         }
 
         if errs.iter().any(|err| err.is_err()) {
-            return Err(errs)
+            return Err(errs);
         }
         if tcs.is_empty() {
             return Err(vec![SdkError::NoProblem]);

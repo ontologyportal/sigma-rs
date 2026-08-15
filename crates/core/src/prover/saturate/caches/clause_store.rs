@@ -13,12 +13,12 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use crate::cache::{CacheBehavior, EntryCache};
-use crate::cache::events::{Event, EventKind};
-use crate::layer::TopLayer;
-use super::super::ProverLayer;
 use super::super::clause::PClause;
 use super::super::clausify::clausify_sentence;
+use super::super::ProverLayer;
+use crate::cache::events::{Event, EventKind};
+use crate::cache::{CacheBehavior, EntryCache};
+use crate::layer::TopLayer;
 use crate::types::SentenceId;
 
 /// Behavior for the `saturate::clause_store` cache.  Carries `S` only as a
@@ -29,16 +29,18 @@ use crate::types::SentenceId;
 pub(crate) struct ClauseStore<S = crate::semantics::SemanticLayer>(PhantomData<fn() -> S>);
 
 impl<S> Default for ClauseStore<S> {
-    fn default() -> Self { Self(PhantomData) }
+    fn default() -> Self {
+        Self(PhantomData)
+    }
 }
 
 impl<S: TopLayer + 'static> CacheBehavior for ClauseStore<S> {
     type Parent = ProverLayer<S>;
-    type Key    = SentenceId;
+    type Key = SentenceId;
     /// `Arc` so a problem assembling thousands of background clauses
     /// bumps refcounts instead of deep-copying clause vectors.
-    type Value  = Arc<Vec<PClause>>;
-    type Side   = ();
+    type Value = Arc<Vec<PClause>>;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "saturate::clause_store";
@@ -48,7 +50,9 @@ impl<S: TopLayer + 'static> CacheBehavior for ClauseStore<S> {
     /// the storage layer re-calling `generate` under contention is benign.
     fn generate(&self, parent: &ProverLayer<S>, root: &SentenceId) -> Arc<Vec<PClause>> {
         let syn = &parent.semantic.semantic().syntactic;
-        let Some(sent) = syn.sentence(*root) else { return Arc::new(Vec::new()) };
+        let Some(sent) = syn.sentence(*root) else {
+            return Arc::new(Vec::new());
+        };
         Arc::new(clausify_sentence(syn, &parent.atoms, &sent, *root, false))
     }
 
@@ -63,9 +67,9 @@ impl<S: TopLayer + 'static> CacheBehavior for ClauseStore<S> {
     fn react(
         &self,
         _parent: &ProverLayer<S>,
-        events:  &[&Event],
-        store:   &EntryCache<SentenceId, Arc<Vec<PClause>>>,
-        _side:   &Self::Side,
+        events: &[&Event],
+        store: &EntryCache<SentenceId, Arc<Vec<PClause>>>,
+        _side: &Self::Side,
     ) -> Vec<Event> {
         // A retracted root's clauses are stale — evict; the next problem
         // that wants the root (it won't) would regenerate from the store.

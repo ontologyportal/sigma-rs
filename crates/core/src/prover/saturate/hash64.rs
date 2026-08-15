@@ -16,7 +16,9 @@ pub(crate) struct ContentHasher(u64);
 
 impl Hasher for ContentHasher {
     #[inline]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
@@ -26,15 +28,25 @@ impl Hasher for ContentHasher {
     }
 
     #[inline]
-    fn write_u8(&mut self, v: u8) { self.0 = self.0.rotate_left(8) ^ u64::from(v); }
+    fn write_u8(&mut self, v: u8) {
+        self.0 = self.0.rotate_left(8) ^ u64::from(v);
+    }
     #[inline]
-    fn write_u16(&mut self, v: u16) { self.0 = self.0.rotate_left(16) ^ u64::from(v); }
+    fn write_u16(&mut self, v: u16) {
+        self.0 = self.0.rotate_left(16) ^ u64::from(v);
+    }
     #[inline]
-    fn write_u32(&mut self, v: u32) { self.0 = self.0.rotate_left(16) ^ u64::from(v); }
+    fn write_u32(&mut self, v: u32) {
+        self.0 = self.0.rotate_left(16) ^ u64::from(v);
+    }
     #[inline]
-    fn write_u64(&mut self, v: u64) { self.0 = self.0.rotate_left(32) ^ v; }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = self.0.rotate_left(32) ^ v;
+    }
     #[inline]
-    fn write_usize(&mut self, v: usize) { self.write_u64(v as u64); }
+    fn write_usize(&mut self, v: usize) {
+        self.write_u64(v as u64);
+    }
 }
 
 pub(crate) type BuildContentHasher = BuildHasherDefault<ContentHasher>;

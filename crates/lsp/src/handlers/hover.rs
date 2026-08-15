@@ -17,25 +17,25 @@ use crate::state::GlobalState;
 /// Returns `None` when the cursor isn't on a recognisable symbol or when the
 /// document hasn't been opened in the server yet.
 pub fn handle_hover(state: &GlobalState, params: HoverParams) -> Option<Hover> {
-    let uri      = params.text_document_position_params.text_document.uri;
+    let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 
     let docs = state.docs.read().ok()?;
-    let doc  = docs.get(&uri)?;
+    let doc = docs.get(&uri)?;
     let offset = position_to_offset(&doc.rope, position);
-    let tag    = uri_to_tag(&uri);
+    let tag = uri_to_tag(&uri);
 
-    let session  = state.session.read().ok()?;
-    let kb       = session.kb();
+    let session = state.session.read().ok()?;
+    let kb = session.kb();
     let sym_name = kb.symbol_at_offset(&tag, offset)?;
     let sym_span = kb.element_at_offset(&tag, offset).map(|h| h.span);
-    let view     = session.manpage(&sym_name)?;
+    let view = session.manpage(&sym_name)?;
 
     let markdown = render_manpage_markdown(&view);
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
-            kind:  MarkupKind::Markdown,
+            kind: MarkupKind::Markdown,
             value: markdown,
         }),
         range: sym_span.as_ref().map(|s| span_to_range(&doc.rope, s)),
@@ -54,7 +54,9 @@ fn render_manpage_markdown(view: &ManPageView) -> String {
     if !view.kinds.is_empty() {
         out.push('`');
         for (i, k) in view.kinds.iter().enumerate() {
-            if i > 0 { out.push_str(" · "); }
+            if i > 0 {
+                out.push_str(" · ");
+            }
             out.push_str(k.as_str());
         }
         out.push('`');
@@ -77,7 +79,11 @@ fn render_manpage_markdown(view: &ManPageView) -> String {
     if has_sig {
         out.push_str("**Signature**\n\n");
         if let Some(a) = sig.arity {
-            let rendered = if a < 0 { "variable".to_string() } else { a.to_string() };
+            let rendered = if a < 0 {
+                "variable".to_string()
+            } else {
+                a.to_string()
+            };
             out.push_str(&format!("- arity: {}\n", rendered));
         }
         for (pos, s) in &sig.domains {
@@ -95,8 +101,11 @@ fn render_manpage_markdown(view: &ManPageView) -> String {
     if !view.documentation.is_empty() {
         out.push_str("**Documentation**\n\n");
         for d in &view.documentation {
-            out.push_str(&format!("*{}*\n\n{}\n\n",
-                d.language, render_spans(d).trim()));
+            out.push_str(&format!(
+                "*{}*\n\n{}\n\n",
+                d.language,
+                render_spans(d).trim()
+            ));
         }
     }
 
@@ -127,7 +136,7 @@ fn render_spans(block: &DocBlock) -> String {
     let mut out = String::new();
     for span in &block.spans {
         match span {
-            DocSpan::Text(t)            => out.push_str(t),
+            DocSpan::Text(t) => out.push_str(t),
             DocSpan::Link { target, .. } => {
                 out.push_str("**");
                 out.push_str(target);
@@ -143,38 +152,38 @@ fn render_spans(block: &DocBlock) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sigmakee_rs_sdk::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
     use sigmakee_rs_sdk::view_from_manpage;
+    use sigmakee_rs_sdk::{DocEntry, ManKind, ManPage, ParentEdge, SortSig};
 
     fn fixture_view() -> ManPageView {
         view_from_manpage(ManPage {
-            name:          "Human".to_string(),
-            kinds:         vec![ManKind::Instance],
+            name: "Human".to_string(),
+            kinds: vec![ManKind::Instance],
             documentation: vec![DocEntry {
-                rel:      0,
+                rel: 0,
                 language: "EnglishLanguage".to_string(),
-                text:     "A member of the species &%HomoSapiens.".to_string(),
+                text: "A member of the species &%HomoSapiens.".to_string(),
             }],
-            term_format:   vec![DocEntry {
-                rel:      0,
+            term_format: vec![DocEntry {
+                rel: 0,
                 language: "EnglishLanguage".to_string(),
-                text:     "human".to_string(),
+                text: "human".to_string(),
             }],
-            format:        vec![],
-            parents:       vec![ParentEdge {
+            format: vec![],
+            parents: vec![ParentEdge {
                 relation: "subclass".to_string(),
-                parent:   "Hominid".to_string(),
+                parent: "Hominid".to_string(),
             }],
-            children:         Vec::new(),
-            arity:   None,
+            children: Vec::new(),
+            arity: None,
             domains: vec![],
-            range:   None,
+            range: None,
             ref_args: Vec::new(),
             ref_nested: Vec::new(),
             appears_in_count: 0,
-            antecedent_refs:  Vec::new(),
+            antecedent_refs: Vec::new(),
             consequent_count: 0,
-            owned_sids:       Default::default(),
+            owned_sids: Default::default(),
         })
     }
 
@@ -198,38 +207,54 @@ mod tests {
         // `DocSpan::Link`, and we render it as **HomoSapiens** —
         // raw `&%` markers must NOT appear in the output.
         let md = render_manpage_markdown(&fixture_view());
-        assert!(md.contains("**HomoSapiens**"),
-            "expected bold cross-ref, markdown was:\n{md}");
-        assert!(!md.contains("&%HomoSapiens"),
-            "raw cross-ref marker leaked into markdown:\n{md}");
+        assert!(
+            md.contains("**HomoSapiens**"),
+            "expected bold cross-ref, markdown was:\n{md}"
+        );
+        assert!(
+            !md.contains("&%HomoSapiens"),
+            "raw cross-ref marker leaked into markdown:\n{md}"
+        );
     }
 
     #[test]
     fn signature_section_renders_arity_and_domains() {
         let view = view_from_manpage(ManPage {
-            name:          "subclass".to_string(),
-            kinds:         vec![ManKind::Predicate],
+            name: "subclass".to_string(),
+            kinds: vec![ManKind::Predicate],
             documentation: vec![],
-            term_format:   vec![],
-            format:        vec![DocEntry {
-                rel:      0,
+            term_format: vec![],
+            format: vec![DocEntry {
+                rel: 0,
                 language: "EnglishLanguage".to_string(),
-                text:     "%1 is a subclass of %2".to_string(),
+                text: "%1 is a subclass of %2".to_string(),
             }],
-            parents:       vec![],
-            children:      Vec::new(),
-            arity:         Some(2),
-            domains:       vec![
-                (1, SortSig { class: "Class".into(), subclass: true }),
-                (2, SortSig { class: "Class".into(), subclass: true }),
+            parents: vec![],
+            children: Vec::new(),
+            arity: Some(2),
+            domains: vec![
+                (
+                    1,
+                    SortSig {
+                        class: "Class".into(),
+                        subclass: true,
+                    },
+                ),
+                (
+                    2,
+                    SortSig {
+                        class: "Class".into(),
+                        subclass: true,
+                    },
+                ),
             ],
-            range:         None,
+            range: None,
             ref_args: Vec::new(),
             ref_nested: Vec::new(),
             appears_in_count: 0,
-            antecedent_refs:  Vec::new(),
+            antecedent_refs: Vec::new(),
             consequent_count: 0,
-            owned_sids:       Default::default(),
+            owned_sids: Default::default(),
         });
         let md = render_manpage_markdown(&view);
         assert!(md.contains("Signature"));
@@ -243,22 +268,22 @@ mod tests {
     #[test]
     fn empty_manpage_renders_minimally() {
         let view = view_from_manpage(ManPage {
-            name:          "X".to_string(),
-            kinds:         vec![ManKind::Individual],
+            name: "X".to_string(),
+            kinds: vec![ManKind::Individual],
             documentation: vec![],
-            term_format:   vec![],
-            format:        vec![],
-            parents:       vec![],
-            children:      Vec::new(),
-            arity:         None,
-            domains:       vec![],
-            range:         None,
+            term_format: vec![],
+            format: vec![],
+            parents: vec![],
+            children: Vec::new(),
+            arity: None,
+            domains: vec![],
+            range: None,
             ref_args: Vec::new(),
             ref_nested: Vec::new(),
             appears_in_count: 0,
-            antecedent_refs:  Vec::new(),
+            antecedent_refs: Vec::new(),
             consequent_count: 0,
-            owned_sids:       Default::default(),
+            owned_sids: Default::default(),
         });
         let md = render_manpage_markdown(&view);
         assert!(md.contains("### X"));

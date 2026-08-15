@@ -11,11 +11,11 @@
 
 use std::collections::HashMap;
 
-use crate::AstNode;
-use crate::parse::Span;
 use crate::parse::kif::dis::flat;
+use crate::parse::Span;
 use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Literal, SymbolId};
+use crate::AstNode;
 
 use super::clause::{AtomId, AtomTable, PClause};
 
@@ -26,13 +26,15 @@ use super::clause::{AtomId, AtomTable, PClause};
 #[derive(Default)]
 pub(crate) struct SkolemNames {
     names: HashMap<SymbolId, String>,
-    fn_n:  u32,
-    c_n:   u32,
+    fn_n: u32,
+    c_n: u32,
 }
 
 impl SkolemNames {
     fn render(&mut self, id: SymbolId, is_fn: bool) -> String {
-        if let Some(n) = self.names.get(&id) { return n.clone(); }
+        if let Some(n) = self.names.get(&id) {
+            return n.clone();
+        }
         let n = if is_fn {
             self.fn_n += 1;
             format!("SkFn{}", self.fn_n)
@@ -54,37 +56,56 @@ fn is_skolem_name(name: &str) -> bool {
 /// ...)`.
 pub(crate) fn clause_to_kif(
     clause: &PClause,
-    atoms:  &AtomTable,
-    syn:    &SyntacticLayer,
-    sk:     &mut SkolemNames,
+    atoms: &AtomTable,
+    syn: &SyntacticLayer,
+    sk: &mut SkolemNames,
 ) -> String {
-    let lits: Vec<String> = clause.lits.iter().map(|lit| {
-        let atom = atom_to_ast(lit.atom, atoms, syn, sk);
-        if lit.pos { flat(&atom) } else { format!("(not {})", flat(&atom)) }
-    }).collect();
+    let lits: Vec<String> = clause
+        .lits
+        .iter()
+        .map(|lit| {
+            let atom = atom_to_ast(lit.atom, atoms, syn, sk);
+            if lit.pos {
+                flat(&atom)
+            } else {
+                format!("(not {})", flat(&atom))
+            }
+        })
+        .collect();
     match lits.as_slice() {
         [one] => one.clone(),
-        many  => format!("(or {})", many.join(" ")),
+        many => format!("(or {})", many.join(" ")),
     }
 }
 
-fn atom_to_ast(id: AtomId, atoms: &AtomTable, syn: &SyntacticLayer, sk: &mut SkolemNames) -> AstNode {
+fn atom_to_ast(
+    id: AtomId,
+    atoms: &AtomTable,
+    syn: &SyntacticLayer,
+    sk: &mut SkolemNames,
+) -> AstNode {
     let span = Span::synthetic();
     let Some(sentence) = atoms.resolve(id, syn) else {
-        return AstNode::Symbol { name: format!("sid: {}", id), span };
+        return AstNode::Symbol {
+            name: format!("sid: {}", id),
+            span,
+        };
     };
     let is_applied = sentence.elements.len() > 1;
-    let elements = sentence.elements.iter().enumerate()
+    let elements = sentence
+        .elements
+        .iter()
+        .enumerate()
         .map(|(i, el)| element_to_ast(el, atoms, syn, sk, is_applied && i == 0))
         .collect();
     AstNode::List { elements, span }
 }
 
 fn element_to_ast(
-    el:      &Element,
-    atoms:   &AtomTable,
-    syn:     &SyntacticLayer,
-    sk:      &mut SkolemNames,
+    el: &Element,
+    atoms: &AtomTable,
+    syn: &SyntacticLayer,
+    sk: &mut SkolemNames,
     is_head: bool,
 ) -> AstNode {
     let span = Span::synthetic();
@@ -96,13 +117,37 @@ fn element_to_ast(
             } else {
                 name.to_string()
             };
-            AstNode::Symbol { name: rendered, span }
+            AstNode::Symbol {
+                name: rendered,
+                span,
+            }
         }
-        Element::Variable { name, is_row: false, .. } => AstNode::Variable { name: name.clone(), span },
-        Element::Variable { name, is_row: true, .. }  => AstNode::RowVariable { name: name.clone(), span },
-        Element::Literal(Literal::Str(s))    => AstNode::Str { value: s.clone(), span },
-        Element::Literal(Literal::Number(n)) => AstNode::Number { value: n.clone(), span },
-        Element::Op(op)                      => AstNode::Operator { op: op.clone(), span },
-        Element::Sub(sub_sid)                => atom_to_ast(*sub_sid, atoms, syn, sk),
+        Element::Variable {
+            name,
+            is_row: false,
+            ..
+        } => AstNode::Variable {
+            name: name.clone(),
+            span,
+        },
+        Element::Variable {
+            name, is_row: true, ..
+        } => AstNode::RowVariable {
+            name: name.clone(),
+            span,
+        },
+        Element::Literal(Literal::Str(s)) => AstNode::Str {
+            value: s.clone(),
+            span,
+        },
+        Element::Literal(Literal::Number(n)) => AstNode::Number {
+            value: n.clone(),
+            span,
+        },
+        Element::Op(op) => AstNode::Operator {
+            op: op.clone(),
+            span,
+        },
+        Element::Sub(sub_sid) => atom_to_ast(*sub_sid, atoms, syn, sk),
     }
 }

@@ -31,16 +31,32 @@ pub enum SemanticError {
     HeadInvalid { sid: SentenceId },
 
     /// Operator passed symbolic value (and not a truth value relation or operator) as an argument
-    #[error("argument {arg} of the operator, {op}, must be logical (predicate or operator) sentence")]
-    NonLogicalArg { sid: SentenceId, arg: usize, op: String },
+    #[error(
+        "argument {arg} of the operator, {op}, must be logical (predicate or operator) sentence"
+    )]
+    NonLogicalArg {
+        sid: SentenceId,
+        arg: usize,
+        op: String,
+    },
 
     /// A given symbol expected a certain arity but did not receive it
     #[error("arity mismatch for '{rel}': expected {expected}, got {got}")]
-    ArityMismatch { sid: SentenceId, rel: String, expected: usize, got: usize },
+    ArityMismatch {
+        sid: SentenceId,
+        rel: String,
+        expected: usize,
+        got: usize,
+    },
 
     /// A given relation symbol expect an argument of a given type, but did not receive it
     #[error("domain mismatch for '{rel}' argument #{arg}: expected '{domain}'")]
-    DomainMismatch { sid: SentenceId, rel: String, arg: usize, domain: String },
+    DomainMismatch {
+        sid: SentenceId,
+        rel: String,
+        arg: usize,
+        domain: String,
+    },
 
     /// There are multiple range declarations for a single symbol
     #[error("function '{sym}' has multiple range declarations")]
@@ -50,7 +66,7 @@ pub enum SemanticError {
     #[error("function '{sym}' has no range declaration")]
     MissingRange { sym: String },
 
-    /// A symbol is a relation but does not derive from a relation class which states an arity 
+    /// A symbol is a relation but does not derive from a relation class which states an arity
     ///  constraint
     #[error("relation '{sym}' is missing inheritance from a specific arity stating class (e.g. BinaryRelation)")]
     MissingArity { sym: String },
@@ -69,16 +85,28 @@ pub enum SemanticError {
     PredicateCase { sym: String },
 
     /// Symbols cannot be both a class and an instance
-    #[error("'{sym}' is declared as both an instance and a class (instance and subclass are disjoint)")]
+    #[error(
+        "'{sym}' is declared as both an instance and a class (instance and subclass are disjoint)"
+    )]
     InstanceSubclassConflict { sym: String },
 
     /// A symbol belongs to disjoint classes
     #[error("'{sym}' is an instance of disjoint classes ({class1} and {class2})")]
-    DisjointInstance { sid: Vec<SentenceId>, sym: String, class1: String, class2: String },
+    DisjointInstance {
+        sid: Vec<SentenceId>,
+        sym: String,
+        class1: String,
+        class2: String,
+    },
 
     /// A symbol cannot be derived from disjoint classes
     #[error("'{sym}' is a subclass of disjoint classes ({class1} and {class2})")]
-    DisjointSubclass { sid: Vec<SentenceId>, sym: String, class1: String, class2: String },
+    DisjointSubclass {
+        sid: Vec<SentenceId>,
+        sym: String,
+        class1: String,
+        class2: String,
+    },
 
     /// An and / or operator got only a single argument
     #[error("only one argument was passed to an conjunctive/disjunctive operator. Not technically incorrect, but meaningless")]
@@ -91,7 +119,11 @@ pub enum SemanticError {
     /// A term has more than one `documentation` axiom in the SAME language
     /// (documented in several distinct languages is normal and not flagged).
     #[error("term '{sym}' has {count} documentation axioms in {language} (expected 1)")]
-    MultipleDocumentation { sym: String, language: String, count: usize },
+    MultipleDocumentation {
+        sym: String,
+        language: String,
+        count: usize,
+    },
 
     /// A term has no `termFormat` axiom in any language.
     #[error("term '{sym}' has no termFormat axiom")]
@@ -124,12 +156,20 @@ pub enum SemanticError {
     /// A symbol is a subclass of a `partition` head but does not appear in the
     /// partition's member list.
     #[error("'{sym}' is a subclass of partitioned class '{partition_class}' but is not listed in the partition")]
-    PartitionViolation { sym: String, partition_class: String },
+    PartitionViolation {
+        sym: String,
+        partition_class: String,
+    },
 
     /// An instance of a class with `exhaustiveDecomposition` does not match any
     /// of the partition's listed sub-classes.
-    #[error("'{sym}' is an instance of '{partition_class}' but does not match any partition member")]
-    PartitionNonMember { sym: String, partition_class: String },
+    #[error(
+        "'{sym}' is an instance of '{partition_class}' but does not match any partition member"
+    )]
+    PartitionNonMember {
+        sym: String,
+        partition_class: String,
+    },
 
     /// A term is referenced nowhere in the antecedent or consequent of an
     /// implication/biconditional. Advisory only.
@@ -139,7 +179,11 @@ pub enum SemanticError {
     /// A loaded constituent references a symbol whose declaration lives in a
     /// constituent that hasn't been loaded.
     #[error("constituent '{current}' references '{sym}' but its declaration lives in unloaded constituent '{defining_constituent}'")]
-    MissingConstituentDep { sym: String, current: String, defining_constituent: String },
+    MissingConstituentDep {
+        sym: String,
+        current: String,
+        defining_constituent: String,
+    },
 
     /// Two constituents reference each other's terms.
     #[error("constituents '{a}' and '{b}' mutually reference each other's terms")]
@@ -195,81 +239,80 @@ impl SemanticError {
     /// Short alphanumeric code for use with `-W` / `--warning`.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::NoEntityAncestor { .. }         => "E001",
-            Self::HeadNotRelation { .. }          => "E002",
-            Self::HeadInvalid { .. }              => "E003",
-            Self::NonLogicalArg { .. }            => "E004",
-            Self::ArityMismatch { .. }            => "E005",
-            Self::DomainMismatch { .. }           => "E006",
-            Self::DoubleRange { .. }              => "E007",
-            Self::MissingRange { .. }             => "E008",
-            Self::MissingArity { .. }             => "W009",
-            Self::MissingDomain { .. }            => "E010",
-            Self::FunctionCase { .. }             => "W011",
-            Self::PredicateCase { .. }            => "W012",
+            Self::NoEntityAncestor { .. } => "E001",
+            Self::HeadNotRelation { .. } => "E002",
+            Self::HeadInvalid { .. } => "E003",
+            Self::NonLogicalArg { .. } => "E004",
+            Self::ArityMismatch { .. } => "E005",
+            Self::DomainMismatch { .. } => "E006",
+            Self::DoubleRange { .. } => "E007",
+            Self::MissingRange { .. } => "E008",
+            Self::MissingArity { .. } => "W009",
+            Self::MissingDomain { .. } => "E010",
+            Self::FunctionCase { .. } => "W011",
+            Self::PredicateCase { .. } => "W012",
             Self::InstanceSubclassConflict { .. } => "E013",
-            Self::DisjointInstance { .. }         => "E014",
-            Self::DisjointSubclass { .. }         => "E015",
-            Self::Other { .. }                    => "E016",
-            Self::SingleArity { .. }              => "E017",
+            Self::DisjointInstance { .. } => "E014",
+            Self::DisjointSubclass { .. } => "E015",
+            Self::Other { .. } => "E016",
+            Self::SingleArity { .. } => "E017",
             // W018/W019 are retired: MissingDocumentation/MultipleDocumentation
             // moved to the Hint-tier H0xx series below (their severity no
             // longer matches the W-prefix convention).
-            Self::SingleUseVariable { .. }        => "W020",
-            Self::FreeVarInConsequent { .. }      => "W021",
-            Self::ExistentialInAntecedent { .. }  => "W022",
-            Self::QuantifierVacuous { .. }        => "E023",
+            Self::SingleUseVariable { .. } => "W020",
+            Self::FreeVarInConsequent { .. } => "W021",
+            Self::ExistentialInAntecedent { .. } => "W022",
+            Self::QuantifierVacuous { .. } => "E023",
             // W024 is unused: `Object`/`object` case collisions are by design in SUMO.
-            Self::PartitionViolation { .. }       => "E025",
-            Self::PartitionNonMember { .. }       => "E026",
-            Self::TermNoRule { .. }               => "W027",
-            Self::MissingConstituentDep { .. }    => "E028",
-            Self::MutualConstituentDep { .. }     => "W029",
+            Self::PartitionViolation { .. } => "E025",
+            Self::PartitionNonMember { .. } => "E026",
+            Self::TermNoRule { .. } => "W027",
+            Self::MissingConstituentDep { .. } => "E028",
+            Self::MutualConstituentDep { .. } => "W029",
             // H0xx: Hint-tier documentation-completeness findings (whole-KB
             // pass, see KnowledgeBase::completeness_findings).
-            Self::MissingDocumentation { .. }     => "H001",
-            Self::MultipleDocumentation { .. }    => "H002",
-            Self::MissingTermFormat { .. }        => "H003",
-            Self::MissingFormatString { .. }      => "H004",
+            Self::MissingDocumentation { .. } => "H001",
+            Self::MultipleDocumentation { .. } => "H002",
+            Self::MissingTermFormat { .. } => "H003",
+            Self::MissingFormatString { .. } => "H004",
         }
     }
 
     /// Kebab-case name for use with `--warning=<name>`.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::NoEntityAncestor { .. }         => "no-entity-ancestor",
-            Self::HeadNotRelation { .. }          => "head-not-relation",
-            Self::HeadInvalid { .. }              => "head-invalid",
-            Self::NonLogicalArg { .. }            => "non-logical-arg",
-            Self::ArityMismatch { .. }            => "arity-mismatch",
-            Self::DomainMismatch { .. }           => "domain-mismatch",
-            Self::DoubleRange { .. }              => "double-range",
-            Self::MissingRange { .. }             => "missing-range",
-            Self::MissingArity { .. }             => "missing-arity",
-            Self::MissingDomain { .. }            => "missing-domain",
-            Self::FunctionCase { .. }             => "function-case",
-            Self::PredicateCase { .. }            => "predicate-case",
+            Self::NoEntityAncestor { .. } => "no-entity-ancestor",
+            Self::HeadNotRelation { .. } => "head-not-relation",
+            Self::HeadInvalid { .. } => "head-invalid",
+            Self::NonLogicalArg { .. } => "non-logical-arg",
+            Self::ArityMismatch { .. } => "arity-mismatch",
+            Self::DomainMismatch { .. } => "domain-mismatch",
+            Self::DoubleRange { .. } => "double-range",
+            Self::MissingRange { .. } => "missing-range",
+            Self::MissingArity { .. } => "missing-arity",
+            Self::MissingDomain { .. } => "missing-domain",
+            Self::FunctionCase { .. } => "function-case",
+            Self::PredicateCase { .. } => "predicate-case",
             Self::InstanceSubclassConflict { .. } => "instance-subclass-conflict",
-            Self::DisjointInstance { .. }         => "disjoint-instance",
-            Self::DisjointSubclass { .. }         => "disjoint-subclass",
-            Self::Other { .. }                    => "other",
-            Self::SingleArity { .. }              => "single-arity",
-            Self::SingleUseVariable { .. }        => "single-use-variable",
-            Self::FreeVarInConsequent { .. }      => "free-var-in-consequent",
-            Self::ExistentialInAntecedent { .. }  => "existential-in-antecedent",
-            Self::QuantifierVacuous { .. }        => "quantifier-vacuous",
-            Self::PartitionViolation { .. }       => "partition-violation",
-            Self::PartitionNonMember { .. }       => "partition-non-member",
-            Self::TermNoRule { .. }               => "term-no-rule",
-            Self::MissingConstituentDep { .. }    => "missing-constituent-dep",
-            Self::MutualConstituentDep { .. }     => "mutual-constituent-dep",
-            Self::MissingDocumentation { .. }     => "missing-documentation",
-            Self::MultipleDocumentation { .. }    => "multiple-documentation",
-            Self::MissingTermFormat { .. }        => "missing-term-format",
-            Self::MissingFormatString { .. }      => "missing-format-string",
+            Self::DisjointInstance { .. } => "disjoint-instance",
+            Self::DisjointSubclass { .. } => "disjoint-subclass",
+            Self::Other { .. } => "other",
+            Self::SingleArity { .. } => "single-arity",
+            Self::SingleUseVariable { .. } => "single-use-variable",
+            Self::FreeVarInConsequent { .. } => "free-var-in-consequent",
+            Self::ExistentialInAntecedent { .. } => "existential-in-antecedent",
+            Self::QuantifierVacuous { .. } => "quantifier-vacuous",
+            Self::PartitionViolation { .. } => "partition-violation",
+            Self::PartitionNonMember { .. } => "partition-non-member",
+            Self::TermNoRule { .. } => "term-no-rule",
+            Self::MissingConstituentDep { .. } => "missing-constituent-dep",
+            Self::MutualConstituentDep { .. } => "mutual-constituent-dep",
+            Self::MissingDocumentation { .. } => "missing-documentation",
+            Self::MultipleDocumentation { .. } => "multiple-documentation",
+            Self::MissingTermFormat { .. } => "missing-term-format",
+            Self::MissingFormatString { .. } => "missing-format-string",
         }
     }
-
 }
 
 impl ToDiagnostic for SemanticError {
@@ -277,11 +320,11 @@ impl ToDiagnostic for SemanticError {
         let severity = self.severity();
         let (sids, highlight_arg): (Vec<SentenceId>, i32) = match self {
             SemanticError::HeadNotRelation { sid, .. }
-            | SemanticError::HeadInvalid   { sid, .. }
-            | SemanticError::SingleArity   { sid, .. } => (vec![*sid], 0),
-            SemanticError::NonLogicalArg   { sid, arg, .. }
+            | SemanticError::HeadInvalid { sid, .. }
+            | SemanticError::SingleArity { sid, .. } => (vec![*sid], 0),
+            SemanticError::NonLogicalArg { sid, arg, .. }
             | SemanticError::DomainMismatch { sid, arg, .. } => (vec![*sid], *arg as i32),
-            SemanticError::ArityMismatch   { sid, .. } => (vec![*sid], -1),
+            SemanticError::ArityMismatch { sid, .. } => (vec![*sid], -1),
             SemanticError::DisjointInstance { sid, .. }
             | SemanticError::DisjointSubclass { sid, .. } => (sid.clone(), -1),
             // Symbol-level errors with no specific sentence anchor.
@@ -294,12 +337,12 @@ impl ToDiagnostic for SemanticError {
             _ => None,
         };
         Diagnostic {
-            kind:     "semantic",
-            range:    Span::default(),  // filled by caller from Sentence.span
+            kind: "semantic",
+            range: Span::default(), // filled by caller from Sentence.span
             severity,
-            code:     self.name(),
-            message:  self.to_string(),
-            related:  Vec::new(),
+            code: self.name(),
+            message: self.to_string(),
+            related: Vec::new(),
             sids,
             highlight_arg,
             highlight_var,
@@ -310,34 +353,34 @@ impl ToDiagnostic for SemanticError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn semantic_warning_maps_to_warning_severity() {
         let err = SemanticError::FunctionCase { sym: "foo".into() };
-        let d   = err.to_diagnostic();
+        let d = err.to_diagnostic();
         assert_eq!(d.severity, Severity::Warning);
-        assert_eq!(d.kind,     "semantic");
-        assert_eq!(d.code,     "function-case");
+        assert_eq!(d.kind, "semantic");
+        assert_eq!(d.code, "function-case");
     }
 
     #[test]
     fn semantic_error_carries_sid_for_source_context() {
         let err = SemanticError::ArityMismatch {
-            sid:      77,
-            rel:      "instance".into(),
+            sid: 77,
+            rel: "instance".into(),
             expected: 2,
-            got:      3,
+            got: 3,
         };
         let d = err.to_diagnostic();
-        assert_eq!(d.sids,          vec![77]);
+        assert_eq!(d.sids, vec![77]);
         assert_eq!(d.highlight_arg, -1);
     }
 
     #[test]
     fn render_without_source_context_includes_code_and_message() {
         let err = SemanticError::FunctionCase { sym: "Foo".into() };
-        let d   = err.to_diagnostic();
-        let s   = d.render(None);
+        let d = err.to_diagnostic();
+        let s = d.render(None);
         assert!(s.contains("[semantic/function-case]"));
         assert!(s.contains("uppercase"));
     }
@@ -356,11 +399,22 @@ mod tests {
     fn documentation_completeness_findings_are_hints() {
         for err in [
             SemanticError::MissingDocumentation { sym: "Foo".into() },
-            SemanticError::MultipleDocumentation { sym: "Foo".into(), language: "EnglishLanguage".into(), count: 2 },
+            SemanticError::MultipleDocumentation {
+                sym: "Foo".into(),
+                language: "EnglishLanguage".into(),
+                count: 2,
+            },
             SemanticError::MissingTermFormat { sym: "Foo".into() },
-            SemanticError::MissingFormatString { sym: "likes".into() },
+            SemanticError::MissingFormatString {
+                sym: "likes".into(),
+            },
         ] {
-            assert_eq!(err.severity(), Severity::Hint, "{} should be Hint-severity", err.name());
+            assert_eq!(
+                err.severity(),
+                Severity::Hint,
+                "{} should be Hint-severity",
+                err.name()
+            );
             assert_eq!(err.to_diagnostic().severity, Severity::Hint);
         }
     }
@@ -369,8 +423,12 @@ mod tests {
     fn severity_is_a_pure_function_of_the_variant() {
         // No global state left to consult — two identical errors always
         // agree, and there is nothing left to reset between test runs.
-        let a = SemanticError::MissingArity { sym: "likes".into() };
-        let b = SemanticError::MissingArity { sym: "likes".into() };
+        let a = SemanticError::MissingArity {
+            sym: "likes".into(),
+        };
+        let b = SemanticError::MissingArity {
+            sym: "likes".into(),
+        };
         assert_eq!(a.severity(), b.severity());
         assert_eq!(a.severity(), Severity::Warning);
     }

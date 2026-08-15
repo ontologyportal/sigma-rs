@@ -1,11 +1,11 @@
 // crates/core/src/parse/tptp/error.rs
 //
 // Span and ParseError -- source location and tokenizer/parser hard errors.
-use thiserror::Error;
-use crate::diagnostic::{ToDiagnostic, Diagnostic, Severity};
-use crate::parse::error::ParseError;
-use super::tokenizer::TokenKind;
 use super::super::Span;
+use super::tokenizer::TokenKind;
+use crate::diagnostic::{Diagnostic, Severity, ToDiagnostic};
+use crate::parse::error::ParseError;
+use thiserror::Error;
 
 /// Hard tokenizer / parser / syntax errors that prevent sentence acceptance.
 #[derive(Debug, Clone, Error)]
@@ -45,25 +45,25 @@ pub enum TptpParseError {
 impl ToDiagnostic for TptpParseError {
     fn to_diagnostic(&self) -> Diagnostic {
         let code: &'static str = match self {
-            TptpParseError::UnterminatedString { .. }     => "tptp/unterminated-string",
-            TptpParseError::UnexpectedChar      { .. }    => "tptp/unexpected-char",
-            TptpParseError::UnexpectedEof       { .. }    => "tptp/unexpected-eof",
-            TptpParseError::Other               { .. }    => "tptp/other",
-            TptpParseError::EmptyQuantifierList { .. }    => "tptp/empty-quantifier-list",
-            TptpParseError::UnexpectedToken { ..}         => "tptp/unexpected-token",
+            TptpParseError::UnterminatedString { .. } => "tptp/unterminated-string",
+            TptpParseError::UnexpectedChar { .. } => "tptp/unexpected-char",
+            TptpParseError::UnexpectedEof { .. } => "tptp/unexpected-eof",
+            TptpParseError::Other { .. } => "tptp/other",
+            TptpParseError::EmptyQuantifierList { .. } => "tptp/empty-quantifier-list",
+            TptpParseError::UnexpectedToken { .. } => "tptp/unexpected-token",
             TptpParseError::UnterminatedBlockComment { .. } => "tptp/unterminated-block-comment",
-            TptpParseError::InvalidEscape { .. }          => "tptp/invalid-escape",
-            TptpParseError::UnsupportedInclude { .. }     => "tptp/unsupported-include",
-            TptpParseError::UnsupportedLanguage { .. }    => "tptp/unsupported-language",
+            TptpParseError::InvalidEscape { .. } => "tptp/invalid-escape",
+            TptpParseError::UnsupportedInclude { .. } => "tptp/unsupported-include",
+            TptpParseError::UnsupportedLanguage { .. } => "tptp/unsupported-language",
         };
         Diagnostic {
-            kind:          "parse",
-            range:         self.get_span(),
-            severity:      Severity::Error,
+            kind: "parse",
+            range: self.get_span(),
+            severity: Severity::Error,
             code,
-            message:       self.to_string(),
-            related:       Vec::new(),
-            sids:          Vec::new(),
+            message: self.to_string(),
+            related: Vec::new(),
+            sids: Vec::new(),
             highlight_arg: -1,
             highlight_var: None,
         }

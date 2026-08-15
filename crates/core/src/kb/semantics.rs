@@ -1,9 +1,9 @@
 //! Public re-exports of semantic operations.
 use std::collections::{HashMap, HashSet};
 
-use crate::{SentenceId, SymbolId, Diagnostic, ToDiagnostic, SemanticError};
+use crate::layer::{Layer, TopLayer};
 use crate::types::Element;
-use crate::layer::{TopLayer, Layer};
+use crate::{Diagnostic, SemanticError, SentenceId, SymbolId, ToDiagnostic};
 
 use super::KnowledgeBase;
 
@@ -11,15 +11,15 @@ use super::KnowledgeBase;
 /// [`KnowledgeBase::vocab_stats`].
 #[derive(Debug, Clone, Default)]
 pub struct VocabStats {
-    pub total:      usize,
-    pub classes:    usize,
-    pub instances:  usize,
-    pub relations:  usize,
+    pub total: usize,
+    pub classes: usize,
+    pub instances: usize,
+    pub relations: usize,
     /// Subset of `relations` classified as predicates / as functions.
     pub predicates: usize,
-    pub functions:  usize,
+    pub functions: usize,
     pub documented: usize,
-    pub labeled:    usize,
+    pub labeled: usize,
     /// Distinct documented symbols per language tag, most-covered first.
     pub doc_languages: Vec<(String, usize)>,
     /// Distinct termFormat-labeled symbols per language tag, most-covered
@@ -58,7 +58,13 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
     /// Axiom sentences in which `sym` occurs.
     pub fn sym_refs(&self, sym: crate::types::SymbolId) -> Vec<SentenceId> {
-        self.layer.semantic().syntactic.axiom_sentences_of(sym).iter().copied().collect()
+        self.layer
+            .semantic()
+            .syntactic
+            .axiom_sentences_of(sym)
+            .iter()
+            .copied()
+            .collect()
     }
 
     /// Aggregate vocabulary and documentation-coverage counts for an overview
@@ -73,15 +79,28 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let syn = &self.layer.semantic().syntactic;
         let ids = self.real_symbol_ids();
 
-        let mut out = VocabStats { total: ids.len(), ..VocabStats::default() };
+        let mut out = VocabStats {
+            total: ids.len(),
+            ..VocabStats::default()
+        };
         for &id in &ids {
-            if self.is_class(id)    { out.classes += 1; }
-            if self.is_instance(id) { out.instances += 1; }
+            if self.is_class(id) {
+                out.classes += 1;
+            }
+            if self.is_instance(id) {
+                out.instances += 1;
+            }
             let pred = self.is_predicate(id);
             let func = self.is_function(id);
-            if pred { out.predicates += 1; }
-            if func { out.functions  += 1; }
-            if self.is_relation(id) || pred || func { out.relations += 1; }
+            if pred {
+                out.predicates += 1;
+            }
+            if func {
+                out.functions += 1;
+            }
+            if self.is_relation(id) || pred || func {
+                out.relations += 1;
+            }
         }
 
         // Distinct documented/labeled subjects, straight off the head indexes.
@@ -95,19 +114,29 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             let mut per_lang: std::collections::HashMap<String, HashSet<crate::types::SymbolId>> =
                 std::collections::HashMap::new();
             for sid in syn.by_head(head).iter().copied() {
-                let Some(sent) = syn.sentence(sid) else { continue };
+                let Some(sent) = syn.sentence(sid) else {
+                    continue;
+                };
                 let (Some(Element::Symbol(subj)), Some(Element::Symbol(lang))) =
-                    (sent.elements.get(subj_slot), sent.elements.get(lang_slot)) else { continue };
+                    (sent.elements.get(subj_slot), sent.elements.get(lang_slot))
+                else {
+                    continue;
+                };
                 union.insert(subj.id());
-                per_lang.entry(lang.to_string()).or_default().insert(subj.id());
+                per_lang
+                    .entry(lang.to_string())
+                    .or_default()
+                    .insert(subj.id());
             }
-            let mut langs: Vec<(String, usize)> =
-                per_lang.into_iter().map(|(l, set)| (l, set.len())).collect();
+            let mut langs: Vec<(String, usize)> = per_lang
+                .into_iter()
+                .map(|(l, set)| (l, set.len()))
+                .collect();
             langs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             (union.len(), langs)
         };
-        (out.documented, out.doc_languages)  = coverage("documentation", 1, 2);
-        (out.labeled,    out.term_languages) = coverage("termFormat", 2, 1);
+        (out.documented, out.doc_languages) = coverage("documentation", 1, 2);
+        (out.labeled, out.term_languages) = coverage("termFormat", 2, 1);
         out
     }
 
@@ -120,9 +149,15 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let mut ids: Vec<SymbolId> = Vec::new();
         syn.symbols.entries().for_each(|(&sym_id, sym)| {
             let name = sym.name();
-            if name.starts_with('?') || name.starts_with('@') { return; }
-            if syn.is_skolem(sym_id) { return; }
-            if crate::kb::search::is_scoped_variable_name(&name) { return; }
+            if name.starts_with('?') || name.starts_with('@') {
+                return;
+            }
+            if syn.is_skolem(sym_id) {
+                return;
+            }
+            if crate::kb::search::is_scoped_variable_name(&name) {
+                return;
+            }
             ids.push(sym_id);
         });
         ids
@@ -134,10 +169,18 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// `pattern_kif`'s head relation isn't interned in this KB at all — never
     /// panics (unlike the public [`Self::lookup`], where an unknown symbol in
     /// a developer-typed pattern is a genuine usage error worth aborting on).
-    fn symbols_matching(&self, pattern_kif: &str, head: &str, subject_slot: usize) -> HashSet<SymbolId> {
+    fn symbols_matching(
+        &self,
+        pattern_kif: &str,
+        head: &str,
+        subject_slot: usize,
+    ) -> HashSet<SymbolId> {
         let syn = &self.layer.semantic().syntactic;
-        let Ok(pat) = syn.patterns().pattern_from_kif(pattern_kif) else { return HashSet::new() };
-        syn.patterns().find_by_pattern(&pat, Some(head), None)
+        let Ok(pat) = syn.patterns().pattern_from_kif(pattern_kif) else {
+            return HashSet::new();
+        };
+        syn.patterns()
+            .find_by_pattern(&pat, Some(head), None)
             .into_iter()
             .filter_map(|(_, b)| match b.elements.get(&subject_slot) {
                 Some(Element::Symbol(s)) => Some(s.id()),
@@ -154,13 +197,22 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// fires per-language, never across languages).
     fn documentation_occurrences(&self) -> HashMap<(SymbolId, String), usize> {
         let syn = &self.layer.semantic().syntactic;
-        let Ok(pat) = syn.patterns().pattern_from_kif("(documentation ?Subj ?Lang ?Text)") else {
+        let Ok(pat) = syn
+            .patterns()
+            .pattern_from_kif("(documentation ?Subj ?Lang ?Text)")
+        else {
             return HashMap::new();
         };
         let mut counts: HashMap<(SymbolId, String), usize> = HashMap::new();
-        for (_, b) in syn.patterns().find_by_pattern(&pat, Some("documentation"), None) {
+        for (_, b) in syn
+            .patterns()
+            .find_by_pattern(&pat, Some("documentation"), None)
+        {
             let (Some(Element::Symbol(subj)), Some(Element::Symbol(lang))) =
-                (b.elements.get(&0), b.elements.get(&1)) else { continue };
+                (b.elements.get(&0), b.elements.get(&1))
+            else {
+                continue;
+            };
             *counts.entry((subj.id(), lang.to_string())).or_insert(0) += 1;
         }
         counts
@@ -183,8 +235,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let syn = &self.layer.semantic().syntactic;
         let doc_occurrences = self.documentation_occurrences();
         let documented: HashSet<SymbolId> = doc_occurrences.keys().map(|(id, _)| *id).collect();
-        let has_term_format = self.symbols_matching("(termFormat ?Lang ?Subj ?Text)", "termFormat", 1);
-        let has_format      = self.symbols_matching("(format ?Lang ?Rel ?Text)", "format", 1);
+        let has_term_format =
+            self.symbols_matching("(termFormat ?Lang ?Subj ?Text)", "termFormat", 1);
+        let has_format = self.symbols_matching("(format ?Lang ?Rel ?Text)", "format", 1);
 
         // Bulk anchor map replacing per-diagnostic `defining_sentence` calls:
         // each of those scanned EVERY declaration sentence (plus a full
@@ -199,26 +252,39 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let mut defining: std::collections::HashMap<SymbolId, (SentenceId, crate::Span)> =
             std::collections::HashMap::new();
         const DECLARATIONS: &[&str] = &[
-            "subclass", "instance", "subrelation", "subAttribute",
+            "subclass",
+            "instance",
+            "subrelation",
+            "subAttribute",
             "documentation",
         ];
         for &head in DECLARATIONS {
             for sid in syn.by_head(head).iter().copied() {
-                let Some(sent) = syn.sentence(sid) else { continue };
-                let Some(crate::types::Element::Symbol(sym)) = sent.elements.get(1) else { continue };
-                let Some(span) = spans.get(&sid) else { continue };
-                defining.entry(sym.id()).or_insert_with(|| (sid, span.clone()));
+                let Some(sent) = syn.sentence(sid) else {
+                    continue;
+                };
+                let Some(crate::types::Element::Symbol(sym)) = sent.elements.get(1) else {
+                    continue;
+                };
+                let Some(span) = spans.get(&sid) else {
+                    continue;
+                };
+                defining
+                    .entry(sym.id())
+                    .or_insert_with(|| (sid, span.clone()));
             }
         }
         let anchor = |err: SemanticError, id: SymbolId, name: &str| -> Diagnostic {
             let mut d = err.to_diagnostic();
             let found = defining.get(&id).cloned().or_else(|| {
                 // `defining_sentence`'s fallback: any root headed by the symbol.
-                syn.by_head(name).iter().copied()
+                syn.by_head(name)
+                    .iter()
+                    .copied()
                     .find_map(|sid| spans.get(&sid).map(|sp| (sid, sp.clone())))
             });
             if let Some((sid, span)) = found {
-                d.sids  = vec![sid];
+                d.sids = vec![sid];
                 d.range = span;
             }
             d
@@ -226,27 +292,48 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
         let mut out = Vec::new();
         for id in self.real_symbol_ids() {
-            let Some(name) = syn.sym_name(id).map(|s| s.name().to_string()) else { continue };
+            let Some(name) = syn.sym_name(id).map(|s| s.name().to_string()) else {
+                continue;
+            };
 
             if !documented.contains(&id) {
-                out.push(anchor(SemanticError::MissingDocumentation { sym: name.clone() }, id, &name));
+                out.push(anchor(
+                    SemanticError::MissingDocumentation { sym: name.clone() },
+                    id,
+                    &name,
+                ));
             }
             if !has_term_format.contains(&id) {
-                out.push(anchor(SemanticError::MissingTermFormat { sym: name.clone() }, id, &name));
+                out.push(anchor(
+                    SemanticError::MissingTermFormat { sym: name.clone() },
+                    id,
+                    &name,
+                ));
             }
             if (self.is_relation(id) || self.is_predicate(id) || self.is_function(id))
                 && !has_format.contains(&id)
             {
-                out.push(anchor(SemanticError::MissingFormatString { sym: name.clone() }, id, &name));
+                out.push(anchor(
+                    SemanticError::MissingFormatString { sym: name.clone() },
+                    id,
+                    &name,
+                ));
             }
         }
 
         for ((id, language), count) in &doc_occurrences {
-            if *count <= 1 { continue; }
+            if *count <= 1 {
+                continue;
+            }
             if let Some(name) = syn.sym_name(*id).map(|s| s.name().to_string()) {
                 out.push(anchor(
-                    SemanticError::MultipleDocumentation { sym: name.clone(), language: language.clone(), count: *count },
-                    *id, &name,
+                    SemanticError::MultipleDocumentation {
+                        sym: name.clone(),
+                        language: language.clone(),
+                        count: *count,
+                    },
+                    *id,
+                    &name,
                 ));
             }
         }
@@ -269,17 +356,22 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// then to any root where it appears at all.  `None` when the
     /// symbol has no declarations anywhere.
     pub fn defining_sentence(&self, symbol: &str) -> Option<(SentenceId, crate::Span)> {
-        let sym_id  = self.symbol_id(symbol)?;
-        let store   = &self.layer.semantic().syntactic;
+        let sym_id = self.symbol_id(symbol)?;
+        let store = &self.layer.semantic().syntactic;
 
         // Canonical declarations with this symbol as arg 1.
         const DECLARATIONS: &[&str] = &[
-            "subclass", "instance", "subrelation", "subAttribute",
+            "subclass",
+            "instance",
+            "subrelation",
+            "subAttribute",
             "documentation",
         ];
         for &head in DECLARATIONS {
             for sid in store.by_head(head).iter().copied() {
-                let Some(sent) = store.sentence(sid) else { continue };
+                let Some(sent) = store.sentence(sid) else {
+                    continue;
+                };
                 if matches!(
                     sent.elements.get(1),
                     Some(crate::types::Element::Symbol(sym)) if sym.id() == sym_id
@@ -309,16 +401,18 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// away).  Callers that need the distinction use the lower-level
     /// `SemanticLayer::domain` path.
     pub fn expected_arg_class(&self, head: &str, arg_idx: usize) -> Option<String> {
-        let head_id   = self.symbol_id(head)?;
-        let domains   = self.layer.semantic().domain(head_id);
+        let head_id = self.symbol_id(head)?;
+        let domains = self.layer.semantic().domain(head_id);
         // `arg_idx` is 1-based (element-index convention); `domains`
         // is 0-based.
-        if arg_idx == 0 || arg_idx > domains.len() { return None; }
+        if arg_idx == 0 || arg_idx > domains.len() {
+            return None;
+        }
         let rd = &domains[arg_idx - 1];
         let class_id = rd.id()?;
         self.sym_name(class_id)
     }
-    
+
     // -- Validation ------------------------------------------------------------
     //
     // Every public validation entrypoint returns a flat `Vec<Diagnostic>`:
@@ -425,18 +519,26 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// doesn't already carry one — so attribution survives even for symbol-level
     /// findings.  Parallel under `feature = "parallel"`; each worker builds its
     /// own validator (a cheap borrow) so there's no cross-thread sharing.
-    fn validate_sids(&self, sids: &[SentenceId], scope: crate::semantics::types::Scope) -> Vec<Diagnostic> {
+    fn validate_sids(
+        &self,
+        sids: &[SentenceId],
+        scope: crate::semantics::types::Scope,
+    ) -> Vec<Diagnostic> {
         // Span anchoring uses the bulk index, not per-sid `source_span`:
         // that call is a full forward-map scan, and at thousands of
         // diagnostics the per-call scans dominated validate_all (and their
         // shard locking serialised the parallel fan-out below).
         let spans = self.layer.semantic().syntactic.source_span_index();
         let one = |sid: SentenceId| -> Vec<Diagnostic> {
-            self.layer.semantic().validation_scoped(sid, scope)
+            self.layer
+                .semantic()
+                .validation_scoped(sid, scope)
                 .iter()
                 .map(|e| {
                     let mut d = e.to_diagnostic();
-                    if d.sids.is_empty() { d.sids = vec![sid]; }
+                    if d.sids.is_empty() {
+                        d.sids = vec![sid];
+                    }
                     // Anchor the diagnostic at the *root* formula's source span,
                     // so findings on nested sub-sentences (which carry no span of
                     // their own) still report the enclosing formula's file:line.
@@ -459,7 +561,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             sids.iter().flat_map(|&sid| one(sid)).collect()
         }
     }
-
 }
 
 #[cfg(test)]
@@ -485,20 +586,31 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         let r = kb.tell(
             "(subclass BinaryRelation Relation)(instance likes BinaryRelation)(likes Foo Bar)",
-            "s");
+            "s",
+        );
         assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
-        let sid = *kb.layer.semantic.syntactic.by_head("likes").iter().next()
+        let sid = *kb
+            .layer
+            .semantic
+            .syntactic
+            .by_head("likes")
+            .iter()
+            .next()
             .expect("a (likes ...) root");
 
         let base = kb.validate_sentence(sid);
-        assert!(base.iter().any(|d| d.code == "head-not-relation"),
+        assert!(
+            base.iter().any(|d| d.code == "head-not-relation"),
             "Base never saw the declaration → HeadNotRelation; got {:?}",
-            base.iter().map(|d| d.code).collect::<Vec<_>>());
+            base.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
 
         let scoped = kb.validate_sentence_in_session(sid, "s");
-        assert!(!scoped.iter().any(|d| d.code == "head-not-relation"),
+        assert!(
+            !scoped.iter().any(|d| d.code == "head-not-relation"),
             "session scope sees `likes` as a relation → no HeadNotRelation; got {:?}",
-            scoped.iter().map(|d| d.code).collect::<Vec<_>>());
+            scoped.iter().map(|d| d.code).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -513,9 +625,15 @@ mod tests {
         assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
 
         let diags = kb.validate_session("s");
-        assert!(!diags.is_empty(), "an ill-formed sentence must yield diagnostics");
+        assert!(
+            !diags.is_empty(),
+            "an ill-formed sentence must yield diagnostics"
+        );
         for d in &diags {
-            assert!(!d.sids.is_empty(), "every diagnostic must carry its sentence id");
+            assert!(
+                !d.sids.is_empty(),
+                "every diagnostic must carry its sentence id"
+            );
             assert_eq!(d.kind, "semantic");
         }
     }
@@ -530,19 +648,25 @@ mod session_validate_probe {
         let mut kb = KnowledgeBase::new();
         let r = kb.reload_kif(
             "(instance orientation TernaryPredicate)",
-            &std::path::PathBuf::from("m1.kif"), "load");
+            &std::path::PathBuf::from("m1.kif"),
+            "load",
+        );
         assert!(r.ok);
         let syn = kb.store_for_testing();
         let o = syn.sym_id("orientation").unwrap();
         // Unpromoted: the edge is session-scoped, not Base.
-        assert!(kb.semantic().parents_of(o).is_empty(),
-            "transient roots must not populate the Base taxonomy");
+        assert!(
+            kb.semantic().parents_of(o).is_empty(),
+            "transient roots must not populate the Base taxonomy"
+        );
         #[cfg(feature = "ask")]
         kb.make_session_axiomatic("load").expect("promote");
         #[cfg(not(feature = "ask"))]
         kb.make_session_axiomatic("load").expect("promote");
-        assert!(!kb.semantic().parents_of(o).is_empty(),
-            "promotion must surface the instance edge in Base");
+        assert!(
+            !kb.semantic().parents_of(o).is_empty(),
+            "promotion must surface the instance edge in Base"
+        );
     }
 
     /// Session-scoped validation sees Base declarations: a session
@@ -557,7 +681,9 @@ mod session_validate_probe {
              (instance orientation TernaryPredicate)\n\
              (subclass Object Entity)\n\
              (instance Right Entity)",
-            &std::path::PathBuf::from("base.kif"), "load");
+            &std::path::PathBuf::from("base.kif"),
+            "load",
+        );
         assert!(r.ok);
         #[cfg(feature = "ask")]
         kb.make_session_axiomatic("load").expect("promote");
@@ -568,8 +694,12 @@ mod session_validate_probe {
         let diags = kb.validate_session("case");
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
         assert!(
-            !messages.iter().any(|m| m.contains("not a declared relation")),
-            "declared relation must not warn; got {:?}", messages);
+            !messages
+                .iter()
+                .any(|m| m.contains("not a declared relation")),
+            "declared relation must not warn; got {:?}",
+            messages
+        );
     }
 }
 
@@ -585,8 +715,14 @@ mod completeness_tests {
         kb
     }
 
-    fn find<'a>(diags: &'a [crate::Diagnostic], code: &str, needle: &str) -> Option<&'a crate::Diagnostic> {
-        diags.iter().find(|d| d.code == code && d.message.contains(needle))
+    fn find<'a>(
+        diags: &'a [crate::Diagnostic],
+        code: &str,
+        needle: &str,
+    ) -> Option<&'a crate::Diagnostic> {
+        diags
+            .iter()
+            .find(|d| d.code == code && d.message.contains(needle))
     }
 
     #[test]
@@ -600,12 +736,12 @@ mod completeness_tests {
 
     #[test]
     fn missing_documentation_hint_absent_when_documented() {
-        let kb = promoted(
-            "(subclass Foo Entity)\n(documentation Foo EnglishLanguage \"A foo.\")",
-        );
+        let kb = promoted("(subclass Foo Entity)\n(documentation Foo EnglishLanguage \"A foo.\")");
         let diags = kb.validate_all();
-        assert!(find(&diags, "missing-documentation", "Foo").is_none(),
-            "Foo is documented — must not be flagged");
+        assert!(
+            find(&diags, "missing-documentation", "Foo").is_none(),
+            "Foo is documented — must not be flagged"
+        );
     }
 
     #[test]
@@ -613,9 +749,7 @@ mod completeness_tests {
         let undocumented = promoted("(subclass Foo Entity)");
         assert!(find(&undocumented.validate_all(), "missing-term-format", "Foo").is_some());
 
-        let labeled = promoted(
-            "(subclass Foo Entity)\n(termFormat EnglishLanguage Foo \"foo\")",
-        );
+        let labeled = promoted("(subclass Foo Entity)\n(termFormat EnglishLanguage Foo \"foo\")");
         assert!(find(&labeled.validate_all(), "missing-term-format", "Foo").is_none());
     }
 
@@ -627,10 +761,14 @@ mod completeness_tests {
              (subclass Foo Entity)",
         );
         let diags = kb.validate_all();
-        assert!(find(&diags, "missing-format-string", "likes").is_some(),
-            "a relation with no format string should be flagged");
-        assert!(find(&diags, "missing-format-string", "Foo").is_none(),
-            "a non-relation class must never be flagged for a missing format string");
+        assert!(
+            find(&diags, "missing-format-string", "likes").is_some(),
+            "a relation with no format string should be flagged"
+        );
+        assert!(
+            find(&diags, "missing-format-string", "Foo").is_none(),
+            "a non-relation class must never be flagged for a missing format string"
+        );
     }
 
     #[test]
@@ -654,7 +792,11 @@ mod completeness_tests {
         let d = find(&diags, "multiple-documentation", "Foo")
             .expect("two English documentation axioms for Foo should be flagged");
         assert_eq!(d.severity, Severity::Hint);
-        assert!(d.message.contains('2'), "message should mention the count: {}", d.message);
+        assert!(
+            d.message.contains('2'),
+            "message should mention the count: {}",
+            d.message
+        );
     }
 
     #[test]
@@ -672,6 +814,9 @@ mod completeness_tests {
     #[test]
     fn empty_kb_has_no_completeness_findings() {
         let kb = KnowledgeBase::new();
-        assert!(kb.validate_all().is_empty(), "an empty KB has no symbols to flag");
+        assert!(
+            kb.validate_all().is_empty(),
+            "an empty KB has no symbols to flag"
+        );
     }
 }

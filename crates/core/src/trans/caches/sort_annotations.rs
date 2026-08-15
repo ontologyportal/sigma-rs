@@ -3,16 +3,16 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::caches::domain::Domain;
 use crate::semantics::caches::is_function::IsFunction;
 use crate::semantics::caches::is_relation::IsRelation;
 use crate::semantics::caches::range::Range;
 use crate::semantics::caches::tax_edges::TaxEdges;
 use crate::trans::caches::numeric_sorts::NumericSorts;
+use crate::trans::{Sort, TranslationLayer};
 use crate::types::{RelationDomain, RelationRange};
 use crate::SymbolId;
-use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
-use crate::trans::{Sort, TranslationLayer};
 
 /// One concrete signature of a relation or function: argument sorts plus an
 /// optional return sort.
@@ -21,7 +21,7 @@ pub struct RelSort {
     /// Per-argument sorts (one per declared position; defaults to Individual).
     arg_sorts: Vec<Sort>,
     /// Return sort for function symbols; `None` for predicates / relations.
-    ret_sort: Option<Sort>
+    ret_sort: Option<Sort>,
 }
 
 impl RelSort {
@@ -42,14 +42,14 @@ pub enum SortAnnotation {
         /// Per-argument sorts (one per declared position; defaults to Individual).
         arg_sorts: Vec<Sort>,
         /// Return sort for function symbols; `None` for predicates / relations.
-        ret_sort: Option<Sort>
+        ret_sort: Option<Sort>,
     },
-    /// A special type of Relation which is polymorphic and requires multiple 
+    /// A special type of Relation which is polymorphic and requires multiple
     /// signatures for multiple types of arguments. For example, instance
     /// has a singature (Entity, Class), but the first "Entity" could be an $i
-    /// or a numeric class. Therefore, these Relations enumerate ALL the various 
+    /// or a numeric class. Therefore, these Relations enumerate ALL the various
     /// forms which it could accept any number of types as its input
-    Polymorphic(Vec<RelSort>)
+    Polymorphic(Vec<RelSort>),
 }
 
 /// Behavior for the `translation::sort_annotations` cache.
@@ -57,10 +57,10 @@ pub enum SortAnnotation {
 pub(crate) struct SortAnnotationsCache;
 
 impl CacheBehavior for SortAnnotationsCache {
-    type Parent       = TranslationLayer;
-    type Key          = SymbolId;
-    type Value        = SortAnnotation;
-    type Side         = ();
+    type Parent = TranslationLayer;
+    type Key = SymbolId;
+    type Value = SortAnnotation;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "translation::sort_annotations";
@@ -68,7 +68,9 @@ impl CacheBehavior for SortAnnotationsCache {
     fn generate(&self, parent: &TranslationLayer, key: &Self::Key) -> Self::Value {
         if !parent.semantic.is_relation(*key) {
             return SortAnnotation::Constant(
-                parent.sort_for_symbol(*key).unwrap_or_else(|_| Sort::Individual)
+                parent
+                    .sort_for_symbol(*key)
+                    .unwrap_or_else(|_| Sort::Individual),
             );
         }
 
@@ -76,8 +78,7 @@ impl CacheBehavior for SortAnnotationsCache {
             None
         } else {
             Some(match parent.semantic.range(*key) {
-                RelationRange::RangeSubclass(_)
-                | RelationRange::Unknown => Sort::Individual,
+                RelationRange::RangeSubclass(_) | RelationRange::Unknown => Sort::Individual,
                 RelationRange::Range(cls) => parent.sort_for_id(cls),
             })
         };
@@ -86,16 +87,22 @@ impl CacheBehavior for SortAnnotationsCache {
             // A numeric-classed domain pins its position's declared sort; the
             // abstract `Number` superclass maps to `$real`, everything else to
             // Individual.
-            let arg_sorts = parent.semantic.domain(*key).iter().map(|d| {
-                match d {
-                    RelationDomain::DomainSubclass(_)
-                    | RelationDomain::Unknown => Sort::Individual,
-                    RelationDomain::Domain(cls) =>
-                        parent.numeric_sort_of_class(*cls).unwrap_or(Sort::Individual),
-                }
-            }).collect();
+            let arg_sorts = parent
+                .semantic
+                .domain(*key)
+                .iter()
+                .map(|d| match d {
+                    RelationDomain::DomainSubclass(_) | RelationDomain::Unknown => Sort::Individual,
+                    RelationDomain::Domain(cls) => parent
+                        .numeric_sort_of_class(*cls)
+                        .unwrap_or(Sort::Individual),
+                })
+                .collect();
 
-            SortAnnotation::Relation { arg_sorts, ret_sort }
+            SortAnnotation::Relation {
+                arg_sorts,
+                ret_sort,
+            }
         } else {
             // Enumerate every concrete signature as the cartesian product of each
             // position's candidate sorts. Cap how many positions get the full
@@ -103,7 +110,9 @@ impl CacheBehavior for SortAnnotationsCache {
             // Individual, to bound the enumeration at 4^MAX_FLEX_POSITIONS.
             const MAX_FLEX_POSITIONS: usize = 3;
             let mut flex_seen = 0usize;
-            let arg_options: Vec<Vec<Sort>> = parent.semantic.domain(*key)
+            let arg_options: Vec<Vec<Sort>> = parent
+                .semantic
+                .domain(*key)
                 .iter()
                 .map(|d| {
                     let opts = position_sort_options(parent, d);
@@ -119,28 +128,39 @@ impl CacheBehavior for SortAnnotationsCache {
 
             let variants = cartesian_sorts(&arg_options)
                 .into_iter()
-                .map(|arg_sorts| RelSort { arg_sorts, ret_sort })
+                .map(|arg_sorts| RelSort {
+                    arg_sorts,
+                    ret_sort,
+                })
                 .collect();
             SortAnnotation::Polymorphic(variants)
         }
     }
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
-        &[crate::cache::events::EventKind::DomainRangeChanged, crate::cache::events::EventKind::TaxonomyChanged]
+        &[
+            crate::cache::events::EventKind::DomainRangeChanged,
+            crate::cache::events::EventKind::TaxonomyChanged,
+        ]
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &[IsRelation::NAME, IsFunction::NAME,
-          Domain::NAME, Range::NAME, TaxEdges::NAME,
-          NumericSorts::NAME]
+        &[
+            IsRelation::NAME,
+            IsFunction::NAME,
+            Domain::NAME,
+            Range::NAME,
+            TaxEdges::NAME,
+            NumericSorts::NAME,
+        ]
     }
 
     fn react(
         &self,
         _parent: &TranslationLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<SymbolId, SortAnnotation>,
-        _side:    &()
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<SymbolId, SortAnnotation>,
+        _side: &(),
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
         // Must clear wholesale, not `evict_keys(syms)`: a changed symbol can
@@ -148,8 +168,12 @@ impl CacheBehavior for SortAnnotationsCache {
         // the event and has no reverse index to find. No `PureAddition` fast path
         // either — a pure taxonomy-edge addition can still flip an existing
         // class's numeric membership.
-        let tax = events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. }));
-        let dr  = events.iter().any(|e| matches!(e, Event::DomainRangeChanged { .. }));
+        let tax = events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }));
+        let dr = events
+            .iter()
+            .any(|e| matches!(e, Event::DomainRangeChanged { .. }));
         if tax || dr {
             store.clear();
         }

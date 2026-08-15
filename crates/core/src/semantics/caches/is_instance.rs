@@ -3,10 +3,10 @@
 // `semantic::is_instance` cache: memoises whether a symbol denotes an
 // *instance* (as opposed to a *class*).
 
-use crate::SymbolId;
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::SemanticLayer;
 use crate::semantics::types::{Scope, Scoped};
+use crate::semantics::SemanticLayer;
+use crate::SymbolId;
 
 /// Behavior for the `semantic::is_instance` cache.
 ///
@@ -18,14 +18,18 @@ pub(crate) struct IsInstance;
 
 impl CacheBehavior for IsInstance {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = bool;
+    type Key = Scoped<SymbolId>;
+    type Value = bool;
     type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "semantic::is_instance";
 
-    fn generate(&self, parent: &SemanticLayer, &Scoped { scope, key: sym }: &Scoped<SymbolId>) -> bool {
+    fn generate(
+        &self,
+        parent: &SemanticLayer,
+        &Scoped { scope, key: sym }: &Scoped<SymbolId>,
+    ) -> bool {
         !parent.is_class_scoped(sym, scope)
     }
 
@@ -40,12 +44,15 @@ impl CacheBehavior for IsInstance {
     fn react(
         &self,
         _parent: &SemanticLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<Scoped<SymbolId>, bool>,
-        _side:   &Self::Side,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<Scoped<SymbolId>, bool>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. })) {
+        if events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }))
+        {
             store.clear();
         }
         Vec::new()
@@ -69,8 +76,8 @@ impl SemanticLayer {
 
 #[cfg(test)]
 mod tests {
-    use crate::semantics::SemanticLayer;
     use crate::semantics::caches::test_support::{base_layer, kif_layer};
+    use crate::semantics::SemanticLayer;
     use crate::syntactic::SyntacticLayer;
 
     #[test]
@@ -99,15 +106,22 @@ mod tests {
         // If `ancestorOf` is declared as an instance and `parentOf` is a
         // subrelation of `ancestorOf`, the algorithm walks the Subrelation edge
         // upward and finds the Instance edge — so `parentOf` is also an instance.
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (instance ancestorOf BinaryRelation)
             (subrelation parentOf ancestorOf)
-        ");
-        let parent_of   = layer.syntactic.sym_id("parentOf").unwrap();
+        ",
+        );
+        let parent_of = layer.syntactic.sym_id("parentOf").unwrap();
         let ancestor_of = layer.syntactic.sym_id("ancestorOf").unwrap();
-        assert!(layer.is_instance(ancestor_of), "direct instance declaration");
-        assert!(layer.is_instance(parent_of),
-            "parentOf inherits is_instance via subrelation chain to ancestorOf");
+        assert!(
+            layer.is_instance(ancestor_of),
+            "direct instance declaration"
+        );
+        assert!(
+            layer.is_instance(parent_of),
+            "parentOf inherits is_instance via subrelation chain to ancestorOf"
+        );
     }
 
     #[test]
@@ -118,9 +132,16 @@ mod tests {
         let fido = layer.syntactic.sym_id("Fido").unwrap();
         let v1 = layer.is_instance(fido);
         assert!(v1);
-        assert!(layer.is_instance.peek(&crate::semantics::types::Scoped {
-            scope: crate::semantics::types::Scope::Base, key: fido
-        }).is_some(), "is_instance cache should be populated after first call");
+        assert!(
+            layer
+                .is_instance
+                .peek(&crate::semantics::types::Scoped {
+                    scope: crate::semantics::types::Scope::Base,
+                    key: fido
+                })
+                .is_some(),
+            "is_instance cache should be populated after first call"
+        );
         assert_eq!(layer.is_instance(fido), v1);
     }
 }

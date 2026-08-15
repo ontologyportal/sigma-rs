@@ -28,9 +28,7 @@ const MAGIC_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 /// real relation id is astronomically unlikely and harmless (magic preds are
 /// internal to the rewritten program and never emitted).
 fn magic_pred(p: Pred, mask: u64) -> Pred {
-    p.wrapping_mul(0xff51_afd7_ed55_8ccd)
-        ^ mask.wrapping_mul(0xc4ce_b9fe_1a85_ec53)
-        ^ MAGIC_SALT
+    p.wrapping_mul(0xff51_afd7_ed55_8ccd) ^ mask.wrapping_mul(0xc4ce_b9fe_1a85_ec53) ^ MAGIC_SALT
 }
 
 /// Bitmask of the argument positions bound given the currently-bound variables
@@ -70,14 +68,14 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
     let goal_mask = adornment(goal_args, &HashSet::new());
 
     let mut out = Program {
-        rules:    Vec::new(),
-        edb:      prog.edb.clone(),
+        rules: Vec::new(),
+        edb: prog.edb.clone(),
         edb_sids: prog.edb_sids.clone(),
         // EGDs / builtin closures / rigid symbols ride along unchanged: the
         // magic rewrite narrows DEMAND, not the constraint semantics.
-        egds:     prog.egds.clone(),
+        egds: prog.egds.clone(),
         builtin_transitive: prog.builtin_transitive.clone(),
-        rigid:    prog.rigid.clone(),
+        rigid: prog.rigid.clone(),
         instance_pred: prog.instance_pred,
     };
 
@@ -102,7 +100,10 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
             continue;
         }
         if mtrace {
-            eprintln!("MAGIC {:#x} = magic({p:#x}, {pmask:#b})", magic_pred(p, pmask));
+            eprintln!(
+                "MAGIC {:#x} = magic({p:#x}, {pmask:#b})",
+                magic_pred(p, pmask)
+            );
         }
         for rule in prog.rules.iter().filter(|r| r.head.pred == p) {
             // Bound variables from the head's bound positions.
@@ -114,7 +115,10 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
                     }
                 }
             }
-            let magic_head = Atom { pred: magic_pred(p, pmask), args: bound_args(&rule.head.args, pmask) };
+            let magic_head = Atom {
+                pred: magic_pred(p, pmask),
+                args: bound_args(&rule.head.args, pmask),
+            };
 
             // BOUND-FIRST SIPS: order the body greedily so each placed
             // literal has as many bound seats as possible given the head's
@@ -144,38 +148,47 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
                     // under a ground goal must probe `instance(subj, X)`
                     // BEFORE `subclass(X, anc)`, or the demand explodes to
                     // subj × descendants(anc).
-                    let score = |li: usize| -> Option<(bool, usize, bool, std::cmp::Reverse<usize>)> {
-                        let lit = &rule.body[li];
-                        let seat_bound: Vec<bool> = lit
-                            .atom
-                            .args
-                            .iter()
-                            .map(|a| match a {
-                                DTerm::Const(_) => true,
-                                DTerm::Var(v) => b.contains(v),
-                            })
-                            .collect();
-                        let n = seat_bound.iter().filter(|x| **x).count();
-                        if lit.negated && n < lit.atom.args.len() {
-                            return None; // negated: only when fully bound
-                        }
-                        let builtin_right_only = prog.builtin_transitive.contains_key(&lit.atom.pred)
-                            && seat_bound.len() == 2
-                            && !seat_bound[0]
-                            && seat_bound[1];
-                        // Extension estimate: EDB size for extensional
-                        // relations; an IDB relation's extension is unknown
-                        // and potentially huge — never prefer it on size
-                        // (an empty-EDB derived relation placed first would
-                        // be demanded with an all-free adornment, deriving
-                        // it wholesale).
-                        let ext = if idb.contains(&lit.atom.pred) {
-                            usize::MAX
-                        } else {
-                            prog.edb.get(&lit.atom.pred).map_or(usize::MAX, HashSet::len)
+                    let score =
+                        |li: usize| -> Option<(bool, usize, bool, std::cmp::Reverse<usize>)> {
+                            let lit = &rule.body[li];
+                            let seat_bound: Vec<bool> = lit
+                                .atom
+                                .args
+                                .iter()
+                                .map(|a| match a {
+                                    DTerm::Const(_) => true,
+                                    DTerm::Var(v) => b.contains(v),
+                                })
+                                .collect();
+                            let n = seat_bound.iter().filter(|x| **x).count();
+                            if lit.negated && n < lit.atom.args.len() {
+                                return None; // negated: only when fully bound
+                            }
+                            let builtin_right_only =
+                                prog.builtin_transitive.contains_key(&lit.atom.pred)
+                                    && seat_bound.len() == 2
+                                    && !seat_bound[0]
+                                    && seat_bound[1];
+                            // Extension estimate: EDB size for extensional
+                            // relations; an IDB relation's extension is unknown
+                            // and potentially huge — never prefer it on size
+                            // (an empty-EDB derived relation placed first would
+                            // be demanded with an all-free adornment, deriving
+                            // it wholesale).
+                            let ext = if idb.contains(&lit.atom.pred) {
+                                usize::MAX
+                            } else {
+                                prog.edb
+                                    .get(&lit.atom.pred)
+                                    .map_or(usize::MAX, HashSet::len)
+                            };
+                            Some((
+                                n == seat_bound.len(),
+                                n,
+                                !builtin_right_only,
+                                std::cmp::Reverse(ext),
+                            ))
                         };
-                        Some((n == seat_bound.len(), n, !builtin_right_only, std::cmp::Reverse(ext)))
-                    };
                     let pick = remaining
                         .iter()
                         .enumerate()
@@ -196,7 +209,10 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
 
             // Adorned rule: head :- magic_head, body (in SIPS order)…
             let mut new_body = Vec::with_capacity(rule.body.len() + 1);
-            new_body.push(Literal { atom: magic_head.clone(), negated: false });
+            new_body.push(Literal {
+                atom: magic_head.clone(),
+                negated: false,
+            });
 
             // Each IDB body literal gets a magic rule from the head's magic
             // plus the literals PLACED before it (the SIPS prefix).
@@ -205,15 +221,21 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
                 if !lit.negated && idb.contains(&lit.atom.pred) {
                     let qmask = adornment(&lit.atom.args, &bound);
                     let mut mbody = Vec::with_capacity(j + 1);
-                    mbody.push(Literal { atom: magic_head.clone(), negated: false });
+                    mbody.push(Literal {
+                        atom: magic_head.clone(),
+                        negated: false,
+                    });
                     mbody.extend(order[..j].iter().map(|&pi| rule.body[pi].clone()));
                     // Magic rules are demand bookkeeping, not entailment
                     // steps — they carry no citation of their own (their
                     // matched prefix facts still cite through `parents`).
                     out.rules.push(Rule {
-                        head: Atom { pred: magic_pred(lit.atom.pred, qmask), args: bound_args(&lit.atom.args, qmask) },
+                        head: Atom {
+                            pred: magic_pred(lit.atom.pred, qmask),
+                            args: bound_args(&lit.atom.args, qmask),
+                        },
                         body: mbody,
-                        sid:  None,
+                        sid: None,
                     });
                     work.push((lit.atom.pred, qmask));
                 }
@@ -227,7 +249,11 @@ pub(crate) fn magic_rewrite(prog: &Program, goal_rel: Pred, goal_args: &[DTerm])
             }
             // The adorned rule derives the same heads as the original — it
             // keeps the original's citation.
-            out.rules.push(Rule { head: rule.head.clone(), body: new_body, sid: rule.sid });
+            out.rules.push(Rule {
+                head: rule.head.clone(),
+                body: new_body,
+                sid: rule.sid,
+            });
         }
     }
     out
@@ -238,11 +264,27 @@ mod tests {
     use super::*;
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Pred { Symbol::hash_name(n) }
-    fn atom(p: &str, a: Vec<DTerm>) -> Atom { Atom { pred: s(p), args: a } }
-    fn v(i: u32) -> DTerm { DTerm::Var(i) }
-    fn c(n: &str) -> DTerm { DTerm::Const(s(n)) }
-    fn pos(a: Atom) -> Literal { Literal { atom: a, negated: false } }
+    fn s(n: &str) -> Pred {
+        Symbol::hash_name(n)
+    }
+    fn atom(p: &str, a: Vec<DTerm>) -> Atom {
+        Atom {
+            pred: s(p),
+            args: a,
+        }
+    }
+    fn v(i: u32) -> DTerm {
+        DTerm::Var(i)
+    }
+    fn c(n: &str) -> DTerm {
+        DTerm::Const(s(n))
+    }
+    fn pos(a: Atom) -> Literal {
+        Literal {
+            atom: a,
+            negated: false,
+        }
+    }
 
     // Transitive closure restricted to the queried source: the rewritten
     // program answers `genls(b0, ?)` correctly but does not derive closure for
@@ -255,20 +297,34 @@ mod tests {
         prog.fact(s("genls"), vec![s("b1"), s("b2")]);
         prog.fact(s("genls"), vec![s("z0"), s("z1")]);
         // genls(X,Z) :- genls(X,Y), genls(Y,Z)
-        prog.rule(atom("genls", vec![v(0), v(2)]),
-                  vec![pos(atom("genls", vec![v(0), v(1)])), pos(atom("genls", vec![v(1), v(2)]))]);
+        prog.rule(
+            atom("genls", vec![v(0), v(2)]),
+            vec![
+                pos(atom("genls", vec![v(0), v(1)])),
+                pos(atom("genls", vec![v(1), v(2)])),
+            ],
+        );
 
         // Query genls(b0, ?Y): demand source b0.
         let rw = magic_rewrite(&prog, s("genls"), &[c("b0"), v(99)]);
         let m = rw.evaluate().expect("stratifiable");
         let g = m.get(&s("genls")).cloned().unwrap_or_default();
         // b0's closure derived (b0→b2 via transitivity).
-        assert!(g.contains(&vec![s("b0"), s("b2")]), "transitive answer for the queried source");
+        assert!(
+            g.contains(&vec![s("b0"), s("b2")]),
+            "transitive answer for the queried source"
+        );
         // the unrelated chain's TRANSITIVE closure is not demanded (z0→z1 is an
         // EDB fact, but z0→… needs no extension here; assert no spurious z work
         // beyond EDB by checking the magic predicate only holds b-side sources).
-        let magic = m.get(&magic_pred(s("genls"), 0b01)).cloned().unwrap_or_default();
+        let magic = m
+            .get(&magic_pred(s("genls"), 0b01))
+            .cloned()
+            .unwrap_or_default();
         assert!(magic.contains(&vec![s("b0")]));
-        assert!(!magic.contains(&vec![s("z0")]), "unrelated source not demanded");
+        assert!(
+            !magic.contains(&vec![s("z0")]),
+            "unrelated source not demanded"
+        );
     }
 }

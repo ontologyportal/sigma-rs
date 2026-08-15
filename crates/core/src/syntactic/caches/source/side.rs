@@ -50,18 +50,26 @@ pub(crate) struct SourceSide {
 impl SourceSide {
     /// Allocate the next unique inline source key (`__inline(N)__`).
     pub(crate) fn next_inline_key(&self) -> String {
-        let n = self.inline_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self
+            .inline_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         format!("__inline({n})__")
     }
 
     /// The source keys ingested under `session` (empty if unknown).
     pub(crate) fn sources_of_session(&self, session: &str) -> Vec<String> {
-        self.session_sources.get(session).map(|s| s.iter().cloned().collect()).unwrap_or_default()
+        self.session_sources
+            .get(session)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// The fingerprints a source currently contributes (its `file_hashes` set).
     pub(crate) fn fingerprints_of(&self, source_key: &str) -> Vec<u64> {
-        self.file_hashes.get(source_key).map(|s| s.iter().copied().collect()).unwrap_or_default()
+        self.file_hashes
+            .get(source_key)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Mark a source key as inline-origin (a `tell`).
@@ -87,7 +95,10 @@ impl SourceSide {
 
     /// Record a deferred (recycle-bin) removal for `source_key`.
     pub(crate) fn recycle(&self, source_key: &str, fp: u64) {
-        self.recycle.entry(source_key.to_string()).or_default().insert(fp);
+        self.recycle
+            .entry(source_key.to_string())
+            .or_default()
+            .insert(fp);
     }
 
     /// Drop a fingerprint from `source_key`'s recycle bin, called when a later
@@ -95,15 +106,23 @@ impl SourceSide {
     /// an emptied bin.
     pub(crate) fn unrecycle(&self, source_key: &str, fp: u64) {
         let now_empty = match self.recycle.get_mut(source_key) {
-            Some(mut set) => { set.remove(&fp); set.is_empty() }
+            Some(mut set) => {
+                set.remove(&fp);
+                set.is_empty()
+            }
             None => false,
         };
-        if now_empty { self.recycle.remove(source_key); }
+        if now_empty {
+            self.recycle.remove(source_key);
+        }
     }
 
     /// The fingerprints currently in `source_key`'s recycle bin.
     pub(crate) fn recycled_of(&self, source_key: &str) -> Vec<u64> {
-        self.recycle.get(source_key).map(|s| s.iter().copied().collect()).unwrap_or_default()
+        self.recycle
+            .get(source_key)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Clear `source_key`'s recycle bin (the deferred formulas were either
@@ -116,12 +135,19 @@ impl SourceSide {
     /// the source's `file_hashes`.  Returns `true` if no reference remains (the
     /// formula is now gone KB-wide).
     pub(crate) fn drop_ref(&self, source_key: &str, fp: u64) -> bool {
-        if let Some(mut set) = self.file_hashes.get_mut(source_key) { set.remove(&fp); }
+        if let Some(mut set) = self.file_hashes.get_mut(source_key) {
+            set.remove(&fp);
+        }
         let now_empty = match self.references.get_mut(&fp) {
-            Some(mut refs) => { refs.retain(|sp| sp.file.as_str() != source_key); refs.is_empty() }
+            Some(mut refs) => {
+                refs.retain(|sp| sp.file.as_str() != source_key);
+                refs.is_empty()
+            }
             None => false,
         };
-        if now_empty { self.references.remove(&fp); }
+        if now_empty {
+            self.references.remove(&fp);
+        }
         now_empty
     }
 
@@ -137,9 +163,9 @@ impl SourceSide {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SourceSideSnapshot {
     pub(super) file_hashes: HashMap<String, HashSet<u64>>,
-    pub(super) references:  HashMap<u64, HashSet<Span>>,
+    pub(super) references: HashMap<u64, HashSet<Span>>,
     /// `#[serde(default)]` so a store persisted before this field existed
     /// restores cleanly (empty — the next ingest repopulates it).
     #[serde(default)]
-    pub(super) origins:     HashMap<String, FileOrigin>,
+    pub(super) origins: HashMap<String, FileOrigin>,
 }

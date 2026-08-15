@@ -27,9 +27,9 @@ use crate::parse::ast::{AstNode, Role, Source};
 use crate::parse::doc::DocItem;
 use crate::parse::szs::parse_szs;
 
-use super::proof::{KifProofStep, proof_steps_to_kif_ast};
+use super::proof::{proof_steps_to_kif_ast, KifProofStep};
 use super::result::{Binding, ProverMode, ProverStatus};
-use super::tptp_proof::{ProofStep, TptpProofProcessor, kif_proof_inputs};
+use super::tptp_proof::{kif_proof_inputs, ProofStep, TptpProofProcessor};
 
 // -- Status classification -----------------------------------------------------
 
@@ -89,8 +89,9 @@ pub(crate) fn determine_status(
         },
         ProverMode::CheckConsistency => match status_word {
             Some("Satisfiable") | Some("CounterSatisfiable") => ProverStatus::Consistent,
-            Some("Unsatisfiable") | Some("Theorem") | Some("ContradictoryAxioms") =>
-                ProverStatus::Inconsistent,
+            Some("Unsatisfiable") | Some("Theorem") | Some("ContradictoryAxioms") => {
+                ProverStatus::Inconsistent
+            }
             _ if is_timeout(output) => ProverStatus::Timeout,
             _ => ProverStatus::Unknown,
         },
@@ -118,15 +119,15 @@ pub(crate) fn szs_status_word(doc: &[DocItem]) -> Option<&str> {
 /// string comparisons against these exact words).
 fn role_str(role: &Role) -> &str {
     match role {
-        Role::Axiom             => "axiom",
-        Role::Hypothesis        => "hypothesis",
-        Role::Definition        => "definition",
-        Role::Lemma             => "lemma",
-        Role::Conjecture        => "conjecture",
+        Role::Axiom => "axiom",
+        Role::Hypothesis => "hypothesis",
+        Role::Definition => "definition",
+        Role::Lemma => "lemma",
+        Role::Conjecture => "conjecture",
         Role::NegatedConjecture => "negated_conjecture",
-        Role::Plain             => "plain",
-        Role::Type              => "type",
-        Role::Other(word)       => word,
+        Role::Plain => "plain",
+        Role::Type => "type",
+        Role::Other(word) => word,
     }
 }
 
@@ -147,9 +148,15 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
     doc.iter()
         .filter_map(DocItem::as_stmt)
         .filter_map(|node| match node {
-            AstNode::Annotated { role, name: Some(id), source, formula, .. } => Some(ProofStep {
-                id:      id.clone(),
-                role:    role_str(role).to_string(),
+            AstNode::Annotated {
+                role,
+                name: Some(id),
+                source,
+                formula,
+                ..
+            } => Some(ProofStep {
+                id: id.clone(),
+                role: role_str(role).to_string(),
                 formula: crate::parse::tptp::dis::tptp_formula(formula),
                 parents: match source {
                     Some(Source::Inference { parents, .. }) => parents.clone(),
@@ -162,7 +169,9 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
                 // downstream (matching `ProofStep::source_name`'s documented
                 // contract), not read as a literal axiom name "unknown".
                 source_name: match source {
-                    Some(Source::Input { name: Some(n), .. }) if n.starts_with("kb_") => Some(n.clone()),
+                    Some(Source::Input { name: Some(n), .. }) if n.starts_with("kb_") => {
+                        Some(n.clone())
+                    }
                     _ => None,
                 },
             }),
@@ -181,8 +190,8 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
 /// saturation prover's proofs use, so callers can render both through one
 /// code path (`render_graphviz`, `render_proof_prose_with`, …).
 pub struct VampireProofResult {
-    pub status:   ProverStatus,
-    pub proof:    Vec<KifProofStep>,
+    pub status: ProverStatus,
+    pub proof: Vec<KifProofStep>,
     pub bindings: Vec<Binding>,
 }
 
@@ -233,14 +242,20 @@ pub fn parse_vampire_result(raw_output: &str, mode: ProverMode) -> VampireProofR
         let inputs: Vec<_> = inputs
             .into_iter()
             .zip(formulas)
-            .map(|((_, role, premises, source_name), formula)| (formula, role, premises, source_name))
+            .map(|((_, role, premises, source_name), formula)| {
+                (formula, role, premises, source_name)
+            })
             .collect();
         proof_steps_to_kif_ast(&inputs)
     } else {
         Vec::new()
     };
 
-    VampireProofResult { status, proof, bindings }
+    VampireProofResult {
+        status,
+        proof,
+        bindings,
+    }
 }
 
 /// The parsed formula `AstNode` of each named statement in `doc`, in the same
@@ -250,7 +265,11 @@ fn docitems_to_ast_formulas(doc: &[DocItem]) -> Vec<AstNode> {
     doc.iter()
         .filter_map(DocItem::as_stmt)
         .filter_map(|node| match node {
-            AstNode::Annotated { name: Some(_), formula, .. } => Some((**formula).clone()),
+            AstNode::Annotated {
+                name: Some(_),
+                formula,
+                ..
+            } => Some((**formula).clone()),
             _ => None,
         })
         .collect()

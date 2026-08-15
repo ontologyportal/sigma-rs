@@ -23,7 +23,9 @@ use smallvec::SmallVec;
 
 use crate::parse::OpKind;
 use crate::syntactic::SyntacticLayer;
-use crate::types::{Element, ElementVec, InternedSym, Literal, Sentence, SentenceId, Symbol, SymbolId};
+use crate::types::{
+    Element, ElementVec, InternedSym, Literal, Sentence, SentenceId, Symbol, SymbolId,
+};
 
 use super::parked;
 
@@ -41,7 +43,7 @@ pub(crate) struct ClauseKey(pub u64);
 /// A signed literal: polarity + atom reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct PLit {
-    pub(crate) pos:  bool,
+    pub(crate) pos: bool,
     pub(crate) atom: AtomId,
 }
 
@@ -50,8 +52,8 @@ pub(crate) struct PLit {
 /// in first occurrence over that order, so `key` is α-invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PClause {
-    pub(crate) key:   ClauseKey,
-    pub(crate) lits:  SmallVec<[PLit; 4]>,
+    pub(crate) key: ClauseKey,
+    pub(crate) lits: SmallVec<[PLit; 4]>,
     /// Number of distinct variables (canonical rename count) — the
     /// rename-apart offset basis for unification (next phase).
     pub(crate) nvars: u32,
@@ -116,7 +118,10 @@ impl AtomTable {
             Term::App(elems) => elems.iter().map(|e| self.element_of(e)).collect(),
             other => std::iter::once(self.element_of(other)).collect(),
         };
-        let sent = Sentence { parent: Vec::new(), elements };
+        let sent = Sentence {
+            parent: Vec::new(),
+            elements,
+        };
         let id = sent.hash();
         // Read-first: `.entry()` always takes the shard's write lock, even
         // when the id already exists (the common case — the same subterm
@@ -136,17 +141,17 @@ impl AtomTable {
     fn element_of(&self, t: &Term) -> Element {
         match t {
             Term::Var(id) => Element::Variable {
-                id:        *id,
+                id: *id,
                 // Canonical atoms carry canonical ids (`V0..Vn`, see
                 // `canon`); the display name is reconstructed on demand.
-                name:      format!("V{:x}", id),
-                is_row:    false,
+                name: format!("V{:x}", id),
+                is_row: false,
                 var_index: 0,
             },
-            Term::Sym(s)   => Element::Symbol(InternedSym(s.clone())),
-            Term::Lit(l)   => Element::Literal(l.clone()),
-            Term::Op(op)   => Element::Op(op.clone()),
-            Term::App(_)   => Element::Sub(self.intern_atom(t)),
+            Term::Sym(s) => Element::Symbol(InternedSym(s.clone())),
+            Term::Lit(l) => Element::Literal(l.clone()),
+            Term::Op(op) => Element::Op(op.clone()),
+            Term::App(_) => Element::Sub(self.intern_atom(t)),
         }
     }
 
@@ -162,7 +167,10 @@ impl AtomTable {
             Term::App(elems) => elems.iter().map(|e| self.element_of_slot(e)).collect(),
             other => std::iter::once(self.element_of_slot(other)).collect(),
         };
-        let sent = Sentence { parent: Vec::new(), elements };
+        let sent = Sentence {
+            parent: Vec::new(),
+            elements,
+        };
         let id = sent.hash();
         // See `intern_atom`'s read-first comment.
         if !self.map.contains_key(&id) {
@@ -180,15 +188,15 @@ impl AtomTable {
                 let id = super::canon::canonical_var_cached(*slot as usize);
                 Element::Variable {
                     id,
-                    name:      format!("V{:x}", id),
-                    is_row:    false,
+                    name: format!("V{:x}", id),
+                    is_row: false,
                     var_index: 0,
                 }
             }
-            Term::Sym(s)   => Element::Symbol(InternedSym(s.clone())),
-            Term::Lit(l)   => Element::Literal(l.clone()),
-            Term::Op(op)   => Element::Op(op.clone()),
-            Term::App(_)   => Element::Sub(self.intern_slot_atom(t)),
+            Term::Sym(s) => Element::Symbol(InternedSym(s.clone())),
+            Term::Lit(l) => Element::Literal(l.clone()),
+            Term::Op(op) => Element::Op(op.clone()),
+            Term::App(_) => Element::Sub(self.intern_slot_atom(t)),
         }
     }
 
@@ -223,10 +231,10 @@ impl AtomTable {
         for el in sent.elements.iter() {
             elems.push(match el {
                 Element::Variable { id, .. } => Term::Var(*id),
-                Element::Symbol(s)           => Term::Sym(s.0.clone()),
-                Element::Literal(l)          => Term::Lit(l.clone()),
-                Element::Op(op)              => Term::Op(op.clone()),
-                Element::Sub(sid)            => self.term_of(*sid, syn)?,
+                Element::Symbol(s) => Term::Sym(s.0.clone()),
+                Element::Literal(l) => Term::Lit(l.clone()),
+                Element::Op(op) => Term::Op(op.clone()),
+                Element::Sub(sid) => self.term_of(*sid, syn)?,
             });
         }
         Some(Term::App(elems))
@@ -254,7 +262,9 @@ use crate::syntactic::sentence::ElementHasher;
 /// them — use on pre-canonicalization terms (the ground probes) or any
 /// term whose `Var` payload is already the id to store.
 pub(crate) fn atom_content_id(t: &Term) -> AtomId {
-    fn raw(v: SymbolId) -> SymbolId { v }
+    fn raw(v: SymbolId) -> SymbolId {
+        v
+    }
     match t {
         Term::App(elems) => hash_elements(elems, raw),
         other => {
@@ -291,10 +301,10 @@ fn hash_elements(elems: &[Term], vmap: fn(SymbolId) -> SymbolId) -> u64 {
 
 fn hash_element(t: &Term, h: &mut ElementHasher, vmap: fn(SymbolId) -> SymbolId) {
     match t {
-        Term::Var(v)   => h.variable(vmap(*v), false),
-        Term::Sym(s)   => h.symbol(s.id()),
-        Term::Lit(l)   => h.literal(l),
-        Term::Op(op)   => h.op(op),
-        Term::App(el)  => h.sub(hash_elements(el, vmap)),
+        Term::Var(v) => h.variable(vmap(*v), false),
+        Term::Sym(s) => h.symbol(s.id()),
+        Term::Lit(l) => h.literal(l),
+        Term::Op(op) => h.op(op),
+        Term::App(el) => h.sub(hash_elements(el, vmap)),
     }
 }

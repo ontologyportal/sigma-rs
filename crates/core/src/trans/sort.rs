@@ -2,7 +2,10 @@
 //
 // Sub-module handling sort generation from SUMO type constraints
 
-use crate::{SymbolId, trans::{TranslationLayer, ir::Sort as IrSort}};
+use crate::{
+    trans::{ir::Sort as IrSort, TranslationLayer},
+    SymbolId,
+};
 
 impl TranslationLayer {
     /// Map a [`SymbolId`] to its most specific primitive [`Sort`].
@@ -10,8 +13,14 @@ impl TranslationLayer {
     /// Returns `Sort::Individual` for any symbol not found in the
     /// pre-built numeric sort map.  Sentinel `u64::MAX` → `Sort::Individual`.
     pub(crate) fn sort_for_id(&self, class_id: SymbolId) -> Sort {
-        if class_id == u64::MAX { return Sort::Individual; }
-        self.collapse_numeric(self.numeric_sorts.get(&class_id).unwrap_or(Sort::Individual))
+        if class_id == u64::MAX {
+            return Sort::Individual;
+        }
+        self.collapse_numeric(
+            self.numeric_sorts
+                .get(&class_id)
+                .unwrap_or(Sort::Individual),
+        )
     }
 
     /// The numeric [`Sort`] a *value* of class `class_id` carries: a
@@ -62,8 +71,8 @@ pub(crate) fn numeric_literal_class(n: &str) -> &'static str {
     use crate::trans::caches::numeric_sorts::{INTEGER_CLASS, RATIONAL_CLASS, REAL_CLASS};
     match numeric_literal_sort(n) {
         Sort::Rational => RATIONAL_CLASS,
-        Sort::Real     => REAL_CLASS,
-        _              => INTEGER_CLASS,
+        Sort::Real => REAL_CLASS,
+        _ => INTEGER_CLASS,
     }
 }
 
@@ -82,13 +91,14 @@ pub(crate) fn numeric_literal_class(n: &str) -> &'static str {
 /// `$o` (formula/Boolean sort) is NOT in this enum. It is a TPTP-specific
 /// concept with no semantic meaning and is emitted as a literal string inside
 /// `tptp/tff.rs` only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
-          serde::Serialize, serde::Deserialize, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
+)]
 pub enum Sort {
     Individual = 1,
-    Real       = 2,
-    Rational   = 3,
-    Integer    = 4,
+    Real = 2,
+    Rational = 3,
+    Integer = 4,
 }
 
 impl Sort {
@@ -103,9 +113,9 @@ impl Sort {
     pub fn tptp(self) -> &'static str {
         match self {
             Sort::Individual => "$i",
-            Sort::Real       => "$real",
-            Sort::Rational   => "$rat",
-            Sort::Integer    => "$int",
+            Sort::Real => "$real",
+            Sort::Rational => "$rat",
+            Sort::Integer => "$int",
         }
     }
 }

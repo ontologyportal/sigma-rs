@@ -11,24 +11,22 @@
 // document text (cheap; the LSP already holds the rope) and walk
 // the root nodes, classifying heads through the KB.
 
-use lsp_types::{
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolKind,
-};
-use sigmakee_rs_sdk::{parse_document, AstNode, Parser};
+use lsp_types::{DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolKind};
 use sigmakee_rs_sdk::AstKif;
+use sigmakee_rs_sdk::{parse_document, AstNode, Parser};
 
 use crate::conv::{span_to_range, uri_to_tag};
 use crate::state::GlobalState;
 
 pub fn handle_document_symbol(
-    state:  &GlobalState,
+    state: &GlobalState,
     params: DocumentSymbolParams,
 ) -> Option<DocumentSymbolResponse> {
     let uri = params.text_document.uri;
     let tag = uri_to_tag(&uri);
 
     let docs = state.docs.read().ok()?;
-    let doc  = docs.get(&uri)?;
+    let doc = docs.get(&uri)?;
 
     let text = doc.rope.to_string();
     let parsed = parse_document(tag, text, Parser::Kif);
@@ -44,30 +42,32 @@ pub fn handle_document_symbol(
         // directives (TQ harness keys etc.) have no symbol to show.
         let Some(node) = item.as_stmt() else { continue };
         let span = node.span();
-        if span.is_synthetic() { continue; }
+        if span.is_synthetic() {
+            continue;
+        }
         let range = span_to_range(&doc.rope, span);
         // Selection range: the head token's span when contained in the
         // sentence range (VSCode rejects the response otherwise).
         let sel_range = head_node(node)
             .map(AstNode::span)
-            .filter(|sp| !sp.is_synthetic()
-                      && sp.offset     >= span.offset
-                      && sp.end_offset <= span.end_offset)
+            .filter(|sp| {
+                !sp.is_synthetic() && sp.offset >= span.offset && sp.end_offset <= span.end_offset
+            })
             .map(|sp| span_to_range(&doc.rope, sp))
             .unwrap_or(range);
 
         let (name, detail, kind) = describe_node(kb, node);
 
-        #[allow(deprecated)]  // `deprecated` field deprecated; must still be passed
+        #[allow(deprecated)] // `deprecated` field deprecated; must still be passed
         symbols.push(DocumentSymbol {
             name,
             detail,
             kind,
-            tags:            None,
-            deprecated:      None,
+            tags: None,
+            deprecated: None,
             range,
             selection_range: sel_range,
-            children:        None,
+            children: None,
         });
     }
 
@@ -87,7 +87,7 @@ fn head_node(node: &AstNode) -> Option<&AstNode> {
 /// - Detail: a short preview of the rest of the sentence.
 /// - Kind: maps the head through the KB's classification caches.
 fn describe_node(
-    kb:   &sigmakee_rs_sdk::KnowledgeBase,
+    kb: &sigmakee_rs_sdk::KnowledgeBase,
     node: &AstNode,
 ) -> (String, Option<String>, SymbolKind) {
     let AstNode::List { elements, .. } = node else {
@@ -97,10 +97,10 @@ fn describe_node(
     let (name, kind) = match elements.first() {
         Some(AstNode::Symbol { name, .. }) => {
             let kind = match kb.symbol_id(name) {
-                Some(id) if kb.is_class(id)    => SymbolKind::CLASS,
+                Some(id) if kb.is_class(id) => SymbolKind::CLASS,
                 Some(id) if kb.is_function(id) => SymbolKind::FUNCTION,
                 Some(id) if kb.is_relation(id) => SymbolKind::INTERFACE,
-                _                              => SymbolKind::VARIABLE,
+                _ => SymbolKind::VARIABLE,
             };
             (name.clone(), kind)
         }
@@ -113,7 +113,9 @@ fn describe_node(
         let mut parts = Vec::new();
         for el in &elements[1..] {
             parts.push(el.flat());
-            if parts.join(" ").len() > 40 { break; }
+            if parts.join(" ").len() > 40 {
+                break;
+            }
         }
         let joined = parts.join(" ");
         let trunc = if joined.chars().count() > 60 {
@@ -123,7 +125,11 @@ fn describe_node(
         } else {
             joined
         };
-        if trunc.is_empty() { None } else { Some(trunc) }
+        if trunc.is_empty() {
+            None
+        } else {
+            Some(trunc)
+        }
     } else {
         None
     };

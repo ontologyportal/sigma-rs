@@ -9,7 +9,11 @@ compile_error!(
      Remove 'ask' from the features list for wasm builds."
 );
 
-#[cfg(all(feature = "parallel", target_arch = "wasm32", not(target_feature = "atomics")))]
+#[cfg(all(
+    feature = "parallel",
+    target_arch = "wasm32",
+    not(target_feature = "atomics")
+))]
 compile_error!(
     "The 'parallel' feature requires a threads-enabled wasm build (atomics \
      and bulk-memory target features via -Zbuild-std, as used by \
@@ -20,17 +24,17 @@ compile_error!(
 
 // -- Module declarations ------------------------------------------------------
 
-pub(crate) mod clock;
-pub(crate) mod parse;
-pub(crate) mod gf64;
-pub(crate) mod diagnostic;
-pub(crate) mod types;
-pub(crate) mod layer;
 pub(crate) mod cache;
+pub(crate) mod clock;
+pub(crate) mod diagnostic;
+pub(crate) mod gf64;
+pub(crate) mod layer;
 pub(crate) mod numeric;
+pub(crate) mod parse;
 pub mod progress;
-pub(crate) mod syntactic;
 pub(crate) mod semantics;
+pub(crate) mod syntactic;
+pub(crate) mod types;
 
 pub(crate) mod trans;
 
@@ -67,13 +71,13 @@ pub use crate::prover::ExternalProverLayer;
 #[cfg(feature = "ask")]
 pub use crate::prover::ExternalOpts;
 
+/// Native-prover options (budget, step caps, `Strategy`).
+#[cfg(feature = "native-prover")]
+pub use crate::prover::saturate::prover::NativeOpts;
 /// One portfolio lane's worth of search-shaping knobs. Serializable, so sweep /
 /// portfolio specs can live in JSON.
 #[cfg(feature = "native-prover")]
 pub use crate::prover::saturate::strategy::Strategy;
-/// Native-prover options (budget, step caps, `Strategy`).
-#[cfg(feature = "native-prover")]
-pub use crate::prover::saturate::prover::NativeOpts;
 
 // -- Public re-exports --------------------------------------------------------
 
@@ -84,7 +88,12 @@ pub use crate::prover::saturate::prover::NativeOpts;
 /// [`KnowledgeBase`]: staging syntactically broken content reads as "the file
 /// is now empty" and retracts every sentence the file previously contributed.
 pub fn kif_parse_diagnostics(text: &str, file: &str) -> Vec<Diagnostic> {
-    parse::Parser::Kif.parse(text, file).1.iter().map(|(_, e)| e.to_diagnostic()).collect()
+    parse::Parser::Kif
+        .parse(text, file)
+        .1
+        .iter()
+        .map(|(_, e)| e.to_diagnostic())
+        .collect()
 }
 
 #[cfg(feature = "ask")]
@@ -92,37 +101,26 @@ pub use kb::natural_lang::RenderReport;
 
 pub use diagnostic::{Diagnostic, DiagnosticSource, RelatedInfo, Severity, ToDiagnostic};
 pub use types::{
-    SymbolId, SentenceId,
-    Element, Literal, Sentence,
-    Occurrence, OccurrenceKind,
-    OpKind,
-    SourceFile, FileOrigin, GitProvenance, LocalProvenance, hash_file_contents,
+    hash_file_contents, Element, FileOrigin, GitProvenance, Literal, LocalProvenance, Occurrence,
+    OccurrenceKind, OpKind, Sentence, SentenceId, SourceFile, SymbolId,
 };
 
-pub use semantics::types::{TaxDirection, TaxRelation};
 pub use semantics::types::DocEntry;
+pub use semantics::types::{TaxDirection, TaxRelation};
 
-pub use kb::KnowledgeBase;
 pub use cache::CacheConfig;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
 pub use kb::search::{SearchHit, SearchOpts, SearchSource};
-pub use syntactic::position::ElementHit;
-pub use parse::{
-    AstNode, Parser, ParsedDocument, parse_document,sentence_fingerprint,
-    Span
-};
-pub use parse::kif::dis::AstKif;
-pub use parse::kif::{Token, TokenKind, tokenize as tokenize_kif};
+pub use kb::KnowledgeBase;
 pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
+pub use parse::kif::dis::AstKif;
+pub use parse::kif::{tokenize as tokenize_kif, Token, TokenKind};
 pub use parse::tptp::syntax::detect_tptp_lang;
+pub use parse::{parse_document, sentence_fingerprint, AstNode, ParsedDocument, Parser, Span};
+pub use syntactic::position::ElementHit;
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::{
-    ProverStatus,
-    ProverResult,
-    Binding,
-    ProverTimings,
-};
+pub use prover::{Binding, ProverResult, ProverStatus, ProverTimings};
 // `ProverMode` is a plain data enum in `prover::result` with no
 // prover-backend dependency (see its doc comment for why it lives there
 // rather than under `external::backends`), but it is reached through the
@@ -138,23 +136,23 @@ pub use prover::ProverMode;
 pub use prover::vampire_proof::{parse_vampire_result, VampireProofResult};
 // `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they
 // live in the `ask`-only `external` module, absent on native/wasm builds.
-#[cfg(feature = "ask")]
-pub use prover::ProverRunner;
-#[cfg(feature = "ask")]
-pub use prover::Prover;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::proof::{emit_proof, render_graphviz, KifProofStep, IrProofStep};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::CommonProverOpts;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::{ProvingLayer, Conjecture};
-pub use parse::tq::{TestCase, parse_test_content};
+pub use parse::tq::{parse_test_content, TestCase};
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use prover::axiom_source::{AxiomSource, AxiomSourceIndex};
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use prover::proof::{emit_proof, render_graphviz, IrProofStep, KifProofStep};
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use prover::CommonProverOpts;
+#[cfg(feature = "ask")]
+pub use prover::Prover;
+#[cfg(feature = "ask")]
+pub use prover::ProverRunner;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use prover::{Conjecture, ProvingLayer};
 
 pub use syntactic::sine::{SineIndex, SineParams};
 
-pub use progress::{LogLevel, PhaseGuard, ProgressEvent, ProgressSink, DynSink, ProveCtx};
+pub use progress::{DynSink, LogLevel, PhaseGuard, ProgressEvent, ProgressSink, ProveCtx};
 
 pub use kb::ingest::{IngestResult, PromoteError};
 pub type TellResult = IngestResult;
@@ -177,9 +175,9 @@ pub mod test {
     #[derive(Debug)]
     pub struct SyntheticReport {
         /// Total number of synthetic sentences allocated.
-        pub synthetic_count:        usize,
+        pub synthetic_count: usize,
         /// Number of root SIDs in `TranslationLayer::suppressed`.
-        pub suppressed_count:       usize,
+        pub suppressed_count: usize,
         /// True when at least one non-suppressed synthetic implication
         /// has `(greaterThan ?V ...)` as a conjunct in its antecedent.
         pub has_greater_than_guard: bool,
@@ -191,17 +189,24 @@ pub mod test {
     /// for any `(greaterThan ?V ...)` atom.
     pub fn peek_synthetic_implications(kb: &KnowledgeBase) -> SyntheticReport {
         let trans = kb.translation();
-        let syn   = &trans.semantic.syntactic;
+        let syn = &trans.semantic.syntactic;
         let greater_than_id = syn.sym_id("greaterThan");
 
         let mut has_guard = false;
         if let Some(gt_id) = greater_than_id {
             for (&sid, _) in syn.synthetic_origin.iter() {
-                if trans.suppressed.read().unwrap().contains(&sid) { continue; }
-                let Some(sent) = syn.sentence(sid) else { continue };
-                if !matches!(sent.elements.first(),
-                    Some(Element::Op(OpKind::Implies))) { continue; }
-                let Some(Element::Sub(ant_sid)) = sent.elements.get(1) else { continue };
+                if trans.suppressed.read().unwrap().contains(&sid) {
+                    continue;
+                }
+                let Some(sent) = syn.sentence(sid) else {
+                    continue;
+                };
+                if !matches!(sent.elements.first(), Some(Element::Op(OpKind::Implies))) {
+                    continue;
+                }
+                let Some(Element::Sub(ant_sid)) = sent.elements.get(1) else {
+                    continue;
+                };
                 // If the antecedent is an `(and ...)`, scan its conjuncts;
                 // otherwise treat it as the single conjunct.
                 let ant = syn.sentence(*ant_sid).expect("ant exists");
@@ -211,7 +216,9 @@ pub mod test {
                 };
                 for c in conjuncts {
                     let Element::Sub(csid) = c else { continue };
-                    let Some(cs) = syn.sentence(*csid) else { continue };
+                    let Some(cs) = syn.sentence(*csid) else {
+                        continue;
+                    };
                     if matches!(cs.elements.first(),
                         Some(Element::Symbol(sym)) if sym.id() == gt_id)
                     {
@@ -219,15 +226,16 @@ pub mod test {
                         break;
                     }
                 }
-                if has_guard { break; }
+                if has_guard {
+                    break;
+                }
             }
         }
 
         SyntheticReport {
-            synthetic_count:        syn.synthetic_origin.len(),
-            suppressed_count:       trans.suppressed.read().unwrap().len(),
+            synthetic_count: syn.synthetic_origin.len(),
+            suppressed_count: trans.suppressed.read().unwrap().len(),
             has_greater_than_guard: has_guard,
         }
     }
 }
-

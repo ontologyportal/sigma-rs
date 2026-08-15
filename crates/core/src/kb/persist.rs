@@ -6,20 +6,19 @@
 //! provenance, symbols, sessions/axiom status, and the eager indices/taxonomy —
 //! round-trips through the one backend-agnostic seam.
 
-
-#[cfg(feature = "persist")]
-use crate::SentenceId;
-#[cfg(any(feature = "snapshot", feature = "persist"))]
-use crate::persist::PersistenceEngine;
+use crate::layer::TopLayer;
 #[cfg(feature = "persist")]
 use crate::persist::LmdbEnv;
+#[cfg(any(feature = "snapshot", feature = "persist"))]
+use crate::persist::PersistenceEngine;
 #[cfg(feature = "persist")]
 use crate::progress::{DynSink, SinkGuard};
 #[cfg(any(feature = "snapshot", feature = "persist"))]
 use crate::semantics::SemanticLayer;
 #[cfg(any(feature = "snapshot", feature = "persist"))]
 use crate::Diagnostic;
-use crate::layer::TopLayer;
+#[cfg(feature = "persist")]
+use crate::SentenceId;
 
 use super::KnowledgeBase;
 
@@ -30,10 +29,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     /// semantics), so a DB written under one top layer opens cleanly
     /// under another.
     #[cfg(feature = "persist")]
-    pub fn open(
-        path: &std::path::Path,
-        sink: Option<DynSink>,
-    ) -> Result<Self, Diagnostic> {
+    pub fn open(path: &std::path::Path, sink: Option<DynSink>) -> Result<Self, Diagnostic> {
         use crate::syntactic::SyntacticLayer;
 
         let _sink_guard = SinkGuard::install(sink.clone());
@@ -78,15 +74,17 @@ impl<L: TopLayer> KnowledgeBase<L> {
 
         // `fresh_config_clone` (not `from_semantic`) carries layer config that
         // isn't a cache — notably a configured external prover backend.
-        let layer = self.layer.fresh_config_clone(SemanticLayer::new(SyntacticLayer::default()));
+        let layer = self
+            .layer
+            .fresh_config_clone(SemanticLayer::new(SyntacticLayer::default()));
         layer.restore_caches_from(&backend)?;
         layer.initialize_caches();
 
         // Carry the KB-level fields that aren't layer caches.
         let mut kb = Self::from_layer(layer);
-        kb.sessions            = self.sessions.clone();
+        kb.sessions = self.sessions.clone();
         kb.syntax_fingerprints = self.syntax_fingerprints.clone();
-        kb.progress            = self.progress.clone();
+        kb.progress = self.progress.clone();
         Ok(kb)
     }
 
@@ -143,7 +141,9 @@ impl<L: TopLayer> KnowledgeBase<L> {
     #[cfg(feature = "persist")]
     pub fn persist(&self) -> Result<(), Diagnostic> {
         with_guard!(self);
-        let Some(env) = &self.db else { return Ok(()); };
+        let Some(env) = &self.db else {
+            return Ok(());
+        };
         let mut backend = PersistenceEngine::lmdb(env);
         profile_span!(self, "persist: snapshot caches to LMDB");
         self.layer.snapshot_caches(&mut backend)
@@ -155,17 +155,16 @@ impl<L: TopLayer> KnowledgeBase<L> {
     pub fn persist_reconcile_diff(
         &self,
         _removed_sids: &[SentenceId],
-        _added_sids:   &[SentenceId],
+        _added_sids: &[SentenceId],
     ) -> Result<(), Diagnostic> {
         self.persist()
     }
-
 }
 
 #[cfg(all(test, feature = "snapshot", feature = "native-prover"))]
 mod snapshot_bytes_tests {
-    use crate::ProverLayer;
     use super::KnowledgeBase;
+    use crate::ProverLayer;
 
     #[test]
     fn kb_round_trips_through_bytes() {
@@ -174,7 +173,9 @@ mod snapshot_bytes_tests {
         let mut master = KnowledgeBase::<ProverLayer>::new_native();
         let r = master.reload_kif(
             "(subclass Dog Mammal)\n(subclass Mammal Animal)\n(instance Rex Dog)",
-            &std::path::PathBuf::from("s.kif"), "s1");
+            &std::path::PathBuf::from("s.kif"),
+            "s1",
+        );
         assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
         master.make_session_axiomatic("s1").expect("promote");
         let roots_before = master.layer.semantic.syntactic.root_sids().len();
@@ -183,12 +184,17 @@ mod snapshot_bytes_tests {
         let bytes = master.snapshot_bytes().expect("snapshot_bytes");
         assert!(!bytes.is_empty(), "snapshot produced bytes");
 
-        let thawed = KnowledgeBase::<ProverLayer>::restore_from_bytes(&bytes)
-            .expect("restore_from_bytes");
-        assert_eq!(thawed.layer.semantic.syntactic.root_sids().len(), roots_before,
-            "thawed KB carries the promoted axioms");
-        assert!(thawed.layer.semantic.syntactic.sym_id("Dog").is_some(),
-            "thawed KB interns the master's symbols");
+        let thawed =
+            KnowledgeBase::<ProverLayer>::restore_from_bytes(&bytes).expect("restore_from_bytes");
+        assert_eq!(
+            thawed.layer.semantic.syntactic.root_sids().len(),
+            roots_before,
+            "thawed KB carries the promoted axioms"
+        );
+        assert!(
+            thawed.layer.semantic.syntactic.sym_id("Dog").is_some(),
+            "thawed KB interns the master's symbols"
+        );
     }
 }
 
@@ -196,12 +202,16 @@ mod snapshot_bytes_tests {
 mod round_trip_tests {
     use crate::TranslationLayer;
 
-use super::*;
+    use super::*;
     use std::collections::HashSet;
 
     fn tmp_dir(name: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("sigmakee-persist-rt-{}-{}", name, std::process::id()));
+        p.push(format!(
+            "sigmakee-persist-rt-{}-{}",
+            name,
+            std::process::id()
+        ));
         p
     }
 
@@ -218,7 +228,9 @@ use super::*;
             // source file.
             let r = kb.reload_kif(
                 "(subclass Dog Animal)\n(instance Fido Dog)",
-                &std::path::PathBuf::from("rt.kif"), "s1");
+                &std::path::PathBuf::from("rt.kif"),
+                "s1",
+            );
             assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
             #[cfg(feature = "ask")]
             kb.make_session_axiomatic("s1").expect("promote");
@@ -227,8 +239,7 @@ use super::*;
 
             let syn = &kb.layer.semantic.syntactic;
             let sub = syn.sym_id("subclass").expect("subclass interned");
-            let roots: HashSet<crate::SentenceId> =
-                syn.root_sids().into_iter().collect();
+            let roots: HashSet<crate::SentenceId> = syn.root_sids().into_iter().collect();
             let generality = syn.sine.with_ref(|idx| idx.generality(sub));
             assert_eq!(roots.len(), 2, "two roots before persist");
             assert!(generality > 0, "SInE populated before persist");
@@ -241,13 +252,18 @@ use super::*;
         {
             let kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("reopen DB");
             let syn = &kb.layer.semantic.syntactic;
-            let roots_after: HashSet<crate::SentenceId> =
-                syn.root_sids().into_iter().collect();
+            let roots_after: HashSet<crate::SentenceId> = syn.root_sids().into_iter().collect();
 
-            assert_eq!(roots_after, roots_before, "root sentences restored from LMDB");
+            assert_eq!(
+                roots_after, roots_before,
+                "root sentences restored from LMDB"
+            );
             assert_eq!(kb.sine_axiom_count(), 2, "SInE axiom count restored");
-            assert_eq!(syn.sine.with_ref(|idx| idx.generality(sub_id)), gen_before,
-                "SInE generality restored");
+            assert_eq!(
+                syn.sine.with_ref(|idx| idx.generality(sub_id)),
+                gen_before,
+                "SInE generality restored"
+            );
             for sid in &roots_before {
                 assert!(syn.sentence(*sid).is_some(), "sentence body restored");
                 assert!(syn.is_axiom(*sid), "axiom status (promoted set) restored");
@@ -264,26 +280,36 @@ use super::*;
         let dir = tmp_dir("file-origin-rt");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let origin = FileOrigin::Local(LocalProvenance { mtime_secs: 1_700_000_000, content_hash: 0xABCD1234 });
+        let origin = FileOrigin::Local(LocalProvenance {
+            mtime_secs: 1_700_000_000,
+            content_hash: 0xABCD1234,
+        });
         {
             let mut kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("open new DB");
             let sf = crate::types::SourceFile {
-                parser:   crate::Parser::Kif,
-                name:     "origin.kif".to_string(),
-                path:     std::path::PathBuf::from("origin.kif"),
-                origin:   origin.clone(),
+                parser: crate::Parser::Kif,
+                name: "origin.kif".to_string(),
+                path: std::path::PathBuf::from("origin.kif"),
+                origin: origin.clone(),
                 contents: "(subclass Cat Animal)".to_string(),
                 prebuilt: None,
             };
             let r = kb.load(sf, "s1");
             assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
-            assert_eq!(kb.file_origin("origin.kif"), Some(origin.clone()),
-                "origin recorded in-memory right after ingest");
+            assert_eq!(
+                kb.file_origin("origin.kif"),
+                Some(origin.clone()),
+                "origin recorded in-memory right after ingest"
+            );
             kb.persist().expect("persist to LMDB");
         }
 
         let kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("reopen DB");
-        assert_eq!(kb.file_origin("origin.kif"), Some(origin), "origin restored from LMDB");
+        assert_eq!(
+            kb.file_origin("origin.kif"),
+            Some(origin),
+            "origin restored from LMDB"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -296,33 +322,54 @@ use super::*;
         // Master: one promoted axiom.
         let mut master = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("open");
         let r = master.reload_kif(
-            "(subclass Dog Animal)", &std::path::PathBuf::from("m.kif"), "s1");
+            "(subclass Dog Animal)",
+            &std::path::PathBuf::from("m.kif"),
+            "s1",
+        );
         assert!(r.ok, "master ingest: {:?}", r.diagnostics);
         kb_promote(&mut master, "s1");
         assert_eq!(master.layer.semantic.syntactic.root_sids().len(), 1);
 
         // Clone carries the master's base...
         let mut clone = master.snapshot_clone().expect("snapshot_clone");
-        assert!(clone.layer.semantic.syntactic.sym_id("Dog").is_some(),
-            "clone must carry the master's promoted base");
-        assert_eq!(clone.layer.semantic.syntactic.root_sids().len(), 1,
-            "clone starts with exactly the master's axioms");
+        assert!(
+            clone.layer.semantic.syntactic.sym_id("Dog").is_some(),
+            "clone must carry the master's promoted base"
+        );
+        assert_eq!(
+            clone.layer.semantic.syntactic.root_sids().len(),
+            1,
+            "clone starts with exactly the master's axioms"
+        );
 
         // ...then mutate ONLY the clone.
         let r = clone.reload_kif(
-            "(subclass Cat Animal)", &std::path::PathBuf::from("c.kif"), "s2");
+            "(subclass Cat Animal)",
+            &std::path::PathBuf::from("c.kif"),
+            "s2",
+        );
         assert!(r.ok, "clone ingest: {:?}", r.diagnostics);
         kb_promote(&mut clone, "s2");
-        assert!(clone.layer.semantic.syntactic.sym_id("Cat").is_some(),
-            "clone gained Cat");
-        assert_eq!(clone.layer.semantic.syntactic.root_sids().len(), 2,
-            "clone now has both axioms");
+        assert!(
+            clone.layer.semantic.syntactic.sym_id("Cat").is_some(),
+            "clone gained Cat"
+        );
+        assert_eq!(
+            clone.layer.semantic.syntactic.root_sids().len(),
+            2,
+            "clone now has both axioms"
+        );
 
         // Master is untouched — no leak from the clone.
-        assert!(master.layer.semantic.syntactic.sym_id("Cat").is_none(),
-            "master must NOT see the clone's Cat");
-        assert_eq!(master.layer.semantic.syntactic.root_sids().len(), 1,
-            "master root count unchanged after cloning + mutating the clone");
+        assert!(
+            master.layer.semantic.syntactic.sym_id("Cat").is_none(),
+            "master must NOT see the clone's Cat"
+        );
+        assert_eq!(
+            master.layer.semantic.syntactic.root_sids().len(),
+            1,
+            "master root count unchanged after cloning + mutating the clone"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

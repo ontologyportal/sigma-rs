@@ -6,15 +6,15 @@
 
 use std::collections::HashSet;
 
+use crate::cache::events::{Event, EventKind};
+use crate::cache::{CacheBehavior, EagerMapBehavior, WholeCacheBehavior};
 use crate::semantics::caches::domain::Domain;
 use crate::syntactic::caches::sentences::SentenceCache;
 use crate::trans::caches::numeric_ancestor_set::NumericAncestorSet;
 use crate::trans::caches::numeric_sorts::NumericSorts;
+use crate::trans::TranslationLayer;
 use crate::types::RelationDomain;
 use crate::{Element, SymbolId};
-use crate::cache::{CacheBehavior, EagerMapBehavior, WholeCacheBehavior};
-use crate::cache::events::{Event, EventKind};
-use crate::trans::TranslationLayer;
 
 /// Behavior for the `translation::poly_variant_symbols` cache.
 #[derive(Debug, Default)]
@@ -22,7 +22,7 @@ pub(crate) struct PolyVariantSymbols;
 
 impl WholeCacheBehavior for PolyVariantSymbols {
     type Parent = TranslationLayer;
-    type Value  = HashSet<SymbolId>;
+    type Value = HashSet<SymbolId>;
 
     const NAME: &'static str = "translation::poly_variant_symbols";
 
@@ -35,7 +35,9 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         // position ordering, scope, and base/session conflict rules) rather than
         // re-parsing `(domain Relation Position Class)` out of the raw sentence.
         for sid in parent.semantic.syntactic.by_head("domain").iter().copied() {
-            let Some(sentence) = parent.semantic.syntactic.sentence(sid) else { continue };
+            let Some(sentence) = parent.semantic.syntactic.sentence(sid) else {
+                continue;
+            };
             let rel_id = match sentence.elements.get(1) {
                 Some(Element::Symbol(sym)) => sym.id(),
                 _ => continue,
@@ -56,7 +58,12 @@ impl WholeCacheBehavior for PolyVariantSymbols {
     // not itself numeric-sorted — reading `numeric_ancestor_set` and
     // `numeric_sorts`.
     fn reads(&self) -> &'static [&'static str] {
-        &[SentenceCache::NAME, Domain::NAME, NumericAncestorSet::NAME, NumericSorts::NAME]
+        &[
+            SentenceCache::NAME,
+            Domain::NAME,
+            NumericAncestorSet::NAME,
+            NumericSorts::NAME,
+        ]
     }
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
@@ -80,9 +87,8 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         &self,
         parent: &Self::Parent,
         events: &[&crate::cache::events::Event],
-        store:  &crate::cache::LayerCache<Self::Value>,
-    ) -> Vec<crate::cache::events::Event>
-    {
+        store: &crate::cache::LayerCache<Self::Value>,
+    ) -> Vec<crate::cache::events::Event> {
         if !store.is_populated() {
             return Vec::new(); // cold → `generate` rebuilds on next read
         }
@@ -132,7 +138,9 @@ impl WholeCacheBehavior for PolyVariantSymbols {
 /// class-valued (an individual), never numeric.
 fn relation_is_poly(parent: &TranslationLayer, rel: SymbolId) -> bool {
     parent.semantic.domain(rel).iter().any(|d| {
-        let RelationDomain::Domain(cls) = d else { return false };
+        let RelationDomain::Domain(cls) = d else {
+            return false;
+        };
         let in_ancestor = parent
             .numeric_ancestor_set
             .with_ref(|s| s.map(|s| s.contains(cls)).unwrap_or(false));

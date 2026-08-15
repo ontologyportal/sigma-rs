@@ -47,10 +47,10 @@
 //
 //   Dollar-words (`$true`, `$false`, `$$domain`, …) are never remapped.
 
+use super::super::ast::{Role, Source};
+use super::super::{AstNode, OpKind, Span};
 use super::error::TptpParseError;
 use super::tokenizer::{Token, TokenKind, TptpOpTok};
-use super::super::{AstNode, OpKind, Span};
-use super::super::ast::{Role, Source};
 
 // Internal helpers
 
@@ -248,11 +248,19 @@ impl TptpParser {
         let mut i = 0;
         while i < b.len() {
             let digits_start = i;
-            while i < b.len() && b[i].is_ascii_digit() { i += 1; }
-            if i == digits_start || i == b.len() { return false; }
-            if !(b[i].is_ascii_uppercase() && b[i] != b'F') { return false; }
+            while i < b.len() && b[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i == digits_start || i == b.len() {
+                return false;
+            }
+            if !(b[i].is_ascii_uppercase() && b[i] != b'F') {
+                return false;
+            }
             i += 1;
-            if i < b.len() && b[i].is_ascii_lowercase() { i += 1; }
+            if i < b.len() && b[i].is_ascii_lowercase() {
+                i += 1;
+            }
         }
         !tail.is_empty()
     }
@@ -269,8 +277,12 @@ impl TptpParser {
     fn strip_arity_suffix(name: &str) -> &str {
         // Require at least one character before __NNFn so that a bare
         // "__NNFn" string (with no base name) is left unchanged.
-        let Some(idx) = name.rfind("__") else { return name };
-        if idx == 0 { return name; }
+        let Some(idx) = name.rfind("__") else {
+            return name;
+        };
+        if idx == 0 {
+            return name;
+        }
         let tail = &name[idx + 2..];
         match tail.strip_suffix("Fn") {
             Some(d) if !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()) => &name[..idx],
@@ -540,7 +552,10 @@ impl TptpParser {
             "fof" | "cnf" | "tff" => self.parse_annotated_formula(),
             "thf" | "tcf" => Err((
                 kw_span.clone(),
-                TptpParseError::UnsupportedLanguage { span: kw_span, lang: kw },
+                TptpParseError::UnsupportedLanguage {
+                    span: kw_span,
+                    lang: kw,
+                },
             )),
             "include" => Err((
                 kw_span.clone(),
@@ -564,8 +579,12 @@ impl TptpParser {
         self.expect(&TokenKind::LParen)?;
 
         let stmt_name: String = match self.peek_kind() {
-            Some(TokenKind::LowerWord(w) | TokenKind::UpperWord(w)
-                 | TokenKind::SingleQuoted(w) | TokenKind::Integer(w)) => {
+            Some(
+                TokenKind::LowerWord(w)
+                | TokenKind::UpperWord(w)
+                | TokenKind::SingleQuoted(w)
+                | TokenKind::Integer(w),
+            ) => {
                 let n = w.clone();
                 self.advance();
                 n
@@ -573,7 +592,10 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                return Err((sp.clone(), TptpParseError::UnexpectedToken { found, span: sp }));
+                return Err((
+                    sp.clone(),
+                    TptpParseError::UnexpectedToken { found, span: sp },
+                ));
             }
         };
 
@@ -585,11 +607,11 @@ impl TptpParser {
         let role: Role = match self.peek_kind() {
             Some(TokenKind::LowerWord(word)) => {
                 let role = match word.as_str() {
-                    "axiom"              => Role::Axiom,
-                    "plain"              => Role::Plain,
-                    "hypothesis"         => Role::Hypothesis,
-                    "definition"         => Role::Definition,
-                    "lemma"              => Role::Lemma,
+                    "axiom" => Role::Axiom,
+                    "plain" => Role::Plain,
+                    "hypothesis" => Role::Hypothesis,
+                    "definition" => Role::Definition,
+                    "lemma" => Role::Lemma,
                     "negated_conjecture" => Role::NegatedConjecture,
                     "theorem" | "corollary" => Role::Other(word.clone()),
                     "conjecture" if self.options.keep_conjectures => Role::Conjecture,
@@ -601,7 +623,10 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                return Err((sp.clone(), TptpParseError::UnexpectedToken { found, span: sp }));
+                return Err((
+                    sp.clone(),
+                    TptpParseError::UnexpectedToken { found, span: sp },
+                ));
             }
         };
 
@@ -612,7 +637,10 @@ impl TptpParser {
         // No annotation present: the plain-input default (unchanged from
         // before this was a real parse — every ordinary axiom file omits
         // the optional fourth argument entirely).
-        let mut source = Source::Input { file: self.file.clone(), name: None };
+        let mut source = Source::Input {
+            file: self.file.clone(),
+            name: None,
+        };
 
         if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
             self.advance();
@@ -634,8 +662,8 @@ impl TptpParser {
         let span = formula.span().clone();
         Ok(Some(AstNode::Annotated {
             role,
-            name:    Some(stmt_name),
-            source:  Some(source),
+            name: Some(stmt_name),
+            source: Some(source),
             formula: Box::new(formula),
             span,
         }))
@@ -674,7 +702,10 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                Err((sp.clone(), TptpParseError::UnexpectedToken { found, span: sp }))
+                Err((
+                    sp.clone(),
+                    TptpParseError::UnexpectedToken { found, span: sp },
+                ))
             }
         }
     }
@@ -695,9 +726,18 @@ impl TptpParser {
             }
         };
         match head.as_str() {
-            "file" => { self.advance(); self.parse_file_source().map(Some) }
-            "inference" => { self.advance(); self.parse_inference_source().map(Some) }
-            "introduced" => { self.advance(); self.parse_introduced_source().map(Some) }
+            "file" => {
+                self.advance();
+                self.parse_file_source().map(Some)
+            }
+            "inference" => {
+                self.advance();
+                self.parse_inference_source().map(Some)
+            }
+            "introduced" => {
+                self.advance();
+                self.parse_introduced_source().map(Some)
+            }
             _ => {
                 self.skip_annotations()?;
                 Ok(None)
@@ -772,14 +812,26 @@ impl TptpParser {
             // A `name(` lookahead means this element is a general_function
             // (e.g. `status(thm)`), not a bare atomic word — skip the whole
             // call rather than mistaking its head for a parent name.
-            let is_call = matches!(self.peek_kind(),
-                Some(TokenKind::LowerWord(_) | TokenKind::UpperWord(_)
-                     | TokenKind::SingleQuoted(_) | TokenKind::Integer(_)))
-                && matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::LParen));
+            let is_call = matches!(
+                self.peek_kind(),
+                Some(
+                    TokenKind::LowerWord(_)
+                        | TokenKind::UpperWord(_)
+                        | TokenKind::SingleQuoted(_)
+                        | TokenKind::Integer(_)
+                )
+            ) && matches!(
+                self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                Some(TokenKind::LParen)
+            );
             match self.peek_kind() {
                 Some(TokenKind::RBracket) => break,
-                Some(TokenKind::LowerWord(_) | TokenKind::UpperWord(_)
-                     | TokenKind::SingleQuoted(_) | TokenKind::Integer(_)) if !is_call => {
+                Some(
+                    TokenKind::LowerWord(_)
+                    | TokenKind::UpperWord(_)
+                    | TokenKind::SingleQuoted(_)
+                    | TokenKind::Integer(_),
+                ) if !is_call => {
                     items.push(self.parse_atomic_word()?);
                 }
                 _ => self.skip_one_arg()?,
@@ -814,7 +866,9 @@ impl TptpParser {
                     depth -= 1;
                     self.advance();
                 }
-                Some(TokenKind::Comma | TokenKind::RParen | TokenKind::RBracket) if depth == 0 => break,
+                Some(TokenKind::Comma | TokenKind::RParen | TokenKind::RBracket) if depth == 0 => {
+                    break
+                }
                 _ => {
                     self.advance();
                 }
@@ -1506,7 +1560,7 @@ mod tests {
                 remap_formula_expansions: true,
                 formulas_only: false,
                 keep_conjectures: false,
-        },
+            },
         );
         if let AstNode::List { elements, .. } = &nodes_nopoly[0] {
             assert!(
@@ -1996,7 +2050,9 @@ mod tests {
     #[test]
     fn annotated_carries_role_and_name() {
         let (tokens, _) = tokenize(
-            "fof(myax, axiom, p(a)). cnf(c1, negated_conjecture, q(b)).", "f");
+            "fof(myax, axiom, p(a)). cnf(c1, negated_conjecture, q(b)).",
+            "f",
+        );
         let (nodes, errs) = parse(tokens, "f", None);
         assert!(errs.is_empty(), "{:?}", errs);
         assert_eq!(nodes.len(), 2);
@@ -2007,7 +2063,13 @@ mod tests {
             }
             n => panic!("expected Annotated, got {:?}", n),
         }
-        assert!(matches!(&nodes[1], AstNode::Annotated { role: Role::NegatedConjecture, .. }));
+        assert!(matches!(
+            &nodes[1],
+            AstNode::Annotated {
+                role: Role::NegatedConjecture,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2019,9 +2081,21 @@ mod tests {
         assert!(nodes.is_empty(), "conjecture should be dropped by default");
         // Opt-in: kept as `Annotated { role: Conjecture }` (no marker).
         let (tokens, _) = tokenize(src, "f");
-        let (nodes, _) = parse(tokens, "f",
-            Some(TptpParseOptions { keep_conjectures: true, ..TptpParseOptions::none() }));
-        assert!(matches!(&nodes[0], AstNode::Annotated { role: Role::Conjecture, .. }));
+        let (nodes, _) = parse(
+            tokens,
+            "f",
+            Some(TptpParseOptions {
+                keep_conjectures: true,
+                ..TptpParseOptions::none()
+            }),
+        );
+        assert!(matches!(
+            &nodes[0],
+            AstNode::Annotated {
+                role: Role::Conjecture,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2040,19 +2114,25 @@ mod tests {
         // `thf` is rejected at the language keyword — before its (also
         // unsupported) lambda body is even reached.
         let errs = parse_errors("thf(f, axiom, ^[X]: p(X)).");
-        assert!(errs.iter().any(|e| matches!(
-            e,
-            TptpParseError::UnsupportedLanguage { lang, .. } if lang == "thf"
-        )), "expected UnsupportedLanguage(thf), got {errs:?}");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                TptpParseError::UnsupportedLanguage { lang, .. } if lang == "thf"
+            )),
+            "expected UnsupportedLanguage(thf), got {errs:?}"
+        );
     }
 
     #[test]
     fn tcf_is_an_unsupported_language() {
         let errs = parse_errors("tcf(f, axiom, ![X]: p(X)).");
-        assert!(errs.iter().any(|e| matches!(
-            e,
-            TptpParseError::UnsupportedLanguage { lang, .. } if lang == "tcf"
-        )), "expected UnsupportedLanguage(tcf), got {errs:?}");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                TptpParseError::UnsupportedLanguage { lang, .. } if lang == "tcf"
+            )),
+            "expected UnsupportedLanguage(tcf), got {errs:?}"
+        );
     }
 
     #[test]
@@ -2122,16 +2202,17 @@ mod tests {
         };
         assert!(tl_elements.len() == 3);
         match &tl_elements[0] {
-            AstNode::Operator { op: OpKind::ForAll, .. } => {
+            AstNode::Operator {
+                op: OpKind::ForAll, ..
+            } => {
                 // OK
             }
-            other => panic!(
-                "Missing top-level forall operator, got {:?}",
-                other
-            ),
+            other => panic!("Missing top-level forall operator, got {:?}", other),
         }
-        assert!(matches!(&tl_elements[1], AstNode::List { elements, .. } if elements.len() == 1 && matches!(&elements[0], AstNode::Variable { name, .. } if name == "X")), "Quantifier variable sentence wrong");
-
+        assert!(
+            matches!(&tl_elements[1], AstNode::List { elements, .. } if elements.len() == 1 && matches!(&elements[0], AstNode::Variable { name, .. } if name == "X")),
+            "Quantifier variable sentence wrong"
+        );
     }
 
     // ── Source annotation ────────────────────────────────────────────────
@@ -2147,7 +2228,9 @@ mod tests {
 
     fn source_of(node: &AstNode) -> &Source {
         match node {
-            AstNode::Annotated { source: Some(s), .. } => s,
+            AstNode::Annotated {
+                source: Some(s), ..
+            } => s,
             other => panic!("expected an Annotated node with a source, got {:?}", other),
         }
     }
@@ -2157,7 +2240,10 @@ mod tests {
         let nodes = parse_tptp_annotated("fof(f1, axiom, p(a)).");
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Input { file: "test".into(), name: None }
+            &Source::Input {
+                file: "test".into(),
+                name: None
+            }
         );
     }
 
@@ -2165,23 +2251,25 @@ mod tests {
     fn file_source_two_args_captures_name() {
         // Vampire's `--output_axiom_names on` shape: the axiom's own
         // `kb_<sid>` name rides as the second `file(...)` argument.
-        let nodes = parse_tptp_annotated(
-            "fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42))."
-        );
+        let nodes = parse_tptp_annotated("fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42)).");
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Input { file: "/dev/stdin".into(), name: Some("kb_42".into()) }
+            &Source::Input {
+                file: "/dev/stdin".into(),
+                name: Some("kb_42".into())
+            }
         );
     }
 
     #[test]
     fn file_source_one_arg_has_no_name() {
-        let nodes = parse_tptp_annotated(
-            "fof(f1, axiom, (p(a)), file('problem.p'))."
-        );
+        let nodes = parse_tptp_annotated("fof(f1, axiom, (p(a)), file('problem.p')).");
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Input { file: "problem.p".into(), name: None }
+            &Source::Input {
+                file: "problem.p".into(),
+                name: None
+            }
         );
     }
 
@@ -2192,7 +2280,7 @@ mod tests {
         // vary in how many arguments precede the parent list.
         let nodes = parse_tptp_annotated(
             "fof(f3, plain, ($false), \
-             inference(forward_subsumption_resolution, [], [f1, f2]))."
+             inference(forward_subsumption_resolution, [], [f1, f2])).",
         );
         assert_eq!(
             source_of(&nodes[0]),
@@ -2209,7 +2297,7 @@ mod tests {
         // inference(rule, [status(thm)], [parents]) — the status list must
         // not be mistaken for the parent list.
         let nodes = parse_tptp_annotated(
-            "fof(f3, plain, (q(a)), inference(resolution, [status(thm)], [f1, f2]))."
+            "fof(f3, plain, (q(a)), inference(resolution, [status(thm)], [f1, f2])).",
         );
         assert_eq!(
             source_of(&nodes[0]),
@@ -2229,25 +2317,32 @@ mod tests {
         );
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Inference { rule: "negate_conjecture".into(), parents: vec![] }
+            &Source::Inference {
+                rule: "negate_conjecture".into(),
+                parents: vec![]
+            }
         );
     }
 
     #[test]
     fn introduced_source_captures_mechanism() {
-        let nodes = parse_tptp_annotated(
-            "fof(f9, plain, (p(a)), introduced(choice_axiom, []))."
+        let nodes = parse_tptp_annotated("fof(f9, plain, (p(a)), introduced(choice_axiom, [])).");
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Introduced("choice_axiom".into())
         );
-        assert_eq!(source_of(&nodes[0]), &Source::Introduced("choice_axiom".into()));
     }
 
     #[test]
     fn introduced_source_with_multiple_trailing_info_args() {
         // Real Vampire output: two trailing info arguments, not one.
         let nodes = parse_tptp_annotated(
-            "fof(f9, plain, (p(a)), introduced(definition, [], [choice_axiom]))."
+            "fof(f9, plain, (p(a)), introduced(definition, [], [choice_axiom])).",
         );
-        assert_eq!(source_of(&nodes[0]), &Source::Introduced("definition".into()));
+        assert_eq!(
+            source_of(&nodes[0]),
+            &Source::Introduced("definition".into())
+        );
     }
 
     #[test]
@@ -2259,7 +2354,10 @@ mod tests {
         let nodes = parse_tptp_annotated("fof(f1, axiom, (p(a)), some_other_statement).");
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Input { file: "test".into(), name: None }
+            &Source::Input {
+                file: "test".into(),
+                name: None
+            }
         );
     }
 
@@ -2269,11 +2367,14 @@ mod tests {
         // introduces a trailing useful_info general_list this crate has no
         // use for; it must not break parsing of the source that precedes it.
         let nodes = parse_tptp_annotated(
-            "fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42), [description('x')])."
+            "fof(f1, axiom, (p(a)), file('/dev/stdin', kb_42), [description('x')]).",
         );
         assert_eq!(
             source_of(&nodes[0]),
-            &Source::Input { file: "/dev/stdin".into(), name: Some("kb_42".into()) }
+            &Source::Input {
+                file: "/dev/stdin".into(),
+                name: Some("kb_42".into())
+            }
         );
     }
 }

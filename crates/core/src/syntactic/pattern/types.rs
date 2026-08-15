@@ -34,10 +34,10 @@ impl MatchKey {
     /// Returns `true` if `elem` structurally matches this key (ignoring span).
     pub(crate) fn matches(&self, elem: &Element) -> bool {
         match (self, elem) {
-            (MatchKey::Symbol(sym), Element::Symbol(esym))       => sym == &**esym,
-            (MatchKey::Var(id),     Element::Variable { id: eid, .. }) => id == eid,
-            (MatchKey::Op(op),      Element::Op(eop))            => op == eop,
-            (MatchKey::Literal(l),  Element::Literal(el))        => l == el,
+            (MatchKey::Symbol(sym), Element::Symbol(esym)) => sym == &**esym,
+            (MatchKey::Var(id), Element::Variable { id: eid, .. }) => id == eid,
+            (MatchKey::Op(op), Element::Op(eop)) => op == eop,
+            (MatchKey::Literal(l), Element::Literal(el)) => l == el,
             _ => false,
         }
     }
@@ -49,9 +49,9 @@ impl MatchKey {
             MatchKey::Symbol(sym) => Element::Symbol(InternedSym(sym.clone())),
             // A variable key cannot reconstruct a full `Element::Variable`
             // (no display name / var_index here); emit it as a symbol leaf.
-            MatchKey::Var(id)     => Element::Symbol(InternedSym(Symbol::from(format!("{id:#x}")))),
-            MatchKey::Op(op)      => Element::Op(op.clone()),
-            MatchKey::Literal(l)  => Element::Literal(l.clone()),
+            MatchKey::Var(id) => Element::Symbol(InternedSym(Symbol::from(format!("{id:#x}")))),
+            MatchKey::Op(op) => Element::Op(op.clone()),
+            MatchKey::Literal(l) => Element::Literal(l.clone()),
         }
     }
 }
@@ -63,9 +63,9 @@ impl MatchKey {
 /// contents, or [`PatternElement::AnySubSentence`] to capture its id.
 fn element_to_match_key(elem: &Element) -> Option<MatchKey> {
     match elem {
-        Element::Symbol(sym)         => Some(MatchKey::Symbol((**sym).clone())),
-        Element::Op(op)              => Some(MatchKey::Op(op.clone())),
-        Element::Literal(lit)        => Some(MatchKey::Literal(lit.clone())),
+        Element::Symbol(sym) => Some(MatchKey::Symbol((**sym).clone())),
+        Element::Op(op) => Some(MatchKey::Op(op.clone())),
+        Element::Literal(lit) => Some(MatchKey::Literal(lit.clone())),
         // Variables key on their scope-qualified id (distinct from symbols).
         Element::Variable { id, .. } => Some(MatchKey::Var(*id)),
         _ => None,
@@ -188,7 +188,10 @@ pub(crate) struct Bindings {
 /// a concrete element to emit — use [`PatternElement::AnySubSentence`] to
 /// capture and re-emit a matched sub-sentence.
 #[allow(dead_code)]
-pub(crate) fn instantiate_pattern(pat: &SentencePattern, bindings: &Bindings) -> Option<ElementVec> {
+pub(crate) fn instantiate_pattern(
+    pat: &SentencePattern,
+    bindings: &Bindings,
+) -> Option<ElementVec> {
     let mut out: ElementVec = ElementVec::with_capacity(pat.0.len());
     for p in &pat.0 {
         let elem = match p {
@@ -197,16 +200,12 @@ pub(crate) fn instantiate_pattern(pat: &SentencePattern, bindings: &Bindings) ->
                 // SubPattern positions cannot be instantiated.
                 return None;
             }
-            PatternElement::AnyCapture(idx) => {
-                bindings.elements.get(idx)?.clone()
-            }
+            PatternElement::AnyCapture(idx) => bindings.elements.get(idx)?.clone(),
             PatternElement::AnySubSentence(idx) => {
                 let sid = *bindings.sub_sids.get(idx)?;
                 Element::Sub(sid)
             }
-            PatternElement::AnyElement(idx) => {
-                bindings.elements.get(idx)?.clone()
-            }
+            PatternElement::AnyElement(idx) => bindings.elements.get(idx)?.clone(),
             PatternElement::Glob | PatternElement::GlobCapture(_) => {
                 // A glob binds no single element and cannot be instantiated.
                 return None;

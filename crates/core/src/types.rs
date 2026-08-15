@@ -1,25 +1,23 @@
 //! Canonical definitions of shared data types.
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
-use crate::Parser;
 pub use crate::parse::{OpKind, Span};
+use crate::Parser;
 
 // -- Id types -----------------------------------------------------------------
 
-pub use crate::syntactic::sentence::SymbolId;
-pub use crate::syntactic::sentence::SentenceId;
 pub(crate) use crate::syntactic::caches::session::SessionId;
+pub use crate::syntactic::sentence::SentenceId;
+pub use crate::syntactic::sentence::SymbolId;
 
 // -- Per-layer type facade ----------------------------------------------------
 
 #[allow(unused_imports)]
-pub use crate::semantics::types::{DocEntry, TaxDirection, TaxRelation};
+pub(crate) use crate::semantics::types::{ClassInference, RelationDomain, RelationRange};
 #[allow(unused_imports)]
-pub(crate) use crate::semantics::types::{
-    ClassInference, RelationDomain, RelationRange,
-};
+pub use crate::semantics::types::{DocEntry, TaxDirection, TaxRelation};
 
 #[allow(unused_imports)]
 pub(crate) use crate::trans::types::CachedFormula;
@@ -110,7 +108,11 @@ impl GitProvenance {
     /// (test scaffolding, synthetic construction). Never equals a real
     /// fetch's provenance, so a freshness check always treats it as
     /// "can't tell" rather than "confirmed unchanged."
-    pub const UNKNOWN: Self = Self { uri: String::new(), branch: String::new(), commit: String::new() };
+    pub const UNKNOWN: Self = Self {
+        uri: String::new(),
+        branch: String::new(),
+        commit: String::new(),
+    };
 }
 
 /// Snapshot of a local file's identity at read time: its modification time
@@ -130,7 +132,10 @@ impl LocalProvenance {
     /// (test scaffolding, synthetic construction). Never equals a real
     /// file's provenance, so a freshness check always treats it as "can't
     /// tell" rather than "confirmed unchanged."
-    pub const UNKNOWN: Self = Self { mtime_secs: 0, content_hash: 0 };
+    pub const UNKNOWN: Self = Self {
+        mtime_secs: 0,
+        content_hash: 0,
+    };
 }
 
 /// Content hash used for [`LocalProvenance::content_hash`] and by anything
@@ -155,7 +160,7 @@ pub enum FileOrigin {
     #[allow(dead_code)]
     Synthetic,
     /// Supplied inline as a string.
-    Inline
+    Inline,
 }
 
 /// A source file with its parser, path, contents, and any prebuilt AST.
@@ -174,7 +179,7 @@ pub struct SourceFile {
     /// Raw source text.
     pub contents: String,
     /// Prebuilt AST nodes, if available.
-    pub prebuilt: Option<Vec<AstNode>>
+    pub prebuilt: Option<Vec<AstNode>>,
 }
 
 impl SourceFile {
@@ -189,7 +194,12 @@ impl SourceFile {
     pub fn kif(file: PathBuf, contents: String) -> Self {
         Self {
             parser: crate::Parser::Kif,
-            name: file.file_name().unwrap_or_default().to_str().unwrap_or_default().to_string(),
+            name: file
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .to_string(),
             path: file,
             origin: FileOrigin::Local(LocalProvenance::UNKNOWN),
             contents,
@@ -213,7 +223,12 @@ impl SourceFile {
     pub fn truncate(file: PathBuf) -> Self {
         Self {
             parser: crate::Parser::Kif,
-            name: file.file_name().unwrap_or_default().to_str().unwrap_or_default().to_string(),
+            name: file
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .to_string(),
             path: file,
             origin: FileOrigin::Local(LocalProvenance::UNKNOWN),
             contents: String::new(),
@@ -224,21 +239,25 @@ impl SourceFile {
     /// Builds a source file, inferring the parser from the file name or, failing
     /// that, from the contents. Returns `None` when no parser can be determined.
     pub fn from_file(path: PathBuf, contents: String, origin: FileOrigin) -> Option<Self> {
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let parser = match Parser::from_filename(&name) {
             Some(p) => p,
             None => match Parser::from_contents(&contents) {
                 Some(p) => p,
-                None => return None
-            }
+                None => return None,
+            },
         };
         Some(Self {
-            parser, 
+            parser,
             name,
             path,
             origin,
             contents,
-            prebuilt: None
+            prebuilt: None,
         })
     }
 }

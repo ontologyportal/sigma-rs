@@ -14,7 +14,7 @@ impl Literal {
                     h = h.wrapping_mul(0x01000193);
                 }
                 h
-            },
+            }
         }
     }
 }

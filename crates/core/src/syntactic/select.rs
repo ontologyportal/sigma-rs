@@ -32,17 +32,22 @@ pub(crate) struct SelectionParams {
     /// Drop bookkeeping-head sentences (`documentation`, `termFormat`, …).
     pub head_filter: bool,
     /// Run the Liu & Xu structural rescue.
-    pub liu_rescue:  bool,
+    pub liu_rescue: bool,
     /// Liu rescue rounds.
-    pub liu_rounds:  usize,
+    pub liu_rounds: usize,
     /// Liu rescue additions per round.
-    pub liu_top_k:   usize,
+    pub liu_top_k: usize,
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 impl Default for SelectionParams {
     fn default() -> Self {
-        Self { head_filter: true, liu_rescue: true, liu_rounds: 1, liu_top_k: 32 }
+        Self {
+            head_filter: true,
+            liu_rescue: true,
+            liu_rounds: 1,
+            liu_top_k: 32,
+        }
     }
 }
 
@@ -59,14 +64,16 @@ impl SyntacticLayer {
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn select_relevant(
         &self,
-        seed:   &HashSet<SymbolId>,
+        seed: &HashSet<SymbolId>,
         params: SineParams,
-        sel:    &SelectionParams,
-        ctx:    &ProveCtx,
+        sel: &SelectionParams,
+        ctx: &ProveCtx,
     ) -> (HashSet<SentenceId>, Vec<SentenceId>) {
         // SInE relevance, or the whole promoted base under `--full-kb`.
         let mut selected: HashSet<SentenceId> = if params.select_all {
-            self.sine_current(|idx| idx.axiom_sids()).into_iter().collect()
+            self.sine_current(|idx| idx.axiom_sids())
+                .into_iter()
+                .collect()
         } else {
             self.sine_select_with_seed(seed.clone(), params, ctx)
         };
@@ -89,14 +96,13 @@ impl SyntacticLayer {
         (selected, liu_frontier)
     }
 
-
     /// SInE-select the relevant axiom subset for a set of sentences already
     /// in the store — symbols read straight off the sids (no parse).
     pub(crate) fn sine_select_for_sids(
         &self,
-        sids:   &[SentenceId],
+        sids: &[SentenceId],
         params: SineParams,
-        ctx:    &ProveCtx,
+        ctx: &ProveCtx,
     ) -> HashSet<SentenceId> {
         let seed = {
             profile_span!(ctx, "sine.collect_symbols");
@@ -113,9 +119,9 @@ impl SyntacticLayer {
     /// seed, return the SentenceIds the index considers relevant at `params`.
     pub(crate) fn sine_select_with_seed(
         &self,
-        seed:   HashSet<SymbolId>,
+        seed: HashSet<SymbolId>,
         params: SineParams,
-        ctx:    &ProveCtx,
+        ctx: &ProveCtx,
     ) -> HashSet<SentenceId> {
         profile_span!(ctx, "sine.select_axioms");
         // Auto-tolerance: pick the largest tolerance whose selected set stays
@@ -134,7 +140,11 @@ impl SyntacticLayer {
         let axiom_count = self.sine_current(|idx| idx.axiom_count());
         ctx.info(format!(
             "sine_select: {} seed syms -> {} relevant axioms (of {} total) at tolerance {} [{}]",
-            seed.len(), selected.len(), axiom_count, effective_tol, mode,
+            seed.len(),
+            selected.len(),
+            axiom_count,
+            effective_tol,
+            mode,
         ));
         selected
     }
@@ -143,9 +153,12 @@ impl SyntacticLayer {
     /// predicates (`documentation`, `termFormat`, `domain`, …).
     pub(crate) fn filter_excluded_heads(&self, sids: &[SentenceId]) -> Vec<SentenceId> {
         let excluded = crate::kb::export::excluded_heads_set();
-        sids.iter().copied()
+        sids.iter()
+            .copied()
             .filter(|&sid| {
-                let Some(sentence) = self.sentence(sid) else { return true };
+                let Some(sentence) = self.sentence(sid) else {
+                    return true;
+                };
                 match sentence.elements.first() {
                     Some(Element::Symbol(sym)) => !excluded.contains(&*sym.name()),
                     _ => true,
@@ -158,7 +171,8 @@ impl SyntacticLayer {
     /// session has been axiomatized (transient assertions and rolled-back
     /// ephemeral query tags excluded).
     pub(crate) fn axiom_ids_set(&self) -> HashSet<SentenceId> {
-        self.root_sids().into_iter()
+        self.root_sids()
+            .into_iter()
             .filter(|&sid| self.is_axiom(sid))
             .collect()
     }
@@ -171,10 +185,10 @@ impl SyntacticLayer {
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn structural_include(
         &self,
-        seed:     &HashSet<SymbolId>,
+        seed: &HashSet<SymbolId>,
         selected: &HashSet<SentenceId>,
-        rounds:   usize,
-        top_k:    usize,
+        rounds: usize,
+        top_k: usize,
     ) -> Vec<SentenceId> {
         /// Symbols more general than this are hubs (`instance`, `subclass`,
         /// …): enumerating their axiom lists is quadratic noise.
@@ -190,7 +204,9 @@ impl SyntacticLayer {
             let mut out = HashSet::new();
             let mut stack = vec![sid];
             while let Some(s) = stack.pop() {
-                let Some(sent) = self.sentence(s) else { continue };
+                let Some(sent) = self.sentence(s) else {
+                    continue;
+                };
                 if let Some(Element::Symbol(h)) = sent.elements.first() {
                     out.insert(h.id());
                 }
@@ -261,11 +277,15 @@ impl SyntacticLayer {
                 if trace {
                     eprintln!(
                         "LIU round {round}: {} work syms ({} non-hub), {} rescued",
-                        work.len(), work_nonhub.len(), accepted.len());
+                        work.len(),
+                        work_nonhub.len(),
+                        accepted.len()
+                    );
                     for (aid, score, _) in accepted.iter().take(8) {
                         eprintln!(
                             "  {score:.4}  {}",
-                            crate::syntactic::display::sentence_to_plain_kif(*aid, self));
+                            crate::syntactic::display::sentence_to_plain_kif(*aid, self)
+                        );
                     }
                 }
                 // Ground FACTS of frontier predicates, admitted outside the
@@ -286,17 +306,21 @@ impl SyntacticLayer {
                         if selected.contains(&aid) || in_set.contains(&aid) {
                             continue;
                         }
-                        let Some(sent) = self.sentence(aid) else { continue };
+                        let Some(sent) = self.sentence(aid) else {
+                            continue;
+                        };
                         // Head must BE the frontier predicate and the
                         // sentence a flat ground atom (no variables, no
                         // nested sub-sentences).
                         if !matches!(sent.elements.first(),
-                                     Some(Element::Symbol(h)) if h.id() == s) {
+                                     Some(Element::Symbol(h)) if h.id() == s)
+                        {
                             continue;
                         }
-                        let ground = sent.elements.iter().all(|el| {
-                            !matches!(el, Element::Variable { .. } | Element::Sub(_))
-                        });
+                        let ground = sent
+                            .elements
+                            .iter()
+                            .all(|el| !matches!(el, Element::Variable { .. } | Element::Sub(_)));
                         if !ground {
                             continue;
                         }
@@ -306,7 +330,8 @@ impl SyntacticLayer {
                 if trace && !fact_adds.is_empty() {
                     eprintln!(
                         "LIU round {round}: +{} ground facts of frontier predicates",
-                        fact_adds.len());
+                        fact_adds.len()
+                    );
                 }
                 for aid in fact_adds {
                     in_set.insert(aid);

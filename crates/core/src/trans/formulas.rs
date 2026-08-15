@@ -10,11 +10,11 @@
 
 use std::collections::HashSet;
 
-use crate::types::{Element, SentenceId};
-use crate::trans::{TranslationError, ir, CachedFormula};
+use crate::parse::tptp::syntax::TptpLang;
 #[cfg(feature = "ask")]
 use crate::trans::lower::QueryVarMap;
-use crate::parse::tptp::syntax::TptpLang;
+use crate::trans::{ir, CachedFormula, TranslationError};
+use crate::types::{Element, SentenceId};
 
 use super::TranslationLayer;
 
@@ -23,7 +23,7 @@ use super::TranslationLayer;
 #[derive(Default)]
 struct DeclSeen {
     sorts: HashSet<String>,
-    fns:   HashSet<(String, u32)>,
+    fns: HashSet<(String, u32)>,
     preds: HashSet<(String, u32)>,
 }
 
@@ -87,7 +87,9 @@ impl TranslationLayer {
         let syn = &self.semantic.syntactic;
         let mut children: HashSet<SentenceId> = HashSet::new();
         for &synth in syn.synthetic_origin.keys() {
-            let Some(s) = syn.sentence(synth) else { continue };
+            let Some(s) = syn.sentence(synth) else {
+                continue;
+            };
             for e in &s.elements {
                 if let Element::Sub(sid) = e {
                     if syn.synthetic_origin.contains_key(sid) {
@@ -187,7 +189,7 @@ impl TranslationLayer {
     pub(crate) fn build_problem(
         &self,
         axiom_sids: &[SentenceId],
-        mode:       TptpLang,
+        mode: TptpLang,
     ) -> (ir::Problem, Vec<SentenceId>) {
         let (problem, sid_map, _) = self.build_problem_with_decls(axiom_sids, mode);
         (problem, sid_map)
@@ -199,9 +201,13 @@ impl TranslationLayer {
     fn build_problem_with_decls(
         &self,
         axiom_sids: &[SentenceId],
-        mode:       TptpLang,
+        mode: TptpLang,
     ) -> (ir::Problem, Vec<SentenceId>, DeclSeen) {
-        let mut problem = if mode.is_typed() { ir::Problem::new_tff() } else { ir::Problem::new() };
+        let mut problem = if mode.is_typed() {
+            ir::Problem::new_tff()
+        } else {
+            ir::Problem::new()
+        };
 
         let mut seen = DeclSeen::default();
 
@@ -211,15 +217,21 @@ impl TranslationLayer {
         #[cfg(feature = "parallel")]
         {
             use rayon::prelude::*;
-            axiom_sids.par_iter().for_each(|&sid| if mode.is_typed() {
-                let _ = self.formula_tff(sid);
-            } else {
-                let _ = self.formula_fof(sid);
+            axiom_sids.par_iter().for_each(|&sid| {
+                if mode.is_typed() {
+                    let _ = self.formula_tff(sid);
+                } else {
+                    let _ = self.formula_fof(sid);
+                }
             });
         }
 
         for &sid in axiom_sids {
-            let Some(cf) = (if mode.is_typed() { self.formula_tff(sid) } else { self.formula_fof(sid) }) else {
+            let Some(cf) = (if mode.is_typed() {
+                self.formula_tff(sid)
+            } else {
+                self.formula_fof(sid)
+            }) else {
                 continue;
             };
 
@@ -256,10 +268,10 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     pub(crate) fn assemble_problem(
         &self,
-        axiom_sids:  &[SentenceId],
-        seed_sids:   &[SentenceId],
-        conjecture:  &[SentenceId],
-        mode:        TptpLang,
+        axiom_sids: &[SentenceId],
+        seed_sids: &[SentenceId],
+        conjecture: &[SentenceId],
+        mode: TptpLang,
         query_scope: Option<crate::semantics::types::Scope>,
     ) -> (ir::Problem, Vec<SentenceId>, Option<QueryVarMap>) {
         // -- synthetic-eligibility scan over the selection --------------------
@@ -279,7 +291,8 @@ impl TranslationLayer {
             let mut scope: Vec<SentenceId> = conjecture.to_vec();
             scope.extend(sids.iter().copied());
             self.instantiate_predvars(
-                &seed, &scope,
+                &seed,
+                &scope,
                 query_scope.unwrap_or(crate::semantics::types::Scope::Base),
             )
         };
@@ -311,12 +324,9 @@ impl TranslationLayer {
         // so they install as a single conjunction with the free-variable union
         // wrapped once.
         let mut qvm = None;
-        if let Some((cf, map)) = self.lower_conjecture_set(
-            conjecture,
-            mode.is_typed(),
-            !mode.is_typed(),
-            query_scope,
-        ) {
+        if let Some((cf, map)) =
+            self.lower_conjecture_set(conjecture, mode.is_typed(), !mode.is_typed(), query_scope)
+        {
             decl_seen.merge_decls(&mut problem, &cf);
             problem.conjecture(cf.formula);
             qvm = Some(map);
@@ -358,11 +368,15 @@ impl TranslationLayer {
         while let Some(sid) = stack.pop() {
             if let Some(children) = by_origin.get(&sid) {
                 for &child in children {
-                    if !seen.insert(child) { continue; }
+                    if !seen.insert(child) {
+                        continue;
+                    }
                     // Predicate-variable instantiations are per-problem only;
                     // never sweep them in here and don't recurse through them,
                     // or one problem's relation-property rules leak into another.
-                    if predvar_instances.contains(&child) { continue; }
+                    if predvar_instances.contains(&child) {
+                        continue;
+                    }
                     // Emit unless `child` is an intermediate building block or a
                     // bare positive assertion; still recurse either way, since
                     // descendants may themselves be top-level.
@@ -418,7 +432,10 @@ mod tests {
         let trans = make_trans("(instance Fido Dog)");
         let sid = root_of(&trans);
         let f = trans.formula_tff(sid);
-        assert!(f.is_some(), "should convert (instance Fido Dog) to a TFF formula");
+        assert!(
+            f.is_some(),
+            "should convert (instance Fido Dog) to a TFF formula"
+        );
     }
 
     #[test]
@@ -426,7 +443,10 @@ mod tests {
         let trans = make_trans("(=> (P ?X) (Q ?X))");
         let sid = root_of(&trans);
         let f = trans.formula_tff(sid);
-        assert!(f.is_some(), "should convert an implication to a TFF formula");
+        assert!(
+            f.is_some(),
+            "should convert an implication to a TFF formula"
+        );
         assert!(
             matches!(f.unwrap().formula, IrFormula::ForallTyped(..)),
             "free variable should be universally quantified with a sort in TFF mode"
@@ -457,7 +477,9 @@ mod tests {
 
         // Prime the numeric sort for PositiveInteger so the rewrite pass fires.
         let pos_int_id = trans.semantic.syntactic.sym_id("PositiveInteger").unwrap();
-        trans.numeric_sorts.update(pos_int_id, crate::trans::Sort::Integer);
+        trans
+            .numeric_sorts
+            .update(pos_int_id, crate::trans::Sort::Integer);
 
         // Manually run the rewrite pass to populate suppressed.
         crate::trans::rewrite::run_rewrite_pass(
@@ -470,7 +492,8 @@ mod tests {
         for &sid in trans.suppressed.read().unwrap().iter() {
             assert!(
                 trans.formula_tff(sid).is_none(),
-                "suppressed sentence {} should return None from formula_tff", sid
+                "suppressed sentence {} should return None from formula_tff",
+                sid
             );
         }
     }
@@ -484,10 +507,15 @@ mod tests {
         // Second call should return the cached value.
         let f2 = trans.formula_tff(sid);
         assert!(f1.is_some() && f2.is_some());
-        assert_eq!(f1.unwrap().formula, f2.unwrap().formula,
-            "formula_tff should return identical results on repeated calls");
-        assert!(trans.formulas_tff.peek(&sid).is_some(),
-            "result should be in the formulas_tff cache");
+        assert_eq!(
+            f1.unwrap().formula,
+            f2.unwrap().formula,
+            "formula_tff should return identical results on repeated calls"
+        );
+        assert!(
+            trans.formulas_tff.peek(&sid).is_some(),
+            "result should be in the formulas_tff cache"
+        );
     }
 
     #[test]
@@ -534,7 +562,10 @@ mod tests {
         let trans = make_trans("(instance Fido Dog)");
         let sid = root_of(&trans);
         let f = trans.formula_fof(sid);
-        assert!(f.is_some(), "should convert (instance Fido Dog) to a FOF formula");
+        assert!(
+            f.is_some(),
+            "should convert (instance Fido Dog) to a FOF formula"
+        );
     }
 
     #[test]
@@ -555,7 +586,7 @@ mod tests {
         let sid = root_of(&trans);
         let cf = trans.formula_fof(sid).expect("should convert");
         assert!(cf.sort_decls.is_empty(), "FOF sort_decls must be empty");
-        assert!(cf.fn_decls.is_empty(),   "FOF fn_decls must be empty");
+        assert!(cf.fn_decls.is_empty(), "FOF fn_decls must be empty");
         assert!(cf.pred_decls.is_empty(), "FOF pred_decls must be empty");
     }
 
@@ -587,7 +618,9 @@ mod tests {
         let mut trans = TranslationLayer::new(sem);
 
         let pos_int_id = trans.semantic.syntactic.sym_id("PositiveInteger").unwrap();
-        trans.numeric_sorts.update(pos_int_id, crate::trans::Sort::Integer);
+        trans
+            .numeric_sorts
+            .update(pos_int_id, crate::trans::Sort::Integer);
         crate::trans::rewrite::run_rewrite_pass(
             &trans.numeric_sorts,
             &mut trans.suppressed.write().unwrap(),
@@ -597,7 +630,8 @@ mod tests {
         for &sid in trans.suppressed.read().unwrap().iter() {
             assert!(
                 trans.formula_fof(sid).is_none(),
-                "suppressed sentence {} should return None from formula_fof", sid
+                "suppressed sentence {} should return None from formula_fof",
+                sid
             );
         }
     }
@@ -609,10 +643,15 @@ mod tests {
         let f1 = trans.formula_fof(sid);
         let f2 = trans.formula_fof(sid);
         assert!(f1.is_some() && f2.is_some());
-        assert_eq!(f1.unwrap().formula, f2.unwrap().formula,
-            "formula_fof should return identical results on repeated calls");
-        assert!(trans.formulas_fof.peek(&sid).is_some(),
-            "result should be in the formulas_fof cache");
+        assert_eq!(
+            f1.unwrap().formula,
+            f2.unwrap().formula,
+            "formula_fof should return identical results on repeated calls"
+        );
+        assert!(
+            trans.formulas_fof.peek(&sid).is_some(),
+            "result should be in the formulas_fof cache"
+        );
     }
 
     #[test]
@@ -660,11 +699,15 @@ mod tests {
         let sid = root_of(&trans);
         // formula_fof should still return a value (on-the-fly).
         let cf = trans.formula_fof(sid);
-        assert!(cf.is_some(),
-            "formula_fof must return a value even when the cache is disabled");
+        assert!(
+            cf.is_some(),
+            "formula_fof must return a value even when the cache is disabled"
+        );
         // But nothing should have been stored.
-        assert!(trans.formulas_fof.peek(&sid).is_none(),
-            "cache should remain empty when formulas_fof is disabled");
+        assert!(
+            trans.formulas_fof.peek(&sid).is_none(),
+            "cache should remain empty when formulas_fof is disabled"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -676,10 +719,16 @@ mod tests {
         let trans = make_trans("(instance Fido Dog)\n(subclass Dog Animal)");
         trans.prime_formula_cache().unwrap();
         for &sid in &roots_of(&trans) {
-            assert!(trans.formulas_tff.peek(&sid).is_some(),
-                "formulas_tff should be populated for sid {}", sid);
-            assert!(trans.formulas_fof.peek(&sid).is_some(),
-                "formulas_fof should be populated for sid {}", sid);
+            assert!(
+                trans.formulas_tff.peek(&sid).is_some(),
+                "formulas_tff should be populated for sid {}",
+                sid
+            );
+            assert!(
+                trans.formulas_fof.peek(&sid).is_some(),
+                "formulas_fof should be populated for sid {}",
+                sid
+            );
         }
     }
 
@@ -692,10 +741,16 @@ mod tests {
         let trans = make_trans("(instance Fido Dog)\n(subclass Dog Animal)");
         let sids: Vec<SentenceId> = roots_of(&trans);
         let (problem, sid_map) = trans.build_problem(&sids, TptpLang::Tff);
-        assert_eq!(problem.axioms().len(), 2,
-            "build_problem should produce one axiom per convertible SID");
-        assert_eq!(problem.axioms().len(), sid_map.len(),
-            "sid_map must be parallel to axioms");
+        assert_eq!(
+            problem.axioms().len(),
+            2,
+            "build_problem should produce one axiom per convertible SID"
+        );
+        assert_eq!(
+            problem.axioms().len(),
+            sid_map.len(),
+            "sid_map must be parallel to axioms"
+        );
     }
 
     #[test]
@@ -703,10 +758,16 @@ mod tests {
         let trans = make_trans("(instance Fido Dog)\n(subclass Dog Animal)");
         let sids: Vec<SentenceId> = roots_of(&trans);
         let (problem, sid_map) = trans.build_problem(&sids, TptpLang::Fof);
-        assert_eq!(problem.axioms().len(), 2,
-            "build_problem FOF should produce one axiom per convertible SID");
-        assert_eq!(problem.axioms().len(), sid_map.len(),
-            "sid_map must be parallel to axioms");
+        assert_eq!(
+            problem.axioms().len(),
+            2,
+            "build_problem FOF should produce one axiom per convertible SID"
+        );
+        assert_eq!(
+            problem.axioms().len(),
+            sid_map.len(),
+            "sid_map must be parallel to axioms"
+        );
     }
 
     #[test]
@@ -722,8 +783,10 @@ mod tests {
             .iter()
             .filter(|p| p.name().contains("instance"))
             .count();
-        assert_eq!(instance_decls, 1,
-            "shared predicate 'instance' should appear exactly once in TFF preamble");
+        assert_eq!(
+            instance_decls, 1,
+            "shared predicate 'instance' should appear exactly once in TFF preamble"
+        );
     }
 
     #[test]
@@ -736,7 +799,9 @@ mod tests {
         let mut trans = TranslationLayer::new(sem);
 
         let pos_int_id = trans.semantic.syntactic.sym_id("PositiveInteger").unwrap();
-        trans.numeric_sorts.update(pos_int_id, crate::trans::Sort::Integer);
+        trans
+            .numeric_sorts
+            .update(pos_int_id, crate::trans::Sort::Integer);
         crate::trans::rewrite::run_rewrite_pass(
             &trans.numeric_sorts,
             &mut trans.suppressed.write().unwrap(),
@@ -754,9 +819,14 @@ mod tests {
             problem.axioms().len() <= total_roots - suppressed_count,
             "suppressed sentences must not appear in build_problem output: \
              roots={} suppressed={} axioms={}",
-            total_roots, suppressed_count, problem.axioms().len()
+            total_roots,
+            suppressed_count,
+            problem.axioms().len()
         );
-        assert_eq!(problem.axioms().len(), sid_map.len(),
-            "sid_map must be parallel to axioms");
+        assert_eq!(
+            problem.axioms().len(),
+            sid_map.len(),
+            "sid_map must be parallel to axioms"
+        );
     }
 }

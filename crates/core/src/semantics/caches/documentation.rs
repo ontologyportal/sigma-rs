@@ -4,12 +4,12 @@
 //! relation (`DocEntry::rel`) plus the language and text.  All languages are
 //! stored; the wrapper filters by language.
 
-use crate::{Element, Literal, SentenceId, SymbolId};
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::SemanticLayer;
-use crate::semantics::consts::{DOC_RELATION, DOCUMENTATION_RELATIONS};
+use crate::semantics::consts::{DOCUMENTATION_RELATIONS, DOC_RELATION};
 use crate::semantics::types::{DocEntry, Scope, Scoped};
+use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
+use crate::{Element, Literal, SentenceId, SymbolId};
 
 /// Behavior for the `semantic::documentation` cache.
 #[derive(Debug, Default)]
@@ -17,14 +17,18 @@ pub(crate) struct Documentation;
 
 impl CacheBehavior for Documentation {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = Vec<DocEntry>;
+    type Key = Scoped<SymbolId>;
+    type Value = Vec<DocEntry>;
     type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "semantic::documentation";
 
-    fn generate(&self, parent: &SemanticLayer, &Scoped { scope, key: sym }: &Scoped<SymbolId>) -> Vec<DocEntry> {
+    fn generate(
+        &self,
+        parent: &SemanticLayer,
+        &Scoped { scope, key: sym }: &Scoped<SymbolId>,
+    ) -> Vec<DocEntry> {
         let mut out = Vec::new();
         for (_, rel) in DOCUMENTATION_RELATIONS {
             out.extend(collect_doc_entries(parent, rel.id(), sym, scope));
@@ -34,20 +38,28 @@ impl CacheBehavior for Documentation {
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
         use crate::cache::events::EventKind;
-        &[EventKind::TaxonomyChanged, EventKind::OtherRootsChanged,
-          EventKind::SessionReferenced, EventKind::SessionRetracted]
+        &[
+            EventKind::TaxonomyChanged,
+            EventKind::OtherRootsChanged,
+            EventKind::SessionReferenced,
+            EventKind::SessionRetracted,
+        ]
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences", "syntactic::residue_index", "syntactic::sessions"]
+        &[
+            "syntactic::sentences",
+            "syntactic::residue_index",
+            "syntactic::sessions",
+        ]
     }
 
     fn react(
         &self,
-        parent:  &SemanticLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<Scoped<SymbolId>, Vec<DocEntry>>,
-        _side:   &Self::Side,
+        parent: &SemanticLayer,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<Scoped<SymbolId>, Vec<DocEntry>>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
         for event in events {
@@ -87,11 +99,14 @@ impl SemanticLayer {
     /// `format`/`termFormat` entries. Optionally filtered by language.
     pub(crate) fn documentation_scoped(
         &self,
-        sym:      SymbolId,
+        sym: SymbolId,
         language: Option<&str>,
-        scope:    Scope,
+        scope: Scope,
     ) -> Vec<DocEntry> {
-        filter_lang(&self.documentation.get(self, Scoped { scope, key: sym }), language)
+        filter_lang(
+            &self.documentation.get(self, Scoped { scope, key: sym }),
+            language,
+        )
     }
 
     /// Documentation entries for `sym` from **every** source, promoted or not.
@@ -110,15 +125,26 @@ impl SemanticLayer {
 /// The symbol arguments of `sid` iff it is a documentation-style root, else an
 /// empty vector.
 fn doc_symbols(parent: &SemanticLayer, sid: SentenceId) -> Vec<SymbolId> {
-    let Some(sent) = parent.syntactic.sentence(sid) else { return Vec::new() };
-    let Some(head) = sent.head_symbol() else { return Vec::new() };
-    if !DOCUMENTATION_RELATIONS.iter().any(|(_, rel)| rel.id() == head) {
+    let Some(sent) = parent.syntactic.sentence(sid) else {
+        return Vec::new();
+    };
+    let Some(head) = sent.head_symbol() else {
+        return Vec::new();
+    };
+    if !DOCUMENTATION_RELATIONS
+        .iter()
+        .any(|(_, rel)| rel.id() == head)
+    {
         return Vec::new();
     }
-    sent.elements.iter().skip(1).filter_map(|el| match el {
-        Element::Symbol(sym) => Some(sym.id()),
-        _ => None,
-    }).collect()
+    sent.elements
+        .iter()
+        .skip(1)
+        .filter_map(|el| match el {
+            Element::Symbol(sym) => Some(sym.id()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Scan head-indexed root sentences for a documentation-style relation,
@@ -131,9 +157,9 @@ fn doc_symbols(parent: &SemanticLayer, sid: SentenceId) -> Vec<SymbolId> {
 /// pull in every documented symbol's text.
 pub(crate) fn collect_doc_entries(
     parent: &SemanticLayer,
-    head:   SymbolId,
+    head: SymbolId,
     target: SymbolId,
-    scope:  Scope,
+    scope: Scope,
 ) -> Vec<DocEntry> {
     let store = &parent.syntactic;
     let sids = parent.scope_filter_sids(store.by_head_id(&head).iter().copied(), scope);
@@ -146,7 +172,7 @@ pub(crate) fn collect_doc_entries(
 /// `format` / `termFormat` render immediately on ingest, before promotion.
 pub(crate) fn collect_doc_entries_any(
     parent: &SemanticLayer,
-    head:   SymbolId,
+    head: SymbolId,
     target: SymbolId,
 ) -> Vec<DocEntry> {
     let store = &parent.syntactic;
@@ -154,14 +180,16 @@ pub(crate) fn collect_doc_entries_any(
 }
 
 fn collect_from_sids(
-    store:  &crate::syntactic::SyntacticLayer,
-    head:   SymbolId,
+    store: &crate::syntactic::SyntacticLayer,
+    head: SymbolId,
     target: SymbolId,
-    sids:   impl IntoIterator<Item = SentenceId>,
+    sids: impl IntoIterator<Item = SentenceId>,
 ) -> Vec<DocEntry> {
     let mut out = Vec::new();
     for sid in sids {
-        let Some(sent) = store.sentence(sid) else { continue };
+        let Some(sent) = store.sentence(sid) else {
+            continue;
+        };
         let mut syms = Vec::new();
         let mut text = None;
         for el in sent.elements.iter().skip(1) {
@@ -186,10 +214,18 @@ fn collect_from_sids(
         } else {
             (syms.get(1).copied(), syms.first().copied())
         };
-        if subject != Some(target) { continue; }
+        if subject != Some(target) {
+            continue;
+        }
         let Some(lang_id) = lang_id else { continue };
-        let Some(lang_sym) = store.sym_name(lang_id) else { continue };
-        out.push(DocEntry { rel: head, language: lang_sym.name().to_string(), text });
+        let Some(lang_sym) = store.sym_name(lang_id) else {
+            continue;
+        };
+        out.push(DocEntry {
+            rel: head,
+            language: lang_sym.name().to_string(),
+            text,
+        });
     }
     out
 }
@@ -197,11 +233,14 @@ fn collect_from_sids(
 /// Filter doc entries by language (`None` = all).
 pub(crate) fn filter_lang(entries: &[DocEntry], want: Option<&str>) -> Vec<DocEntry> {
     match want {
-        None    => entries.to_vec(),
-        Some(l) => entries.iter().filter(|e| e.language == l).cloned().collect(),
+        None => entries.to_vec(),
+        Some(l) => entries
+            .iter()
+            .filter(|e| e.language == l)
+            .cloned()
+            .collect(),
     }
 }
-
 
 /// Strip the surrounding double-quotes from a KIF string literal.
 fn strip_quotes(s: &str) -> String {
@@ -221,55 +260,74 @@ mod tests {
 
     #[test]
     fn documentation_single_entry() {
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (documentation Animal EnglishLanguage "A living organism.")
-        "#);
+        "#,
+        );
         let animal = layer.syntactic.sym_id("Animal").unwrap();
-        assert_eq!(layer.documentation(animal, None), vec![DocEntry {
-            rel: DOC_RELATION.id(),
-            language: "EnglishLanguage".into(),
-            text:     "A living organism.".into(),
-        }]);
+        assert_eq!(
+            layer.documentation(animal, None),
+            vec![DocEntry {
+                rel: DOC_RELATION.id(),
+                language: "EnglishLanguage".into(),
+                text: "A living organism.".into(),
+            }]
+        );
     }
 
     #[test]
     fn documentation_language_filter() {
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (documentation Animal EnglishLanguage "A living organism.")
             (documentation Animal GermanLanguage "Ein Lebewesen.")
-        "#);
+        "#,
+        );
         let animal = layer.syntactic.sym_id("Animal").unwrap();
         assert_eq!(layer.documentation(animal, None).len(), 2);
         let german = layer.documentation(animal, Some("GermanLanguage"));
         assert_eq!(german.len(), 1);
         assert_eq!(german[0].text, "Ein Lebewesen.");
-        assert!(layer.documentation(animal, Some("FrenchLanguage")).is_empty());
+        assert!(layer
+            .documentation(animal, Some("FrenchLanguage"))
+            .is_empty());
     }
 
     #[test]
     fn format_entry_flipped_layout() {
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (format EnglishLanguage instance "%1 is an instance of %2")
-        "#);
+        "#,
+        );
         let instance = layer.syntactic.sym_id("instance").unwrap();
-        assert_eq!(layer.documentation(instance, None), vec![DocEntry {
-            rel:      FORMAT_RELATION.id(),
-            language: "EnglishLanguage".into(),
-            text:     "%1 is an instance of %2".into(),
-        }]);
+        assert_eq!(
+            layer.documentation(instance, None),
+            vec![DocEntry {
+                rel: FORMAT_RELATION.id(),
+                language: "EnglishLanguage".into(),
+                text: "%1 is an instance of %2".into(),
+            }]
+        );
     }
 
     #[test]
     fn term_format_entry_flipped_layout() {
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (termFormat EnglishLanguage Entity "entity")
-        "#);
+        "#,
+        );
         let entity = layer.syntactic.sym_id("Entity").unwrap();
-        assert_eq!(layer.documentation(entity, None), vec![DocEntry {
-            rel:      TERM_RELATION.id(),
-            language: "EnglishLanguage".into(),
-            text:     "entity".into(),
-        }]);
+        assert_eq!(
+            layer.documentation(entity, None),
+            vec![DocEntry {
+                rel: TERM_RELATION.id(),
+                language: "EnglishLanguage".into(),
+                text: "entity".into(),
+            }]
+        );
     }
 
     #[test]
@@ -277,38 +335,59 @@ mod tests {
         // EnglishLanguage sits in the language slot of every entry below, but is
         // the *subject* of only the last one. Looking it up must return that one
         // entry, not everyone else's documentation.
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (documentation Animal EnglishLanguage "A living organism.")
             (documentation Plant EnglishLanguage "A photosynthesizing organism.")
             (termFormat EnglishLanguage Animal "animal")
             (format EnglishLanguage instance "%1 is an instance of %2")
             (documentation EnglishLanguage EnglishLanguage "A natural language.")
-        "#);
+        "#,
+        );
         let english = layer.syntactic.sym_id("EnglishLanguage").unwrap();
         let entries = layer.documentation(english, None);
-        assert_eq!(entries.len(), 1, "expected only EnglishLanguage's own doc, got: {entries:?}");
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected only EnglishLanguage's own doc, got: {entries:?}"
+        );
         assert_eq!(entries[0].rel, DOC_RELATION.id());
         assert_eq!(entries[0].text, "A natural language.");
 
         // The real subjects still resolve, unaffected by the shared language slot.
         let animal = layer.syntactic.sym_id("Animal").unwrap();
-        assert_eq!(layer.documentation(animal, None).len(), 2, "documentation + termFormat");
+        assert_eq!(
+            layer.documentation(animal, None).len(),
+            2,
+            "documentation + termFormat"
+        );
     }
 
     #[test]
     fn collects_across_all_doc_relations() {
-        let layer = kif_layer(r#"
+        let layer = kif_layer(
+            r#"
             (documentation Entity EnglishLanguage "The root class.")
             (termFormat EnglishLanguage Entity "entity")
             (format EnglishLanguage Entity "%1 entity")
-        "#);
+        "#,
+        );
         let entity = layer.syntactic.sym_id("Entity").unwrap();
         let entries = layer.documentation(entity, None);
         assert_eq!(entries.len(), 3, "one entry per doc relation");
 
         let by_rel = |rel: u64| entries.iter().find(|e| e.rel == rel);
-        assert_eq!(by_rel(DOC_RELATION.id()).map(|e| e.text.as_str()),  Some("The root class."));
-        assert_eq!(by_rel(TERM_RELATION.id()).map(|e| e.text.as_str()), Some("entity"));
-        assert_eq!(by_rel(FORMAT_RELATION.id()).map(|e| e.text.as_str()), Some("%1 entity"));
+        assert_eq!(
+            by_rel(DOC_RELATION.id()).map(|e| e.text.as_str()),
+            Some("The root class.")
+        );
+        assert_eq!(
+            by_rel(TERM_RELATION.id()).map(|e| e.text.as_str()),
+            Some("entity")
+        );
+        assert_eq!(
+            by_rel(FORMAT_RELATION.id()).map(|e| e.text.as_str()),
+            Some("%1 entity")
+        );
     }
 }

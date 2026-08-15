@@ -16,10 +16,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::KnowledgeBase;
-use crate::SentenceId;
 use crate::kb::man::ManKind;
+use crate::layer::{Layer, TopLayer};
 use crate::types::{Element, Literal, SymbolId};
-use crate::layer::{TopLayer, Layer};
+use crate::SentenceId;
 
 // -- Public types ------------------------------------------------------------
 
@@ -44,9 +44,9 @@ impl SearchSource {
     /// Short label for this source (`"term"`, `"doc"`, or `"format"`).
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::TermFormat    => "term",
+            Self::TermFormat => "term",
             Self::Documentation => "doc",
-            Self::Format        => "format",
+            Self::Format => "format",
         }
     }
 }
@@ -60,27 +60,27 @@ impl SearchSource {
 pub struct SearchHit {
     /// The SUMO symbol whose documentation/termFormat/format axiom matched,
     /// or whose own name matched the query directly.
-    pub symbol:   String,
+    pub symbol: String,
     /// Classification labels for the symbol (mirrors `ManPage::kinds`).
-    pub kinds:    Vec<ManKind>,
+    pub kinds: Vec<ManKind>,
     /// Which predicate produced the hit (best-effort — `Documentation` when
     /// the hit came from the unsourced name-match pass).
-    pub source:   SearchSource,
+    pub source: SearchSource,
     /// The language tag of the matching axiom (e.g. `"EnglishLanguage"`), or
     /// `""` for an unsourced name-match hit.
     pub language: String,
     /// The full matching string, surrounding quotes stripped, or `""` for an
     /// unsourced name-match hit.
-    pub text:     String,
+    pub text: String,
     /// SentenceId of the matching axiom, or `SentenceId::MAX` for an
     /// unsourced name-match hit (no backing axiom to cite).
-    pub sid:      SentenceId,
+    pub sid: SentenceId,
     /// Relevance score, higher = better.  Combines symbol-name match quality
     /// (exact > prefix > substring > name doesn't contain the query), the
     /// source tier (termFormat > documentation > format), and how early the
     /// query appears in the matched text.  Hits are returned sorted by this
     /// descending (ties broken by symbol name, then `sid`).
-    pub rank:     f32,
+    pub rank: f32,
 }
 
 /// Optional filters for [`KnowledgeBase::search`].  All fields are
@@ -144,20 +144,23 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         // `termFormat` label, then `format`; ties within a tier keep first-seen.
         // When a language filter is set, off-language entries never enter the
         // map: the preview must respect the same filter the matches do.
-        let mut backing: HashMap<SymbolId, (SentenceId, SearchSource, String, String)> = HashMap::new();
+        let mut backing: HashMap<SymbolId, (SentenceId, SearchSource, String, String)> =
+            HashMap::new();
 
         // (head_name, symbol_arg_index, lang_arg_index, text_arg_index, source).
         // Arg indices are into `Sentence.elements`, where `elements[0]` is the
         // head and arguments start at `elements[1]`.
         const SCHEMAS: &[(&str, usize, usize, usize, SearchSource)] = &[
-            ("termFormat",    2, 1, 3, SearchSource::TermFormat),
+            ("termFormat", 2, 1, 3, SearchSource::TermFormat),
             ("documentation", 1, 2, 3, SearchSource::Documentation),
-            ("format",        2, 1, 3, SearchSource::Format),
+            ("format", 2, 1, 3, SearchSource::Format),
         ];
 
         for &(head, sym_pos, lang_pos, text_pos, source) in SCHEMAS {
             for sid in syn.by_head(head).iter().copied() {
-                let Some(sent) = syn.sentence(sid) else { continue };
+                let Some(sent) = syn.sentence(sid) else {
+                    continue;
+                };
 
                 let text = match sent.elements.get(text_pos) {
                     Some(Element::Literal(Literal::Str(s))) => s,
@@ -179,7 +182,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 // breaks ties.  Entries in a filtered-out language are never
                 // eligible as previews.
                 if opts.language.is_none_or(|want| lang == want) {
-                    let better = backing.get(&sym_id)
+                    let better = backing
+                        .get(&sym_id)
                         .is_none_or(|cur| source_preview_rank(source) < source_preview_rank(cur.1));
                     if better {
                         backing.insert(sym_id, (sid, source, lang.clone(), strip_quotes(text)));
@@ -187,15 +191,21 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 }
 
                 let text_lc = text.to_lowercase();
-                let Some(match_idx) = text_lc.find(&q) else { continue };
+                let Some(match_idx) = text_lc.find(&q) else {
+                    continue;
+                };
 
                 if let Some(want) = opts.language {
-                    if lang != want { continue; }
+                    if lang != want {
+                        continue;
+                    }
                 }
 
                 let kinds = self.kinds_of(sym_id);
                 if let Some(want) = opts.kind {
-                    if !kind_matches(&kinds, want) { continue; }
+                    if !kind_matches(&kinds, want) {
+                        continue;
+                    }
                 }
 
                 let symbol = match syn.sym_name(sym_id) {
@@ -205,15 +215,18 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 let rank = search_rank(&q, &symbol, source, match_idx);
                 let keep = text_hits.get(&sym_id).is_none_or(|cur| rank > cur.rank);
                 if keep {
-                    text_hits.insert(sym_id, SearchHit {
-                        symbol,
-                        kinds,
-                        source,
-                        language: lang,
-                        text:     strip_quotes(text),
-                        sid,
-                        rank,
-                    });
+                    text_hits.insert(
+                        sym_id,
+                        SearchHit {
+                            symbol,
+                            kinds,
+                            source,
+                            language: lang,
+                            text: strip_quotes(text),
+                            sid,
+                            rank,
+                        },
+                    );
                 }
             }
         }
@@ -241,7 +254,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         // Sort by relevance (descending), then deterministic tie-breaks. The
         // stable sort preserves KB order for hits with an identical key.
         hits.sort_by(|a, b| {
-            b.rank.partial_cmp(&a.rank).unwrap_or(std::cmp::Ordering::Equal)
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.symbol.cmp(&b.symbol))
                 .then_with(|| a.sid.cmp(&b.sid))
         });
@@ -267,15 +282,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// (the name match itself is still a legitimate result).
     fn name_match_hits(
         &self,
-        q:           &str,
-        opts:        &SearchOpts,
-        backing:     &HashMap<SymbolId, (SentenceId, SearchSource, String, String)>,
+        q: &str,
+        opts: &SearchOpts,
+        backing: &HashMap<SymbolId, (SentenceId, SearchSource, String, String)>,
         already_hit: &HashSet<&str>,
     ) -> Vec<SearchHit> {
         let syn = &self.layer.semantic().syntactic;
         let mut out = Vec::new();
         syn.symbols.entries().for_each(|(&sym_id, sym)| {
-            if syn.is_skolem(sym_id) { return; }
+            if syn.is_skolem(sym_id) {
+                return;
+            }
             let name = sym.name();
             // `?X`/`@X` variables are interned into this same table under a
             // scope-qualified key (`"<name>__<scope-id>"`, e.g. `X__3` — see
@@ -284,22 +301,43 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             // interning detail, not KB vocabulary, and must never surface as
             // a search result — e.g. a KB axiom binding `?Human` would
             // otherwise show up as a hit named `Human__15551`.
-            if is_scoped_variable_name(&name) { return; }
-            if !name.to_lowercase().contains(q) { return; }
-            if already_hit.contains(name.as_ref()) { return; }
+            if is_scoped_variable_name(&name) {
+                return;
+            }
+            if !name.to_lowercase().contains(q) {
+                return;
+            }
+            if already_hit.contains(name.as_ref()) {
+                return;
+            }
 
             let kinds = self.kinds_of(sym_id);
             if let Some(want) = opts.kind {
-                if !kind_matches(&kinds, want) { return; }
+                if !kind_matches(&kinds, want) {
+                    return;
+                }
             }
 
             let (sid, source, language, text) = match backing.get(&sym_id) {
                 Some((sid, source, lang, text)) => (*sid, *source, lang.clone(), text.clone()),
-                None => (SentenceId::MAX, SearchSource::Documentation, String::new(), String::new()),
+                None => (
+                    SentenceId::MAX,
+                    SearchSource::Documentation,
+                    String::new(),
+                    String::new(),
+                ),
             };
 
             let rank = search_rank(q, &name, source, 0);
-            out.push(SearchHit { symbol: name.to_string(), kinds, source, language, text, sid, rank });
+            out.push(SearchHit {
+                symbol: name.to_string(),
+                kinds,
+                source,
+                language,
+                text,
+                sid,
+                rank,
+            });
         });
         out
     }
@@ -326,13 +364,17 @@ fn search_rank(query_lc: &str, symbol: &str, source: SearchSource, match_idx: us
         0.0
     };
     let src = match source {
-        SearchSource::TermFormat    => 12.0,
+        SearchSource::TermFormat => 12.0,
         SearchSource::Documentation => 6.0,
-        SearchSource::Format        => 0.0,
+        SearchSource::Format => 0.0,
     };
     // Earlier matches score a little higher; a match at the very start gets a
     // small flat bonus.
-    let pos = if match_idx == 0 { 4.0 } else { 2.0 / (1.0 + match_idx as f32) };
+    let pos = if match_idx == 0 {
+        4.0
+    } else {
+        2.0 / (1.0 + match_idx as f32)
+    };
     name + src + pos
 }
 
@@ -343,8 +385,8 @@ fn search_rank(query_lc: &str, symbol: &str, source: SearchSource, match_idx: us
 fn source_preview_rank(source: SearchSource) -> u8 {
     match source {
         SearchSource::Documentation => 0,
-        SearchSource::TermFormat    => 1,
-        SearchSource::Format        => 2,
+        SearchSource::TermFormat => 1,
+        SearchSource::Format => 2,
     }
 }
 
@@ -352,10 +394,12 @@ fn source_preview_rank(source: SearchSource) -> u8 {
 /// Relation, Predicate, Function); all other kinds require an exact match.
 fn kind_matches(have: &[ManKind], want: ManKind) -> bool {
     if want == ManKind::Relation {
-        have.iter().any(|k| matches!(
-            k,
-            ManKind::Relation | ManKind::Predicate | ManKind::Function
-        ))
+        have.iter().any(|k| {
+            matches!(
+                k,
+                ManKind::Relation | ManKind::Predicate | ManKind::Function
+            )
+        })
     } else {
         have.contains(&want)
     }
@@ -405,7 +449,7 @@ mod tests {
         assert!(!is_scoped_variable_name("HumanDoll"));
         assert!(!is_scoped_variable_name("subordinateInOrganization"));
         assert!(!is_scoped_variable_name("w__chase_12")); // skolem naming, non-digit suffix
-        assert!(!is_scoped_variable_name("__3"));         // no base name before the scope
+        assert!(!is_scoped_variable_name("__3")); // no base name before the scope
         assert!(!is_scoped_variable_name("plain"));
     }
 
@@ -420,18 +464,30 @@ mod tests {
         // it again. Nothing that round trip leaves behind should stay visible:
         // a half-typed term surfaced in search as a ghost with partial docs.
         let mut kb = KnowledgeBase::new();
-        let r = kb.reload_kif("(documentation Dog EnglishLanguage \"a real dog\")",
-                              &std::path::PathBuf::from("t.kif"), "t.kif");
+        let r = kb.reload_kif(
+            "(documentation Dog EnglishLanguage \"a real dog\")",
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
         assert!(r.ok, "seed load failed: {:?}", r.diagnostics);
 
-        kb.tell("(documentation ZzGhost EnglishLanguage \"half typed thing\")", "__scratch__");
+        kb.tell(
+            "(documentation ZzGhost EnglishLanguage \"half typed thing\")",
+            "__scratch__",
+        );
         kb.flush_session("__scratch__");
 
-        let opts = SearchOpts { kind: None, language: None, limit: None };
+        let opts = SearchOpts {
+            kind: None,
+            language: None,
+            limit: None,
+        };
         let hits = kb.search("half typed", &opts);
-        assert!(hits.is_empty(),
+        assert!(
+            hits.is_empty(),
             "flushed scratch content must not be searchable, got {:?}",
-            hits.iter().map(|h| h.symbol.clone()).collect::<Vec<_>>());
+            hits.iter().map(|h| h.symbol.clone()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -444,8 +500,11 @@ mod tests {
             "#,
         );
         let hits = kb.search("Human", &SearchOpts::default());
-        assert!(hits.iter().any(|h| h.symbol == "Human"), "expected an exact `Human` hit, got {:?}",
-            hits.iter().map(|h| &h.symbol).collect::<Vec<_>>());
+        assert!(
+            hits.iter().any(|h| h.symbol == "Human"),
+            "expected an exact `Human` hit, got {:?}",
+            hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
+        );
         assert!(
             hits.iter().all(|h| !is_scoped_variable_name(&h.symbol)),
             "a scope-qualified variable name leaked into results: {:?}",
@@ -466,8 +525,15 @@ mod tests {
             "#,
         );
         let hits = kb.search("Triangle", &SearchOpts::default());
-        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
-        assert_eq!(hit.source, SearchSource::Documentation, "preview should cite the documentation");
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Triangle")
+            .expect("Triangle hit");
+        assert_eq!(
+            hit.source,
+            SearchSource::Documentation,
+            "preview should cite the documentation"
+        );
         assert_eq!(hit.text, "A three-sided polygon.");
     }
 
@@ -480,9 +546,15 @@ mod tests {
             (documentation Triangle FrenchLanguage "Un polygone a trois cotes.")
             "#,
         );
-        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let opts = SearchOpts {
+            language: Some("FrenchLanguage"),
+            ..SearchOpts::default()
+        };
         let hits = kb.search("Triangle", &opts);
-        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Triangle")
+            .expect("Triangle hit");
         assert_eq!(hit.language, "FrenchLanguage");
         assert_eq!(hit.text, "Un polygone a trois cotes.");
     }
@@ -500,10 +572,19 @@ mod tests {
             (documentation Triangle EnglishLanguage "A three-sided polygon.")
             "#,
         );
-        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let opts = SearchOpts {
+            language: Some("FrenchLanguage"),
+            ..SearchOpts::default()
+        };
         let hits = kb.search("triangle", &opts);
-        let hit = hits.iter().find(|h| h.symbol == "Triangle").expect("Triangle hit");
-        assert_eq!(hit.language, "FrenchLanguage", "snippet language must respect the filter");
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Triangle")
+            .expect("Triangle hit");
+        assert_eq!(
+            hit.language, "FrenchLanguage",
+            "snippet language must respect the filter"
+        );
         assert_eq!(hit.text, "triangle");
         assert_eq!(hit.source, SearchSource::TermFormat);
     }
@@ -520,9 +601,14 @@ mod tests {
             (documentation Foo EnglishLanguage "An English-only description.")
             "#,
         );
-        let opts = SearchOpts { language: Some("FrenchLanguage"), ..SearchOpts::default() };
+        let opts = SearchOpts {
+            language: Some("FrenchLanguage"),
+            ..SearchOpts::default()
+        };
         let hits = kb.search("Foo", &opts);
-        let hit = hits.iter().find(|h| h.symbol == "Foo")
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Foo")
             .expect("name match must not be dropped by off-language documentation");
         assert_eq!(hit.language, "FrenchLanguage");
         assert_eq!(hit.text, "fou");

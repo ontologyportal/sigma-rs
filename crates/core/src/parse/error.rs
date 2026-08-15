@@ -1,7 +1,7 @@
 use std::error::Error;
 
-use crate::{Diagnostic, Severity, ToDiagnostic};
 use super::Span;
+use crate::{Diagnostic, Severity, ToDiagnostic};
 
 pub trait ParseError: Error + ToDiagnostic {
     fn get_span(&self) -> Span;
@@ -27,9 +27,9 @@ impl ToDiagnostic for Box<dyn ParseError> {
 
 // Keep a Severity import path so callers that referenced `Severity`
 // through this module continue to compile.
+use thiserror::Error;
 #[allow(unused_imports)]
 use Severity as _UnusedSeverity;
-use thiserror::Error;
 
 #[derive(Debug, Clone, Error)]
 #[allow(dead_code)]

@@ -19,10 +19,10 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::Element;
 
 use super::clause::{AtomId, AtomTable, Term};
-use super::parked;
-use super::AtomInfos;
 use super::hash64::Map64;
+use super::parked;
 use super::unify::{match_one_way, slot_atom, term_slots, Subst};
+use super::AtomInfos;
 
 /// Key of an atom's head seat, for the open-unit buckets.  `None` when
 /// the head is a variable (predicate-variable units are not bucketed —
@@ -32,7 +32,7 @@ fn head_key(atoms: &AtomTable, syn: &SyntacticLayer, atom: AtomId) -> Option<(u6
     let arity = s.elements.len().min(255) as u8;
     match s.elements.first()? {
         Element::Symbol(sym) => Some((sym.id(), arity)),
-        Element::Op(op)      => Some((u64::from(op_tag(op)), arity)),
+        Element::Op(op) => Some((u64::from(op_tag(op)), arity)),
         _ => None,
     }
 }
@@ -40,8 +40,14 @@ fn head_key(atoms: &AtomTable, syn: &SyntacticLayer, atom: AtomId) -> Option<(u6
 pub(crate) fn op_tag(op: &crate::parse::OpKind) -> u8 {
     use crate::parse::OpKind::*;
     match op {
-        And => b'a', Or => b'o', Not => b'n', Implies => b'i',
-        Iff => b'f', Equal => b'e', ForAll => b'A', Exists => b'E',
+        And => b'a',
+        Or => b'o',
+        Not => b'n',
+        Implies => b'i',
+        Iff => b'f',
+        Equal => b'e',
+        ForAll => b'A',
+        Exists => b'E',
     }
 }
 
@@ -65,12 +71,12 @@ parked! {
 #[derive(Debug, Clone)]
 pub(crate) struct OpenUnit {
     #[allow(dead_code)] // parked
-    pub(crate) atom:    AtomId,
-    pub(crate) clause:  u32,
+    pub(crate) atom: AtomId,
+    pub(crate) clause: u32,
     pub(crate) pattern: Arc<Term>,
     /// Slot-variable count of the owning clause — the caller's scratch
     /// substitution only needs slots `0..=nvars` cleared per attempt.
-    pub(crate) nvars:   u32,
+    pub(crate) nvars: u32,
 }
 
 /// How one target seat participates in the open-unit residue lookup.
@@ -132,12 +138,12 @@ impl UnitStores {
     pub(crate) fn add_unit(
         &mut self,
         clause_id: u32,
-        pos:       bool,
-        atom:      AtomId,
-        nvars:     u32,
-        infos:     &AtomInfos,
-        atoms:     &AtomTable,
-        syn:       &SyntacticLayer,
+        pos: bool,
+        atom: AtomId,
+        nvars: u32,
+        infos: &AtomInfos,
+        atoms: &AtomTable,
+        syn: &SyntacticLayer,
     ) {
         let info = infos.info(atom, atoms, syn);
         if info.is_ground() {
@@ -165,7 +171,10 @@ impl UnitStores {
                     .entry(key)
                     .or_default()
                     .push(OpenUnit {
-                        atom, clause: clause_id, pattern: Arc::new(pattern), nvars,
+                        atom,
+                        clause: clause_id,
+                        pattern: Arc::new(pattern),
+                        nvars,
                     });
             }
         }
@@ -173,8 +182,10 @@ impl UnitStores {
         if pos {
             if let Some(s) = atoms.resolve(atom, syn) {
                 if s.elements.len() == 3
-                    && matches!(s.elements.first(),
-                        Some(Element::Op(crate::parse::OpKind::Equal)))
+                    && matches!(
+                        s.elements.first(),
+                        Some(Element::Op(crate::parse::OpKind::Equal))
+                    )
                 {
                     if let Some(Term::App(elems)) = slot_atom(atoms, syn, atom, 0) {
                         let l = elems[1].clone();
@@ -214,8 +225,8 @@ impl UnitStores {
     /// outright (one-way matching never binds target variables).
     pub(crate) fn open_candidates(
         &self,
-        pos:   bool,
-        head:  u64,
+        pos: bool,
+        head: u64,
         arity: u8,
         n_elems: usize,
         seats: &[SeatK],
@@ -254,7 +265,9 @@ impl UnitStores {
                 }
             }
             if scan_all {
-                for v in residues.values() { out.extend(v.iter().cloned()); }
+                for v in residues.values() {
+                    out.extend(v.iter().cloned());
+                }
             } else if let Some(v) = residues.get(&key) {
                 out.extend(v.iter().cloned());
             }
@@ -387,15 +400,21 @@ pub(crate) struct DemodIndex {
 }
 
 impl DemodIndex {
-    pub(crate) fn is_empty(&self) -> bool { self.len == 0 }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 
     /// The registered-lhs head-bit mask (see field docs).
     #[inline]
-    pub(crate) fn head_bits(&self) -> u64 { self.head_bits }
+    pub(crate) fn head_bits(&self) -> u64 {
+        self.head_bits
+    }
 
     /// The current demodulator-set generation (see field docs).
     #[inline]
-    pub(crate) fn generation(&self) -> u32 { self.generation }
+    pub(crate) fn generation(&self) -> u32 {
+        self.generation
+    }
 
     pub(crate) fn clear(&mut self) {
         self.app = Map64::default();
@@ -414,7 +433,12 @@ impl DemodIndex {
         let mut slots = std::collections::BTreeSet::new();
         term_slots(&l, &mut slots);
         let nslots = slots.iter().max().map_or(0, |m| *m as u32 + 1);
-        let d = Demod { clause, l, r, nslots };
+        let d = Demod {
+            clause,
+            l,
+            r,
+            nslots,
+        };
         match &d.l {
             Term::App(elems) => {
                 let key = match elems.first() {
@@ -426,10 +450,7 @@ impl DemodIndex {
                 };
                 let ar = elems.len().min(255) as u8;
                 self.head_bits |= 1u64 << (key & 63);
-                self.app
-                    .entry((key, ar))
-                    .or_default()
-                    .push(d.clone());
+                self.app.entry((key, ar)).or_default().push(d.clone());
             }
             Term::Sym(s) => {
                 let id = s.id();
@@ -532,7 +553,11 @@ mod tests {
     #[test]
     fn demod_index_possibly_matches_agrees_with_candidates() {
         let mut idx = DemodIndex::default();
-        idx.add(7, Term::App(vec![sym("sideKick"), Term::Var(0)]), Term::Var(0));
+        idx.add(
+            7,
+            Term::App(vec![sym("sideKick"), Term::Var(0)]),
+            Term::Var(0),
+        );
         idx.add(3, sym("aliasOf"), sym("real"));
 
         // Same head+arity as an app bucket: possibly_matches true, and a
@@ -563,7 +588,9 @@ mod tests {
     fn demod_index_leaf_bucket_and_clear() {
         let mut idx = DemodIndex::default();
         idx.add(3, sym("aliasOf"), sym("real"));
-        let hits = idx.candidates(&sym("aliasOf")).expect("leaf bucket must hit");
+        let hits = idx
+            .candidates(&sym("aliasOf"))
+            .expect("leaf bucket must hit");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].clause, 3);
         assert!(idx.candidates(&sym("real")).is_none());
@@ -587,7 +614,11 @@ mod tests {
         // sideKick(?0) → ?0 against the ground instance sideKick(Clark):
         // the match binds ?0 = Clark and the replacement is Clark.
         let mut idx = DemodIndex::default();
-        idx.add(9, Term::App(vec![sym("sideKick"), Term::Var(0)]), Term::Var(0));
+        idx.add(
+            9,
+            Term::App(vec![sym("sideKick"), Term::Var(0)]),
+            Term::Var(0),
+        );
 
         let target = Term::App(vec![sym("sideKick"), sym("Clark")]);
         let d = &idx.candidates(&target).expect("bucket")[0];

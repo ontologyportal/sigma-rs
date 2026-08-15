@@ -37,7 +37,9 @@ fn main() {
     let Some(config) = config else { return };
     println!("cargo:rerun-if-changed={}", config.display());
 
-    let Ok(text) = fs::read_to_string(&config) else { return };
+    let Ok(text) = fs::read_to_string(&config) else {
+        return;
+    };
 
     // Minimal parse of the `[env]` table: the file is repo-controlled and
     // holds only `KEY = "value"` lines there (see the workspace
@@ -52,7 +54,9 @@ fn main() {
         if !in_env || line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let key = key.trim();
         let value = value.trim().trim_matches('"');
         println!("cargo:rerun-if-env-changed={}", key);

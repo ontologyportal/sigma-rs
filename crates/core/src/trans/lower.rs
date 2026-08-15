@@ -21,8 +21,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::types::InternedSym;
-use crate::{Element, Literal, OpKind, Sentence, SentenceId, SymbolId};
 use crate::semantics::types::Scope;
 use crate::trans::builtins::{numeric_constant_value, SumoArith, TPTPConstant};
 use crate::trans::ir::{Formula, Function, Interp, Predicate, Sort as IrSort, Term, VarId};
@@ -30,6 +28,8 @@ use crate::trans::sort::numeric_literal_sort;
 use crate::trans::term_sorts::{unified_numeric, unify_numeric_call, widen_term, VarSorts};
 use crate::trans::{Sort, TranslationLayer};
 use crate::types::CachedFormula;
+use crate::types::InternedSym;
+use crate::{Element, Literal, OpKind, Sentence, SentenceId, SymbolId};
 
 /// Map recorded for a converted conjecture so downstream binding extraction can
 /// rejoin the prover's `X<n>` variable names with the original KIF names.
@@ -72,10 +72,10 @@ struct Mode {
 #[derive(Default)]
 struct Decls {
     sorts: Vec<IrSort>,
-    fns:   Vec<Function>,
+    fns: Vec<Function>,
     preds: Vec<Predicate>,
     seen_sorts: HashSet<String>,
-    seen_fns:   HashSet<(String, u32)>,
+    seen_fns: HashSet<(String, u32)>,
     seen_preds: HashSet<(String, u32)>,
 }
 
@@ -137,8 +137,15 @@ impl TranslationLayer {
         typed: bool,
         hide_numbers: bool,
     ) -> Option<CachedFormula> {
-        self.lower_inner(sid, typed, hide_numbers, /*existential*/ false, None, None)
-            .map(|(cf, _)| cf)
+        self.lower_inner(
+            sid,
+            typed,
+            hide_numbers,
+            /*existential*/ false,
+            None,
+            None,
+        )
+        .map(|(cf, _)| cf)
     }
 
     /// Lower `sid` as an axiom with explicit variable-sort OVERRIDES layered
@@ -149,11 +156,18 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     pub(crate) fn lower_axiom_variant(
         &self,
-        sid:       SentenceId,
+        sid: SentenceId,
         overrides: &VarSorts,
     ) -> Option<CachedFormula> {
-        self.lower_inner(sid, /*typed*/ true, /*hide*/ false, /*existential*/ false, None, Some(overrides))
-            .map(|(cf, _)| cf)
+        self.lower_inner(
+            sid,
+            /*typed*/ true,
+            /*hide*/ false,
+            /*existential*/ false,
+            None,
+            Some(overrides),
+        )
+        .map(|(cf, _)| cf)
     }
 
     /// Lower a sentence as a **conjecture** (existential free-var wrap), also
@@ -167,7 +181,14 @@ impl TranslationLayer {
         hide_numbers: bool,
         scope: Option<Scope>,
     ) -> Option<(CachedFormula, QueryVarMap)> {
-        self.lower_inner(sid, typed, hide_numbers, /*existential*/ true, scope, None)
+        self.lower_inner(
+            sid,
+            typed,
+            hide_numbers,
+            /*existential*/ true,
+            scope,
+            None,
+        )
     }
 
     /// Lower a **multi-sentence conjecture** as one conjunction: each `sid`'s
@@ -212,15 +233,18 @@ impl TranslationLayer {
                 return None;
             }
             let s = scope.unwrap_or_else(|| self.scope_of(sid));
-            let mode = Mode { typed, hide_numbers, scope: s };
+            let mode = Mode {
+                typed,
+                hide_numbers,
+                scope: s,
+            };
             let sentence = self.semantic.syntactic.sentence(sid)?;
 
             // This root's local variable numbering, in local-index order for
             // deterministic global assignment.
             let mut vids: HashMap<SymbolId, u32> = HashMap::new();
             self.semantic.syntactic.collect_vars(sid, &mut vids);
-            let mut locals: Vec<(SymbolId, u32)> =
-                vids.iter().map(|(k, v)| (*k, *v)).collect();
+            let mut locals: Vec<(SymbolId, u32)> = vids.iter().map(|(k, v)| (*k, *v)).collect();
             locals.sort_by_key(|&(_, l)| l);
             let mut remap: HashMap<u32, u32> = HashMap::new();
             for (sym, local) in locals {
@@ -246,7 +270,9 @@ impl TranslationLayer {
             let mut body = self.sid_to_formula(&sentence, mode, &var_sorts, &mut decls)?;
             remap_formula_vars(&mut body, &remap);
             bodies.push(body);
-            self.semantic.syntactic.collect_bound_vars(sid, true, &mut bound);
+            self.semantic
+                .syntactic
+                .collect_bound_vars(sid, true, &mut bound);
             // Shared variable ids must agree; a later conjunct's evidence can
             // only sharpen (most-specific wins via `max`).
             for (k, v) in var_sorts {
@@ -259,7 +285,11 @@ impl TranslationLayer {
 
         // Only `typed` matters for the wrap; the per-sid scopes have already
         // been folded into `var_sorts_all`.
-        let mode = Mode { typed, hide_numbers, scope: scope.unwrap_or(Scope::Base) };
+        let mode = Mode {
+            typed,
+            hide_numbers,
+            scope: scope.unwrap_or(Scope::Base),
+        };
         let mut free: Vec<(SymbolId, u32)> = global_idx
             .iter()
             .filter(|(id, _)| !bound.contains(id))
@@ -269,7 +299,8 @@ impl TranslationLayer {
 
         let mut formula = Formula::and(bodies);
         for &(id, idx) in &free {
-            formula = self.wrap_quantifier(idx, id, formula, /*exist*/ true, mode, &var_sorts_all);
+            formula =
+                self.wrap_quantifier(idx, id, formula, /*exist*/ true, mode, &var_sorts_all);
         }
 
         let qvm = QueryVarMap {
@@ -298,7 +329,7 @@ impl TranslationLayer {
         }
         match syn.sessions.sessions_of(sid).first() {
             Some(&s) => Scope::Session(s),
-            None     => Scope::Base,
+            None => Scope::Base,
         }
     }
 
@@ -314,7 +345,11 @@ impl TranslationLayer {
         sort_overrides: Option<&VarSorts>,
     ) -> Option<(CachedFormula, QueryVarMap)> {
         let scope = scope_override.unwrap_or_else(|| self.scope_of(sid));
-        let mode = Mode { typed, hide_numbers, scope };
+        let mode = Mode {
+            typed,
+            hide_numbers,
+            scope,
+        };
 
         // Suppressed sentences (rewrite-pass originals replaced by a synthetic,
         // predicate-variable schema templates, …) must not be emitted — checked
@@ -352,7 +387,9 @@ impl TranslationLayer {
         let body = self.sid_to_formula(&sentence, mode, &var_sorts, &mut decls)?;
 
         let mut bound: HashSet<SymbolId> = HashSet::new();
-        self.semantic.syntactic.collect_bound_vars(sid, true, &mut bound);
+        self.semantic
+            .syntactic
+            .collect_bound_vars(sid, true, &mut bound);
         let mut free: Vec<(SymbolId, u32)> = all
             .iter()
             .filter(|(id, _)| !bound.contains(id))
@@ -431,9 +468,18 @@ impl TranslationLayer {
                 if fs.is_empty() {
                     return None;
                 }
-                Some(if matches!(op, OpKind::And) { Formula::and(fs) } else { Formula::or(fs) })
+                Some(if matches!(op, OpKind::And) {
+                    Formula::and(fs)
+                } else {
+                    Formula::or(fs)
+                })
             }
-            OpKind::Not => Some(Formula::not(self.element_to_formula(args.first()?, mode, vars, decls)?)),
+            OpKind::Not => Some(Formula::not(self.element_to_formula(
+                args.first()?,
+                mode,
+                vars,
+                decls,
+            )?)),
             OpKind::Implies => {
                 let a = self.element_to_formula(args.first()?, mode, vars, decls)?;
                 let b = self.element_to_formula(args.get(1)?, mode, vars, decls)?;
@@ -449,8 +495,16 @@ impl TranslationLayer {
                 let b_el = args.get(1)?;
                 // Each side is converted with the OTHER side's inferred sort as
                 // its expected sort, so a typed term widens an untyped literal.
-                let a_sort = if mode.typed { self.infer_term_sort(a_el, mode.scope, vars) } else { None };
-                let b_sort = if mode.typed { self.infer_term_sort(b_el, mode.scope, vars) } else { None };
+                let a_sort = if mode.typed {
+                    self.infer_term_sort(a_el, mode.scope, vars)
+                } else {
+                    None
+                };
+                let b_sort = if mode.typed {
+                    self.infer_term_sort(b_el, mode.scope, vars)
+                } else {
+                    None
+                };
                 if mode.typed {
                     if let (Some(sa), Some(sb)) = (a_sort, b_sort) {
                         let numeric = |s: Sort| s != Sort::Individual;
@@ -492,7 +546,13 @@ impl TranslationLayer {
 
     /// A child element in *formula* position: a sub-sentence recurses; `True` /
     /// `False` map to the logical constants; anything else is not a formula.
-    fn element_to_formula(&self, el: &Element, mode: Mode, vars: &VarSorts, decls: &mut Decls) -> Option<Formula> {
+    fn element_to_formula(
+        &self,
+        el: &Element,
+        mode: Mode,
+        vars: &VarSorts,
+        decls: &mut Decls,
+    ) -> Option<Formula> {
         match el {
             Element::Sub(sid) => {
                 let s = self.semantic.syntactic.sentence(*sid)?;
@@ -504,7 +564,13 @@ impl TranslationLayer {
     }
 
     /// Build the `Formula::atom` for a Symbol-headed sentence `(P a b ...)`.
-    fn atomic_to_formula(&self, sentence: &Sentence, mode: Mode, vars: &VarSorts, decls: &mut Decls) -> Option<Formula> {
+    fn atomic_to_formula(
+        &self,
+        sentence: &Sentence,
+        mode: Mode,
+        vars: &VarSorts,
+        decls: &mut Decls,
+    ) -> Option<Formula> {
         let n_args = sentence.elements.len().saturating_sub(1);
         let head = match sentence.elements.first()? {
             Element::Symbol(sym) => sym,
@@ -570,7 +636,11 @@ impl TranslationLayer {
             // The binder sort comes from the per-root formula classification —
             // the same map `infer_term_sort` reads for occurrences, so binder
             // and use sites never disagree.
-            let sort: IrSort = vars.get(&var_id).copied().unwrap_or(Sort::Individual).into();
+            let sort: IrSort = vars
+                .get(&var_id)
+                .copied()
+                .unwrap_or(Sort::Individual)
+                .into();
             if exist {
                 Formula::exists_typed(VarId(idx), sort, body)
             } else {
@@ -611,7 +681,11 @@ impl TranslationLayer {
                 // a numeric literal.
                 if mode.typed {
                     if let Some(v) = numeric_constant_value(&sym.name()) {
-                        return self.literal_to_term(&Literal::Number(v.to_string()), expected, mode);
+                        return self.literal_to_term(
+                            &Literal::Number(v.to_string()),
+                            expected,
+                            mode,
+                        );
                     }
                 }
                 if self.semantic.is_relation_scoped(id, mode.scope) {
@@ -649,7 +723,13 @@ impl TranslationLayer {
     /// Convert a sub-sentence in *term* position: a function application becomes
     /// `Term::apply`; a quantifier / operator / relation used as a value is
     /// higher-order and is dropped (`None`).
-    fn sub_to_term(&self, sid: SentenceId, mode: Mode, vars: &VarSorts, decls: &mut Decls) -> Option<Term> {
+    fn sub_to_term(
+        &self,
+        sid: SentenceId,
+        mode: Mode,
+        vars: &VarSorts,
+        decls: &mut Decls,
+    ) -> Option<Term> {
         let sentence = self.semantic.syntactic.sentence(sid)?;
         let n_args = sentence.elements.len().saturating_sub(1);
 
@@ -816,10 +896,10 @@ impl TranslationLayer {
     /// function (`$sum`, …); everything else is a sort-suffixed typed function.
     fn tff_fn(
         &self,
-        head:      &InternedSym,
+        head: &InternedSym,
         arg_sorts: &[Sort],
-        scope:     Scope,
-        decls:     &mut Decls,
+        scope: Scope,
+        decls: &mut Decls,
     ) -> Option<Function> {
         if let Some(arith) = SumoArith::from_sumo_name(&head.name()) {
             if !arith.is_predicate() {
@@ -843,15 +923,14 @@ impl TranslationLayer {
         decls.ensure_fn(&f);
         Some(f)
     }
-
 }
 
 /// The TFF sort-suffix for a relation/function variant: each non-Individual
 /// position contributes `<pos><code>` (`In`/`Ra`/`Re`), with the return at
 /// position 0 for functions.  All-Individual signatures get the empty suffix.
 fn tff_sort_suffix(args: &[Sort], ret: Option<Sort>) -> String {
-    let any_typed = args.iter().any(|s| *s != Sort::Individual)
-        || ret.is_some_and(|r| r != Sort::Individual);
+    let any_typed =
+        args.iter().any(|s| *s != Sort::Individual) || ret.is_some_and(|r| r != Sort::Individual);
     if !any_typed {
         return String::new();
     }
@@ -923,19 +1002,14 @@ fn remap_formula_vars(f: &mut Formula, map: &HashMap<u32, u32>) {
             remap_formula_vars(a, map);
             remap_formula_vars(b, map);
         }
-        Formula::Forall(v, g)
-        | Formula::Exists(v, g) => {
+        Formula::Forall(v, g) | Formula::Exists(v, g) => {
             remap_var(v, map);
             remap_formula_vars(g, map);
         }
-        Formula::ForallTyped(v, _, g)
-        | Formula::ExistsTyped(v, _, g) => {
+        Formula::ForallTyped(v, _, g) | Formula::ExistsTyped(v, _, g) => {
             remap_var(v, map);
             remap_formula_vars(g, map);
         }
         Formula::True | Formula::False => {}
     }
 }
-
-
-

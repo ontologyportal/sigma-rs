@@ -16,29 +16,29 @@
 // (the lazy clause store).  The residue index, theory oracle, and
 // given-clause loop land in subsequent phases.
 
+pub(crate) mod caches;
+pub(crate) mod canon;
 pub(crate) mod clause;
 pub(crate) mod clausify;
-pub(crate) mod render;
-pub(crate) mod canon;
-pub(crate) mod caches;
-pub(crate) mod hash64;
-pub(crate) mod kbo;
-pub(crate) mod terms;
-pub(crate) mod index;
-pub(crate) mod unify;
-pub(crate) mod units;
-pub(crate) mod oracle;
-pub(crate) mod theory;
-pub(crate) mod temporal;
-pub(crate) mod eventcalc;
-pub(crate) mod model;
-pub(crate) mod prover;
-pub(crate) mod proof;
-pub(crate) mod schema;
-mod prove;
 mod consistency;
 mod doxastic;
+pub(crate) mod eventcalc;
+pub(crate) mod hash64;
+pub(crate) mod index;
+pub(crate) mod kbo;
+pub(crate) mod model;
+pub(crate) mod oracle;
+pub(crate) mod proof;
+mod prove;
+pub(crate) mod prover;
+pub(crate) mod render;
+pub(crate) mod schema;
 pub mod strategy;
+pub(crate) mod temporal;
+pub(crate) mod terms;
+pub(crate) mod theory;
+pub(crate) mod unify;
+pub(crate) mod units;
 
 #[cfg(test)]
 mod tests;
@@ -47,8 +47,8 @@ mod tests;
 // backends can use it too; re-exported here for the saturate modules.
 pub(crate) use super::parked;
 
-use super::ProvingLayer;
 pub(crate) use super::Conjecture;
+use super::ProvingLayer;
 
 use std::sync::Arc;
 
@@ -58,11 +58,13 @@ use crate::prover::saturate::prover::NativeOpts;
 use crate::semantics::SemanticLayer;
 use crate::types::SentenceId;
 
-use clause::{AtomTable, PClause};
 use caches::clause_store::ClauseStore;
 use caches::model_registry::ModelRegistry;
+use clause::{AtomTable, PClause};
 
-pub(crate) use caches::fingerprint::{AtomInfo, slot_term_seat_coin, arity_tag, term_atom_info, AtomInfos};
+pub(crate) use caches::fingerprint::{
+    arity_tag, slot_term_seat_coin, term_atom_info, AtomInfo, AtomInfos,
+};
 
 /// The native-prover top layer.  Owns the semantic stack plus the
 /// prover-local clause state; the residue index and given-clause loop
@@ -130,8 +132,7 @@ pub struct ProverLayer<S: TopLayer + 'static = SemanticLayer> {
     /// skips the theory pre-pass and background clause loading for
     /// repeat queries (serve / SDK loops / retried autoscale budgets).
     /// Capped — see `kb/prove_native.rs`.
-    pub(crate) bg_snapshots:
-        dashmap::DashMap<u64, std::sync::Arc<prover::ProverSnapshot>>,
+    pub(crate) bg_snapshots: dashmap::DashMap<u64, std::sync::Arc<prover::ProverSnapshot>>,
 }
 
 impl<S: TopLayer + 'static> ProverLayer<S> {
@@ -150,17 +151,18 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             atoms,
             clause_store: Cache::new(cfg, ClauseStore::default()),
             model_program: WholeCache::new(cfg, ModelRegistry::default()),
-            atom_infos:   AtomInfos::default(),
+            atom_infos: AtomInfos::default(),
             schema,
-            kbo:          kbo::KboOrdering::new(),
-            term_facts:   terms::TermFactsTable::default(),
+            kbo: kbo::KboOrdering::new(),
+            term_facts: terms::TermFactsTable::default(),
             bg_snapshots: dashmap::DashMap::new(),
         }
     }
 
     /// The memoized residue facts of `atom`.
     pub(crate) fn atom_info(&self, atom: clause::AtomId) -> Arc<AtomInfo> {
-        self.atom_infos.info(atom, &self.atoms, &self.semantic.semantic().syntactic)
+        self.atom_infos
+            .info(atom, &self.atoms, &self.semantic.semantic().syntactic)
     }
 
     /// The canonical clauses of a stored root sentence (clausified on
@@ -182,23 +184,35 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             return false;
         }
         let syn = &self.semantic.semantic().syntactic;
-        let Some(sent) = syn.sentence(root) else { return true };
+        let Some(sent) = syn.sentence(root) else {
+            return true;
+        };
         clausify::clausify_sentence_lossy(syn, &self.atoms, &sent, root, false).1
     }
 }
 
 impl<S: TopLayer + 'static> TopLayer for ProverLayer<S> {
-    fn from_semantic(semantic: SemanticLayer) -> Self { Self::new(S::from_semantic(semantic)) }
-    fn semantic(&self) -> &SemanticLayer { self.semantic.semantic() }
-    fn semantic_mut(&mut self) -> &mut SemanticLayer { self.semantic.semantic_mut() }
+    fn from_semantic(semantic: SemanticLayer) -> Self {
+        Self::new(S::from_semantic(semantic))
+    }
+    fn semantic(&self) -> &SemanticLayer {
+        self.semantic.semantic()
+    }
+    fn semantic_mut(&mut self) -> &mut SemanticLayer {
+        self.semantic.semantic_mut()
+    }
 }
 
 impl<S: TopLayer + 'static> Layer for ProverLayer<S> {
     type Inner = S;
     type Outer = NoLayer;
 
-    fn inner(&self) -> Option<&S> { Some(&self.semantic) }
-    fn outer(&self) -> Option<&NoLayer> { None }
+    fn inner(&self) -> Option<&S> {
+        Some(&self.semantic)
+    }
+    fn outer(&self) -> Option<&NoLayer> {
+        None
+    }
 
     // Every OTHER layer in this crate is a concrete (non-generic) type, so its
     // `schedule_cell`'s function-local `static` is naturally distinct per
@@ -220,12 +234,15 @@ impl<S: TopLayer + 'static> Layer for ProverLayer<S> {
         static CELLS: Mutex<Option<HashMap<TypeId, &'static crate::layer::ScheduleCell>>> =
             Mutex::new(None);
         let mut cells = CELLS.lock().unwrap();
-        cells.get_or_insert_with(HashMap::new)
+        cells
+            .get_or_insert_with(HashMap::new)
             .entry(TypeId::of::<S>())
             .or_insert_with(|| Box::leak(Box::new(std::sync::OnceLock::new())))
     }
 
-    fn cache_config(&self) -> &CacheConfig { self.semantic.cache_config() }
+    fn cache_config(&self) -> &CacheConfig {
+        self.semantic.cache_config()
+    }
 
     fn own_reactors(&self) -> Vec<crate::cache::router::ReactorEntry<'_>> {
         use crate::cache::router::bind;
@@ -242,8 +259,10 @@ impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
     /// Interns into the prover-local atom table.  Forwards to the inherent
     /// `&self` [`intern_conjecture_native`](ProverLayer::intern_conjecture_native);
     /// the whole `ProvingLayer` impl is `&self` (sweep-safe).
-    fn intern_conjecture(&self, asts: &[crate::AstNode])
-        -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
+    fn intern_conjecture(
+        &self,
+        asts: &[crate::AstNode],
+    ) -> Vec<(std::sync::Arc<crate::types::Sentence>, SentenceId)> {
         self.intern_conjecture_native(asts)
     }
 
@@ -254,22 +273,23 @@ impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
     /// `(Unknown, TimeLimit)` hits its catch-all and stops the loop.
     fn remap(
         _status: super::result::ProverStatus,
-        term:    Option<super::result::TerminationReason>,
+        term: Option<super::result::TerminationReason>,
     ) -> Option<super::result::TerminationReason> {
         match term {
-            Some(super::result::TerminationReason::GaveUp) =>
-                Some(super::result::TerminationReason::ResourceOut),
+            Some(super::result::TerminationReason::GaveUp) => {
+                Some(super::result::TerminationReason::ResourceOut)
+            }
             other => other,
         }
     }
 
     fn prove_once(
         &self,
-        conj:   &super::Conjecture,
+        conj: &super::Conjecture,
         params: crate::SineParams,
-        slice:  u32,
-        opts:   &NativeOpts,
-        ctx:    &crate::ProveCtx,
+        slice: u32,
+        opts: &NativeOpts,
+        ctx: &crate::ProveCtx,
     ) -> (super::result::ProverResult, usize) {
         // `prove_one_driver` is `&self` — sweep-safe; nothing here mutates.
         self.prove_one_driver(conj, params, slice, opts, ctx)
@@ -285,10 +305,10 @@ impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
     /// hook existed.
     fn try_portfolio(
         &self,
-        conj:          &super::Conjecture,
+        conj: &super::Conjecture,
         total_timeout: u32,
-        opts:          &NativeOpts,
-        ctx:           &crate::ProveCtx,
+        opts: &NativeOpts,
+        ctx: &crate::ProveCtx,
     ) -> Option<super::result::ProverResult> {
         if !opts.strategy.full_saturation || std::env::var_os("SIGMA_NO_PORTFOLIO").is_some() {
             return None;
@@ -296,24 +316,41 @@ impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
         Some(self.run_portfolio_schedule(conj, total_timeout, opts, ctx))
     }
 
-    fn check_consistency(&self, opts: &NativeOpts, ctx: &crate::ProveCtx)
-        -> super::result::ProverResult {
+    fn check_consistency(
+        &self,
+        opts: &NativeOpts,
+        ctx: &crate::ProveCtx,
+    ) -> super::result::ProverResult {
         // `limit = 1`: stop at the first contradiction — the cross-backend
         // consistency contract.  The enumerating audit calls the same driver
         // (`check_consistency_driver`) with a larger limit and a `focus`.
-        self.check_consistency_driver(opts.session.as_deref(), &[], opts.selection, opts.clone(), ctx, 1)
+        self.check_consistency_driver(
+            opts.session.as_deref(),
+            &[],
+            opts.selection,
+            opts.clone(),
+            ctx,
+            1,
+        )
     }
 
     /// Enumerate up to `limit` distinct contradictions over `focus` — the
     /// native driver behind `KnowledgeBase::audit_consistency`.
     fn audit_consistency(
         &self,
-        focus:  &[SentenceId],
-        opts:   &NativeOpts,
-        limit:  usize,
-        ctx:    &crate::ProveCtx,
+        focus: &[SentenceId],
+        opts: &NativeOpts,
+        limit: usize,
+        ctx: &crate::ProveCtx,
     ) -> super::result::ProverResult {
-        self.check_consistency_driver(opts.session.as_deref(), focus, opts.selection, opts.clone(), ctx, limit)
+        self.check_consistency_driver(
+            opts.session.as_deref(),
+            focus,
+            opts.selection,
+            opts.clone(),
+            ctx,
+            limit,
+        )
     }
 }
 
@@ -328,6 +365,10 @@ impl<S: TopLayer + 'static> ProvingLayer for ProverLayer<S> {
 /// `HasTranslation`, since plain `SemanticLayer` doesn't either — exactly
 /// preserving today's behavior for every existing caller.
 impl<S: crate::trans::HasTranslation + 'static> crate::trans::HasTranslation for ProverLayer<S> {
-    fn translation(&self) -> &crate::trans::TranslationLayer { self.semantic.translation() }
-    fn translation_mut(&mut self) -> &mut crate::trans::TranslationLayer { self.semantic.translation_mut() }
+    fn translation(&self) -> &crate::trans::TranslationLayer {
+        self.semantic.translation()
+    }
+    fn translation_mut(&mut self) -> &mut crate::trans::TranslationLayer {
+        self.semantic.translation_mut()
+    }
 }

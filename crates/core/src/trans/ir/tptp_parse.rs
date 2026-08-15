@@ -47,11 +47,11 @@ struct Context {
 impl Context {
     fn new() -> Self {
         let mut sorts = HashMap::new();
-        sorts.insert("$i".to_string(),   Sort::default_sort());
+        sorts.insert("$i".to_string(), Sort::default_sort());
         sorts.insert("$int".to_string(), Sort::int());
         sorts.insert("$real".to_string(), Sort::real());
         sorts.insert("$rat".to_string(), Sort::rational());
-        sorts.insert("$o".to_string(),   Sort::bool());
+        sorts.insert("$o".to_string(), Sort::bool());
 
         Self {
             sorts,
@@ -66,13 +66,20 @@ impl Context {
         }
     }
 
-    fn push_scope(&mut self) { self.variables.push(HashMap::new()); }
-    fn pop_scope(&mut self)  { self.variables.pop(); }
+    fn push_scope(&mut self) {
+        self.variables.push(HashMap::new());
+    }
+    fn pop_scope(&mut self) {
+        self.variables.pop();
+    }
 
     fn add_variable(&mut self, name: &str, sort: Option<Sort>) -> u32 {
         let id = self.next_var_id;
         self.next_var_id += 1;
-        self.variables.last_mut().unwrap().insert(name.to_string(), (id, sort));
+        self.variables
+            .last_mut()
+            .unwrap()
+            .insert(name.to_string(), (id, sort));
         id
     }
 
@@ -86,32 +93,35 @@ impl Context {
     }
 
     fn get_sort(&mut self, name: &str) -> Sort {
-        self.sorts.entry(name.to_string())
+        self.sorts
+            .entry(name.to_string())
             .or_insert_with(|| Sort::new(name))
             .clone()
     }
 
     fn get_predicate(&mut self, name: &str, arity: usize) -> Predicate {
-        self.predicates.entry((name.to_string(), arity))
+        self.predicates
+            .entry((name.to_string(), arity))
             .or_insert_with(|| match name {
-                "$less"      => Predicate::interpreted(name, Interp::IntLess),
-                "$lesseq"    => Predicate::interpreted(name, Interp::IntLessEqual),
-                "$greater"   => Predicate::interpreted(name, Interp::IntGreater),
+                "$less" => Predicate::interpreted(name, Interp::IntLess),
+                "$lesseq" => Predicate::interpreted(name, Interp::IntLessEqual),
+                "$greater" => Predicate::interpreted(name, Interp::IntGreater),
                 "$greatereq" => Predicate::interpreted(name, Interp::IntGreaterEqual),
-                _            => Predicate::new(name, arity as u32),
+                _ => Predicate::new(name, arity as u32),
             })
             .clone()
     }
 
     fn get_function(&mut self, name: &str, arity: usize) -> Function {
-        self.functions.entry((name.to_string(), arity))
+        self.functions
+            .entry((name.to_string(), arity))
             .or_insert_with(|| match name {
-                "$sum"        => Function::interpreted(name, Interp::IntPlus),
+                "$sum" => Function::interpreted(name, Interp::IntPlus),
                 "$difference" => Function::interpreted(name, Interp::IntMinus),
-                "$product"    => Function::interpreted(name, Interp::IntMultiply),
-                "$uminus"     => Function::interpreted(name, Interp::IntUnaryMinus),
-                "$abs"        => Function::interpreted(name, Interp::IntAbs),
-                _             => Function::new(name, arity as u32),
+                "$product" => Function::interpreted(name, Interp::IntMultiply),
+                "$uminus" => Function::interpreted(name, Interp::IntUnaryMinus),
+                "$abs" => Function::interpreted(name, Interp::IntAbs),
+                _ => Function::new(name, arity as u32),
             })
             .clone()
     }
@@ -129,30 +139,45 @@ impl TptpParser {
         let mut current_input = input;
         while !current_input.is_empty() {
             current_input = skip_comments_and_whitespace(current_input);
-            if current_input.is_empty() { break; }
+            if current_input.is_empty() {
+                break;
+            }
 
             if current_input.starts_with("fof") {
-                let mut stateful = winnow::Stateful { input: current_input, state: &mut ctx };
+                let mut stateful = winnow::Stateful {
+                    input: current_input,
+                    state: &mut ctx,
+                };
                 let (_, role, formula) = parse_fof.parse_next(&mut stateful).map_err(|e| {
                     ParseError::Message(format!(
                         "FOF error at '{}': {}",
-                        stateful.input.chars().take(20).collect::<String>(), e,
+                        stateful.input.chars().take(20).collect::<String>(),
+                        e,
                     ))
                 })?;
                 current_input = stateful.input;
                 formulas.push((role.to_string(), formula));
             } else if current_input.starts_with("tff") {
                 let start = current_input;
-                let mut type_in = winnow::Stateful { input: start, state: &mut ctx };
+                let mut type_in = winnow::Stateful {
+                    input: start,
+                    state: &mut ctx,
+                };
                 if parse_tff_type.parse_next(&mut type_in).is_ok() {
                     current_input = type_in.input;
                 } else {
-                    let mut formula_in = winnow::Stateful { input: start, state: &mut ctx };
-                    let (_, role, formula) = parse_tff_formula.parse_next(&mut formula_in)
-                        .map_err(|e| ParseError::Message(format!(
-                            "TFF error at '{}': {}",
-                            formula_in.input.chars().take(20).collect::<String>(), e,
-                        )))?;
+                    let mut formula_in = winnow::Stateful {
+                        input: start,
+                        state: &mut ctx,
+                    };
+                    let (_, role, formula) =
+                        parse_tff_formula.parse_next(&mut formula_in).map_err(|e| {
+                            ParseError::Message(format!(
+                                "TFF error at '{}': {}",
+                                formula_in.input.chars().take(20).collect::<String>(),
+                                e,
+                            ))
+                        })?;
                     current_input = formula_in.input;
                     formulas.push((role.to_string(), formula));
                 }
@@ -165,11 +190,21 @@ impl TptpParser {
             }
         }
 
-        let mut problem = if ctx.has_tff_types { Problem::new_tff() } else { Problem::new() };
+        let mut problem = if ctx.has_tff_types {
+            Problem::new_tff()
+        } else {
+            Problem::new()
+        };
 
-        for s in ctx.declared_sorts      { problem.declare_sort(s); }
-        for f in ctx.declared_functions  { problem.declare_function(f); }
-        for p in ctx.declared_predicates { problem.declare_predicate(p); }
+        for s in ctx.declared_sorts {
+            problem.declare_sort(s);
+        }
+        for f in ctx.declared_functions {
+            problem.declare_function(f);
+        }
+        for p in ctx.declared_predicates {
+            problem.declare_predicate(p);
+        }
 
         for (role, formula) in formulas {
             Self::add_to_problem(&mut problem, &role, formula);
@@ -183,8 +218,12 @@ impl TptpParser {
             "axiom" | "hypothesis" | "definition" | "lemma" | "theorem" => {
                 problem.with_axiom(formula);
             }
-            "conjecture"         => { problem.conjecture(formula); }
-            "negated_conjecture" => { problem.with_axiom(formula); }
+            "conjecture" => {
+                problem.conjecture(formula);
+            }
+            "negated_conjecture" => {
+                problem.with_axiom(formula);
+            }
             _ => {}
         }
     }
@@ -195,11 +234,19 @@ fn skip_comments_and_whitespace(mut input: &str) -> &str {
         let prev = input;
         input = input.trim_start();
         if input.starts_with('%') {
-            if let Some(pos) = input.find('\n') { input = &input[pos..]; } else { input = ""; }
+            if let Some(pos) = input.find('\n') {
+                input = &input[pos..];
+            } else {
+                input = "";
+            }
         } else if input.starts_with('[') {
-            if let Some(pos) = input.find(']') { input = &input[pos + 1..]; }
+            if let Some(pos) = input.find(']') {
+                input = &input[pos + 1..];
+            }
         }
-        if input == prev { break; }
+        if input == prev {
+            break;
+        }
     }
     input
 }
@@ -239,45 +286,45 @@ fn punct<'a, 'ctx>(c: char) -> impl FnMut(&mut Stream<'a, 'ctx>) -> PResult<char
 }
 
 fn parse_fof<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<(&'a str, &'a str, Formula)> {
-    let _    = op("fof").parse_next(input)?;
-    let _    = punct('(').parse_next(input)?;
+    let _ = op("fof").parse_next(input)?;
+    let _ = punct('(').parse_next(input)?;
     let name = ident.parse_next(input)?;
-    let _    = punct(',').parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
     let role = ident.parse_next(input)?;
-    let _    = punct(',').parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
     let formula = parse_formula(input)?;
-    let _    = punct(')').parse_next(input)?;
-    let _    = punct('.').parse_next(input)?;
+    let _ = punct(')').parse_next(input)?;
+    let _ = punct('.').parse_next(input)?;
     Ok((name, role, formula))
 }
 
 fn parse_tff_formula<'a, 'ctx>(
     input: &mut Stream<'a, 'ctx>,
 ) -> PResult<(&'a str, &'a str, Formula)> {
-    let _    = op("tff").parse_next(input)?;
-    let _    = punct('(').parse_next(input)?;
+    let _ = op("tff").parse_next(input)?;
+    let _ = punct('(').parse_next(input)?;
     let name = ident.parse_next(input)?;
-    let _    = punct(',').parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
     let role = ident.parse_next(input)?;
-    let _    = punct(',').parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
     let formula = parse_formula(input)?;
-    let _    = punct(')').parse_next(input)?;
-    let _    = punct('.').parse_next(input)?;
+    let _ = punct(')').parse_next(input)?;
+    let _ = punct('.').parse_next(input)?;
     Ok((name, role, formula))
 }
 
 fn parse_tff_type<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<()> {
-    let _      = op("tff").parse_next(input)?;
-    let _      = punct('(').parse_next(input)?;
-    let _name  = ident.parse_next(input)?;
-    let _      = punct(',').parse_next(input)?;
-    let _role  = op("type").parse_next(input)?;
-    let _      = punct(',').parse_next(input)?;
+    let _ = op("tff").parse_next(input)?;
+    let _ = punct('(').parse_next(input)?;
+    let _name = ident.parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
+    let _role = op("type").parse_next(input)?;
+    let _ = punct(',').parse_next(input)?;
     let symbol = ident.parse_next(input)?;
-    let _      = punct(':').parse_next(input)?;
+    let _ = punct(':').parse_next(input)?;
     parse_tff_type_expr(symbol, input)?;
-    let _      = punct(')').parse_next(input)?;
-    let _      = punct('.').parse_next(input)?;
+    let _ = punct(')').parse_next(input)?;
+    let _ = punct('.').parse_next(input)?;
     Ok(())
 }
 
@@ -320,22 +367,31 @@ fn parse_tff_type_expr<'a, 'ctx>(symbol: &'a str, input: &mut Stream<'a, 'ctx>) 
     };
 
     if opt(op(">")).parse_next(input)?.is_some() {
-        let ret_sort  = parse_sort_name(input)?;
+        let ret_sort = parse_sort_name(input)?;
         let bool_sort = input.state.get_sort("$o");
         if ret_sort == bool_sort {
             let p = Predicate::typed(symbol, &arg_sorts);
-            input.state.predicates.insert((symbol.to_string(), arg_sorts.len()), p.clone());
+            input
+                .state
+                .predicates
+                .insert((symbol.to_string(), arg_sorts.len()), p.clone());
             input.state.declared_predicates.push(p);
         } else {
             let f = Function::typed(symbol, &arg_sorts, ret_sort);
-            input.state.functions.insert((symbol.to_string(), arg_sorts.len()), f.clone());
+            input
+                .state
+                .functions
+                .insert((symbol.to_string(), arg_sorts.len()), f.clone());
             input.state.declared_functions.push(f);
         }
     } else {
         // No arrow → 0-arity constant of the given sort.
         let sort = arg_sorts.into_iter().next().unwrap();
         let f = Function::typed(symbol, &[], sort);
-        input.state.functions.insert((symbol.to_string(), 0), f.clone());
+        input
+            .state
+            .functions
+            .insert((symbol.to_string(), 0), f.clone());
         input.state.declared_functions.push(f);
     }
 
@@ -354,7 +410,7 @@ fn parse_equiv<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<Formula> {
         let right = parse_impl(input)?;
         left = match connector {
             "<=>" => Formula::iff(left, right),
-            _     => left,
+            _ => left,
         };
     }
     Ok(left)
@@ -446,10 +502,10 @@ fn parse_quantifier<'a, 'ctx>(q: char, input: &mut Stream<'a, 'ctx>) -> PResult<
     for (id, sort) in var_infos.into_iter().rev() {
         f = match (q, sort) {
             ('!', Some(s)) => Formula::forall_typed(VarId(id), s, f),
-            ('!', None)    => Formula::forall(VarId(id), f),
+            ('!', None) => Formula::forall(VarId(id), f),
             ('?', Some(s)) => Formula::exists_typed(VarId(id), s, f),
-            ('?', None)    => Formula::exists(VarId(id), f),
-            _              => unreachable!("quantifier must be ! or ?"),
+            ('?', None) => Formula::exists(VarId(id), f),
+            _ => unreachable!("quantifier must be ! or ?"),
         };
     }
     Ok(f)
@@ -521,7 +577,11 @@ fn resolve_bare_term<'a, 'ctx>(name: &'a str, input: &mut Stream<'a, 'ctx>) -> T
     if let Some((id, _)) = input.state.find_variable(name) {
         Term::var(id)
     } else if name.chars().all(|c| c.is_ascii_digit() || c == '.') {
-        if name.contains('.') { Term::real(name) } else { Term::int(name) }
+        if name.contains('.') {
+            Term::real(name)
+        } else {
+            Term::int(name)
+        }
     } else {
         let f = input.state.get_function(name, 0);
         Term::apply(f, vec![])
@@ -547,7 +607,11 @@ fn parse_term<'a, 'ctx>(input: &mut Stream<'a, 'ctx>) -> PResult<Term> {
         .chars()
         .all(|c: char| c.is_ascii_digit() || c == '.' || (c == '-' && name.len() > 1))
     {
-        if name.contains('.') { Ok(Term::real(name)) } else { Ok(Term::int(name)) }
+        if name.contains('.') {
+            Ok(Term::real(name))
+        } else {
+            Ok(Term::int(name))
+        }
     } else {
         let f = input.state.get_function(name, 0);
         Ok(Term::apply(f, vec![]))

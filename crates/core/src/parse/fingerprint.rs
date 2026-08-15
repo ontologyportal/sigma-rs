@@ -14,12 +14,12 @@ const SEED: u64 = 0xC0DE_5F5F_5F5F_5F5Fu64;
 // Tag bytes distinguish variants so two element kinds with the same payload
 // hash differently.
 const TAG_LIST: u8 = b'L';
-const TAG_SYM:  u8 = b'S';
-const TAG_VAR:  u8 = b'V';
-const TAG_ROW:  u8 = b'R';
-const TAG_NUM:  u8 = b'N';
-const TAG_STR:  u8 = b'T';
-const TAG_OP:   u8 = b'O';
+const TAG_SYM: u8 = b'S';
+const TAG_VAR: u8 = b'V';
+const TAG_ROW: u8 = b'R';
+const TAG_NUM: u8 = b'N';
+const TAG_STR: u8 = b'T';
+const TAG_OP: u8 = b'O';
 
 impl AstNode {
     /// Non-canonical fingerprint of this node (variable names affect the hash).
@@ -34,7 +34,7 @@ impl AstNode {
     pub(crate) fn canonical_fingerprint(&self) -> u64 {
         canonical_sentence_fingerprint(self)
     }
-} 
+}
 
 impl std::hash::Hash for AstNode {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -100,7 +100,7 @@ fn emit_variable_plain(h: &mut Xxh64, name: &str, is_row: bool) {
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 #[inline]
 fn emit_variable_canonical(
-    h:    &mut Xxh64,
+    h: &mut Xxh64,
     name: &str,
     is_row: bool,
     vars: &mut HashMap<String, u32>,
@@ -131,18 +131,21 @@ fn hash_node(h: &mut Xxh64, node: &AstNode) {
     match node {
         AstNode::List { elements, .. } => {
             emit_list_header(h, elements.len());
-            for el in elements { hash_node(h, el); }
+            for el in elements {
+                hash_node(h, el);
+            }
         }
-        AstNode::Symbol      { name, .. }  => emit_symbol(h, name),
-        AstNode::Variable    { name, .. }  => emit_variable_plain(h, name, false),
-        AstNode::RowVariable { name, .. }  => emit_variable_plain(h, name, true),
-        AstNode::Number      { value, .. } => emit_number(h, value),
-        AstNode::Str         { value, .. } => emit_str(h, value),
-        AstNode::Operator    { op, .. }    => emit_op(h, op),
+        AstNode::Symbol { name, .. } => emit_symbol(h, name),
+        AstNode::Variable { name, .. } => emit_variable_plain(h, name, false),
+        AstNode::RowVariable { name, .. } => emit_variable_plain(h, name, true),
+        AstNode::Number { value, .. } => emit_number(h, value),
+        AstNode::Str { value, .. } => emit_str(h, value),
+        AstNode::Operator { op, .. } => emit_op(h, op),
         // `Annotated` is stripped before a sentence is built and must never
         // reach the content hash.
-        AstNode::Annotated   { .. }        => unreachable!(
-            "Annotated statements are stripped before fingerprinting"),
+        AstNode::Annotated { .. } => {
+            unreachable!("Annotated statements are stripped before fingerprinting")
+        }
     }
 }
 
@@ -169,21 +172,30 @@ pub(crate) fn canonical_sentence_fingerprint(node: &AstNode) -> u64 {
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 fn strip_leading_forall(mut node: &AstNode) -> &AstNode {
     loop {
-        let AstNode::List { elements, .. } = node else { return node; };
+        let AstNode::List { elements, .. } = node else {
+            return node;
+        };
         // Shape: [Operator(ForAll), List(vars), body]
-        if elements.len() != 3 { return node; }
+        if elements.len() != 3 {
+            return node;
+        }
         let is_forall = matches!(
             &elements[0],
-            AstNode::Operator { op: OpKind::ForAll, .. }
+            AstNode::Operator {
+                op: OpKind::ForAll,
+                ..
+            }
         );
-        if !is_forall { return node; }
+        if !is_forall {
+            return node;
+        }
         node = strip_leading_forall(&elements[2]);
     }
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 fn hash_node_canonical(
-    h:    &mut Xxh64,
+    h: &mut Xxh64,
     node: &AstNode,
     vars: &mut HashMap<String, u32>,
     rows: &mut HashMap<String, u32>,
@@ -191,31 +203,34 @@ fn hash_node_canonical(
     match node {
         AstNode::List { elements, .. } => {
             emit_list_header(h, elements.len());
-            for el in elements { hash_node_canonical(h, el, vars, rows); }
+            for el in elements {
+                hash_node_canonical(h, el, vars, rows);
+            }
         }
-        AstNode::Symbol      { name, .. }  => emit_symbol(h, name),
-        AstNode::Variable    { name, .. }  => emit_variable_canonical(h, name, false, vars, rows),
-        AstNode::RowVariable { name, .. }  => emit_variable_canonical(h, name, true,  vars, rows),
-        AstNode::Number      { value, .. } => emit_number(h, value),
-        AstNode::Str         { value, .. } => emit_str(h, value),
-        AstNode::Operator    { op, .. }    => emit_op(h, op),
+        AstNode::Symbol { name, .. } => emit_symbol(h, name),
+        AstNode::Variable { name, .. } => emit_variable_canonical(h, name, false, vars, rows),
+        AstNode::RowVariable { name, .. } => emit_variable_canonical(h, name, true, vars, rows),
+        AstNode::Number { value, .. } => emit_number(h, value),
+        AstNode::Str { value, .. } => emit_str(h, value),
+        AstNode::Operator { op, .. } => emit_op(h, op),
         // `Annotated` is stripped before a sentence is built and must never
         // reach the content hash.
-        AstNode::Annotated   { .. }        => unreachable!(
-            "Annotated statements are stripped before fingerprinting"),
+        AstNode::Annotated { .. } => {
+            unreachable!("Annotated statements are stripped before fingerprinting")
+        }
     }
 }
 
 fn op_byte(op: &OpKind) -> &'static [u8] {
     match op {
-        OpKind::And     => b"a",
-        OpKind::Or      => b"o",
-        OpKind::Not     => b"n",
+        OpKind::And => b"a",
+        OpKind::Or => b"o",
+        OpKind::Not => b"n",
         OpKind::Implies => b"i",
-        OpKind::Iff     => b"f",
-        OpKind::Equal   => b"e",
-        OpKind::ForAll  => b"A",
-        OpKind::Exists  => b"E",
+        OpKind::Iff => b"f",
+        OpKind::Equal => b"e",
+        OpKind::ForAll => b"A",
+        OpKind::Exists => b"E",
     }
 }
 
@@ -229,7 +244,9 @@ mod tests {
     fn hash_of(src: &str) -> Vec<u64> {
         let (ast, errs) = Parser::Kif.parse(src, "test");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        ast.iter().map(|d| sentence_fingerprint(&d.as_stmt().cloned().unwrap())).collect()
+        ast.iter()
+            .map(|d| sentence_fingerprint(&d.as_stmt().cloned().unwrap()))
+            .collect()
     }
 
     #[test]
@@ -301,7 +318,9 @@ mod tests {
     fn canon_hash_of(src: &str) -> Vec<u64> {
         let (ast, errs) = Parser::Kif.parse(src, "test");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
-        ast.iter().map(|d| canonical_sentence_fingerprint(&d.as_stmt().cloned().unwrap())).collect()
+        ast.iter()
+            .map(|d| canonical_sentence_fingerprint(&d.as_stmt().cloned().unwrap()))
+            .collect()
     }
 
     #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -334,8 +353,8 @@ mod tests {
     #[test]
     fn canonical_strips_leading_forall() {
         let implicit = canon_hash_of("(=> (P ?X) (Q ?X))");
-        let single   = canon_hash_of("(forall (?X) (=> (P ?X) (Q ?X)))");
-        let renamed  = canon_hash_of("(forall (?HUMAN) (=> (P ?HUMAN) (Q ?HUMAN)))");
+        let single = canon_hash_of("(forall (?X) (=> (P ?X) (Q ?X)))");
+        let renamed = canon_hash_of("(forall (?HUMAN) (=> (P ?HUMAN) (Q ?HUMAN)))");
         assert_eq!(implicit, single);
         assert_eq!(implicit, renamed);
     }
@@ -345,7 +364,7 @@ mod tests {
     fn canonical_strips_multiple_outer_foralls_but_not_nested() {
         let source = canon_hash_of("(=> (R ?A ?B ?C) (S ?A ?B ?C))");
         let vampire_style = canon_hash_of(
-            "(forall (?X1) (forall (?X2) (forall (?X3) (=> (R ?X1 ?X2 ?X3) (S ?X1 ?X2 ?X3)))))"
+            "(forall (?X1) (forall (?X2) (forall (?X3) (=> (R ?X1 ?X2 ?X3) (S ?X1 ?X2 ?X3)))))",
         );
         assert_eq!(source, vampire_style);
     }
@@ -361,9 +380,9 @@ mod tests {
     #[test]
     fn many_sentences_have_independent_hashes() {
         let src = "(instance A B)\n(instance A B)\n(instance C D)";
-        let hs  = hash_of(src);
+        let hs = hash_of(src);
         assert_eq!(hs.len(), 3);
-        assert_eq!(hs[0], hs[1]);    // dup
+        assert_eq!(hs[0], hs[1]); // dup
         assert_ne!(hs[0], hs[2]);
     }
 }

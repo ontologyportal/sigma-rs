@@ -114,7 +114,11 @@ impl TermFactsTable {
     /// sub-node memoized on the way up).  `None` when `t` is not an
     /// `App` or contains a variable.  The key equals what
     /// `AtomTable::intern_atom(t)` would assign — no interning happens.
-    pub(crate) fn ground_key_facts(&self, t: &Term, kbo: &KboOrdering) -> Option<(TermKey, PTermFacts)> {
+    pub(crate) fn ground_key_facts(
+        &self,
+        t: &Term,
+        kbo: &KboOrdering,
+    ) -> Option<(TermKey, PTermFacts)> {
         let Term::App(elems) = t else { return None };
         let mut h = ElementHasher::new(elems.len());
         let mut size: u16 = 0;
@@ -147,7 +151,12 @@ impl TermFactsTable {
             }
         }
         let key = h.finish();
-        let facts = PTermFacts { size, depth: depth.saturating_add(1), sym_bloom, kbo_weight };
+        let facts = PTermFacts {
+            size,
+            depth: depth.saturating_add(1),
+            sym_bloom,
+            kbo_weight,
+        };
         // Read-first: ground subterms recur constantly, so most calls here
         // find the key already memoized — `.entry()` alone would take the
         // shard's write lock even on a hit. See `AtomTable::intern_atom`'s
@@ -167,10 +176,10 @@ impl TermFactsTable {
     /// the id is unresolvable.
     pub(crate) fn facts_for_atom(
         &self,
-        id:    AtomId,
+        id: AtomId,
         atoms: &AtomTable,
-        syn:   &SyntacticLayer,
-        kbo:   &KboOrdering,
+        syn: &SyntacticLayer,
+        kbo: &KboOrdering,
     ) -> Option<PTermFacts> {
         if let Some(hit) = self.map.get(&id) {
             return Some(*hit.value());
@@ -206,7 +215,12 @@ impl TermFactsTable {
                 }
             }
         }
-        let facts = PTermFacts { size, depth: depth.saturating_add(1), sym_bloom, kbo_weight };
+        let facts = PTermFacts {
+            size,
+            depth: depth.saturating_add(1),
+            sym_bloom,
+            kbo_weight,
+        };
         // Tier-1 cross-check (debug builds only): a store-resident sid's
         // structural facts must agree with `syntactic::term_facts`.
         #[cfg(any(test, debug_assertions))]
@@ -232,7 +246,12 @@ fn leaf_facts(t: &Term, kbo: &KboOrdering) -> PTermFacts {
         Term::Op(op) => bloom_bit_op(op),
         _ => 0, // literals never key a demodulator bucket
     };
-    PTermFacts { size: 1, depth: 0, sym_bloom, kbo_weight: kbo.term_leaf_weight(t) }
+    PTermFacts {
+        size: 1,
+        depth: 0,
+        sym_bloom,
+        kbo_weight: kbo.term_leaf_weight(t),
+    }
 }
 
 #[cfg(test)]
@@ -279,7 +298,10 @@ mod tests {
             app(vec![sym("f"), sym("a")]),
             app(vec![sym("f"), sym("a"), sym("b")]),
             app(vec![sym("g"), app(vec![sym("f"), sym("a")]), sym("c")]),
-            app(vec![sym("h"), app(vec![sym("g"), app(vec![sym("f"), sym("a")]), sym("c")])]),
+            app(vec![
+                sym("h"),
+                app(vec![sym("g"), app(vec![sym("f"), sym("a")]), sym("c")]),
+            ]),
             app(vec![sym("MeasureFn"), num("3"), sym("Meter")]),
             app(vec![
                 Term::Op(crate::parse::OpKind::Equal),
@@ -299,7 +321,9 @@ mod tests {
         let atoms = AtomTable::default();
         let syn = SyntacticLayer::default();
         for t in fixtures() {
-            let (key, f) = table.ground_key_facts(&t, &kbo).expect("fixtures are ground");
+            let (key, f) = table
+                .ground_key_facts(&t, &kbo)
+                .expect("fixtures are ground");
             assert_eq!(f.size, brute_size(&t), "size for {t:?}");
             assert_eq!(f.depth, brute_depth(&t), "depth for {t:?}");
             assert_eq!(f.sym_bloom, brute_bloom(&t), "bloom for {t:?}");
@@ -313,7 +337,9 @@ mod tests {
                 "kbo weight for {t:?}",
             );
             // The by-id path returns the identical facts (memo or walk).
-            let by_id = table.facts_for_atom(id, &atoms, &syn, &kbo).expect("ground");
+            let by_id = table
+                .facts_for_atom(id, &atoms, &syn, &kbo)
+                .expect("ground");
             assert_eq!(by_id, f, "by-id facts for {t:?}");
         }
     }
@@ -342,7 +368,10 @@ mod tests {
         assert_eq!(table.len(), 2);
         let atoms = AtomTable::default();
         let inner_id = atoms.intern_atom(&inner);
-        assert!(table.map.get(&inner_id).is_some(), "inner sub-node memoized under its own key");
+        assert!(
+            table.map.get(&inner_id).is_some(),
+            "inner sub-node memoized under its own key"
+        );
     }
 
     // The op bloom key must stay byte-for-byte equal to the demodulator

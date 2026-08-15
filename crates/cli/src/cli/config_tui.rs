@@ -21,7 +21,9 @@ use std::path::{Path, PathBuf};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -29,17 +31,25 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Terminal;
 
-use sigmakee_rs_sdk::Source;
-use sigmakee_rs_sdk::manager::{Constituent, KBManager};
 use sigmakee_rs_sdk::manager::meta::{Kind, OptionMeta, Scope};
+use sigmakee_rs_sdk::manager::{Constituent, KBManager};
+use sigmakee_rs_sdk::Source;
 
 /// One row in the scrollable list: a non-selectable section header, an
 /// editable option, a KB summary line, or one of that KB's constituents.
 enum Row {
     Header(&'static str),
     Item(&'static OptionMeta),
-    Kb { name: String, active: bool, count: usize },
-    Constituent { kb: String, path: PathBuf, label: String },
+    Kb {
+        name: String,
+        active: bool,
+        count: usize,
+    },
+    Constituent {
+        kb: String,
+        path: PathBuf,
+        label: String,
+    },
 }
 
 /// Which text-edit flow `App::edit_buf` is currently feeding, so `Enter`
@@ -56,7 +66,10 @@ pub fn run_config_tui(target: &Path) -> bool {
     let manager = if target.exists() {
         match KBManager::from_config_xml_path_lenient(target) {
             Ok(m) => m,
-            Err(e) => { log::error!("config: cannot parse {}: {e}", target.display()); return false; }
+            Err(e) => {
+                log::error!("config: cannot parse {}: {e}", target.display());
+                return false;
+            }
         }
     } else {
         KBManager::default()
@@ -64,7 +77,10 @@ pub fn run_config_tui(target: &Path) -> bool {
 
     match enter_and_run(manager, target) {
         Ok(saved) => saved,
-        Err(e) => { log::error!("config: interactive editor failed: {e}"); false }
+        Err(e) => {
+            log::error!("config: interactive editor failed: {e}");
+            false
+        }
     }
 }
 
@@ -108,24 +124,34 @@ fn build_rows(manager: &KBManager) -> Vec<Row> {
     let opts = KBManager::options();
     let mut rows = Vec::new();
     let mut section = |title: &'static str, pred: &dyn Fn(&OptionMeta) -> bool| {
-        let items: Vec<&'static OptionMeta> = opts.iter()
+        let items: Vec<&'static OptionMeta> = opts
+            .iter()
             .filter(|o| !matches!(o.kind, Kind::List | Kind::Json) && pred(o))
             .collect();
-        if items.is_empty() { return; }
+        if items.is_empty() {
+            return;
+        }
         rows.push(Row::Header(title));
         rows.extend(items.into_iter().map(Row::Item));
     };
     section("Global flags", &|o| matches!(o.scope, Scope::Global));
-    section("Native prover options (NativeProverConfig)",
-        &|o| super::config_cmd::prover_category(o) == Some(super::config_cmd::ProverCategory::Native));
-    section("External prover options (ExternalProverConfig)",
-        &|o| super::config_cmd::prover_category(o) == Some(super::config_cmd::ProverCategory::External));
-    section("Other subcommand flags",
-        &|o| matches!(o.scope, Scope::Subsystems(_)) && super::config_cmd::prover_category(o).is_none());
-    section("Config-file only", &|o| matches!(o.scope, Scope::ConfigOnly));
+    section("Native prover options (NativeProverConfig)", &|o| {
+        super::config_cmd::prover_category(o) == Some(super::config_cmd::ProverCategory::Native)
+    });
+    section("External prover options (ExternalProverConfig)", &|o| {
+        super::config_cmd::prover_category(o) == Some(super::config_cmd::ProverCategory::External)
+    });
+    section("Other subcommand flags", &|o| {
+        matches!(o.scope, Scope::Subsystems(_)) && super::config_cmd::prover_category(o).is_none()
+    });
+    section("Config-file only", &|o| {
+        matches!(o.scope, Scope::ConfigOnly)
+    });
 
     if !manager.kbs.is_empty() {
-        rows.push(Row::Header("Knowledge bases (a: add constituent, d: delete, n: new KB)"));
+        rows.push(Row::Header(
+            "Knowledge bases (a: add constituent, d: delete, n: new KB)",
+        ));
         for kb in &manager.kbs {
             rows.push(Row::Kb {
                 name: kb.name().to_string(),
@@ -160,8 +186,14 @@ fn constituent_path(c: &Constituent) -> PathBuf {
 fn render_constituent(c: &Constituent) -> String {
     match c {
         Constituent::Named(p) => format!("{} [relative → kbDir]", p.display()),
-        Constituent::Source(Source::Local(paths)) =>
-            format!("{} [pinned]", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
+        Constituent::Source(Source::Local(paths)) => format!(
+            "{} [pinned]",
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Constituent::Source(_) => "<non-local source>".to_string(),
     }
 }
@@ -183,15 +215,25 @@ impl App {
         let rows = build_rows(manager);
         let values: HashMap<&'static str, serde_json::Value> = KBManager::options()
             .iter()
-            .filter_map(|o| o.json_paths.first().and_then(|p| resolve(&doc, p)).map(|v| (o.field, v.clone())))
+            .filter_map(|o| {
+                o.json_paths
+                    .first()
+                    .and_then(|p| resolve(&doc, p))
+                    .map(|v| (o.field, v.clone()))
+            })
             .collect();
         let mut list_state = ListState::default();
         let first_stop = rows.iter().position(|r| !matches!(r, Row::Header(_)));
         list_state.select(first_stop);
         Self {
-            rows, values, list_state,
-            edit_buf: None, edit_kind: EditKind::Option,
-            dirty: false, confirm_quit: false, status: None,
+            rows,
+            values,
+            list_state,
+            edit_buf: None,
+            edit_kind: EditKind::Option,
+            dirty: false,
+            confirm_quit: false,
+            status: None,
         }
     }
 
@@ -222,7 +264,9 @@ impl App {
     /// to ever reveal whatever's rendered below it (the "Knowledge bases"
     /// section, entirely unreachable no matter how far down you scroll).
     fn move_selection(&mut self, delta: isize) {
-        let Some(cur) = self.list_state.selected() else { return };
+        let Some(cur) = self.list_state.selected() else {
+            return;
+        };
         let n = self.rows.len() as isize;
         let mut i = cur as isize;
         loop {
@@ -231,7 +275,9 @@ impl App {
                 self.list_state.select(Some(i as usize));
                 return;
             }
-            if i as usize == cur { return; } // no other stoppable row
+            if i as usize == cur {
+                return;
+            } // no other stoppable row
         }
     }
 
@@ -239,22 +285,34 @@ impl App {
     /// buffer needed); everything else opens a single-line text edit seeded
     /// with the current value.
     fn activate(&mut self) {
-        let Some(o) = self.selected_option() else { return };
+        let Some(o) = self.selected_option() else {
+            return;
+        };
         if matches!(o.kind, Kind::Bool) {
-            let cur = self.values.get(o.field).and_then(|v| v.as_bool()).unwrap_or(false);
+            let cur = self
+                .values
+                .get(o.field)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             self.values.insert(o.field, serde_json::json!(!cur));
             self.dirty = true;
             return;
         }
         self.edit_kind = EditKind::Option;
-        let seed = self.values.get(o.field).map(display_value).unwrap_or_default();
+        let seed = self
+            .values
+            .get(o.field)
+            .map(display_value)
+            .unwrap_or_default();
         self.edit_buf = Some(seed);
     }
 
     fn confirm_edit(&mut self) {
-        let (Some(o), Some(buf)) = (self.selected_option(), self.edit_buf.take()) else { return };
+        let (Some(o), Some(buf)) = (self.selected_option(), self.edit_buf.take()) else {
+            return;
+        };
         let parsed = match o.kind {
-            Kind::Int   => buf.trim().parse::<u64>().ok().map(|n| serde_json::json!(n)),
+            Kind::Int => buf.trim().parse::<u64>().ok().map(|n| serde_json::json!(n)),
             Kind::Float => buf.trim().parse::<f64>().ok().map(|n| serde_json::json!(n)),
             Kind::Str | Kind::Path => Some(serde_json::json!(buf)),
             // Never reached: `build_rows` filters both out of the editable
@@ -263,8 +321,17 @@ impl App {
             Kind::Bool | Kind::List | Kind::Json => None,
         };
         match parsed {
-            Some(v) => { self.values.insert(o.field, v); self.dirty = true; self.status = None; }
-            None => self.status = Some(format!("'{buf}' is not a valid {kind}", kind = kind_name(o.kind))),
+            Some(v) => {
+                self.values.insert(o.field, v);
+                self.dirty = true;
+                self.status = None;
+            }
+            None => {
+                self.status = Some(format!(
+                    "'{buf}' is not a valid {kind}",
+                    kind = kind_name(o.kind)
+                ))
+            }
         }
     }
 
@@ -324,8 +391,11 @@ impl App {
     /// disk" pattern (a Bool option flips the same way). No-op unless the
     /// selection is on a `Constituent` row.
     fn delete_selected_constituent(&mut self, manager: &mut KBManager) {
-        let Some(Row::Constituent { kb, path, .. }) = self.list_state.selected().and_then(|i| self.rows.get(i))
-        else { return };
+        let Some(Row::Constituent { kb, path, .. }) =
+            self.list_state.selected().and_then(|i| self.rows.get(i))
+        else {
+            return;
+        };
         let (kb, path) = (kb.clone(), path.clone());
         match manager.remove_constituents_from_kb(&kb, vec![path]) {
             Ok(n) if n > 0 => {
@@ -342,8 +412,12 @@ impl App {
     /// `prefer_kb`'s row when it's still present.
     fn refresh_rows(&mut self, manager: &KBManager, prefer_kb: Option<&str>) {
         self.rows = build_rows(manager);
-        let idx = prefer_kb.and_then(|want| self.rows.iter().position(|r|
-            matches!(r, Row::Kb { name, .. } if name == want)))
+        let idx = prefer_kb
+            .and_then(|want| {
+                self.rows
+                    .iter()
+                    .position(|r| matches!(r, Row::Kb { name, .. } if name == want))
+            })
             .or_else(|| self.rows.iter().position(|r| !matches!(r, Row::Header(_))));
         self.list_state.select(idx);
     }
@@ -384,7 +458,9 @@ fn run_app<B: ratatui::backend::Backend>(
     loop {
         terminal.draw(|f| draw(f, &mut app))?;
 
-        let Event::Key(key) = event::read()? else { continue };
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -396,9 +472,19 @@ fn run_app<B: ratatui::backend::Backend>(
                     EditKind::AddConstituent(kb) => app.confirm_add_constituent(&mut manager, &kb),
                     EditKind::NewKb => app.confirm_new_kb(&mut manager),
                 },
-                KeyCode::Esc => { app.edit_buf = None; }
-                KeyCode::Backspace => { if let Some(buf) = app.edit_buf.as_mut() { buf.pop(); } }
-                KeyCode::Char(c) => { if let Some(buf) = app.edit_buf.as_mut() { buf.push(c); } }
+                KeyCode::Esc => {
+                    app.edit_buf = None;
+                }
+                KeyCode::Backspace => {
+                    if let Some(buf) = app.edit_buf.as_mut() {
+                        buf.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(buf) = app.edit_buf.as_mut() {
+                        buf.push(c);
+                    }
+                }
                 _ => {}
             }
             continue;
@@ -413,7 +499,7 @@ fn run_app<B: ratatui::backend::Backend>(
         }
 
         match key.code {
-            KeyCode::Up | KeyCode::Char('k')   => app.move_selection(-1),
+            KeyCode::Up | KeyCode::Char('k') => app.move_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => app.move_selection(1),
             KeyCode::Enter | KeyCode::Char(' ') => app.activate(),
             KeyCode::Char('a') => app.begin_add_constituent(),
@@ -446,8 +532,13 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     let chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Min(5), Constraint::Length(4), Constraint::Length(1)],
-    ).split(area);
+        [
+            Constraint::Min(5),
+            Constraint::Length(4),
+            Constraint::Length(1),
+        ],
+    )
+    .split(area);
 
     draw_list(f, chunks[0], app);
     draw_detail(f, chunks[1], app);
@@ -468,32 +559,53 @@ fn draw(f: &mut ratatui::Frame, app: &mut App) {
 /// (e.g. "Prover options", after 8 "Global flags" rows) becomes unreachable
 /// or erratic to scroll to.
 fn draw_list(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let items: Vec<ListItem> = app.rows.iter().map(|r| match r {
-        Row::Header(title) => ListItem::new(Line::from(Span::styled(
-            format!("── {title} ──"),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
-        ))),
-        Row::Item(o) => {
-            let value = app.values.get(o.field).map(display_value).unwrap_or_default();
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("  --{:<26}", o.long)),
-                Span::styled(format!("= {value}"), Style::default().fg(Color::Green)),
-            ]))
-        }
-        Row::Kb { name, active, count } => {
-            let marker = if *active { "●" } else { "○" };
-            ListItem::new(Line::from(Span::styled(
-                format!("{marker} {name}  ({count} constituent(s))"),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            )))
-        }
-        Row::Constituent { label, .. } => ListItem::new(Line::from(Span::styled(
-            format!("    {label}"), Style::default().fg(Color::Cyan),
-        ))),
-    }).collect();
+    let items: Vec<ListItem> = app
+        .rows
+        .iter()
+        .map(|r| match r {
+            Row::Header(title) => ListItem::new(Line::from(Span::styled(
+                format!("── {title} ──"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            Row::Item(o) => {
+                let value = app
+                    .values
+                    .get(o.field)
+                    .map(display_value)
+                    .unwrap_or_default();
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("  --{:<26}", o.long)),
+                    Span::styled(format!("= {value}"), Style::default().fg(Color::Green)),
+                ]))
+            }
+            Row::Kb {
+                name,
+                active,
+                count,
+            } => {
+                let marker = if *active { "●" } else { "○" };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{marker} {name}  ({count} constituent(s))"),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )))
+            }
+            Row::Constituent { label, .. } => ListItem::new(Line::from(Span::styled(
+                format!("    {label}"),
+                Style::default().fg(Color::Cyan),
+            ))),
+        })
+        .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" sumo config "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" sumo config "),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -507,10 +619,12 @@ fn draw_detail(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         match app.list_state.selected().and_then(|i| app.rows.get(i)) {
             Some(Row::Kb { .. }) => Line::from(Span::styled(
-                "a: add constituent   n: new KB", Style::default().fg(Color::DarkGray),
+                "a: add constituent   n: new KB",
+                Style::default().fg(Color::DarkGray),
             )),
             Some(Row::Constituent { .. }) => Line::from(Span::styled(
-                "a: add another constituent   d: delete this one", Style::default().fg(Color::DarkGray),
+                "a: add another constituent   d: delete this one",
+                Style::default().fg(Color::DarkGray),
             )),
             _ => Line::from(""),
         }
@@ -527,16 +641,23 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         "↑/↓ navigate  Enter/Space edit  a add  d delete  n new KB  s save & quit  q quit"
     };
-    f.render_widget(Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)), area);
+    f.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+        area,
+    );
 }
 
 fn draw_edit_popup(f: &mut ratatui::Frame, area: Rect, app: &App, buf: &str) {
     let title = match &app.edit_kind {
         EditKind::Option => {
-            let Some(o) = app.selected_option() else { return };
+            let Some(o) = app.selected_option() else {
+                return;
+            };
             format!(" --{}  (Enter=confirm, Esc=cancel) ", o.long)
         }
-        EditKind::AddConstituent(kb) => format!(" add constituent to `{kb}`  (Enter=confirm, Esc=cancel) "),
+        EditKind::AddConstituent(kb) => {
+            format!(" add constituent to `{kb}`  (Enter=confirm, Esc=cancel) ")
+        }
         EditKind::NewKb => " new KB name  (Enter=confirm, Esc=cancel) ".to_string(),
     };
     let popup = centered_rect(60, 5, area);
@@ -549,8 +670,11 @@ fn draw_edit_popup(f: &mut ratatui::Frame, area: Rect, app: &App, buf: &str) {
 fn draw_confirm_popup(f: &mut ratatui::Frame, area: Rect) {
     let popup = centered_rect(50, 5, area);
     f.render_widget(Clear, popup);
-    let p = Paragraph::new("Quit without saving? (y/n)")
-        .block(Block::default().borders(Borders::ALL).title(" unsaved changes "));
+    let p = Paragraph::new("Quit without saving? (y/n)").block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" unsaved changes "),
+    );
     f.render_widget(p, popup);
 }
 
@@ -558,7 +682,12 @@ fn centered_rect(pct_x: u16, height: u16, area: Rect) -> Rect {
     let width = area.width.saturating_mul(pct_x) / 100;
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect { x, y, width: width.min(area.width), height: height.min(area.height) }
+    Rect {
+        x,
+        y,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
 }
 
 #[cfg(test)]
@@ -573,7 +702,8 @@ mod tests {
                 <constituent filename="Merge.kif"/>
               </kb>
             </configuration>"#,
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     /// Drift guard: every section `run_config`'s read-only dump shows should
@@ -590,7 +720,9 @@ mod tests {
         for r in &rows {
             match r {
                 Row::Header(h) => cur = h,
-                Row::Item(_) | Row::Kb { .. } | Row::Constituent { .. } => *counts.entry(cur).or_insert(0) += 1,
+                Row::Item(_) | Row::Kb { .. } | Row::Constituent { .. } => {
+                    *counts.entry(cur).or_insert(0) += 1
+                }
             }
         }
         for section in [
@@ -622,18 +754,27 @@ mod tests {
     fn navigation_reaches_trailing_constituent_rows() {
         let manager = fixture_manager();
         let mut app = App::new(&manager);
-        let last_constituent_index = app.rows.iter().rposition(|r| matches!(r, Row::Constituent { .. }))
+        let last_constituent_index = app
+            .rows
+            .iter()
+            .rposition(|r| matches!(r, Row::Constituent { .. }))
             .expect("fixture has at least one constituent row");
 
         // Walk `move_selection(1)` forward, collecting every stop, until it
         // revisits one (a full lap — `move_selection` wraps deterministically,
         // so this always terminates without needing a fixed step budget).
         let mut visited = std::collections::HashSet::new();
-        visited.insert(app.list_state.selected().expect("App::new selects a starting row"));
+        visited.insert(
+            app.list_state
+                .selected()
+                .expect("App::new selects a starting row"),
+        );
         loop {
             app.move_selection(1);
             let cur = app.list_state.selected().unwrap();
-            if !visited.insert(cur) { break; }
+            if !visited.insert(cur) {
+                break;
+            }
         }
         assert!(
             visited.contains(&last_constituent_index),
@@ -652,7 +793,11 @@ mod tests {
         assert_eq!(manager.kbs.len(), 1);
         assert_eq!(manager.kbs[0].name(), "SUMO");
         assert!(app.dirty);
-        assert_eq!(app.selected_kb(), Some("SUMO"), "selection follows the newly created KB");
+        assert_eq!(
+            app.selected_kb(),
+            Some("SUMO"),
+            "selection follows the newly created KB"
+        );
 
         let dir = std::env::temp_dir().join("sdk_tui_add_constituent");
         std::fs::create_dir_all(&dir).unwrap();
@@ -673,10 +818,16 @@ mod tests {
         std::fs::write(&f, "").unwrap();
 
         let mut manager = KBManager::default();
-        manager.add_constituents_to_kb("SUMO", vec![f], vec![], true).unwrap();
+        manager
+            .add_constituents_to_kb("SUMO", vec![f], vec![], true)
+            .unwrap();
         let mut app = App::new(&manager);
 
-        let idx = app.rows.iter().position(|r| matches!(r, Row::Constituent { .. })).unwrap();
+        let idx = app
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Constituent { .. }))
+            .unwrap();
         app.list_state.select(Some(idx));
         app.delete_selected_constituent(&mut manager);
 

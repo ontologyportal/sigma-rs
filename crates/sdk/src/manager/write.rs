@@ -52,7 +52,11 @@ fn pref(w: &mut W, name: &str, value: &str) {
 }
 
 fn yn(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
+    if b {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 fn write_preferences(w: &mut W, m: &KBManager) {
@@ -64,7 +68,11 @@ fn write_preferences(w: &mut W, m: &KBManager) {
     pref(w, EPROVER, &m.eprover.display().to_string());
     pref(w, GRAPHVIZ_DIR, &m.graphviz_dir.display().to_string());
     pref(w, HOLDS_PREFIX, yn(m.holds_prefix));
-    pref(w, INFERENCE_TEST_DIR, &m.inference_test_dir.display().to_string());
+    pref(
+        w,
+        INFERENCE_TEST_DIR,
+        &m.inference_test_dir.display().to_string(),
+    );
     pref(w, KB_DIR, &m.kb_dir.display().to_string());
     pref(w, LANGUAGE, &m.language);
     pref(w, LEO_EXECUTABLE, &m.leo_executable.display().to_string());
@@ -118,7 +126,9 @@ fn write_error_elevation(w: &mut W, ew: &ElevateWarnings) {
 /// are `#[serde(default)]`, so absence reads back as the default.
 fn write_prover<T: serde::Serialize>(w: &mut W, kind: &str, cfg: &T) {
     let value = serde_json::to_value(cfg).expect("prover config serializes to JSON");
-    let obj = value.as_object().expect("prover config serializes to a JSON object");
+    let obj = value
+        .as_object()
+        .expect("prover config serializes to a JSON object");
     w.create_element("prover")
         .with_attribute(("type", kind))
         .write_inner_content(|w| {
@@ -144,12 +154,13 @@ fn write_pref_tree(w: &mut W, name: &str, v: &Value) {
 
 fn json_value_to_pref_str(v: &Value) -> String {
     match v {
-        Value::Bool(b)   => yn(*b).to_string(),
+        Value::Bool(b) => yn(*b).to_string(),
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
-        Value::Null       => String::new(),
-        Value::Object(_) | Value::Array(_) =>
-            serde_json::to_string(v).expect("nested prover value serializes"),
+        Value::Null => String::new(),
+        Value::Object(_) | Value::Array(_) => {
+            serde_json::to_string(v).expect("nested prover value serializes")
+        }
     }
 }
 

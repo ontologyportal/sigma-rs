@@ -39,7 +39,7 @@ pub(crate) fn session_id(name: &str) -> SessionId {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SessionEntry {
     /// Root sentence ids this session produced or references.
-    pub sentences:   HashSet<SentenceId>,
+    pub sentences: HashSet<SentenceId>,
     /// `true` once the session has been promoted to axioms. Sticky: a session
     /// never un-axiomatizes (individual axioms still retract via `RootRemoved`).
     pub axiomatized: bool,
@@ -72,26 +72,39 @@ impl SessionSide {
     /// Drop `sid` from session `s`'s tombstones (re-asserted / committed / kept).
     fn untombstone(&self, s: SessionId, sid: SentenceId) {
         let empty = match self.tombstones.get_mut(&s) {
-            Some(mut set) => { set.remove(&sid); set.is_empty() }
+            Some(mut set) => {
+                set.remove(&sid);
+                set.is_empty()
+            }
             None => false,
         };
-        if empty { self.tombstones.remove(&s); }
+        if empty {
+            self.tombstones.remove(&s);
+        }
     }
 
     /// Drop `sid` from every session's tombstones (the formula is truly gone).
     fn untombstone_everywhere(&self, sid: SentenceId) {
-        self.tombstones.iter_mut().for_each(|mut e| { e.remove(&sid); });
+        self.tombstones.iter_mut().for_each(|mut e| {
+            e.remove(&sid);
+        });
         self.tombstones.retain(|_, set| !set.is_empty());
     }
 
     /// Take and clear session `s`'s tombstones (accept/reject consume them).
     fn take_tombstones(&self, s: SessionId) -> Vec<SentenceId> {
-        self.tombstones.remove(&s).map(|(_, set)| set.into_iter().collect()).unwrap_or_default()
+        self.tombstones
+            .remove(&s)
+            .map(|(_, set)| set.into_iter().collect())
+            .unwrap_or_default()
     }
 
     /// Session `s`'s tombstoned sids (without clearing).
     fn tombstoned_sids(&self, s: SessionId) -> Vec<SentenceId> {
-        self.tombstones.get(&s).map(|set| set.iter().copied().collect()).unwrap_or_default()
+        self.tombstones
+            .get(&s)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Whether session `s`'s tombstone of `sid` is **active** (would actually
@@ -111,9 +124,9 @@ pub(crate) struct SessionCache;
 
 impl EagerMapBehavior for SessionCache {
     type Parent = SyntacticLayer;
-    type Key    = String;
-    type Value  = SessionEntry;
-    type Side   = SessionSide;
+    type Key = String;
+    type Value = SessionEntry;
+    type Side = SessionSide;
     type SideSnapshot = Vec<SentenceId>;
 
     const NAME: &'static str = "syntactic::sessions";
@@ -143,9 +156,9 @@ impl EagerMapBehavior for SessionCache {
     fn react(
         &self,
         _parent: &SyntacticLayer,
-        events:  &[&Event],
-        store:   &EntryCache<String, SessionEntry>,
-        side:    &SessionSide,
+        events: &[&Event],
+        store: &EntryCache<String, SessionEntry>,
+        side: &SessionSide,
     ) -> Vec<Event> {
         let mut out = Vec::new();
         for e in events {
@@ -154,7 +167,9 @@ impl EagerMapBehavior for SessionCache {
                 Event::SessionAxiomatized { session } => {
                     // No entry ⇒ nothing to promote. Don't `modify_entry` an
                     // absent key — it `or_default`s a phantom empty session.
-                    let Some(entry) = store.get(session) else { continue };
+                    let Some(entry) = store.get(session) else {
+                        continue;
+                    };
                     // Sorted (not the `HashSet`'s RandomState order): this list
                     // becomes the `AxiomsPromoted` event's `sids`, which drives
                     // both the SInE index's axiom-registration order (tie-break
@@ -163,7 +178,8 @@ impl EagerMapBehavior for SessionCache {
                     // KB content for the native prover's search to be
                     // reproducible.  SentenceIds are content hashes, so sorting
                     // gives a stable, KB-content-determined order.
-                    let mut promoted_now: Vec<SentenceId> = entry.sentences.iter().copied().collect();
+                    let mut promoted_now: Vec<SentenceId> =
+                        entry.sentences.iter().copied().collect();
                     promoted_now.sort_unstable();
                     let newly: Vec<SentenceId> = promoted_now
                         .iter()
@@ -175,7 +191,10 @@ impl EagerMapBehavior for SessionCache {
                         entry.sentences.clear();
                     });
                     for sid in &promoted_now {
-                        side.promoted_by.entry(*sid).or_default().insert(session.clone());
+                        side.promoted_by
+                            .entry(*sid)
+                            .or_default()
+                            .insert(session.clone());
                     }
                     if !newly.is_empty() {
                         out.push(Event::AxiomsPromoted { sids: newly });
@@ -187,8 +206,7 @@ impl EagerMapBehavior for SessionCache {
                 // only retract individually.
                 Event::SessionRetracted { session } => {
                     side.tombstones.remove(&session_id(session));
-                    let is_axiom_session =
-                        store.get(session).map_or(false, |e| e.axiomatized);
+                    let is_axiom_session = store.get(session).map_or(false, |e| e.axiomatized);
                     if !is_axiom_session {
                         store.evict_keys(&[session.clone()]);
                     }
@@ -247,7 +265,8 @@ impl EagerMap<SessionCache> {
     /// hash seeding instead of KB content. SentenceIds are content hashes,
     /// so sorting gives a stable, KB-content-determined order.
     pub(crate) fn session_sentences(&self, session: &str) -> Vec<SentenceId> {
-        let mut v: Vec<SentenceId> = self.entries()
+        let mut v: Vec<SentenceId> = self
+            .entries()
             .get(&session.to_string())
             .map(|e| e.sentences.iter().copied().collect())
             .unwrap_or_default();
@@ -307,14 +326,18 @@ impl EagerMap<SessionCache> {
     /// Whether session `s` has any tombstone (→ its scoped view is "active" even
     /// with no additive overlay).
     pub(crate) fn has_tombstones(&self, s: SessionId) -> bool {
-        self.side().tombstones.get(&s).is_some_and(|set| !set.is_empty())
+        self.side()
+            .tombstones
+            .get(&s)
+            .is_some_and(|set| !set.is_empty())
     }
 
     /// The sids session `s` actively hides (tombstoned AND the removal would
     /// take effect — no other session promoted them).
     pub(crate) fn active_tombstones(&self, s: SessionId) -> Vec<SentenceId> {
         let side = self.side();
-        side.tombstoned_sids(s).into_iter()
+        side.tombstoned_sids(s)
+            .into_iter()
             .filter(|sid| side.tombstone_active(s, *sid))
             .collect()
     }
@@ -324,7 +347,10 @@ impl EagerMap<SessionCache> {
     /// ceases to be a Base axiom.
     pub(crate) fn demote(&self, name: &str, sid: SentenceId) -> bool {
         let now_empty = match self.side().promoted_by.get_mut(&sid) {
-            Some(mut p) => { p.remove(name); p.is_empty() }
+            Some(mut p) => {
+                p.remove(name);
+                p.is_empty()
+            }
             None => true,
         };
         if now_empty {
@@ -337,7 +363,11 @@ impl EagerMap<SessionCache> {
     /// The session(s) an axiom was promoted from (lineage). Empty for a non-axiom
     /// or unknown sid.
     pub(crate) fn provenance_of(&self, sid: SentenceId) -> Vec<String> {
-        self.side().promoted_by.get(&sid).map(|s| s.iter().cloned().collect()).unwrap_or_default()
+        self.side()
+            .promoted_by
+            .get(&sid)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

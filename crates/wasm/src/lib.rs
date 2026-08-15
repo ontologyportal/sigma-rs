@@ -1,15 +1,15 @@
+use sigmakee_rs_core::AstKif;
+use sigmakee_rs_core::TopLayer;
+use sigmakee_rs_core::TranslationLayer;
+use sigmakee_rs_core::{KnowledgeBase, TptpLang, TptpOptions};
+use sigmakee_rs_core::{ManKind, ManPage, SearchHit, SearchOpts};
+use sigmakee_rs_core::{NativeOpts, ProverLayer};
 /// WASM bindings for sigmakee-rs-core.
 ///
 /// Exposes the KnowledgeBase API to JavaScript/Node.js via wasm-bindgen.
 /// The `ask()` functionality is handled by a JS callback hook since WASM
 /// cannot spawn native processes.
 use wasm_bindgen::prelude::*;
-use sigmakee_rs_core::{KnowledgeBase, TptpOptions, TptpLang};
-use sigmakee_rs_core::{ProverLayer, NativeOpts};
-use sigmakee_rs_core::{ManKind, ManPage, SearchHit, SearchOpts};
-use sigmakee_rs_core::TopLayer;
-use sigmakee_rs_core::AstKif;
-use sigmakee_rs_core::TranslationLayer;
 
 // Threaded builds only: re-exports `initThreadPool`, the JS entry point that
 // spins up the wasm-bindgen-rayon worker pool. Plain (non-`atomics`) wasm32
@@ -33,7 +33,9 @@ impl WasmKnowledgeBase {
     /// Create an empty knowledge base.
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self { inner: KnowledgeBase::new() }
+        Self {
+            inner: KnowledgeBase::new(),
+        }
     }
 
     /// Load KIF text into the KB under `file_tag` as **axioms**.
@@ -48,15 +50,21 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let result = self.inner.load(
-            sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file_tag), kif_text.to_string()),
+            sigmakee_rs_core::SourceFile::kif(
+                std::path::PathBuf::from(file_tag),
+                kif_text.to_string(),
+            ),
             file_tag,
         );
-        let mut errors: Vec<String> = result.diagnostics.iter().map(|e: &sigmakee_rs_core::Diagnostic| e.to_string()).collect();
+        let mut errors: Vec<String> = result
+            .diagnostics
+            .iter()
+            .map(|e: &sigmakee_rs_core::Diagnostic| e.to_string())
+            .collect();
         if let Err(e) = self.inner.make_session_axiomatic(file_tag) {
             errors.push(format!("promote failed: {:?}", e));
         }
-        serde_wasm_bindgen::to_value(&errors)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Assert a single KIF formula into the KB under the given session key.
@@ -71,8 +79,8 @@ impl WasmKnowledgeBase {
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         let errors: Vec<String> = result.diagnostics.iter().map(|e| e.to_string()).collect();
-        let errs_js = serde_wasm_bindgen::to_value(&errors)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let errs_js =
+            serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))?;
         js_sys::Reflect::set(&obj, &"errors".into(), &errs_js)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(obj.into())
@@ -93,16 +101,16 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen(js_name = toTptp)]
     pub fn to_tptp(
         &mut self,
-        lang:         Option<String>,
+        lang: Option<String>,
         hide_numbers: Option<bool>,
-        session:      Option<String>,
+        session: Option<String>,
     ) -> String {
         let tptp_lang = match lang.as_deref() {
             Some("tff") => TptpLang::Tff,
-            _           => TptpLang::Fof,
+            _ => TptpLang::Fof,
         };
         let opts = TptpOptions {
-            lang:         tptp_lang,
+            lang: tptp_lang,
             hide_numbers: hide_numbers.unwrap_or(true),
             ..TptpOptions::default()
         };
@@ -120,8 +128,7 @@ impl WasmKnowledgeBase {
             .iter()
             .map(|&sid| self.inner.sentence_to_string(sid))
             .collect();
-        serde_wasm_bindgen::to_value(&results)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Run semantic validation over the whole KB. Returns a JS `string[]` of
@@ -152,15 +159,15 @@ impl WasmKnowledgeBase {
     #[wasm_bindgen]
     pub fn search(
         &self,
-        query:    &str,
-        kind:     Option<String>,
+        query: &str,
+        kind: Option<String>,
         language: Option<String>,
-        limit:    Option<u32>,
+        limit: Option<u32>,
     ) -> Result<JsValue, JsValue> {
         let opts = SearchOpts {
-            kind:     kind.as_deref().and_then(man_kind_from_str),
+            kind: kind.as_deref().and_then(man_kind_from_str),
             language: language.as_deref(),
-            limit:    limit.map(|n| n as usize),
+            limit: limit.map(|n| n as usize),
         };
         search_hits_to_js(&self.inner.search(query, &opts))
     }
@@ -210,11 +217,19 @@ impl WasmKnowledgeBase {
     /// appended to the KB axioms, and the combined TPTP is passed to `ask_hook`.
     /// Returns the raw string output from the hook.
     #[wasm_bindgen]
-    pub fn ask(&mut self, query_kif: &str, ask_hook: &js_sys::Function) -> Result<JsValue, JsValue> {
+    pub fn ask(
+        &mut self,
+        query_kif: &str,
+        ask_hook: &js_sys::Function,
+    ) -> Result<JsValue, JsValue> {
         let query_tag = "__query__";
         let tell_result = self.inner.tell(query_kif, query_tag);
         if !tell_result.ok {
-            let errors: Vec<String> = tell_result.diagnostics.iter().map(|e| e.to_string()).collect();
+            let errors: Vec<String> = tell_result
+                .diagnostics
+                .iter()
+                .map(|e| e.to_string())
+                .collect();
             return Err(serde_wasm_bindgen::to_value(&errors)
                 .unwrap_or_else(|_| JsValue::from_str("parse error")));
         }
@@ -225,10 +240,17 @@ impl WasmKnowledgeBase {
             return Err(JsValue::from_str("No query sentence parsed"));
         }
 
-        let kb_opts  = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
+        let kb_opts = TptpOptions {
+            hide_numbers: true,
+            ..TptpOptions::default()
+        };
         let mut tptp = self.inner.to_tptp(&kb_opts, None);
 
-        let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
+        let q_opts = TptpOptions {
+            query: true,
+            hide_numbers: true,
+            ..TptpOptions::default()
+        };
         for (i, &sid) in query_sids.iter().enumerate() {
             let conj = self.inner.format_sentence_tptp(sid, &q_opts);
             tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
@@ -237,7 +259,8 @@ impl WasmKnowledgeBase {
         self.inner.flush_session(query_tag);
 
         let tptp_js = JsValue::from_str(&tptp);
-        ask_hook.call1(&JsValue::NULL, &tptp_js)
+        ask_hook
+            .call1(&JsValue::NULL, &tptp_js)
             .map_err(|e| JsValue::from_str(&format!("ask_hook threw: {:?}", e)))
     }
 }
@@ -265,12 +288,12 @@ impl WasmKnowledgeBase {
 #[derive(Clone)]
 pub struct WasmConfig {
     time_limit_secs: u64,
-    max_steps:       usize,
-    max_lits:        usize,
-    forward_close:   bool,
-    want_proof:      bool,
-    profile:         bool,
-    select_all:      bool,
+    max_steps: usize,
+    max_lits: usize,
+    forward_close: bool,
+    want_proof: bool,
+    profile: bool,
+    select_all: bool,
     selection_tolerance_pct: Option<f64>,
 }
 
@@ -286,11 +309,11 @@ impl WasmConfig {
     fn to_native_opts(&self, axiom_count: usize) -> NativeOpts {
         NativeOpts {
             time_limit_secs: self.time_limit_secs,
-            max_steps:       self.max_steps,
-            max_lits:        self.max_lits,
-            forward_close:   self.forward_close,
-            want_proof:      self.want_proof,
-            profile:         self.profile,
+            max_steps: self.max_steps,
+            max_lits: self.max_lits,
+            forward_close: self.forward_close,
+            want_proof: self.want_proof,
+            profile: self.profile,
             selection: if self.select_all {
                 sigmakee_rs_core::SineParams::whole_kb()
             } else if let Some(pct) = self.selection_tolerance_pct {
@@ -319,51 +342,75 @@ impl WasmConfig {
         // Mirrors NativeOpts::default() (see NativeProverConfig::default).
         Self {
             time_limit_secs: 30,
-            max_steps:       4000,
-            max_lits:        8,
-            forward_close:   true,
-            want_proof:      true,
-            profile:         false,
-            select_all:      false,
+            max_steps: 4000,
+            max_lits: 8,
+            forward_close: true,
+            want_proof: true,
+            profile: false,
+            select_all: false,
             selection_tolerance_pct: None,
         }
     }
 
     /// Wall-clock budget in seconds (0 = unlimited; the step cap still bounds it).
     #[wasm_bindgen(getter = timeLimitSecs)]
-    pub fn time_limit_secs(&self) -> u32 { self.time_limit_secs as u32 }
+    pub fn time_limit_secs(&self) -> u32 {
+        self.time_limit_secs as u32
+    }
     #[wasm_bindgen(setter = timeLimitSecs)]
-    pub fn set_time_limit_secs(&mut self, v: u32) { self.time_limit_secs = v as u64; }
+    pub fn set_time_limit_secs(&mut self, v: u32) {
+        self.time_limit_secs = v as u64;
+    }
 
     /// Maximum given-clause steps before the loop gives up.
     #[wasm_bindgen(getter = maxSteps)]
-    pub fn max_steps(&self) -> u32 { self.max_steps as u32 }
+    pub fn max_steps(&self) -> u32 {
+        self.max_steps as u32
+    }
     #[wasm_bindgen(setter = maxSteps)]
-    pub fn set_max_steps(&mut self, v: u32) { self.max_steps = v as usize; }
+    pub fn set_max_steps(&mut self, v: u32) {
+        self.max_steps = v as usize;
+    }
 
     /// Maximum literals per retained clause.
     #[wasm_bindgen(getter = maxLits)]
-    pub fn max_lits(&self) -> u32 { self.max_lits as u32 }
+    pub fn max_lits(&self) -> u32 {
+        self.max_lits as u32
+    }
     #[wasm_bindgen(setter = maxLits)]
-    pub fn set_max_lits(&mut self, v: u32) { self.max_lits = v as usize; }
+    pub fn set_max_lits(&mut self, v: u32) {
+        self.max_lits = v as usize;
+    }
 
     /// Run forward-closure over the theory before the given-clause loop.
     #[wasm_bindgen(getter = forwardClose)]
-    pub fn forward_close(&self) -> bool { self.forward_close }
+    pub fn forward_close(&self) -> bool {
+        self.forward_close
+    }
     #[wasm_bindgen(setter = forwardClose)]
-    pub fn set_forward_close(&mut self, v: bool) { self.forward_close = v; }
+    pub fn set_forward_close(&mut self, v: bool) {
+        self.forward_close = v;
+    }
 
     /// Populate the `proof` array on a `Proved` result.
     #[wasm_bindgen(getter = wantProof)]
-    pub fn want_proof(&self) -> bool { self.want_proof }
+    pub fn want_proof(&self) -> bool {
+        self.want_proof
+    }
     #[wasm_bindgen(setter = wantProof)]
-    pub fn set_want_proof(&mut self, v: bool) { self.want_proof = v; }
+    pub fn set_want_proof(&mut self, v: bool) {
+        self.want_proof = v;
+    }
 
     /// Emit phase-timing spans into `raw_output`.
     #[wasm_bindgen(getter)]
-    pub fn profile(&self) -> bool { self.profile }
+    pub fn profile(&self) -> bool {
+        self.profile
+    }
     #[wasm_bindgen(setter)]
-    pub fn set_profile(&mut self, v: bool) { self.profile = v; }
+    pub fn set_profile(&mut self, v: bool) {
+        self.profile = v;
+    }
 
     /// Disable SInE axiom selection — search the WHOLE promoted KB instead of
     /// a query-relevant subset. Off (`false`) by default, matching the
@@ -372,9 +419,13 @@ impl WasmConfig {
     /// but sidesteps selection ever excluding an axiom the query actually
     /// needs — useful for debugging a query that fails under selection.
     #[wasm_bindgen(getter = selectAll)]
-    pub fn select_all(&self) -> bool { self.select_all }
+    pub fn select_all(&self) -> bool {
+        self.select_all
+    }
     #[wasm_bindgen(setter = selectAll)]
-    pub fn set_select_all(&mut self, v: bool) { self.select_all = v; }
+    pub fn set_select_all(&mut self, v: bool) {
+        self.select_all = v;
+    }
 
     /// SInE selection budget, as a percentage (0-100) of the KB's total
     /// axiom count — how much of the ontology a query-relevant selection is
@@ -386,9 +437,13 @@ impl WasmConfig {
     /// may still widen from there) and Vampire (as the final, one-shot
     /// budget — see [`WasmNativeProver::to_tptp_for_ask`]).
     #[wasm_bindgen(getter = selectionTolerancePct)]
-    pub fn selection_tolerance_pct(&self) -> Option<f64> { self.selection_tolerance_pct }
+    pub fn selection_tolerance_pct(&self) -> Option<f64> {
+        self.selection_tolerance_pct
+    }
     #[wasm_bindgen(setter = selectionTolerancePct)]
-    pub fn set_selection_tolerance_pct(&mut self, v: Option<f64>) { self.selection_tolerance_pct = v; }
+    pub fn set_selection_tolerance_pct(&mut self, v: Option<f64>) {
+        self.selection_tolerance_pct = v;
+    }
 }
 
 // -- WasmNativeProver ----------------------------------------------------------
@@ -402,7 +457,7 @@ impl WasmConfig {
 /// solves the SUMO TQ suite natively.
 #[wasm_bindgen]
 pub struct WasmNativeProver {
-    inner:  KnowledgeBase<ProverLayer<TranslationLayer>>,
+    inner: KnowledgeBase<ProverLayer<TranslationLayer>>,
     config: WasmConfig,
     /// The sid→line map from the last [`to_tptp_indexed`](Self::to_tptp_indexed)
     /// call, consulted by [`tptp_line_for_position`](Self::tptp_line_for_position).
@@ -421,8 +476,8 @@ impl WasmNativeProver {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            inner:      KnowledgeBase::new_native_translating(),
-            config:     WasmConfig::new(),
+            inner: KnowledgeBase::new_native_translating(),
+            config: WasmConfig::new(),
             tptp_lines: std::collections::HashMap::new(),
         }
     }
@@ -456,10 +511,17 @@ impl WasmNativeProver {
     #[wasm_bindgen(js_name = loadKif)]
     pub fn load_kif(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let result = self.inner.load(
-            sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file_tag), kif_text.to_string()),
+            sigmakee_rs_core::SourceFile::kif(
+                std::path::PathBuf::from(file_tag),
+                kif_text.to_string(),
+            ),
             file_tag,
         );
-        let mut errors: Vec<String> = result.diagnostics.iter().map(|e: &sigmakee_rs_core::Diagnostic| e.to_string()).collect();
+        let mut errors: Vec<String> = result
+            .diagnostics
+            .iter()
+            .map(|e: &sigmakee_rs_core::Diagnostic| e.to_string())
+            .collect();
         // Promote the freshly-loaded source into the searchable axiom base.
         // Skipping this leaves the axioms as inert session support the
         // given-clause loop never force-includes, so queries come back
@@ -467,8 +529,7 @@ impl WasmNativeProver {
         if let Err(e) = self.inner.make_session_axiomatic(file_tag) {
             errors.push(format!("promote failed: {:?}", e));
         }
-        serde_wasm_bindgen::to_value(&errors)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Load KIF under `file_tag` WITHOUT promoting it to axioms.
@@ -479,10 +540,17 @@ impl WasmNativeProver {
     #[wasm_bindgen(js_name = ingest)]
     pub fn ingest(&mut self, kif_text: &str, file_tag: &str) -> Result<JsValue, JsValue> {
         let result = self.inner.load(
-            sigmakee_rs_core::SourceFile::kif(std::path::PathBuf::from(file_tag), kif_text.to_string()),
+            sigmakee_rs_core::SourceFile::kif(
+                std::path::PathBuf::from(file_tag),
+                kif_text.to_string(),
+            ),
             file_tag,
         );
-        let errors: Vec<String> = result.diagnostics.iter().map(|e: &sigmakee_rs_core::Diagnostic| e.to_string()).collect();
+        let errors: Vec<String> = result
+            .diagnostics
+            .iter()
+            .map(|e: &sigmakee_rs_core::Diagnostic| e.to_string())
+            .collect();
         serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -506,7 +574,7 @@ impl WasmNativeProver {
     pub fn clausify(&self, formula: Option<String>) -> Result<JsValue, JsValue> {
         let clauses = match formula {
             Some(kif) => self.inner.clausify_formula(&kif),
-            None      => self.inner.clausify_all(),
+            None => self.inner.clausify_all(),
         };
         serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
     }
@@ -541,7 +609,9 @@ impl WasmNativeProver {
         // Diff the buffer into the file's own session and commit it live: the KB
         // simply tracks what the editor holds. No restore step, so a pure
         // addition emits no FormulaRemoved and cannot trigger the symbol prune.
-        let staged = self.inner.stage(SourceFile::kif(path, text.to_string()), file);
+        let staged = self
+            .inner
+            .stage(SourceFile::kif(path, text.to_string()), file);
         self.inner.commit(file);
         if !staged.ok {
             return diagnostics_to_js(&staged.diagnostics);
@@ -570,13 +640,14 @@ impl WasmNativeProver {
         let opts = TptpOptions {
             lang: match lang.as_deref() {
                 Some("tff") => TptpLang::Tff,
-                _           => TptpLang::Fof,
+                _ => TptpLang::Fof,
             },
             hide_numbers: hide_numbers.unwrap_or(true),
             ..TptpOptions::default()
         };
         self.tptp_lines.clear();
-        self.inner.to_tptp_indexed(&opts, None, Some(&mut self.tptp_lines))
+        self.inner
+            .to_tptp_indexed(&opts, None, Some(&mut self.tptp_lines))
     }
 
     /// The 0-based line in the last [`toTptpIndexed`](Self::to_tptp_indexed)
@@ -623,8 +694,8 @@ impl WasmNativeProver {
     pub fn to_tptp_for_ask(
         &mut self,
         assertions_kif: &str,
-        query_kif:      &str,
-        select_all:     Option<bool>,
+        query_kif: &str,
+        select_all: Option<bool>,
         selection_tolerance_pct: Option<f64>,
     ) -> Result<String, JsValue> {
         // Assertions and the query go into SEPARATE session tags (rather
@@ -632,7 +703,7 @@ impl WasmNativeProver {
         // set-differenced out of the assertions' — `session_sids(QUERY_TAG)`
         // is exactly the query's sentences, nothing more.
         const ASSERT_TAG: &str = "__vampire_ask_assertions__";
-        const QUERY_TAG:  &str = "__vampire_ask_query__";
+        const QUERY_TAG: &str = "__vampire_ask_query__";
         if !assertions_kif.trim().is_empty() {
             let r = self.inner.tell(assertions_kif, ASSERT_TAG);
             if !r.ok {
@@ -646,7 +717,11 @@ impl WasmNativeProver {
         if !query_tell.ok {
             self.inner.flush_session(ASSERT_TAG);
             self.inner.flush_session(QUERY_TAG);
-            let errors: Vec<String> = query_tell.diagnostics.iter().map(|e| e.to_string()).collect();
+            let errors: Vec<String> = query_tell
+                .diagnostics
+                .iter()
+                .map(|e| e.to_string())
+                .collect();
             return Err(serde_wasm_bindgen::to_value(&errors)
                 .unwrap_or_else(|_| JsValue::from_str("query parse error")));
         }
@@ -657,7 +732,10 @@ impl WasmNativeProver {
             return Err(JsValue::from_str("No query sentence parsed"));
         }
 
-        let kb_opts = TptpOptions { hide_numbers: true, ..TptpOptions::default() };
+        let kb_opts = TptpOptions {
+            hide_numbers: true,
+            ..TptpOptions::default()
+        };
         let mut tptp = if select_all.unwrap_or(false) {
             self.inner.to_tptp(&kb_opts, Some(ASSERT_TAG))
         } else {
@@ -667,10 +745,20 @@ impl WasmNativeProver {
             // assertion's own vocabulary can pull in axioms it needs too.
             let mut seed_sids = self.inner.session_sids(ASSERT_TAG);
             seed_sids.extend(query_sids.iter().copied());
-            self.inner.to_tptp_selected(&kb_opts, &seed_sids, Some(ASSERT_TAG), None, selection_tolerance_pct)
+            self.inner.to_tptp_selected(
+                &kb_opts,
+                &seed_sids,
+                Some(ASSERT_TAG),
+                None,
+                selection_tolerance_pct,
+            )
         };
 
-        let q_opts = TptpOptions { query: true, hide_numbers: true, ..TptpOptions::default() };
+        let q_opts = TptpOptions {
+            query: true,
+            hide_numbers: true,
+            ..TptpOptions::default()
+        };
         for (i, &sid) in query_sids.iter().enumerate() {
             let conj = self.inner.format_sentence_tptp(sid, &q_opts);
             tptp.push_str(&format!("\nfof(query_{}, conjecture, ({})).\n", i, conj));
@@ -695,7 +783,9 @@ impl WasmNativeProver {
         // Count ontology terms: exclude KIF variables (`?x`/`@row`), the
         // scope-qualified variable symbols the store interns (`X__<scope>`),
         // and CNF skolem constants.
-        let symbols = self.inner.iter_symbols()
+        let symbols = self
+            .inner
+            .iter_symbols()
             .filter(|(_, name)| !name.starts_with('?') && !name.starts_with('@'))
             .filter(|(_, name)| !self.inner.symbol_is_variable(name))
             .filter(|(_, name)| !self.inner.symbol_is_skolem(name))
@@ -703,17 +793,23 @@ impl WasmNativeProver {
 
         // Internal scratch sessions (`__inline(N)__`, `__wasm:…`) are not
         // constituents and would inflate every count.
-        let files: Vec<String> = self.inner.iter_files()
-            .into_iter().filter(|f| !f.starts_with("__")).collect();
+        let files: Vec<String> = self
+            .inner
+            .iter_files()
+            .into_iter()
+            .filter(|f| !f.starts_with("__"))
+            .collect();
 
         let mut axioms = 0usize;
-        let mut rules  = 0usize;
+        let mut rules = 0usize;
         for f in &files {
             for sid in self.inner.file_roots(f) {
                 axioms += 1;
                 if let Some(sent) = self.inner.sentence(sid) {
-                    if matches!(sent.elements.first(),
-                                Some(Element::Op(OpKind::Implies | OpKind::Iff))) {
+                    if matches!(
+                        sent.elements.first(),
+                        Some(Element::Op(OpKind::Implies | OpKind::Iff))
+                    ) {
                         rules += 1;
                     }
                 }
@@ -722,15 +818,32 @@ impl WasmNativeProver {
 
         let v = self.inner.vocab_stats();
         let out = KbStatsJs {
-            files: files.len(), symbols, axioms, rules,
-            classes: v.classes, instances: v.instances, relations: v.relations,
-            predicates: v.predicates, functions: v.functions,
-            documented: v.documented, labeled: v.labeled,
-            doc_languages: v.doc_languages.into_iter()
-                .map(|(language, documented)| DocLangJs { language, documented })
+            files: files.len(),
+            symbols,
+            axioms,
+            rules,
+            classes: v.classes,
+            instances: v.instances,
+            relations: v.relations,
+            predicates: v.predicates,
+            functions: v.functions,
+            documented: v.documented,
+            labeled: v.labeled,
+            doc_languages: v
+                .doc_languages
+                .into_iter()
+                .map(|(language, documented)| DocLangJs {
+                    language,
+                    documented,
+                })
                 .collect(),
-            term_languages: v.term_languages.into_iter()
-                .map(|(language, documented)| DocLangJs { language, documented })
+            term_languages: v
+                .term_languages
+                .into_iter()
+                .map(|(language, documented)| DocLangJs {
+                    language,
+                    documented,
+                })
                 .collect(),
         };
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -745,7 +858,9 @@ impl WasmNativeProver {
     /// is the browser freeze/thaw seam.
     #[wasm_bindgen]
     pub fn snapshot(&self) -> Result<Vec<u8>, JsValue> {
-        self.inner.snapshot_bytes().map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner
+            .snapshot_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Thaw a KB previously produced by [`snapshot`](Self::snapshot), replacing
@@ -770,8 +885,8 @@ impl WasmNativeProver {
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         let errors: Vec<String> = result.diagnostics.iter().map(|e| e.to_string()).collect();
-        let errs_js = serde_wasm_bindgen::to_value(&errors)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let errs_js =
+            serde_wasm_bindgen::to_value(&errors).map_err(|e| JsValue::from_str(&e.to_string()))?;
         js_sys::Reflect::set(&obj, &"errors".into(), &errs_js)
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(obj.into())
@@ -791,8 +906,7 @@ impl WasmNativeProver {
             .iter()
             .map(|&sid| self.inner.sentence_to_string(sid))
             .collect();
-        serde_wasm_bindgen::to_value(&results)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&results).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Run semantic validation over the whole KB. Returns a JS `string[]` of
@@ -823,15 +937,15 @@ impl WasmNativeProver {
     #[wasm_bindgen]
     pub fn search(
         &self,
-        query:    &str,
-        kind:     Option<String>,
+        query: &str,
+        kind: Option<String>,
         language: Option<String>,
-        limit:    Option<u32>,
+        limit: Option<u32>,
     ) -> Result<JsValue, JsValue> {
         let opts = SearchOpts {
-            kind:     kind.as_deref().and_then(man_kind_from_str),
+            kind: kind.as_deref().and_then(man_kind_from_str),
             language: language.as_deref(),
-            limit:    limit.map(|n| n as usize),
+            limit: limit.map(|n| n as usize),
         };
         search_hits_to_js(&self.inner.search(query, &opts))
     }
@@ -889,29 +1003,41 @@ impl WasmNativeProver {
     #[wasm_bindgen(js_name = auditConsistency)]
     pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
         let opts = self.config.to_native_opts(self.inner.sine_axiom_count());
-        let result = self.inner.audit_consistency(&[], opts, limit.unwrap_or(5) as usize);
+        let result = self
+            .inner
+            .audit_consistency(&[], opts, limit.unwrap_or(5) as usize);
         let src_idx = self.inner.build_axiom_source_index();
 
-        let contradictions: Vec<ContradictionJs> = result.contradiction_proofs.iter().enumerate().map(|(i, steps)| {
-            // A contradiction has no conjecture to restate — it refutes the KB
-            // itself — so the prose opens straight into the derivation. Reuse
-            // the one index built above: rendering N contradictions would
-            // otherwise repeat a whole-KB fingerprint pass N times.
-            let prose_report = self.inner.render_proof_prose_with(
-                None, steps, "EnglishLanguage", &src_idx);
-            ContradictionJs {
-                graphviz: sigmakee_rs_core::render_graphviz(steps, &format!("contradiction-{}", i + 1), "Inconsistent"),
-                prose:         prose_report.rendered,
-                prose_missing: prose_report.missing,
-                steps: proof_steps_js(steps, &src_idx),
-            }
-        }).collect();
+        let contradictions: Vec<ContradictionJs> = result
+            .contradiction_proofs
+            .iter()
+            .enumerate()
+            .map(|(i, steps)| {
+                // A contradiction has no conjecture to restate — it refutes the KB
+                // itself — so the prose opens straight into the derivation. Reuse
+                // the one index built above: rendering N contradictions would
+                // otherwise repeat a whole-KB fingerprint pass N times.
+                let prose_report =
+                    self.inner
+                        .render_proof_prose_with(None, steps, "EnglishLanguage", &src_idx);
+                ContradictionJs {
+                    graphviz: sigmakee_rs_core::render_graphviz(
+                        steps,
+                        &format!("contradiction-{}", i + 1),
+                        "Inconsistent",
+                    ),
+                    prose: prose_report.rendered,
+                    prose_missing: prose_report.missing,
+                    steps: proof_steps_js(steps, &src_idx),
+                }
+            })
+            .collect();
 
         let out = AuditResultJs {
-            status:         format!("{:?}", result.status),
-            inconsistent:   result.status == sigmakee_rs_core::ProverStatus::Inconsistent,
-            given_steps:    result.given_steps,
-            raw_output:     result.raw_output,
+            status: format!("{:?}", result.status),
+            inconsistent: result.status == sigmakee_rs_core::ProverStatus::Inconsistent,
+            given_steps: result.given_steps,
+            raw_output: result.raw_output,
             contradictions,
         };
         serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -937,14 +1063,12 @@ impl WasmNativeProver {
     /// * `graphviz` — the same proof rendered as a Graphviz DOT digraph
     ///   (always a syntactically valid graph, even when `proof` is empty).
     #[wasm_bindgen]
-    pub fn ask(
-        &self,
-        query_kif: &str,
-        session:   Option<String>,
-    ) -> Result<JsValue, JsValue> {
-        let opts   = self.config.to_native_opts(self.inner.sine_axiom_count());
-        let sine   = opts.selection.clone();
-        let result = self.inner.ask_query(query_kif, session.as_deref(), sine, opts);
+    pub fn ask(&self, query_kif: &str, session: Option<String>) -> Result<JsValue, JsValue> {
+        let opts = self.config.to_native_opts(self.inner.sine_axiom_count());
+        let sine = opts.selection.clone();
+        let result = self
+            .inner
+            .ask_query(query_kif, session.as_deref(), sine, opts);
 
         // Curated, JS-safe projection of `ProverResult`.  We deliberately do
         // NOT serialize the raw result: its `bindings`/`proof_kif` carry u64
@@ -967,25 +1091,31 @@ impl WasmNativeProver {
             // the query (cheap — one formula); a parse failure just drops the
             // opener, it never fails the ask.
             let goal_doc = sigmakee_rs_core::parse_document(
-                "__prose_goal__", query_kif.to_string(), sigmakee_rs_core::Parser::Kif);
+                "__prose_goal__",
+                query_kif.to_string(),
+                sigmakee_rs_core::Parser::Kif,
+            );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report = self.inner.render_proof_prose_with(
-                goal_ast, &result.proof_kif, "EnglishLanguage", &src_idx);
+                goal_ast,
+                &result.proof_kif,
+                "EnglishLanguage",
+                &src_idx,
+            );
             (proof, report.rendered, report.missing)
         };
 
         let out = AskResultJs {
-            status:      status_str,
-            proved:      result.status == sigmakee_rs_core::ProverStatus::Proved,
+            status: status_str,
+            proved: result.status == sigmakee_rs_core::ProverStatus::Proved,
             given_steps: result.given_steps,
-            raw_output:  result.raw_output,
+            raw_output: result.raw_output,
             proof,
             graphviz,
             prose,
             prose_missing,
         };
-        serde_wasm_bindgen::to_value(&out)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Parse a captured Vampire (WASM) run's combined stdout+stderr into the
@@ -1001,8 +1131,13 @@ impl WasmNativeProver {
     /// `query_kif` — the conjecture KIF text, reparsed only for the prose's
     /// goal restatement; a parse failure just drops that opener line.
     #[wasm_bindgen(js_name = parseVampireAskResult)]
-    pub fn parse_vampire_ask_result(&self, raw_output: &str, query_kif: &str) -> Result<JsValue, JsValue> {
-        let parsed = sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
+    pub fn parse_vampire_ask_result(
+        &self,
+        raw_output: &str,
+        query_kif: &str,
+    ) -> Result<JsValue, JsValue> {
+        let parsed =
+            sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
         let status_str = format!("{:?}", parsed.status);
         let graphviz = sigmakee_rs_core::render_graphviz(&parsed.proof, "ask", &status_str);
 
@@ -1012,25 +1147,31 @@ impl WasmNativeProver {
             let src_idx = self.inner.build_axiom_source_index();
             let proof = proof_steps_js(&parsed.proof, &src_idx);
             let goal_doc = sigmakee_rs_core::parse_document(
-                "__prose_goal__", query_kif.to_string(), sigmakee_rs_core::Parser::Kif);
+                "__prose_goal__",
+                query_kif.to_string(),
+                sigmakee_rs_core::Parser::Kif,
+            );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report = self.inner.render_proof_prose_with(
-                goal_ast, &parsed.proof, "EnglishLanguage", &src_idx);
+                goal_ast,
+                &parsed.proof,
+                "EnglishLanguage",
+                &src_idx,
+            );
             (proof, report.rendered, report.missing)
         };
 
         let out = AskResultJs {
-            status:      status_str,
-            proved:      parsed.status == sigmakee_rs_core::ProverStatus::Proved,
+            status: status_str,
+            proved: parsed.status == sigmakee_rs_core::ProverStatus::Proved,
             given_steps: None,
-            raw_output:  raw_output.to_string(),
+            raw_output: raw_output.to_string(),
             proof,
             graphviz,
             prose,
             prose_missing,
         };
-        serde_wasm_bindgen::to_value(&out)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Parse a captured Vampire (WASM) consistency-check run into the SAME
@@ -1043,17 +1184,28 @@ impl WasmNativeProver {
     /// whole-KB TPTP dump (no conjecture — see the demo's `auditVampire`).
     #[wasm_bindgen(js_name = parseVampireAuditResult)]
     pub fn parse_vampire_audit_result(&self, raw_output: &str) -> Result<JsValue, JsValue> {
-        let parsed = sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::CheckConsistency);
-        let status_str    = format!("{:?}", parsed.status);
-        let inconsistent  = parsed.status == sigmakee_rs_core::ProverStatus::Inconsistent;
+        let parsed = sigmakee_rs_core::parse_vampire_result(
+            raw_output,
+            sigmakee_rs_core::ProverMode::CheckConsistency,
+        );
+        let status_str = format!("{:?}", parsed.status);
+        let inconsistent = parsed.status == sigmakee_rs_core::ProverStatus::Inconsistent;
 
         let contradictions = if inconsistent && !parsed.proof.is_empty() {
             let src_idx = self.inner.build_axiom_source_index();
             let prose_report = self.inner.render_proof_prose_with(
-                None, &parsed.proof, "EnglishLanguage", &src_idx);
+                None,
+                &parsed.proof,
+                "EnglishLanguage",
+                &src_idx,
+            );
             vec![ContradictionJs {
-                graphviz: sigmakee_rs_core::render_graphviz(&parsed.proof, "contradiction-1", "Inconsistent"),
-                prose:         prose_report.rendered,
+                graphviz: sigmakee_rs_core::render_graphviz(
+                    &parsed.proof,
+                    "contradiction-1",
+                    "Inconsistent",
+                ),
+                prose: prose_report.rendered,
                 prose_missing: prose_report.missing,
                 steps: proof_steps_js(&parsed.proof, &src_idx),
             }]
@@ -1062,14 +1214,13 @@ impl WasmNativeProver {
         };
 
         let out = AuditResultJs {
-            status:      status_str,
+            status: status_str,
             inconsistent,
             given_steps: None,
-            raw_output:  raw_output.to_string(),
+            raw_output: raw_output.to_string(),
             contradictions,
         };
-        serde_wasm_bindgen::to_value(&out)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 }
 
@@ -1079,20 +1230,23 @@ impl WasmNativeProver {
 /// A refutation proof and an audit contradiction are the same shape, so both
 /// endpoints share this — and the UI renders them through one code path.
 fn proof_steps_js(
-    steps:   &[sigmakee_rs_core::KifProofStep],
+    steps: &[sigmakee_rs_core::KifProofStep],
     src_idx: &sigmakee_rs_core::AxiomSourceIndex,
 ) -> Vec<ProofStepJs> {
-    steps.iter().map(|s| {
-        let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
-        ProofStepJs {
-            index:    s.index,
-            rule:     s.rule.clone(),
-            premises: s.premises.clone(),
-            kif:      s.formula.format_plain(0),
-            file:     loc.map(|a| a.file.clone()),
-            line:     loc.map(|a| a.line),
-        }
-    }).collect()
+    steps
+        .iter()
+        .map(|s| {
+            let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+            ProofStepJs {
+                index: s.index,
+                rule: s.rule.clone(),
+                premises: s.premises.clone(),
+                kif: s.formula.format_plain(0),
+                file: loc.map(|a| a.file.clone()),
+                line: loc.map(|a| a.line),
+            }
+        })
+        .collect()
 }
 
 /// Summary counts describing the loaded KB (see [`WasmNativeProver::stats`]).
@@ -1100,44 +1254,44 @@ fn proof_steps_js(
 /// `documented`/`labeled` divide by `symbols` for a coverage percentage.
 #[derive(serde::Serialize)]
 struct KbStatsJs {
-    files:      usize,
-    symbols:    usize,
-    axioms:     usize,
-    rules:      usize,
-    classes:    usize,
-    instances:  usize,
-    relations:  usize,
+    files: usize,
+    symbols: usize,
+    axioms: usize,
+    rules: usize,
+    classes: usize,
+    instances: usize,
+    relations: usize,
     predicates: usize,
-    functions:  usize,
+    functions: usize,
     documented: usize,
-    labeled:    usize,
-    doc_languages:  Vec<DocLangJs>,
+    labeled: usize,
+    doc_languages: Vec<DocLangJs>,
     term_languages: Vec<DocLangJs>,
 }
 
 /// One language's documentation coverage (see `KbStatsJs.doc_languages`).
 #[derive(serde::Serialize)]
 struct DocLangJs {
-    language:   String,
+    language: String,
     documented: usize,
 }
 
 /// Curated native-prover result projected to JS-safe types.
 #[derive(serde::Serialize)]
 struct AskResultJs {
-    status:      String,
-    proved:      bool,
+    status: String,
+    proved: bool,
     given_steps: Option<usize>,
-    raw_output:  String,
-    proof:       Vec<ProofStepJs>,
+    raw_output: String,
+    proof: Vec<ProofStepJs>,
     /// The proof rendered as a Graphviz DOT digraph (one node per step, one
     /// edge per premise) — always a syntactically valid graph, even when
     /// `proof` is empty. Safe to hand straight to a DOT renderer.
-    graphviz:    String,
+    graphviz: String,
     /// The proof narrated as connected English prose (goal restatement, the
     /// axioms/hypotheses used, then the derivation chain). Empty when there is
     /// no proof to narrate.
-    prose:       String,
+    prose: String,
     /// Symbols the prose showed by bare name because they have no
     /// `format`/`termFormat` in the rendering language. Sorted, de-duplicated.
     prose_missing: Vec<String>,
@@ -1147,22 +1301,22 @@ struct AskResultJs {
 /// contradiction; both endpoints project to this single shape.
 #[derive(serde::Serialize)]
 struct ProofStepJs {
-    index:    usize,
-    rule:     String,
+    index: usize,
+    rule: String,
     premises: Vec<usize>,
-    kif:      String,
-    file:     Option<String>,
-    line:     Option<u32>,
+    kif: String,
+    file: Option<String>,
+    line: Option<u32>,
 }
 
 /// One distinct contradiction the audit found — a full derivation to `FALSE`.
 #[derive(serde::Serialize)]
 struct ContradictionJs {
-    steps:    Vec<ProofStepJs>,
+    steps: Vec<ProofStepJs>,
     /// This contradiction's derivation rendered as a Graphviz DOT digraph.
     graphviz: String,
     /// This contradiction's derivation narrated as connected English prose.
-    prose:    String,
+    prose: String,
     /// Symbols the prose showed by bare name (no `format`/`termFormat`).
     prose_missing: Vec<String>,
 }
@@ -1170,10 +1324,10 @@ struct ContradictionJs {
 /// Curated native-prover consistency-audit result projected to JS-safe types.
 #[derive(serde::Serialize)]
 struct AuditResultJs {
-    status:         String,
-    inconsistent:   bool,
-    given_steps:    Option<usize>,
-    raw_output:     String,
+    status: String,
+    inconsistent: bool,
+    given_steps: Option<usize>,
+    raw_output: String,
     contradictions: Vec<ContradictionJs>,
 }
 
@@ -1192,29 +1346,32 @@ struct AuditResultJs {
 #[derive(serde::Serialize)]
 struct DiagnosticJs {
     severity: String,
-    kind:     String,
-    code:     String,
-    message:  String,
-    file:     String,
-    line:     u32,
-    col:      u32,
+    kind: String,
+    code: String,
+    message: String,
+    file: String,
+    line: u32,
+    col: u32,
     end_line: u32,
-    end_col:  u32,
+    end_col: u32,
 }
 
 /// Serialize a diagnostics list to structured JS objects (see [`DiagnosticJs`]).
 fn diagnostics_to_js(diags: &[sigmakee_rs_core::Diagnostic]) -> Result<JsValue, JsValue> {
-    let out: Vec<DiagnosticJs> = diags.iter().map(|d| DiagnosticJs {
-        severity: d.severity.as_str().to_string(),
-        kind:     d.kind.to_string(),
-        code:     d.code.to_string(),
-        message:  d.message.clone(),
-        file:     d.range.file.clone(),
-        line:     d.range.line,
-        col:      d.range.col,
-        end_line: d.range.end_line,
-        end_col:  d.range.end_col,
-    }).collect();
+    let out: Vec<DiagnosticJs> = diags
+        .iter()
+        .map(|d| DiagnosticJs {
+            severity: d.severity.as_str().to_string(),
+            kind: d.kind.to_string(),
+            code: d.code.to_string(),
+            message: d.message.clone(),
+            file: d.range.file.clone(),
+            line: d.range.line,
+            col: d.range.col,
+            end_line: d.range.end_line,
+            end_col: d.range.end_col,
+        })
+        .collect();
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
@@ -1222,7 +1379,7 @@ fn diagnostics_to_js(diags: &[sigmakee_rs_core::Diagnostic]) -> Result<JsValue, 
 /// KB is left untouched (mirrors `Session::validate_formula`).  Generic over the
 /// backend: `TopLayer: Layer`, so the `validate_sentence` bound is satisfied.
 fn validate_formula_impl<L: TopLayer>(
-    kb:  &mut KnowledgeBase<L>,
+    kb: &mut KnowledgeBase<L>,
     kif: &str,
 ) -> Result<JsValue, JsValue> {
     const TAG: &str = "__wasm:validate_formula__";
@@ -1255,43 +1412,46 @@ pub fn parse_test(name: &str, text: &str) -> Result<JsValue, JsValue> {
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct TestJs {
-        name:            String,
-        note:            String,
-        timeout:         u32,
-        query_kif:       Option<String>,
-        axiom_kif:       String,
-        expected_proof:  Option<bool>,
+        name: String,
+        note: String,
+        timeout: u32,
+        query_kif: Option<String>,
+        axiom_kif: String,
+        expected_proof: Option<bool>,
         expected_answer: Option<Vec<String>>,
-        extra_files:     Vec<String>,
+        extra_files: Vec<String>,
     }
     let out = TestJs {
-        name:            tc.file_name.clone(),
-        note:            tc.note.clone(),
-        timeout:         tc.timeout,
-        query_kif:       tc.query_kif(),
-        axiom_kif:       tc.axiom_kif(),
-        expected_proof:  tc.expected_proof,
+        name: tc.file_name.clone(),
+        note: tc.note.clone(),
+        timeout: tc.timeout,
+        query_kif: tc.query_kif(),
+        axiom_kif: tc.axiom_kif(),
+        expected_proof: tc.expected_proof,
         expected_answer: tc.expected_answer.clone(),
-        extra_files:     tc.extra_files.clone(),
+        extra_files: tc.extra_files.clone(),
     };
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 fn validate_scratch_impl<L: TopLayer>(
-    kb:         &mut KnowledgeBase<L>,
+    kb: &mut KnowledgeBase<L>,
     assertions: &str,
-    query:      &str,
+    query: &str,
 ) -> Result<JsValue, JsValue> {
     const TAG: &str = "__wasm:validate_scratch__";
 
     let collect = |kif: &str, kb: &mut KnowledgeBase<L>| -> Vec<sigmakee_rs_core::Diagnostic> {
-        if kif.trim().is_empty() { return Vec::new(); }
+        if kif.trim().is_empty() {
+            return Vec::new();
+        }
         let before: std::collections::HashSet<_> = kb.session_sids(TAG).into_iter().collect();
         let r = kb.tell(kif, TAG);
         if !r.ok {
             return r.diagnostics;
         }
-        kb.session_sids(TAG).into_iter()
+        kb.session_sids(TAG)
+            .into_iter()
             .filter(|sid| !before.contains(sid))
             .flat_map(|sid| kb.validate_sentence_in_session(sid, TAG))
             .collect()
@@ -1303,65 +1463,91 @@ fn validate_scratch_impl<L: TopLayer>(
     kb.flush_session(TAG);
 
     #[derive(serde::Serialize)]
-    struct Out { assertions: Vec<DiagnosticJs>, query: Vec<DiagnosticJs> }
-    let to_js = |diags: Vec<sigmakee_rs_core::Diagnostic>| diags.iter().map(|d| DiagnosticJs {
-        severity: d.severity.as_str().to_string(),
-        kind:     d.kind.to_string(),
-        code:     d.code.to_string(),
-        message:  d.message.clone(),
-        file:     d.range.file.clone(),
-        line:     d.range.line,
-        col:      d.range.col,
-        end_line: d.range.end_line,
-        end_col:  d.range.end_col,
-    }).collect::<Vec<_>>();
-    let out = Out { assertions: to_js(a_diags), query: to_js(q_diags) };
+    struct Out {
+        assertions: Vec<DiagnosticJs>,
+        query: Vec<DiagnosticJs>,
+    }
+    let to_js = |diags: Vec<sigmakee_rs_core::Diagnostic>| {
+        diags
+            .iter()
+            .map(|d| DiagnosticJs {
+                severity: d.severity.as_str().to_string(),
+                kind: d.kind.to_string(),
+                code: d.code.to_string(),
+                message: d.message.clone(),
+                file: d.range.file.clone(),
+                line: d.range.line,
+                col: d.range.col,
+                end_line: d.range.end_line,
+                end_col: d.range.end_col,
+            })
+            .collect::<Vec<_>>()
+    };
+    let out = Out {
+        assertions: to_js(a_diags),
+        query: to_js(q_diags),
+    };
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[derive(serde::Serialize)]
 struct SearchHitJs {
-    symbol:   String,
-    kinds:    Vec<String>,
-    source:   String,
+    symbol: String,
+    kinds: Vec<String>,
+    source: String,
     language: String,
-    text:     String,
-    rank:     f32,
+    text: String,
+    rank: f32,
 }
 
 /// Project search hits to JS-safe objects (dropping each hit's internal `sid`).
 fn search_hits_to_js(hits: &[SearchHit]) -> Result<JsValue, JsValue> {
-    let out: Vec<SearchHitJs> = hits.iter().map(|h| SearchHitJs {
-        symbol:   h.symbol.clone(),
-        kinds:    h.kinds.iter().map(|k| k.as_str().to_string()).collect(),
-        source:   h.source.as_str().to_string(),
-        language: h.language.clone(),
-        text:     h.text.clone(),
-        rank:     h.rank,
-    }).collect();
+    let out: Vec<SearchHitJs> = hits
+        .iter()
+        .map(|h| SearchHitJs {
+            symbol: h.symbol.clone(),
+            kinds: h.kinds.iter().map(|k| k.as_str().to_string()).collect(),
+            source: h.source.as_str().to_string(),
+            language: h.language.clone(),
+            text: h.text.clone(),
+            rank: h.rank,
+        })
+        .collect();
     serde_wasm_bindgen::to_value(&out).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 fn man_kind_from_str(s: &str) -> Option<ManKind> {
     match s.to_ascii_lowercase().as_str() {
-        "class"      => Some(ManKind::Class),
-        "relation"   => Some(ManKind::Relation),
-        "function"   => Some(ManKind::Function),
-        "predicate"  => Some(ManKind::Predicate),
-        "instance"   => Some(ManKind::Instance),
+        "class" => Some(ManKind::Class),
+        "relation" => Some(ManKind::Relation),
+        "function" => Some(ManKind::Function),
+        "predicate" => Some(ManKind::Predicate),
+        "instance" => Some(ManKind::Instance),
         "individual" => Some(ManKind::Individual),
-        _            => None,
+        _ => None,
     }
 }
 
 #[derive(serde::Serialize)]
-struct DocJs { language: String, text: String }
+struct DocJs {
+    language: String,
+    text: String,
+}
 #[derive(serde::Serialize)]
-struct EdgeJs { relation: String, parent: String }
+struct EdgeJs {
+    relation: String,
+    parent: String,
+}
 #[derive(serde::Serialize)]
-struct SortJs { class: String, subclass: bool }
+struct SortJs {
+    class: String,
+    subclass: bool,
+}
 #[derive(serde::Serialize)]
-struct DomainJs { position: usize, sort: SortJs }
+struct DomainJs {
+    position: usize,
+    sort: SortJs,
+}
 
 /// One formula that references the man-paged symbol: its rendered KIF text
 /// plus source location (when the sentence has one — synthetic/CNF sentences
@@ -1377,11 +1563,11 @@ struct DomainJs { position: usize, sort: SortJs }
 #[derive(serde::Serialize)]
 struct ManPageRefJs {
     position: Option<usize>,
-    kif:      String,
-    file:     Option<String>,
-    line:     Option<u32>,
-    kind:     String,
-    arg_pos:  Option<usize>,
+    kif: String,
+    file: Option<String>,
+    line: Option<u32>,
+    kind: String,
+    arg_pos: Option<usize>,
 }
 
 /// A JS-safe projection of `ManPage` — the human-facing fields, with the raw
@@ -1389,19 +1575,19 @@ struct ManPageRefJs {
 /// location (see [`ManPageRefJs`]) rather than dropped.
 #[derive(serde::Serialize)]
 struct ManPageJs {
-    name:             String,
-    kinds:            Vec<String>,
-    documentation:    Vec<DocJs>,
-    term_format:      Vec<DocJs>,
-    format:           Vec<DocJs>,
-    parents:          Vec<EdgeJs>,
-    children:         Vec<EdgeJs>,
-    arity:            Option<i32>,
-    domains:          Vec<DomainJs>,
-    range:            Option<SortJs>,
+    name: String,
+    kinds: Vec<String>,
+    documentation: Vec<DocJs>,
+    term_format: Vec<DocJs>,
+    format: Vec<DocJs>,
+    parents: Vec<EdgeJs>,
+    children: Vec<EdgeJs>,
+    arity: Option<i32>,
+    domains: Vec<DomainJs>,
+    range: Option<SortJs>,
     appears_in_count: usize,
     consequent_count: usize,
-    references:       Vec<ManPageRefJs>,
+    references: Vec<ManPageRefJs>,
 }
 
 /// Direct taxonomy edges of `symbol` as `{ parents, children }` of
@@ -1410,11 +1596,17 @@ struct ManPageJs {
 /// lazily-expanded taxonomy tree. Shared by both backends' `taxonomy` binding.
 fn taxonomy_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, symbol: &str) -> Result<JsValue, JsValue> {
     #[derive(serde::Serialize)]
-    struct TaxJs { parents: Vec<EdgeJs>, children: Vec<EdgeJs> }
+    struct TaxJs {
+        parents: Vec<EdgeJs>,
+        children: Vec<EdgeJs>,
+    }
     let (parents, children) = kb.taxonomy_edges(symbol);
-    let edge = |e: sigmakee_rs_core::ParentEdge| EdgeJs { relation: e.relation, parent: e.parent };
+    let edge = |e: sigmakee_rs_core::ParentEdge| EdgeJs {
+        relation: e.relation,
+        parent: e.parent,
+    };
     let tax = TaxJs {
-        parents:  parents.into_iter().map(edge).collect(),
+        parents: parents.into_iter().map(edge).collect(),
         children: children.into_iter().map(edge).collect(),
     };
     serde_wasm_bindgen::to_value(&tax).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -1426,16 +1618,24 @@ fn taxonomy_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, symbol: &str) -> Result<Js
 /// `naturalLanguages` binding.
 fn natural_languages_to_js<L: TopLayer>(kb: &KnowledgeBase<L>) -> Result<JsValue, JsValue> {
     #[derive(serde::Serialize)]
-    struct LangJs { symbol: String, label: String }
+    struct LangJs {
+        symbol: String,
+        label: String,
+    }
     let mut langs: Vec<LangJs> = Vec::new();
     for symbol in kb.instances_of("NaturalLanguage") {
-        let label = kb.term_format(&symbol, Some("EnglishLanguage"))
-            .first().map(|d| d.text.clone())
+        let label = kb
+            .term_format(&symbol, Some("EnglishLanguage"))
+            .first()
+            .map(|d| d.text.clone())
             .unwrap_or_else(|| symbol.clone());
         langs.push(LangJs { symbol, label });
     }
     if !langs.iter().any(|l| l.symbol == "EnglishLanguage") {
-        langs.push(LangJs { symbol: "EnglishLanguage".into(), label: "English".into() });
+        langs.push(LangJs {
+            symbol: "EnglishLanguage".into(),
+            label: "English".into(),
+        });
     }
     langs.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
     serde_wasm_bindgen::to_value(&langs).map_err(|e| JsValue::from_str(&e.to_string()))
@@ -1446,7 +1646,10 @@ fn natural_languages_to_js<L: TopLayer>(kb: &KnowledgeBase<L>) -> Result<JsValue
 /// to a statement. Shared by both backends' `renderNl` binding.
 fn render_nl_string<L: TopLayer>(kb: &KnowledgeBase<L>, kif: &str, language: &str) -> String {
     let doc = sigmakee_rs_core::parse_document(
-        "__wasm:render_nl__", kif.to_string(), sigmakee_rs_core::Parser::Kif);
+        "__wasm:render_nl__",
+        kif.to_string(),
+        sigmakee_rs_core::Parser::Kif,
+    );
     match doc.ast.iter().find_map(|d| d.as_stmt()) {
         Some(ast) => kb.render_formula(ast, language).rendered,
         None => String::new(),
@@ -1464,35 +1667,41 @@ fn render_nl_string<L: TopLayer>(kb: &KnowledgeBase<L>, kif: &str, language: &st
 ///     direct argument (e.g. it sits inside a nested function term) or the
 ///     formula isn't a fact.
 fn classify_reference<L: TopLayer>(
-    kb:     &KnowledgeBase<L>,
-    sid:    sigmakee_rs_core::SentenceId,
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
     target: sigmakee_rs_core::SymbolId,
 ) -> (String, Option<usize>) {
     use sigmakee_rs_core::{Element, OpKind};
-    let Some(root) = kb.sentence(sid) else { return ("other".into(), None) };
+    let Some(root) = kb.sentence(sid) else {
+        return ("other".into(), None);
+    };
     // A leading `not` wraps its operand as a nested sub-sentence; peel one.
     let atom = if matches!(root.op(), Some(OpKind::Not)) {
         match root.elements.get(1) {
             Some(Element::Sub(inner)) => kb.sentence(*inner),
-            _                         => Some(root.clone()),
+            _ => Some(root.clone()),
         }
     } else {
         Some(root.clone())
     };
-    let Some(atom) = atom else { return ("other".into(), None) };
+    let Some(atom) = atom else {
+        return ("other".into(), None);
+    };
     match atom.elements.first() {
         Some(Element::Symbol(_)) => {
-            let pos = atom.elements.iter()
+            let pos = atom
+                .elements
+                .iter()
                 .position(|el| matches!(el, Element::Symbol(s) if s.id() == target));
             ("fact".into(), pos)
         }
         Some(Element::Op(op)) => {
             let k = match op {
                 OpKind::Implies => "=>",
-                OpKind::Iff     => "<=>",
-                OpKind::And     => "and",
-                OpKind::Or      => "or",
-                _               => "other",
+                OpKind::Iff => "<=>",
+                OpKind::And => "and",
+                OpKind::Or => "or",
+                _ => "other",
             };
             (k.into(), None)
         }
@@ -1500,46 +1709,73 @@ fn classify_reference<L: TopLayer>(
     }
 }
 
-fn manpage_to_js<L: TopLayer>(kb: &KnowledgeBase<L>, page: Option<ManPage>) -> Result<JsValue, JsValue> {
-    let Some(p) = page else { return Ok(JsValue::NULL) };
+fn manpage_to_js<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    page: Option<ManPage>,
+) -> Result<JsValue, JsValue> {
+    let Some(p) = page else {
+        return Ok(JsValue::NULL);
+    };
     let docs = |v: &[sigmakee_rs_core::DocEntry]| -> Vec<DocJs> {
-        v.iter().map(|d| DocJs { language: d.language.clone(), text: d.text.clone() }).collect()
+        v.iter()
+            .map(|d| DocJs {
+                language: d.language.clone(),
+                text: d.text.clone(),
+            })
+            .collect()
     };
     let edges = |v: &[sigmakee_rs_core::ParentEdge]| -> Vec<EdgeJs> {
-        v.iter().map(|e| EdgeJs { relation: e.relation.clone(), parent: e.parent.clone() }).collect()
+        v.iter()
+            .map(|e| EdgeJs {
+                relation: e.relation.clone(),
+                parent: e.parent.clone(),
+            })
+            .collect()
     };
-    let sort = |s: &sigmakee_rs_core::SortSig| SortJs { class: s.class.clone(), subclass: s.subclass };
+    let sort = |s: &sigmakee_rs_core::SortSig| SortJs {
+        class: s.class.clone(),
+        subclass: s.subclass,
+    };
     let target = kb.symbol_id(&p.name);
     let reference = |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefJs {
         let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
         let (kind, arg_pos) = match target {
             Some(t) => classify_reference(kb, sid, t),
-            None    => ("other".to_string(), None),
+            None => ("other".to_string(), None),
         };
         ManPageRefJs {
             position,
-            kif:  kb.pretty_print_sentence_plain(sid, 0),
+            kif: kb.pretty_print_sentence_plain(sid, 0),
             file: span.as_ref().map(|s| s.file.clone()),
             line: span.as_ref().map(|s| s.line),
             kind,
             arg_pos,
         }
     };
-    let mut references: Vec<ManPageRefJs> = p.ref_args.iter()
+    let mut references: Vec<ManPageRefJs> = p
+        .ref_args
+        .iter()
         .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos)))
         .collect();
     references.extend(p.ref_nested.iter().map(|&sid| reference(sid, None)));
     let out = ManPageJs {
-        name:             p.name.clone(),
-        kinds:            p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
-        documentation:    docs(&p.documentation),
-        term_format:      docs(&p.term_format),
-        format:           docs(&p.format),
-        parents:          edges(&p.parents),
-        children:         edges(&p.children),
-        arity:            p.arity,
-        domains:          p.domains.iter().map(|(pos, s)| DomainJs { position: *pos, sort: sort(s) }).collect(),
-        range:            p.range.as_ref().map(sort),
+        name: p.name.clone(),
+        kinds: p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
+        documentation: docs(&p.documentation),
+        term_format: docs(&p.term_format),
+        format: docs(&p.format),
+        parents: edges(&p.parents),
+        children: edges(&p.children),
+        arity: p.arity,
+        domains: p
+            .domains
+            .iter()
+            .map(|(pos, s)| DomainJs {
+                position: *pos,
+                sort: sort(s),
+            })
+            .collect(),
+        range: p.range.as_ref().map(sort),
         appears_in_count: p.appears_in_count,
         consequent_count: p.consequent_count,
         references,

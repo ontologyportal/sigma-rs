@@ -74,11 +74,15 @@ pub struct Cli {
     /// By default, semantic errors are warnings.
     /// Use '-W all' to treat all as errors.
     /// Use `-W <CODE>` (e.g., `-W E005`) to treat a specific one as an error.
-    #[arg(short = 'W', long = "warning", value_name = "CODE_OR_ALL", global = true)]
+    #[arg(
+        short = 'W',
+        long = "warning",
+        value_name = "CODE_OR_ALL",
+        global = true
+    )]
     pub suppress: Vec<String>,
 
     // -- Universal source-selection flags -------------------------------------
-
     /// KIF file to load into the knowledge base (repeatable).
     #[arg(short = 'f', long = "file", value_name = "FILE", global = true)]
     pub files: Vec<PathBuf>,

@@ -1,9 +1,9 @@
 //! `semantic::is_class` cache: memoises whether a symbol denotes a class.
 
-use crate::SymbolId;
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::SemanticLayer;
 use crate::semantics::types::{Scope, Scoped, TaxRelation};
+use crate::semantics::SemanticLayer;
+use crate::SymbolId;
 
 /// Behavior for the `semantic::is_class` cache.
 ///
@@ -14,15 +14,22 @@ pub(crate) struct IsClass;
 
 impl CacheBehavior for IsClass {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = bool;
+    type Key = Scoped<SymbolId>;
+    type Value = bool;
     type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "semantic::is_class";
 
-    fn generate(&self, parent: &SemanticLayer, &Scoped { scope, key: sym }: &Scoped<SymbolId>) -> bool {
-        parent.parents_of_scoped(sym, scope).iter().all(|(_, rel)| *rel == TaxRelation::Subclass)
+    fn generate(
+        &self,
+        parent: &SemanticLayer,
+        &Scoped { scope, key: sym }: &Scoped<SymbolId>,
+    ) -> bool {
+        parent
+            .parents_of_scoped(sym, scope)
+            .iter()
+            .all(|(_, rel)| *rel == TaxRelation::Subclass)
     }
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
@@ -36,12 +43,15 @@ impl CacheBehavior for IsClass {
     fn react(
         &self,
         _parent: &SemanticLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<Scoped<SymbolId>, bool>,
-        _side:   &Self::Side,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<Scoped<SymbolId>, bool>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events.iter().any(|e| matches!(e, Event::TaxonomyChanged { .. })) {
+        if events
+            .iter()
+            .any(|e| matches!(e, Event::TaxonomyChanged { .. }))
+        {
             store.clear();
         }
         Vec::new()

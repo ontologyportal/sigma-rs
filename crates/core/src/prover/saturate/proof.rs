@@ -20,9 +20,9 @@ use crate::parse::{OpKind, Span};
 use crate::prover::proof::KifProofStep;
 use crate::types::{Element, Literal, SentenceId};
 
-use crate::layer::TopLayer;
-use super::ProverLayer;
 use super::prover::NativeProver;
+use super::ProverLayer;
+use crate::layer::TopLayer;
 
 /// Per-proof skolem display renamer.  The clausifier names skolems
 /// `sk_<root-hash>_<n>` (deterministic, so re-clausification is
@@ -41,7 +41,12 @@ impl SkolemRenamer {
             return None;
         }
         let next = self.map.len();
-        Some(self.map.entry(id).or_insert_with(|| format!("sk{next}")).clone())
+        Some(
+            self.map
+                .entry(id)
+                .or_insert_with(|| format!("sk{next}"))
+                .clone(),
+        )
     }
 }
 
@@ -53,7 +58,10 @@ impl SkolemRenamer {
 /// actually leaned on the model-discharge / rule-join / event-calculus /
 /// oracle mechanisms, as opposed to them merely being enabled.  Zero
 /// behavior change: called only to fill `ProverStats` counters.
-pub(crate) fn count_proof_tags<S: crate::layer::TopLayer + 'static>(prover: &NativeProver<'_, S>, empty_id: u32) -> ProofTagCounts {
+pub(crate) fn count_proof_tags<S: crate::layer::TopLayer + 'static>(
+    prover: &NativeProver<'_, S>,
+    empty_id: u32,
+) -> ProofTagCounts {
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut counts = ProofTagCounts::default();
     fn visit<S: crate::layer::TopLayer + 'static>(
@@ -62,7 +70,9 @@ pub(crate) fn count_proof_tags<S: crate::layer::TopLayer + 'static>(prover: &Nat
         seen: &mut std::collections::HashSet<u32>,
         counts: &mut ProofTagCounts,
     ) {
-        if !seen.insert(id) { return; }
+        if !seen.insert(id) {
+            return;
+        }
         let c = &prover.clauses[id as usize];
         for p in &c.parents {
             visit(prover, *p, seen, counts);
@@ -94,7 +104,10 @@ pub(crate) struct ProofTagCounts {
 }
 
 /// Convert the refutation DAG ending at `empty_id` into proof steps.
-pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &NativeProver<'_, S>, empty_id: u32) -> Vec<KifProofStep> {
+pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(
+    prover: &NativeProver<'_, S>,
+    empty_id: u32,
+) -> Vec<KifProofStep> {
     // Topological order via DFS over clause parents; witness facts are
     // emitted (once) before the step that uses them.
     let mut order: Vec<u32> = Vec::new();
@@ -105,7 +118,9 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         seen: &mut std::collections::HashSet<u32>,
         order: &mut Vec<u32>,
     ) {
-        if !seen.insert(id) { return; }
+        if !seen.insert(id) {
+            return;
+        }
         for p in &prover.clauses[id as usize].parents {
             visit(prover, *p, seen, order);
         }
@@ -116,8 +131,10 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
     if std::env::var("SIGMA_PROOF_TRACE").is_ok() {
         for cid in &order {
             let c = &prover.clauses[*cid as usize];
-            eprintln!("PROOF-CLAUSE id={} rule={} tier={} parents={:?} fact_parents={:?} notes={:?}",
-                c.id, c.rule, c.tier, c.parents, c.fact_parents, c.notes);
+            eprintln!(
+                "PROOF-CLAUSE id={} rule={} tier={} parents={:?} fact_parents={:?} notes={:?}",
+                c.id, c.rule, c.tier, c.parents, c.fact_parents, c.notes
+            );
         }
     }
 
@@ -141,15 +158,20 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
     // shows once — the transcript cites axioms as written, not the
     // clausified internals.
     fn root_step<S: crate::layer::TopLayer + 'static>(
-        layer:      &ProverLayer<S>,
-        sid:        SentenceId,
-        rule:       &str,
-        steps:      &mut Vec<KifProofStep>,
+        layer: &ProverLayer<S>,
+        sid: SentenceId,
+        rule: &str,
+        steps: &mut Vec<KifProofStep>,
         root_steps: &mut HashMap<SentenceId, usize>,
-        renamer:    &mut SkolemRenamer,
+        renamer: &mut SkolemRenamer,
     ) -> usize {
-        if let Some(&i) = root_steps.get(&sid) { return i; }
-        let formula = layer.semantic().syntactic.source_node_of(sid)
+        if let Some(&i) = root_steps.get(&sid) {
+            return i;
+        }
+        let formula = layer
+            .semantic()
+            .syntactic
+            .source_node_of(sid)
             .or_else(|| sentence_ast(layer, sid, renamer))
             .unwrap_or_else(|| AstNode::Symbol {
                 name: format!("<unresolved {:x}>", sid),
@@ -186,13 +208,15 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
     // formula (`sentence_ast`/`atom_ast` resolve it fine via the atom table)
     // and to key the dedup map.
     fn negated_root_step<S: crate::layer::TopLayer + 'static>(
-        layer:          &ProverLayer<S>,
-        sid:            SentenceId,
-        steps:          &mut Vec<KifProofStep>,
+        layer: &ProverLayer<S>,
+        sid: SentenceId,
+        steps: &mut Vec<KifProofStep>,
         neg_conj_steps: &mut HashMap<SentenceId, usize>,
-        renamer:        &mut SkolemRenamer,
+        renamer: &mut SkolemRenamer,
     ) -> usize {
-        if let Some(&i) = neg_conj_steps.get(&sid) { return i; }
+        if let Some(&i) = neg_conj_steps.get(&sid) {
+            return i;
+        }
         // A conjecture sid is a `build_detached` interning (see
         // `intern_conjecture_native`) — no stored file span, so
         // `source_node_of` always misses and this always falls back to
@@ -229,7 +253,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         });
         let conj_idx = steps.len() - 1;
         let negated = AstNode::List {
-            elements: vec![AstNode::Operator { op: OpKind::Not, span: Span::synthetic() }, formula],
+            elements: vec![
+                AstNode::Operator {
+                    op: OpKind::Not,
+                    span: Span::synthetic(),
+                },
+                formula,
+            ],
             span: Span::synthetic(),
         };
         steps.push(KifProofStep {
@@ -260,13 +290,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
     // the goal is not a ground binary atom, any witness is not one, or the
     // witnesses do not form exactly one chain from `x` to `Y`.
     fn expand_oracle_refutation<S: crate::layer::TopLayer + 'static>(
-        layer:      &ProverLayer<S>,
-        src:        SentenceId,
-        witnesses:  &[SentenceId],
-        root_idx:   usize,
-        steps:      &mut Vec<KifProofStep>,
+        layer: &ProverLayer<S>,
+        src: SentenceId,
+        witnesses: &[SentenceId],
+        root_idx: usize,
+        steps: &mut Vec<KifProofStep>,
         root_steps: &mut HashMap<SentenceId, usize>,
-        renamer:    &mut SkolemRenamer,
+        renamer: &mut SkolemRenamer,
     ) -> Option<usize> {
         if witnesses.is_empty() {
             return None;
@@ -279,10 +309,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         // sister TransitiveRelation)` from a schema dispatch.  Licenses are
         // not part of the walk; they justify it, so they become premises of
         // every hop step.
-        let mut facts:    Vec<(SentenceId, String, String, String)> = Vec::new();
+        let mut facts: Vec<(SentenceId, String, String, String)> = Vec::new();
         let mut licenses: Vec<SentenceId> = Vec::new();
         for sid in witnesses {
-            let f = layer.semantic().syntactic.source_node_of(*sid)
+            let f = layer
+                .semantic()
+                .syntactic
+                .source_node_of(*sid)
                 .or_else(|| sentence_ast(layer, *sid, renamer))?;
             let (r, a, b) = ground_binary(&f)?;
             if r == "instance" && a == grel {
@@ -294,13 +327,17 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
 
         // Chain walk: start at the fact `(grel gx _)`, then repeatedly take
         // the unused edge whose left endpoint is the current class.
-        let start = facts.iter().position(|(_, r, a, _)| *r == grel && *a == gx)?;
+        let start = facts
+            .iter()
+            .position(|(_, r, a, _)| *r == grel && *a == gx)?;
         let mut used = vec![false; facts.len()];
         used[start] = true;
         let mut chain: Vec<usize> = Vec::new();
         let mut current = facts[start].3.clone();
         while current != gy {
-            let next = facts.iter().enumerate()
+            let next = facts
+                .iter()
+                .enumerate()
                 .position(|(i, (_, _, a, _))| !used[i] && *a == current)?;
             used[next] = true;
             current = facts[next].3.clone();
@@ -318,7 +355,10 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
             premises: vec![root_idx],
             formula: AstNode::List {
                 elements: vec![
-                    AstNode::Operator { op: OpKind::Not, span: sp() },
+                    AstNode::Operator {
+                        op: OpKind::Not,
+                        span: sp(),
+                    },
                     mk_ground_binary(&grel, &gx, &gy),
                 ],
                 span: sp(),
@@ -326,14 +366,21 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
             source_sid: None,
         });
         let mut prev = root_step(layer, facts[start].0, "axiom", steps, root_steps, renamer);
-        let license_steps: Vec<usize> = if chain.is_empty() { Vec::new() } else {
-            licenses.iter()
+        let license_steps: Vec<usize> = if chain.is_empty() {
+            Vec::new()
+        } else {
+            licenses
+                .iter()
                 .map(|sid| root_step(layer, *sid, "axiom", steps, root_steps, renamer))
                 .collect()
         };
         // Schema-licensed chains are the relation's own property at work
         // (transitivity), not the taxonomy oracle's built-in semantics.
-        let hop_rule = if license_steps.is_empty() { "taxonomy" } else { "transitivity" };
+        let hop_rule = if license_steps.is_empty() {
+            "taxonomy"
+        } else {
+            "transitivity"
+        };
         for &ei in &chain {
             let edge = root_step(layer, facts[ei].0, "axiom", steps, root_steps, renamer);
             let idx = steps.len();
@@ -353,7 +400,10 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
             index: f_idx,
             rule: "resolve".to_string(),
             premises: vec![nc_unit, prev],
-            formula: AstNode::Symbol { name: "FALSE".to_string(), span: sp() },
+            formula: AstNode::Symbol {
+                name: "FALSE".to_string(),
+                span: sp(),
+            },
             source_sid: None,
         });
         Some(f_idx)
@@ -378,25 +428,31 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
     // witnesses, unused edges, or fewer than two reached declared-disjoint
     // classes.
     fn expand_disjoint_refutation<S: crate::layer::TopLayer + 'static>(
-        layer:      &ProverLayer<S>,
-        src:        SentenceId,
-        witnesses:  &[SentenceId],
-        input_idx:  usize,
-        steps:      &mut Vec<KifProofStep>,
+        layer: &ProverLayer<S>,
+        src: SentenceId,
+        witnesses: &[SentenceId],
+        input_idx: usize,
+        steps: &mut Vec<KifProofStep>,
         root_steps: &mut HashMap<SentenceId, usize>,
-        renamer:    &mut SkolemRenamer,
+        renamer: &mut SkolemRenamer,
     ) -> Option<usize> {
         if witnesses.len() < 2 {
             return None;
         }
-        let goal = layer.semantic().syntactic.source_node_of(src)
+        let goal = layer
+            .semantic()
+            .syntactic
+            .source_node_of(src)
             .or_else(|| sentence_ast(layer, src, renamer))?;
         let (grel, gx, gc0) = ground_binary(&goal)?;
 
         let mut edges: Vec<(SentenceId, String, String)> = Vec::new();
         let mut decls: Vec<(SentenceId, Vec<String>)> = Vec::new();
         for sid in witnesses {
-            let f = layer.semantic().syntactic.source_node_of(*sid)
+            let f = layer
+                .semantic()
+                .syntactic
+                .source_node_of(*sid)
                 .or_else(|| sentence_ast(layer, *sid, renamer))?;
             let syms = ground_symbols(&f)?;
             if DISJOINT_HEADS.contains(&syms[0].as_str()) {
@@ -468,8 +524,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         // The declaration's class arguments: `(disjoint C1 C2)` lists them
         // from position 1; `(partition Parent C1 …)` and
         // `(disjointDecomposition Parent C1 …)` from position 2.
-        let classes = if decl_syms[0] == "disjoint" { &decl_syms[1..] } else { &decl_syms[2..] };
-        let mut conflict: Vec<usize> = classes.iter()
+        let classes = if decl_syms[0] == "disjoint" {
+            &decl_syms[1..]
+        } else {
+            &decl_syms[2..]
+        };
+        let mut conflict: Vec<usize> = classes
+            .iter()
             .filter_map(|c| reached.iter().find(|(rc, _)| rc == c).map(|&(_, i)| i))
             .collect();
         conflict.sort_unstable();
@@ -483,7 +544,10 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
             index: f_idx,
             rule: "disjoint".to_string(),
             premises: vec![conflict[0], conflict[1], decl_step],
-            formula: AstNode::Symbol { name: "FALSE".to_string(), span: Span::synthetic() },
+            formula: AstNode::Symbol {
+                name: "FALSE".to_string(),
+                span: Span::synthetic(),
+            },
             source_sid: None,
         });
         Some(f_idx)
@@ -498,7 +562,14 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         // matches them.)
         if matches!(c.rule, "axiom" | "hypothesis") {
             if let Some(src) = c.source {
-                let idx = root_step(layer, src, c.rule, &mut steps, &mut root_steps, &mut renamer);
+                let idx = root_step(
+                    layer,
+                    src,
+                    c.rule,
+                    &mut steps,
+                    &mut root_steps,
+                    &mut renamer,
+                );
                 clause_step.insert(cid, idx);
                 // An EMPTY input clause is an oracle-refuted fact (an audit
                 // contradiction): expand the disjointness witnesses into
@@ -506,9 +577,14 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
                 // the disjoint/partition conflict step to FALSE.
                 if c.lits.is_empty() {
                     if let Some(f_idx) = expand_disjoint_refutation(
-                        layer, src, &c.fact_parents, idx,
-                        &mut steps, &mut root_steps, &mut renamer)
-                    {
+                        layer,
+                        src,
+                        &c.fact_parents,
+                        idx,
+                        &mut steps,
+                        &mut root_steps,
+                        &mut renamer,
+                    ) {
                         clause_step.insert(cid, f_idx);
                         continue;
                     }
@@ -520,7 +596,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
                     let mut premises = vec![idx];
                     for w in &c.fact_parents {
                         premises.push(root_step(
-                            layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer));
+                            layer,
+                            *w,
+                            "axiom",
+                            &mut steps,
+                            &mut root_steps,
+                            &mut renamer,
+                        ));
                     }
                     premises.extend(c.parents.iter().filter_map(|p| clause_step.get(p).copied()));
                     premises.sort_unstable();
@@ -544,7 +626,14 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
                 // this a single-axiom (oracle-refuted) contradiction shows
                 // only the trigger, not the axioms it conflicts with.
                 for w in &c.fact_parents {
-                    root_step(layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer);
+                    root_step(
+                        layer,
+                        *w,
+                        "axiom",
+                        &mut steps,
+                        &mut root_steps,
+                        &mut renamer,
+                    );
                 }
                 continue;
             }
@@ -558,7 +647,8 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         // unset (defensive — every live call site sets it).
         if c.rule == "negated_conjecture" {
             if let Some(src) = c.source {
-                let root_idx = negated_root_step(layer, src, &mut steps, &mut neg_conj_steps, &mut renamer);
+                let root_idx =
+                    negated_root_step(layer, src, &mut steps, &mut neg_conj_steps, &mut renamer);
                 // A goal literal struck to the empty clause by the taxonomy
                 // oracle: expand the witness chain into explicit hop steps
                 // ((instance Rex Mammal), (instance Rex Vertebrate), …) so
@@ -567,9 +657,14 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
                 // to the flat witness citation for any other shape.
                 if c.lits.is_empty() {
                     if let Some(idx) = expand_oracle_refutation(
-                        layer, src, &c.fact_parents, root_idx,
-                        &mut steps, &mut root_steps, &mut renamer)
-                    {
+                        layer,
+                        src,
+                        &c.fact_parents,
+                        root_idx,
+                        &mut steps,
+                        &mut root_steps,
+                        &mut renamer,
+                    ) {
                         clause_step.insert(cid, idx);
                         continue;
                     }
@@ -585,7 +680,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
                 let mut premises = vec![root_idx];
                 for w in &c.fact_parents {
                     premises.push(root_step(
-                        layer, *w, "axiom", &mut steps, &mut root_steps, &mut renamer));
+                        layer,
+                        *w,
+                        "axiom",
+                        &mut steps,
+                        &mut root_steps,
+                        &mut renamer,
+                    ));
                 }
                 premises.extend(c.parents.iter().filter_map(|p| clause_step.get(p).copied()));
                 premises.sort_unstable();
@@ -619,7 +720,13 @@ pub(crate) fn extract_proof<S: crate::layer::TopLayer + 'static>(prover: &Native
         let mut fact_premises: Vec<usize> = Vec::new();
         for sid in &c.fact_parents {
             fact_premises.push(root_step(
-                layer, *sid, "axiom", &mut steps, &mut root_steps, &mut renamer));
+                layer,
+                *sid,
+                "axiom",
+                &mut steps,
+                &mut root_steps,
+                &mut renamer,
+            ));
         }
 
         let mut premises: Vec<usize> = c
@@ -651,21 +758,30 @@ fn theory_discharge_rule(goal: &AstNode) -> Option<&'static str> {
     match goal {
         AstNode::Annotated { formula, .. } => theory_discharge_rule(formula),
         AstNode::List { elements, .. } => match elements.as_slice() {
-            [AstNode::Operator { op: OpKind::Equal, .. }, a, b] => {
-                if let (AstNode::Number { value: x, .. }, AstNode::Number { value: y, .. }) = (a, b) {
+            [AstNode::Operator {
+                op: OpKind::Equal, ..
+            }, a, b] => {
+                if let (AstNode::Number { value: x, .. }, AstNode::Number { value: y, .. }) = (a, b)
+                {
                     return (x == y).then_some("arithmetic");
                 }
                 match (a, b) {
                     (AstNode::Symbol { name: x, .. }, AstNode::Symbol { name: y, .. })
-                        if x == y => Some("reflexivity"),
+                        if x == y =>
+                    {
+                        Some("reflexivity")
+                    }
                     _ => None,
                 }
             }
             [AstNode::Symbol { name, .. }, AstNode::Number { .. }, AstNode::Number { .. }]
-                if matches!(name.as_str(),
-                    "greaterThan" | "lessThan"
-                    | "greaterThanOrEqualTo" | "lessThanOrEqualTo") =>
-                Some("arithmetic"),
+                if matches!(
+                    name.as_str(),
+                    "greaterThan" | "lessThan" | "greaterThanOrEqualTo" | "lessThanOrEqualTo"
+                ) =>
+            {
+                Some("arithmetic")
+            }
             _ => None,
         },
         _ => None,
@@ -705,9 +821,9 @@ fn ground_binary(node: &AstNode) -> Option<(String, String, String)> {
     match node {
         AstNode::Annotated { formula, .. } => ground_binary(formula),
         AstNode::List { elements, .. } => match elements.as_slice() {
-            [AstNode::Symbol { name: r, .. },
-             AstNode::Symbol { name: a, .. },
-             AstNode::Symbol { name: b, .. }] => Some((r.clone(), a.clone(), b.clone())),
+            [AstNode::Symbol { name: r, .. }, AstNode::Symbol { name: a, .. }, AstNode::Symbol { name: b, .. }] => {
+                Some((r.clone(), a.clone(), b.clone()))
+            }
             _ => None,
         },
         _ => None,
@@ -717,8 +833,14 @@ fn ground_binary(node: &AstNode) -> Option<(String, String, String)> {
 /// Build a `(rel a b)` ground atom AST.
 fn mk_ground_binary(rel: &str, a: &str, b: &str) -> AstNode {
     let sp = Span::synthetic;
-    let sym = |name: &str| AstNode::Symbol { name: name.to_string(), span: sp() };
-    AstNode::List { elements: vec![sym(rel), sym(a), sym(b)], span: sp() }
+    let sym = |name: &str| AstNode::Symbol {
+        name: name.to_string(),
+        span: sp(),
+    };
+    AstNode::List {
+        elements: vec![sym(rel), sym(a), sym(b)],
+        span: sp(),
+    }
 }
 
 /// Rewrite every bound variable name in `node`, in first-appearance order,
@@ -729,12 +851,15 @@ fn rename_vars_pretty(node: &mut AstNode, seen: &mut HashMap<String, String>) {
     match node {
         AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => {
             let next = seen.len();
-            let label = seen.entry(name.clone())
+            let label = seen
+                .entry(name.clone())
                 .or_insert_with(|| sequential_var_label(next));
             *name = label.clone();
         }
         AstNode::List { elements, .. } => {
-            for e in elements.iter_mut() { rename_vars_pretty(e, seen); }
+            for e in elements.iter_mut() {
+                rename_vars_pretty(e, seen);
+            }
         }
         AstNode::Annotated { formula, .. } => rename_vars_pretty(formula, seen),
         _ => {}
@@ -745,13 +870,21 @@ fn rename_vars_pretty(node: &mut AstNode, seen: &mut HashMap<String, String>) {
 fn sequential_var_label(n: usize) -> String {
     let letter = (b'A' + (n % 26) as u8) as char;
     let suffix = n / 26;
-    if suffix == 0 { letter.to_string() } else { format!("{letter}{suffix}") }
+    if suffix == 0 {
+        letter.to_string()
+    } else {
+        format!("{letter}{suffix}")
+    }
 }
 
 /// A clause as a KIF AST: the empty clause renders as the symbol
 /// `FALSE`, a unit as its (possibly negated) atom, a multi-literal
 /// clause as `(or …)`.
-fn clause_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, c: &super::prover::ClauseRec, renamer: &mut SkolemRenamer) -> AstNode {
+fn clause_ast<S: crate::layer::TopLayer + 'static>(
+    layer: &ProverLayer<S>,
+    c: &super::prover::ClauseRec,
+    renamer: &mut SkolemRenamer,
+) -> AstNode {
     let sp = Span::synthetic;
     let mut lits: Vec<AstNode> = Vec::with_capacity(c.lits.len());
     for l in &c.lits {
@@ -764,7 +897,10 @@ fn clause_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, c: &s
         } else {
             AstNode::List {
                 elements: vec![
-                    AstNode::Operator { op: OpKind::Not, span: sp() },
+                    AstNode::Operator {
+                        op: OpKind::Not,
+                        span: sp(),
+                    },
                     atom,
                 ],
                 span: sp(),
@@ -772,23 +908,40 @@ fn clause_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, c: &s
         });
     }
     match lits.len() {
-        0 => AstNode::Symbol { name: "FALSE".to_string(), span: sp() },
+        0 => AstNode::Symbol {
+            name: "FALSE".to_string(),
+            span: sp(),
+        },
         1 => lits.pop().unwrap(),
         _ => {
-            let mut elements = vec![AstNode::Operator { op: OpKind::Or, span: sp() }];
+            let mut elements = vec![AstNode::Operator {
+                op: OpKind::Or,
+                span: sp(),
+            }];
             elements.extend(lits);
-            AstNode::List { elements, span: sp() }
+            AstNode::List {
+                elements,
+                span: sp(),
+            }
         }
     }
 }
 
 /// A stored root sentence as a KIF AST (witness facts, input sources).
-fn sentence_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, sid: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+fn sentence_ast<S: crate::layer::TopLayer + 'static>(
+    layer: &ProverLayer<S>,
+    sid: SentenceId,
+    renamer: &mut SkolemRenamer,
+) -> Option<AstNode> {
     atom_ast(layer, sid, renamer)
 }
 
 /// An atom/sentence (AtomTable or store) as a KIF AST.
-fn atom_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, id: SentenceId, renamer: &mut SkolemRenamer) -> Option<AstNode> {
+fn atom_ast<S: crate::layer::TopLayer + 'static>(
+    layer: &ProverLayer<S>,
+    id: SentenceId,
+    renamer: &mut SkolemRenamer,
+) -> Option<AstNode> {
     let syn = &layer.semantic().syntactic;
     let s = layer.atoms.resolve(id, syn)?;
     let sp = Span::synthetic;
@@ -798,7 +951,9 @@ fn atom_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, id: Sen
             Element::Symbol(sym) => {
                 // Skolems get a clean per-proof label; other symbols pass through.
                 let raw = sym.name();
-                let name = renamer.label(&raw, sym.id()).unwrap_or_else(|| raw.to_string());
+                let name = renamer
+                    .label(&raw, sym.id())
+                    .unwrap_or_else(|| raw.to_string());
                 AstNode::Symbol { name, span: sp() }
             }
             // Canonical atoms carry the variable's hashed slot id, not a
@@ -808,13 +963,28 @@ fn atom_ast<S: crate::layer::TopLayer + 'static>(layer: &ProverLayer<S>, id: Sen
                 let label = super::canon::canonical_slot(*id)
                     .map(|k| format!("V{k}"))
                     .unwrap_or_else(|| format!("V{id:x}"));
-                AstNode::Variable { name: label, span: sp() }
+                AstNode::Variable {
+                    name: label,
+                    span: sp(),
+                }
             }
-            Element::Literal(Literal::Str(v))    => AstNode::Str { value: v.clone(), span: sp() },
-            Element::Literal(Literal::Number(v)) => AstNode::Number { value: v.clone(), span: sp() },
-            Element::Op(op) => AstNode::Operator { op: op.clone(), span: sp() },
+            Element::Literal(Literal::Str(v)) => AstNode::Str {
+                value: v.clone(),
+                span: sp(),
+            },
+            Element::Literal(Literal::Number(v)) => AstNode::Number {
+                value: v.clone(),
+                span: sp(),
+            },
+            Element::Op(op) => AstNode::Operator {
+                op: op.clone(),
+                span: sp(),
+            },
             Element::Sub(sub) => atom_ast(layer, *sub, renamer)?,
         });
     }
-    Some(AstNode::List { elements, span: sp() })
+    Some(AstNode::List {
+        elements,
+        span: sp(),
+    })
 }

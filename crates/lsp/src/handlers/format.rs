@@ -17,8 +17,8 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::AstKif;
+use sigmakee_rs_sdk::AstNode;
 
 use crate::conv::{offset_to_position, position_to_offset};
 use crate::state::GlobalState;
@@ -26,16 +26,20 @@ use crate::state::GlobalState;
 // -- Full document -----------------------------------------------------------
 
 pub fn handle_formatting(
-    state:  &GlobalState,
+    state: &GlobalState,
     params: DocumentFormattingParams,
 ) -> Option<Vec<TextEdit>> {
-    let uri  = params.text_document.uri;
+    let uri = params.text_document.uri;
     let docs = state.docs.read().ok()?;
-    let doc  = docs.get(&uri)?;
+    let doc = docs.get(&uri)?;
     let parsed = doc.parsed.as_ref()?;
 
-    if parsed.has_errors() { return Some(Vec::new()); }
-    if parsed.ast.is_empty() { return Some(Vec::new()); }
+    if parsed.has_errors() {
+        return Some(Vec::new());
+    }
+    if parsed.ast.is_empty() {
+        return Some(Vec::new());
+    }
 
     let formatted = render_forms(parsed.ast.iter().filter_map(|i| i.as_stmt()));
 
@@ -45,7 +49,13 @@ pub fn handle_formatting(
     // selection.
     let end = rope_end_position(&doc.rope);
     Some(vec![TextEdit {
-        range: Range { start: Position { line: 0, character: 0 }, end },
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end,
+        },
         new_text: formatted,
     }])
 }
@@ -53,45 +63,54 @@ pub fn handle_formatting(
 // -- Range formatting --------------------------------------------------------
 
 pub fn handle_range_formatting(
-    state:  &GlobalState,
+    state: &GlobalState,
     params: DocumentRangeFormattingParams,
 ) -> Option<Vec<TextEdit>> {
-    let uri   = params.text_document.uri;
+    let uri = params.text_document.uri;
     let range = params.range;
-    let docs  = state.docs.read().ok()?;
-    let doc   = docs.get(&uri)?;
+    let docs = state.docs.read().ok()?;
+    let doc = docs.get(&uri)?;
     let parsed = doc.parsed.as_ref()?;
 
-    if parsed.has_errors() { return Some(Vec::new()); }
+    if parsed.has_errors() {
+        return Some(Vec::new());
+    }
 
     let start_off = position_to_offset(&doc.rope, range.start);
-    let end_off   = position_to_offset(&doc.rope, range.end);
+    let end_off = position_to_offset(&doc.rope, range.end);
 
     // Pick the root AST nodes whose span intersects the requested
     // range.  A node is "in range" if its span overlaps [start, end)
     // at all -- partial overlap pulls the whole node in so we don't
     // emit mid-sentence edits.
-    let nodes: Vec<&AstNode> = parsed.ast.iter()
+    let nodes: Vec<&AstNode> = parsed
+        .ast
+        .iter()
         .filter_map(|i| i.as_stmt())
         .filter(|n| {
             let s = n.span();
             !(s.end_offset <= start_off || s.offset >= end_off)
         })
         .collect();
-    if nodes.is_empty() { return Some(Vec::new()); }
+    if nodes.is_empty() {
+        return Some(Vec::new());
+    }
 
     // Edit range = union of selected-node spans, snapped to whole
     // lines at the start (so leading indentation disappears) and
     // through the end of the last selected node.
     let first = nodes.first().expect("non-empty").span();
-    let last  = nodes.last() .expect("non-empty").span();
+    let last = nodes.last().expect("non-empty").span();
     let union_start = offset_to_position(&doc.rope, first.offset);
-    let union_end   = offset_to_position(&doc.rope, last.end_offset);
+    let union_end = offset_to_position(&doc.rope, last.end_offset);
 
     let formatted = render_forms(nodes.iter().copied());
 
     Some(vec![TextEdit {
-        range: Range { start: union_start, end: union_end },
+        range: Range {
+            start: union_start,
+            end: union_end,
+        },
         new_text: formatted,
     }])
 }
@@ -103,7 +122,9 @@ pub fn handle_range_formatting(
 fn render_forms<'a>(nodes: impl IntoIterator<Item = &'a AstNode>) -> String {
     let mut out = String::new();
     for (i, node) in nodes.into_iter().enumerate() {
-        if i > 0 { out.push_str("\n\n"); }
+        if i > 0 {
+            out.push_str("\n\n");
+        }
         out.push_str(&node.format_plain(0));
     }
     out
@@ -112,8 +133,10 @@ fn render_forms<'a>(nodes: impl IntoIterator<Item = &'a AstNode>) -> String {
 /// End-of-buffer position, used for full-document formatting.
 fn rope_end_position(rope: &Rope) -> Position {
     if rope.len_bytes() == 0 {
-        return Position { line: 0, character: 0 };
+        return Position {
+            line: 0,
+            character: 0,
+        };
     }
     offset_to_position(rope, rope.len_bytes())
 }
-

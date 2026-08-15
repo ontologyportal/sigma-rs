@@ -13,10 +13,10 @@
 //     collapse to one content-addressed id), so
 //     [`SyntacticLayer::display_source_pretty`] renders all of them grouped.
 
-use crate::AstNode;
-use crate::parse::Span;
 use crate::parse::kif::dis::AstKif; // `.flat()` / `.pretty_print()` / `.format_plain()`
+use crate::parse::Span;
 use crate::types::{Element, Literal, SentenceId};
+use crate::AstNode;
 
 use super::SyntacticLayer;
 
@@ -39,25 +39,56 @@ impl SyntacticLayer {
         let Some(sentence) = self.sentence(sid) else {
             // Unknown sid — preserve the old `sentence_to_plain_kif` placeholder
             // text (`sid: N`) so output stays identical.
-            return AstNode::Symbol { name: format!("sid: {}", sid), span: Span::synthetic() };
+            return AstNode::Symbol {
+                name: format!("sid: {}", sid),
+                span: Span::synthetic(),
+            };
         };
-        let elements = sentence.elements.iter().map(|el| self.element_to_ast(el)).collect();
-        AstNode::List { elements, span: Span::synthetic() }
+        let elements = sentence
+            .elements
+            .iter()
+            .map(|el| self.element_to_ast(el))
+            .collect();
+        AstNode::List {
+            elements,
+            span: Span::synthetic(),
+        }
     }
 
     fn element_to_ast(&self, el: &Element) -> AstNode {
         let span = Span::synthetic();
         match el {
-            Element::Symbol(sym) =>
-                AstNode::Symbol { name: sym.name().to_string(), span },
-            Element::Variable { name, is_row: false, .. } =>
-                AstNode::Variable { name: name.clone(), span },
-            Element::Variable { name, is_row: true, .. } =>
-                AstNode::RowVariable { name: name.clone(), span },
-            Element::Literal(Literal::Str(s))    => AstNode::Str { value: s.clone(), span },
-            Element::Literal(Literal::Number(n)) => AstNode::Number { value: n.clone(), span },
-            Element::Op(op)                      => AstNode::Operator { op: op.clone(), span },
-            Element::Sub(sub_sid)                => self.sentence_to_ast(*sub_sid),
+            Element::Symbol(sym) => AstNode::Symbol {
+                name: sym.name().to_string(),
+                span,
+            },
+            Element::Variable {
+                name,
+                is_row: false,
+                ..
+            } => AstNode::Variable {
+                name: name.clone(),
+                span,
+            },
+            Element::Variable {
+                name, is_row: true, ..
+            } => AstNode::RowVariable {
+                name: name.clone(),
+                span,
+            },
+            Element::Literal(Literal::Str(s)) => AstNode::Str {
+                value: s.clone(),
+                span,
+            },
+            Element::Literal(Literal::Number(n)) => AstNode::Number {
+                value: n.clone(),
+                span,
+            },
+            Element::Op(op) => AstNode::Operator {
+                op: op.clone(),
+                span,
+            },
+            Element::Sub(sub_sid) => self.sentence_to_ast(*sub_sid),
         }
     }
 
@@ -85,22 +116,30 @@ impl SyntacticLayer {
         let nodes: Vec<AstNode> = match mode {
             SourceMode::All => fps.iter().filter_map(|fp| self.source_ast(*fp)).collect(),
         };
-        let render = |n: &AstNode| if color { n.pretty_print(0) } else { n.format_plain(0) };
+        let render = |n: &AstNode| {
+            if color {
+                n.pretty_print(0)
+            } else {
+                n.format_plain(0)
+            }
+        };
 
         match nodes.as_slice() {
             // No source AST (synthetic, source evicted, or a nested sub-sentence
             // that only exists embedded in a root) — render the *normalized*
             // sentence instead, colourised too when requested so these don't
             // appear as the lone un-highlighted snippet in diagnostic output.
-            []      => if color {
-                // Reconstruct the normalized sentence and render it through the
-                // one KIF emitter (canonical width-based layout), colourised.
-                self.sentence_to_ast(sid).pretty_print(0)
-            } else {
-                self.display_normalized(sid)
-            },
-            [only]  => render(only),
-            many    => {
+            [] => {
+                if color {
+                    // Reconstruct the normalized sentence and render it through the
+                    // one KIF emitter (canonical width-based layout), colourised.
+                    self.sentence_to_ast(sid).pretty_print(0)
+                } else {
+                    self.display_normalized(sid)
+                }
+            }
+            [only] => render(only),
+            many => {
                 let n = many.len();
                 let mut out = String::new();
                 for (i, node) in many.iter().enumerate() {
@@ -152,19 +191,32 @@ pub(crate) fn sentence_to_plain_kif(sid: SentenceId, store: &SyntacticLayer) -> 
 
 #[allow(dead_code)]
 fn display_sentence_with_subs(sid: SentenceId, store: &SyntacticLayer, level: usize) -> String {
-    let Some(sent) = store.sentence(sid) else { return String::new() };
-    let mut root = format!("{:width$}: {}\n", sid, sentence_to_plain_kif(sid, store), width = (level * 2));
-    let subs: String = sent.elements.iter().filter_map(|el| match el {
-        Element::Sub(sub_sid) => Some(display_sentence_with_subs(*sub_sid, store, level + 1)),
-        _ => None,
-    }).collect();
+    let Some(sent) = store.sentence(sid) else {
+        return String::new();
+    };
+    let mut root = format!(
+        "{:width$}: {}\n",
+        sid,
+        sentence_to_plain_kif(sid, store),
+        width = (level * 2)
+    );
+    let subs: String = sent
+        .elements
+        .iter()
+        .filter_map(|el| match el {
+            Element::Sub(sub_sid) => Some(display_sentence_with_subs(*sub_sid, store, level + 1)),
+            _ => None,
+        })
+        .collect();
     root.push_str(&subs);
     root
 }
 
 #[allow(dead_code)]
 pub(crate) fn display_syntax(store: &SyntacticLayer) -> String {
-    store.root_sids().into_iter()
+    store
+        .root_sids()
+        .into_iter()
         .map(|sid| display_sentence_with_subs(sid, store, 0))
         .collect()
 }

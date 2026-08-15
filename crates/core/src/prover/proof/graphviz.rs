@@ -40,10 +40,18 @@ pub fn render_graphviz(proof: &[KifProofStep], name: &str, status: &str) -> Stri
 
     for step in proof {
         let node = node_id(step.index);
-        let label = format!("{}. [{}]\n{}", step.index + 1, step.rule, step.formula.flat());
+        let label = format!(
+            "{}. [{}]\n{}",
+            step.index + 1,
+            step.rule,
+            step.formula.flat()
+        );
         stmts.push(Stmt::Node(Node::new(
             NodeId(Id::Plain(node.clone()), None),
-            vec![Attribute(Id::Plain("label".to_string()), dot_escaped(&label))],
+            vec![Attribute(
+                Id::Plain("label".to_string()),
+                dot_escaped(&label),
+            )],
         )));
         for &premise in &step.premises {
             stmts.push(Stmt::Edge(Edge {
@@ -56,7 +64,11 @@ pub fn render_graphviz(proof: &[KifProofStep], name: &str, status: &str) -> Stri
         }
     }
 
-    let graph = Graph::DiGraph { id: Id::Plain("proof".to_string()), strict: false, stmts };
+    let graph = Graph::DiGraph {
+        id: Id::Plain("proof".to_string()),
+        strict: false,
+        stmts,
+    };
     graph.print(&mut PrinterContext::default())
 }
 
@@ -69,7 +81,10 @@ fn node_id(step_index: usize) -> String {
 /// escaping are the caller's responsibility (mirrors `dot_generator`'s `esc`
 /// macro).
 fn dot_escaped(s: &str) -> Id {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let escaped = s
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n");
     Id::Escaped(format!("\"{escaped}\""))
 }
 
@@ -83,7 +98,10 @@ mod tests {
             index,
             rule: rule.to_string(),
             premises,
-            formula: AstNode::Symbol { name: "FALSE".to_string(), span: Default::default() },
+            formula: AstNode::Symbol {
+                name: "FALSE".to_string(),
+                span: Default::default(),
+            },
             source_sid: None,
         }
     }

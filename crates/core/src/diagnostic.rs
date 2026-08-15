@@ -35,29 +35,29 @@ impl Severity {
     /// The lowercase name of this severity (`"error"`, `"warning"`, …).
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Error   => "error",
+            Self::Error => "error",
             Self::Warning => "warning",
-            Self::Info    => "info",
-            Self::Hint    => "hint",
+            Self::Info => "info",
+            Self::Hint => "hint",
         }
     }
 
     /// Map this severity onto a `log::Level`. `Hint` maps to `Trace`.
     pub fn log_level(self) -> log::Level {
         match self {
-            Self::Error   => log::Level::Error,
+            Self::Error => log::Level::Error,
             Self::Warning => log::Level::Warn,
-            Self::Info    => log::Level::Info,
-            Self::Hint    => log::Level::Trace,
+            Self::Info => log::Level::Info,
+            Self::Hint => log::Level::Trace,
         }
     }
 
     fn ansi_color(self) -> &'static str {
         match self {
-            Self::Error   => color_red,
+            Self::Error => color_red,
             Self::Warning => color_yellow,
-            Self::Info    => color_cyan,
-            Self::Hint    => color_white,
+            Self::Info => color_cyan,
+            Self::Hint => color_white,
         }
     }
 }
@@ -77,20 +77,20 @@ impl Severity {
 #[derive(Debug, Clone)]
 pub struct Diagnostic {
     /// Coarse category, e.g. `"parse"` or `"semantic"`.
-    pub kind:     &'static str,
+    pub kind: &'static str,
     /// Source span this diagnostic points at.
-    pub range:    Span,
+    pub range: Span,
     /// Severity level.
     pub severity: Severity,
     /// Specific leaf identifier within `kind`.
-    pub code:     &'static str,
+    pub code: &'static str,
     /// Human-readable message.
-    pub message:  String,
+    pub message: String,
     /// Supplementary locations that clarify this diagnostic.
-    pub related:  Vec<RelatedInfo>,
+    pub related: Vec<RelatedInfo>,
     /// Sentences implicated by this diagnostic. Empty for source-positional
     /// errors that reference no stored sentence (e.g. parse errors).
-    pub sids:          Vec<SentenceId>,
+    pub sids: Vec<SentenceId>,
     /// Argument index to highlight inside the first entry of `sids`, or `-1`
     /// for no highlight / whole-sentence highlight.
     pub highlight_arg: i32,
@@ -111,19 +111,15 @@ impl std::error::Error for Diagnostic {}
 impl Diagnostic {
     /// Construct an error-severity diagnostic with no source context (empty
     /// `sids`, default span, no related info).
-    pub fn new_error(
-        kind:    &'static str,
-        code:    &'static str,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn new_error(kind: &'static str, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             kind,
             code,
-            severity:      Severity::Error,
-            range:         Span::default(),
-            message:       message.into(),
-            related:       Vec::new(),
-            sids:          Vec::new(),
+            severity: Severity::Error,
+            range: Span::default(),
+            message: message.into(),
+            related: Vec::new(),
+            sids: Vec::new(),
             highlight_arg: -1,
             highlight_var: None,
         }
@@ -140,7 +136,10 @@ impl Diagnostic {
 
         out.push_str(&format!(
             "{color}{style_bold}{}[{}/{}]{style_reset}{color}: {}{color_reset}",
-            self.severity.as_str(), self.kind, self.code, self.message,
+            self.severity.as_str(),
+            self.kind,
+            self.code,
+            self.message,
         ));
 
         if let Some(src) = ctx {
@@ -163,25 +162,39 @@ impl Diagnostic {
                     if let Some(var) = &self.highlight_var {
                         // Caret beneath the variable's first occurrence.
                         let caret = find_var_occurrence(&rendered, var).map(|(line, col, len)| {
-                            (line, format!("{color}{}{}{color_reset}",
-                                " ".repeat(col), "^".repeat(len)))
+                            (
+                                line,
+                                format!(
+                                    "{color}{}{}{color_reset}",
+                                    " ".repeat(col),
+                                    "^".repeat(len)
+                                ),
+                            )
                         });
                         out.push_str(&gutter(&rendered, caret));
                     } else if self.highlight_arg >= 0 && !rendered.contains('\n') {
                         // Single line: caret underline beneath the argument,
                         // spanned against the flat one-line form.
-                        let caret = src.highlight_span(sid, self.highlight_arg)
-                            .filter(|&(start, len)| len > 0 && start + len <= visible_len(&rendered))
-                            .map(|(start, len)| (0usize, format!(
-                                "{color}{}{}{color_reset}",
-                                " ".repeat(start), "^".repeat(len),
-                            )));
+                        let caret = src
+                            .highlight_span(sid, self.highlight_arg)
+                            .filter(|&(start, len)| {
+                                len > 0 && start + len <= visible_len(&rendered)
+                            })
+                            .map(|(start, len)| {
+                                (
+                                    0usize,
+                                    format!(
+                                        "{color}{}{}{color_reset}",
+                                        " ".repeat(start),
+                                        "^".repeat(len),
+                                    ),
+                                )
+                            });
                         out.push_str(&gutter(&rendered, caret));
                     } else if self.highlight_arg >= 1 {
                         // Multi line: mark the offending argument's line with `<<<<`.
-                        let marked = mark_arg_line(
-                            &rendered, self.highlight_arg, src.arg_count(sid), color,
-                        );
+                        let marked =
+                            mark_arg_line(&rendered, self.highlight_arg, src.arg_count(sid), color);
                         out.push_str(&gutter(&marked, None));
                     } else {
                         out.push_str(&gutter(&rendered, None));
@@ -213,7 +226,7 @@ impl Diagnostic {
     pub fn is_err(&self) -> bool {
         match self.severity {
             Severity::Error => true,
-            _ => false
+            _ => false,
         }
     }
 }
@@ -231,7 +244,7 @@ fn gutter(snippet: &str, caret: Option<(usize, String)>) -> String {
     let bar = format!("{color_blue}   |{color_reset}");
     let (caret_after, caret_text) = match &caret {
         Some((i, t)) => (Some(*i), t.as_str()),
-        None         => (None, ""),
+        None => (None, ""),
     };
     let mut out = String::new();
     out.push_str(&bar);
@@ -261,17 +274,23 @@ fn find_var_occurrence(snippet: &str, var: &str) -> Option<(usize, usize, usize)
     let needle: Vec<char> = std::iter::once('?').chain(var.chars()).collect();
     for (li, line) in snippet.lines().enumerate() {
         let chars: Vec<char> = line.chars().collect();
-        let mut col = 0usize;   // visible column (ANSI skipped)
-        let mut i = 0usize;     // index into `chars`
+        let mut col = 0usize; // visible column (ANSI skipped)
+        let mut i = 0usize; // index into `chars`
         let mut in_esc = false;
         while i < chars.len() {
             let c = chars[i];
             if in_esc {
-                if c == 'm' { in_esc = false; }
+                if c == 'm' {
+                    in_esc = false;
+                }
                 i += 1;
                 continue;
             }
-            if c == '\u{1b}' { in_esc = true; i += 1; continue; }
+            if c == '\u{1b}' {
+                in_esc = true;
+                i += 1;
+                continue;
+            }
             if c == '?' && matches_token(&chars, i, &needle) {
                 return Some((li, col, needle.len()));
             }
@@ -291,18 +310,42 @@ fn matches_token(chars: &[char], start: usize, needle: &[char]) -> bool {
     let mut in_esc = false;
     while i < chars.len() && n < needle.len() {
         let c = chars[i];
-        if in_esc { if c == 'm' { in_esc = false; } i += 1; continue; }
-        if c == '\u{1b}' { in_esc = true; i += 1; continue; }
-        if c != needle[n] { return false; }
+        if in_esc {
+            if c == 'm' {
+                in_esc = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\u{1b}' {
+            in_esc = true;
+            i += 1;
+            continue;
+        }
+        if c != needle[n] {
+            return false;
+        }
         n += 1;
         i += 1;
     }
-    if n < needle.len() { return false; }
+    if n < needle.len() {
+        return false;
+    }
     // Boundary: skip ANSI, then ensure the next visible char isn't [A-Za-z0-9_].
     while i < chars.len() {
         let c = chars[i];
-        if in_esc { if c == 'm' { in_esc = false; } i += 1; continue; }
-        if c == '\u{1b}' { in_esc = true; i += 1; continue; }
+        if in_esc {
+            if c == 'm' {
+                in_esc = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\u{1b}' {
+            in_esc = true;
+            i += 1;
+            continue;
+        }
         return !(c.is_alphanumeric() || c == '_');
     }
     true // end of line is a boundary
@@ -321,21 +364,32 @@ fn mark_arg_line(rendered: &str, arg: i32, arg_count: Option<usize>, color: &str
         _ => return rendered.to_string(),
     };
     let lines: Vec<&str> = rendered.lines().collect();
-    if lines.len() < 2 { return rendered.to_string(); }
+    if lines.len() < 2 {
+        return rendered.to_string();
+    }
 
     // Leading literal spaces (the pretty-printer's pad precedes any ANSI).
     let indent_of = |l: &str| l.bytes().take_while(|b| *b == b' ').count();
     let arg_indent = indent_of(lines[1]); // first argument's line
-    let arg_lines: Vec<usize> = lines.iter().enumerate().skip(1)
+    let arg_lines: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .skip(1)
         .filter(|(_, l)| indent_of(l) == arg_indent)
         .map(|(i, _)| i)
         .collect();
-    if arg_lines.len() != arg_count { return rendered.to_string(); }
-    let Some(&target) = arg_lines.get(arg as usize - 1) else { return rendered.to_string(); };
+    if arg_lines.len() != arg_count {
+        return rendered.to_string();
+    }
+    let Some(&target) = arg_lines.get(arg as usize - 1) else {
+        return rendered.to_string();
+    };
 
     let mut out = String::new();
     for (i, l) in lines.iter().enumerate() {
-        if i > 0 { out.push('\n'); }
+        if i > 0 {
+            out.push('\n');
+        }
         out.push_str(l);
         if i == target {
             out.push_str(&format!(" {color}<<<<{color_reset}"));
@@ -351,7 +405,9 @@ fn visible_len(s: &str) -> usize {
     let mut in_esc = false;
     for c in s.chars() {
         if in_esc {
-            if c == 'm' { in_esc = false; }
+            if c == 'm' {
+                in_esc = false;
+            }
         } else if c == '\u{1b}' {
             in_esc = true;
         } else {
@@ -365,7 +421,7 @@ fn visible_len(s: &str) -> usize {
 #[derive(Debug, Clone)]
 pub struct RelatedInfo {
     /// Location this note points at.
-    pub range:   Span,
+    pub range: Span,
     /// The note text.
     pub message: String,
 }
@@ -387,17 +443,23 @@ pub trait DiagnosticSource {
     /// compiler-style `--> file:line` header.  Returns `None` for synthetic
     /// sentences with no real origin, or when the source has been evicted.
     /// Default: no location.
-    fn sentence_location(&self, _sid: SentenceId) -> Option<Span> { None }
+    fn sentence_location(&self, _sid: SentenceId) -> Option<Span> {
+        None
+    }
 
     /// Column span `(start, len)` of argument `arg` within the one-line flat
     /// rendering of `sid`, for drawing a caret underline.  `arg` indexes the
     /// sentence's elements (as `highlight_arg` does).  Default: none.
-    fn highlight_span(&self, _sid: SentenceId, _arg: i32) -> Option<(usize, usize)> { None }
+    fn highlight_span(&self, _sid: SentenceId, _arg: i32) -> Option<(usize, usize)> {
+        None
+    }
 
     /// Number of arguments of `sid` (its element count minus the head).  Lets
     /// the multi-line renderer confirm a one-argument-per-line layout before
     /// marking the offending argument's line.  Default: none.
-    fn arg_count(&self, _sid: SentenceId) -> Option<usize> { None }
+    fn arg_count(&self, _sid: SentenceId) -> Option<usize> {
+        None
+    }
 }
 
 // -- ToDiagnostic trait -------------------------------------------------------
@@ -419,7 +481,7 @@ mod tests {
     impl DiagnosticSource for StubSrc {
         fn render_sentence(&self, _sid: SentenceId, _arg: i32) -> Option<String> {
             Some("(rel Foo Bar)".to_string()) //  ( r e l _ F o o _ B a r )
-        }                                      //  0 1 2 3 4 5 6 7 8 9 ...
+        } //  0 1 2 3 4 5 6 7 8 9 ...
         fn highlight_span(&self, _sid: SentenceId, arg: i32) -> Option<(usize, usize)> {
             // arg 2 → "Bar" at column 9, length 3.
             (arg == 2).then_some((9, 3))
@@ -429,16 +491,25 @@ mod tests {
     #[test]
     fn render_draws_caret_under_highlighted_arg() {
         let d = Diagnostic {
-            kind: "semantic", code: "domain-mismatch", severity: Severity::Warning,
-            range: Span::default(), message: "x".into(), related: Vec::new(),
-            sids: vec![1], highlight_arg: 2, highlight_var: None,
+            kind: "semantic",
+            code: "domain-mismatch",
+            severity: Severity::Warning,
+            range: Span::default(),
+            message: "x".into(),
+            related: Vec::new(),
+            sids: vec![1],
+            highlight_arg: 2,
+            highlight_var: None,
         };
         let s = d.render(Some(&StubSrc));
         // The caret line carries exactly three carets, indented to column 9 of
         // the snippet so it underlines "Bar".
         let caret_line = s.lines().find(|l| l.contains('^')).expect("a caret line");
-        assert!(caret_line.contains("^^^") && !caret_line.contains("^^^^"),
-            "expected exactly 3 carets, got {:?}", caret_line);
+        assert!(
+            caret_line.contains("^^^") && !caret_line.contains("^^^^"),
+            "expected exactly 3 carets, got {:?}",
+            caret_line
+        );
         let visible = visible_len(caret_line);
         // gutter "   |" (4) + space (1) + 9 spaces + 3 carets = 17 visible cols.
         assert_eq!(visible, 4 + 1 + 9 + 3, "caret misaligned: {:?}", caret_line);
@@ -450,21 +521,37 @@ mod tests {
         fn render_sentence(&self, _sid: SentenceId, _arg: i32) -> Option<String> {
             Some("(rel\n  Foo\n  Bar)".to_string())
         }
-        fn arg_count(&self, _sid: SentenceId) -> Option<usize> { Some(2) }
+        fn arg_count(&self, _sid: SentenceId) -> Option<usize> {
+            Some(2)
+        }
     }
 
     #[test]
     fn render_marks_multiline_argument() {
         let d = Diagnostic {
-            kind: "semantic", code: "domain-mismatch", severity: Severity::Warning,
-            range: Span::default(), message: "x".into(), related: Vec::new(),
-            sids: vec![1], highlight_arg: 2, highlight_var: None,
+            kind: "semantic",
+            code: "domain-mismatch",
+            severity: Severity::Warning,
+            range: Span::default(),
+            message: "x".into(),
+            related: Vec::new(),
+            sids: vec![1],
+            highlight_arg: 2,
+            highlight_var: None,
         };
         let s = d.render(Some(&MultiStub));
         let bar = s.lines().find(|l| l.contains("Bar")).expect("Bar line");
         let foo = s.lines().find(|l| l.contains("Foo")).expect("Foo line");
-        assert!(bar.contains("<<<<"), "arg-2 line should be marked: {:?}", bar);
-        assert!(!foo.contains("<<<<"), "arg-1 line should not be marked: {:?}", foo);
+        assert!(
+            bar.contains("<<<<"),
+            "arg-2 line should be marked: {:?}",
+            bar
+        );
+        assert!(
+            !foo.contains("<<<<"),
+            "arg-1 line should not be marked: {:?}",
+            foo
+        );
     }
 
     #[test]
@@ -477,25 +564,50 @@ mod tests {
             }
         }
         let d = Diagnostic {
-            kind: "semantic", code: "free-var-in-consequent", severity: Severity::Warning,
-            range: Span::default(), message: "x".into(), related: Vec::new(),
-            sids: vec![1], highlight_arg: -1, highlight_var: Some("USER".into()),
+            kind: "semantic",
+            code: "free-var-in-consequent",
+            severity: Severity::Warning,
+            range: Span::default(),
+            message: "x".into(),
+            related: Vec::new(),
+            sids: vec![1],
+            highlight_arg: -1,
+            highlight_var: Some("USER".into()),
         };
         let s = d.render(Some(&VarStub));
         let lines: Vec<&str> = s.lines().collect();
-        let user_idx  = lines.iter().position(|l| l.contains("?USER")).expect("?USER line");
-        let caret_idx = lines.iter().position(|l| l.contains('^')).expect("caret line");
-        assert_eq!(caret_idx, user_idx + 1, "caret must sit directly under ?USER");
-        assert!(lines[caret_idx].contains("^^^^^") && !lines[caret_idx].contains("^^^^^^"),
-            "expected 5 carets (?USER), got {:?}", lines[caret_idx]);
+        let user_idx = lines
+            .iter()
+            .position(|l| l.contains("?USER"))
+            .expect("?USER line");
+        let caret_idx = lines
+            .iter()
+            .position(|l| l.contains('^'))
+            .expect("caret line");
+        assert_eq!(
+            caret_idx,
+            user_idx + 1,
+            "caret must sit directly under ?USER"
+        );
+        assert!(
+            lines[caret_idx].contains("^^^^^") && !lines[caret_idx].contains("^^^^^^"),
+            "expected 5 carets (?USER), got {:?}",
+            lines[caret_idx]
+        );
     }
 
     #[test]
     fn render_no_caret_without_highlight() {
         let d = Diagnostic {
-            kind: "semantic", code: "x", severity: Severity::Warning,
-            range: Span::default(), message: "x".into(), related: Vec::new(),
-            sids: vec![1], highlight_arg: -1, highlight_var: None,
+            kind: "semantic",
+            code: "x",
+            severity: Severity::Warning,
+            range: Span::default(),
+            message: "x".into(),
+            related: Vec::new(),
+            sids: vec![1],
+            highlight_arg: -1,
+            highlight_var: None,
         };
         let s = d.render(Some(&StubSrc));
         assert!(!s.contains('^'), "no caret expected when highlight_arg < 0");

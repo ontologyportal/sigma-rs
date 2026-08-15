@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::{Sentence, types::{SentenceId, SymbolId}};
+use crate::{
+    types::{SentenceId, SymbolId},
+    Sentence,
+};
 
 /// A single typed change event flowing through the reactive graph.
 ///
@@ -12,9 +15,13 @@ use crate::{Sentence, types::{SentenceId, SymbolId}};
 /// applied in parallel order-free.
 #[derive(Debug, Clone)]
 pub(crate) enum Event {
-    /// New source file / session is ingested. Need parsing, will trigger 
-    /// fingerprint deduplication 
-    SourceAdded { session: Arc<String>, file: crate::types::SourceFile, staged: bool },
+    /// New source file / session is ingested. Need parsing, will trigger
+    /// fingerprint deduplication
+    SourceAdded {
+        session: Arc<String>,
+        file: crate::types::SourceFile,
+        staged: bool,
+    },
     /// New formulas parsed in a file/session context. All start as assertions.
     FormulaAdded { node: u64, session: Arc<String> },
     /// Formulas retracted (the API resolves file/session → sids first).
@@ -45,7 +52,10 @@ pub(crate) enum Event {
     /// extend that snapshot; live-reading consumers (`inferred_class`) use it to
     /// invalidate the session's stale entries.  Carries no semantics for sids
     /// that aren't taxonomy edges — consumers filter.
-    SessionReferenced { session: String, sids: Vec<SentenceId> },
+    SessionReferenced {
+        session: String,
+        sids: Vec<SentenceId>,
+    },
 
     // Tier 1 — sentence-store reactor output
     /// The sentence store changed: which sentences and symbols were
@@ -57,10 +67,10 @@ pub(crate) enum Event {
     // the cache-behavior refactor.  Same for the three below.
     #[allow(dead_code)]
     SentencesChanged {
-        added:         Vec<SentenceId>,
-        removed:       Vec<SentenceId>,
-        syms_added:    Vec<SymbolId>,
-        syms_removed:  Vec<SymbolId>,
+        added: Vec<SentenceId>,
+        removed: Vec<SentenceId>,
+        syms_added: Vec<SymbolId>,
+        syms_removed: Vec<SymbolId>,
         syms_modified: Vec<SymbolId>,
     },
     /// A session's sentences became axioms. Consumed by `axiom_index`, `sine`.
@@ -73,7 +83,10 @@ pub(crate) enum Event {
     ///
     /// Carries the removed sentences so consumers don't have to read the body
     /// back from the store, which removal has already torn out of the map.
-    RootRemoved { sid: SentenceId, sentences: Vec<Sentence> },
+    RootRemoved {
+        sid: SentenceId,
+        sentences: Vec<Sentence>,
+    },
     /// A new relation was added (a sentence with a symbol head).
     RelationAdded { sid: SentenceId, head_id: SymbolId },
     /// A relation was removed (a sentence with a symbol head).
@@ -269,15 +282,15 @@ pub(crate) struct CycleError {
 ///
 /// Returns `Err(CycleError)` if the graph is cyclic — including a reactor that
 /// both produces and consumes the same kind (a self-loop).
-pub(crate) fn build_schedule_indexed(
-    decls: &[ReactorDecl],
-) -> Result<Vec<Vec<usize>>, CycleError> {
+pub(crate) fn build_schedule_indexed(decls: &[ReactorDecl]) -> Result<Vec<Vec<usize>>, CycleError> {
     let n = decls.len();
 
     // A self-loop (produces a kind it also consumes) is a degenerate cycle.
     for d in decls {
         if d.produces.iter().any(|k| d.consumes.contains(k)) {
-            return Err(CycleError { names: vec![d.name] });
+            return Err(CycleError {
+                names: vec![d.name],
+            });
         }
     }
 
@@ -314,7 +327,10 @@ pub(crate) fn build_schedule_indexed(
         let level: Vec<usize> = (0..n).filter(|&i| !placed[i] && indeg[i] == 0).collect();
         if level.is_empty() {
             // No zero-in-degree node left ⇒ the unplaced nodes form a cycle.
-            let names = (0..n).filter(|&i| !placed[i]).map(|i| decls[i].name).collect();
+            let names = (0..n)
+                .filter(|&i| !placed[i])
+                .map(|i| decls[i].name)
+                .collect();
             return Err(CycleError { names });
         }
         for &i in &level {
@@ -334,9 +350,7 @@ pub(crate) fn build_schedule_indexed(
 
 /// [`build_schedule_indexed`] with the cohorts mapped back to reactor *names*.
 #[cfg(test)]
-pub(crate) fn build_schedule(
-    decls: &[ReactorDecl],
-) -> Result<Vec<Vec<&'static str>>, CycleError> {
+pub(crate) fn build_schedule(decls: &[ReactorDecl]) -> Result<Vec<Vec<&'static str>>, CycleError> {
     build_schedule_indexed(decls).map(|levels| {
         levels
             .into_iter()
@@ -358,33 +372,165 @@ pub(crate) fn kb_reactor_graph() -> Vec<ReactorDecl> {
     use EventKind::*;
     vec![
         // Sources / derivation.
-        ReactorDecl { name: "ingest",   consumes: &[],                       produces: &[RootAdded, RootRemoved], reads: &[] },
-        ReactorDecl { name: "classify", consumes: &[RootAdded, RootRemoved], produces: &[TaxonomyChanged, DomainRangeChanged, OtherRootsChanged, PureAddition, ImplicationsAdded], reads: &[] },
+        ReactorDecl {
+            name: "ingest",
+            consumes: &[],
+            produces: &[RootAdded, RootRemoved],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "classify",
+            consumes: &[RootAdded, RootRemoved],
+            produces: &[
+                TaxonomyChanged,
+                DomainRangeChanged,
+                OtherRootsChanged,
+                PureAddition,
+                ImplicationsAdded,
+            ],
+            reads: &[],
+        },
         // Structural (mutate live state read by caches).
-        ReactorDecl { name: "taxonomy_apply",      consumes: &[TaxonomyChanged],                                  produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::prime_caches", consumes: &[TaxonomyChanged],                                  produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::rewrite_dirty", consumes: &[TaxonomyChanged, ImplicationsAdded, PureAddition], produces: &[], reads: &[] },
+        ReactorDecl {
+            name: "taxonomy_apply",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::prime_caches",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::rewrite_dirty",
+            consumes: &[TaxonomyChanged, ImplicationsAdded, PureAddition],
+            produces: &[],
+            reads: &[],
+        },
         // Semantic caches.
-        ReactorDecl { name: "semantic::is_instance",   consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::is_class",      consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::is_relation",   consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::is_predicate",  consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::is_function",   consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::has_ancestor",  consumes: &[TaxonomyChanged],                     produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::domain",        consumes: &[TaxonomyChanged, RelationAdded, RelationRemoved], produces: &[DomainRangeChanged], reads: &[] },
-        ReactorDecl { name: "semantic::range",         consumes: &[TaxonomyChanged, DomainRangeChanged], produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::inferred_class",consumes: &[TaxonomyChanged, DomainRangeChanged], produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::validate",      consumes: &[ValidateKB, ValidateSentence, ValidateSession, RootAdded, RootRemoved], produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::arity",         consumes: &[TaxonomyChanged, OtherRootsChanged],  produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::documentation", consumes: &[TaxonomyChanged, OtherRootsChanged],  produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::term_format",   consumes: &[TaxonomyChanged, OtherRootsChanged],  produces: &[], reads: &[] },
-        ReactorDecl { name: "semantic::format",        consumes: &[TaxonomyChanged, OtherRootsChanged],  produces: &[], reads: &[] },
+        ReactorDecl {
+            name: "semantic::is_instance",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::is_class",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::is_relation",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::is_predicate",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::is_function",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::has_ancestor",
+            consumes: &[TaxonomyChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::domain",
+            consumes: &[TaxonomyChanged, RelationAdded, RelationRemoved],
+            produces: &[DomainRangeChanged],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::range",
+            consumes: &[TaxonomyChanged, DomainRangeChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::inferred_class",
+            consumes: &[TaxonomyChanged, DomainRangeChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::validate",
+            consumes: &[
+                ValidateKB,
+                ValidateSentence,
+                ValidateSession,
+                RootAdded,
+                RootRemoved,
+            ],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::arity",
+            consumes: &[TaxonomyChanged, OtherRootsChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::documentation",
+            consumes: &[TaxonomyChanged, OtherRootsChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::term_format",
+            consumes: &[TaxonomyChanged, OtherRootsChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "semantic::format",
+            consumes: &[TaxonomyChanged, OtherRootsChanged],
+            produces: &[],
+            reads: &[],
+        },
         // Translation caches.
-        ReactorDecl { name: "trans::symbol_sort",     consumes: &[DomainRangeChanged],                            produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::sort_annotations",consumes: &[DomainRangeChanged],                            produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::relation_sorts",  consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition], produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::formulas_tff",    consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition], produces: &[], reads: &[] },
-        ReactorDecl { name: "trans::formulas_fof",    consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition], produces: &[], reads: &[] },
+        ReactorDecl {
+            name: "trans::symbol_sort",
+            consumes: &[DomainRangeChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::sort_annotations",
+            consumes: &[DomainRangeChanged],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::relation_sorts",
+            consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::formulas_tff",
+            consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition],
+            produces: &[],
+            reads: &[],
+        },
+        ReactorDecl {
+            name: "trans::formulas_fof",
+            consumes: &[TaxonomyChanged, DomainRangeChanged, PureAddition],
+            produces: &[],
+            reads: &[],
+        },
     ]
 }
 
@@ -397,7 +543,12 @@ mod tests {
         consumes: &'static [EventKind],
         produces: &'static [EventKind],
     ) -> ReactorDecl {
-        ReactorDecl { name, consumes, produces, reads: &[] }
+        ReactorDecl {
+            name,
+            consumes,
+            produces,
+            reads: &[],
+        }
     }
 
     #[test]
@@ -430,20 +581,39 @@ mod tests {
     #[test]
     fn three_level_chain() {
         let decls = [
-            decl("store", &[EventKind::RootAdded], &[EventKind::SentencesChanged]),
-            decl("index", &[EventKind::SentencesChanged], &[EventKind::TaxonomyChanged]),
+            decl(
+                "store",
+                &[EventKind::RootAdded],
+                &[EventKind::SentencesChanged],
+            ),
+            decl(
+                "index",
+                &[EventKind::SentencesChanged],
+                &[EventKind::TaxonomyChanged],
+            ),
             decl("taxonomy", &[EventKind::TaxonomyChanged], &[]),
         ];
         let schedule = build_schedule(&decls).unwrap();
-        assert_eq!(schedule, vec![vec!["store"], vec!["index"], vec!["taxonomy"]]);
+        assert_eq!(
+            schedule,
+            vec![vec!["store"], vec!["index"], vec!["taxonomy"]]
+        );
     }
 
     #[test]
     fn cycle_is_rejected() {
         // A → B (A produces X, B consumes X) and B → A (B produces Y, A consumes Y).
         let decls = [
-            decl("A", &[EventKind::DomainRangeChanged], &[EventKind::SentencesChanged]),
-            decl("B", &[EventKind::SentencesChanged], &[EventKind::DomainRangeChanged]),
+            decl(
+                "A",
+                &[EventKind::DomainRangeChanged],
+                &[EventKind::SentencesChanged],
+            ),
+            decl(
+                "B",
+                &[EventKind::SentencesChanged],
+                &[EventKind::DomainRangeChanged],
+            ),
         ];
         let err = build_schedule(&decls).unwrap_err();
         assert_eq!(err.names.len(), 2);
@@ -452,8 +622,7 @@ mod tests {
     #[test]
     fn kb_cross_layer_graph_is_acyclic_with_expected_cohorts() {
         let graph = kb_reactor_graph();
-        let schedule =
-            build_schedule(&graph).expect("cross-layer reactor graph must be acyclic");
+        let schedule = build_schedule(&graph).expect("cross-layer reactor graph must be acyclic");
 
         // Four cohorts, driven purely by the event interface:
         //   0. ingest                       — the only source (consumes nothing)
@@ -463,7 +632,11 @@ mod tests {
         //                                      (`domain` re-emits DomainRangeChanged)
         //   3. range/inferred_class/sorts/…  — consume the DomainRangeChanged that
         //                                      `domain` (cohort 2) produces
-        assert_eq!(schedule.len(), 4, "expected ingest → classify+validate → caches → domain/range-derived");
+        assert_eq!(
+            schedule.len(),
+            4,
+            "expected ingest → classify+validate → caches → domain/range-derived"
+        );
 
         // Cohort 0: ingest alone.
         assert_eq!(schedule[0], vec!["ingest"]);
@@ -498,7 +671,9 @@ mod tests {
         )];
         assert_eq!(
             build_schedule(&decls),
-            Err(CycleError { names: vec!["loop"] })
+            Err(CycleError {
+                names: vec!["loop"]
+            })
         );
     }
 }

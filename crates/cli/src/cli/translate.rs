@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use log;
+use sigmakee_rs_sdk::manager::KBManager;
 use sigmakee_rs_sdk::{HasTranslation, TopLayer, TptpOptions};
 use sigmakee_rs_sdk::{SdkError, Session, Source};
-use sigmakee_rs_sdk::manager::KBManager;
 
-use crate::cli::util::{read_stdin};
+use crate::cli::util::read_stdin;
 
 /// Entry point for `sumo translate`.
 ///
@@ -18,22 +18,19 @@ use crate::cli::util::{read_stdin};
 /// would receive — see [`run_translate_test`] (requires the `ask` feature).
 #[allow(clippy::too_many_arguments)]
 pub fn run_translate<L>(
-    mut session:  Session<L>,
-    manager:      KBManager,
-    formula:      Option<String>,
+    mut session: Session<L>,
+    manager: KBManager,
+    formula: Option<String>,
     show_numbers: bool,
-    test:         Option<PathBuf>,
-) -> bool 
-where 
-    L: HasTranslation + TopLayer {
+    test: Option<PathBuf>,
+) -> bool
+where
+    L: HasTranslation + TopLayer,
+{
     if let Some(test_file) = test {
         let test_source = Source::Local(vec![test_file]);
         let prover_opts = manager.external_prover.to_prover_opts();
-        let tptp = session.translate_test(
-            test_source, 
-            manager.into(), 
-            prover_opts
-        );
+        let tptp = session.translate_test(test_source, manager.into(), prover_opts);
         match tptp {
             Ok(tptp) => println!("{}", tptp),
             Err(errs) => {
@@ -41,8 +38,8 @@ where
                     match e {
                         SdkError::Kb(e) => {
                             session.kb().pretty_print_error(&e, log::Level::Error);
-                        },
-                        _ => log::error!("{}", e)
+                        }
+                        _ => log::error!("{}", e),
                     }
                 }
             }
@@ -62,29 +59,31 @@ where
     };
 
     match formula {
-        Some(text) => {
-            match session.translate_formula(&text, opts.lang) {
-                Ok(s) => {print!("{}", s); true},
-                Err(e) => {
-                    match e {
-                        SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
-                        _ => log::error!("{}", e)
-                    }
-                    false
-                }
+        Some(text) => match session.translate_formula(&text, opts.lang) {
+            Ok(s) => {
+                print!("{}", s);
+                true
             }
-        }
-        None => {
-            match session.translate(opts) {
-                Ok(s) => {print!("{}", s); true},
-                Err(e) => {
-                    match e {
-                        SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
-                        _ => log::error!("{}", e)
-                    }
-                    false
+            Err(e) => {
+                match e {
+                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                    _ => log::error!("{}", e),
                 }
+                false
             }
-        }
+        },
+        None => match session.translate(opts) {
+            Ok(s) => {
+                print!("{}", s);
+                true
+            }
+            Err(e) => {
+                match e {
+                    SdkError::Kb(diag) => session.kb().pretty_print_error(&diag, log::Level::Error),
+                    _ => log::error!("{}", e),
+                }
+                false
+            }
+        },
     }
 }

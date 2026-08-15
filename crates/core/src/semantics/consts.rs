@@ -1,5 +1,5 @@
-use once_cell::sync::Lazy;
 use crate::types::Symbol;
+use once_cell::sync::Lazy;
 
 // Defines every env-derived symbol.  `static` (not `const`) is required: only
 // a `static` can be referenced with the `'static` lifetime the iterable holds,
@@ -58,9 +58,9 @@ symbol_set!(
 
 /// Maps SUMO arity-constant symbol names to their integer arity (`-1` = variable).
 pub(crate) const ARITY: &[(&'static str, i32)] = &[
-    (env!("SUMO_ARITY_TWO"),         2),
-    (env!("SUMO_ARITY_THREE"),       3),
-    (env!("SUMO_ARITY_FOUR"),        4),
-    (env!("SUMO_ARITY_FIVE"),        5),
-    (env!("SUMO_ARITY_VAR"),        -1),
+    (env!("SUMO_ARITY_TWO"), 2),
+    (env!("SUMO_ARITY_THREE"), 3),
+    (env!("SUMO_ARITY_FOUR"), 4),
+    (env!("SUMO_ARITY_FIVE"), 5),
+    (env!("SUMO_ARITY_VAR"), -1),
 ];

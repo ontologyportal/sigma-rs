@@ -4,12 +4,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::{Element, OpKind, Sentence, SentenceId, SymbolId};
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::SemanticLayer;
 use crate::semantics::consts::INSTANCE_RELATION;
-use crate::semantics::types::{ClassInference, ClassScope, RelationDomain, RelationRange, Scope, Scoped, ScopedClass, TaxRelation};
+use crate::semantics::types::{
+    ClassInference, ClassScope, RelationDomain, RelationRange, Scope, Scoped, ScopedClass,
+    TaxRelation,
+};
+use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
+use crate::{Element, OpKind, Sentence, SentenceId, SymbolId};
 
 /// Cache behavior for `semantic::inferred_class`: the most specific SUMO
 /// class(es) for a symbol.
@@ -18,14 +21,18 @@ pub(crate) struct InferredClass;
 
 impl CacheBehavior for InferredClass {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = ClassInference;
+    type Key = Scoped<SymbolId>;
+    type Value = ClassInference;
     type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "semantic::inferred_class";
 
-    fn generate(&self, parent: &SemanticLayer, &Scoped { scope, key: sym }: &Scoped<SymbolId>) -> ClassInference {
+    fn generate(
+        &self,
+        parent: &SemanticLayer,
+        &Scoped { scope, key: sym }: &Scoped<SymbolId>,
+    ) -> ClassInference {
         compute_infer_class(parent, sym, scope)
     }
 
@@ -35,30 +42,41 @@ impl CacheBehavior for InferredClass {
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
         use crate::cache::events::EventKind;
-        &[EventKind::TaxonomyChanged, EventKind::DomainRangeChanged,
-          EventKind::RootAdded, EventKind::RootRemoved,
-          EventKind::SessionReferenced]
+        &[
+            EventKind::TaxonomyChanged,
+            EventKind::DomainRangeChanged,
+            EventKind::RootAdded,
+            EventKind::RootRemoved,
+            EventKind::SessionReferenced,
+        ]
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences", "semantic::domain", "semantic::range"]
+        &[
+            "syntactic::sentences",
+            "semantic::domain",
+            "semantic::range",
+        ]
     }
 
     fn react(
         &self,
-        parent:  &SemanticLayer,
-        events:  &[&crate::cache::events::Event],
-        store:   &EntryCache<Scoped<SymbolId>, ClassInference>,
-        _side:   &Self::Side,
+        parent: &SemanticLayer,
+        events: &[&crate::cache::events::Event],
+        store: &EntryCache<Scoped<SymbolId>, ClassInference>,
+        _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
 
         // A `subclass` change ripples through `has_ancestor`/`collapse` for
         // unrelated symbols, and a domain/range declaration change affects every
         // argument of a relation, so clear wholesale on either.
-        if events.iter().any(|e| matches!(e,
-            Event::TaxonomyChanged { .. } | Event::DomainRangeChanged { .. }))
-        {
+        if events.iter().any(|e| {
+            matches!(
+                e,
+                Event::TaxonomyChanged { .. } | Event::DomainRangeChanged { .. }
+            )
+        }) {
             store.clear();
             return Vec::new();
         }
@@ -68,13 +86,16 @@ impl CacheBehavior for InferredClass {
         for e in events {
             match e {
                 Event::SymbolsRetracted { syms } => evict.extend(syms.iter().copied()),
-                Event::RootAdded { sid } => evict.extend(
-                    inference_affected(parent, added_root_bodies(parent, *sid).iter().map(|a| a.as_ref())),
-                ),
-                Event::RootRemoved { sentences, .. } =>
-                    evict.extend(inference_affected(parent, sentences.iter())),
-                Event::SessionReferenced { session, .. } =>
-                    { evict_scopes.insert(Scope::Session(session_id(session))); }
+                Event::RootAdded { sid } => evict.extend(inference_affected(
+                    parent,
+                    added_root_bodies(parent, *sid).iter().map(|a| a.as_ref()),
+                )),
+                Event::RootRemoved { sentences, .. } => {
+                    evict.extend(inference_affected(parent, sentences.iter()))
+                }
+                Event::SessionReferenced { session, .. } => {
+                    evict_scopes.insert(Scope::Session(session_id(session)));
+                }
                 _ => {}
             }
         }
@@ -123,33 +144,51 @@ impl SemanticLayer {
     pub(crate) fn classify_formula_scoped(
         &self,
         root_sid: SentenceId,
-        scope:    Scope,
+        scope: Scope,
     ) -> HashMap<SymbolId, ScopedClass> {
         let mut candidates: HashMap<SymbolId, Vec<(SymbolId, ClassScope)>> = HashMap::new();
-        collect_class_candidates(self, root_sid, root_sid, false, false, scope, &mut candidates);
+        collect_class_candidates(
+            self,
+            root_sid,
+            root_sid,
+            false,
+            false,
+            scope,
+            &mut candidates,
+        );
 
         // Ground (non-variable) argument symbols also carry their global
         // taxonomy class, even when asserted in a different root than this formula.
-        let var_ids: HashSet<SymbolId> =
-            self.syntactic.sentence_vars(root_sid).into_iter().map(|(id, _)| id).collect();
-        let ground: Vec<SymbolId> =
-            candidates.keys().copied().filter(|k| !var_ids.contains(k)).collect();
+        let var_ids: HashSet<SymbolId> = self
+            .syntactic
+            .sentence_vars(root_sid)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let ground: Vec<SymbolId> = candidates
+            .keys()
+            .copied()
+            .filter(|k| !var_ids.contains(k))
+            .collect();
         for g in ground {
             let extra = match self.infer_class_scoped(g, scope) {
-                ClassInference::Single(c)   => vec![c],
+                ClassInference::Single(c) => vec![c],
                 ClassInference::Multiple(c) => c,
                 _ => vec![],
             };
             let slot = candidates.entry(g).or_default();
-            for c in extra { slot.push((c, ClassScope::Global)); }
+            for c in extra {
+                slot.push((c, ClassScope::Global));
+            }
         }
 
         candidates
             .into_iter()
             .map(|(sym, cands)| {
                 // Prefer ground (unconditional) evidence; fall back to local.
-                let (globals, locals): (Vec<_>, Vec<_>) =
-                    cands.into_iter().partition(|(_, s)| matches!(s, ClassScope::Global));
+                let (globals, locals): (Vec<_>, Vec<_>) = cands
+                    .into_iter()
+                    .partition(|(_, s)| matches!(s, ClassScope::Global));
                 let classes: Vec<SymbolId> = if !globals.is_empty() {
                     globals.into_iter().map(|(c, _)| c).collect()
                 } else {
@@ -172,15 +211,17 @@ impl SemanticLayer {
 /// top and flips `true` once a logical operator is crossed — the `Global` vs
 /// `Local(root_sid)` distinction.
 fn collect_class_candidates(
-    layer:    &SemanticLayer,
+    layer: &SemanticLayer,
     root_sid: SentenceId,
-    sid:      SentenceId,
-    local:    bool,
-    negated:  bool,
-    scope:    Scope,
-    out:      &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
+    sid: SentenceId,
+    local: bool,
+    negated: bool,
+    scope: Scope,
+    out: &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
 ) {
-    let Some(sentence) = layer.syntactic.sentence(sid) else { return };
+    let Some(sentence) = layer.syntactic.sentence(sid) else {
+        return;
+    };
     match sentence.elements.first() {
         Some(Element::Op(op)) => {
             // `(equal L R)` is an atom and `(and …)` asserts each conjunct at the
@@ -190,26 +231,39 @@ fn collect_class_candidates(
             if matches!(op, OpKind::Equal) {
                 classify_equality(layer, root_sid, &sentence, local, negated, scope, out);
             }
-            let child_local   = local || !matches!(op, OpKind::And | OpKind::Equal);
+            let child_local = local || !matches!(op, OpKind::And | OpKind::Equal);
             let child_negated = negated ^ matches!(op, OpKind::Not);
             for el in &sentence.elements[1..] {
                 if let Element::Sub(child) = el {
-                    collect_class_candidates(layer, root_sid, *child, child_local, child_negated, scope, out);
+                    collect_class_candidates(
+                        layer,
+                        root_sid,
+                        *child,
+                        child_local,
+                        child_negated,
+                        scope,
+                        out,
+                    );
                 }
             }
         }
         // A relation atom: (head arg1 arg2 …).
         Some(Element::Symbol(head)) => {
             let head_id = head.id();
-            let class_scope = if local { ClassScope::Local(root_sid) } else { ClassScope::Global };
+            let class_scope = if local {
+                ClassScope::Local(root_sid)
+            } else {
+                ClassScope::Global
+            };
 
             // A negated atom says what the target is NOT, so skip it.
             if !negated {
                 if head_id == INSTANCE_RELATION.id() {
                     // (instance TARGET Class)
-                    if let (Some(t), Some(Element::Symbol(c))) =
-                        (target_id(sentence.elements.get(1)), sentence.elements.get(2))
-                    {
+                    if let (Some(t), Some(Element::Symbol(c))) = (
+                        target_id(sentence.elements.get(1)),
+                        sentence.elements.get(2),
+                    ) {
                         out.entry(t).or_default().push((c.id(), class_scope));
                     }
                 } else {
@@ -241,27 +295,37 @@ fn collect_class_candidates(
 /// `(equal L R)`: when one side is a function application `(Fn …)`, the other
 /// side (a symbol or variable) takes `Fn`'s declared *range* as its class.
 fn classify_equality(
-    layer:    &SemanticLayer,
+    layer: &SemanticLayer,
     root_sid: SentenceId,
     sentence: &Sentence,
-    local:    bool,
-    negated:  bool,
-    scope:    Scope,
-    out:      &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
+    local: bool,
+    negated: bool,
+    scope: Scope,
+    out: &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
 ) {
     // `(not (equal A B))` asserts the two are different — no class is shared.
-    if negated { return; }
-    let class_scope = if local { ClassScope::Local(root_sid) } else { ClassScope::Global };
+    if negated {
+        return;
+    }
+    let class_scope = if local {
+        ClassScope::Local(root_sid)
+    } else {
+        ClassScope::Global
+    };
     let (l, r) = (sentence.elements.get(1), sentence.elements.get(2));
 
     // (a) function-application on one side → the other side takes the function's
     //     declared range, e.g. `(equal Joseph (FatherOfFn Jesus))`.
     for (lhs, rhs) in [(l, r), (r, l)] {
         if let (Some(target), Some(Element::Sub(fn_sid))) = (target_id(lhs), rhs) {
-            let Some(fn_sent) = layer.syntactic.sentence(*fn_sid) else { continue };
+            let Some(fn_sent) = layer.syntactic.sentence(*fn_sid) else {
+                continue;
+            };
             if let Some(Element::Symbol(fhead)) = fn_sent.elements.first() {
                 if let Some(range_class) = layer.range_scoped(fhead.id(), scope).id() {
-                    out.entry(target).or_default().push((range_class, class_scope));
+                    out.entry(target)
+                        .or_default()
+                        .push((range_class, class_scope));
                 }
             }
         }
@@ -293,25 +357,29 @@ fn classify_equality(
 /// Push a [`ClassInference`]'s class ids as candidates for `target` (no-op for
 /// `Unknown`/`Class`, so no empty entry is created).
 fn push_candidates(
-    out:    &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
+    out: &mut HashMap<SymbolId, Vec<(SymbolId, ClassScope)>>,
     target: SymbolId,
-    class:  ClassInference,
-    scope:  ClassScope,
+    class: ClassInference,
+    scope: ClassScope,
 ) {
     let ids: Vec<SymbolId> = match class {
-        ClassInference::Single(c)   => vec![c],
+        ClassInference::Single(c) => vec![c],
         ClassInference::Multiple(c) => c,
         _ => return,
     };
     let slot = out.entry(target).or_default();
-    for c in ids { slot.push((c, scope)); }
+    for c in ids {
+        slot.push((c, scope));
+    }
 }
 
 /// The classifiable id of an element: a ground symbol or a (non-row) variable.
 fn target_id(el: Option<&Element>) -> Option<SymbolId> {
     match el {
         Some(Element::Symbol(s)) => Some(s.id()),
-        Some(Element::Variable { id, is_row: false, .. }) => Some(*id),
+        Some(Element::Variable {
+            id, is_row: false, ..
+        }) => Some(*id),
         _ => None,
     }
 }
@@ -356,14 +424,16 @@ fn compute_infer_class(layer: &SemanticLayer, sym: SymbolId, scope: Scope) -> Cl
         return ClassInference::Class;
     }
     for &m in &component {
-        if is_variable_id(layer, m) { continue; }
+        if is_variable_id(layer, m) {
+            continue;
+        }
         let parents = layer.parents_of_scoped(m, scope);
         if !parents.is_empty() && parents.iter().all(|(_, rel)| *rel == TaxRelation::Subclass) {
             return ClassInference::Class;
         }
         match infer_from_taxonomy_parents(layer, &parents, scope) {
             ClassInference::Unknown => {}
-            other                   => return other,
+            other => return other,
         }
     }
     ClassInference::Unknown
@@ -376,9 +446,9 @@ fn compute_infer_class(layer: &SemanticLayer, sym: SymbolId, scope: Scope) -> Cl
 /// `contains` returns `None` (the matcher scans all roots), preserving the
 /// no-narrowing semantics.
 fn scoped_contain_roots(
-    layer:    &SemanticLayer,
+    layer: &SemanticLayer,
     contains: &Option<HashSet<SymbolId>>,
-    scope:    Scope,
+    scope: Scope,
 ) -> Option<HashSet<SentenceId>> {
     let syms = contains.as_ref()?;
     let mut roots: HashSet<SentenceId> = HashSet::new();
@@ -388,7 +458,13 @@ fn scoped_contain_roots(
     if let Scope::Session(sid) = scope {
         for r in layer.syntactic.sessions.session_sentences_by_id(sid) {
             let mut occ = layer.syntactic.sentence_symbols(r);
-            occ.extend(layer.syntactic.sentence_vars(r).into_iter().map(|(id, _)| id));
+            occ.extend(
+                layer
+                    .syntactic
+                    .sentence_vars(r)
+                    .into_iter()
+                    .map(|(id, _)| id),
+            );
             if syms.iter().any(|s| occ.contains(s)) {
                 roots.insert(r);
             }
@@ -407,15 +483,15 @@ fn scoped_contain_roots(
 /// overlay) and matches `pat` over them.  A `None` candidate set falls back to
 /// the unfiltered scan, matching the un-scoped behaviour.
 fn scoped_find_sub(
-    layer:    &SemanticLayer,
-    pat:      &crate::syntactic::pattern::SentencePattern,
+    layer: &SemanticLayer,
+    pat: &crate::syntactic::pattern::SentencePattern,
     contains: &Option<HashSet<SymbolId>>,
-    scope:    Scope,
+    scope: Scope,
 ) -> Vec<(SentenceId, crate::syntactic::pattern::Bindings)> {
     let pats = layer.syntactic.patterns();
     match scoped_contain_roots(layer, contains, scope) {
         Some(roots) => pats.find_by_pattern_sub_in_roots(pat, roots),
-        None        => pats.find_by_pattern_sub(pat, None),
+        None => pats.find_by_pattern_sub(pat, None),
     }
 }
 
@@ -423,10 +499,14 @@ fn scoped_find_sub(
 /// store (the bodies are present — the root was just interned).
 fn added_root_bodies(layer: &SemanticLayer, sid: SentenceId) -> Vec<Arc<Sentence>> {
     let mut out = Vec::new();
-    if let Some(root) = layer.syntactic.sentence(sid) { out.push(root); }
+    if let Some(root) = layer.syntactic.sentence(sid) {
+        out.push(root);
+    }
     let subs = layer.syntactic.subs_of(sid).unwrap_or_default();
     for d in subs {
-        if let Some(b) = layer.syntactic.sentence(d) { out.push(b); }
+        if let Some(b) = layer.syntactic.sentence(d) {
+            out.push(b);
+        }
     }
     out
 }
@@ -444,7 +524,7 @@ fn added_root_bodies(layer: &SemanticLayer, sid: SentenceId) -> Vec<Arc<Sentence
 /// `documentation` / `format` / domainless-relation root leaves the cache
 /// untouched.
 fn inference_affected<'a>(
-    layer:  &SemanticLayer,
+    layer: &SemanticLayer,
     bodies: impl IntoIterator<Item = &'a Sentence>,
 ) -> HashSet<SymbolId> {
     let mut affected: HashSet<SymbolId> = HashSet::new();
@@ -456,13 +536,17 @@ fn inference_affected<'a>(
                 let hid = head.id();
                 if layer.tax_role_of(hid) == Some(TaxRelation::Instance) {
                     // (instance T C) → T's class.
-                    if let Some(t) = target_id(s.elements.get(1)) { affected.insert(t); }
+                    if let Some(t) = target_id(s.elements.get(1)) {
+                        affected.insert(t);
+                    }
                 } else if layer.tax_role_of(hid).is_none()
                     && (!layer.domain(hid).is_empty() || layer.range(hid).id().is_some())
                 {
                     // (R … args …) with a declared domain/range → every argument.
                     for el in &s.elements[1..] {
-                        if let Some(t) = target_id(Some(el)) { affected.insert(t); }
+                        if let Some(t) = target_id(Some(el)) {
+                            affected.insert(t);
+                        }
                     }
                 }
             }
@@ -496,7 +580,9 @@ fn equality_component(layer: &SemanticLayer, sym: SymbolId, scope: Scope) -> Has
     let mut stack = vec![sym];
     while let Some(s) = stack.pop() {
         for n in equal_neighbors(layer, s, scope) {
-            if seen.insert(n) { stack.push(n); }
+            if seen.insert(n) {
+                stack.push(n);
+            }
         }
     }
     seen
@@ -516,12 +602,20 @@ fn equal_neighbors(layer: &SemanticLayer, s: SymbolId, scope: Scope) -> Vec<Symb
     ]);
     let mut out = Vec::new();
     for (sid, b) in scoped_find_sub(layer, &eq_pat, &contains, scope) {
-        if negated.contains(&sid) { continue; }
-        let (Some(l), Some(r)) = (b.elements.get(&0), b.elements.get(&1)) else { continue };
+        if negated.contains(&sid) {
+            continue;
+        }
+        let (Some(l), Some(r)) = (b.elements.get(&0), b.elements.get(&1)) else {
+            continue;
+        };
         for (side, other) in [(l, r), (r, l)] {
-            if target_id(Some(side)) != Some(s) { continue; }
+            if target_id(Some(side)) != Some(s) {
+                continue;
+            }
             if let Some(o) = target_id(Some(other)) {
-                if o != s { out.push(o); }              // skip reflexive `(equal s s)`
+                if o != s {
+                    out.push(o);
+                } // skip reflexive `(equal s s)`
             }
         }
     }
@@ -532,7 +626,11 @@ fn equal_neighbors(layer: &SemanticLayer, s: SymbolId, scope: Scope) -> Vec<Symb
 /// their positive classification is dropped (a negated atom says what the target
 /// is *not*).  `(not (and …))` / `(not (or …))` are already NNF-normalized at
 /// ingest, so by here every negation sits directly on an atom.
-fn negated_subs(layer: &SemanticLayer, contains: &Option<HashSet<SymbolId>>, scope: Scope) -> HashSet<SentenceId> {
+fn negated_subs(
+    layer: &SemanticLayer,
+    contains: &Option<HashSet<SymbolId>>,
+    scope: Scope,
+) -> HashSet<SentenceId> {
     use crate::syntactic::pattern::{MatchKey, PatternElement, SentencePattern};
     let not_pat = SentencePattern(vec![
         PatternElement::Exact(MatchKey::Op(OpKind::Not)),
@@ -556,10 +654,10 @@ fn negated_subs(layer: &SemanticLayer, contains: &Option<HashSet<SymbolId>>, sco
 /// Returns `(class_ids, class_signal)`, where `class_signal` flags a
 /// `domainSubclass` / `rangeSubclass` position (evidence `sym` is itself a class).
 fn collect_direct_classes(
-    layer:  &SemanticLayer,
-    sym:    SymbolId,
+    layer: &SemanticLayer,
+    sym: SymbolId,
     is_var: bool,
-    scope:  Scope,
+    scope: Scope,
 ) -> (Vec<SymbolId>, bool) {
     use crate::syntactic::pattern::{MatchKey, PatternElement, SentencePattern};
 
@@ -576,8 +674,12 @@ fn collect_direct_classes(
         PatternElement::AnyElement(1),
     ]);
     for (sid, b) in scoped_find_sub(layer, &inst_pat, &contains, scope) {
-        if negated.contains(&sid) { continue; }
-        if target_id(b.elements.get(&0)) != Some(sym) { continue; }
+        if negated.contains(&sid) {
+            continue;
+        }
+        if target_id(b.elements.get(&0)) != Some(sym) {
+            continue;
+        }
         if let Some(Element::Symbol(c)) = b.elements.get(&1) {
             classes.push(c.id());
         }
@@ -590,25 +692,35 @@ fn collect_direct_classes(
     } else {
         match layer.syntactic.sym_name(sym) {
             Some(s) => MatchKey::Symbol(s),
-            None    => return (classes, class_signal), // unknown ground id
+            None => return (classes, class_signal), // unknown ground id
         }
     };
     let dom_pat = SentencePattern(vec![
-        PatternElement::AnyCapture(0),               // head (forces sym to be a non-head arg)
+        PatternElement::AnyCapture(0), // head (forces sym to be a non-head arg)
         PatternElement::Glob,
-        PatternElement::Exact(target_key.clone()),   // sym occurs as an argument
+        PatternElement::Exact(target_key.clone()), // sym occurs as an argument
         PatternElement::Glob,
     ]);
     for (sid, _b) in scoped_find_sub(layer, &dom_pat, &contains, scope) {
-        if negated.contains(&sid) { continue; }
-        let Some(s) = layer.syntactic.sentence(sid) else { continue };
-        let Some(head_id) = s.head_symbol() else { continue };  // None for operator heads
-        if layer.tax_role_of(head_id).is_some() { continue; } // taxonomy heads handled elsewhere
+        if negated.contains(&sid) {
+            continue;
+        }
+        let Some(s) = layer.syntactic.sentence(sid) else {
+            continue;
+        };
+        let Some(head_id) = s.head_symbol() else {
+            continue;
+        }; // None for operator heads
+        if layer.tax_role_of(head_id).is_some() {
+            continue;
+        } // taxonomy heads handled elsewhere
         let domain = layer.domain_scoped(head_id, scope);
         for (i, el) in s.elements[1..].iter().enumerate() {
-            if target_id(Some(el)) != Some(sym) { continue; }
+            if target_id(Some(el)) != Some(sym) {
+                continue;
+            }
             match domain.get(i) {
-                Some(RelationDomain::Domain(c))         => classes.push(*c),
+                Some(RelationDomain::Domain(c)) => classes.push(*c),
                 Some(RelationDomain::DomainSubclass(_)) => class_signal = true,
                 _ => {}
             }
@@ -624,19 +736,27 @@ fn collect_direct_classes(
         PatternElement::AnyElement(1),
     ]);
     for (sid, b) in scoped_find_sub(layer, &eq_pat, &contains, scope) {
-        if negated.contains(&sid) { continue; }
-        let (Some(l), Some(r)) = (b.elements.get(&0), b.elements.get(&1)) else { continue };
+        if negated.contains(&sid) {
+            continue;
+        }
+        let (Some(l), Some(r)) = (b.elements.get(&0), b.elements.get(&1)) else {
+            continue;
+        };
         for (side, other) in [(l, r), (r, l)] {
-            if target_id(Some(side)) != Some(sym) { continue; }
+            if target_id(Some(side)) != Some(sym) {
+                continue;
+            }
             match other {
                 Element::Sub(fsid) => {
-                    if let Some(fhead) =
-                        layer.syntactic.sentence(*fsid).and_then(|s| s.head_symbol())
+                    if let Some(fhead) = layer
+                        .syntactic
+                        .sentence(*fsid)
+                        .and_then(|s| s.head_symbol())
                     {
                         match layer.range_scoped(fhead, scope) {
-                            RelationRange::Range(c)         => classes.push(c),
+                            RelationRange::Range(c) => classes.push(c),
                             RelationRange::RangeSubclass(_) => class_signal = true,
-                            RelationRange::Unknown          => {}
+                            RelationRange::Unknown => {}
                         }
                     }
                 }
@@ -654,17 +774,16 @@ fn collect_direct_classes(
     (classes, class_signal)
 }
 
-
 /// Whether `sym` is a scope-qualified variable id rather than a ground symbol.
 /// Variables are interned under names of the form `name__<scope-number>` — a
 /// suffix ground SUMO symbols never carry.
 fn is_variable_id(layer: &SemanticLayer, sym: SymbolId) -> bool {
     layer.syntactic.sym_name(sym).is_some_and(|s| {
-        s.name().rsplit_once("__")
-            .is_some_and(|(_, scope)| !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit()))
+        s.name().rsplit_once("__").is_some_and(|(_, scope)| {
+            !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit())
+        })
     })
 }
-
 
 /// Collect all C where `(instance sym C)` is a direct taxonomy edge visible in
 /// `scope` — the `Base` axioms unioned with the session overlay (via
@@ -684,7 +803,11 @@ fn taxonomy_instance_classes(layer: &SemanticLayer, sym: SymbolId, scope: Scope)
 ///
 /// Removes dominated classes (those with a more-specific sibling in the slice)
 /// and returns `Single` when one leaf remains, else `Multiple`.
-pub(crate) fn collapse_classes(layer: &SemanticLayer, classes: &[SymbolId], scope: Scope) -> ClassInference {
+pub(crate) fn collapse_classes(
+    layer: &SemanticLayer,
+    classes: &[SymbolId],
+    scope: Scope,
+) -> ClassInference {
     debug_assert!(!classes.is_empty());
     if classes.len() == 1 {
         return ClassInference::Single(classes[0]);
@@ -739,12 +862,12 @@ impl SemanticLayer {
     /// `reduce` retains.  Returns `None` for an empty slice.
     #[allow(dead_code)]
     pub(crate) fn most_specific_class(&self, classes: &[SymbolId]) -> Option<SymbolId> {
-        classes.iter().copied().reduce(|a, b| {
-            if self.has_ancestor(a, b) { a } else { b }
-        })
+        classes
+            .iter()
+            .copied()
+            .reduce(|a, b| if self.has_ancestor(a, b) { a } else { b })
     }
 }
-
 
 #[cfg(test)]
 mod tests;

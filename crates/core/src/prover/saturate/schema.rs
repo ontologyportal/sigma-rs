@@ -38,9 +38,9 @@ use crate::syntactic::SyntacticLayer;
 use crate::types::{Element, Symbol, SymbolId};
 
 use super::canon::{canonical_clause, canonical_slot};
-use super::parked;
 use super::clause::{AtomTable, PLit, Term};
 use super::hash64::Map64;
+use super::parked;
 
 /// Seed for literal-skeleton coins — its own keyspace, disjoint from
 /// sentence hashes, clause keys, and residue-index coins.
@@ -65,7 +65,7 @@ const H_VAR: u64 = 0x7A_4E_AD_5C_0F_FE_E0_11;
 #[derive(Debug, Clone)]
 pub(crate) struct SchemaHit {
     pub(crate) kind: SchemaKind,
-    pub(crate) rel:  Option<Symbol>,
+    pub(crate) rel: Option<Symbol>,
     pub(crate) rel2: Option<Symbol>,
 }
 
@@ -103,7 +103,7 @@ pub(crate) enum SchemaKind {
 /// the fingerprint and verifiers see only this.
 #[derive(Debug, Clone)]
 struct LitShape {
-    pos:  bool,
+    pos: bool,
     head: HeadK,
     args: SmallVec<[ArgK; 2]>,
 }
@@ -137,10 +137,10 @@ pub(crate) struct SchemaTable {
 /// does not fit the schema family (compound/literal arguments, arity
 /// other than 3, non-canonical variables).
 fn shape_of_sentence(
-    pos:   bool,
-    atom:  super::clause::AtomId,
+    pos: bool,
+    atom: super::clause::AtomId,
     atoms: &AtomTable,
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
 ) -> Option<LitShape> {
     let sent = atoms.resolve(atom, syn)?;
     if sent.elements.len() != 3 {
@@ -239,7 +239,10 @@ struct Fingerprint {
 
 fn fingerprint(shapes: &[LitShape]) -> Fingerprint {
     let mut fp = Fingerprint {
-        sym1: 0, sym3: 0, fix1: 0, fix3: 0,
+        sym1: 0,
+        sym3: 0,
+        fix1: 0,
+        fix3: 0,
         heads: SmallVec::new(),
     };
     for s in shapes {
@@ -300,7 +303,10 @@ fn two_slots(s: &LitShape) -> Option<(u32, u32)> {
 }
 
 fn head_sym(s: &LitShape) -> Option<&Symbol> {
-    match &s.head { HeadK::Sym(sym) => Some(sym), _ => None }
+    match &s.head {
+        HeadK::Sym(sym) => Some(sym),
+        _ => None,
+    }
 }
 
 /// Verify a probe hit structurally.  Hash equality routed us here;
@@ -310,10 +316,18 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
         SchemaKind::Symmetry => {
             let [a, b] = shapes else { return false };
             let (neg, pos) = if a.pos { (b, a) } else { (a, b) };
-            if neg.pos || !pos.pos { return false; }
-            let (Some(hn), Some(hp)) = (head_sym(neg), head_sym(pos)) else { return false };
-            if hn.id() != hp.id() { return false; }
-            let (Some((x, y)), Some((u, v))) = (two_slots(neg), two_slots(pos)) else { return false };
+            if neg.pos || !pos.pos {
+                return false;
+            }
+            let (Some(hn), Some(hp)) = (head_sym(neg), head_sym(pos)) else {
+                return false;
+            };
+            if hn.id() != hp.id() {
+                return false;
+            }
+            let (Some((x, y)), Some((u, v))) = (two_slots(neg), two_slots(pos)) else {
+                return false;
+            };
             x != y && u == y && v == x
         }
         SchemaKind::Transitivity => {
@@ -321,18 +335,27 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
             let mut negs: SmallVec<[&LitShape; 2]> = SmallVec::new();
             let mut pos = None;
             for s in [a, b, c] {
-                if s.pos { pos = Some(s); } else { negs.push(s); }
+                if s.pos {
+                    pos = Some(s);
+                } else {
+                    negs.push(s);
+                }
             }
-            let (Some(p), [n1, n2]) = (pos, negs.as_slice()) else { return false };
-            let heads: Option<Vec<&Symbol>> =
-                [p, n1, n2].iter().map(|s| head_sym(s)).collect();
+            let (Some(p), [n1, n2]) = (pos, negs.as_slice()) else {
+                return false;
+            };
+            let heads: Option<Vec<&Symbol>> = [p, n1, n2].iter().map(|s| head_sym(s)).collect();
             let Some(heads) = heads else { return false };
             if heads[0].id() != heads[1].id() || heads[1].id() != heads[2].id() {
                 return false;
             }
-            let (Some((px, pz)), Some(s1), Some(s2)) =
-                (two_slots(p), two_slots(n1), two_slots(n2)) else { return false };
-            if px == pz { return false; }
+            let (Some((px, pz)), Some(s1), Some(s2)) = (two_slots(p), two_slots(n1), two_slots(n2))
+            else {
+                return false;
+            };
+            if px == pz {
+                return false;
+            }
             // ¬R(px,m) ∧ ¬R(m,pz) in either literal order, m fresh.
             let chains = |(ax, ay): (u32, u32), (bx, by): (u32, u32)| {
                 ax == px && by == pz && ay == bx && ay != px && ay != pz
@@ -344,29 +367,53 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
             let mut negs: SmallVec<[&LitShape; 2]> = SmallVec::new();
             let mut pos = None;
             for s in [a, b, c] {
-                if s.pos { pos = Some(s); } else { negs.push(s); }
+                if s.pos {
+                    pos = Some(s);
+                } else {
+                    negs.push(s);
+                }
             }
-            let (Some(p), [n1, n2]) = (pos, negs.as_slice()) else { return false };
-            if !matches!(p.head, HeadK::Eq) { return false; }
-            let (Some(h1), Some(h2)) = (head_sym(n1), head_sym(n2)) else { return false };
-            if h1.id() != h2.id() { return false; }
+            let (Some(p), [n1, n2]) = (pos, negs.as_slice()) else {
+                return false;
+            };
+            if !matches!(p.head, HeadK::Eq) {
+                return false;
+            }
+            let (Some(h1), Some(h2)) = (head_sym(n1), head_sym(n2)) else {
+                return false;
+            };
+            if h1.id() != h2.id() {
+                return false;
+            }
             let (Some((ex, ey)), Some((x, y)), Some((u, v))) =
-                (two_slots(p), two_slots(n1), two_slots(n2)) else { return false };
-            x != y && u == y && v == x
-                && ((ex == x && ey == y) || (ex == y && ey == x))
+                (two_slots(p), two_slots(n1), two_slots(n2))
+            else {
+                return false;
+            };
+            x != y && u == y && v == x && ((ex == x && ey == y) || (ex == y && ey == x))
         }
         SchemaKind::Irreflexivity => {
             let [s] = shapes else { return false };
-            if s.pos || head_sym(s).is_none() { return false; }
+            if s.pos || head_sym(s).is_none() {
+                return false;
+            }
             matches!(two_slots(s), Some((x, y)) if x == y)
         }
         SchemaKind::Inverse => {
             let [a, b] = shapes else { return false };
             let (neg, pos) = if a.pos { (b, a) } else { (a, b) };
-            if neg.pos || !pos.pos { return false; }
-            let (Some(hn), Some(hp)) = (head_sym(neg), head_sym(pos)) else { return false };
-            if hn.id() == hp.id() { return false; }
-            let (Some((x, y)), Some((u, v))) = (two_slots(neg), two_slots(pos)) else { return false };
+            if neg.pos || !pos.pos {
+                return false;
+            }
+            let (Some(hn), Some(hp)) = (head_sym(neg), head_sym(pos)) else {
+                return false;
+            };
+            if hn.id() == hp.id() {
+                return false;
+            }
+            let (Some((x, y)), Some((u, v))) = (two_slots(neg), two_slots(pos)) else {
+                return false;
+            };
             x != y && u == y && v == x
         }
         SchemaKind::EqSubstitution => {
@@ -382,10 +429,18 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
                     _ => return false,
                 }
             }
-            let (Some(eq), Some(nr), Some(pr)) = (eq, neg_r, pos_r) else { return false };
-            let Some((ea, eb)) = two_slots(eq) else { return false };
-            if ea == eb { return false; }
-            let (Some(hn), Some(hp)) = (head_sym(nr), head_sym(pr)) else { return false };
+            let (Some(eq), Some(nr), Some(pr)) = (eq, neg_r, pos_r) else {
+                return false;
+            };
+            let Some((ea, eb)) = two_slots(eq) else {
+                return false;
+            };
+            if ea == eb {
+                return false;
+            }
+            let (Some(hn), Some(hp)) = (head_sym(nr), head_sym(pr)) else {
+                return false;
+            };
             if hn.id() != hp.id() || nr.args.len() != pr.args.len() {
                 return false;
             }
@@ -425,7 +480,10 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
                 match &s.head {
                     HeadK::Sym(h) if h.id() == instance && !s.pos => {
                         let (Some(ArgK::Slot(r)), Some(ArgK::Sym(c))) =
-                            (s.args.first(), s.args.get(1)) else { return false };
+                            (s.args.first(), s.args.get(1))
+                        else {
+                            return false;
+                        };
                         if *c != class || rel_slot.replace(*r).is_some() {
                             return false;
                         }
@@ -435,7 +493,10 @@ fn verify(kind: SchemaKind, shapes: &[LitShape]) -> bool {
                 }
             }
             let Some(r) = rel_slot else { return false };
-            if !body.iter().all(|s| matches!(s.head, HeadK::Var(v) if v == r)) {
+            if !body
+                .iter()
+                .all(|s| matches!(s.head, HeadK::Var(v) if v == r))
+            {
                 return false;
             }
             // Re-verify the body as the corresponding first-order shape
@@ -478,40 +539,59 @@ impl SchemaTable {
         let eq = || Term::Op(OpKind::Equal);
 
         let mut variants: Vec<(SchemaKind, Vec<(bool, Term)>)> = vec![
-            (SchemaKind::Symmetry, vec![
-                (false, app(vec![r(), x(), y()])),
-                (true,  app(vec![r(), y(), x()])),
-            ]),
-            (SchemaKind::Irreflexivity, vec![
-                (false, app(vec![r(), x(), x()])),
-            ]),
-            (SchemaKind::SymMetaschema, vec![
-                (false, app(vec![inst(), rv(), symc()])),
-                (false, app(vec![rv(), x(), y()])),
-                (true,  app(vec![rv(), y(), x()])),
-            ]),
+            (
+                SchemaKind::Symmetry,
+                vec![
+                    (false, app(vec![r(), x(), y()])),
+                    (true, app(vec![r(), y(), x()])),
+                ],
+            ),
+            (
+                SchemaKind::Irreflexivity,
+                vec![(false, app(vec![r(), x(), x()]))],
+            ),
+            (
+                SchemaKind::SymMetaschema,
+                vec![
+                    (false, app(vec![inst(), rv(), symc()])),
+                    (false, app(vec![rv(), x(), y()])),
+                    (true, app(vec![rv(), y(), x()])),
+                ],
+            ),
             // Leibniz substitution: both argument positions, both
             // substitution directions.
-            (SchemaKind::EqSubstitution, vec![
-                (false, app(vec![eq(), x(), y()])),
-                (false, app(vec![r(), x(), z()])),
-                (true,  app(vec![r(), y(), z()])),
-            ]),
-            (SchemaKind::EqSubstitution, vec![
-                (false, app(vec![eq(), x(), y()])),
-                (false, app(vec![r(), y(), z()])),
-                (true,  app(vec![r(), x(), z()])),
-            ]),
-            (SchemaKind::EqSubstitution, vec![
-                (false, app(vec![eq(), x(), y()])),
-                (false, app(vec![r(), z(), x()])),
-                (true,  app(vec![r(), z(), y()])),
-            ]),
-            (SchemaKind::EqSubstitution, vec![
-                (false, app(vec![eq(), x(), y()])),
-                (false, app(vec![r(), z(), y()])),
-                (true,  app(vec![r(), z(), x()])),
-            ]),
+            (
+                SchemaKind::EqSubstitution,
+                vec![
+                    (false, app(vec![eq(), x(), y()])),
+                    (false, app(vec![r(), x(), z()])),
+                    (true, app(vec![r(), y(), z()])),
+                ],
+            ),
+            (
+                SchemaKind::EqSubstitution,
+                vec![
+                    (false, app(vec![eq(), x(), y()])),
+                    (false, app(vec![r(), y(), z()])),
+                    (true, app(vec![r(), x(), z()])),
+                ],
+            ),
+            (
+                SchemaKind::EqSubstitution,
+                vec![
+                    (false, app(vec![eq(), x(), y()])),
+                    (false, app(vec![r(), z(), x()])),
+                    (true, app(vec![r(), z(), y()])),
+                ],
+            ),
+            (
+                SchemaKind::EqSubstitution,
+                vec![
+                    (false, app(vec![eq(), x(), y()])),
+                    (false, app(vec![r(), z(), y()])),
+                    (true, app(vec![r(), z(), x()])),
+                ],
+            ),
         ];
         // Emission-order variants: same-polarity same-head literals tie
         // on the blank key, so the stable sort preserves their input
@@ -521,32 +601,41 @@ impl SchemaTable {
                 0 => app(vec![r(), x(), y()]),
                 _ => app(vec![r(), y(), z()]),
             };
-            variants.push((SchemaKind::Transitivity, vec![
-                (false, tn(negs[0])),
-                (false, tn(negs[1])),
-                (true,  app(vec![r(), x(), z()])),
-            ]));
+            variants.push((
+                SchemaKind::Transitivity,
+                vec![
+                    (false, tn(negs[0])),
+                    (false, tn(negs[1])),
+                    (true, app(vec![r(), x(), z()])),
+                ],
+            ));
             let mn = |i: usize| match i {
                 0 => app(vec![rv(), x(), y()]),
                 _ => app(vec![rv(), y(), z()]),
             };
-            variants.push((SchemaKind::TransMetaschema, vec![
-                (false, app(vec![inst(), rv(), trac()])),
-                (false, mn(negs[0])),
-                (false, mn(negs[1])),
-                (true,  app(vec![rv(), x(), z()])),
-            ]));
+            variants.push((
+                SchemaKind::TransMetaschema,
+                vec![
+                    (false, app(vec![inst(), rv(), trac()])),
+                    (false, mn(negs[0])),
+                    (false, mn(negs[1])),
+                    (true, app(vec![rv(), x(), z()])),
+                ],
+            ));
             let an = |i: usize| match i {
                 0 => app(vec![r(), x(), y()]),
                 _ => app(vec![r(), y(), x()]),
             };
             for eq_args in [[0usize, 1], [1, 0]] {
                 let ea = |i: usize| if i == 0 { x() } else { y() };
-                variants.push((SchemaKind::Antisymmetry, vec![
-                    (false, an(negs[0])),
-                    (false, an(negs[1])),
-                    (true,  app(vec![eq(), ea(eq_args[0]), ea(eq_args[1])])),
-                ]));
+                variants.push((
+                    SchemaKind::Antisymmetry,
+                    vec![
+                        (false, an(negs[0])),
+                        (false, an(negs[1])),
+                        (true, app(vec![eq(), ea(eq_args[0]), ea(eq_args[1])])),
+                    ],
+                ));
             }
         }
 
@@ -566,7 +655,10 @@ impl SchemaTable {
                 debug_assert!(false, "schema table: {kind:?} has no single-head key");
                 continue;
             };
-            debug_assert!(verify(kind, &shapes), "schema table: {kind:?} fails own verify");
+            debug_assert!(
+                verify(kind, &shapes),
+                "schema table: {kind:?} fails own verify"
+            );
             let prev = map.insert(key, kind);
             debug_assert!(
                 prev.is_none() || prev == Some(kind),
@@ -581,9 +673,9 @@ impl SchemaTable {
     /// the schema family; structural verify runs only on table hits.
     pub(crate) fn probe(
         &self,
-        lits:  &[PLit],
+        lits: &[PLit],
         atoms: &AtomTable,
-        syn:   &SyntacticLayer,
+        syn: &SyntacticLayer,
     ) -> Option<SchemaHit> {
         if lits.is_empty() || lits.len() > 4 {
             return None;
@@ -600,11 +692,7 @@ impl SchemaTable {
     /// clauses whose atoms may never be interned).  The shape reader
     /// was the only part that touched the table; same shapes, same
     /// verdicts (twin test below).
-    pub(crate) fn probe_terms(
-        &self,
-        lits:  &[PLit],
-        terms: &[(bool, Term)],
-    ) -> Option<SchemaHit> {
+    pub(crate) fn probe_terms(&self, lits: &[PLit], terms: &[(bool, Term)]) -> Option<SchemaHit> {
         if lits.is_empty() || lits.len() > 4 {
             return None;
         }
@@ -630,7 +718,7 @@ impl SchemaTable {
                 };
                 return Some(SchemaHit {
                     kind: SchemaKind::Inverse,
-                    rel:  head_sym(neg).cloned(),
+                    rel: head_sym(neg).cloned(),
                     rel2: head_sym(pos).cloned(),
                 });
             }
@@ -645,7 +733,11 @@ impl SchemaTable {
             SchemaKind::SymMetaschema | SchemaKind::TransMetaschema => None,
             _ => Some(fp.heads[0].clone()),
         };
-        Some(SchemaHit { kind, rel, rel2: None })
+        Some(SchemaHit {
+            kind,
+            rel,
+            rel2: None,
+        })
     }
 
     parked! {
@@ -676,7 +768,11 @@ mod tests {
     }
 
     fn rel_name(hit: &SchemaHit) -> String {
-        hit.rel.as_ref().expect("hit carries a relation").name().to_string()
+        hit.rel
+            .as_ref()
+            .expect("hit carries a relation")
+            .name()
+            .to_string()
     }
 
     // Hash-before-intern twin: the term-shape probe (`probe_terms`, fed
@@ -713,7 +809,12 @@ mod tests {
                 let terms: Vec<(bool, Term)> = pc
                     .lits
                     .iter()
-                    .map(|l| (l.pos, slot_atom(&layer.atoms, syn, l.atom, 0).expect("liftable")))
+                    .map(|l| {
+                        (
+                            l.pos,
+                            slot_atom(&layer.atoms, syn, l.atom, 0).expect("liftable"),
+                        )
+                    })
                     .collect();
                 let by_terms = layer.schema.probe_terms(&pc.lits, &terms);
                 match (&by_sentence, &by_terms) {
@@ -768,9 +869,7 @@ mod tests {
 
     #[test]
     fn recognizes_antisymmetry() {
-        let hit = probe_kif(
-            "(=> (and (covers ?X ?Y) (covers ?Y ?X)) (equal ?X ?Y))",
-        ).unwrap();
+        let hit = probe_kif("(=> (and (covers ?X ?Y) (covers ?Y ?X)) (equal ?X ?Y))").unwrap();
         assert_eq!(hit.kind, SchemaKind::Antisymmetry);
         assert_eq!(rel_name(&hit), "covers");
     }
@@ -792,9 +891,9 @@ mod tests {
 
     #[test]
     fn recognizes_symmetry_metaschema() {
-        let hit = probe_kif(
-            "(=> (and (instance ?REL SymmetricRelation) (?REL ?I1 ?I2)) (?REL ?I2 ?I1))",
-        ).unwrap();
+        let hit =
+            probe_kif("(=> (and (instance ?REL SymmetricRelation) (?REL ?I1 ?I2)) (?REL ?I2 ?I1))")
+                .unwrap();
         assert_eq!(hit.kind, SchemaKind::SymMetaschema);
         assert!(hit.rel.is_none());
     }
@@ -806,7 +905,8 @@ mod tests {
             "(=> (instance ?REL SymmetricRelation) \
                  (forall (?INST1 ?INST2) \
                     (=> (?REL ?INST1 ?INST2) (?REL ?INST2 ?INST1))))",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(hit.kind, SchemaKind::SymMetaschema);
     }
 
@@ -815,7 +915,8 @@ mod tests {
         let hit = probe_kif(
             "(=> (and (instance ?REL TransitiveRelation) (?REL ?I1 ?I2) (?REL ?I2 ?I3)) \
                  (?REL ?I1 ?I3))",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(hit.kind, SchemaKind::TransMetaschema);
     }
 
@@ -840,18 +941,15 @@ mod tests {
             assert_eq!(hit.kind, SchemaKind::EqSubstitution);
         }
         // Second argument position (the property-attribute spelling).
-        let hit = probe_kif(
-            "(=> (and (equal ?A1 ?A2) (property ?T ?A1)) (property ?T ?A2))",
-        ).unwrap();
+        let hit =
+            probe_kif("(=> (and (equal ?A1 ?A2) (property ?T ?A1)) (property ?T ?A2))").unwrap();
         assert_eq!(hit.kind, SchemaKind::EqSubstitution);
     }
 
     #[test]
     fn rejects_near_misses() {
         // Guarded symmetry is NOT unconditional symmetry.
-        assert!(probe_kif(
-            "(=> (and (instance ?X Human) (likes ?X ?Y)) (likes ?Y ?X))"
-        ).is_none());
+        assert!(probe_kif("(=> (and (instance ?X Human) (likes ?X ?Y)) (likes ?Y ?X))").is_none());
         // Subrelation shape: same argument order, different heads.
         assert!(probe_kif("(=> (relA ?X ?Y) (relB ?X ?Y))").is_none());
         // Reflexive-ish tautology shape: same head, same order.

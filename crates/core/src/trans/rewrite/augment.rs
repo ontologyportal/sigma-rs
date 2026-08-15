@@ -4,10 +4,10 @@ use std::collections::HashSet;
 
 use smallvec::smallvec;
 
-use crate::parse::ast::OpKind;
-use crate::types::{Element, ElementVec, SentenceId, SymbolId};
-use crate::syntactic::SyntacticLayer;
 use super::extract::RewriteRule;
+use crate::parse::ast::OpKind;
+use crate::syntactic::SyntacticLayer;
+use crate::types::{Element, ElementVec, SentenceId, SymbolId};
 
 // ---------------------------------------------------------------------------
 // Stage 3 — Augmentation Fixed-Point
@@ -19,9 +19,9 @@ use super::extract::RewriteRule;
 /// Suppresses augmented-away originals in `suppressed`.
 /// New augmented sentences are pushed into the synthetic store of `syntactic`.
 pub(crate) fn augment_fixed_point(
-    syntactic:  &SyntacticLayer,
-    rules:      &[RewriteRule],
-    seed:       &[SentenceId],
+    syntactic: &SyntacticLayer,
+    rules: &[RewriteRule],
+    seed: &[SentenceId],
     suppressed: &mut HashSet<SentenceId>,
 ) {
     let mut dirty: Vec<SentenceId> = seed.to_vec();
@@ -33,7 +33,9 @@ pub(crate) fn augment_fixed_point(
     let mut applied: HashSet<(SentenceId, usize)> = HashSet::new();
 
     while let Some(sid) = dirty.pop() {
-        if suppressed.contains(&sid) { continue; }
+        if suppressed.contains(&sid) {
+            continue;
+        }
         for rule in rules {
             if let Some((new_sid, matched_csid)) =
                 try_augment_conjunct(syntactic, sid, rule, &applied)
@@ -57,9 +59,9 @@ pub(crate) fn augment_fixed_point(
 /// match. The caller records the `(matched_csid, rule.id)` pair after the fire.
 fn try_augment_conjunct(
     syntactic: &SyntacticLayer,
-    sid:       SentenceId,
-    rule:      &RewriteRule,
-    applied:   &HashSet<(SentenceId, usize)>,
+    sid: SentenceId,
+    rule: &RewriteRule,
+    applied: &HashSet<(SentenceId, usize)>,
 ) -> Option<(SentenceId, SentenceId)> {
     // Sentence must be (=> Sub(ant) Sub(con)).
     let (ant_sid, con_sid) = {
@@ -76,9 +78,13 @@ fn try_augment_conjunct(
     let conjunct_sids: Vec<SentenceId> = collect_conjuncts(syntactic, ant_sid);
 
     let (matched_csid, bindings) = conjunct_sids.iter().find_map(|&csid| {
-        if applied.contains(&(csid, rule.id)) { return None; }
+        if applied.contains(&(csid, rule.id)) {
+            return None;
+        }
         let conjunct_s = syntactic.sentence(csid)?;
-        let b = syntactic.patterns().match_pattern(&rule.pattern, &conjunct_s)?;
+        let b = syntactic
+            .patterns()
+            .match_pattern(&rule.pattern, &conjunct_s)?;
         Some((csid, b))
     })?;
 
@@ -87,7 +93,11 @@ fn try_augment_conjunct(
     let replacement = bindings.elements.get(&0)?.clone();
 
     let subst_sid = substitute_var(
-        syntactic, rule.consequent_sid, rule.template_var, &replacement, sid,
+        syntactic,
+        rule.consequent_sid,
+        rule.template_var,
+        &replacement,
+        sid,
     );
 
     // If the substituted consequent is (and …), add each child individually so
@@ -121,11 +131,11 @@ fn try_augment_conjunct(
 /// all other elements are copied as-is.  A fresh synthetic sentence is
 /// always allocated so the original tree is never modified.
 pub(super) fn substitute_var(
-    syntactic:   &SyntacticLayer,
-    sid:         SentenceId,
-    var_id:      SymbolId,
+    syntactic: &SyntacticLayer,
+    sid: SentenceId,
+    var_id: SymbolId,
     replacement: &Element,
-    origin:      SentenceId,
+    origin: SentenceId,
 ) -> SentenceId {
     // Clone the elements first to release the immutable borrow on `syntactic`
     // before calling `push_synthetic_sentence` or recurring into Sub children.
@@ -153,13 +163,24 @@ pub(super) fn substitute_var(
 ///
 /// If `ant_sid` is an `(and …)` sentence, returns its children's Sub sids.
 /// Otherwise returns `[ant_sid]` (single conjunct).
-pub(super) fn collect_conjuncts(syntactic: &SyntacticLayer, ant_sid: SentenceId) -> Vec<SentenceId> {
-    let Some(ant_s) = syntactic.sentence(ant_sid) else { return vec![ant_sid] };
+pub(super) fn collect_conjuncts(
+    syntactic: &SyntacticLayer,
+    ant_sid: SentenceId,
+) -> Vec<SentenceId> {
+    let Some(ant_s) = syntactic.sentence(ant_sid) else {
+        return vec![ant_sid];
+    };
     if !matches!(ant_s.elements.first(), Some(Element::Op(OpKind::And))) {
         return vec![ant_sid];
     }
-    ant_s.elements[1..].iter().filter_map(|e| {
-        if let Element::Sub(sid) = e { Some(*sid) } else { None }
-    }).collect()
+    ant_s.elements[1..]
+        .iter()
+        .filter_map(|e| {
+            if let Element::Sub(sid) = e {
+                Some(*sid)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
-

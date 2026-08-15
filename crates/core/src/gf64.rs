@@ -59,8 +59,7 @@ unsafe fn clmul_pmull(a: u64, b: u64) -> u128 {
 fn hw_clmul_available() -> bool {
     static AVAIL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAIL.get_or_init(|| {
-        std::is_x86_feature_detected!("pclmulqdq")
-            && std::is_x86_feature_detected!("sse4.1")
+        std::is_x86_feature_detected!("pclmulqdq") && std::is_x86_feature_detected!("sse4.1")
     })
 }
 
@@ -173,7 +172,10 @@ pub(crate) fn div(a: u64, b: u64) -> u64 {
 pub(crate) fn batch_inv(xs: &mut [u64]) {
     match xs.len() {
         0 => return,
-        1 => { xs[0] = inv(xs[0]); return; }
+        1 => {
+            xs[0] = inv(xs[0]);
+            return;
+        }
         _ => {}
     }
     // prefix[i] = xs[0]·…·xs[i]
@@ -341,7 +343,7 @@ impl QuadSolver {
             }
         }
         transpose64(&mut zplanes); // back to one solution per lane
-        // Per-lane algebraic verification.
+                                   // Per-lane algebraic verification.
         let mut ok = !fail;
         for (j, &z) in zplanes.iter().enumerate() {
             if (ok >> j) & 1 == 1 && sq(z) ^ z != cs[j] {
@@ -397,7 +399,10 @@ impl Sketch {
     /// Componentwise XOR — the residual constructor.
     #[inline]
     pub(crate) fn xor(self, other: Sketch) -> Sketch {
-        Sketch { s1: self.s1 ^ other.s1, s3: self.s3 ^ other.s3 }
+        Sketch {
+            s1: self.s1 ^ other.s1,
+            s3: self.s3 ^ other.s3,
+        }
     }
 
     /// Whether both power-sum words are zero.
@@ -432,7 +437,11 @@ pub(crate) enum Decoded {
 pub(crate) fn decode(r: Sketch, expected: u32) -> Decoded {
     match expected {
         0 => {
-            if r.is_zero() { Decoded::None } else { Decoded::Fail }
+            if r.is_zero() {
+                Decoded::None
+            } else {
+                Decoded::Fail
+            }
         }
         1 => {
             if r.s1 != 0 && cube(r.s1) == r.s3 {
@@ -559,7 +568,12 @@ mod tests {
     #[test]
     fn hw_clmul_matches_portable() {
         let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
-        let mut step = || { x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); x };
+        let mut step = || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x
+        };
         for _ in 0..20_000 {
             let (a, b) = (step(), step());
             assert_eq!(clmul(a, b), clmul_portable(a, b), "a={a:#x} b={b:#x}");
@@ -576,29 +590,44 @@ mod tests {
     #[ignore] // microbenchmark: cargo test --release ... clmul_bench -- --ignored --nocapture
     fn clmul_bench() {
         let mut x: u64 = 0xDEAD_BEEF_CAFE_F00D;
-        let mut step = || { x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); x };
+        let mut step = || {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            x
+        };
         let pairs: Vec<(u64, u64)> = (0..1_000_000).map(|_| (step(), step())).collect();
         let t = std::time::Instant::now();
         let mut acc = 0u64;
-        for &(a, b) in &pairs { acc ^= mul(a, b); }
+        for &(a, b) in &pairs {
+            acc ^= mul(a, b);
+        }
         let hw = t.elapsed();
         let t = std::time::Instant::now();
         let mut acc2 = 0u64;
-        for &(a, b) in &pairs { acc2 ^= reduce(clmul_portable(a, b)); }
+        for &(a, b) in &pairs {
+            acc2 ^= reduce(clmul_portable(a, b));
+        }
         let portable = t.elapsed();
         assert_eq!(acc, acc2);
-        eprintln!("1M field muls: dispatched {hw:?}, portable {portable:?} ({:.1}x)",
-            portable.as_secs_f64() / hw.as_secs_f64());
+        eprintln!(
+            "1M field muls: dispatched {hw:?}, portable {portable:?} ({:.1}x)",
+            portable.as_secs_f64() / hw.as_secs_f64()
+        );
     }
 
     #[test]
     fn batch_inv_matches_scalar() {
         let mut next = rng(7);
         for n in [1usize, 2, 3, 7, 64, 129] {
-            let xs: Vec<u64> = (0..n).map(|_| loop {
-                let v = next();
-                if v != 0 { break v; }
-            }).collect();
+            let xs: Vec<u64> = (0..n)
+                .map(|_| loop {
+                    let v = next();
+                    if v != 0 {
+                        break v;
+                    }
+                })
+                .collect();
             let mut batched = xs.clone();
             batch_inv(&mut batched);
             for (x, b) in xs.iter().zip(&batched) {
@@ -644,7 +673,10 @@ mod tests {
                     s
                 }
                 // Garbage words.
-                1 => Sketch { s1: next(), s3: next() },
+                1 => Sketch {
+                    s1: next(),
+                    s3: next(),
+                },
                 // Zero sum (collision shape).
                 2 => Sketch { s1: 0, s3: next() },
                 // Single-coin shape (wrong for expected=2).
@@ -662,8 +694,7 @@ mod tests {
             for expected in [0u32, 1, 2, 3] {
                 let mut batched = Vec::new();
                 decode_batch(&rs, expected, &mut batched);
-                let scalar: Vec<Decoded> =
-                    rs.iter().map(|&r| decode(r, expected)).collect();
+                let scalar: Vec<Decoded> = rs.iter().map(|&r| decode(r, expected)).collect();
                 assert_eq!(batched, scalar, "n={n} expected={expected}");
             }
         }
@@ -674,19 +705,23 @@ mod tests {
     fn decode_batch_bench() {
         let mut next = rng(17);
         for n in [4usize, 16, 64, 256, 1024] {
-            let rs: Vec<Sketch> = (0..n).map(|_| {
-                let (a, b) = (next() | 1, next() | 2);
-                let mut s = Sketch::default();
-                s.toggle(a);
-                s.toggle(b);
-                s
-            }).collect();
+            let rs: Vec<Sketch> = (0..n)
+                .map(|_| {
+                    let (a, b) = (next() | 1, next() | 2);
+                    let mut s = Sketch::default();
+                    s.toggle(a);
+                    s.toggle(b);
+                    s
+                })
+                .collect();
             let reps = 200_000 / n.max(1);
             let t = std::time::Instant::now();
             let mut acc = 0u64;
             for _ in 0..reps {
                 for &r in &rs {
-                    if let Decoded::Two(a, _) = decode(r, 2) { acc ^= a; }
+                    if let Decoded::Two(a, _) = decode(r, 2) {
+                        acc ^= a;
+                    }
                 }
             }
             let scalar = t.elapsed();
@@ -696,15 +731,19 @@ mod tests {
             for _ in 0..reps {
                 decode_batch(&rs, 2, &mut out);
                 for d in &out {
-                    if let Decoded::Two(a, _) = d { acc2 ^= a; }
+                    if let Decoded::Two(a, _) = d {
+                        acc2 ^= a;
+                    }
                 }
             }
             let batched = t.elapsed();
             assert_eq!(acc, acc2);
             eprintln!(
                 "n={n:>5}: scalar {:>10.1?}  batched {:>10.1?}  ({:.1}x)",
-                scalar / reps as u32, batched / reps as u32,
-                scalar.as_secs_f64() / batched.as_secs_f64());
+                scalar / reps as u32,
+                batched / reps as u32,
+                scalar.as_secs_f64() / batched.as_secs_f64()
+            );
         }
     }
 
@@ -727,7 +766,11 @@ mod tests {
             let (a, b, c) = (r(), r(), r());
             assert_eq!(mul(a, b), mul(b, a), "commutativity");
             assert_eq!(mul(a, mul(b, c)), mul(mul(a, b), c), "associativity");
-            assert_eq!(mul(a, b ^ c), mul(a, b) ^ mul(a, c), "distributivity over XOR");
+            assert_eq!(
+                mul(a, b ^ c),
+                mul(a, b) ^ mul(a, c),
+                "distributivity over XOR"
+            );
             // Freshman's dream: squaring distributes over addition.
             assert_eq!(sq(a ^ b), sq(a) ^ sq(b));
         }
@@ -750,7 +793,9 @@ mod tests {
         for _ in 0..500 {
             let a = r();
             let c = sq(a) ^ a;
-            let z = solver().solve(c).expect("c is in the image by construction");
+            let z = solver()
+                .solve(c)
+                .expect("c is in the image by construction");
             assert!(z == a || z == a ^ 1, "root must be a or a⊕1");
             solvable += 1;
         }
@@ -779,7 +824,9 @@ mod tests {
         let mut r = rng(5);
         for _ in 0..500 {
             let (t, s) = (r() | 1, r() | 1);
-            if t == s { continue; }
+            if t == s {
+                continue;
+            }
             let mut sk = Sketch::default();
             sk.toggle(t);
             sk.toggle(s);
@@ -802,7 +849,10 @@ mod tests {
         for _ in 0..300 {
             // A random sketch is almost never a valid 2-coin residual
             // (s3 must satisfy the cube relation through the quadratic).
-            let junk = Sketch { s1: r() | 1, s3: r() };
+            let junk = Sketch {
+                s1: r() | 1,
+                s3: r(),
+            };
             if matches!(decode(junk, 2), Decoded::Fail) {
                 fails += 1;
             }
@@ -812,7 +862,10 @@ mod tests {
         // a random s1 still yields *some* algebraically-consistent pairs
         // (any (e1, e2) is a valid quadratic when Tr passes).  What we
         // must guarantee is rejection of *structural* garbage:
-        assert!(fails > 0, "the Tr consistency check must reject some inputs");
+        assert!(
+            fails > 0,
+            "the Tr consistency check must reject some inputs"
+        );
         // Sharp rejection: a 3-coin residual decoded as 2 must fail the
         // cube audit (it is not the sketch of any 2-element set... it may
         // rarely alias; assert overwhelmingly common rejection).

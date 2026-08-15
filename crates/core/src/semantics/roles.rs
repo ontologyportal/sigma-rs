@@ -49,36 +49,36 @@ use crate::types::{Element, OpKind, Sentence, SentenceId, Symbol, SymbolId};
 /// The five operator/class ids the oracle keys taxonomy reasoning on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaxonomyRoles {
-    pub instance:    SymbolId,
-    pub subclass:    SymbolId,
+    pub instance: SymbolId,
+    pub subclass: SymbolId,
     pub subrelation: SymbolId,
-    pub transitive:  SymbolId,
-    pub symmetric:   SymbolId,
+    pub transitive: SymbolId,
+    pub symmetric: SymbolId,
     /// Argument-typing relations: `domain` is ternary `(domain R N C)`,
     /// `range` binary `(range R C)`.
-    pub domain:      SymbolId,
-    pub range:       SymbolId,
+    pub domain: SymbolId,
+    pub range: SymbolId,
     /// Class-disjointness / exhaustive-decomposition operators. Only the
     /// binary `disjoint` and the exhaustive `partition` are recognized;
     /// row-variable `disjointDecomposition`/`exhaustiveDecomposition`
     /// stay on their global names.
-    pub disjoint:    SymbolId,
-    pub partition:   SymbolId,
+    pub disjoint: SymbolId,
+    pub partition: SymbolId,
 }
 
 impl Default for TaxonomyRoles {
     /// The hard-coded names used as the fallback.
     fn default() -> Self {
         Self {
-            instance:    Symbol::hash_name("instance"),
-            subclass:    Symbol::hash_name("subclass"),
+            instance: Symbol::hash_name("instance"),
+            subclass: Symbol::hash_name("subclass"),
             subrelation: Symbol::hash_name("subrelation"),
-            transitive:  Symbol::hash_name("TransitiveRelation"),
-            symmetric:   Symbol::hash_name("SymmetricRelation"),
-            domain:      Symbol::hash_name("domain"),
-            range:       Symbol::hash_name("range"),
-            disjoint:    Symbol::hash_name("disjoint"),
-            partition:   Symbol::hash_name("partition"),
+            transitive: Symbol::hash_name("TransitiveRelation"),
+            symmetric: Symbol::hash_name("SymmetricRelation"),
+            domain: Symbol::hash_name("domain"),
+            range: Symbol::hash_name("range"),
+            disjoint: Symbol::hash_name("disjoint"),
+            partition: Symbol::hash_name("partition"),
         }
     }
 }
@@ -103,14 +103,17 @@ impl TaxonomyRoles {
 /// A binary atom `(R a b)` reduced to its head id, head-is-variable
 /// flag, and the two argument elements.
 struct Binary<'a> {
-    head:   SymbolId,
+    head: SymbolId,
     is_var: bool,
-    a:      &'a Element,
-    b:      &'a Element,
+    a: &'a Element,
+    b: &'a Element,
 }
 
 /// Resolve a sentence by id through the syntactic store.
-fn sent(syn: &crate::syntactic::SyntacticLayer, sid: SentenceId) -> Option<std::sync::Arc<Sentence>> {
+fn sent(
+    syn: &crate::syntactic::SyntacticLayer,
+    sid: SentenceId,
+) -> Option<std::sync::Arc<Sentence>> {
     syn.sentence(sid)
 }
 
@@ -118,7 +121,7 @@ fn sent(syn: &crate::syntactic::SyntacticLayer, sid: SentenceId) -> Option<std::
 /// of an atom sentence, or `None` for an operator/quantifier sentence.
 fn atom_head(s: &Sentence) -> Option<(SymbolId, bool)> {
     match s.elements.first()? {
-        Element::Symbol(sym)      => Some((sym.id(), false)),
+        Element::Symbol(sym) => Some((sym.id(), false)),
         Element::Variable { id, .. } => Some((*id, true)),
         _ => None,
     }
@@ -130,7 +133,12 @@ fn as_binary(s: &Sentence) -> Option<Binary<'_>> {
         return None;
     }
     let (head, is_var) = atom_head(s)?;
-    Some(Binary { head, is_var, a: &s.elements[1], b: &s.elements[2] })
+    Some(Binary {
+        head,
+        is_var,
+        a: &s.elements[1],
+        b: &s.elements[2],
+    })
 }
 
 /// Variable id of an element, if it is a variable.
@@ -278,13 +286,14 @@ impl TaxonomyRoles {
         // Pass 2 — meta-classes (need the recovered `instance`) and the
         // sub-relation operator. Higher frequency wins; ties break on
         // smaller id for determinism when frequency is uninformative.
-        let better = |cand: SymbolId, cur: &Option<(SymbolId, usize)>, f: &HashMap<SymbolId, usize>| {
-            let sc = f.get(&cand).copied().unwrap_or(0);
-            match cur {
-                None => true,
-                Some((c0, b)) => sc > *b || (sc == *b && cand < *c0),
-            }
-        };
+        let better =
+            |cand: SymbolId, cur: &Option<(SymbolId, usize)>, f: &HashMap<SymbolId, usize>| {
+                let sc = f.get(&cand).copied().unwrap_or(0);
+                match cur {
+                    None => true,
+                    Some((c0, b)) => sc > *b || (sc == *b && cand < *c0),
+                }
+            };
         let mut best_trans: Option<(SymbolId, usize)> = None;
         let mut best_sym: Option<(SymbolId, usize)> = None;
         let mut best_subrel: Option<(SymbolId, usize)> = None;
@@ -298,37 +307,69 @@ impl TaxonomyRoles {
         for &sid in &sids {
             let Some(s) = sent(syn, sid) else { continue };
             if let Some(c) = match_meta_class(syn, &s, roles.instance, MetaShape::Transitive) {
-                if better(c, &best_trans, &freq) { best_trans = Some((c, freq.get(&c).copied().unwrap_or(0))); }
+                if better(c, &best_trans, &freq) {
+                    best_trans = Some((c, freq.get(&c).copied().unwrap_or(0)));
+                }
             }
             if let Some(c) = match_meta_class(syn, &s, roles.instance, MetaShape::Symmetric) {
-                if better(c, &best_sym, &freq) { best_sym = Some((c, freq.get(&c).copied().unwrap_or(0))); }
+                if better(c, &best_sym, &freq) {
+                    best_sym = Some((c, freq.get(&c).copied().unwrap_or(0)));
+                }
             }
             if let Some(sr) = match_subrelation(syn, &s) {
-                if better(sr, &best_subrel, &freq) { best_subrel = Some((sr, freq.get(&sr).copied().unwrap_or(0))); }
+                if better(sr, &best_subrel, &freq) {
+                    best_subrel = Some((sr, freq.get(&sr).copied().unwrap_or(0)));
+                }
             }
             if let Some(d) = match_typing_consistency(syn, &s, roles.subclass, 3) {
-                if better(d, &best_domain, &freq) { best_domain = Some((d, freq.get(&d).copied().unwrap_or(0))); }
+                if better(d, &best_domain, &freq) {
+                    best_domain = Some((d, freq.get(&d).copied().unwrap_or(0)));
+                }
             }
             if let Some(r) = match_typing_consistency(syn, &s, roles.subclass, 2) {
-                if better(r, &best_range, &freq) { best_range = Some((r, freq.get(&r).copied().unwrap_or(0))); }
+                if better(r, &best_range, &freq) {
+                    best_range = Some((r, freq.get(&r).copied().unwrap_or(0)));
+                }
             }
             if let Some(d) = match_disjoint(syn, &s, roles.instance)
                 .or_else(|| match_disjoint_flat(syn, &s, roles.instance))
-                .or_else(|| decomp_disjoint.then(|| match_disjoint_forall(syn, &s, roles.instance)).flatten())
+                .or_else(|| {
+                    decomp_disjoint
+                        .then(|| match_disjoint_forall(syn, &s, roles.instance))
+                        .flatten()
+                })
             {
-                if better(d, &best_disjoint, &freq) { best_disjoint = Some((d, freq.get(&d).copied().unwrap_or(0))); }
+                if better(d, &best_disjoint, &freq) {
+                    best_disjoint = Some((d, freq.get(&d).copied().unwrap_or(0)));
+                }
             }
             if let Some(p) = match_partition(syn, &s, roles.instance) {
-                if better(p, &best_partition, &freq) { best_partition = Some((p, freq.get(&p).copied().unwrap_or(0))); }
+                if better(p, &best_partition, &freq) {
+                    best_partition = Some((p, freq.get(&p).copied().unwrap_or(0)));
+                }
             }
         }
-        if let Some((c, _)) = best_trans     { roles.transitive  = c; }
-        if let Some((c, _)) = best_sym       { roles.symmetric   = c; }
-        if let Some((c, _)) = best_subrel    { roles.subrelation = c; }
-        if let Some((c, _)) = best_domain    { roles.domain      = c; }
-        if let Some((c, _)) = best_range     { roles.range       = c; }
-        if let Some((c, _)) = best_disjoint  { roles.disjoint    = c; }
-        if let Some((c, _)) = best_partition { roles.partition   = c; }
+        if let Some((c, _)) = best_trans {
+            roles.transitive = c;
+        }
+        if let Some((c, _)) = best_sym {
+            roles.symmetric = c;
+        }
+        if let Some((c, _)) = best_subrel {
+            roles.subrelation = c;
+        }
+        if let Some((c, _)) = best_domain {
+            roles.domain = c;
+        }
+        if let Some((c, _)) = best_range {
+            roles.range = c;
+        }
+        if let Some((c, _)) = best_disjoint {
+            roles.disjoint = c;
+        }
+        if let Some((c, _)) = best_partition {
+            roles.partition = c;
+        }
         roles
     }
 }
@@ -339,7 +380,10 @@ impl TaxonomyRoles {
 /// occurs twice (sharing its first argument), the other `S` once, with
 /// `S`'s arguments chaining the two `I` atoms' second arguments.  The
 /// conjunct order is not assumed.
-fn match_bridge(syn: &crate::syntactic::SyntacticLayer, s: &Sentence) -> Option<(SymbolId, SymbolId)> {
+fn match_bridge(
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
+) -> Option<(SymbolId, SymbolId)> {
     let (ant, con) = as_implies(s)?;
     let ant_s = sent(syn, ant)?;
     let (l1, l2) = as_and2(&ant_s)?;
@@ -392,9 +436,9 @@ enum MetaShape {
 /// transitivity / symmetry rule over the *variable-headed* `(?rel …)`
 /// atoms → returns `?class`.  `inst` is the recovered `instance` id.
 fn match_meta_class(
-    syn:   &crate::syntactic::SyntacticLayer,
-    s:     &Sentence,
-    inst:  SymbolId,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
+    inst: SymbolId,
     shape: MetaShape,
 ) -> Option<SymbolId> {
     let (ant, con) = as_implies(s)?;
@@ -480,7 +524,9 @@ fn match_subrelation(syn: &crate::syntactic::SyntacticLayer, s: &Sentence) -> Op
     // binary (SR ?r1 ?r2) linking the two heads.
     for &cj in &conjuncts {
         let Some(cjs) = sent(syn, cj) else { continue };
-        let Some((h, is_var)) = atom_head(&cjs) else { continue };
+        let Some((h, is_var)) = atom_head(&cjs) else {
+            continue;
+        };
         if !is_var || h == con_head {
             continue;
         }
@@ -523,10 +569,10 @@ fn match_subrelation(syn: &crate::syntactic::SyntacticLayer, s: &Sentence) -> Op
 /// `subclass` disjunction over the two differing classes; returns the
 /// head. `subclass_id` is the recovered subclass relation.
 fn match_typing_consistency(
-    syn:         &crate::syntactic::SyntacticLayer,
-    s:           &Sentence,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
     subclass_id: SymbolId,
-    arity:       usize,
+    arity: usize,
 ) -> Option<SymbolId> {
     let (ant, con) = as_implies(s)?;
     let ant_s = sent(syn, ant)?;
@@ -559,7 +605,7 @@ fn match_typing_consistency(
     }
     let (b1a, b1b) = (var_id(b1.a)?, var_id(b1.b)?);
     let (b2a, b2b) = (var_id(b2.a)?, var_id(b2.b)?);
-    let forward  = b1a == c1 && b1b == c2 && b2a == c2 && b2b == c1;
+    let forward = b1a == c1 && b1b == c2 && b2a == c2 && b2b == c1;
     let backward = b1a == c2 && b1b == c1 && b2a == c1 && b2b == c2;
     (forward || backward).then_some(h1)
 }
@@ -571,8 +617,8 @@ fn match_typing_consistency(
 /// A binary `D` whose holding forbids a shared `instance` of the two
 /// classes → returns `D`.  `inst` is the recovered `instance` id.
 fn match_disjoint(
-    syn:  &crate::syntactic::SyntacticLayer,
-    s:    &Sentence,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
     inst: SymbolId,
 ) -> Option<SymbolId> {
     let (ant, con) = as_implies(s)?;
@@ -609,8 +655,8 @@ fn match_disjoint(
 /// first-order binary `D` relates those classes; returns `D`. `inst` is
 /// the recovered `instance` id.
 fn match_disjoint_flat(
-    syn:  &crate::syntactic::SyntacticLayer,
-    s:    &Sentence,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
     inst: SymbolId,
 ) -> Option<SymbolId> {
     // Optional leading (forall (vars) …).
@@ -657,8 +703,8 @@ fn match_disjoint_flat(
 /// ```
 /// Returns `D`. `inst` is the recovered `instance` id.
 fn match_disjoint_forall(
-    syn:  &crate::syntactic::SyntacticLayer,
-    s:    &Sentence,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
     inst: SymbolId,
 ) -> Option<SymbolId> {
     let (ant, con) = as_implies(s)?;
@@ -698,8 +744,8 @@ fn match_disjoint_forall(
 /// i.e. an instance of the super that is not in one block must be in the
 /// other → returns the ternary `P`.  `inst` is the recovered `instance`.
 fn match_partition(
-    syn:  &crate::syntactic::SyntacticLayer,
-    s:    &Sentence,
+    syn: &crate::syntactic::SyntacticLayer,
+    s: &Sentence,
     inst: SymbolId,
 ) -> Option<SymbolId> {
     let (ant, con) = as_implies(s)?;
@@ -720,8 +766,8 @@ fn match_partition(
     // `(not (instance i a))` among the (order-free) conjuncts.
     let mut p_head = None;
     let mut p_args: Option<(SymbolId, SymbolId, SymbolId)> = None;
-    let mut s_super = None;   // from (instance i s)
-    let mut a_block = None;   // from (not (instance i a))
+    let mut s_super = None; // from (instance i s)
+    let mut a_block = None; // from (not (instance i a))
     for &cj in &conjuncts {
         let cjs = sent(syn, cj)?;
         if let Some(neg) = as_not(&cjs) {
@@ -783,15 +829,15 @@ mod tests {
                 (zinst ?I ?B))
             ",
         );
-        assert_eq!(roles.instance,    Symbol::hash_name("zinst"));
-        assert_eq!(roles.subclass,    Symbol::hash_name("zsubc"));
+        assert_eq!(roles.instance, Symbol::hash_name("zinst"));
+        assert_eq!(roles.subclass, Symbol::hash_name("zsubc"));
         assert_eq!(roles.subrelation, Symbol::hash_name("zsubrel"));
-        assert_eq!(roles.transitive,  Symbol::hash_name("zTransRel"));
-        assert_eq!(roles.symmetric,   Symbol::hash_name("zSymRel"));
-        assert_eq!(roles.domain,      Symbol::hash_name("zdom"));
-        assert_eq!(roles.range,       Symbol::hash_name("zrng"));
-        assert_eq!(roles.disjoint,    Symbol::hash_name("zdisj"));
-        assert_eq!(roles.partition,   Symbol::hash_name("zpart"));
+        assert_eq!(roles.transitive, Symbol::hash_name("zTransRel"));
+        assert_eq!(roles.symmetric, Symbol::hash_name("zSymRel"));
+        assert_eq!(roles.domain, Symbol::hash_name("zdom"));
+        assert_eq!(roles.range, Symbol::hash_name("zrng"));
+        assert_eq!(roles.disjoint, Symbol::hash_name("zdisj"));
+        assert_eq!(roles.partition, Symbol::hash_name("zpart"));
     }
 
     #[test]
@@ -814,16 +860,16 @@ mod tests {
                 (instance ?I ?B))
             ",
         );
-        assert_eq!(roles.instance,    Symbol::hash_name("instance"));
-        assert_eq!(roles.subclass,    Symbol::hash_name("subclass"));
+        assert_eq!(roles.instance, Symbol::hash_name("instance"));
+        assert_eq!(roles.subclass, Symbol::hash_name("subclass"));
         assert_eq!(roles.subrelation, Symbol::hash_name("subrelation"));
-        assert_eq!(roles.transitive,  Symbol::hash_name("TransitiveRelation"));
-        assert_eq!(roles.domain,      Symbol::hash_name("domain"));
-        assert_eq!(roles.range,       Symbol::hash_name("range"));
-        assert_eq!(roles.disjoint,    Symbol::hash_name("disjoint"));
-        assert_eq!(roles.partition,   Symbol::hash_name("partition"));
+        assert_eq!(roles.transitive, Symbol::hash_name("TransitiveRelation"));
+        assert_eq!(roles.domain, Symbol::hash_name("domain"));
+        assert_eq!(roles.range, Symbol::hash_name("range"));
+        assert_eq!(roles.disjoint, Symbol::hash_name("disjoint"));
+        assert_eq!(roles.partition, Symbol::hash_name("partition"));
         // No symmetry axiom present → falls back to the default.
-        assert_eq!(roles.symmetric,   Symbol::hash_name("SymmetricRelation"));
+        assert_eq!(roles.symmetric, Symbol::hash_name("SymmetricRelation"));
     }
 
     #[test]
@@ -841,7 +887,10 @@ mod tests {
         );
         assert_eq!(roles.instance, Symbol::hash_name("isa"));
         assert_eq!(roles.subclass, Symbol::hash_name("genls"));
-        assert_ne!(roles.instance, roles.subclass, "transitivity must not collapse the roles");
+        assert_ne!(
+            roles.instance, roles.subclass,
+            "transitivity must not collapse the roles"
+        );
         assert_eq!(roles.disjoint, Symbol::hash_name("disjointwith"));
     }
 

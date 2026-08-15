@@ -71,7 +71,6 @@ fn main() {
     // map onto the release-asset label naming convention.  Cargo
     // exposes the active target as `TARGET` to every build script;
     // this is always set, never an Option.
-    let target = env::var("TARGET")
-        .expect("Cargo always sets TARGET for build scripts");
+    let target = env::var("TARGET").expect("Cargo always sets TARGET for build scripts");
     println!("cargo:rustc-env=SUMO_BUILD_TARGET={}", target);
 }

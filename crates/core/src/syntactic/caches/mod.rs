@@ -14,14 +14,14 @@
 // cross-cache relationship that warrants its own pass.  They remain raw
 // `LayerCache` fields for now.
 
-pub(crate) mod sentences;
-pub(crate) mod session;
-pub(crate) mod source;
-pub(crate) mod symbol;
+pub(crate) mod axiom_index;
 pub(crate) mod occurrences;
 pub(crate) mod residue_index;
-pub(crate) mod axiom_index;
+pub(crate) mod sentences;
+pub(crate) mod session;
 pub(crate) mod sine_index;
+pub(crate) mod source;
+pub(crate) mod symbol;
 
 // Toggleable compute caches — disabled by default (transparent getters).
 pub(crate) mod sentence_symbols;

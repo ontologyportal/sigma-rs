@@ -9,14 +9,14 @@
 
 use std::path::PathBuf;
 
-use crate::prover::{CommonProverOpts, ProverResult, ProvingLayer};
+use crate::layer::{Layer, TopLayer};
 #[cfg(feature = "native-prover")]
 use crate::prover::ProverStatus;
+use crate::prover::{CommonProverOpts, ProverResult, ProvingLayer};
 use crate::types::{SentenceId, SourceFile};
-use crate::layer::{Layer, TopLayer};
-use crate::{Parser, TestCase};
 #[cfg(feature = "native-prover")]
 use crate::SineParams;
+use crate::{Parser, TestCase};
 
 use super::KnowledgeBase;
 
@@ -25,20 +25,18 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     ///
     /// `session` is an optional in-memory session whose assertions become
     /// hypotheses.  `opts` carries the layer's proving parameters.
-    pub fn ask(
-        &self,
-        tc:          TestCase,
-        session:     Option<&str>,
-        opts:        &L::Opts,
-    ) -> ProverResult {
+    pub fn ask(&self, tc: TestCase, session: Option<&str>, opts: &L::Opts) -> ProverResult {
         with_guard!(self);
         self.debug(format!("ask: query={}", tc.query_kif().unwrap_or_default()));
 
         let session = session.map_or_else(
             || format!("{:x}", crate::clock::epoch_nanos()),
-            |s| s.to_string());
+            |s| s.to_string(),
+        );
 
-        let Some(query) = tc.query else { return ProverResult::default() };
+        let Some(query) = tc.query else {
+            return ProverResult::default();
+        };
         // Hypothesis-staging failures must not stay silent: a hypothesis
         // that never reached the session could be the one that makes the set
         // unsatisfiable, so its loss poisons any confident
@@ -61,14 +59,18 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         });
         if !tc.axioms.is_empty() {
             let p = tc.file_name.clone().into();
-            let outcome = self.ingest_source(SourceFile {
-                parser: Parser::Kif,
-                name: tc.file_name,
-                path: p,
-                origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
-                contents: String::new(),
-                prebuilt: Some(tc.axioms)
-            }, &session, true);
+            let outcome = self.ingest_source(
+                SourceFile {
+                    parser: Parser::Kif,
+                    name: tc.file_name,
+                    path: p,
+                    origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
+                    contents: String::new(),
+                    prebuilt: Some(tc.axioms),
+                },
+                &session,
+                true,
+            );
             input_failures += outcome.errors.len();
         }
 
@@ -92,8 +94,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         // Input-completeness gate: staged-hypothesis / assembly losses make
         // a confident "no" (Disproved/Satisfiable) unsound — demote it to
         // Unknown/GaveUp with a loud reason.  Proved verdicts stand.
-        result.withhold_countermodel(
-            input_failures, "hypothesis staging / test-case assembly");
+        result.withhold_countermodel(input_failures, "hypothesis staging / test-case assembly");
 
         // Roll back any session-scoped axioms staged for this ask.  The
         // '__query__' truncate covers the external layer's conjecture tag
@@ -102,7 +103,11 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         // own truncate, or they persist in the store and feed every later
         // ask's session support and every whole-store scan.
         profile_call!(self, "ask.rollback", {
-            let _ = self.ingest_source(SourceFile::truncate(PathBuf::from(query_tag)), &session, true);
+            let _ = self.ingest_source(
+                SourceFile::truncate(PathBuf::from(query_tag)),
+                &session,
+                true,
+            );
             if let Some(src) = staged {
                 let _ = self.ingest_source(src, &session, true);
             }
@@ -117,11 +122,12 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
     /// struct.
     pub fn audit_consistency(
         &self,
-        focus:   &[SentenceId],
-        opts:    L::Opts,
-        limit:   usize,
+        focus: &[SentenceId],
+        opts: L::Opts,
+        limit: usize,
     ) -> ProverResult {
-        self.layer.audit_consistency(focus, &opts, limit, &self.prove_ctx())
+        self.layer
+            .audit_consistency(focus, &opts, limit, &self.prove_ctx())
     }
 
     /// Single-contradiction satisfiability check (`limit = 1`) over the whole
@@ -141,26 +147,30 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     pub fn ask_query(
         &self,
         query_kif: &str,
-        session:   Option<&str>,
-        sine:      SineParams,
-        mut opts:  crate::NativeOpts,
+        session: Option<&str>,
+        sine: SineParams,
+        mut opts: crate::NativeOpts,
     ) -> ProverResult {
         opts.selection = sine;
-        opts.session   = session.map(|s| s.to_string());
+        opts.session = session.map(|s| s.to_string());
         let doc = crate::parse_document("ask_query", query_kif.to_string(), Parser::Kif);
         // A malformed query is an input error, not an unprovable goal — and it
         // must leave no residue (the parse never reached the atom table).
         if doc.has_errors() {
             return ProverResult {
-                status:     ProverStatus::InputError,
-                raw_output: format!("query parse error ({} diagnostic(s))", doc.parse_errors.len()),
+                status: ProverStatus::InputError,
+                raw_output: format!(
+                    "query parse error ({} diagnostic(s))",
+                    doc.parse_errors.len()
+                ),
                 ..Default::default()
             };
         }
-        let asts: Vec<crate::AstNode> =
-            doc.ast.into_iter()
-                .filter_map(|d| d.as_stmt().cloned())
-                .collect();
+        let asts: Vec<crate::AstNode> = doc
+            .ast
+            .into_iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .collect();
         self.layer.prove_native(asts, opts, &self.prove_ctx())
     }
 }

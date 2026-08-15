@@ -13,10 +13,10 @@
 //   * `RootRemoved`    — an axiom was retracted → `remove_axiom` (idempotent;
 //     a no-op for sentences that were never axioms).
 
-use crate::cache::{EagerBehavior, EagerIndex};
 use crate::cache::events::{Event, EventKind};
-use crate::syntactic::SyntacticLayer;
+use crate::cache::{EagerBehavior, EagerIndex};
 use crate::syntactic::sine::SineIndex;
+use crate::syntactic::SyntacticLayer;
 
 /// Behavior for the `syntactic::sine_index` eager index.
 #[derive(Debug, Default)]
@@ -24,7 +24,7 @@ pub(crate) struct SineCache;
 
 impl EagerBehavior for SineCache {
     type Parent = SyntacticLayer;
-    type Value  = SineIndex;
+    type Value = SineIndex;
 
     const NAME: &'static str = "syntactic::sine_index";
 
@@ -46,7 +46,7 @@ impl EagerBehavior for SineCache {
         &self,
         parent: &SyntacticLayer,
         events: &[&Event],
-        store:  &EagerIndex<SineIndex>,
+        store: &EagerIndex<SineIndex>,
     ) -> Vec<Event> {
         store.update_with(|idx| {
             for e in events {

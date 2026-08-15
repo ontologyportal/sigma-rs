@@ -5,8 +5,8 @@ use std::collections::{HashSet, VecDeque};
 
 use crate::types::{SentenceId, SymbolId};
 
-use super::SineIndex;
 use super::params::MAX_AUTO_TOLERANCE;
+use super::SineIndex;
 
 /// Hard cap on the number of breakpoint steps [`SineIndex::tolerance_breakpoints`]
 /// will climb, guarding against pathological conjectures with very many
@@ -39,8 +39,8 @@ impl SineIndex {
     /// updated by the [`SyntacticLayer::select_axioms`] wrapper, not here.
     pub fn select(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        tolerance:   f32,
+        seed_syms: &HashSet<SymbolId>,
+        tolerance: f32,
         depth_limit: Option<usize>,
     ) -> HashSet<SentenceId> {
         let (selected, _next, _over) =
@@ -58,8 +58,8 @@ impl SineIndex {
     /// None`); under a finite depth cap it may under-estimate.
     pub fn select_reporting_next(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        tolerance:   f32,
+        seed_syms: &HashSet<SymbolId>,
+        tolerance: f32,
         depth_limit: Option<usize>,
     ) -> (HashSet<SentenceId>, Option<f32>) {
         let (selected, next, _over) =
@@ -74,10 +74,10 @@ impl SineIndex {
     /// [`Self::select_within_budget`] never has to compute a full "explosion".
     pub fn select_capped(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        tolerance:   f32,
+        seed_syms: &HashSet<SymbolId>,
+        tolerance: f32,
         depth_limit: Option<usize>,
-        cap:         usize,
+        cap: usize,
     ) -> (HashSet<SentenceId>, bool) {
         let (selected, _next, over) =
             self.select_inner(seed_syms, tolerance, depth_limit, false, Some(cap));
@@ -92,16 +92,16 @@ impl SineIndex {
     ///   the third tuple element reports whether that happened.
     fn select_inner(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        tolerance:   f32,
+        seed_syms: &HashSet<SymbolId>,
+        tolerance: f32,
         depth_limit: Option<usize>,
-        track_next:  bool,
-        cap:         Option<usize>,
+        track_next: bool,
+        cap: Option<usize>,
     ) -> (HashSet<SentenceId>, Option<f32>, bool) {
         let tolerance = tolerance.max(1.0);
-        let mut selected:     HashSet<SentenceId> = HashSet::new();
-        let mut visited_syms: HashSet<SymbolId>   = HashSet::new();
-        let mut frontier:     VecDeque<SymbolId>  = seed_syms.iter().copied().collect();
+        let mut selected: HashSet<SentenceId> = HashSet::new();
+        let mut visited_syms: HashSet<SymbolId> = HashSet::new();
+        let mut frontier: VecDeque<SymbolId> = seed_syms.iter().copied().collect();
         let mut depth = 0usize;
         // Smallest activation tolerance among edges we examined but rejected.
         let mut next_breakpoint: Option<f32> = None;
@@ -109,17 +109,26 @@ impl SineIndex {
 
         'bfs: while !frontier.is_empty() {
             if let Some(limit) = depth_limit {
-                if depth >= limit { break; }
+                if depth >= limit {
+                    break;
+                }
             }
             let wave_size = frontier.len();
             let mut next_wave: Vec<SymbolId> = Vec::new();
 
             for _ in 0..wave_size {
-                let s = match frontier.pop_front() { Some(x) => x, None => break };
-                if !visited_syms.insert(s) { continue; }
+                let s = match frontier.pop_front() {
+                    Some(x) => x,
+                    None => break,
+                };
+                if !visited_syms.insert(s) {
+                    continue;
+                }
 
                 let occ_s = self.sym_occ.get(&s).copied().unwrap_or(0);
-                if occ_s == 0 { continue; }
+                if occ_s == 0 {
+                    continue;
+                }
                 let occ_f = occ_s as f32;
 
                 if let Some(entries) = self.sym_to_axioms.get(&s) {
@@ -157,7 +166,9 @@ impl SineIndex {
                     }
                 }
             }
-            for s in next_wave { frontier.push_back(s); }
+            for s in next_wave {
+                frontier.push_back(s);
+            }
             depth += 1;
         }
 
@@ -186,19 +197,23 @@ impl SineIndex {
     /// `(A_i, t_i)` activation-threshold list (Hoder & Voronkov §4.1).
     pub fn tolerance_breakpoints(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
+        seed_syms: &HashSet<SymbolId>,
         depth_limit: Option<usize>,
-        max_t:       f32,
+        max_t: f32,
     ) -> Vec<f32> {
         let mut out: Vec<f32> = Vec::new();
         let (_set, mut next) = self.select_reporting_next(seed_syms, 1.0, depth_limit);
         let mut steps = 0usize;
         while let Some(nt) = next {
-            if nt > max_t || steps >= MAX_CLIMB_STEPS { break; }
+            if nt > max_t || steps >= MAX_CLIMB_STEPS {
+                break;
+            }
             out.push(nt);
             let (_set, n2) = self.select_reporting_next(seed_syms, nt, depth_limit);
             // Guard against a non-advancing breakpoint (FP corner case).
-            if n2.map_or(false, |v| v <= nt) { break; }
+            if n2.map_or(false, |v| v <= nt) {
+                break;
+            }
             next = n2;
             steps += 1;
         }
@@ -225,8 +240,8 @@ impl SineIndex {
     ///   (to within [`AUTO_TOLERANCE_RESOLUTION`]) that stays in budget.
     pub fn select_within_budget(
         &self,
-        seed_syms:   &HashSet<SymbolId>,
-        budget:      usize,
+        seed_syms: &HashSet<SymbolId>,
+        budget: usize,
         depth_limit: Option<usize>,
     ) -> (f32, HashSet<SentenceId>) {
         // Strict floor.  If even this overruns, nothing smaller is achievable.

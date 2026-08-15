@@ -7,8 +7,8 @@
 #![cfg(feature = "native-prover")]
 
 use crate::layer::TopLayer;
+use crate::prover::saturate::render::{clause_to_kif, SkolemNames};
 use crate::prover::saturate::ProverLayer;
-use crate::prover::saturate::render::{SkolemNames, clause_to_kif};
 use crate::types::SentenceId;
 
 use super::KnowledgeBase;
@@ -25,10 +25,12 @@ impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
         roots.sort_unstable();
         let syn = &self.layer.semantic().syntactic;
         let mut sk = SkolemNames::default();
-        roots.iter()
+        roots
+            .iter()
             .flat_map(|&root| {
                 let clauses = self.layer.clauses_for(root);
-                clauses.iter()
+                clauses
+                    .iter()
                     .map(|c| clause_to_kif(c, &self.layer.atoms, syn, &mut sk))
                     .collect::<Vec<_>>()
             })
@@ -43,12 +45,18 @@ impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
         if doc.has_errors() {
             return Vec::new();
         }
-        let asts: Vec<crate::AstNode> =
-            doc.ast.into_iter().filter_map(|d| d.as_stmt().cloned()).collect();
+        let asts: Vec<crate::AstNode> = doc
+            .ast
+            .into_iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .collect();
         let clauses = self.layer.clausify_asts(asts);
         let syn = &self.layer.semantic().syntactic;
         let mut sk = SkolemNames::default();
-        clauses.iter().map(|c| clause_to_kif(c, &self.layer.atoms, syn, &mut sk)).collect()
+        clauses
+            .iter()
+            .map(|c| clause_to_kif(c, &self.layer.atoms, syn, &mut sk))
+            .collect()
     }
 }
 

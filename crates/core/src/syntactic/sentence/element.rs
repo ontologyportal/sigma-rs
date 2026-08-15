@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{AstNode, SentenceId, OpKind};
 use super::literal::Literal;
 use super::ScopeCtx;
 use super::Sentence;
+use crate::{AstNode, OpKind, SentenceId};
 
 /// Stable symbol identifier — the content hash of the symbol's name
 /// (`Symbol::id`). The same name always yields the same id, KB-independent.
@@ -25,7 +25,9 @@ pub type SymbolId = u64;
 pub struct Symbol(Arc<str>);
 
 impl PartialEq for Symbol {
-    fn eq(&self, other: &Self) -> bool { self.0 == other.0 }
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
 }
 
 // Hash on the id (the name's content hash), not the `Arc<str>` bytes, so a
@@ -101,11 +103,15 @@ pub struct InternedSym(pub Symbol);
 
 impl std::ops::Deref for InternedSym {
     type Target = Symbol;
-    fn deref(&self) -> &Symbol { &self.0 }
+    fn deref(&self) -> &Symbol {
+        &self.0
+    }
 }
 
 impl From<Symbol> for InternedSym {
-    fn from(s: Symbol) -> Self { InternedSym(s) }
+    fn from(s: Symbol) -> Self {
+        InternedSym(s)
+    }
 }
 
 impl Serialize for InternedSym {
@@ -123,15 +129,13 @@ impl<'de> Deserialize<'de> for InternedSym {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let id = u64::deserialize(d)?;
-        THAW_POOL.with(|p| {
-            match p.borrow().as_ref() {
-                None => Err(D::Error::custom(
-                    "InternedSym deserialized outside a seeded THAW_POOL scope",
-                )),
-                Some(map) => map.get(&id).cloned().map(InternedSym).ok_or_else(|| {
-                    D::Error::custom(format!("symbol id {id:#x} absent from THAW_POOL"))
-                }),
-            }
+        THAW_POOL.with(|p| match p.borrow().as_ref() {
+            None => Err(D::Error::custom(
+                "InternedSym deserialized outside a seeded THAW_POOL scope",
+            )),
+            Some(map) => map.get(&id).cloned().map(InternedSym).ok_or_else(|| {
+                D::Error::custom(format!("symbol id {id:#x} absent from THAW_POOL"))
+            }),
         })
     }
 }
@@ -169,8 +173,8 @@ pub enum Element {
     /// A logical variable or row-variable.
     /// `id` is the interned symbol id for the scope-qualified name (e.g. `x@3`).
     Variable {
-        id:     SymbolId,
-        name:   String,
+        id: SymbolId,
+        name: String,
         is_row: bool,
         /// Per-root-formula variable index: a 0-based ordinal assigned to each
         /// distinct scoped variable in its enclosing root formula, in
@@ -196,27 +200,43 @@ impl Element {
         ctx: &ScopeCtx,
     ) -> Option<(Self, Vec<Sentence>, Vec<Symbol>)> {
         #[cfg(debug_assertions)]
-        crate::log!(Trace, "sigmakee_rs_core::syntactic", format!("building element: {}", node));
+        crate::log!(
+            Trace,
+            "sigmakee_rs_core::syntactic",
+            format!("building element: {}", node)
+        );
         match node {
             AstNode::Symbol { name, .. } => {
                 let sym = Symbol::from(name);
                 Some((Element::Symbol(InternedSym(sym.clone())), vec![], vec![sym]))
-            },
+            }
             AstNode::Variable { name, .. } => {
                 let scope = ctx.scope_for(name);
                 let sym = Symbol::from(format!("{}__{}", name, scope));
-                Some((Element::Variable {
-                    id:        sym.id(),
-                    name:      name.clone(),
-                    is_row:    false,
-                    var_index: 0,
-                }, vec![], vec![sym]))
+                Some((
+                    Element::Variable {
+                        id: sym.id(),
+                        name: name.clone(),
+                        is_row: false,
+                        var_index: 0,
+                    },
+                    vec![],
+                    vec![sym],
+                ))
             }
             AstNode::RowVariable { .. } => {
                 unreachable!("Row variables should have been collapsed by this point")
             }
-            AstNode::Str    { value, .. } => Some((Element::Literal(Literal::Str(value.clone())), vec![], vec![])),
-            AstNode::Number { value, .. } => Some((Element::Literal(Literal::Number(value.clone())), vec![], vec![])),
+            AstNode::Str { value, .. } => Some((
+                Element::Literal(Literal::Str(value.clone())),
+                vec![],
+                vec![],
+            )),
+            AstNode::Number { value, .. } => Some((
+                Element::Literal(Literal::Number(value.clone())),
+                vec![],
+                vec![],
+            )),
             AstNode::Operator { op, .. } => Some((Element::Op(op.clone()), vec![], vec![])),
             AstNode::List { .. } => {
                 let (sub_sent, mut subs, syms) = Sentence::from_node(node, ctx)?;

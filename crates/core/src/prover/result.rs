@@ -2,8 +2,8 @@
 //
 // Prover result types and handling
 
-use std::{fmt, time::Duration};
 use serde::{Deserialize, Serialize};
+use std::{fmt, time::Duration};
 
 /// Why the prover stopped, when it stopped *without* a definitive
 /// Proved/Disproved verdict.  Lets callers (notably the autoscaling loop)
@@ -34,9 +34,9 @@ pub enum TerminationReason {
 #[derive(Debug, Clone, Default)]
 pub struct ProverTimings {
     /// Time spent building the theorem-prover input (TPTP string or native Problem).
-    pub input_gen:    Duration,
+    pub input_gen: Duration,
     /// Time spent inside the theorem prover itself.
-    pub prover_run:   Duration,
+    pub prover_run: Duration,
     /// Time spent parsing the prover output / extracting bindings.
     pub output_parse: Duration,
 }
@@ -60,22 +60,22 @@ pub struct ProverResult {
     /// `None` for subprocess backends and synthesized results.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub given_steps: Option<usize>,
-    pub status:     ProverStatus,
+    pub status: ProverStatus,
     pub raw_output: String,
     /// Why the prover stopped, when no definitive verdict was reached.
     /// `None` for definitive Proved/Disproved/Consistent/Inconsistent
     /// results and for backends that don't report a reason.
     #[serde(default)]
     pub termination: Option<TerminationReason>,
-    pub bindings:   Vec<Binding>,
+    pub bindings: Vec<Binding>,
     /// Proof steps converted to SUO-KIF, populated when a proof is found.
-    pub proof_kif:  Vec<crate::prover::proof::KifProofStep>,
+    pub proof_kif: Vec<crate::prover::proof::KifProofStep>,
     /// Proof steps as structured IR formulas — backend-agnostic output
     /// from both the subprocess and embedded paths.  Empty when no proof
     /// was produced.  KIF steps can be derived from these via
     /// `step.formula.to_tptp()` → `proof::formula_to_kif(...)`.
     #[serde(skip)]
-    pub ir_proof:   Vec<crate::prover::proof::IrProofStep>,
+    pub ir_proof: Vec<crate::prover::proof::IrProofStep>,
     /// Raw TSTP proof section as emitted by Vampire (the text between
     /// `SZS output start` and `SZS output end`, minus the markers
     /// themselves).  Empty when no proof was produced.  Preserved so
@@ -91,7 +91,7 @@ pub struct ProverResult {
     pub proof_tptp_lang: crate::parse::dialect::TptpLang,
     /// Per-phase timing breakdown (not serialized).
     #[serde(skip)]
-    pub timings:    ProverTimings,
+    pub timings: ProverTimings,
     /// Named sub-phase durations from inside the prover (native
     /// backend's saturation-loop mechanisms; empty unless the run was
     /// profiled).  Coarser pipeline phases flow through the progress
@@ -121,12 +121,16 @@ impl ProverResult {
         }
         self.raw_output.push_str(&format!(
             "\nWARNING: {failures} input formula(s) failed to load ({why}) — \
-             Satisfiable/countermodel verdicts withheld (GaveUp)"));
+             Satisfiable/countermodel verdicts withheld (GaveUp)"
+        ));
         if self.complete_saturation == Some(true) {
             self.complete_saturation = Some(false);
         }
-        if matches!(self.status, ProverStatus::Disproved | ProverStatus::Consistent) {
-            self.status      = ProverStatus::Unknown;
+        if matches!(
+            self.status,
+            ProverStatus::Disproved | ProverStatus::Consistent
+        ) {
+            self.status = ProverStatus::Unknown;
             self.termination = Some(TerminationReason::GaveUp);
             self.complete_saturation = Some(false);
         }
@@ -176,7 +180,7 @@ pub enum ProverMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Binding {
     pub variable: String,
-    pub value:    String,
+    pub value: String,
 }
 
 impl fmt::Display for Binding {

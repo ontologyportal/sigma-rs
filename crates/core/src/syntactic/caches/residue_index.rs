@@ -69,7 +69,11 @@ fn coin(seat: u8, meaning: &CoinMeaning) -> u64 {
     buf[1] = tag;
     buf[2..].copy_from_slice(&key.to_be_bytes());
     let c = xxh64(&buf, COIN_SEED);
-    if c == 0 { 1 } else { c }
+    if c == 0 {
+        1
+    } else {
+        c
+    }
 }
 
 fn coin_lit(seat: u8, lit: &Literal) -> u64 {
@@ -82,7 +86,11 @@ fn coin_lit(seat: u8, lit: &Literal) -> u64 {
     buf.push(tag);
     buf.extend_from_slice(bytes);
     let c = xxh64(&buf, COIN_SEED);
-    if c == 0 { 1 } else { c }
+    if c == 0 {
+        1
+    } else {
+        c
+    }
 }
 
 /// Everything the index remembers about one root.
@@ -247,13 +255,7 @@ impl ResidueIndex {
     /// All roots possibly matching a pattern with `p_mask` open seats and
     /// `p_coins` at its ground seats, within one arity.  One O(1) probe
     /// per (stored-mask, union-view); views derive lazily.
-    fn probe(
-        &mut self,
-        arity: u8,
-        p_mask: u64,
-        p_coins: &[u64],
-        out: &mut Vec<SentenceId>,
-    ) {
+    fn probe(&mut self, arity: u8, p_mask: u64, p_coins: &[u64], out: &mut Vec<SentenceId>) {
         // Sorted: `groups` is a `HashMap` (RandomState), and its key
         // iteration order otherwise leaks into `out`'s cross-mask ordering
         // — this index backs `by_head_id`/`by_head_arg1_ids`, which the
@@ -388,14 +390,22 @@ impl ResidueIndex {
     fn probe_ground_binary(&mut self, out: &mut Vec<SentenceId>, key_open2: u64) {
         // Ground arity-3 roots, viewed with seat 2 open.
         self.ensure_view(3, 0, 1 << 2);
-        if let Some(b) = self.views.get(&(3, 0, 1 << 2)).and_then(|t| t.get(&key_open2)) {
+        if let Some(b) = self
+            .views
+            .get(&(3, 0, 1 << 2))
+            .and_then(|t| t.get(&key_open2))
+        {
             out.extend(b.iter().copied());
         }
     }
 
     /// Every head symbol with at least one indexed root.
     pub(crate) fn head_symbols(&self) -> Vec<SymbolId> {
-        self.head_arities.keys().copied().chain(self.oversize.keys().copied()).collect()
+        self.head_arities
+            .keys()
+            .copied()
+            .chain(self.oversize.keys().copied())
+            .collect()
     }
 }
 
@@ -416,7 +426,11 @@ fn rekey(info: &RootInfo, u: u64) -> u64 {
 
 /// The open-mask for "everything except these seats" at `arity`.
 fn mask_all_but(arity: u8, keep: &[usize]) -> u64 {
-    let mut m = if arity as u32 >= 64 { u64::MAX } else { (1u64 << arity) - 1 };
+    let mut m = if arity as u32 >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << arity) - 1
+    };
     for k in keep {
         m &= !(1u64 << k);
     }
@@ -426,8 +440,14 @@ fn mask_all_but(arity: u8, keep: &[usize]) -> u64 {
 fn op_byte(op: &crate::parse::OpKind) -> u8 {
     use crate::parse::OpKind::*;
     match op {
-        And => b'a', Or => b'o', Not => b'n', Implies => b'i',
-        Iff => b'f', Equal => b'e', ForAll => b'A', Exists => b'E',
+        And => b'a',
+        Or => b'o',
+        Not => b'n',
+        Implies => b'i',
+        Iff => b'f',
+        Equal => b'e',
+        ForAll => b'A',
+        Exists => b'E',
     }
 }
 
@@ -523,7 +543,9 @@ impl EagerBehavior for ResidueCache {
 impl SyntacticLayer {
     /// Every root headed by `head` (name form).
     pub(crate) fn by_head(&self, head: &str) -> Vec<SentenceId> {
-        let Some(id) = self.sym_id(head) else { return Vec::new() };
+        let Some(id) = self.sym_id(head) else {
+            return Vec::new();
+        };
         self.by_head_id(&id)
     }
 
@@ -535,7 +557,8 @@ impl SyntacticLayer {
 
     /// `(head, arg1)` subject lookup.
     pub(crate) fn by_head_arg1(&self, head: SymbolId, subject: SymbolId) -> Vec<SentenceId> {
-        self.residue.update_with(|idx| idx.by_head_arg1_ids(head, subject))
+        self.residue
+            .update_with(|idx| idx.by_head_arg1_ids(head, subject))
     }
 
     /// Ground binary facts `(head subject OBJ)` with the object
@@ -546,7 +569,8 @@ impl SyntacticLayer {
         head: SymbolId,
         subject: SymbolId,
     ) -> Vec<(Option<SymbolId>, SentenceId)> {
-        self.residue.update_with(|idx| idx.binary_objects(head, subject))
+        self.residue
+            .update_with(|idx| idx.binary_objects(head, subject))
     }
 
     /// Every head symbol with at least one indexed root.

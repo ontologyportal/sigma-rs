@@ -12,14 +12,14 @@ use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, u
 use crate::state::GlobalState;
 
 pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option<Vec<Location>> {
-    let uri      = params.text_document_position.text_document.uri;
+    let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let include_decl = params.context.include_declaration;
 
     let docs = state.docs.read().ok()?;
-    let doc  = docs.get(&uri)?;
+    let doc = docs.get(&uri)?;
     let offset = position_to_offset(&doc.rope, position);
-    let tag    = uri_to_tag(&uri);
+    let tag = uri_to_tag(&uri);
 
     let session = state.session.read().ok()?;
     let kb = session.kb();
@@ -56,9 +56,14 @@ pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option
                 }
             }
         }
-        let Some(occ_uri) = tag_to_uri(&occ.span.file) else { continue; };
+        let Some(occ_uri) = tag_to_uri(&occ.span.file) else {
+            continue;
+        };
         let range = span_to_range_with_fallback(&docs, &occ_uri, &occ.span);
-        locations.push(Location { uri: occ_uri, range });
+        locations.push(Location {
+            uri: occ_uri,
+            range,
+        });
     }
 
     Some(locations)

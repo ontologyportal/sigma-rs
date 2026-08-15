@@ -2,14 +2,13 @@
 
 use std::collections::HashSet;
 
-use crate::SymbolId;
 use crate::types::{Element, SentenceId};
+use crate::SymbolId;
 
-use super::super::SyntacticLayer;
 use super::super::sentence::Sentence;
+use super::super::SyntacticLayer;
 use super::types::{
-    Bindings, PatternElement, SentencePattern,
-    elements_eq_any_span_free, elements_eq_span_free,
+    elements_eq_any_span_free, elements_eq_span_free, Bindings, PatternElement, SentencePattern,
 };
 
 // -- PatternMatcher -----------------------------------------------------------
@@ -36,30 +35,42 @@ impl<'a> PatternMatcher<'a> {
     /// When `head` is `Some(name)`, only sentences whose first element is the
     /// named symbol are tested (uses [`by_head`](SyntacticLayer::by_head) for
     /// O(1) pre-filtering).  Pass `None` to scan all roots.
-    /// 
+    ///
     /// When `contains` is `Some(HashSet<SymbolId>)`, only roots containing ANY of
     /// the symbols are tests (uses [`axiom_index`](SyntacticLayer::axiom_index))
-    /// for O(1) pre-filtering). Intersection with `head` if specified. Pass `None` 
+    /// for O(1) pre-filtering). Intersection with `head` if specified. Pass `None`
     /// to scan all roots.
     ///
     /// `self` is passed through to [`match_pattern`] so that
     /// [`PatternElement::SubPattern`] positions can look up sub-sentences.
     pub(crate) fn find_by_pattern(
         &self,
-        pattern:  &SentencePattern,
-        head:     Option<&str>,
-        contains: Option<HashSet<SymbolId>>
+        pattern: &SentencePattern,
+        head: Option<&str>,
+        contains: Option<HashSet<SymbolId>>,
     ) -> Vec<(SentenceId, Bindings)> {
         let head_candidates: HashSet<SentenceId> = match head {
             Some(h) => self.store.by_head(h).iter().copied().collect(),
-            None    => self.store.root_sids().into_iter().collect(),
+            None => self.store.root_sids().into_iter().collect(),
         };
         let candidates: HashSet<SentenceId> = match contains {
-            Some(c) => c.iter().flat_map(|s| self.store.axiom_sentences_of(*s).iter().copied().collect::<Vec<_>>()).collect(),
-            None    => self.store.root_sids().into_iter().collect(),
+            Some(c) => c
+                .iter()
+                .flat_map(|s| {
+                    self.store
+                        .axiom_sentences_of(*s)
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+            None => self.store.root_sids().into_iter().collect(),
         };
 
-        let candidates: HashSet<SymbolId> = candidates.intersection(&head_candidates).map(|h| *h).collect();
+        let candidates: HashSet<SymbolId> = candidates
+            .intersection(&head_candidates)
+            .map(|h| *h)
+            .collect();
 
         candidates
             .into_iter()
@@ -83,12 +94,21 @@ impl<'a> PatternMatcher<'a> {
     /// [`PatternElement::SubPattern`] positions can look up sub-sentences.
     pub(crate) fn find_by_pattern_sub(
         &self,
-        pattern:  &SentencePattern,
-        contains: Option<HashSet<SymbolId>>
+        pattern: &SentencePattern,
+        contains: Option<HashSet<SymbolId>>,
     ) -> Vec<(SentenceId, Bindings)> {
         let roots: HashSet<SentenceId> = match contains {
-            Some(c) => c.iter().flat_map(|s| self.store.axiom_sentences_of(*s).iter().copied().collect::<Vec<_>>()).collect(),
-            None    => self.store.root_sids().into_iter().collect(),
+            Some(c) => c
+                .iter()
+                .flat_map(|s| {
+                    self.store
+                        .axiom_sentences_of(*s)
+                        .iter()
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
+            None => self.store.root_sids().into_iter().collect(),
         };
         self.find_by_pattern_sub_in_roots(pattern, roots)
     }
@@ -100,16 +120,19 @@ impl<'a> PatternMatcher<'a> {
     pub(crate) fn find_by_pattern_sub_in_roots(
         &self,
         pattern: &SentencePattern,
-        roots:   HashSet<SentenceId>,
+        roots: HashSet<SentenceId>,
     ) -> Vec<(SentenceId, Bindings)> {
-        let candidates: HashSet<SentenceId> = roots.into_iter().flat_map(|c| {
-            let Some(subs) = self.store.subs_of(c) else {
-                return vec![c]
-            };
-            let mut out = vec![c];
-            out.extend(subs);
-            out
-        }).collect();
+        let candidates: HashSet<SentenceId> = roots
+            .into_iter()
+            .flat_map(|c| {
+                let Some(subs) = self.store.subs_of(c) else {
+                    return vec![c];
+                };
+                let mut out = vec![c];
+                out.extend(subs);
+                out
+            })
+            .collect();
 
         candidates
             .into_iter()
@@ -135,17 +158,25 @@ impl<'a> PatternMatcher<'a> {
     /// [`match_seq`](Self::match_seq).
     pub(crate) fn match_pattern(
         &self,
-        pattern:   &SentencePattern,
-        sentence:  &Sentence
+        pattern: &SentencePattern,
+        sentence: &Sentence,
     ) -> Option<Bindings> {
-        if pattern.0.iter().any(|p| matches!(p, PatternElement::Glob | PatternElement::GlobCapture(_))) {
+        if pattern
+            .0
+            .iter()
+            .any(|p| matches!(p, PatternElement::Glob | PatternElement::GlobCapture(_)))
+        {
             return self.match_seq(&pattern.0, &sentence.elements, Bindings::default());
         }
 
-        if pattern.0.len() != sentence.elements.len() { return None; }
+        if pattern.0.len() != sentence.elements.len() {
+            return None;
+        }
         let mut b = Bindings::default();
         for (pat, elem) in pattern.0.iter().zip(sentence.elements.iter()) {
-            if !self.match_one(pat, elem, &mut b) { return None; }
+            if !self.match_one(pat, elem, &mut b) {
+                return None;
+            }
         }
         Some(b)
     }
@@ -158,9 +189,15 @@ impl<'a> PatternMatcher<'a> {
             PatternElement::Glob | PatternElement::GlobCapture(_) => false,
             PatternElement::Exact(key) => key.matches(elem),
             PatternElement::SubPattern(inner_pat) => {
-                let Element::Sub(sid) = elem else { return false };
-                let Some(sub_s) = self.store.sentence(*sid) else { return false };
-                let Some(inner_b) = self.match_pattern(inner_pat, &sub_s) else { return false };
+                let Element::Sub(sid) = elem else {
+                    return false;
+                };
+                let Some(sub_s) = self.store.sentence(*sid) else {
+                    return false;
+                };
+                let Some(inner_b) = self.match_pattern(inner_pat, &sub_s) else {
+                    return false;
+                };
                 // Callers must assign globally non-overlapping slot numbers.
                 b.elements.extend(inner_b.elements);
                 b.sub_sids.extend(inner_b.sub_sids);
@@ -203,9 +240,9 @@ impl<'a> PatternMatcher<'a> {
     /// element consumes exactly one element via [`match_one`](Self::match_one).
     fn match_seq(
         &self,
-        pats:  &[PatternElement],
+        pats: &[PatternElement],
         elems: &[Element],
-        b:     Bindings,
+        b: Bindings,
     ) -> Option<Bindings> {
         let Some((first, rest)) = pats.split_first() else {
             // Pattern exhausted: success iff the sentence is also exhausted.
@@ -214,10 +251,16 @@ impl<'a> PatternMatcher<'a> {
 
         if let PatternElement::Glob | PatternElement::GlobCapture(_) = first {
             // A `GlobCapture(slot)` records how many elements it consumed.
-            let slot = if let PatternElement::GlobCapture(s) = first { Some(*s) } else { None };
+            let slot = if let PatternElement::GlobCapture(s) = first {
+                Some(*s)
+            } else {
+                None
+            };
             for skip in 0..=elems.len() {
                 let mut nb = b.clone();
-                if let Some(s) = slot { nb.glob_lens.insert(s, skip); }
+                if let Some(s) = slot {
+                    nb.glob_lens.insert(s, skip);
+                }
                 if let Some(done) = self.match_seq(rest, &elems[skip..], nb) {
                     return Some(done);
                 }
@@ -234,4 +277,3 @@ impl<'a> PatternMatcher<'a> {
         }
     }
 }
-

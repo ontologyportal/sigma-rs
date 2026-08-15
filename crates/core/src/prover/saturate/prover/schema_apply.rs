@@ -30,7 +30,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if pc.lits.len() > 4 || pc.nvars == 0 {
                 continue;
             }
-            if let Some(hit) = self.layer.schema.probe(&pc.lits, &self.layer.atoms, self.syn()) {
+            if let Some(hit) = self
+                .layer
+                .schema
+                .probe(&pc.lits, &self.layer.atoms, self.syn())
+            {
                 self.apply_schema_hit(&hit, Some(root));
             }
         }

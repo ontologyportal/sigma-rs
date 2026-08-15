@@ -22,7 +22,9 @@ use std::io;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -30,8 +32,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Terminal;
 
-use sigmakee_rs_sdk::{AstKif, ProverStatus, ProverResult, ProvingLayer, Session};
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
+use sigmakee_rs_sdk::{AstKif, ProverResult, ProverStatus, ProvingLayer, Session};
 
 /// Entry point for `sumo ask -i`. Returns whether the session left the
 /// editor in a state that should be treated as CLI success (mirrors
@@ -61,7 +63,10 @@ where
 
     match enter_and_run(&mut session, manager) {
         Ok(proved) => proved,
-        Err(e) => { log::error!("ask -i: interactive editor failed: {e}"); false }
+        Err(e) => {
+            log::error!("ask -i: interactive editor failed: {e}");
+            false
+        }
     }
 }
 
@@ -87,53 +92,78 @@ where
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode { Normal, Insert }
+enum Mode {
+    Normal,
+    Insert,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Focus { Formula(usize), Query }
+enum Focus {
+    Formula(usize),
+    Query,
+}
 
-enum Overlay { Error(String), Result(String) }
+enum Overlay {
+    Error(String),
+    Result(String),
+}
 
 /// A single-line editable text cell. Cursor is a char index (not byte
 /// offset), so movement/insert/delete stay correct on multibyte input.
 #[derive(Default)]
 struct Buffer {
-    chars:  Vec<char>,
+    chars: Vec<char>,
     cursor: usize,
 }
 
 impl Buffer {
-    fn text(&self) -> String { self.chars.iter().collect() }
-    fn insert(&mut self, c: char) { self.chars.insert(self.cursor, c); self.cursor += 1; }
-    fn backspace(&mut self) { if self.cursor > 0 { self.cursor -= 1; self.chars.remove(self.cursor); } }
-    fn left(&mut self)  { self.cursor = self.cursor.saturating_sub(1); }
-    fn right(&mut self) { self.cursor = (self.cursor + 1).min(self.chars.len()); }
-    fn end(&mut self)   { self.cursor = self.chars.len(); }
+    fn text(&self) -> String {
+        self.chars.iter().collect()
+    }
+    fn insert(&mut self, c: char) {
+        self.chars.insert(self.cursor, c);
+        self.cursor += 1;
+    }
+    fn backspace(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+            self.chars.remove(self.cursor);
+        }
+    }
+    fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+    fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.chars.len());
+    }
+    fn end(&mut self) {
+        self.cursor = self.chars.len();
+    }
 }
 
 struct App {
     formulas: Vec<Buffer>,
-    query:    Buffer,
-    focus:    Focus,
-    mode:     Mode,
-    overlay:  Option<Overlay>,
+    query: Buffer,
+    focus: Focus,
+    mode: Mode,
+    overlay: Option<Overlay>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             formulas: vec![Buffer::default()],
-            query:    Buffer::default(),
-            focus:    Focus::Formula(0),
-            mode:     Mode::Normal,
-            overlay:  None,
+            query: Buffer::default(),
+            focus: Focus::Formula(0),
+            mode: Mode::Normal,
+            overlay: None,
         }
     }
 
     fn current_buf_mut(&mut self) -> &mut Buffer {
         match self.focus {
             Focus::Formula(i) => &mut self.formulas[i],
-            Focus::Query      => &mut self.query,
+            Focus::Query => &mut self.query,
         }
     }
 
@@ -141,10 +171,14 @@ impl App {
         let last = self.formulas.len();
         let cur = match self.focus {
             Focus::Formula(i) => i as isize,
-            Focus::Query      => last as isize,
+            Focus::Query => last as isize,
         };
         let next = (cur + delta).clamp(0, last as isize);
-        self.focus = if next as usize == last { Focus::Query } else { Focus::Formula(next as usize) };
+        self.focus = if next as usize == last {
+            Focus::Query
+        } else {
+            Focus::Formula(next as usize)
+        };
     }
 
     /// Insert a fresh formula cell right after the focused one (or at the
@@ -152,14 +186,16 @@ impl App {
     fn new_formula_after_focus(&mut self) {
         let at = match self.focus {
             Focus::Formula(i) => i + 1,
-            Focus::Query      => self.formulas.len(),
+            Focus::Query => self.formulas.len(),
         };
         self.formulas.insert(at, Buffer::default());
         self.focus = Focus::Formula(at);
     }
 
     fn delete_focused_formula(&mut self) {
-        let Focus::Formula(i) = self.focus else { return };
+        let Focus::Formula(i) = self.focus else {
+            return;
+        };
         self.formulas.remove(i);
         if self.formulas.is_empty() {
             self.formulas.push(Buffer::default());
@@ -174,16 +210,22 @@ impl App {
     {
         let conjecture = self.query.text();
         if conjecture.trim().is_empty() {
-            self.overlay = Some(Overlay::Error("query box is empty — nothing to ask".to_string()));
+            self.overlay = Some(Overlay::Error(
+                "query box is empty — nothing to ask".to_string(),
+            ));
             return;
         }
-        let tells: Vec<String> = self.formulas.iter()
+        let tells: Vec<String> = self
+            .formulas
+            .iter()
             .map(Buffer::text)
             .filter(|s| !s.trim().is_empty())
             .collect();
 
         let opts = <L::Opts as ProverOptsFor>::from_manager(manager);
-        let open = tells.iter().try_fold(session.open_session(), |s, t| s.tell(t));
+        let open = tells
+            .iter()
+            .try_fold(session.open_session(), |s, t| s.tell(t));
         let open = match open {
             Ok(o) => o,
             Err(errs) => {
@@ -193,25 +235,29 @@ impl App {
         };
         match open.ask(&conjecture, Some(opts)) {
             Ok(result) => self.overlay = Some(Overlay::Result(render_result(&conjecture, &result))),
-            Err(errs)  => self.overlay = Some(Overlay::Error(join_errors("ask error", &errs))),
+            Err(errs) => self.overlay = Some(Overlay::Error(join_errors("ask error", &errs))),
         }
     }
 }
 
 fn join_errors<E: std::fmt::Display>(label: &str, errs: &[E]) -> String {
-    let body = errs.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
+    let body = errs
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     format!("{label}:\n{body}")
 }
 
 fn render_result(conjecture: &str, result: &ProverResult) -> String {
     let verdict = match result.status {
-        ProverStatus::Proved       => "Proved",
-        ProverStatus::Disproved    => "Disproved",
-        ProverStatus::Consistent   => "Consistent",
+        ProverStatus::Proved => "Proved",
+        ProverStatus::Disproved => "Disproved",
+        ProverStatus::Consistent => "Consistent",
         ProverStatus::Inconsistent => "Inconsistent",
-        ProverStatus::Timeout      => "Timeout",
-        ProverStatus::InputError   => "Input Error",
-        ProverStatus::Unknown      => "Unknown",
+        ProverStatus::Timeout => "Timeout",
+        ProverStatus::InputError => "Input Error",
+        ProverStatus::Unknown => "Unknown",
     };
     let mut out = format!("Conjecture: {}\n\nResult: {verdict}", conjecture.trim());
     for b in &result.bindings {
@@ -220,7 +266,12 @@ fn render_result(conjecture: &str, result: &ProverResult) -> String {
     if !result.proof_kif.is_empty() {
         out.push_str("\n\nProof:");
         for step in &result.proof_kif {
-            out.push_str(&format!("\n  {:>3}. [{:<14}] {}", step.index, step.rule, step.formula.flat()));
+            out.push_str(&format!(
+                "\n  {:>3}. [{:<14}] {}",
+                step.index,
+                step.rule,
+                step.formula.flat()
+            ));
         }
     } else {
         // Same per-verdict explanation `run_ask` prints for an empty
@@ -228,16 +279,15 @@ fn render_result(conjecture: &str, result: &ProverResult) -> String {
         // omitting the section, since Proved/Inconsistent with no proof
         // reads very differently from Disproved/Consistent with no proof.
         let note = match result.status {
-            ProverStatus::Proved | ProverStatus::Inconsistent =>
-                "(proof found, but the prover returned no renderable transcript)",
-            ProverStatus::Disproved | ProverStatus::Consistent =>
-                "(no proof exists: the prover saturated without finding a refutation)",
-            ProverStatus::Timeout =>
-                "(no proof: the prover timed out before finding a refutation)",
-            ProverStatus::InputError =>
-                "(no proof: the prover rejected the input before running)",
-            ProverStatus::Unknown =>
-                "(no proof: the prover found no refutation)",
+            ProverStatus::Proved | ProverStatus::Inconsistent => {
+                "(proof found, but the prover returned no renderable transcript)"
+            }
+            ProverStatus::Disproved | ProverStatus::Consistent => {
+                "(no proof exists: the prover saturated without finding a refutation)"
+            }
+            ProverStatus::Timeout => "(no proof: the prover timed out before finding a refutation)",
+            ProverStatus::InputError => "(no proof: the prover rejected the input before running)",
+            ProverStatus::Unknown => "(no proof: the prover found no refutation)",
         };
         out.push_str(&format!("\n\n{note}"));
     }
@@ -248,8 +298,8 @@ fn render_result(conjecture: &str, result: &ProverResult) -> String {
 /// return convention). `false` if the editor was quit before ever asking.
 fn run_app<B: ratatui::backend::Backend, L>(
     terminal: &mut Terminal<B>,
-    session:  &mut Session<L>,
-    manager:  &KBManager,
+    session: &mut Session<L>,
+    manager: &KBManager,
 ) -> io::Result<bool>
 where
     L: ProvingLayer,
@@ -261,7 +311,9 @@ where
     loop {
         terminal.draw(|f| draw(f, &app))?;
 
-        let Event::Key(key) = event::read()? else { continue };
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -283,15 +335,18 @@ where
 
         match app.mode {
             Mode::Normal => match key.code {
-                KeyCode::Up   | KeyCode::Char('k') => app.move_focus(-1),
-                KeyCode::Down | KeyCode::Char('j')  => app.move_focus(1),
-                KeyCode::Left  | KeyCode::Char('h') => app.current_buf_mut().left(),
+                KeyCode::Up | KeyCode::Char('k') => app.move_focus(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.move_focus(1),
+                KeyCode::Left | KeyCode::Char('h') => app.current_buf_mut().left(),
                 KeyCode::Right | KeyCode::Char('l') => app.current_buf_mut().right(),
-                KeyCode::Home  | KeyCode::Char('0') => app.current_buf_mut().cursor = 0,
-                KeyCode::End   | KeyCode::Char('$') => app.current_buf_mut().end(),
-                KeyCode::Tab   => app.focus = Focus::Query,
+                KeyCode::Home | KeyCode::Char('0') => app.current_buf_mut().cursor = 0,
+                KeyCode::End | KeyCode::Char('$') => app.current_buf_mut().end(),
+                KeyCode::Tab => app.focus = Focus::Query,
                 KeyCode::Char('i') => app.mode = Mode::Insert,
-                KeyCode::Char('o') => { app.new_formula_after_focus(); app.mode = Mode::Insert; }
+                KeyCode::Char('o') => {
+                    app.new_formula_after_focus();
+                    app.mode = Mode::Insert;
+                }
                 KeyCode::Char('D') => app.delete_focused_formula(),
                 KeyCode::Char('a') => app.run_ask(session, manager),
                 KeyCode::Char('q') => return Ok(proved),
@@ -299,14 +354,16 @@ where
             },
             Mode::Insert => match key.code {
                 KeyCode::Esc => app.mode = Mode::Normal,
-                KeyCode::Left  => app.current_buf_mut().left(),
+                KeyCode::Left => app.current_buf_mut().left(),
                 KeyCode::Right => app.current_buf_mut().right(),
-                KeyCode::Home  => app.current_buf_mut().cursor = 0,
-                KeyCode::End   => app.current_buf_mut().end(),
+                KeyCode::Home => app.current_buf_mut().cursor = 0,
+                KeyCode::End => app.current_buf_mut().end(),
                 KeyCode::Backspace => app.current_buf_mut().backspace(),
                 KeyCode::Char(c) => app.current_buf_mut().insert(c),
                 KeyCode::Enter => match app.focus {
-                    Focus::Formula(_) => { app.new_formula_after_focus(); }
+                    Focus::Formula(_) => {
+                        app.new_formula_after_focus();
+                    }
                     Focus::Query => app.run_ask(session, manager),
                 },
                 _ => {}
@@ -319,8 +376,14 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     let area = f.area();
     let chunks = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(1), Constraint::Min(3), Constraint::Length(3), Constraint::Length(1)],
-    ).split(area);
+        [
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ],
+    )
+    .split(area);
 
     draw_title(f, chunks[0], app);
     draw_formulas(f, chunks[1], app);
@@ -328,14 +391,23 @@ fn draw(f: &mut ratatui::Frame, app: &App) {
     draw_footer(f, chunks[3], app);
 
     match &app.overlay {
-        Some(Overlay::Error(msg))  => draw_overlay(f, area, " error ", msg, Color::Red),
-        Some(Overlay::Result(msg)) => draw_overlay(f, area, " result (Esc/Enter to dismiss) ", msg, Color::Green),
+        Some(Overlay::Error(msg)) => draw_overlay(f, area, " error ", msg, Color::Red),
+        Some(Overlay::Result(msg)) => draw_overlay(
+            f,
+            area,
+            " result (Esc/Enter to dismiss) ",
+            msg,
+            Color::Green,
+        ),
         None => {}
     }
 }
 
 fn draw_title(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let mode = match app.mode { Mode::Normal => "NORMAL", Mode::Insert => "INSERT" };
+    let mode = match app.mode {
+        Mode::Normal => "NORMAL",
+        Mode::Insert => "INSERT",
+    };
     let line = Line::from(Span::styled(
         format!(" sumo ask -i — [{mode}]"),
         Style::default().add_modifier(Modifier::BOLD),
@@ -345,17 +417,24 @@ fn draw_title(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn draw_formulas(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let n = app.formulas.len().max(1) as u16;
-    let rows = Layout::new(
-        Direction::Vertical,
-        vec![Constraint::Length(3); n as usize],
-    ).split(area);
+    let rows =
+        Layout::new(Direction::Vertical, vec![Constraint::Length(3); n as usize]).split(area);
 
     for (i, buf) in app.formulas.iter().enumerate() {
         let focused = app.focus == Focus::Formula(i);
         let line = cursor_line(buf, focused);
-        let border_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default() };
+        let border_style = if focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
         let p = Paragraph::new(line)
-            .block(Block::default().borders(Borders::ALL).title(format!(" [{}] ", i + 1)).border_style(border_style))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" [{}] ", i + 1))
+                    .border_style(border_style),
+            )
             .wrap(Wrap { trim: false });
         if let Some(row) = rows.get(i) {
             f.render_widget(p, *row);
@@ -365,10 +444,19 @@ fn draw_formulas(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn draw_query(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Query;
-    let border_style = if focused { Style::default().fg(Color::Yellow) } else { Style::default() };
+    let border_style = if focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
     let line = cursor_line(&app.query, focused);
     let p = Paragraph::new(line)
-        .block(Block::default().borders(Borders::ALL).title(" query (conjecture) ").border_style(border_style))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" query (conjecture) ")
+                .border_style(border_style),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
 }
@@ -380,7 +468,10 @@ fn draw_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Mode::Insert =>
             "Esc normal  ←/→/Home/End cursor  Backspace delete  Enter new formula / ask (in query)",
     };
-    f.render_widget(Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)), area);
+    f.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(Color::DarkGray)),
+        area,
+    );
 }
 
 fn draw_overlay(f: &mut ratatui::Frame, area: Rect, title: &str, text: &str, color: Color) {
@@ -394,11 +485,16 @@ fn draw_overlay(f: &mut ratatui::Frame, area: Rect, title: &str, text: &str, col
 }
 
 fn centered_rect(pct_x: u16, pct_y: u16, area: Rect) -> Rect {
-    let width  = area.width.saturating_mul(pct_x) / 100;
+    let width = area.width.saturating_mul(pct_x) / 100;
     let height = area.height.saturating_mul(pct_y) / 100;
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect { x, y, width: width.min(area.width), height: height.min(area.height) }
+    Rect {
+        x,
+        y,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
 }
 
 /// Render a buffer with a reversed-style block cursor at `buf.cursor` when
@@ -411,10 +507,17 @@ fn cursor_line(buf: &Buffer, focused: bool) -> Line<'static> {
     }
     let before: String = buf.chars[..buf.cursor].iter().collect();
     let at = buf.chars.get(buf.cursor).copied().unwrap_or(' ');
-    let after: String = buf.chars.get(buf.cursor + 1..).map(|s| s.iter().collect()).unwrap_or_default();
+    let after: String = buf
+        .chars
+        .get(buf.cursor + 1..)
+        .map(|s| s.iter().collect())
+        .unwrap_or_default();
     Line::from(vec![
         Span::raw(before),
-        Span::styled(at.to_string(), Style::default().add_modifier(Modifier::REVERSED)),
+        Span::styled(
+            at.to_string(),
+            Style::default().add_modifier(Modifier::REVERSED),
+        ),
         Span::raw(after),
     ])
 }

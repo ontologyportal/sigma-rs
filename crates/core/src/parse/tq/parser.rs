@@ -37,7 +37,7 @@ pub struct TestCase {
     /// The conjecture, as `Annotated { role: Conjecture, … }` (its `name` is the
     /// query's KIF text, for citations).  `None` if the file has no `(query …)`.
     pub query: Option<AstNode>,
-    pub expected_proof: Option<bool>,        // true = yes, false = no
+    pub expected_proof: Option<bool>, // true = yes, false = no
     pub expected_answer: Option<Vec<String>>,
     /// Hypotheses, each `Annotated { role: Hypothesis, … }`.
     pub axioms: Vec<AstNode>,
@@ -74,7 +74,11 @@ impl TestCase {
     /// consumers (TPTP translation, sweep).  Byte-identical to the old
     /// `axioms.join("\n")` since each hypothesis is its bare formula.
     pub fn axiom_kif(&self) -> String {
-        self.axioms.iter().map(|a| a.formula().to_string()).collect::<Vec<_>>().join("\n")
+        self.axioms
+            .iter()
+            .map(|a| a.formula().to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The conjecture's KIF text, if any.
@@ -110,37 +114,40 @@ impl TestCase {
     /// `Conjecture` / `Hypothesis` — that leftover vec is empty.
     pub fn from_doc_items(items: &[DocItem], file_name: &str) -> (TestCase, Vec<DocItem>) {
         let mut tc = TestCase {
-            file_name:       file_name.to_string(),
-            note:            file_name.to_string(),
-            timeout:         30,
-            query:           None,
+            file_name: file_name.to_string(),
+            note: file_name.to_string(),
+            timeout: 30,
+            query: None,
             expected_answer: None,
-            expected_proof:  None,
-            axioms:          Vec::new(),
-            extra_files:     Vec::new(),
+            expected_proof: None,
+            axioms: Vec::new(),
+            extra_files: Vec::new(),
             expected_status: None,
             has_fof_conjecture: false,
-            input_formulas:     0,
+            input_formulas: 0,
             unaccounted_inputs: 0,
         };
         let mut leftover: Vec<DocItem> = Vec::new();
         let mut conjectures: Vec<AstNode> = Vec::new();
-        let mut negated:     Vec<AstNode> = Vec::new();
+        let mut negated: Vec<AstNode> = Vec::new();
         for item in items {
             match item {
                 DocItem::Stmt(node) => {
                     tc.input_formulas += 1;
                     match node.role() {
-                        Some(Role::Conjecture)        => conjectures.push(node.clone()),
+                        Some(Role::Conjecture) => conjectures.push(node.clone()),
                         Some(Role::NegatedConjecture) => negated.push(node.clone()),
-                        Some(Role::Hypothesis)        => tc.axioms.push(node.clone()),
+                        Some(Role::Hypothesis) => tc.axioms.push(node.clone()),
                         // Background theory (`axiom`, `plain`, `definition`, …) is
                         // not part of the obligation — hand it back to be ingested
                         // as an ordinary, selectable KB axiom.  A role-less
                         // statement (bare KIF) is tagged `axiom` on the way out so
                         // downstream partitioning sees a uniform annotation.
                         None => leftover.push(DocItem::Stmt(annotate(
-                            Role::Axiom, node.clone().strip_annotation(), file_name))),
+                            Role::Axiom,
+                            node.clone().strip_annotation(),
+                            file_name,
+                        ))),
                         Some(_) => leftover.push(item.clone()),
                     }
                 }
@@ -165,7 +172,8 @@ impl TestCase {
                     conjectures.iter().map(|c| c.formula().clone()).collect();
                 if n > 0 {
                     parts.push(negate(conjoin(
-                        negated.iter().map(|c| c.formula().clone()).collect())));
+                        negated.iter().map(|c| c.formula().clone()).collect(),
+                    )));
                 }
                 Some(annotate(Role::Conjecture, conjoin(parts), file_name))
             }
@@ -189,16 +197,24 @@ impl TestCase {
     /// statements — flattened to bare `AstNode`s here for the caller's
     /// convenience.)  `include(...)` directives must already be spliced by the
     /// caller (filesystem work the core deliberately leaves to the SDK).
-    pub fn from_tptp(text: &str, name: &str)
-        -> (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>)
-    {
+    pub fn from_tptp(
+        text: &str,
+        name: &str,
+    ) -> (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>) {
         let probe = Parser::Tptp {
-            options: Some(TptpParseOptions { keep_conjectures: true, ..TptpParseOptions::none() }),
+            options: Some(TptpParseOptions {
+                keep_conjectures: true,
+                ..TptpParseOptions::none()
+            }),
         };
         let (items, errors) = probe.parse(text, name);
         let (tc, leftover) = TestCase::from_doc_items(&items, name);
-        let background = leftover.into_iter()
-            .filter_map(|d| match d { DocItem::Stmt(n) => Some(n), DocItem::Meta(_) => None })
+        let background = leftover
+            .into_iter()
+            .filter_map(|d| match d {
+                DocItem::Stmt(n) => Some(n),
+                DocItem::Meta(_) => None,
+            })
             .collect();
         (tc, background, errors)
     }
@@ -206,46 +222,58 @@ impl TestCase {
     /// Fold one harness directive into the test case.
     fn apply_directive(&mut self, m: &MetaNode) {
         match m.key.as_str() {
-            "note" => if let Some(first) = m.args.first() {
-                self.note = match first {
-                    AstNode::Str { value, .. }   => value.trim_matches('"').to_string(),
-                    AstNode::Symbol { name, .. } => name.clone(),
-                    other                        => other.to_string(),
-                };
-            },
-            "time" => if let Some(AstNode::Number { value, .. }) = m.args.first() {
-                self.timeout = value.parse::<u32>().unwrap_or(30);
-            },
-            "answer" => if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
-                match name.to_lowercase().as_str() {
-                    "yes" => self.expected_proof = Some(true),
-                    "no"  => self.expected_proof = Some(false),
-                    _ => {
-                        self.expected_proof = Some(true);
-                        let mut answers = vec![name.clone()];
-                        for el in &m.args[1..] {
-                            if let AstNode::Symbol { name, .. } = el { answers.push(name.clone()); }
+            "note" => {
+                if let Some(first) = m.args.first() {
+                    self.note = match first {
+                        AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+                        AstNode::Symbol { name, .. } => name.clone(),
+                        other => other.to_string(),
+                    };
+                }
+            }
+            "time" => {
+                if let Some(AstNode::Number { value, .. }) = m.args.first() {
+                    self.timeout = value.parse::<u32>().unwrap_or(30);
+                }
+            }
+            "answer" => {
+                if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
+                    match name.to_lowercase().as_str() {
+                        "yes" => self.expected_proof = Some(true),
+                        "no" => self.expected_proof = Some(false),
+                        _ => {
+                            self.expected_proof = Some(true);
+                            let mut answers = vec![name.clone()];
+                            for el in &m.args[1..] {
+                                if let AstNode::Symbol { name, .. } = el {
+                                    answers.push(name.clone());
+                                }
+                            }
+                            self.expected_answer = Some(answers);
                         }
-                        self.expected_answer = Some(answers);
                     }
                 }
-            },
-            "file" => if let Some(el) = m.args.first() {
-                let fname = match el {
-                    AstNode::Symbol { name, .. } => name.clone(),
-                    AstNode::Str { value, .. }   => value.trim_matches('"').to_string(),
-                    other                        => other.to_string(),
-                };
-                self.extra_files.push(fname);
-            },
+            }
+            "file" => {
+                if let Some(el) = m.args.first() {
+                    let fname = match el {
+                        AstNode::Symbol { name, .. } => name.clone(),
+                        AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+                        other => other.to_string(),
+                    };
+                    self.extra_files.push(fname);
+                }
+            }
             // The TPTP `% Status : <word>` header pragma (see the tokenizer's
             // `record_status_pragma`) — first match wins, mirroring the
             // TPTP convention of one `Status` line per problem file.
-            "status" => if self.expected_status.is_none() {
-                if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
-                    self.expected_status = Some(name.clone());
+            "status" => {
+                if self.expected_status.is_none() {
+                    if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
+                        self.expected_status = Some(name.clone());
+                    }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -260,7 +288,10 @@ impl TestCase {
 fn renegate(node: &AstNode, file: &str) -> AstNode {
     let negated = AstNode::List {
         elements: vec![
-            AstNode::Operator { op: OpKind::Not, span: Span::synthetic() },
+            AstNode::Operator {
+                op: OpKind::Not,
+                span: Span::synthetic(),
+            },
             node.formula().clone(),
         ],
         span: Span::synthetic(),
@@ -274,17 +305,25 @@ fn conjoin(mut formulas: Vec<AstNode>) -> AstNode {
     if formulas.len() == 1 {
         return formulas.pop().unwrap();
     }
-    let mut elements =
-        vec![AstNode::Operator { op: OpKind::And, span: Span::synthetic() }];
+    let mut elements = vec![AstNode::Operator {
+        op: OpKind::And,
+        span: Span::synthetic(),
+    }];
     elements.extend(formulas);
-    AstNode::List { elements, span: Span::synthetic() }
+    AstNode::List {
+        elements,
+        span: Span::synthetic(),
+    }
 }
 
 /// `(not f)`.
 fn negate(formula: AstNode) -> AstNode {
     AstNode::List {
         elements: vec![
-            AstNode::Operator { op: OpKind::Not, span: Span::synthetic() },
+            AstNode::Operator {
+                op: OpKind::Not,
+                span: Span::synthetic(),
+            },
             formula,
         ],
         span: Span::synthetic(),
@@ -296,8 +335,11 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
     let span = formula.span().clone();
     AstNode::Annotated {
         role,
-        name:    None,
-        source:  Some(crate::parse::ast::Source::Input { file: file.to_string(), name: None }),
+        name: None,
+        source: Some(crate::parse::ast::Source::Input {
+            file: file.to_string(),
+            name: None,
+        }),
         formula: Box::new(formula),
         span,
     }
@@ -307,9 +349,7 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
 /// (`Parser::Kif`) for the raw nodes, then sorts each top-level form into a
 /// [`DocItem`].  Parse errors are forwarded verbatim (positionally independent
 /// of the returned items, like every other parser).
-pub fn parse_tq(content: &str, file: &str)
-    -> (Vec<DocItem>, Vec<(Span, KifParseError)>)
-{
+pub fn parse_tq(content: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, KifParseError)>) {
     let (tokens, tok_err) = kif::tokenize(&content, file);
     let (nodes, parse_err) = kif::parse(tokens, file);
     let items = nodes.into_iter().map(|n| classify(n, file)).collect();
@@ -326,16 +366,20 @@ fn classify(node: AstNode, file: &str) -> DocItem {
                 // `(query F)` / `(ask F)` is formula-bearing → a Conjecture
                 // statement whose `name` is the query's KIF text (for
                 // proof-step citations).
-                "query" | "ask" => if let Some(q) = elements.get(1) {
-                    let qname = q.to_string();
-                    let mut ann = annotate(Role::Conjecture, q.clone(), file);
-                    if let AstNode::Annotated { name, .. } = &mut ann { *name = Some(qname); }
-                    return DocItem::Stmt(ann);
-                },
+                "query" | "ask" => {
+                    if let Some(q) = elements.get(1) {
+                        let qname = q.to_string();
+                        let mut ann = annotate(Role::Conjecture, q.clone(), file);
+                        if let AstNode::Annotated { name, .. } = &mut ann {
+                            *name = Some(qname);
+                        }
+                        return DocItem::Stmt(ann);
+                    }
+                }
                 // Harness directives carry no formula → `Meta`.
                 k if DIRECTIVES.contains(&k) => {
                     return DocItem::Meta(MetaNode {
-                        key:  k.to_string(),
+                        key: k.to_string(),
                         args: elements[1..].to_vec(),
                         span: span.clone(),
                     });
@@ -399,7 +443,9 @@ mod tests {
         // The `axiom`-role statement is background theory → handed back.
         assert_eq!(leftover.len(), 1);
         assert!(matches!(
-            leftover[0].as_stmt().and_then(|n| n.role()), Some(Role::Axiom)));
+            leftover[0].as_stmt().and_then(|n| n.role()),
+            Some(Role::Axiom)
+        ));
         assert_eq!(tc.query.unwrap().formula().to_string(), "(instance x B)");
     }
 
@@ -410,9 +456,7 @@ mod tests {
         let f = |kif: &str| Parser::Kif.parse(kif, "t").0.into_iter().next().unwrap();
         let neg = f("(not (mammal rex))");
         let s = neg.as_stmt().cloned().unwrap().strip_annotation();
-        let items = vec![
-            DocItem::Stmt(annotate(Role::NegatedConjecture, s, "t")),
-        ];
+        let items = vec![DocItem::Stmt(annotate(Role::NegatedConjecture, s, "t"))];
         let (tc, leftover) = TestCase::from_doc_items(&items, "t");
         assert!(leftover.is_empty());
         let q = tc.query.expect("query");
@@ -434,7 +478,10 @@ mod tests {
         let (tc, background, errors) = TestCase::from_tptp(problem, "multi");
         assert!(errors.is_empty(), "{errors:?}");
         assert!(background.is_empty());
-        assert!(!tc.has_fof_conjecture, "pure-NC problems report Unsat/Sat SZS");
+        assert!(
+            !tc.has_fof_conjecture,
+            "pure-NC problems report Unsat/Sat SZS"
+        );
         assert_eq!(tc.input_formulas, 3);
         assert_eq!(tc.unaccounted_inputs, 0, "every parsed formula accounted");
         let q = tc.query.expect("query").formula().to_string();
@@ -469,7 +516,10 @@ mod tests {
         assert!(matches!(background[0].role(), Some(Role::Axiom)));
         assert_eq!(tc.axioms.len(), 1, "the `hypothesis` is support");
         assert!(matches!(tc.axioms[0].role(), Some(Role::Hypothesis)));
-        assert!(matches!(tc.query.and_then(|q| q.role().cloned()), Some(Role::Conjecture)));
+        assert!(matches!(
+            tc.query.and_then(|q| q.role().cloned()),
+            Some(Role::Conjecture)
+        ));
     }
 
     #[test]
@@ -478,14 +528,22 @@ mod tests {
         let (items, errors) = parse_tq(src, "T.kif.tq");
         assert!(errors.is_empty());
         // note + time → Meta; subclass → Stmt(Hypothesis); query → Stmt(Conjecture).
-        let metas: Vec<&str> = items.iter()
-            .filter_map(|i| i.as_meta().map(|m| m.key.as_str())).collect();
+        let metas: Vec<&str> = items
+            .iter()
+            .filter_map(|i| i.as_meta().map(|m| m.key.as_str()))
+            .collect();
         assert_eq!(metas, vec!["note", "time"]);
-        let roles: Vec<_> = items.iter()
-            .filter_map(|i| i.as_stmt().and_then(|n| n.role())).cloned().collect();
+        let roles: Vec<_> = items
+            .iter()
+            .filter_map(|i| i.as_stmt().and_then(|n| n.role()))
+            .cloned()
+            .collect();
         assert_eq!(roles, vec![Role::Hypothesis, Role::Conjecture]);
         // The `time` directive keeps its raw operand for the consumer.
-        let time = items.iter().find_map(|i| i.as_meta().filter(|m| m.key == "time")).unwrap();
+        let time = items
+            .iter()
+            .find_map(|i| i.as_meta().filter(|m| m.key == "time"))
+            .unwrap();
         assert!(matches!(time.args.first(), Some(AstNode::Number { value, .. }) if value == "12"));
     }
 }

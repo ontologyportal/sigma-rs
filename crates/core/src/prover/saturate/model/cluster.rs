@@ -35,7 +35,7 @@ use crate::prover::saturate::parked;
 /// sub-program (rules + EDB facts) that defines them.
 #[derive(Debug, Clone)]
 pub(crate) struct Cluster {
-    pub preds:   HashSet<Pred>,
+    pub preds: HashSet<Pred>,
     #[allow(dead_code)] // parked
     pub program: Program,
 }
@@ -75,7 +75,11 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
             bad_scc.insert(scc_of[h]);
         }
     }
-    let bad: HashSet<Pred> = preds.iter().copied().filter(|p| bad_scc.contains(&scc_of[p])).collect();
+    let bad: HashSet<Pred> = preds
+        .iter()
+        .copied()
+        .filter(|p| bad_scc.contains(&scc_of[p]))
+        .collect();
 
     // 4. taint: reverse-reachability from bad preds along head → body edges
     //    (anything that depends on a bad pred is itself unmodelable).
@@ -96,7 +100,11 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
     }
 
     // 5. union-find over modelable preds, connected by the rules among them.
-    let modelable: Vec<Pred> = preds.iter().copied().filter(|p| !tainted.contains(p)).collect();
+    let modelable: Vec<Pred> = preds
+        .iter()
+        .copied()
+        .filter(|p| !tainted.contains(p))
+        .collect();
     let mut uf = UnionFind::new(&modelable);
     for r in &prog.rules {
         if tainted.contains(&r.head.pred) {
@@ -117,7 +125,12 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
     let mut clusters = Vec::new();
     for (_, cpreds) in by_root {
         let mut program = Program {
-            egds: prog.egds.iter().filter(|e| cpreds.contains(&e.rel)).cloned().collect(),
+            egds: prog
+                .egds
+                .iter()
+                .filter(|e| cpreds.contains(&e.rel))
+                .cloned()
+                .collect(),
             builtin_transitive: prog
                 .builtin_transitive
                 .iter()
@@ -143,7 +156,10 @@ pub(crate) fn partition(prog: &Program) -> Vec<Cluster> {
                 program.rules.push(r.clone());
             }
         }
-        clusters.push(Cluster { preds: cpreds, program });
+        clusters.push(Cluster {
+            preds: cpreds,
+            program,
+        });
     }
     clusters.sort_by_key(|c| std::cmp::Reverse(c.preds.len()));
     clusters
@@ -182,7 +198,12 @@ pub(crate) fn dependency_cone(prog: &Program, seed: &HashSet<Pred>) -> HashSet<P
 /// guarded EGDs unable to verify — they under-fire, soundly).
 pub(crate) fn scope_program(prog: &Program, preds: &HashSet<Pred>) -> Program {
     let mut p = Program {
-        egds: prog.egds.iter().filter(|e| preds.contains(&e.rel)).cloned().collect(),
+        egds: prog
+            .egds
+            .iter()
+            .filter(|e| preds.contains(&e.rel))
+            .cloned()
+            .collect(),
         builtin_transitive: prog
             .builtin_transitive
             .iter()
@@ -223,12 +244,12 @@ pub(crate) fn scope_program(prog: &Program, preds: &HashSet<Pred>) -> Program {
 /// `partition`; this fragment serves the (common) positive case.
 pub(crate) fn positive_program(prog: &Program) -> Program {
     let mut p = Program {
-        rules:    Vec::new(),
-        edb:      prog.edb.clone(),
+        rules: Vec::new(),
+        edb: prog.edb.clone(),
         edb_sids: prog.edb_sids.clone(),
-        egds:     prog.egds.clone(),
+        egds: prog.egds.clone(),
         builtin_transitive: prog.builtin_transitive.clone(),
-        rigid:    prog.rigid.clone(),
+        rigid: prog.rigid.clone(),
         instance_pred: prog.instance_pred,
     };
     for r in &prog.rules {
@@ -278,19 +299,36 @@ fn scc_index(preds: &HashSet<Pred>, adj: &HashMap<Pred, Vec<Pred>>) -> HashMap<P
     for v in 0..n {
         if index[v] == usize::MAX {
             strongconnect(
-                v, &adj_idx, &mut index, &mut low, &mut on_stack, &mut stk,
-                &mut counter, &mut comp, &mut ncomp,
+                v,
+                &adj_idx,
+                &mut index,
+                &mut low,
+                &mut on_stack,
+                &mut stk,
+                &mut counter,
+                &mut comp,
+                &mut ncomp,
             );
         }
     }
-    nodes.iter().enumerate().map(|(i, p)| (*p, comp[i])).collect()
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (*p, comp[i]))
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
 fn strongconnect(
-    v: usize, adj: &[Vec<usize>], index: &mut [usize], low: &mut [usize],
-    on_stack: &mut [bool], stk: &mut Vec<usize>, counter: &mut usize,
-    comp: &mut [usize], ncomp: &mut usize,
+    v: usize,
+    adj: &[Vec<usize>],
+    index: &mut [usize],
+    low: &mut [usize],
+    on_stack: &mut [bool],
+    stk: &mut Vec<usize>,
+    counter: &mut usize,
+    comp: &mut [usize],
+    ncomp: &mut usize,
 ) {
     index[v] = *counter;
     low[v] = *counter;
@@ -326,7 +364,9 @@ struct UnionFind {
 
 impl UnionFind {
     fn new(preds: &[Pred]) -> Self {
-        Self { parent: preds.iter().map(|p| (*p, *p)).collect() }
+        Self {
+            parent: preds.iter().map(|p| (*p, *p)).collect(),
+        }
     }
     fn find(&mut self, p: Pred) -> Pred {
         let mut root = p;
@@ -352,16 +392,31 @@ impl UnionFind {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{Atom, DTerm, Literal};
+    use super::*;
     use crate::types::Symbol;
 
-    fn s(n: &str) -> Pred { Symbol::hash_name(n) }
-    fn atom(p: &str, a: &[u32]) -> Atom {
-        Atom { pred: s(p), args: a.iter().map(|i| DTerm::Var(*i)).collect() }
+    fn s(n: &str) -> Pred {
+        Symbol::hash_name(n)
     }
-    fn pos(a: Atom) -> Literal { Literal { atom: a, negated: false } }
-    fn neg(a: Atom) -> Literal { Literal { atom: a, negated: true } }
+    fn atom(p: &str, a: &[u32]) -> Atom {
+        Atom {
+            pred: s(p),
+            args: a.iter().map(|i| DTerm::Var(*i)).collect(),
+        }
+    }
+    fn pos(a: Atom) -> Literal {
+        Literal {
+            atom: a,
+            negated: false,
+        }
+    }
+    fn neg(a: Atom) -> Literal {
+        Literal {
+            atom: a,
+            negated: true,
+        }
+    }
 
     // Two independent clean clusters + a negation cycle.  Partition must find
     // the two clean clusters and DROP the cycle's predicates (and dependents).
@@ -371,30 +426,66 @@ mod tests {
         // cluster A: taxonomy-like — subclass transitive + instance bridge.
         p.fact(s("subclass"), vec![s("A"), s("B")]);
         p.fact(s("instance"), vec![s("x"), s("A")]);
-        p.rule(atom("subclass", &[0, 2]), vec![pos(atom("subclass", &[0, 1])), pos(atom("subclass", &[1, 2]))]);
-        p.rule(atom("instance", &[2, 1]), vec![pos(atom("instance", &[2, 0])), pos(atom("subclass", &[0, 1]))]);
+        p.rule(
+            atom("subclass", &[0, 2]),
+            vec![
+                pos(atom("subclass", &[0, 1])),
+                pos(atom("subclass", &[1, 2])),
+            ],
+        );
+        p.rule(
+            atom("instance", &[2, 1]),
+            vec![
+                pos(atom("instance", &[2, 0])),
+                pos(atom("subclass", &[0, 1])),
+            ],
+        );
         // cluster B: a separate definite rule.
         p.fact(s("edge"), vec![s("u"), s("v")]);
         p.rule(atom("path", &[0, 1]), vec![pos(atom("edge", &[0, 1]))]);
         // bad: negation cycle  p2(X):-dom(X),not q2(X) ; q2(X):-dom(X),not p2(X)
         p.fact(s("dom"), vec![s("k")]);
-        p.rule(atom("p2", &[0]), vec![pos(atom("dom", &[0])), neg(atom("q2", &[0]))]);
-        p.rule(atom("q2", &[0]), vec![pos(atom("dom", &[0])), neg(atom("p2", &[0]))]);
+        p.rule(
+            atom("p2", &[0]),
+            vec![pos(atom("dom", &[0])), neg(atom("q2", &[0]))],
+        );
+        p.rule(
+            atom("q2", &[0]),
+            vec![pos(atom("dom", &[0])), neg(atom("p2", &[0]))],
+        );
 
         let clusters = partition(&p);
         // every returned cluster must evaluate (be stratifiable).
         for c in &clusters {
-            assert!(c.program.evaluate().is_ok(), "cluster should be stratifiable");
+            assert!(
+                c.program.evaluate().is_ok(),
+                "cluster should be stratifiable"
+            );
         }
         // p2/q2 are dropped; the clean predicates survive.
-        let all: HashSet<Pred> = clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
-        assert!(!all.contains(&s("p2")) && !all.contains(&s("q2")), "cycle preds excluded");
+        let all: HashSet<Pred> = clusters
+            .iter()
+            .flat_map(|c| c.preds.iter().copied())
+            .collect();
+        assert!(
+            !all.contains(&s("p2")) && !all.contains(&s("q2")),
+            "cycle preds excluded"
+        );
         assert!(all.contains(&s("subclass")) && all.contains(&s("instance")));
         assert!(all.contains(&s("path")));
         // taxonomy preds land together; path is its own cluster.
-        let tax = clusters.iter().find(|c| c.preds.contains(&s("subclass"))).unwrap();
-        assert!(tax.preds.contains(&s("instance")), "instance bridges into the subclass cluster");
-        assert!(!tax.preds.contains(&s("path")), "unrelated predicate is a separate cluster");
+        let tax = clusters
+            .iter()
+            .find(|c| c.preds.contains(&s("subclass")))
+            .unwrap();
+        assert!(
+            tax.preds.contains(&s("instance")),
+            "instance bridges into the subclass cluster"
+        );
+        assert!(
+            !tax.preds.contains(&s("path")),
+            "unrelated predicate is a separate cluster"
+        );
     }
 
     // The SInE-demand hook selects only clusters touched by the seed.
@@ -402,7 +493,13 @@ mod tests {
     fn relevant_clusters_selects_by_seed() {
         let mut p = Program::default();
         p.fact(s("subclass"), vec![s("A"), s("B")]);
-        p.rule(atom("subclass", &[0, 2]), vec![pos(atom("subclass", &[0, 1])), pos(atom("subclass", &[1, 2]))]);
+        p.rule(
+            atom("subclass", &[0, 2]),
+            vec![
+                pos(atom("subclass", &[0, 1])),
+                pos(atom("subclass", &[1, 2])),
+            ],
+        );
         p.fact(s("edge"), vec![s("u"), s("v")]);
         p.rule(atom("path", &[0, 1]), vec![pos(atom("edge", &[0, 1]))]);
 

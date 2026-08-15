@@ -3,22 +3,22 @@
 //! [`SentenceSide`] of provenance / refcount / scope companion state.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::cache::events::{Event, EventKind};
+use crate::cache::{EagerMap, EagerMapBehavior, EntryCache};
 use crate::syntactic::caches::session::SessionCache;
 use crate::syntactic::caches::source::SourceCache;
 use crate::syntactic::caches::symbol::SymbolCache;
 use crate::syntactic::sentence::ScopeCtx;
-use crate::{AstNode, Element, Sentence, SymbolId};
-use crate::cache::events::{Event, EventKind};
-use crate::cache::{EagerMap, EagerMapBehavior, EntryCache};
 use crate::syntactic::SyntacticLayer;
 use crate::types::{ElementVec, SentenceId};
+use crate::{AstNode, Element, Sentence, SymbolId};
 
 /// Companion (non-keyed) state for the sentence [`EagerMap`](crate::cache::EagerMap).
 ///
@@ -31,7 +31,7 @@ pub(crate) struct SentenceSide {
     /// Source fingerprint → the root sentence ids it produced (1→N for CAF /
     /// row-var expansion).  Read through `roots_of_fingerprint` / related
     /// accessors.
-    forward:         DashMap<u64, SmallVec<[SentenceId; 2]>>,
+    forward: DashMap<u64, SmallVec<[SentenceId; 2]>>,
     /// Sparse source-refcount: roots produced by *more than one* fingerprint
     /// (absent ⇒ exactly one source).
     source_overflow: DashMap<SentenceId, u32>,
@@ -39,26 +39,26 @@ pub(crate) struct SentenceSide {
     /// `Element::Sub` (absent ⇒ exactly one parent reference).
     parent_overflow: DashMap<SentenceId, u32>,
     /// Variable scope disambiguation counter (not persisted).
-    scope_counter:   Arc<AtomicU64>,
+    scope_counter: Arc<AtomicU64>,
     /// Source-backed sentence ids (≥1 producing fingerprint).  A root may also
     /// be a sub.  Read via `root_sids` / `num_roots`.
-    roots:           DashSet<SentenceId>,
+    roots: DashSet<SentenceId>,
     /// Sentence ids referenced as a sub by ≥1 parent.  A sub may also be a root.
-    subs:            DashSet<SentenceId>,
+    subs: DashSet<SentenceId>,
     /// Per-root recorded sub-sentence ids.  Read via `subs_of`.
-    sentence_subs:   DashMap<SentenceId, Vec<SentenceId>>
+    sentence_subs: DashMap<SentenceId, Vec<SentenceId>>,
 }
 
 /// Serializable snapshot of [`SentenceSide`] for whole-cache persistence.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SentenceSideSnapshot {
-    forward:         Vec<(u64, Vec<SentenceId>)>,
+    forward: Vec<(u64, Vec<SentenceId>)>,
     source_overflow: Vec<(SentenceId, u32)>,
     parent_overflow: Vec<(SentenceId, u32)>,
-    scope_counter:   u64,
-    roots:           Vec<SentenceId>,
-    subs:            Vec<SentenceId>,
-    sentence_subs:   Vec<(SentenceId, Vec<SentenceId>)>
+    scope_counter: u64,
+    roots: Vec<SentenceId>,
+    subs: Vec<SentenceId>,
+    sentence_subs: Vec<(SentenceId, Vec<SentenceId>)>,
 }
 
 /// Behavior for the `syntactic::sentences` store.
@@ -67,42 +67,79 @@ pub(crate) struct SentenceCache;
 
 impl EagerMapBehavior for SentenceCache {
     type Parent = SyntacticLayer;
-    type Key    = SentenceId;
-    type Value  = Arc<Sentence>;
-    type Side   = SentenceSide;
+    type Key = SentenceId;
+    type Value = Arc<Sentence>;
+    type Side = SentenceSide;
     type SideSnapshot = SentenceSideSnapshot;
 
     const NAME: &'static str = "syntactic::sentences";
 
     fn snapshot_side(&self, side: &SentenceSide) -> SentenceSideSnapshot {
         SentenceSideSnapshot {
-            forward:         side.forward.iter().map(|e| (*e.key(), e.value().to_vec())).collect(),
-            source_overflow: side.source_overflow.iter().map(|e| (*e.key(), *e.value())).collect(),
-            parent_overflow: side.parent_overflow.iter().map(|e| (*e.key(), *e.value())).collect(),
-            scope_counter:   side.scope_counter.load(Ordering::Relaxed),
-            roots:           side.roots.iter().map(|r| *r).collect(),
-            subs:            side.subs.iter().map(|r| *r).collect(),
-            sentence_subs:   side.sentence_subs.iter().map(|e| (*e.key(), e.value().clone())).collect(),
+            forward: side
+                .forward
+                .iter()
+                .map(|e| (*e.key(), e.value().to_vec()))
+                .collect(),
+            source_overflow: side
+                .source_overflow
+                .iter()
+                .map(|e| (*e.key(), *e.value()))
+                .collect(),
+            parent_overflow: side
+                .parent_overflow
+                .iter()
+                .map(|e| (*e.key(), *e.value()))
+                .collect(),
+            scope_counter: side.scope_counter.load(Ordering::Relaxed),
+            roots: side.roots.iter().map(|r| *r).collect(),
+            subs: side.subs.iter().map(|r| *r).collect(),
+            sentence_subs: side
+                .sentence_subs
+                .iter()
+                .map(|e| (*e.key(), e.value().clone()))
+                .collect(),
         }
     }
 
     fn restore_side(&self, side: &SentenceSide, snap: SentenceSideSnapshot) {
-        for (fp, sids) in snap.forward         { side.forward.insert(fp, sids.into_iter().collect()); }
-        for (sid, n) in snap.source_overflow   { side.source_overflow.insert(sid, n); }
-        for (sid, n) in snap.parent_overflow   { side.parent_overflow.insert(sid, n); }
-        side.scope_counter.store(snap.scope_counter, Ordering::Relaxed);
-        for sid in snap.roots { side.roots.insert(sid); }
-        for sid in snap.subs  { side.subs.insert(sid); }
-        for (sid, n) in snap.sentence_subs   { side.sentence_subs.insert(sid, n); }
+        for (fp, sids) in snap.forward {
+            side.forward.insert(fp, sids.into_iter().collect());
+        }
+        for (sid, n) in snap.source_overflow {
+            side.source_overflow.insert(sid, n);
+        }
+        for (sid, n) in snap.parent_overflow {
+            side.parent_overflow.insert(sid, n);
+        }
+        side.scope_counter
+            .store(snap.scope_counter, Ordering::Relaxed);
+        for sid in snap.roots {
+            side.roots.insert(sid);
+        }
+        for sid in snap.subs {
+            side.subs.insert(sid);
+        }
+        for (sid, n) in snap.sentence_subs {
+            side.sentence_subs.insert(sid, n);
+        }
     }
 
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::FormulaAdded, EventKind::FormulaRemoved, EventKind::FormulaReferenced]
+        &[
+            EventKind::FormulaAdded,
+            EventKind::FormulaRemoved,
+            EventKind::FormulaReferenced,
+        ]
     }
 
     fn produces(&self) -> &'static [EventKind] {
-        &[EventKind::RootAdded, EventKind::RootRemoved, EventKind::SentencesChanged,
-          EventKind::SessionReferenced]
+        &[
+            EventKind::RootAdded,
+            EventKind::RootRemoved,
+            EventKind::SentencesChanged,
+            EventKind::SessionReferenced,
+        ]
     }
 
     // `react` resolves fingerprints against the source store, so the source
@@ -113,18 +150,22 @@ impl EagerMapBehavior for SentenceCache {
 
     fn react(
         &self,
-        parent:  &SyntacticLayer,
-        events:  &[&Event],
+        parent: &SyntacticLayer,
+        events: &[&Event],
         // The build/removal methods reach the keyed map + side through
         // `parent.store` (the whole `EagerMap`), so the split views are unused.
-        _store:  &EntryCache<SentenceId, Arc<Sentence>>,
-        _side:   &SentenceSide,
+        _store: &EntryCache<SentenceId, Arc<Sentence>>,
+        _side: &SentenceSide,
     ) -> Vec<Event> {
         let mut out: Vec<Event> = Vec::new();
         for event in events {
-            if let Event::FormulaAdded { node: hash, session } = event {
+            if let Event::FormulaAdded {
+                node: hash,
+                session,
+            } = event
+            {
                 let Some(raw) = parent.source.get(hash) else {
-                    continue // removed between event emission and now
+                    continue; // removed between event emission and now
                 };
                 let session = session.clone();
 
@@ -135,7 +176,12 @@ impl EagerMapBehavior for SentenceCache {
                 let mut scope_sids: Vec<SentenceId> = Vec::new();
                 for ast in &normalized {
                     let (root, scope) = parent.sentences.append_root_sentence(
-                        *hash, &session, ast, &parent.symbols, &parent.sessions);
+                        *hash,
+                        &session,
+                        ast,
+                        &parent.symbols,
+                        &parent.sessions,
+                    );
                     if let Some(sid) = root {
                         out.push(Event::RootAdded { sid });
                     }
@@ -148,20 +194,22 @@ impl EagerMapBehavior for SentenceCache {
                 if !scope_sids.is_empty() {
                     out.push(Event::SessionReferenced {
                         session: session.to_string(),
-                        sids:    scope_sids,
+                        sids: scope_sids,
                     });
                 }
-            }
-            else if let Event::FormulaRemoved { node: hash } = event {
+            } else if let Event::FormulaRemoved { node: hash } = event {
                 // Symbol pruning spans two caches: collect the still-referenced
                 // symbols from the sentence store, then evict the rest from the
                 // separate symbol store.
                 let removed = parent.sentences.remove_hash(*hash);
                 if !removed.is_empty() {
-                    let referenced  = parent.sentences.referenced_symbols();
+                    let referenced = parent.sentences.referenced_symbols();
                     let removed_syms = parent.symbols.retain_referenced(&referenced);
                     for r in removed {
-                        out.push(Event::RootRemoved { sid: r.sid, sentences: r.sentences });
+                        out.push(Event::RootRemoved {
+                            sid: r.sid,
+                            sentences: r.sentences,
+                        });
                     }
                     if !removed_syms.is_empty() {
                         // Orphaned symbols are batch-global.
@@ -170,14 +218,22 @@ impl EagerMapBehavior for SentenceCache {
                         });
                     }
                 }
-            }
-            else if let Event::FormulaReferenced { node: hash, session } = event {
+            } else if let Event::FormulaReferenced {
+                node: hash,
+                session,
+            } = event
+            {
                 // A session newly references an already-ingested fingerprint.
                 // Resolve it to the root sids it produced, record this session's
                 // membership, and surface the newly-owned roots so scope-bearing
                 // indices pick up the added scope.
-                let sids: Vec<SentenceId> = parent.sentences.side().forward
-                    .get(hash).map(|r| r.value().to_vec()).unwrap_or_default();
+                let sids: Vec<SentenceId> = parent
+                    .sentences
+                    .side()
+                    .forward
+                    .get(hash)
+                    .map(|r| r.value().to_vec())
+                    .unwrap_or_default();
                 let mut scope_sids: Vec<SentenceId> = Vec::new();
                 for sid in sids {
                     if parent.sessions.register(session, sid) {
@@ -187,7 +243,7 @@ impl EagerMapBehavior for SentenceCache {
                 if !scope_sids.is_empty() {
                     out.push(Event::SessionReferenced {
                         session: session.to_string(),
-                        sids:    scope_sids,
+                        sids: scope_sids,
                     });
                 }
             }
@@ -224,7 +280,12 @@ impl SyntacticLayer {
     /// The root sentence ids a source fingerprint produced (the `forward`
     /// `fingerprint -> roots` map).  Empty if the fingerprint produced nothing.
     pub(crate) fn roots_of_fingerprint(&self, fp: u64) -> Vec<SentenceId> {
-        self.sentences.side().forward.get(&fp).map(|s| s.to_vec()).unwrap_or_default()
+        self.sentences
+            .side()
+            .forward
+            .get(&fp)
+            .map(|s| s.to_vec())
+            .unwrap_or_default()
     }
 
     /// One-pass `sid -> source span` index over the whole `forward` map —
@@ -245,13 +306,19 @@ impl SyntacticLayer {
             std::collections::HashMap::new();
         for e in self.sentences.side().forward.iter() {
             let fp = *e.key();
-            let Some(node) = self.source_ast(fp) else { continue };
+            let Some(node) = self.source_ast(fp) else {
+                continue;
+            };
             let sp = node.span();
-            if sp.is_synthetic() { continue; }
+            if sp.is_synthetic() {
+                continue;
+            }
             for &sid in e.value().iter() {
                 match best.entry(sid) {
                     std::collections::hash_map::Entry::Occupied(mut o) => {
-                        if fp < o.get().0 { o.insert((fp, sp.clone())); }
+                        if fp < o.get().0 {
+                            o.insert((fp, sp.clone()));
+                        }
                     }
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert((fp, sp.clone()));
@@ -265,7 +332,10 @@ impl SyntacticLayer {
     /// The source fingerprints that produced `sid` — the inverse of `forward`.
     /// Linear scan (cold paths only, e.g. display / provenance).
     pub(crate) fn fingerprints_producing(&self, sid: SentenceId) -> Vec<u64> {
-        self.sentences.side().forward.iter()
+        self.sentences
+            .side()
+            .forward
+            .iter()
             .filter(|e| e.value().contains(&sid))
             .map(|e| *e.key())
             .collect()
@@ -276,7 +346,10 @@ impl SyntacticLayer {
     // Sole caller is the ask-gated `root_source_nodes` bulk walk.
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn fingerprint_roots(&self) -> Vec<(u64, Vec<SentenceId>)> {
-        self.sentences.side().forward.iter()
+        self.sentences
+            .side()
+            .forward
+            .iter()
             .map(|e| (*e.key(), e.value().to_vec()))
             .collect()
     }
@@ -284,7 +357,11 @@ impl SyntacticLayer {
     /// The recorded sub-sentence ids of `root` (its `Element::Sub`
     /// descendents), or `None` when the root has no recorded subs.
     pub(crate) fn subs_of(&self, root: SentenceId) -> Option<Vec<SentenceId>> {
-        self.sentences.side().sentence_subs.get(&root).map(|v| v.clone())
+        self.sentences
+            .side()
+            .sentence_subs
+            .get(&root)
+            .map(|v| v.clone())
     }
 }
 
@@ -299,13 +376,15 @@ impl EagerMap<SentenceCache> {
     /// brings a *new session*, `scope_added` is `Some`.
     pub(crate) fn append_root_sentence(
         &self,
-        hash:     u64,      // content fingerprint of the source AST
-        session:  &str,     // the ingest session tag this formula arrived under
-        node:     &AstNode, // a fully normalized root AST node
-        symbols:  &EagerMap<SymbolCache>,
+        hash: u64,      // content fingerprint of the source AST
+        session: &str,  // the ingest session tag this formula arrived under
+        node: &AstNode, // a fully normalized root AST node
+        symbols: &EagerMap<SymbolCache>,
         sessions: &EagerMap<SessionCache>,
     ) -> (Option<SentenceId>, Option<SentenceId>) {
-        if !matches!(node, AstNode::List { .. }) { return (None, None); }
+        if !matches!(node, AstNode::List { .. }) {
+            return (None, None);
+        }
 
         // Build the root, a post-order list of every sub-sentence (children
         // before parents), and the symbols mentioned.  Ids are content hashes,
@@ -327,7 +406,9 @@ impl EagerMap<SentenceCache> {
         let mut descendents = Vec::with_capacity(sub_sents.len());
         for sent in sub_sents {
             let (sid, is_new) = self.intern_sentence(sent);
-            if is_new { self.register_sub_edges(sid); }
+            if is_new {
+                self.register_sub_edges(sid);
+            }
             descendents.push(sid);
         }
 
@@ -364,25 +445,28 @@ impl EagerMap<SentenceCache> {
     /// 0-based `var_index`, shared by all its occurrences and across nested
     /// sub-sentences, in first-appearance (pre-order) order.
     pub(crate) fn assign_var_indices(&self, root_sid: SentenceId) {
-        let mut map:  HashMap<SymbolId, u32> = HashMap::new();
+        let mut map: HashMap<SymbolId, u32> = HashMap::new();
         let mut next: u32 = 0;
         self.stamp_var_indices(root_sid, &mut map, &mut next);
     }
 
     /// Pre-order walk helper for [`Self::assign_var_indices`].
-    fn stamp_var_indices(
-        &self,
-        sid:  SentenceId,
-        map:  &mut HashMap<SymbolId, u32>,
-        next: &mut u32,
-    ) {
+    fn stamp_var_indices(&self, sid: SentenceId, map: &mut HashMap<SymbolId, u32>, next: &mut u32) {
         /// One variable slot or sub-sentence in element order.
-        enum Item { Var(usize, SymbolId), Sub(SentenceId) }
+        enum Item {
+            Var(usize, SymbolId),
+            Sub(SentenceId),
+        }
 
         // Snapshot the relevant elements (in order) from the Arc so no map guard
         // is held across the mutation / recursion below.
-        let Some(sentence) = self.get(&sid) else { return };
-        let items: Vec<Item> = sentence.elements.iter().enumerate()
+        let Some(sentence) = self.get(&sid) else {
+            return;
+        };
+        let items: Vec<Item> = sentence
+            .elements
+            .iter()
+            .enumerate()
             .filter_map(|(i, el)| match el {
                 Element::Variable { id, .. } => Some(Item::Var(i, *id)),
                 Element::Sub(sub) => Some(Item::Sub(*sub)),
@@ -394,7 +478,11 @@ impl EagerMap<SentenceCache> {
         for item in items {
             match item {
                 Item::Var(i, id) => {
-                    let vi = *map.entry(id).or_insert_with(|| { let v = *next; *next += 1; v });
+                    let vi = *map.entry(id).or_insert_with(|| {
+                        let v = *next;
+                        *next += 1;
+                        v
+                    });
                     self.entries().modify_entry(sid, |arc| {
                         if let Some(Element::Variable { var_index, .. }) =
                             Arc::make_mut(arc).elements.get_mut(i)
@@ -411,7 +499,11 @@ impl EagerMap<SentenceCache> {
     /// Intern a parent-less sentence built directly from `elements`, returning
     /// its content-hash id.  Idempotent via [`Self::intern_sentence`].
     pub(crate) fn push_sentence(&self, elements: ElementVec) -> SentenceId {
-        self.intern_sentence(Sentence { parent: Vec::new(), elements }).0
+        self.intern_sentence(Sentence {
+            parent: Vec::new(),
+            elements,
+        })
+        .0
     }
 
     /// Intern `sentence` under its content-hash id, returning `(id, is_new)`.
@@ -444,10 +536,15 @@ impl EagerMap<SentenceCache> {
     /// Outgoing `Element::Sub` children of `sid` (each is one sub-reference).
     fn sub_children(&self, sid: SentenceId) -> Vec<SentenceId> {
         self.get(&sid)
-            .map(|s| s.elements.iter().filter_map(|e| match e {
-                Element::Sub(c) => Some(*c),
-                _ => None,
-            }).collect())
+            .map(|s| {
+                s.elements
+                    .iter()
+                    .filter_map(|e| match e {
+                        Element::Sub(c) => Some(*c),
+                        _ => None,
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -462,17 +559,23 @@ impl EagerMap<SentenceCache> {
     /// Add the direct (non-recursive) `Element::Symbol` ids of the single
     /// sentence `sid` to `out`.
     fn collect_own_symbols(&self, sid: SentenceId, out: &mut HashSet<SymbolId>) {
-        let Some(sentence) = self.get(&sid) else { return };
+        let Some(sentence) = self.get(&sid) else {
+            return;
+        };
         for el in &sentence.elements {
             match el {
-                Element::Symbol(sym) => { out.insert(sym.id()); }
+                Element::Symbol(sym) => {
+                    out.insert(sym.id());
+                }
                 // Variables are interned into the symbol table under their
                 // scope-qualified name (`X__<scope>`) but stored as
                 // `Element::Variable`, not `Element::Symbol`. Count their id
                 // here too, or a removal batch's orphan prune (which keeps only
                 // ids this walk returns) evicts every live variable symbol —
                 // thousands of them across a rule-heavy KB like SUMO.
-                Element::Variable { id, .. } => { out.insert(*id); }
+                Element::Variable { id, .. } => {
+                    out.insert(*id);
+                }
                 _ => {}
             }
         }
@@ -489,8 +592,12 @@ impl EagerMap<SentenceCache> {
             self.collect_own_symbols(sid, &mut referenced);
             // Clone the descendent list out so no `DashMap` guard is held across
             // the per-sentence lookups below.
-            let subs: Vec<SentenceId> = self.side().sentence_subs
-                .get(&sid).map(|r| r.clone()).unwrap_or_default();
+            let subs: Vec<SentenceId> = self
+                .side()
+                .sentence_subs
+                .get(&sid)
+                .map(|r| r.clone())
+                .unwrap_or_default();
             for sub in subs {
                 self.collect_own_symbols(sub, &mut referenced);
             }
@@ -505,7 +612,9 @@ impl EagerMap<SentenceCache> {
     /// be roots (the `RootRemoved` set), each tagged with the head + transitive
     /// symbol set its indices need — captured *before* the body is reclaimed.
     pub(crate) fn remove_hash(&self, hash: u64) -> Vec<RemovedRoot> {
-        let Some((_, sids)) = self.side().forward.remove(&hash) else { return Vec::new() };
+        let Some((_, sids)) = self.side().forward.remove(&hash) else {
+            return Vec::new();
+        };
 
         let mut removed_roots = Vec::new();
         for sid in sids {
@@ -513,9 +622,15 @@ impl EagerMap<SentenceCache> {
             // same `DashMap` deadlocks; copy the count out first.
             let cur = self.side().source_overflow.get(&sid).map(|r| *r);
             let last_source = match cur {
-                Some(n) if n > 2 => { self.side().source_overflow.insert(sid, n - 1); false }
-                Some(_)          => { self.side().source_overflow.remove(&sid); false } // 2 → 1
-                None             => true, // was the sole source
+                Some(n) if n > 2 => {
+                    self.side().source_overflow.insert(sid, n - 1);
+                    false
+                }
+                Some(_) => {
+                    self.side().source_overflow.remove(&sid);
+                    false
+                } // 2 → 1
+                None => true, // was the sole source
             };
             if last_source {
                 self.side().roots.remove(&sid);
@@ -543,13 +658,23 @@ impl EagerMap<SentenceCache> {
     /// root (no source) and not a sub (no parent).  Cascades into its children:
     /// dropping the body releases one sub-reference per `Element::Sub`.
     fn collect_if_unreferenced(&self, sid: SentenceId, out: &mut Vec<Sentence>) {
-        if self.side().roots.contains(&sid) || self.side().subs.contains(&sid) { return; }
-        let Some(sentence) = self.get(&sid) else { return };
+        if self.side().roots.contains(&sid) || self.side().subs.contains(&sid) {
+            return;
+        }
+        let Some(sentence) = self.get(&sid) else {
+            return;
+        };
         self.entries().evict_keys(&[sid]);
-        crate::log!(Trace, "sigmakee_rs_core::syntactic", format!("collected sentence sid={sid:#x}"));
+        crate::log!(
+            Trace,
+            "sigmakee_rs_core::syntactic",
+            format!("collected sentence sid={sid:#x}")
+        );
         // The held `Arc` keeps the body alive after eviction so we can read its
         // children; no map guard is held across the recursive decrement.
-        let children: Vec<SentenceId> = sentence.elements.iter()
+        let children: Vec<SentenceId> = sentence
+            .elements
+            .iter()
             .filter_map(|el| match el {
                 Element::Sub(c) => Some(*c),
                 _ => None,
@@ -567,8 +692,12 @@ impl EagerMap<SentenceCache> {
     fn dec_sub_use(&self, sid: SentenceId, out: &mut Vec<Sentence>) {
         let cur = self.side().parent_overflow.get(&sid).map(|r| *r);
         match cur {
-            Some(n) if n > 2 => { self.side().parent_overflow.insert(sid, n - 1); }
-            Some(_)          => { self.side().parent_overflow.remove(&sid); } // 2 → 1
+            Some(n) if n > 2 => {
+                self.side().parent_overflow.insert(sid, n - 1);
+            }
+            Some(_) => {
+                self.side().parent_overflow.remove(&sid);
+            } // 2 → 1
             None => {
                 // Was the sole parent reference.
                 self.side().subs.remove(&sid);
@@ -583,7 +712,7 @@ impl EagerMap<SentenceCache> {
 /// are torn out of the store, so consumers never read freed state.
 pub(crate) struct RemovedRoot {
     /// The sentence id that is no longer a root.
-    pub sid:       SentenceId,
+    pub sid: SentenceId,
     /// The sentence bodies removed by this root's retraction — the root itself
     /// plus any sub-sentences it orphaned — moved out of the store so downstream
     /// reactors can read the head / symbols / edge straight from the body.  The
@@ -602,10 +731,17 @@ mod tests {
     fn variables_have_scope_qualified_occurrences() {
         let mut store = SyntacticLayer::default();
         store.load_kif("(forall (?X) (P ?X))\n(forall (?X) (Q ?X))", "t.kif");
-        let xs: Vec<String> = store.symbols.snapshot().into_values()
+        let xs: Vec<String> = store
+            .symbols
+            .snapshot()
+            .into_values()
             .map(|sym| sym.name().to_string())
             .filter(|k| k.starts_with("X__"))
             .collect();
-        assert!(xs.len() >= 2, "expected distinct X__<scope> ids, got {:?}", xs);
+        assert!(
+            xs.len() >= 2,
+            "expected distinct X__<scope> ids, got {:?}",
+            xs
+        );
     }
 }

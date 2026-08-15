@@ -15,11 +15,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::types::{Element, SentenceId, SymbolId, TaxRelation};
-use crate::cache::{CacheBehavior, EntryCache};
 use crate::cache::events::{Event, EventKind};
-use crate::semantics::SemanticLayer;
+use crate::cache::{CacheBehavior, EntryCache};
 use crate::semantics::types::{Scope, Scoped};
+use crate::semantics::SemanticLayer;
+use crate::types::{Element, SentenceId, SymbolId, TaxRelation};
 
 /// One hop up the lattice: the next relation toward the queried target,
 /// plus the sid justifying the hop — `Some(rule sid)` for mined edges,
@@ -38,9 +38,9 @@ pub(crate) struct SubrelLattice;
 
 impl CacheBehavior for SubrelLattice {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = Arc<BelowMap>;
-    type Side   = ();
+    type Key = Scoped<SymbolId>;
+    type Value = Arc<BelowMap>;
+    type Side = ();
     type SideSnapshot = ();
 
     const NAME: &'static str = "semantic::subrel_lattice";
@@ -55,7 +55,9 @@ impl CacheBehavior for SubrelLattice {
         let mut frontier = vec![rel];
         while let Some(r) = frontier.pop() {
             for (child, tax) in parent.children_of_scoped(r, scope) {
-                if !matches!(tax, TaxRelation::Subrelation) { continue; }
+                if !matches!(tax, TaxRelation::Subrelation) {
+                    continue;
+                }
                 below.entry(child).or_insert_with(|| {
                     frontier.push(child);
                     Some((r, None))
@@ -72,22 +74,30 @@ impl CacheBehavior for SubrelLattice {
     }
 
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::RootAdded, EventKind::RootRemoved,
-          EventKind::TaxonomyChanged,
-          EventKind::SessionReferenced, EventKind::SessionRetracted]
+        &[
+            EventKind::RootAdded,
+            EventKind::RootRemoved,
+            EventKind::TaxonomyChanged,
+            EventKind::SessionReferenced,
+            EventKind::SessionRetracted,
+        ]
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences", "semantic::tax_edges",
-          "syntactic::axiom_index", "syntactic::sessions"]
+        &[
+            "syntactic::sentences",
+            "semantic::tax_edges",
+            "syntactic::axiom_index",
+            "syntactic::sessions",
+        ]
     }
 
     fn react(
         &self,
         parent: &SemanticLayer,
         events: &[&Event],
-        store:  &EntryCache<Scoped<SymbolId>, Arc<BelowMap>>,
-        _side:  &Self::Side,
+        store: &EntryCache<Scoped<SymbolId>, Arc<BelowMap>>,
+        _side: &Self::Side,
     ) -> Vec<Event> {
         let dirty = events.iter().any(|e| match e {
             Event::RootAdded { sid } => mined_edge_of(parent, *sid).is_some(),
@@ -97,7 +107,9 @@ impl CacheBehavior for SubrelLattice {
             | Event::SessionRetracted { .. } => true,
             _ => false,
         });
-        if dirty { store.clear(); }
+        if dirty {
+            store.clear();
+        }
         Vec::new()
     }
 }
@@ -107,11 +119,15 @@ impl CacheBehavior for SubrelLattice {
 /// the session's own roots.
 fn mined_subs_of(
     parent: &SemanticLayer,
-    sup:    SymbolId,
-    scope:  Scope,
+    sup: SymbolId,
+    scope: Scope,
 ) -> Vec<(SymbolId, SentenceId)> {
-    let mut candidates: Vec<SentenceId> =
-        parent.syntactic.axiom_sentences_of(sup).iter().copied().collect();
+    let mut candidates: Vec<SentenceId> = parent
+        .syntactic
+        .axiom_sentences_of(sup)
+        .iter()
+        .copied()
+        .collect();
     if let Scope::Session(s) = scope {
         candidates.extend(parent.syntactic.sessions.session_sentences_by_id(s));
     }
@@ -132,17 +148,33 @@ fn mined_edge_of(parent: &SemanticLayer, sid: SentenceId) -> Option<(SymbolId, S
     use crate::parse::OpKind;
     let s = parent.syntactic.sentence(sid)?;
     let mut els = s.elements.iter();
-    if !matches!(els.next(), Some(Element::Op(OpKind::Implies))) { return None; }
-    let Some(Element::Sub(ante)) = els.next() else { return None };
-    let Some(Element::Sub(cons)) = els.next() else { return None };
-    if els.next().is_some() { return None; }
+    if !matches!(els.next(), Some(Element::Op(OpKind::Implies))) {
+        return None;
+    }
+    let Some(Element::Sub(ante)) = els.next() else {
+        return None;
+    };
+    let Some(Element::Sub(cons)) = els.next() else {
+        return None;
+    };
+    if els.next().is_some() {
+        return None;
+    }
 
     let binary_pred = |sid: SentenceId| -> Option<(SymbolId, SymbolId, SymbolId)> {
         let s = parent.syntactic.sentence(sid)?;
-        if s.elements.len() != 3 { return None; }
-        let Some(Element::Symbol(head)) = s.elements.first() else { return None };
-        let Element::Variable { id: v1, .. } = s.elements[1] else { return None };
-        let Element::Variable { id: v2, .. } = s.elements[2] else { return None };
+        if s.elements.len() != 3 {
+            return None;
+        }
+        let Some(Element::Symbol(head)) = s.elements.first() else {
+            return None;
+        };
+        let Element::Variable { id: v1, .. } = s.elements[1] else {
+            return None;
+        };
+        let Element::Variable { id: v2, .. } = s.elements[2] else {
+            return None;
+        };
         Some((head.id(), v1, v2))
     };
     let (r1, a1, a2) = binary_pred(*ante)?;
@@ -166,10 +198,12 @@ mod tests {
 
     #[test]
     fn declared_subrelation_chains_into_below_set() {
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (subrelation brother sibling)
             (subrelation sibling familyRelation)
-        ");
+        ",
+        );
         let rel = layer.syntactic.sym_id("familyRelation").unwrap();
         let bro = layer.syntactic.sym_id("brother").unwrap();
         let sib = layer.syntactic.sym_id("sibling").unwrap();
@@ -183,32 +217,41 @@ mod tests {
 
     #[test]
     fn mined_rule_edge_enters_lattice_with_sid() {
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (=> (greaterThan ?X ?Y) (greaterThanOrEqualTo ?X ?Y))
             (instance greaterThan BinaryPredicate)
-        ");
+        ",
+        );
         let ge = layer.syntactic.sym_id("greaterThanOrEqualTo").unwrap();
         let gt = layer.syntactic.sym_id("greaterThan").unwrap();
         let below = layer.subrel_below(ge, Scope::Base);
-        let hop = below.get(&gt).expect("mined edge present").expect("not the target");
+        let hop = below
+            .get(&gt)
+            .expect("mined edge present")
+            .expect("not the target");
         assert_eq!(hop.0, ge);
         assert!(hop.1.is_some(), "mined hop carries the rule's sid");
     }
 
     #[test]
     fn wrong_shapes_are_not_mined() {
-        let layer = kif_layer("
+        let layer = kif_layer(
+            "
             (=> (p ?X ?Y) (q ?Y ?X))
             (=> (r ?X ?Y) (r2 ?X ?Z))
             (=> (s ?X ?X) (s2 ?X ?X))
             (=> (and (t ?X ?Y) (t ?Y ?Z)) (t ?X ?Z))
-        ");
+        ",
+        );
         for (sub, sup) in [("p", "q"), ("r", "r2"), ("s", "s2")] {
             let sup_id = layer.syntactic.sym_id(sup).unwrap();
             let sub_id = layer.syntactic.sym_id(sub).unwrap();
             let below = layer.subrel_below(sup_id, Scope::Base);
-            assert!(!below.contains_key(&sub_id),
-                "({sub} -> {sup}) must not mine: wrong variable shape");
+            assert!(
+                !below.contains_key(&sub_id),
+                "({sub} -> {sup}) must not mine: wrong variable shape"
+            );
         }
     }
 }

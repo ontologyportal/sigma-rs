@@ -1,21 +1,23 @@
 use std::fs;
 
 use log;
-use sigmakee_rs_sdk::{HasTranslation, TopLayer};
 use sigmakee_rs_sdk::manager::KBManager;
-use sigmakee_rs_sdk::{Session};
+use sigmakee_rs_sdk::Session;
+use sigmakee_rs_sdk::{HasTranslation, TopLayer};
 
 /// Entry point for `sumo load`.
 ///
-/// The only command that writes to the LMDB database. This command 
+/// The only command that writes to the LMDB database. This command
 /// writes the current state of the KB to the LMDB persistence backend
-/// by the point that `run_load` is called, the backend should have 
+/// by the point that `run_load` is called, the backend should have
 /// already been flushed.
-/// 
+///
 /// This variant is for layers which perform TPTP translation. It will
 /// warm the translation cache and persist that
 pub fn run_load_warm<L>(mut session: Session<L>, manager: KBManager) -> bool
-where L: HasTranslation {
+where
+    L: HasTranslation,
+{
     if let Err(e) = session.translate(manager.into()) {
         log::error!("Error warming session translation cache: {}", e);
         log::error!("Aborting KB loading");
@@ -30,14 +32,17 @@ where L: HasTranslation {
 
 /// Entry point for `sumo load`.
 ///
-/// The only command that writes to the LMDB database. This command 
+/// The only command that writes to the LMDB database. This command
 /// writes the current state of the KB to the LMDB persistence backend
-/// by the point that `run_load` is called, the backend should have 
+/// by the point that `run_load` is called, the backend should have
 /// already been flushed.
-/// 
-/// This variant is for layers which do not have translation capacity. 
+///
+/// This variant is for layers which do not have translation capacity.
 /// No cache warming is necessary
-pub fn run_load<L>(session: Session<L>, _manager: KBManager) -> bool where L : TopLayer {
+pub fn run_load<L>(session: Session<L>, _manager: KBManager) -> bool
+where
+    L: TopLayer,
+{
     if let Err(err) = session.persist() {
         log::error!("Failed to save KB to disk: {}", err);
         false
@@ -64,9 +69,8 @@ pub fn run_flush(manager: &KBManager) -> bool {
                 return false;
             }
             log::info!(target: "sigmakee_rs_core::load",
-                "load --flush: wiped '{}'", kb_path.display());    
+                "load --flush: wiped '{}'", kb_path.display());
         }
     }
     true
 }
-

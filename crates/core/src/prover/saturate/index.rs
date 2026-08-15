@@ -33,7 +33,7 @@ use super::AtomInfo;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EntryRef {
     pub(crate) clause: u32,
-    pub(crate) lit:    u8,
+    pub(crate) lit: u8,
 }
 
 /// Where an indexed *subterm* lives: a literal plus the position path from
@@ -42,15 +42,15 @@ pub(crate) struct EntryRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TermPos {
     pub(crate) clause: u32,
-    pub(crate) lit:    u8,
-    pub(crate) path:   SmallVec<[u8; 4]>,
+    pub(crate) lit: u8,
+    pub(crate) path: SmallVec<[u8; 4]>,
 }
 
 /// One indexed entry: its location plus the atom identity the views need
 /// for re-keying (coins come from the atom's memoized info).
 #[derive(Debug, Clone)]
 struct Entry<L> {
-    at:   L,
+    at: L,
     atom: AtomId,
 }
 
@@ -60,10 +60,16 @@ pub(crate) trait Located {
     fn loc_clause(&self) -> u32;
 }
 impl Located for EntryRef {
-    #[inline] fn loc_clause(&self) -> u32 { self.clause }
+    #[inline]
+    fn loc_clause(&self) -> u32 {
+        self.clause
+    }
 }
 impl Located for TermPos {
-    #[inline] fn loc_clause(&self) -> u32 { self.clause }
+    #[inline]
+    fn loc_clause(&self) -> u32 {
+        self.clause
+    }
 }
 
 /// Group / view keys, folded to `u64` so the engine needn't be generic
@@ -123,14 +129,16 @@ impl<F> InfoSource for F
 where
     F: Fn(AtomId) -> std::sync::Arc<AtomInfo>,
 {
-    fn info(&self, atom: AtomId) -> std::sync::Arc<AtomInfo> { self(atom) }
+    fn info(&self, atom: AtomId) -> std::sync::Arc<AtomInfo> {
+        self(atom)
+    }
 }
 
 /// The generic residue-keyed multimap with lazy union views.
 #[derive(Debug, Clone)]
 struct ResidueTable<L> {
     groups: Map64<u64, Map64<u64, Map64<u64, Vec<Entry<L>>>>>,
-    views:  Map64<ViewKey, Map64<u64, Vec<Entry<L>>>>,
+    views: Map64<ViewKey, Map64<u64, Vec<Entry<L>>>>,
     /// Retired clauses — their entries linger in `groups`/`views` (the
     /// lazy views cache copies, so physical removal would have to purge
     /// every derived view) but are filtered out of every probe.  Cheap
@@ -164,9 +172,12 @@ impl<L: Clone + Located> ResidueTable<L> {
         let r = info.base_residue;
         let entry = Entry { at, atom };
         self.groups
-            .entry(gkey).or_default()
-            .entry(m).or_default()
-            .entry(r).or_default()
+            .entry(gkey)
+            .or_default()
+            .entry(m)
+            .or_default()
+            .entry(r)
+            .or_default()
             .push(entry.clone());
         // Funnel-pour into live views derived from this (gkey, mask).
         for ((g2, mp, u), tbl) in self.views.iter_mut() {
@@ -179,9 +190,13 @@ impl<L: Clone + Located> ResidueTable<L> {
 
     /// The union view of `gkey`'s `mp`-mask table at mask `u`, derived on
     /// first use (one coin-XOR per entry per extra seat).
-    fn view(&mut self, gkey: u64, mp: u64, u: u64, src: &impl InfoSource)
-        -> Option<&Map64<u64, Vec<Entry<L>>>>
-    {
+    fn view(
+        &mut self,
+        gkey: u64,
+        mp: u64,
+        u: u64,
+        src: &impl InfoSource,
+    ) -> Option<&Map64<u64, Vec<Entry<L>>>> {
         if mp == u {
             return self.groups.get(&gkey)?.get(&mp);
         }
@@ -280,9 +295,7 @@ impl LiteralIndex {
     }
 
     /// Index literal `lit` of clause `clause` (polarity `pos`, atom `atom`).
-    pub(crate) fn add(
-        &mut self, at: EntryRef, pos: bool, atom: AtomId, src: &impl InfoSource,
-    ) {
+    pub(crate) fn add(&mut self, at: EntryRef, pos: bool, atom: AtomId, src: &impl InfoSource) {
         let info = src.info(atom);
         self.t.add(Self::gkey(pos, info.arity), at, atom, &info);
     }
@@ -301,7 +314,11 @@ impl LiteralIndex {
     /// [`Self::probe`] under an explicit retrieval relation — the
     /// phase-0 seat-shape channel (see [`SeatRel`]).
     pub(crate) fn probe_rel(
-        &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource, rel: SeatRel,
+        &mut self,
+        pos: bool,
+        q: &AtomInfo,
+        src: &impl InfoSource,
+        rel: SeatRel,
     ) -> Vec<EntryRef> {
         self.t.probe(Self::gkey(pos, q.arity), q, src, rel)
     }
@@ -310,14 +327,20 @@ impl LiteralIndex {
     /// (unifiability relation, swap-tolerant: see
     /// [`AtomInfo::seats_unifiable_mod_swap`]).
     pub(crate) fn complementary(
-        &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
+        &mut self,
+        pos: bool,
+        q: &AtomInfo,
+        src: &impl InfoSource,
     ) -> Vec<EntryRef> {
         self.probe_rel(!pos, q, src, SeatRel::Unifiable)
     }
 
     /// Complementary candidate count (the fewest-candidates heuristic).
     pub(crate) fn count_complementary(
-        &mut self, pos: bool, q: &AtomInfo, src: &impl InfoSource,
+        &mut self,
+        pos: bool,
+        q: &AtomInfo,
+        src: &impl InfoSource,
     ) -> usize {
         self.t.count(Self::gkey(!pos, q.arity), q, src)
     }

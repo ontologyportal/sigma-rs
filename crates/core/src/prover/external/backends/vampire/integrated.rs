@@ -17,14 +17,10 @@ use std::time::Duration;
 
 use vampire_prover::{Options, ProofRes, UnknownReason};
 
-
-use super::super::{ProverMode, ProverOpts, ProverRunner};
 use super::super::super::super::result::{
-    ProverResult,
-    ProverStatus,
-    ProverTimings,
-    TerminationReason
+    ProverResult, ProverStatus, ProverTimings, TerminationReason,
 };
+use super::super::{ProverMode, ProverOpts, ProverRunner};
 
 /// A [`ProverRunner`] that uses the embedded Vampire library (FFI) instead of
 /// spawning a child process.
@@ -53,10 +49,10 @@ impl ProverRunner for IntegratedVampireRunner {
 
         let t_input = Instant::now();
         let ir_problem = match crate::trans::ir::parse_tptp(tptp) {
-            Ok(p)  => p,
+            Ok(p) => p,
             Err(e) => {
                 return ProverResult {
-                    status:     ProverStatus::Unknown,
+                    status: ProverStatus::Unknown,
                     raw_output: format!("TPTP parse error: {e}"),
                     ..Default::default()
                 };
@@ -74,10 +70,10 @@ impl ProverRunner for IntegratedVampireRunner {
     /// (`lower_ho.rs`), mirroring the first-order [`ProverRunner::prove_ir`].
     fn prove_ho(
         &self,
-        problem:          &crate::trans::ir::HoProblem,
-        _sid_map:         &[crate::types::SentenceId],
+        problem: &crate::trans::ir::HoProblem,
+        _sid_map: &[crate::types::SentenceId],
         _conjecture_name: &str,
-        opts:             &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         use std::time::Instant;
 
@@ -94,7 +90,7 @@ impl ProverRunner for IntegratedVampireRunner {
             Ok(p) => p,
             Err(msg) => {
                 return ProverResult {
-                    status:     ProverStatus::Unknown,
+                    status: ProverStatus::Unknown,
                     raw_output: format!("HOL lowering error: {msg}"),
                     ..Default::default()
                 };
@@ -124,10 +120,10 @@ impl ProverRunner for IntegratedVampireRunner {
     /// proof steps map back by formula content, not by axiom name.)
     fn prove_ir(
         &self,
-        ir_problem:       &crate::trans::ir::Problem,
-        _sid_map:         &[crate::types::SentenceId],
+        ir_problem: &crate::trans::ir::Problem,
+        _sid_map: &[crate::types::SentenceId],
         _conjecture_name: &str,
-        opts:             &ProverOpts,
+        opts: &ProverOpts,
     ) -> ProverResult {
         use std::time::Instant;
 
@@ -179,18 +175,18 @@ impl ProverRunner for IntegratedVampireRunner {
         //    flow as `ProverStatus::Unknown` but with a more
         //    informative `raw_output` (see below).
         let status = match (&opts.mode, &res) {
-            (ProverMode::Prove, ProofRes::Proved)     => ProverStatus::Proved,
+            (ProverMode::Prove, ProofRes::Proved) => ProverStatus::Proved,
             (ProverMode::Prove, ProofRes::Unprovable) => ProverStatus::Disproved,
-            (ProverMode::CheckConsistency, ProofRes::Proved)     => ProverStatus::Inconsistent,
+            (ProverMode::CheckConsistency, ProofRes::Proved) => ProverStatus::Inconsistent,
             (ProverMode::CheckConsistency, ProofRes::Unprovable) => ProverStatus::Consistent,
-            (_, ProofRes::Unknown(UnknownReason::Timeout))       => ProverStatus::Timeout,
-            (_, ProofRes::Unknown(_))                            => ProverStatus::Unknown,
+            (_, ProofRes::Unknown(UnknownReason::Timeout)) => ProverStatus::Timeout,
+            (_, ProofRes::Unknown(_)) => ProverStatus::Unknown,
         };
 
         let t_output = Instant::now();
         let (proof_kif, ir_proof) = if let Some(proof) = proof_opt.as_ref() {
-            let kif   = super::native_proof::native_proof_to_kif_steps(proof);
-            let ir    = super::native_proof::native_proof_to_ir_steps(proof);
+            let kif = super::native_proof::native_proof_to_kif_steps(proof);
+            let ir = super::native_proof::native_proof_to_ir_steps(proof);
             (kif, ir)
         } else {
             (vec![], vec![])
@@ -229,25 +225,29 @@ impl ProverRunner for IntegratedVampireRunner {
         // follow the same shape but are gated on more FFI work in
         // `vampire-prover`.
         let raw_output = match &res {
-            ProofRes::Proved     => "Proved".to_string(),
+            ProofRes::Proved => "Proved".to_string(),
             ProofRes::Unprovable => "Unprovable (saturation found a counter-model)".to_string(),
-            ProofRes::Unknown(UnknownReason::Timeout)     => "Timeout".to_string(),
+            ProofRes::Unknown(UnknownReason::Timeout) => "Timeout".to_string(),
             ProofRes::Unknown(UnknownReason::MemoryLimit) => "Memory limit exceeded".to_string(),
-            ProofRes::Unknown(UnknownReason::Incomplete)  => "Inconclusive (incomplete decision procedure)".to_string(),
-            ProofRes::Unknown(UnknownReason::Unknown)     => "Inconclusive (no reason reported)".to_string(),
-            ProofRes::Unknown(UnknownReason::Other(msg))  => format!("Internal prover error: {msg}"),
+            ProofRes::Unknown(UnknownReason::Incomplete) => {
+                "Inconclusive (incomplete decision procedure)".to_string()
+            }
+            ProofRes::Unknown(UnknownReason::Unknown) => {
+                "Inconclusive (no reason reported)".to_string()
+            }
+            ProofRes::Unknown(UnknownReason::Other(msg)) => format!("Internal prover error: {msg}"),
         };
 
         // Map the native termination reason onto the backend-agnostic
         // [`TerminationReason`] the autoscaling loop consumes.
         let termination = match &res {
-            ProofRes::Proved                              => None,
-            ProofRes::Unprovable                          => Some(TerminationReason::Saturation),
-            ProofRes::Unknown(UnknownReason::Timeout)     => Some(TerminationReason::TimeLimit),
+            ProofRes::Proved => None,
+            ProofRes::Unprovable => Some(TerminationReason::Saturation),
+            ProofRes::Unknown(UnknownReason::Timeout) => Some(TerminationReason::TimeLimit),
             ProofRes::Unknown(UnknownReason::MemoryLimit) => Some(TerminationReason::ResourceOut),
-            ProofRes::Unknown(UnknownReason::Incomplete)  => Some(TerminationReason::GaveUp),
-            ProofRes::Unknown(UnknownReason::Unknown)     => Some(TerminationReason::GaveUp),
-            ProofRes::Unknown(UnknownReason::Other(_))    => Some(TerminationReason::Other),
+            ProofRes::Unknown(UnknownReason::Incomplete) => Some(TerminationReason::GaveUp),
+            ProofRes::Unknown(UnknownReason::Unknown) => Some(TerminationReason::GaveUp),
+            ProofRes::Unknown(UnknownReason::Other(_)) => Some(TerminationReason::Other),
         };
 
         ProverResult {
@@ -256,7 +256,11 @@ impl ProverRunner for IntegratedVampireRunner {
             termination,
             proof_kif,
             ir_proof,
-            timings:    ProverTimings { input_gen, prover_run, output_parse },
+            timings: ProverTimings {
+                input_gen,
+                prover_run,
+                output_parse,
+            },
             ..Default::default()
         }
     }

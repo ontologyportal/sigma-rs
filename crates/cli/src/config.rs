@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 /// quotes).  Without this the config silently fails to load, the KB
 /// is built empty, and callers like `-k /path` produce a one-line TPTP
 /// dump containing only the conjecture.
-pub fn resolve_config_path(
-    manual_path: Option<&Path>,
-) -> Option<PathBuf> {
+pub fn resolve_config_path(manual_path: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = manual_path {
         let p = expand_tilde(p);
         if p.is_dir() {
@@ -55,7 +53,7 @@ pub fn default_config_write_path() -> Option<PathBuf> {
 pub(crate) fn expand_tilde(p: &Path) -> PathBuf {
     let s = match p.to_str() {
         Some(s) => s,
-        None    => return p.to_path_buf(),
+        None => return p.to_path_buf(),
     };
     if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = std::env::var_os("HOME") {
@@ -84,6 +82,4 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}

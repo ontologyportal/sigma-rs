@@ -44,26 +44,29 @@ use crate::state::GlobalState;
 /// and keeps the Problems panel dominated by the yellow-triangle
 /// icon.  Hard parse errors remain `Error`.
 pub fn publish_diagnostics(
-    sender:  &Sender<Message>,
-    uri:     &Url,
-    rope:    &Rope,
-    parsed:  &ParsedDocument,
-    state:   &GlobalState,
-    kb:      &KnowledgeBase,
+    sender: &Sender<Message>,
+    uri: &Url,
+    rope: &Rope,
+    parsed: &ParsedDocument,
+    state: &GlobalState,
+    kb: &KnowledgeBase,
     version: Option<i32>,
 ) {
-    let ignored = state.ignored_diagnostic_codes.read().ok()
+    let ignored = state
+        .ignored_diagnostic_codes
+        .read()
+        .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
     publish_diagnostics_filtered(sender, uri, rope, parsed, kb, version, &ignored)
 }
 
 fn publish_diagnostics_filtered(
-    sender:  &Sender<Message>,
-    uri:     &Url,
-    rope:    &Rope,
-    parsed:  &ParsedDocument,
-    kb:      &KnowledgeBase,
+    sender: &Sender<Message>,
+    uri: &Url,
+    rope: &Rope,
+    parsed: &ParsedDocument,
+    kb: &KnowledgeBase,
     version: Option<i32>,
     ignored: &HashSet<String>,
 ) {
@@ -83,7 +86,7 @@ fn publish_diagnostics_filtered(
     // so the client sees an immediate change the next time
     // diagnostics are published.
     let file_tag = uri_to_tag(uri);
-    let roots    = kb.file_roots(&file_tag);
+    let roots = kb.file_roots(&file_tag);
     for sid in roots {
         // The validator now returns ranged Diagnostics directly; force
         // Warning severity per the module doc and apply the ignore list
@@ -98,7 +101,7 @@ fn publish_diagnostics_filtered(
     }
 
     let params = PublishDiagnosticsParams {
-        uri:     uri.clone(),
+        uri: uri.clone(),
         diagnostics,
         version,
     };

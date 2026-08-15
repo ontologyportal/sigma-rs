@@ -18,8 +18,13 @@ impl<'a> SemanticValidator<'a> {
         if !self.entity_checked.borrow_mut().insert(id) {
             return;
         }
-        if !self.layer.has_ancestor_by_name_scoped(id, &ROOT_SYMBOL.name(), self.scope) {
-            out.push(SemanticError::NoEntityAncestor { sym: self.sym_name_str(id) });
+        if !self
+            .layer
+            .has_ancestor_by_name_scoped(id, &ROOT_SYMBOL.name(), self.scope)
+        {
+            out.push(SemanticError::NoEntityAncestor {
+                sym: self.sym_name_str(id),
+            });
         }
     }
 
@@ -28,8 +33,11 @@ impl<'a> SemanticValidator<'a> {
         let id = match el {
             Element::Variable { is_row: false, .. } => return,
             Element::Symbol(sym) => sym.id(),
-            Element::Sub(sid)    => { self.validate_structure(*sid, out); return; }
-            _                    => return,
+            Element::Sub(sid) => {
+                self.validate_structure(*sid, out);
+                return;
+            }
+            _ => return,
         };
         self.check_entity_ancestor(id, out);
         if self.layer.is_relation_scoped(id, self.scope) {
@@ -37,13 +45,18 @@ impl<'a> SemanticValidator<'a> {
             // `Unknown` gap (`rd.id() == None`) means none was declared there.
             for (idx, rd) in self.layer.domain_scoped(id, self.scope).iter().enumerate() {
                 if rd.id().is_none() {
-                    out.push(SemanticError::MissingDomain { sym: self.sym_name_str(id), idx });
+                    out.push(SemanticError::MissingDomain {
+                        sym: self.sym_name_str(id),
+                        idx,
+                    });
                 }
             }
 
             // A relation must declare its arity (via its `BinaryRelation` / … ancestry).
             if self.layer.arity(id).is_none() {
-                out.push(SemanticError::MissingArity { sym: self.sym_name_str(id) });
+                out.push(SemanticError::MissingArity {
+                    sym: self.sym_name_str(id),
+                });
             }
 
             if self.layer.is_function_scoped(id, self.scope) {
@@ -52,17 +65,30 @@ impl<'a> SemanticValidator<'a> {
                 // additionally surfaced as a `DoubleRange` diagnostic by the
                 // `semantic::range` cache reactor on ingest, so the validator only
                 // flags the missing case here.
-                if matches!(self.layer.range_scoped(id, self.scope), RelationRange::Unknown) {
-                    out.push(SemanticError::MissingRange { sym: self.sym_name_str(id) });
+                if matches!(
+                    self.layer.range_scoped(id, self.scope),
+                    RelationRange::Unknown
+                ) {
+                    out.push(SemanticError::MissingRange {
+                        sym: self.sym_name_str(id),
+                    });
                 }
 
                 let fun_name = self.sym_name_str(id);
-                if !fun_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                if !fun_name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
                     out.push(SemanticError::FunctionCase { sym: fun_name });
                 }
             } else if self.layer.is_predicate_scoped(id, self.scope) {
                 let rel_name = self.sym_name_str(id);
-                if rel_name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                if rel_name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
                     out.push(SemanticError::PredicateCase { sym: rel_name });
                 }
             }
@@ -70,8 +96,12 @@ impl<'a> SemanticValidator<'a> {
     }
 
     pub(crate) fn is_logical_sentence(&self, sid: SentenceId) -> bool {
-        let Some(sentence) = &self.layer.syntactic.sentence(sid) else { return false };
-        if sentence.is_operator() { return true; }
+        let Some(sentence) = &self.layer.syntactic.sentence(sid) else {
+            return false;
+        };
+        if sentence.is_operator() {
+            return true;
+        }
         let head_id = match sentence.elements.first() {
             Some(Element::Symbol(sym)) => sym.id(),
             // A predicate-variable head `(?REL ?x ?y)` is a higher-order literal
@@ -98,7 +128,9 @@ impl<'a> SemanticValidator<'a> {
                 match dom {
                     RelationDomain::Domain(dom_id) => {
                         let dom_name = self.sym_name_str(*dom_id);
-                        if dom_name == &*ROOT_SYMBOL.name() { return true; }
+                        if dom_name == &*ROOT_SYMBOL.name() {
+                            return true;
+                        }
                         // A class is an instance of `Class`, hence of every
                         // *superclass* of Class (SetOrClass, Abstract, Entity, …).
                         // So a class argument satisfies a `Domain(C)` constraint
@@ -111,24 +143,32 @@ impl<'a> SemanticValidator<'a> {
                         if self.layer.is_class_scoped(sym_id, self.scope) {
                             if let Some(class_id) = self.layer.syntactic.sym_id("Class") {
                                 if class_id == *dom_id
-                                    || self.layer.has_ancestor_scoped(class_id, *dom_id, self.scope)
+                                    || self
+                                        .layer
+                                        .has_ancestor_scoped(class_id, *dom_id, self.scope)
                                 {
                                     return true;
                                 }
                             }
                         }
-                        self.layer.is_instance_scoped(sym_id, self.scope) && self.layer.has_ancestor_scoped(sym_id, *dom_id, self.scope)
+                        self.layer.is_instance_scoped(sym_id, self.scope)
+                            && self.layer.has_ancestor_scoped(sym_id, *dom_id, self.scope)
                     }
                     RelationDomain::DomainSubclass(dom_id) => {
                         let dom_name = self.sym_name_str(*dom_id);
-                        if dom_name == &*ROOT_SYMBOL.name() { return true; }
+                        if dom_name == &*ROOT_SYMBOL.name() {
+                            return true;
+                        }
                         // `domainSubclass R N Class` means "the argument must be a
                         // class".  Any symbol that IS a class satisfies this, even
                         // if it is not itself a subclass of `Class` in the hierarchy
                         // (e.g. SetOrClass is a superclass of Class, not a subclass,
                         // yet it is a class and is a valid range for rangeSubclass).
-                        if dom_name == "Class"  { return self.layer.is_class_scoped(sym_id, self.scope); }
-                        self.layer.is_class_scoped(sym_id, self.scope) && self.layer.has_ancestor_scoped(sym_id, *dom_id, self.scope)
+                        if dom_name == "Class" {
+                            return self.layer.is_class_scoped(sym_id, self.scope);
+                        }
+                        self.layer.is_class_scoped(sym_id, self.scope)
+                            && self.layer.has_ancestor_scoped(sym_id, *dom_id, self.scope)
                     }
                     // No declared domain for this position — no constraint to fail.
                     RelationDomain::Unknown => true,
@@ -149,7 +189,6 @@ impl<'a> SemanticValidator<'a> {
             Element::Op(_) => false,
         }
     }
-    
-    // -- Batch validation ------------------------------------------------------
 
+    // -- Batch validation ------------------------------------------------------
 }

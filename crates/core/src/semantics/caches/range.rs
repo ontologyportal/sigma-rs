@@ -1,13 +1,13 @@
 //! `semantic::range` cache: memoises a relation's range sort(s).
 
-use crate::types::RelationRange;
-use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, ToDiagnostic};
+use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::SemanticLayer;
 use crate::semantics::consts::RANGE_SUB_REL_CLASS;
 use crate::semantics::types::{Scope, Scoped};
+use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
-use crate::cache::events::{Event, EventKind};
+use crate::types::RelationRange;
+use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, ToDiagnostic};
 
 /// Behavior for the `semantic::range` cache: the range sort(s) declared for a
 /// relation via `range` / `rangeSubclass` axioms.
@@ -16,8 +16,8 @@ pub(crate) struct Range;
 
 impl CacheBehavior for Range {
     type Parent = SemanticLayer;
-    type Key    = Scoped<SymbolId>;
-    type Value  = RelationRange;
+    type Key = Scoped<SymbolId>;
+    type Value = RelationRange;
     type Side = ();
     type SideSnapshot = ();
 
@@ -31,28 +31,35 @@ impl CacheBehavior for Range {
         // A global (axiom) rule overrules a session assertion: resolve Base
         // first, fall to the session only when Base declares no range.
         let resolve = |only_base: bool| -> Option<RelationRange> {
-            let pick = |head: SymbolId, make: fn(SymbolId) -> RelationRange| -> Option<RelationRange> {
-                for sid in parent.subject_sids_scoped(head, rel, scope) {
-                    if only_base && !parent.syntactic.is_axiom(sid) { continue; }
-                    if !only_base && parent.syntactic.is_axiom(sid) { continue; }
-                    let Some(sentence) = parent.syntactic.sentence(sid) else { continue };
-                    let class_id = match sentence.elements.get(2) {
-                        Some(Element::Symbol(sym)) => sym.id(),
-                        _ => continue,
-                    };
-                    return Some(make(class_id));
-                }
-                None
-            };
+            let pick =
+                |head: SymbolId, make: fn(SymbolId) -> RelationRange| -> Option<RelationRange> {
+                    for sid in parent.subject_sids_scoped(head, rel, scope) {
+                        if only_base && !parent.syntactic.is_axiom(sid) {
+                            continue;
+                        }
+                        if !only_base && parent.syntactic.is_axiom(sid) {
+                            continue;
+                        }
+                        let Some(sentence) = parent.syntactic.sentence(sid) else {
+                            continue;
+                        };
+                        let class_id = match sentence.elements.get(2) {
+                            Some(Element::Symbol(sym)) => sym.id(),
+                            _ => continue,
+                        };
+                        return Some(make(class_id));
+                    }
+                    None
+                };
             // `range` head id may be shape-recognized (renamed dialect);
             // `rangeSubclass` stays on its global name.
-            let range          = pick(parent.range_role(),      RelationRange::Range);
+            let range = pick(parent.range_role(), RelationRange::Range);
             let range_subclass = pick(RANGE_SUB_REL_CLASS.id(), RelationRange::RangeSubclass);
             match (range, range_subclass) {
-                (None, None)        => None,
-                (None, Some(rs))    => Some(rs),
-                (Some(r), None)     => Some(r),
-                (Some(_), Some(_))  => Some(RelationRange::Unknown), // conflict
+                (None, None) => None,
+                (None, Some(rs)) => Some(rs),
+                (Some(r), None) => Some(r),
+                (Some(_), Some(_)) => Some(RelationRange::Unknown), // conflict
             }
         };
 
@@ -68,8 +75,12 @@ impl CacheBehavior for Range {
     }
 
     fn consumes(&self) -> &'static [EventKind] {
-        &[EventKind::RelationAdded, EventKind::RelationRemoved,
-          EventKind::SessionReferenced, EventKind::SessionRetracted]
+        &[
+            EventKind::RelationAdded,
+            EventKind::RelationRemoved,
+            EventKind::SessionReferenced,
+            EventKind::SessionRetracted,
+        ]
     }
 
     fn produces(&self) -> &'static [EventKind] {
@@ -77,15 +88,19 @@ impl CacheBehavior for Range {
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences", "syntactic::residue_index", "syntactic::sessions"]
+        &[
+            "syntactic::sentences",
+            "syntactic::residue_index",
+            "syntactic::sessions",
+        ]
     }
 
     fn react(
         &self,
         parent: &SemanticLayer,
-        events:  &[&Event],
-        store:   &EntryCache<Scoped<SymbolId>, RelationRange>,
-        _side:   &Self::Side,
+        events: &[&Event],
+        store: &EntryCache<Scoped<SymbolId>, RelationRange>,
+        _side: &Self::Side,
     ) -> Vec<Event> {
         // An edge add/remove changes the relation's range in every scope (clear
         // wholesale); a session scope-membership change only moves which scope
@@ -119,42 +134,53 @@ impl CacheBehavior for Range {
                         Some(Err(e)) => {
                             out.push(Event::Diagnostic(e.to_diagnostic()));
                             continue;
-                        },
+                        }
                         None => continue,
-                        Some(Ok(res)) => res
+                        Some(Ok(res)) => res,
                     }
-                },
+                }
                 Event::RelationRemoved { sid, sentence } => {
-                    let Some(head_sym) = sentence.head_symbol_name() else { continue };
+                    let Some(head_sym) = sentence.head_symbol_name() else {
+                        continue;
+                    };
                     let h = head_sym.id();
                     if h != range_id && h != RANGE_SUB_REL_CLASS.id() {
                         continue;
                     }
                     match try_extract_range_from(parent, h, range_id, *sid, sentence) {
                         Ok(res) => res,
-                        _ => continue
+                        _ => continue,
                     }
-                },
-                _ => { continue }
+                }
+                _ => continue,
             };
             // A relation carrying both a `range` and a `rangeSubclass` base axiom
             // is the conflict `generate` collapses to `Unknown`; surface it as the
             // `DoubleRange` user error. Read raw axiom presence, not the memo,
             // which is stale until the trailing `clear`.
             if matches!(event, Event::RelationAdded { .. })
-                && !parent.subject_sids_scoped(range_id, f, Scope::Base).is_empty()
-                && !parent.subject_sids_scoped(RANGE_SUB_REL_CLASS.id(), f, Scope::Base).is_empty()
+                && !parent
+                    .subject_sids_scoped(range_id, f, Scope::Base)
+                    .is_empty()
+                && !parent
+                    .subject_sids_scoped(RANGE_SUB_REL_CLASS.id(), f, Scope::Base)
+                    .is_empty()
             {
                 if let Some(sym) = parent.syntactic.sym_name(f) {
                     out.push(Event::Diagnostic(
-                        SemanticError::DoubleRange { sym: sym.to_string() }.to_diagnostic(),
+                        SemanticError::DoubleRange {
+                            sym: sym.to_string(),
+                        }
+                        .to_diagnostic(),
                     ));
                 }
             }
             dirty = true;
             out.push(Event::DomainRangeChanged { syms: vec![f] });
         }
-        if dirty { store.clear(); }
+        if dirty {
+            store.clear();
+        }
         out
     }
 }
@@ -164,10 +190,14 @@ impl CacheBehavior for Range {
 /// invalidation at just the affected relation's entry.
 fn range_edge_relation(parent: &SemanticLayer, sid: SentenceId) -> Option<SymbolId> {
     let sentence = parent.syntactic.sentence(sid)?;
-    let head     = sentence.head_symbol()?;
+    let head = sentence.head_symbol()?;
     let range_id = parent.range_role();
-    if head != range_id && head != RANGE_SUB_REL_CLASS.id() { return None; }
-    try_extract_range_from(parent, head, range_id, sid, &sentence).ok().map(|(rel, _)| rel)
+    if head != range_id && head != RANGE_SUB_REL_CLASS.id() {
+        return None;
+    }
+    try_extract_range_from(parent, head, range_id, sid, &sentence)
+        .ok()
+        .map(|(rel, _)| rel)
 }
 
 impl SemanticLayer {
@@ -189,10 +219,19 @@ impl SemanticLayer {
     /// Returns `None` when `sid` is not headed by a `range`/`rangeSubclass`
     /// predicate; otherwise `Some(Ok(..))` for a well-formed edge or
     /// `Some(Err(..))` for a malformed one.
-    fn try_extract_range(&self, sid: SentenceId) -> Option<Result<(SymbolId, RelationRange), SemanticError>> {
+    fn try_extract_range(
+        &self,
+        sid: SentenceId,
+    ) -> Option<Result<(SymbolId, RelationRange), SemanticError>> {
         let sentence = self.syntactic.sentence(sid)?;
-        let head     = sentence.head_symbol()?;
-        Some(try_extract_range_from(self, head, self.range_role(), sid, &sentence))
+        let head = sentence.head_symbol()?;
+        Some(try_extract_range_from(
+            self,
+            head,
+            self.range_role(),
+            sid,
+            &sentence,
+        ))
     }
 }
 
@@ -202,14 +241,18 @@ impl SemanticLayer {
 /// because the store copy is already gone.  Returns `Err` when the sentence is
 /// not a well-formed `(range | rangeSubclass rel Class)` edge.
 fn try_extract_range_from(
-    parent:   &SemanticLayer,
-    head_id:  SymbolId,
+    parent: &SemanticLayer,
+    head_id: SymbolId,
     range_id: SymbolId,
-    sid:      SentenceId,
+    sid: SentenceId,
     sentence: &Sentence,
 ) -> Result<(SymbolId, RelationRange), SemanticError> {
-    let head_name = || parent.syntactic.sym_name(head_id)
-        .map_or_else(String::new, |s| s.to_string());
+    let head_name = || {
+        parent
+            .syntactic
+            .sym_name(head_id)
+            .map_or_else(String::new, |s| s.to_string())
+    };
     let mut els = sentence.elements.iter().skip(1);
     let Some(Element::Symbol(func)) = els.next() else {
         return Err(SemanticError::DomainMismatch {
@@ -239,8 +282,11 @@ fn try_extract_range_from(
     if head_id == range_id {
         Ok((func.id(), RelationRange::Range(class.id())))
     } else {
-        debug_assert_eq!(head_id, RANGE_SUB_REL_CLASS.id(),
-            "range head should have been checked by the filter");
+        debug_assert_eq!(
+            head_id,
+            RANGE_SUB_REL_CLASS.id(),
+            "range head should have been checked by the filter"
+        );
         Ok((func.id(), RelationRange::RangeSubclass(class.id())))
     }
 }
@@ -253,7 +299,7 @@ mod tests {
     #[test]
     fn range_domain_variant() {
         let layer = kif_layer("(range parent Human)");
-        let parent   = layer.syntactic.sym_id("parent").unwrap();
+        let parent = layer.syntactic.sym_id("parent").unwrap();
         let human_id = layer.syntactic.sym_id("Human").unwrap();
         match layer.range(parent) {
             RelationRange::Range(id) => assert_eq!(id, human_id),
@@ -265,7 +311,7 @@ mod tests {
     fn range_domain_subclass_variant() {
         let layer = kif_layer("(rangeSubclass powerSet Class)");
         let power_set = layer.syntactic.sym_id("powerSet").unwrap();
-        let class_id  = layer.syntactic.sym_id("Class").unwrap();
+        let class_id = layer.syntactic.sym_id("Class").unwrap();
         match layer.range(power_set) {
             RelationRange::RangeSubclass(id) => assert_eq!(id, class_id),
             other => panic!("expected DomainSubclass(Class), got {other:?}"),

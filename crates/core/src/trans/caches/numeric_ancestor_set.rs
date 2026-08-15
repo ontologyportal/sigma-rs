@@ -7,12 +7,12 @@
 use std::collections::HashSet;
 
 use crate::cache::events::{Event, EventKind};
-use crate::semantics::caches::tax_edges::TaxEdges;
-use crate::SymbolId;
 use crate::cache::{EagerMapBehavior, WholeCacheBehavior};
+use crate::semantics::caches::tax_edges::TaxEdges;
 use crate::semantics::SemanticLayer;
-use crate::trans::TranslationLayer;
 use crate::trans::caches::numeric_sorts::NumericSorts;
+use crate::trans::TranslationLayer;
+use crate::SymbolId;
 
 /// Behavior for the `translation::numeric_ancestor_set` cache.
 #[derive(Debug, Default)]
@@ -20,7 +20,7 @@ pub(crate) struct NumericAncestorSet;
 
 impl WholeCacheBehavior for NumericAncestorSet {
     type Parent = TranslationLayer;
-    type Value  = HashSet<SymbolId>;
+    type Value = HashSet<SymbolId>;
 
     const NAME: &'static str = "translation::numeric_ancestor_set";
 
@@ -56,9 +56,8 @@ impl WholeCacheBehavior for NumericAncestorSet {
         &self,
         parent: &Self::Parent,
         events: &[&crate::cache::events::Event],
-        store:  &crate::cache::LayerCache<Self::Value>,
-    ) -> Vec<crate::cache::events::Event>
-    {
+        store: &crate::cache::LayerCache<Self::Value>,
+    ) -> Vec<crate::cache::events::Event> {
         if !store.is_populated() {
             return Vec::new(); // cold → `generate` rebuilds the full set on next read
         }
@@ -67,7 +66,7 @@ impl WholeCacheBehavior for NumericAncestorSet {
         let mut removed: Vec<SymbolId> = Vec::new();
         for ev in events {
             match ev {
-                Event::NumericSortAdded(x)   => collect_ancestors(&parent.semantic, *x, &mut set),
+                Event::NumericSortAdded(x) => collect_ancestors(&parent.semantic, *x, &mut set),
                 Event::NumericSortRemoved(x) => removed.push(*x),
                 _ => {}
             }

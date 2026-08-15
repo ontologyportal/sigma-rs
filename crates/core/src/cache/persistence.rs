@@ -13,11 +13,11 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
-use crate::Diagnostic;
 use crate::persist::PersistenceBackend;
+use crate::Diagnostic;
 
 use super::{
     Cache, CacheBehavior, Eager, EagerBehavior, EagerMap, EagerMapBehavior, WholeCache,
@@ -30,8 +30,8 @@ use super::{
 #[cfg(feature = "snapshot")]
 fn freeze_value<T: Serialize>(
     backend: &mut dyn PersistenceBackend,
-    key:     &'static str,
-    value:   &T,
+    key: &'static str,
+    value: &T,
 ) -> Result<(), Diagnostic> {
     let bytes = bincode::serialize(value)
         .map_err(|e| Diagnostic::new_error("persist", "serialize", format!("{key}: {e}")))?;
@@ -41,8 +41,8 @@ fn freeze_value<T: Serialize>(
 #[cfg(not(feature = "snapshot"))]
 fn freeze_value<T: Serialize>(
     _backend: &mut dyn PersistenceBackend,
-    _key:     &'static str,
-    _value:   &T,
+    _key: &'static str,
+    _value: &T,
 ) -> Result<(), Diagnostic> {
     Ok(())
 }
@@ -52,7 +52,7 @@ fn freeze_value<T: Serialize>(
 #[cfg(feature = "snapshot")]
 fn thaw_value<T: DeserializeOwned>(
     backend: &dyn PersistenceBackend,
-    key:     &'static str,
+    key: &'static str,
 ) -> Result<Option<T>, Diagnostic> {
     match backend.get(key)? {
         Some(bytes) => bincode::deserialize(&bytes)
@@ -65,7 +65,7 @@ fn thaw_value<T: DeserializeOwned>(
 #[cfg(not(feature = "snapshot"))]
 fn thaw_value<T: DeserializeOwned>(
     _backend: &dyn PersistenceBackend,
-    _key:     &'static str,
+    _key: &'static str,
 ) -> Result<Option<T>, Diagnostic> {
     Ok(None)
 }
@@ -86,10 +86,12 @@ pub(crate) trait PersistableCache {
 impl<B> PersistableCache for Cache<B>
 where
     B: CacheBehavior,
-    B::Key:   Serialize + DeserializeOwned + Eq + Hash,
+    B::Key: Serialize + DeserializeOwned + Eq + Hash,
     B::Value: Serialize + DeserializeOwned,
 {
-    fn cache_key(&self) -> &'static str { B::NAME }
+    fn cache_key(&self) -> &'static str {
+        B::NAME
+    }
     fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
         freeze_value(backend, B::NAME, &(self.snapshot(), self.snapshot_side()))
     }
@@ -107,10 +109,12 @@ where
 impl<B> PersistableCache for EagerMap<B>
 where
     B: EagerMapBehavior,
-    B::Key:   Serialize + DeserializeOwned + Eq + Hash,
+    B::Key: Serialize + DeserializeOwned + Eq + Hash,
     B::Value: Serialize + DeserializeOwned,
 {
-    fn cache_key(&self) -> &'static str { B::NAME }
+    fn cache_key(&self) -> &'static str {
+        B::NAME
+    }
     fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
         freeze_value(backend, B::NAME, &(self.snapshot(), self.snapshot_side()))
     }
@@ -130,7 +134,9 @@ where
     B: WholeCacheBehavior,
     B::Value: Serialize + DeserializeOwned,
 {
-    fn cache_key(&self) -> &'static str { B::NAME }
+    fn cache_key(&self) -> &'static str {
+        B::NAME
+    }
     fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
         freeze_value(backend, B::NAME, &self.snapshot())
     }
@@ -147,7 +153,9 @@ where
     B: EagerBehavior,
     B::Value: Serialize + DeserializeOwned,
 {
-    fn cache_key(&self) -> &'static str { B::NAME }
+    fn cache_key(&self) -> &'static str {
+        B::NAME
+    }
     fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
         freeze_value(backend, B::NAME, &self.snapshot())
     }

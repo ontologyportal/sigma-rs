@@ -17,8 +17,8 @@ use super::ir;
 /// FOF emits no type declarations.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CachedFormula {
-    pub formula:    ir::Formula,
+    pub formula: ir::Formula,
     pub sort_decls: Vec<ir::Sort>,
-    pub fn_decls:   Vec<ir::Function>,
+    pub fn_decls: Vec<ir::Function>,
     pub pred_decls: Vec<ir::Predicate>,
 }

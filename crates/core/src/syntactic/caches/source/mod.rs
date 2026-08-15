@@ -17,11 +17,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::parse::doc::DocItem;
-use crate::{AstNode, Diagnostic, Severity, Span};
-use crate::cache::{EntryCache, EagerMapBehavior};
 use crate::cache::events::{Event, EventKind};
+use crate::cache::{EagerMapBehavior, EntryCache};
+use crate::parse::doc::DocItem;
 use crate::syntactic::SyntacticLayer;
+use crate::{AstNode, Diagnostic, Severity, Span};
 
 mod side;
 #[cfg(test)]
@@ -31,16 +31,16 @@ pub(crate) use side::{SourceSide, SourceSideSnapshot};
 /// Warning event for a formula that appears more than once in a single file.
 fn duplicate_warning(dup: &Span, first: &Span) -> Event {
     Event::Diagnostic(Diagnostic {
-        kind:          "ingest",
-        range:         dup.clone(),
-        severity:      Severity::Warning,
-        code:          "duplicate-formula",
-        message:       format!(
+        kind: "ingest",
+        range: dup.clone(),
+        severity: Severity::Warning,
+        code: "duplicate-formula",
+        message: format!(
             "duplicate formula ignored; first occurrence at {}:{}",
             first.file, first.line,
         ),
-        related:       Vec::new(),
-        sids:          Vec::new(),
+        related: Vec::new(),
+        sids: Vec::new(),
         highlight_arg: -1,
         highlight_var: None,
     })
@@ -84,19 +84,19 @@ fn dedup_parse(
 /// empty→non-empty (first occurrence anywhere); `FormulaRemoved` fires only
 /// when it goes non-empty→empty (last occurrence gone).
 fn apply_source(
-    store:    &EntryCache<u64, AstNode>,
-    side:     &SourceSide,
+    store: &EntryCache<u64, AstNode>,
+    side: &SourceSide,
     file_key: &str,
-    session:  &Arc<String>,
-    current:  HashMap<u64, (AstNode, Span)>,
+    session: &Arc<String>,
+    current: HashMap<u64, (AstNode, Span)>,
     // First-occurrence hashes in FILE order (see `dedup_parse`) — iterated
     // instead of `current`'s own (RandomState) key order so `FormulaAdded`
     // fires in a KB-content-determined sequence.
-    order:    &[u64],
+    order: &[u64],
     // Fingerprints whose removal must be deferred (staged update of a promoted
     // axiom): kept live and in the file's membership, recorded in the recycle
     // bin, no `FormulaRemoved`. Empty for ordinary (immediate) ingests.
-    protect:  &HashSet<u64>,
+    protect: &HashSet<u64>,
 ) -> Vec<Event> {
     let mut evs = Vec::new();
     // Fingerprints carried over unchanged (present in both prev and new parse),
@@ -104,7 +104,9 @@ fn apply_source(
     let mut retained: Vec<u64> = Vec::new();
     let mut current_hashes: HashSet<u64> = current.keys().copied().collect();
     // The file's previous membership, snapshotted before we mutate.
-    let prev: HashSet<u64> = side.file_hashes.get(file_key)
+    let prev: HashSet<u64> = side
+        .file_hashes
+        .get(file_key)
         .map(|r| r.value().clone())
         .unwrap_or_default();
 
@@ -127,12 +129,18 @@ fn apply_source(
                 // First occurrence anywhere. `nodes` are keyed by content
                 // fingerprint, so the canonical AST is immutable; insert once.
                 let _ = store.get_or_insert_with(hash, |_| node.clone());
-                evs.push(Event::FormulaAdded { node: hash, session: session.clone() });
+                evs.push(Event::FormulaAdded {
+                    node: hash,
+                    session: session.clone(),
+                });
             } else {
                 // Already referenced elsewhere, so no `FormulaAdded` — but this
                 // session newly references it, and the session/scope indices need
                 // to learn that ownership.
-                evs.push(Event::FormulaReferenced { node: hash, session: session.clone() });
+                evs.push(Event::FormulaReferenced {
+                    node: hash,
+                    session: session.clone(),
+                });
             }
         }
     }
@@ -169,10 +177,14 @@ fn apply_source(
     current_hashes.extend(deferred.iter().copied());
 
     // The file's set is now exactly this parse.
-    side.file_hashes.insert(file_key.to_string(), current_hashes);
+    side.file_hashes
+        .insert(file_key.to_string(), current_hashes);
     // Record the source under its session's eviction group so `flush_session`
     // can reconcile every source the session produced.
-    side.session_sources.entry(session.to_string()).or_default().insert(file_key.to_string());
+    side.session_sources
+        .entry(session.to_string())
+        .or_default()
+        .insert(file_key.to_string());
     if !retained.is_empty() {
         evs.push(Event::FormulasUnchanged { nodes: retained });
     }
@@ -188,9 +200,9 @@ pub(crate) struct SourceCache;
 
 impl EagerMapBehavior for SourceCache {
     type Parent = SyntacticLayer;
-    type Key    = u64;
-    type Value  = AstNode;
-    type Side   = SourceSide;
+    type Key = u64;
+    type Value = AstNode;
+    type Side = SourceSide;
     type SideSnapshot = SourceSideSnapshot;
 
     const NAME: &'static str = "syntactic::source";
@@ -200,137 +212,179 @@ impl EagerMapBehavior for SourceCache {
     }
 
     fn produces(&self) -> &'static [EventKind] {
-        &[EventKind::FormulaAdded, EventKind::FormulaRemoved, EventKind::FormulaReferenced]
+        &[
+            EventKind::FormulaAdded,
+            EventKind::FormulaRemoved,
+            EventKind::FormulaReferenced,
+        ]
     }
 
     fn snapshot_side(&self, side: &SourceSide) -> SourceSideSnapshot {
         SourceSideSnapshot {
-            file_hashes: side.file_hashes.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
-            references:  side.references.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
-            origins:     side.origins.iter().map(|e| (e.key().clone(), e.value().clone())).collect(),
+            file_hashes: side
+                .file_hashes
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
+            references: side
+                .references
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
+            origins: side
+                .origins
+                .iter()
+                .map(|e| (e.key().clone(), e.value().clone()))
+                .collect(),
         }
     }
 
     fn restore_side(&self, side: &SourceSide, snap: SourceSideSnapshot) {
-        for (k, v) in snap.file_hashes { side.file_hashes.insert(k, v); }
-        for (k, v) in snap.references  { side.references.insert(k, v); }
-        for (k, v) in snap.origins     { side.origins.insert(k, v); }
+        for (k, v) in snap.file_hashes {
+            side.file_hashes.insert(k, v);
+        }
+        for (k, v) in snap.references {
+            side.references.insert(k, v);
+        }
+        for (k, v) in snap.origins {
+            side.origins.insert(k, v);
+        }
     }
 
     fn react(
         &self,
-        parent:  &SyntacticLayer,
-        events:  &[&Event],
-        store:   &EntryCache<Self::Key, Self::Value>,
-        side:    &SourceSide
+        parent: &SyntacticLayer,
+        events: &[&Event],
+        store: &EntryCache<Self::Key, Self::Value>,
+        side: &SourceSide,
     ) -> Vec<Event> {
-        events.iter().filter_map(|event| {
-            match event {
-                Event::SourceAdded { file, session, staged } => {
-                    let parser = &file.parser;
-                    // Source identity used to reconcile a source against its own
-                    // previous contents. File ingests carry a real `path`; inline
-                    // sources (`tell`, and the empty truncation `flush_session`
-                    // re-ingests) carry an empty path but the same `session`, so
-                    // inline content is keyed by session to keep distinct sessions
-                    // isolated.
-                    let file_key = {
-                        let path = file.path.to_str().unwrap_or("");
-                        if !path.is_empty() {
-                            path.to_string()
-                        } else if !file.name.is_empty() {
-                            file.name.clone()
-                        } else {
-                            "inline".to_string()
-                        }
-                    };
-                    if matches!(file.origin, crate::types::FileOrigin::Inline) {
-                        side.mark_inline(&file_key);
-                    }
-                    // Baseline for a later "has this changed since I loaded
-                    // it" check — replaced on every re-ingest, including a
-                    // staged truncate, which is fine: a truncated source's
-                    // membership goes empty too, so a stale/unknown baseline
-                    // for it is inert.
-                    side.set_origin(&file_key, file.origin.clone());
-                    let mut out = Vec::new();
-                    let nodes: Vec<AstNode> = if file.prebuilt.is_none() {
-                        // -- Outside the lock: parse + fingerprint + dedup ----------
-                        let (nodes, errs) = parser.parse(file.contents.as_str(), &file_key);
-                        out.extend(errs
-                            .iter()
-                            .map(|(_, e)| Event::Diagnostic(e.to_diagnostic())));
-                        nodes.into_iter().filter_map(|doc| {
-                            match doc {
-                                DocItem::Stmt(node) => Some(node),
-                                _ => None
+        events
+            .iter()
+            .filter_map(|event| {
+                match event {
+                    Event::SourceAdded {
+                        file,
+                        session,
+                        staged,
+                    } => {
+                        let parser = &file.parser;
+                        // Source identity used to reconcile a source against its own
+                        // previous contents. File ingests carry a real `path`; inline
+                        // sources (`tell`, and the empty truncation `flush_session`
+                        // re-ingests) carry an empty path but the same `session`, so
+                        // inline content is keyed by session to keep distinct sessions
+                        // isolated.
+                        let file_key = {
+                            let path = file.path.to_str().unwrap_or("");
+                            if !path.is_empty() {
+                                path.to_string()
+                            } else if !file.name.is_empty() {
+                                file.name.clone()
+                            } else {
+                                "inline".to_string()
                             }
-                        }).collect()
-                    } else {
-                        file.prebuilt.clone().unwrap()
-                    };
-
-                    let parsed = nodes.into_iter()
-                        .map(|node| {
-                            // Strip top-level statement metadata (role/name/source
-                            // from a dialect parser) so only the bare formula is
-                            // fingerprinted, stored, and built into a sentence.
-                            let node = node.strip_annotation();
-                            let hash = node.fingerprint();
-                            let span = node.span().clone();
-                            (hash, node, span)
-                        })
-                        .collect();
-                    let (current, order, mut dup_warnings) = dedup_parse(parsed);
-                    out.append(&mut dup_warnings);
-
-                    // The new parse, captured before `apply_source` mutates it,
-                    // for tombstone bookkeeping.
-                    let new_fps: HashSet<u64> = current.keys().copied().collect();
-                    // For a staged file update, defer removal of any promoted axiom
-                    // currently in this source: those go to the recycle bin (commit)
-                    // and a session tombstone (scoped view).
-                    let protect: HashSet<u64> = if *staged {
-                        side.fingerprints_of(&file_key).into_iter()
-                            .filter(|fp| parent.roots_of_fingerprint(*fp)
-                                .iter().any(|s| parent.sessions.is_axiom(*s)))
-                            .collect()
-                    } else {
-                        HashSet::new()
-                    };
-
-                    // -- Under the lock: pure map ops on the store --------------
-                    let session = session.clone();
-                    let follow_on = apply_source(store, side, &file_key, &session, current, &order, &protect);
-
-                    // -- Negative overlay (session tombstones), scoped to this
-                    //    review session. Operates only on fingerprints that already
-                    //    existed (deferred axioms + retained formulas); brand-new
-                    //    additions have no `forward` entry yet.
-                    let sid = crate::syntactic::caches::session::session_id(&session);
-                    let sids_of = |fp: u64| parent.roots_of_fingerprint(fp);
-                    if *staged {
-                        // Promoted axioms this update drops → tombstone in `session`.
-                        for fp in protect.iter().filter(|fp| !new_fps.contains(fp)) {
-                            for s in sids_of(*fp) { parent.sessions.add_tombstone(sid, s); }
+                        };
+                        if matches!(file.origin, crate::types::FileOrigin::Inline) {
+                            side.mark_inline(&file_key);
                         }
-                    }
-                    // A formula present in the new content is kept/re-asserted, so
-                    // it leaves this session's tombstones.
-                    if parent.sessions.has_tombstones(sid) {
-                        for fp in &new_fps {
-                            for s in sids_of(*fp) { parent.sessions.untombstone(sid, s); }
-                        }
-                    }
+                        // Baseline for a later "has this changed since I loaded
+                        // it" check — replaced on every re-ingest, including a
+                        // staged truncate, which is fine: a truncated source's
+                        // membership goes empty too, so a stale/unknown baseline
+                        // for it is inert.
+                        side.set_origin(&file_key, file.origin.clone());
+                        let mut out = Vec::new();
+                        let nodes: Vec<AstNode> = if file.prebuilt.is_none() {
+                            // -- Outside the lock: parse + fingerprint + dedup ----------
+                            let (nodes, errs) = parser.parse(file.contents.as_str(), &file_key);
+                            out.extend(
+                                errs.iter()
+                                    .map(|(_, e)| Event::Diagnostic(e.to_diagnostic())),
+                            );
+                            nodes
+                                .into_iter()
+                                .filter_map(|doc| match doc {
+                                    DocItem::Stmt(node) => Some(node),
+                                    _ => None,
+                                })
+                                .collect()
+                        } else {
+                            file.prebuilt.clone().unwrap()
+                        };
 
-                    out.extend(follow_on);
-                    Some(out)
+                        let parsed = nodes
+                            .into_iter()
+                            .map(|node| {
+                                // Strip top-level statement metadata (role/name/source
+                                // from a dialect parser) so only the bare formula is
+                                // fingerprinted, stored, and built into a sentence.
+                                let node = node.strip_annotation();
+                                let hash = node.fingerprint();
+                                let span = node.span().clone();
+                                (hash, node, span)
+                            })
+                            .collect();
+                        let (current, order, mut dup_warnings) = dedup_parse(parsed);
+                        out.append(&mut dup_warnings);
+
+                        // The new parse, captured before `apply_source` mutates it,
+                        // for tombstone bookkeeping.
+                        let new_fps: HashSet<u64> = current.keys().copied().collect();
+                        // For a staged file update, defer removal of any promoted axiom
+                        // currently in this source: those go to the recycle bin (commit)
+                        // and a session tombstone (scoped view).
+                        let protect: HashSet<u64> = if *staged {
+                            side.fingerprints_of(&file_key)
+                                .into_iter()
+                                .filter(|fp| {
+                                    parent
+                                        .roots_of_fingerprint(*fp)
+                                        .iter()
+                                        .any(|s| parent.sessions.is_axiom(*s))
+                                })
+                                .collect()
+                        } else {
+                            HashSet::new()
+                        };
+
+                        // -- Under the lock: pure map ops on the store --------------
+                        let session = session.clone();
+                        let follow_on = apply_source(
+                            store, side, &file_key, &session, current, &order, &protect,
+                        );
+
+                        // -- Negative overlay (session tombstones), scoped to this
+                        //    review session. Operates only on fingerprints that already
+                        //    existed (deferred axioms + retained formulas); brand-new
+                        //    additions have no `forward` entry yet.
+                        let sid = crate::syntactic::caches::session::session_id(&session);
+                        let sids_of = |fp: u64| parent.roots_of_fingerprint(fp);
+                        if *staged {
+                            // Promoted axioms this update drops → tombstone in `session`.
+                            for fp in protect.iter().filter(|fp| !new_fps.contains(fp)) {
+                                for s in sids_of(*fp) {
+                                    parent.sessions.add_tombstone(sid, s);
+                                }
+                            }
+                        }
+                        // A formula present in the new content is kept/re-asserted, so
+                        // it leaves this session's tombstones.
+                        if parent.sessions.has_tombstones(sid) {
+                            for fp in &new_fps {
+                                for s in sids_of(*fp) {
+                                    parent.sessions.untombstone(sid, s);
+                                }
+                            }
+                        }
+
+                        out.extend(follow_on);
+                        Some(out)
+                    }
+                    _ => None,
                 }
-                _ => None,
-            }
-        })
-        .flatten()
-        .collect()
+            })
+            .flatten()
+            .collect()
     }
 }
 
@@ -339,7 +393,9 @@ impl SyntacticLayer {
     /// never liftable, so `make_session_axiomatic` rejects such a session.
     pub(crate) fn session_has_inline_assertions(&self, session: &str) -> bool {
         let side = self.source.side();
-        side.sources_of_session(session).iter().any(|k| side.is_inline_source(k))
+        side.sources_of_session(session)
+            .iter()
+            .any(|k| side.is_inline_source(k))
     }
 
     /// Whether `source_key` currently contributes any *axiom* (promoted) root —
@@ -347,7 +403,11 @@ impl SyntacticLayer {
     /// otherwise retract a promoted sentence (axioms survive session flush).
     pub(crate) fn source_produces_axiom(&self, source_key: &str) -> bool {
         for fp in self.source.side().fingerprints_of(source_key) {
-            if self.roots_of_fingerprint(fp).iter().any(|sid| self.sessions.is_axiom(*sid)) {
+            if self
+                .roots_of_fingerprint(fp)
+                .iter()
+                .any(|sid| self.sessions.is_axiom(*sid))
+            {
                 return true;
             }
         }
@@ -402,7 +462,11 @@ impl SyntacticLayer {
         self.source.entries().for_each(|(_, n)| {
             if found.is_none() {
                 let sp = n.span();
-                if !sp.is_synthetic() && sp.file == file && offset >= sp.offset && offset < sp.end_offset {
+                if !sp.is_synthetic()
+                    && sp.file == file
+                    && offset >= sp.offset
+                    && offset < sp.end_offset
+                {
                     found = Some(n.clone());
                 }
             }
@@ -412,12 +476,22 @@ impl SyntacticLayer {
 
     /// Every file tag currently loaded (the source store's per-file membership).
     pub(crate) fn source_files(&self) -> Vec<String> {
-        self.source.side().file_hashes.iter().map(|e| e.key().clone()).collect()
+        self.source
+            .side()
+            .file_hashes
+            .iter()
+            .map(|e| e.key().clone())
+            .collect()
     }
 
     /// The content fingerprints a file contributed (its formulas).
     pub(crate) fn file_fingerprints(&self, file: &str) -> Vec<u64> {
-        self.source.side().file_hashes.get(file).map(|set| set.iter().copied().collect()).unwrap_or_default()
+        self.source
+            .side()
+            .file_hashes
+            .get(file)
+            .map(|set| set.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// The provenance recorded at `file`'s most recent ingest (its
@@ -462,9 +536,11 @@ impl SyntacticLayer {
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn root_source_nodes(&self) -> Vec<(crate::SentenceId, AstNode)> {
         let mut seen = std::collections::HashSet::new();
-        let mut out  = Vec::new();
+        let mut out = Vec::new();
         for (fp, sids) in self.fingerprint_roots() {
-            let Some(node) = self.source_ast(fp) else { continue };
+            let Some(node) = self.source_ast(fp) else {
+                continue;
+            };
             for sid in sids {
                 if seen.insert(sid) {
                     out.push((sid, node.clone()));

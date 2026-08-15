@@ -7,8 +7,8 @@ use std::fmt::Write as _;
 
 use crate::trans::ir::{LogicMode, Problem as IrProblem};
 
-use crate::syntactic::sentence_to_plain_kif;
 use crate::semantics::SemanticLayer;
+use crate::syntactic::sentence_to_plain_kif;
 use crate::types::SentenceId;
 
 /// Configuration for [`assemble_tptp_indexed`].
@@ -76,9 +76,9 @@ impl<'a> Default for AssemblyOpts<'a> {
 /// line. Tracking is an O(1)-per-axiom running counter, not a re-scan, so
 /// passing `None` costs nothing extra.
 pub fn assemble_tptp_indexed(
-    problem:     &IrProblem,
-    sid_map:     &[SentenceId],
-    opts:        &AssemblyOpts,
+    problem: &IrProblem,
+    sid_map: &[SentenceId],
+    opts: &AssemblyOpts,
     mut axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
 ) -> String {
     let kw = match problem.mode() {
@@ -105,12 +105,15 @@ pub fn assemble_tptp_indexed(
     }
 
     // Axioms.  Anonymous axioms (no sid) bypass `axiom_filter`.
-    let mut seen_sids: std::collections::HashMap<SentenceId, u32> = std::collections::HashMap::new();
+    let mut seen_sids: std::collections::HashMap<SentenceId, u32> =
+        std::collections::HashMap::new();
     let mut line_no: u32 = out.matches('\n').count() as u32;
     for (i, ax) in problem.axioms().iter().enumerate() {
         let sid = sid_map.get(i).copied();
         if let (Some(s), Some(filter)) = (sid, opts.axiom_filter) {
-            if !filter.contains(&s) { continue; }
+            if !filter.contains(&s) {
+                continue;
+            }
         }
         if let (Some(s), Some(lines)) = (sid, axiom_lines.as_deref_mut()) {
             lines.entry(s).or_insert(line_no);
@@ -137,7 +140,14 @@ pub fn assemble_tptp_indexed(
             }
             None => format!("{}anon_{}", opts.axiom_prefix, i),
         };
-        let _ = writeln!(out, "{}({}, {}, {}).", kw, name, opts.axiom_role, ax.to_tptp());
+        let _ = writeln!(
+            out,
+            "{}({}, {}, {}).",
+            kw,
+            name,
+            opts.axiom_role,
+            ax.to_tptp()
+        );
         line_no += 1;
     }
 
@@ -146,7 +156,9 @@ pub fn assemble_tptp_indexed(
         let _ = writeln!(
             out,
             "{}({}, conjecture, {}).",
-            kw, opts.conjecture_name, c.to_tptp(),
+            kw,
+            opts.conjecture_name,
+            c.to_tptp(),
         );
     }
 
@@ -156,12 +168,11 @@ pub fn assemble_tptp_indexed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trans::ir::{
-        Formula as IrF, Function as IrFn, Predicate as IrPd, Problem as IrProblem,
-        Term as IrT,
-    };
     #[cfg(feature = "ask")]
     use crate::trans::ir::Sort as IrSort;
+    use crate::trans::ir::{
+        Formula as IrF, Function as IrFn, Predicate as IrPd, Problem as IrProblem, Term as IrT,
+    };
 
     #[test]
     fn empty_problem_produces_empty_output() {
@@ -182,7 +193,7 @@ mod tests {
 
         let tptp = assemble_tptp_indexed(&pb, &[42, 7], &AssemblyOpts::default(), None);
         assert!(tptp.contains("fof(kb_42, axiom, P(a))."), "{}", tptp);
-        assert!(tptp.contains("fof(kb_7, axiom, P(b))."),  "{}", tptp);
+        assert!(tptp.contains("fof(kb_7, axiom, P(b))."), "{}", tptp);
     }
 
     #[test]
@@ -204,12 +215,12 @@ mod tests {
         pb.conjecture(IrF::atom(p, vec![]));
 
         let opts = AssemblyOpts {
-            axiom_role:      "hypothesis",
+            axiom_role: "hypothesis",
             conjecture_name: "query_0",
             ..AssemblyOpts::default()
         };
         let tptp = assemble_tptp_indexed(&pb, &[1], &opts, None);
-        assert!(tptp.contains("fof(kb_1, hypothesis, P)."),    "{}", tptp);
+        assert!(tptp.contains("fof(kb_1, hypothesis, P)."), "{}", tptp);
         assert!(tptp.contains("fof(query_0, conjecture, P)."), "{}", tptp);
     }
 
@@ -226,14 +237,17 @@ mod tests {
         let mut pb = IrProblem::new();
         pb.with_axiom(IrF::atom(p.clone(), vec![a]));
         pb.with_axiom(IrF::atom(p.clone(), vec![b]));
-        pb.with_axiom(IrF::atom(p,         vec![c]));
+        pb.with_axiom(IrF::atom(p, vec![c]));
 
         let allow: HashSet<SentenceId> = [10, 30].into_iter().collect();
-        let opts = AssemblyOpts { axiom_filter: Some(&allow), ..AssemblyOpts::default() };
+        let opts = AssemblyOpts {
+            axiom_filter: Some(&allow),
+            ..AssemblyOpts::default()
+        };
         let tptp = assemble_tptp_indexed(&pb, &[10, 20, 30], &opts, None);
-        assert!(tptp.contains("fof(kb_10"),  "must keep sid 10: {}", tptp);
+        assert!(tptp.contains("fof(kb_10"), "must keep sid 10: {}", tptp);
         assert!(!tptp.contains("fof(kb_20"), "must drop sid 20: {}", tptp);
-        assert!(tptp.contains("fof(kb_30"),  "must keep sid 30: {}", tptp);
+        assert!(tptp.contains("fof(kb_30"), "must keep sid 30: {}", tptp);
     }
 
     #[test]
@@ -244,7 +258,7 @@ mod tests {
         let p = IrPd::new("P", 0);
         let mut pb = IrProblem::new();
         pb.with_axiom(IrF::atom(p.clone(), vec![]));
-        pb.with_axiom(IrF::atom(p,         vec![]));
+        pb.with_axiom(IrF::atom(p, vec![]));
 
         let tptp = assemble_tptp_indexed(&pb, &[1, 2], &AssemblyOpts::default(), None);
         assert!(tptp.contains("fof(kb_1"), "{}", tptp);
@@ -264,13 +278,21 @@ mod tests {
         // Filter excludes every axiom — conjecture still rendered.
         let empty: HashSet<SentenceId> = HashSet::new();
         let opts = AssemblyOpts {
-            axiom_filter:    Some(&empty),
+            axiom_filter: Some(&empty),
             conjecture_name: "query_0",
             ..AssemblyOpts::default()
         };
         let tptp = assemble_tptp_indexed(&pb, &[1], &opts, None);
-        assert!(!tptp.contains("fof(kb_1"),           "axiom must be dropped: {}", tptp);
-        assert!(tptp.contains("fof(query_0, conjecture, P)."), "conjecture must survive: {}", tptp);
+        assert!(
+            !tptp.contains("fof(kb_1"),
+            "axiom must be dropped: {}",
+            tptp
+        );
+        assert!(
+            tptp.contains("fof(query_0, conjecture, P)."),
+            "conjecture must survive: {}",
+            tptp
+        );
     }
 
     #[test]
@@ -282,22 +304,33 @@ mod tests {
         let p = IrPd::new("P", 0);
         let mut pb = IrProblem::new();
         pb.with_axiom(IrF::atom(p.clone(), vec![]));
-        pb.with_axiom(IrF::atom(p,         vec![]));
+        pb.with_axiom(IrF::atom(p, vec![]));
 
         // sid_map is shorter than axioms() — the second axiom is
         // anonymous.  Filter excludes the first (sid 7).
         let empty: HashSet<SentenceId> = HashSet::new();
-        let opts = AssemblyOpts { axiom_filter: Some(&empty), ..AssemblyOpts::default() };
+        let opts = AssemblyOpts {
+            axiom_filter: Some(&empty),
+            ..AssemblyOpts::default()
+        };
         let tptp = assemble_tptp_indexed(&pb, &[7], &opts, None);
-        assert!(!tptp.contains("fof(kb_7"),      "sid 7 must be dropped: {}", tptp);
-        assert!(tptp.contains("fof(kb_anon_1"),  "anon axiom must survive: {}", tptp);
+        assert!(
+            !tptp.contains("fof(kb_7"),
+            "sid 7 must be dropped: {}",
+            tptp
+        );
+        assert!(
+            tptp.contains("fof(kb_anon_1"),
+            "anon axiom must survive: {}",
+            tptp
+        );
     }
 
     #[test]
     #[cfg(feature = "ask")]
     fn tff_mode_emits_type_declarations_first() {
         let person = IrSort::new("person");
-        let alice  = IrFn::typed("alice",  &[], person.clone());
+        let alice = IrFn::typed("alice", &[], person.clone());
         let mortal = IrPd::typed("mortal", &[person.clone()]);
 
         let mut pb = IrProblem::new_tff();
@@ -309,8 +342,16 @@ mod tests {
         let tptp = assemble_tptp_indexed(&pb, &[3], &AssemblyOpts::default(), None);
         // Type decls come before the axiom.
         let person_pos = tptp.find("person_type").unwrap();
-        let axiom_pos  = tptp.find("kb_3").unwrap();
-        assert!(person_pos < axiom_pos, "type decl must precede axiom; got:\n{}", tptp);
-        assert!(tptp.contains("tff(kb_3, axiom, mortal(alice))."), "{}", tptp);
+        let axiom_pos = tptp.find("kb_3").unwrap();
+        assert!(
+            person_pos < axiom_pos,
+            "type decl must precede axiom; got:\n{}",
+            tptp
+        );
+        assert!(
+            tptp.contains("tff(kb_3, axiom, mortal(alice))."),
+            "{}",
+            tptp
+        );
     }
 }

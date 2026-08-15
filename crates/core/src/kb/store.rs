@@ -1,7 +1,7 @@
 //! Symbol store interactions for the KB.
 
 use super::KnowledgeBase;
-use crate::{SentenceId, SymbolId, Sentence};
+use crate::{Sentence, SentenceId, SymbolId};
 
 impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Pattern-based sentence lookup.
@@ -26,20 +26,23 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         use crate::syntactic::pattern::{MatchKey, PatternElement, PatternFromKifError};
         let syntactic = &self.layer.semantic().syntactic;
         let pat = match syntactic.patterns().pattern_from_kif(pattern) {
-            Ok(p)  => p,
+            Ok(p) => p,
             Err(PatternFromKifError::NoRootSentence) => return Vec::new(),
-            Err(PatternFromKifError::UnknownSymbol(sym)) =>
-                panic!("KnowledgeBase::lookup: unknown symbol '{sym}' in pattern \"{pattern}\""),
+            Err(PatternFromKifError::UnknownSymbol(sym)) => {
+                panic!("KnowledgeBase::lookup: unknown symbol '{sym}' in pattern \"{pattern}\"")
+            }
         };
 
-        let head: Option<String> = if let Some(PatternElement::Exact(MatchKey::Symbol(sym))) = pat.0.first() {
-            Some(sym.name().to_string())
-        } else {
-            None
-        };
+        let head: Option<String> =
+            if let Some(PatternElement::Exact(MatchKey::Symbol(sym))) = pat.0.first() {
+                Some(sym.name().to_string())
+            } else {
+                None
+            };
 
         syntactic
-            .patterns().find_by_pattern(&pat, head.as_deref(), None)
+            .patterns()
+            .find_by_pattern(&pat, head.as_deref(), None)
             .into_iter()
             .map(|(sid, _)| sid)
             .collect()
@@ -68,16 +71,20 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// stats) should exclude them. No SUMO term ends in `__<digits>`, so the
     /// name shape is an exact discriminator.
     pub fn symbol_is_variable(&self, symbol: &str) -> bool {
-        symbol.rsplit_once("__")
-            .is_some_and(|(head, scope)| !head.is_empty()
-                && !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit()))
+        symbol.rsplit_once("__").is_some_and(|(head, scope)| {
+            !head.is_empty() && !scope.is_empty() && scope.bytes().all(|b| b.is_ascii_digit())
+        })
     }
 
     /// Resolve a [`SymbolId`] to its interned name.
     ///
     /// Returns `None` for ids that aren't in the store.
     pub fn sym_name(&self, id: crate::types::SymbolId) -> Option<String> {
-        self.layer.semantic().syntactic.sym_name(id).map(|s| s.name().to_string())
+        self.layer
+            .semantic()
+            .syntactic
+            .sym_name(id)
+            .map(|s| s.name().to_string())
     }
 
     /// Fetch a root or sub-sentence by id.
@@ -92,8 +99,16 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Returns the deepest non-synthetic element whose span covers the
     /// offset, or `None` when `file` isn't loaded or `offset` falls
     /// outside every root sentence's `(...)` range.
-    pub fn element_at_offset(&self, file: &str, offset: usize) -> Option<crate::syntactic::position::ElementHit> {
-        crate::syntactic::position::element_at_offset(&self.layer.semantic().syntactic, file, offset)
+    pub fn element_at_offset(
+        &self,
+        file: &str,
+        offset: usize,
+    ) -> Option<crate::syntactic::position::ElementHit> {
+        crate::syntactic::position::element_at_offset(
+            &self.layer.semantic().syntactic,
+            file,
+            offset,
+        )
     }
 
     /// Name of the symbol at `offset`, if the element there is a
@@ -112,7 +127,12 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// promoted past a scratch session).
     pub fn sentence_at(&self, file: &str, offset: usize) -> Option<SentenceId> {
         let fp = self.element_at_offset(file, offset)?.fingerprint;
-        self.layer.semantic().syntactic.roots_of_fingerprint(fp).into_iter().next()
+        self.layer
+            .semantic()
+            .syntactic
+            .roots_of_fingerprint(fp)
+            .into_iter()
+            .next()
     }
 
     /// Interned id for whatever symbol-like element is at `offset`,
@@ -123,12 +143,12 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     ///
     /// Returns `(id, display_name)` -- the display name is `"?X"` or
     /// `"@Row"` for variables, the plain interned name for symbols.
-    pub fn id_at_offset(
-        &self, file: &str, offset: usize,
-    ) -> Option<(SymbolId, String)> {
+    pub fn id_at_offset(&self, file: &str, offset: usize) -> Option<(SymbolId, String)> {
         let hit = self.element_at_offset(file, offset)?;
         let name = hit.name?;
-        if hit.is_variable { return None; } // scoped variable id is not derivable from a source position
+        if hit.is_variable {
+            return None;
+        } // scoped variable id is not derivable from a source position
         let id = self.layer.semantic().syntactic.sym_id(&name)?;
         Some((id, name))
     }
@@ -148,12 +168,21 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// Returns a deterministic `Vec` ordered by file then source position.
     pub fn occurrences_of(&self, id: crate::types::SymbolId) -> Vec<crate::types::Occurrence> {
         let syntactic = &self.layer.semantic().syntactic;
-        let Some(name) = syntactic.sym_name(id) else { return Vec::new() };
+        let Some(name) = syntactic.sym_name(id) else {
+            return Vec::new();
+        };
         let mut occs: Vec<crate::types::Occurrence> = syntactic
             .occurrences
-            .get(&name.name().to_string()).unwrap_or_default().iter().cloned().collect();
+            .get(&name.name().to_string())
+            .unwrap_or_default()
+            .iter()
+            .cloned()
+            .collect();
         occs.sort_by(|a, b| {
-            a.span.file.cmp(&b.span.file).then(a.span.offset.cmp(&b.span.offset))
+            a.span
+                .file
+                .cmp(&b.span.file)
+                .then(a.span.offset.cmp(&b.span.offset))
         });
         occs
     }
@@ -164,7 +193,11 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// [`symbol_is_skolem`](Self::symbol_is_skolem). Iteration order is
     /// arbitrary but stable within one KB instance.
     pub fn iter_symbols(&self) -> impl Iterator<Item = (crate::types::SymbolId, String)> + '_ {
-        self.layer.semantic().syntactic.symbols.snapshot()
+        self.layer
+            .semantic()
+            .syntactic
+            .symbols
+            .snapshot()
             .into_iter()
             .map(|(id, sym)| (id, sym.name().to_string()))
     }
@@ -178,7 +211,8 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// (the relations / predicates / functions that appear as sentence heads).
     pub fn head_names(&self) -> Vec<String> {
         let store = &self.layer.semantic().syntactic;
-        store.residue_head_symbols()
+        store
+            .residue_head_symbols()
             .into_iter()
             .filter_map(|id| store.sym_name(id).map(|s| s.name().to_string()))
             .collect()

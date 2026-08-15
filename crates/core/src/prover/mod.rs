@@ -2,9 +2,9 @@
 //! prover (`saturate`).
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
-use crate::SineParams;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
 use crate::layer::TopLayer;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+use crate::SineParams;
 
 // The external (subprocess) prover spawns `vampire`/`E` — `std::process`
 // doesn't exist on wasm32, so the whole module (CLI construction, spawning,
@@ -29,8 +29,8 @@ pub(crate) use proof::tstp as tptp_proof;
 // classification + proof-step extraction, no subprocess spawning. See the
 // module doc for how this relates to `external`'s `ask`-gated
 // `VampireRunner`.
-pub mod vampire_proof;
 pub mod axiom_source;
+pub mod vampire_proof;
 
 pub(crate) mod scale;
 
@@ -43,13 +43,13 @@ macro_rules! parked {
 }
 pub(crate) use parked;
 
+#[cfg(feature = "ask")]
+pub use external::backends::{Prover, ProverMode, ProverOpts, ProverRunner};
+#[cfg(feature = "ask")]
+pub use external::{ExternalOpts, ExternalProverLayer};
 pub use result::*;
 #[cfg(feature = "native-prover")]
 pub use saturate::ProverLayer;
-#[cfg(feature = "ask")]
-pub use external::{ExternalProverLayer, ExternalOpts};
-#[cfg(feature = "ask")]
-pub use external::backends::{Prover, ProverRunner, ProverOpts, ProverMode};
 
 /// A [`TopLayer`] that can discharge a proof obligation — the single seam
 /// behind `KnowledgeBase::ask` that unifies the native (`ProverLayer`) and
@@ -87,22 +87,22 @@ pub trait ProvingLayer: TopLayer {
     /// store under a query tag — returning the conjecture roots as
     /// `(sentence, content-hash id)`.  The only per-backend step of
     /// [`prepare`](ProvingLayer::prepare).
-    fn intern_conjecture(&self, asts: &[crate::AstNode])
-        -> Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>;
+    fn intern_conjecture(
+        &self,
+        asts: &[crate::AstNode],
+    ) -> Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>;
 
     /// Normalize the conjecture, collect its SInE seed, and intern it (via
     /// [`intern_conjecture`](ProvingLayer::intern_conjecture)).  Shared across
     /// backends; runs once per ask.  `Err` short-circuits the whole proof
     /// (e.g. a parse error / empty query) with the carried result.
-    fn prepare(&self, conjecture: Vec<crate::AstNode>)
-        -> Result<Conjecture, result::ProverResult>
-    {
+    fn prepare(&self, conjecture: Vec<crate::AstNode>) -> Result<Conjecture, result::ProverResult> {
         let (normalized, norm_dropped) = Conjecture::normalize(conjecture);
-        let seed_syms  = Conjecture::seed(&normalized);
-        let sents      = self.intern_conjecture(&normalized);
+        let seed_syms = Conjecture::seed(&normalized);
+        let sents = self.intern_conjecture(&normalized);
         if sents.is_empty() {
             return Err(result::ProverResult {
-                status:     ProverStatus::Unknown,
+                status: ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
                 ..Default::default()
             });
@@ -110,7 +110,11 @@ pub trait ProvingLayer: TopLayer {
         // Intern/build failures surface as a shortfall (`intern_conjecture`
         // yields at most one entry per normalized ast, skipping failures).
         let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
-        Ok(Conjecture { sents, seed_syms, dropped })
+        Ok(Conjecture {
+            sents,
+            seed_syms,
+            dropped,
+        })
     }
 
     /// Undo anything [`prepare`](ProvingLayer::prepare) staged, after the proof
@@ -125,19 +129,16 @@ pub trait ProvingLayer: TopLayer {
     /// the result and the raw SInE selection size.
     fn prove_once(
         &self,
-        conj:     &Conjecture,
-        params:   SineParams,
-        slice:    u32,
-        opts:     &Self::Opts,
-        ctx:      &crate::ProveCtx,
+        conj: &Conjecture,
+        params: SineParams,
+        slice: u32,
+        opts: &Self::Opts,
+        ctx: &crate::ProveCtx,
     ) -> (result::ProverResult, usize);
 
     /// Adjust a result's termination reason before the planner classifies it.
     /// Identity by default; the native layer maps step-exhaustion `GaveUp`.
-    fn remap(
-        _status: ProverStatus,
-        term:    Option<TerminationReason>,
-    ) -> Option<TerminationReason> {
+    fn remap(_status: ProverStatus, term: Option<TerminationReason>) -> Option<TerminationReason> {
         term
     }
 
@@ -156,10 +157,10 @@ pub trait ProvingLayer: TopLayer {
     /// autoscale loop).
     fn try_portfolio(
         &self,
-        _prepared:      &Conjecture,
+        _prepared: &Conjecture,
         _total_timeout: u32,
-        _opts:          &Self::Opts,
-        _ctx:           &crate::ProveCtx,
+        _opts: &Self::Opts,
+        _ctx: &crate::ProveCtx,
     ) -> Option<result::ProverResult> {
         None
     }
@@ -174,18 +175,19 @@ pub trait ProvingLayer: TopLayer {
     fn prove(
         &self,
         conjecture: Vec<crate::AstNode>,
-        opts:       &Self::Opts,
-        ctx:        &crate::ProveCtx,
+        opts: &Self::Opts,
+        ctx: &crate::ProveCtx,
     ) -> result::ProverResult {
         self.warm_up();
         let prepared = match self.prepare(conjecture) {
-            Ok(p)  => p,
+            Ok(p) => p,
             Err(r) => return r,
         };
-        let selection    = opts.selection();
+        let selection = opts.selection();
         let total_timeout = opts.timeout().min(u64::from(u32::MAX)) as u32;
         let result = if !selection.autoscaling() {
-            self.prove_once(&prepared, selection, total_timeout, opts, ctx).0
+            self.prove_once(&prepared, selection, total_timeout, opts, ctx)
+                .0
         } else if let Some(r) = self.try_portfolio(&prepared, total_timeout, opts, ctx) {
             r
         } else {
@@ -194,10 +196,10 @@ pub trait ProvingLayer: TopLayer {
                 scale_factor, scale_max_disproofs, scale_max_time_runs, scale_min_budget,
             };
             let cfg = ScaleConfig {
-                factor:        scale_factor(),
+                factor: scale_factor(),
                 max_disproofs: scale_max_disproofs(),
                 max_time_runs: scale_max_time_runs(),
-                min_budget:    scale_min_budget(),
+                min_budget: scale_min_budget(),
                 total_timeout,
             };
             drive(selection, cfg, Self::remap, |params, slice| {
@@ -210,8 +212,7 @@ pub trait ProvingLayer: TopLayer {
 
     /// Saturate the (selected) axiom base looking for a contradiction — no
     /// conjecture attached.  Selection / session come off `opts`.
-    fn check_consistency(&self, opts: &Self::Opts, ctx: &crate::ProveCtx)
-        -> result::ProverResult;
+    fn check_consistency(&self, opts: &Self::Opts, ctx: &crate::ProveCtx) -> result::ProverResult;
 
     /// Saturate the selected base (plus `opts`' session support) for up to
     /// `limit` distinct contradictions over `focus` (empty ⇒ whole base).
@@ -221,9 +222,9 @@ pub trait ProvingLayer: TopLayer {
     fn audit_consistency(
         &self,
         _focus: &[crate::SentenceId],
-        opts:   &Self::Opts,
+        opts: &Self::Opts,
         _limit: usize,
-        ctx:    &crate::ProveCtx,
+        ctx: &crate::ProveCtx,
     ) -> result::ProverResult {
         self.check_consistency(opts, ctx)
     }
@@ -270,7 +271,7 @@ pub trait CommonProverOpts {
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub struct Conjecture {
     /// The conjecture root sentences: `(sentence, content-hash id)`.
-    pub sents:     Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>,
+    pub sents: Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>,
     /// The conjecture's concrete symbols — the SInE seed for `select_axioms`.
     pub seed_syms: std::collections::HashSet<crate::SymbolId>,
     /// How many conjecture input formulas were DROPPED on the way in — a
@@ -278,7 +279,7 @@ pub struct Conjecture {
     /// failure (`sents` shorter than the normalized list).  Nonzero poisons
     /// any confident Disproved/Satisfiable verdict (the refutation set is
     /// missing part of the goal); a Proved verdict stays sound.
-    pub dropped:   usize,
+    pub dropped: usize,
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -303,7 +304,9 @@ impl Conjecture {
     }
 
     /// The conjecture's concrete symbols — its SInE seed.
-    pub(crate) fn seed(normalized: &[crate::AstNode]) -> std::collections::HashSet<crate::SymbolId> {
+    pub(crate) fn seed(
+        normalized: &[crate::AstNode],
+    ) -> std::collections::HashSet<crate::SymbolId> {
         let mut out = std::collections::HashSet::new();
         for n in normalized {
             collect_ast_symbols(n, &mut out);
@@ -315,7 +318,10 @@ impl Conjecture {
 /// Collect every concrete symbol mentioned in `node` into `out` — the
 /// conjecture's SInE seed.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
-fn collect_ast_symbols(node: &crate::AstNode, out: &mut std::collections::HashSet<crate::SymbolId>) {
+fn collect_ast_symbols(
+    node: &crate::AstNode,
+    out: &mut std::collections::HashSet<crate::SymbolId>,
+) {
     use crate::parse::AstNode;
     match node {
         AstNode::Symbol { name, .. } => {

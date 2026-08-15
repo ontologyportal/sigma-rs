@@ -40,7 +40,7 @@ use crate::types::{Element, Sentence, SentenceId};
 fn normalized_negation_id(syn: &SyntacticLayer, sid: SentenceId) -> Option<SentenceId> {
     let wrap = |el: Element| -> SentenceId {
         Sentence {
-            parent:   Vec::new(),
+            parent: Vec::new(),
             elements: [Element::Op(OpKind::Not), el].into_iter().collect(),
         }
         .hash()
@@ -54,7 +54,11 @@ fn normalized_negation_id(syn: &SyntacticLayer, sid: SentenceId) -> Option<Sente
             _ => None,
         },
         Some(Element::Op(op @ (OpKind::And | OpKind::Or))) => {
-            let dual = if *op == OpKind::And { OpKind::Or } else { OpKind::And };
+            let dual = if *op == OpKind::And {
+                OpKind::Or
+            } else {
+                OpKind::And
+            };
             let mut elements = Vec::with_capacity(s.elements.len());
             elements.push(Element::Op(dual));
             for el in s.elements.iter().skip(1) {
@@ -62,12 +66,17 @@ fn normalized_negation_id(syn: &SyntacticLayer, sid: SentenceId) -> Option<Sente
                     Element::Sub(c) => Element::Sub(normalized_negation_id(syn, *c)?),
                     // A bare propositional atom child: ingest negates it
                     // as the sub-sentence `(not <atom>)`.
-                    Element::Symbol(_) | Element::Variable { .. } =>
-                        Element::Sub(wrap(el.clone())),
+                    Element::Symbol(_) | Element::Variable { .. } => Element::Sub(wrap(el.clone())),
                     _ => return None,
                 });
             }
-            Some(Sentence { parent: Vec::new(), elements: elements.into_iter().collect() }.hash())
+            Some(
+                Sentence {
+                    parent: Vec::new(),
+                    elements: elements.into_iter().collect(),
+                }
+                .hash(),
+            )
         }
         _ => Some(wrap(Element::Sub(sid))),
     }
@@ -96,13 +105,23 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// `prover/saturate/doxastic.rs`.
     pub fn doxastic_contents_via(&self, attitude: &str, agent: &str) -> Vec<SentenceId> {
         let syn = self.syntactic();
-        let Some(agent_sym) = self.symbol_id(agent) else { return Vec::new() };
+        let Some(agent_sym) = self.symbol_id(agent) else {
+            return Vec::new();
+        };
         let mut out: Vec<SentenceId> = Vec::new();
         for root in syn.by_head(attitude) {
-            let Some(sent) = syn.sentence(root) else { continue };
-            if sent.elements.len() != 3 { continue; }
-            let Element::Symbol(a) = &sent.elements[1] else { continue };
-            if a.id() != agent_sym { continue; }
+            let Some(sent) = syn.sentence(root) else {
+                continue;
+            };
+            if sent.elements.len() != 3 {
+                continue;
+            }
+            let Element::Symbol(a) = &sent.elements[1] else {
+                continue;
+            };
+            if a.id() != agent_sym {
+                continue;
+            }
             if let Element::Sub(content) = &sent.elements[2] {
                 out.push(*content);
             }
@@ -133,7 +152,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     pub fn doxastic_conflicts_via(
         &self,
         attitude: &str,
-        agent:    &str,
+        agent: &str,
     ) -> Vec<(SentenceId, SentenceId)> {
         let syn = self.syntactic();
 
@@ -148,21 +167,27 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
         // negation-normalized complement (O(1) per belief after the
         // complement hash is computed).
         let is_not_headed = |sid: SentenceId| -> bool {
-            syn.sentence(sid).is_some_and(
-                |s| matches!(s.elements.first(), Some(Element::Op(OpKind::Not))))
+            syn.sentence(sid)
+                .is_some_and(|s| matches!(s.elements.first(), Some(Element::Op(OpKind::Not))))
         };
         let mut seen: HashSet<(SentenceId, SentenceId)> = HashSet::new();
         let mut out: Vec<(SentenceId, SentenceId)> = Vec::new();
         for sid in ids {
-            let Some(neg) = normalized_negation_id(syn, sid) else { continue };
-            if neg == sid || !believed.contains(&neg) { continue; }
-            if !seen.insert((sid.min(neg), sid.max(neg))) { continue; }
+            let Some(neg) = normalized_negation_id(syn, sid) else {
+                continue;
+            };
+            if neg == sid || !believed.contains(&neg) {
+                continue;
+            }
+            if !seen.insert((sid.min(neg), sid.max(neg))) {
+                continue;
+            }
             // Orientation: the plainly-negated side second when
             // distinguishable, else the deterministic id order.
             match (is_not_headed(sid), is_not_headed(neg)) {
                 (false, true) | (false, false) => out.push((sid, neg)),
-                (true, false)                  => out.push((neg, sid)),
-                (true, true)                   => out.push((sid.min(neg), sid.max(neg))),
+                (true, false) => out.push((neg, sid)),
+                (true, true) => out.push((sid.min(neg), sid.max(neg))),
             }
         }
         out.sort_unstable();
@@ -193,9 +218,9 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     /// never touched the query).  `Unknown`/`Timeout` — budget.
     pub fn doxastic_ask(
         &self,
-        agent:     &str,
+        agent: &str,
         query_kif: &str,
-        opts:      crate::NativeOpts,
+        opts: crate::NativeOpts,
     ) -> crate::prover::ProverResult {
         self.doxastic_ask_via("believes", agent, query_kif, opts)
     }
@@ -204,25 +229,30 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     /// relation (`knows`, `desires`, …) — same contract.
     pub fn doxastic_ask_via(
         &self,
-        attitude:  &str,
-        agent:     &str,
+        attitude: &str,
+        agent: &str,
         query_kif: &str,
-        opts:      crate::NativeOpts,
+        opts: crate::NativeOpts,
     ) -> crate::prover::ProverResult {
-        let doc = crate::parse_document(
-            "doxastic_ask", query_kif.to_string(), crate::Parser::Kif);
+        let doc = crate::parse_document("doxastic_ask", query_kif.to_string(), crate::Parser::Kif);
         if doc.has_errors() {
             return crate::prover::ProverResult {
-                status:     crate::prover::ProverStatus::InputError,
+                status: crate::prover::ProverStatus::InputError,
                 raw_output: format!(
-                    "query parse error ({} diagnostic(s))", doc.parse_errors.len()),
+                    "query parse error ({} diagnostic(s))",
+                    doc.parse_errors.len()
+                ),
                 ..Default::default()
             };
         }
-        let asts: Vec<crate::AstNode> =
-            doc.ast.into_iter().filter_map(|d| d.as_stmt().cloned()).collect();
+        let asts: Vec<crate::AstNode> = doc
+            .ast
+            .into_iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .collect();
         let contents = self.doxastic_contents_via(attitude, agent);
-        self.layer.doxastic_project(&contents, Some(asts), opts, &self.prove_ctx())
+        self.layer
+            .doxastic_project(&contents, Some(asts), opts, &self.prove_ctx())
     }
 
     /// Is `agent`'s belief base (via `believes`) consistent under full
@@ -234,7 +264,7 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     pub fn doxastic_consistent(
         &self,
         agent: &str,
-        opts:  crate::NativeOpts,
+        opts: crate::NativeOpts,
     ) -> crate::prover::ProverResult {
         self.doxastic_consistent_via("believes", agent, opts)
     }
@@ -244,11 +274,12 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     pub fn doxastic_consistent_via(
         &self,
         attitude: &str,
-        agent:    &str,
-        opts:     crate::NativeOpts,
+        agent: &str,
+        opts: crate::NativeOpts,
     ) -> crate::prover::ProverResult {
         let contents = self.doxastic_contents_via(attitude, agent);
-        self.layer.doxastic_project(&contents, None, opts, &self.prove_ctx())
+        self.layer
+            .doxastic_project(&contents, None, opts, &self.prove_ctx())
     }
 }
 
@@ -282,7 +313,8 @@ mod tests {
         assert_eq!(kif_of(&kb, p), "(bald Socrates)");
         assert_eq!(kif_of(&kb, n), "(not (bald Socrates))");
         assert_eq!(
-            normalized_negation_id(kb.store_for_testing(), p), Some(n),
+            normalized_negation_id(kb.store_for_testing(), p),
+            Some(n),
             "negation side is (not P) by content hash"
         );
     }
@@ -293,8 +325,14 @@ mod tests {
             "(believes John (bald Socrates))\n\
              (believes Mary (not (bald Socrates)))",
         );
-        assert!(kb.doxastic_conflicts("John").is_empty(), "no self-conflict for John");
-        assert!(kb.doxastic_conflicts("Mary").is_empty(), "no self-conflict for Mary");
+        assert!(
+            kb.doxastic_conflicts("John").is_empty(),
+            "no self-conflict for John"
+        );
+        assert!(
+            kb.doxastic_conflicts("Mary").is_empty(),
+            "no self-conflict for Mary"
+        );
     }
 
     #[test]
@@ -305,7 +343,10 @@ mod tests {
              (believes John (not (wise Aristotle)))",
         );
         assert!(kb.doxastic_conflicts("John").is_empty());
-        assert!(kb.doxastic_conflicts("NoSuchAgent").is_empty(), "unknown agent is clean");
+        assert!(
+            kb.doxastic_conflicts("NoSuchAgent").is_empty(),
+            "unknown agent is clean"
+        );
     }
 
     #[test]
@@ -350,11 +391,14 @@ mod tests {
         assert_eq!(conflicts.len(), 1, "only the exact-match pair flags");
         let (p, n) = conflicts[0];
         let pair = [kif_of(&kb, p), kif_of(&kb, n)];
-        assert!(pair.contains(&"(and (shape Earth Flat) (orbits Earth Sun))".to_string()),
-            "got {pair:?}");
-        assert!(pair.contains(
-            &"(or (not (shape Earth Flat)) (not (orbits Earth Sun)))".to_string()),
-            "got {pair:?}");
+        assert!(
+            pair.contains(&"(and (shape Earth Flat) (orbits Earth Sun))".to_string()),
+            "got {pair:?}"
+        );
+        assert!(
+            pair.contains(&"(or (not (shape Earth Flat)) (not (orbits Earth Sun)))".to_string()),
+            "got {pair:?}"
+        );
     }
 
     #[test]
@@ -365,7 +409,10 @@ mod tests {
              (believes Ann (calm Sea))",
         );
         assert_eq!(kb.doxastic_conflicts_via("knows", "Ann").len(), 1);
-        assert!(kb.doxastic_conflicts("Ann").is_empty(), "believes set unaffected");
+        assert!(
+            kb.doxastic_conflicts("Ann").is_empty(),
+            "believes set unaffected"
+        );
     }
 }
 
@@ -398,7 +445,10 @@ mod projection_tests {
     }
 
     fn fast() -> NativeOpts {
-        NativeOpts { time_limit_secs: 10, ..Default::default() }
+        NativeOpts {
+            time_limit_secs: 10,
+            ..Default::default()
+        }
     }
 
     fn kif_of(kb: &KnowledgeBase<ProverLayer>, sid: SentenceId) -> String {
@@ -408,8 +458,11 @@ mod projection_tests {
     #[test]
     fn harvest_collects_asserted_contents_only() {
         let kb = kb_native(PROBE_KB);
-        let contents: Vec<String> = kb.doxastic_contents("John")
-            .into_iter().map(|s| kif_of(&kb, s)).collect();
+        let contents: Vec<String> = kb
+            .doxastic_contents("John")
+            .into_iter()
+            .map(|s| kif_of(&kb, s))
+            .collect();
         assert_eq!(contents.len(), 2, "got {contents:?}");
         assert!(contents.contains(&"(bald Socrates)".to_string()));
         assert!(contents.contains(&"(=> (bald Socrates) (old Socrates))".to_string()));
@@ -420,9 +473,13 @@ mod projection_tests {
         // belief — same exclusion the conflict lint applies.
         let kb2 = kb_native(
             "(=> (believes John (bald Socrates)) (confused John))\n\
-             (believes John (wise Plato))");
-        let harvested: Vec<String> = kb2.doxastic_contents("John")
-            .into_iter().map(|s| kif_of(&kb2, s)).collect();
+             (believes John (wise Plato))",
+        );
+        let harvested: Vec<String> = kb2
+            .doxastic_contents("John")
+            .into_iter()
+            .map(|s| kif_of(&kb2, s))
+            .collect();
         assert_eq!(harvested, vec!["(wise Plato)".to_string()]);
     }
 
@@ -438,21 +495,37 @@ mod projection_tests {
         let roots_before = kb.store_for_testing().root_sids().len();
 
         let inner = kb.doxastic_ask("John", "(old Socrates)", fast());
-        assert_eq!(inner.status, ProverStatus::Proved,
-            "modus ponens inside the context: {}", inner.raw_output);
+        assert_eq!(
+            inner.status,
+            ProverStatus::Proved,
+            "modus ponens inside the context: {}",
+            inner.raw_output
+        );
 
         // GUARDRAIL: the projection asserted nothing.
-        assert_eq!(kb.store_for_testing().root_sids().len(), roots_before,
-            "projection must not mutate the store");
+        assert_eq!(
+            kb.store_for_testing().root_sids().len(),
+            roots_before,
+            "projection must not mutate the store"
+        );
 
         // Outer control: `(believes John (old Socrates))` is NOT
         // derivable outside the context.
         let outer = kb.ask_query(
-            "(believes John (old Socrates))", None, SineParams::default(), fast());
+            "(believes John (old Socrates))",
+            None,
+            SineParams::default(),
+            fast(),
+        );
         assert!(
-            !matches!(outer.status, ProverStatus::Proved | ProverStatus::Inconsistent),
+            !matches!(
+                outer.status,
+                ProverStatus::Proved | ProverStatus::Inconsistent
+            ),
             "outer ask must stay unproven (got {:?}): {}",
-            outer.status, outer.raw_output);
+            outer.status,
+            outer.raw_output
+        );
     }
 
     /// Closure genuinely beyond K: quantifier instantiation inside the
@@ -463,23 +536,38 @@ mod projection_tests {
         let kb = kb_native(
             "(domain believes 2 Formula)\n\
              (believes John (forall (?X) (=> (man ?X) (mortal ?X))))\n\
-             (believes John (man Socrates))");
+             (believes John (man Socrates))",
+        );
         let inner = kb.doxastic_ask("John", "(mortal Socrates)", fast());
         assert_eq!(inner.status, ProverStatus::Proved, "{}", inner.raw_output);
 
         let outer = kb.ask_query(
-            "(believes John (mortal Socrates))", None, SineParams::default(), fast());
+            "(believes John (mortal Socrates))",
+            None,
+            SineParams::default(),
+            fast(),
+        );
         assert!(
-            !matches!(outer.status, ProverStatus::Proved | ProverStatus::Inconsistent),
-            "outer control (got {:?}): {}", outer.status, outer.raw_output);
+            !matches!(
+                outer.status,
+                ProverStatus::Proved | ProverStatus::Inconsistent
+            ),
+            "outer control (got {:?}): {}",
+            outer.status,
+            outer.raw_output
+        );
     }
 
     #[test]
     fn negated_content_is_not_proved_inside() {
         let kb = kb_native(PROBE_KB);
         let r = kb.doxastic_ask("John", "(not (bald Socrates))", fast());
-        assert_eq!(r.status, ProverStatus::Disproved,
-            "John's context saturates without ¬P: {}", r.raw_output);
+        assert_eq!(
+            r.status,
+            ProverStatus::Disproved,
+            "John's context saturates without ¬P: {}",
+            r.raw_output
+        );
     }
 
     #[test]
@@ -492,14 +580,17 @@ mod projection_tests {
         // Add `believes John (not Q)`: {P, P⇒Q, ¬Q} is inconsistent
         // under consequence — invisible to the syntactic lint, found by
         // the projection, with a transcript citing the three contents.
-        let kb = kb_native(&format!(
-            "{PROBE_KB}\n(believes John (not (old Socrates)))"));
-        assert!(kb.doxastic_conflicts("John").is_empty(),
-            "no syntactic P/¬P pair — this contradiction needs deduction");
+        let kb = kb_native(&format!("{PROBE_KB}\n(believes John (not (old Socrates)))"));
+        assert!(
+            kb.doxastic_conflicts("John").is_empty(),
+            "no syntactic P/¬P pair — this contradiction needs deduction"
+        );
         let r = kb.doxastic_consistent("John", fast());
         assert_eq!(r.status, ProverStatus::Inconsistent, "{}", r.raw_output);
         assert!(!r.proof_kif.is_empty(), "cited transcript expected");
-        let cited: HashSet<String> = r.proof_kif.iter()
+        let cited: HashSet<String> = r
+            .proof_kif
+            .iter()
             .filter_map(|s| s.source_sid)
             .map(|sid| kif_of(&kb, sid))
             .collect();
@@ -508,8 +599,10 @@ mod projection_tests {
             "(=> (bald Socrates) (old Socrates))",
             "(not (old Socrates))",
         ] {
-            assert!(cited.contains(content),
-                "proof must cite {content:?}, cited: {cited:?}");
+            assert!(
+                cited.contains(content),
+                "proof must cite {content:?}, cited: {cited:?}"
+            );
         }
     }
 
@@ -529,16 +622,19 @@ mod projection_tests {
 
     #[test]
     fn nested_belief_stays_quoted_one_level() {
-        let kb = kb_native(
-            "(believes John (believes Mary (not (bald Socrates))))");
+        let kb = kb_native("(believes John (believes Mary (not (bald Socrates))))");
         // John's projection holds `believes(Mary, ¬P)` as an inner FACT
         // (the content quotes one level down at inner clausification).
         let r = kb.doxastic_ask("John", "(believes Mary (not (bald Socrates)))", fast());
         assert_eq!(r.status, ProverStatus::Proved, "{}", r.raw_output);
         // The nested content is never unquoted to John's assertion level.
         let r = kb.doxastic_ask("John", "(not (bald Socrates))", fast());
-        assert_eq!(r.status, ProverStatus::Disproved,
-            "nested quote must stay opaque: {}", r.raw_output);
+        assert_eq!(
+            r.status,
+            ProverStatus::Disproved,
+            "nested quote must stay opaque: {}",
+            r.raw_output
+        );
         // No recursion into Mary (phase 1): the nested belief is not an
         // ASSERTED root of Mary's, so her context is empty.
         assert!(kb.doxastic_contents("Mary").is_empty());

@@ -28,15 +28,15 @@ use crate::syntactic::sine::{default_budget, SineParams};
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScaleConfig {
     /// Budget multiplier per step (widen ×, narrow ÷).  ≥ 2.
-    pub factor:         usize,
+    pub factor: usize,
     /// Give up after this many consecutive Widen verdicts that don't prove.
-    pub max_disproofs:  usize,
+    pub max_disproofs: usize,
     /// Number of full-length prover runs the total timeout is split across.
-    pub max_time_runs:  usize,
+    pub max_time_runs: usize,
     /// Floor on the budget when narrowing.
-    pub min_budget:     usize,
+    pub min_budget: usize,
     /// Total wall-clock budget in seconds (0 = unbounded — no time slicing).
-    pub total_timeout:  u32,
+    pub total_timeout: u32,
 }
 
 /// What the prover verdict tells the loop to do next.
@@ -56,28 +56,28 @@ pub(crate) fn classify(status: ProverStatus, term: Option<TerminationReason>) ->
     use TerminationReason as TR;
     match (status, term) {
         (S::Proved, _) | (S::Inconsistent, _) | (S::InputError, _) => ScaleAct::Done,
-        (S::Disproved, _)                       => ScaleAct::Widen,
-        (S::Timeout, _)                         => ScaleAct::Narrow,
-        (S::Unknown, Some(TR::Saturation))      => ScaleAct::Widen,
-        (S::Unknown, Some(TR::GaveUp))          => ScaleAct::Widen,
-        (S::Unknown, Some(TR::ResourceOut))     => ScaleAct::Narrow,
+        (S::Disproved, _) => ScaleAct::Widen,
+        (S::Timeout, _) => ScaleAct::Narrow,
+        (S::Unknown, Some(TR::Saturation)) => ScaleAct::Widen,
+        (S::Unknown, Some(TR::GaveUp)) => ScaleAct::Widen,
+        (S::Unknown, Some(TR::ResourceOut)) => ScaleAct::Narrow,
         // Truly unknown (no reason / Other), or Consistent in Prove mode:
         // nothing useful to scale on.
-        _                                       => ScaleAct::Done,
+        _ => ScaleAct::Done,
     }
 }
 
 /// Mutable state of the budget search across iterations.
 #[derive(Debug)]
 pub(crate) struct ScalePlanner {
-    cfg:                ScaleConfig,
-    budget:             usize,
+    cfg: ScaleConfig,
+    budget: usize,
     /// Largest budget seen to be *under-selected* (a Widen verdict).
-    lo:                 Option<usize>,
+    lo: Option<usize>,
     /// Smallest budget seen to be *over-selected* (a Narrow verdict).
-    hi:                 Option<usize>,
+    hi: Option<usize>,
     consecutive_widens: usize,
-    time_runs_used:     usize,
+    time_runs_used: usize,
     /// Remaining wall-clock budget in **fractional** seconds (only
     /// meaningful when `cfg.total_timeout > 0`).  Kept as a float (not the
     /// legacy whole-second counter) so a handful of sub-second-but-nonzero
@@ -85,7 +85,7 @@ pub(crate) struct ScalePlanner {
     /// the caller is expected to feed back the attempt's *actual measured
     /// wall-clock time* (see [`drive`]'s `Instant`-based timing), not a
     /// backend-reported, second-truncated duration.
-    time_left:          f64,
+    time_left: f64,
 }
 
 impl ScalePlanner {
@@ -102,11 +102,15 @@ impl ScalePlanner {
     }
 
     /// The budget to select at for the next prove attempt.
-    pub(crate) fn budget(&self) -> usize { self.budget }
+    pub(crate) fn budget(&self) -> usize {
+        self.budget
+    }
 
     /// Remaining wall-clock budget (fractional seconds); only meaningful
     /// when `cfg.total_timeout > 0`.
-    pub(crate) fn time_left(&self) -> f64 { self.time_left }
+    pub(crate) fn time_left(&self) -> f64 {
+        self.time_left
+    }
 
     /// `true` once the total wall-clock budget is exhausted (always `false`
     /// when `cfg.total_timeout == 0`, i.e. no cap configured).  The `drive`
@@ -131,7 +135,11 @@ impl ScalePlanner {
         if self.time_left <= 0.0 {
             return 0; // caller must check `deadline_exceeded` before this is reachable
         }
-        let runs_left = self.cfg.max_time_runs.saturating_sub(self.time_runs_used).max(1) as f64;
+        let runs_left = self
+            .cfg
+            .max_time_runs
+            .saturating_sub(self.time_runs_used)
+            .max(1) as f64;
         let per_run = (self.time_left / runs_left).min(self.time_left);
         per_run.ceil().max(1.0) as u32
     }
@@ -156,10 +164,10 @@ impl ScalePlanner {
     /// re-running an identical problem.
     pub(crate) fn step(
         &mut self,
-        act:             ScaleAct,
+        act: ScaleAct,
         reached_ceiling: bool,
-        reached_floor:   bool,
-        elapsed_secs:    f64,
+        reached_floor: bool,
+        elapsed_secs: f64,
     ) -> bool {
         self.time_left -= elapsed_secs.max(0.0);
         let timed_out = self.deadline_exceeded();
@@ -167,31 +175,49 @@ impl ScalePlanner {
             ScaleAct::Done => false,
             ScaleAct::Widen => {
                 self.consecutive_widens += 1;
-                if reached_ceiling { return false; }            // can't add more axioms
-                if self.consecutive_widens >= self.cfg.max_disproofs { return false; }
-                if timed_out { return false; }
+                if reached_ceiling {
+                    return false;
+                } // can't add more axioms
+                if self.consecutive_widens >= self.cfg.max_disproofs {
+                    return false;
+                }
+                if timed_out {
+                    return false;
+                }
                 self.lo = Some(self.budget);
                 let next = match self.hi {
                     Some(h) => (self.budget + h) / 2,
-                    None    => self.budget.saturating_mul(self.cfg.factor),
+                    None => self.budget.saturating_mul(self.cfg.factor),
                 };
-                if next <= self.budget { return false; }        // bracket collapsed
+                if next <= self.budget {
+                    return false;
+                } // bracket collapsed
                 self.budget = next;
                 true
             }
             ScaleAct::Narrow => {
                 self.consecutive_widens = 0;
                 self.time_runs_used += 1;
-                if reached_floor { return false; }              // can't drop fewer axioms
-                if self.budget <= self.cfg.min_budget { return false; }
-                if self.time_runs_used >= self.cfg.max_time_runs { return false; }
-                if timed_out { return false; }
+                if reached_floor {
+                    return false;
+                } // can't drop fewer axioms
+                if self.budget <= self.cfg.min_budget {
+                    return false;
+                }
+                if self.time_runs_used >= self.cfg.max_time_runs {
+                    return false;
+                }
+                if timed_out {
+                    return false;
+                }
                 self.hi = Some(self.budget);
                 let next = match self.lo {
                     Some(l) => (l + self.budget) / 2,
-                    None    => (self.budget / self.cfg.factor).max(self.cfg.min_budget),
+                    None => (self.budget / self.cfg.factor).max(self.cfg.min_budget),
                 };
-                if next >= self.budget { return false; }        // bracket collapsed
+                if next >= self.budget {
+                    return false;
+                } // bracket collapsed
                 self.budget = next;
                 true
             }
@@ -214,7 +240,11 @@ impl ScalePlanner {
 /// is untouched; this only shortens the climb for small/self-contained
 /// corpora (standalone TPTP problems, small test KBs).
 #[cfg(feature = "native-prover")]
-pub(crate) fn adaptive_start_budget(requested: usize, total_axioms: usize, cfg: &ScaleConfig) -> usize {
+pub(crate) fn adaptive_start_budget(
+    requested: usize,
+    total_axioms: usize,
+    cfg: &ScaleConfig,
+) -> usize {
     if total_axioms == 0 || total_axioms >= requested {
         return requested;
     }
@@ -241,9 +271,15 @@ pub(crate) fn adaptive_start_budget(requested: usize, total_axioms: usize, cfg: 
 /// same safety property as `adaptive_start_budget`.
 #[cfg(feature = "native-prover")]
 pub(crate) fn effective_max_time_runs(
-    configured: usize, total_axioms: usize, min_budget: usize,
+    configured: usize,
+    total_axioms: usize,
+    min_budget: usize,
 ) -> usize {
-    if total_axioms > 0 && total_axioms <= min_budget { 1 } else { configured }
+    if total_axioms > 0 && total_axioms <= min_budget {
+        1
+    } else {
+        configured
+    }
 }
 
 /// The backend-agnostic autoscaling driver shared by the TPTP/Vampire path
@@ -270,9 +306,9 @@ pub(crate) fn effective_max_time_runs(
 /// Returns the first definitive verdict, or — if the search gives up — the
 /// best (last) inconclusive result it saw.
 pub(crate) fn drive<F>(
-    base:    SineParams,
-    cfg:     ScaleConfig,
-    remap:   impl Fn(ProverStatus, Option<TerminationReason>) -> Option<TerminationReason>,
+    base: SineParams,
+    cfg: ScaleConfig,
+    remap: impl Fn(ProverStatus, Option<TerminationReason>) -> Option<TerminationReason>,
     mut attempt: F,
 ) -> ProverResult
 where
@@ -298,11 +334,14 @@ where
         if planner.deadline_exceeded() {
             break;
         }
-        let budget  = planner.budget();
+        let budget = planner.budget();
         let per_run = planner.slice();
 
         let params = SineParams {
-            auto_budget: Some(budget), autoscale: false, select_all: false, ..base
+            auto_budget: Some(budget),
+            autoscale: false,
+            select_all: false,
+            ..base
         };
         // Measure the attempt's ACTUAL wall-clock time ourselves (not the
         // backend-reported `result.timings.prover_run`, which is truncated
@@ -322,12 +361,17 @@ where
         // it's folded into `reached_floor` too rather than requiring the
         // planner to rediscover it by halving all the way down.
         let reached_ceiling = raw_selected < budget;
-        let reached_floor   = raw_selected > budget || raw_selected <= cfg.min_budget;
+        let reached_floor = raw_selected > budget || raw_selected <= cfg.min_budget;
         let act = classify(result.status, remap(result.status, result.termination));
         if trace {
-            eprintln!("SCALE-TRACE: budget={budget} per_run={per_run} raw_selected={raw_selected} \
+            eprintln!(
+                "SCALE-TRACE: budget={budget} per_run={per_run} raw_selected={raw_selected} \
                 status={:?} term={:?} elapsed={elapsed:.3}s act={:?} time_left={:.3}s",
-                result.status, result.termination, act, planner.time_left());
+                result.status,
+                result.termination,
+                act,
+                planner.time_left()
+            );
         }
 
         // Definitive verdict (or nothing useful to scale): return as-is.
@@ -431,9 +475,15 @@ pub(crate) fn adaptive_lane_count(total_timeout: u32, all_lanes: usize) -> usize
 /// is the run-time backstop; this is the static, no-overrun-yet baseline.
 #[cfg(feature = "native-prover")]
 fn lane_shares(total_timeout: u32, lanes: usize) -> Vec<u32> {
-    if lanes == 0 { return Vec::new(); }
-    if total_timeout == 0 { return vec![0; lanes]; }
-    if lanes == 1 { return vec![total_timeout]; }
+    if lanes == 0 {
+        return Vec::new();
+    }
+    if total_timeout == 0 {
+        return vec![0; lanes];
+    }
+    if lanes == 1 {
+        return vec![total_timeout];
+    }
 
     const FIRST_LANE_SHARE: f64 = 0.4;
     let total = f64::from(total_timeout);
@@ -468,7 +518,10 @@ fn verdict_rank(r: &ProverResult) -> u8 {
     match r.status {
         ProverStatus::Proved | ProverStatus::Inconsistent => 4,
         ProverStatus::Disproved | ProverStatus::Consistent
-            if r.complete_saturation != Some(false) => 3,
+            if r.complete_saturation != Some(false) =>
+        {
+            3
+        }
         ProverStatus::Timeout => 1,
         // Disproved-but-not-certified, Unknown, InputError.
         _ => 2,
@@ -530,7 +583,7 @@ const OVERRUN_GRACE_SECS: f64 = 1.0;
 /// [`verdict_rank`]) and its lane.
 #[cfg(feature = "native-prover")]
 pub(crate) fn drive_portfolio(
-    lane_count:  usize,
+    lane_count: usize,
     total_timeout: u32,
     mut drive_one_lane: impl FnMut(usize, u32) -> ProverResult,
 ) -> (usize, ProverResult) {
@@ -560,7 +613,8 @@ pub(crate) fn drive_portfolio(
             if trace {
                 eprintln!(
                     "PORTFOLIO-TRACE: lane={idx} skipped — schedule already at \
-                     {total_elapsed:.3}s of {total_timeout}s budget (+{OVERRUN_GRACE_SECS}s grace)");
+                     {total_elapsed:.3}s of {total_timeout}s budget (+{OVERRUN_GRACE_SECS}s grace)"
+                );
             }
             break;
         }
@@ -598,11 +652,14 @@ pub(crate) fn drive_portfolio(
                 "PORTFOLIO-TRACE: lane={idx} slice={slice}s elapsed={elapsed:.3}s \
                  total_elapsed={total_elapsed:.3}s \
                  status={:?} term={:?} complete_saturation={:?} carry_next={carry:.3}s",
-                result.status, result.termination, result.complete_saturation);
+                result.status, result.termination, result.complete_saturation
+            );
         }
 
         let final_verdict = is_schedule_final(&result);
-        let better = best.as_ref().is_none_or(|(_, b)| verdict_rank(&result) > verdict_rank(b));
+        let better = best
+            .as_ref()
+            .is_none_or(|(_, b)| verdict_rank(&result) > verdict_rank(b));
         if better {
             best = Some((idx, result));
         }
@@ -636,8 +693,8 @@ pub(crate) fn drive_portfolio(
 #[cfg(feature = "native-prover")]
 pub(crate) fn drive_portfolio_parallel(
     lane_count: usize,
-    workers:    usize,
-    cancel:     &std::sync::atomic::AtomicBool,
+    workers: usize,
+    cancel: &std::sync::atomic::AtomicBool,
     drive_one_lane: impl Fn(usize) -> ProverResult + Sync,
 ) -> (usize, ProverResult) {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -666,7 +723,8 @@ pub(crate) fn drive_portfolio_parallel(
                     eprintln!(
                         "PORTFOLIO-PARALLEL-TRACE: lane={idx} elapsed={elapsed:.3}s \
                          status={:?} term={:?} complete_saturation={:?} final={final_verdict}",
-                        result.status, result.termination, result.complete_saturation);
+                        result.status, result.termination, result.complete_saturation
+                    );
                 }
                 if final_verdict {
                     // Raise BEFORE taking the results lock: every other
@@ -677,7 +735,8 @@ pub(crate) fn drive_portfolio_parallel(
                 }
                 {
                     let mut best = best.lock().expect("portfolio results mutex poisoned");
-                    let better = best.as_ref()
+                    let better = best
+                        .as_ref()
                         .is_none_or(|(_, b)| verdict_rank(&result) > verdict_rank(b));
                     if better {
                         *best = Some((idx, result));
@@ -690,7 +749,8 @@ pub(crate) fn drive_portfolio_parallel(
         }
     });
 
-    best.into_inner().expect("portfolio results mutex poisoned")
+    best.into_inner()
+        .expect("portfolio results mutex poisoned")
         .expect("lane_count > 0 guaranteed by caller")
 }
 
@@ -700,27 +760,39 @@ mod tests {
     use crate::prover::{ProverStatus as S, TerminationReason as TR};
 
     fn cfg(total_timeout: u32) -> ScaleConfig {
-        ScaleConfig { factor: 2, max_disproofs: 4, max_time_runs: 4, min_budget: 64, total_timeout }
+        ScaleConfig {
+            factor: 2,
+            max_disproofs: 4,
+            max_time_runs: 4,
+            min_budget: 64,
+            total_timeout,
+        }
     }
 
     #[test]
     fn classify_maps_verdicts_to_actions() {
-        assert_eq!(classify(S::Proved, None),                 ScaleAct::Done);
-        assert_eq!(classify(S::Inconsistent, None),           ScaleAct::Done);
-        assert_eq!(classify(S::InputError, None),             ScaleAct::Done);
-        assert_eq!(classify(S::Disproved, Some(TR::Saturation)), ScaleAct::Widen);
+        assert_eq!(classify(S::Proved, None), ScaleAct::Done);
+        assert_eq!(classify(S::Inconsistent, None), ScaleAct::Done);
+        assert_eq!(classify(S::InputError, None), ScaleAct::Done);
+        assert_eq!(
+            classify(S::Disproved, Some(TR::Saturation)),
+            ScaleAct::Widen
+        );
         assert_eq!(classify(S::Timeout, Some(TR::TimeLimit)), ScaleAct::Narrow);
-        assert_eq!(classify(S::Unknown, Some(TR::Saturation)),ScaleAct::Widen);
-        assert_eq!(classify(S::Unknown, Some(TR::GaveUp)),    ScaleAct::Widen);
-        assert_eq!(classify(S::Unknown, Some(TR::ResourceOut)),ScaleAct::Narrow);
-        assert_eq!(classify(S::Unknown, None),                ScaleAct::Done);
+        assert_eq!(classify(S::Unknown, Some(TR::Saturation)), ScaleAct::Widen);
+        assert_eq!(classify(S::Unknown, Some(TR::GaveUp)), ScaleAct::Widen);
+        assert_eq!(
+            classify(S::Unknown, Some(TR::ResourceOut)),
+            ScaleAct::Narrow
+        );
+        assert_eq!(classify(S::Unknown, None), ScaleAct::Done);
     }
 
     #[test]
     fn widen_doubles_until_ceiling() {
         let mut p = ScalePlanner::new(100, cfg(0));
         assert_eq!(p.budget(), 100);
-        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // not at ceiling → grow
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0)); // not at ceiling → grow
         assert_eq!(p.budget(), 200);
         assert!(p.step(ScaleAct::Widen, false, false, 0.0));
         assert_eq!(p.budget(), 400);
@@ -732,16 +804,16 @@ mod tests {
     fn widen_gives_up_after_max_disproofs() {
         let mut p = ScalePlanner::new(100, cfg(0));
         // 4 consecutive widens (max_disproofs=4): the 4th returns false.
-        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 1
-        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 2
-        assert!(p.step(ScaleAct::Widen, false, false, 0.0));   // 3
-        assert!(!p.step(ScaleAct::Widen, false, false, 0.0));  // 4 → give up
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0)); // 1
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0)); // 2
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0)); // 3
+        assert!(!p.step(ScaleAct::Widen, false, false, 0.0)); // 4 → give up
     }
 
     #[test]
     fn narrow_halves_to_min_budget() {
         let mut p = ScalePlanner::new(256, cfg(0));
-        assert!(p.step(ScaleAct::Narrow, false, false, 0.0));  // 256 -> 128
+        assert!(p.step(ScaleAct::Narrow, false, false, 0.0)); // 256 -> 128
         assert_eq!(p.budget(), 128);
         // 128 -> 64 (min); at min the *next* narrow stops.
         assert!(p.step(ScaleAct::Narrow, false, false, 0.0));
@@ -781,10 +853,10 @@ mod tests {
         let mut p = ScalePlanner::new(4096, cfg(40));
         assert_eq!(p.slice(), 10);
         // Each narrow consumes a run; after max_time_runs narrows we stop.
-        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 1, 30s left, 3 runs
-        assert_eq!(p.slice(), 10);                     // 30/3
-        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 2
-        assert!(p.step(ScaleAct::Narrow, false, false, 10.0));  // run 3
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0)); // run 1, 30s left, 3 runs
+        assert_eq!(p.slice(), 10); // 30/3
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0)); // run 2
+        assert!(p.step(ScaleAct::Narrow, false, false, 10.0)); // run 3
         assert!(!p.step(ScaleAct::Narrow, false, false, 10.0)); // run 4 → max_time_runs reached
     }
 
@@ -794,8 +866,8 @@ mod tests {
         // slice for a later narrow still reflects the full remaining time.
         let mut p = ScalePlanner::new(100, cfg(40));
         assert_eq!(p.slice(), 10);
-        assert!(p.step(ScaleAct::Widen, false, false, 0.0));    // fast, no time/run used
-        assert_eq!(p.slice(), 10);                     // still 40/4
+        assert!(p.step(ScaleAct::Widen, false, false, 0.0)); // fast, no time/run used
+        assert_eq!(p.slice(), 10); // still 40/4
     }
 
     #[test]
@@ -813,10 +885,10 @@ mod tests {
         // floor to 2s, undercounting by 0.6s/iter) must exhaust a 10s total
         // budget in FOUR runs, not five+ — 4 * 2.6 = 10.4 > 10.
         let mut p = ScalePlanner::new(1000, cfg(10));
-        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 7.4s left
-        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 4.8s left
-        assert!(p.step(ScaleAct::Narrow, false, false, 2.6));  // 2.2s left
-        // A 4th 2.6s run overdraws the remaining 2.2s → deadline exceeded.
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6)); // 7.4s left
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6)); // 4.8s left
+        assert!(p.step(ScaleAct::Narrow, false, false, 2.6)); // 2.2s left
+                                                              // A 4th 2.6s run overdraws the remaining 2.2s → deadline exceeded.
         assert!(!p.step(ScaleAct::Narrow, false, false, 2.6));
         assert!(p.deadline_exceeded());
     }
@@ -845,7 +917,12 @@ mod tests {
 
     #[cfg(feature = "native-prover")]
     fn result(status: S, term: Option<TR>, complete_saturation: Option<bool>) -> ProverResult {
-        ProverResult { status, termination: term, complete_saturation, ..Default::default() }
+        ProverResult {
+            status,
+            termination: term,
+            complete_saturation,
+            ..Default::default()
+        }
     }
 
     #[cfg(feature = "native-prover")]
@@ -991,10 +1068,10 @@ mod tests {
     #[cfg(feature = "native-prover")]
     #[test]
     fn verdict_rank_orders_proved_over_disproved_over_gaveup_over_timeout() {
-        let proved    = result(S::Proved, None, None);
+        let proved = result(S::Proved, None, None);
         let disproved = result(S::Disproved, Some(TR::Saturation), Some(true));
-        let gaveup    = result(S::Unknown, Some(TR::GaveUp), None);
-        let timeout   = result(S::Timeout, Some(TR::TimeLimit), None);
+        let gaveup = result(S::Unknown, Some(TR::GaveUp), None);
+        let timeout = result(S::Timeout, Some(TR::TimeLimit), None);
         assert!(verdict_rank(&proved) > verdict_rank(&disproved));
         assert!(verdict_rank(&disproved) > verdict_rank(&gaveup));
         assert!(verdict_rank(&gaveup) > verdict_rank(&timeout));
@@ -1006,7 +1083,7 @@ mod tests {
         // Verdict honesty: a Disproved that ISN'T a saturation certificate is
         // "no proof found", not a countermodel — must not outrank GaveUp.
         let uncertified = result(S::Disproved, Some(TR::Saturation), Some(false));
-        let gaveup       = result(S::Unknown, Some(TR::GaveUp), None);
+        let gaveup = result(S::Unknown, Some(TR::GaveUp), None);
         assert_eq!(verdict_rank(&uncertified), verdict_rank(&gaveup));
     }
 
@@ -1015,10 +1092,26 @@ mod tests {
     fn is_schedule_final_true_only_for_conclusive_verdicts() {
         assert!(is_schedule_final(&result(S::Proved, None, None)));
         assert!(is_schedule_final(&result(S::Inconsistent, None, None)));
-        assert!(is_schedule_final(&result(S::Disproved, Some(TR::Saturation), Some(true))));
-        assert!(!is_schedule_final(&result(S::Disproved, Some(TR::Saturation), Some(false))));
-        assert!(!is_schedule_final(&result(S::Timeout, Some(TR::TimeLimit), None)));
-        assert!(!is_schedule_final(&result(S::Unknown, Some(TR::GaveUp), None)));
+        assert!(is_schedule_final(&result(
+            S::Disproved,
+            Some(TR::Saturation),
+            Some(true)
+        )));
+        assert!(!is_schedule_final(&result(
+            S::Disproved,
+            Some(TR::Saturation),
+            Some(false)
+        )));
+        assert!(!is_schedule_final(&result(
+            S::Timeout,
+            Some(TR::TimeLimit),
+            None
+        )));
+        assert!(!is_schedule_final(&result(
+            S::Unknown,
+            Some(TR::GaveUp),
+            None
+        )));
     }
 
     #[cfg(feature = "native-prover")]
@@ -1055,7 +1148,10 @@ mod tests {
         });
         assert_eq!(winner, 0);
         assert_eq!(r.status, S::Disproved);
-        assert_eq!(calls, 1, "a confident disproof must end the schedule immediately");
+        assert_eq!(
+            calls, 1,
+            "a confident disproof must end the schedule immediately"
+        );
     }
 
     #[cfg(feature = "native-prover")]
@@ -1075,12 +1171,10 @@ mod tests {
     #[cfg(feature = "native-prover")]
     #[test]
     fn drive_portfolio_falls_back_to_best_rank_when_all_inconclusive() {
-        let (winner, r) = drive_portfolio(3, 20, |idx, _slice| {
-            match idx {
-                0 => result(S::Timeout, Some(TR::TimeLimit), None),
-                1 => result(S::Unknown, Some(TR::GaveUp), None),
-                _ => result(S::Timeout, Some(TR::TimeLimit), None),
-            }
+        let (winner, r) = drive_portfolio(3, 20, |idx, _slice| match idx {
+            0 => result(S::Timeout, Some(TR::TimeLimit), None),
+            1 => result(S::Unknown, Some(TR::GaveUp), None),
+            _ => result(S::Timeout, Some(TR::TimeLimit), None),
         });
         // GaveUp (rank 2) outranks Timeout (rank 1).
         assert_eq!(winner, 1);
@@ -1105,7 +1199,11 @@ mod tests {
         // Since the test's closure takes ~0 wall time, lane 0's entire slice
         // is unspent slack and should roll into lane 1.
         assert_eq!(slices[0], 8);
-        assert!(slices[1] > 12, "unused lane-0 time should roll forward: {:?}", slices);
+        assert!(
+            slices[1] > 12,
+            "unused lane-0 time should roll forward: {:?}",
+            slices
+        );
     }
 
     #[cfg(feature = "native-prover")]
@@ -1130,11 +1228,14 @@ mod tests {
         // before a single lane had even run.
         for total in [5u32, 7, 10, 11, 13, 19, 20, 21, 37, 100] {
             for lanes in [2usize, 3, 5, 7] {
-                if (total as usize) < lanes { continue; }
+                if (total as usize) < lanes {
+                    continue;
+                }
                 let shares = lane_shares(total, lanes);
                 assert_eq!(shares.len(), lanes);
                 assert_eq!(
-                    shares.iter().sum::<u32>(), total,
+                    shares.iter().sum::<u32>(),
+                    total,
                     "total={total} lanes={lanes} shares={shares:?} must sum to the budget exactly"
                 );
             }
@@ -1225,7 +1326,10 @@ mod tests {
         let t0 = Instant::now();
         let _ = drive_portfolio(5, total_timeout, |_idx, slice| {
             // Overrun each lane's slice by 300ms.
-            std::thread::sleep(std::time::Duration::from_secs(u64::from(slice)) + std::time::Duration::from_millis(300));
+            std::thread::sleep(
+                std::time::Duration::from_secs(u64::from(slice))
+                    + std::time::Duration::from_millis(300),
+            );
             result(S::Timeout, Some(TR::TimeLimit), None)
         });
         let elapsed = t0.elapsed().as_secs_f64();

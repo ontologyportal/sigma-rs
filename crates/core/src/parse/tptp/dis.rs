@@ -9,10 +9,10 @@
 // clausification); FOF frames any untyped formula; non-conforming statements
 // are dropped and reported in `EmitResult.dropped`.
 
-use crate::parse::ast::{AstNode, OpKind, Role, Source, Span};
-use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 use super::syntax;
 use super::tokenizer::{tokenize, TokenKind};
+use crate::parse::ast::{AstNode, OpKind, Role, Source, Span};
+use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 
 /// ANSI-colourised TPTP text — tokenizes `text` (the real TPTP lexer, not an
 /// ad-hoc regex) and re-emits it with each token's ORIGINAL bytes wrapped in
@@ -38,11 +38,34 @@ pub fn highlight(text: &str) -> String {
     // predicate/function names in SUMO-derived proofs never collide with
     // this fixed set.
     const KEYWORDS: &[&str] = &[
-        "fof", "cnf", "tff", "thf", "tcf", "include",
-        "axiom", "hypothesis", "definition", "lemma", "conjecture",
-        "negated_conjecture", "plain", "type", "unknown", "assumption",
-        "theorem", "corollary", "fi_domain", "fi_functors", "fi_predicates",
-        "inference", "file", "status", "introduced", "esa", "thm", "cth",
+        "fof",
+        "cnf",
+        "tff",
+        "thf",
+        "tcf",
+        "include",
+        "axiom",
+        "hypothesis",
+        "definition",
+        "lemma",
+        "conjecture",
+        "negated_conjecture",
+        "plain",
+        "type",
+        "unknown",
+        "assumption",
+        "theorem",
+        "corollary",
+        "fi_domain",
+        "fi_functors",
+        "fi_predicates",
+        "inference",
+        "file",
+        "status",
+        "introduced",
+        "esa",
+        "thm",
+        "cth",
     ];
 
     let mut out = String::with_capacity(text.len() + tokens.len() * 8);
@@ -57,8 +80,12 @@ pub fn highlight(text: &str) -> String {
             TokenKind::DollarWord(_) | TokenKind::DollarDollarWord(_) => color_bright_cyan,
             TokenKind::Integer(_) | TokenKind::Rational(_) | TokenKind::Real(_) => color_green,
             TokenKind::SingleQuoted(_) | TokenKind::DoubleQuoted(_) => color_green,
-            TokenKind::Tilde | TokenKind::Bang | TokenKind::Question
-            | TokenKind::Pipe | TokenKind::Ampersand | TokenKind::Equals
+            TokenKind::Tilde
+            | TokenKind::Bang
+            | TokenKind::Question
+            | TokenKind::Pipe
+            | TokenKind::Ampersand
+            | TokenKind::Equals
             | TokenKind::Operator(_) => color_cyan,
             _ => "",
         };
@@ -98,7 +125,13 @@ impl Emit for TptpEmit {
 
     fn emit_statement(&self, stmt: &AstNode) -> Result<String, String> {
         let lang = match self.lang {
-            TptpLang::Auto => if is_clause(stmt.formula()) { TptpLang::Cnf } else { TptpLang::Fof },
+            TptpLang::Auto => {
+                if is_clause(stmt.formula()) {
+                    TptpLang::Cnf
+                } else {
+                    TptpLang::Fof
+                }
+            }
             l => l,
         };
         frame_stmt(stmt, 1, lang)
@@ -108,11 +141,13 @@ impl Emit for TptpEmit {
         // Resolve `Auto` over the whole document: CNF iff every statement is a
         // clause, else FOF (the universal untyped fallback).
         let lang = match self.lang {
-            TptpLang::Auto => if doc.iter().all(|s| is_clause(s.formula())) {
-                TptpLang::Cnf
-            } else {
-                TptpLang::Fof
-            },
+            TptpLang::Auto => {
+                if doc.iter().all(|s| is_clause(s.formula())) {
+                    TptpLang::Cnf
+                } else {
+                    TptpLang::Fof
+                }
+            }
             l => l,
         };
         let mut out = EmitResult::default();
@@ -126,9 +161,13 @@ impl Emit for TptpEmit {
         }
         for (i, stmt) in doc.iter().enumerate() {
             match frame_stmt(stmt, i + 1, lang) {
-                Ok(t)  => { out.text.push_str(&t); out.text.push('\n'); }
+                Ok(t) => {
+                    out.text.push_str(&t);
+                    out.text.push('\n');
+                }
                 Err(r) => out.dropped.push(DroppedStmt {
-                    name: stmt_name_or(stmt, i + 1).into(), reason: r,
+                    name: stmt_name_or(stmt, i + 1).into(),
+                    reason: r,
                 }),
             }
         }
@@ -140,7 +179,11 @@ impl Emit for TptpEmit {
 
 /// One symbol's TFF signature, keyed by its emitted (TPTP) name.
 #[derive(PartialEq, Eq)]
-enum TffKind { Pred(usize), Func(usize), Const }
+enum TffKind {
+    Pred(usize),
+    Func(usize),
+    Const,
+}
 
 /// Collect every symbol used across `doc` and emit a `tff(_, type, …)`
 /// declaration for each, monomorphically typed over `$i`.  Predicates get
@@ -155,10 +198,10 @@ fn tff_type_preamble(doc: &[AstNode]) -> String {
     let mut out = String::new();
     for (i, (name, kind)) in sigs.iter().enumerate() {
         let sig = match kind {
-            TffKind::Pred(0)          => "$o".to_string(),
-            TffKind::Pred(n)          => format!("{} > $o", arrow_domain(*n)),
-            TffKind::Func(n)          => format!("{} > $i", arrow_domain(*n)),
-            TffKind::Const            => "$i".to_string(),
+            TffKind::Pred(0) => "$o".to_string(),
+            TffKind::Pred(n) => format!("{} > $o", arrow_domain(*n)),
+            TffKind::Func(n) => format!("{} > $i", arrow_domain(*n)),
+            TffKind::Const => "$i".to_string(),
         };
         out.push_str(&format!("tff(ty{i}, type, {name}: {sig}).\n"));
     }
@@ -170,7 +213,13 @@ fn arrow_domain(arity: usize) -> String {
     if arity == 1 {
         "$i".to_string()
     } else {
-        format!("({})", std::iter::repeat("$i").take(arity).collect::<Vec<_>>().join(" * "))
+        format!(
+            "({})",
+            std::iter::repeat("$i")
+                .take(arity)
+                .collect::<Vec<_>>()
+                .join(" * ")
+        )
     }
 }
 
@@ -179,18 +228,24 @@ fn arrow_domain(arity: usize) -> String {
 fn collect_formula_sigs(node: &AstNode, sigs: &mut std::collections::BTreeMap<String, TffKind>) {
     match node {
         AstNode::Annotated { formula, .. } => collect_formula_sigs(formula, sigs),
-        AstNode::Symbol { name, .. } if name != "FALSE" =>
-            { sigs.entry(syntax::lower_word(name)).or_insert(TffKind::Pred(0)); }
+        AstNode::Symbol { name, .. } if name != "FALSE" => {
+            sigs.entry(syntax::lower_word(name))
+                .or_insert(TffKind::Pred(0));
+        }
         AstNode::List { elements, .. } => {
             let Some(head) = elements.first() else { return };
             let args = &elements[1..];
             match head {
                 AstNode::Operator { op, .. } => match op {
-                    OpKind::Not | OpKind::And | OpKind::Or | OpKind::Implies | OpKind::Iff =>
-                        args.iter().for_each(|a| collect_formula_sigs(a, sigs)),
+                    OpKind::Not | OpKind::And | OpKind::Or | OpKind::Implies | OpKind::Iff => {
+                        args.iter().for_each(|a| collect_formula_sigs(a, sigs))
+                    }
                     OpKind::Equal => args.iter().for_each(|a| collect_term_sigs(a, sigs)),
-                    OpKind::ForAll | OpKind::Exists =>
-                        if let Some(body) = args.get(1) { collect_formula_sigs(body, sigs) },
+                    OpKind::ForAll | OpKind::Exists => {
+                        if let Some(body) = args.get(1) {
+                            collect_formula_sigs(body, sigs)
+                        }
+                    }
                 },
                 AstNode::Symbol { name, .. } => {
                     sigs.insert(syntax::lower_word(name), TffKind::Pred(args.len()));
@@ -206,10 +261,14 @@ fn collect_formula_sigs(node: &AstNode, sigs: &mut std::collections::BTreeMap<St
 /// Walk a node in **term** position, recording function/constant symbols.
 fn collect_term_sigs(node: &AstNode, sigs: &mut std::collections::BTreeMap<String, TffKind>) {
     match node {
-        AstNode::Symbol { name, .. } =>
-            { sigs.entry(syntax::lower_word(name)).or_insert(TffKind::Const); }
+        AstNode::Symbol { name, .. } => {
+            sigs.entry(syntax::lower_word(name))
+                .or_insert(TffKind::Const);
+        }
         AstNode::List { elements, .. } => {
-            let Some(AstNode::Symbol { name, .. }) = elements.first() else { return };
+            let Some(AstNode::Symbol { name, .. }) = elements.first() else {
+                return;
+            };
             let args = &elements[1..];
             sigs.insert(syntax::lower_word(name), TffKind::Func(args.len()));
             args.iter().for_each(|a| collect_term_sigs(a, sigs));
@@ -222,8 +281,13 @@ fn collect_term_sigs(node: &AstNode, sigs: &mut std::collections::BTreeMap<Strin
 /// `Auto`).  `idx` supplies a default name when the statement is unnamed.
 fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, String> {
     let (role, name, source, formula) = match stmt {
-        AstNode::Annotated { role, name, source, formula, .. } =>
-            (role.clone(), name.clone(), source.clone(), formula.as_ref()),
+        AstNode::Annotated {
+            role,
+            name,
+            source,
+            formula,
+            ..
+        } => (role.clone(), name.clone(), source.clone(), formula.as_ref()),
         other => (Role::Axiom, None, None, other),
     };
     let name = name.unwrap_or_else(|| format!("a{idx}"));
@@ -270,12 +334,26 @@ fn frame_stmt(stmt: &AstNode, idx: usize, lang: TptpLang) -> Result<String, Stri
 
     // A `Source` (provenance) becomes the optional 4th TPTP argument; without
     // one the statement is the bare 3-arg form.
-    let source_suffix = source.map(|src| format!(", {}", render_source(&src))).unwrap_or_default();
+    let source_suffix = source
+        .map(|src| format!(", {}", render_source(&src)))
+        .unwrap_or_default();
 
     Ok(if body.contains('\n') {
-        format!("{kw}({}, {},\n  {}{}).", name, role_word(&role), body, source_suffix)
+        format!(
+            "{kw}({}, {},\n  {}{}).",
+            name,
+            role_word(&role),
+            body,
+            source_suffix
+        )
     } else {
-        format!("{kw}({}, {}, {}{}).", name, role_word(&role), body, source_suffix)
+        format!(
+            "{kw}({}, {}, {}{}).",
+            name,
+            role_word(&role),
+            body,
+            source_suffix
+        )
     })
 }
 
@@ -291,24 +369,33 @@ fn free_var_names(node: &AstNode, bound: &mut Vec<String>, out: &mut Vec<String>
         }
         AstNode::Annotated { formula, .. } => free_var_names(formula, bound, out),
         AstNode::List { elements, .. } => {
-            let is_quant = matches!(elements.first(),
-                Some(AstNode::Operator { op: OpKind::ForAll | OpKind::Exists, .. }));
+            let is_quant = matches!(
+                elements.first(),
+                Some(AstNode::Operator {
+                    op: OpKind::ForAll | OpKind::Exists,
+                    ..
+                })
+            );
             if !is_quant {
-                for e in elements { free_var_names(e, bound, out); }
+                for e in elements {
+                    free_var_names(e, bound, out);
+                }
                 return;
             }
             let depth = bound.len();
             match elements.get(1) {
                 Some(AstNode::List { elements: vs, .. }) => {
                     for v in vs {
-                        if let AstNode::Variable { name, .. }
-                             | AstNode::RowVariable { name, .. } = v {
+                        if let AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } =
+                            v
+                        {
                             bound.push(name.clone());
                         }
                     }
                 }
-                Some(AstNode::Variable { name, .. })
-                | Some(AstNode::RowVariable { name, .. }) => bound.push(name.clone()),
+                Some(AstNode::Variable { name, .. }) | Some(AstNode::RowVariable { name, .. }) => {
+                    bound.push(name.clone())
+                }
                 _ => {}
             }
             for body in elements.iter().skip(2) {
@@ -326,9 +413,13 @@ fn universal_closure(formula: &AstNode, names: Vec<String>) -> AstNode {
     let sp = Span::synthetic;
     AstNode::List {
         elements: vec![
-            AstNode::Operator { op: OpKind::ForAll, span: sp() },
+            AstNode::Operator {
+                op: OpKind::ForAll,
+                span: sp(),
+            },
             AstNode::List {
-                elements: names.into_iter()
+                elements: names
+                    .into_iter()
                     .map(|name| AstNode::Variable { name, span: sp() })
                     .collect(),
                 span: sp(),
@@ -346,8 +437,11 @@ fn universal_closure(formula: &AstNode, names: Vec<String>) -> AstNode {
 /// so the clauses are not theorems of their parent), else `thm`.
 fn render_source(src: &Source) -> String {
     match src {
-        Source::Input { file, name: None }         => format!("file('{file}')"),
-        Source::Input { file, name: Some(name) }    => format!("file('{file}', {name})"),
+        Source::Input { file, name: None } => format!("file('{file}')"),
+        Source::Input {
+            file,
+            name: Some(name),
+        } => format!("file('{file}', {name})"),
         Source::Introduced(mechanism) => format!("introduced({})", syntax::lower_word(mechanism)),
         Source::Inference { rule, parents } => {
             let status = match rule.as_str() {
@@ -355,8 +449,11 @@ fn render_source(src: &Source) -> String {
                 "cnf_transformation" => "esa",
                 _ => "thm",
             };
-            format!("inference({}, [status({status})], [{}])",
-                syntax::lower_word(rule), parents.join(","))
+            format!(
+                "inference({}, [status({status})], [{}])",
+                syntax::lower_word(rule),
+                parents.join(",")
+            )
         }
     }
 }
@@ -371,15 +468,15 @@ fn stmt_name_or(stmt: &AstNode, idx: usize) -> String {
 /// TPTP role keyword for a [`Role`].
 fn role_word(role: &Role) -> String {
     match role {
-        Role::Axiom             => "axiom".into(),
-        Role::Hypothesis        => "hypothesis".into(),
-        Role::Definition        => "definition".into(),
-        Role::Lemma             => "lemma".into(),
-        Role::Conjecture        => "conjecture".into(),
+        Role::Axiom => "axiom".into(),
+        Role::Hypothesis => "hypothesis".into(),
+        Role::Definition => "definition".into(),
+        Role::Lemma => "lemma".into(),
+        Role::Conjecture => "conjecture".into(),
         Role::NegatedConjecture => "negated_conjecture".into(),
-        Role::Plain             => "plain".into(),
-        Role::Type              => "type".into(),
-        Role::Other(s)          => s.clone(),
+        Role::Plain => "plain".into(),
+        Role::Type => "type".into(),
+        Role::Other(s) => s.clone(),
     }
 }
 
@@ -390,8 +487,13 @@ fn role_word(role: &Role) -> String {
 pub(crate) fn is_clause(f: &AstNode) -> bool {
     match f {
         AstNode::List { elements, .. }
-            if matches!(elements.first(), Some(AstNode::Operator { op: OpKind::Or, .. })) =>
-            elements[1..].iter().all(is_literal),
+            if matches!(
+                elements.first(),
+                Some(AstNode::Operator { op: OpKind::Or, .. })
+            ) =>
+        {
+            elements[1..].iter().all(is_literal)
+        }
         _ => is_literal(f),
     }
 }
@@ -399,8 +501,16 @@ pub(crate) fn is_clause(f: &AstNode) -> bool {
 fn is_literal(f: &AstNode) -> bool {
     match f {
         AstNode::List { elements, .. }
-            if matches!(elements.first(), Some(AstNode::Operator { op: OpKind::Not, .. })) =>
-            elements.len() == 2 && is_atom(&elements[1]),
+            if matches!(
+                elements.first(),
+                Some(AstNode::Operator {
+                    op: OpKind::Not,
+                    ..
+                })
+            ) =>
+        {
+            elements.len() == 2 && is_atom(&elements[1])
+        }
         _ => is_atom(f),
     }
 }
@@ -410,8 +520,8 @@ fn is_atom(f: &AstNode) -> bool {
         AstNode::List { elements, .. } => match elements.first() {
             // Equality is an atom; any other logical connective is not.
             Some(AstNode::Operator { op, .. }) => matches!(op, OpKind::Equal),
-            Some(_) => true,  // predicate / function application
-            None    => false,
+            Some(_) => true, // predicate / function application
+            None => false,
         },
         AstNode::Symbol { .. } => true, // propositional constant
         _ => false,
@@ -433,26 +543,40 @@ fn render_formula(node: &AstNode, typed: bool) -> String {
     match node {
         AstNode::Symbol { name, .. } if name == "FALSE" => syntax::FALSE.to_string(),
         AstNode::Symbol { name, .. } => syntax::lower_word(name),
-        AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => syntax::variable(name),
+        AstNode::Variable { name, .. } | AstNode::RowVariable { name, .. } => {
+            syntax::variable(name)
+        }
         AstNode::Number { value, .. } => value.clone(),
         AstNode::Str { value, .. } => format!("\"{value}\""),
         AstNode::Operator { .. } => syntax::TRUE.to_string(), // bare op — unreachable
         AstNode::Annotated { formula, .. } => rec(formula),
         AstNode::List { elements, .. } => {
-            let Some(head) = elements.first() else { return syntax::TRUE.to_string() };
+            let Some(head) = elements.first() else {
+                return syntax::TRUE.to_string();
+            };
             let args = &elements[1..];
             match head {
                 AstNode::Operator { op, .. } => match op {
                     OpKind::Not => format!("({} {})", syntax::NOT, rec(&args[0])),
                     OpKind::And | OpKind::Or => {
-                        let con = if matches!(op, OpKind::And) { syntax::AND } else { syntax::OR };
+                        let con = if matches!(op, OpKind::And) {
+                            syntax::AND
+                        } else {
+                            syntax::OR
+                        };
                         format!("({})", args.iter().map(rec).collect::<Vec<_>>().join(con))
                     }
-                    OpKind::Implies => format!("({}{}{})", rec(&args[0]), syntax::IMPLIES, rec(&args[1])),
-                    OpKind::Iff     => format!("({}{}{})", rec(&args[0]), syntax::IFF, rec(&args[1])),
-                    OpKind::Equal   => format!("({}{}{})", rec(&args[0]), syntax::EQ, rec(&args[1])),
+                    OpKind::Implies => {
+                        format!("({}{}{})", rec(&args[0]), syntax::IMPLIES, rec(&args[1]))
+                    }
+                    OpKind::Iff => format!("({}{}{})", rec(&args[0]), syntax::IFF, rec(&args[1])),
+                    OpKind::Equal => format!("({}{}{})", rec(&args[0]), syntax::EQ, rec(&args[1])),
                     OpKind::ForAll | OpKind::Exists => {
-                        let q = if matches!(op, OpKind::ForAll) { syntax::FORALL } else { syntax::EXISTS };
+                        let q = if matches!(op, OpKind::ForAll) {
+                            syntax::FORALL
+                        } else {
+                            syntax::EXISTS
+                        };
                         let (vars, body) = quantifier_parts(args, typed);
                         format!("({q} [{}] : {})", vars.join(","), body)
                     }
@@ -462,7 +586,10 @@ fn render_formula(node: &AstNode, typed: bool) -> String {
                     if args.is_empty() {
                         h
                     } else {
-                        format!("{h}({})", args.iter().map(rec).collect::<Vec<_>>().join(","))
+                        format!(
+                            "{h}({})",
+                            args.iter().map(rec).collect::<Vec<_>>().join(",")
+                        )
                     }
                 }
             }
@@ -473,7 +600,13 @@ fn render_formula(node: &AstNode, typed: bool) -> String {
 /// `((?X ?Y) body)` argument shape of KIF quantifiers.  When `typed`, each bound
 /// variable is annotated `X: $i` (monomorphic TFF sorting).
 fn quantifier_parts(args: &[AstNode], typed: bool) -> (Vec<String>, String) {
-    let bind = |name: &str| if typed { format!("{}: $i", syntax::variable(name)) } else { syntax::variable(name) };
+    let bind = |name: &str| {
+        if typed {
+            format!("{}: $i", syntax::variable(name))
+        } else {
+            syntax::variable(name)
+        }
+    };
     let mut vars = Vec::new();
     if let Some(AstNode::List { elements, .. }) = args.first() {
         for v in elements {
@@ -484,9 +617,16 @@ fn quantifier_parts(args: &[AstNode], typed: bool) -> (Vec<String>, String) {
     } else if let Some(AstNode::Variable { name, .. }) = args.first() {
         vars.push(bind(name));
     }
-    let body = args.get(1).map(|b| render_formula(b, typed)).unwrap_or_else(|| "$true".to_string());
+    let body = args
+        .get(1)
+        .map(|b| render_formula(b, typed))
+        .unwrap_or_else(|| "$true".to_string());
     if vars.is_empty() {
-        vars.push(if typed { "X__: $i".to_string() } else { "X__".to_string() });
+        vars.push(if typed {
+            "X__: $i".to_string()
+        } else {
+            "X__".to_string()
+        });
     }
     (vars, body)
 }
@@ -519,12 +659,16 @@ fn styled(node: &AstNode, indent: usize, _color: bool, typed: bool) -> String {
     if indent + flat.len() <= LINE_WIDTH {
         return flat;
     }
-    let AstNode::List { elements, .. } = node else { return flat };
-    let Some(AstNode::Operator { op, .. }) = elements.first() else { return flat };
+    let AstNode::List { elements, .. } = node else {
+        return flat;
+    };
+    let Some(AstNode::Operator { op, .. }) = elements.first() else {
+        return flat;
+    };
     let args = &elements[1..];
-    let pad  = " ".repeat(indent);
+    let pad = " ".repeat(indent);
     let pad2 = " ".repeat(indent + 2);
-    let rec  = |n: &AstNode| styled(n, indent + 2, _color, typed);
+    let rec = |n: &AstNode| styled(n, indent + 2, _color, typed);
 
     match op {
         OpKind::Not => format!("(~\n{pad2}{})", rec(&args[0])),
@@ -538,15 +682,22 @@ fn styled(node: &AstNode, indent: usize, _color: bool, typed: bool) -> String {
         OpKind::Implies | OpKind::Iff | OpKind::Equal => {
             let sym = match op {
                 OpKind::Implies => "=>",
-                OpKind::Iff     => "<=>",
-                _               => "=",
+                OpKind::Iff => "<=>",
+                _ => "=",
             };
             format!("({}\n{pad}{sym} {})", rec(&args[0]), rec(&args[1]))
         }
         OpKind::ForAll | OpKind::Exists => {
-            let q = if matches!(op, OpKind::ForAll) { syntax::FORALL } else { syntax::EXISTS };
+            let q = if matches!(op, OpKind::ForAll) {
+                syntax::FORALL
+            } else {
+                syntax::EXISTS
+            };
             let (vars, _) = quantifier_parts(args, typed);
-            let body = args.get(1).map(rec).unwrap_or_else(|| syntax::TRUE.to_string());
+            let body = args
+                .get(1)
+                .map(rec)
+                .unwrap_or_else(|| syntax::TRUE.to_string());
             format!("({q} [{}] :\n{pad2}{body})", vars.join(","))
         }
     }
@@ -560,13 +711,28 @@ mod tests {
 
     fn parse_one(src: &str) -> AstNode {
         let doc = crate::parse::parse_document("t", src, crate::Parser::Kif);
-        assert!(doc.parse_errors.is_empty(), "parse errors: {:?}", doc.parse_errors);
-        doc.ast.into_iter().next().unwrap().as_stmt().cloned().unwrap()
+        assert!(
+            doc.parse_errors.is_empty(),
+            "parse errors: {:?}",
+            doc.parse_errors
+        );
+        doc.ast
+            .into_iter()
+            .next()
+            .unwrap()
+            .as_stmt()
+            .cloned()
+            .unwrap()
     }
 
     fn ann(role: Role, name: &str, f: AstNode) -> AstNode {
-        AstNode::Annotated { role, name: Some(name.into()), source: None,
-            formula: Box::new(f), span: Span::default() }
+        AstNode::Annotated {
+            role,
+            name: Some(name.into()),
+            source: None,
+            formula: Box::new(f),
+            span: Span::default(),
+        }
     }
 
     #[test]
@@ -576,8 +742,10 @@ mod tests {
         // variables (GDV rejects them).
         let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
-        assert_eq!(r.text.trim_end(),
-            "fof(a1, axiom, (! [X] : (instance(X,'Human') => mortal(X)))).");
+        assert_eq!(
+            r.text.trim_end(),
+            "fof(a1, axiom, (! [X] : (instance(X,'Human') => mortal(X))))."
+        );
         assert!(r.is_complete());
     }
 
@@ -588,8 +756,10 @@ mod tests {
         // bind in first-appearance order.
         let f = parse_one("(=> (p ?X ?Z) (exists (?Y) (q ?X ?Y)))");
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Plain, "f7", f));
-        assert_eq!(r.text.trim_end(),
-            "fof(f7, plain, (! [X,Z] : (p(X,Z) => (? [Y] : q(X,Y))))).");
+        assert_eq!(
+            r.text.trim_end(),
+            "fof(f7, plain, (! [X,Z] : (p(X,Z) => (? [Y] : q(X,Y)))))."
+        );
     }
 
     #[test]
@@ -598,17 +768,27 @@ mod tests {
         // (implicitly universal) — no closure there.
         let clause = parse_one("(or (p ?X) (not (q ?X)))");
         let r = Emitter::Tptp(TptpLang::Cnf).emit_one(&ann(Role::Axiom, "c1", clause));
-        assert!(r.text.contains("p(X) | (~ q(X))") && !r.text.contains("! ["), "{}", r.text);
+        assert!(
+            r.text.contains("p(X) | (~ q(X))") && !r.text.contains("! ["),
+            "{}",
+            r.text
+        );
     }
 
     #[test]
     fn cnf_keeps_clauses_drops_quantified() {
         let clause = parse_one("(or (p ?X) (not (q ?X)))");
-        let quant  = parse_one("(forall (?X) (p ?X))");
-        let doc = vec![ann(Role::Axiom, "c1", clause), ann(Role::Axiom, "c2", quant)];
+        let quant = parse_one("(forall (?X) (p ?X))");
+        let doc = vec![
+            ann(Role::Axiom, "c1", clause),
+            ann(Role::Axiom, "c2", quant),
+        ];
         let r = Emitter::Tptp(TptpLang::Cnf).emit(&doc);
-        assert!(r.text.starts_with("cnf(c1, axiom,") && r.text.contains("p(X) | (~ q(X))"),
-            "{}", r.text);
+        assert!(
+            r.text.starts_with("cnf(c1, axiom,") && r.text.contains("p(X) | (~ q(X))"),
+            "{}",
+            r.text
+        );
         assert_eq!(r.dropped.len(), 1);
         assert_eq!(r.dropped[0].name.as_deref(), Some("c2"));
     }
@@ -618,38 +798,70 @@ mod tests {
         let c1 = ann(Role::Axiom, "c1", parse_one("(p ?X)"));
         let c2 = ann(Role::Axiom, "c2", parse_one("(or (p ?X) (q ?X))"));
         let all_clausal = Emitter::Tptp(TptpLang::Auto).emit(&[c1.clone(), c2.clone()]);
-        assert!(all_clausal.text.contains("cnf(c1") && all_clausal.text.contains("cnf(c2"),
-            "{}", all_clausal.text);
+        assert!(
+            all_clausal.text.contains("cnf(c1") && all_clausal.text.contains("cnf(c2"),
+            "{}",
+            all_clausal.text
+        );
 
         let quant = ann(Role::Conjecture, "g", parse_one("(forall (?X) (p ?X))"));
         let mixed = Emitter::Tptp(TptpLang::Auto).emit(&[c1, quant]);
-        assert!(mixed.text.contains("fof(c1") && mixed.text.contains("fof(g, conjecture"),
-            "{}", mixed.text);
+        assert!(
+            mixed.text.contains("fof(c1") && mixed.text.contains("fof(g, conjecture"),
+            "{}",
+            mixed.text
+        );
         assert!(mixed.is_complete());
     }
 
     fn ann_src(role: Role, name: &str, source: Source, f: AstNode) -> AstNode {
-        AstNode::Annotated { role, name: Some(name.into()), source: Some(source),
-            formula: Box::new(f), span: Span::default() }
+        AstNode::Annotated {
+            role,
+            name: Some(name.into()),
+            source: Some(source),
+            formula: Box::new(f),
+            span: Span::default(),
+        }
     }
 
     #[test]
     fn source_becomes_fourth_argument() {
         // An input axiom cites `file('...')`; a derived step cites an inference
         // with status `thm`; a `negate_conjecture` step uses status `cth`.
-        let input = ann_src(Role::Axiom, "f1",
-            Source::Input { file: "p.kif".into(), name: None }, parse_one("(p ?X)"));
-        let derived = ann_src(Role::Plain, "f3",
-            Source::Inference { rule: "resolution".into(),
-                parents: vec!["f1".into(), "f2".into()] }, parse_one("(q a)"));
-        let negc = ann_src(Role::NegatedConjecture, "f2",
-            Source::Inference { rule: "negate_conjecture".into(), parents: vec![] },
-            parse_one("(not (q a))"));
+        let input = ann_src(
+            Role::Axiom,
+            "f1",
+            Source::Input {
+                file: "p.kif".into(),
+                name: None,
+            },
+            parse_one("(p ?X)"),
+        );
+        let derived = ann_src(
+            Role::Plain,
+            "f3",
+            Source::Inference {
+                rule: "resolution".into(),
+                parents: vec!["f1".into(), "f2".into()],
+            },
+            parse_one("(q a)"),
+        );
+        let negc = ann_src(
+            Role::NegatedConjecture,
+            "f2",
+            Source::Inference {
+                rule: "negate_conjecture".into(),
+                parents: vec![],
+            },
+            parse_one("(not (q a))"),
+        );
         let r = Emitter::Tptp(TptpLang::Fof).emit(&[input, derived, negc]);
         let lines: Vec<&str> = r.text.lines().collect();
         assert_eq!(lines[0], "fof(f1, axiom, (! [X] : p(X)), file('p.kif')).");
-        assert_eq!(lines[1],
-            "fof(f3, plain, q(a), inference(resolution, [status(thm)], [f1,f2])).");
+        assert_eq!(
+            lines[1],
+            "fof(f3, plain, q(a), inference(resolution, [status(thm)], [f1,f2]))."
+        );
         assert_eq!(lines[2],
             "fof(f2, negated_conjecture, (~ q(a)), inference(negate_conjecture, [status(cth)], [])).");
     }
@@ -659,17 +871,34 @@ mod tests {
         // A document emits a `$i`-monomorphic type preamble (one decl per
         // symbol, sorted by emitted name) then the framed statements; binders
         // carry an explicit `: $i` sort.
-        let ax = ann(Role::Axiom, "a1", parse_one("(forall (?X) (=> (human ?X) (mortal ?X)))"));
+        let ax = ann(
+            Role::Axiom,
+            "a1",
+            parse_one("(forall (?X) (=> (human ?X) (mortal ?X)))"),
+        );
         let hy = ann(Role::Hypothesis, "a2", parse_one("(human socrates)"));
         let r = Emitter::Tptp(TptpLang::Tff).emit(&[ax, hy]);
         assert!(r.is_complete(), "dropped: {:?}", r.dropped);
         // Type preamble: human/1 and mortal/1 are predicates; socrates is a const.
-        assert!(r.text.contains("tff(ty0, type, human: $i > $o)."), "{}", r.text);
+        assert!(
+            r.text.contains("tff(ty0, type, human: $i > $o)."),
+            "{}",
+            r.text
+        );
         assert!(r.text.contains("type, mortal: $i > $o)."), "{}", r.text);
         assert!(r.text.contains("type, socrates: $i)."), "{}", r.text);
         // Framed statements with typed binder.
-        assert!(r.text.contains("tff(a1, axiom, (! [X: $i] : (human(X) => mortal(X))))."), "{}", r.text);
-        assert!(r.text.contains("tff(a2, hypothesis, human(socrates))."), "{}", r.text);
+        assert!(
+            r.text
+                .contains("tff(a1, axiom, (! [X: $i] : (human(X) => mortal(X))))."),
+            "{}",
+            r.text
+        );
+        assert!(
+            r.text.contains("tff(a2, hypothesis, human(socrates))."),
+            "{}",
+            r.text
+        );
     }
 
     #[test]
@@ -679,7 +908,11 @@ mod tests {
         let r = Emitter::Tptp(TptpLang::Tff).emit(&[ax]);
         assert!(r.text.contains("type, f: $i > $i)."), "{}", r.text);
         assert!(r.text.contains("type, c: $i)."), "{}", r.text);
-        assert!(!r.text.contains("'='"), "equality must not be declared: {}", r.text);
+        assert!(
+            !r.text.contains("'='"),
+            "equality must not be declared: {}",
+            r.text
+        );
         assert!(r.text.contains("tff(a1, axiom, (f(c) = c))."), "{}", r.text);
     }
 
@@ -688,7 +921,10 @@ mod tests {
         // Under LINE_WIDTH, `emit_pretty` and the flat `Emit` renderer agree —
         // no gratuitous wrapping of short forms.
         let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
-        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let pretty = TptpEmit {
+            lang: TptpLang::Fof,
+        }
+        .emit_pretty(&f, 0, false);
         assert_eq!(pretty, "(instance(X,'Human') => mortal(X))");
         assert!(!pretty.contains('\n'));
     }
@@ -700,12 +936,18 @@ mod tests {
                   (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
                   (yetAnotherLongPredicateNameForTestingWrap ?D))",
         );
-        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let pretty = TptpEmit {
+            lang: TptpLang::Fof,
+        }
+        .emit_pretty(&f, 0, false);
         let lines: Vec<&str> = pretty.lines().collect();
         assert_eq!(lines.len(), 3, "expected one conjunct per line:\n{pretty}");
         assert!(lines[0].starts_with('('), "{pretty}");
         assert!(lines[1].trim_start().starts_with('&'), "{pretty}");
-        assert!(lines[2].trim_start().starts_with('&') && lines[2].ends_with(')'), "{pretty}");
+        assert!(
+            lines[2].trim_start().starts_with('&') && lines[2].ends_with(')'),
+            "{pretty}"
+        );
     }
 
     #[test]
@@ -721,7 +963,7 @@ mod tests {
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
         assert!(r.is_complete());
         assert!(r.text.starts_with("fof(a1, axiom,\n  ("), "{}", r.text);
-        assert!(r.text.trim_end().ends_with(")).") , "{}", r.text);
+        assert!(r.text.trim_end().ends_with("))."), "{}", r.text);
     }
 
     #[test]
@@ -730,7 +972,10 @@ mod tests {
             "(forall (?X) (=> (instanceOfSomeVeryLongPredicateName ?X) \
                               (anotherVeryLongPredicateNameHereToo ?X)))",
         );
-        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let pretty = TptpEmit {
+            lang: TptpLang::Fof,
+        }
+        .emit_pretty(&f, 0, false);
         assert!(pretty.starts_with("(! [X] :\n  ("), "{pretty}");
         assert!(pretty.trim_end().ends_with("))"), "{pretty}");
     }
@@ -746,7 +991,10 @@ mod tests {
                   (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
                   (yetAnotherLongPredicateNameForTestingWrap ?D))",
         );
-        let pretty = TptpEmit { lang: TptpLang::Fof }.emit_pretty(&f, 0, false);
+        let pretty = TptpEmit {
+            lang: TptpLang::Fof,
+        }
+        .emit_pretty(&f, 0, false);
         let collapsed: String = pretty.split_whitespace().collect::<Vec<_>>().join(" ");
         let flat = tptp_formula(&f);
         let flat_collapsed: String = flat.split_whitespace().collect::<Vec<_>>().join(" ");

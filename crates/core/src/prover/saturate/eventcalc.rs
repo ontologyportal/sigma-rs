@@ -38,8 +38,8 @@ pub(crate) type Fluent = SymbolId;
 /// (`happens(e,T)` must / must-not also hold at the event's time).
 #[derive(Debug, Clone)]
 pub(crate) struct Effect {
-    pub event:   SymbolId,
-    pub fluent:  Fluent,
+    pub event: SymbolId,
+    pub fluent: Fluent,
     /// Events that must ALSO happen at the same time (`happens(e,T)`).
     pub pos_concurrent: Vec<SymbolId>,
     /// Events that must NOT happen at the same time (`~happens(e,T)`).
@@ -50,13 +50,13 @@ pub(crate) struct Effect {
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Narrative {
     /// Ground time points in order (`n0, n1, …, nK`).
-    pub times:      Vec<SymbolId>,
+    pub times: Vec<SymbolId>,
     /// `time → events that happen at it`.
-    pub happens:    HashMap<SymbolId, Vec<SymbolId>>,
-    pub initiates:  Vec<Effect>,
+    pub happens: HashMap<SymbolId, Vec<SymbolId>>,
+    pub initiates: Vec<Effect>,
     pub terminates: Vec<Effect>,
     /// Fluent → whether it holds at `times[0]` (default: false).
-    pub initial:    HashMap<Fluent, bool>,
+    pub initial: HashMap<Fluent, bool>,
     /// Raw `(fluent, time, holds, sid)` rows from ground `holdsAt`
     /// hypotheses, resolved into `initial` (those at `times[0]`) once the
     /// timeline is ordered.  `sid` is the hypothesis sentence itself — the
@@ -69,9 +69,9 @@ pub(crate) struct Narrative {
     /// The KB sentence defining `happens` (the only-if root
     /// `(=> (happens E T) (or …))`) — cited on every emitted `holdsAt`
     /// unit whose derivation passed through a `happens` fact/absence.
-    pub happens_sid:    Option<SentenceId>,
+    pub happens_sid: Option<SentenceId>,
     /// The KB sentence defining `initiates` (ditto, for `initiates`).
-    pub initiates_sid:  Option<SentenceId>,
+    pub initiates_sid: Option<SentenceId>,
     /// The KB sentence defining `terminates` (ditto, for `terminates`).
     pub terminates_sid: Option<SentenceId>,
     /// `time → immediate successor`, derived from the KB's own `plus`/`less`
@@ -125,7 +125,9 @@ fn sym_of(e: &Element) -> Option<Symbol> {
 /// Flatten a (possibly binary-nested) `(or …)` / `(and …)` into its child
 /// sub-sentence ids; a non-`op` sentence yields itself.
 fn flatten(syn: &SyntacticLayer, sid: SentenceId, op: &OpKind) -> Vec<SentenceId> {
-    let Some(s) = syn.sentence(sid) else { return vec![sid] };
+    let Some(s) = syn.sentence(sid) else {
+        return vec![sid];
+    };
     if s.op() != Some(op) {
         return vec![sid];
     }
@@ -142,9 +144,9 @@ fn flatten(syn: &SyntacticLayer, sid: SentenceId, op: &OpKind) -> Vec<SentenceId
 /// `vevent`/`vfluent`/`vtime` are the var ids at the LHS argument positions
 /// (`vfluent = None` for `happens`).  Records constant bindings into `names`.
 struct Disjunct {
-    event:  Option<Symbol>,
+    event: Option<Symbol>,
     fluent: Option<Symbol>,
-    time:   Option<Symbol>,
+    time: Option<Symbol>,
     pos_concurrent: Vec<Symbol>,
     neg_concurrent: Vec<Symbol>,
     /// A feature outside the inertial fragment was seen in this disjunct
@@ -154,16 +156,19 @@ struct Disjunct {
 }
 
 fn parse_disjunct(
-    syn:     &SyntacticLayer,
-    dj_sid:  SentenceId,
-    vevent:  SymbolId,
+    syn: &SyntacticLayer,
+    dj_sid: SentenceId,
+    vevent: SymbolId,
     vfluent: Option<SymbolId>,
-    vtime:   SymbolId,
+    vtime: SymbolId,
 ) -> Option<Disjunct> {
     let conjuncts = flatten(syn, dj_sid, &OpKind::And);
     let mut d = Disjunct {
-        event: None, fluent: None, time: None,
-        pos_concurrent: Vec::new(), neg_concurrent: Vec::new(),
+        event: None,
+        fluent: None,
+        time: None,
+        pos_concurrent: Vec::new(),
+        neg_concurrent: Vec::new(),
         unsafe_feature: false,
     };
     let is_role_var = |v: SymbolId| v == vevent || Some(v) == vfluent || v == vtime;
@@ -189,9 +194,13 @@ fn parse_disjunct(
                         }
                     },
                 };
-                if v == vevent { d.event = Some(k); }
-                else if Some(v) == vfluent { d.fluent = Some(k); }
-                else if v == vtime { d.time = Some(k); }
+                if v == vevent {
+                    d.event = Some(k);
+                } else if Some(v) == vfluent {
+                    d.fluent = Some(k);
+                } else if v == vtime {
+                    d.time = Some(k);
+                }
             }
             // (not (happens e T)) — a negative concurrent-event guard.
             Some(&OpKind::Not) if c.elements.len() == 2 => {
@@ -239,7 +248,7 @@ fn happens_event(syn: &SyntacticLayer, sid: SentenceId) -> Option<Symbol> {
 /// assert `holdsAt`/`~holdsAt` units from a narrative the asker never
 /// stated (same visibility rule as `store_facts`).
 pub(crate) fn parse_narrative(
-    syn:   &SyntacticLayer,
+    syn: &SyntacticLayer,
     scope: crate::semantics::types::Scope,
 ) -> Option<(Narrative, HashMap<SymbolId, Symbol>)> {
     let mut nar = Narrative::default();
@@ -296,27 +305,36 @@ pub(crate) fn parse_narrative(
 
         // ---- Root A: (=> (HEAD vars…) (or d…)) — a narrative definition. ----
         if s.op() == Some(&OpKind::Implies) && s.elements.len() == 3 {
-            let (Some(ant_sid), Some(con_sid)) =
-                (sub_id(&s.elements[1]), sub_id(&s.elements[2])) else { continue };
-            let (Some(ant), Some(con)) = (syn.sentence(ant_sid), syn.sentence(con_sid))
-                else { continue };
+            let (Some(ant_sid), Some(con_sid)) = (sub_id(&s.elements[1]), sub_id(&s.elements[2]))
+            else {
+                continue;
+            };
+            let (Some(ant), Some(con)) = (syn.sentence(ant_sid), syn.sentence(con_sid)) else {
+                continue;
+            };
             // Non-inertial markers: a `releases` definition (releases makes a
             // fluent non-inertial) or a `trajectory` / `antiTrajectory` rule
             // (continuous functional change).  Either ⇒ outside this engine's
             // fragment; flag and let resolution handle it instead of emitting
             // an unsound partial state.
             if let Some(ah) = ant.head_symbol_name() {
-                if &*ah.name() == "releases" { unsafe_narrative = true; }
+                if &*ah.name() == "releases" {
+                    unsafe_narrative = true;
+                }
             }
             if let Some(ch) = con.head_symbol_name() {
                 let c = &*ch.name();
-                if c == "trajectory" || c == "antiTrajectory" { unsafe_narrative = true; }
+                if c == "trajectory" || c == "antiTrajectory" {
+                    unsafe_narrative = true;
+                }
             }
-            let Some(head) = ant.head_symbol_name() else { continue };
+            let Some(head) = ant.head_symbol_name() else {
+                continue;
+            };
             let hname = &*head.name();
             let is_happens = hname == "happens";
-            let is_init    = hname == "initiates";
-            let is_term    = hname == "terminates";
+            let is_init = hname == "initiates";
+            let is_term = hname == "terminates";
             if !(is_happens || is_init || is_term) {
                 continue;
             }
@@ -324,7 +342,10 @@ pub(crate) fn parse_narrative(
             let (vevent, vfluent, vtime) = if is_happens {
                 let v0 = var_id(ant.elements.get(1)?);
                 let v1 = var_id(ant.elements.get(2)?);
-                match (v0, v1) { (Some(e), Some(t)) => (e, None, t), _ => continue }
+                match (v0, v1) {
+                    (Some(e), Some(t)) => (e, None, t),
+                    _ => continue,
+                }
             } else {
                 let v0 = var_id(ant.elements.get(1)?);
                 let v1 = var_id(ant.elements.get(2)?);
@@ -338,23 +359,33 @@ pub(crate) fn parse_narrative(
                 continue;
             }
             for dj in flatten(syn, con_sid, &OpKind::Or) {
-                let Some(d) = parse_disjunct(syn, dj, vevent, vfluent, vtime) else { continue };
-                if d.unsafe_feature { unsafe_narrative = true; }
+                let Some(d) = parse_disjunct(syn, dj, vevent, vfluent, vtime) else {
+                    continue;
+                };
+                if d.unsafe_feature {
+                    unsafe_narrative = true;
+                }
                 for sym in d.pos_concurrent.iter().chain(d.neg_concurrent.iter()) {
                     note(sym, &mut names);
                 }
                 if is_happens {
-                    let (Some(ev), Some(t)) = (d.event, d.time) else { continue };
-                    note(&ev, &mut names); note(&t, &mut names);
+                    let (Some(ev), Some(t)) = (d.event, d.time) else {
+                        continue;
+                    };
+                    note(&ev, &mut names);
+                    note(&t, &mut names);
                     time_syms.insert(t.clone());
                     nar.happens.entry(t.id()).or_default().push(ev.id());
                     found_happens = true;
                     nar.happens_sid.get_or_insert(sid);
                 } else {
-                    let (Some(ev), Some(fl)) = (d.event, d.fluent) else { continue };
-                    note(&ev, &mut names); note(&fl, &mut names);
+                    let (Some(ev), Some(fl)) = (d.event, d.fluent) else {
+                        continue;
+                    };
+                    note(&ev, &mut names);
+                    note(&fl, &mut names);
                     let eff = Effect {
-                        event:  ev.id(),
+                        event: ev.id(),
                         fluent: fl.id(),
                         pos_concurrent: d.pos_concurrent.iter().map(|s| s.id()).collect(),
                         neg_concurrent: d.neg_concurrent.iter().map(|s| s.id()).collect(),
@@ -378,16 +409,21 @@ pub(crate) fn parse_narrative(
         // harvests time constants (`n0`, `n1`, …).
         let (neg, atom) = match s.op() {
             Some(&OpKind::Not) if s.elements.len() == 2 => {
-                let Some(a) = sub_id(&s.elements[1]).and_then(|i| syn.sentence(i)) else { continue };
+                let Some(a) = sub_id(&s.elements[1]).and_then(|i| syn.sentence(i)) else {
+                    continue;
+                };
                 (true, a)
             }
             None => (false, s.clone()),
             _ => continue,
         };
-        let Some(hd) = atom.head_symbol_name() else { continue };
+        let Some(hd) = atom.head_symbol_name() else {
+            continue;
+        };
         if &*hd.name() == "holdsAt" && atom.elements.len() == 3 {
             if let (Some(fl), Some(t)) = (sym_of(&atom.elements[1]), sym_of(&atom.elements[2])) {
-                note(&fl, &mut names); note(&t, &mut names);
+                note(&fl, &mut names);
+                note(&t, &mut names);
                 time_syms.insert(t.clone());
                 // Record the initial value keyed by (fluent,time); resolved
                 // against `times[0]` once the timeline is known.
@@ -426,7 +462,11 @@ pub(crate) fn parse_narrative(
     if std::env::var_os("SIGMA_ORACLE_TRACE").is_some() {
         eprintln!(
             "EC[parse]: timeline order {} ({} order-axiom edge(s) covering {} time points)",
-            if used_order_axioms { "AXIOM-DERIVED" } else { "LEXICAL FALLBACK" },
+            if used_order_axioms {
+                "AXIOM-DERIVED"
+            } else {
+                "LEXICAL FALLBACK"
+            },
             succ_edges.len(),
             time_ids.len(),
         );
@@ -462,7 +502,7 @@ pub(crate) fn parse_narrative(
 /// caller falls back to the lexical rank in that case (never a partial /
 /// unsound order).
 fn order_chain(
-    edges:  &HashMap<SymbolId, (SymbolId, SentenceId)>,
+    edges: &HashMap<SymbolId, (SymbolId, SentenceId)>,
     wanted: &HashSet<SymbolId>,
 ) -> Option<Vec<SymbolId>> {
     if wanted.is_empty() {
@@ -478,7 +518,9 @@ fn order_chain(
     }
     let succs: HashSet<SymbolId> = relevant.values().copied().collect();
     let mut roots = wanted.iter().copied().filter(|t| !succs.contains(t));
-    let (Some(root), None) = (roots.next(), roots.next()) else { return None }; // need exactly one root
+    let (Some(root), None) = (roots.next(), roots.next()) else {
+        return None;
+    }; // need exactly one root
     let mut ordered = vec![root];
     let mut seen: HashSet<SymbolId> = [root].into_iter().collect();
     let mut cur = root;
@@ -515,9 +557,18 @@ fn order_succ_edge(syn: &SyntacticLayer, s: &Sentence) -> Option<(SymbolId, Symb
                         && lhs.elements.len() == 3
                     {
                         let (a, b) = (sym_of(&lhs.elements[1]), sym_of(&lhs.elements[2]));
-                        let is_one = |s: &Option<Symbol>| s.as_ref().is_some_and(|s| &*s.name() == "n1");
-                        if is_one(&b) { if let Some(a) = a { return Some((a.id(), rhs.id())); } }
-                        if is_one(&a) { if let Some(b) = b { return Some((b.id(), rhs.id())); } }
+                        let is_one =
+                            |s: &Option<Symbol>| s.as_ref().is_some_and(|s| &*s.name() == "n1");
+                        if is_one(&b) {
+                            if let Some(a) = a {
+                                return Some((a.id(), rhs.id()));
+                            }
+                        }
+                        if is_one(&a) {
+                            if let Some(b) = b {
+                                return Some((b.id(), rhs.id()));
+                            }
+                        }
                     }
                 }
             }
@@ -527,8 +578,12 @@ fn order_succ_edge(syn: &SyntacticLayer, s: &Sentence) -> Option<(SymbolId, Symb
     // `(=> (less_or_equal ?X A) (less ?X B))` / `(=> (less ?X B) (less_or_equal ?X A))`.
     if s.op() == Some(&OpKind::Implies) && s.elements.len() == 3 {
         let (Some(ant_sid), Some(con_sid)) = (sub_id(&s.elements[1]), sub_id(&s.elements[2]))
-            else { return None };
-        let (Some(ant), Some(con)) = (syn.sentence(ant_sid), syn.sentence(con_sid)) else { return None };
+        else {
+            return None;
+        };
+        let (Some(ant), Some(con)) = (syn.sentence(ant_sid), syn.sentence(con_sid)) else {
+            return None;
+        };
         let names = |a: &Sentence| a.head_symbol_name().map(|h| h.name().to_string());
         let (an, cn) = (names(&ant), names(&con));
         let le_lt = an.as_deref() == Some("less_or_equal") && cn.as_deref() == Some("less");
@@ -543,11 +598,15 @@ fn order_succ_edge(syn: &SyntacticLayer, s: &Sentence) -> Option<(SymbolId, Symb
         // Both atoms must share the SAME variable in the first argument
         // (the `?X` bound by the enclosing `<=>`) — otherwise this isn't
         // the chain shape.
-        let (Some(v1), Some(v2)) = (var_id(&le.elements[1]), var_id(&lt.elements[1])) else { return None };
+        let (Some(v1), Some(v2)) = (var_id(&le.elements[1]), var_id(&lt.elements[1])) else {
+            return None;
+        };
         if v1 != v2 {
             return None;
         }
-        let (Some(a), Some(b)) = (sym_of(&le.elements[2]), sym_of(&lt.elements[2])) else { return None };
+        let (Some(a), Some(b)) = (sym_of(&le.elements[2]), sym_of(&lt.elements[2])) else {
+            return None;
+        };
         return Some((a.id(), b.id()));
     }
     None
@@ -556,8 +615,8 @@ fn order_succ_edge(syn: &SyntacticLayer, s: &Sentence) -> Option<(SymbolId, Symb
 /// Recursively collect every time-constant symbol (`n` followed by digits)
 /// reachable from `s`, noting each in `names`.
 fn collect_time_syms(
-    syn:   &SyntacticLayer,
-    s:     &Sentence,
+    syn: &SyntacticLayer,
+    s: &Sentence,
     times: &mut HashSet<Symbol>,
     names: &mut HashMap<SymbolId, Symbol>,
 ) {
@@ -598,7 +657,9 @@ mod tests {
     use super::*;
     use crate::types::Symbol;
 
-    fn s(name: &str) -> SymbolId { Symbol::hash_name(name) }
+    fn s(name: &str) -> SymbolId {
+        Symbol::hash_name(name)
+    }
 
     // -- order_chain: the succ-EDB honesty fallback logic --------
 

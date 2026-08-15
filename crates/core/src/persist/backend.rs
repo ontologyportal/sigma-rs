@@ -81,7 +81,7 @@ impl PersistenceBackend for MemoryBackend {
 /// [`LmdbEnv`]: super::LmdbEnv
 #[cfg(feature = "persist")]
 pub(crate) struct LmdbBackend<'a> {
-    env:     &'a super::LmdbEnv,
+    env: &'a super::LmdbEnv,
     /// Staged writes: `Some` = put these bytes, `None` = delete the key.
     pending: HashMap<String, Option<Vec<u8>>>,
 }
@@ -90,7 +90,10 @@ pub(crate) struct LmdbBackend<'a> {
 impl<'a> LmdbBackend<'a> {
     /// Creates a backend that stages writes against `env`.
     pub(crate) fn new(env: &'a super::LmdbEnv) -> Self {
-        Self { env, pending: HashMap::new() }
+        Self {
+            env,
+            pending: HashMap::new(),
+        }
     }
 }
 
@@ -115,8 +118,12 @@ impl PersistenceBackend for LmdbBackend<'_> {
         let mut wtxn = self.env.write_txn()?;
         for (key, val) in self.pending.drain() {
             match val {
-                Some(bytes) => { self.env.caches.put(&mut wtxn, &key, &bytes)?; }
-                None        => { self.env.caches.delete(&mut wtxn, &key)?; }
+                Some(bytes) => {
+                    self.env.caches.put(&mut wtxn, &key, &bytes)?;
+                }
+                None => {
+                    self.env.caches.delete(&mut wtxn, &key)?;
+                }
             }
         }
         wtxn.commit()?;
@@ -156,34 +163,34 @@ impl<'a> PersistenceEngine<'a> {
 impl PersistenceBackend for PersistenceEngine<'_> {
     fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
         match self {
-            Self::Noop(_)   => Ok(()),
+            Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.put(key, bytes),
             #[cfg(feature = "persist")]
-            Self::Lmdb(l)   => l.put(key, bytes),
+            Self::Lmdb(l) => l.put(key, bytes),
         }
     }
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic> {
         match self {
-            Self::Noop(_)   => Ok(None),
+            Self::Noop(_) => Ok(None),
             Self::Memory(m) => m.get(key),
             #[cfg(feature = "persist")]
-            Self::Lmdb(l)   => l.get(key),
+            Self::Lmdb(l) => l.get(key),
         }
     }
     fn remove(&mut self, key: &str) -> Result<(), Diagnostic> {
         match self {
-            Self::Noop(_)   => Ok(()),
+            Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.remove(key),
             #[cfg(feature = "persist")]
-            Self::Lmdb(l)   => l.remove(key),
+            Self::Lmdb(l) => l.remove(key),
         }
     }
     fn commit(&mut self) -> Result<(), Diagnostic> {
         match self {
-            Self::Noop(_)   => Ok(()),
+            Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.commit(),
             #[cfg(feature = "persist")]
-            Self::Lmdb(l)   => l.commit(),
+            Self::Lmdb(l) => l.commit(),
         }
     }
 }

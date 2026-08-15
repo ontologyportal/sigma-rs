@@ -108,7 +108,11 @@ pub(crate) fn seat_elem(head: u64, pos: usize) -> u64 {
     buf[..8].copy_from_slice(&head.to_be_bytes());
     buf[8..].copy_from_slice(&(pos as u32).to_be_bytes());
     let a = xxh64(&buf, ROW_SEAT_SEED);
-    if a == 0 { 1 } else { a }
+    if a == 0 {
+        1
+    } else {
+        a
+    }
 }
 
 /// `[alpha^0, alpha^1, alpha^2, alpha^3]` — the per-channel multipliers
@@ -331,7 +335,11 @@ impl PatternPlan {
             };
             accum_powers(&mut delta, powers, b);
         }
-        let on_check_fail = if nd.has_closed { Reject::Binding } else { Reject::Surplus };
+        let on_check_fail = if nd.has_closed {
+            Reject::Binding
+        } else {
+            Reject::Surplus
+        };
         let v = nd.unknowns.len();
         if v == 0 {
             // Fully closed node: all four channels are checks.
@@ -448,7 +456,10 @@ pub(crate) fn compile_into(
     let Some(head) = head_of(elems) else {
         // Unindexable lhs shape — `DemodIndex::add` never produces one;
         // defensive root fallback.
-        plan.nodes.push(PNode { fallback: true, ..PNode::default() });
+        plan.nodes.push(PNode {
+            fallback: true,
+            ..PNode::default()
+        });
         plan.fallback_any = true;
         return;
     };
@@ -506,9 +517,7 @@ fn comp_node(
                         }
                         None => closed.push((slot, powers)),
                     }
-                } else if let Some(u) =
-                    srcs.iter().position(|s| *s == UnkSrc::Var(slot))
-                {
+                } else if let Some(u) = srcs.iter().position(|s| *s == UnkSrc::Var(slot)) {
                     // Same-node repeat: collapse linearly into ONE
                     // unknown with summed seat multipliers.
                     for j in 0..4 {
@@ -571,8 +580,7 @@ fn comp_node(
         // A node constrains beyond the depth-1 seat prefilter when it
         // closes seats (ground or bound), collapses repeats, is a pure
         // check, or descends into subpatterns.
-        plan.constraining |=
-            ground_closed || node.has_closed || collapsed || v == 0 || has_sub;
+        plan.constraining |= ground_closed || node.has_closed || collapsed || v == 0 || has_sub;
     }
     let idx = plan.nodes.len() as u32;
     plan.nodes.push(node);
@@ -713,7 +721,13 @@ mod tests {
         let facts = TermFactsTable::default();
         let kbo = KboOrdering::new();
         let mut po = SubtermPostings::default();
-        po.register_clause(1, &[(true, app(vec![sym("p"), cand.clone()]))], &facts, &kbo, true);
+        po.register_clause(
+            1,
+            &[(true, app(vec![sym("p"), cand.clone()]))],
+            &facts,
+            &kbo,
+            true,
+        );
         let (h, ar) = head_lhs_key(pat).expect("pattern is a concrete-headed App");
         let (posts, rows) = po.head_postings(h, ar);
         assert_eq!(posts.len(), 1, "candidate occurrence bucketed");
@@ -746,8 +760,7 @@ mod tests {
                 }
                 pat.push(sym(&anchor));
                 cand.push(sym(&anchor));
-                let (r, bind, plan) =
-                    run_chain(&app(pat), &app(cand), v);
+                let (r, bind, plan) = run_chain(&app(pat), &app(cand), v);
                 assert!(plan.active(), "anchored pattern is constraining");
                 assert_eq!(r, Ok(()), "true instance must survive (v={v})");
                 for (u, w) in want.iter().enumerate() {
@@ -786,7 +799,10 @@ mod tests {
             bind[s as usize] = None;
         }
         trail.clear();
-        assert_eq!(plan.eval(&rows[0], po.row_table(), &mut bind, &mut trail), Ok(()));
+        assert_eq!(
+            plan.eval(&rows[0], po.row_table(), &mut bind, &mut trail),
+            Ok(())
+        );
     }
 
     // Same-node repeated variable: occurrences collapse into ONE unknown

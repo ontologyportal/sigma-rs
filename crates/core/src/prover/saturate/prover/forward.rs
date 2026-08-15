@@ -13,7 +13,10 @@ use super::super::clause::{AtomId, Term};
 use super::super::oracle::Witness;
 use super::super::theory::TheoryOracle;
 use super::super::unify::{apply, shift_slots, slot_atom, unify, Subst};
-use super::{positions_paths, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver, JOIN_UNIT_OFF, SUPPORT};
+use super::{
+    positions_paths, term_binary_ids, term_depth, term_kif, witnesses_kif, NativeProver,
+    JOIN_UNIT_OFF, SUPPORT,
+};
 
 impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Is clause `id` an activated, KBO-orientable positive unit equality
@@ -53,8 +56,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let mut produced = 0usize;
         let mut attempts = 0usize;
         let hard = budget.saturating_mul(16); // attempt backstop
-        // LIFO frontier of equation ids still to superpose against the set;
-        // newly derived equations join it (the closure's fixpoint engine).
+                                              // LIFO frontier of equation ids still to superpose against the set;
+                                              // newly derived equations join it (the closure's fixpoint engine).
         let mut frontier: Vec<u32> = self.unit_equation_ids();
         'closure: while let Some(eid) = frontier.pop() {
             if produced >= budget || attempts >= hard {
@@ -69,15 +72,22 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if p == eid {
                     continue;
                 }
-                let Some(p_atom) =
-                    slot_atom(&self.layer.atoms, self.syn(), self.clauses[p as usize].lits[0].atom, 0)
-                else { continue };
+                let Some(p_atom) = slot_atom(
+                    &self.layer.atoms,
+                    self.syn(),
+                    self.clauses[p as usize].lits[0].atom,
+                    0,
+                ) else {
+                    continue;
+                };
                 for path in positions_paths(&p_atom) {
                     attempts += 1;
                     if attempts >= hard {
                         break 'partners;
                     }
-                    let Some(nid) = self.superpose(eid, 0, p, 0, &path) else { continue };
+                    let Some(nid) = self.superpose(eid, 0, p, 0, &path) else {
+                        continue;
+                    };
                     // An EMPTY product is a refutation of the background
                     // equations themselves (make can collapse the single
                     // literal: false ground equality, unit simplification).
@@ -109,9 +119,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// activated) clause — completion's acceptance test for a product.
     fn is_unit_equation_unactivated(&self, id: u32) -> bool {
         let c = &self.clauses[id as usize];
-        c.terms.len() == 1
-            && c.terms[0].0
-            && self.equality_oriented(&c.terms[0].1).is_some()
+        c.terms.len() == 1 && c.terms[0].0 && self.equality_oriented(&c.terms[0].1).is_some()
     }
 
     /// Bounded hyperresolution: support units × background clauses,
@@ -122,9 +130,22 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         let fc_start = Instant::now();
         // Copied out: the loop below borrows `self` mutably.
         let st = &self.opts.strategy;
-        let (fc_rounds, fc_max_premise_lits, fc_flat_depth, fc_fanout, fc_cap, fc_branch, fc_max_pos) = (
-            st.fc_rounds, st.fc_max_premise_lits, st.fc_flat_depth,
-            st.fc_fanout, st.fc_cap, st.fc_branch, st.fc_max_pos.max(1),
+        let (
+            fc_rounds,
+            fc_max_premise_lits,
+            fc_flat_depth,
+            fc_fanout,
+            fc_cap,
+            fc_branch,
+            fc_max_pos,
+        ) = (
+            st.fc_rounds,
+            st.fc_max_premise_lits,
+            st.fc_flat_depth,
+            st.fc_fanout,
+            st.fc_cap,
+            st.fc_branch,
+            st.fc_max_pos.max(1),
         );
         let instance = self.oracle.roles().instance;
         let mut units: Vec<(AtomId, u32)> = self
@@ -132,8 +153,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             .clone()
             .into_iter()
             .filter(|(a, _)| {
-                self.layer.atoms.resolve(*a, self.syn())
-                    .and_then(|s| s.head_symbol()) != Some(instance)
+                self.layer
+                    .atoms
+                    .resolve(*a, self.syn())
+                    .and_then(|s| s.head_symbol())
+                    != Some(instance)
             })
             .collect();
         let mut total = 0usize;
@@ -144,33 +168,48 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 let layer = self.layer;
                 let src = move |a| layer.atom_info(a);
                 let candidates = self.idx.complementary(true, &u_info, &src);
-                let Some(u_term) = slot_atom(&self.layer.atoms, self.syn(), *u_atom, 0)
-                else { continue };
+                let Some(u_term) = slot_atom(&self.layer.atoms, self.syn(), *u_atom, 0) else {
+                    continue;
+                };
                 for at in candidates {
                     let (c_id, c_i) = (at.clause, at.lit as usize);
                     let (c_terms, c_nvars, c_npos) = {
                         let c = &self.clauses[c_id as usize];
-                        if self.is_retired(c_id) { continue; } // superseded by bwd-demod replacement
-                        if c.lits.len() > fc_max_premise_lits || c.lits[c_i].pos { continue; }
-                        (c.terms.clone(), c.nvars,
-                         c.terms.iter().filter(|(p, _)| *p).count())
+                        if self.is_retired(c_id) {
+                            continue;
+                        } // superseded by bwd-demod replacement
+                        if c.lits.len() > fc_max_premise_lits || c.lits[c_i].pos {
+                            continue;
+                        }
+                        (
+                            c.terms.clone(),
+                            c.nvars,
+                            c.terms.iter().filter(|(p, _)| *p).count(),
+                        )
                     };
-                    if c_npos < 1 || c_npos > fc_max_pos { continue; }
+                    if c_npos < 1 || c_npos > fc_max_pos {
+                        continue;
+                    }
                     let off = 1u64; // unit is ground: no slots of its own
                     let mut s: Subst = vec![None; (off + u64::from(c_nvars) + 1) as usize];
                     let p_lit = shift_slots(&c_terms[c_i].1, off);
                     self.stats.fc_unify_attempts += 1;
                     self.stats.fc_ground_candidate += 1; // seed unit is ground by construction
-                    if !unify(&p_lit, &u_term, &mut s) { continue; }
+                    if !unify(&p_lit, &u_term, &mut s) {
+                        continue;
+                    }
                     self.stats.fc_unify_hits += 1;
-                    let negs: Vec<Term> = c_terms.iter().enumerate()
+                    let negs: Vec<Term> = c_terms
+                        .iter()
+                        .enumerate()
                         .filter(|(k, (p, _))| *k != c_i && !*p)
                         .map(|(_, (_, t))| shift_slots(t, off))
                         .collect();
                     // ALL positive heads (a unit for a Horn rule; a short
                     // disjunction for a multi-conclusion rule) — the
                     // conclusion is their σ-applied disjunction.
-                    let pos_terms: Vec<Term> = c_terms.iter()
+                    let pos_terms: Vec<Term> = c_terms
+                        .iter()
                         .filter(|(p, _)| *p)
                         .map(|(_, t)| shift_slots(t, off))
                         .collect();
@@ -185,20 +224,24 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             // a flat ground atom (the anti-flooding contract).
                             let atoms: Vec<Term> =
                                 pos_terms.iter().map(|t| apply(t, &s2)).collect();
-                            if atoms.iter().any(|a| {
-                                !a.is_ground() || term_depth(a) > fc_flat_depth
-                            }) {
+                            if atoms
+                                .iter()
+                                .any(|a| !a.is_ground() || term_depth(a) > fc_flat_depth)
+                            {
                                 continue;
                             }
                             let mut parents = vec![c_id, *u_cid];
                             parents.extend(used.iter().copied());
                             let lits: Vec<(bool, Term)> =
                                 atoms.into_iter().map(|a| (true, a)).collect();
-                            let made =
-                                self.make(lits, parents, "hyper", SUPPORT, None, true);
+                            let made = self.make(lits, parents, "hyper", SUPPORT, None, true);
                             let Some(cid) = made else { continue };
-                            self.clauses[cid as usize].fact_parents.extend(facts.iter().copied());
-                            self.clauses[cid as usize].notes.extend(jnotes.iter().cloned());
+                            self.clauses[cid as usize]
+                                .fact_parents
+                                .extend(facts.iter().copied());
+                            self.clauses[cid as usize]
+                                .notes
+                                .extend(jnotes.iter().cloned());
                             if self.clauses[cid as usize].lits.is_empty() {
                                 // The joined conclusion was refuted
                                 // outright (arithmetic / oracle
@@ -210,7 +253,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                 continue;
                             }
                             let key = self.clauses[cid as usize].key;
-                            if !self.seen_insert(key, cid) { continue; }
+                            if !self.seen_insert(key, cid) {
+                                continue;
+                            }
                             self.activate(cid);
                             // Only UNIT conclusions re-seed the unit-driven
                             // next round; a derived disjunction can't.
@@ -220,7 +265,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             }
                             total += 1;
                             got += 1;
-                            if got >= fc_fanout || total >= fc_cap { break; }
+                            if got >= fc_fanout || total >= fc_cap {
+                                break;
+                            }
                             continue;
                         }
                         let a = apply(&negs[k], &s2);
@@ -231,7 +278,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                     let mut why: Vec<Witness> = Vec::new();
                                     let _ = self.oracle.holds(rel, x, y, Some(&mut why));
                                     let mut facts2 = facts.clone();
-                                    let mut used2  = used.clone();
+                                    let mut used2 = used.clone();
                                     for w in &why {
                                         if let Some(sid) = w.sid {
                                             facts2.push(sid);
@@ -245,7 +292,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                     jn.push(format!(
                                         "(not {}) -- oracle: {}",
                                         term_kif(&a, self.syn()),
-                                        witnesses_kif(&why, self.syn())));
+                                        witnesses_kif(&why, self.syn())
+                                    ));
                                     stack.push((k + 1, s2.clone(), facts2, used2, jn));
                                     continue;
                                 }
@@ -256,38 +304,56 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         let qa = self.layer.atoms.intern_atom(&a);
                         let q_info = self.layer.atom_info(qa);
                         let cands = self.idx.probe_rel(
-                            true, &q_info, &src, super::super::index::SeatRel::Unifiable);
+                            true,
+                            &q_info,
+                            &src,
+                            super::super::index::SeatRel::Unifiable,
+                        );
                         let mut branch = 0usize;
                         for cand in cands {
                             let uc = &self.clauses[cand.clause as usize];
-                            if uc.lits.len() != 1 || self.is_retired(cand.clause) { continue; }
+                            if uc.lits.len() != 1 || self.is_retired(cand.clause) {
+                                continue;
+                            }
                             // Two-way unification binds the unit's vars
                             // too, so (unlike the one-way matches) the
                             // substitution must cover its slot range.
                             let Some(u2) = slot_atom(
-                                &self.layer.atoms, self.syn(), uc.lits[0].atom,
-                                JOIN_UNIT_OFF as u32)
-                            else { continue };
+                                &self.layer.atoms,
+                                self.syn(),
+                                uc.lits[0].atom,
+                                JOIN_UNIT_OFF as u32,
+                            ) else {
+                                continue;
+                            };
                             let mut s3 = s2.clone();
                             s3.resize((JOIN_UNIT_OFF + 257) as usize, None);
                             self.stats.fc_unify_attempts += 1;
-                            if uc.nvars == 0 { self.stats.fc_ground_candidate += 1; }
+                            if uc.nvars == 0 {
+                                self.stats.fc_ground_candidate += 1;
+                            }
                             if unify(&a, &u2, &mut s3) {
                                 self.stats.fc_unify_hits += 1;
                                 let mut used2 = used.clone();
                                 used2.push(cand.clause);
                                 stack.push((k + 1, s3, facts.clone(), used2, jnotes.clone()));
                                 branch += 1;
-                                if branch >= fc_branch { break; }
+                                if branch >= fc_branch {
+                                    break;
+                                }
                             }
                         }
                     }
-                    if total >= fc_cap { break 'units; }
+                    if total >= fc_cap {
+                        break 'units;
+                    }
                 }
             }
             self.stats.forward_closed = total as u64;
             units = nxt;
-            if units.is_empty() || total >= fc_cap { break; }
+            if units.is_empty() || total >= fc_cap {
+                break;
+            }
             // Wall-clock insurance: fc has its own caps, but theory
             // feedback (lists, FD, exhaustiveness) can make rounds
             // expensive at full-KB scale.

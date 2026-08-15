@@ -12,13 +12,13 @@
 //   WholeCache<B>: sort_annotations, numeric_ancestor_set, poly_variant_symbols (lazy/install whole)
 //   EagerMap<B>  : numeric_sorts (eager keyed, built by prime_caches)
 
+pub(crate) mod formulas_fof;
+pub(crate) mod formulas_tff;
 pub(crate) mod formulas_thf;
 pub(crate) mod ho_signatures;
-pub(crate) mod symbol_sort;
-pub(crate) mod formulas_tff;
-pub(crate) mod formulas_fof;
-pub(crate) mod sort_annotations;
-pub(crate) mod numeric_sorts;
 pub(crate) mod numeric_ancestor_set;
+pub(crate) mod numeric_sorts;
 pub(crate) mod poly_variant_symbols;
 pub(crate) mod rewrite_rules;
+pub(crate) mod sort_annotations;
+pub(crate) mod symbol_sort;

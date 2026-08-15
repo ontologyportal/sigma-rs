@@ -19,12 +19,11 @@
 
 #![allow(dead_code)]
 
-
 use crate::Diagnostic;
 
-use super::backends::CacheConfig;
 #[cfg(any(feature = "parallel", test))]
 use super::backends::plan_threads;
+use super::backends::CacheConfig;
 use super::events::{build_schedule_indexed, CycleError, Event, EventKind, ReactorDecl};
 
 /// A cache wrapper viewed as a reactor: its static event interface plus a
@@ -49,25 +48,21 @@ pub(crate) trait CacheLike {
     /// React to `events`, returning the follow-on events to dispatch
     /// downstream. A reactor reports a warning/error by including an
     /// [`Event::Diagnostic`] in the returned vec; the router peels those off.
-    fn react(
-        &self,
-        parent: &Self::Parent,
-        events: &[&Event],
-    ) -> Vec<Event>;
+    fn react(&self, parent: &Self::Parent, events: &[&Event]) -> Vec<Event>;
 }
 
 /// A reactor registered with the router: its static interface plus a reaction
 /// closure with the owning layer already bound in.  Build one with [`bind`].
 pub(crate) struct ReactorEntry<'a> {
     /// Unique reactor name (used as the schedule node id).
-    pub name:     &'static str,
+    pub name: &'static str,
     /// Event kinds this reactor consumes.
     pub consumes: &'static [EventKind],
     /// Event kinds this reactor may produce.
     pub produces: &'static [EventKind],
     /// Cache names this reactor's `react` reads. Each names a cache whose own
     /// reactor must run first (a data edge).
-    pub reads:    &'static [&'static str],
+    pub reads: &'static [&'static str],
     /// Whether `react` is safe to event-shard. When `true` and the event slice
     /// is large enough, the router splits it across threads.
     pub event_parallel: bool,
@@ -77,7 +72,7 @@ pub(crate) struct ReactorEntry<'a> {
     /// `Send + Sync` so the router may dispatch reactors in a cohort
     /// concurrently and call one reactor from several threads on disjoint event
     /// shards.
-    pub react:    Box<dyn Fn(&[&Event]) -> Vec<Event> + Send + Sync + 'a>,
+    pub react: Box<dyn Fn(&[&Event]) -> Vec<Event> + Send + Sync + 'a>,
 }
 
 /// Register a cache for routing by binding it to its owning layer.
@@ -90,12 +85,12 @@ where
     C::Parent: Sync + 'a,
 {
     ReactorEntry {
-        name:           cache.name(),
-        consumes:       cache.consumes(),
-        produces:       cache.produces(),
-        reads:          cache.reads(),
+        name: cache.name(),
+        consumes: cache.consumes(),
+        produces: cache.produces(),
+        reads: cache.reads(),
         event_parallel: cache.event_parallel(),
-        react:          Box::new(move |events| cache.react(parent, events)),
+        react: Box::new(move |events| cache.react(parent, events)),
     }
 }
 
@@ -112,7 +107,7 @@ pub(crate) struct RouteOutcome {
     pub emitted: Vec<Event>,
     /// Every per-event reaction failure, in the order encountered.  Empty on a
     /// fully successful cascade.
-    pub errors:  Vec<Diagnostic>,
+    pub errors: Vec<Diagnostic>,
 }
 
 /// Drive the reactive cascade.
@@ -128,15 +123,22 @@ pub(crate) struct RouteOutcome {
 ///
 /// A cyclic reactor graph is the one genuinely-fatal case (nothing can run): it
 /// short-circuits to an empty `emitted` with the cycle reported in `errors`.
-pub(crate) fn route(
-    entries: &[ReactorEntry<'_>],
-    seed:    Vec<Event>,
-) -> RouteOutcome {
+pub(crate) fn route(entries: &[ReactorEntry<'_>], seed: Vec<Event>) -> RouteOutcome {
     let decls: Vec<ReactorDecl> = entries
         .iter()
-        .map(|e| ReactorDecl { name: e.name, consumes: e.consumes, produces: e.produces, reads: e.reads })
+        .map(|e| ReactorDecl {
+            name: e.name,
+            consumes: e.consumes,
+            produces: e.produces,
+            reads: e.reads,
+        })
         .collect();
-    route_with_schedule(entries, &build_schedule_indexed(&decls), &CacheConfig::default(), seed)
+    route_with_schedule(
+        entries,
+        &build_schedule_indexed(&decls),
+        &CacheConfig::default(),
+        seed,
+    )
 }
 
 /// Dispatch `seed` through `entries` using a precomputed level schedule
@@ -146,15 +148,15 @@ pub(crate) fn route(
 pub(crate) fn route_with_schedule(
     entries: &[ReactorEntry<'_>],
     cohorts: &Result<Vec<Vec<usize>>, CycleError>,
-    config:  &CacheConfig,
-    seed:    Vec<Event>,
+    config: &CacheConfig,
+    seed: Vec<Event>,
 ) -> RouteOutcome {
     let levels = match cohorts {
         Ok(levels) => levels,
         Err(cycle) => {
             return RouteOutcome {
                 emitted: Vec::new(),
-                errors:  vec![Diagnostic::new_error(
+                errors: vec![Diagnostic::new_error(
                     "reactive-cache",
                     "reactor-cycle",
                     format!("reactor dependency cycle: {}", cycle.names.join(" -> ")),
@@ -166,13 +168,14 @@ pub(crate) fn route_with_schedule(
     // drifted from the graph the schedule was built for.
     debug_assert!(
         levels.iter().flatten().all(|&i| i < entries.len()),
-        "cached reactor schedule index out of range for {} entries", entries.len(),
+        "cached reactor schedule index out of range for {} entries",
+        entries.len(),
     );
 
     // `pool` = every event visible so far (seed + follow-ons from earlier
     // levels); `emitted` = every follow-on produced across the whole cascade.
-    let mut pool: Vec<Event>     = seed;
-    let mut emitted: Vec<Event>  = Vec::new();
+    let mut pool: Vec<Event> = seed;
+    let mut emitted: Vec<Event> = Vec::new();
     let mut errors: Vec<Diagnostic> = Vec::new();
 
     for level in levels {
@@ -204,7 +207,7 @@ pub(crate) fn route_with_schedule(
                 match ev {
                     // A diagnostic is collected, never dispatched.
                     Event::Diagnostic(diag) => errors.push(diag),
-                    other                   => level_out.push(other),
+                    other => level_out.push(other),
                 }
             }
         }
@@ -223,16 +226,15 @@ pub(crate) fn route_with_schedule(
 /// store, so this is race-free. Otherwise serial. Order is preserved either way.
 fn run_cohort(
     entries: &[ReactorEntry<'_>],
-    jobs:    &[(usize, Vec<&Event>)],
-    config:  &CacheConfig,
+    jobs: &[(usize, Vec<&Event>)],
+    config: &CacheConfig,
 ) -> Vec<Vec<Event>> {
     #[cfg(not(feature = "parallel"))]
     let _ = config; // only the parallel path consults the thread cap / floor
     #[cfg(feature = "parallel")]
     {
         let total: usize = jobs.iter().map(|(_, r)| r.len()).sum();
-        if jobs.len() > 1
-            && plan_threads(total, config.max_threads(), config.parallel_floor()) > 1
+        if jobs.len() > 1 && plan_threads(total, config.max_threads(), config.parallel_floor()) > 1
         {
             use rayon::prelude::*;
             return jobs
@@ -253,23 +255,26 @@ fn run_cohort(
 /// reactor's own store. Sound only for reactors whose `react` is a commutative
 /// per-event fold — hence the opt-in. Shard order is preserved, so follow-ons
 /// stay deterministic.
-fn run_reactor(
-    entry:    &ReactorEntry<'_>,
-    relevant: &[&Event],
-    config:   &CacheConfig,
-) -> Vec<Event> {
+fn run_reactor(entry: &ReactorEntry<'_>, relevant: &[&Event], config: &CacheConfig) -> Vec<Event> {
     // Opt-in per-reactor timing (`SIGMA_REACTOR_PROFILE=<min-ms>`): prints one
     // line per dispatch that takes ≥ the given threshold (ms), attributing
     // cascade cost to a cache.  Any unparsable value defaults to 1 ms.
     static PROFILE: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
     if let Some(min_ms) = *PROFILE.get_or_init(|| {
-        std::env::var("SIGMA_REACTOR_PROFILE").ok().map(|v| v.parse().unwrap_or(1.0))
+        std::env::var("SIGMA_REACTOR_PROFILE")
+            .ok()
+            .map(|v| v.parse().unwrap_or(1.0))
     }) {
-        let t0  = crate::clock::Instant::now();
+        let t0 = crate::clock::Instant::now();
         let out = run_reactor_inner(entry, relevant, config);
-        let ms  = t0.elapsed().as_secs_f64() * 1e3;
+        let ms = t0.elapsed().as_secs_f64() * 1e3;
         if ms >= min_ms {
-            eprintln!("[reactor] {:<40} {:>9.1} ms  ({} event(s))", entry.name, ms, relevant.len());
+            eprintln!(
+                "[reactor] {:<40} {:>9.1} ms  ({} event(s))",
+                entry.name,
+                ms,
+                relevant.len()
+            );
         }
         return out;
     }
@@ -278,13 +283,17 @@ fn run_reactor(
 
 /// The untimed dispatch body of [`run_reactor`].
 fn run_reactor_inner(
-    entry:    &ReactorEntry<'_>,
+    entry: &ReactorEntry<'_>,
     relevant: &[&Event],
-    config:   &CacheConfig,
+    config: &CacheConfig,
 ) -> Vec<Event> {
     #[cfg(feature = "parallel")]
     if entry.event_parallel {
-        let threads = plan_threads(relevant.len(), config.max_threads(), config.parallel_floor());
+        let threads = plan_threads(
+            relevant.len(),
+            config.max_threads(),
+            config.parallel_floor(),
+        );
         if threads > 1 {
             use rayon::prelude::*;
             let chunk = relevant.len().div_ceil(threads);
@@ -308,11 +317,11 @@ mod tests {
     // A trivial reactor: records the events it saw and optionally emits one
     // follow-on per consumed event.
     fn entry<'a>(
-        name:     &'static str,
+        name: &'static str,
         consumes: &'static [EventKind],
         produces: &'static [EventKind],
-        log:      &'a Mutex<Vec<&'static str>>,
-        emit:     Option<Event>,
+        log: &'a Mutex<Vec<&'static str>>,
+        emit: Option<Event>,
     ) -> ReactorEntry<'a> {
         ReactorEntry {
             name,
@@ -322,10 +331,7 @@ mod tests {
             event_parallel: false,
             react: Box::new(move |events| {
                 log.lock().unwrap().push(name);
-                events
-                    .iter()
-                    .filter_map(|_| emit.clone())
-                    .collect()
+                events.iter().filter_map(|_| emit.clone()).collect()
             }),
         }
     }
@@ -337,14 +343,17 @@ mod tests {
         let out = route(&entries, Vec::new());
         assert!(out.emitted.is_empty());
         assert!(out.errors.is_empty());
-        assert!(log.lock().unwrap().is_empty(), "no relevant events -> reactor not run");
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "no relevant events -> reactor not run"
+        );
     }
 
     #[test]
     fn dispatches_only_to_consumers() {
         let log = Mutex::new(Vec::new());
         let entries = [
-            entry("wants_added",   &[EventKind::RootAdded],   &[], &log, None),
+            entry("wants_added", &[EventKind::RootAdded], &[], &log, None),
             entry("wants_removed", &[EventKind::RootRemoved], &[], &log, None),
         ];
         route(&entries, vec![Event::RootAdded { sid: 1 }]);
@@ -358,12 +367,25 @@ mod tests {
         // TaxonomyChanged — so it must run in a later level off the follow-on.
         let entries = [
             entry("consumer", &[EventKind::TaxonomyChanged], &[], &log, None),
-            entry("producer", &[EventKind::RootAdded], &[EventKind::TaxonomyChanged],
-                  &log, Some(Event::TaxonomyChanged { syms: vec![7] })),
+            entry(
+                "producer",
+                &[EventKind::RootAdded],
+                &[EventKind::TaxonomyChanged],
+                &log,
+                Some(Event::TaxonomyChanged { syms: vec![7] }),
+            ),
         ];
         let out = route(&entries, vec![Event::RootAdded { sid: 1 }]);
-        assert_eq!(*log.lock().unwrap(), vec!["producer", "consumer"], "producer runs first, then consumer");
-        assert_eq!(out.emitted.len(), 1, "the TaxonomyChanged follow-on was emitted");
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["producer", "consumer"],
+            "producer runs first, then consumer"
+        );
+        assert_eq!(
+            out.emitted.len(),
+            1,
+            "the TaxonomyChanged follow-on was emitted"
+        );
         assert!(out.errors.is_empty());
     }
 
@@ -379,14 +401,26 @@ mod tests {
                 produces: &[],
                 reads: &[],
                 event_parallel: false,
-                react: Box::new(|_| vec![Event::Diagnostic(Diagnostic::new_error("t", "boom", "kaboom"))]),
+                react: Box::new(|_| {
+                    vec![Event::Diagnostic(Diagnostic::new_error(
+                        "t", "boom", "kaboom",
+                    ))]
+                }),
             },
             entry("survivor", &[EventKind::RootAdded], &[], &log, None),
         ];
         let out = route(&entries, vec![Event::RootAdded { sid: 1 }]);
-        assert_eq!(out.errors.len(), 1, "the failure is recorded, not propagated");
+        assert_eq!(
+            out.errors.len(),
+            1,
+            "the failure is recorded, not propagated"
+        );
         assert_eq!(out.errors[0].code, "boom");
-        assert_eq!(*log.lock().unwrap(), vec!["survivor"], "other reactors still process the event");
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["survivor"],
+            "other reactors still process the event"
+        );
     }
 
     #[test]
@@ -489,8 +523,16 @@ mod tests {
         let seed: Vec<Event> = (0..3_000).map(|sid| Event::RootAdded { sid }).collect();
 
         let run = |threads: usize| -> Vec<usize> {
-            let stores = [dashmap::DashSet::new(), dashmap::DashSet::new(), dashmap::DashSet::new()];
-            let entries = [collector(&stores[0]), collector(&stores[1]), collector(&stores[2])];
+            let stores = [
+                dashmap::DashSet::new(),
+                dashmap::DashSet::new(),
+                dashmap::DashSet::new(),
+            ];
+            let entries = [
+                collector(&stores[0]),
+                collector(&stores[1]),
+                collector(&stores[2]),
+            ];
             let cfg = CacheConfig::default();
             cfg.set_max_threads(threads);
             cfg.set_parallel_floor(64);

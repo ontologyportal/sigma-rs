@@ -12,13 +12,11 @@ use std::time::Duration;
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::{
     notification::{DidOpenTextDocument, Initialized, Notification as _, PublishDiagnostics},
-    request::{DocumentSymbolRequest, GotoDefinition, HoverRequest,
-              Initialize, Shutdown},
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, InitializedParams, MarkupContent, MarkupKind, PartialResultParams,
-    Position, TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
-    Url, WorkDoneProgressParams,
+    request::{DocumentSymbolRequest, GotoDefinition, HoverRequest, Initialize, Shutdown},
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams, InitializedParams,
+    MarkupContent, MarkupKind, PartialResultParams, Position, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, Url, WorkDoneProgressParams,
 };
 
 // -- Helpers ------------------------------------------------------------------
@@ -31,7 +29,7 @@ fn spawn_server(connection: Connection) -> thread::JoinHandle<()> {
 
 fn send_request<R: lsp_types::request::Request>(
     client: &Connection,
-    id:     impl Into<RequestId>,
+    id: impl Into<RequestId>,
     params: R::Params,
 ) -> RequestId {
     let id: RequestId = id.into();
@@ -40,7 +38,10 @@ fn send_request<R: lsp_types::request::Request>(
         method: R::METHOD.to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    client.sender.send(Message::Request(req)).expect("request sent");
+    client
+        .sender
+        .send(Message::Request(req))
+        .expect("request sent");
     id
 }
 
@@ -52,14 +53,21 @@ fn send_notification<N: lsp_types::notification::Notification>(
         method: N::METHOD.to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    client.sender.send(Message::Notification(not)).expect("notification sent");
+    client
+        .sender
+        .send(Message::Notification(not))
+        .expect("notification sent");
 }
 
 fn recv_response(client: &Connection) -> lsp_server::Response {
     loop {
-        let m = client.receiver.recv_timeout(Duration::from_secs(5))
+        let m = client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
             .expect("response within 5s");
-        if let Message::Response(r) = m { return r; }
+        if let Message::Response(r) = m {
+            return r;
+        }
     }
 }
 
@@ -69,8 +77,12 @@ fn drain_publish_diagnostics_for(client: &Connection, uri: &Url) {
     while std::time::Instant::now() < deadline {
         match client.receiver.recv_timeout(Duration::from_millis(200)) {
             Ok(Message::Notification(not)) if not.method == PublishDiagnostics::METHOD => {
-                if let Ok(p) = serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(not.params) {
-                    if &p.uri == uri { return; }
+                if let Ok(p) =
+                    serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(not.params)
+                {
+                    if &p.uri == uri {
+                        return;
+                    }
                 }
             }
             Ok(_) => continue,
@@ -89,21 +101,27 @@ fn initialize(client: &Connection) {
 fn shutdown(client: &Connection) {
     send_request::<Shutdown>(client, 999, ());
     recv_response(client);
-    client.sender.send(Message::Notification(Notification {
-        method: lsp_types::notification::Exit::METHOD.to_string(),
-        params: serde_json::Value::Null,
-    })).expect("exit");
+    client
+        .sender
+        .send(Message::Notification(Notification {
+            method: lsp_types::notification::Exit::METHOD.to_string(),
+            params: serde_json::Value::Null,
+        }))
+        .expect("exit");
 }
 
 fn open(client: &Connection, uri: &Url, text: &str) {
-    send_notification::<DidOpenTextDocument>(client, DidOpenTextDocumentParams {
-        text_document: TextDocumentItem {
-            uri:         uri.clone(),
-            language_id: "kif".to_string(),
-            version:     1,
-            text:        text.to_string(),
+    send_notification::<DidOpenTextDocument>(
+        client,
+        DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "kif".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
         },
-    });
+    );
     drain_publish_diagnostics_for(client, uri);
 }
 
@@ -111,43 +129,75 @@ fn open(client: &Connection, uri: &Url, text: &str) {
 
 /// Send a hover request at `(line, character)` and return the response body.
 fn hover_at(client: &Connection, uri: &Url, line: u32, ch: u32, id: i32) -> Option<Hover> {
-    send_request::<HoverRequest>(client, id, HoverParams {
-        text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: uri.clone() },
-            position:      Position { line, character: ch },
+    send_request::<HoverRequest>(
+        client,
+        id,
+        HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line,
+                    character: ch,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
         },
-        work_done_progress_params: WorkDoneProgressParams::default(),
-    });
+    );
     let r = recv_response(client);
     assert!(r.error.is_none(), "hover error: {:?}", r.error);
-    serde_json::from_value::<Option<Hover>>(r.result.unwrap_or(serde_json::Value::Null)).ok().flatten()
+    serde_json::from_value::<Option<Hover>>(r.result.unwrap_or(serde_json::Value::Null))
+        .ok()
+        .flatten()
 }
 
-fn goto_at(client: &Connection, uri: &Url, line: u32, ch: u32, id: i32) -> Option<GotoDefinitionResponse> {
-    send_request::<GotoDefinition>(client, id, GotoDefinitionParams {
-        text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: uri.clone() },
-            position:      Position { line, character: ch },
+fn goto_at(
+    client: &Connection,
+    uri: &Url,
+    line: u32,
+    ch: u32,
+    id: i32,
+) -> Option<GotoDefinitionResponse> {
+    send_request::<GotoDefinition>(
+        client,
+        id,
+        GotoDefinitionParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                position: Position {
+                    line,
+                    character: ch,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
         },
-        work_done_progress_params: WorkDoneProgressParams::default(),
-        partial_result_params:     PartialResultParams::default(),
-    });
+    );
     let r = recv_response(client);
     assert!(r.error.is_none(), "goto error: {:?}", r.error);
-    serde_json::from_value::<Option<GotoDefinitionResponse>>(r.result.unwrap_or(serde_json::Value::Null))
-        .ok().flatten()
+    serde_json::from_value::<Option<GotoDefinitionResponse>>(
+        r.result.unwrap_or(serde_json::Value::Null),
+    )
+    .ok()
+    .flatten()
 }
 
 fn document_symbols(client: &Connection, uri: &Url, id: i32) -> Option<DocumentSymbolResponse> {
-    send_request::<DocumentSymbolRequest>(client, id, DocumentSymbolParams {
-        text_document: TextDocumentIdentifier { uri: uri.clone() },
-        work_done_progress_params: WorkDoneProgressParams::default(),
-        partial_result_params:     PartialResultParams::default(),
-    });
+    send_request::<DocumentSymbolRequest>(
+        client,
+        id,
+        DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        },
+    );
     let r = recv_response(client);
     assert!(r.error.is_none(), "documentSymbol error: {:?}", r.error);
-    serde_json::from_value::<Option<DocumentSymbolResponse>>(r.result.unwrap_or(serde_json::Value::Null))
-        .ok().flatten()
+    serde_json::from_value::<Option<DocumentSymbolResponse>>(
+        r.result.unwrap_or(serde_json::Value::Null),
+    )
+    .ok()
+    .flatten()
 }
 
 #[test]
@@ -157,7 +207,7 @@ fn hover_on_symbol_returns_manpage_markdown() {
 
     initialize(&client);
 
-    let uri  = Url::parse("file:///tmp/hover.kif").expect("url");
+    let uri = Url::parse("file:///tmp/hover.kif").expect("url");
     // (subclass Human Animal) -- `Human` starts at byte 10.
     // On line 0 in KIF, byte == UTF-16 column for ASCII-only files.
     let text = "(subclass Human Animal)\n\
@@ -165,24 +215,37 @@ fn hover_on_symbol_returns_manpage_markdown() {
     open(&client, &uri, text);
 
     // Hover over `Human` in the first sentence.
-    let hover = hover_at(&client, &uri, 0, 12, 10)
-        .expect("hover result at (0, 12) where `Human` lives");
+    let hover =
+        hover_at(&client, &uri, 0, 12, 10).expect("hover result at (0, 12) where `Human` lives");
     match hover.contents {
         HoverContents::Markup(MarkupContent { kind, value }) => {
             assert_eq!(kind, MarkupKind::Markdown);
-            assert!(value.contains("### Human"), "markdown missing heading: {}", value);
+            assert!(
+                value.contains("### Human"),
+                "markdown missing heading: {}",
+                value
+            );
             // SDK pre-resolves the `&%Human` cross-ref into a structured
             // link span; the hover renderer bolds it.  The surrounding
             // text "A ... being." is still present, just split around
             // the bolded reference.
-            assert!(value.contains("**Human**"),
-                "markdown missing bolded cross-ref: {}", value);
-            assert!(value.contains("being"),
-                "markdown missing documentation text: {}", value);
+            assert!(
+                value.contains("**Human**"),
+                "markdown missing bolded cross-ref: {}",
+                value
+            );
+            assert!(
+                value.contains("being"),
+                "markdown missing documentation text: {}",
+                value
+            );
             // And the raw `&%` marker must NOT leak through —
             // the SDK is the only place that knows that syntax.
-            assert!(!value.contains("&%"),
-                "raw cross-ref marker leaked: {}", value);
+            assert!(
+                !value.contains("&%"),
+                "raw cross-ref marker leaked: {}",
+                value
+            );
         }
         other => panic!("expected markup hover contents, got {:?}", other),
     }
@@ -198,7 +261,7 @@ fn hover_outside_symbol_returns_null() {
 
     initialize(&client);
 
-    let uri  = Url::parse("file:///tmp/hover2.kif").expect("url");
+    let uri = Url::parse("file:///tmp/hover2.kif").expect("url");
     let text = "(subclass Human Animal)";
     open(&client, &uri, text);
 
@@ -217,7 +280,7 @@ fn goto_definition_jumps_to_defining_subclass_sentence() {
 
     initialize(&client);
 
-    let uri  = Url::parse("file:///tmp/goto.kif").expect("url");
+    let uri = Url::parse("file:///tmp/goto.kif").expect("url");
     // Human is used in sentence 2 but defined (via subclass) in
     // sentence 1.  Jump from sentence 2 should land at sentence 1.
     let text = "(subclass Human Hominid)\n\
@@ -226,8 +289,7 @@ fn goto_definition_jumps_to_defining_subclass_sentence() {
     open(&client, &uri, text);
 
     // `Human` on line 2 is at column 24 (after "(format EnglishLanguage ").
-    let response = goto_at(&client, &uri, 2, 24, 20)
-        .expect("goto should resolve Human");
+    let response = goto_at(&client, &uri, 2, 24, 20).expect("goto should resolve Human");
     match response {
         GotoDefinitionResponse::Scalar(loc) => {
             assert_eq!(loc.uri, uri);
@@ -248,14 +310,13 @@ fn document_symbols_list_each_root_sentence() {
 
     initialize(&client);
 
-    let uri  = Url::parse("file:///tmp/symbols.kif").expect("url");
+    let uri = Url::parse("file:///tmp/symbols.kif").expect("url");
     let text = "(subclass Human Animal)\n\
                 (subclass Dog Animal)\n\
                 (instance Fido Dog)";
     open(&client, &uri, text);
 
-    let response = document_symbols(&client, &uri, 30)
-        .expect("documentSymbol response");
+    let response = document_symbols(&client, &uri, 30).expect("documentSymbol response");
     match response {
         DocumentSymbolResponse::Nested(symbols) => {
             assert_eq!(symbols.len(), 3, "expected one entry per root sentence");
@@ -284,13 +345,12 @@ fn document_symbols_on_empty_file_returns_empty_list() {
     let uri = Url::parse("file:///tmp/empty.kif").expect("url");
     open(&client, &uri, "");
 
-    let response = document_symbols(&client, &uri, 40)
-        .expect("documentSymbol response");
+    let response = document_symbols(&client, &uri, 40).expect("documentSymbol response");
     // An empty list serialises ambiguously between Nested([]) and
     // Flat([]) on the wire; accept either.
     match response {
         DocumentSymbolResponse::Nested(symbols) => assert!(symbols.is_empty()),
-        DocumentSymbolResponse::Flat(symbols)   => assert!(symbols.is_empty()),
+        DocumentSymbolResponse::Flat(symbols) => assert!(symbols.is_empty()),
     }
 
     shutdown(&client);

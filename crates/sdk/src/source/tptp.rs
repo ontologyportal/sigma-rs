@@ -50,11 +50,11 @@ pub fn resolve_includes(
 }
 
 fn resolve_rec(
-    text:  &str,
-    base:  &str,
+    text: &str,
+    base: &str,
     depth: usize,
-    seen:  &mut HashSet<String>,
-    read:  &dyn Fn(&str) -> Result<String, String>,
+    seen: &mut HashSet<String>,
+    read: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<Vec<SourceFile>, String> {
     if depth > 8 {
         return Err("include depth exceeds 8 (cycle?)".to_string());
@@ -119,15 +119,16 @@ fn parse_include(trimmed: &str) -> Option<(&str, Option<HashSet<String>>)> {
 /// through `read`; the first that reads `Ok` wins.  Errors if `rel` is not a
 /// TPTP file or no candidate could be read.
 fn fetch_include(
-    rel:  &str,
-    dir:  &str,
+    rel: &str,
+    dir: &str,
     read: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<(String, String), String> {
     // The target must be a TPTP file (.ax / .p / .tptp) — the extension is the
     // same across every candidate, so check it once on `rel`.
     if !matches!(Parser::from_filename(rel), Some(Parser::Tptp { .. })) {
         return Err(format!(
-            "include('{rel}') does not point at a TPTP file (.ax / .p / .tptp)"));
+            "include('{rel}') does not point at a TPTP file (.ax / .p / .tptp)"
+        ));
     }
     let mut candidates: Vec<String> = Vec::new();
     if let Ok(root) = std::env::var("TPTP") {
@@ -144,7 +145,10 @@ fn fetch_include(
             Err(e) => errs.push(format!("{cand} ({e})")),
         }
     }
-    Err(format!("cannot resolve include('{rel}') — tried {}", errs.join(", ")))
+    Err(format!(
+        "cannot resolve include('{rel}') — tried {}",
+        errs.join(", ")
+    ))
 }
 
 /// Build the `SourceFile` for `location` with the given (possibly blanked)
@@ -155,10 +159,14 @@ fn fetch_include(
 /// no mtime/hash to stat here; see the module doc comment).
 fn make_source(location: &str, contents: String) -> SourceFile {
     SourceFile {
-        parser:   Parser::from_filename(location).unwrap_or(Parser::Tptp { options: None }),
-        name:     file_name(location),
-        path:     PathBuf::from(location),
-        origin:   if is_url(location) { FileOrigin::Remote } else { FileOrigin::Local(LocalProvenance::UNKNOWN) },
+        parser: Parser::from_filename(location).unwrap_or(Parser::Tptp { options: None }),
+        name: file_name(location),
+        path: PathBuf::from(location),
+        origin: if is_url(location) {
+            FileOrigin::Remote
+        } else {
+            FileOrigin::Local(LocalProvenance::UNKNOWN)
+        },
         contents,
         prebuilt: None,
     }
@@ -192,7 +200,11 @@ fn is_url(s: &str) -> bool {
 
 /// The last `/`-separated segment of a location (`…/Foo.ax` → `Foo.ax`).
 fn file_name(location: &str) -> String {
-    location.rsplit('/').find(|s| !s.is_empty()).unwrap_or(location).to_string()
+    location
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(location)
+        .to_string()
 }
 
 /// The "directory" of a location — everything up to (not including) the last
@@ -208,7 +220,9 @@ fn dir_of(loc: &str) -> String {
 /// One directory level up from `dir`, or `None` at the root / host.
 fn parent_dir(dir: &str) -> Option<String> {
     let start = dir.find("://").map(|i| i + 3).unwrap_or(0);
-    dir[start..].rfind('/').map(|rel| dir[..start + rel].to_string())
+    dir[start..]
+        .rfind('/')
+        .map(|rel| dir[..start + rel].to_string())
 }
 
 /// Join a relative include onto a directory location with exactly one `/`.
@@ -229,7 +243,9 @@ fn tptp_statement_spans(text: &str) -> Vec<(Option<String>, usize, usize)> {
     while i < bytes.len() {
         match bytes[i] {
             b'%' => {
-                while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
                 continue;
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
@@ -241,18 +257,33 @@ fn tptp_statement_spans(text: &str) -> Vec<(Option<String>, usize, usize)> {
                 continue;
             }
             b'\'' | b'"' => {
-                if start.is_none() { start = Some(i); }
+                if start.is_none() {
+                    start = Some(i);
+                }
                 let quote = bytes[i];
                 i += 1;
                 while i < bytes.len() {
-                    if bytes[i] == b'\\' && i + 1 < bytes.len() { i += 2; continue; }
-                    if bytes[i] == quote { i += 1; break; }
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
                     i += 1;
                 }
                 continue;
             }
-            b'(' | b'[' => { if start.is_none() { start = Some(i); } depth += 1; }
-            b')' | b']' => { depth -= 1; }
+            b'(' | b'[' => {
+                if start.is_none() {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            b')' | b']' => {
+                depth -= 1;
+            }
             b'.' if depth == 0 => {
                 let s = start.unwrap_or(i);
                 let end = i + 1;
@@ -263,7 +294,9 @@ fn tptp_statement_spans(text: &str) -> Vec<(Option<String>, usize, usize)> {
                 start = None;
             }
             b if !b.is_ascii_whitespace() => {
-                if start.is_none() { start = Some(i); }
+                if start.is_none() {
+                    start = Some(i);
+                }
             }
             _ => {}
         }
@@ -296,8 +329,11 @@ fof(keep_c, axiom, r(c)).\n";
     #[test]
     fn selective_include_blanks_unselected_preserving_lines() {
         let read = |loc: &str| -> Result<String, String> {
-            if loc == "/probs/Axioms/T001.ax" { Ok(AX.to_string()) }
-            else { Err(format!("not found: {loc}")) }
+            if loc == "/probs/Axioms/T001.ax" {
+                Ok(AX.to_string())
+            } else {
+                Err(format!("not found: {loc}"))
+            }
         };
         let top = "include('Axioms/T001.ax', [keep_a, keep_c]).\n\
 fof(goal, conjecture, p(a)).\n";
@@ -305,25 +341,43 @@ fof(goal, conjecture, p(a)).\n";
 
         assert_eq!(out.len(), 2, "problem + one resolved include");
         // Problem file: the include line is blanked, the conjecture survives.
-        assert!(!out[0].contents.contains("include("), "include blanked: {:?}", out[0].contents);
+        assert!(
+            !out[0].contents.contains("include("),
+            "include blanked: {:?}",
+            out[0].contents
+        );
         assert!(out[0].contents.contains("fof(goal"));
         // Included file: selected formulas kept, the rest blanked, lines stable.
         let inc = &out[1].contents;
         assert!(inc.contains("keep_a") && inc.contains("keep_c"), "{inc:?}");
-        assert!(!inc.contains("drop_b") && !inc.contains("q(b)"), "unselected blanked: {inc:?}");
-        assert_eq!(inc.lines().count(), AX.lines().count(), "line numbers preserved");
+        assert!(
+            !inc.contains("drop_b") && !inc.contains("q(b)"),
+            "unselected blanked: {inc:?}"
+        );
+        assert_eq!(
+            inc.lines().count(),
+            AX.lines().count(),
+            "line numbers preserved"
+        );
         assert!(matches!(out[1].origin, FileOrigin::Local(_)));
     }
 
     #[test]
     fn whole_file_include_keeps_everything() {
         let read = |loc: &str| -> Result<String, String> {
-            if loc == "/probs/Axioms/T001.ax" { Ok(AX.to_string()) }
-            else { Err(format!("not found: {loc}")) }
+            if loc == "/probs/Axioms/T001.ax" {
+                Ok(AX.to_string())
+            } else {
+                Err(format!("not found: {loc}"))
+            }
         };
         let out = resolve_includes("include('Axioms/T001.ax').\n", "/probs/prob.p", &read).unwrap();
         assert_eq!(out.len(), 2);
-        assert!(out[1].contents.contains("drop_b"), "whole-file keeps all: {:?}", out[1].contents);
+        assert!(
+            out[1].contents.contains("drop_b"),
+            "whole-file keeps all: {:?}",
+            out[1].contents
+        );
     }
 
     #[test]
@@ -340,7 +394,10 @@ fof(goal, conjecture, p(a)).\n";
         let out = resolve_includes(top, "https://example.com/problems/TPTP/test.p", &read).unwrap();
         assert_eq!(out.len(), 2);
         assert!(out[1].contents.contains("fof(a"));
-        assert!(matches!(out[1].origin, FileOrigin::Remote), "remote origin from scheme");
+        assert!(
+            matches!(out[1].origin, FileOrigin::Remote),
+            "remote origin from scheme"
+        );
     }
 
     #[test]

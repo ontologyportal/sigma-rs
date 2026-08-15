@@ -2,10 +2,13 @@
 //
 // Module dictating how KB sources are read from
 
-use std::{io::Read, path::{Path, PathBuf}};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
-use sigmakee_rs_core::{DynSink, FileOrigin, LocalProvenance, ProgressEvent, SourceFile};
 use sigmakee_rs_core::Parser;
+use sigmakee_rs_core::{DynSink, FileOrigin, LocalProvenance, ProgressEvent, SourceFile};
 #[cfg(feature = "http")]
 use ureq::http::Uri;
 
@@ -37,7 +40,7 @@ pub enum Source {
         /// never guessed beyond that; a caller that wants a specific branch
         /// must say so here.
         branch: Option<String>,
-    }
+    },
 }
 
 impl Source {
@@ -50,8 +53,11 @@ impl Source {
             #[cfg(feature = "http")]
             Source::Http { uri } => Some(Source::Http { uri: uri.clone() }),
             #[cfg(feature = "git")]
-            Source::Git { uri, paths, branch } =>
-                Some(Source::Git { uri: uri.clone(), paths: paths.clone(), branch: branch.clone() }),
+            Source::Git { uri, paths, branch } => Some(Source::Git {
+                uri: uri.clone(),
+                paths: paths.clone(),
+                branch: branch.clone(),
+            }),
             Source::Reader { .. } => None,
         }
     }
@@ -61,13 +67,24 @@ impl PartialEq for Source {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Local(l0), Self::Local(r0)) => l0 == r0,
-            (Self::Reader { name: l_name, .. }, Self::Reader { name: r_name, .. }) => l_name == r_name,
+            (Self::Reader { name: l_name, .. }, Self::Reader { name: r_name, .. }) => {
+                l_name == r_name
+            }
             #[cfg(feature = "http")]
             (Self::Http { uri: l_uri }, Self::Http { uri: r_uri }) => l_uri == r_uri,
             #[cfg(feature = "git")]
-            (Self::Git { uri: l_uri, paths: l_paths, branch: l_branch },
-             Self::Git { uri: r_uri, paths: r_paths, branch: r_branch }) =>
-                l_uri == r_uri && l_paths == r_paths && l_branch == r_branch,
+            (
+                Self::Git {
+                    uri: l_uri,
+                    paths: l_paths,
+                    branch: l_branch,
+                },
+                Self::Git {
+                    uri: r_uri,
+                    paths: r_paths,
+                    branch: r_branch,
+                },
+            ) => l_uri == r_uri && l_paths == r_paths && l_branch == r_branch,
             _ => false,
         }
     }
@@ -98,9 +115,17 @@ impl Ord for Source {
                 uri.to_string().cmp(&luri.to_string())
             }
             #[cfg(feature = "git")]
-            (Self::Git { uri, paths, branch }, Self::Git { uri: luri, paths: lpaths, branch: lbranch }) => {
-                uri.cmp(luri).then_with(|| paths.cmp(lpaths)).then_with(|| branch.cmp(lbranch))
-            }
+            (
+                Self::Git { uri, paths, branch },
+                Self::Git {
+                    uri: luri,
+                    paths: lpaths,
+                    branch: lbranch,
+                },
+            ) => uri
+                .cmp(luri)
+                .then_with(|| paths.cmp(lpaths))
+                .then_with(|| branch.cmp(lbranch)),
             _ => self.variant_index().cmp(&other.variant_index()),
         }
     }
@@ -127,7 +152,12 @@ enum SourceWire {
     #[cfg(feature = "http")]
     Http(String),
     #[cfg(feature = "git")]
-    Git { uri: String, paths: Vec<PathBuf>, #[serde(default)] branch: Option<String> },
+    Git {
+        uri: String,
+        paths: Vec<PathBuf>,
+        #[serde(default)]
+        branch: Option<String>,
+    },
 }
 
 impl serde::Serialize for Source {
@@ -137,10 +167,16 @@ impl serde::Serialize for Source {
             #[cfg(feature = "http")]
             Source::Http { uri } => SourceWire::Http(uri.to_string()),
             #[cfg(feature = "git")]
-            Source::Git { uri, paths, branch } =>
-                SourceWire::Git { uri: uri.clone(), paths: paths.clone(), branch: branch.clone() },
-            Source::Reader { name, .. } => return Err(serde::ser::Error::custom(format!(
-                "Source::Reader (`{name}`) is a runtime stream and cannot be serialized"))),
+            Source::Git { uri, paths, branch } => SourceWire::Git {
+                uri: uri.clone(),
+                paths: paths.clone(),
+                branch: branch.clone(),
+            },
+            Source::Reader { name, .. } => {
+                return Err(serde::ser::Error::custom(format!(
+                    "Source::Reader (`{name}`) is a runtime stream and cannot be serialized"
+                )))
+            }
         };
         wire.serialize(ser)
     }
@@ -166,14 +202,22 @@ impl std::fmt::Debug for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Source::Local(paths) => f.debug_tuple("Local").field(paths).finish(),
-            Source::Reader { name, .. } =>
-                f.debug_struct("Reader").field("name", name).finish_non_exhaustive(),
+            Source::Reader { name, .. } => f
+                .debug_struct("Reader")
+                .field("name", name)
+                .finish_non_exhaustive(),
             #[cfg(feature = "http")]
-            Source::Http { uri } =>
-                f.debug_struct("Http").field("uri", &uri.to_string()).finish(),
+            Source::Http { uri } => f
+                .debug_struct("Http")
+                .field("uri", &uri.to_string())
+                .finish(),
             #[cfg(feature = "git")]
-            Source::Git { uri, paths, branch } =>
-                f.debug_struct("Git").field("uri", uri).field("paths", paths).field("branch", branch).finish(),
+            Source::Git { uri, paths, branch } => f
+                .debug_struct("Git")
+                .field("uri", uri)
+                .field("paths", paths)
+                .field("branch", branch)
+                .finish(),
         }
     }
 }
@@ -182,7 +226,9 @@ impl Source {
     /// Read a `Source` to `(name, contents)`.
     pub(crate) fn read(self, sink: Option<&DynSink>) -> SdkResult<Vec<SourceFile>> {
         if let Some(s) = sink {
-            s.emit(&ProgressEvent::PhaseStarted { name: "opening source for read" });
+            s.emit(&ProgressEvent::PhaseStarted {
+                name: "opening source for read",
+            });
         }
         let r: Vec<SourceFile> = match self {
             Source::Local(paths) => {
@@ -200,16 +246,23 @@ impl Source {
                     }
                 }
                 out
-            },
+            }
             Source::Reader { name, mut reader } => {
                 let mut contents = String::new();
-                reader.read_to_string(&mut contents)
-                    .map_err(|e| SdkError::Io { path: PathBuf::from(&name), source: e })?;
+                reader
+                    .read_to_string(&mut contents)
+                    .map_err(|e| SdkError::Io {
+                        path: PathBuf::from(&name),
+                        source: e,
+                    })?;
                 // No real file behind an arbitrary reader (e.g. stdin) — no
                 // mtime/hash to record.
                 let source = SourceFile::from_file(
-                    name.clone().into(), contents, FileOrigin::Local(LocalProvenance::UNKNOWN),
-                ).ok_or_else(|| SdkError::Input(name.into()))?;
+                    name.clone().into(),
+                    contents,
+                    FileOrigin::Local(LocalProvenance::UNKNOWN),
+                )
+                .ok_or_else(|| SdkError::Input(name.into()))?;
                 vec![source]
             }
             #[cfg(feature = "http")]
@@ -217,26 +270,38 @@ impl Source {
                 // Last non-empty path segment → a file-ish name for parser
                 // detection (the content sniff in `from_file` is the fallback
                 // when the URL has no recognizable extension).
-                let name = uri.path().rsplit('/').find(|s| !s.is_empty())
-                    .unwrap_or("remote").to_string();
+                let name = uri
+                    .path()
+                    .rsplit('/')
+                    .find(|s| !s.is_empty())
+                    .unwrap_or("remote")
+                    .to_string();
                 if let Some(s) = sink.as_ref() {
                     s.emit(&ProgressEvent::PhaseStarted { name: "http fetch" });
                 }
-                let mut resp = ureq::get(uri).call()
+                let mut resp = ureq::get(uri)
+                    .call()
                     .map_err(|e| SdkError::Http(e.to_string()))?;
-                let contents = resp.body_mut().read_to_string()
+                let contents = resp
+                    .body_mut()
+                    .read_to_string()
                     .map_err(|e| SdkError::Http(e.to_string()))?;
                 if let Some(s) = sink.as_ref() {
                     s.emit(&ProgressEvent::PhaseFinished { name: "http fetch" });
                 }
-                let source = SourceFile::from_file(name.clone().into(), contents, FileOrigin::Remote)
-                    .ok_or_else(|| SdkError::Input(name.into()))?;
+                let source =
+                    SourceFile::from_file(name.clone().into(), contents, FileOrigin::Remote)
+                        .ok_or_else(|| SdkError::Input(name.into()))?;
                 vec![source]
             }
             #[cfg(feature = "git")]
             Source::Git { uri, paths, branch } => {
-                let paths: Vec<String> = paths.iter().map(|p| -> String { p.to_string_lossy().into() }).collect();
-                let (_tmp, dir, provenance) = git::fetch_repo_sparse(&uri, &paths, branch.as_deref())?;
+                let paths: Vec<String> = paths
+                    .iter()
+                    .map(|p| -> String { p.to_string_lossy().into() })
+                    .collect();
+                let (_tmp, dir, provenance) =
+                    git::fetch_repo_sparse(&uri, &paths, branch.as_deref())?;
                 // Resolve each requested path under the checkout exactly like a
                 // local argument: a file is read directly; a directory loads its
                 // direct files (NON-recursive, unrecognized files dropped).  We
@@ -261,24 +326,32 @@ impl Source {
                     if p.is_dir() {
                         for child in read_dir_sources(&p)? {
                             let rel = child.strip_prefix(&dir).unwrap_or(&child).to_path_buf();
-                            let mut sf = read_file_source(child, FileOrigin::Git(provenance.clone()))?;
-                            sf.name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            let mut sf =
+                                read_file_source(child, FileOrigin::Git(provenance.clone()))?;
+                            sf.name = rel
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
                             sf.path = rel;
                             sources.push(sf);
                         }
                     } else if p.is_file() {
                         let mut sf = read_file_source(p, FileOrigin::Git(provenance.clone()))?;
                         sf.name = PathBuf::from(path_str.trim_end_matches('/'))
-                            .file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
                         sf.path = PathBuf::from(path_str.trim_end_matches('/'));
                         sources.push(sf);
                     }
                 }
                 sources
-            },
+            }
         };
         if let Some(s) = sink {
-            s.emit(&&ProgressEvent::PhaseFinished { name: "opening source for read" });
+            s.emit(&&ProgressEvent::PhaseFinished {
+                name: "opening source for read",
+            });
         }
         Ok(r)
     }
@@ -289,20 +362,28 @@ impl Source {
 /// read from disk — before any TPTP `include(...)` splicing, so the hash
 /// reflects only this file's own bytes, not content pulled in from includes.
 fn read_local_file(p: PathBuf) -> SdkResult<SourceFile> {
-    let meta = std::fs::metadata(&p)
-        .map_err(|e| SdkError::Io { path: p.clone(), source: e })?;
-    let mtime_secs = meta.modified().ok()
+    let meta = std::fs::metadata(&p).map_err(|e| SdkError::Io {
+        path: p.clone(),
+        source: e,
+    })?;
+    let mtime_secs = meta
+        .modified()
+        .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let raw = std::fs::read_to_string(&p)
-        .map_err(|e| SdkError::Io { path: p.clone(), source: e })?;
+    let raw = std::fs::read_to_string(&p).map_err(|e| SdkError::Io {
+        path: p.clone(),
+        source: e,
+    })?;
     let content_hash = sigmakee_rs_core::hash_file_contents(raw.as_bytes());
-    let origin = FileOrigin::Local(LocalProvenance { mtime_secs, content_hash });
+    let origin = FileOrigin::Local(LocalProvenance {
+        mtime_secs,
+        content_hash,
+    });
 
     let contents = splice_tptp_includes(&p, raw)?;
-    SourceFile::from_file(p.clone(), contents, origin)
-        .ok_or_else(|| SdkError::Input(p))
+    SourceFile::from_file(p.clone(), contents, origin).ok_or_else(|| SdkError::Input(p))
 }
 
 /// Read one on-disk file into a [`SourceFile`], detecting its parser from the
@@ -317,11 +398,12 @@ fn read_local_file(p: PathBuf) -> SdkResult<SourceFile> {
 /// source.
 #[cfg(feature = "git")]
 fn read_file_source(p: PathBuf, origin: FileOrigin) -> SdkResult<SourceFile> {
-    let contents = std::fs::read_to_string(&p)
-        .map_err(|e| SdkError::Io { path: p.clone(), source: e })?;
+    let contents = std::fs::read_to_string(&p).map_err(|e| SdkError::Io {
+        path: p.clone(),
+        source: e,
+    })?;
     let contents = splice_tptp_includes(&p, contents)?;
-    SourceFile::from_file(p.clone(), contents, origin)
-        .ok_or_else(|| SdkError::Input(p))
+    SourceFile::from_file(p.clone(), contents, origin).ok_or_else(|| SdkError::Input(p))
 }
 
 /// Splice TPTP `include('…')` directives (the cross-file handler) when `path`
@@ -330,7 +412,10 @@ fn read_file_source(p: PathBuf, origin: FileOrigin) -> SdkResult<SourceFile> {
 /// unchanged.  This makes every TPTP source the SDK reads — for `Session::test`
 /// or `Session::ingest` — self-contained before it reaches the parser.
 fn splice_tptp_includes(path: &Path, contents: String) -> SdkResult<String> {
-    if matches!(Parser::from_filename(&path.to_string_lossy()), Some(Parser::Tptp { .. })) {
+    if matches!(
+        Parser::from_filename(&path.to_string_lossy()),
+        Some(Parser::Tptp { .. })
+    ) {
         // STOPGAP so the crate compiles: drive the new `Vec<SourceFile>` resolver
         // with a local-fs reader and re-join the parts into the single spliced
         // string this call site still expects.  Replace with real per-file
@@ -338,9 +423,16 @@ fn splice_tptp_includes(path: &Path, contents: String) -> SdkResult<String> {
         let base = path.to_string_lossy();
         let read = |loc: &str| std::fs::read_to_string(loc).map_err(|e| e.to_string());
         let parts = tptp::resolve_includes(&contents, &base, &read).map_err(|e| {
-            SdkError::Config(format!("include resolution failed for {}: {e}", path.display()))
+            SdkError::Config(format!(
+                "include resolution failed for {}: {e}",
+                path.display()
+            ))
         })?;
-        Ok(parts.into_iter().map(|sf| sf.contents).collect::<Vec<_>>().join("\n"))
+        Ok(parts
+            .into_iter()
+            .map(|sf| sf.contents)
+            .collect::<Vec<_>>()
+            .join("\n"))
     } else {
         Ok(contents)
     }
@@ -368,14 +460,21 @@ mod tests {
     #[ignore = "network: fetches Merge.kif from raw.githubusercontent.com"]
     fn http_fetches_a_remote_kif() {
         let uri = RAW_MERGE_KIF.parse::<ureq::http::Uri>().expect("valid uri");
-        let mut files = Source::Http { uri }.read(None).expect("http fetch should succeed");
+        let mut files = Source::Http { uri }
+            .read(None)
+            .expect("http fetch should succeed");
         assert_eq!(files.len(), 1, "one SourceFile per http source");
         let sf = files.pop().unwrap();
         assert_eq!(sf.name, "Merge.kif", "name comes from the last URL segment");
         assert!(matches!(sf.parser, Parser::Kif), "`.kif` detected as KIF");
-        assert!(matches!(sf.origin, FileOrigin::Remote), "tagged as a remote fetch");
-        assert!(sf.contents.contains("subclass"),
-            "fetched body should be the real Merge.kif (contains `subclass`)");
+        assert!(
+            matches!(sf.origin, FileOrigin::Remote),
+            "tagged as a remote fetch"
+        );
+        assert!(
+            sf.contents.contains("subclass"),
+            "fetched body should be the real Merge.kif (contains `subclass`)"
+        );
     }
 
     #[cfg(feature = "git")]
@@ -383,13 +482,17 @@ mod tests {
     #[ignore = "network: sparse-clones ontologyportal/sumo over git (transfers HEAD blobs)"]
     fn git_sparse_fetches_a_single_file() {
         let src = Source::Git {
-            uri:    SUMO_REPO.to_string(),
-            paths:  vec![std::path::PathBuf::from("Merge.kif")],
+            uri: SUMO_REPO.to_string(),
+            paths: vec![std::path::PathBuf::from("Merge.kif")],
             branch: Some("master".to_string()),
         };
         let files = src.read(None).expect("git fetch should succeed");
         // Only the requested file is checked out; the `.git` dir is filtered out.
-        assert_eq!(files.len(), 1, "sparse checkout yields exactly the requested file");
+        assert_eq!(
+            files.len(),
+            1,
+            "sparse checkout yields exactly the requested file"
+        );
         let merge = &files[0];
         assert_eq!(merge.name, "Merge.kif");
         assert!(matches!(merge.parser, Parser::Kif));
@@ -400,8 +503,10 @@ mod tests {
             }
             other => panic!("expected a Git origin, got {other:?}"),
         }
-        assert!(merge.contents.contains("subclass"),
-            "checked-out blob should be the real Merge.kif");
+        assert!(
+            merge.contents.contains("subclass"),
+            "checked-out blob should be the real Merge.kif"
+        );
     }
 
     #[cfg(feature = "git")]
@@ -412,12 +517,14 @@ mod tests {
         // the same as a local directory argument.  `SimpleFacts/` holds one
         // `.kif`, which must surface.
         let src = Source::Git {
-            uri:    SUMO_REPO.to_string(),
-            paths:  vec![std::path::PathBuf::from("SimpleFacts")],
+            uri: SUMO_REPO.to_string(),
+            paths: vec![std::path::PathBuf::from("SimpleFacts")],
             branch: Some("master".to_string()),
         };
         let files = src.read(None).expect("git fetch should succeed");
-        let car = files.iter().find(|sf| sf.name == "CarBrands.kif")
+        let car = files
+            .iter()
+            .find(|sf| sf.name == "CarBrands.kif")
             .expect("CarBrands.kif surfaced from the SimpleFacts directory");
         assert!(matches!(car.parser, Parser::Kif));
         assert!(matches!(car.origin, FileOrigin::Git(_)));
@@ -433,15 +540,20 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("sub")).unwrap();
-        fs::write(root.join("a.kif"), "(subclass A B)").unwrap();              // recognized, top-level
-        fs::write(root.join("README.md"), "not an ontology").unwrap();         // unrecognized → dropped
-        fs::write(root.join("sub").join("b.kif"), "(instance x A)").unwrap();   // nested → NOT loaded
+        fs::write(root.join("a.kif"), "(subclass A B)").unwrap(); // recognized, top-level
+        fs::write(root.join("README.md"), "not an ontology").unwrap(); // unrecognized → dropped
+        fs::write(root.join("sub").join("b.kif"), "(instance x A)").unwrap(); // nested → NOT loaded
 
         let files = super::read_dir_sources(&root).unwrap();
-        let names: Vec<String> = files.iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(names, vec!["a.kif"],
-            "only top-level recognized files: drops README, the `sub/` subtree, and `.git/`");
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.kif"],
+            "only top-level recognized files: drops README, the `sub/` subtree, and `.git/`"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
@@ -451,8 +563,10 @@ mod tests {
 /// of `*.kif` (or a suite of `*.tq`) comes through while READMEs and other
 /// stray files are skipped.
 fn read_dir_sources(dir: &Path) -> SdkResult<Vec<PathBuf>> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| SdkError::DirRead { path: dir.to_path_buf(), message: e.to_string() })?;
+    let entries = std::fs::read_dir(dir).map_err(|e| SdkError::DirRead {
+        path: dir.to_path_buf(),
+        message: e.to_string(),
+    })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())

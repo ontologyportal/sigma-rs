@@ -13,10 +13,10 @@
 
 use std::collections::HashSet;
 
-use crate::SymbolId;
 use crate::cache::{EagerMap, EagerMapBehavior, EntryCache};
 use crate::syntactic::SyntacticLayer;
 use crate::types::Symbol;
+use crate::SymbolId;
 
 /// Behavior for the `syntactic::symbols` store.  `Value` is the interned name;
 /// `Side` is the sparse Skolem-arity index (present iff the symbol is a Skolem).
@@ -25,9 +25,9 @@ pub(crate) struct SymbolCache;
 
 impl EagerMapBehavior for SymbolCache {
     type Parent = SyntacticLayer;
-    type Key    = SymbolId;
-    type Value  = Symbol;
-    type Side   = EntryCache<SymbolId, Option<usize>>;
+    type Key = SymbolId;
+    type Value = Symbol;
+    type Side = EntryCache<SymbolId, Option<usize>>;
     type SideSnapshot = std::collections::HashMap<SymbolId, Option<usize>>;
 
     const NAME: &'static str = "syntactic::symbols";
@@ -45,8 +45,9 @@ impl EagerMap<SymbolCache> {
     pub(super) fn intern(&self, sym: Symbol) -> SymbolId {
         let id = sym.id();
         match self.entries().get(&id) {
-            Some(existing) if existing != sym =>
-                panic!("SymbolId collision {id:#x}: {sym:?} vs {existing:?}"),
+            Some(existing) if existing != sym => {
+                panic!("SymbolId collision {id:#x}: {sym:?} vs {existing:?}")
+            }
             Some(_) => {} // already interned, same name
             None => self.entries().update(id, sym),
         }
@@ -96,7 +97,9 @@ impl EagerMap<SymbolCache> {
         let mut removed = HashSet::new();
         self.entries().retain(|id, _| {
             let keep = referenced.contains(id);
-            if !keep { removed.insert(*id); }
+            if !keep {
+                removed.insert(*id);
+            }
             keep
         });
         self.side().retain(|id, _| referenced.contains(id));
@@ -106,11 +109,17 @@ impl EagerMap<SymbolCache> {
 
 impl SyntacticLayer {
     /// The id for `name`, if it has been interned.
-    pub(crate) fn sym_id(&self, name: &str) -> Option<SymbolId> { self.symbols.sym_id(name) }
+    pub(crate) fn sym_id(&self, name: &str) -> Option<SymbolId> {
+        self.symbols.sym_id(name)
+    }
 
     /// The name of `id`, if interned.
-    pub(crate) fn sym_name(&self, id: SymbolId) -> Option<Symbol> { self.symbols.sym_name(id) }
+    pub(crate) fn sym_name(&self, id: SymbolId) -> Option<Symbol> {
+        self.symbols.sym_name(id)
+    }
 
     /// Whether a given [`SymbolId`] is a CNF-generated Skolem symbol.
-    pub(crate) fn is_skolem(&self, id: SymbolId) -> bool { self.symbols.is_skolem(id) }
+    pub(crate) fn is_skolem(&self, id: SymbolId) -> bool {
+        self.symbols.is_skolem(id)
+    }
 }

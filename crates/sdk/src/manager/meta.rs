@@ -63,9 +63,9 @@ impl Scope {
     /// Does this option surface as a flag on `sub`?
     pub fn applies_to(&self, sub: Subsystem) -> bool {
         match self {
-            Scope::Global         => true,
+            Scope::Global => true,
             Scope::Subsystems(ss) => ss.contains(&sub),
-            Scope::ConfigOnly     => false,
+            Scope::ConfigOnly => false,
         }
     }
 
@@ -149,7 +149,9 @@ impl KBManager {
     /// The options that surface as a flag on `sub` (CLI flags only; global +
     /// in-scope subsystem options).
     pub fn options_for(sub: Subsystem) -> impl Iterator<Item = &'static OptionMeta> {
-        Self::options().iter().filter(move |o| o.scope.applies_to(sub))
+        Self::options()
+            .iter()
+            .filter(move |o| o.scope.applies_to(sub))
     }
 
     /// Layer CLI/env overrides on top of this config — the bottom of the
@@ -197,7 +199,9 @@ impl KBManager {
 /// needed.  The inverse of the `resolve` reader the drift tests use.
 fn set_json_path(doc: &mut serde_json::Value, path: &str, leaf: serde_json::Value) {
     let segs: Vec<&str> = path.split('.').collect();
-    let Some((last, parents)) = segs.split_last() else { return };
+    let Some((last, parents)) = segs.split_last() else {
+        return;
+    };
     let mut cur = doc;
     for seg in parents {
         if !cur.is_object() {
@@ -389,7 +393,11 @@ mod tests {
         for o in KBManager::options() {
             assert!(fields.insert(o.field), "duplicate option id `{}`", o.field);
             assert!(longs.insert(o.long), "duplicate flag `--{}`", o.long);
-            assert!(!o.json_paths.is_empty(), "option `{}` targets no json_path", o.field);
+            assert!(
+                !o.json_paths.is_empty(),
+                "option `{}` targets no json_path",
+                o.field
+            );
         }
     }
 
@@ -398,9 +406,12 @@ mod tests {
         let v = serde_json::to_value(KBManager::default()).unwrap();
         for o in KBManager::options() {
             for path in o.json_paths {
-                assert!(resolve(&v, path).is_some(),
+                assert!(
+                    resolve(&v, path).is_some(),
                     "json_path `{}` for `--{}` does not resolve in a serialized KBManager",
-                    path, o.long);
+                    path,
+                    o.long
+                );
             }
         }
     }
@@ -411,13 +422,18 @@ mod tests {
     #[test]
     fn every_top_level_field_is_covered() {
         let v = serde_json::to_value(KBManager::default()).unwrap();
-        let obj = v.as_object().expect("KBManager serializes to a JSON object");
+        let obj = v
+            .as_object()
+            .expect("KBManager serializes to a JSON object");
         let covered: HashSet<&str> = KBManager::options()
             .iter()
             .flat_map(|o| o.json_paths.iter().copied())
             .collect();
         for key in obj.keys() {
-            if matches!(key.as_str(), "kbs" | "native_prover" | "external_prover" | "unknown_preferences") {
+            if matches!(
+                key.as_str(),
+                "kbs" | "native_prover" | "external_prover" | "unknown_preferences"
+            ) {
                 continue; // collections + nested configs handled via nested paths
             }
             assert!(covered.contains(key.as_str()),
@@ -428,7 +444,10 @@ mod tests {
     #[test]
     fn one_flag_can_drive_multiple_fields() {
         // `--timeout` fans out to both prover backends' budgets.
-        let timeout = KBManager::options().iter().find(|o| o.field == "timeout").unwrap();
+        let timeout = KBManager::options()
+            .iter()
+            .find(|o| o.field == "timeout")
+            .unwrap();
         assert!(timeout.json_paths.contains(&"native_prover.timeLimitSecs"));
         assert!(timeout.json_paths.contains(&"external_prover.timeoutSecs"));
     }
@@ -440,8 +459,8 @@ mod tests {
         let by = |id: &str| opts.iter().find(|o| o.field == id).unwrap();
         m.apply_overrides([
             (by("backend"), serde_json::json!("subprocess")),
-            (by("scope"),   serde_json::json!(3.5)),       // nested 2 levels deep
-            (by("timeout"), serde_json::json!(90)),        // fans out to both backends
+            (by("scope"), serde_json::json!(3.5)), // nested 2 levels deep
+            (by("timeout"), serde_json::json!(90)), // fans out to both backends
         ])
         .unwrap();
         assert_eq!(m.default_backend, "subprocess");
@@ -453,17 +472,26 @@ mod tests {
     #[test]
     fn apply_overrides_rejects_a_type_mismatch() {
         let mut m = KBManager::default();
-        let timeout = KBManager::options().iter().find(|o| o.field == "timeout").unwrap();
+        let timeout = KBManager::options()
+            .iter()
+            .find(|o| o.field == "timeout")
+            .unwrap();
         // timeLimitSecs is u64 — a string can't deserialize back into it.
-        let err = m.apply_overrides([(timeout, serde_json::json!("not-a-number"))]).unwrap_err();
+        let err = m
+            .apply_overrides([(timeout, serde_json::json!("not-a-number"))])
+            .unwrap_err();
         assert!(matches!(err, SdkError::Config(_)));
     }
 
     #[test]
     fn scope_filtering_works() {
         // `--eprover` is a prover flag, not a validate flag.
-        let ask: Vec<&str> = KBManager::options_for(Subsystem::Ask).map(|o| o.long).collect();
-        let validate: Vec<&str> = KBManager::options_for(Subsystem::Validate).map(|o| o.long).collect();
+        let ask: Vec<&str> = KBManager::options_for(Subsystem::Ask)
+            .map(|o| o.long)
+            .collect();
+        let validate: Vec<&str> = KBManager::options_for(Subsystem::Validate)
+            .map(|o| o.long)
+            .collect();
         assert!(ask.contains(&"eprover"));
         assert!(!validate.contains(&"eprover"));
         // globals appear everywhere.

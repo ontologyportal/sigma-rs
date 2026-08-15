@@ -43,7 +43,7 @@ use crate::syntactic::SyntacticLayer;
 #[derive(Debug, Clone)]
 pub(crate) struct ModelProgram {
     /// Extracted Horn rules + role-schema rules for DIRECTLY-declared roles.
-    pub program:  Program,
+    pub program: Program,
     /// Stratifiable definitional clusters (negation cycles isolated).
     pub clusters: Vec<cluster::Cluster>,
     /// The negation-free fragment — a sound positive model for every predicate,
@@ -71,14 +71,14 @@ pub(crate) struct ModelProgram {
     pub cert_blocked: CertBlocked,
     /// Recognized role symbols (dialect-agnostic) — for the Level-2 derivation
     /// of the inherited transitive/symmetric set over the evaluated model.
-    pub roles:    crate::semantics::roles::TaxonomyRoles,
+    pub roles: crate::semantics::roles::TaxonomyRoles,
     /// Extracted denial constraints (disjointness declarations flattened to
     /// pairwise ⊥-rules) — the integrity constraints [`refutes`](Self::refutes)
     /// chases.  Empty on a KB with no disjointness.
-    pub denials:  Vec<extract::Denial>,
+    pub denials: Vec<extract::Denial>,
     /// Existential rules for the bounded chase ([`chase_model`](Self::chase_model),
     /// SIGMA_CHASE) — never consulted by certification or negative answers.
-    pub tgds:     Vec<extract::Tgd>,
+    pub tgds: Vec<extract::Tgd>,
 }
 
 impl ModelProgram {
@@ -111,11 +111,14 @@ impl ModelProgram {
         // kernel resolves their literals by on-demand BFS, so the dense
         // closure is never materialized.  Subrelation/symmetric schemas
         // stay ordinary rules.
-        for r in extract::schema_rules(&extract::RoleDecls {
-            subrelation: decls.subrelation.clone(),
-            transitive:  Vec::new(),
-            symmetric:   decls.symmetric.clone(),
-        }, &[]) {
+        for r in extract::schema_rules(
+            &extract::RoleDecls {
+                subrelation: decls.subrelation.clone(),
+                transitive: Vec::new(),
+                symmetric: decls.symmetric.clone(),
+            },
+            &[],
+        ) {
             program.rules.push(r);
         }
         for &(r, sid) in &decls.transitive {
@@ -129,8 +132,10 @@ impl ModelProgram {
 
         let clusters = cluster::partition(&program);
         let monotone = cluster::positive_program(&program);
-        let mut complete: HashSet<Pred> =
-            clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
+        let mut complete: HashSet<Pred> = clusters
+            .iter()
+            .flat_map(|c| c.preds.iter().copied())
+            .collect();
         // A builtin-transitive relation's stored extension is the UN-CLOSED
         // base — model-absence says nothing about the closure, so it is
         // never complete/certified (and, via the body fixpoint in `certify`,
@@ -144,18 +149,37 @@ impl ModelProgram {
         // `certified` field doc and `certify` itself).  Role relations are
         // the oracle's Complete coverage — never double-owned here.
         let role_syms: HashSet<Pred> = [
-            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
-            roles.symmetric, roles.domain, roles.range, roles.disjoint,
+            roles.instance,
+            roles.subclass,
+            roles.subrelation,
+            roles.transitive,
+            roles.symmetric,
+            roles.domain,
+            roles.range,
+            roles.disjoint,
             roles.partition,
         ]
         .into_iter()
         .collect();
         let builtin: HashSet<Pred> = program.builtin_transitive.keys().copied().collect();
-        let (certified, cert_blocked) =
-            certify(&program, &complete, &ex.skipped_heads, ex.wildcard_skip, &role_syms, &builtin);
+        let (certified, cert_blocked) = certify(
+            &program,
+            &complete,
+            &ex.skipped_heads,
+            ex.wildcard_skip,
+            &role_syms,
+            &builtin,
+        );
 
         ModelProgram {
-            program, clusters, monotone, complete, certified, cert_blocked, roles, denials,
+            program,
+            clusters,
+            monotone,
+            complete,
+            certified,
+            cert_blocked,
+            roles,
+            denials,
             tgds: ex.tgds,
         }
     }
@@ -191,7 +215,10 @@ impl ModelProgram {
     /// path: past it, bail to `None` (guidance/full-model consumers degrade
     /// gracefully — see their call sites) rather than blocking the run.
     /// `None` ⇒ unbounded (existing behavior, e.g. the unit test below).
-    pub(crate) fn positive_model(&self, deadline: Option<crate::clock::Instant>) -> Option<(Model, Provenance)> {
+    pub(crate) fn positive_model(
+        &self,
+        deadline: Option<crate::clock::Instant>,
+    ) -> Option<(Model, Provenance)> {
         // Materialization budget — bail (→ resolution) rather than blow up on a
         // large un-scoped KB.  Demand scoping (SInE, slice 4) is the real fix;
         // this keeps slice 2 from regressing problems resolution already solves.
@@ -204,7 +231,8 @@ impl ModelProgram {
             eprintln!(
                 "[SIGMA_MODEL_TRACE] positive_model: dropped {} / {} unsafe rule(s) \
                  before evaluation (sound under-approximation)",
-                n_rules - work.rules.len(), n_rules
+                n_rules - work.rules.len(),
+                n_rules
             );
         }
         let mut known: HashSet<Pred> = work.builtin_transitive.keys().copied().collect();
@@ -227,7 +255,9 @@ impl ModelProgram {
             eprintln!(
                 "[SIGMA_MODEL_TRACE] positive_model: initial evaluate_within OK, {} tuples \
                  across {} preds, took {:?}",
-                n, model.len(), t0.elapsed()
+                n,
+                model.len(),
+                t0.elapsed()
             );
         }
         loop {
@@ -258,7 +288,8 @@ impl ModelProgram {
                         eprintln!(
                             "[SIGMA_MODEL_TRACE] positive_model: re-evaluate after closing {} \
                              transitive relation(s) bailed: {e:?} after {:?}",
-                            fresh.len(), t1.elapsed()
+                            fresh.len(),
+                            t1.elapsed()
                         );
                     }
                     return None;
@@ -269,7 +300,10 @@ impl ModelProgram {
                 eprintln!(
                     "[SIGMA_MODEL_TRACE] positive_model: re-evaluate after closing {} transitive \
                      relation(s) OK, {} tuples across {} preds, took {:?}",
-                    fresh.len(), n, model.len(), t1.elapsed()
+                    fresh.len(),
+                    n,
+                    model.len(),
+                    t1.elapsed()
                 );
             }
         }
@@ -296,16 +330,19 @@ impl ModelProgram {
     /// model on any budget/deadline overrun.
     pub(crate) fn chase_model(
         &self,
-        syn:        &SyntacticLayer,
+        syn: &SyntacticLayer,
         goal_preds: &HashSet<Pred>,
-        deadline:   Option<crate::clock::Instant>,
+        deadline: Option<crate::clock::Instant>,
     ) -> Option<(Model, Provenance)> {
         const BUDGET: usize = 250_000;
         const ROUNDS: usize = 2;
         const MAX_WITNESS_FIRINGS: usize = 20_000;
         let trace = std::env::var_os("SIGMA_MODEL_TRACE").is_some();
         if trace {
-            eprintln!("[SIGMA_MODEL_TRACE] chase_model: {} TGDs extracted", self.tgds.len());
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] chase_model: {} TGDs extracted",
+                self.tgds.len()
+            );
         }
         if self.tgds.is_empty() {
             return self.positive_model(deadline);
@@ -338,7 +375,10 @@ impl ModelProgram {
             eprintln!(
                 "[SIGMA_MODEL_TRACE] chase_model: scoped to {} rules / {} EDB preds \
                  (cone of {} goals), {} live TGDs",
-                work.rules.len(), work.edb.len(), goals.len(), live.len()
+                work.rules.len(),
+                work.edb.len(),
+                goals.len(),
+                live.len()
             );
         }
         if live.is_empty() {
@@ -358,7 +398,10 @@ impl ModelProgram {
             }
         };
         if trace {
-            eprintln!("[SIGMA_MODEL_TRACE] chase_model: scoped base eval took {:?}", t0.elapsed());
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] chase_model: scoped base eval took {:?}",
+                t0.elapsed()
+            );
         }
         let mut memo: HashSet<(usize, Vec<SymbolId>)> = HashSet::new();
         let mut firings = 0usize;
@@ -395,7 +438,11 @@ impl ModelProgram {
                 let mut tgd_firings = 0usize;
                 // Single-literal bodies enumerate linearly — no cap (the
                 // inhabitation axiom's witnesses are the chase substrate).
-                let cap = if tgd.body.len() > 1 { MAX_FIRINGS_PER_TGD } else { usize::MAX };
+                let cap = if tgd.body.len() > 1 {
+                    MAX_FIRINGS_PER_TGD
+                } else {
+                    usize::MAX
+                };
                 let stop = std::cell::Cell::new(false);
                 let t_tgd = crate::clock::Instant::now();
                 // Most-selective literal first: constants beat variables,
@@ -413,8 +460,9 @@ impl ModelProgram {
                         stop.set(true);
                         return;
                     }
-                    let frontier: Vec<SymbolId> =
-                        (0..tgd.n_body_vars as usize).map(|i| b[i].unwrap_or(0)).collect();
+                    let frontier: Vec<SymbolId> = (0..tgd.n_body_vars as usize)
+                        .map(|i| b[i].unwrap_or(0))
+                        .collect();
                     if firings >= MAX_WITNESS_FIRINGS || !memo.insert((ti, frontier)) {
                         return;
                     }
@@ -426,23 +474,36 @@ impl ModelProgram {
                         b[k as usize] = Some(syn.symbols.intern_skolem(&name, Some(0)));
                     }
                     for h in &tgd.heads {
-                        let tuple: Tuple = h.args.iter().map(|a| match a {
-                            DTerm::Const(c) => *c,
-                            DTerm::Var(v) => b[*v as usize].unwrap_or(0),
-                        }).collect();
+                        let tuple: Tuple = h
+                            .args
+                            .iter()
+                            .map(|a| match a {
+                                DTerm::Const(c) => *c,
+                                DTerm::Var(v) => b[*v as usize].unwrap_or(0),
+                            })
+                            .collect();
                         new_facts.push((h.pred, tuple, tgd.sid));
                     }
                 };
                 let visits = std::cell::Cell::new(0usize);
                 match_tgd_body(
-                    &matchable, &pos_idx, &ordered, 0, &mut binding, &mut on_match,
-                    deadline, &stop, &visits,
+                    &matchable,
+                    &pos_idx,
+                    &ordered,
+                    0,
+                    &mut binding,
+                    &mut on_match,
+                    deadline,
+                    &stop,
+                    &visits,
                 );
                 if trace && t_tgd.elapsed().as_millis() > 200 {
                     eprintln!(
                         "[SIGMA_MODEL_TRACE] chase slow TGD sid={:?}: {:?} body_lits={} \
                          body_preds={:?}",
-                        tgd.sid, t_tgd.elapsed(), tgd.body.len(),
+                        tgd.sid,
+                        t_tgd.elapsed(),
+                        tgd.body.len(),
                         tgd.body.iter().map(|l| l.atom.pred).collect::<Vec<_>>()
                     );
                 }
@@ -522,12 +583,13 @@ impl ModelProgram {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn answer(
         &self,
-        rel:      Pred,
-        args:     &[DTerm],
+        rel: Pred,
+        args: &[DTerm],
         deadline: Option<crate::clock::Instant>,
     ) -> Option<Vec<Tuple>> {
         let mut stats = ModelStats::default();
-        self.answer_stats(rel, args, deadline, &mut stats, 250_000).map(|(rows, _)| rows)
+        self.answer_stats(rel, args, deadline, &mut stats, 250_000)
+            .map(|(rows, _)| rows)
     }
 
     /// As [`answer`](Self::answer), but records WHY a bail happened (or that
@@ -538,11 +600,11 @@ impl ModelProgram {
     /// value and must NOT be cached on the KB-lifetime registry.
     pub(crate) fn answer_stats(
         &self,
-        rel:      Pred,
-        args:     &[DTerm],
+        rel: Pred,
+        args: &[DTerm],
         deadline: Option<crate::clock::Instant>,
-        stats:    &mut ModelStats,
-        budget:   usize,
+        stats: &mut ModelStats,
+        budget: usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         // Positive-path policy: an unsafe rule in the cone FAILS FAST
         // (`ModelError::Unsafe`), the long-standing behavior — on full SUMO
@@ -571,12 +633,12 @@ impl ModelProgram {
     #[allow(clippy::too_many_arguments)]
     fn answer_stats_impl(
         &self,
-        rel:         Pred,
-        args:        &[DTerm],
-        deadline:    Option<crate::clock::Instant>,
-        stats:       &mut ModelStats,
+        rel: Pred,
+        args: &[DTerm],
+        deadline: Option<crate::clock::Instant>,
+        stats: &mut ModelStats,
         drop_unsafe: bool,
-        budget:      usize,
+        budget: usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         let first_deadline = deadline.map(|d| {
             let now = crate::clock::Instant::now();
@@ -600,13 +662,13 @@ impl ModelProgram {
     #[allow(clippy::too_many_arguments)]
     fn answer_cone_impl(
         &self,
-        rel:         Pred,
-        args:        &[DTerm],
-        deadline:    Option<crate::clock::Instant>,
-        stats:       &mut ModelStats,
+        rel: Pred,
+        args: &[DTerm],
+        deadline: Option<crate::clock::Instant>,
+        stats: &mut ModelStats,
         drop_unsafe: bool,
-        shallow:     bool,
-        budget:      usize,
+        shallow: bool,
+        budget: usize,
     ) -> Option<(Vec<Tuple>, Provenance)> {
         stats.retry_eligible = false;
         // Per-evaluation tuple budget (`opts.model_budget` / `SIGMA_MODEL_BUDGET`
@@ -790,7 +852,12 @@ impl ModelProgram {
     /// EGD merges: each justification edge's witness derivations + EGD axiom
     /// sid.  Empty when the evaluation never merged them.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn eq_explain(&self, prov: &Provenance, a: SymbolId, b: SymbolId) -> Vec<SentenceId> {
+    pub(crate) fn eq_explain(
+        &self,
+        prov: &Provenance,
+        a: SymbolId,
+        b: SymbolId,
+    ) -> Vec<SentenceId> {
         prov.explain_eq(a, b)
     }
 
@@ -820,11 +887,11 @@ impl ModelProgram {
     /// goal-side subclass chain, and the denial declaration LAST.
     pub(crate) fn refutes(
         &self,
-        rel:      Pred,
-        tuple:    &[SymbolId],
+        rel: Pred,
+        tuple: &[SymbolId],
         deadline: Option<crate::clock::Instant>,
-        stats:    &mut ModelStats,
-        budget:   usize,
+        stats: &mut ModelStats,
+        budget: usize,
     ) -> Option<ModelRefutation> {
         if self.denials.is_empty() || rel != self.roles.instance || tuple.len() != 2 {
             return None;
@@ -854,7 +921,11 @@ impl ModelProgram {
         // (magic-scoped on C).  An undefined subclass relation means "no
         // chains" (anc = {C}); a bail on a DEFINED one aborts the refutation.
         let sub_defined = self.monotone.edb.contains_key(&self.roles.subclass)
-            || self.monotone.rules.iter().any(|r| r.head.pred == self.roles.subclass);
+            || self
+                .monotone
+                .rules
+                .iter()
+                .any(|r| r.head.pred == self.roles.subclass);
         let mut anc_c: Vec<SymbolId> = vec![c];
         let mut prov_c: Option<Provenance> = None;
         if sub_defined {
@@ -877,7 +948,9 @@ impl ModelProgram {
             }
             let d = row[1];
             for &a_c in &anc_c {
-                let Some(&decl) = pairs.get(&norm(d, a_c)) else { continue };
+                let Some(&decl) = pairs.get(&norm(d, a_c)) else {
+                    continue;
+                };
                 // Citation: instance-derivation chain (leaves, then rules) …
                 let mut cited = prov_i.cite(self.roles.instance, &vec![x, d]);
                 // … the goal-side subclass chain C ⊑ … ⊑ a_c …
@@ -890,7 +963,11 @@ impl ModelProgram {
                 cited.push(decl);
                 let mut seen: HashSet<SentenceId> = HashSet::new();
                 cited.retain(|s| seen.insert(*s));
-                return Some(ModelRefutation { member: d, goal_ancestor: a_c, cited });
+                return Some(ModelRefutation {
+                    member: d,
+                    goal_ancestor: a_c,
+                    cited,
+                });
             }
         }
         None
@@ -913,11 +990,11 @@ impl ModelProgram {
     /// shrinks the model, also unsound for absence).
     pub(crate) fn complete_absent(
         &self,
-        rel:      Pred,
-        tuple:    &[SymbolId],
+        rel: Pred,
+        tuple: &[SymbolId],
         deadline: Option<crate::clock::Instant>,
-        stats:    &mut ModelStats,
-        budget:   usize,
+        stats: &mut ModelStats,
+        budget: usize,
     ) -> Option<Vec<SentenceId>> {
         if !self.certified.contains(&rel) {
             return None;
@@ -1017,12 +1094,12 @@ pub(crate) struct CertBlocked {
 /// Condition (c) is the shrink fixpoint at the end.  Everything errs toward
 /// NOT certifying.
 pub(crate) fn certify(
-    program:       &Program,
+    program: &Program,
     cluster_preds: &HashSet<Pred>,
     skipped_heads: &HashSet<Pred>,
     wildcard_skip: bool,
-    role_syms:     &HashSet<Pred>,
-    builtin:       &HashSet<Pred>,
+    role_syms: &HashSet<Pred>,
+    builtin: &HashSet<Pred>,
 ) -> (HashSet<Pred>, CertBlocked) {
     let mut blocked = CertBlocked::default();
 
@@ -1114,13 +1191,13 @@ pub(crate) fn certify(
 #[derive(Debug, Clone)]
 pub(crate) struct ModelRefutation {
     /// The model-entailed class of `x` that met a denial pair.
-    pub member:        SymbolId,
+    pub member: SymbolId,
     /// The goal-side class the pair was hit through: `C` itself or the
     /// ancestor `C ⊑ goal_ancestor` reached in the subclass closure.
     pub goal_ancestor: SymbolId,
     /// KB citation chain: instance-derivation chain (EDB leaves first, then
     /// rules), goal-side subclass chain, denial declaration last.
-    pub cited:         Vec<SentenceId>,
+    pub cited: Vec<SentenceId>,
 }
 
 /// SIGMA_STATS instrumentation only (Part 1): why `ModelProgram::answer`
@@ -1187,7 +1264,7 @@ pub(crate) struct Atom {
 /// A body literal: an atom with a polarity.
 #[derive(Clone, Debug)]
 pub(crate) struct Literal {
-    pub atom:    Atom,
+    pub atom: Atom,
     pub negated: bool,
 }
 
@@ -1201,14 +1278,14 @@ pub(crate) struct Rule {
     /// `(subrelation R S)` / `(instance R TransitiveRelation)` sentence for
     /// schema rules.  `None` for synthetic rules (magic guards, hand-authored
     /// narratives), which contribute no citation of their own.
-    pub sid:  Option<SentenceId>,
+    pub sid: Option<SentenceId>,
 }
 
 /// A Datalog(¬) program: intensional rules + extensional ground facts.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Program {
     pub rules: Vec<Rule>,
-    pub edb:   HashMap<Pred, HashSet<Tuple>>,
+    pub edb: HashMap<Pred, HashSet<Tuple>>,
     /// Source sentence of each EDB fact — the provenance leaves.  Facts
     /// seeded without a source (magic seeds, hand-authored programs) are
     /// simply absent and contribute no citation.
@@ -1246,7 +1323,7 @@ pub(crate) struct Program {
 /// [`BUILTIN_RULE`] and [`EQ_CANON_RULE`].
 #[derive(Clone, Debug)]
 pub(crate) struct Derivation {
-    pub rule:    u32,
+    pub rule: u32,
     pub parents: SmallVec<[(Pred, Tuple); 4]>,
 }
 
@@ -1271,9 +1348,9 @@ pub(crate) struct Provenance {
     /// `rule_sids[i]` = source sentence of the evaluated program's rule `i`.
     pub rule_sids: Vec<Option<SentenceId>>,
     /// Source sentence of each EDB fact (copied from the evaluated program).
-    pub edb_sids:  HashMap<(Pred, Tuple), SentenceId>,
+    pub edb_sids: HashMap<(Pred, Tuple), SentenceId>,
     /// First derivation of each IDB fact.
-    pub derived:   HashMap<(Pred, Tuple), Derivation>,
+    pub derived: HashMap<(Pred, Tuple), Derivation>,
     /// The evaluation's equality classes (EGD union-find + justification
     /// forest).  Per-evaluation state like everything else here — NEVER
     /// cached on the KB-lifetime registry.
@@ -1331,7 +1408,13 @@ impl Provenance {
             let key = if ctup != tup {
                 for i in 0..tup.len() {
                     if tup[i] != ctup[i] {
-                        self.push_eq_chain(tup[i], ctup[i], &mut cited_edges, &mut rule_sids, &mut stack);
+                        self.push_eq_chain(
+                            tup[i],
+                            ctup[i],
+                            &mut cited_edges,
+                            &mut rule_sids,
+                            &mut stack,
+                        );
                     }
                 }
                 let ckey = (p, ctup);
@@ -1355,8 +1438,11 @@ impl Provenance {
                             for i in 0..key.1.len().min(orig.len()) {
                                 if orig[i] != key.1[i] {
                                     self.push_eq_chain(
-                                        orig[i], key.1[i],
-                                        &mut cited_edges, &mut rule_sids, &mut stack,
+                                        orig[i],
+                                        key.1[i],
+                                        &mut cited_edges,
+                                        &mut rule_sids,
+                                        &mut stack,
                                     );
                                 }
                             }
@@ -1398,8 +1484,8 @@ impl Provenance {
         a: SymbolId,
         b: SymbolId,
         cited_edges: &mut HashSet<(SymbolId, SymbolId)>,
-        rule_sids:   &mut Vec<SentenceId>,
-        stack:       &mut Vec<(Pred, Tuple)>,
+        rule_sids: &mut Vec<SentenceId>,
+        stack: &mut Vec<(Pred, Tuple)>,
     ) {
         for ek in self.eq.explain(a, b) {
             if !cited_edges.insert(ek) {
@@ -1423,7 +1509,9 @@ impl Provenance {
         let mut out: Vec<SentenceId> = Vec::new();
         let mut seen: HashSet<SentenceId> = HashSet::new();
         for ek in self.eq.explain(a, b) {
-            let Some(e) = self.eq.edges.get(&ek) else { continue };
+            let Some(e) = self.eq.edges.get(&ek) else {
+                continue;
+            };
             for w in [&e.witness_a, &e.witness_b] {
                 for s in self.cite(w.0, &w.1) {
                     if seen.insert(s) {
@@ -1475,7 +1563,11 @@ impl Program {
 
     /// Add a rule (no citable source — hand-authored / synthetic).
     pub(crate) fn rule(&mut self, head: Atom, body: Vec<Literal>) {
-        self.rules.push(Rule { head, body, sid: None });
+        self.rules.push(Rule {
+            head,
+            body,
+            sid: None,
+        });
     }
 
     parked! {
@@ -1505,7 +1597,7 @@ impl Program {
     pub(crate) fn evaluate_within(
         &self,
         max_tuples: usize,
-        deadline:   Option<crate::clock::Instant>,
+        deadline: Option<crate::clock::Instant>,
     ) -> Result<(Model, Provenance), ModelError> {
         self.validate_safe()?;
         let strata = self.stratify()?;
@@ -1574,7 +1666,9 @@ fn closed_for_matching(model: &Model, work: &Program, budget: usize) -> Option<M
     let mut out = model.clone();
     let mut total: usize = model.values().map(HashSet::len).sum();
     for (&pred, _) in work.builtin_transitive.iter() {
-        let Some(base) = model.get(&pred) else { continue };
+        let Some(base) = model.get(&pred) else {
+            continue;
+        };
         if base.iter().any(|t| t.len() != 2) {
             continue; // closure only defined for binary relations
         }
@@ -1628,15 +1722,15 @@ fn build_pos_index(model: &Model) -> PosIndex {
 /// from the position index (most selective bound seat) instead of a full
 /// extension scan.
 fn match_tgd_body(
-    model:    &Model,
-    idx:      &PosIndex,
-    lits:     &[Literal],
-    li:       usize,
-    binding:  &mut Vec<Option<SymbolId>>,
+    model: &Model,
+    idx: &PosIndex,
+    lits: &[Literal],
+    li: usize,
+    binding: &mut Vec<Option<SymbolId>>,
     on_match: &mut dyn FnMut(&mut Vec<Option<SymbolId>>),
     deadline: Option<crate::clock::Instant>,
-    stop:     &std::cell::Cell<bool>,
-    visits:   &std::cell::Cell<usize>,
+    stop: &std::cell::Cell<bool>,
+    visits: &std::cell::Cell<usize>,
 ) {
     // Row-visit budget: a wide body (7 literals over instance/subclass)
     // can burn seconds scanning without ever firing — cap the join's
@@ -1671,7 +1765,9 @@ fn match_tgd_body(
     let candidates: &[Tuple] = match indexed {
         Some(c) => c,
         None => {
-            let Some(r) = model.get(&lit.atom.pred) else { return };
+            let Some(r) = model.get(&lit.atom.pred) else {
+                return;
+            };
             scan = r.iter().cloned().collect();
             &scan
         }
@@ -1691,13 +1787,17 @@ fn match_tgd_body(
             match a {
                 DTerm::Const(c) => {
                     if *c != v {
-                        for &u in &bound_here { binding[u as usize] = None; }
+                        for &u in &bound_here {
+                            binding[u as usize] = None;
+                        }
                         continue 'row;
                     }
                 }
                 DTerm::Var(u) => match binding[*u as usize] {
                     Some(b) if b != v => {
-                        for &u2 in &bound_here { binding[u2 as usize] = None; }
+                        for &u2 in &bound_here {
+                            binding[u2 as usize] = None;
+                        }
                         continue 'row;
                     }
                     Some(_) => {}
@@ -1708,7 +1808,17 @@ fn match_tgd_body(
                 },
             }
         }
-        match_tgd_body(model, idx, lits, li + 1, binding, on_match, deadline, stop, visits);
+        match_tgd_body(
+            model,
+            idx,
+            lits,
+            li + 1,
+            binding,
+            on_match,
+            deadline,
+            stop,
+            visits,
+        );
         for &u in &bound_here {
             binding[u as usize] = None;
         }
@@ -1760,7 +1870,11 @@ fn rule_is_safe(r: &Rule) -> bool {
 
 /// Match an atom's argument terms against a ground tuple, extending `binding`.
 /// Returns the variables newly bound (for undo), or `None` on a clash.
-pub(super) fn unify(args: &[DTerm], tuple: &[SymbolId], binding: &mut HashMap<u32, SymbolId>) -> Option<Vec<u32>> {
+pub(super) fn unify(
+    args: &[DTerm],
+    tuple: &[SymbolId],
+    binding: &mut HashMap<u32, SymbolId>,
+) -> Option<Vec<u32>> {
     if args.len() != tuple.len() {
         return None;
     }
@@ -1769,14 +1883,18 @@ pub(super) fn unify(args: &[DTerm], tuple: &[SymbolId], binding: &mut HashMap<u3
         match a {
             DTerm::Const(c) => {
                 if *c != val {
-                    for v in &undo { binding.remove(v); }
+                    for v in &undo {
+                        binding.remove(v);
+                    }
                     return None;
                 }
             }
             DTerm::Var(v) => match binding.get(v) {
                 Some(&b) => {
                     if b != val {
-                        for v in &undo { binding.remove(v); }
+                        for v in &undo {
+                            binding.remove(v);
+                        }
                         return None;
                     }
                 }
@@ -1799,12 +1917,12 @@ pub(super) fn unify(args: &[DTerm], tuple: &[SymbolId], binding: &mut HashMap<u3
 /// to the caller's base-row filter, the documented under-enumeration).
 /// `Err(())` when the BFS work would exceed the remaining tuple budget.
 fn builtin_goal_answers(
-    rows:       &HashSet<Tuple>,
-    cargs:      &[DTerm],
-    rel:        Pred,
-    prov:       &mut Provenance,
+    rows: &HashSet<Tuple>,
+    cargs: &[DTerm],
+    rel: Pred,
+    prov: &mut Provenance,
     is_builtin: bool,
-    budget:     usize,
+    budget: usize,
 ) -> Result<Option<Vec<Tuple>>, ()> {
     if !is_builtin || cargs.len() != 2 {
         return Ok(None);
@@ -1824,7 +1942,11 @@ fn builtin_goal_answers(
     let mut adj: HashMap<SymbolId, Vec<SymbolId>> = HashMap::new();
     for row in rows {
         if row.len() == 2 {
-            let (a, b) = if fwd { (row[0], row[1]) } else { (row[1], row[0]) };
+            let (a, b) = if fwd {
+                (row[0], row[1])
+            } else {
+                (row[1], row[0])
+            };
             adj.entry(a).or_default().push(b);
         }
     }
@@ -1852,7 +1974,9 @@ fn builtin_goal_answers(
         let mut edges: Vec<(Pred, Tuple)> = Vec::new();
         let mut cur = node;
         while cur != seed {
-            let Some(&w) = parent.get(&cur) else { return SmallVec::new() };
+            let Some(&w) = parent.get(&cur) else {
+                return SmallVec::new();
+            };
             // Forward BFS: tree edge (w → cur) is a real edge w→cur.
             // Reverse BFS: tree edge means a real edge cur→w.
             edges.push((rel, if fwd { vec![w, cur] } else { vec![cur, w] }));
@@ -1865,8 +1989,13 @@ fn builtin_goal_answers(
     };
     let record = |prov: &mut Provenance, pair: Tuple, node: SymbolId| {
         if !rows.contains(&pair) && !prov.derived.contains_key(&(rel, pair.clone())) {
-            prov.derived
-                .insert((rel, pair), Derivation { rule: BUILTIN_RULE, parents: path_of(node) });
+            prov.derived.insert(
+                (rel, pair),
+                Derivation {
+                    rule: BUILTIN_RULE,
+                    parents: path_of(node),
+                },
+            );
         }
     };
     let ans: Vec<Tuple> = match (b0, b1) {
@@ -1997,32 +2126,42 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
     // the time variable (safety); `happens(p,T)` is a positive guard,
     // `not happens(n,T)` a negative one.  T is variable 0.  Each rule cites
     // the narrative's only-if root that defined its relation, for provenance.
-    let effect_rule = |head_pred: Pred, e: &super::eventcalc::Effect, rule_sid: Option<SentenceId>| -> Rule {
-        let mut body = vec![Literal {
-            atom: Atom { pred: time, args: vec![DTerm::Var(0)] },
-            negated: false,
-        }];
-        for &pe in &e.pos_concurrent {
-            body.push(Literal {
-                atom: Atom { pred: happens, args: vec![DTerm::Const(pe), DTerm::Var(0)] },
+    let effect_rule =
+        |head_pred: Pred, e: &super::eventcalc::Effect, rule_sid: Option<SentenceId>| -> Rule {
+            let mut body = vec![Literal {
+                atom: Atom {
+                    pred: time,
+                    args: vec![DTerm::Var(0)],
+                },
                 negated: false,
-            });
-        }
-        for &ne in &e.neg_concurrent {
-            body.push(Literal {
-                atom: Atom { pred: happens, args: vec![DTerm::Const(ne), DTerm::Var(0)] },
-                negated: true,
-            });
-        }
-        Rule {
-            head: Atom {
-                pred: head_pred,
-                args: vec![DTerm::Const(e.event), DTerm::Const(e.fluent), DTerm::Var(0)],
-            },
-            body,
-            sid: rule_sid,
-        }
-    };
+            }];
+            for &pe in &e.pos_concurrent {
+                body.push(Literal {
+                    atom: Atom {
+                        pred: happens,
+                        args: vec![DTerm::Const(pe), DTerm::Var(0)],
+                    },
+                    negated: false,
+                });
+            }
+            for &ne in &e.neg_concurrent {
+                body.push(Literal {
+                    atom: Atom {
+                        pred: happens,
+                        args: vec![DTerm::Const(ne), DTerm::Var(0)],
+                    },
+                    negated: true,
+                });
+            }
+            Rule {
+                head: Atom {
+                    pred: head_pred,
+                    args: vec![DTerm::Const(e.event), DTerm::Const(e.fluent), DTerm::Var(0)],
+                },
+                body,
+                sid: rule_sid,
+            }
+        };
     for e in &n.initiates {
         p.rules.push(effect_rule(initiates, e, n.initiates_sid));
     }
@@ -2036,37 +2175,103 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
     // just the connecting step; `happens_sid` is picked up transitively
     // through the `happens` EDB fact's own `fact_src`.
     p.rules.push(Rule {
-        head: Atom { pred: initiated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
+        head: Atom {
+            pred: initiated,
+            args: vec![DTerm::Var(1), DTerm::Var(2)],
+        },
         body: vec![
-            Literal { atom: Atom { pred: happens, args: vec![DTerm::Var(0), DTerm::Var(2)] }, negated: false },
-            Literal { atom: Atom { pred: initiates, args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)] }, negated: false },
+            Literal {
+                atom: Atom {
+                    pred: happens,
+                    args: vec![DTerm::Var(0), DTerm::Var(2)],
+                },
+                negated: false,
+            },
+            Literal {
+                atom: Atom {
+                    pred: initiates,
+                    args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)],
+                },
+                negated: false,
+            },
         ],
         sid: n.initiates_sid,
     });
     // terminated(F,T) :- happens(E,T), terminates(E,F,T)
     p.rules.push(Rule {
-        head: Atom { pred: terminated, args: vec![DTerm::Var(1), DTerm::Var(2)] },
+        head: Atom {
+            pred: terminated,
+            args: vec![DTerm::Var(1), DTerm::Var(2)],
+        },
         body: vec![
-            Literal { atom: Atom { pred: happens, args: vec![DTerm::Var(0), DTerm::Var(2)] }, negated: false },
-            Literal { atom: Atom { pred: terminates, args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)] }, negated: false },
+            Literal {
+                atom: Atom {
+                    pred: happens,
+                    args: vec![DTerm::Var(0), DTerm::Var(2)],
+                },
+                negated: false,
+            },
+            Literal {
+                atom: Atom {
+                    pred: terminates,
+                    args: vec![DTerm::Var(0), DTerm::Var(1), DTerm::Var(2)],
+                },
+                negated: false,
+            },
         ],
         sid: n.terminates_sid,
     });
     // holdsAt(F,T1) :- succ(T,T1), initiated(F,T)         (F=0, T=1, T1=2)
     p.rule(
-        Atom { pred: holds, args: vec![DTerm::Var(0), DTerm::Var(2)] },
+        Atom {
+            pred: holds,
+            args: vec![DTerm::Var(0), DTerm::Var(2)],
+        },
         vec![
-            Literal { atom: Atom { pred: succ, args: vec![DTerm::Var(1), DTerm::Var(2)] }, negated: false },
-            Literal { atom: Atom { pred: initiated, args: vec![DTerm::Var(0), DTerm::Var(1)] }, negated: false },
+            Literal {
+                atom: Atom {
+                    pred: succ,
+                    args: vec![DTerm::Var(1), DTerm::Var(2)],
+                },
+                negated: false,
+            },
+            Literal {
+                atom: Atom {
+                    pred: initiated,
+                    args: vec![DTerm::Var(0), DTerm::Var(1)],
+                },
+                negated: false,
+            },
         ],
     );
     // holdsAt(F,T1) :- succ(T,T1), holdsAt(F,T), not terminated(F,T)
     p.rule(
-        Atom { pred: holds, args: vec![DTerm::Var(0), DTerm::Var(2)] },
+        Atom {
+            pred: holds,
+            args: vec![DTerm::Var(0), DTerm::Var(2)],
+        },
         vec![
-            Literal { atom: Atom { pred: succ, args: vec![DTerm::Var(1), DTerm::Var(2)] }, negated: false },
-            Literal { atom: Atom { pred: holds, args: vec![DTerm::Var(0), DTerm::Var(1)] }, negated: false },
-            Literal { atom: Atom { pred: terminated, args: vec![DTerm::Var(0), DTerm::Var(1)] }, negated: true },
+            Literal {
+                atom: Atom {
+                    pred: succ,
+                    args: vec![DTerm::Var(1), DTerm::Var(2)],
+                },
+                negated: false,
+            },
+            Literal {
+                atom: Atom {
+                    pred: holds,
+                    args: vec![DTerm::Var(0), DTerm::Var(1)],
+                },
+                negated: false,
+            },
+            Literal {
+                atom: Atom {
+                    pred: terminated,
+                    args: vec![DTerm::Var(0), DTerm::Var(1)],
+                },
+                negated: true,
+            },
         ],
     );
 
@@ -2075,17 +2280,36 @@ pub(crate) fn narrative_to_program(n: &super::eventcalc::Narrative) -> Program {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::eventcalc::{Effect, Narrative};
+    use super::*;
     use crate::types::Symbol;
 
-    fn s(name: &str) -> SymbolId { Symbol::hash_name(name) }
+    fn s(name: &str) -> SymbolId {
+        Symbol::hash_name(name)
+    }
 
     // Readable rule builders for the small hand-authored programs.
-    fn atom(pred: &str, args: Vec<DTerm>) -> Atom { Atom { pred: s(pred), args } }
-    fn pos(a: Atom) -> Literal { Literal { atom: a, negated: false } }
-    fn neg(a: Atom) -> Literal { Literal { atom: a, negated: true } }
-    fn v(i: u32) -> DTerm { DTerm::Var(i) }
+    fn atom(pred: &str, args: Vec<DTerm>) -> Atom {
+        Atom {
+            pred: s(pred),
+            args,
+        }
+    }
+    fn pos(a: Atom) -> Literal {
+        Literal {
+            atom: a,
+            negated: false,
+        }
+    }
+    fn neg(a: Atom) -> Literal {
+        Literal {
+            atom: a,
+            negated: true,
+        }
+    }
+    fn v(i: u32) -> DTerm {
+        DTerm::Var(i)
+    }
     parked! {
         fn c(name: &str) -> DTerm { DTerm::Const(s(name)) }
     }
@@ -2105,13 +2329,21 @@ mod tests {
         p.fact(s("subclass"), vec![s("LandVehicle"), s("Vehicle")]);
         p.fact(s("instance"), vec![s("Bus1"), s("RoadVehicle")]);
         // subclass(X,Z) :- subclass(X,Y), subclass(Y,Z)
-        p.rule(atom("subclass", vec![v(0), v(2)]),
-               vec![pos(atom("subclass", vec![v(0), v(1)])),
-                    pos(atom("subclass", vec![v(1), v(2)]))]);
+        p.rule(
+            atom("subclass", vec![v(0), v(2)]),
+            vec![
+                pos(atom("subclass", vec![v(0), v(1)])),
+                pos(atom("subclass", vec![v(1), v(2)])),
+            ],
+        );
         // instance(Z,Y) :- instance(Z,X), subclass(X,Y)
-        p.rule(atom("instance", vec![v(2), v(1)]),
-               vec![pos(atom("instance", vec![v(2), v(0)])),
-                    pos(atom("subclass", vec![v(0), v(1)]))]);
+        p.rule(
+            atom("instance", vec![v(2), v(1)]),
+            vec![
+                pos(atom("instance", vec![v(2), v(0)])),
+                pos(atom("subclass", vec![v(0), v(1)])),
+            ],
+        );
         let m = p.evaluate().unwrap();
         assert!(holds(&m, "subclass", &["RoadVehicle", "Vehicle"]));
         assert!(holds(&m, "instance", &["Bus1", "LandVehicle"]));
@@ -2126,13 +2358,19 @@ mod tests {
         p.fact(s("driving"), vec![s("Bob")]);
         p.fact(s("usingPhone"), vec![s("Bob")]);
         p.fact(s("driving"), vec![s("Ann")]); // Ann drives but no phone ⇒ no breach
-        // breaksLaw(P) :- driving(P), usingPhone(P)
-        p.rule(atom("breaksLaw", vec![v(0)]),
-               vec![pos(atom("driving", vec![v(0)])),
-                    pos(atom("usingPhone", vec![v(0)]))]);
+                                              // breaksLaw(P) :- driving(P), usingPhone(P)
+        p.rule(
+            atom("breaksLaw", vec![v(0)]),
+            vec![
+                pos(atom("driving", vec![v(0)])),
+                pos(atom("usingPhone", vec![v(0)])),
+            ],
+        );
         // goesToJail(P) :- breaksLaw(P)   (chains via the fixpoint)
-        p.rule(atom("goesToJail", vec![v(0)]),
-               vec![pos(atom("breaksLaw", vec![v(0)]))]);
+        p.rule(
+            atom("goesToJail", vec![v(0)]),
+            vec![pos(atom("breaksLaw", vec![v(0)]))],
+        );
         let m = p.evaluate().unwrap();
         assert!(holds(&m, "breaksLaw", &["Bob"]));
         assert!(holds(&m, "goesToJail", &["Bob"]));
@@ -2148,9 +2386,13 @@ mod tests {
         p.fact(s("thing"), vec![s("b")]);
         p.fact(s("flagged"), vec![s("a")]);
         // clear(X) :- thing(X), not flagged(X)
-        p.rule(atom("clear", vec![v(0)]),
-               vec![pos(atom("thing", vec![v(0)])),
-                    neg(atom("flagged", vec![v(0)]))]);
+        p.rule(
+            atom("clear", vec![v(0)]),
+            vec![
+                pos(atom("thing", vec![v(0)])),
+                neg(atom("flagged", vec![v(0)])),
+            ],
+        );
         let m = p.evaluate().unwrap();
         assert!(holds(&m, "clear", &["b"]));
         assert!(!holds(&m, "clear", &["a"]));
@@ -2162,10 +2404,14 @@ mod tests {
         let mut p = Program::default();
         p.fact(s("dom"), vec![s("x")]);
         // p(X) :- dom(X), not q(X)  ;  q(X) :- dom(X), not p(X)
-        p.rule(atom("p", vec![v(0)]),
-               vec![pos(atom("dom", vec![v(0)])), neg(atom("q", vec![v(0)]))]);
-        p.rule(atom("q", vec![v(0)]),
-               vec![pos(atom("dom", vec![v(0)])), neg(atom("p", vec![v(0)]))]);
+        p.rule(
+            atom("p", vec![v(0)]),
+            vec![pos(atom("dom", vec![v(0)])), neg(atom("q", vec![v(0)]))],
+        );
+        p.rule(
+            atom("q", vec![v(0)]),
+            vec![pos(atom("dom", vec![v(0)])), neg(atom("p", vec![v(0)]))],
+        );
         assert_eq!(p.evaluate(), Err(ModelError::Unstratifiable));
     }
 
@@ -2183,13 +2429,16 @@ mod tests {
         p.rules.push(Rule {
             head: atom("step", vec![v(0), v(1)]),
             body: vec![pos(atom("edge", vec![v(0), v(1)]))],
-            sid:  Some(r1),
+            sid: Some(r1),
         });
         // reach(X,Z) :- step(X,Y), link(Y,Z)          [rule sid r2]
         p.rules.push(Rule {
             head: atom("reach", vec![v(0), v(2)]),
-            body: vec![pos(atom("step", vec![v(0), v(1)])), pos(atom("link", vec![v(1), v(2)]))],
-            sid:  Some(r2),
+            body: vec![
+                pos(atom("step", vec![v(0), v(1)])),
+                pos(atom("link", vec![v(1), v(2)])),
+            ],
+            sid: Some(r2),
         });
         let (model, prov) = p.evaluate_within(usize::MAX, None).unwrap();
         assert!(holds(&model, "reach", &["a", "c"]));
@@ -2226,7 +2475,11 @@ mod tests {
         let rows = mp
             .answer(s("p"), &[DTerm::Var(0), DTerm::Var(0)], None)
             .expect("p is stored");
-        assert_eq!(rows, vec![vec![s("c"), s("c")]], "p(X, X) must not match (a, b)");
+        assert_eq!(
+            rows,
+            vec![vec![s("c"), s("c")]],
+            "p(X, X) must not match (a, b)"
+        );
 
         // p(X, Y): both tuples.
         let mut rows = mp
@@ -2256,8 +2509,7 @@ mod tests {
         );
         let mp = ModelProgram::build(&sem.syntactic);
         let norm = |a: SymbolId, b: SymbolId| if a <= b { (a, b) } else { (b, a) };
-        let pairs: HashSet<(SymbolId, SymbolId)> =
-            mp.denials.iter().map(|d| d.classes).collect();
+        let pairs: HashSet<(SymbolId, SymbolId)> = mp.denials.iter().map(|d| d.classes).collect();
         assert_eq!(pairs.len(), 4, "3 partition pairs + 1 disjoint pair");
         for (a, b) in [
             ("DomesticAnimal", "WildAnimal"),
@@ -2269,7 +2521,10 @@ mod tests {
         }
         // Every denial cites its declaring root.
         for d in &mp.denials {
-            assert!(sem.syntactic.sentence(d.sid).is_some(), "denial sid resolvable");
+            assert!(
+                sem.syntactic.sentence(d.sid).is_some(),
+                "denial sid resolvable"
+            );
         }
     }
 
@@ -2307,26 +2562,35 @@ mod tests {
                 })
                 .expect("fixture root present")
         };
-        let f_rex     = find2("instance", "Rex", "Poodle");
-        let f_poodle  = find2("subclass", "Poodle", "Dog");
-        let f_dog     = find2("subclass", "Dog", "DomesticAnimal");
-        let f_wolf    = find2("subclass", "Wolf", "WildAnimal");
-        let f_part    = syn
+        let f_rex = find2("instance", "Rex", "Poodle");
+        let f_poodle = find2("subclass", "Poodle", "Dog");
+        let f_dog = find2("subclass", "Dog", "DomesticAnimal");
+        let f_wolf = find2("subclass", "Wolf", "WildAnimal");
+        let f_part = syn
             .by_head_id(&s("partition"))
             .into_iter()
             .next()
             .expect("partition root");
-        let f_bridge  = syn
+        let f_bridge = syn
             .root_sids()
             .into_iter()
-            .find(|sid| syn.sentence(*sid).is_some_and(|x| x.op() == Some(&OpKind::Implies)))
+            .find(|sid| {
+                syn.sentence(*sid)
+                    .is_some_and(|x| x.op() == Some(&OpKind::Implies))
+            })
             .expect("bridge rule root");
 
         // (instance Rex Wolf) is REFUTED: Rex ⊑… DomesticAnimal (2 hops),
         // Wolf ⊑ WildAnimal, and partition makes those disjoint.
         let mut stats = ModelStats::default();
         let r = mp
-            .refutes(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats, 250_000)
+            .refutes(
+                s("instance"),
+                &[s("Rex"), s("Wolf")],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("denial refutes (instance Rex Wolf)");
         assert_eq!(r.member, s("DomesticAnimal"), "clashing membership");
         assert_eq!(r.goal_ancestor, s("WildAnimal"), "goal-side ancestor");
@@ -2339,7 +2603,11 @@ mod tests {
             (f_wolf, "subclass Wolf WildAnimal"),
             (f_part, "partition declaration"),
         ] {
-            assert!(r.cited.contains(&sid), "citation chain missing {what}: {:?}", r.cited);
+            assert!(
+                r.cited.contains(&sid),
+                "citation chain missing {what}: {:?}",
+                r.cited
+            );
         }
         // The chain climbed through a rule (the bridge, or the derived
         // subclass-transitivity schema citing its declaration).
@@ -2366,10 +2634,34 @@ mod tests {
         // No denial between Rex's classes and Dog / an unknown class: no
         // refutation (and membership of a class ON Rex's own chain never
         // refutes).
-        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Dog")], None, &mut stats, 250_000).is_none());
-        assert!(mp.refutes(s("instance"), &[s("Rex"), s("Cat")], None, &mut stats, 250_000).is_none());
+        assert!(mp
+            .refutes(
+                s("instance"),
+                &[s("Rex"), s("Dog")],
+                None,
+                &mut stats,
+                250_000
+            )
+            .is_none());
+        assert!(mp
+            .refutes(
+                s("instance"),
+                &[s("Rex"), s("Cat")],
+                None,
+                &mut stats,
+                250_000
+            )
+            .is_none());
         // Non-instance relations are never refuted here.
-        assert!(mp.refutes(s("subclass"), &[s("Dog"), s("Wolf")], None, &mut stats, 250_000).is_none());
+        assert!(mp
+            .refutes(
+                s("subclass"),
+                &[s("Dog"), s("Wolf")],
+                None,
+                &mut stats,
+                250_000
+            )
+            .is_none());
     }
 
     // Cross-check: on a fixture where BOTH engines see the same information
@@ -2404,8 +2696,15 @@ mod tests {
 
         let individuals = ["Rex", "Tweety", "Nemo"];
         let classes = [
-            "Animal", "DomesticAnimal", "WildAnimal", "Dog", "Poodle", "Wolf",
-            "Bird", "Fish", "Canary",
+            "Animal",
+            "DomesticAnimal",
+            "WildAnimal",
+            "Dog",
+            "Poodle",
+            "Wolf",
+            "Bird",
+            "Fish",
+            "Canary",
         ];
         let mut refuted = 0usize;
         for x in individuals {
@@ -2419,7 +2718,10 @@ mod tests {
                 refuted += usize::from(m);
             }
         }
-        assert!(refuted >= 5, "cross-check must be non-vacuous, got {refuted} refutations");
+        assert!(
+            refuted >= 5,
+            "cross-check must be non-vacuous, got {refuted} refutations"
+        );
     }
 
     // Unsafe rule (head var not bound by a positive body literal) is rejected.
@@ -2428,7 +2730,10 @@ mod tests {
         let mut p = Program::default();
         p.fact(s("dom"), vec![s("x")]);
         // bad(X,Y) :- dom(X)   -- Y unbound
-        p.rule(atom("bad", vec![v(0), v(1)]), vec![pos(atom("dom", vec![v(0)]))]);
+        p.rule(
+            atom("bad", vec![v(0), v(1)]),
+            vec![pos(atom("dom", vec![v(0)]))],
+        );
         assert_eq!(p.evaluate(), Err(ModelError::Unsafe));
     }
 
@@ -2454,17 +2759,62 @@ mod tests {
         happens.insert(n1, vec![pull]);
         happens.insert(n2, vec![pull, push]);
         let initiates = vec![
-            Effect { event: push, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![push], neg_concurrent: vec![] },
+            Effect {
+                event: push,
+                fluent: fwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: bwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
+            Effect {
+                event: pull,
+                fluent: spin,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
         ];
         let terminates = vec![
-            Effect { event: push, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: push, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![push] },
+            Effect {
+                event: push,
+                fluent: bwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: fwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
+            Effect {
+                event: pull,
+                fluent: fwd,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
+            Effect {
+                event: pull,
+                fluent: bwd,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
+            Effect {
+                event: push,
+                fluent: spin,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: spin,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
         ];
         let nar = Narrative {
             times: vec![n0, n1, n2, n3],
@@ -2488,9 +2838,18 @@ mod tests {
         // narrative's DEC6/7/10/11 semantics (initiated ∨ (held ∧
         // ¬terminated)) — literal expected values, no simulator involved.
         let golden: [((SymbolId, SymbolId), bool); 12] = [
-            ((fwd, n0), false), ((fwd, n1), true),  ((fwd, n2), false), ((fwd, n3), false),
-            ((bwd, n0), false), ((bwd, n1), false), ((bwd, n2), true),  ((bwd, n3), false),
-            ((spin, n0), false), ((spin, n1), false), ((spin, n2), false), ((spin, n3), true),
+            ((fwd, n0), false),
+            ((fwd, n1), true),
+            ((fwd, n2), false),
+            ((fwd, n3), false),
+            ((bwd, n0), false),
+            ((bwd, n1), false),
+            ((bwd, n2), true),
+            ((bwd, n3), false),
+            ((spin, n0), false),
+            ((spin, n1), false),
+            ((spin, n2), false),
+            ((spin, n3), true),
         ];
         for &((f, t), expected) in &golden {
             let actual = holds_rel.contains(&vec![f, t]);
@@ -2500,8 +2859,8 @@ mod tests {
         // narrative backs: CSR015-023+1).
         assert!(!holds_rel.contains(&vec![spin, n1])); // ¬spinning@n1 (CSR017)
         assert!(!holds_rel.contains(&vec![spin, n2])); // ¬spinning@n2 (CSR020)
-        assert!(holds_rel.contains(&vec![spin, n3]));  //  spinning@n3
-        assert!(holds_rel.contains(&vec![fwd, n1]));   //  forwards@n1
+        assert!(holds_rel.contains(&vec![spin, n3])); //  spinning@n3
+        assert!(holds_rel.contains(&vec![fwd, n1])); //  forwards@n1
     }
 
     // `succ` EDB honesty: when the narrative carries a derived order chain,
@@ -2516,9 +2875,12 @@ mod tests {
         let (ev, fl) = (s("ev"), s("fl"));
         let mut happens = HashMap::new();
         happens.insert(n0, vec![ev]);
-        let initiates = vec![
-            Effect { event: ev, fluent: fl, pos_concurrent: vec![], neg_concurrent: vec![] },
-        ];
+        let initiates = vec![Effect {
+            event: ev,
+            fluent: fl,
+            pos_concurrent: vec![],
+            neg_concurrent: vec![],
+        }];
         let mut succ = HashMap::new();
         succ.insert(n0, n1);
         succ.insert(n1, n2);
@@ -2543,9 +2905,18 @@ mod tests {
         let holds_rel = model.get(&pid("holdsAt")).cloned().unwrap_or_default();
         // ev@n0 initiates fl; succ(n0,n1) ⇒ fl holds at n1; succ(n1,n2) ⇒
         // fl still holds at n2 (inertia, nothing terminates it).
-        assert!(holds_rel.contains(&vec![fl, n1]), "fl must hold at n1 via the derived succ edge");
-        assert!(holds_rel.contains(&vec![fl, n2]), "fl must persist to n2 via inertia over the derived succ chain");
-        assert!(!holds_rel.contains(&vec![fl, n0]), "fl must not hold at n0 (initiated only at the n0->n1 step)");
+        assert!(
+            holds_rel.contains(&vec![fl, n1]),
+            "fl must hold at n1 via the derived succ edge"
+        );
+        assert!(
+            holds_rel.contains(&vec![fl, n2]),
+            "fl must persist to n2 via inertia over the derived succ chain"
+        );
+        assert!(
+            !holds_rel.contains(&vec![fl, n0]),
+            "fl must not hold at n0 (initiated only at the n0->n1 step)"
+        );
     }
 
     // -- Clark-completion certifier -------------------------------------------
@@ -2567,7 +2938,11 @@ mod tests {
         let mp = ModelProgram::build(&sem.syntactic);
 
         for r in ["grandparent", "parent", "adoptedBy"] {
-            assert!(mp.certified.contains(&s(r)), "{r} must certify: {:?}", mp.cert_blocked);
+            assert!(
+                mp.certified.contains(&s(r)),
+                "{r} must certify: {:?}",
+                mp.cert_blocked
+            );
         }
 
         // grandparent(Alice, Dave) is absent (Alice's chain ends at Carol;
@@ -2575,27 +2950,53 @@ mod tests {
         // — the grandparent rule and the parent-via-adoption rule.
         let mut stats = ModelStats::default();
         let cited = mp
-            .complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("grandparent"),
+                &[s("Alice"), s("Dave")],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("certified absence must decide the negative");
-        let rule_sids: Vec<SentenceId> =
-            mp.program.rules.iter().filter_map(|r| r.sid).collect();
+        let rule_sids: Vec<SentenceId> = mp.program.rules.iter().filter_map(|r| r.sid).collect();
         assert_eq!(rule_sids.len(), 2, "two extracted rules define the cone");
         for sid in &rule_sids {
-            assert!(cited.contains(sid), "completion citation missing a defining rule sid");
+            assert!(
+                cited.contains(sid),
+                "completion citation missing a defining rule sid"
+            );
         }
         assert_eq!(cited.len(), 2, "nothing beyond the defining rules is cited");
         assert_eq!(stats.answered, 1);
 
         // Present tuples decide nothing (both are model-derived).
         assert!(mp
-            .complete_absent(s("grandparent"), &[s("Alice"), s("Carol")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("grandparent"),
+                &[s("Alice"), s("Carol")],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
         assert!(mp
-            .complete_absent(s("grandparent"), &[s("Bob"), s("Dave")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("grandparent"),
+                &[s("Bob"), s("Dave")],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
         // An uncertified (unknown) relation decides nothing.
         assert!(mp
-            .complete_absent(s("instance"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("instance"),
+                &[s("Alice"), s("Dave")],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
     }
 
@@ -2627,8 +3028,14 @@ mod tests {
 
         let mut stats = ModelStats::default();
         assert!(
-            mp.complete_absent(s("grandparent"), &[s("Alice"), s("Dave")], None, &mut stats, 250_000)
-                .is_none(),
+            mp.complete_absent(
+                s("grandparent"),
+                &[s("Alice"), s("Dave")],
+                None,
+                &mut stats,
+                250_000
+            )
+            .is_none(),
             "no negative may be decided for a blocked relation"
         );
     }
@@ -2650,8 +3057,14 @@ mod tests {
         let mp = ModelProgram::build(&sem.syntactic);
 
         assert!(!mp.certified.contains(&s("r")), "skipped-head block on r");
-        assert!(!mp.certified.contains(&s("q")), "one-step body chain decertifies q");
-        assert!(!mp.certified.contains(&s("top")), "two-step body chain decertifies top");
+        assert!(
+            !mp.certified.contains(&s("q")),
+            "one-step body chain decertifies q"
+        );
+        assert!(
+            !mp.certified.contains(&s("top")),
+            "two-step body chain decertifies top"
+        );
         assert!(mp.cert_blocked.body_chain >= 2, "{:?}", mp.cert_blocked);
         // The clean chain is untouched by the shrink.
         assert!(mp.certified.contains(&s("u")));
@@ -2671,17 +3084,35 @@ mod tests {
         let sem = kif_layer(kif);
         let mp = ModelProgram::build(&sem.syntactic);
 
-        assert!(!mp.certified.contains(&mp.roles.instance), "instance is oracle-owned");
-        assert!(!mp.certified.contains(&mp.roles.subclass), "subclass is oracle-owned");
+        assert!(
+            !mp.certified.contains(&mp.roles.instance),
+            "instance is oracle-owned"
+        );
+        assert!(
+            !mp.certified.contains(&mp.roles.subclass),
+            "subclass is oracle-owned"
+        );
         assert!(mp.cert_blocked.role >= 2, "{:?}", mp.cert_blocked);
 
         let mut stats = ModelStats::default();
         // Neither the entailed nor the un-entailed instance atom is decided.
         assert!(mp
-            .complete_absent(s("instance"), &[s("Rex"), s("Animal")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("instance"),
+                &[s("Rex"), s("Animal")],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
         assert!(mp
-            .complete_absent(s("instance"), &[s("Rex"), s("Wolf")], None, &mut stats, 250_000)
+            .complete_absent(
+                s("instance"),
+                &[s("Rex"), s("Wolf")],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
     }
 
@@ -2703,17 +3134,62 @@ mod tests {
         happens.insert(n1, vec![pull]);
         happens.insert(n2, vec![pull, push]);
         let initiates = vec![
-            Effect { event: push, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![push], neg_concurrent: vec![] },
+            Effect {
+                event: push,
+                fluent: fwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: bwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
+            Effect {
+                event: pull,
+                fluent: spin,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
         ];
         let terminates = vec![
-            Effect { event: push, fluent: bwd,  pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![],     neg_concurrent: vec![push] },
-            Effect { event: pull, fluent: fwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: pull, fluent: bwd,  pos_concurrent: vec![push], neg_concurrent: vec![] },
-            Effect { event: push, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![pull] },
-            Effect { event: pull, fluent: spin, pos_concurrent: vec![],     neg_concurrent: vec![push] },
+            Effect {
+                event: push,
+                fluent: bwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: fwd,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
+            Effect {
+                event: pull,
+                fluent: fwd,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
+            Effect {
+                event: pull,
+                fluent: bwd,
+                pos_concurrent: vec![push],
+                neg_concurrent: vec![],
+            },
+            Effect {
+                event: push,
+                fluent: spin,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![pull],
+            },
+            Effect {
+                event: pull,
+                fluent: spin,
+                pos_concurrent: vec![],
+                neg_concurrent: vec![push],
+            },
         ];
         let nar = Narrative {
             times: vec![n0, n1, n2, n3],
@@ -2731,18 +3207,39 @@ mod tests {
 
         let prog = narrative_to_program(&nar);
         let clusters = cluster::partition(&prog);
-        let complete: HashSet<Pred> =
-            clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
+        let complete: HashSet<Pred> = clusters
+            .iter()
+            .flat_map(|c| c.preds.iter().copied())
+            .collect();
         let roles = crate::semantics::roles::TaxonomyRoles::default();
         let role_syms: HashSet<Pred> = [
-            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
-            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
+            roles.instance,
+            roles.subclass,
+            roles.subrelation,
+            roles.transitive,
+            roles.symmetric,
+            roles.domain,
+            roles.range,
+            roles.disjoint,
+            roles.partition,
         ]
         .into_iter()
         .collect();
-        let (certified, cert_blocked) =
-            certify(&prog, &complete, &HashSet::new(), false, &role_syms, &HashSet::new());
-        for p in ["holdsAt", "initiated", "terminated", "initiates", "terminates"] {
+        let (certified, cert_blocked) = certify(
+            &prog,
+            &complete,
+            &HashSet::new(),
+            false,
+            &role_syms,
+            &HashSet::new(),
+        );
+        for p in [
+            "holdsAt",
+            "initiated",
+            "terminated",
+            "initiates",
+            "terminates",
+        ] {
             assert!(
                 certified.contains(&pid(p)),
                 "{p} must certify on the narrative program: {cert_blocked:?}"
@@ -2767,9 +3264,18 @@ mod tests {
 
         // The same golden grid as `ec_kernel_holds_grid`.
         let golden: [((SymbolId, SymbolId), bool); 12] = [
-            ((fwd, n0), false), ((fwd, n1), true),  ((fwd, n2), false), ((fwd, n3), false),
-            ((bwd, n0), false), ((bwd, n1), false), ((bwd, n2), true),  ((bwd, n3), false),
-            ((spin, n0), false), ((spin, n1), false), ((spin, n2), false), ((spin, n3), true),
+            ((fwd, n0), false),
+            ((fwd, n1), true),
+            ((fwd, n2), false),
+            ((fwd, n3), false),
+            ((bwd, n0), false),
+            ((bwd, n1), false),
+            ((bwd, n2), true),
+            ((bwd, n3), false),
+            ((spin, n0), false),
+            ((spin, n1), false),
+            ((spin, n2), false),
+            ((spin, n3), true),
         ];
         let mut stats = ModelStats::default();
         for &((f, t), expected) in &golden {
@@ -2788,7 +3294,12 @@ mod tests {
     // =======================================================================
 
     /// Root sid of the flat binary fact `(head a b)`.
-    fn find_fact(syn: &crate::syntactic::SyntacticLayer, head: &str, a: &str, b: &str) -> SentenceId {
+    fn find_fact(
+        syn: &crate::syntactic::SyntacticLayer,
+        head: &str,
+        a: &str,
+        b: &str,
+    ) -> SentenceId {
         use crate::types::Element;
         syn.by_head_id(&s(head))
             .into_iter()
@@ -2814,11 +3325,25 @@ mod tests {
              (instance ssn SingleValuedRelation)\n",
         );
         let mp = ModelProgram::build(&sem.syntactic);
-        let age = mp.program.egds.iter().find(|e| e.rel == s("age")).expect("age EGD mined");
-        assert_eq!((age.key_pos, age.val_pos), (0, 1), "key at arg1, values at arg2");
+        let age = mp
+            .program
+            .egds
+            .iter()
+            .find(|e| e.rel == s("age"))
+            .expect("age EGD mined");
+        assert_eq!(
+            (age.key_pos, age.val_pos),
+            (0, 1),
+            "key at arg1, values at arg2"
+        );
         assert!(age.sid.is_some(), "uniqueness clause cited");
         assert!(age.key_guards.is_empty() && age.val_guards.is_empty());
-        let ssn = mp.program.egds.iter().find(|e| e.rel == s("ssn")).expect("ssn EGD mined");
+        let ssn = mp
+            .program
+            .egds
+            .iter()
+            .find(|e| e.rel == s("ssn"))
+            .expect("ssn EGD mined");
         assert_eq!((ssn.key_pos, ssn.val_pos), (0, 1));
         assert!(ssn.sid.is_some(), "declaration cited");
 
@@ -2828,7 +3353,12 @@ mod tests {
             "egd_or.p",
         );
         let mp = ModelProgram::build(&sem.syntactic);
-        let e = mp.program.egds.iter().find(|e| e.rel == s("age")).expect("or-shape mined");
+        let e = mp
+            .program
+            .egds
+            .iter()
+            .find(|e| e.rel == s("age"))
+            .expect("or-shape mined");
         assert_eq!((e.key_pos, e.val_pos), (0, 1));
         assert!(e.sid.is_some());
 
@@ -2839,17 +3369,24 @@ mod tests {
                  (equal ?P1 ?P2))\n",
         );
         let mp = ModelProgram::build(&sem.syntactic);
-        let e = mp.program.egds.iter().find(|e| e.rel == s("part")).expect("guarded shape mined");
+        let e = mp
+            .program
+            .egds
+            .iter()
+            .find(|e| e.rel == s("part"))
+            .expect("guarded shape mined");
         assert_eq!((e.key_pos, e.val_pos), (1, 0), "keyed on the whole (arg2)");
         assert_eq!(e.key_guards, vec![s("AtomicNucleus")]);
         assert!(e.val_guards.is_empty());
 
         // A guard over an UNRELATED variable disqualifies the sentence.
-        let sem = kif_layer(
-            "(=> (and (age ?P ?A1) (age ?P ?A2) (instance ?Q Human)) (equal ?A1 ?A2))\n",
-        );
+        let sem =
+            kif_layer("(=> (and (age ?P ?A1) (age ?P ?A2) (instance ?Q Human)) (equal ?A1 ?A2))\n");
         let mp = ModelProgram::build(&sem.syntactic);
-        assert!(mp.program.egds.is_empty(), "unrelated-guard sentence skipped");
+        assert!(
+            mp.program.egds.is_empty(),
+            "unrelated-guard sentence skipped"
+        );
     }
 
     // -- GATE: EGD merge with a 2-hop citation chain (both witnesses + EGD
@@ -2893,9 +3430,19 @@ mod tests {
         // match, and the returned row must carry the ORIGINAL constant.
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(s("AgeA"))], None, &mut stats, 250_000)
+            .answer_stats(
+                s("ageOf"),
+                &[DTerm::Const(s("Bob")), DTerm::Const(s("AgeA"))],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("ageOf answers");
-        assert_eq!(rows, vec![vec![s("Bob"), s("AgeA")]], "original goal constant kept");
+        assert_eq!(
+            rows,
+            vec![vec![s("Bob"), s("AgeA")]],
+            "original goal constant kept"
+        );
 
         // All three symbols share one rep (eq_rep API).
         let rep = mp.eq_rep(&prov, s("AgeA"));
@@ -2913,7 +3460,10 @@ mod tests {
             (uniq_root, "uniqueness clause"),
             (svr_decl, "SingleValuedRelation declaration"),
         ] {
-            assert!(chain.contains(&sid), "2-hop chain missing {what}: {chain:?}");
+            assert!(
+                chain.contains(&sid),
+                "2-hop chain missing {what}: {chain:?}"
+            );
         }
 
         // Probe with a NON-REP constant (which of the three wins rep-hood is
@@ -2927,11 +3477,24 @@ mod tests {
             .unwrap();
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("ageOf"), &[DTerm::Const(s("Bob")), DTerm::Const(probe)], None, &mut stats, 250_000)
+            .answer_stats(
+                s("ageOf"),
+                &[DTerm::Const(s("Bob")), DTerm::Const(probe)],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("non-rep goal constant still answers");
-        assert_eq!(rows, vec![vec![s("Bob"), probe]], "original (non-rep) goal constant kept");
+        assert_eq!(
+            rows,
+            vec![vec![s("Bob"), probe]],
+            "original (non-rep) goal constant kept"
+        );
         let cited = mp.cite(&prov, s("ageOf"), &vec![s("Bob"), probe]);
-        assert!(cited.contains(&f_age_a) || cited.contains(&f_age_b), "age leaf cited: {cited:?}");
+        assert!(
+            cited.contains(&f_age_a) || cited.contains(&f_age_b),
+            "age leaf cited: {cited:?}"
+        );
         assert!(
             cited.contains(&uniq_root) || cited.contains(&svr_decl),
             "an EGD axiom is cited when the probe crosses a merge: {cited:?}"
@@ -2947,15 +3510,22 @@ mod tests {
         p.fact_src(s("val"), vec![s("k"), s("1")], f1);
         p.fact_src(s("val"), vec![s("k"), s("2")], f2);
         p.egds.push(extract::Egd {
-            rel: s("val"), key_pos: 0, val_pos: 1,
-            key_guards: Vec::new(), val_guards: Vec::new(), sid: Some(u1),
+            rel: s("val"),
+            key_pos: 0,
+            val_pos: 1,
+            key_guards: Vec::new(),
+            val_guards: Vec::new(),
+            sid: Some(u1),
         });
         p.rigid.insert(s("1"));
         p.rigid.insert(s("2"));
         match p.evaluate_within(usize::MAX, None) {
             Err(ModelError::Inconsistent(chain)) => {
                 for (sid, what) in [(f1, "witness 1"), (f2, "witness 2"), (u1, "EGD axiom")] {
-                    assert!(chain.contains(&sid), "conflict chain missing {what}: {chain:?}");
+                    assert!(
+                        chain.contains(&sid),
+                        "conflict chain missing {what}: {chain:?}"
+                    );
                 }
             }
             other => panic!("expected Inconsistent, got {other:?}"),
@@ -2963,8 +3533,10 @@ mod tests {
 
         // Surfaced in ModelStats through the answer path.
         let clusters = cluster::partition(&p);
-        let complete: HashSet<Pred> =
-            clusters.iter().flat_map(|c| c.preds.iter().copied()).collect();
+        let complete: HashSet<Pred> = clusters
+            .iter()
+            .flat_map(|c| c.preds.iter().copied())
+            .collect();
         let mp = ModelProgram {
             monotone: cluster::positive_program(&p),
             program: p.clone(),
@@ -2978,7 +3550,13 @@ mod tests {
         };
         let mut stats = ModelStats::default();
         assert!(mp
-            .answer_stats(s("val"), &[DTerm::Const(s("k")), DTerm::Var(0)], None, &mut stats, 250_000)
+            .answer_stats(
+                s("val"),
+                &[DTerm::Const(s("k")), DTerm::Var(0)],
+                None,
+                &mut stats,
+                250_000
+            )
             .is_none());
         assert_eq!(stats.rigid_conflicts, 1, "conflict surfaced in ModelStats");
 
@@ -3007,17 +3585,38 @@ mod tests {
         // Guard UNSATISFIED: no merge.
         let sem = kif_layer(base);
         let mp = ModelProgram::build(&sem.syntactic);
-        let (_, prov) = mp.monotone.evaluate_within(usize::MAX, None).expect("evaluates");
-        assert_ne!(prov.eq.find(s("Pa")), prov.eq.find(s("Pb")), "guard blocks the merge");
+        let (_, prov) = mp
+            .monotone
+            .evaluate_within(usize::MAX, None)
+            .expect("evaluates");
+        assert_ne!(
+            prov.eq.find(s("Pa")),
+            prov.eq.find(s("Pb")),
+            "guard blocks the merge"
+        );
 
         // Guard SATISFIED: merge fires, citing the guarded axiom.
         let kif = format!("{base}(instance Nuc AtomicNucleus)\n");
         let sem = kif_layer(&kif);
         let mp = ModelProgram::build(&sem.syntactic);
-        let (_, prov) = mp.monotone.evaluate_within(usize::MAX, None).expect("evaluates");
-        assert_eq!(prov.eq.find(s("Pa")), prov.eq.find(s("Pb")), "guarded EGD fires");
+        let (_, prov) = mp
+            .monotone
+            .evaluate_within(usize::MAX, None)
+            .expect("evaluates");
+        assert_eq!(
+            prov.eq.find(s("Pa")),
+            prov.eq.find(s("Pb")),
+            "guarded EGD fires"
+        );
         let chain = prov.explain_eq(s("Pa"), s("Pb"));
-        let uniq = mp.program.egds.iter().find(|e| e.rel == s("part")).unwrap().sid.unwrap();
+        let uniq = mp
+            .program
+            .egds
+            .iter()
+            .find(|e| e.rel == s("part"))
+            .unwrap()
+            .sid
+            .unwrap();
         assert!(chain.contains(&uniq), "guarded axiom cited: {chain:?}");
     }
 
@@ -3031,13 +3630,22 @@ mod tests {
         p.fact(s("val"), vec![s("k"), s("b")]);
         p.fact(s("dom"), vec![s("x")]);
         p.egds.push(extract::Egd {
-            rel: s("val"), key_pos: 0, val_pos: 1,
-            key_guards: Vec::new(), val_guards: Vec::new(), sid: None,
+            rel: s("val"),
+            key_pos: 0,
+            val_pos: 1,
+            key_guards: Vec::new(),
+            val_guards: Vec::new(),
+            sid: None,
         });
         // q(X) :- dom(X), not flagged(X)  — stratifiable, but negation +
         // a firing EGD is refused.
-        p.rule(atom("q", vec![v(0)]),
-               vec![pos(atom("dom", vec![v(0)])), neg(atom("flagged", vec![v(0)]))]);
+        p.rule(
+            atom("q", vec![v(0)]),
+            vec![
+                pos(atom("dom", vec![v(0)])),
+                neg(atom("flagged", vec![v(0)])),
+            ],
+        );
         assert_eq!(p.evaluate(), Err(ModelError::Unstratifiable));
     }
 
@@ -3064,7 +3672,13 @@ mod tests {
 
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("r"), &[DTerm::Const(s("n0")), DTerm::Const(s("n1000"))], None, &mut stats, 250_000)
+            .answer_stats(
+                s("r"),
+                &[DTerm::Const(s("n0")), DTerm::Const(s("n1000"))],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("reachability answers");
         assert_eq!(rows, vec![vec![s("n0"), s("n1000")]]);
         assert!(
@@ -3076,12 +3690,19 @@ mod tests {
         // The BUILTIN citation: the declaring sid + every chain edge.
         let decl = find_fact(&sem.syntactic, "instance", "r", "TransitiveRelation");
         let cited = mp.cite(&prov, s("r"), &vec![s("n0"), s("n1000")]);
-        assert!(cited.contains(&decl), "TransitiveRelation declaration cited");
+        assert!(
+            cited.contains(&decl),
+            "TransitiveRelation declaration cited"
+        );
         let e0 = find_fact(&sem.syntactic, "r", "n0", "n1");
         let e999 = find_fact(&sem.syntactic, "r", "n999", "n1000");
         assert!(cited.contains(&e0), "first chain edge cited");
         assert!(cited.contains(&e999), "last chain edge cited");
-        assert_eq!(cited.len(), 1001, "1000 edges + the declaration, nothing else");
+        assert_eq!(
+            cited.len(),
+            1001,
+            "1000 edges + the declaration, nothing else"
+        );
     }
 
     // -- GATE: a single dense rule-firing must respect the deadline (task
@@ -3144,7 +3765,13 @@ mod tests {
         let mp = ModelProgram::build(&sem.syntactic);
         let mut stats = ModelStats::default();
         let (rows, prov) = mp
-            .answer_stats(s("r"), &[DTerm::Const(s("a")), DTerm::Var(0)], None, &mut stats, 250_000)
+            .answer_stats(
+                s("r"),
+                &[DTerm::Const(s("a")), DTerm::Var(0)],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("closure answers");
         let mut got: Vec<Tuple> = rows.clone();
         got.sort();
@@ -3161,7 +3788,11 @@ mod tests {
         let e2 = find_fact(&sem.syntactic, "r", "b", "c");
         let e3 = find_fact(&sem.syntactic, "r", "c", "d");
         let cited = mp.cite(&prov, s("r"), &vec![s("a"), s("d")]);
-        assert_eq!(cited, vec![e1, e2, e3, decl], "path edges in order, then the declaration");
+        assert_eq!(
+            cited,
+            vec![e1, e2, e3, decl],
+            "path edges in order, then the declaration"
+        );
     }
 
     // -- Builtin body-literal resolution inside the kernel (a rule reads the
@@ -3183,19 +3814,31 @@ mod tests {
         let rows = mp
             .answer(s("linked"), &[DTerm::Const(s("a")), DTerm::Var(0)], None)
             .expect("linked answers");
-        assert!(rows.contains(&vec![s("a"), s("c")]), "closure through the body literal: {rows:?}");
+        assert!(
+            rows.contains(&vec![s("a"), s("c")]),
+            "closure through the body literal: {rows:?}"
+        );
 
         // Reverse: goal linked(?, c) — the r-literal resolves bound-right.
         let rows = mp
             .answer(s("linked"), &[DTerm::Var(0), DTerm::Const(s("c"))], None)
             .expect("linked answers (reverse)");
-        assert!(rows.contains(&vec![s("a"), s("c")]), "reverse closure: {rows:?}");
+        assert!(
+            rows.contains(&vec![s("a"), s("c")]),
+            "reverse closure: {rows:?}"
+        );
 
         // Citation of the closure-derived head: the rule root + both edges +
         // the declaring sid.
         let mut stats = ModelStats::default();
         let (_, prov) = mp
-            .answer_stats(s("linked"), &[DTerm::Const(s("a")), DTerm::Const(s("c"))], None, &mut stats, 250_000)
+            .answer_stats(
+                s("linked"),
+                &[DTerm::Const(s("a")), DTerm::Const(s("c"))],
+                None,
+                &mut stats,
+                250_000,
+            )
             .expect("ground goal answers");
         let cited = mp.cite(&prov, s("linked"), &vec![s("a"), s("c")]);
         let decl = find_fact(&sem.syntactic, "instance", "r", "TransitiveRelation");
@@ -3212,10 +3855,15 @@ mod tests {
             })
             .expect("rule root");
         for (sid, what) in [
-            (e1, "edge (r a b)"), (e2, "edge (r b c)"),
-            (decl, "TransitiveRelation declaration"), (rule_root, "the => rule"),
+            (e1, "edge (r a b)"),
+            (e2, "edge (r b c)"),
+            (decl, "TransitiveRelation declaration"),
+            (rule_root, "the => rule"),
         ] {
-            assert!(cited.contains(&sid), "head citation missing {what}: {cited:?}");
+            assert!(
+                cited.contains(&sid),
+                "head citation missing {what}: {cited:?}"
+            );
         }
     }
 
@@ -3240,8 +3888,8 @@ mod tests {
     #[test]
     #[ignore]
     fn headline_full_sumo_instance_cone_under_default_budget() {
-        use crate::semantics::caches::test_support::kif_layer;
         use crate::clock::Instant;
+        use crate::semantics::caches::test_support::kif_layer;
 
         // Load the full KB from the config's constituent list.
         let home = std::env::var("HOME").unwrap_or_default();
@@ -3262,7 +3910,10 @@ mod tests {
                 n_files += 1;
             }
         }
-        assert!(n_files > 10, "expected the full constituent list, got {n_files}");
+        assert!(
+            n_files > 10,
+            "expected the full constituent list, got {n_files}"
+        );
         let t0 = Instant::now();
         let sem = kif_layer(&kif);
         let mp = ModelProgram::build(&sem.syntactic);
@@ -3326,7 +3977,7 @@ mod tests {
                 None,
                 &mut st,
                 true,
-                    250_000,
+                250_000,
             );
             eprintln!(
                 "HEADLINE diag unbounded GROUND: answered={} rows={} budget_used={} elapsed={:?}",
@@ -3350,7 +4001,7 @@ mod tests {
             deadline,
             &mut stats,
             true,
-                    250_000,
+            250_000,
         );
         eprintln!(
             "HEADLINE after (builtin, ground instance membership): answered={} rows={} \
@@ -3359,7 +4010,9 @@ mod tests {
             after.as_ref().map_or(0, |(r, _)| r.len()),
             stats.budget_used,
             t1.elapsed(),
-            stats.unsafe_bails, stats.unstratifiable_bails, stats.budget_overflows,
+            stats.unsafe_bails,
+            stats.unstratifiable_bails,
+            stats.budget_overflows,
         );
         // The goal-side subclass closure (the other half of `refutes`).
         let mut stats_sub = ModelStats::default();
@@ -3371,7 +4024,7 @@ mod tests {
             deadline,
             &mut stats_sub,
             true,
-                    250_000,
+            250_000,
         );
         eprintln!(
             "HEADLINE after (subclass Human cone): answered={} rows={} budget_used={} elapsed={:?}",
@@ -3397,7 +4050,7 @@ mod tests {
                 None,
                 &mut st,
                 true,
-                    250_000,
+                250_000,
             );
             eprintln!(
                 "HEADLINE diag member-bound instance: answered={} rows={} budget_used={} elapsed={:?}",
@@ -3442,7 +4095,7 @@ mod tests {
             deadline,
             &mut stats_b,
             true,
-                    250_000,
+            250_000,
         );
         eprintln!(
             "HEADLINE before (schema rules, same ground query): answered={} \
@@ -3462,7 +4115,7 @@ mod tests {
             deadline,
             &mut stats_bs,
             true,
-                    250_000,
+            250_000,
         );
         eprintln!(
             "HEADLINE before (schema rules, subclass Human cone): answered={} rows={} \
@@ -3515,14 +4168,21 @@ mod tests {
         // (b) every discovered cluster is stratifiable (evaluates clean).
         assert!(!mp.clusters.is_empty());
         for c in &mp.clusters {
-            assert!(c.program.evaluate().is_ok(), "cluster must evaluate: {:?}", c.preds);
+            assert!(
+                c.program.evaluate().is_ok(),
+                "cluster must evaluate: {:?}",
+                c.preds
+            );
         }
 
         // (c) never complete/certified — its stored extension is the
         // un-closed base — and the body fixpoint decertifies dependents.
         assert!(!mp.complete.contains(&s("r")), "builtin not complete");
         assert!(!mp.certified.contains(&s("r")), "builtin not certified");
-        assert!(!mp.certified.contains(&s("linked")), "dependent decertified (body fixpoint)");
+        assert!(
+            !mp.certified.contains(&s("linked")),
+            "dependent decertified (body fixpoint)"
+        );
         assert!(mp.cert_blocked.builtin >= 1, "{:?}", mp.cert_blocked);
     }
 }

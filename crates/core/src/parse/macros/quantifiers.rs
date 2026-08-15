@@ -37,14 +37,15 @@ pub fn collapse_quantifiers(node: &mut AstNode) {
             _ => return,
         };
         match &elements[2] {
-            AstNode::List { elements: inner_els, .. } if inner_els.len() == 3 => {
-                match &inner_els[0] {
-                    AstNode::Operator { op: inner_op, .. } => {
-                        std::mem::discriminant(inner_op) == outer_disc
-                    }
-                    _ => false,
+            AstNode::List {
+                elements: inner_els,
+                ..
+            } if inner_els.len() == 3 => match &inner_els[0] {
+                AstNode::Operator { op: inner_op, .. } => {
+                    std::mem::discriminant(inner_op) == outer_disc
                 }
-            }
+                _ => false,
+            },
             _ => false,
         }
     };
@@ -53,19 +54,35 @@ pub fn collapse_quantifiers(node: &mut AstNode) {
         return;
     }
 
-    let Some(inner_list) = elements.pop() else { unreachable!("shape already verified above") };
+    let Some(inner_list) = elements.pop() else {
+        unreachable!("shape already verified above")
+    };
 
-    let AstNode::List { elements: mut inner_els, .. } = inner_list else {
+    let AstNode::List {
+        elements: mut inner_els,
+        ..
+    } = inner_list
+    else {
         unreachable!("shape already verified above")
     };
 
     // inner_els: [inner_op, inner_var_list, inner_body]
-    let Some(inner_body) = inner_els.pop() else { unreachable!("shape already verified above") };
-    let Some(inner_var_list) = inner_els.pop() else { unreachable!("shape already verified above") };
+    let Some(inner_body) = inner_els.pop() else {
+        unreachable!("shape already verified above")
+    };
+    let Some(inner_var_list) = inner_els.pop() else {
+        unreachable!("shape already verified above")
+    };
 
     if let (
-        AstNode::List { elements: outer_vars, .. },
-        AstNode::List { elements: inner_vars, .. },
+        AstNode::List {
+            elements: outer_vars,
+            ..
+        },
+        AstNode::List {
+            elements: inner_vars,
+            ..
+        },
     ) = (&mut elements[1], inner_var_list)
     {
         outer_vars.extend(inner_vars);
@@ -87,7 +104,10 @@ pub fn strip_top_level_forall(node: &mut AstNode) {
                 if elements.len() == 3
                     && matches!(
                         elements[0],
-                        AstNode::Operator { op: OpKind::ForAll, .. }
+                        AstNode::Operator {
+                            op: OpKind::ForAll,
+                            ..
+                        }
                     ) =>
             {
                 let body = elements.remove(2);
@@ -108,16 +128,25 @@ mod tests {
     }
 
     fn dummy_symbol(name: &str) -> AstNode {
-        AstNode::Symbol { name: name.to_owned(), span: dummy_span() }
+        AstNode::Symbol {
+            name: name.to_owned(),
+            span: dummy_span(),
+        }
     }
 
     #[test]
     fn single_forall_stripped() {
         let body = dummy_symbol("p");
-        let var_list = AstNode::List { elements: vec![], span: dummy_span() };
+        let var_list = AstNode::List {
+            elements: vec![],
+            span: dummy_span(),
+        };
         let mut node = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::ForAll, span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::ForAll,
+                    span: dummy_span(),
+                },
                 var_list,
                 body,
             ],
@@ -132,16 +161,28 @@ mod tests {
         let body = dummy_symbol("p");
         let inner = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::ForAll, span: dummy_span() },
-                AstNode::List { elements: vec![], span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::ForAll,
+                    span: dummy_span(),
+                },
+                AstNode::List {
+                    elements: vec![],
+                    span: dummy_span(),
+                },
                 body,
             ],
             span: dummy_span(),
         };
         let mut node = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::ForAll, span: dummy_span() },
-                AstNode::List { elements: vec![], span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::ForAll,
+                    span: dummy_span(),
+                },
+                AstNode::List {
+                    elements: vec![],
+                    span: dummy_span(),
+                },
                 inner,
             ],
             span: dummy_span(),
@@ -153,10 +194,16 @@ mod tests {
     #[test]
     fn exists_at_top_not_stripped() {
         let body = dummy_symbol("p");
-        let var_list = AstNode::List { elements: vec![], span: dummy_span() };
+        let var_list = AstNode::List {
+            elements: vec![],
+            span: dummy_span(),
+        };
         let mut node = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::Exists, span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::Exists,
+                    span: dummy_span(),
+                },
                 var_list,
                 body,
             ],
@@ -172,15 +219,24 @@ mod tests {
         // (=> (forall ...) p) — the forall is not at the top level.
         let inner_forall = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::ForAll, span: dummy_span() },
-                AstNode::List { elements: vec![], span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::ForAll,
+                    span: dummy_span(),
+                },
+                AstNode::List {
+                    elements: vec![],
+                    span: dummy_span(),
+                },
                 dummy_symbol("q"),
             ],
             span: dummy_span(),
         };
         let mut node = AstNode::List {
             elements: vec![
-                AstNode::Operator { op: OpKind::Implies, span: dummy_span() },
+                AstNode::Operator {
+                    op: OpKind::Implies,
+                    span: dummy_span(),
+                },
                 inner_forall,
                 dummy_symbol("p"),
             ],

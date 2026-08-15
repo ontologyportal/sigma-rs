@@ -54,16 +54,16 @@
 
 use std::collections::HashSet;
 
-use crate::SentenceId;
 use crate::progress::ProveCtx;
 use crate::prover::{ProverResult, ProverStatus};
 use crate::semantics::types::Scope;
+use crate::SentenceId;
 
-use crate::layer::TopLayer;
-use super::{Conjecture, ProverLayer};
 use super::clause::PClause;
 use super::clausify::clausify_negated_conjunction_lossy;
 use super::prover::{NativeOpts, NativeProver, RunVerdict};
+use super::{Conjecture, ProverLayer};
+use crate::layer::TopLayer;
 
 impl<S: TopLayer + 'static> ProverLayer<S> {
     /// One projected prover run over a harvested belief base.
@@ -92,9 +92,9 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
     pub(crate) fn doxastic_project(
         &self,
         contents: &[SentenceId],
-        query:    Option<Vec<crate::AstNode>>,
-        opts:     NativeOpts,
-        ctx:      &ProveCtx,
+        query: Option<Vec<crate::AstNode>>,
+        opts: NativeOpts,
+        ctx: &ProveCtx,
     ) -> ProverResult {
         let is_ask = query.is_some();
 
@@ -108,18 +108,25 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                 let sents = self.intern_conjecture_native(&normalized);
                 if sents.is_empty() {
                     return ProverResult {
-                        status:     ProverStatus::Unknown,
+                        status: ProverStatus::Unknown,
                         raw_output: "No query sentence parsed".into(),
                         ..Default::default()
                     };
                 }
                 let dropped = norm_dropped + normalized.len().saturating_sub(sents.len());
-                Some(Conjecture { sents, seed_syms, dropped })
+                Some(Conjecture {
+                    sents,
+                    seed_syms,
+                    dropped,
+                })
             }
         };
         let (conjecture_clauses, conj_lossy): (Vec<PClause>, bool) = match &conj {
             Some(c) => clausify_negated_conjunction_lossy(
-                &self.semantic().syntactic, &self.atoms, &c.sents),
+                &self.semantic().syntactic,
+                &self.atoms,
+                &c.sents,
+            ),
             None => (Vec::new(), false),
         };
 
@@ -160,7 +167,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
             }
             prover.add_conjecture_clauses(
                 &conjecture_clauses,
-                conj.as_ref().and_then(|c| c.sents.first().map(|(_, sid)| *sid)),
+                conj.as_ref()
+                    .and_then(|c| c.sents.first().map(|(_, sid)| *sid)),
             );
         } else {
             for sid in contents {
@@ -179,10 +187,12 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // Input-completeness: a content that failed to clausify
         // (unsupported shape / capacity) is a missing belief — any
         // confident "no"/"consistent" verdict below is withheld.
-        let failed_roots = contents.iter().filter(|s| self.root_load_failed(**s)).count();
-        let input_load_failures = failed_roots
-            + conj.as_ref().map_or(0, |c| c.dropped)
-            + usize::from(conj_lossy);
+        let failed_roots = contents
+            .iter()
+            .filter(|s| self.root_load_failed(**s))
+            .count();
+        let input_load_failures =
+            failed_roots + conj.as_ref().map_or(0, |c| c.dropped) + usize::from(conj_lossy);
 
         // Harvest distinct input contradictions (deduped by implicated
         // source contents) — the cited transcripts an Inconsistent
@@ -191,8 +201,7 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         let mut seen_culprits: HashSet<Vec<SentenceId>> = HashSet::new();
         for &cid in &prover.input_contradiction_ids {
             let steps = super::proof::extract_proof(&prover, cid);
-            let mut culprits: Vec<SentenceId> =
-                steps.iter().filter_map(|s| s.source_sid).collect();
+            let mut culprits: Vec<SentenceId> = steps.iter().filter_map(|s| s.source_sid).collect();
             culprits.sort_unstable();
             culprits.dedup();
             if seen_culprits.insert(culprits) {
@@ -226,7 +235,8 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
                     && prover.stats.discarded_deep == 0
                     && prover.stats.slot_lift_failures == 0
                     && (!is_ask || prover.stats.input_contradictions == 0)
-                    && input_load_failures == 0),
+                    && input_load_failures == 0,
+            ),
             _ => None,
         };
 
@@ -236,23 +246,35 @@ impl<S: TopLayer + 'static> ProverLayer<S> {
         // `complete_saturation` — it is a certificate.
         let (status, termination) = if is_ask {
             super::prover::map_verdict(
-                verdict, conjecture_used,
-                prover.opts.strategy.strict_saturation, complete_saturation,
-                super::prover::VerdictMode::Ask)
+                verdict,
+                conjecture_used,
+                prover.opts.strategy.strict_saturation,
+                complete_saturation,
+                super::prover::VerdictMode::Ask,
+            )
         } else if found > 0 {
             (ProverStatus::Inconsistent, None)
         } else {
             super::prover::map_verdict(
-                verdict, false, false, complete_saturation,
-                super::prover::VerdictMode::Consistency)
+                verdict,
+                false,
+                false,
+                complete_saturation,
+                super::prover::VerdictMode::Consistency,
+            )
         };
 
         let raw = format!(
             "doxastic projection ({}; {} believed contents): {:?} after {} steps; \
              {} clauses, {} distinct contradiction(s) ({} total occurrences)",
             if is_ask { "ask" } else { "consistency" },
-            contents.len(), verdict, steps, prover.clauses.len(),
-            found, prover.stats.input_contradictions);
+            contents.len(),
+            verdict,
+            steps,
+            prover.clauses.len(),
+            found,
+            prover.stats.input_contradictions
+        );
         ctx.debug(raw.clone());
 
         let mut result = ProverResult {

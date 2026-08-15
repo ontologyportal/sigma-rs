@@ -1,9 +1,7 @@
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use sigmakee_rs_sdk::{
-    Diagnostic, Span, TptpLang,
-};
+use sigmakee_rs_sdk::{Diagnostic, Span, TptpLang};
 
 // #[cfg(feature = "server")]
 // use crate::cli::args::KbArgs;
@@ -42,7 +40,14 @@ use sigmakee_rs_sdk::{
 pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, Diagnostic)> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
         let span = Span::point(format!("{}", dir.display()), 0, 0, 0);
-        (span.clone(), Diagnostic::new_error("kb", "io-error", format!("cannot read directory '{}': {}", dir.display(), e)))
+        (
+            span.clone(),
+            Diagnostic::new_error(
+                "kb",
+                "io-error",
+                format!("cannot read directory '{}': {}", dir.display(), e),
+            ),
+        )
     })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()
@@ -62,14 +67,25 @@ pub fn read_stdin() -> Option<String> {
     }
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf).ok();
-    if buf.trim().is_empty() { None } else { Some(buf) }
+    if buf.trim().is_empty() {
+        None
+    } else {
+        Some(buf)
+    }
 }
 
 /// File tag used for formulas supplied inline or via stdin.
 pub fn source_tag() -> &'static str {
-    if io::stdin().is_terminal() { "<inline>" } else { "<stdin>" }
+    if io::stdin().is_terminal() {
+        "<inline>"
+    } else {
+        "<stdin>"
+    }
 }
 
 pub fn parse_lang(s: &str) -> TptpLang {
-    match s { "tff" => TptpLang::Tff, _ => TptpLang::Fof }
+    match s {
+        "tff" => TptpLang::Tff,
+        _ => TptpLang::Fof,
+    }
 }

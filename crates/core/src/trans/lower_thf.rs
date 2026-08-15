@@ -41,13 +41,13 @@ use crate::{SentenceId, SymbolId};
 /// constant declarations it needs.  The THF analog of `CachedFormula`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThfCached {
-    pub expr:  ThfExpr,
+    pub expr: ThfExpr,
     pub decls: Vec<ThfConst>,
     /// Definition axioms introduced by lambda lifting (`kdef_<sid>`): each
     /// `KappaFn` lambda becomes a fresh defined predicate closed over its
     /// captured variables — Vampire 5.0.1 proves the lifted (lambda-free)
     /// form directly, while explicit `^`-terms defeat its calculus.
-    pub defs:  Vec<ThfExpr>,
+    pub defs: Vec<ThfExpr>,
 }
 
 /// Why a sentence did not lower to THF.  Structured so exclusions are
@@ -89,7 +89,10 @@ struct ThfDecls {
 impl ThfDecls {
     fn ensure(&mut self, name: &str, sort: HoSort) {
         if self.seen.insert(name.to_string()) {
-            self.list.push(ThfConst { name: name.to_string(), sort });
+            self.list.push(ThfConst {
+                name: name.to_string(),
+                sort,
+            });
         }
     }
 }
@@ -125,7 +128,7 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     pub(crate) fn lower_conjecture_thf(
         &self,
-        sids:  &[SentenceId],
+        sids: &[SentenceId],
         scope: Option<Scope>,
     ) -> Option<ThfCached> {
         if sids.is_empty() {
@@ -147,8 +150,7 @@ impl TranslationLayer {
 
             let mut vids: HashMap<SymbolId, u32> = HashMap::new();
             self.semantic.syntactic.collect_vars(sid, &mut vids);
-            let mut locals: Vec<(SymbolId, u32)> =
-                vids.iter().map(|(k, v)| (*k, *v)).collect();
+            let mut locals: Vec<(SymbolId, u32)> = vids.iter().map(|(k, v)| (*k, *v)).collect();
             locals.sort_by_key(|&(_, l)| l);
             let mut remap: HashMap<u32, u32> = HashMap::new();
             for (sym, local) in locals {
@@ -161,11 +163,16 @@ impl TranslationLayer {
             }
 
             let var_sorts = self.thf_var_sorts(sid, s);
-            let ctx = ThfCtx { scope: s, vars: &var_sorts };
+            let ctx = ThfCtx {
+                scope: s,
+                vars: &var_sorts,
+            };
             let mut body = self.thf_formula(&sentence, &ctx, &mut decls).ok()?;
             remap_thf_vars(&mut body, &remap);
             bodies.push(body);
-            self.semantic.syntactic.collect_bound_vars(sid, true, &mut bound);
+            self.semantic
+                .syntactic
+                .collect_bound_vars(sid, true, &mut bound);
             for (k, v) in var_sorts {
                 // `$o` evidence from any conjunct wins for the shared binder.
                 var_sorts_all
@@ -195,15 +202,19 @@ impl TranslationLayer {
             let sort = var_sorts_all.get(&id).cloned().unwrap_or(HoSort::I);
             expr = ThfExpr::Exists(idx, sort, Box::new(expr));
         }
-        Some(ThfCached { expr, decls: decls.list, defs: decls.defs })
+        Some(ThfCached {
+            expr,
+            decls: decls.list,
+            defs: decls.defs,
+        })
     }
 
     // -- the shared core -------------------------------------------------------
 
     fn lower_thf_inner(
         &self,
-        sid:         SentenceId,
-        scope:       Scope,
+        sid: SentenceId,
+        scope: Scope,
         existential: bool,
     ) -> Result<(ThfCached, HashMap<SymbolId, HoSort>), ThfDrop> {
         let sentence = self
@@ -214,14 +225,19 @@ impl TranslationLayer {
 
         let var_sorts = self.thf_var_sorts(sid, scope);
         let mut decls = ThfDecls::default();
-        let ctx = ThfCtx { scope, vars: &var_sorts };
+        let ctx = ThfCtx {
+            scope,
+            vars: &var_sorts,
+        };
         let body = self.thf_formula(&sentence, &ctx, &mut decls)?;
 
         // Free variables wrap at their inferred sorts.
         let mut all: HashMap<SymbolId, u32> = HashMap::new();
         self.semantic.syntactic.collect_vars(sid, &mut all);
         let mut bound: HashSet<SymbolId> = HashSet::new();
-        self.semantic.syntactic.collect_bound_vars(sid, true, &mut bound);
+        self.semantic
+            .syntactic
+            .collect_bound_vars(sid, true, &mut bound);
         let mut free: Vec<(SymbolId, u32)> = all
             .iter()
             .filter(|(id, _)| !bound.contains(id))
@@ -239,7 +255,11 @@ impl TranslationLayer {
             };
         }
         Ok((
-            ThfCached { expr, decls: decls.list, defs: decls.defs },
+            ThfCached {
+                expr,
+                decls: decls.list,
+                defs: decls.defs,
+            },
             var_sorts,
         ))
     }
@@ -256,7 +276,9 @@ impl TranslationLayer {
             if !seen.insert(s) {
                 continue;
             }
-            let Some(sentence) = syn.sentence(s) else { continue };
+            let Some(sentence) = syn.sentence(s) else {
+                continue;
+            };
             for el in sentence.elements.iter() {
                 if let Element::Sub(sub) = el {
                     stack.push(*sub);
@@ -269,9 +291,7 @@ impl TranslationLayer {
                     // ForAll/Exists and contain Variables at `$i`-binder
                     // positions — skip them.)
                     let body_args: &[Element] = match op {
-                        OpKind::ForAll | OpKind::Exists => {
-                            &sentence.elements[2..]
-                        }
+                        OpKind::ForAll | OpKind::Exists => &sentence.elements[2..],
                         _ => &sentence.elements[1..],
                     };
                     for el in body_args {
@@ -311,8 +331,8 @@ impl TranslationLayer {
     fn thf_formula(
         &self,
         sentence: &Sentence,
-        ctx:      &ThfCtx<'_>,
-        decls:    &mut ThfDecls,
+        ctx: &ThfCtx<'_>,
+        decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         match sentence.elements.first().ok_or(ThfDrop::UnsupportedHead)? {
             Element::Op(op) => self.thf_operator(op.clone(), sentence, ctx, decls),
@@ -323,10 +343,10 @@ impl TranslationLayer {
 
     fn thf_operator(
         &self,
-        op:       OpKind,
+        op: OpKind,
         sentence: &Sentence,
-        ctx:      &ThfCtx<'_>,
-        decls:    &mut ThfDecls,
+        ctx: &ThfCtx<'_>,
+        decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         let args = &sentence.elements[1..];
         match op {
@@ -350,13 +370,29 @@ impl TranslationLayer {
                 decls,
             )?))),
             OpKind::Implies => {
-                let a = self.thf_child_formula(args.first().ok_or(ThfDrop::UnsupportedHead)?, ctx, decls)?;
-                let b = self.thf_child_formula(args.get(1).ok_or(ThfDrop::UnsupportedHead)?, ctx, decls)?;
+                let a = self.thf_child_formula(
+                    args.first().ok_or(ThfDrop::UnsupportedHead)?,
+                    ctx,
+                    decls,
+                )?;
+                let b = self.thf_child_formula(
+                    args.get(1).ok_or(ThfDrop::UnsupportedHead)?,
+                    ctx,
+                    decls,
+                )?;
                 Ok(ThfExpr::Imp(Box::new(a), Box::new(b)))
             }
             OpKind::Iff => {
-                let a = self.thf_child_formula(args.first().ok_or(ThfDrop::UnsupportedHead)?, ctx, decls)?;
-                let b = self.thf_child_formula(args.get(1).ok_or(ThfDrop::UnsupportedHead)?, ctx, decls)?;
+                let a = self.thf_child_formula(
+                    args.first().ok_or(ThfDrop::UnsupportedHead)?,
+                    ctx,
+                    decls,
+                )?;
+                let b = self.thf_child_formula(
+                    args.get(1).ok_or(ThfDrop::UnsupportedHead)?,
+                    ctx,
+                    decls,
+                )?;
                 Ok(ThfExpr::Iff(Box::new(a), Box::new(b)))
             }
             OpKind::Equal => {
@@ -366,26 +402,34 @@ impl TranslationLayer {
             }
             OpKind::ForAll | OpKind::Exists => {
                 let exist = matches!(op, OpKind::Exists);
-                let ids: Vec<(SymbolId, u32)> = match args.first().ok_or(ThfDrop::UnsupportedHead)? {
-                    Element::Sub(vl_sid) => {
-                        let vl = self
-                            .semantic
-                            .syntactic
-                            .sentence(*vl_sid)
-                            .ok_or(ThfDrop::MissingSentence)?;
-                        vl.elements
-                            .iter()
-                            .filter_map(|e| match e {
-                                Element::Variable { id, var_index, is_row: false, .. } => {
-                                    Some((*id, *var_index))
-                                }
-                                _ => None,
-                            })
-                            .collect()
-                    }
-                    _ => Vec::new(),
-                };
-                let body = self.thf_child_formula(args.get(1).ok_or(ThfDrop::UnsupportedHead)?, ctx, decls)?;
+                let ids: Vec<(SymbolId, u32)> =
+                    match args.first().ok_or(ThfDrop::UnsupportedHead)? {
+                        Element::Sub(vl_sid) => {
+                            let vl = self
+                                .semantic
+                                .syntactic
+                                .sentence(*vl_sid)
+                                .ok_or(ThfDrop::MissingSentence)?;
+                            vl.elements
+                                .iter()
+                                .filter_map(|e| match e {
+                                    Element::Variable {
+                                        id,
+                                        var_index,
+                                        is_row: false,
+                                        ..
+                                    } => Some((*id, *var_index)),
+                                    _ => None,
+                                })
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                let body = self.thf_child_formula(
+                    args.get(1).ok_or(ThfDrop::UnsupportedHead)?,
+                    ctx,
+                    decls,
+                )?;
                 let mut f = body;
                 for (id, idx) in ids.into_iter().rev() {
                     let sort = ctx.vars.get(&id).cloned().unwrap_or(HoSort::I);
@@ -403,8 +447,8 @@ impl TranslationLayer {
     /// A child element in FORMULA position.
     fn thf_child_formula(
         &self,
-        el:    &Element,
-        ctx:   &ThfCtx<'_>,
+        el: &Element,
+        ctx: &ThfCtx<'_>,
         decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         match el {
@@ -453,8 +497,8 @@ impl TranslationLayer {
     fn thf_atom(
         &self,
         sentence: &Sentence,
-        ctx:      &ThfCtx<'_>,
-        decls:    &mut ThfDecls,
+        ctx: &ThfCtx<'_>,
+        decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         let head = match sentence.elements.first() {
             Some(Element::Symbol(sym)) => sym,
@@ -471,7 +515,10 @@ impl TranslationLayer {
         let args = &sentence.elements[1..];
         let sig = self
             .ho_signature_scoped(head.id(), ctx.scope)
-            .unwrap_or(HoSignature { args: Vec::new(), ret: None });
+            .unwrap_or(HoSignature {
+                args: Vec::new(),
+                ret: None,
+            });
 
         let name = self.rel_name(head, args.len());
         decls.ensure(&name, sig.arrow_sort(args.len()));
@@ -492,8 +539,8 @@ impl TranslationLayer {
 
     fn thf_term(
         &self,
-        el:    &Element,
-        ctx:   &ThfCtx<'_>,
+        el: &Element,
+        ctx: &ThfCtx<'_>,
         decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         match el {
@@ -560,8 +607,8 @@ impl TranslationLayer {
     /// `KappaFn` lambda former.
     fn thf_sub_term(
         &self,
-        sid:   SentenceId,
-        ctx:   &ThfCtx<'_>,
+        sid: SentenceId,
+        ctx: &ThfCtx<'_>,
         decls: &mut ThfDecls,
     ) -> Result<ThfExpr, ThfDrop> {
         let sentence = self
@@ -582,7 +629,12 @@ impl TranslationLayer {
         // explicit `^`-lambdas defeat its calculus — measured.)
         if head.name().as_ref() == KAPPA_FN {
             let (binder_id, binder_idx) = match sentence.elements.get(1) {
-                Some(Element::Variable { id, var_index, is_row: false, .. }) => (*id, *var_index),
+                Some(Element::Variable {
+                    id,
+                    var_index,
+                    is_row: false,
+                    ..
+                }) => (*id, *var_index),
                 _ => return Err(ThfDrop::UnsupportedHead),
             };
             let body_el = sentence.elements.get(2).ok_or(ThfDrop::UnsupportedHead)?;
@@ -661,7 +713,10 @@ impl TranslationLayer {
             // function application (FOF parity for session-local functions).
             None => {
                 let name = self.rel_name(head, args.len());
-                decls.ensure(&name, HoSort::curry(&vec![HoSort::I; args.len()], HoSort::I));
+                decls.ensure(
+                    &name,
+                    HoSort::curry(&vec![HoSort::I; args.len()], HoSort::I),
+                );
                 let mut lowered = Vec::with_capacity(args.len());
                 for el in args {
                     lowered.push(self.thf_term(el, ctx, decls)?);
@@ -725,9 +780,9 @@ impl TranslationLayer {
     #[cfg(feature = "ask")]
     pub(crate) fn assemble_problem_thf(
         &self,
-        axiom_sids:  &[SentenceId],
-        seed_sids:   &[SentenceId],
-        conjecture:  &[SentenceId],
+        axiom_sids: &[SentenceId],
+        seed_sids: &[SentenceId],
+        conjecture: &[SentenceId],
         query_scope: Option<Scope>,
     ) -> (HoProblem, Vec<SentenceId>) {
         // Same sid-set preparation as the FO assembly.
@@ -741,10 +796,7 @@ impl TranslationLayer {
             seed.extend(seed_sids.iter().copied());
             let mut scope: Vec<SentenceId> = conjecture.to_vec();
             scope.extend(sids.iter().copied());
-            self.instantiate_predvars(
-                &seed, &scope,
-                query_scope.unwrap_or(Scope::Base),
-            )
+            self.instantiate_predvars(&seed, &scope, query_scope.unwrap_or(Scope::Base))
         };
         sids.extend(pv);
         sids.sort_unstable();
@@ -777,14 +829,23 @@ impl TranslationLayer {
                 }
                 ThfEntry::Dropped(reason) => {
                     dropped += 1;
-                    crate::log!(Debug, "sigmakee_rs_core::trans", format!(
-                        "thf: dropped sid {sid}: {reason:?}"));
+                    crate::log!(
+                        Debug,
+                        "sigmakee_rs_core::trans",
+                        format!("thf: dropped sid {sid}: {reason:?}")
+                    );
                 }
             }
         }
         if dropped > 0 {
-            crate::log!(Debug, "sigmakee_rs_core::trans", format!(
-                "thf: {dropped} of {} selected sentences dropped", sids.len()));
+            crate::log!(
+                Debug,
+                "sigmakee_rs_core::trans",
+                format!(
+                    "thf: {dropped} of {} selected sentences dropped",
+                    sids.len()
+                )
+            );
         }
 
         // Conjecture (multi-root conjunction, existential wrap).
@@ -810,10 +871,7 @@ impl TranslationLayer {
             if problem.decls().iter().any(|d| d.name == rel) {
                 // ![A:$i, P:$o, Q:$o]: (rel @ A @ (P & Q)) => ((rel @ A @ P) & (rel @ A @ Q))
                 let app = |arg: ThfExpr| {
-                    ThfExpr::apply(
-                        ThfExpr::Const(rel.to_string()),
-                        vec![ThfExpr::Var(0), arg],
-                    )
+                    ThfExpr::apply(ThfExpr::Const(rel.to_string()), vec![ThfExpr::Var(0), arg])
                 };
                 let lhs = app(ThfExpr::And(vec![ThfExpr::Var(1), ThfExpr::Var(2)]));
                 let rhs = ThfExpr::And(vec![app(ThfExpr::Var(1)), app(ThfExpr::Var(2))]);
@@ -835,7 +893,11 @@ impl TranslationLayer {
         }
 
         // KappaFn comprehension, when the lambda former is in play.
-        if problem.decls().iter().any(|d| d.name == format!("s__{KAPPA_FN}")) {
+        if problem
+            .decls()
+            .iter()
+            .any(|d| d.name == format!("s__{KAPPA_FN}"))
+        {
             let inst = ThfConst {
                 name: "s__instance".to_string(),
                 sort: HoSort::curry(&[HoSort::I, HoSort::I], HoSort::O),

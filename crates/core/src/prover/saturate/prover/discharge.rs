@@ -13,8 +13,8 @@
 // it on unconditionally and `SIGMA_NO_RULE_JOIN=1` forces it off
 // unconditionally, for A/B testing and backward compat.
 
-use std::collections::{HashMap, HashSet};
 use crate::clock::Instant;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::{Element, SentenceId, Symbol, SymbolId};
 
@@ -66,7 +66,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         struct JoinRule {
             /// The Horn-rule clause id — a proof-DAG parent of every head
             /// the rule discharges (renders as "by axiom …").
-            id:   u32,
+            id: u32,
             body: Vec<(SymbolId, Vec<Term>)>,
             head: Term,
         }
@@ -101,7 +101,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 continue; // no body
             }
             let rule_id = c.id;
-            let Some((head_rel, _)) = lit_pattern(head) else { continue };
+            let Some((head_rel, _)) = lit_pattern(head) else {
+                continue;
+            };
             if cov.owns(head_rel) {
                 continue;
             }
@@ -135,7 +137,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         body.len(),
                     );
                 }
-                rules.push(JoinRule { id: rule_id, body, head: head.clone() });
+                rules.push(JoinRule {
+                    id: rule_id,
+                    body,
+                    head: head.clone(),
+                });
             }
         }
 
@@ -166,17 +172,29 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             }
             if ok && !lits.is_empty() {
                 if trace {
-                    let desc: Vec<String> = lits.iter().filter_map(|t| {
-                        lit_pattern(t).map(|(r, a)| format!(
-                            "{}/{}{}",
-                            term_kif(t, self.syn()).split_whitespace().next().unwrap_or("?")
-                                .trim_start_matches('('),
-                            a.len(),
-                            if cov.owns(r) { "[theory]" }
-                            else if !self.head_has_visible_fact(r) { "[nofacts]" }
-                            else { "[facts]" },
-                        ))
-                    }).collect();
+                    let desc: Vec<String> = lits
+                        .iter()
+                        .filter_map(|t| {
+                            lit_pattern(t).map(|(r, a)| {
+                                format!(
+                                    "{}/{}{}",
+                                    term_kif(t, self.syn())
+                                        .split_whitespace()
+                                        .next()
+                                        .unwrap_or("?")
+                                        .trim_start_matches('('),
+                                    a.len(),
+                                    if cov.owns(r) {
+                                        "[theory]"
+                                    } else if !self.head_has_visible_fact(r) {
+                                        "[nofacts]"
+                                    } else {
+                                        "[facts]"
+                                    },
+                                )
+                            })
+                        })
+                        .collect();
                     eprintln!("RULE-JOIN query [{}]", desc.join(", "));
                 }
                 queries.push(JoinQuery { lits });
@@ -255,7 +273,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             // satisfied head this round — collected with only `&self`
             // before the mutating emit pass below.
             let mut produced: Vec<(Term, Vec<SentenceId>, Vec<u32>)> = Vec::new();
-            for r in rules.iter().take(if suppress_rules { 0 } else { rules.len() }) {
+            for r in rules
+                .iter()
+                .take(if suppress_rules { 0 } else { rules.len() })
+            {
                 let mut sols: Vec<HashMap<SymbolId, Term>> = Vec::new();
                 self.join_rec(
                     &r.body,
@@ -374,21 +395,25 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             return;
         }
         let trace = std::env::var_os("SIGMA_ORACLE_TRACE").is_some();
-        let Some((nar, names)) =
-            super::super::eventcalc::parse_narrative(self.syn(), self.scope) else {
+        let Some((nar, names)) = super::super::eventcalc::parse_narrative(self.syn(), self.scope)
+        else {
             return;
         };
         let holds_at = Symbol::from("holdsAt");
         let holds_pred = holds_at.id();
         let prog = super::super::model::narrative_to_program(&nar);
         let Ok((model, prov)) = prog.evaluate_within(usize::MAX, None) else {
-            if trace { eprintln!("EC: program not stratified/safe — bailing"); }
+            if trace {
+                eprintln!("EC: program not stratified/safe — bailing");
+            }
             return;
         };
         let rel = model.get(&holds_pred).cloned().unwrap_or_default();
         // Reconstruct complete state over the fluent×time grid (closed-world:
         // a cell absent from the relation is false).
-        let fluents: HashSet<SymbolId> = nar.initiates.iter()
+        let fluents: HashSet<SymbolId> = nar
+            .initiates
+            .iter()
             .chain(nar.terminates.iter())
             .map(|e| e.fluent)
             .chain(nar.initial.keys().copied())
@@ -402,7 +427,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         if trace {
             eprintln!(
                 "EC: {} times, {} initiates, {} terminates, {} state cells (kernel)",
-                nar.times.len(), nar.initiates.len(), nar.terminates.len(), state.len(),
+                nar.times.len(),
+                nar.initiates.len(),
+                nar.terminates.len(),
+                state.len(),
             );
         }
         // Provenance: a positive cell cites the model's real derivation
@@ -436,9 +464,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             } else {
                 neg_parents.clone()
             };
-            if let Some(id) =
-                self.make(vec![(holds, atom)], Vec::new(), "event_calculus", SUPPORT, None, true)
-            {
+            if let Some(id) = self.make(
+                vec![(holds, atom)],
+                Vec::new(),
+                "event_calculus",
+                SUPPORT,
+                None,
+                true,
+            ) {
                 self.clauses[id as usize].fact_parents.extend(fact_parents);
                 if self.push(Some(id)).is_some() {
                     pushed += 1;
@@ -447,7 +480,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             }
         }
         if trace {
-            eprintln!("EC: {} state cells → {} pushed/activated", state.len(), pushed);
+            eprintln!(
+                "EC: {} state cells → {} pushed/activated",
+                state.len(),
+                pushed
+            );
         }
     }
 
@@ -481,8 +518,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // certified set and blocked-reason breakdown, recorded once per run.
         self.stats.model_certified_relations = mp.certified.len() as u64;
         self.stats.model_cert_blocked_skipped_head = u64::from(mp.cert_blocked.skipped_head);
-        self.stats.model_cert_blocked_unstratifiable =
-            u64::from(mp.cert_blocked.unstratifiable);
+        self.stats.model_cert_blocked_unstratifiable = u64::from(mp.cert_blocked.unstratifiable);
         self.stats.model_cert_blocked_body_chain = u64::from(mp.cert_blocked.body_chain);
         self.stats.model_cert_blocked_role = u64::from(mp.cert_blocked.role);
 
@@ -509,7 +545,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         }
         let goal_preds: HashSet<SymbolId> = patterns.iter().map(|(r, _)| *r).collect();
         // Cheap skip: does the program define/store any goal relation?
-        let defines = mp.monotone.rules.iter().any(|r| goal_preds.contains(&r.head.pred))
+        let defines = mp
+            .monotone
+            .rules
+            .iter()
+            .any(|r| goal_preds.contains(&r.head.pred))
             || mp.monotone.edb.keys().any(|p| goal_preds.contains(p));
         // Clark-completion negatives can apply even when the MONOTONE
         // fragment defines no goal relation (a certified relation may be
@@ -521,8 +561,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         }
         if trace {
             let prog_facts: usize = mp.monotone.edb.values().map(|s| s.len()).sum();
-            eprintln!("MODEL: program {} monotone rules, {prog_facts} edb facts; {} goal atoms",
-                mp.monotone.rules.len(), patterns.len());
+            eprintln!(
+                "MODEL: program {} monotone rules, {prog_facts} edb facts; {} goal atoms",
+                mp.monotone.rules.len(),
+                patterns.len()
+            );
         }
         // Per conjecture atom: demand-scope (dependency cone) + magic-set
         // rewrite on the atom's CONSTANTS (slice 4b), evaluate the demanded
@@ -543,7 +586,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     self.stats.model_atoms_rejected += 1;
                     continue;
                 };
-                let answered = mp.answer_stats(*rel, &dargs, Some(deadline), &mut model_stats, self.opts.model_budget);
+                let answered = mp.answer_stats(
+                    *rel,
+                    &dargs,
+                    Some(deadline),
+                    &mut model_stats,
+                    self.opts.model_budget,
+                );
                 if let Some((rows, prov)) = answered {
                     self.stats.model_atoms_answered += 1;
                     for row in rows {
@@ -586,16 +635,22 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else {
                         continue;
                     };
-                    let Some((rel, args)) = lit_pattern(&t) else { continue };
+                    let Some((rel, args)) = lit_pattern(&t) else {
+                        continue;
+                    };
                     if rel != mp.roles.instance || args.len() != 2 {
                         continue; // instance-shaped ground atoms only
                     }
                     let (Some(x), Some(cc)) = (sym_of(&args[0]), sym_of(&args[1])) else {
                         continue;
                     };
-                    let Some(r) =
-                        mp.refutes(rel, &[x, cc], Some(deadline), &mut model_stats, self.opts.model_budget)
-                    else {
+                    let Some(r) = mp.refutes(
+                        rel,
+                        &[x, cc],
+                        Some(deadline),
+                        &mut model_stats,
+                        self.opts.model_budget,
+                    ) else {
                         continue;
                     };
                     if trace {
@@ -668,7 +723,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     let Some(t) = slot_atom(&self.layer.atoms, self.syn(), l.atom, 0) else {
                         continue;
                     };
-                    let Some((rel, args)) = lit_pattern(&t) else { continue };
+                    let Some((rel, args)) = lit_pattern(&t) else {
+                        continue;
+                    };
                     if !mp.certified.contains(&rel) {
                         continue;
                     }
@@ -677,9 +734,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     else {
                         continue;
                     };
-                    let Some(cited) =
-                        mp.complete_absent(rel, &tuple, Some(deadline), &mut model_stats, self.opts.model_budget)
-                    else {
+                    let Some(cited) = mp.complete_absent(
+                        rel,
+                        &tuple,
+                        Some(deadline),
+                        &mut model_stats,
+                        self.opts.model_budget,
+                    ) else {
                         continue;
                     };
                     if trace {
@@ -697,28 +758,41 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
 
         let mut emitted = 0usize;
         for (rel, row, cited) in to_emit {
-            let Some(relname) = self.syn().sym_name(rel) else { continue };
+            let Some(relname) = self.syn().sym_name(rel) else {
+                continue;
+            };
             let mut elems = vec![Term::Sym(relname)];
             let mut ok = true;
             for v in &row {
                 match self.syn().sym_name(*v) {
                     Some(s) => elems.push(Term::Sym(s)),
-                    None => { ok = false; break; }
+                    None => {
+                        ok = false;
+                        break;
+                    }
                 }
             }
             if !ok {
                 continue;
             }
-            if let Some(id) =
-                self.make(vec![(true, Term::App(elems))], Vec::new(), "model", SUPPORT, None, true)
-            {
+            if let Some(id) = self.make(
+                vec![(true, Term::App(elems))],
+                Vec::new(),
+                "model",
+                SUPPORT,
+                None,
+                true,
+            ) {
                 self.clauses[id as usize].fact_parents.extend(cited);
                 if trace && !self.clauses[id as usize].fact_parents.is_empty() {
                     let c = &self.clauses[id as usize];
                     eprintln!(
                         "MODEL emit [{}] {} fact_parents={:?}",
                         id,
-                        c.terms.first().map(|(_, t)| term_kif(t, self.syn())).unwrap_or_default(),
+                        c.terms
+                            .first()
+                            .map(|(_, t)| term_kif(t, self.syn()))
+                            .unwrap_or_default(),
                         c.fact_parents,
                     );
                 }
@@ -736,9 +810,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // rules, denial declaration last).
         let mut emitted_neg = 0usize;
         for (t, r) in to_refute {
-            if let Some(id) =
-                self.make(vec![(false, t)], Vec::new(), "model_refute", SUPPORT, None, true)
-            {
+            if let Some(id) = self.make(
+                vec![(false, t)],
+                Vec::new(),
+                "model_refute",
+                SUPPORT,
+                None,
+                true,
+            ) {
                 self.clauses[id as usize].fact_parents.extend(r.cited);
                 self.activate(id);
                 if self.push(Some(id)).is_some() {
@@ -753,9 +832,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // sid of the relation's cone).
         let mut emitted_complete = 0usize;
         for (t, cited) in to_complete {
-            if let Some(id) =
-                self.make(vec![(false, t)], Vec::new(), "model_complete", SUPPORT, None, true)
-            {
+            if let Some(id) = self.make(
+                vec![(false, t)],
+                Vec::new(),
+                "model_complete",
+                SUPPORT,
+                None,
+                true,
+            ) {
                 self.clauses[id as usize].fact_parents.extend(cited);
                 self.activate(id);
                 if self.push(Some(id)).is_some() {
@@ -789,7 +873,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     fn bridge_dargs(
         &mut self,
         args: &[Term],
-        ms:   &mut super::super::model::ModelStats,
+        ms: &mut super::super::model::ModelStats,
     ) -> Option<Vec<super::super::model::DTerm>> {
         let mut var_ix: HashMap<SymbolId, u32> = HashMap::new();
         let mut out = Vec::with_capacity(args.len());
@@ -798,7 +882,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 Term::Sym(s) => out.push(super::super::model::DTerm::Const(s.id())),
                 Term::Var(v) => {
                     let next = var_ix.len() as u32;
-                    out.push(super::super::model::DTerm::Var(*var_ix.entry(*v).or_insert(next)));
+                    out.push(super::super::model::DTerm::Var(
+                        *var_ix.entry(*v).or_insert(next),
+                    ));
                 }
                 _ => {
                     self.stats.model_arg_collapsed_compound += 1;
@@ -892,7 +978,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             break;
                         }
                     }
-                    None => { ok = false; break; }
+                    None => {
+                        ok = false;
+                        break;
+                    }
                 }
             }
             if !eqmap.is_empty() {
@@ -932,8 +1021,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // Classically sound for this POSITIVE join path only;
         // certification / negative answers never see chased facts.
         let chase = self.opts.chase;
-        let deadline = Instant::now() + std::time::Duration::from_millis(
-            if chase { self.opts.chase_ms } else { 1500 });
+        let deadline = Instant::now()
+            + std::time::Duration::from_millis(if chase { self.opts.chase_ms } else { 1500 });
         let max_facts_per_rel: usize = if chase { 250_000 } else { 50_000 };
         // Provenance of each materialization, in `provs`; a model-sourced
         // `JoinFact` records WHICH evaluation derived it (`FactSrc::Model`
@@ -949,7 +1038,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             mp.positive_model(Some(deadline))
         };
         if dbgt {
-            eprintln!("[SIGMA_MODEL_TRACE] model_joins: materialize {:?}", t0.elapsed());
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] model_joins: materialize {:?}",
+                t0.elapsed()
+            );
         }
         let t1 = Instant::now();
         let full_model = match materialized {
@@ -963,7 +1055,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             match full_model.as_ref() {
                 Some(m) => eprintln!(
                     "MODEL-JOIN: materialized {} preds / {} tuples (chase={chase})",
-                    m.len(), m.values().map(|s| s.len()).sum::<usize>()
+                    m.len(),
+                    m.values().map(|s| s.len()).sum::<usize>()
                 ),
                 None => eprintln!("MODEL-JOIN: full model bailed (chase={chase})"),
             }
@@ -996,7 +1089,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             }
             for lits in &queries {
                 for t in lits {
-                    let Some((r, args)) = lit_pattern(t) else { continue };
+                    let Some((r, args)) = lit_pattern(t) else {
+                        continue;
+                    };
                     if r != rel {
                         continue;
                     }
@@ -1019,14 +1114,27 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         })
                         .collect();
                     let mut model_stats = super::super::model::ModelStats::default();
-                    let answered = mp.answer_stats(rel, &dargs, Some(deadline), &mut model_stats, self.opts.model_budget);
+                    let answered = mp.answer_stats(
+                        rel,
+                        &dargs,
+                        Some(deadline),
+                        &mut model_stats,
+                        self.opts.model_budget,
+                    );
                     self.merge_model_stats(&model_stats);
                     if let Some((rows, prov)) = answered {
                         self.stats.model_atoms_answered += 1;
                         let pix = provs.len() as u32;
                         provs.push(prov);
                         for row in &rows {
-                            push_join_fact(self.syn(), &mut f, &mut seen, row, max_facts_per_rel, pix);
+                            push_join_fact(
+                                self.syn(),
+                                &mut f,
+                                &mut seen,
+                                row,
+                                max_facts_per_rel,
+                                pix,
+                            );
                         }
                     } else {
                         self.stats.model_atoms_unanswered += 1;
@@ -1050,20 +1158,25 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         }
 
         if dbgt {
-            eprintln!("[SIGMA_MODEL_TRACE] model_joins: facts build {:?}", t1.elapsed());
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] model_joins: facts build {:?}",
+                t1.elapsed()
+            );
         }
         // 3) Join each query; on the first satisfying binding, collect the
         //    ground conjuncts to emit.
         let t2 = Instant::now();
         let seat_idx = build_seat_index(&facts);
         if dbgt {
-            eprintln!("[SIGMA_MODEL_TRACE] model_joins: seat index {:?}", t2.elapsed());
+            eprintln!(
+                "[SIGMA_MODEL_TRACE] model_joins: seat index {:?}",
+                t2.elapsed()
+            );
         }
         let mut budget = 200_000usize;
         let mut produced: Vec<(Term, Vec<SentenceId>)> = Vec::new();
         for lits in &queries {
-            let body: Vec<(SymbolId, Vec<Term>)> =
-                lits.iter().filter_map(lit_pattern).collect();
+            let body: Vec<(SymbolId, Vec<Term>)> = lits.iter().filter_map(lit_pattern).collect();
             if body.len() != lits.len() {
                 continue;
             }
@@ -1081,7 +1194,8 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if trace {
                 eprintln!(
                     "MODEL-JOIN: query of {} atoms joined, {} solutions, budget left {budget}",
-                    body.len(), sols.len()
+                    body.len(),
+                    sols.len()
                 );
                 for (rel, args) in &body {
                     let n = facts.get(rel).map_or(0, |v| {
@@ -1117,8 +1231,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             FactSrc::Model(pix) => {
                                 let tuple: Option<Vec<SymbolId>> =
                                     sargs.iter().map(sym_of).collect();
-                                if let (Some(prov), Some(tuple)) =
-                                    (provs.get(pix as usize), tuple)
+                                if let (Some(prov), Some(tuple)) = (provs.get(pix as usize), tuple)
                                 {
                                     fact_sids.extend(mp.cite(prov, *rel, &tuple));
                                 }
@@ -1166,9 +1279,14 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if !seen_emit.insert(aid) {
                 continue;
             }
-            if let Some(id) =
-                self.make(vec![(true, h)], Vec::new(), "model_join", SUPPORT, None, true)
-            {
+            if let Some(id) = self.make(
+                vec![(true, h)],
+                Vec::new(),
+                "model_join",
+                SUPPORT,
+                None,
+                true,
+            ) {
                 self.clauses[id as usize].fact_parents.extend(fact_sids);
                 self.activate(id);
                 if self.push(Some(id)).is_some() {
@@ -1262,7 +1380,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             .unwrap_or(0);
                         eprintln!(
                             "BACKWARD:   goal lit {}/{} -> {} candidate head(s)",
-                            self.syn().sym_name(pred).map(|s| s.to_string()).unwrap_or_default(),
+                            self.syn()
+                                .sym_name(pred)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default(),
                             gargs.len(),
                             n,
                         );
@@ -1337,7 +1458,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if *pos {
                     continue; // definite-clause focus: expand negative literals
                 }
-                let Some((pred, gargs)) = lit_pattern(t) else { continue };
+                let Some((pred, gargs)) = lit_pattern(t) else {
+                    continue;
+                };
                 let mut cands: Vec<(u32, usize)> = Vec::new();
                 for &(cid, pi) in head_index.get(&pred).unwrap_or(&empty) {
                     if cid == goal {
@@ -1374,10 +1497,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
 
             // Otherwise branch on the most-constrained literal, trying
             // ground-unit-clause partners (leaf closures) before rule partners.
-            let (gi, mut cands) = lit_cands
-                .into_iter()
-                .min_by_key(|(_, c)| c.len())
-                .unwrap();
+            let (gi, mut cands) = lit_cands.into_iter().min_by_key(|(_, c)| c.len()).unwrap();
             cands.sort_by_key(|&(cid, _)| usize::from(self.clauses[cid as usize].terms.len() > 1));
             for (partner, pi) in cands {
                 if *budget == 0 || Instant::now() >= deadline {
@@ -1400,12 +1520,12 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// clause parents (so chained `rule_join` steps form a connected DAG).
     fn collect_provenance(
         &self,
-        body:    &[(SymbolId, Vec<Term>)],
+        body: &[(SymbolId, Vec<Term>)],
         binding: &HashMap<SymbolId, Term>,
-        facts:   &HashMap<SymbolId, Vec<JoinFact>>,
+        facts: &HashMap<SymbolId, Vec<JoinFact>>,
     ) -> (Vec<SentenceId>, Vec<u32>) {
         let mut fact_sids: Vec<SentenceId> = Vec::new();
-        let mut cparents:  Vec<u32> = Vec::new();
+        let mut cparents: Vec<u32> = Vec::new();
         for (rel, args) in body {
             let sargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
             // A directly-matched generator fact (store or emitted head).
@@ -1484,7 +1604,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if !visible {
                 continue;
             }
-            let Some(s) = self.syn().sentence(sid) else { continue };
+            let Some(s) = self.syn().sentence(sid) else {
+                continue;
+            };
             if s.elements.len() < 2 {
                 continue;
             }
@@ -1501,7 +1623,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 }
             }
             if ok {
-                out.push(JoinFact { args, src: FactSrc::Store(sid) });
+                out.push(JoinFact {
+                    args,
+                    src: FactSrc::Store(sid),
+                });
             }
         }
         out
@@ -1572,7 +1697,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
             if cov.owns(*rel) {
                 continue;
             }
-            let Some(rel_facts) = facts.get(rel) else { continue };
+            let Some(rel_facts) = facts.get(rel) else {
+                continue;
+            };
             let mut narrowed: Option<&Vec<u32>> = None;
             let mut dead = false;
             for (seat, a) in args.iter().enumerate() {
@@ -1590,17 +1717,29 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     }
                 }
             }
-            let count = if dead { 0 } else { narrowed.map_or(rel_facts.len(), |c| c.len()) };
+            let count = if dead {
+                0
+            } else {
+                narrowed.map_or(rel_facts.len(), |c| c.len())
+            };
             if pick.as_ref().map_or(true, |(_, _, bn)| count < *bn) {
-                let cands = if dead { Some(Vec::new()) } else { narrowed.cloned() };
+                let cands = if dead {
+                    Some(Vec::new())
+                } else {
+                    narrowed.cloned()
+                };
                 pick = Some((li, cands, count));
             }
         }
-        let Some((li, cand_idxs, _)) = pick else { return }; // only open theory lits left
+        let Some((li, cand_idxs, _)) = pick else {
+            return;
+        }; // only open theory lits left
         let (rel, args) = &body[li];
         let rest: Vec<usize> = pending.iter().copied().filter(|&x| x != li).collect();
         let pargs: Vec<Term> = args.iter().map(|a| subst(a, binding)).collect();
-        let Some(rel_facts) = facts.get(rel) else { return };
+        let Some(rel_facts) = facts.get(rel) else {
+            return;
+        };
         // Iterate either the index-narrowed candidates or the full relation.
         match cand_idxs {
             Some(idxs) => {
@@ -1646,9 +1785,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         // quadratic on SUMO-scale instance extensions (measured: the
         // chase's 35k-row `instance` extension × thousands of checks
         // blew the whole prologue deadline).
-        let narrowed: Option<&Vec<u32>> = args.iter().enumerate().find_map(|(seat, a)| {
-            seat_key(a).and_then(|k| seat_idx.get(&(rel, seat as u8, k)))
-        });
+        let narrowed: Option<&Vec<u32>> = args
+            .iter()
+            .enumerate()
+            .find_map(|(seat, a)| seat_key(a).and_then(|k| seat_idx.get(&(rel, seat as u8, k))));
         if let (Some(idxs), Some(v)) = (narrowed, facts.get(&rel)) {
             if idxs.iter().any(|&fi| {
                 let jf = &v[fi as usize];
@@ -1680,7 +1820,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
 /// dispatches on named relations).
 fn lit_pattern(t: &Term) -> Option<(SymbolId, Vec<Term>)> {
     let Term::App(elems) = t else { return None };
-    if elems.len() < 2 { return None; }
+    if elems.len() < 2 {
+        return None;
+    }
     let Term::Sym(h) = &elems[0] else { return None };
     Some((h.id(), elems[1..].to_vec()))
 }
@@ -1782,7 +1924,7 @@ enum FactSrc {
 #[derive(Clone)]
 struct JoinFact {
     args: Vec<Term>,
-    src:  FactSrc,
+    src: FactSrc,
 }
 
 /// Push one model-derived ground tuple into a join generator relation as a
@@ -1793,11 +1935,11 @@ struct JoinFact {
 /// mutate `self.stats` for the SIGMA_STATS answer/bail counters in the same
 /// scope without a borrow conflict.
 fn push_join_fact(
-    syn:     &crate::syntactic::SyntacticLayer,
-    f:       &mut Vec<JoinFact>,
-    seen:    &mut HashSet<Vec<SymbolId>>,
-    row:     &[SymbolId],
-    cap:     usize,
+    syn: &crate::syntactic::SyntacticLayer,
+    f: &mut Vec<JoinFact>,
+    seen: &mut HashSet<Vec<SymbolId>>,
+    row: &[SymbolId],
+    cap: usize,
     prov_ix: u32,
 ) {
     if f.len() >= cap {
@@ -1808,9 +1950,15 @@ fn push_join_fact(
     if !seen.insert(row.to_vec()) {
         return;
     }
-    let aargs: Vec<Term> = row.iter().filter_map(|v| syn.sym_name(*v).map(Term::Sym)).collect();
+    let aargs: Vec<Term> = row
+        .iter()
+        .filter_map(|v| syn.sym_name(*v).map(Term::Sym))
+        .collect();
     if aargs.len() == row.len() {
-        f.push(JoinFact { args: aargs, src: FactSrc::Model(prov_ix) });
+        f.push(JoinFact {
+            args: aargs,
+            src: FactSrc::Model(prov_ix),
+        });
     }
 }
 
@@ -1838,7 +1986,9 @@ fn build_seat_index(facts: &HashMap<SymbolId, Vec<JoinFact>>) -> SeatIndex {
         for (fi, jf) in vec.iter().enumerate() {
             for (seat, a) in jf.args.iter().enumerate() {
                 if let Some(k) = seat_key(a) {
-                    idx.entry((*rel, seat as u8, k)).or_default().push(fi as u32);
+                    idx.entry((*rel, seat as u8, k))
+                        .or_default()
+                        .push(fi as u32);
                 }
             }
         }
@@ -1920,7 +2070,6 @@ mod tests {
         assert_eq!(ms.bridge_rejected_atoms, 1, "rejection is counted");
     }
 
-
     // The NEW coverage() surface must claim EXACTLY the relation set the
     // legacy hardcoded `is_theory_rel` role/temporal lists encoded, and
     // exactly the omission list `decomposition_meaning_axioms` returned —
@@ -1945,15 +2094,30 @@ mod tests {
         }
         // …and every legacy-owned relation is claimed: the same set.
         let legacy: std::collections::HashSet<SymbolId> = [
-            roles.instance, roles.subclass, roles.subrelation, roles.transitive,
-            roles.symmetric, roles.domain, roles.range, roles.disjoint, roles.partition,
-            tids.before, tids.earlier, tids.meets, tids.during, tids.starts,
-            tids.finishes, tids.temporal_part,
+            roles.instance,
+            roles.subclass,
+            roles.subrelation,
+            roles.transitive,
+            roles.symmetric,
+            roles.domain,
+            roles.range,
+            roles.disjoint,
+            roles.partition,
+            tids.before,
+            tids.earlier,
+            tids.meets,
+            tids.during,
+            tids.starts,
+            tids.finishes,
+            tids.temporal_part,
         ]
         .into_iter()
         .collect();
         for &rel in &legacy {
-            assert!(cov.owns(rel), "legacy theory relation missing from coverage");
+            assert!(
+                cov.owns(rel),
+                "legacy theory relation missing from coverage"
+            );
         }
         assert_eq!(cov.claims.len(), legacy.len(), "claim set == legacy set");
 
@@ -1983,9 +2147,9 @@ mod tests {
     // closes with a refutation.
     #[test]
     fn model_complete_negative_closes_certified_absence_goal() {
-        use crate::parse::OpKind;
         use super::super::super::clausify::clausify_sentence;
         use super::super::RunVerdict;
+        use crate::parse::OpKind;
 
         let kif = "\
             (=> (and (parent ?X ?Y) (parent ?Y ?Z)) (grandparent ?X ?Z))\n\
@@ -1999,13 +2163,17 @@ mod tests {
         let goal = syn
             .root_sids()
             .into_iter()
-            .find(|sid| syn.sentence(*sid).is_some_and(|s| s.op() == Some(&OpKind::Not)))
+            .find(|sid| {
+                syn.sentence(*sid)
+                    .is_some_and(|s| s.op() == Some(&OpKind::Not))
+            })
             .expect("goal root stored");
         let rule_sids: Vec<SentenceId> = syn
             .root_sids()
             .into_iter()
             .filter(|sid| {
-                syn.sentence(*sid).is_some_and(|s| s.op() == Some(&OpKind::Implies))
+                syn.sentence(*sid)
+                    .is_some_and(|s| s.op() == Some(&OpKind::Implies))
             })
             .collect();
         assert_eq!(rule_sids.len(), 2, "two defining rule roots");
@@ -2013,9 +2181,12 @@ mod tests {
         let mut prover = NativeProver::new(&layer, Scope::Base, Default::default());
         // Negated conjecture of `(not (grandparent Alice Dave))`: the
         // positive unit `grandparent(Alice, Dave)` at CONJECTURE tier.
-        let sent = layer.semantic.syntactic.sentence(goal).expect("goal sentence");
-        let clauses = clausify_sentence(
-            &layer.semantic.syntactic, &layer.atoms, &sent, goal, true);
+        let sent = layer
+            .semantic
+            .syntactic
+            .sentence(goal)
+            .expect("goal sentence");
+        let clauses = clausify_sentence(&layer.semantic.syntactic, &layer.atoms, &sent, goal, true);
         assert!(!clauses.is_empty(), "conjecture clausifies");
         prover.add_conjecture_clauses(&clauses, Some(goal));
 

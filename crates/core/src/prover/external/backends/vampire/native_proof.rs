@@ -45,26 +45,30 @@ use crate::prover::proof::{formula_to_ast, IrProofStep, KifProofStep};
 /// `; [unparseable]`, mirroring `proof_steps_to_kif`'s defensive
 /// behaviour on the subprocess path.
 pub(crate) fn native_proof_to_kif_steps(proof: &Proof) -> Vec<KifProofStep> {
-    proof.steps().iter().enumerate().map(|(i, step)| {
-        let tptp = step.conclusion().to_tptp();
-        let formula = formula_to_ast(&tptp).unwrap_or_else(|| {
-            crate::parse::ast::AstNode::Symbol {
-                name: format!("; [unparseable] {}", tptp),
-                span: crate::parse::ast::Span::point(String::new(), 0, 0, 0),
+    proof
+        .steps()
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let tptp = step.conclusion().to_tptp();
+            let formula =
+                formula_to_ast(&tptp).unwrap_or_else(|| crate::parse::ast::AstNode::Symbol {
+                    name: format!("; [unparseable] {}", tptp),
+                    span: crate::parse::ast::Span::point(String::new(), 0, 0, 0),
+                });
+            KifProofStep {
+                index: i,
+                rule: rule_name(step.rule()).to_string(),
+                premises: step.premises().to_vec(),
+                formula,
+                // Embedded path has no preserved `kb_<sid>` name — the
+                // CLI's print_step_source falls back to canonical-hash
+                // lookup, which is correct though slower than the sid
+                // direct path.
+                source_sid: None,
             }
-        });
-        KifProofStep {
-            index:      i,
-            rule:       rule_name(step.rule()).to_string(),
-            premises:   step.premises().to_vec(),
-            formula,
-            // Embedded path has no preserved `kb_<sid>` name — the
-            // CLI's print_step_source falls back to canonical-hash
-            // lookup, which is correct though slower than the sid
-            // direct path.
-            source_sid: None,
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 /// Map a native `ProofRule` enum variant to the string role the CLI
@@ -81,23 +85,23 @@ pub(crate) fn native_proof_to_kif_steps(proof: &Proof) -> Vec<KifProofStep> {
 /// cosmetic — the CLI treats them as opaque strings.
 fn rule_name(rule: ProofRule) -> &'static str {
     match rule {
-        ProofRule::Axiom                        => "axiom",
-        ProofRule::NegatedConjecture            => "negated_conjecture",
-        ProofRule::Rectify                      => "rectify",
-        ProofRule::Flatten                      => "flatten",
-        ProofRule::EENFTransformation           => "ennf_transformation",
-        ProofRule::CNFTransformation            => "cnf_transformation",
-        ProofRule::NNFTransformation            => "nnf_transformation",
-        ProofRule::SkolemSymbolIntroduction     => "skolem_symbol_introduction",
-        ProofRule::Skolemize                    => "skolemize",
-        ProofRule::Superposition                => "superposition",
-        ProofRule::ForwardDemodulation          => "forward_demodulation",
-        ProofRule::BackwardDemodulation         => "backward_demodulation",
+        ProofRule::Axiom => "axiom",
+        ProofRule::NegatedConjecture => "negated_conjecture",
+        ProofRule::Rectify => "rectify",
+        ProofRule::Flatten => "flatten",
+        ProofRule::EENFTransformation => "ennf_transformation",
+        ProofRule::CNFTransformation => "cnf_transformation",
+        ProofRule::NNFTransformation => "nnf_transformation",
+        ProofRule::SkolemSymbolIntroduction => "skolem_symbol_introduction",
+        ProofRule::Skolemize => "skolemize",
+        ProofRule::Superposition => "superposition",
+        ProofRule::ForwardDemodulation => "forward_demodulation",
+        ProofRule::BackwardDemodulation => "backward_demodulation",
         ProofRule::ForwardSubsumptionResolution => "forward_subsumption_resolution",
-        ProofRule::Resolution                   => "resolution",
-        ProofRule::TrivialInequalityRemoval     => "trivial_inequality_removal",
-        ProofRule::Avatar                       => "avatar",
-        ProofRule::Other                        => "plain",
+        ProofRule::Resolution => "resolution",
+        ProofRule::TrivialInequalityRemoval => "trivial_inequality_removal",
+        ProofRule::Avatar => "avatar",
+        ProofRule::Other => "plain",
     }
 }
 
@@ -110,21 +114,26 @@ fn rule_name(rule: ProofRule) -> &'static str {
 /// fall back to `ir::Formula::True` with the raw string preserved in
 /// the debug representation.
 pub(crate) fn native_proof_to_ir_steps(proof: &Proof) -> Vec<IrProofStep> {
-    proof.steps().iter().enumerate().map(|(i, step)| {
-        let tptp_formula = step.conclusion().to_tptp();
-        let tptp_wrapped = format!("fof(anon, plain, {}).\n", tptp_formula);
-        let formula = crate::trans::ir::parse_tptp(&tptp_wrapped)
-            .ok()
-            .and_then(|p| p.axioms().first().cloned())
-            .unwrap_or(crate::trans::ir::Formula::True);
-        IrProofStep {
-            index:      i,
-            rule:       rule_name(step.rule()).to_string(),
-            premises:   step.premises().to_vec(),
-            formula,
-            source_sid: None,
-        }
-    }).collect()
+    proof
+        .steps()
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let tptp_formula = step.conclusion().to_tptp();
+            let tptp_wrapped = format!("fof(anon, plain, {}).\n", tptp_formula);
+            let formula = crate::trans::ir::parse_tptp(&tptp_wrapped)
+                .ok()
+                .and_then(|p| p.axioms().first().cloned())
+                .unwrap_or(crate::trans::ir::Formula::True);
+            IrProofStep {
+                index: i,
+                rule: rule_name(step.rule()).to_string(),
+                premises: step.premises().to_vec(),
+                formula,
+                source_sid: None,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -144,7 +153,10 @@ mod tests {
     fn negated_conjecture_maps_to_subprocess_convention() {
         // Mirror the role string Vampire's TPTP output uses, so
         // proof-step headers look identical across backends.
-        assert_eq!(rule_name(ProofRule::NegatedConjecture), "negated_conjecture");
+        assert_eq!(
+            rule_name(ProofRule::NegatedConjecture),
+            "negated_conjecture"
+        );
     }
 
     #[test]
@@ -153,9 +165,12 @@ mod tests {
         // but appear in the `[rule]` label.  A spot check that the
         // enum → string mapping is populated (not just the "Other"
         // catch-all).
-        assert_eq!(rule_name(ProofRule::Resolution),     "resolution");
-        assert_eq!(rule_name(ProofRule::Superposition),  "superposition");
-        assert_eq!(rule_name(ProofRule::CNFTransformation), "cnf_transformation");
-        assert_eq!(rule_name(ProofRule::Other),          "plain");
+        assert_eq!(rule_name(ProofRule::Resolution), "resolution");
+        assert_eq!(rule_name(ProofRule::Superposition), "superposition");
+        assert_eq!(
+            rule_name(ProofRule::CNFTransformation),
+            "cnf_transformation"
+        );
+        assert_eq!(rule_name(ProofRule::Other), "plain");
     }
 }

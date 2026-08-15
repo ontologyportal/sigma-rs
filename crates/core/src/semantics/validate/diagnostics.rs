@@ -16,11 +16,17 @@ impl<'a> SemanticValidator<'a> {
     /// Includes occurrences inside quantifier var-lists; callers needing a
     /// binder-vs-use distinction filter from the resulting counts.
     fn walk_vars(&self, sid: SentenceId, f: &mut dyn FnMut(&str)) {
-        let Some(s) = self.layer.syntactic.sentence(sid) else { return };
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return;
+        };
         for el in &s.elements {
             match el {
                 Element::Sub(sid) => self.walk_vars(*sid, f),
-                Element::Variable { name, is_row: false, .. } => f(name),
+                Element::Variable {
+                    name,
+                    is_row: false,
+                    ..
+                } => f(name),
                 _ => {}
             }
         }
@@ -38,7 +44,7 @@ impl<'a> SemanticValidator<'a> {
         self.walk_vars(sid, &mut |name: &str| {
             *counts.entry(name.to_string()).or_insert(0) += 1;
         });
-        let mut bound:      HashSet<String> = HashSet::new();
+        let mut bound: HashSet<String> = HashSet::new();
         let mut consequent: HashSet<String> = HashSet::new();
         self.collect_binding_structure(sid, &mut bound, &mut consequent);
         for (var, count) in counts {
@@ -55,13 +61,19 @@ impl<'a> SemanticValidator<'a> {
     /// nesting depth) and is never introduced by a `forall` / `exists`.
     /// Computing over the whole tree keeps variables bound by an enclosing
     /// antecedent or quantifier from being mistaken for free occurrences.
-    pub(super) fn check_free_vars_in_consequent(&self, root: SentenceId, out: &mut Vec<SemanticError>) {
-        let mut bound:      HashSet<String> = HashSet::new();
+    pub(super) fn check_free_vars_in_consequent(
+        &self,
+        root: SentenceId,
+        out: &mut Vec<SemanticError>,
+    ) {
+        let mut bound: HashSet<String> = HashSet::new();
         let mut consequent: HashSet<String> = HashSet::new();
         self.collect_binding_structure(root, &mut bound, &mut consequent);
 
-        let mut free: Vec<String> =
-            consequent.into_iter().filter(|v| !bound.contains(v)).collect();
+        let mut free: Vec<String> = consequent
+            .into_iter()
+            .filter(|v| !bound.contains(v))
+            .collect();
         free.sort_unstable();
         for var in free {
             out.push(SemanticError::FreeVarInConsequent { sid: root, var });
@@ -77,18 +89,24 @@ impl<'a> SemanticValidator<'a> {
     /// inside an outer consequent) is therefore not free.
     fn collect_binding_structure(
         &self,
-        sid:        SentenceId,
-        bound:      &mut HashSet<String>,
+        sid: SentenceId,
+        bound: &mut HashSet<String>,
         consequent: &mut HashSet<String>,
     ) {
-        let Some(s) = self.layer.syntactic.sentence(sid) else { return };
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return;
+        };
         match s.op() {
             Some(OpKind::Implies) => {
                 if let (Some(Element::Sub(a)), Some(Element::Sub(c))) =
                     (s.elements.get(1), s.elements.get(2))
                 {
-                    self.walk_vars(*a, &mut |n: &str| { bound.insert(n.to_string()); });
-                    self.walk_vars(*c, &mut |n: &str| { consequent.insert(n.to_string()); });
+                    self.walk_vars(*a, &mut |n: &str| {
+                        bound.insert(n.to_string());
+                    });
+                    self.walk_vars(*c, &mut |n: &str| {
+                        consequent.insert(n.to_string());
+                    });
                 }
             }
             Some(OpKind::Iff) => {
@@ -97,15 +115,24 @@ impl<'a> SemanticValidator<'a> {
                 if let (Some(Element::Sub(a)), Some(Element::Sub(c))) =
                     (s.elements.get(1), s.elements.get(2))
                 {
-                    self.walk_vars(*a, &mut |n: &str| { bound.insert(n.to_string()); });
-                    self.walk_vars(*c, &mut |n: &str| { bound.insert(n.to_string()); });
+                    self.walk_vars(*a, &mut |n: &str| {
+                        bound.insert(n.to_string());
+                    });
+                    self.walk_vars(*c, &mut |n: &str| {
+                        bound.insert(n.to_string());
+                    });
                 }
             }
             Some(OpKind::ForAll | OpKind::Exists) => {
                 if let Some(Element::Sub(varlist_sid)) = s.elements.get(1) {
                     if let Some(vl) = self.layer.syntactic.sentence(*varlist_sid) {
                         for el in &vl.elements {
-                            if let Element::Variable { name, is_row: false, .. } = el {
+                            if let Element::Variable {
+                                name,
+                                is_row: false,
+                                ..
+                            } = el
+                            {
                                 bound.insert(name.clone());
                             }
                         }
@@ -125,11 +152,17 @@ impl<'a> SemanticValidator<'a> {
     /// anywhere?  Used by [`Self::check_implication_shape`] to detect
     /// existentials trapped under an antecedent (W022).
     fn subtree_has_existential(&self, sid: SentenceId) -> bool {
-        let Some(s) = self.layer.syntactic.sentence(sid) else { return false };
-        if matches!(s.op(), Some(OpKind::Exists)) { return true; }
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return false;
+        };
+        if matches!(s.op(), Some(OpKind::Exists)) {
+            return true;
+        }
         for el in &s.elements {
             if let Element::Sub(sid) = el {
-                if self.subtree_has_existential(*sid) { return true; }
+                if self.subtree_has_existential(*sid) {
+                    return true;
+                }
             }
         }
         false
@@ -143,7 +176,9 @@ impl<'a> SemanticValidator<'a> {
     /// whole-formula property handled once at the root by
     /// [`Self::check_free_vars_in_consequent`].)
     pub(super) fn check_implication_shape(&self, sid: SentenceId, out: &mut Vec<SemanticError>) {
-        let Some(s) = self.layer.syntactic.sentence(sid) else { return };
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return;
+        };
         // elements: [Op{Implies|Iff}, Sub{ant}, Sub{cons}]
         let ant_sid = match s.elements.get(1) {
             Some(Element::Sub(a)) => *a,
@@ -160,7 +195,9 @@ impl<'a> SemanticValidator<'a> {
     /// `(exists (vars...) body)`.  Flags a variable listed in the quantifier's
     /// var-list that is never referenced in the body.
     pub(super) fn check_quantifier_vacuous(&self, sid: SentenceId, out: &mut Vec<SemanticError>) {
-        let Some(s) = self.layer.syntactic.sentence(sid) else { return };
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return;
+        };
         // elements: [Op{ForAll|Exists}, Sub{varlist}, Sub{body}, ...]
         let var_list_sid = match s.elements.get(1) {
             Some(Element::Sub(sid)) => *sid,
@@ -171,7 +208,12 @@ impl<'a> SemanticValidator<'a> {
             let mut out = HashSet::new();
             if let Some(vl) = self.layer.syntactic.sentence(var_list_sid) {
                 for el in &vl.elements {
-                    if let Element::Variable { name, is_row: false, .. } = el {
+                    if let Element::Variable {
+                        name,
+                        is_row: false,
+                        ..
+                    } = el
+                    {
                         out.insert(name.clone());
                     }
                 }
@@ -184,13 +226,18 @@ impl<'a> SemanticValidator<'a> {
         let mut body_vars: HashSet<String> = HashSet::new();
         for el in s.elements[2..].iter() {
             if let Element::Sub(body_sid) = el {
-                self.walk_vars(*body_sid, &mut |n: &str| { body_vars.insert(n.to_string()); });
+                self.walk_vars(*body_sid, &mut |n: &str| {
+                    body_vars.insert(n.to_string());
+                });
             }
         }
 
         for var in varlist.iter() {
             if !body_vars.contains(var) {
-                out.push(SemanticError::QuantifierVacuous { sid, var: var.clone() });
+                out.push(SemanticError::QuantifierVacuous {
+                    sid,
+                    var: var.clone(),
+                });
             }
         }
     }

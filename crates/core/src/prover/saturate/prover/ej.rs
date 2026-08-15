@@ -240,7 +240,12 @@ pub(crate) fn compile_clause_plans(
         }
     }
     let runnable_any = lits.iter().any(|lp| lp.runnable(joinable));
-    ClausePlans { lits, nslots, joinable, runnable_any }
+    ClausePlans {
+        lits,
+        nslots,
+        joinable,
+        runnable_any,
+    }
 }
 
 /// Prover-owned scratch for the channel — reused across every
@@ -389,7 +394,10 @@ pub(crate) fn filter(
         scratch.gkeys.resize(64, SmallVec::new());
         scratch.lkeys.resize(64, SmallVec::new());
     }
-    debug_assert!(scratch.bind.iter().all(Option::is_none), "bind table clean on entry");
+    debug_assert!(
+        scratch.bind.iter().all(Option::is_none),
+        "bind table clean on entry"
+    );
     debug_assert!(scratch.trail.is_empty());
     // Which slots have a live global (cross-literal) set in `gkeys`.
     let mut g_has = 0u64;
@@ -461,8 +469,7 @@ pub(crate) fn filter(
                 // `c_lit·σ = d_lit`.
                 #[cfg(any(test, debug_assertions))]
                 {
-                    let mut s: super::Subst =
-                        vec![None; super::term_slots_end(&c_terms[ci].1)];
+                    let mut s: super::Subst = vec![None; super::term_slots_end(&c_terms[ci].1)];
                     debug_assert!(
                         !super::match_one_way(&c_terms[ci].1, &d_terms[dj].1, &mut s),
                         "ej pair decode rejected {:?} -> {:?} but match_one_way accepts",
@@ -557,26 +564,38 @@ mod tests {
         let facts = TermFactsTable::default();
         let kbo = KboOrdering::new();
         let fixtures = vec![
-            (true, app(vec![
-                sym("p"),
-                app(vec![sym("f"), sym("a"), var(0)]),
+            (
+                true,
                 app(vec![
-                    sym("g"),
+                    sym("p"),
                     app(vec![sym("f"), sym("a"), var(0)]),
-                    Term::Lit(Literal::Str("s".into())),
+                    app(vec![
+                        sym("g"),
+                        app(vec![sym("f"), sym("a"), var(0)]),
+                        Term::Lit(Literal::Str("s".into())),
+                    ]),
                 ]),
-            ])),
-            (false, app(vec![
-                sym("q"),
-                app(vec![sym("h"), app(vec![sym("f"), app(vec![sym("f"), sym("a")]), sym("b")])]),
-                Term::Lit(Literal::Number("3".into())),
-                var(1),
-            ])),
-            (true, app(vec![
-                Term::Op(crate::parse::OpKind::Equal),
-                app(vec![sym("mult"), var(0), app(vec![sym("inv"), var(0)])]),
-                sym("e"),
-            ])),
+            ),
+            (
+                false,
+                app(vec![
+                    sym("q"),
+                    app(vec![
+                        sym("h"),
+                        app(vec![sym("f"), app(vec![sym("f"), sym("a")]), sym("b")]),
+                    ]),
+                    Term::Lit(Literal::Number("3".into())),
+                    var(1),
+                ]),
+            ),
+            (
+                true,
+                app(vec![
+                    Term::Op(crate::parse::OpKind::Equal),
+                    app(vec![sym("mult"), var(0), app(vec![sym("inv"), var(0)])]),
+                    sym("e"),
+                ]),
+            ),
         ];
         let mut po = SubtermPostings::default();
         // Parity test compares transient rows against the STORED registration
@@ -591,11 +610,7 @@ mod tests {
             "transient and registration walks cover the same node set",
         );
         for (k, r) in &scratch.table {
-            assert_eq!(
-                po.row_table().get(k),
-                Some(r),
-                "row parity for key {k:#x}",
-            );
+            assert_eq!(po.row_table().get(k), Some(r), "row parity for key {k:#x}",);
         }
         // And every literal root row is the registered row of its atom.
         for ((_, t), r) in fixtures.iter().zip(&scratch.lit_rows) {
@@ -613,11 +628,11 @@ mod tests {
         let facts = TermFactsTable::default();
         let kbo = KboOrdering::new();
         let terms = vec![
-            (true, app(vec![sym("g"), sym("a")])),                       // Ground
-            (true, app(vec![sym("p"), var(0)])),                         // Trivial
-            (true, app(vec![sym("q"), var(0), sym("k")])),               // Active
+            (true, app(vec![sym("g"), sym("a")])),         // Ground
+            (true, app(vec![sym("p"), var(0)])),           // Trivial
+            (true, app(vec![sym("q"), var(0), sym("k")])), // Active
             (true, app(vec![sym("f"), var(1), var(2), var(3), var(4)])), // Unusable (v=4)
-            (true, app(vec![sym("r"), var(1), sym("m")])),               // Active
+            (true, app(vec![sym("r"), var(1), sym("m")])), // Active
         ];
         let cp = compile_clause_plans(&terms, &facts, &kbo);
         assert_eq!(cp.lits[0].class, LitClass::Ground);

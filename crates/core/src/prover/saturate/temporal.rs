@@ -49,27 +49,30 @@ pub(crate) enum Order {
 /// strict edge); inconsistency is a strict self-loop (`a < a`).
 #[derive(Debug, Default)]
 pub(crate) struct TemporalNet {
-    index:  HashMap<PointKey, usize>,
+    index: HashMap<PointKey, usize>,
     /// union-find parent (for `=`).
     parent: Vec<usize>,
     /// raw constraints `(a, b, strict)` meaning `a < b` (strict) or `a ≤ b`.
-    edges:  Vec<(usize, usize, bool)>,
+    edges: Vec<(usize, usize, bool)>,
     /// Proof-provenance adjacency, keyed by [`PointKey`] (NOT collapsed
     /// node ids): every constraint as a directed edge `from →(strict, sid)
     /// to`.  Equality contributes both directions.  Used only by
     /// [`Self::path_witness`] to recover the chain of KB facts behind an
     /// entailment — independent of the boolean decision machinery.
-    wadj:   HashMap<PointKey, Vec<(PointKey, bool, Option<SentenceId>)>>,
+    wadj: HashMap<PointKey, Vec<(PointKey, bool, Option<SentenceId>)>>,
     /// closure (computed by `close`): `le[a][b]` ⇔ `a ≤ b`, `lt[a][b]` ⇔ `a < b`.
-    le:     Vec<Vec<bool>>,
-    lt:     Vec<Vec<bool>>,
+    le: Vec<Vec<bool>>,
+    lt: Vec<Vec<bool>>,
     consistent: bool,
     closed: bool,
 }
 
 impl TemporalNet {
     pub(crate) fn new() -> Self {
-        Self { consistent: true, ..Default::default() }
+        Self {
+            consistent: true,
+            ..Default::default()
+        }
     }
 
     /// Intern a point key to a node id.
@@ -270,7 +273,8 @@ impl TemporalNet {
         let start = (a, false);
         let mut parent: HashMap<(PointKey, bool), (PointKey, bool, Option<SentenceId>)> =
             HashMap::new();
-        let mut seen: std::collections::HashSet<(PointKey, bool)> = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(PointKey, bool)> =
+            std::collections::HashSet::new();
         let mut q: VecDeque<(PointKey, bool)> = VecDeque::new();
         seen.insert(start);
         q.push_back(start);
@@ -289,7 +293,9 @@ impl TemporalNet {
                 }
                 return sids;
             }
-            let Some(neigh) = self.wadj.get(&node) else { continue };
+            let Some(neigh) = self.wadj.get(&node) else {
+                continue;
+            };
             for &(to, strict, sid) in neigh {
                 let next = (to, crossed || strict);
                 if seen.insert(next) {
@@ -312,34 +318,38 @@ use crate::types::Symbol;
 /// can later re-derive them, per the plan's "hybrid" choice).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TemporalRelIds {
-    pub before:        SymbolId,
-    pub earlier:       SymbolId,
-    pub meets:         SymbolId,
-    pub during:        SymbolId,
-    pub starts:        SymbolId,
-    pub finishes:      SymbolId,
+    pub before: SymbolId,
+    pub earlier: SymbolId,
+    pub meets: SymbolId,
+    pub during: SymbolId,
+    pub starts: SymbolId,
+    pub finishes: SymbolId,
     pub temporal_part: SymbolId,
-    pub time_point:    SymbolId,
+    pub time_point: SymbolId,
 }
 
 impl TemporalRelIds {
     pub(crate) fn standard() -> Self {
         Self {
-            before:        Symbol::hash_name("before"),
-            earlier:       Symbol::hash_name("earlier"),
-            meets:         Symbol::hash_name("meetsTemporally"),
-            during:        Symbol::hash_name("during"),
-            starts:        Symbol::hash_name("starts"),
-            finishes:      Symbol::hash_name("finishes"),
+            before: Symbol::hash_name("before"),
+            earlier: Symbol::hash_name("earlier"),
+            meets: Symbol::hash_name("meetsTemporally"),
+            during: Symbol::hash_name("during"),
+            starts: Symbol::hash_name("starts"),
+            finishes: Symbol::hash_name("finishes"),
             temporal_part: Symbol::hash_name("temporalPart"),
-            time_point:    Symbol::hash_name("TimePoint"),
+            time_point: Symbol::hash_name("TimePoint"),
         }
     }
 
     /// Is `rel` a temporal relation the network can reason about?
     pub(crate) fn is_temporal(&self, rel: SymbolId) -> bool {
-        rel == self.before || rel == self.earlier || rel == self.meets
-            || rel == self.during || rel == self.starts || rel == self.finishes
+        rel == self.before
+            || rel == self.earlier
+            || rel == self.meets
+            || rel == self.during
+            || rel == self.starts
+            || rel == self.finishes
             || rel == self.temporal_part
     }
 
@@ -349,17 +359,23 @@ impl TemporalRelIds {
     fn interval_rels(&self) -> [(SymbolId, IntervalShape); 5] {
         use IntervalShape::*;
         [
-            (self.earlier,  Earlier),
-            (self.meets,    Meets),
-            (self.during,   During),
-            (self.starts,   Starts),
+            (self.earlier, Earlier),
+            (self.meets, Meets),
+            (self.during, During),
+            (self.starts, Starts),
             (self.finishes, Finishes),
         ]
     }
 }
 
 #[derive(Clone, Copy)]
-enum IntervalShape { Earlier, Meets, During, Starts, Finishes }
+enum IntervalShape {
+    Earlier,
+    Meets,
+    During,
+    Starts,
+    Finishes,
+}
 
 /// The `(Begin, End)` keys for a symbol: a degenerate point collapses to
 /// `Point(s) = Point(s)`, an interval splits into `Begin(s)`/`End(s)`.
@@ -377,7 +393,7 @@ fn endpoints(net: &mut TemporalNet, s: SymbolId, is_point: bool) -> (PointKey, P
 /// atoms; `is_point(s)` classifies a symbol as a `TimePoint` (vs
 /// interval).  Each constraint carries its `sid` for witness recovery.
 pub(crate) fn build_net(
-    ids:      &TemporalRelIds,
+    ids: &TemporalRelIds,
     mut facts: impl FnMut(SymbolId) -> Vec<(SymbolId, SymbolId, Option<SentenceId>)>,
     is_point: impl Fn(SymbolId) -> bool,
 ) -> TemporalNet {
@@ -393,11 +409,20 @@ pub(crate) fn build_net(
             net.add_interval(i);
             net.add_interval(j);
             match shape {
-                IntervalShape::Earlier  => net.add_lt_w(End(i), Begin(j), sid),
-                IntervalShape::Meets    => net.add_eq_w(End(i), Begin(j), sid),
-                IntervalShape::During   => { net.add_lt_w(Begin(j), Begin(i), sid); net.add_lt_w(End(i), End(j), sid); }
-                IntervalShape::Starts   => { net.add_eq_w(Begin(i), Begin(j), sid); net.add_lt_w(End(i), End(j), sid); }
-                IntervalShape::Finishes => { net.add_eq_w(End(i), End(j), sid);     net.add_lt_w(Begin(j), Begin(i), sid); }
+                IntervalShape::Earlier => net.add_lt_w(End(i), Begin(j), sid),
+                IntervalShape::Meets => net.add_eq_w(End(i), Begin(j), sid),
+                IntervalShape::During => {
+                    net.add_lt_w(Begin(j), Begin(i), sid);
+                    net.add_lt_w(End(i), End(j), sid);
+                }
+                IntervalShape::Starts => {
+                    net.add_eq_w(Begin(i), Begin(j), sid);
+                    net.add_lt_w(End(i), End(j), sid);
+                }
+                IntervalShape::Finishes => {
+                    net.add_eq_w(End(i), End(j), sid);
+                    net.add_lt_w(Begin(j), Begin(i), sid);
+                }
             }
         }
     }
@@ -416,11 +441,11 @@ pub(crate) fn build_net(
 /// Whether the network ENTAILS the temporal goal `(rel x y)` (positive
 /// discharge).  `Unknown`/non-temporal ⇒ `false` ⇒ resolution.
 pub(crate) fn query(
-    net:      &mut TemporalNet,
-    ids:      &TemporalRelIds,
-    rel:      SymbolId,
-    x:        SymbolId,
-    y:        SymbolId,
+    net: &mut TemporalNet,
+    ids: &TemporalRelIds,
+    rel: SymbolId,
+    x: SymbolId,
+    y: SymbolId,
     is_point: impl Fn(SymbolId) -> bool,
 ) -> bool {
     use PointKey::{Begin, End, Point};
@@ -437,7 +462,11 @@ pub(crate) fn query(
     } else if rel == ids.finishes {
         net.entails(End(x), End(y), Order::Eq) && net.entails(Begin(y), Begin(x), Order::Lt)
     } else if rel == ids.temporal_part {
-        let (bx, ex) = if is_point(x) { (Point(x), Point(x)) } else { (Begin(x), End(x)) };
+        let (bx, ex) = if is_point(x) {
+            (Point(x), Point(x))
+        } else {
+            (Begin(x), End(x))
+        };
         net.entails(Begin(y), bx, Order::Le) && net.entails(ex, End(y), Order::Le)
     } else {
         false
@@ -448,11 +477,11 @@ pub(crate) fn query(
 /// same endpoint reduction as [`query`], unioned over the constraint
 /// conjuncts.  Call only after `query` returned `true`.
 pub(crate) fn query_witness(
-    net:      &mut TemporalNet,
-    ids:      &TemporalRelIds,
-    rel:      SymbolId,
-    x:        SymbolId,
-    y:        SymbolId,
+    net: &mut TemporalNet,
+    ids: &TemporalRelIds,
+    rel: SymbolId,
+    x: SymbolId,
+    y: SymbolId,
     is_point: impl Fn(SymbolId) -> bool,
 ) -> Vec<SentenceId> {
     use PointKey::{Begin, End, Point};
@@ -476,7 +505,11 @@ pub(crate) fn query_witness(
         w.extend(net.witness(Begin(y), Begin(x), Order::Lt));
         w
     } else if rel == ids.temporal_part {
-        let (bx, ex) = if is_point(x) { (Point(x), Point(x)) } else { (Begin(x), End(x)) };
+        let (bx, ex) = if is_point(x) {
+            (Point(x), Point(x))
+        } else {
+            (Begin(x), End(x))
+        };
         let mut w = net.witness(Begin(y), bx, Order::Le);
         w.extend(net.witness(ex, End(y), Order::Le));
         w
@@ -493,8 +526,12 @@ mod tests {
     use super::*;
     use crate::types::Symbol;
 
-    fn p(name: &str) -> SymbolId { Symbol::hash_name(name) }
-    fn pt(name: &str) -> PointKey { PointKey::Point(Symbol::hash_name(name)) }
+    fn p(name: &str) -> SymbolId {
+        Symbol::hash_name(name)
+    }
+    fn pt(name: &str) -> PointKey {
+        PointKey::Point(Symbol::hash_name(name))
+    }
 
     #[test]
     fn point_order_transitive_and_strict() {
@@ -641,7 +678,14 @@ mod tests {
         let is_point = move |s: SymbolId| s == pc;
         let mut net = build_net(&ids, facts, is_point);
         // PhoneCheck falls within the whole Shift.
-        assert!(query(&mut net, &ids, ids.temporal_part, pc, shift, is_point));
+        assert!(query(
+            &mut net,
+            &ids,
+            ids.temporal_part,
+            pc,
+            shift,
+            is_point
+        ));
         let w = query_witness(&mut net, &ids, ids.temporal_part, pc, shift, is_point);
         // Every shift-structure fact is on an entailing path and cited;
         // the chain is connected (both ≤ directions covered).
@@ -656,7 +700,9 @@ mod tests {
         use PointKey::*;
         let (i1, i2, k) = (p("I1"), p("I2"), p("K"));
         let mut n = TemporalNet::new();
-        for iv in [i1, i2, k] { n.add_interval(iv); }
+        for iv in [i1, i2, k] {
+            n.add_interval(iv);
+        }
         // starts(I1,K): Begin(I1)=Begin(K), End(I1)<End(K)
         n.add_eq(Begin(i1), Begin(k));
         n.add_lt(End(i1), End(k));

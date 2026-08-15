@@ -3,36 +3,36 @@
 // Parse submodule -- extensible for multiple input formats.
 // Currently only KIF is supported.
 
-pub mod kif;
-pub mod tptp;
-pub mod tq;
-pub mod szs;
-pub mod doc;
 pub mod ast;
-pub mod span;
-pub mod macros;
+pub mod dialect;
+pub mod doc;
+pub mod document;
 pub mod error;
 pub mod fingerprint;
-pub mod document;
-pub mod dialect;
+pub mod kif;
+pub mod macros;
+pub mod span;
+pub mod szs;
+pub mod tptp;
+pub mod tq;
 
 pub use ast::*;
-pub use span::*;
-pub use fingerprint::sentence_fingerprint;
-pub use error::*;
 pub use document::{parse_document, ParsedDocument};
+pub use error::*;
+pub use fingerprint::sentence_fingerprint;
+pub use span::*;
 
 pub use crate::parse::tptp::parser::TptpParseOptions;
-use crate::{parse::{doc::DocItem, tq::parse_tq}};
+use crate::parse::{doc::DocItem, tq::parse_tq};
 
 #[derive(Debug, Default, Clone)]
 pub enum Parser {
     #[default]
     Kif,
     Tptp {
-        options: Option<TptpParseOptions>
+        options: Option<TptpParseOptions>,
     },
-    Tq
+    Tq,
 }
 
 impl Parser {
@@ -44,12 +44,10 @@ impl Parser {
                 let (ast, parse_err) = kif::parse(tokens, file);
                 let mut errors = tok_err;
                 errors.extend(parse_err);
-                let doc: Vec<DocItem> = ast.into_iter().map(|ast| {
-                    DocItem::Stmt(ast)
-                }).collect();
+                let doc: Vec<DocItem> = ast.into_iter().map(|ast| DocItem::Stmt(ast)).collect();
                 (doc, wrap_error(errors))
-            },
-            Parser::Tptp { options} => {
+            }
+            Parser::Tptp { options } => {
                 let (tokens, tok_err, metas) = tptp::tokenize_with_meta(&inp, file);
                 let (mut ast, parse_err) = tptp::parse(tokens, file, options.clone());
                 let mut errors = tok_err;
@@ -68,27 +66,49 @@ impl Parser {
                 let mut doc: Vec<DocItem> = metas.into_iter().map(DocItem::Meta).collect();
                 doc.extend(ast.into_iter().map(DocItem::Stmt));
                 (doc, wrap_error(errors))
-            },
+            }
             Parser::Tq => {
                 let (doc, errors) = parse_tq(inp, file);
                 (doc, wrap_error(errors))
-            },
+            }
         };
         (ast, errors)
     }
 
     /// Perform tokenization ONLY on file contents
-    pub fn tokenize(&self, inp: &str, file: &str) -> (Vec<String>, Vec<(Span, Box<dyn ParseError>)>) {
+    pub fn tokenize(
+        &self,
+        inp: &str,
+        file: &str,
+    ) -> (Vec<String>, Vec<(Span, Box<dyn ParseError>)>) {
         match self {
             Parser::Kif | Parser::Tq => {
                 let (tokens, err) = kif::tokenize(inp, file);
-                let errors = err.into_iter().map(| (span, e) | { (span, Box::new(e) as Box<dyn ParseError>) }).collect::<Vec<(Span, Box<dyn ParseError>)>>();
-                (tokens.iter().map(|t| format!("{}", t).to_uppercase()).collect(), errors)
-            },
+                let errors = err
+                    .into_iter()
+                    .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
+                    .collect::<Vec<(Span, Box<dyn ParseError>)>>();
+                (
+                    tokens
+                        .iter()
+                        .map(|t| format!("{}", t).to_uppercase())
+                        .collect(),
+                    errors,
+                )
+            }
             Parser::Tptp { .. } => {
                 let (tokens, err) = tptp::tokenize(inp, file);
-                let errors = err.into_iter().map(| (span, e) | { (span, Box::new(e) as Box<dyn ParseError>) }).collect::<Vec<(Span, Box<dyn ParseError>)>>();
-                (tokens.iter().map(|t| format!("{}", t).to_uppercase()).collect(), errors)
+                let errors = err
+                    .into_iter()
+                    .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
+                    .collect::<Vec<(Span, Box<dyn ParseError>)>>();
+                (
+                    tokens
+                        .iter()
+                        .map(|t| format!("{}", t).to_uppercase())
+                        .collect(),
+                    errors,
+                )
             }
         }
     }
@@ -111,14 +131,21 @@ impl Parser {
             // A `.p` / `.tptp` file is a theorem-proving *problem*: keep its
             // conjecture so it is recognized as a test (`is_test`) and its goal
             // surfaces as the `TestCase` query.
-            "p" | "tptp" => Parser::Tptp { options: Some(TptpParseOptions {
-                formulas_only: false, keep_conjectures: true, ..TptpParseOptions::default()
-            }) },
-            "ax" => Parser::Tptp { options: Some(TptpParseOptions { 
-                formulas_only: true, ..TptpParseOptions::default() 
-            }) },
+            "p" | "tptp" => Parser::Tptp {
+                options: Some(TptpParseOptions {
+                    formulas_only: false,
+                    keep_conjectures: true,
+                    ..TptpParseOptions::default()
+                }),
+            },
+            "ax" => Parser::Tptp {
+                options: Some(TptpParseOptions {
+                    formulas_only: true,
+                    ..TptpParseOptions::default()
+                }),
+            },
             "tq" => Parser::Tq,
-            _ => { return None }
+            _ => return None,
         };
         Some(p)
     }
@@ -129,7 +156,8 @@ impl Parser {
         // by just scanning for the annotated-formula keyword anywhere early).
         let head: String = contents.chars().take(4096).collect();
         if ["fof(", "cnf(", "tff(", "thf(", "tcf(", "include("]
-            .iter().any(|kw| head.contains(kw))
+            .iter()
+            .any(|kw| head.contains(kw))
         {
             return Some(Parser::Tptp { options: None });
         }
@@ -142,9 +170,8 @@ impl Parser {
 
 fn wrap_error<E: ParseError + 'static>(err: Vec<(Span, E)>) -> Vec<(Span, Box<dyn ParseError>)> {
     err.into_iter()
-        .map(|(span, e)| {
-            (span, Box::new(e) as Box<dyn ParseError>)
-        }).collect::<Vec<(Span, Box<dyn ParseError>)>>()
+        .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
+        .collect::<Vec<(Span, Box<dyn ParseError>)>>()
 }
 
 #[cfg(test)]
@@ -162,8 +189,14 @@ mod tests {
             % Status   : Theorem\n\
             fof(a1, axiom, p).\n\
             fof(g, conjecture, p).\n";
-        let opts = TptpParseOptions { keep_conjectures: true, ..TptpParseOptions::none() };
-        let (doc, errors) = Parser::Tptp { options: Some(opts) }.parse(src, "mini");
+        let opts = TptpParseOptions {
+            keep_conjectures: true,
+            ..TptpParseOptions::none()
+        };
+        let (doc, errors) = Parser::Tptp {
+            options: Some(opts),
+        }
+        .parse(src, "mini");
         assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
         let metas: Vec<&crate::parse::doc::MetaNode> =
             doc.iter().filter_map(DocItem::as_meta).collect();
@@ -171,7 +204,8 @@ mod tests {
         assert_eq!(metas[0].key, "status");
         assert!(
             matches!(&metas[0].args[0], AstNode::Symbol { name, .. } if name == "Theorem"),
-            "expected Symbol(\"Theorem\"), got {:?}", metas[0].args[0]
+            "expected Symbol(\"Theorem\"), got {:?}",
+            metas[0].args[0]
         );
         // The two `fof` statements still parse as ordinary Stmt items.
         assert_eq!(doc.iter().filter(|d| d.as_stmt().is_some()).count(), 2);

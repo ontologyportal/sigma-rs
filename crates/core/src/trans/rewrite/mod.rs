@@ -24,30 +24,29 @@
 //
 // The normalization stage (Stage 1) lives in `syntactic/normalize.rs`.
 
-
 use crate::trans::TranslationLayer;
 
-mod preprocess;
-mod extract;
 mod augment;
+mod extract;
 mod predvar;
+mod preprocess;
 #[cfg(test)]
 mod tests;
 
 // Re-exports used by the driver below and by other modules
 // (`trans::rewrite::X`): the rest stays private to its stage file.
-use preprocess::inject_domain_guards;
-pub(crate) use extract::{RewriteRule, extract_case1_rules, extract_case2_rules};
 use augment::augment_fixed_point;
-pub(crate) use predvar::{PredVarSchema, detect_predvar_schemas, is_bare_positive_assertion};
+pub(crate) use extract::{extract_case1_rules, extract_case2_rules, RewriteRule};
+pub(crate) use predvar::{detect_predvar_schemas, is_bare_positive_assertion, PredVarSchema};
+use preprocess::inject_domain_guards;
 
 // `HashSet` / `SentenceId` are used by `build_rewrite_program` below (and the
 // `#[cfg(test)]` `run_rewrite_pass` driver).  `SyntacticLayer` is named only by
 // the test driver.
-use std::collections::HashSet;
-use crate::types::SentenceId;
 #[cfg(test)]
 use crate::syntactic::SyntacticLayer;
+use crate::types::SentenceId;
+use std::collections::HashSet;
 
 /// The pure, cacheable output of rewrite-rule extraction over the current
 /// (CAF-normalized) implication set: the Case-1/Case-2 [`RewriteRule`]s, the
@@ -136,7 +135,11 @@ impl TranslationLayer {
             }
         }
 
-        RewriteProgram { rules, predvar_schemas, suppressed_sources }
+        RewriteProgram {
+            rules,
+            predvar_schemas,
+            suppressed_sources,
+        }
     }
 
     /// Run the complete rewrite pass (Stage 2 + Stage 3).
@@ -153,9 +156,7 @@ impl TranslationLayer {
     ///     &mut self.semantic.syntactic,
     /// );
     /// ```
-    pub(crate) fn run_rewrite_pass(
-        &self
-    ) {
+    pub(crate) fn run_rewrite_pass(&self) {
         // Stage 1 — normalization (lazy build).
         let implications = self.semantic.syntactic.normal_implications();
 
@@ -181,27 +182,32 @@ impl TranslationLayer {
 
         let syntactic = &self.semantic.syntactic;
         {
-        let mut suppressed = self.suppressed.write().unwrap();
-        for rule in &rules {
-            suppressed.insert(rule.source_sid);
-            // If the rule's source is a synthetic sentence (produced by
-            // CAF normalization in `syntactic/normalize.rs`), also
-            // suppress the original root it was derived from.  Without
-            // this, biconditionals like
-            //   (<=> (instance ?X NonnegativeRealNumber)
-            //        (and (greaterOrEqual ?X 0) (instance ?X RealNumber)))
-            // survive to the TPTP emitter: CAF splits them into two
-            // synthetic implications, Case 1 matches the forward
-            // direction and suppresses the *synthetic* sid, but the
-            // unsplit original `<=>` axiom passes through.  Vampire
-            // then sees `$greatereq(X0, 0)` with X0 quantified at `$i`
-            // and rejects the file as ill-typed.
-            if let Some(origin) = syntactic.synthetic_origin.get(&rule.source_sid).copied() {
-                suppressed.insert(origin);
+            let mut suppressed = self.suppressed.write().unwrap();
+            for rule in &rules {
+                suppressed.insert(rule.source_sid);
+                // If the rule's source is a synthetic sentence (produced by
+                // CAF normalization in `syntactic/normalize.rs`), also
+                // suppress the original root it was derived from.  Without
+                // this, biconditionals like
+                //   (<=> (instance ?X NonnegativeRealNumber)
+                //        (and (greaterOrEqual ?X 0) (instance ?X RealNumber)))
+                // survive to the TPTP emitter: CAF splits them into two
+                // synthetic implications, Case 1 matches the forward
+                // direction and suppresses the *synthetic* sid, but the
+                // unsplit original `<=>` axiom passes through.  Vampire
+                // then sees `$greatereq(X0, 0)` with X0 quantified at `$i`
+                // and rejects the file as ill-typed.
+                if let Some(origin) = syntactic.synthetic_origin.get(&rule.source_sid).copied() {
+                    suppressed.insert(origin);
+                }
             }
         }
-        }
-        augment_fixed_point(syntactic, &rules, &implications, &mut self.suppressed.write().unwrap());
+        augment_fixed_point(
+            syntactic,
+            &rules,
+            &implications,
+            &mut self.suppressed.write().unwrap(),
+        );
 
         // The pass changed the implication set (injected guards, suppressed
         // originals) without cascading events, so invalidate the reactive
@@ -222,18 +228,22 @@ impl TranslationLayer {
     /// minutes on a release build.  Deferring to the first reader
     /// collapses the cost to a single O(N) sweep at first query time.
     pub(crate) fn ensure_rewrite_pass(&self) {
-        if !self.rewrite_dirty.swap(false, std::sync::atomic::Ordering::Relaxed) { return; }
+        if !self
+            .rewrite_dirty
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         self.run_rewrite_pass();
     }
 }
-
 
 /// Test-only driver: run the full rewrite pass over a bare `SyntacticLayer`.
 #[cfg(test)]
 pub(crate) fn run_rewrite_pass(
     numeric_sorts: &crate::cache::EagerMap<crate::trans::caches::numeric_sorts::NumericSorts>,
-    suppressed:    &mut HashSet<SentenceId>,
-    syntactic:     &mut SyntacticLayer,
+    suppressed: &mut HashSet<SentenceId>,
+    syntactic: &mut SyntacticLayer,
 ) {
     let implications = syntactic.normal_implications();
     let mut rules = extract_case1_rules(numeric_sorts, syntactic, &implications);
@@ -241,7 +251,10 @@ pub(crate) fn run_rewrite_pass(
     rules.extend(
         extract_case2_rules(numeric_sorts, syntactic, &implications)
             .into_iter()
-            .map(|mut r| { r.id += case1_count; r }),
+            .map(|mut r| {
+                r.id += case1_count;
+                r
+            }),
     );
     for rule in &rules {
         suppressed.insert(rule.source_sid);

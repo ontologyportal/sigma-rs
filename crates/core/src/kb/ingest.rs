@@ -1,16 +1,16 @@
 //! Formula ingestion API.
 
-use thiserror::Error;
 use std::collections::HashSet;
+use thiserror::Error;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{SentenceId, ToDiagnostic};
 use crate::cache::events::Event;
 use crate::cache::router::RouteOutcome;
 use crate::types::SourceFile;
-use crate::{Diagnostic};
+use crate::Diagnostic;
+use crate::{SentenceId, ToDiagnostic};
 
 use super::KnowledgeBase;
 
@@ -75,9 +75,17 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// Test-only batch over [`Self::reload_kif`].
     #[cfg(test)]
     pub(crate) fn reload_kifs<'a, I>(&mut self, files: I, session: &str) -> Vec<IngestResult>
-    where I: IntoIterator<Item = (&'a str, &'a str)> {
-        files.into_iter()
-            .map(|(path, text)| self.stage(SourceFile::kif(PathBuf::from(path), text.to_string()), session))
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        files
+            .into_iter()
+            .map(|(path, text)| {
+                self.stage(
+                    SourceFile::kif(PathBuf::from(path), text.to_string()),
+                    session,
+                )
+            })
             .collect()
     }
 
@@ -92,7 +100,11 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// pending.
     pub fn commit(&mut self, path: &str) {
         with_guard!(self);
-        let recycled = self.layer.semantic().syntactic.recycled_fingerprints_of(path);
+        let recycled = self
+            .layer
+            .semantic()
+            .syntactic
+            .recycled_fingerprints_of(path);
         let mut events = Vec::new();
         for fp in recycled {
             let sids = self.layer.semantic().syntactic.roots_of_fingerprint(fp);
@@ -100,12 +112,21 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
                 self.layer.semantic().syntactic.sessions.demote(path, sid);
             }
             if self.layer.semantic().syntactic.drop_source_ref(path, fp) {
-                self.layer.semantic().syntactic.source.entries().evict_keys(&[fp]);
+                self.layer
+                    .semantic()
+                    .syntactic
+                    .source
+                    .entries()
+                    .evict_keys(&[fp]);
                 events.push(Event::FormulaRemoved { node: fp });
             }
         }
         self.layer.semantic().syntactic.clear_source_recycle(path);
-        let _ = self.layer.semantic().syntactic.sessions
+        let _ = self
+            .layer
+            .semantic()
+            .syntactic
+            .sessions
             .take_tombstones(crate::syntactic::caches::session::session_id(path));
         if !events.is_empty() {
             let _ = self.layer.cascade(events);
@@ -121,7 +142,11 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     pub fn rollback(&mut self, path: &str) {
         with_guard!(self);
         self.layer.semantic().syntactic.clear_source_recycle(path);
-        let _ = self.layer.semantic().syntactic.sessions
+        let _ = self
+            .layer
+            .semantic()
+            .syntactic
+            .sessions
             .take_tombstones(crate::syntactic::caches::session::session_id(path));
     }
 
@@ -143,7 +168,12 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// re-ingest of an existing source is the reconcile (emitting
     /// `FormulaAdded` / `FormulaRemoved` for the delta). `staged` defers
     /// removals.
-    pub(crate) fn ingest_source(&self, mut source: SourceFile, session: &str, staged: bool) -> RouteOutcome {
+    pub(crate) fn ingest_source(
+        &self,
+        mut source: SourceFile,
+        session: &str,
+        staged: bool,
+    ) -> RouteOutcome {
         profile_span!(self, "ingest.source_cascade");
         if matches!(source.origin, crate::types::FileOrigin::Inline) {
             if source.name.is_empty() {
@@ -152,7 +182,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         }
         self.layer.cascade(vec![Event::SourceAdded {
             session: Arc::new(session.to_owned()),
-            file:    source,
+            file: source,
             staged,
         }])
     }
@@ -179,7 +209,10 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         let sids = self.session_sids(session);
         self.sessions.remove(session);
         if sids.is_empty() {
-            self.layer.semantic().syntactic.forget_source_session(session);
+            self.layer
+                .semantic()
+                .syntactic
+                .forget_source_session(session);
             return;
         }
 
@@ -187,25 +220,37 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         // promoted axiom.
         let sources = self.layer.semantic().syntactic.sources_of_session(session);
         for src in sources {
-            if self.layer.semantic().syntactic.source_produces_axiom(&src) { continue; }
-            let _ = self.ingest_source(SourceFile {
-                parser:   crate::Parser::Kif,
-                name:     src,
-                path:     PathBuf::new(),
-                origin:   crate::types::FileOrigin::Inline,
-                contents: String::new(),
-                prebuilt: None,
-            }, session, false);
+            if self.layer.semantic().syntactic.source_produces_axiom(&src) {
+                continue;
+            }
+            let _ = self.ingest_source(
+                SourceFile {
+                    parser: crate::Parser::Kif,
+                    name: src,
+                    path: PathBuf::new(),
+                    origin: crate::types::FileOrigin::Inline,
+                    contents: String::new(),
+                    prebuilt: None,
+                },
+                session,
+                false,
+            );
         }
-        self.layer.semantic().syntactic.forget_source_session(session);
+        self.layer
+            .semantic()
+            .syntactic
+            .forget_source_session(session);
 
         // Fingerprint cleanup for the transient (non-axiom) sids only; a
         // promoted sid remains an axiom and must survive.
         {
-            let removable: std::collections::HashSet<SentenceId> = sids.iter().copied()
+            let removable: std::collections::HashSet<SentenceId> = sids
+                .iter()
+                .copied()
                 .filter(|sid| !self.layer.semantic().syntactic.sessions.is_axiom(*sid))
                 .collect();
-            self.syntax_fingerprints.retain(|_, sid| !removable.contains(sid));
+            self.syntax_fingerprints
+                .retain(|_, sid| !removable.contains(sid));
         }
 
         // Cascade from the top layer so `SessionRetracted` reaches the semantic
@@ -219,7 +264,11 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
 
     /// Return the SentenceIds for a session (empty if it doesn't exist).
     pub fn session_sids(&self, session: &str) -> Vec<SentenceId> {
-        self.layer.semantic().syntactic.sessions.session_sentences(session)
+        self.layer
+            .semantic()
+            .syntactic
+            .sessions
+            .session_sentences(session)
     }
 
     /// Drop every root sentence tagged with `file` from the in-memory KB by
@@ -240,21 +289,25 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     }
 
     /// Promote `session`'s assertions to axioms.
-    pub fn make_session_axiomatic(
-        &mut self,
-        session: &str,
-    ) -> Result<PromoteReport, PromoteError> {
+    pub fn make_session_axiomatic(&mut self, session: &str) -> Result<PromoteReport, PromoteError> {
         with_guard!(self);
 
         self.info(format!("promote: session='{}'", session));
 
         // Inline (`tell`) assertions are transient super-hypotheses that can
         // never be lifted; a session holding any is rejected wholesale.
-        if self.layer.semantic().syntactic.session_has_inline_assertions(session) {
-            return Err(PromoteError::ContainsInline { session: session.to_owned() });
+        if self
+            .layer
+            .semantic()
+            .syntactic
+            .session_has_inline_assertions(session)
+        {
+            return Err(PromoteError::ContainsInline {
+                session: session.to_owned(),
+            });
         }
 
-        let sids: Vec<SentenceId>  = self.session_sids(session);
+        let sids: Vec<SentenceId> = self.session_sids(session);
 
         let mut report = PromoteReport::default();
 
@@ -273,7 +326,11 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             }]);
         }
 
-        self.info(format!("promote: {} sentence(s) from session '{}' promoted to axioms", sids.len(), session));
+        self.info(format!(
+            "promote: {} sentence(s) from session '{}' promoted to axioms",
+            sids.len(),
+            session
+        ));
         report.promoted = sids.to_vec();
 
         self.sessions.remove(session);
@@ -284,11 +341,11 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
 
 /// Split a [`RouteOutcome`]'s emitted events into `(added, removed)` root ids.
 pub(super) fn roots_from_outcome(outcome: &RouteOutcome) -> (Vec<SentenceId>, Vec<SentenceId>) {
-    let mut added   = Vec::new();
+    let mut added = Vec::new();
     let mut removed = Vec::new();
     for e in &outcome.emitted {
         match e {
-            Event::RootAdded   { sid }     => added.push(*sid),
+            Event::RootAdded { sid } => added.push(*sid),
             Event::RootRemoved { sid, .. } => removed.push(*sid),
             _ => {}
         }
@@ -307,7 +364,9 @@ impl IngestResult {
 
         // Retained: formulas a file reconcile carried over unchanged, batched as
         // one `FormulasUnchanged` per source (a fresh load has none).
-        let retained = outcome.emitted.iter()
+        let retained = outcome
+            .emitted
+            .iter()
             .filter_map(|e| match e {
                 Event::FormulasUnchanged { nodes } => Some(nodes.len()),
                 _ => None,
@@ -337,18 +396,18 @@ impl IngestResult {
 #[derive(Debug)]
 pub struct IngestResult {
     /// The name of the session/file being ingested to.
-    pub session:      String,
+    pub session: String,
     /// True if the source parsed and ingested — i.e. no parse-level error.
     /// Semantic findings are advisory and do NOT clear this flag.
-    pub ok:           bool,
+    pub ok: bool,
     /// All diagnostics raised by this call — parse errors and semantic
     /// findings alike, each carrying its own [`Severity`].
-    pub diagnostics:  Vec<Diagnostic>,
+    pub diagnostics: Vec<Diagnostic>,
     /// Sentence ids newly added to the KB by this call.
-    pub sids:         Vec<SentenceId>,
+    pub sids: Vec<SentenceId>,
     /// Number of sentences carried over unchanged from the previous
     /// version of the file.
-    pub retained:     usize,
+    pub retained: usize,
     /// Sentence ids removed from the KB by this call, including a staged
     /// reconcile's deferred removals (tombstoned live until `commit`, but no
     /// longer part of the file's content, so they count in the diff).
@@ -357,21 +416,34 @@ pub struct IngestResult {
 
 impl IngestResult {
     /// Number of sentences added.
-    #[inline] pub fn added(&self) -> usize { self.sids.len() }
+    #[inline]
+    pub fn added(&self) -> usize {
+        self.sids.len()
+    }
     /// Number of sentences removed.
-    #[inline] pub fn removed(&self) -> usize { self.removed_sids.len() }
+    #[inline]
+    pub fn removed(&self) -> usize {
+        self.removed_sids.len()
+    }
     /// Diagnostics of error severity.
     pub fn errors(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == crate::Severity::Error)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::Severity::Error)
     }
     /// Diagnostics of warning severity.
     pub fn warnings(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.severity == crate::Severity::Warning)
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == crate::Severity::Warning)
     }
     /// True if any diagnostic is an error.
-    pub fn has_errors(&self) -> bool { self.errors().next().is_some() }
+    pub fn has_errors(&self) -> bool {
+        self.errors().next().is_some()
+    }
     /// True when nothing changed — no adds, removes, or diagnostics.
-    #[inline] pub fn is_noop(&self) -> bool {
+    #[inline]
+    pub fn is_noop(&self) -> bool {
         self.sids.is_empty() && self.removed_sids.is_empty() && self.diagnostics.is_empty()
     }
 }
@@ -379,11 +451,11 @@ impl IngestResult {
 impl Default for IngestResult {
     fn default() -> Self {
         Self {
-            session:      String::new(),
-            ok:           true,
-            diagnostics:  Vec::new(),
-            sids:         Vec::new(),
-            retained:     0,
+            session: String::new(),
+            ok: true,
+            diagnostics: Vec::new(),
+            sids: Vec::new(),
+            retained: 0,
             removed_sids: Vec::new(),
         }
     }
@@ -426,7 +498,7 @@ pub enum PromoteError {
 
 impl ToDiagnostic for PromoteError {
     fn to_diagnostic(&self) -> Diagnostic {
-        Diagnostic { 
+        Diagnostic {
             kind: "promotion",
             range: crate::Span::synthetic(),
             severity: crate::Severity::Error,
@@ -439,19 +511,19 @@ impl ToDiagnostic for PromoteError {
             related: vec![],
             sids: match self {
                 PromoteError::Inconsistent { conflicting, .. } => conflicting.clone(),
-                _ => vec![]
+                _ => vec![],
             },
             highlight_arg: i32::MAX,
-            highlight_var: None
+            highlight_var: None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::PromoteError;
     use crate::KnowledgeBase;
     use crate::SourceFile;
-    use super::PromoteError;
     use std::{collections::HashSet, path::PathBuf};
 
     const TEST_PATH: PathBuf = PathBuf::new();
@@ -462,17 +534,15 @@ mod tests {
     fn load_file(kb: &mut KnowledgeBase, file: &str, text: &str) {
         let r = kb.reload_kif(text, &PathBuf::from(file), file);
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
-        let r = kb.make_session_axiomatic(
-            file,
-        );
+        let r = kb.make_session_axiomatic(file);
         assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
     }
 
     // ── tell ───────────────────────────────────────────────────────────────
     #[test]
     fn infer_class_end_to_end_through_kb() {
-        use std::path::PathBuf;
         use crate::semantics::types::{ClassInference, Scope};
+        use std::path::PathBuf;
         let mut kb = KnowledgeBase::new();
         let f = PathBuf::from("t.kif");
 
@@ -484,33 +554,33 @@ mod tests {
             &f, "t.kif");
         kb.make_session_axiomatic("t.kif").expect("promote");
 
-        let b     = kb.symbol_id("B").unwrap();
+        let b = kb.symbol_id("B").unwrap();
         let human = kb.symbol_id("Human").unwrap();
-        let dog   = kb.symbol_id("Dog").unwrap();
+        let dog = kb.symbol_id("Dog").unwrap();
 
         // Equality `(equal A B)` folds A's Human into B (which is itself a Dog).
         match kb.layer.semantic.infer_class_scoped(b, Scope::Base) {
-            ClassInference::Multiple(v) =>
-                assert!(v.contains(&human) && v.contains(&dog), "B should be {{Dog, Human}}, got {v:?}"),
+            ClassInference::Multiple(v) => assert!(
+                v.contains(&human) && v.contains(&dog),
+                "B should be {{Dog, Human}}, got {v:?}"
+            ),
             other => panic!("expected Multiple([Dog, Human]), got {other:?}"),
         }
 
         // Remove the equality, re-promote: B drops Human, back to Single(Dog).
         kb.reload_kif(
             "(subclass Human Entity)(subclass Dog Entity)(instance A Human)(instance B Dog)",
-            &f, "t.kif");
+            &f,
+            "t.kif",
+        );
         kb.commit("t.kif");
         kb.make_session_axiomatic("t.kif").ok();
-        assert!(matches!(kb.layer.semantic.infer_class_scoped(b, Scope::Base), ClassInference::Single(d) if d == dog),
+        assert!(
+            matches!(kb.layer.semantic.infer_class_scoped(b, Scope::Base), ClassInference::Single(d) if d == dog),
             "after removing the equality, B should be Single(Dog), got {:?}",
-            kb.layer.semantic.infer_class_scoped(b, Scope::Base));
+            kb.layer.semantic.infer_class_scoped(b, Scope::Base)
+        );
     }
-
-
-
-
-
-
 
     #[test]
     fn transient_taxonomy_does_not_leak_across_sessions() {
@@ -524,21 +594,27 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         kb.tell("(subclass Human Object)", "session_a");
 
-        let human  = kb.symbol_id("Human").unwrap();
+        let human = kb.symbol_id("Human").unwrap();
         let object = kb.symbol_id("Object").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
 
         let sem = &kb.layer.semantic;
         // Visible in the asserting session's overlay …
-        assert!(sem.has_ancestor_scoped(human, object, sa),
-            "session A asserted (subclass Human Object) — must see it in its own scope");
+        assert!(
+            sem.has_ancestor_scoped(human, object, sa),
+            "session A asserted (subclass Human Object) — must see it in its own scope"
+        );
         // … but NOT in Base (it was never promoted) …
-        assert!(!sem.has_ancestor(human, object),
-            "transient edge must not appear in the Base taxonomy");
+        assert!(
+            !sem.has_ancestor(human, object),
+            "transient edge must not appear in the Base taxonomy"
+        );
         // … and NOT in a concurrent session that never asserted it.
-        assert!(!sem.has_ancestor_scoped(human, object, sb),
-            "session B never asserted this edge — must not leak across sessions");
+        assert!(
+            !sem.has_ancestor_scoped(human, object, sb),
+            "session B never asserted this edge — must not leak across sessions"
+        );
     }
 
     #[test]
@@ -551,14 +627,18 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "session_a", "(subclass Human Object)");
 
-        let human  = kb.symbol_id("Human").unwrap();
+        let human = kb.symbol_id("Human").unwrap();
         let object = kb.symbol_id("Object").unwrap();
 
         let sem = &kb.layer.semantic;
-        assert!(sem.has_ancestor(human, object),
-            "after promotion the edge is a Base axiom");
-        assert!(sem.has_ancestor_scoped(human, object, Scope::Session(session_id("session_b"))),
-            "a Base axiom is visible from every session scope");
+        assert!(
+            sem.has_ancestor(human, object),
+            "after promotion the edge is a Base axiom"
+        );
+        assert!(
+            sem.has_ancestor_scoped(human, object, Scope::Session(session_id("session_b"))),
+            "a Base axiom is visible from every session scope"
+        );
     }
 
     #[test]
@@ -570,14 +650,22 @@ mod tests {
 
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "base", "(subclass BinaryRelation Relation)");
-        assert!(kb.symbol_id("Relation").is_some(), "Relation interned after promote");
+        assert!(
+            kb.symbol_id("Relation").is_some(),
+            "Relation interned after promote"
+        );
 
-        kb.tell("(instance likes BinaryRelation)(likes Foo Bar)", "session_a");
+        kb.tell(
+            "(instance likes BinaryRelation)(likes Foo Bar)",
+            "session_a",
+        );
         assert!(kb.symbol_id("Relation").is_some(),
             "a tell into session_a must not retract the promoted base axiom (Relation must stay interned)");
         let syn = &kb.layer.semantic.syntactic;
-        assert!(syn.sentences.referenced_symbols().contains(&rel_id),
-            "the base (subclass BinaryRelation Relation) root must still be live");
+        assert!(
+            syn.sentences.referenced_symbols().contains(&rel_id),
+            "the base (subclass BinaryRelation Relation) root must still be live"
+        );
     }
 
     #[test]
@@ -597,15 +685,21 @@ mod tests {
         let a = Scope::Session(session_id("sess_a"));
 
         assert!(kb.layer.semantic.has_ancestor_scoped(foo, bar, a));
-        assert!(kb.layer.semantic.tax_session_active(a),
-            "sess_a is overlay-active before flush");
+        assert!(
+            kb.layer.semantic.tax_session_active(a),
+            "sess_a is overlay-active before flush"
+        );
 
         kb.flush_session("sess_a");
 
-        assert!(!kb.layer.semantic.tax_session_active(a),
-            "sess_a's overlay refcount is cleared after flush");
-        assert!(!kb.layer.semantic.has_ancestor_scoped(foo, bar, a),
-            "the flushed session's transient edge is gone (falls through to Base)");
+        assert!(
+            !kb.layer.semantic.tax_session_active(a),
+            "sess_a's overlay refcount is cleared after flush"
+        );
+        assert!(
+            !kb.layer.semantic.has_ancestor_scoped(foo, bar, a),
+            "the flushed session's transient edge is gone (falls through to Base)"
+        );
     }
 
     #[test]
@@ -628,19 +722,27 @@ mod tests {
         let b = Scope::Session(session_id("sess_b"));
 
         assert!(kb.layer.semantic.has_ancestor_scoped(foo, bar, a));
-        assert!(kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
-            "the second session sees the edge it re-asserted (scope propagated)");
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
+            "the second session sees the edge it re-asserted (scope propagated)"
+        );
         assert!(kb.layer.semantic.tax_session_active(a));
         assert!(kb.layer.semantic.tax_session_active(b));
 
         kb.flush_session("sess_a");
 
-        assert!(!kb.layer.semantic.tax_session_active(a),
-            "sess_a's scope is dropped after flush");
-        assert!(kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
-            "sess_b still owns the shared edge after sess_a is flushed");
-        assert!(!kb.layer.semantic.has_ancestor_scoped(foo, bar, a),
-            "flushed session falls through to Base (edge never promoted)");
+        assert!(
+            !kb.layer.semantic.tax_session_active(a),
+            "sess_a's scope is dropped after flush"
+        );
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
+            "sess_b still owns the shared edge after sess_a is flushed"
+        );
+        assert!(
+            !kb.layer.semantic.has_ancestor_scoped(foo, bar, a),
+            "flushed session falls through to Base (edge never promoted)"
+        );
     }
 
     #[test]
@@ -650,8 +752,10 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         kb.tell("(married brian amy)", "abc");
         kb.tell("(mother amy steve)", "abc");
-        assert!(!kb.layer.semantic.syntactic.by_head("married").is_empty(),
-            "first tell survives the second (append, not reconcile)");
+        assert!(
+            !kb.layer.semantic.syntactic.by_head("married").is_empty(),
+            "first tell survives the second (append, not reconcile)"
+        );
         assert!(!kb.layer.semantic.syntactic.by_head("mother").is_empty());
         assert_eq!(kb.session_sids("abc").len(), 2, "both tells accumulate");
 
@@ -668,22 +772,42 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "base.kif", "(subclass Dog Animal)");
 
-        assert!(kb.session_sids("base.kif").is_empty(),
-            "promoted content is drained out of the session membership");
+        assert!(
+            kb.session_sids("base.kif").is_empty(),
+            "promoted content is drained out of the session membership"
+        );
 
         let dog = kb.symbol_id("Dog").unwrap();
         let animal = kb.symbol_id("Animal").unwrap();
-        assert!(kb.layer.semantic.has_ancestor(dog, animal), "promoted to the Base taxonomy");
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "promoted to the Base taxonomy"
+        );
 
-        let sid = *kb.layer.semantic.syntactic.by_head("subclass").iter().next().unwrap();
-        assert!(kb.layer.semantic.syntactic.sessions.is_axiom(sid), "is an axiom");
-        assert_eq!(kb.layer.semantic.syntactic.sessions.provenance_of(sid),
-            vec!["base.kif".to_string()], "provenance points back to the origin file");
+        let sid = *kb
+            .layer
+            .semantic
+            .syntactic
+            .by_head("subclass")
+            .iter()
+            .next()
+            .unwrap();
+        assert!(
+            kb.layer.semantic.syntactic.sessions.is_axiom(sid),
+            "is an axiom"
+        );
+        assert_eq!(
+            kb.layer.semantic.syntactic.sessions.provenance_of(sid),
+            vec!["base.kif".to_string()],
+            "provenance points back to the origin file"
+        );
 
         // Retracting the (now-drained) session is a no-op for the axiom.
         kb.flush_session("base.kif");
-        assert!(kb.layer.semantic.has_ancestor(dog, animal),
-            "the promoted axiom survives session retraction");
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "the promoted axiom survives session retraction"
+        );
     }
 
     #[test]
@@ -699,15 +823,24 @@ mod tests {
 
         // Staged: drop Dog⊂Animal, add Cat⊂Animal.
         kb.reload_kif("(subclass Cat Animal)", &path, "model.kif");
-        assert!(kb.layer.semantic.has_ancestor(dog, animal),
-            "removal of the promoted axiom is deferred, not applied");
-        assert!(!kb.pending_axiom_removals("model.kif").is_empty(),
-            "the dropped axiom waits in the recycle bin");
-        assert!(kb.symbol_id("Cat").is_some(), "the addition applied immediately");
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "removal of the promoted axiom is deferred, not applied"
+        );
+        assert!(
+            !kb.pending_axiom_removals("model.kif").is_empty(),
+            "the dropped axiom waits in the recycle bin"
+        );
+        assert!(
+            kb.symbol_id("Cat").is_some(),
+            "the addition applied immediately"
+        );
 
         kb.commit("model.kif");
-        assert!(!kb.layer.semantic.has_ancestor(dog, animal),
-            "after accept, the removal is committed");
+        assert!(
+            !kb.layer.semantic.has_ancestor(dog, animal),
+            "after accept, the removal is committed"
+        );
         assert!(kb.pending_axiom_removals("model.kif").is_empty());
     }
 
@@ -724,18 +857,24 @@ mod tests {
 
         // 1. Staged update drops Dog⊂Animal → deferred into the recycle bin.
         kb.reload_kif("(subclass Cat Animal)", &path, "model.kif");
-        assert!(!kb.pending_axiom_removals("model.kif").is_empty(),
-            "the dropped axiom is pending");
+        assert!(
+            !kb.pending_axiom_removals("model.kif").is_empty(),
+            "the dropped axiom is pending"
+        );
 
         // 2. The file is edited again to put Dog⊂Animal back.
         kb.reload_kif("(subclass Dog Animal)", &path, "model.kif");
-        assert!(kb.pending_axiom_removals("model.kif").is_empty(),
-            "re-adding the formula clears it from the recycle bin");
+        assert!(
+            kb.pending_axiom_removals("model.kif").is_empty(),
+            "re-adding the formula clears it from the recycle bin"
+        );
 
         // 3. Accept: must NOT delete Dog⊂Animal — the latest version keeps it.
         kb.commit("model.kif");
-        assert!(kb.layer.semantic.has_ancestor(dog, animal),
-            "a re-added axiom survives a later accept");
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "a re-added axiom survives a later accept"
+        );
     }
 
     #[test]
@@ -752,14 +891,20 @@ mod tests {
         let p = Scope::Session(session_id("P"));
         let q = Scope::Session(session_id("Q"));
 
-        kb.reload_kif("", &path, "P");   // staged delete of the file's only axiom
+        kb.reload_kif("", &path, "P"); // staged delete of the file's only axiom
 
-        assert!(!kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
-            "the reviewing session sees the axiom as gone");
-        assert!(kb.layer.semantic.has_ancestor(dog, animal),
-            "Base is unaffected during staging");
-        assert!(kb.layer.semantic.has_ancestor_scoped(dog, animal, q),
-            "another session sees it normally");
+        assert!(
+            !kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
+            "the reviewing session sees the axiom as gone"
+        );
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "Base is unaffected during staging"
+        );
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(dog, animal, q),
+            "another session sees it normally"
+        );
     }
 
     #[test]
@@ -776,8 +921,10 @@ mod tests {
         kb.reload_kif("", &path, "P");
         assert!(!kb.layer.semantic.has_ancestor_scoped(dog, animal, p));
         kb.rollback("P");
-        assert!(kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
-            "reject restores the axiom in the session's view");
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
+            "reject restores the axiom in the session's view"
+        );
         assert!(kb.layer.semantic.has_ancestor(dog, animal));
     }
 
@@ -791,8 +938,10 @@ mod tests {
 
         kb.reload_kif("", &path, "P");
         kb.commit("P");
-        assert!(!kb.layer.semantic.has_ancestor(dog, animal),
-            "accept removes the axiom from Base");
+        assert!(
+            !kb.layer.semantic.has_ancestor(dog, animal),
+            "accept removes the axiom from Base"
+        );
         assert!(kb.pending_axiom_removals("P").is_empty());
     }
 
@@ -804,14 +953,16 @@ mod tests {
         use crate::syntactic::caches::session::session_id;
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "P", "(subclass Dog Animal)");
-        load_file(&mut kb, "Q", "(subclass Dog Animal)");   // same content, 2nd promoter
+        load_file(&mut kb, "Q", "(subclass Dog Animal)"); // same content, 2nd promoter
         let dog = kb.symbol_id("Dog").unwrap();
         let animal = kb.symbol_id("Animal").unwrap();
         let p = Scope::Session(session_id("P"));
 
         kb.reload_kif("", &PathBuf::from("P"), "P");
-        assert!(kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
-            "removal is latent (Q still promotes it) → not hidden even in P's view");
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(dog, animal, p),
+            "removal is latent (Q still promotes it) → not hidden even in P's view"
+        );
     }
 
     #[test]
@@ -824,8 +975,10 @@ mod tests {
 
         kb.reload_kif("(subclass Cat Animal)", &path, "model.kif");
         kb.rollback("model.kif");
-        assert!(kb.layer.semantic.has_ancestor(dog, animal),
-            "after reject, the axiom the update would have deleted is kept");
+        assert!(
+            kb.layer.semantic.has_ancestor(dog, animal),
+            "after reject, the axiom the update would have deleted is kept"
+        );
         assert!(kb.pending_axiom_removals("model.kif").is_empty());
     }
 
@@ -835,8 +988,10 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         kb.tell("(married brian amy)", "abc");
         let r = kb.make_session_axiomatic("abc");
-        assert!(matches!(r, Err(PromoteError::ContainsInline { .. })),
-            "a session with inline (tell) assertions must not promote; got {r:?}");
+        assert!(
+            matches!(r, Err(PromoteError::ContainsInline { .. })),
+            "a session with inline (tell) assertions must not promote; got {r:?}"
+        );
         // The rejection touches nothing — the assertion is still there, unpromoted.
         assert!(!kb.layer.semantic.syntactic.by_head("married").is_empty());
     }
@@ -846,15 +1001,19 @@ mod tests {
         // A file axiom that a session re-states (dedup → shared) survives flush;
         // only the session's own transient tell is dropped.
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "base.kif", "(married brian amy)");   // file → promoted axiom
-        kb.tell("(married brian amy)", "abc");            // re-states the axiom
-        kb.tell("(sister susan steve)", "abc");           // transient
+        load_file(&mut kb, "base.kif", "(married brian amy)"); // file → promoted axiom
+        kb.tell("(married brian amy)", "abc"); // re-states the axiom
+        kb.tell("(sister susan steve)", "abc"); // transient
 
         kb.flush_session("abc");
-        assert!(!kb.layer.semantic.syntactic.by_head("married").is_empty(),
-            "the promoted file axiom survives flush");
-        assert!(kb.layer.semantic.syntactic.by_head("sister").is_empty(),
-            "the transient tell is flushed");
+        assert!(
+            !kb.layer.semantic.syntactic.by_head("married").is_empty(),
+            "the promoted file axiom survives flush"
+        );
+        assert!(
+            kb.layer.semantic.syntactic.by_head("sister").is_empty(),
+            "the transient tell is flushed"
+        );
     }
 
     #[test]
@@ -874,10 +1033,14 @@ mod tests {
 
         kb.tell("(subclass Foo Bar)", "sess_b"); // redundant re-assert of a Base axiom
 
-        assert!(kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
-            "the session sees the global axiom through Base");
-        assert!(!kb.layer.semantic.tax_session_active(b),
-            "re-asserting a Base axiom must not mark the session overlay-active");
+        assert!(
+            kb.layer.semantic.has_ancestor_scoped(foo, bar, b),
+            "the session sees the global axiom through Base"
+        );
+        assert!(
+            !kb.layer.semantic.tax_session_active(b),
+            "re-asserting a Base axiom must not mark the session overlay-active"
+        );
     }
 
     #[test]
@@ -889,12 +1052,16 @@ mod tests {
         use crate::syntactic::caches::session::session_id;
 
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "base", "(subclass Dog Animal)(subclass Animal Entity)");
+        load_file(
+            &mut kb,
+            "base",
+            "(subclass Dog Animal)(subclass Animal Entity)",
+        );
         // session_a declares its OWN taxonomy (Cat) — overlay-active — but never
         // touches Dog.
         kb.tell("(subclass Cat Animal)", "session_a");
 
-        let dog    = kb.symbol_id("Dog").unwrap();
+        let dog = kb.symbol_id("Dog").unwrap();
         let entity = kb.symbol_id("Entity").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b")); // never asserted → inactive
@@ -903,24 +1070,59 @@ mod tests {
         // Direct cache, per-symbol fall-through: Dog has no overlay in the
         // (otherwise active) session_a → is_class(Dog) keys under Base.
         assert!(sem.is_class_scoped(dog, sa));
-        assert!(sem.is_class.peek(&Scoped { scope: Scope::Base, key: dog }).is_some(),
-            "is_class(Dog) memoised under Base");
-        assert!(sem.is_class.peek(&Scoped { scope: sa, key: dog }).is_none(),
-            "no redundant session-keyed is_class(Dog) entry");
+        assert!(
+            sem.is_class
+                .peek(&Scoped {
+                    scope: Scope::Base,
+                    key: dog
+                })
+                .is_some(),
+            "is_class(Dog) memoised under Base"
+        );
+        assert!(
+            sem.is_class
+                .peek(&Scoped {
+                    scope: sa,
+                    key: dog
+                })
+                .is_none(),
+            "no redundant session-keyed is_class(Dog) entry"
+        );
 
         // Transitive cache, per-session fall-through: session_b declares no
         // taxonomy at all → has_ancestor keys under Base.
         assert!(sem.has_ancestor_scoped(dog, entity, sb));
-        assert!(sem.has_ancestor.peek(&Scoped { scope: Scope::Base, key: (dog, entity) }).is_some(),
-            "has_ancestor(Dog, Entity) memoised under Base");
-        assert!(sem.has_ancestor.peek(&Scoped { scope: sb, key: (dog, entity) }).is_none(),
-            "no redundant session-keyed has_ancestor entry for an inactive session");
+        assert!(
+            sem.has_ancestor
+                .peek(&Scoped {
+                    scope: Scope::Base,
+                    key: (dog, entity)
+                })
+                .is_some(),
+            "has_ancestor(Dog, Entity) memoised under Base"
+        );
+        assert!(
+            sem.has_ancestor
+                .peek(&Scoped {
+                    scope: sb,
+                    key: (dog, entity)
+                })
+                .is_none(),
+            "no redundant session-keyed has_ancestor entry for an inactive session"
+        );
 
         // Sanity: an active session DOES get its own entry for a symbol it touches.
         let cat = kb.symbol_id("Cat").unwrap();
         assert!(sem.is_class_scoped(cat, sa));
-        assert!(sem.is_class.peek(&Scoped { scope: sa, key: cat }).is_some(),
-            "Cat carries a session_a overlay edge → keyed under the session");
+        assert!(
+            sem.is_class
+                .peek(&Scoped {
+                    scope: sa,
+                    key: cat
+                })
+                .is_some(),
+            "Cat carries a session_a overlay edge → keyed under the session"
+        );
     }
 
     #[test]
@@ -928,9 +1130,9 @@ mod tests {
         // Validating a session reasons in that session's scope, so a
         // relation declared only transiently in the session is recognised — while
         // global validation (the default) still flags its use as HeadNotRelation.
+        use crate::layer::Layer;
         use crate::semantics::types::Scope;
         use crate::syntactic::caches::session::session_id;
-        use crate::layer::Layer;
 
         let mut kb = KnowledgeBase::new();
         // A single session transiently declares the relation taxonomy, declares
@@ -938,27 +1140,48 @@ mod tests {
         // lives only in the session overlay.
         kb.tell(
             "(subclass BinaryRelation Relation)(instance likes BinaryRelation)(likes Foo Bar)",
-            "session_a");
+            "session_a",
+        );
 
-        let likes_sid = *kb.layer.semantic.syntactic.by_head("likes").iter().next()
+        let likes_sid = *kb
+            .layer
+            .semantic
+            .syntactic
+            .by_head("likes")
+            .iter()
+            .next()
             .expect("a (likes ...) root");
         let sa = Scope::Session(session_id("session_a"));
 
-        let scoped = kb.layer.semantic.validator_scoped(sa).validate_sentence_collect(likes_sid);
-        let global = kb.layer.semantic.validator_scoped(Scope::Base).validate_sentence_collect(likes_sid);
+        let scoped = kb
+            .layer
+            .semantic
+            .validator_scoped(sa)
+            .validate_sentence_collect(likes_sid);
+        let global = kb
+            .layer
+            .semantic
+            .validator_scoped(Scope::Base)
+            .validate_sentence_collect(likes_sid);
 
         // E002 = HeadNotRelation.
-        assert!(!scoped.iter().any(|e| e.code() == "E002"),
+        assert!(
+            !scoped.iter().any(|e| e.code() == "E002"),
             "session scope sees (instance likes BinaryRelation) → likes is a relation; got {:?}",
-            scoped.iter().map(|e| e.code()).collect::<Vec<_>>());
-        assert!(global.iter().any(|e| e.code() == "E002"),
+            scoped.iter().map(|e| e.code()).collect::<Vec<_>>()
+        );
+        assert!(
+            global.iter().any(|e| e.code() == "E002"),
             "Base never saw the declaration → HeadNotRelation; got {:?}",
-            global.iter().map(|e| e.code()).collect::<Vec<_>>());
+            global.iter().map(|e| e.code()).collect::<Vec<_>>()
+        );
 
         // The ValidateSession event cascades through the reactive graph cleanly.
-        let _ = kb.layer.cascade(vec![crate::cache::events::Event::ValidateSession {
-            session: "session_a".to_string(),
-        }]);
+        let _ = kb
+            .layer
+            .cascade(vec![crate::cache::events::Event::ValidateSession {
+                session: "session_a".to_string(),
+            }]);
     }
 
     #[test]
@@ -972,24 +1195,38 @@ mod tests {
         use crate::syntactic::caches::session::session_id;
 
         let mut kb = KnowledgeBase::new();
-        kb.tell("(subclass Human Entity)(instance A Human)(equal A B)", "session_a");
+        kb.tell(
+            "(subclass Human Entity)(instance A Human)(equal A B)",
+            "session_a",
+        );
 
-        let b     = kb.symbol_id("B").unwrap();
+        let b = kb.symbol_id("B").unwrap();
         let human = kb.symbol_id("Human").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
         let sem = &kb.layer.semantic;
 
         // In session A, equality folds A's Human onto B.
-        assert!(matches!(sem.infer_class_scoped(b, sa), ClassInference::Single(c) if c == human),
+        assert!(
+            matches!(sem.infer_class_scoped(b, sa), ClassInference::Single(c) if c == human),
             "session A: B is equal to A which is a Human → Single(Human), got {:?}",
-            sem.infer_class_scoped(b, sa));
+            sem.infer_class_scoped(b, sa)
+        );
         // Base never saw these (un-promoted) → Unknown.
-        assert!(matches!(sem.infer_class_scoped(b, Scope::Base), ClassInference::Unknown),
-            "Base has no evidence for B → Unknown, got {:?}", sem.infer_class_scoped(b, Scope::Base));
+        assert!(
+            matches!(
+                sem.infer_class_scoped(b, Scope::Base),
+                ClassInference::Unknown
+            ),
+            "Base has no evidence for B → Unknown, got {:?}",
+            sem.infer_class_scoped(b, Scope::Base)
+        );
         // A concurrent session is isolated → Unknown.
-        assert!(matches!(sem.infer_class_scoped(b, sb), ClassInference::Unknown),
-            "session B never asserted this → Unknown, got {:?}", sem.infer_class_scoped(b, sb));
+        assert!(
+            matches!(sem.infer_class_scoped(b, sb), ClassInference::Unknown),
+            "session B never asserted this → Unknown, got {:?}",
+            sem.infer_class_scoped(b, sb)
+        );
     }
 
     #[test]
@@ -1006,27 +1243,40 @@ mod tests {
         kb.tell("(domain mother 1 Mother)(mother Mary Jesus)", "session_a");
         // session_b asserts the SAME relation atom but a DIFFERENT arg-1 domain —
         // if any cross-session leak existed, Mary's class would collide here.
-        kb.tell("(domain mother 1 Caregiver)(mother Mary Jesus)", "session_b");
+        kb.tell(
+            "(domain mother 1 Caregiver)(mother Mary Jesus)",
+            "session_b",
+        );
 
-        let mary      = kb.symbol_id("Mary").unwrap();
-        let mother    = kb.symbol_id("Mother").unwrap();
+        let mary = kb.symbol_id("Mary").unwrap();
+        let mother = kb.symbol_id("Mother").unwrap();
         let caregiver = kb.symbol_id("Caregiver").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
         let sem = &kb.layer.semantic;
 
         // session_a: Mary at arg-1 of `mother` → mother's session_a domain (Mother).
-        assert!(matches!(sem.infer_class_scoped(mary, sa), ClassInference::Single(c) if c == mother),
+        assert!(
+            matches!(sem.infer_class_scoped(mary, sa), ClassInference::Single(c) if c == mother),
             "session A: Mary is arg-1 of mother (domain Mother) → Single(Mother), got {:?}",
-            sem.infer_class_scoped(mary, sa));
+            sem.infer_class_scoped(mary, sa)
+        );
         // session_b: same arg position, but its OWN domain (Caregiver) — no leak
         // of session_a's Mother classification.
-        assert!(matches!(sem.infer_class_scoped(mary, sb), ClassInference::Single(c) if c == caregiver),
+        assert!(
+            matches!(sem.infer_class_scoped(mary, sb), ClassInference::Single(c) if c == caregiver),
             "session B: Mary → its own domain (Caregiver), not session A's Mother, got {:?}",
-            sem.infer_class_scoped(mary, sb));
+            sem.infer_class_scoped(mary, sb)
+        );
         // Base saw neither (both transient) → Unknown.
-        assert!(matches!(sem.infer_class_scoped(mary, Scope::Base), ClassInference::Unknown),
-            "Base has no transient evidence for Mary → Unknown, got {:?}", sem.infer_class_scoped(mary, Scope::Base));
+        assert!(
+            matches!(
+                sem.infer_class_scoped(mary, Scope::Base),
+                ClassInference::Unknown
+            ),
+            "Base has no transient evidence for Mary → Unknown, got {:?}",
+            sem.infer_class_scoped(mary, Scope::Base)
+        );
     }
 
     #[test]
@@ -1040,7 +1290,7 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         kb.tell("(domain likes 1 Animal)", "session_a");
 
-        let likes  = kb.symbol_id("likes").unwrap();
+        let likes = kb.symbol_id("likes").unwrap();
         let animal = kb.symbol_id("Animal").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
@@ -1049,14 +1299,20 @@ mod tests {
         // Visible in the declaring session …
         let d = sem.domain_scoped(likes, sa);
         assert_eq!(d.len(), 1);
-        assert!(matches!(&d[0], RelationDomain::Domain(c) if *c == animal),
-            "session A declared (domain likes 1 Animal) — must see it, got {d:?}");
+        assert!(
+            matches!(&d[0], RelationDomain::Domain(c) if *c == animal),
+            "session A declared (domain likes 1 Animal) — must see it, got {d:?}"
+        );
         // … never in Base (un-promoted) …
-        assert!(sem.domain(likes).is_empty(),
-            "transient session domain must not leak into Base");
+        assert!(
+            sem.domain(likes).is_empty(),
+            "transient session domain must not leak into Base"
+        );
         // … nor in a concurrent session.
-        assert!(sem.domain_scoped(likes, sb).is_empty(),
-            "transient session domain must not leak across sessions");
+        assert!(
+            sem.domain_scoped(likes, sb).is_empty(),
+            "transient session domain must not leak across sessions"
+        );
     }
 
     #[test]
@@ -1068,42 +1324,50 @@ mod tests {
 
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "base.kif", "(domain likes 1 Animal)"); // promoted axiom
-        kb.tell("(domain likes 1 Plant)", "session_a");     // conflicting overlay
+        kb.tell("(domain likes 1 Plant)", "session_a"); // conflicting overlay
 
-        let likes  = kb.symbol_id("likes").unwrap();
+        let likes = kb.symbol_id("likes").unwrap();
         let animal = kb.symbol_id("Animal").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sem = &kb.layer.semantic;
 
         let d = sem.domain_scoped(likes, sa);
         assert_eq!(d.len(), 1);
-        assert!(matches!(&d[0], RelationDomain::Domain(c) if *c == animal),
-            "Base (Animal) overrules the session's conflicting (Plant), got {d:?}");
+        assert!(
+            matches!(&d[0], RelationDomain::Domain(c) if *c == animal),
+            "Base (Animal) overrules the session's conflicting (Plant), got {d:?}"
+        );
     }
 
     #[test]
     fn scoped_range_is_session_local_and_base_overrules() {
         // Range mirrors domain: a session's transient `range` is effective only
         // when Base declares none, and only within that session.
-        use crate::types::RelationRange;
         use crate::semantics::types::Scope;
         use crate::syntactic::caches::session::session_id;
+        use crate::types::RelationRange;
 
         let mut kb = KnowledgeBase::new();
         kb.tell("(range FatherOfFn Human)", "session_a");
 
-        let fof   = kb.symbol_id("FatherOfFn").unwrap();
+        let fof = kb.symbol_id("FatherOfFn").unwrap();
         let human = kb.symbol_id("Human").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
         let sem = &kb.layer.semantic;
 
-        assert!(matches!(sem.range_scoped(fof, sa), RelationRange::Range(c) if c == human),
-            "session A declared (range FatherOfFn Human) — must see it");
-        assert!(matches!(sem.range(fof), RelationRange::Unknown),
-            "transient session range must not leak into Base");
-        assert!(matches!(sem.range_scoped(fof, sb), RelationRange::Unknown),
-            "transient session range must not leak across sessions");
+        assert!(
+            matches!(sem.range_scoped(fof, sa), RelationRange::Range(c) if c == human),
+            "session A declared (range FatherOfFn Human) — must see it"
+        );
+        assert!(
+            matches!(sem.range(fof), RelationRange::Unknown),
+            "transient session range must not leak into Base"
+        );
+        assert!(
+            matches!(sem.range_scoped(fof, sb), RelationRange::Unknown),
+            "transient session range must not leak across sessions"
+        );
     }
 
     #[test]
@@ -1115,7 +1379,10 @@ mod tests {
         use crate::syntactic::caches::session::session_id;
 
         let mut kb = KnowledgeBase::new();
-        kb.tell(r#"(documentation Gizmo EnglishLanguage "a session gadget")"#, "session_a");
+        kb.tell(
+            r#"(documentation Gizmo EnglishLanguage "a session gadget")"#,
+            "session_a",
+        );
 
         let gizmo = kb.symbol_id("Gizmo").unwrap();
         let sa = Scope::Session(session_id("session_a"));
@@ -1123,15 +1390,19 @@ mod tests {
         let sem = &kb.layer.semantic;
 
         // Default (Base) does NOT see a session's transient (un-promoted) doc.
-        assert!(sem.documentation(gizmo, None).is_empty(),
-            "Base must not see a session's transient documentation");
+        assert!(
+            sem.documentation(gizmo, None).is_empty(),
+            "Base must not see a session's transient documentation"
+        );
         // The declaring session sees it.
         let d = sem.documentation_scoped(gizmo, None, sa);
         assert_eq!(d.len(), 1, "session A declared the doc → must see it");
         assert_eq!(d[0].text, "a session gadget");
         // A concurrent session does not.
-        assert!(sem.documentation_scoped(gizmo, None, sb).is_empty(),
-            "documentation must not leak across sessions");
+        assert!(
+            sem.documentation_scoped(gizmo, None, sb).is_empty(),
+            "documentation must not leak across sessions"
+        );
     }
 
     #[test]
@@ -1146,20 +1417,26 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         kb.tell("(domain mother 1 Mother)", "session_a"); // transient root
 
-        let mother   = kb.symbol_id("mother").unwrap();
+        let mother = kb.symbol_id("mother").unwrap();
         let mother_c = kb.symbol_id("Mother").unwrap();
         let sb = Scope::Session(session_id("session_b"));
 
         // Query B FIRST → empty, MEMOISING the empty verdict for B's scope.
-        assert!(kb.layer.semantic.domain_scoped(mother, sb).is_empty(),
-            "B has not referenced the domain axiom yet → empty");
+        assert!(
+            kb.layer.semantic.domain_scoped(mother, sb).is_empty(),
+            "B has not referenced the domain axiom yet → empty"
+        );
 
         // B re-asserts the identical axiom: dedup → SessionReferenced, which must
         // drop B's stale empty entry (targeted, only B's scope for `mother`).
         kb.tell("(domain mother 1 Mother)", "session_b");
 
         let d = kb.layer.semantic.domain_scoped(mother, sb);
-        assert_eq!(d.len(), 1, "B now references the axiom → must see the domain");
+        assert_eq!(
+            d.len(),
+            1,
+            "B now references the axiom → must see the domain"
+        );
         assert!(matches!(&d[0], RelationDomain::Domain(c) if *c == mother_c));
     }
 
@@ -1168,36 +1445,76 @@ mod tests {
         // SessionRetracted is a TARGETED invalidation: retracting session A drops
         // only A's scoped entries.  A shared edge that survives (still referenced
         // by B) keeps B's memo intact — not a coarse store-wide clear.
-        use crate::types::RelationRange;
         use crate::semantics::types::{Scope, Scoped};
         use crate::syntactic::caches::session::session_id;
+        use crate::types::RelationRange;
 
         let mut kb = KnowledgeBase::new();
         // Both sessions reference the SAME transient range sentence (dedup-shared).
         kb.tell("(range FatherOfFn Human)", "session_a");
         kb.tell("(range FatherOfFn Human)", "session_b");
 
-        let fof   = kb.symbol_id("FatherOfFn").unwrap();
+        let fof = kb.symbol_id("FatherOfFn").unwrap();
         let human = kb.symbol_id("Human").unwrap();
         let sa = Scope::Session(session_id("session_a"));
         let sb = Scope::Session(session_id("session_b"));
 
         // Memoise BOTH sessions' verdicts.
-        assert!(matches!(kb.layer.semantic.range_scoped(fof, sa), RelationRange::Range(c) if c == human));
-        assert!(matches!(kb.layer.semantic.range_scoped(fof, sb), RelationRange::Range(c) if c == human));
-        assert!(kb.layer.semantic.range.peek(&Scoped { scope: sa, key: fof }).is_some());
-        assert!(kb.layer.semantic.range.peek(&Scoped { scope: sb, key: fof }).is_some());
+        assert!(
+            matches!(kb.layer.semantic.range_scoped(fof, sa), RelationRange::Range(c) if c == human)
+        );
+        assert!(
+            matches!(kb.layer.semantic.range_scoped(fof, sb), RelationRange::Range(c) if c == human)
+        );
+        assert!(kb
+            .layer
+            .semantic
+            .range
+            .peek(&Scoped {
+                scope: sa,
+                key: fof
+            })
+            .is_some());
+        assert!(kb
+            .layer
+            .semantic
+            .range
+            .peek(&Scoped {
+                scope: sb,
+                key: fof
+            })
+            .is_some());
 
         // Retract A.  B still references the sentence, so it survives — the only
         // signal the range cache sees is `SessionRetracted{A}` (no RelationRemoved).
         kb.flush_session("session_a");
 
-        assert!(kb.layer.semantic.range.peek(&Scoped { scope: sa, key: fof }).is_none(),
-            "session A's range entry is dropped on retraction");
-        assert!(kb.layer.semantic.range.peek(&Scoped { scope: sb, key: fof }).is_some(),
-            "session B's entry SURVIVES A's retraction — targeted, not coarse");
-        assert!(matches!(kb.layer.semantic.range_scoped(fof, sb), RelationRange::Range(c) if c == human),
-            "B still resolves the range after A is gone");
+        assert!(
+            kb.layer
+                .semantic
+                .range
+                .peek(&Scoped {
+                    scope: sa,
+                    key: fof
+                })
+                .is_none(),
+            "session A's range entry is dropped on retraction"
+        );
+        assert!(
+            kb.layer
+                .semantic
+                .range
+                .peek(&Scoped {
+                    scope: sb,
+                    key: fof
+                })
+                .is_some(),
+            "session B's entry SURVIVES A's retraction — targeted, not coarse"
+        );
+        assert!(
+            matches!(kb.layer.semantic.range_scoped(fof, sb), RelationRange::Range(c) if c == human),
+            "B still resolves the range after A is gone"
+        );
     }
 
     #[test]
@@ -1274,15 +1591,33 @@ mod tests {
         // lifting and indexes the axiom in SInE.
         let mut kb = KnowledgeBase::new();
         assert!(kb.file_roots("new.kif").is_empty());
-        let r = kb.reload_kif("(subclass Dog Mammal)", &PathBuf::from("new.kif"), "new.kif");
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)",
+            &PathBuf::from("new.kif"),
+            "new.kif",
+        );
         assert!(r.ok);
         assert_eq!(r.added(), 1);
         assert!(!kb.file_roots("new.kif").is_empty());
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 0,
-            "reload alone is a pure ingest — nothing is promoted yet");
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            0,
+            "reload alone is a pure ingest — nothing is promoted yet"
+        );
         kb.make_session_axiomatic("new.kif").expect("promote");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 1,
-            "explicit promotion lifts the new axiom into SInE");
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            1,
+            "explicit promotion lifts the new axiom into SInE"
+        );
     }
 
     #[test]
@@ -1291,14 +1626,30 @@ mod tests {
         // but SInE is intentionally not touched.
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "t.kif", "(subclass Dog Mammal)");
-        let sine_before = kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count());
+        let sine_before = kb
+            .layer
+            .semantic
+            .syntactic
+            .sine
+            .with_ref(|idx| idx.axiom_count());
 
-        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Cat Mammal)", &PathBuf::from("t.kif"), "test");
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+            &PathBuf::from("t.kif"),
+            "test",
+        );
         assert!(r.ok);
         assert_eq!(r.added(), 1);
         assert_eq!(kb.file_roots("t.kif").len(), 2);
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), sine_before,
-            "syntactic-only path must not update SInE");
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            sine_before,
+            "syntactic-only path must not update SInE"
+        );
     }
 
     #[test]
@@ -1324,14 +1675,29 @@ mod tests {
         assert_eq!(r.added(), 1);
         assert!(!kb.file_roots("new.kif").is_empty());
         kb.make_session_axiomatic("new.kif").expect("promote");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 1);
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            1
+        );
     }
 
     #[test]
     fn reload_kif_noop_when_text_unchanged() {
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
-        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Cat Mammal)", &PathBuf::from("t.kif"), "test");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+            &PathBuf::from("t.kif"),
+            "test",
+        );
         assert_eq!(r.retained, 2);
         assert_eq!(r.added(), 0);
         assert_eq!(r.removed(), 0);
@@ -1342,7 +1708,11 @@ mod tests {
     fn reload_kif_detects_pure_addition() {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "t.kif", "(subclass Dog Mammal)");
-        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Cat Mammal)", &PathBuf::from("t.kif"), "test");
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+            &PathBuf::from("t.kif"),
+            "test",
+        );
         assert_eq!(r.retained, 1);
         assert_eq!(r.added(), 1);
         assert_eq!(r.removed(), 0);
@@ -1351,7 +1721,11 @@ mod tests {
     #[test]
     fn reload_kif_detects_pure_removal() {
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
         let r = kb.reload_kif("(subclass Dog Mammal)", &PathBuf::from("t.kif"), "test");
         assert_eq!(r.retained, 1);
         assert_eq!(r.added(), 0);
@@ -1361,8 +1735,16 @@ mod tests {
     #[test]
     fn reload_kif_detects_mixed_edit() {
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
-        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Whale Mammal)", &PathBuf::from("t.kif"), "test");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Whale Mammal)",
+            &PathBuf::from("t.kif"),
+            "test",
+        );
         assert_eq!(r.retained, 1);
         assert_eq!(r.added(), 1);
         assert_eq!(r.removed(), 1);
@@ -1376,11 +1758,29 @@ mod tests {
         // would now append.)
         let path = PathBuf::from("t.kif");
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 2);
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            2
+        );
         kb.reload_kif("(subclass Dog Mammal)", &path, "t.kif");
         kb.commit("t.kif");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 1);
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            1
+        );
     }
 
     #[test]
@@ -1391,11 +1791,24 @@ mod tests {
         // added `Whale` axiom is transient until the caller explicitly lifts the
         // session; only then does the `SessionAxiomatized → AxiomsPromoted`
         // cascade index it into SInE.
-        let _r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Whale Mammal)", &PathBuf::from("t.kif"), "t.kif");
+        let _r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Whale Mammal)",
+            &PathBuf::from("t.kif"),
+            "t.kif",
+        );
         kb.make_session_axiomatic("t.kif").expect("promote");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 2);
-        assert!(kb.store_for_testing().sym_id("Whale").is_some(),
-            "Whale should have been interned");
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            2
+        );
+        assert!(
+            kb.store_for_testing().sym_id("Whale").is_some(),
+            "Whale should have been interned"
+        );
     }
 
     #[test]
@@ -1404,28 +1817,51 @@ mod tests {
         // than wipe-and-reload: SInE triggers, fingerprint keys, and LMDB
         // rows all stay valid without rehashing.
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
         let old: HashSet<_> = kb.file_roots("t.kif").into_iter().collect();
-        let _r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Whale Mammal)", &PathBuf::from("t.kif"), "test");
+        let _r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Whale Mammal)",
+            &PathBuf::from("t.kif"),
+            "test",
+        );
         kb.commit("t.kif");
         let new: HashSet<_> = kb.file_roots("t.kif").into_iter().collect();
         // The retained `(subclass Dog Mammal)` sentence must keep its SentenceId,
         // so its SID appears in both root sets (the intersection is exactly it).
-        assert_eq!(old.intersection(&new).count(), 1,
-            "retained sentence must keep its SentenceId");
+        assert_eq!(
+            old.intersection(&new).count(),
+            1,
+            "retained sentence must keep its SentenceId"
+        );
     }
 
     #[test]
     fn reload_kif_parse_error_aborts_without_mutation() {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "t.kif", "(subclass Dog Mammal)");
-        let axioms_before = kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count());
+        let axioms_before = kb
+            .layer
+            .semantic
+            .syntactic
+            .sine
+            .with_ref(|idx| idx.axiom_count());
         let r = kb.reload_kif("(subclass Dog Mammal", &TEST_PATH, "test");
         assert!(r.has_errors());
         assert_eq!(r.retained, 0);
         assert_eq!(r.added(), 0);
         assert_eq!(r.removed(), 0);
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), axioms_before);
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            axioms_before
+        );
     }
 
     #[test]
@@ -1448,7 +1884,11 @@ mod tests {
     #[test]
     fn truncate_removes_every_axiom_of_the_file() {
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
         assert_eq!(kb.file_roots("t.kif").len(), 2);
 
         // An empty source diffs against the file's prior formulas: everything
@@ -1457,7 +1897,10 @@ mod tests {
         assert!(r.ok, "truncate failed: {:?}", r.diagnostics);
         assert_eq!(r.added(), 0);
         assert_eq!(r.removed(), 2, "both axioms should be recycled");
-        assert!(kb.file_roots("t.kif").is_empty(), "file should own nothing after truncation");
+        assert!(
+            kb.file_roots("t.kif").is_empty(),
+            "file should own nothing after truncation"
+        );
     }
 
     #[test]
@@ -1465,20 +1908,28 @@ mod tests {
         // Same outcome by the route a caller is likelier to take: re-ingesting
         // the same path with empty contents rather than building a truncate.
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(instance Rex Dog)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(instance Rex Dog)",
+        );
         assert_eq!(kb.file_roots("t.kif").len(), 2);
 
         let r = kb.reload_kif("", &PathBuf::from("t.kif"), "t.kif");
         assert!(r.ok, "empty reload failed: {:?}", r.diagnostics);
         assert_eq!(r.removed(), 2);
-        kb.commit("t.kif");                    // staged removals become real
+        kb.commit("t.kif"); // staged removals become real
         assert!(kb.file_roots("t.kif").is_empty());
     }
 
     #[test]
     fn remove_file_drops_the_files_axioms() {
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
         kb.remove_file("t.kif");
         assert!(kb.file_roots("t.kif").is_empty());
     }
@@ -1490,15 +1941,27 @@ mod tests {
         // this is the refcounting `remove_file` documents.
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "a.kif", "(subclass Dog Mammal)");
-        load_file(&mut kb, "b.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "b.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
 
         kb.remove_file("a.kif");
 
-        assert!(kb.file_roots("a.kif").is_empty(), "a.kif should own nothing");
-        assert_eq!(kb.file_roots("b.kif").len(), 2,
-            "b.kif still owns the shared axiom and its own");
-        assert!(kb.store_for_testing().sym_id("Dog").is_some(),
-            "the shared axiom must survive: b.kif still references it");
+        assert!(
+            kb.file_roots("a.kif").is_empty(),
+            "a.kif should own nothing"
+        );
+        assert_eq!(
+            kb.file_roots("b.kif").len(),
+            2,
+            "b.kif still owns the shared axiom and its own"
+        );
+        assert!(
+            kb.store_for_testing().sym_id("Dog").is_some(),
+            "the shared axiom must survive: b.kif still references it"
+        );
     }
 
     #[test]
@@ -1506,12 +1969,19 @@ mod tests {
         // Truncation is not destructive to the path: re-ingesting the original
         // text brings the axioms back as ordinary additions.
         let mut kb = KnowledgeBase::new();
-        load_file(&mut kb, "t.kif", "(subclass Dog Mammal)\n(subclass Cat Mammal)");
+        load_file(
+            &mut kb,
+            "t.kif",
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+        );
         kb.remove_file("t.kif");
         assert!(kb.file_roots("t.kif").is_empty());
 
-        let r = kb.reload_kif("(subclass Dog Mammal)\n(subclass Cat Mammal)",
-                              &PathBuf::from("t.kif"), "t.kif");
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Cat Mammal)",
+            &PathBuf::from("t.kif"),
+            "t.kif",
+        );
         assert!(r.ok, "reload after truncate failed: {:?}", r.diagnostics);
         assert_eq!(r.added(), 2);
         assert_eq!(r.removed(), 0);
@@ -1531,20 +2001,40 @@ mod tests {
 
         let edited = format!("{orig}\n(documentation ZzGhost EnglishLanguage \"half typed\")");
         let staged = kb.reload_kif(&edited, &PathBuf::from("t.kif"), "t.kif");
-        assert_eq!(staged.added(), 1, "only the edited line is staged, not the file");
+        assert_eq!(
+            staged.added(),
+            1,
+            "only the edited line is staged, not the file"
+        );
 
         // Semantic checks resolve against the whole KB here, which is the point.
         let mut diags = Vec::new();
-        for sid in &staged.sids { diags.extend(kb.validate_sentence(*sid)); }
+        for sid in &staged.sids {
+            diags.extend(kb.validate_sentence(*sid));
+        }
 
         let back = kb.reload_kif(orig, &PathBuf::from("t.kif"), "t.kif");
         kb.commit("t.kif");
         assert_eq!(back.removed(), 1, "the staged addition is diffed back out");
 
-        assert_eq!(kb.file_roots("t.kif").len(), before, "file restored exactly");
-        let opts = crate::kb::search::SearchOpts { kind: None, language: None, limit: None };
-        assert!(kb.search("half typed", &opts).is_empty(), "no searchable ghost remains");
-        assert!(kb.symbol_id("ZzGhost").is_none(), "the buffer's symbol is not left interned");
+        assert_eq!(
+            kb.file_roots("t.kif").len(),
+            before,
+            "file restored exactly"
+        );
+        let opts = crate::kb::search::SearchOpts {
+            kind: None,
+            language: None,
+            limit: None,
+        };
+        assert!(
+            kb.search("half typed", &opts).is_empty(),
+            "no searchable ghost remains"
+        );
+        assert!(
+            kb.symbol_id("ZzGhost").is_none(),
+            "the buffer's symbol is not left interned"
+        );
     }
 
     #[test]
@@ -1558,9 +2048,15 @@ mod tests {
         load_file(&mut kb, "t.kif",
             "(=> (instance ?X Dog) (instance ?X Mammal))\n             (=> (instance ?Y Cat) (instance ?Y Mammal))\n             (instance Rex Dog)");
 
-        let vars_before: HashSet<String> = kb.iter_symbols()
-            .map(|(_, n)| n).filter(|n| n.contains("__")).collect();
-        assert!(vars_before.len() >= 2, "expected scope-qualified var symbols, got {vars_before:?}");
+        let vars_before: HashSet<String> = kb
+            .iter_symbols()
+            .map(|(_, n)| n)
+            .filter(|n| n.contains("__"))
+            .collect();
+        assert!(
+            vars_before.len() >= 2,
+            "expected scope-qualified var symbols, got {vars_before:?}"
+        );
 
         // Remove one sentence (the atomic fact) — a real FormulaRemoved batch.
         let r = kb.reload_kif(
@@ -1569,11 +2065,16 @@ mod tests {
         assert_eq!(r.removed(), 1);
         kb.commit("t.kif");
 
-        let vars_after: HashSet<String> = kb.iter_symbols()
-            .map(|(_, n)| n).filter(|n| n.contains("__")).collect();
+        let vars_after: HashSet<String> = kb
+            .iter_symbols()
+            .map(|(_, n)| n)
+            .filter(|n| n.contains("__"))
+            .collect();
         // Both rules survive, so their variable symbols must survive too.
-        assert_eq!(vars_before, vars_after,
-            "variables of still-live rules must not be pruned by an unrelated removal");
+        assert_eq!(
+            vars_before, vars_after,
+            "variables of still-live rules must not be pruned by an unrelated removal"
+        );
     }
 
     #[test]
@@ -1584,17 +2085,30 @@ mod tests {
         let mut kb = KnowledgeBase::new();
         load_file(&mut kb, "t.kif",
             "(=> (instance ?X Dog) (instance ?X Mammal))\n             (=> (instance ?Y Cat) (instance ?Y Mammal))");
-        let before: HashSet<String> = kb.iter_symbols().map(|(_,n)|n).filter(|n|n.contains("__")).collect();
+        let before: HashSet<String> = kb
+            .iter_symbols()
+            .map(|(_, n)| n)
+            .filter(|n| n.contains("__"))
+            .collect();
 
         // Drop the first rule entirely.
-        let r = kb.reload_kif("(=> (instance ?Y Cat) (instance ?Y Mammal))",
-            &PathBuf::from("t.kif"), "t.kif");
+        let r = kb.reload_kif(
+            "(=> (instance ?Y Cat) (instance ?Y Mammal))",
+            &PathBuf::from("t.kif"),
+            "t.kif",
+        );
         assert_eq!(r.removed(), 1);
         kb.commit("t.kif");
 
-        let after: HashSet<String> = kb.iter_symbols().map(|(_,n)|n).filter(|n|n.contains("__")).collect();
-        assert!(after.len() < before.len(),
-            "the removed rule's own variable symbols should be reclaimed ({before:?} -> {after:?})");
+        let after: HashSet<String> = kb
+            .iter_symbols()
+            .map(|(_, n)| n)
+            .filter(|n| n.contains("__"))
+            .collect();
+        assert!(
+            after.len() < before.len(),
+            "the removed rule's own variable symbols should be reclaimed ({before:?} -> {after:?})"
+        );
     }
 
     #[test]
@@ -1606,7 +2120,15 @@ mod tests {
         }
         // Real ontology terms are not — including ones with a double underscore
         // but no trailing scope number.
-        for t in ["Human", "instance", "subclass", "Mid-level", "foo__bar", "A__", "__3"] {
+        for t in [
+            "Human",
+            "instance",
+            "subclass",
+            "Mid-level",
+            "foo__bar",
+            "A__",
+            "__3",
+        ] {
             assert!(!kb.symbol_is_variable(t), "{t} should read as a term");
         }
     }
@@ -1619,17 +2141,27 @@ mod tests {
         load_file(&mut kb, "a.kif", "(subclass Dog Mammal)");
         load_file(&mut kb, "b.kif", "(subclass Cat Mammal)");
 
-        let results = kb.reload_kifs([
-            ("a.kif", "(subclass Dog Mammal)\n(subclass Wolf Mammal)"),
-            ("b.kif", "(subclass Cat Mammal)\n(subclass Lion Mammal)"),
-        ], "Test");
+        let results = kb.reload_kifs(
+            [
+                ("a.kif", "(subclass Dog Mammal)\n(subclass Wolf Mammal)"),
+                ("b.kif", "(subclass Cat Mammal)\n(subclass Lion Mammal)"),
+            ],
+            "Test",
+        );
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].added(), 1, "a.kif: one addition");
         assert_eq!(results[1].added(), 1, "b.kif: one addition");
         // The two prior files were promoted by `load_file`; lift the reload's
         // session to index the two new axioms (Wolf, Lion) → 4 total.
         kb.make_session_axiomatic("Test").expect("promote");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 4);
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            4
+        );
     }
 
     #[test]
@@ -1638,10 +2170,13 @@ mod tests {
         load_file(&mut kb, "a.kif", "(subclass Dog Mammal)");
         load_file(&mut kb, "b.kif", "(subclass Cat Mammal)");
 
-        let results = kb.reload_kifs([
-            ("a.kif", "(subclass Dog Mammal"),           // parse error
-            ("b.kif", "(subclass Cat Mammal)\n(subclass Lion Mammal)"),
-        ],"Test");
+        let results = kb.reload_kifs(
+            [
+                ("a.kif", "(subclass Dog Mammal"), // parse error
+                ("b.kif", "(subclass Cat Mammal)\n(subclass Lion Mammal)"),
+            ],
+            "Test",
+        );
         assert_eq!(results.len(), 2);
         assert!(!results[0].ok, "a.kif should report parse error");
         assert!(results[1].ok, "b.kif should succeed despite a.kif error");
@@ -1651,24 +2186,37 @@ mod tests {
     #[test]
     fn reload_kifs_new_files_in_batch_are_indexed_in_sine() {
         let mut kb = KnowledgeBase::new();
-        let results = kb.reload_kifs([
-            ("a.kif", "(subclass Dog Mammal)"),
-            ("b.kif", "(subclass Cat Mammal)"),
-        ], "Test");
+        let results = kb.reload_kifs(
+            [
+                ("a.kif", "(subclass Dog Mammal)"),
+                ("b.kif", "(subclass Cat Mammal)"),
+            ],
+            "Test",
+        );
         assert!(results.iter().all(|r| r.ok));
         // Batch ingest doesn't auto-promote either; lift the batch's session.
         kb.make_session_axiomatic("Test").expect("promote");
-        assert_eq!(kb.layer.semantic.syntactic.sine.with_ref(|idx| idx.axiom_count()), 2);
+        assert_eq!(
+            kb.layer
+                .semantic
+                .syntactic
+                .sine
+                .with_ref(|idx| idx.axiom_count()),
+            2
+        );
     }
 
     #[test]
     fn reload_kifs_returns_one_result_per_input_file_in_order() {
         let mut kb = KnowledgeBase::new();
-        let results = kb.reload_kifs([
-            ("x.kif", "(subclass A B)"),
-            ("y.kif", "(subclass C D)"),
-            ("z.kif", "(subclass E F)"),
-        ], "Test");
+        let results = kb.reload_kifs(
+            [
+                ("x.kif", "(subclass A B)"),
+                ("y.kif", "(subclass C D)"),
+                ("z.kif", "(subclass E F)"),
+            ],
+            "Test",
+        );
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].added(), 1);
         assert_eq!(results[1].added(), 1);

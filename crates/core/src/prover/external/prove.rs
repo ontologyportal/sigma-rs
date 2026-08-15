@@ -5,41 +5,44 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use super::{
-    ExternalProverLayer,
-    ExternalOpts,
-    Conjecture,
-};
 use super::super::ProverResult;
-use super::backends::{ProverOpts, ProverMode, ProverRunner};
+use super::backends::{ProverMode, ProverOpts, ProverRunner};
+use super::{Conjecture, ExternalOpts, ExternalProverLayer};
 
-use crate::{SentenceId, SineParams, SymbolId, profile_span};
 use crate::progress::ProveCtx;
 use crate::semantics::types::Scope;
+use crate::{profile_span, SentenceId, SineParams, SymbolId};
 
 impl ExternalProverLayer {
     pub(super) fn ext_prove_once(
         &self,
-        conj:     &Conjecture,
-        params:   SineParams,
-        slice:    u32,
-        opts:     &ExternalOpts,
-        ctx:      &ProveCtx,
+        conj: &Conjecture,
+        params: SineParams,
+        slice: u32,
+        opts: &ExternalOpts,
+        ctx: &ProveCtx,
     ) -> (ProverResult, usize) {
         // The conjecture roots are store sids (content hashes the cascade
         // interned in `intern_conjecture`) — exactly what `build_problem` /
         // `set_conjecture` resolve against.
         let query_sids_owned: Vec<SentenceId> = conj.sents.iter().map(|(_, sid)| *sid).collect();
         let query_sids = &query_sids_owned;
-        let session    = opts.session.as_deref();
-        let mode       = opts.mode;
+        let session = opts.session.as_deref();
+        let mode = opts.mode;
 
         // Session assertions are force-included as hypotheses *and* seed SInE
         // alongside the conjecture, so axioms connecting an asserted fact to
         // the goal are reachable.
         let assertion_ids: HashSet<SentenceId> = session
-            .map(|s| self.translation.semantic.syntactic.sessions.session_sentences(s)
-                 .into_iter().collect())
+            .map(|s| {
+                self.translation
+                    .semantic
+                    .syntactic
+                    .sessions
+                    .session_sentences(s)
+                    .into_iter()
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Symbol seed = conjecture ∪ session assertions.  The external path now
@@ -57,12 +60,15 @@ impl ExternalProverLayer {
         // defaults.
         let sel = crate::syntactic::SelectionParams {
             head_filter: true,
-            liu_rescue:  true,
-            liu_rounds:  1,
-            liu_top_k:   32,
+            liu_rescue: true,
+            liu_rounds: 1,
+            liu_top_k: 32,
         };
-        let (selected, _frontier) =
-            self.translation.semantic.syntactic.select_relevant(&seed, params, &sel, ctx);
+        let (selected, _frontier) = self
+            .translation
+            .semantic
+            .syntactic
+            .select_relevant(&seed, params, &sel, ctx);
         let raw_selected = selected.len();
 
         let mut axiom_sids: Vec<SentenceId> = selected.into_iter().collect();
@@ -75,8 +81,11 @@ impl ExternalProverLayer {
         // Taxonomy-closure injection: pull in the subclass/instance chain facts
         // connecting the conjecture's (and assertions') class symbols — the
         // same conjecture ∪ assertions symbol union already built as `seed`.
-        let tax = self.translation.semantic
-            .taxonomy_closure_facts_scoped(&seed, 4000, query_scope(session));
+        let tax = self.translation.semantic.taxonomy_closure_facts_scoped(
+            &seed,
+            4000,
+            query_scope(session),
+        );
         if !tax.is_empty() {
             axiom_sids.extend(tax);
             axiom_sids.sort_unstable();
@@ -84,7 +93,10 @@ impl ExternalProverLayer {
         }
 
         let t_input = Instant::now();
-        let prover_opts = ProverOpts { timeout_secs: slice as u64, mode: ProverMode::Prove };
+        let prover_opts = ProverOpts {
+            timeout_secs: slice as u64,
+            mode: ProverMode::Prove,
+        };
 
         // Higher-order (THF) mode: assemble through the translation layer's
         // HO pipeline and hand the structured problem to the runner — text
@@ -96,16 +108,23 @@ impl ExternalProverLayer {
                 profile_span!(ctx, "ask.build_problem");
                 let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
                 self.translation.assemble_problem_thf(
-                    &axiom_sids, &seeds, query_sids, Some(query_scope(session)),
+                    &axiom_sids,
+                    &seeds,
+                    query_sids,
+                    Some(query_scope(session)),
                 )
             };
             let input_gen = t_input.elapsed();
             ctx.debug(format!(
                 "ask(thf): {} selected + {} assertions, {} axiom rows",
-                raw_selected, assertion_ids.len(), problem.axioms().len()));
+                raw_selected,
+                assertion_ids.len(),
+                problem.axioms().len()
+            ));
             let mut result = {
                 profile_span!(ctx, "ask.prover_run");
-                self.backend.prove_ho(&problem, &sid_map, "query_0", &prover_opts)
+                self.backend
+                    .prove_ho(&problem, &sid_map, "query_0", &prover_opts)
             };
             result.timings.input_gen += input_gen;
             return (result, raw_selected);
@@ -115,7 +134,10 @@ impl ExternalProverLayer {
         // the query) — never the whole KB — so a numeral anywhere in the
         // actual problem upgrades it to Tff; `assertion_ids` is already
         // folded into `axiom_sids` above, so it's covered by that scan.
-        let mode = self.translation.semantic.syntactic
+        let mode = self
+            .translation
+            .semantic
+            .syntactic
             .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
 
         // Translate through the translation layer: on-demand synthetic scan
@@ -126,14 +148,21 @@ impl ExternalProverLayer {
             profile_span!(ctx, "ask.build_problem");
             let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
             self.translation.assemble_problem(
-                &axiom_sids, &seeds, query_sids, mode,
+                &axiom_sids,
+                &seeds,
+                query_sids,
+                mode,
                 Some(query_scope(session)),
             )
         };
         let input_gen = t_input.elapsed();
         ctx.debug(format!(
             "ask({:?}): {} selected + {} assertions, {} axiom rows",
-            mode, raw_selected, assertion_ids.len(), problem.axioms().len()));
+            mode,
+            raw_selected,
+            assertion_ids.len(),
+            problem.axioms().len()
+        ));
 
         // Hand the structured problem to the runner.  Text backends serialise
         // it themselves (the `prove_ir` default → `assemble_tptp` → `prove`,
@@ -141,7 +170,8 @@ impl ExternalProverLayer {
         // straight into the FFI solver with no TPTP round-trip.
         let mut result = {
             profile_span!(ctx, "ask.prover_run");
-            self.backend.prove_ir(&problem, &sid_map, "query_0", &prover_opts)
+            self.backend
+                .prove_ir(&problem, &sid_map, "query_0", &prover_opts)
         };
         result.timings.input_gen += input_gen;
         (result, raw_selected)
@@ -153,6 +183,6 @@ impl ExternalProverLayer {
 fn query_scope(session: Option<&str>) -> Scope {
     match session {
         Some(s) => Scope::Session(crate::syntactic::caches::session::session_id(s)),
-        None    => Scope::Base,
+        None => Scope::Base,
     }
 }

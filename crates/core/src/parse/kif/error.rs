@@ -1,9 +1,9 @@
 // crates/core/src/parse/kif/error.rs
 //
 // Span and ParseError -- source location and tokenizer/parser hard errors.
+use super::super::{error::ParseError, Span};
+use crate::diagnostic::{Diagnostic, Severity, ToDiagnostic};
 use thiserror::Error;
-use crate::diagnostic::{ToDiagnostic, Diagnostic, Severity};
-use super::super::{Span, error::ParseError};
 
 /// Hard tokenizer / parser / syntax errors that prevent sentence acceptance.
 #[derive(Debug, Clone, Error)]
@@ -38,12 +38,12 @@ pub enum KifParseError {
     #[error("operator '{op}' expects {expected} argument(s) but got {actual}")]
     OperatorArityMismatch {
         /// KIF spelling of the operator (`and`, `not`, `=>`, …)
-        op:       String,
+        op: String,
         /// Human-readable expected-arity string (`"exactly 1"`, `"at least 2"`, …)
         expected: String,
         /// Actual argument count supplied
-        actual:   usize,
-        span:     Span,
+        actual: usize,
+        span: Span,
     },
 
     #[allow(dead_code)]
@@ -54,26 +54,26 @@ pub enum KifParseError {
 impl ToDiagnostic for KifParseError {
     fn to_diagnostic(&self) -> Diagnostic {
         let code: &'static str = match self {
-            KifParseError::UnterminatedString { .. }    => "kif/unterminated-string",
-            KifParseError::UnexpectedChar      { .. }    => "kif/unexpected-char",
-            KifParseError::EmptySentence       { .. }    => "kif/empty-sentence",
-            KifParseError::UnexpectedEof       { .. }    => "kif/unexpected-eof",
-            KifParseError::UnbalancedParens    { .. }    => "kif/unbalanced-parens",
-            KifParseError::QuantifierArg           { .. } => "kif/quantifier-arg",
-            KifParseError::FirstTerm               { .. } => "kif/first-term",
-            KifParseError::OperatorOutOfPosition   { .. } => "kif/operator-out-of-position",
-            KifParseError::SingleTermSentence      { .. } => "kif/single-term-sentence",
-            KifParseError::OperatorArityMismatch   { .. } => "kif/operator-arity-mismatch",
-            KifParseError::Other                   { .. } => "kif/other",
+            KifParseError::UnterminatedString { .. } => "kif/unterminated-string",
+            KifParseError::UnexpectedChar { .. } => "kif/unexpected-char",
+            KifParseError::EmptySentence { .. } => "kif/empty-sentence",
+            KifParseError::UnexpectedEof { .. } => "kif/unexpected-eof",
+            KifParseError::UnbalancedParens { .. } => "kif/unbalanced-parens",
+            KifParseError::QuantifierArg { .. } => "kif/quantifier-arg",
+            KifParseError::FirstTerm { .. } => "kif/first-term",
+            KifParseError::OperatorOutOfPosition { .. } => "kif/operator-out-of-position",
+            KifParseError::SingleTermSentence { .. } => "kif/single-term-sentence",
+            KifParseError::OperatorArityMismatch { .. } => "kif/operator-arity-mismatch",
+            KifParseError::Other { .. } => "kif/other",
         };
         Diagnostic {
-            kind:          "parse",
-            range:         self.get_span(),
-            severity:      Severity::Error,
+            kind: "parse",
+            range: self.get_span(),
+            severity: Severity::Error,
             code,
-            message:       self.to_string(),
-            related:       Vec::new(),
-            sids:          Vec::new(),
+            message: self.to_string(),
+            related: Vec::new(),
+            sids: Vec::new(),
             highlight_arg: -1,
             highlight_var: None,
         }
@@ -88,12 +88,12 @@ impl ParseError for KifParseError {
             | KifParseError::EmptySentence { span }
             | KifParseError::UnexpectedEof { span }
             | KifParseError::UnbalancedParens { span }
-            | KifParseError::QuantifierArg           { span }
-            | KifParseError::FirstTerm             { span }
-            | KifParseError::OperatorOutOfPosition  { span, .. }
-            | KifParseError::SingleTermSentence     { span }
-            | KifParseError::OperatorArityMismatch  { span, .. }
-            | KifParseError::Other                  { span, .. } => span.clone(),
+            | KifParseError::QuantifierArg { span }
+            | KifParseError::FirstTerm { span }
+            | KifParseError::OperatorOutOfPosition { span, .. }
+            | KifParseError::SingleTermSentence { span }
+            | KifParseError::OperatorArityMismatch { span, .. }
+            | KifParseError::Other { span, .. } => span.clone(),
         }
     }
 }
