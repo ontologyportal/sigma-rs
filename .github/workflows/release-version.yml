@@ -30,10 +30,10 @@
 # After a release, `git pull` locally — the bump commit lands on the
 # remote main.
 #
-# The LSP release (release.yml, `sumo-lsp-v*` tags) is deliberately not
-# orchestrated here — it has its own cadence.
+# There is no separate LSP release workflow: the `sumo-lsp` binary is not
+# published on its own cadence any more.
 
-name: Release (version)
+name: Trigger Release
 
 on:
   workflow_dispatch:

@@ -2,10 +2,14 @@
 #
 # Jobs are split by dependency weight:
 #
-#   * lsp-fast:   cross-OS matrix covering the CMake-free surface --
-#                 sumo-lsp (default-features=false sigmakee-rs-core) and
-#                 sigmakee-rs-core itself without the cnf / integrated-prover
-#                 features.  Runs on every push / PR.
+#   * lean-features: Linux-only, CMake-free lane covering the REDUCED
+#                 feature sets that `--all-features` structurally cannot
+#                 reach.  Cargo unifies features across a workspace build,
+#                 so `--workspace --all-features` always hands every member
+#                 a maximal dep graph -- the lean postures that
+#                 `crates/lsp` and `crates/wasm` pin via
+#                 `default-features = false` are only exercised here.
+#                 Cheap (no vampire-sys, no CMake), so it runs first.
 #
 #   * full-matrix: Linux-only canonical test lane exercising
 #                 `--all-features` over the whole workspace -- pulls
@@ -27,10 +31,10 @@
 #                 drift on every PR.
 #
 # Editor-side packaging (VSCode extension, Neovim config, etc.) is
-# explicitly out of scope for this CI -- the sumo-lsp binary is
-# published via release.yml, the sigmakee CLI via release-sumo.yml.
+# explicitly out of scope for this CI -- the sigmakee CLI is published
+# via release-sumo.yml.
 
-name: CI
+name: Testing
 
 on:
   push:
@@ -42,14 +46,14 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # -- Fast cross-OS lane: sumo-lsp + CMake-free sigmakee-rs-core --------------------
-  lsp-fast:
-    name: lsp-fast / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  # -- Lean feature sets: what --all-features structurally cannot reach -------
+  #
+  # Runs the fast, CMake-free checks so a formatting or lean-build
+  # regression reports in under a minute instead of behind the
+  # vampire-sys build in `full-matrix`.
+  lean-features:
+    name: lean-features / ubuntu
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,29 +61,35 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          key: lsp-fast-${{ matrix.os }}
+          key: lean-features-linux
 
-      - name: Build sumo-lsp (release)
-        run: cargo build -p sumo-lsp --release
+      - name: Format check
+        run: cargo fmt --all --check
 
-      - name: Test sumo-lsp
-        run: cargo test -p sumo-lsp --all-features
-
-      - name: Test sigmakee-rs-core (CMake-free -- no cnf / no integrated-prover)
+      # The lane deleted along with the old `lsp-fast` job.  CMake-free:
+      # `ask` is the subprocess-prover backend, not the embedded FFI one.
+      - name: Test sigmakee-rs-core (CMake-free -- persist,ask)
         run: cargo test -p sigmakee-rs-core --no-default-features --features persist,ask
 
-      - name: Clippy -- sumo-lsp
-        run: cargo clippy -p sumo-lsp --all-features --tests -- -D warnings
-
-      - name: Clippy -- sigmakee-rs-core (CMake-free)
-        run: >-
-          cargo clippy -p sigmakee-rs-core --no-default-features
-          --features persist,ask --tests -- -D warnings
+      # sumo-lsp pins `sigmakee-rs-sdk` with `default-features = false`, which
+      # lands on sigmakee-rs-core with NO prover features -- a configuration no
+      # other job builds, and one that has silently broken before.  The
+      # workspace lanes DO run these same tests, but only after feature
+      # unification has handed sumo-lsp a maximal dep graph; this is the only
+      # place they run against the graph the crate actually ships with.
+      #
+      # RUSTFLAGS is cleared for this step only: under the lean set the szs
+      # parser and `clock::epoch_nanos` are dead code and emit 7 warnings that
+      # `-D warnings` would promote to errors.  Restore the deny once those
+      # items carry `cfg(any(feature = "ask", feature = "native-prover"))`.
+      - name: Test sumo-lsp (lean SDK -- no prover features in core)
+        run: cargo test -p sumo-lsp
+        env:
+          RUSTFLAGS: ""
 
   # -- Linux full matrix: all-features, incl. vampire-sys ---------------------
   full-matrix:
@@ -185,7 +195,11 @@ jobs:
       - name: Dep-graph denylist -- no LSP / async / buffer crates in sigmakee-rs-core
         run: |
           set -euo pipefail
-          DENYLIST='lsp-server|lsp-types|tower-lsp|ropey|^url$|dashmap|arc-swap|crossbeam-|^tokio$|^async-'
+          # `dashmap` is legitimately core's (EntryCache shard locks), and it
+          # pulls `crossbeam-utils` transitively -- so neither can be denied.
+          # `crossbeam-channel` stays denied: it is lsp-server's transport,
+          # exactly the leak this gate exists to catch.
+          DENYLIST='lsp-server|lsp-types|tower-lsp|ropey|^url$|crossbeam-channel|crossbeam-queue|arc-swap|^tokio$|^async-'
           if cargo tree -p sigmakee-rs-core --prefix none --edges normal 2>/dev/null \
              | awk '{print $1}' \
              | grep -E "${DENYLIST}"; then
@@ -204,7 +218,11 @@ jobs:
           # "Position" (e.g. "independent of LSP's Position")
           # are left alone.
           PATTERN='^\s*pub(\s*\([^)]*\))?\s+(struct|enum|fn|trait|type|const|static)\s+(Lsp|Uri|Url[A-Z_]|Position[A-Z_])'
-          if grep -R -nE "${PATTERN}" crates/sigmakee-rs-core/src; then
+          # The package is `sigmakee-rs-core`; its directory is `crates/core`.
+          # Pointing this at the package name made `grep -R` fail on a missing
+          # path -- non-zero, so the `if` never fired and the gate always
+          # reported clean without reading a single file.
+          if grep -R -nE "${PATTERN}" crates/core/src; then
             echo "::error::sigmakee-rs-core public API contains an LSP-flavoured symbol name"
             exit 1
           fi

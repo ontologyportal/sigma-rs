@@ -41,7 +41,7 @@
 # binary above (drops `integrated-prover`; see the script for why) and
 # uploaded as its own release asset, not the same archive.
 
-name: Release (sumo CLI)
+name: Build Release
 
 on:
   push:
