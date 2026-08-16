@@ -4,7 +4,7 @@ export default defineConfig({
   // Mount point, baked into every emitted asset URL: / for Cloudflare Pages,
   // /browse/ for GitHub Pages. Must stay ABSOLUTE -- with a relative base the
   // SPA fallback serves index.html at deeper paths (/edit/), where
-  // './assets/app.js' resolves to '/edit/assets/app.js', comes back as
+  // './assets/main.js' resolves to '/edit/assets/main.js', comes back as
   // index.html, and is rejected on MIME type, so the page renders blank.
   base: process.env.VITE_BASE || '/',
 
@@ -19,7 +19,7 @@ export default defineConfig({
   },
 
   // Serve index.html for unmatched paths: they are client-side routes
-  // (see app.js's routeFromLocation), not missing assets.
+  // (see src/router.js's routeFromLocation), not missing assets.
   appType: 'spa',
 
   worker: {

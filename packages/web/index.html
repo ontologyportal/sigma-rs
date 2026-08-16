@@ -392,7 +392,7 @@
       color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
     .btn-group > button[hidden] { display: none; }
     /* Download menu (#editDownloadMenu): fixed-position dropdown under the
-       download button; coordinates set by app.js when opened. */
+       download button; coordinates set by tabs/edit.js when opened. */
     .dl-menu { position: fixed; z-index: 300; min-width: 220px; padding: 4px;
       border: 1px solid var(--line); border-radius: 8px; background: var(--card);
       box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
@@ -469,7 +469,7 @@
 
     /* Fullscreen editor: #tab-edit (toolbar + editor + editLog) lifted out of
        <main>'s max-width/flow to cover the viewport. Animated via the View
-       Transitions API where supported (app.js wraps the class toggle in
+       Transitions API where supported (tabs/edit.js wraps the class toggle in
        document.startViewTransition — this rule only needs to describe the
        two end states; the browser interpolates the geometry morph between
        them); toggling the class directly is still correct with no transition
@@ -845,7 +845,7 @@
           <select id="editPicker" hidden aria-hidden="true"><option value="__new__">+ New file…</option></select>
           <!-- Download menu for #editDownload. Lives OUTSIDE .btn-group (whose
                overflow:hidden would clip it, and whose `button + button`
-               divider chain a nested div would break); app.js positions it
+               divider chain a nested div would break); tabs/edit.js positions it
                fixed under the button when opened. -->
           <div id="editDownloadMenu" class="dl-menu" role="menu" hidden>
             <button id="dlKifBtn" type="button" role="menuitem">This file (KIF)</button>
@@ -996,6 +996,6 @@
     <div id="overlayErr" class="hint" style="color:var(--bad)"></div>
   </div>
 
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 // Web Worker host for the sigmakee wasm engine. Keeps the synchronous prover
 // (ingest / promote / ask / audit / validate) off the UI thread. Owns only the
-// Session; the page (app.js) owns the constituent list, OPFS, localStorage, and
+// Session; the page (src/main.js and friends) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
 import { init, Session, Config, Backend, parseTest } from 'sigmakee/sdk';
@@ -25,7 +25,7 @@ function makeConfig(o = {}) {
   if (o.maxLits      != null) cfg.maxLits      = o.maxLits;
   if (o.forwardClose != null) cfg.forwardClose = !!o.forwardClose;
   if (o.profile      != null) cfg.profile      = !!o.profile;
-  // 0 means "engine default" (see app.js's CFG_KNOBS) — leave the wasm
+  // 0 means "engine default" (see src/prover-config.js's CFG_KNOBS) — leave the wasm
   // Config field unset (its own default is `None`, same effect) rather than
   // pass a literal 0% budget. 100 searches the whole KB.
   if (o.selectionTolerancePct) cfg.selectionTolerancePct = o.selectionTolerancePct;
@@ -59,7 +59,7 @@ const handlers = {
   validate() { return { diagnostics: session.validate() }; },
   stats() { return { stats: session.kb.stats() }; },
 
-  // Freeze/thaw seam for the page's OPFS boot cache (see app.js's
+  // Freeze/thaw seam for the page's OPFS boot cache (see src/kb-cache.js's
   // tryRestoreFromCache/saveKbCache) — native backend only, per the SDK doc.
   snapshot() { return { bytes: session.snapshot() }; },
   restore({ bytes }) { session.restore(bytes); return { ok: true }; },
@@ -224,12 +224,23 @@ async function runVampireProblem(tptp, timeLimitSecs, extraArgs) {
   return res.stdout + (res.stderr ? '\n' + res.stderr : '');
 }
 
+/** Hand a result's byte payload over instead of copying it, when it owns its
+ *  whole (non-shared) buffer. */
+function transferables(result) {
+  const b = result?.bytes;
+  if (!(b instanceof Uint8Array)) return [];
+  const buf = b.buffer;
+  return buf instanceof ArrayBuffer && b.byteOffset === 0 && b.byteLength === buf.byteLength
+    ? [buf] : [];
+}
+
 self.onmessage = async (e) => {
   const { id, cmd, args } = e.data;
   try {
     const fn = handlers[cmd];
     if (!fn) throw new Error(`unknown cmd: ${cmd}`);
-    self.postMessage({ id, result: await fn(args || {}) });
+    const result = await fn(args || {});
+    self.postMessage({ id, result }, transferables(result));
   } catch (err) {
     self.postMessage({ id, error: String(err && err.message || err) });
   }
