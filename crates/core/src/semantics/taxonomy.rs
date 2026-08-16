@@ -18,17 +18,21 @@ pub enum TaxRelation {
     SubAttribute,
 }
 
-impl TaxRelation {
-    pub fn from_str(s: &str) -> Option<Self> {
+impl std::str::FromStr for TaxRelation {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            s if *SUBCLASS_RELATION.name() == *s => Some(TaxRelation::Subclass),
-            s if *INSTANCE_RELATION.name() == *s => Some(TaxRelation::Instance),
-            s if *SUBRELATION_RELATION.name() == *s => Some(TaxRelation::Subrelation),
-            s if *SUBATTRIBUTE_RELATION.name() == *s => Some(TaxRelation::SubAttribute),
-            _ => None,
+            s if *SUBCLASS_RELATION.name() == *s => Ok(TaxRelation::Subclass),
+            s if *INSTANCE_RELATION.name() == *s => Ok(TaxRelation::Instance),
+            s if *SUBRELATION_RELATION.name() == *s => Ok(TaxRelation::Subrelation),
+            s if *SUBATTRIBUTE_RELATION.name() == *s => Ok(TaxRelation::SubAttribute),
+            _ => Err(()),
         }
     }
+}
 
+impl TaxRelation {
     pub fn from_id(s: SymbolId) -> Option<Self> {
         match s {
             s if SUBCLASS_RELATION.id() == s => Some(TaxRelation::Subclass),

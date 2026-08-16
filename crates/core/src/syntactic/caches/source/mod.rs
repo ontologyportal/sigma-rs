@@ -60,9 +60,11 @@ fn duplicate_warning(dup: &Span, first: &Span) -> Event {
 /// sentence's content hash — so an unordered emission here would make the
 /// SAME axiom text hash differently from run to run, breaking content
 /// addressing (and, downstream, native-prover search reproducibility).
-fn dedup_parse(
-    parsed: Vec<(u64, AstNode, Span)>,
-) -> (HashMap<u64, (AstNode, Span)>, Vec<u64>, Vec<Event>) {
+/// Deduplicated formulas by content hash, their first-occurrence order, and
+/// the duplicate warnings raised along the way.
+type DedupedParse = (HashMap<u64, (AstNode, Span)>, Vec<u64>, Vec<Event>);
+
+fn dedup_parse(parsed: Vec<(u64, AstNode, Span)>) -> DedupedParse {
     let mut current: HashMap<u64, (AstNode, Span)> = HashMap::with_capacity(parsed.len());
     let mut order: Vec<u64> = Vec::with_capacity(parsed.len());
     let mut warnings = Vec::new();

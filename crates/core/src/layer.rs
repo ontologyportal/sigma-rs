@@ -18,6 +18,7 @@ use crate::cache::events::{build_schedule_indexed, CycleError, Event, ReactorDec
 use crate::cache::persistence::PersistableCache;
 use crate::cache::router::{route_with_schedule, ReactorEntry, RouteOutcome};
 use crate::persist::PersistenceBackend;
+use crate::DiagResult;
 
 /// A layer's reactor schedule, computed once and memoised.  The schedule (which
 /// reactors run in which cohort) is a pure function of the static reactor graph,
@@ -122,10 +123,7 @@ pub(crate) trait Layer {
     /// Freeze the current state of every registered cache (this layer down) to
     /// `backend`, then commit atomically.  A no-op when the `persist` feature
     /// is off (each `freeze` compiles to nothing) or the backend is `Noop`.
-    fn snapshot_caches(
-        &self,
-        backend: &mut dyn PersistenceBackend,
-    ) -> Result<(), crate::Diagnostic> {
+    fn snapshot_caches(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()> {
         for cache in self.persistable() {
             cache.freeze(backend)?;
         }
@@ -139,10 +137,7 @@ pub(crate) trait Layer {
     /// the symbol table before the sentence store so the latter can resolve
     /// symbol ids back to shared `Arc`s; see its override).  Caches whose key is
     /// absent are left untouched (to be rebuilt via `initialize_caches`).
-    fn restore_caches_from(
-        &self,
-        backend: &dyn PersistenceBackend,
-    ) -> Result<(), crate::Diagnostic> {
+    fn restore_caches_from(&self, backend: &dyn PersistenceBackend) -> DiagResult<()> {
         if let Some(inner) = self.inner() {
             inner.restore_caches_from(backend)?;
         }

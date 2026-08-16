@@ -12,6 +12,7 @@ pub mod fingerprint;
 pub mod kif;
 pub mod macros;
 pub mod span;
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 pub mod szs;
 pub mod tptp;
 pub mod tq;
@@ -25,6 +26,8 @@ pub use span::*;
 pub use crate::parse::tptp::parser::TptpParseOptions;
 use crate::parse::{doc::DocItem, tq::parse_tq};
 
+pub(crate) type ParseResult<T> = (Vec<T>, Vec<(Span, Box<dyn ParseError>)>);
+
 #[derive(Debug, Default, Clone)]
 pub enum Parser {
     #[default]
@@ -37,7 +40,7 @@ pub enum Parser {
 
 impl Parser {
     /// Perform full parsing on a file input
-    pub fn parse(&self, inp: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn ParseError>)>) {
+    pub fn parse(&self, inp: &str, file: &str) -> ParseResult<DocItem> {
         let (ast, errors) = match self {
             Parser::Kif => {
                 let (tokens, tok_err) = kif::tokenize(inp, file);
@@ -76,18 +79,11 @@ impl Parser {
     }
 
     /// Perform tokenization ONLY on file contents
-    pub fn tokenize(
-        &self,
-        inp: &str,
-        file: &str,
-    ) -> (Vec<String>, Vec<(Span, Box<dyn ParseError>)>) {
+    pub fn tokenize(&self, inp: &str, file: &str) -> ParseResult<String> {
         match self {
             Parser::Kif | Parser::Tq => {
                 let (tokens, err) = kif::tokenize(inp, file);
-                let errors = err
-                    .into_iter()
-                    .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
-                    .collect::<Vec<(Span, Box<dyn ParseError>)>>();
+                let errors = wrap_error(err);
                 (
                     tokens
                         .iter()
@@ -98,10 +94,7 @@ impl Parser {
             }
             Parser::Tptp { .. } => {
                 let (tokens, err) = tptp::tokenize(inp, file);
-                let errors = err
-                    .into_iter()
-                    .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
-                    .collect::<Vec<(Span, Box<dyn ParseError>)>>();
+                let errors = wrap_error(err);
                 (
                     tokens
                         .iter()
@@ -168,9 +161,9 @@ impl Parser {
     }
 }
 
-fn wrap_error<E: ParseError + 'static>(err: Vec<(Span, E)>) -> Vec<(Span, Box<dyn ParseError>)> {
+fn wrap_error<E: ParseError + 'static>(err: Vec<E>) -> Vec<(Span, Box<dyn ParseError>)> {
     err.into_iter()
-        .map(|(span, e)| (span, Box::new(e) as Box<dyn ParseError>))
+        .map(|e| (e.get_span(), Box::new(e) as Box<dyn ParseError>))
         .collect::<Vec<(Span, Box<dyn ParseError>)>>()
 }
 

@@ -568,7 +568,7 @@ fn add_axioms_empty_batch_is_noop() {
     store.sine_add_axioms(axioms.iter().copied());
     let before = store.sine.with_ref(|idx| idx.axiom_count());
     let empty: Vec<SentenceId> = Vec::new();
-    store.sine_add_axioms(empty.into_iter());
+    store.sine_add_axioms(empty);
     assert_eq!(store.sine.with_ref(|idx| idx.axiom_count()), before);
 }
 

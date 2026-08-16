@@ -419,7 +419,12 @@ impl KBManager {
     /// (`sumo config`) that must load a possibly-incomplete config.xml (e.g.
     /// no `sumokbname` set yet) without failing outright.
     pub fn parse_config_xml_lenient(xml: &str) -> SdkResult<Self> {
-        let (prefs, kbs, provers, errors) = parse_config_xml(xml)?;
+        let ParsedConfig {
+            prefs,
+            kbs,
+            provers,
+            errors,
+        } = parse_config_xml(xml)?;
 
         let mut m = KBManager::default();
         let get = |k: &str| prefs.get(k).map(String::as_str);
@@ -1106,14 +1111,14 @@ type ProverSection = (String, HashMap<String, String>);
 
 /// Parse a `config.xml` into its top-level `<preference>` map, its `<kb>` list,
 /// and its `<prover type="..">` sections.
-fn parse_config_xml(
-    xml: &str,
-) -> SdkResult<(
-    HashMap<String, String>,
-    Vec<KB>,
-    Vec<ProverSection>,
-    Vec<String>,
-)> {
+struct ParsedConfig {
+    prefs: HashMap<String, String>,
+    kbs: Vec<KB>,
+    provers: Vec<ProverSection>,
+    errors: Vec<String>,
+}
+
+fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
     let mut reader = Reader::from_str(xml);
     let mut prefs: HashMap<String, String> = HashMap::new();
     let mut kbs: Vec<KB> = Vec::new();
@@ -1194,7 +1199,12 @@ fn parse_config_xml(
         }
         buf.clear();
     }
-    Ok((prefs, kbs, provers, errors))
+    Ok(ParsedConfig {
+        prefs,
+        kbs,
+        provers,
+        errors,
+    })
 }
 
 /// Build a prover-config struct from a `<prover>` section's preference map.
@@ -1625,8 +1635,10 @@ mod tests {
     }
 
     fn kb_with(name: &str) -> KBManager {
-        let mut m = KBManager::default();
-        m.sumokbname = name.into();
+        let mut m = KBManager {
+            sumokbname: name.into(),
+            ..Default::default()
+        };
         m.kbs.push(KB {
             name: name.into(),
             constituents: vec![],
@@ -1756,8 +1768,10 @@ mod tests {
         let outside = root.join("Outside.kif");
         std::fs::write(&outside, "").unwrap();
 
-        let mut m = KBManager::default();
-        m.kb_dir = kbd.clone();
+        let mut m = KBManager {
+            kb_dir: kbd.clone(),
+            ..Default::default()
+        };
 
         // A clean-relative name that resolves under kbDir → Named.
         m.add_constituents_to_kb("K", vec![PathBuf::from("InKbDir.kif")], vec![], true)
@@ -2110,9 +2124,11 @@ mod tests {
         std::fs::write(&vampire, b"#!/bin/sh\n").unwrap();
         std::fs::write(&eprover, b"#!/bin/sh\n").unwrap();
 
-        let mut m = KBManager::default();
-        m.vampire = vampire.clone();
-        m.eprover = eprover.clone();
+        let m = KBManager {
+            vampire: vampire.clone(),
+            eprover: eprover.clone(),
+            ..Default::default()
+        };
         m.validate_prover_paths().unwrap();
         assert_eq!(m.resolve_vampire().unwrap(), vampire);
         assert_eq!(m.resolve_eprover().unwrap(), eprover);
@@ -2120,9 +2136,11 @@ mod tests {
 
     #[test]
     fn validate_prover_paths_reports_a_missing_absolute_binary() {
-        let mut m = KBManager::default();
-        m.vampire = PathBuf::from("/definitely/not/here/vampire");
-        m.eprover = PathBuf::from("/definitely/not/here/eprover");
+        let m = KBManager {
+            vampire: PathBuf::from("/definitely/not/here/vampire"),
+            eprover: PathBuf::from("/definitely/not/here/eprover"),
+            ..Default::default()
+        };
         let err = m.validate_prover_paths().unwrap_err();
         let SdkError::Config(msg) = err else {
             panic!("expected Config error")
@@ -2139,9 +2157,11 @@ mod tests {
         let bin = dir.join("vampire");
         std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
 
-        let mut m = KBManager::default();
-        m.systems_dir = dir.clone();
-        m.vampire = PathBuf::from("vampire"); // bare name → systemsDir first
+        let m = KBManager {
+            systems_dir: dir.clone(),
+            vampire: PathBuf::from("vampire"), // bare name → systemsDir first
+            ..Default::default()
+        };
         assert_eq!(m.resolve_vampire().unwrap(), bin);
     }
 

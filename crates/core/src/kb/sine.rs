@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::layer::{Layer, TopLayer};
 use crate::types::SourceFile;
-use crate::Diagnostic;
+use crate::DiagResult;
 use crate::{SentenceId, SineParams, SymbolId};
 
 use super::KnowledgeBase;
@@ -37,7 +37,7 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     /// rolls the parse back — leaving no orphan sentences, taxonomy
     /// edges, or semantic-cache entries.
     ///
-    /// Returns [`Diagnostic`] on parse failure.  On success the returned
+    /// Returns [`Diagnostic`](crate::Diagnostic) on parse failure.  On success the returned
     /// set may be empty if the conjecture references only variables
     /// and literals.
     ///
@@ -45,7 +45,7 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
     /// straight into [`Self::sine_select_for_query`] or similar — they are
     /// not stable across multiple calls because the name→id interning
     /// resets under roll-back.
-    pub fn query_symbols(&mut self, query_kif: &str) -> Result<HashSet<SymbolId>, Diagnostic> {
+    pub fn query_symbols(&mut self, query_kif: &str) -> DiagResult<HashSet<SymbolId>> {
         let query_tag = crate::kb::session_tags::SESSION_SINE_QUERY;
 
         let outcome = self.ingest_source(
@@ -61,7 +61,7 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
                 query_tag,
                 true,
             );
-            return Err(outcome.errors.into_iter().next().unwrap());
+            return Err(outcome.errors.into_iter().next().unwrap().into());
         }
 
         // Every root the query maps to under its tag — *including* ones that
@@ -112,7 +112,7 @@ impl<L: Layer + TopLayer> KnowledgeBase<L> {
         &mut self,
         query_kif: &str,
         params: SineParams,
-    ) -> Result<HashSet<SentenceId>, Diagnostic> {
+    ) -> DiagResult<HashSet<SentenceId>> {
         // Two-step: harvest symbols by parse-and-rollback, then dispatch
         // to the canonical sid-agnostic SInE entry.  The
         // `sine.query_symbols` span covers the parse cost (which dominates

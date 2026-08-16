@@ -20,12 +20,14 @@ use crate::parse::doc::{DocItem, MetaNode};
 use crate::parse::kif;
 use crate::parse::kif::error::KifParseError;
 use crate::parse::{ParseError, Parser, Span, TptpParseOptions};
-use crate::{Diagnostic, ToDiagnostic};
+use crate::{DiagResult, ToDiagnostic};
 
 /// Directive head keywords that classify a top-level `(kw …)` list as a
 /// [`MetaNode`] rather than a logical statement.  `query` is **not** here —
 /// it carries a formula, so it becomes a `Conjecture` statement.
 const DIRECTIVES: &[&str] = &["note", "time", "answer", "file"];
+
+type ParsedTestCase = (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>);
 
 /// A parsed `.kif.tq` test: its logical content (as role-tagged statements) plus
 /// the harness directives.
@@ -197,10 +199,7 @@ impl TestCase {
     /// statements — flattened to bare `AstNode`s here for the caller's
     /// convenience.)  `include(...)` directives must already be spliced by the
     /// caller (filesystem work the core deliberately leaves to the SDK).
-    pub fn from_tptp(
-        text: &str,
-        name: &str,
-    ) -> (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>) {
+    pub fn from_tptp(text: &str, name: &str) -> ParsedTestCase {
         let probe = Parser::Tptp {
             options: Some(TptpParseOptions {
                 keep_conjectures: true,
@@ -349,7 +348,7 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
 /// (`Parser::Kif`) for the raw nodes, then sorts each top-level form into a
 /// [`DocItem`].  Parse errors are forwarded verbatim (positionally independent
 /// of the returned items, like every other parser).
-pub fn parse_tq(content: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, KifParseError)>) {
+pub fn parse_tq(content: &str, file: &str) -> (Vec<DocItem>, Vec<KifParseError>) {
     let (tokens, tok_err) = kif::tokenize(content, file);
     let (nodes, parse_err) = kif::parse(tokens, file);
     let items = nodes.into_iter().map(|n| classify(n, file)).collect();
@@ -393,11 +392,10 @@ fn classify(node: AstNode, file: &str) -> DocItem {
 
 /// Parse a `.kif.tq` source straight into a [`TestCase`] — `parse_tq` followed
 /// by [`TestCase::from_doc_items`].  Aborts on the first hard parse error.
-pub fn parse_test_content(content: &str, file_name: &str) -> Result<TestCase, Diagnostic> {
+pub fn parse_test_content(content: &str, file_name: &str) -> DiagResult<TestCase> {
     let (items, mut errors) = parse_tq(content, file_name);
     if !errors.is_empty() {
-        let (_, err) = errors.remove(0);
-        return Err(err.to_diagnostic());
+        return Err(errors.remove(0).to_diagnostic().into());
     }
     // `.tq` sources emit only `Conjecture` / `Hypothesis`, so the leftover
     // (background-axiom) vec is always empty here — discard it.

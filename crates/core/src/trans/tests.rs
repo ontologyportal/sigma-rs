@@ -12,8 +12,8 @@ fn make_trans(kif: &str) -> TranslationLayer {
     let mut store = SyntacticLayer::default();
     store.load_kif(kif, "t");
     let sem = SemanticLayer::new(store);
-    let trans = TranslationLayer::new(sem);
-    trans
+
+    TranslationLayer::new(sem)
 }
 
 // =====================================================================

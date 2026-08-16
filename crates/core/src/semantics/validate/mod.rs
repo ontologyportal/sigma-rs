@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn validate_sentence_valid() {
         let layer = base_layer();
-        let sid = *layer.syntactic.by_head("subclass").iter().next().unwrap();
+        let sid = *layer.syntactic.by_head("subclass").first().unwrap();
         assert!(layer
             .validator_scoped(Scope::Base)
             .validate_sentence_collect(sid)
@@ -308,7 +308,7 @@ mod tests {
         );
         let foo_sids = layer.syntactic.by_head("Foo");
         assert!(!foo_sids.is_empty(), "expected a sentence headed by Foo");
-        let sid = foo_sids.iter().next().unwrap();
+        let sid = foo_sids.first().unwrap();
 
         let errs = layer
             .validator_scoped(Scope::Base)
@@ -333,7 +333,7 @@ mod tests {
             1,
             "expected exactly one root headed by `{head}`, got {sids:?}"
         );
-        *sids.iter().next().unwrap()
+        *sids.first().unwrap()
     }
 
     /// Find the single root whose operator matches `op` (for operator-headed

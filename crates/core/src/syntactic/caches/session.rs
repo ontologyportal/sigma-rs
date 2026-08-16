@@ -208,7 +208,7 @@ impl EagerMapBehavior for SessionCache {
                     side.tombstones.remove(&session_id(session));
                     let is_axiom_session = store.get(session).is_some_and(|e| e.axiomatized);
                     if !is_axiom_session {
-                        store.evict_keys(&[session.clone()]);
+                        store.evict_keys(std::slice::from_ref(session));
                     }
                 }
 

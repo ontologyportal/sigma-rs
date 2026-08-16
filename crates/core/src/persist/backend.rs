@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use crate::DiagResult;
+#[cfg(feature = "persist")]
 use crate::Diagnostic;
 
 /// A string-keyed blob store.  Cache freeze/thaw is written against this trait,
@@ -24,17 +26,17 @@ pub(crate) trait PersistenceBackend {
     // Only called from `cache/persistence.rs` code that is `cfg(feature =
     // "persist")`, but the impls exist unconditionally — don't cfg out.
     #[cfg_attr(not(feature = "persist"), allow(dead_code))]
-    fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic>;
+    fn put(&mut self, key: &str, bytes: &[u8]) -> DiagResult<()>;
     /// Read the committed bytes under `key`, or `None` if absent.
     #[cfg_attr(not(feature = "persist"), allow(dead_code))]
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic>;
+    fn get(&self, key: &str) -> DiagResult<Option<Vec<u8>>>;
     // TODO: implement incremental rewrites, right now, persistence is ALL OR NOTHING
     /// Stage a removal of `key`.  May be buffered until `commit`.
     #[allow(dead_code)]
-    fn remove(&mut self, key: &str) -> Result<(), Diagnostic>;
+    fn remove(&mut self, key: &str) -> DiagResult<()>;
     /// Flush all staged writes atomically.  No-op for backends that write
     /// eagerly (e.g. the in-memory one).
-    fn commit(&mut self) -> Result<(), Diagnostic>;
+    fn commit(&mut self) -> DiagResult<()>;
 }
 
 /// In-memory blob store — tests and ephemeral use.  Writes are eager; `commit`
@@ -58,18 +60,18 @@ impl MemoryBackend {
 }
 
 impl PersistenceBackend for MemoryBackend {
-    fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
+    fn put(&mut self, key: &str, bytes: &[u8]) -> DiagResult<()> {
         self.map.insert(key.to_owned(), bytes.to_vec());
         Ok(())
     }
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic> {
+    fn get(&self, key: &str) -> DiagResult<Option<Vec<u8>>> {
         Ok(self.map.get(key).cloned())
     }
-    fn remove(&mut self, key: &str) -> Result<(), Diagnostic> {
+    fn remove(&mut self, key: &str) -> DiagResult<()> {
         self.map.remove(key);
         Ok(())
     }
-    fn commit(&mut self) -> Result<(), Diagnostic> {
+    fn commit(&mut self) -> DiagResult<()> {
         Ok(())
     }
 }
@@ -99,19 +101,24 @@ impl<'a> LmdbBackend<'a> {
 
 #[cfg(feature = "persist")]
 impl PersistenceBackend for LmdbBackend<'_> {
-    fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
+    fn put(&mut self, key: &str, bytes: &[u8]) -> DiagResult<()> {
         self.pending.insert(key.to_owned(), Some(bytes.to_vec()));
         Ok(())
     }
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic> {
+    fn get(&self, key: &str) -> DiagResult<Option<Vec<u8>>> {
         let rtxn = self.env.read_txn()?;
-        Ok(self.env.caches.get(&rtxn, key)?.map(|b| b.to_vec()))
+        Ok(self
+            .env
+            .caches
+            .get(&rtxn, key)
+            .map_err(Diagnostic::from)?
+            .map(|b| b.to_vec()))
     }
-    fn remove(&mut self, key: &str) -> Result<(), Diagnostic> {
+    fn remove(&mut self, key: &str) -> DiagResult<()> {
         self.pending.insert(key.to_owned(), None);
         Ok(())
     }
-    fn commit(&mut self) -> Result<(), Diagnostic> {
+    fn commit(&mut self) -> DiagResult<()> {
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -119,14 +126,20 @@ impl PersistenceBackend for LmdbBackend<'_> {
         for (key, val) in self.pending.drain() {
             match val {
                 Some(bytes) => {
-                    self.env.caches.put(&mut wtxn, &key, &bytes)?;
+                    self.env
+                        .caches
+                        .put(&mut wtxn, &key, &bytes)
+                        .map_err(Diagnostic::from)?;
                 }
                 None => {
-                    self.env.caches.delete(&mut wtxn, &key)?;
+                    self.env
+                        .caches
+                        .delete(&mut wtxn, &key)
+                        .map_err(Diagnostic::from)?;
                 }
             }
         }
-        wtxn.commit()?;
+        wtxn.commit().map_err(Diagnostic::from)?;
         Ok(())
     }
 }
@@ -161,7 +174,7 @@ impl<'a> PersistenceEngine<'a> {
 }
 
 impl PersistenceBackend for PersistenceEngine<'_> {
-    fn put(&mut self, key: &str, bytes: &[u8]) -> Result<(), Diagnostic> {
+    fn put(&mut self, key: &str, bytes: &[u8]) -> DiagResult<()> {
         match self {
             Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.put(key, bytes),
@@ -169,7 +182,7 @@ impl PersistenceBackend for PersistenceEngine<'_> {
             Self::Lmdb(l) => l.put(key, bytes),
         }
     }
-    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Diagnostic> {
+    fn get(&self, key: &str) -> DiagResult<Option<Vec<u8>>> {
         match self {
             Self::Noop(_) => Ok(None),
             Self::Memory(m) => m.get(key),
@@ -177,7 +190,7 @@ impl PersistenceBackend for PersistenceEngine<'_> {
             Self::Lmdb(l) => l.get(key),
         }
     }
-    fn remove(&mut self, key: &str) -> Result<(), Diagnostic> {
+    fn remove(&mut self, key: &str) -> DiagResult<()> {
         match self {
             Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.remove(key),
@@ -185,7 +198,7 @@ impl PersistenceBackend for PersistenceEngine<'_> {
             Self::Lmdb(l) => l.remove(key),
         }
     }
-    fn commit(&mut self) -> Result<(), Diagnostic> {
+    fn commit(&mut self) -> DiagResult<()> {
         match self {
             Self::Noop(_) => Ok(()),
             Self::Memory(m) => m.commit(),

@@ -68,8 +68,16 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
 
     /// Test-only shorthand staging `SourceFile::kif(file, text)` into `session`.
     #[cfg(test)]
-    pub(crate) fn reload_kif(&mut self, text: &str, file: &PathBuf, session: &str) -> IngestResult {
-        self.stage(SourceFile::kif(file.clone(), text.to_string()), session)
+    pub(crate) fn reload_kif(
+        &mut self,
+        text: &str,
+        file: &std::path::Path,
+        session: &str,
+    ) -> IngestResult {
+        self.stage(
+            SourceFile::kif(file.to_path_buf(), text.to_string()),
+            session,
+        )
     }
 
     /// Test-only batch over [`Self::reload_kif`].
@@ -533,7 +541,7 @@ mod tests {
         let r = kb.reload_kif(text, &PathBuf::from(file), file);
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         let r = kb.make_session_axiomatic(file);
-        assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
+        assert!(r.is_ok(), "promotion failed: {:?}", r.err());
     }
 
     // ── tell ───────────────────────────────────────────────────────────────
@@ -787,8 +795,7 @@ mod tests {
             .semantic
             .syntactic
             .by_head("subclass")
-            .iter()
-            .next()
+            .first()
             .unwrap();
         assert!(
             kb.layer.semantic.syntactic.sessions.is_axiom(sid),
@@ -1146,8 +1153,7 @@ mod tests {
             .semantic
             .syntactic
             .by_head("likes")
-            .iter()
-            .next()
+            .first()
             .expect("a (likes ...) root");
         let sa = Scope::Session(session_id("session_a"));
 

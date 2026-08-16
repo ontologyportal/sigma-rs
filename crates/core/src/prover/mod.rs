@@ -96,16 +96,19 @@ pub trait ProvingLayer: TopLayer {
     /// [`intern_conjecture`](ProvingLayer::intern_conjecture)).  Shared across
     /// backends; runs once per ask.  `Err` short-circuits the whole proof
     /// (e.g. a parse error / empty query) with the carried result.
-    fn prepare(&self, conjecture: Vec<crate::AstNode>) -> Result<Conjecture, result::ProverResult> {
+    fn prepare(
+        &self,
+        conjecture: Vec<crate::AstNode>,
+    ) -> Result<Conjecture, Box<result::ProverResult>> {
         let (normalized, norm_dropped) = Conjecture::normalize(conjecture);
         let seed_syms = Conjecture::seed(&normalized);
         let sents = self.intern_conjecture(&normalized);
         if sents.is_empty() {
-            return Err(result::ProverResult {
+            return Err(Box::new(result::ProverResult {
                 status: ProverStatus::Unknown,
                 raw_output: "No query sentence parsed".into(),
                 ..Default::default()
-            });
+            }));
         }
         // Intern/build failures surface as a shortfall (`intern_conjecture`
         // yields at most one entry per normalized ast, skipping failures).
@@ -181,7 +184,7 @@ pub trait ProvingLayer: TopLayer {
         self.warm_up();
         let prepared = match self.prepare(conjecture) {
             Ok(p) => p,
-            Err(r) => return r,
+            Err(r) => return *r,
         };
         let selection = opts.selection();
         let total_timeout = opts.timeout().min(u64::from(u32::MAX)) as u32;

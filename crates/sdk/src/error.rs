@@ -21,8 +21,11 @@ use std::io::Error as IOError;
 pub enum SdkError {
     /// An error from the underlying `sigmakee-rs-core` layer, typically a parse
     /// failure or a propagated DB error.
+    ///
+    /// Boxed so a `Diagnostic` (192 bytes) does not set the size of every
+    /// `SdkResult` in the crate.
     #[error("KB error: {0}")]
-    Kb(#[from] sigmakee_rs_core::Diagnostic),
+    Kb(#[source] Box<sigmakee_rs_core::Diagnostic>),
 
     /// Reading a file the caller asked the SDK to ingest failed.
     ///
@@ -110,52 +113,22 @@ pub enum SdkError {
 /// Convenience alias used throughout the SDK.
 pub type SdkResult<T> = Result<T, SdkError>;
 
+impl From<sigmakee_rs_core::Diagnostic> for SdkError {
+    fn from(d: sigmakee_rs_core::Diagnostic) -> Self {
+        SdkError::Kb(Box::new(d))
+    }
+}
+
+impl From<Box<sigmakee_rs_core::Diagnostic>> for SdkError {
+    fn from(d: Box<sigmakee_rs_core::Diagnostic>) -> Self {
+        SdkError::Kb(d)
+    }
+}
+
 #[cfg(feature = "persist")]
 impl From<sigmakee_rs_core::PromoteError> for SdkError {
     fn from(e: sigmakee_rs_core::PromoteError) -> Self {
         SdkError::Persist(e)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sigmakee_rs_core::Diagnostic;
-
-    #[test]
-    fn infra_variants_are_hard_errors() {
-        assert!(SdkError::Config("bad flag".into()).is_err());
-        assert!(SdkError::Input(PathBuf::from("mystery.bin")).is_err());
-        assert!(SdkError::Unsupported.is_err());
-    }
-
-    #[test]
-    fn kb_error_is_classified_by_diagnostic_severity() {
-        let err = Diagnostic::new_error("kind", "E000", "boom");
-        assert!(SdkError::Kb(err).is_err());
-
-        let mut warn = Diagnostic::new_error("kind", "W000", "heads up");
-        warn.severity = Severity::Warning;
-        assert!(!SdkError::Kb(warn).is_err());
-    }
-
-    #[test]
-    fn display_carries_context() {
-        assert!(SdkError::Config("oops".into()).to_string().contains("oops"));
-        assert!(SdkError::Unsupported
-            .to_string()
-            .to_lowercase()
-            .contains("unsupported"));
-        assert!(SdkError::Input(PathBuf::from("f.dat"))
-            .to_string()
-            .contains("f.dat"));
-    }
-
-    #[test]
-    fn from_diagnostic_yields_kb_variant() {
-        let d = Diagnostic::new_error("k", "E1", "x");
-        let e: SdkError = d.into();
-        assert!(matches!(e, SdkError::Kb(_)));
     }
 }
 
@@ -192,5 +165,47 @@ impl SdkError {
             SdkError::MultipleProblems => Severity::Error,
             SdkError::NoProblem => Severity::Error,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sigmakee_rs_core::Diagnostic;
+
+    #[test]
+    fn infra_variants_are_hard_errors() {
+        assert!(SdkError::Config("bad flag".into()).is_err());
+        assert!(SdkError::Input(PathBuf::from("mystery.bin")).is_err());
+        assert!(SdkError::Unsupported.is_err());
+    }
+
+    #[test]
+    fn kb_error_is_classified_by_diagnostic_severity() {
+        let err = Diagnostic::new_error("kind", "E000", "boom");
+        assert!(SdkError::from(err).is_err());
+
+        let mut warn = Diagnostic::new_error("kind", "W000", "heads up");
+        warn.severity = Severity::Warning;
+        assert!(!SdkError::from(warn).is_err());
+    }
+
+    #[test]
+    fn display_carries_context() {
+        assert!(SdkError::Config("oops".into()).to_string().contains("oops"));
+        assert!(SdkError::Unsupported
+            .to_string()
+            .to_lowercase()
+            .contains("unsupported"));
+        assert!(SdkError::Input(PathBuf::from("f.dat"))
+            .to_string()
+            .contains("f.dat"));
+    }
+
+    #[test]
+    fn from_diagnostic_yields_kb_variant() {
+        let d = Diagnostic::new_error("k", "E1", "x");
+        let e: SdkError = d.into();
+        assert!(matches!(e, SdkError::Kb(_)));
     }
 }

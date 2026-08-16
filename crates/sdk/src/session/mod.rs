@@ -142,7 +142,7 @@ impl<L: TopLayer> Session<L> {
     /// proving on it leaves *this* session untouched.  Requires `persist`.
     #[cfg(feature = "persist")]
     pub fn fork(&self) -> crate::SdkResult<Self> {
-        let kb = self.kb.snapshot_clone().map_err(crate::SdkError::Kb)?;
+        let kb = self.kb.snapshot_clone().map_err(crate::SdkError::from)?;
         Ok(Self {
             kb,
             name: self.name.clone(),

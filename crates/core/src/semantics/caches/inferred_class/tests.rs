@@ -73,7 +73,7 @@ fn classify_formula_global_scope_for_ground_atoms() {
     let mary = l.syntactic.sym_id("Mary").unwrap();
 
     // (instance Bob Human) → Bob : Human, Global.
-    let inst_root = *l.syntactic.by_head("instance").iter().next().unwrap();
+    let inst_root = *l.syntactic.by_head("instance").first().unwrap();
     let bsc = l
         .classify_formula_scoped(inst_root, Scope::Base)
         .get(&bob)
@@ -82,7 +82,7 @@ fn classify_formula_global_scope_for_ground_atoms() {
     assert!(matches!(&bsc.class, ClassInference::Single(id) if *id == human));
 
     // (mother Mary Jesus) → Mary : Mother (mother's arg-1 domain), Global.
-    let m_root = *l.syntactic.by_head("mother").iter().next().unwrap();
+    let m_root = *l.syntactic.by_head("mother").first().unwrap();
     let msc = l
         .classify_formula_scoped(m_root, Scope::Base)
         .get(&mary)

@@ -55,13 +55,13 @@ impl<L: TopLayer> Session<L> {
 
     pub(super) fn ingest_inner(&mut self, src: SourceFile) -> Vec<SdkError> {
         let r = self.kb.load(src, &self.name);
-        r.diagnostics.into_iter().map(SdkError::Kb).collect()
+        r.diagnostics.into_iter().map(SdkError::from).collect()
     }
 
     pub(super) fn after_ingest(&mut self) -> SdkResult<()> {
         self.kb
             .make_session_axiomatic(&self.name)
-            .map_err(|e: PromoteError| SdkError::Kb(e.to_diagnostic()))?;
+            .map_err(|e: PromoteError| SdkError::from(e.to_diagnostic()))?;
         Ok(())
     }
 
@@ -103,7 +103,7 @@ impl<L: TopLayer> Session<L> {
                     errs.extend(
                         parse_errs
                             .into_iter()
-                            .map(|(_, p)| SdkError::Kb(p.to_diagnostic())),
+                            .map(|(_, p)| SdkError::from(p.to_diagnostic())),
                     );
                     continue;
                 }
@@ -130,7 +130,7 @@ impl<L: TopLayer> Session<L> {
                 errs.extend(
                     parse_errs
                         .into_iter()
-                        .map(|(_, p)| SdkError::Kb(p.to_diagnostic())),
+                        .map(|(_, p)| SdkError::from(p.to_diagnostic())),
                 );
                 continue;
             }

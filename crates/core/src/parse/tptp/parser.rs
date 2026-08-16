@@ -183,11 +183,11 @@ impl TptpParser {
         }
     }
 
-    fn expect(&mut self, expected: &TokenKind) -> Result<Span, (Span, TptpParseError)> {
+    fn expect(&mut self, expected: &TokenKind) -> Result<Span, TptpParseError> {
         match self.peek() {
             None => {
                 let sp = self.eof_span();
-                Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }))
+                Err(TptpParseError::UnexpectedEof { span: sp })
             }
             Some(t) if &t.kind == expected => {
                 let span = t.span.clone();
@@ -197,10 +197,7 @@ impl TptpParser {
             Some(t) => {
                 let found = t.kind.clone();
                 let sp = t.span.clone();
-                Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedToken { found, span: sp },
-                ))
+                Err(TptpParseError::UnexpectedToken { found, span: sp })
             }
         }
     }
@@ -471,13 +468,13 @@ impl TptpParser {
         }
     }
 
-    fn skip_type(&mut self) -> Result<(), (Span, TptpParseError)> {
+    fn skip_type(&mut self) -> Result<(), TptpParseError> {
         let mut depth: i32 = 0;
         loop {
             match self.peek_kind() {
                 None => {
                     let sp = self.eof_span();
-                    return Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }));
+                    return Err(TptpParseError::UnexpectedEof { span: sp });
                 }
                 Some(TokenKind::LParen) => {
                     depth += 1;
@@ -496,13 +493,13 @@ impl TptpParser {
         Ok(())
     }
 
-    fn skip_annotations(&mut self) -> Result<(), (Span, TptpParseError)> {
+    fn skip_annotations(&mut self) -> Result<(), TptpParseError> {
         let mut depth: i32 = 0;
         loop {
             match self.peek_kind() {
                 None => {
                     let sp = self.eof_span();
-                    return Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }));
+                    return Err(TptpParseError::UnexpectedEof { span: sp });
                 }
                 Some(TokenKind::LParen) => {
                     depth += 1;
@@ -523,7 +520,7 @@ impl TptpParser {
 
     // ── Top-level sentence ────────────────────────────────────────────────
 
-    fn parse_top_level(&mut self) -> Result<Option<AstNode>, (Span, TptpParseError)> {
+    fn parse_top_level(&mut self) -> Result<Option<AstNode>, TptpParseError> {
         if self.options.formulas_only {
             return Ok(Some(self.parse_formula()?));
         }
@@ -534,15 +531,12 @@ impl TptpParser {
                 _ => {
                     let found = t.kind.clone();
                     let sp = t.span.clone();
-                    return Err((
-                        sp.clone(),
-                        TptpParseError::UnexpectedToken { found, span: sp },
-                    ));
+                    return Err(TptpParseError::UnexpectedToken { found, span: sp });
                 }
             },
             None => {
                 let sp = self.eof_span();
-                return Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }));
+                return Err(TptpParseError::UnexpectedEof { span: sp });
             }
         };
 
@@ -550,31 +544,22 @@ impl TptpParser {
             // `tff` is accepted but its typing is dropped; the body parses as
             // untyped `fof`. `thf`/`tcf` are rejected outright.
             "fof" | "cnf" | "tff" => self.parse_annotated_formula(),
-            "thf" | "tcf" => Err((
-                kw_span.clone(),
-                TptpParseError::UnsupportedLanguage {
-                    span: kw_span,
-                    lang: kw,
-                },
-            )),
-            "include" => Err((
-                kw_span.clone(),
-                TptpParseError::UnsupportedInclude { span: kw_span },
-            )),
+            "thf" | "tcf" => Err(TptpParseError::UnsupportedLanguage {
+                span: kw_span,
+                lang: kw,
+            }),
+            "include" => Err(TptpParseError::UnsupportedInclude { span: kw_span }),
             _ => {
                 let found = self.current_kind();
-                Err((
-                    kw_span.clone(),
-                    TptpParseError::UnexpectedToken {
-                        found,
-                        span: kw_span,
-                    },
-                ))
+                Err(TptpParseError::UnexpectedToken {
+                    found,
+                    span: kw_span,
+                })
             }
         }
     }
 
-    fn parse_annotated_formula(&mut self) -> Result<Option<AstNode>, (Span, TptpParseError)> {
+    fn parse_annotated_formula(&mut self) -> Result<Option<AstNode>, TptpParseError> {
         self.advance(); // consume language keyword
         self.expect(&TokenKind::LParen)?;
 
@@ -592,10 +577,7 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                return Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedToken { found, span: sp },
-                ));
+                return Err(TptpParseError::UnexpectedToken { found, span: sp });
             }
         };
 
@@ -623,10 +605,7 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                return Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedToken { found, span: sp },
-                ));
+                return Err(TptpParseError::UnexpectedToken { found, span: sp });
             }
         };
 
@@ -687,7 +666,7 @@ impl TptpParser {
     /// tokenizer retains the quotes; callers here want the bare text, to
     /// match how `self.file` — the un-quoted counterpart `render_source`
     /// re-quotes on output — is already stored).
-    fn parse_atomic_word(&mut self) -> Result<String, (Span, TptpParseError)> {
+    fn parse_atomic_word(&mut self) -> Result<String, TptpParseError> {
         match self.peek_kind() {
             Some(TokenKind::LowerWord(w) | TokenKind::UpperWord(w) | TokenKind::Integer(w)) => {
                 let w = w.clone();
@@ -702,10 +681,7 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedToken { found, span: sp },
-                ))
+                Err(TptpParseError::UnexpectedToken { found, span: sp })
             }
         }
     }
@@ -714,7 +690,7 @@ impl TptpParser {
     /// annotation term on every path (recognized or not) — the caller can
     /// go straight on to check for a trailing `optional_info` comma either
     /// way.
-    fn parse_source(&mut self) -> Result<Option<Source>, (Span, TptpParseError)> {
+    fn parse_source(&mut self) -> Result<Option<Source>, TptpParseError> {
         let head = match self.peek_kind() {
             Some(TokenKind::LowerWord(w)) => w.clone(),
             // A bare name (`source ::= name`, citing another statement by
@@ -746,7 +722,7 @@ impl TptpParser {
     }
 
     /// `file('path'[, name])` — already past the `file` keyword.
-    fn parse_file_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+    fn parse_file_source(&mut self) -> Result<Source, TptpParseError> {
         self.expect(&TokenKind::LParen)?;
         let file = self.parse_atomic_word()?;
         let name = if matches!(self.peek_kind(), Some(TokenKind::Comma)) {
@@ -760,7 +736,7 @@ impl TptpParser {
     }
 
     /// `introduced(mechanism[, info])` — already past the `introduced` keyword.
-    fn parse_introduced_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+    fn parse_introduced_source(&mut self) -> Result<Source, TptpParseError> {
         self.expect(&TokenKind::LParen)?;
         let mechanism = self.parse_atomic_word()?;
         // `introduced(intro_type, intro_info)` per spec, but real output
@@ -784,7 +760,7 @@ impl TptpParser {
     /// rather than assuming a fixed arity — matching what the raw-text
     /// regex parser this replaces already relied on ("last `[...]`
     /// bracket"). Non-list arguments (status info, bare atoms) are skipped.
-    fn parse_inference_source(&mut self) -> Result<Source, (Span, TptpParseError)> {
+    fn parse_inference_source(&mut self) -> Result<Source, TptpParseError> {
         self.expect(&TokenKind::LParen)?;
         let rule = self.parse_atomic_word()?;
         let mut parents: Vec<String> = Vec::new();
@@ -805,7 +781,7 @@ impl TptpParser {
     /// (a nested function call, say) is skipped rather than failing the
     /// whole list, since only the identifier-shaped entries are ever
     /// meaningful as parent-step names.
-    fn parse_atomic_word_list(&mut self) -> Result<Vec<String>, (Span, TptpParseError)> {
+    fn parse_atomic_word_list(&mut self) -> Result<Vec<String>, TptpParseError> {
         self.expect(&TokenKind::LBracket)?;
         let mut items = Vec::new();
         loop {
@@ -850,13 +826,13 @@ impl TptpParser {
     /// including) the next top-level `,`, `)`, or `]`, tracking both paren
     /// and bracket nesting so an argument containing its own `(...)`/`[...]`
     /// doesn't end the skip early.
-    fn skip_one_arg(&mut self) -> Result<(), (Span, TptpParseError)> {
+    fn skip_one_arg(&mut self) -> Result<(), TptpParseError> {
         let mut depth: i32 = 0;
         loop {
             match self.peek_kind() {
                 None => {
                     let sp = self.eof_span();
-                    return Err((sp.clone(), TptpParseError::UnexpectedEof { span: sp }));
+                    return Err(TptpParseError::UnexpectedEof { span: sp });
                 }
                 Some(TokenKind::LParen | TokenKind::LBracket) => {
                     depth += 1;
@@ -879,7 +855,7 @@ impl TptpParser {
 
     // ── Formula ───────────────────────────────────────────────────────────
 
-    fn parse_formula(&mut self) -> Result<AstNode, (Span, TptpParseError)> {
+    fn parse_formula(&mut self) -> Result<AstNode, TptpParseError> {
         let lhs = self.parse_unitary_formula()?;
 
         match self.peek_binary_tail() {
@@ -923,14 +899,11 @@ impl TptpParser {
 
     // ── Unitary formula ───────────────────────────────────────────────────
 
-    fn parse_unitary_formula(&mut self) -> Result<AstNode, (Span, TptpParseError)> {
+    fn parse_unitary_formula(&mut self) -> Result<AstNode, TptpParseError> {
         let (head, head_span) = self.peek_unitary_head();
 
         match head {
-            UnitaryHead::Eof => Err((
-                head_span.clone(),
-                TptpParseError::UnexpectedEof { span: head_span },
-            )),
+            UnitaryHead::Eof => Err(TptpParseError::UnexpectedEof { span: head_span }),
             UnitaryHead::LParen => {
                 self.advance();
                 let inner = self.parse_formula()?;
@@ -946,13 +919,10 @@ impl TptpParser {
             UnitaryHead::Exists => self.parse_quantified_formula(OpKind::Exists, head_span),
             UnitaryHead::Thf => {
                 let found = self.current_kind();
-                Err((
-                    head_span.clone(),
-                    TptpParseError::UnexpectedToken {
-                        found,
-                        span: head_span,
-                    },
-                ))
+                Err(TptpParseError::UnexpectedToken {
+                    found,
+                    span: head_span,
+                })
             }
             UnitaryHead::Atomic => self.parse_atomic_formula(),
         }
@@ -964,7 +934,7 @@ impl TptpParser {
         &mut self,
         quant: OpKind,
         quant_span: Span,
-    ) -> Result<AstNode, (Span, TptpParseError)> {
+    ) -> Result<AstNode, TptpParseError> {
         self.advance();
         self.expect(&TokenKind::LBracket)?;
 
@@ -991,10 +961,7 @@ impl TptpParser {
                 _ => {
                     let found = self.current_kind();
                     let sp = self.current_span();
-                    return Err((
-                        sp.clone(),
-                        TptpParseError::UnexpectedToken { found, span: sp },
-                    ));
+                    return Err(TptpParseError::UnexpectedToken { found, span: sp });
                 }
             }
 
@@ -1006,21 +973,15 @@ impl TptpParser {
                 _ => {
                     let found = self.current_kind();
                     let sp = self.current_span();
-                    return Err((
-                        sp.clone(),
-                        TptpParseError::UnexpectedToken { found, span: sp },
-                    ));
+                    return Err(TptpParseError::UnexpectedToken { found, span: sp });
                 }
             }
         }
 
         if vars.is_empty() {
-            return Err((
-                var_list_span.clone(),
-                TptpParseError::EmptyQuantifierList {
-                    span: var_list_span,
-                },
-            ));
+            return Err(TptpParseError::EmptyQuantifierList {
+                span: var_list_span,
+            });
         }
 
         self.expect(&TokenKind::RBracket)?;
@@ -1046,7 +1007,7 @@ impl TptpParser {
 
     // ── Atomic formula ────────────────────────────────────────────────────
 
-    fn parse_atomic_formula(&mut self) -> Result<AstNode, (Span, TptpParseError)> {
+    fn parse_atomic_formula(&mut self) -> Result<AstNode, TptpParseError> {
         let lhs = self.parse_term()?;
 
         let infix: Option<(bool, Span)> = match self.tokens.get(self.pos) {
@@ -1075,7 +1036,7 @@ impl TptpParser {
 
     // ── Term ──────────────────────────────────────────────────────────────
 
-    fn parse_term(&mut self) -> Result<AstNode, (Span, TptpParseError)> {
+    fn parse_term(&mut self) -> Result<AstNode, TptpParseError> {
         match self.tokens.get(self.pos) {
             // Variable: upper-word — never remapped.
             Some(t) if matches!(t.kind, TokenKind::UpperWord(_)) => {
@@ -1133,10 +1094,10 @@ impl TptpParser {
                                 _ => {
                                     let found = self.current_kind();
                                     let sp = self.current_span();
-                                    return Err((
-                                        sp.clone(),
-                                        TptpParseError::UnexpectedToken { found, span: sp },
-                                    ));
+                                    return Err(TptpParseError::UnexpectedToken {
+                                        found,
+                                        span: sp,
+                                    });
                                 }
                             }
                         }
@@ -1189,17 +1150,14 @@ impl TptpParser {
             _ => {
                 let found = self.current_kind();
                 let sp = self.current_span();
-                Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedToken { found, span: sp },
-                ))
+                Err(TptpParseError::UnexpectedToken { found, span: sp })
             }
         }
     }
 
     // ── Driver ────────────────────────────────────────────────────────────
 
-    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<(Span, TptpParseError)>) {
+    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<TptpParseError>) {
         let mut nodes = Vec::new();
         let mut errors = Vec::new();
         while self.peek().is_some() {
@@ -1222,7 +1180,7 @@ pub fn parse(
     tokens: Vec<Token>,
     file: &str,
     options: Option<TptpParseOptions>,
-) -> (Vec<AstNode>, Vec<(Span, TptpParseError)>) {
+) -> (Vec<AstNode>, Vec<TptpParseError>) {
     TptpParser::new(tokens, file, options).parse_all()
 }
 
@@ -1280,13 +1238,13 @@ mod tests {
     fn parse_errors(src: &str) -> Vec<TptpParseError> {
         let (tokens, _) = tokenize(src, "test");
         let (_, errors) = parse(tokens, "test", None);
-        errors.into_iter().map(|(_, e)| e).collect()
+        errors
     }
 
     fn parse_errors_opts(src: &str, opts: TptpParseOptions) -> Vec<TptpParseError> {
         let (tokens, _) = tokenize(src, "test");
         let (_, errors) = parse(tokens, "test", Some(opts));
-        errors.into_iter().map(|(_, e)| e).collect()
+        errors
     }
 
     // ── Unit tests for the remapping helpers ──────────────────────────────

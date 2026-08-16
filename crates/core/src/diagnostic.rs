@@ -108,6 +108,14 @@ impl std::fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
+/// `Result` alias for fallible operations whose error is a [`Diagnostic`].
+///
+/// The error is boxed: a `Diagnostic` carries a `Span`, a message, and several
+/// vectors, so returning it by value would widen every `Result` in the crate --
+/// including the success path -- to its size. `?` converts a bare `Diagnostic`
+/// into the boxed form automatically.
+pub type DiagResult<T> = Result<T, Box<Diagnostic>>;
+
 impl Diagnostic {
     /// Construct an error-severity diagnostic with no source context (empty
     /// `sids`, default span, no related info).
@@ -224,10 +232,7 @@ impl Diagnostic {
 
     /// Whether this diagnostic is a hard error (`Severity::Error`).
     pub fn is_err(&self) -> bool {
-        match self.severity {
-            Severity::Error => true,
-            _ => false,
-        }
+        matches!(self.severity, Severity::Error)
     }
 }
 

@@ -3,7 +3,7 @@
 //! Five branches:
 //!   - `tptp`                → dump `result.proof_tptp` verbatim
 //!   - `casc`                → strict SZS-wrapped TPTP, matching Vampire's
-//!                             own stdout (`% SZS status`/`% SZS output
+//!     own stdout (`% SZS status`/`% SZS output
 //!                             start|end Proof`), no other output
 //!   - `graphviz`            → the proof DAG as DOT syntax, no other output
 //!   - `kif`                 → SUO-KIF pretty-print with per-axiom source
@@ -33,15 +33,15 @@ pub fn is_quiet_proof_format(format: &str) -> bool {
 /// Dispatch the `--proof <FORMAT>` rendering.  Recognised values:
 /// - `tptp`                     → dump `result.proof_tptp` verbatim
 /// - `casc`                     → strict SZS-wrapped TPTP (CASC submission
-///                                 format): `% SZS status <status> for
+///   format): `% SZS status <status> for
 ///                                 <name>` then, if a proof exists, `% SZS
 ///                                 output start Proof for <name>` / the
-///                                 proof / `% SZS output end Proof for
+///   proof / `% SZS output end Proof for
 ///                                 <name>` — nothing else
 /// - `graphviz`                 → the proof DAG as DOT syntax on stdout
-///                                 (one node per `proof_kif` step, one edge
-///                                 per premise), nothing else — pipe straight
-///                                 into `dot`/`neato`/etc.
+///   (one node per `proof_kif` step, one edge
+///   per premise), nothing else — pipe straight
+///   into `dot`/`neato`/etc.
 /// - `kif`                      → SUO-KIF pretty-print
 /// - any SUMO language (e.g.
 ///   `EnglishLanguage`,

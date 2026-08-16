@@ -239,7 +239,9 @@ impl Formula {
 
 #[cfg(test)]
 mod tests {
-    use super::super::symbol::{Function, Predicate};
+    #[cfg(feature = "ask")]
+    use super::super::symbol::Function;
+    use super::super::symbol::Predicate;
     use super::*;
 
     #[test]

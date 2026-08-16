@@ -81,10 +81,11 @@ impl<'a> SemanticValidator<'a> {
     }
 
     /// Walk the formula tree once, partitioning variable occurrences for W021:
-    ///   * `bound`      — variables that bind their scope: every antecedent's
-    ///                    variables (both halves of an `<=>`, since each binds
-    ///                    the other), plus every `forall` / `exists` var-list.
+    ///   * `bound` — variables that bind their scope: every antecedent's
+    ///     variables (both halves of an `<=>`, since each binds
+    ///     the other), plus every `forall` / `exists` var-list.
     ///   * `consequent` — variables occurring in an implication consequent.
+    ///
     /// A variable in both sets (e.g. bound by a *nested* antecedent that sits
     /// inside an outer consequent) is therefore not free.
     fn collect_binding_structure(

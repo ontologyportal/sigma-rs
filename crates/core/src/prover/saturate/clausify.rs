@@ -1640,8 +1640,8 @@ impl DefCtx {
 ///   * Pos:  `¬d(x̄) ∨ body`   (d → φ)
 ///   * Neg:  `¬body ∨ d(x̄)`   (φ → d)
 ///   * Both: both units.
-/// The body is first (recursively) squeezed to fit one literal less than
-/// the parent budget, so each unit itself distributes within the caps.
+///     The body is first (recursively) squeezed to fit one literal less than
+///     the parent budget, so each unit itself distributes within the caps.
 fn define(body: Form, pol: Pol, b: Budget, path: &mut Vec<Seg>, dc: &mut DefCtx) -> Option<Form> {
     if b.w < 2 {
         return None;
@@ -1687,8 +1687,8 @@ fn define(body: Form, pol: Pol, b: Budget, path: &mut Vec<Seg>, dc: &mut DefCtx)
 ///     them, the output stays linear in the input, and the rescue-path
 ///     distribution cap (`DEFCNF_MAX_CLAUSES_PER_FORMULA`) bounds the
 ///     pathological end.
-/// `None` = unfixable within the width floor; the caller abandons the
-/// rescue (the primary path's lossy result stands).
+///     `None` = unfixable within the width floor; the caller abandons the
+///     rescue (the primary path's lossy result stands).
 fn pg(f: Form, pol: Pol, b: Budget, path: &mut Vec<Seg>, dc: &mut DefCtx) -> Option<Form> {
     if fits_at(est(&f), pol, b) {
         return Some(f);

@@ -496,7 +496,7 @@ fn push_tptp(doc: &mut Document, kb: &KnowledgeBase, sid: SentenceId) {
 }
 
 /// Sort a list of sentence ids by (file, line) for stable output.
-fn sort_sids_by_source(sids: &mut Vec<SentenceId>, src_idx: &sigmakee_rs_sdk::AxiomSourceIndex) {
+fn sort_sids_by_source(sids: &mut [SentenceId], src_idx: &sigmakee_rs_sdk::AxiomSourceIndex) {
     sids.sort_by(
         |a, b| match (src_idx.lookup_by_sid(*a), src_idx.lookup_by_sid(*b)) {
             (Some(x), Some(y)) => (x.file.as_str(), x.line).cmp(&(y.file.as_str(), y.line)),
@@ -659,13 +659,15 @@ fn view_loop<W: Write>(
         render(
             stdout,
             doc,
-            focused,
-            scroll,
-            body_rows,
-            cols as usize,
-            history_depth,
-            current_name,
-            mode,
+            &View {
+                focused,
+                scroll,
+                body_rows,
+                cols: cols as usize,
+                history_depth,
+                current_name,
+                mode,
+            },
         )?;
 
         match event::read()? {
@@ -750,17 +752,28 @@ fn ensure_focused_visible(
     }
 }
 
-fn render<W: Write>(
-    stdout: &mut W,
-    doc: &Document,
+/// One frame's worth of viewer state: what to highlight, where the viewport
+/// sits, and the terminal geometry to lay it out in.
+struct View<'a> {
     focused: Option<usize>,
     scroll: usize,
     body_rows: usize,
     cols: usize,
     history_depth: usize,
-    current_name: &str,
+    current_name: &'a str,
     mode: FormulaMode,
-) -> io::Result<()> {
+}
+
+fn render<W: Write>(stdout: &mut W, doc: &Document, view: &View<'_>) -> io::Result<()> {
+    let View {
+        focused,
+        scroll,
+        body_rows,
+        cols,
+        history_depth,
+        current_name,
+        mode,
+    } = *view;
     queue!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
 
     for screen_row in 0..body_rows {

@@ -270,15 +270,10 @@ impl<'src> Tokenizer<'src> {
 
     /// Skip a `/* … */` block comment (TPTP extension).
     /// Returns an error if EOF is reached before `*/`.
-    fn skip_block_comment(&mut self, start: Span) -> Result<(), (Span, TptpParseError)> {
+    fn skip_block_comment(&mut self, start: Span) -> Result<(), TptpParseError> {
         loop {
             match self.advance() {
-                None => {
-                    return Err((
-                        start.clone(),
-                        TptpParseError::UnterminatedBlockComment { span: start },
-                    ))
-                }
+                None => return Err(TptpParseError::UnterminatedBlockComment { span: start }),
                 Some('*') if self.peek() == Some('/') => {
                     self.advance(); // consume '/'
                     return Ok(());
@@ -292,16 +287,11 @@ impl<'src> Tokenizer<'src> {
 
     /// Read a single-quoted atom `'…'` (TPTP *single_quoted*).
     /// The outer quotes are retained: `'Socrates'` → `"'Socrates'"`.
-    fn read_single_quoted(&mut self, start: Span) -> Result<Token, (Span, TptpParseError)> {
+    fn read_single_quoted(&mut self, start: Span) -> Result<Token, TptpParseError> {
         let mut s = String::from('\'');
         loop {
             match self.advance() {
-                None => {
-                    return Err((
-                        start.clone(),
-                        TptpParseError::UnterminatedString { span: start },
-                    ))
-                }
+                None => return Err(TptpParseError::UnterminatedString { span: start }),
                 Some('\\') => {
                     // Escape: only `\\` and `\'` are valid in TPTP.
                     match self.advance() {
@@ -311,17 +301,9 @@ impl<'src> Tokenizer<'src> {
                         }
                         Some(bad) => {
                             let sp = self.seal(start.clone());
-                            return Err((
-                                sp.clone(),
-                                TptpParseError::InvalidEscape { ch: bad, span: sp },
-                            ));
+                            return Err(TptpParseError::InvalidEscape { ch: bad, span: sp });
                         }
-                        None => {
-                            return Err((
-                                start.clone(),
-                                TptpParseError::UnterminatedString { span: start },
-                            ))
-                        }
+                        None => return Err(TptpParseError::UnterminatedString { span: start }),
                     }
                 }
                 Some('\'') => {
@@ -339,16 +321,11 @@ impl<'src> Tokenizer<'src> {
     }
 
     /// Read a double-quoted string `"…"` (TPTP *double_quoted*).
-    fn read_double_quoted(&mut self, start: Span) -> Result<Token, (Span, TptpParseError)> {
+    fn read_double_quoted(&mut self, start: Span) -> Result<Token, TptpParseError> {
         let mut s = String::from('"');
         loop {
             match self.advance() {
-                None => {
-                    return Err((
-                        start.clone(),
-                        TptpParseError::UnterminatedString { span: start },
-                    ))
-                }
+                None => return Err(TptpParseError::UnterminatedString { span: start }),
                 Some('\\') => match self.advance() {
                     Some(esc @ ('\\' | '"')) => {
                         s.push('\\');
@@ -356,17 +333,9 @@ impl<'src> Tokenizer<'src> {
                     }
                     Some(bad) => {
                         let sp = self.seal(start.clone());
-                        return Err((
-                            sp.clone(),
-                            TptpParseError::InvalidEscape { ch: bad, span: sp },
-                        ));
+                        return Err(TptpParseError::InvalidEscape { ch: bad, span: sp });
                     }
-                    None => {
-                        return Err((
-                            start.clone(),
-                            TptpParseError::UnterminatedString { span: start },
-                        ))
-                    }
+                    None => return Err(TptpParseError::UnterminatedString { span: start }),
                 },
                 Some('"') => {
                     s.push('"');
@@ -441,7 +410,7 @@ impl<'src> Tokenizer<'src> {
 
     // ── Core dispatch ─────────────────────────────────────────────
 
-    fn next_token(&mut self) -> Result<Option<Token>, (Span, TptpParseError)> {
+    fn next_token(&mut self) -> Result<Option<Token>, TptpParseError> {
         // Skip whitespace.
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() {
@@ -616,18 +585,12 @@ impl<'src> Tokenizer<'src> {
                             TokenKind::Operator(TptpOpTok::Xor)
                         } else {
                             let sp = self.seal(start.clone());
-                            return Err((
-                                sp.clone(),
-                                TptpParseError::UnexpectedChar { ch: '~', span: sp },
-                            ));
+                            return Err(TptpParseError::UnexpectedChar { ch: '~', span: sp });
                         }
                     }
                     _ => {
                         let sp = self.seal(start.clone());
-                        return Err((
-                            sp.clone(),
-                            TptpParseError::UnexpectedChar { ch: '<', span: sp },
-                        ));
+                        return Err(TptpParseError::UnexpectedChar { ch: '<', span: sp });
                     }
                 };
                 Ok(Some(Token {
@@ -654,10 +617,7 @@ impl<'src> Tokenizer<'src> {
                         }
                         _ => {
                             let sp = self.seal(start.clone());
-                            Err((
-                                sp.clone(),
-                                TptpParseError::UnexpectedChar { ch: '$', span: sp },
-                            ))
+                            Err(TptpParseError::UnexpectedChar { ch: '$', span: sp })
                         }
                     }
                 } else {
@@ -675,10 +635,7 @@ impl<'src> Tokenizer<'src> {
                         }
                         _ => {
                             let sp = self.seal(start.clone());
-                            Err((
-                                sp.clone(),
-                                TptpParseError::UnexpectedChar { ch: '$', span: sp },
-                            ))
+                            Err(TptpParseError::UnexpectedChar { ch: '$', span: sp })
                         }
                     }
                 }
@@ -721,10 +678,7 @@ impl<'src> Tokenizer<'src> {
 
                 // Anything else is an unexpected character.
                 let sp = self.seal(start.clone());
-                Err((
-                    sp.clone(),
-                    TptpParseError::UnexpectedChar { ch: c, span: sp },
-                ))
+                Err(TptpParseError::UnexpectedChar { ch: c, span: sp })
             }
         }
     }
@@ -767,7 +721,7 @@ fn is_numeric_str(s: &str) -> bool {
 ///
 /// Returns the tokens and any errors. Errors do not abort tokenization; they
 /// accumulate so the caller can report multiple problems at once.
-pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, TptpParseError)>) {
+pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<TptpParseError>) {
     let (tokens, errors, _metas) = tokenize_with_meta(src, file);
     (tokens, errors)
 }
@@ -779,7 +733,7 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, TptpParseError
 pub fn tokenize_with_meta(
     src: &str,
     file: &str,
-) -> (Vec<Token>, Vec<(Span, TptpParseError)>, Vec<MetaNode>) {
+) -> (Vec<Token>, Vec<TptpParseError>, Vec<MetaNode>) {
     let mut tok = Tokenizer::new(src, file);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -992,7 +946,7 @@ mod tests {
         let (_, errors) = tokenize("/* oops", "test");
         assert!(!errors.is_empty());
         assert!(matches!(
-            &errors[0].1,
+            &errors[0],
             TptpParseError::UnterminatedBlockComment { .. }
         ));
     }

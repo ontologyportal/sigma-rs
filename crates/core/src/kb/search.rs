@@ -438,7 +438,7 @@ mod tests {
         let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         let r = kb.make_session_axiomatic("test.kif");
-        assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
+        assert!(r.is_ok(), "promotion failed: {:?}", r.err());
         kb
     }
 

@@ -22,8 +22,8 @@ use crate::parse::ast::AstNode;
 use crate::parse::doc::{DocItem, MetaNode};
 use crate::parse::error::ParseError;
 use crate::parse::span::Span;
-use crate::parse::tptp;
 use crate::parse::TptpParseOptions;
+use crate::parse::{tptp, ParseResult};
 
 /// Parse a captured prover transcript (`raw`, from a subprocess or a WASM
 /// build's captured stdout+stderr) into a document: `% SZS …` scaffolding as
@@ -44,7 +44,7 @@ use crate::parse::TptpParseOptions;
 /// A transcript with no `SZS output start`/`end` block (e.g. a bare
 /// `Timeout`/`GaveUp` status with no proof) yields only `Meta` items and no
 /// parse errors — there is nothing to hand to the formula parser.
-pub fn parse_szs(raw: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn ParseError>)>) {
+pub fn parse_szs(raw: &str, file: &str) -> ParseResult<DocItem> {
     let mut doc: Vec<DocItem> = Vec::new();
     for (text, span) in scan_lines(raw, file) {
         if let Some(meta) = recognize_szs_pragma(text, span) {
@@ -81,12 +81,12 @@ pub fn parse_szs(raw: &str, file: &str) -> (Vec<DocItem>, Vec<(Span, Box<dyn Par
 
     let mut errors: Vec<(Span, Box<dyn ParseError>)> = tok_errors
         .into_iter()
-        .map(|(sp, e)| (sp, Box::new(e) as Box<dyn ParseError>))
+        .map(|e| (e.get_span(), Box::new(e) as Box<dyn ParseError>))
         .collect();
     errors.extend(
         parse_errors
             .into_iter()
-            .map(|(sp, e)| (sp, Box::new(e) as Box<dyn ParseError>)),
+            .map(|e| (e.get_span(), Box::new(e) as Box<dyn ParseError>)),
     );
 
     (doc, errors)

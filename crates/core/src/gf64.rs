@@ -224,12 +224,12 @@ impl QuadSolver {
         }
         // Equation r (output bit r): row bitmask over unknowns.
         let mut rows = [0u64; 64];
-        for r in 0..64 {
+        for (r, row) in rows.iter_mut().enumerate() {
             let mut bits = 0u64;
             for (i, c) in col.iter().enumerate() {
                 bits |= ((c >> r) & 1) << i;
             }
-            rows[r] = bits;
+            *row = bits;
         }
         // Gauss–Jordan to RREF, tracking the row transform.
         let mut transform = [0u64; 64];
@@ -525,8 +525,8 @@ pub(crate) fn decode_batch(rs: &[Sketch], expected: u32, out: &mut Vec<Decoded>)
             let mut block = [0u64; 64];
             block[..chunk.len()].copy_from_slice(chunk);
             let (zs, ok) = qs.solve_block(&block);
-            for j in 0..chunk.len() {
-                ws.push(((ok >> j) & 1 == 1).then(|| zs[j]));
+            for (j, it) in zs.iter().enumerate().take(chunk.len()) {
+                ws.push(((ok >> j) & 1 == 1).then_some(*it));
             }
         }
     } else {

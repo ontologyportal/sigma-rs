@@ -1374,6 +1374,10 @@ impl Provenance {
     /// same walk).  [`BUILTIN_RULE`] facts cite their path edges + the
     /// `(R, TransitiveRelation)` declaration; [`EQ_CANON_RULE`] facts cite
     /// their original row + the rewriting chain.
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "parallel index into orig and key.1, bounded by their min"
+    )]
     pub(crate) fn cite(&self, pred: Pred, t: &Tuple) -> Vec<SentenceId> {
         const MAX_STEPS: usize = 10_000;
         let mut fact_sids: Vec<SentenceId> = Vec::new();
@@ -1718,6 +1722,10 @@ fn build_pos_index(model: &Model) -> PosIndex {
 /// literal is a constant or an already-bound variable, candidates come
 /// from the position index (most selective bound seat) instead of a full
 /// extension scan.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "tuned prover internals: if it ain't broke, don't fix it"
+)]
 fn match_tgd_body(
     model: &Model,
     idx: &PosIndex,
@@ -4069,7 +4077,7 @@ mod tests {
             complete: mp.complete.clone(),
             certified: mp.certified.clone(),
             cert_blocked: mp.cert_blocked,
-            roles: mp.roles.clone(),
+            roles: mp.roles,
             denials: mp.denials.clone(),
             tgds: mp.tgds.clone(),
         };

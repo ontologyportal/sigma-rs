@@ -99,7 +99,9 @@ pub fn kif_parse_diagnostics(text: &str, file: &str) -> Vec<Diagnostic> {
 #[cfg(feature = "ask")]
 pub use kb::natural_lang::RenderReport;
 
-pub use diagnostic::{Diagnostic, DiagnosticSource, RelatedInfo, Severity, ToDiagnostic};
+pub use diagnostic::{
+    DiagResult, Diagnostic, DiagnosticSource, RelatedInfo, Severity, ToDiagnostic,
+};
 pub use types::{
     hash_file_contents, Element, FileOrigin, GitProvenance, Literal, LocalProvenance, Occurrence,
     OccurrenceKind, OpKind, Sentence, SentenceId, SourceFile, SymbolId,

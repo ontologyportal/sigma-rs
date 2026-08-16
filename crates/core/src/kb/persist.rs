@@ -15,10 +15,10 @@ use crate::persist::PersistenceEngine;
 use crate::progress::{DynSink, SinkGuard};
 #[cfg(any(feature = "snapshot", feature = "persist"))]
 use crate::semantics::SemanticLayer;
-#[cfg(any(feature = "snapshot", feature = "persist"))]
-use crate::Diagnostic;
 #[cfg(feature = "persist")]
 use crate::SentenceId;
+#[cfg(any(feature = "snapshot", feature = "persist"))]
+use crate::{DiagResult, Diagnostic};
 
 use super::KnowledgeBase;
 
@@ -29,7 +29,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     /// semantics), so a DB written under one top layer opens cleanly
     /// under another.
     #[cfg(feature = "persist")]
-    pub fn open(path: &std::path::Path, sink: Option<DynSink>) -> Result<Self, Diagnostic> {
+    pub fn open(path: &std::path::Path, sink: Option<DynSink>) -> DiagResult<Self> {
         use crate::syntactic::SyntacticLayer;
 
         let _sink_guard = SinkGuard::install(sink.clone());
@@ -64,7 +64,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     ///
     /// Requires the `persist` feature.
     #[cfg(feature = "persist")]
-    pub fn snapshot_clone(&self) -> Result<Self, Diagnostic> {
+    pub fn snapshot_clone(&self) -> DiagResult<Self> {
         use crate::syntactic::SyntacticLayer;
 
         with_guard!(self);
@@ -99,7 +99,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     /// re-ingesting. Requires the `snapshot` feature (heed-free; compiles on
     /// wasm32, unlike [`persist`](Self::persist)).
     #[cfg(feature = "snapshot")]
-    pub fn snapshot_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
+    pub fn snapshot_bytes(&self) -> DiagResult<Vec<u8>> {
         with_guard!(self);
 
         let mut backend = PersistenceEngine::memory();
@@ -109,7 +109,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
             _ => unreachable!("memory() constructs the Memory variant"),
         };
         bincode::serialize(&map)
-            .map_err(|e| Diagnostic::new_error("snapshot", "serialize", e.to_string()))
+            .map_err(|e| Diagnostic::new_error("snapshot", "serialize", e.to_string()).into())
     }
 
     /// Thaw a KB previously frozen by [`snapshot_bytes`](Self::snapshot_bytes)
@@ -117,7 +117,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     /// layer doesn't recognize are left to rebuild, mirroring
     /// [`open`](Self::open). Requires the `snapshot` feature.
     #[cfg(feature = "snapshot")]
-    pub fn restore_from_bytes(bytes: &[u8]) -> Result<Self, Diagnostic> {
+    pub fn restore_from_bytes(bytes: &[u8]) -> DiagResult<Self> {
         use crate::persist::MemoryBackend;
         use crate::syntactic::SyntacticLayer;
         use std::collections::HashMap;
@@ -139,7 +139,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
     /// The snapshot is atomic (one backend `commit`), so all blobs are mutually
     /// consistent on disk.
     #[cfg(feature = "persist")]
-    pub fn persist(&self) -> Result<(), Diagnostic> {
+    pub fn persist(&self) -> DiagResult<()> {
         with_guard!(self);
         let Some(env) = &self.db else {
             return Ok(());
@@ -156,7 +156,7 @@ impl<L: TopLayer> KnowledgeBase<L> {
         &self,
         _removed_sids: &[SentenceId],
         _added_sids: &[SentenceId],
-    ) -> Result<(), Diagnostic> {
+    ) -> DiagResult<()> {
         self.persist()
     }
 }

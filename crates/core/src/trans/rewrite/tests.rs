@@ -48,7 +48,7 @@ fn make_numeric_sorts(sym_id: SymbolId) -> EagerMap<NumericSorts> {
 
 #[test]
 fn substitute_var_replaces_variable_in_flat_sentence() {
-    let mut syntactic = syntactic_from("(greaterThan ?X 0)");
+    let syntactic = syntactic_from("(greaterThan ?X 0)");
     let x_id = syntactic
         .sym_id("?X")
         .or_else(|| syntactic.sym_id("X"))
@@ -96,7 +96,7 @@ fn substitute_var_replaces_variable_in_flat_sentence() {
             is_row: false,
             var_index: 0,
         };
-        let new_sid = substitute_var(&mut syntactic, target_sid, x_id, &replacement, root);
+        let new_sid = substitute_var(&syntactic, target_sid, x_id, &replacement, root);
         let new_s = syntactic
             .sentence(new_sid)
             .expect("substituted sentence should exist");
@@ -122,7 +122,7 @@ fn substitute_var_replaces_variable_in_flat_sentence() {
 #[test]
 fn substitute_var_recurses_into_sub_references() {
     let kif = "(=> (instance ?X EvenInteger) (equal (RemainderFn ?X 2) 0))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let root = root_of(&syntactic);
     let x_id = {
         let root_s = syntactic.sentence(root).unwrap();
@@ -151,7 +151,7 @@ fn substitute_var_recurses_into_sub_references() {
         is_row: false,
         var_index: 0,
     };
-    let new_sid = substitute_var(&mut syntactic, con_sid, x_id, &replacement, root);
+    let new_sid = substitute_var(&syntactic, con_sid, x_id, &replacement, root);
 
     let _new_s = syntactic
         .sentence(new_sid)
@@ -364,7 +364,7 @@ fn run_rewrite_pass_does_not_suppress_non_numeric_implication() {
 fn augment_fixed_point_is_idempotent() {
     let kif = "(=> (instance ?X PositiveInteger) (greaterThan ?X 0))\n\
                (=> (instance ?Y PositiveInteger) (SomePred ?Y))";
-    let mut syntactic = syntactic_from(kif);
+    let syntactic = syntactic_from(kif);
     let pos_int_id = syntactic.sym_id("PositiveInteger").unwrap();
     let numeric_sorts = make_numeric_sorts(pos_int_id);
 
@@ -374,10 +374,10 @@ fn augment_fixed_point_is_idempotent() {
     for rule in &rules {
         suppressed.insert(rule.source_sid);
     }
-    augment_fixed_point(&mut syntactic, &rules, &impls, &mut suppressed);
+    augment_fixed_point(&syntactic, &rules, &impls, &mut suppressed);
     let after_first = suppressed.len();
 
-    augment_fixed_point(&mut syntactic, &rules, &impls, &mut suppressed);
+    augment_fixed_point(&syntactic, &rules, &impls, &mut suppressed);
     assert_eq!(
         suppressed.len(),
         after_first,
@@ -1343,7 +1343,7 @@ fn inject_domain_guards_picks_most_specific_class_across_predicates() {
 #[test]
 fn inject_domain_guards_synthetic_appears_in_normal_implications_after_rewrite() {
     use crate::semantics::SemanticLayer;
-    let mut sem = semantic_from(
+    let sem = semantic_from(
         "(subclass Process Entity)
          (instance subProcess BinaryRelation)
          (domain subProcess 1 Process)
@@ -1352,7 +1352,7 @@ fn inject_domain_guards_synthetic_appears_in_normal_implications_after_rewrite()
     );
     let implications = sem.syntactic.normal_implications();
     let mut suppressed: HashSet<SentenceId> = HashSet::new();
-    let injected = inject_domain_guards(&mut sem, &implications, &mut suppressed);
+    let injected = inject_domain_guards(&sem, &implications, &mut suppressed);
 
     assert!(
         !injected.is_empty(),

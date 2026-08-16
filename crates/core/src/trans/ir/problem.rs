@@ -195,7 +195,7 @@ impl Problem {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ask"))]
 mod tests {
     use super::super::term::Term;
     use super::*;

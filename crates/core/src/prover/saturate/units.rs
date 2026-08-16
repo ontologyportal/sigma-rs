@@ -114,6 +114,11 @@ pub(crate) fn seat_shape_coin(seat: usize, t: &Term) -> Option<u64> {
     Some(xxhash_rust::xxh64::xxh64(&buf, u64::from(b'P')))
 }
 
+/// Open units bucketed by pattern residue XOR shape coins.
+type OpenBucket = Map64<u64, Vec<OpenUnit>>;
+/// (pattern mask, shaped-seat mask) -> residue bucket.
+type OpenShapes = Map64<(u64, u64), OpenBucket>;
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct UnitStores {
     /// (polarity, atom) → owning unit clause id.  Ground atoms only.
@@ -126,7 +131,7 @@ pub(crate) struct UnitStores {
     /// targets with a leaf or a different function there never see the
     /// pattern.  Without shapes the all-open group was reached by every
     /// target — 10M+ dead match walks per run.
-    open: Map64<(bool, u64, u8), Map64<(u64, u64), Map64<u64, Vec<OpenUnit>>>>,
+    open: Map64<(bool, u64, u8), OpenShapes>,
     /// Active positive `(equal l r)` units as slot-form term pairs,
     /// both orientations (l→r and r→l), with the owning clause id.
     pub(crate) equals: Vec<(u32, Term, Term)>,
@@ -135,6 +140,10 @@ pub(crate) struct UnitStores {
 impl UnitStores {
     /// Register an *activated* unit clause's single literal.  `nvars`
     /// is the owning clause's slot-variable count.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tuned prover internals: if it ain't broke, don't fix it"
+    )]
     pub(crate) fn add_unit(
         &mut self,
         clause_id: u32,

@@ -3,7 +3,7 @@ use std::error::Error;
 use super::Span;
 use crate::{Diagnostic, Severity, ToDiagnostic};
 
-pub trait ParseError: Error + ToDiagnostic {
+pub trait ParseError: Error + ToDiagnostic + Send + Sync {
     fn get_span(&self) -> Span;
 }
 

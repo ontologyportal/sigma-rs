@@ -204,22 +204,22 @@ pub struct Strategy {
     /// compute and STORE a 4-word GF(2^64) presence/decode row for every
     /// walked subterm at clause-accept time (the content-keyed row table
     /// + the per-bucket lockstep row column in `SubtermPostings`), and
-    /// run the decode-chain prefilter it backs in front of the open-lhs
-    /// backward-demodulation verify.  OFF by default: measured negative
-    /// on BOTH consumers — the backward-demod decode chain (2a) charged a
-    /// ~2% per-accept row-registration tax for a <1ms filter payoff, and
-    /// the subsumption equality-join (2b, [`Self::subs_join`]) ended up
-    /// using TRANSIENT rows only (it never reads the stored table).  With
-    /// this off the postings themselves (exact ground keys + (head, len)
-    /// head buckets — phase 1) are UNAFFECTED and backward demodulation
-    /// runs identically via the seat prefilter + `match_one_way_off`;
-    /// only the row computation/storage and the decode chain are skipped,
-    /// so a default build pays zero row tax.  `SIGMA_SUBTERM_ROWS=1`
-    /// forces it ON, `SIGMA_NO_SUBTERM_ROWS=1` forces it OFF (off wins) —
-    /// the same two-directional A/B convention as `SIGMA_BWD_DEMOD` /
-    /// [`Self::subs_join`].  Derivation-neutral: the decode chain is a
-    /// NECESSARY-condition prefilter in front of the unchanged structural
-    /// verify, so the backward-demod derivations are identical either way.
+    ///   run the decode-chain prefilter it backs in front of the open-lhs
+    ///   backward-demodulation verify.  OFF by default: measured negative
+    ///   on BOTH consumers — the backward-demod decode chain (2a) charged a
+    ///   ~2% per-accept row-registration tax for a <1ms filter payoff, and
+    ///   the subsumption equality-join (2b, [`Self::subs_join`]) ended up
+    ///   using TRANSIENT rows only (it never reads the stored table).  With
+    ///   this off the postings themselves (exact ground keys + (head, len)
+    ///   head buckets — phase 1) are UNAFFECTED and backward demodulation
+    ///   runs identically via the seat prefilter + `match_one_way_off`;
+    ///   only the row computation/storage and the decode chain are skipped,
+    ///   so a default build pays zero row tax.  `SIGMA_SUBTERM_ROWS=1`
+    ///   forces it ON, `SIGMA_NO_SUBTERM_ROWS=1` forces it OFF (off wins) —
+    ///   the same two-directional A/B convention as `SIGMA_BWD_DEMOD` /
+    ///   [`Self::subs_join`].  Derivation-neutral: the decode chain is a
+    ///   NECESSARY-condition prefilter in front of the unchanged structural
+    ///   verify, so the backward-demod derivations are identical either way.
     pub subterm_rows: bool,
     /// Ordered superposition: the complete equality calculus (replaces the
     /// SOS-gated unit-paramodulation stand-in).  Implies the maximality

@@ -599,7 +599,7 @@ mod tests {
         let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         let r = kb.make_session_axiomatic("test.kif");
-        assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
+        assert!(r.is_ok(), "promotion failed: {:?}", r.err());
         kb
     }
 
@@ -717,7 +717,7 @@ mod tests {
         let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
         assert!(r.ok, "load failed: {:?}", r.diagnostics);
         let r = kb.make_session_axiomatic("test.kif");
-        assert!(matches!(r, Ok(_)), "promotion failed: {:?}", r.err());
+        assert!(r.is_ok(), "promotion failed: {:?}", r.err());
         kb
     }
 
@@ -1005,7 +1005,7 @@ mod tests {
             "a.kif",
         );
         assert!(r_a.ok);
-        assert!(matches!(kb.make_session_axiomatic("a.kif"), Ok(_)));
+        assert!(kb.make_session_axiomatic("a.kif").is_ok());
 
         // File B: a trailing incomplete sentence plus a valid one. The parse
         // surfaces an error but the recovered valid sentence must still be
@@ -1057,7 +1057,7 @@ mod tests {
             "t.kif",
         );
         assert!(r.ok);
-        assert!(matches!(kb.make_session_axiomatic("t.kif"), Ok(_)));
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
 
         let langs = kb.instances_of("NaturalLanguage");
         for want in ["EnglishLanguage", "CantoneseLanguage", "MandarinLanguage"] {

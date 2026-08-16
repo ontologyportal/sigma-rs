@@ -331,7 +331,7 @@ mod tests {
     fn tff_mode_emits_type_declarations_first() {
         let person = IrSort::new("person");
         let alice = IrFn::typed("alice", &[], person.clone());
-        let mortal = IrPd::typed("mortal", &[person.clone()]);
+        let mortal = IrPd::typed("mortal", std::slice::from_ref(&person));
 
         let mut pb = IrProblem::new_tff();
         pb.declare_sort(person);

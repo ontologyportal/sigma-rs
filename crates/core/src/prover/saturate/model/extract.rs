@@ -1186,7 +1186,7 @@ mod tests {
 
     /// Find the one extracted rule whose head predicate is `head_pred`
     /// (panics if there isn't exactly one — tests target a single clause).
-    fn only_rule_for<'a>(p: &'a Program, head_pred: SymbolId) -> &'a Rule {
+    fn only_rule_for(p: &Program, head_pred: SymbolId) -> &Rule {
         let matches: Vec<&Rule> = p
             .rules
             .iter()

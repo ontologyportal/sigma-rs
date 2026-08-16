@@ -40,15 +40,12 @@ impl KifParser {
         }
     }
 
-    fn parse_node(&mut self) -> Result<AstNode, (Span, KifParseError)> {
+    fn parse_node(&mut self) -> Result<AstNode, KifParseError> {
         let tok = match self.peek() {
             None => {
-                return Err((
-                    self.eof_span(),
-                    KifParseError::UnexpectedEof {
-                        span: self.eof_span(),
-                    },
-                ))
+                return Err(KifParseError::UnexpectedEof {
+                    span: self.eof_span(),
+                })
             }
             Some(t) => t,
         };
@@ -63,24 +60,16 @@ impl KifParser {
                 let close_span: Span = loop {
                     match self.peek() {
                         Some(t) if matches!(t.kind, TokenKind::RParen) && idx == 0 => {
-                            return Err((
-                                start_span.clone(),
-                                KifParseError::EmptySentence {
-                                    span: start_span.clone(),
-                                },
-                            ));
+                            return Err(KifParseError::EmptySentence {
+                                span: start_span.clone(),
+                            });
                         }
                         Some(t) if matches!(t.kind, TokenKind::RParen) && idx > 0 => {
                             let close = t.span.clone();
                             self.advance();
                             break close;
                         }
-                        None => {
-                            return Err((
-                                start_span.clone(),
-                                KifParseError::UnbalancedParens { span: start_span },
-                            ))
-                        }
+                        None => return Err(KifParseError::UnbalancedParens { span: start_span }),
                         Some(Token {
                             kind: TokenKind::Operator(op_tok),
                             span,
@@ -107,23 +96,17 @@ impl KifParser {
                                 }
                                 OpTok::Implies | OpTok::Iff => {
                                     let op_str = op_tok.to_string();
-                                    return Err((
-                                        span.clone(),
-                                        KifParseError::OperatorOutOfPosition {
-                                            op: op_str,
-                                            span: span.clone(),
-                                        },
-                                    ));
+                                    return Err(KifParseError::OperatorOutOfPosition {
+                                        op: op_str,
+                                        span: span.clone(),
+                                    });
                                 }
                             }
                         }
                         Some(t) if idx == 0 && !t.kind.can_head() => {
-                            return Err((
-                                t.span.clone(),
-                                KifParseError::FirstTerm {
-                                    span: t.span.clone(),
-                                },
-                            ));
+                            return Err(KifParseError::FirstTerm {
+                                span: t.span.clone(),
+                            });
                         }
                         _ => elements.push(self.parse_node()?),
                     }
@@ -139,10 +122,7 @@ impl KifParser {
                         AstNode::Variable { .. } | AstNode::RowVariable { .. }
                     )
                 {
-                    return Err((
-                        start_span.clone(),
-                        KifParseError::SingleTermSentence { span: start_span },
-                    ));
+                    return Err(KifParseError::SingleTermSentence { span: start_span });
                 }
 
                 // QuantifierArg: `(forall VAR_LIST BODY)` and `(exists VAR_LIST BODY)`.
@@ -164,30 +144,21 @@ impl KifParser {
                                     el,
                                     AstNode::Variable { .. } | AstNode::RowVariable { .. }
                                 ) {
-                                    return Err((
-                                        el.span().clone(),
-                                        KifParseError::QuantifierArg {
-                                            span: el.span().clone(),
-                                        },
-                                    ));
+                                    return Err(KifParseError::QuantifierArg {
+                                        span: el.span().clone(),
+                                    });
                                 }
                             }
                         }
                         Some(other) => {
-                            return Err((
-                                other.span().clone(),
-                                KifParseError::QuantifierArg {
-                                    span: other.span().clone(),
-                                },
-                            ));
+                            return Err(KifParseError::QuantifierArg {
+                                span: other.span().clone(),
+                            });
                         }
                         None => {
-                            return Err((
-                                start_span.clone(),
-                                KifParseError::QuantifierArg {
-                                    span: start_span.clone(),
-                                },
-                            ));
+                            return Err(KifParseError::QuantifierArg {
+                                span: start_span.clone(),
+                            });
                         }
                     }
                 }
@@ -215,15 +186,12 @@ impl KifParser {
                         OpKind::ForAll | OpKind::Exists => None,
                     };
                     if let Some(expected) = arity_err {
-                        return Err((
-                            op_span.clone(),
-                            KifParseError::OperatorArityMismatch {
-                                op: op_name,
-                                expected: expected.to_string(),
-                                actual: n_args,
-                                span: op_span,
-                            },
-                        ));
+                        return Err(KifParseError::OperatorArityMismatch {
+                            op: op_name,
+                            expected: expected.to_string(),
+                            actual: n_args,
+                            span: op_span,
+                        });
                     }
                 }
 
@@ -237,7 +205,7 @@ impl KifParser {
             TokenKind::RParen => {
                 let span = tok.span.clone();
                 self.advance();
-                Err((span.clone(), KifParseError::UnbalancedParens { span }))
+                Err(KifParseError::UnbalancedParens { span })
             }
             TokenKind::Symbol(name) => {
                 let node = AstNode::Symbol {
@@ -302,7 +270,7 @@ impl KifParser {
         }
     }
 
-    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<(Span, KifParseError)>) {
+    fn parse_all(&mut self) -> (Vec<AstNode>, Vec<KifParseError>) {
         let mut nodes = Vec::new();
         let mut errors = Vec::new();
         while self.peek().is_some() {
@@ -327,7 +295,7 @@ impl KifParser {
 }
 
 /// Parse `tokens` into a list of top-level AST nodes.
-pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<(Span, KifParseError)>) {
+pub fn parse(tokens: Vec<Token>, file: &str) -> (Vec<AstNode>, Vec<KifParseError>) {
     let mut parser = KifParser::new(tokens, file);
     parser.parse_all()
 }
@@ -393,7 +361,7 @@ mod tests {
     fn parse_errors(src: &str) -> Vec<KifParseError> {
         let (tokens, _) = tokenize(src, "test");
         let (_, errors) = parse(tokens, "test");
-        errors.into_iter().map(|(_, e)| e).collect()
+        errors
     }
 
     #[test]
@@ -415,7 +383,7 @@ mod tests {
         let (nodes, errors) = parse(tokens, "test");
         assert!(errors
             .iter()
-            .any(|e| matches!(e.1, KifParseError::EmptySentence { .. })));
+            .any(|e| matches!(e, KifParseError::EmptySentence { .. })));
         assert_eq!(nodes.len(), 1, "the valid sentence after () should survive");
     }
 

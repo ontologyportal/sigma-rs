@@ -594,8 +594,7 @@ mod tests {
             .semantic
             .syntactic
             .by_head("likes")
-            .iter()
-            .next()
+            .first()
             .expect("a (likes ...) root");
 
         let base = kb.validate_sentence(sid);

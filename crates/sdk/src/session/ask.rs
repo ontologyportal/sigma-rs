@@ -451,13 +451,13 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
         );
 
         if res.has_errors() {
-            return res.diagnostics.into_iter().map(SdkError::Kb).collect();
+            return res.diagnostics.into_iter().map(SdkError::from).collect();
         }
 
         let diag = kb
             .validate_session(&session_name)
             .into_iter()
-            .map(SdkError::Kb)
+            .map(SdkError::from)
             .collect();
 
         kb.flush_session(&session_name);
@@ -473,7 +473,7 @@ fn parse_formulas(kif: &str) -> Result<Vec<AstNode>, Vec<SdkError>> {
         return Err(doc
             .parse_errors
             .iter()
-            .map(|(_, e)| SdkError::Kb(e.to_diagnostic()))
+            .map(|(_, e)| SdkError::from(e.to_diagnostic()))
             .collect());
     }
     Ok(doc

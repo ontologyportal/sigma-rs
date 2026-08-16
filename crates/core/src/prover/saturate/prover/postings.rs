@@ -320,6 +320,10 @@ impl SubtermPostings {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tuned prover internals: if it ain't broke, don't fix it"
+    )]
     fn walk_arena(
         &mut self,
         id: u32,

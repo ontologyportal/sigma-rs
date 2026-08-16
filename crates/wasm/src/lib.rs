@@ -31,6 +31,10 @@ pub struct WasmKnowledgeBase {
 #[wasm_bindgen]
 impl WasmKnowledgeBase {
     /// Create an empty knowledge base.
+    #[allow(
+        clippy::new_without_default,
+        reason = "wasm_bindgen constructor; a Default impl is unreachable from JS"
+    )]
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
@@ -337,6 +341,10 @@ fn selection_budget(axiom_count: usize, pct: f64) -> usize {
 impl WasmConfig {
     /// Construct a config with the native prover's defaults, except `wantProof`
     /// which is on (proofs are cheap to surface and useful in a UI).
+    #[allow(
+        clippy::new_without_default,
+        reason = "wasm_bindgen constructor; a Default impl is unreachable from JS"
+    )]
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         // Mirrors NativeOpts::default() (see NativeProverConfig::default).
@@ -473,6 +481,10 @@ impl WasmNativeProver {
     /// Topped by [`ProverLayer<TranslationLayer>`] rather than a bare
     /// [`ProverLayer`] — native proving AND TPTP export off one shared KB
     /// (see [`toTptpIndexed`](Self::to_tptp_indexed)), no dual KB.
+    #[allow(
+        clippy::new_without_default,
+        reason = "wasm_bindgen constructor; a Default impl is unreachable from JS"
+    )]
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {

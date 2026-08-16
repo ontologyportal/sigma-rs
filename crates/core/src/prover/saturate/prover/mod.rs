@@ -1878,7 +1878,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         }
         lits.iter()
             .map(|(pos, t)| {
-                let k = term_kif(t, self.syn());
+                let k = term_kif(t);
                 if *pos {
                     k
                 } else {
@@ -3272,7 +3272,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             self.push_recipe(recipe, key);
             return None;
         }
-        let Some(out) = resolvent else { return None };
+        let out = resolvent?;
         self.stats.resolve_unify_hits += 1;
         self.stats.resolvents += 1;
         let tier = self.clauses[given as usize]
@@ -3659,7 +3659,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
         self.clauses[id as usize]
             .terms
             .iter()
-            .map(|(p, t)| (*p, term_kif(t, self.syn())))
+            .map(|(p, t)| (*p, term_kif(t)))
             .collect()
     }
 
@@ -4965,7 +4965,8 @@ pub(super) fn var_disjoint_components(terms: &[(bool, Term)]) -> Vec<Vec<usize>>
             let mut i = 0;
             while i < groups.len() {
                 let overlap = !groups[i].0.is_disjoint(&merged_slots)
-                    && !(groups[i].0.is_empty() || merged_slots.is_empty());
+                    && !groups[i].0.is_empty()
+                    && !merged_slots.is_empty();
                 if overlap {
                     let (gs, gl) = groups.swap_remove(i);
                     merged_slots.extend(gs);
@@ -5084,24 +5085,24 @@ pub(crate) fn arith_norm(t: &mut Term) {
 
 // -- rendering helpers (notes / diagnostics) -----------------------------------------
 
-pub(crate) fn term_kif(t: &Term, syn: &crate::syntactic::SyntacticLayer) -> String {
+pub(crate) fn term_kif(t: &Term) -> String {
     match t {
         Term::Var(v) => format!("?V{}", v),
         Term::Sym(s) => s.name().to_string(),
         Term::Lit(Literal::Str(v)) | Term::Lit(Literal::Number(v)) => v.clone(),
         Term::Op(op) => op.name().to_string(),
         Term::App(elems) => {
-            let inner: Vec<String> = elems.iter().map(|e| term_kif(e, syn)).collect();
+            let inner: Vec<String> = elems.iter().map(term_kif).collect();
             format!("({})", inner.join(" "))
         }
     }
 }
 
-fn lit_kif(pos: bool, t: &Term, syn: &crate::syntactic::SyntacticLayer) -> String {
+fn lit_kif(pos: bool, t: &Term) -> String {
     if pos {
-        term_kif(t, syn)
+        term_kif(t)
     } else {
-        format!("(not {})", term_kif(t, syn))
+        format!("(not {})", term_kif(t))
     }
 }
 
@@ -5126,6 +5127,9 @@ mod subsumption_tests {
         clause_subsumes, clause_subsumes_in, replace, replace_in_place, SubsScratch, Term,
     };
     use crate::types::Symbol;
+
+    /// A (subsumer, subsumee) clause pair in literal form.
+    type ClausePair = (Vec<(bool, Term)>, Vec<(bool, Term)>);
 
     fn s(n: &str) -> Term {
         Term::Sym(Symbol::from(n))
@@ -5166,11 +5170,11 @@ mod subsumption_tests {
         let sub = vec![(true, app(vec![s("p"), v(0), v(0)]))];
         assert!(!clause_subsumes(
             &sub,
-            &vec![(true, app(vec![s("p"), s("a"), s("b")]))]
+            &[(true, app(vec![s("p"), s("a"), s("b")]))]
         ));
         assert!(clause_subsumes(
             &sub,
-            &vec![(true, app(vec![s("p"), s("a"), s("a")]))]
+            &[(true, app(vec![s("p"), s("a"), s("a")]))]
         ));
     }
 
@@ -5187,7 +5191,7 @@ mod subsumption_tests {
     // and must leave the scratch invariants intact between calls.
     #[test]
     fn clause_subsumes_in_agrees_with_reference_and_keeps_scratch_clean() {
-        let pairs: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
+        let pairs: Vec<ClausePair> = vec![
             (
                 vec![(true, app(vec![s("p"), v(0)]))],
                 vec![(true, app(vec![s("p"), s("a")]))],
@@ -5276,6 +5280,9 @@ mod deferred_tests {
     use crate::semantics::caches::test_support::kif_layer;
     use crate::types::Symbol;
 
+    /// A (given, partner) clause pair in literal form.
+    type ClausePair = (Vec<(bool, Term)>, Vec<(bool, Term)>);
+
     fn s(n: &str) -> Term {
         Term::Sym(Symbol::from(n))
     }
@@ -5334,7 +5341,7 @@ mod deferred_tests {
         // Covers the general-unification path (2-lit partner blocks the
         // decode fast path), a skolem-bearing conclusion (the skolem
         // weight factor), and a ground-unit partner (the decoded path).
-        let fixtures: Vec<(Vec<(bool, Term)>, Vec<(bool, Term)>)> = vec![
+        let fixtures: Vec<ClausePair> = vec![
             (
                 vec![
                     (false, app(vec![s("p"), v(0), s("b")])),

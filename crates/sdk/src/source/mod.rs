@@ -438,6 +438,30 @@ fn splice_tptp_includes(path: &Path, contents: String) -> SdkResult<String> {
     }
 }
 
+/// List the parseable files in `dir` (non-recursive, sorted).  A file counts
+/// iff [`Parser::from_filename`] recognizes its name — so an ontology directory
+/// of `*.kif` (or a suite of `*.tq`) comes through while READMEs and other
+/// stray files are skipped.
+fn read_dir_sources(dir: &Path) -> SdkResult<Vec<PathBuf>> {
+    let entries = std::fs::read_dir(dir).map_err(|e| SdkError::DirRead {
+        path: dir.to_path_buf(),
+        message: e.to_string(),
+    })?;
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(Parser::from_filename)
+                    .is_some()
+        })
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(any(feature = "http", feature = "git"))]
@@ -556,28 +580,4 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
     }
-}
-
-/// List the parseable files in `dir` (non-recursive, sorted).  A file counts
-/// iff [`Parser::from_filename`] recognizes its name — so an ontology directory
-/// of `*.kif` (or a suite of `*.tq`) comes through while READMEs and other
-/// stray files are skipped.
-fn read_dir_sources(dir: &Path) -> SdkResult<Vec<PathBuf>> {
-    let entries = std::fs::read_dir(dir).map_err(|e| SdkError::DirRead {
-        path: dir.to_path_buf(),
-        message: e.to_string(),
-    })?;
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(Parser::from_filename)
-                    .is_some()
-        })
-        .collect();
-    files.sort();
-    Ok(files)
 }

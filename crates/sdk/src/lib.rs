@@ -137,7 +137,7 @@ pub use sigmakee_rs_core::{
 // there is no more process-global promotion state to re-export; a caller
 // wanting `-Wall`-style promotion applies it as an explicit, stateless
 // transform over the returned `Diagnostic`s (see `crates/cli`).
-pub use sigmakee_rs_core::{Severity, TellResult, ToDiagnostic};
+pub use sigmakee_rs_core::{DiagResult, Severity, TellResult, ToDiagnostic};
 
 // Proof-source indexing + search + shared prover opts.
 #[cfg(feature = "ask")]

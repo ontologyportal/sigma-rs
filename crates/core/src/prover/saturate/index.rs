@@ -134,11 +134,16 @@ where
     }
 }
 
+/// Entries bucketed by residue under one (mask, shape) pair.
+type ResidueBucket<L> = Map64<u64, Vec<Entry<L>>>;
+/// Full three-level group index: mask -> shape -> residue -> entries.
+type ResidueGroups<L> = Map64<u64, Map64<u64, ResidueBucket<L>>>;
+
 /// The generic residue-keyed multimap with lazy union views.
 #[derive(Debug, Clone)]
 struct ResidueTable<L> {
-    groups: Map64<u64, Map64<u64, Map64<u64, Vec<Entry<L>>>>>,
-    views: Map64<ViewKey, Map64<u64, Vec<Entry<L>>>>,
+    groups: ResidueGroups<L>,
+    views: Map64<ViewKey, ResidueBucket<L>>,
     /// Retired clauses — their entries linger in `groups`/`views` (the
     /// lazy views cache copies, so physical removal would have to purge
     /// every derived view) but are filtered out of every probe.  Cheap

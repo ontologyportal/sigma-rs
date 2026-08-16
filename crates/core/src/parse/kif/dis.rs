@@ -72,9 +72,9 @@ pub(crate) fn styled(node: &AstNode, indent: usize, color: bool) -> String {
     }
 
     // The one argument slot allowed to sit inline with the head, if any.
-    let inline_idx = if is_quantifier_head(&elements[0]) && elements.len() >= 3 {
-        Some(1) // the variable list
-    } else if is_not_head(&elements[0]) && elements.len() == 2 {
+    let inline_idx = if (is_quantifier_head(&elements[0]) && elements.len() >= 3)
+        || (is_not_head(&elements[0]) && elements.len() == 2)
+    {
         Some(1) // not's sole argument
     } else {
         None

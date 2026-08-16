@@ -26,6 +26,8 @@ use super::backends::plan_threads;
 use super::backends::CacheConfig;
 use super::events::{build_schedule_indexed, CycleError, Event, EventKind, ReactorDecl};
 
+pub(crate) type Reaction<'a> = dyn Fn(&[&Event]) -> Vec<Event> + Send + Sync + 'a;
+
 /// A cache wrapper viewed as a reactor: its static event interface plus a
 /// reaction that still needs its owning layer (`Parent`) threaded in.
 ///
@@ -72,7 +74,7 @@ pub(crate) struct ReactorEntry<'a> {
     /// `Send + Sync` so the router may dispatch reactors in a cohort
     /// concurrently and call one reactor from several threads on disjoint event
     /// shards.
-    pub react: Box<dyn Fn(&[&Event]) -> Vec<Event> + Send + Sync + 'a>,
+    pub react: Box<Reaction<'a>>,
 }
 
 /// Register a cache for routing by binding it to its owning layer.

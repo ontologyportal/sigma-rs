@@ -19,7 +19,7 @@ use std::path::Path;
 use heed::types::{Bytes, Str};
 use heed::{Database, Env, EnvOpenOptions, RoTxn, RwTxn};
 
-use crate::Diagnostic;
+use crate::{DiagResult, Diagnostic};
 
 /// LMDB/heed errors surface as `db`-kind diagnostics so `?` works throughout
 /// the persistence path.
@@ -55,7 +55,7 @@ pub(crate) struct LmdbEnv {
 impl LmdbEnv {
     /// Open an LMDB environment or create a new one if it does not already
     /// exist
-    pub(crate) fn open(path: &Path) -> Result<Self, Diagnostic> {
+    pub(crate) fn open(path: &Path) -> DiagResult<Self> {
         crate::log!(
             Info,
             "sigmakee_rs_core::persist",
@@ -84,14 +84,22 @@ impl LmdbEnv {
             )
         })?;
 
-        let mut wtxn = env.write_txn()?;
-        let caches: Database<Str, Bytes> = env.create_database(&mut wtxn, Some(DB_CACHES))?;
-        let meta: Database<Str, Bytes> = env.create_database(&mut wtxn, Some(DB_META))?;
+        let mut wtxn = env.write_txn().map_err(Diagnostic::from)?;
+        let caches: Database<Str, Bytes> = env
+            .create_database(&mut wtxn, Some(DB_CACHES))
+            .map_err(Diagnostic::from)?;
+        let meta: Database<Str, Bytes> = env
+            .create_database(&mut wtxn, Some(DB_META))
+            .map_err(Diagnostic::from)?;
 
         // Format-version gate.  Fresh DB → stamp it.  Stale stamp → wipe the
         // cache table so the caller cold-loads (the blobs are an incompatible
         // shape).  Matching stamp → fast path.
-        match meta.get(&wtxn, META_KEY_FORMAT)?.and_then(read_u64) {
+        match meta
+            .get(&wtxn, META_KEY_FORMAT)
+            .map_err(Diagnostic::from)?
+            .and_then(read_u64)
+        {
             Some(v) if v == FORMAT_VERSION => {}
             Some(_) => {
                 crate::log!(
@@ -99,24 +107,26 @@ impl LmdbEnv {
                     "sigmakee_rs_core::persist",
                     "persisted cache format is stale; clearing for a cold rebuild".to_string()
                 );
-                caches.clear(&mut wtxn)?;
-                meta.put(&mut wtxn, META_KEY_FORMAT, &FORMAT_VERSION.to_le_bytes())?;
+                caches.clear(&mut wtxn).map_err(Diagnostic::from)?;
+                meta.put(&mut wtxn, META_KEY_FORMAT, &FORMAT_VERSION.to_le_bytes())
+                    .map_err(Diagnostic::from)?;
             }
             None => {
-                meta.put(&mut wtxn, META_KEY_FORMAT, &FORMAT_VERSION.to_le_bytes())?;
+                meta.put(&mut wtxn, META_KEY_FORMAT, &FORMAT_VERSION.to_le_bytes())
+                    .map_err(Diagnostic::from)?;
             }
         }
-        wtxn.commit()?;
+        wtxn.commit().map_err(Diagnostic::from)?;
 
         Ok(Self { env, caches, meta })
     }
 
-    pub(crate) fn read_txn(&self) -> Result<RoTxn<'_>, Diagnostic> {
-        Ok(self.env.read_txn()?)
+    pub(crate) fn read_txn(&self) -> DiagResult<RoTxn<'_>> {
+        Ok(self.env.read_txn().map_err(Diagnostic::from)?)
     }
 
-    pub(crate) fn write_txn(&self) -> Result<RwTxn<'_>, Diagnostic> {
-        Ok(self.env.write_txn()?)
+    pub(crate) fn write_txn(&self) -> DiagResult<RwTxn<'_>> {
+        Ok(self.env.write_txn().map_err(Diagnostic::from)?)
     }
 }
 

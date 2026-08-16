@@ -367,18 +367,18 @@ pub enum Cmd {
     /// source resolves to):
     ///
     ///   * `.kif.tq`           — a KIF test query, run against the loaded
-    ///                           base KB (`-f`/`-d`, plus any `.ax` below);
+    ///     base KB (`-f`/`-d`, plus any `.ax` below);
     ///   * `.p` / `.tptp`      — a self-contained TPTP problem, each on a
-    ///                           FRESH KB (`include('Axioms/…')` resolved
-    ///                           against $TPTP / the problem dir / parent),
-    ///                           SZS-styled and checked against the header
-    ///                           `% Status :`;
+    ///     FRESH KB (`include('Axioms/…')` resolved
+    ///     against $TPTP / the problem dir / parent),
+    ///     SZS-styled and checked against the header
+    ///     `% Status :`;
     ///   * `.ax`               — a TPTP axiom library; ingested to POPULATE
-    ///                           the KB (no conjecture), so the `.kif.tq`
-    ///                           and `.p` problems run against it;
+    ///     the KB (no conjecture), so the `.kif.tq`
+    ///     and `.p` problems run against it;
     ///   * a directory         — every `*.kif.tq` inside it (local only —
-    ///                           there's no "list files" over git/http, so
-    ///                           a git/http source names one file).
+    ///     there's no "list files" over git/http, so
+    ///     a git/http source names one file).
     ///
     /// When no path is supplied, the test directory is read from
     /// config.xml's `inferenceTestDir` preference (loaded whenever

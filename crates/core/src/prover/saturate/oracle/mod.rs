@@ -411,6 +411,12 @@ pub(crate) struct EqJust {
     pub(crate) axiom: Option<SentenceId>,
 }
 
+/// Memoized `holds_instance` verdicts keyed by (term, class, scope), each
+/// stamped with the epoch it was computed at.
+type HoldsMemo = std::cell::RefCell<Map64<(SymbolId, SymbolId, SymbolId), (u64, bool)>>;
+/// One class's exhaustive decompositions, each with the axiom that stated it.
+type Decomps = Vec<(Vec<SymbolId>, SentenceId)>;
+
 /// The semantic-layer-backed oracle, scoped to one problem.
 pub(crate) struct SemanticOracle<'a> {
     sem: &'a SemanticLayer,
@@ -447,7 +453,7 @@ pub(crate) struct SemanticOracle<'a> {
     /// `DisjointSets`); SUMO's own exhaustiveness axiom routes through
     /// ListFn existentials that saturation cannot chew, so the oracle
     /// does the case analysis directly.
-    exhaustive: Map64<SymbolId, Vec<(Vec<SymbolId>, SentenceId)>>,
+    exhaustive: Map64<SymbolId, Decomps>,
     /// NEGATIVE learned ground edges (¬(rel x y) asserted/derived) —
     /// the exclusions exhaustiveness propagation eliminates against.
     neg_learned: Map64<SymbolId, Map64<SymbolId, Map64<SymbolId, Option<u32>>>>,
@@ -461,7 +467,7 @@ pub(crate) struct SemanticOracle<'a> {
     /// `add_equality` bump it.  Kills the repeated sub_chain BFS +
     /// scoped-cache walks that dominate `stale()` re-checks and
     /// theory-propagation misses.
-    holds_memo: std::cell::RefCell<Map64<(SymbolId, SymbolId, SymbolId), (u64, bool)>>,
+    holds_memo: HoldsMemo,
     epoch: std::cell::Cell<u64>,
     /// Rule-mined symmetric relations (schema channel): relations whose
     /// symmetry is stated by an explicit `¬R(x,y) ∨ R(y,x)` axiom
@@ -503,7 +509,7 @@ pub(crate) struct OracleSnapshot {
     fd_facts: Map64<SymbolId, Vec<FdFact>>,
     pending_eq: Vec<(SymbolId, SymbolId, EqJust)>,
     eq_just: Map64<SymbolId, EqJust>,
-    exhaustive: Map64<SymbolId, Vec<(Vec<SymbolId>, SentenceId)>>,
+    exhaustive: Map64<SymbolId, Decomps>,
     neg_learned: Map64<SymbolId, Map64<SymbolId, Map64<SymbolId, Option<u32>>>>,
     pending_facts: Vec<(SymbolId, SymbolId, SymbolId, EqJust)>,
     holds_memo: Map64<(SymbolId, SymbolId, SymbolId), (u64, bool)>,
@@ -666,7 +672,7 @@ impl<'a> SemanticOracle<'a> {
         if self.exhaustive.is_empty() {
             return;
         }
-        let classes: Vec<(SymbolId, Vec<(Vec<SymbolId>, SentenceId)>)> = self
+        let classes: Vec<(SymbolId, Decomps)> = self
             .exhaustive
             .iter()
             .map(|(c, v)| (*c, v.clone()))
@@ -1657,7 +1663,7 @@ impl<'a> TheoryOracle for SemanticOracle<'a> {
     ///   * **subclass antisymmetry** — `X ⊆ Y ∧ Y ⊆ X ⇒ X = Y` is a SUMO
     ///     axiom (`subclass` is a partial order), so two mutually-
     ///     subclassing classes are equal.
-    /// When `why` is `Some`, the two subclass chains are appended.
+    ///     When `why` is `Some`, the two subclass chains are appended.
     fn equal_holds(&self, x: SymbolId, y: SymbolId, mut why: Option<&mut Vec<Witness>>) -> bool {
         if x == y {
             return true;

@@ -416,7 +416,7 @@ impl SemanticLayer {
     /// * `None`        — not headed by a taxonomy predicate (not an edge; skip).
     /// * `Some(Ok(_))` — a well-formed `(from, to, rel)` edge.
     /// * `Some(Err(_))`— taxonomy-headed but malformed (bad arity / a literal in
-    ///                   a class position); the caller surfaces it as a diagnostic.
+    ///   a class position); the caller surfaces it as a diagnostic.
     fn try_extract_edge(
         &self,
         sid: SentenceId,

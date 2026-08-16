@@ -133,7 +133,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if trace {
                     eprintln!(
                         "RULE-JOIN rule head={} ({} body lits)",
-                        term_kif(head, self.syn()),
+                        term_kif(head),
                         body.len(),
                     );
                 }
@@ -178,7 +178,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             lit_pattern(t).map(|(r, a)| {
                                 format!(
                                     "{}/{}{}",
-                                    term_kif(t, self.syn())
+                                    term_kif(t)
                                         .split_whitespace()
                                         .next()
                                         .unwrap_or("?")
@@ -338,7 +338,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     continue;
                 }
                 if trace {
-                    eprintln!("RULE-JOIN emit {}", term_kif(&h, self.syn()));
+                    eprintln!("RULE-JOIN emit {}", term_kif(&h));
                 }
                 let head_for_fact = lit_pattern(&h);
                 if let Some(id) =
@@ -665,13 +665,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                 self.layer
                                     .atoms
                                     .term_of(*sid, self.syn())
-                                    .map(|ct| term_kif(&ct, self.syn()))
+                                    .map(|ct| term_kif(&ct))
                                     .unwrap_or_else(|| format!("sid:{sid}"))
                             })
                             .collect();
                         eprintln!(
                             "MODEL-REFUTE ~{} via member {} ⊓ ancestor {} oracle_refutes={} chain:\n    {}",
-                            term_kif(&t, self.syn()),
+                            term_kif(&t),
                             self.syn().sym_name(r.member).map(|s| s.to_string()).unwrap_or_default(),
                             self.syn().sym_name(r.goal_ancestor).map(|s| s.to_string()).unwrap_or_default(),
                             oracle_agrees,
@@ -746,7 +746,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if trace {
                         eprintln!(
                             "MODEL-COMPLETE ~{} (certified absence; {} defining rule sids cited)",
-                            term_kif(&t, self.syn()),
+                            term_kif(&t),
                             cited.len(),
                         );
                     }
@@ -791,7 +791,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         id,
                         c.terms
                             .first()
-                            .map(|(_, t)| term_kif(t, self.syn()))
+                            .map(|(_, t)| term_kif(t))
                             .unwrap_or_default(),
                         c.fact_parents,
                     );
@@ -1770,9 +1770,9 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
 
     /// Decide a fully-ground body literal.  Generator facts (store atoms
     /// + previously-emitted heads) are consulted first by exact match —
-    /// this is what lets a chained rule see an earlier round's head.
-    /// Binary atoms then fall through to the oracle (taxonomy, temporal,
-    /// subrelation-inherited and transitive edges).
+    ///   this is what lets a chained rule see an earlier round's head.
+    ///   Binary atoms then fall through to the oracle (taxonomy, temporal,
+    ///   subrelation-inherited and transitive edges).
     fn ground_lit_holds(
         &self,
         rel: SymbolId,

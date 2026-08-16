@@ -308,6 +308,10 @@ impl PatternPlan {
         self.eval_node(0, row, tab, bind, trail)
     }
 
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "parallel index into two arrays, bounded by the channel count rather than a slice length"
+    )]
     fn eval_node(
         &self,
         ni: usize,
@@ -474,6 +478,10 @@ pub(crate) fn compile_into(
 /// Compile one pattern node (recursing into open subpattern children
 /// AFTER this node's variable unknowns are marked bound — the exact
 /// order `eval_node` replays).  Returns the node's index.
+#[allow(
+    clippy::needless_range_loop,
+    reason = "parallel index into two arrays, bounded by the channel count rather than a slice length"
+)]
 fn comp_node(
     plan: &mut PatternPlan,
     elems: &[Term],
@@ -620,6 +628,10 @@ fn comp_node(
 /// exactly channels 0..v-1 whenever those are independent) and invert
 /// the pivot submatrix.  Returns (pivot rows, inverse, check mask) or
 /// `None` when the system is rank-deficient over the 4 channels.
+#[allow(
+    clippy::needless_range_loop,
+    reason = "parallel index into two arrays, bounded by the channel count rather than a slice length"
+)]
 fn solve_plan(coef: &[[u64; 3]; 4], v: usize) -> Option<([u8; 3], [[u64; 3]; 3], u8)> {
     debug_assert!((1..=3).contains(&v));
     // Greedy rank-building: keep channel j if it is independent of the

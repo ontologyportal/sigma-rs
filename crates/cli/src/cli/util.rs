@@ -1,7 +1,7 @@
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 
-use sigmakee_rs_sdk::{Diagnostic, Span, TptpLang};
+use sigmakee_rs_sdk::{DiagResult, Diagnostic, Span, TptpLang};
 
 // #[cfg(feature = "server")]
 // use crate::cli::args::KbArgs;
@@ -37,17 +37,15 @@ use sigmakee_rs_sdk::{Diagnostic, Span, TptpLang};
 // -- Directory helpers ---------------------------------------------------------
 
 /// Collect all `*.kif` files in a directory, sorted for deterministic ordering.
-pub fn kif_files_in_dir(dir: &Path) -> Result<Vec<PathBuf>, (Span, Diagnostic)> {
+pub fn kif_files_in_dir(dir: &Path) -> DiagResult<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        let span = Span::point(format!("{}", dir.display()), 0, 0, 0);
-        (
-            span.clone(),
-            Diagnostic::new_error(
-                "kb",
-                "io-error",
-                format!("cannot read directory '{}': {}", dir.display(), e),
-            ),
-        )
+        let mut diag = Diagnostic::new_error(
+            "kb",
+            "io-error",
+            format!("cannot read directory '{}': {}", dir.display(), e),
+        );
+        diag.range = Span::point(format!("{}", dir.display()), 0, 0, 0);
+        Box::new(diag)
     })?;
     let mut files: Vec<PathBuf> = entries
         .flatten()

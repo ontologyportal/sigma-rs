@@ -18,6 +18,17 @@ use super::{
     JOIN_UNIT_OFF, SUPPORT,
 };
 
+/// One pending branch of the hyperresolution join: how many negative
+/// literals are already satisfied (`k`), the substitution built so far, and
+/// the provenance accumulated for the eventual conclusion.
+struct HyperFrame {
+    k: usize,
+    subst: Subst,
+    facts: Vec<SentenceId>,
+    used: Vec<u32>,
+    jnotes: Vec<String>,
+}
+
 impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// Is clause `id` an activated, KBO-orientable positive unit equality
     /// — i.e. a demodulator that completion can superpose with?
@@ -215,9 +226,21 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         .collect();
 
                     let mut got = 0usize;
-                    let mut stack: Vec<(usize, Subst, Vec<SentenceId>, Vec<u32>, Vec<String>)> =
-                        vec![(0, s, Vec::new(), Vec::new(), Vec::new())];
-                    while let Some((k, s2, facts, used, jnotes)) = stack.pop() {
+                    let mut stack: Vec<HyperFrame> = vec![HyperFrame {
+                        k: 0,
+                        subst: s,
+                        facts: Vec::new(),
+                        used: Vec::new(),
+                        jnotes: Vec::new(),
+                    }];
+                    while let Some(HyperFrame {
+                        k,
+                        subst: s2,
+                        facts,
+                        used,
+                        jnotes,
+                    }) = stack.pop()
+                    {
                         if k == negs.len() {
                             // The conclusion is the disjunction of all
                             // positive heads, σ-applied — every head must be
@@ -291,10 +314,16 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                     let mut jn = jnotes.clone();
                                     jn.push(format!(
                                         "(not {}) -- oracle: {}",
-                                        term_kif(&a, self.syn()),
+                                        term_kif(&a),
                                         witnesses_kif(&why, self.syn())
                                     ));
-                                    stack.push((k + 1, s2.clone(), facts2, used2, jn));
+                                    stack.push(HyperFrame {
+                                        k: k + 1,
+                                        subst: s2.clone(),
+                                        facts: facts2,
+                                        used: used2,
+                                        jnotes: jn,
+                                    });
                                     continue;
                                 }
                             }
@@ -336,7 +365,13 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                                 self.stats.fc_unify_hits += 1;
                                 let mut used2 = used.clone();
                                 used2.push(cand.clause);
-                                stack.push((k + 1, s3, facts.clone(), used2, jnotes.clone()));
+                                stack.push(HyperFrame {
+                                    k: k + 1,
+                                    subst: s3,
+                                    facts: facts.clone(),
+                                    used: used2,
+                                    jnotes: jnotes.clone(),
+                                });
                                 branch += 1;
                                 if branch >= fc_branch {
                                     break;

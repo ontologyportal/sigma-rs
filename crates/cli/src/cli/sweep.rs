@@ -260,7 +260,7 @@ pub fn run_sweep(
                     ms: t0.elapsed().as_millis(),
                 });
                 let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d % (n_tasks / 20).max(1) == 0 || d == n_tasks {
+                if d.is_multiple_of((n_tasks / 20).max(1)) || d == n_tasks {
                     eprint!("\rsweep: {d}/{n_tasks}");
                 }
             });

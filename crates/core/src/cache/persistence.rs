@@ -17,6 +17,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::persist::PersistenceBackend;
+use crate::DiagResult;
+#[cfg(feature = "snapshot")]
 use crate::Diagnostic;
 
 use super::{
@@ -24,15 +26,13 @@ use super::{
     WholeCacheBehavior,
 };
 
-// -- Serialization helpers ---------------------------------------------------
-
 /// Serialize `value` and stage it under `key`.  No-op without `persist`.
 #[cfg(feature = "snapshot")]
 fn freeze_value<T: Serialize>(
     backend: &mut dyn PersistenceBackend,
     key: &'static str,
     value: &T,
-) -> Result<(), Diagnostic> {
+) -> DiagResult<()> {
     let bytes = bincode::serialize(value)
         .map_err(|e| Diagnostic::new_error("persist", "serialize", format!("{key}: {e}")))?;
     backend.put(key, &bytes)
@@ -43,7 +43,7 @@ fn freeze_value<T: Serialize>(
     _backend: &mut dyn PersistenceBackend,
     _key: &'static str,
     _value: &T,
-) -> Result<(), Diagnostic> {
+) -> DiagResult<()> {
     Ok(())
 }
 
@@ -53,11 +53,11 @@ fn freeze_value<T: Serialize>(
 fn thaw_value<T: DeserializeOwned>(
     backend: &dyn PersistenceBackend,
     key: &'static str,
-) -> Result<Option<T>, Diagnostic> {
+) -> DiagResult<Option<T>> {
     match backend.get(key)? {
-        Some(bytes) => bincode::deserialize(&bytes)
-            .map(Some)
-            .map_err(|e| Diagnostic::new_error("persist", "deserialize", format!("{key}: {e}"))),
+        Some(bytes) => bincode::deserialize(&bytes).map(Some).map_err(|e| {
+            Diagnostic::new_error("persist", "deserialize", format!("{key}: {e}")).into()
+        }),
         None => Ok(None),
     }
 }
@@ -66,7 +66,7 @@ fn thaw_value<T: DeserializeOwned>(
 fn thaw_value<T: DeserializeOwned>(
     _backend: &dyn PersistenceBackend,
     _key: &'static str,
-) -> Result<Option<T>, Diagnostic> {
+) -> DiagResult<Option<T>> {
     Ok(None)
 }
 
@@ -78,9 +78,9 @@ pub(crate) trait PersistableCache {
     /// The blob key (the cache's `NAME`).
     fn cache_key(&self) -> &'static str;
     /// Write this cache's current value to `backend`.
-    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic>;
+    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()>;
     /// Load this cache's value from `backend` (no-op if the key is absent).
-    fn thaw(&self, backend: &dyn PersistenceBackend) -> Result<(), Diagnostic>;
+    fn thaw(&self, backend: &dyn PersistenceBackend) -> DiagResult<()>;
 }
 
 impl<B> PersistableCache for Cache<B>
@@ -92,10 +92,10 @@ where
     fn cache_key(&self) -> &'static str {
         B::NAME
     }
-    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()> {
         freeze_value(backend, B::NAME, &(self.snapshot(), self.snapshot_side()))
     }
-    fn thaw(&self, backend: &dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn thaw(&self, backend: &dyn PersistenceBackend) -> DiagResult<()> {
         if let Some((map, side)) =
             thaw_value::<(HashMap<B::Key, B::Value>, B::SideSnapshot)>(backend, B::NAME)?
         {
@@ -115,10 +115,10 @@ where
     fn cache_key(&self) -> &'static str {
         B::NAME
     }
-    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()> {
         freeze_value(backend, B::NAME, &(self.snapshot(), self.snapshot_side()))
     }
-    fn thaw(&self, backend: &dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn thaw(&self, backend: &dyn PersistenceBackend) -> DiagResult<()> {
         if let Some((map, side)) =
             thaw_value::<(HashMap<B::Key, B::Value>, B::SideSnapshot)>(backend, B::NAME)?
         {
@@ -137,10 +137,10 @@ where
     fn cache_key(&self) -> &'static str {
         B::NAME
     }
-    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()> {
         freeze_value(backend, B::NAME, &self.snapshot())
     }
-    fn thaw(&self, backend: &dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn thaw(&self, backend: &dyn PersistenceBackend) -> DiagResult<()> {
         if let Some(Some(value)) = thaw_value::<Option<B::Value>>(backend, B::NAME)? {
             self.install(value);
         }
@@ -156,10 +156,10 @@ where
     fn cache_key(&self) -> &'static str {
         B::NAME
     }
-    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn freeze(&self, backend: &mut dyn PersistenceBackend) -> DiagResult<()> {
         freeze_value(backend, B::NAME, &self.snapshot())
     }
-    fn thaw(&self, backend: &dyn PersistenceBackend) -> Result<(), Diagnostic> {
+    fn thaw(&self, backend: &dyn PersistenceBackend) -> DiagResult<()> {
         if let Some(value) = thaw_value::<B::Value>(backend, B::NAME)? {
             self.install(value);
         }

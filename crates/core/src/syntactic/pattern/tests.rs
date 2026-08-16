@@ -192,7 +192,7 @@ fn instantiate_pattern_exact_produces_correct_element() {
     let pattern = SentencePattern(vec![PatternElement::Exact(mkey("Foo"))]);
     let bindings = Bindings::default();
     let elems = instantiate_pattern(&pattern, &bindings).expect("should instantiate");
-    assert!(is_sym(elems.get(0), "Foo"));
+    assert!(is_sym(elems.first(), "Foo"));
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn instantiate_pattern_any_capture_uses_binding() {
     let mut bindings = Bindings::default();
     bindings.elements.insert(0, esym("Foo"));
     let elems = instantiate_pattern(&pattern, &bindings).expect("should instantiate");
-    assert!(is_sym(elems.get(0), "Foo"));
+    assert!(is_sym(elems.first(), "Foo"));
 }
 
 #[test]

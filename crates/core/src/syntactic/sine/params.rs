@@ -44,11 +44,6 @@ pub fn default_budget() -> usize {
 /// not yet reached.
 pub const MAX_AUTO_TOLERANCE: f32 = 64.0;
 
-/// Hard cap on the number of breakpoint steps [`SineIndex::tolerance_breakpoints`]
-/// will climb, guarding against pathological conjectures with very many
-/// distinct activation thresholds.
-// -- Parameters --------------------------------------------------------------
-
 /// Tuning knobs for SInE axiom selection.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]

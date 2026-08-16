@@ -504,11 +504,10 @@ fn added_root_bodies(layer: &SemanticLayer, sid: SentenceId) -> Vec<Arc<Sentence
 /// The symbols whose cached inference an added/removed root's `bodies` (root +
 /// sub-sentences) can affect — the *targets* of the root's inference-input atoms:
 ///
-///   * `(instance T C)`                         → `T`
+///   * `(instance T C)` → `T`
 ///   * `(R … args …)` where `R` has a declared
 ///     `domain`/`range` (and is not a taxonomy head) → each arg
-///   * `(equal L R)`                            → both sides, plus the
-///                                                 equality closure (transitive)
+///   * `(equal L R)` → both sides, plus the equality closure (transitive)
 ///
 /// Returns empty when the root contains no inference-input atom, so a
 /// `documentation` / `format` / domainless-relation root leaves the cache

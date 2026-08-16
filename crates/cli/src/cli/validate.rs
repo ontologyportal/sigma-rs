@@ -124,7 +124,7 @@ where
         .validate()
         .into_iter()
         .filter_map(|e| match e {
-            SdkError::Kb(e) => Some(e),
+            SdkError::Kb(e) => Some(*e),
             _ => None,
         })
         .collect();

@@ -20,7 +20,10 @@ pub use std::time::Instant;
 
 /// Nanoseconds since the Unix epoch. Used only to mint unique session tags,
 /// so millisecond granularity (all `Date::now()` offers) is fine on wasm.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "ask", feature = "native-prover")
+))]
 pub fn epoch_nanos() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -31,7 +34,10 @@ pub fn epoch_nanos() -> u128 {
 #[cfg(target_arch = "wasm32")]
 pub use wasm::Instant;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(
+    target_arch = "wasm32",
+    any(feature = "ask", feature = "native-prover")
+))]
 pub fn epoch_nanos() -> u128 {
     // `Date::now()` is f64 milliseconds since the Unix epoch.
     (js_sys::Date::now() as u128).saturating_mul(1_000_000)

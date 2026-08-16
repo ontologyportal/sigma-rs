@@ -73,13 +73,13 @@ pub enum TokenKind {
 impl TokenKind {
     /// Whether this token can appear as the head of a KIF s-expression.
     pub fn can_head(&self) -> bool {
-        match self {
+        matches!(
+            self,
             TokenKind::Symbol(_)
-            | TokenKind::Variable(_)
-            | TokenKind::RowVariable(_)
-            | TokenKind::Operator(_) => true,
-            _ => false,
-        }
+                | TokenKind::Variable(_)
+                | TokenKind::RowVariable(_)
+                | TokenKind::Operator(_)
+        )
     }
 }
 
@@ -193,16 +193,11 @@ impl<'src> Tokenizer<'src> {
         }
     }
 
-    fn read_string(&mut self, start_span: Span) -> Result<Token, (Span, KifParseError)> {
+    fn read_string(&mut self, start_span: Span) -> Result<Token, KifParseError> {
         let mut s = String::from('"');
         loop {
             match self.advance() {
-                None => {
-                    return Err((
-                        start_span.clone(),
-                        KifParseError::UnterminatedString { span: start_span },
-                    ))
-                }
+                None => return Err(KifParseError::UnterminatedString { span: start_span }),
                 Some('"') => {
                     s.push('"');
                     break;
@@ -219,16 +214,11 @@ impl<'src> Tokenizer<'src> {
 
     /// Read a single-quoted atom `'…'` into a `Symbol`, quotes retained
     /// (`'Socrates'` → `"'Socrates'"`). `\\` and `\'` escapes are kept verbatim.
-    fn read_single_quoted(&mut self, start_span: Span) -> Result<Token, (Span, KifParseError)> {
+    fn read_single_quoted(&mut self, start_span: Span) -> Result<Token, KifParseError> {
         let mut s = String::from('\'');
         loop {
             match self.advance() {
-                None => {
-                    return Err((
-                        start_span.clone(),
-                        KifParseError::UnterminatedString { span: start_span },
-                    ))
-                }
+                None => return Err(KifParseError::UnterminatedString { span: start_span }),
                 Some('\\') => {
                     s.push('\\');
                     if let Some(c) = self.advance() {
@@ -294,7 +284,7 @@ impl<'src> Tokenizer<'src> {
         }
     }
 
-    fn next_token(&mut self) -> Result<Option<Token>, (Span, KifParseError)> {
+    fn next_token(&mut self) -> Result<Option<Token>, KifParseError> {
         while let Some(ch) = self.peek() {
             if ch.is_whitespace() {
                 self.advance();
@@ -352,7 +342,7 @@ impl<'src> Tokenizer<'src> {
                 // Symbols must start with a letter; a Symbol beginning with a
                 // non-letter (e.g. `_test`) is a tokenizer error.
                 if matches!(&kind, TokenKind::Symbol(_)) && !ch.is_alphabetic() {
-                    return Err((span.clone(), KifParseError::UnexpectedChar { ch, span }));
+                    return Err(KifParseError::UnexpectedChar { ch, span });
                 }
                 Ok(Some(Token { kind, span }))
             }
@@ -361,7 +351,11 @@ impl<'src> Tokenizer<'src> {
 }
 
 fn is_numeric(s: &str) -> bool {
-    let s = if s.starts_with('-') { &s[1..] } else { s };
+    let s = if let Some(stripped) = s.strip_prefix('-') {
+        stripped
+    } else {
+        s
+    };
     if s.is_empty() {
         return false;
     }
@@ -381,7 +375,7 @@ fn is_numeric(s: &str) -> bool {
 
 /// Tokenize `src` and return all tokens plus any hard errors encountered.
 /// Tokenization continues after an error to collect as many issues as possible.
-pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<(Span, KifParseError)>) {
+pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
     let mut tok = Tokenizer::new(src, file);
     let mut tokens = Vec::new();
     let mut errors = Vec::new();
@@ -490,7 +484,7 @@ mod tests {
         let (_, errors) = tokenize("_test", "test");
         assert!(!errors.is_empty(), "expected tokenizer error for '_test'");
         assert!(matches!(
-            &errors[0].1,
+            &errors[0],
             KifParseError::UnexpectedChar { ch: '_', .. }
         ));
     }

@@ -194,7 +194,7 @@ mod tests {
             (Foo Bar Baz)
         "#,
         );
-        let sid = *layer.syntactic.by_head("Foo").iter().next().unwrap();
+        let sid = *layer.syntactic.by_head("Foo").first().unwrap();
         let errs = layer.validation_scoped(sid, Scope::Base);
         assert!(
             !errs.is_empty(),
@@ -215,7 +215,7 @@ mod tests {
             (Foo Bar Baz)
         "#,
         );
-        let sid = *layer.syntactic.by_head("Foo").iter().next().unwrap();
+        let sid = *layer.syntactic.by_head("Foo").first().unwrap();
         assert!(
             layer.validate.peek(&base(sid)).is_none(),
             "not validated yet"

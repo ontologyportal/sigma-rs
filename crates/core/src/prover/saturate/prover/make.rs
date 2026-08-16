@@ -346,6 +346,10 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
     /// `key`, facts `facts`) the walk entered at `path`: bloom prune →
     /// NF-memo probe → normalize-and-record.  See `demodulate`'s docs
     /// for the outcome-invariance argument.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tuned prover internals: if it ain't broke, don't fix it"
+    )]
     fn ground_subtree_step(
         &mut self,
         g: &Term,
@@ -1019,13 +1023,11 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
         candidates.dedup();
         let cap = self.opts.strategy.bwd_demod_cap.max(1);
         let term_cap = self.opts.strategy.demod_cap.max(1);
-        let mut checks = 0usize;
-        for &cid in &candidates {
+        for (checks, &cid) in candidates.iter().enumerate() {
             if checks >= cap {
                 self.stats.bwd_demod_cap_hits += 1;
                 break;
             }
-            checks += 1;
             let (terms, tier) = {
                 let c = &self.clauses[cid as usize];
                 // Re-check retirement: an earlier iteration of THIS pass
@@ -1834,7 +1836,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if self.want_notes() {
                         notes.push(format!(
                             "{} -- ill-sorted (argument disjoint from declared domain)",
-                            term_kif(t, self.syn())
+                            term_kif(t)
                         ));
                     }
                     dropped_positive = true;
@@ -1862,7 +1864,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if truth != *pos {
                     self.stats.oracle_discharges += 1;
                     if self.want_notes() {
-                        notes.push(format!("{} -- arithmetic", lit_kif(*pos, t, self.syn())));
+                        notes.push(format!("{} -- arithmetic", lit_kif(*pos, t)));
                     }
                     continue;
                 }
@@ -1877,7 +1879,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             if self.want_notes() {
                                 notes.push(format!(
                                     "(not {}) -- oracle: {}",
-                                    term_kif(t, self.syn()),
+                                    term_kif(t),
                                     if why.is_empty() {
                                         "x = x".to_string()
                                     } else {
@@ -1905,10 +1907,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         if *pos {
                             self.stats.oracle_discharges += 1;
                             if self.want_notes() {
-                                notes.push(format!(
-                                    "{} -- numeric disequality",
-                                    term_kif(t, self.syn())
-                                ));
+                                notes.push(format!("{} -- numeric disequality", term_kif(t)));
                             }
                             continue;
                         }
@@ -1935,7 +1934,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         if self.want_notes() {
                             notes.push(format!(
                                 "{} -- oracle refutes: {}",
-                                term_kif(t, self.syn()),
+                                term_kif(t),
                                 witnesses_kif(&why_r, self.syn())
                             ));
                         }
@@ -1969,7 +1968,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                         if self.want_notes() {
                             notes.push(format!(
                                 "(not {}) -- oracle: {}",
-                                term_kif(t, self.syn()),
+                                term_kif(t),
                                 witnesses_kif(&why, self.syn())
                             ));
                         }
@@ -2000,10 +1999,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                 if let Some(sids) = self.model_true_negative(t, tier) {
                     self.stats.model_literals_deleted += 1;
                     if self.want_notes() {
-                        notes.push(format!(
-                            "(not {}) -- model: entailed true",
-                            term_kif(t, self.syn())
-                        ));
+                        notes.push(format!("(not {}) -- model: entailed true", term_kif(t)));
                     }
                     fact_parents.extend(sids);
                     continue;
@@ -2064,7 +2060,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                     if self.want_notes() {
                         notes.push(format!(
                             "{} -- refuted by unit clause {}",
-                            lit_kif(*pos, t, self.syn()),
+                            lit_kif(*pos, t),
                             cid
                         ));
                     }
@@ -2110,7 +2106,7 @@ impl<'a, S: crate::layer::TopLayer + 'static> NativeProver<'a, S> {
                             if self.want_notes() {
                                 notes.push(format!(
                                     "{} -- refuted by unit clause {}",
-                                    lit_kif(*pos, t, self.syn()),
+                                    lit_kif(*pos, t),
                                     u.clause
                                 ));
                             }
@@ -2730,8 +2726,8 @@ mod model_true_negative_tests {
             sids.contains(&rule_sid),
             "citation must include the defining rule's sid: {sids:?}"
         );
-        assert_eq!(
-            prover.guide_attempted, true,
+        assert!(
+            prover.guide_attempted,
             "the shared model was materialized on demand"
         );
 

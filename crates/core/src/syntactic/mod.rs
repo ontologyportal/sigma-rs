@@ -22,6 +22,7 @@ use crate::cache::{Cache, CacheBehavior, CacheConfig, Eager, EagerMap};
 use crate::layer::{Layer, NoLayer};
 use crate::semantics::SemanticLayer;
 use crate::types::{ElementVec, SentenceId};
+use crate::DiagResult;
 
 use caches::axiom_index::AxiomIndex;
 use caches::occurrences::OccurrenceIndex;
@@ -139,8 +140,8 @@ impl SyntacticLayer {
     /// cascade does the rest: `source` parses + macro-expands + dedups by
     /// fingerprint and emits `FormulaAdded`/`FormulaRemoved`; `store` builds
     /// + CAF-normalizes and emits `RootAdded`; the occurrence / head / axiom
-    /// indices react.  Parse errors and duplicate-formula warnings surface as
-    /// `Event::Diagnostic`.
+    ///   indices react.  Parse errors and duplicate-formula warnings surface as
+    ///   `Event::Diagnostic`.
     pub(crate) fn load_kif_assert(&mut self, text: &str, file: &str) -> Vec<crate::Diagnostic> {
         let source = crate::types::SourceFile {
             parser: crate::Parser::Kif,
@@ -302,7 +303,7 @@ impl Layer for SyntacticLayer {
     fn restore_caches_from(
         &self,
         backend: &dyn crate::persist::PersistenceBackend,
-    ) -> Result<(), crate::Diagnostic> {
+    ) -> DiagResult<()> {
         use crate::cache::persistence::PersistableCache;
         use crate::syntactic::sentence::{clear_thaw_pool, seed_thaw_pool};
 
@@ -310,7 +311,7 @@ impl Layer for SyntacticLayer {
         seed_thaw_pool(self.symbols.snapshot());
 
         let symbols_key = self.symbols.cache_key();
-        let result = (|| -> Result<(), crate::Diagnostic> {
+        let result = (|| -> DiagResult<()> {
             for cache in self.own_persistable() {
                 if cache.cache_key() == symbols_key {
                     continue;

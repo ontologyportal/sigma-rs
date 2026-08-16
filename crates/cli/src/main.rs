@@ -343,11 +343,14 @@ fn main_worker() {
             Session::from_kb(kb, session_name),
             manager,
             cli.command,
-            sink,
-            profile,
-            cli.git.as_deref(),
-            cli.branch.as_deref(),
-            &mut ingest_stats,
+            DispatchCtx {
+                arg_matches: &arg_matches,
+                sink,
+                git: cli.git.as_deref(),
+                branch: cli.branch.as_deref(),
+                stats: &mut ingest_stats,
+                suppress: &cli.suppress,
+            },
         )
     } else {
         match manager.default_backend.as_str() {
@@ -361,13 +364,14 @@ fn main_worker() {
                     Session::from_kb(kb, session_name),
                     manager,
                     cli.command,
-                    &arg_matches,
-                    sink,
-                    profile,
-                    cli.git.as_deref(),
-                    cli.branch.as_deref(),
-                    &mut ingest_stats,
-                    &cli.suppress,
+                    DispatchCtx {
+                        arg_matches: &arg_matches,
+                        sink,
+                        git: cli.git.as_deref(),
+                        branch: cli.branch.as_deref(),
+                        stats: &mut ingest_stats,
+                        suppress: &cli.suppress,
+                    },
                 )
             }
             // e / eprover / subprocess / embedded → external layer.
@@ -421,13 +425,14 @@ fn main_worker() {
                         session,
                         manager,
                         cli.command,
-                        &arg_matches,
-                        sink,
-                        profile,
-                        cli.git.as_deref(),
-                        cli.branch.as_deref(),
-                        &mut ingest_stats,
-                        &cli.suppress,
+                        DispatchCtx {
+                            arg_matches: &arg_matches,
+                            sink,
+                            git: cli.git.as_deref(),
+                            branch: cli.branch.as_deref(),
+                            stats: &mut ingest_stats,
+                            suppress: &cli.suppress,
+                        },
                     )
                 }
             }
@@ -518,21 +523,34 @@ fn open_or_new<L, E: std::fmt::Display>(
 /// Route a parsed command against a ready proving `Session`. Ingests the
 /// selected KB's constituents, then dispatches `cmd` to its handler. Returns
 /// whether the command succeeded.
+/// Cross-cutting inputs shared by every command handler: the raw clap matches,
+/// the progress sink, remote-source selectors, and the run-wide ingest tally.
+struct DispatchCtx<'a> {
+    arg_matches: &'a clap::ArgMatches,
+    sink: Option<DynSink>,
+    git: Option<&'a str>,
+    branch: Option<&'a str>,
+    stats: &'a mut IngestStats,
+    suppress: &'a [String],
+}
+
 fn dispatch<L: ProvingLayer>(
     mut session: Session<L>,
     mut manager: KBManager,
     cmd: Cmd,
-    arg_matches: &clap::ArgMatches,
-    sink: Option<DynSink>,
-    _profile: bool,
-    git: Option<&str>,
-    branch: Option<&str>,
-    stats: &mut IngestStats,
-    suppress: &[String],
+    ctx: DispatchCtx<'_>,
 ) -> bool
 where
     L::Opts: ProverOptsFor,
 {
+    let DispatchCtx {
+        arg_matches,
+        sink,
+        git,
+        branch,
+        stats,
+        suppress,
+    } = ctx;
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }
@@ -646,12 +664,15 @@ fn dispatch_translation(
     mut session: Session<TranslationLayer>,
     mut manager: KBManager,
     cmd: Cmd,
-    sink: Option<DynSink>,
-    _profile: bool,
-    git: Option<&str>,
-    branch: Option<&str>,
-    stats: &mut IngestStats,
+    ctx: DispatchCtx<'_>,
 ) -> bool {
+    let DispatchCtx {
+        sink,
+        git,
+        branch,
+        stats,
+        ..
+    } = ctx;
     if let Some(s) = sink {
         session.set_progress_sink(s);
     }

@@ -59,7 +59,7 @@ impl<L: TopLayer> Session<L> {
         sink: Option<DynSink>,
     ) -> SdkResult<Session<TranslationLayer>> {
         let kb =
-            sigmakee_rs_core::KnowledgeBase::open(path.as_ref(), sink).map_err(SdkError::Kb)?;
+            sigmakee_rs_core::KnowledgeBase::open(path.as_ref(), sink).map_err(SdkError::from)?;
         Ok(Session { kb, name: session })
     }
 
@@ -69,7 +69,7 @@ impl<L: TopLayer> Session<L> {
     /// method. The path is the same path the LMDB was opened from.
     #[cfg(feature = "persist")]
     pub fn persist(&self) -> SdkResult<()> {
-        self.kb.persist().map_err(SdkError::Kb)
+        self.kb.persist().map_err(SdkError::from)
     }
 }
 
@@ -92,7 +92,7 @@ impl<L: HasTranslation> Session<L> {
         if !r.ok {
             self.kb.flush_session(TAG);
             let first = r.diagnostics.into_iter().find(|d| d.is_err());
-            return Err(first.map(SdkError::Kb).unwrap_or_else(|| {
+            return Err(first.map(SdkError::from).unwrap_or_else(|| {
                 SdkError::Config("inline translate: formula failed to parse".into())
             }));
         }
@@ -120,7 +120,7 @@ impl<L: HasTranslation> Session<L> {
         let tc = self.source_to_test_case(src)?;
         self.kb
             .tc_to_tptp(tc, &opts, Some(&self.name), Some(prover_opts))
-            .map_err(|e| -> Vec<SdkError> { e.into_iter().map(SdkError::Kb).collect() })
+            .map_err(|e| -> Vec<SdkError> { e.into_iter().map(SdkError::from).collect() })
     }
 }
 
