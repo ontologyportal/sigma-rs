@@ -3,6 +3,7 @@
 
 import { rawUrl } from './constants.js';
 import { state } from './state.js';
+import { readEdit } from './changes.js';
 
 export async function fetchText(url) {
   const r = await fetch(url);
@@ -11,7 +12,14 @@ export async function fetchText(url) {
 }
 
 export async function fromOrigin(origin, file) {
-  if (origin === 'sumo') return await fetchText(rawUrl(file));
+  if (origin === 'sumo') {
+    // An unpushed local edit outranks upstream. This is the whole reason the
+    // edit store is separate from the KB snapshot cache: an upstream commit
+    // discards that cache and sends every 'sumo' file back through here, which
+    // would otherwise silently restore the pre-edit text.
+    const edited = await readEdit(file);
+    return edited ?? await fetchText(rawUrl(file));
+  }
   if (origin === 'url') return await fetchText(file);
   if (origin === 'file') {
     if (state.opfsRoot === null) throw new Error('File system not initialized yet');

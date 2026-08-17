@@ -11,6 +11,8 @@ import { state } from './state.js';
 import { call } from './rpc.js';
 import { $, esc } from './dom.js';
 import { scheduleKbCacheSave } from './kb-cache.js';
+import { recordSave, forgetChange } from './changes.js';
+import { refreshChangeUi } from './tabs/contribute.js';
 import { currentTab, routeFromLocation, showTab } from './router.js';
 import { renderDiagnostics, applyDiagRouteParams } from './tabs/diagnostics.js';
 import { renderConstituents, renderPicker } from './tabs/kb-tab.js';
@@ -49,7 +51,8 @@ async function rebuildSession() {
  * loaded, else adds it. Used by the Edit tab's Save button. For `file`-origin
  * constituents, persists to OPFS FIRST (awaited), mirroring the KB tab's upload
  * flow — a `file` entry with no OPFS handle would throw on next boot and abort
- * loading every OTHER constituent too.
+ * loading every OTHER constituent too. A `sumo`-origin save is persisted the
+ * same way, into the separate edit store, and stays local until pushed.
  * @returns {Promise<{ added: boolean, notices: string[] }>}
  */
 export async function updateConstituentText(name, text, origin = 'file') {
@@ -61,6 +64,10 @@ export async function updateConstituentText(name, text, origin = 'file') {
     await stream.close();
   }
   const idx = state.constituents.findIndex((c) => c.name === name && c.origin === origin);
+  // The text this edit descends from, which only the FIRST save of a file can
+  // observe — by the second, the constituent already holds the first save.
+  const pristine = idx === -1 ? undefined : state.constituents[idx].text;
+  await recordSave(name, origin, text, pristine);
   if (idx === -1) {
     const r = await ingestConstituent(name, text, origin);
     await reprocess();
@@ -85,13 +92,18 @@ export async function removeConstituent(name, origin = 'sumo') {
   if (origin === 'file') {
     try { const h = await state.opfsRoot.getFileHandle(name); await h.remove(); } catch { /* already gone */ }
   }
+  await forgetChange(name, origin);
   await rebuildSession();
   await reprocess();
 }
 
 export async function resetToMerge() {
   const merge = state.constituents.find((c) => c.name === MERGE);
+  const dropped = state.constituents.filter((c) => c !== merge);
   state.constituents = merge ? [merge] : [];
+  // A record left behind for a constituent that is gone would resurrect with a
+  // long-stale base the next time that file is loaded.
+  for (const c of dropped) await forgetChange(c.name, c.origin);
   await rebuildSession();
   await reprocess();
 }
@@ -169,6 +181,7 @@ export function renderAll() {
   refreshLangSelect();
   if (state.sumoCatalog) renderPicker();
   populateEditPicker();
+  refreshChangeUi();
   if (currentTab() === 'browse') refreshHomeStats();   // counts moved
 }
 

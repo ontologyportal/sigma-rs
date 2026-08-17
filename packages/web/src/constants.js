@@ -19,6 +19,7 @@ export const APP_REPO = { owner: 'ontologyportal', repo: 'sigma-rs' };
 export const SUMO_FILE_SETTING = 'sumoFiles';
 export const TQ_SETTING = 'sumoTests';
 export const GH_TOKEN_KEY = 'sumoBrowserGhToken';
+export const EDITS_KEY = 'sumoBrowserEdits';
 export const THEME_KEY = 'sumoBrowserTheme';
 export const SEEN_VERSION_KEY = 'sumoBrowserSeenVersion';
 

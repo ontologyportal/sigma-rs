@@ -7,8 +7,10 @@ import { $ } from './dom.js';
 import { fromOrigin } from './sources.js';
 import { ingestConstituent, renderAll, refreshLangSelect, reprocess } from './kb.js';
 import { tryRestoreFromCache } from './kb-cache.js';
+import { refreshUpstreamShas, refreshProposals } from './changes.js';
 import { BASE, applyRoute } from './router.js';
 import { renderConstituents } from './tabs/kb-tab.js';
+import { refreshChangeUi, checkStaleOnOpen } from './tabs/contribute.js';
 import { restoreTests } from './tabs/tests.js';
 
 // Boot progress. Each constituent contributes two steps — the fetch and the
@@ -35,6 +37,23 @@ export function bootProgress(label) {
   if (msg) msg.textContent = label;
 }
 
+/**
+ * Show the badge from the persisted records straight away, then reconcile them
+ * against upstream in the background. Not awaited: both steps are no-ops when
+ * nothing is tracked, and neither should hold up a page that is already usable.
+ */
+function syncChanges() {
+  refreshChangeUi();
+  (async () => {
+    await refreshProposals();
+    await refreshUpstreamShas({ force: true });
+    refreshChangeUi();
+    // A deep link into /edit selected its file before any of this resolved, so
+    // nothing could have known the file was stale at the time it was opened.
+    checkStaleOnOpen(state.editCurrentFile);
+  })().catch(() => { /* offline or rate-limited: the badge keeps the last known state */ });
+}
+
 export async function boot() {
   try {
     resetBootProgress(1 + state.savedConstituents.length * 2);
@@ -56,6 +75,7 @@ export async function boot() {
       renderAll();
       applyRoute();
       restoreTests();
+      syncChanges();
       return;
     }
 
@@ -75,6 +95,7 @@ export async function boot() {
     // needs them loaded before it can select a file in the editor.
     applyRoute();
     restoreTests();
+    syncChanges();
     reprocess();   // toast → promote all → validate → untoast (off the critical path)
   } catch (e) {
     $('overlayTitle').textContent = 'Failed to load SUMO';

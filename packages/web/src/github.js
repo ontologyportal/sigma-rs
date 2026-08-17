@@ -66,6 +66,15 @@ export function toBase64(text) {
   return btoa(bin);
 }
 
+/** Inverse of `toBase64`, for blob reads. GitHub wraps its base64 payloads at
+ *  60 columns, which `atob` rejects. */
+export function fromBase64(b64) {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
 /** Path segments must survive encoding without turning "/" into "%2F". */
 const encodePath = (p) => p.split('/').map(encodeURIComponent).join('/');
 
@@ -86,19 +95,32 @@ export function assertFeatureBranch(branch, base) {
 export const whoami = (token) => api(token, '/user');
 
 /**
- * Propose a single-file change upstream.
+ * Propose a set of files upstream as ONE commit, either on a fresh branch with
+ * a new pull request or as a follow-up commit on a branch already under review.
  *
- * Branches directly when the user can push to `owner/repo`, otherwise forks
- * and opens the PR cross-repo. Reports progress through `onStep`.
+ * Branches directly when the user can push to `owner/repo`, otherwise forks and
+ * opens the PR cross-repo. Reports progress through `onStep`.
  *
- * @returns {Promise<{url:string, number:number, branch:string, forked:boolean}>}
+ * The commit is built through the git data API (blobs -> tree -> commit -> ref)
+ * rather than one contents-API PUT per file: a five-file change is one reviewable
+ * commit instead of five, and the tree is layered onto upstream's own tree, so
+ * paths nobody touched are carried over untouched.
+ *
+ * @param {object}   opts
+ * @param {{path:string, content:string}[]} opts.files what to write
+ * @param {?{branch:string, headOwner:string, number:number, url:string}} opts.existing
+ *   a pull request to add this commit to, instead of opening a new one
+ * @returns {Promise<{url:string, number:number, branch:string, forked:boolean,
+ *                    amended:boolean, blobShas:string[]}>}
  */
-export async function contribute({
-  token, owner, repo, path, content, title, body,
+export async function contributeFiles({
+  token, owner, repo, files, title, body, existing = null,
   branchPrefix = 'sumo-browser', onStep = () => {},
 }) {
   if (!token) throw new GitHubError('No token supplied.', 0);
-  if (!path) throw new GitHubError('No file selected.', 0);
+  if (!files?.length) throw new GitHubError('No files selected.', 0);
+  const missing = files.find((f) => !f.path);
+  if (missing) throw new GitHubError(`No repository path given for ${missing.name || 'a file'}.`, 0);
 
   onStep('Checking token…');
   const { login } = await api(token, '/user');
@@ -108,8 +130,8 @@ export async function contribute({
   const base = upstream.default_branch;
   const canPush = Boolean(upstream.permissions?.push);
 
-  let headOwner = owner;
-  if (!canPush) {
+  let headOwner = existing ? existing.headOwner : owner;
+  if (!existing && !canPush) {
     onStep('Forking the repository…');
     await api(token, `/repos/${owner}/${repo}/forks`, { method: 'POST' });
     headOwner = login;
@@ -122,42 +144,78 @@ export async function contribute({
     if (!ready) throw new GitHubError('Fork did not become available in time — retry in a moment.', 0);
   }
 
-  onStep('Creating branch…');
-  // Branch point is the CURRENT upstream tip. Forks share object storage with
-  // the upstream network, so a ref in the fork can point straight at an
-  // upstream commit — which means we never have to sync (i.e. write to) the
-  // fork's default branch either.
-  const upstreamRef = await api(token, `/repos/${owner}/${repo}/git/ref/heads/${base}`);
-  const branch = `${branchPrefix}/${path.replace(/[^A-Za-z0-9._-]/g, '-')}-${Date.now().toString(36)}`;
-  assertFeatureBranch(branch, base);
-  try {
-    await api(token, `/repos/${headOwner}/${repo}/git/refs`, {
+  // The branch to commit on, and the commit it grows from.
+  let branch, parentSha;
+  if (existing) {
+    branch = existing.branch;
+    assertFeatureBranch(branch, base);
+    onStep(`Updating branch ${branch}…`);
+    // encodePath, not encodeURIComponent: a branch name's own "/" is a literal
+    // path separator in this endpoint and must not be escaped.
+    const head = await api(token, `/repos/${headOwner}/${repo}/git/ref/heads/${encodePath(branch)}`);
+    parentSha = head.object.sha;
+  } else {
+    onStep('Creating branch…');
+    // Branch point is the CURRENT upstream tip. Forks share object storage with
+    // the upstream network, so a ref in the fork can point straight at an
+    // upstream commit — which means we never have to sync (i.e. write to) the
+    // fork's default branch either.
+    const upstreamRef = await api(token, `/repos/${owner}/${repo}/git/ref/heads/${base}`);
+    const stem = files.length === 1 ? files[0].path.replace(/[^A-Za-z0-9._-]/g, '-') : 'changes';
+    branch = `${branchPrefix}/${stem}-${Date.now().toString(36)}`;
+    assertFeatureBranch(branch, base);
+    parentSha = upstreamRef.object.sha;
+    try {
+      await api(token, `/repos/${headOwner}/${repo}/git/refs`, {
+        method: 'POST',
+        body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: parentSha }),
+      });
+    } catch (e) {
+      // Upstream commit not reachable in the fork: branch off the fork's own tip
+      // instead. Still a fresh branch, still no write to any default branch.
+      const forkRef = await api(token, `/repos/${headOwner}/${repo}/git/ref/heads/${base}`);
+      parentSha = forkRef.object.sha;
+      await api(token, `/repos/${headOwner}/${repo}/git/refs`, {
+        method: 'POST',
+        body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: parentSha }),
+      });
+    }
+  }
+
+  assertFeatureBranch(branch, base);   // re-check immediately before the write
+
+  const blobShas = [];
+  for (let i = 0; i < files.length; i++) {
+    onStep(`Uploading ${files[i].path} (${i + 1}/${files.length})…`);
+    const blob = await api(token, `/repos/${headOwner}/${repo}/git/blobs`, {
       method: 'POST',
-      body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: upstreamRef.object.sha }),
+      body: JSON.stringify({ content: toBase64(files[i].content), encoding: 'base64' }),
     });
-  } catch (e) {
-    // Upstream commit not reachable in the fork: branch off the fork's own tip
-    // instead. Still a fresh branch, still no write to any default branch.
-    const forkRef = await api(token, `/repos/${headOwner}/${repo}/git/ref/heads/${base}`);
-    await api(token, `/repos/${headOwner}/${repo}/git/refs`, {
-      method: 'POST',
-      body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: forkRef.object.sha }),
-    });
+    blobShas.push(blob.sha);
   }
 
   onStep('Committing…');
-  assertFeatureBranch(branch, base);   // re-check immediately before the write
-  // Updating requires the blob sha it replaces; its absence (404) means the
-  // path is new on this branch, which the same endpoint handles as a create.
-  let sha;
-  try {
-    const existing = await api(token, `/repos/${headOwner}/${repo}/contents/${encodePath(path)}?ref=${encodeURIComponent(branch)}`);
-    sha = existing?.sha;
-  } catch (e) { if (e.status !== 404) throw e; }
-  await api(token, `/repos/${headOwner}/${repo}/contents/${encodePath(path)}`, {
-    method: 'PUT',
-    body: JSON.stringify({ message: title, content: toBase64(content), branch, ...(sha ? { sha } : {}) }),
+  const parent = await api(token, `/repos/${headOwner}/${repo}/git/commits/${parentSha}`);
+  const tree = await api(token, `/repos/${headOwner}/${repo}/git/trees`, {
+    method: 'POST',
+    body: JSON.stringify({
+      base_tree: parent.tree.sha,
+      tree: files.map((f, i) => ({ path: f.path, mode: '100644', type: 'blob', sha: blobShas[i] })),
+    }),
   });
+  const commit = await api(token, `/repos/${headOwner}/${repo}/git/commits`, {
+    method: 'POST',
+    body: JSON.stringify({ message: title, tree: tree.sha, parents: [parentSha] }),
+  });
+  await api(token, `/repos/${headOwner}/${repo}/git/refs/heads/${encodePath(branch)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ sha: commit.sha }),
+  });
+
+  if (existing) {
+    return { url: existing.url, number: existing.number, branch, headOwner,
+             forked: headOwner !== owner, amended: true, blobShas };
+  }
 
   onStep('Opening pull request…');
   const pr = await api(token, `/repos/${owner}/${repo}/pulls`, {
@@ -169,5 +227,6 @@ export async function contribute({
     }),
   });
 
-  return { url: pr.html_url, number: pr.number, branch, forked: headOwner !== owner };
+  return { url: pr.html_url, number: pr.number, branch, headOwner,
+           forked: headOwner !== owner, amended: false, blobShas };
 }

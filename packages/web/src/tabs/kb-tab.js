@@ -1,12 +1,12 @@
 /** Knowledge base tab: the loaded-constituent list, the standard presets, and
  *  the three import channels (GitHub picker / URL / upload). */
 
-import { MERGE, SUMO, SUMO_FILE_SETTING } from '../constants.js';
+import { MERGE, SUMO_FILE_SETTING } from '../constants.js';
 import { state } from '../state.js';
 import { call } from '../rpc.js';
 import { $, esc, escAttr, withBusy } from '../dom.js';
 import { fetchText, fetchAllTexts } from '../sources.js';
-import { githubApi } from '../github-api.js';
+import { fetchSumoTree } from '../github-api.js';
 import { ingestConstituent, removeConstituent, reprocess } from '../kb.js';
 import { addTest, isTestFile, loadedSumoTestNames } from './tests.js';
 import { navigate } from '../router.js';
@@ -116,9 +116,10 @@ export async function loadSumoCatalog() {
   $('pickerStatus').textContent = 'loading file list…';
   try {
     // Via the shared client so a rate-limited response raises rather than
-    // silently yielding `undefined.tree`.
-    const tree = await githubApi(`/repos/${SUMO.owner}/${SUMO.repo}/git/trees/${SUMO.ref}?recursive=1`);
-    state.sumoCatalog = (tree.tree || [])
+    // silently yielding `undefined.tree`, and via the shared tree read so this
+    // and the change tracker's staleness check cost one request between them.
+    const tree = await fetchSumoTree();
+    state.sumoCatalog = tree
       .filter((e) => e.type === 'blob' && /\.kif(\.tq)?$/i.test(e.path))
       .map((e) => e.path)
       .sort();

@@ -3,10 +3,11 @@
 
 import { state } from '../state.js';
 import { call } from '../rpc.js';
-import { $, esc, escAttr, downloadText, isDarkTheme, togglePanel } from '../dom.js';
+import { $, esc, escAttr, downloadText, isDarkTheme } from '../dom.js';
 import { loadMonaco, diagsToMarkers } from '../editor/monaco.js';
 import { refreshTptpPane, scheduleTptpRefresh, scheduleTptpFollow } from '../editor/tptp-pane.js';
 import { updateConstituentText } from '../kb.js';
+import { checkStaleOnOpen } from './contribute.js';
 import { navigate, updateParams } from '../router.js';
 
 let editValidateTimer = null;
@@ -45,7 +46,7 @@ $('editDiagList').addEventListener('click', (e) => {
 
 function scheduleEditValidate() {
   clearTimeout(editValidateTimer);
-  editValidateTimer = setTimeout(runEditValidate, 400);
+  editValidateTimer = setTimeout(() => { updateEditFileLabel(); runEditValidate(); }, 400);
 }
 
 // Coalesce validate requests: whole-file validation of a large constituent
@@ -122,21 +123,16 @@ export function populateEditPicker() {
 }
 
 /**
- * The Edit tab offers exactly one write action, chosen by where the buffer came
- * from — there is no single action that means the same thing for all three:
- *   file (upload/new) → Save     — persists to OPFS + the in-memory KB
- *   sumo (GitHub)     → Submit change — opens a PR upstream; a local save would
- *                                   be silently discarded on reload anyway
- *   url (remote)      → neither  — nowhere to save it and nowhere to submit it
+ * Save persists wherever the buffer came from and is offered for both writable
+ * origins — a `file` upload to OPFS, a `sumo` file to the edit store, where it
+ * stays local until it is pushed. A `url` buffer has nowhere to be saved.
+ *
+ * The GitHub button is always available: it lists every tracked change across
+ * the whole KB now, not just an action on the open file.
  */
 function updateEditActions() {
   const origin = state.editCurrentFile ? state.editCurrentFile.origin : 'file';  // unsaved new file is local
-  const isLocal = origin === 'file';
-  const isGitHub = origin === 'sumo';
-  $('editSave').hidden = !isLocal;
-  $('ghPropose').hidden = !isGitHub;
-  // Collapse the PR panel when it no longer applies.
-  if (!isGitHub) togglePanel('ghPropose', 'ghPanel', false);
+  $('editSave').hidden = origin === 'url';
   $('editLog').style.color = '';   // clear any prior error styling
   $('editLog').textContent = origin === 'url'
     ? 'Loaded from a URL — it can be edited and downloaded here, but not saved or submitted.'
@@ -168,13 +164,28 @@ export function onEditPickerChange() {
   setEditorContent(c ? c.text : '');
   updateEditActions();
   updateEditFileLabel();
+  checkStaleOnOpen(state.editCurrentFile);
 }
 
-/** The filename shown beside the toolbar button group. */
+/** True when the buffer holds edits that have not been saved. What a pull
+ *  request carries is the SAVED text, so this is also what stops the Contribute
+ *  panel from pushing a version the user has already moved past. */
+export function isBufferDirty() {
+  const f = state.editCurrentFile;
+  if (!f || !state.monacoEditor) return false;
+  const c = state.constituents.find((x) => x.name === f.name && x.origin === f.origin);
+  return Boolean(c) && c.text !== state.monacoEditor.getValue();
+}
+
+/** The filename shown beside the toolbar button group, marked when the buffer
+ *  has moved ahead of what is saved. */
 function updateEditFileLabel() {
   const el = $('editFileName');
   if (!el) return;
-  el.textContent = state.editCurrentFile ? state.editCurrentFile.name : 'new file (unsaved)';
+  const name = state.editCurrentFile ? state.editCurrentFile.name : 'new file (unsaved)';
+  const dirty = isBufferDirty();
+  el.textContent = dirty ? `${name} •` : name;
+  el.title = dirty ? 'Unsaved changes' : '';
 }
 
 // -- Open-file dialog: pick a loaded constituent, or start a new file ---------
@@ -414,9 +425,6 @@ $('editSave').onclick = async () => {
 
   btn.disabled = true;   // icon-only button: disable, don't swap the label
   try {
-    // Save is only offered for local files now (see updateEditActions), so the
-    // old "this edit is session-only" warning for sumo/url origins is gone with
-    // the button that could trigger it.
     const r = await updateConstituentText(name, state.monacoEditor.getValue(), origin);
     state.editCurrentFile = { name, origin };
     populateEditPicker();
@@ -424,7 +432,10 @@ $('editSave').onclick = async () => {
     updateEditActions();
     updateEditFileLabel();
     runEditValidate();
-    setStatus(r.notices.length ? r.notices.join(' | ') : `Saved ${name}.`, false);
+    const saved = origin === 'sumo'
+      ? `Saved ${name} locally — it stays here until you push it to GitHub.`
+      : `Saved ${name}.`;
+    setStatus(r.notices.length ? r.notices.join(' | ') : saved, false);
   } catch (e) {
     setStatus(String(e && e.message || e), true);
   } finally {

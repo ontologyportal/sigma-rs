@@ -11,8 +11,9 @@
  *
  * Validity: the cached upstream commit SHA must match the CURRENT SHA
  * (`sumo`-origin content is pinned to a commit, not versioned per-file), and
- * a fingerprint of the exact (name, origin) set loaded must match (a
- * different file set obviously needs a different snapshot). `file`-origin
+ * a fingerprint of the exact (name, origin) set loaded — plus each tracked
+ * local edit's content — must match (a different file set, or a different
+ * edit on top of it, obviously needs a different snapshot). `file`-origin
  * text has no commit to pin to, so its cache freshness instead relies on
  * every mutation path (ingest/update/remove/reset) funnelling through
  * promoteAndValidate, which rewrites the cache after every successful
@@ -29,6 +30,7 @@ import { state } from './state.js';
 import { call } from './rpc.js';
 import { $ } from './dom.js';
 import { fromOrigin } from './sources.js';
+import { opfsSafeName, editsFingerprint } from './changes.js';
 import { bootProgress, resetBootProgress } from './boot.js';
 import { fetchLastCommitInfo } from './tabs/home-stats.js';
 
@@ -61,22 +63,14 @@ async function writeOpfsFile(dir, name, contents) {
   await w.close();
 }
 
-/** Encode a constituent name into a single OPFS-safe path segment. Some SUMO
- *  constituents live in a subdirectory of the repo (e.g.
- *  "development/Muscles.kif"), and OPFS's `getFileHandle` only accepts one
- *  path component — a `/` in the name throws `TypeError: Invalid filename`.
- *  That failure happens mid-loop in `saveKbCache`, *before* snapshot.bin/
- *  meta.json are written, so it silently aborted the entire cache save on
- *  every KB containing such a file, forcing a normal fetch+rebuild on every
- *  boot even though the cache directory looked partially populated. */
-function opfsSafeName(name) {
-  return encodeURIComponent(name);
-}
-
 /** Stable fingerprint of the current constituent SET (name+origin pairs) —
- *  changes on add/remove, independent of any file's content. */
+ *  changes on add/remove, independent of any file's content — plus the tracked
+ *  local edits, so a revert (which puts a `sumo` file back to upstream's text,
+ *  leaving the commit SHA and the file set both unchanged) still invalidates
+ *  the snapshot it no longer matches. */
 function constituentsFingerprint() {
-  return state.savedConstituents.map((c) => `${c.origin}:${c.name}`).sort().join('|');
+  const files = state.savedConstituents.map((c) => `${c.origin}:${c.name}`).sort().join('|');
+  return `${files}#${editsFingerprint()}`;
 }
 
 /** `false` when any loaded constituent has no stable version signal to cache
@@ -155,8 +149,9 @@ async function saveKbCache() {
     const bytes = (await call('snapshot')).bytes;
     const dir = await getSumoCacheDir();
     for (const { name, origin, text } of state.constituents) {
-      // 'sumo' text is pinned to a commit, so it cannot change within a
-      // session — write each file once, not on every promote.
+      // Upstream text cannot change within a session and a local edit changes
+      // it at most once per save, so the comparison writes each file about
+      // once rather than on every promote.
       if (origin !== 'sumo' || cachedText.get(name) === text) continue;
       await writeOpfsFile(dir, opfsSafeName(name), text);
       cachedText.set(name, text);
