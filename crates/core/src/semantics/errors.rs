@@ -145,8 +145,13 @@ pub enum SemanticError {
 
     /// An existential quantifier appears under the antecedent of an
     /// implication; the witness can't be used in the consequent.
-    #[error("existential quantifier in implication antecedent: any witness will not be available in the consequent")]
+    #[error("existential quantifier in implication antecedent or biconditional: any witness will not be available in the consequent")]
     ExistentialInAntecedent { sid: SentenceId },
+
+    /// An existential quantifier appears under the antecedent of an
+    /// implication; the witness can't be used in the consequent.
+    #[error("existential quantifier in biimplication: any witness will not be available to the other sub-statement")]
+    ExistentialInIff { sid: SentenceId },
 
     /// A variable appears in a quantifier's variable list but is never used in
     /// the quantified body.
@@ -226,6 +231,7 @@ impl SemanticError {
             | Self::SingleUseVariable { .. }
             | Self::FreeVarInConsequent { .. }
             | Self::ExistentialInAntecedent { .. }
+            | Self::ExistentialInIff { .. }
             | Self::TermNoRule { .. }
             | Self::MutualConstituentDep { .. } => Severity::Warning,
 
@@ -263,6 +269,7 @@ impl SemanticError {
             Self::FreeVarInConsequent { .. } => "W021",
             Self::ExistentialInAntecedent { .. } => "W022",
             Self::QuantifierVacuous { .. } => "E023",
+            Self::ExistentialInIff { .. } => "W030",
             // W024 is unused: `Object`/`object` case collisions are by design in SUMO.
             Self::PartitionViolation { .. } => "E025",
             Self::PartitionNonMember { .. } => "E026",
@@ -311,6 +318,7 @@ impl SemanticError {
             Self::MultipleDocumentation { .. } => "multiple-documentation",
             Self::MissingTermFormat { .. } => "missing-term-format",
             Self::MissingFormatString { .. } => "missing-format-string",
+            Self::ExistentialInIff { .. } => "existential-in-biimplication",
         }
     }
 }

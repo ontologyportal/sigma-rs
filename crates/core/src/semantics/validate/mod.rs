@@ -181,19 +181,23 @@ impl<'a> SemanticValidator<'a> {
             });
         }
 
-        if matches!(op, OpKind::And | OpKind::Or) && sentence.arity() == 1 {
-            out.push(SemanticError::SingleArity { sid });
-        }
-
-        if matches!(op, OpKind::Implies | OpKind::Iff) {
-            self.check_implication_shape(sid, out);
-        }
-        if matches!(op, OpKind::ForAll | OpKind::Exists) {
-            self.check_quantifier_vacuous(sid, out);
-        }
-
-        if op == OpKind::Equal {
-            return;
+        match op {
+            OpKind::And | OpKind::Or if sentence.arity() == 1 => {
+                out.push(SemanticError::SingleArity { sid });
+            }
+            OpKind::Iff => {
+                self.check_biimplication_shape(sid, out);
+            }
+            OpKind::Implies => {
+                self.check_implication_shape(sid, out);
+            }
+            OpKind::ForAll | OpKind::Exists => {
+                self.check_quantifier_vacuous(sid, out);
+            }
+            OpKind::Equal => {
+                return;
+            }
+            _ => {}
         }
 
         let is_quantifier = matches!(op, OpKind::ForAll | OpKind::Exists);

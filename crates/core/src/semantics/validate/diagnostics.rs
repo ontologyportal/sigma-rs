@@ -176,11 +176,44 @@ impl<'a> SemanticValidator<'a> {
     /// (W021 free-var-in-consequent is *not* checked here — it is a
     /// whole-formula property handled once at the root by
     /// [`Self::check_free_vars_in_consequent`].)
+    pub(super) fn check_biimplication_shape(&self, sid: SentenceId, out: &mut Vec<SemanticError>) {
+        let Some(s) = self.layer.syntactic.sentence(sid) else {
+            return;
+        };
+
+        // elements: [Op{Iff}, Sub{lhs}, Sub{rhs}]
+        let lhs_sid = match s.elements.get(1) {
+            Some(Element::Sub(a)) => *a,
+            _ => return,
+        };
+
+        let rhs_sid = match s.elements.get(2) {
+            Some(Element::Sub(a)) => *a,
+            _ => return,
+        };
+
+        // W030.
+        if self.subtree_has_existential(lhs_sid) {
+            out.push(SemanticError::ExistentialInIff { sid: lhs_sid });
+        }
+
+        if self.subtree_has_existential(rhs_sid) {
+            out.push(SemanticError::ExistentialInIff { sid: rhs_sid });
+        }
+    }
+
+    /// W022 existential-in-antecedent.  Called on `(=> ant cons)` and
+    /// `(<=> ant cons)` sentences; an `exists` anywhere under the antecedent
+    /// means the witness can't be referenced in the consequent.
+    ///
+    /// (W021 free-var-in-consequent is *not* checked here — it is a
+    /// whole-formula property handled once at the root by
+    /// [`Self::check_free_vars_in_consequent`].)
     pub(super) fn check_implication_shape(&self, sid: SentenceId, out: &mut Vec<SemanticError>) {
         let Some(s) = self.layer.syntactic.sentence(sid) else {
             return;
         };
-        // elements: [Op{Implies|Iff}, Sub{ant}, Sub{cons}]
+        // elements: [Op{Implies}, Sub{ant}, Sub{cons}]
         let ant_sid = match s.elements.get(1) {
             Some(Element::Sub(a)) => *a,
             _ => return,
@@ -188,7 +221,7 @@ impl<'a> SemanticValidator<'a> {
 
         // W022.
         if self.subtree_has_existential(ant_sid) {
-            out.push(SemanticError::ExistentialInAntecedent { sid });
+            out.push(SemanticError::ExistentialInAntecedent { sid: ant_sid });
         }
     }
 
