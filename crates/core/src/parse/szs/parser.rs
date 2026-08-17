@@ -118,12 +118,13 @@ fn proof_block(raw: &str) -> Option<&str> {
 fn scan_lines<'a>(raw: &'a str, file: &str) -> Vec<(&'a str, Span)> {
     let mut out = Vec::new();
     let mut offset = 0usize;
-    let mut line_no = 1u32;
-    for line in raw.split_inclusive('\n') {
+    for (line_no, line) in (1u32..).zip(raw.split_inclusive('\n')) {
         let text = line.trim_end_matches(['\n', '\r']);
-        out.push((text, Span::point(file.to_string(), line_no, 1, offset)));
+        out.push((
+            text,
+            Span::point(file.to_string(), line_no + 1u32, 1, offset),
+        ));
         offset += line.len();
-        line_no += 1;
     }
     out
 }

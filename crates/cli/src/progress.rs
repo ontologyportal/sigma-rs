@@ -362,7 +362,7 @@ impl PhaseAggregator {
             .iter()
             .map(|(name, dur)| (*name, *dur, *inner.counts.get(name).unwrap_or(&0)))
             .collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         let max_name_len = entries.iter().map(|(n, _, _)| n.len()).max().unwrap_or(0);
         let mut out = String::new();

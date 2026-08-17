@@ -1170,13 +1170,11 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
                 b"prover" => {
                     cur_prover = Some((attr(&e, b"type").unwrap_or_default(), HashMap::new()));
                 }
-                b"error" => {
+                b"error" if cur_prover.is_none() => {
                     // `<error code="E005"/>` or `<error name="E005"/>` — a
                     // top-level warning code to elevate to a hard error.
-                    if cur_prover.is_none() {
-                        if let Some(code) = attr(&e, b"code").or_else(|| attr(&e, b"name")) {
-                            errors.push(code);
-                        }
+                    if let Some(code) = attr(&e, b"code").or_else(|| attr(&e, b"name")) {
+                        errors.push(code);
                     }
                 }
                 _ => {} // `configuration` and anything else: ignored

@@ -1649,7 +1649,7 @@ fn natural_languages_to_js<L: TopLayer>(kb: &KnowledgeBase<L>) -> Result<JsValue
             label: "English".into(),
         });
     }
-    langs.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    langs.sort_by_key(|a| a.label.to_lowercase());
     serde_wasm_bindgen::to_value(&langs).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 

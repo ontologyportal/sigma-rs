@@ -1666,7 +1666,7 @@ impl Program {
 fn closed_for_matching(model: &Model, work: &Program, budget: usize) -> Option<Model> {
     let mut out = model.clone();
     let mut total: usize = model.values().map(HashSet::len).sum();
-    for (&pred, _) in work.builtin_transitive.iter() {
+    for &pred in work.builtin_transitive.keys() {
         let Some(base) = model.get(&pred) else {
             continue;
         };

@@ -3946,7 +3946,7 @@ impl<'a, S: TopLayer + 'static> NativeProver<'a, S> {
             *counts.entry((c.rule, head)).or_insert(0) += 1;
         }
         let mut rows: Vec<((&'static str, String), usize)> = counts.into_iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows.sort_by_key(|b| std::cmp::Reverse(b.1));
         rows.truncate(n);
         rows.iter()
             .map(|((rule, head), k)| format!("{k:>8}  {rule:<14} {head}"))

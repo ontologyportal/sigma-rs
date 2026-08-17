@@ -235,43 +235,38 @@ impl TestCase {
                     self.timeout = value.parse::<u32>().unwrap_or(30);
                 }
             }
-            "answer" => {
-                if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
-                    match name.to_lowercase().as_str() {
-                        "yes" => self.expected_proof = Some(true),
-                        "no" => self.expected_proof = Some(false),
-                        _ => {
-                            self.expected_proof = Some(true);
-                            let mut answers = vec![name.clone()];
-                            for el in &m.args[1..] {
-                                if let AstNode::Symbol { name, .. } = el {
-                                    answers.push(name.clone());
-                                }
+            "answer" if let Some(AstNode::Symbol { name, .. }) = m.args.first() => {
+                match name.to_lowercase().as_str() {
+                    "yes" => self.expected_proof = Some(true),
+                    "no" => self.expected_proof = Some(false),
+                    _ => {
+                        self.expected_proof = Some(true);
+                        let mut answers = vec![name.clone()];
+                        for el in &m.args[1..] {
+                            if let AstNode::Symbol { name, .. } = el {
+                                answers.push(name.clone());
                             }
-                            self.expected_answer = Some(answers);
                         }
+                        self.expected_answer = Some(answers);
                     }
                 }
             }
-            "file" => {
-                if let Some(el) = m.args.first() {
-                    let fname = match el {
-                        AstNode::Symbol { name, .. } => name.clone(),
-                        AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
-                        other => other.to_string(),
-                    };
-                    self.extra_files.push(fname);
-                }
+            "file" if let Some(el) = m.args.first() => {
+                let fname = match el {
+                    AstNode::Symbol { name, .. } => name.clone(),
+                    AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+                    other => other.to_string(),
+                };
+                self.extra_files.push(fname);
             }
             // The TPTP `% Status : <word>` header pragma (see the tokenizer's
             // `record_status_pragma`) — first match wins, mirroring the
             // TPTP convention of one `Status` line per problem file.
-            "status" => {
-                if self.expected_status.is_none() {
-                    if let Some(AstNode::Symbol { name, .. }) = m.args.first() {
-                        self.expected_status = Some(name.clone());
-                    }
-                }
+            "status"
+                if self.expected_status.is_none()
+                    && let Some(AstNode::Symbol { name, .. }) = m.args.first() =>
+            {
+                self.expected_status = Some(name.clone());
             }
             _ => {}
         }

@@ -293,10 +293,8 @@ fn tptp_statement_spans(text: &str) -> Vec<(Option<String>, usize, usize)> {
                 }
                 start = None;
             }
-            b if !b.is_ascii_whitespace() => {
-                if start.is_none() {
-                    start = Some(i);
-                }
+            b if !b.is_ascii_whitespace() && start.is_none() => {
+                start = Some(i);
             }
             _ => {}
         }

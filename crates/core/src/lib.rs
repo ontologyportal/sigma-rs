@@ -196,7 +196,7 @@ pub mod test {
 
         let mut has_guard = false;
         if let Some(gt_id) = greater_than_id {
-            for (&sid, _) in syn.synthetic_origin.iter() {
+            for &sid in syn.synthetic_origin.keys() {
                 if trans.suppressed.read().unwrap().contains(&sid) {
                     continue;
                 }

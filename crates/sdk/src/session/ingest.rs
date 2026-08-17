@@ -30,7 +30,7 @@ impl<L: TopLayer> Session<L> {
         // per-layer (the prover layers take the 1-arg `make_session_axiomatic`,
         // the translation layer the consistency-gated 4-arg form).
         for src in sources {
-            errs.extend(self.ingest_inner(src).into_iter());
+            errs.extend(self.ingest_inner(src));
         }
         if abort && errs.iter().any(|e| e.is_err()) {
             return errs;

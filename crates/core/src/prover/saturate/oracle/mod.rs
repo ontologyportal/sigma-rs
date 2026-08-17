@@ -1229,7 +1229,7 @@ impl<'a> SemanticOracle<'a> {
         x: SymbolId,
         y: SymbolId,
     ) -> Option<Vec<Witness>> {
-        for (&r, _) in below.iter() {
+        for &r in below.keys() {
             // Stored facts…
             let stored = self
                 .sem
@@ -1271,7 +1271,7 @@ impl<'a> SemanticOracle<'a> {
         let mut stack = vec![x];
         let mut seen: HashSet<SymbolId> = HashSet::from([x]);
         while let Some(a) = stack.pop() {
-            for (&r, _) in below.iter() {
+            for &r in below.keys() {
                 let stored = self
                     .sem
                     .ground_binary_objects(r, a, self.scope)

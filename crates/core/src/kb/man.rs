@@ -574,10 +574,8 @@ fn subtree_contains_symbol(store: &SyntacticLayer, sid: SentenceId, sym_id: Symb
     for el in &sent.elements {
         match el {
             Element::Symbol(sym) if sym.id() == sym_id => return true,
-            Element::Sub(sub_sid) => {
-                if subtree_contains_symbol(store, *sub_sid, sym_id) {
-                    return true;
-                }
+            Element::Sub(sub_sid) if subtree_contains_symbol(store, *sub_sid, sym_id) => {
+                return true;
             }
             _ => {}
         }
