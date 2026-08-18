@@ -323,7 +323,9 @@ pub enum ProgressEvent {
     /// Hard semantic error surfaced through the event stream
     /// (in addition to the `Result` path).  Carried by-clone so
     /// consumers needn't lock on the KB to read it.
-    SemanticErrorEv { error: Box<SemanticError> },
+    SemanticErrorEv {
+        error: std::sync::Arc<dyn SemanticError>,
+    },
 
     // -- Phase timing --------------------------------------------------------
     /// A named phase in the KB's work has started. Consumers that want timing

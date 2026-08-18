@@ -47,6 +47,10 @@ define_symbols_from_env! {
 
     // --- Root Symbol ---
     ROOT_SYMBOL           => "SUMO_ROOT_SYMBOL",
+
+    // --- Meta Symbol ---
+    FORMULA_SYMBOL        => "SUMO_FORMULA_SYMBOL",
+    CLASS_SYMBOL          => "SUMO_CLASS_SYMBOL"
 }
 
 symbol_set!(

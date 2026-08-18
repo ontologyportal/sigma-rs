@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::errors::SemanticError;
+use crate::semantics::errors::BoxedError;
 use crate::semantics::types::{Scope, Scoped};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
@@ -25,7 +25,7 @@ pub(crate) struct Validate;
 impl CacheBehavior for Validate {
     type Parent = SemanticLayer;
     type Key = Scoped<SentenceId>;
-    type Value = Arc<Vec<SemanticError>>;
+    type Value = Arc<Vec<BoxedError>>;
     type Side = ();
     type SideSnapshot = ();
 
@@ -36,7 +36,7 @@ impl CacheBehavior for Validate {
         &self,
         parent: &SemanticLayer,
         &Scoped { scope, key: sid }: &Scoped<SentenceId>,
-    ) -> Arc<Vec<SemanticError>> {
+    ) -> Arc<Vec<BoxedError>> {
         Arc::new(
             parent
                 .validator_scoped(scope)
@@ -78,7 +78,7 @@ impl CacheBehavior for Validate {
         &self,
         parent: &SemanticLayer,
         events: &[&Event],
-        store: &EntryCache<Scoped<SentenceId>, Arc<Vec<SemanticError>>>,
+        store: &EntryCache<Scoped<SentenceId>, Arc<Vec<BoxedError>>>,
         _side: &Self::Side,
     ) -> Vec<Event> {
         // Whole-KB churn invalidates every scope's verdicts.  Clear first so a
@@ -151,11 +151,7 @@ impl SemanticLayer {
     ///
     /// Memoised only when the `semantic::validate` cache is enabled; it is off
     /// by default, in which case each call recomputes.
-    pub(crate) fn validation_scoped(
-        &self,
-        sid: SentenceId,
-        scope: Scope,
-    ) -> Arc<Vec<SemanticError>> {
+    pub(crate) fn validation_scoped(&self, sid: SentenceId, scope: Scope) -> Arc<Vec<BoxedError>> {
         self.validate.get(self, Scoped { scope, key: sid })
     }
 }

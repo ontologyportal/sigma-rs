@@ -1,13 +1,27 @@
 //! `semantic::range` cache: memoises a relation's range sort(s).
 
+use thiserror::Error;
+
+use crate::semantics::errors::{ArityMismatch, BoxedError, DomainMismatch, SemanticError};
+
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
 use crate::semantics::consts::RANGE_SUB_REL_CLASS;
+use crate::semantics::errors::semantic_error;
 use crate::semantics::types::{Scope, Scoped};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
 use crate::types::RelationRange;
-use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, ToDiagnostic};
+use crate::{Element, Sentence, SentenceId, SymbolId, ToDiagnostic};
+
+/// Conflicting `range` / `rangeSubclass` declarations. Raised by the `range`
+/// cache reactor on ingest, not by a validator.
+#[derive(Debug, Clone, Error)]
+#[error("function '{sym}' has multiple range declarations")]
+pub struct DoubleRange {
+    pub sym: String,
+}
+semantic_error!(DoubleRange, "E007", "double-range", Error);
 
 /// Behavior for the `semantic::range` cache: the range sort(s) declared for a
 /// relation via `range` / `rangeSubclass` axioms.
@@ -168,10 +182,10 @@ impl CacheBehavior for Range {
             {
                 if let Some(sym) = parent.syntactic.sym_name(f) {
                     out.push(Event::Diagnostic(
-                        SemanticError::DoubleRange {
+                        DoubleRange {
                             sym: sym.to_string(),
                         }
-                        .to_diagnostic(),
+                        .diagnostic(),
                     ));
                 }
             }
@@ -222,7 +236,7 @@ impl SemanticLayer {
     fn try_extract_range(
         &self,
         sid: SentenceId,
-    ) -> Option<Result<(SymbolId, RelationRange), SemanticError>> {
+    ) -> Option<Result<(SymbolId, RelationRange), BoxedError>> {
         let sentence = self.syntactic.sentence(sid)?;
         let head = sentence.head_symbol()?;
         Some(try_extract_range_from(
@@ -246,7 +260,7 @@ fn try_extract_range_from(
     range_id: SymbolId,
     sid: SentenceId,
     sentence: &Sentence,
-) -> Result<(SymbolId, RelationRange), SemanticError> {
+) -> Result<(SymbolId, RelationRange), BoxedError> {
     let head_name = || {
         parent
             .syntactic
@@ -255,29 +269,29 @@ fn try_extract_range_from(
     };
     let mut els = sentence.elements.iter().skip(1);
     let Some(Element::Symbol(func)) = els.next() else {
-        return Err(SemanticError::DomainMismatch {
+        return Err(Box::new(DomainMismatch {
             sid,
             rel: head_name(),
             arg: 0,
             domain: "Function".to_string(),
-        });
+        }));
     };
     let Some(Element::Symbol(class)) = els.next() else {
-        return Err(SemanticError::DomainMismatch {
+        return Err(Box::new(DomainMismatch {
             sid,
             rel: head_name(),
             arg: 1,
             domain: "Function".to_string(),
-        });
+        }));
     };
     let remaining = els.count();
     if remaining > 0 {
-        return Err(SemanticError::ArityMismatch {
+        return Err(Box::new(ArityMismatch {
             sid,
             rel: head_name(),
             expected: 2,
             got: 2 + remaining,
-        });
+        }));
     }
     if head_id == range_id {
         Ok((func.id(), RelationRange::Range(class.id())))

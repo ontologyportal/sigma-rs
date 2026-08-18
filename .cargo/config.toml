@@ -4,6 +4,10 @@ SINE_TOLERANCE="2.5"
 # Root SUMO symbol from which all other symbols are derived
 SUMO_ROOT_SYMBOL              = "Entity"
 
+# SUMO Symbols with meta meaning
+SUMO_FORMULA_SYMBOL           = "Formula"
+SUMO_CLASS_SYMBOL             = "Class"
+
 # ---------------------------------------------------------------------------
 # SUMO built-in arithmetic predicate names.
 # Used by the TFF converter (trans/converter/builtins.rs) to recognise

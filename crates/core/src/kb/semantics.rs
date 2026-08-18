@@ -1,11 +1,54 @@
 //! Public re-exports of semantic operations.
 use std::collections::{HashMap, HashSet};
 
+use thiserror::Error;
+
 use crate::layer::{Layer, TopLayer};
+use crate::semantics::errors::semantic_error;
+use crate::semantics::errors::SemanticError;
 use crate::types::Element;
-use crate::{Diagnostic, SemanticError, SentenceId, SymbolId, ToDiagnostic};
+use crate::{Diagnostic, SentenceId, SymbolId, ToDiagnostic};
 
 use super::KnowledgeBase;
+
+/// A relation has no `format` axiom.
+#[derive(Debug, Clone, Error)]
+#[error("relation '{sym}' has no format axiom")]
+pub struct MissingFormatString {
+    pub sym: String,
+}
+semantic_error!(MissingFormatString, "H004", "missing-format-string", Hint);
+
+/// A term has no `termFormat` axiom.
+#[derive(Debug, Clone, Error)]
+#[error("term '{sym}' has no termFormat axiom")]
+pub struct MissingTermFormat {
+    pub sym: String,
+}
+semantic_error!(MissingTermFormat, "H003", "missing-term-format", Hint);
+
+/// A term has several `documentation` axioms in one language.
+#[derive(Debug, Clone, Error)]
+#[error("term '{sym}' has {count} documentation axioms in {language} (expected 1)")]
+pub struct MultipleDocumentation {
+    pub sym: String,
+    pub language: String,
+    pub count: usize,
+}
+semantic_error!(
+    MultipleDocumentation,
+    "H002",
+    "multiple-documentation",
+    Hint
+);
+
+/// A term has no `documentation` axiom.
+#[derive(Debug, Clone, Error)]
+#[error("term '{sym}' has no documentation axiom")]
+pub struct MissingDocumentation {
+    pub sym: String,
+}
+semantic_error!(MissingDocumentation, "H001", "missing-documentation", Hint);
 
 /// Aggregate vocabulary + documentation-coverage counts — see
 /// [`KnowledgeBase::vocab_stats`].
@@ -193,7 +236,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     /// SUBJECT LANGUAGE "...")` sentences — the finer key
     /// [`Self::symbols_matching`] can't give, needed to tell "documented in
     /// three languages" (fine) apart from "documented three times in
-    /// English" (a real duplicate — [`SemanticError::MultipleDocumentation`]
+    /// English" (a real duplicate — [`MultipleDocumentation`]
     /// fires per-language, never across languages).
     fn documentation_occurrences(&self) -> HashMap<(SymbolId, String), usize> {
         let syn = &self.layer.semantic().syntactic;
@@ -274,8 +317,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     .or_insert_with(|| (sid, span.clone()));
             }
         }
-        let anchor = |err: SemanticError, id: SymbolId, name: &str| -> Diagnostic {
-            let mut d = err.to_diagnostic();
+        let anchor = |err: &dyn SemanticError, id: SymbolId, name: &str| -> Diagnostic {
+            let mut d = err.diagnostic();
             let found = defining.get(&id).cloned().or_else(|| {
                 // `defining_sentence`'s fallback: any root headed by the symbol.
                 syn.by_head(name)
@@ -298,23 +341,19 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 
             if !documented.contains(&id) {
                 out.push(anchor(
-                    SemanticError::MissingDocumentation { sym: name.clone() },
+                    &MissingDocumentation { sym: name.clone() },
                     id,
                     &name,
                 ));
             }
             if !has_term_format.contains(&id) {
-                out.push(anchor(
-                    SemanticError::MissingTermFormat { sym: name.clone() },
-                    id,
-                    &name,
-                ));
+                out.push(anchor(&MissingTermFormat { sym: name.clone() }, id, &name));
             }
             if (self.is_relation(id) || self.is_predicate(id) || self.is_function(id))
                 && !has_format.contains(&id)
             {
                 out.push(anchor(
-                    SemanticError::MissingFormatString { sym: name.clone() },
+                    &MissingFormatString { sym: name.clone() },
                     id,
                     &name,
                 ));
@@ -327,7 +366,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             }
             if let Some(name) = syn.sym_name(*id).map(|s| s.name().to_string()) {
                 out.push(anchor(
-                    SemanticError::MultipleDocumentation {
+                    &MultipleDocumentation {
                         sym: name.clone(),
                         language: language.clone(),
                         count: *count,

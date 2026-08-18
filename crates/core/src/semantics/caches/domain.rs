@@ -5,10 +5,13 @@ use std::sync::Arc;
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
 use crate::semantics::consts::DOMAIN_SUBCLASS_RELATION;
+use crate::semantics::errors::BoxedError;
 use crate::semantics::types::{RelationDomain, Scope, Scoped};
+use crate::semantics::validate::validators::arity::ArityMismatch;
+use crate::semantics::validate::validators::domain::DomainMismatch;
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
-use crate::{Element, Literal, SemanticError, Sentence, SentenceId, SymbolId, ToDiagnostic};
+use crate::{Element, Literal, Sentence, SentenceId, SymbolId, ToDiagnostic};
 
 /// Behavior for the `semantic::domain` cache: the argument-position sorts
 /// declared for a relation via `domain` / `domainSubclass` axioms, ordered by
@@ -214,7 +217,7 @@ impl SemanticLayer {
     fn try_extract_domain(
         &self,
         sid: SentenceId,
-    ) -> Option<Result<(SymbolId, usize, RelationDomain), SemanticError>> {
+    ) -> Option<Result<(SymbolId, usize, RelationDomain), BoxedError>> {
         let sentence = self.syntactic.sentence(sid)?;
         let head = sentence.head_symbol()?;
         Some(try_extract_domain_from(
@@ -236,7 +239,7 @@ fn try_extract_domain_from(
     domain_id: SymbolId,
     sid: SentenceId,
     sentence: &Sentence,
-) -> Result<(SymbolId, usize, RelationDomain), SemanticError> {
+) -> Result<(SymbolId, usize, RelationDomain), BoxedError> {
     let head_name = || {
         parent
             .syntactic
@@ -247,52 +250,52 @@ fn try_extract_domain_from(
 
     // arg 0 — the relation being described.
     let Some(Element::Symbol(rel)) = els.next() else {
-        return Err(SemanticError::DomainMismatch {
+        return Err(Box::new(DomainMismatch {
             sid,
             rel: head_name(),
             arg: 0,
             domain: "Relation".to_string(),
-        });
+        }));
     };
     // arg 1 — the 1-based argument position (a numeric literal).
     let pos = match els.next() {
         Some(Element::Literal(Literal::Number(n))) => match n.parse::<usize>() {
             Ok(p) if p >= 1 => p - 1,
             _ => {
-                return Err(SemanticError::DomainMismatch {
+                return Err(Box::new(DomainMismatch {
                     sid,
                     rel: head_name(),
                     arg: 1,
                     domain: "PositiveInteger".to_string(),
-                })
+                }))
             }
         },
         _ => {
-            return Err(SemanticError::DomainMismatch {
+            return Err(Box::new(DomainMismatch {
                 sid,
                 rel: head_name(),
                 arg: 1,
                 domain: "PositiveInteger".to_string(),
-            })
+            }))
         }
     };
     // arg 2 — the class constraining that position.
     let Some(Element::Symbol(class)) = els.next() else {
-        return Err(SemanticError::DomainMismatch {
+        return Err(Box::new(DomainMismatch {
             sid,
             rel: head_name(),
             arg: 2,
             domain: "Class".to_string(),
-        });
+        }));
     };
     let remaining = els.count();
     if remaining > 0 {
-        return Err(SemanticError::ArityMismatch {
+        return Err(Box::new(ArityMismatch {
             sid,
             rel: head_name(),
             expected: 3,
             got: 3 + remaining,
-        });
+        }));
     }
 
     let rd = if head_id == domain_id {

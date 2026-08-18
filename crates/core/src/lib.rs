@@ -160,7 +160,15 @@ pub use kb::ingest::{IngestResult, PromoteError};
 pub type TellResult = IngestResult;
 pub use kb::export::TptpOptions;
 pub use kb::session_tags;
-pub use semantics::errors::SemanticError;
+pub use semantics::errors::{
+    ArityMismatch, BoxedError, DisjointInstance, DisjointSubclass, DomainMismatch, DoubleRange,
+    ExistentialInAntecedent, ExistentialInIff, FreeVarInConsequent, FunctionCase, HeadInvalid,
+    HeadNotRelation, InstanceSubclassConflict, MissingArity, MissingConstituentDep,
+    MissingDocumentation, MissingDomain, MissingFormatString, MissingRange, MissingTermFormat,
+    MultipleDocumentation, MutualConstituentDep, NoEntityAncestor, NonLogicalArg, Other,
+    PartitionNonMember, PartitionViolation, PredicateCase, QuantifierVacuous, SemanticError,
+    SingleArity, SingleUseVariable, TermNoRule,
+};
 
 pub use parse::tptp::syntax::TptpLang;
 

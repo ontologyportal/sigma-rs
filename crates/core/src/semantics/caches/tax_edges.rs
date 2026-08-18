@@ -17,11 +17,14 @@ use dashmap::DashMap;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::EagerMapBehavior;
+use crate::semantics::errors::BoxedError;
 use crate::semantics::taxonomy::TaxDirection;
-use crate::semantics::types::{Scope, Scoped};
+use crate::semantics::types::{RelationRange, Scope, Scoped};
+use crate::semantics::validate::validators::arity::ArityMismatch;
+use crate::semantics::validate::validators::domain::DomainMismatch;
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
-use crate::{Element, SemanticError, Sentence, SentenceId, SymbolId, TaxRelation, ToDiagnostic};
+use crate::{Element, Sentence, SentenceId, SymbolId, TaxRelation, ToDiagnostic};
 
 /// The keyed store: `(scope, direction) → {(neighbour, rel)}`.  `Scope::Base`
 /// holds promoted-axiom edges; `Scope::Session(X)` holds X's un-promoted
@@ -203,7 +206,11 @@ impl EagerMapBehavior for TaxEdges {
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences", "syntactic::sessions"]
+        &[
+            "syntactic::sentences",
+            "syntactic::sessions",
+            "semantic::range",
+        ]
     }
 
     fn snapshot_side(&self, side: &TaxEdgesSide) -> Vec<EdgeSnap> {
@@ -420,7 +427,7 @@ impl SemanticLayer {
     fn try_extract_edge(
         &self,
         sid: SentenceId,
-    ) -> Option<Result<(SymbolId, SymbolId, TaxRelation), SemanticError>> {
+    ) -> Option<Result<(SymbolId, SymbolId, TaxRelation), BoxedError>> {
         let sentence = self.syntactic.sentence(sid)?;
         try_extract_edge_from(self, sid, &sentence)
     }
@@ -449,6 +456,26 @@ fn classify_arg(el: Option<&Element>) -> EdgeArg {
     }
 }
 
+/// The class a complex term denotes, when its head is a function declared with
+/// `rangeSubclass`.
+///
+/// `(subclass LeftHand (BodySideFn Left Hand))` with
+/// `(rangeSubclass BodySideFn BodyPart)` yields `BodyPart`: the term is some
+/// subclass of `BodyPart`, so anything below it is below `BodyPart` too. Only
+/// sound in the parent position -- resolving a term this way discards its
+/// identity, which is an upper bound for a parent but would wrongly place the
+/// whole range class beneath the child.
+fn class_denoted_by(layer: &SemanticLayer, el: Option<&Element>) -> Option<SymbolId> {
+    let Element::Sub(sub) = el? else {
+        return None;
+    };
+    let head = layer.syntactic.sentence(*sub)?.head_symbol()?;
+    match layer.range_scoped(head, Scope::Base) {
+        RelationRange::RangeSubclass(class) => Some(class),
+        _ => None,
+    }
+}
+
 /// Extract a taxonomy edge directly from a sentence body.
 ///
 /// Once the head filter confirms a taxonomy predicate, the two arguments are
@@ -460,19 +487,19 @@ fn try_extract_edge_from(
     layer: &SemanticLayer,
     sid: SentenceId,
     sentence: &Sentence,
-) -> Option<Result<(SymbolId, SymbolId, TaxRelation), SemanticError>> {
+) -> Option<Result<(SymbolId, SymbolId, TaxRelation), BoxedError>> {
     let head_sym = sentence.head_symbol()?;
     let rel = layer.tax_role_of(head_sym)?; // not a taxonomy edge → skip
     let rel_name = || rel.as_sym().name().to_string();
 
     // Taxonomy predicates are binary: exactly two arguments after the head.
     if sentence.elements.len() != 3 {
-        return Some(Err(SemanticError::ArityMismatch {
+        return Some(Err(Box::new(ArityMismatch {
             sid,
             rel: rel_name(),
             expected: 2,
             got: sentence.elements.len().saturating_sub(1),
-        }));
+        })));
     }
 
     // arg 1 (child / specific) and arg 2 (parent / general).
@@ -480,25 +507,104 @@ fn try_extract_edge_from(
         EdgeArg::Id(id) => id,
         EdgeArg::Skip => return None,
         EdgeArg::Bad => {
-            return Some(Err(SemanticError::DomainMismatch {
+            return Some(Err(Box::new(DomainMismatch {
                 sid,
                 rel: rel_name(),
                 arg: 0,
                 domain: "Entity".to_string(),
-            }))
+            })))
         }
     };
     let from = match classify_arg(sentence.elements.get(2)) {
         EdgeArg::Id(id) => id,
-        EdgeArg::Skip => return None,
+        EdgeArg::Skip => class_denoted_by(layer, sentence.elements.get(2))?,
         EdgeArg::Bad => {
-            return Some(Err(SemanticError::DomainMismatch {
+            return Some(Err(Box::new(DomainMismatch {
                 sid,
                 rel: rel_name(),
                 arg: 1,
                 domain: "Entity".to_string(),
-            }))
+            })))
         }
     };
     Some(Ok((from, to, rel)))
+}
+
+#[cfg(test)]
+mod class_term_tests {
+    use super::super::test_support::kif_layer;
+    use crate::semantics::types::Scope;
+
+    const FIXTURE: &str = "
+        (subclass Abstract Entity)
+        (subclass Relation Abstract)
+        (subclass Function Relation)
+        (subclass BinaryFunction Function)
+        (subclass Object Entity)
+        (subclass BodyPart Object)
+        (subclass Hand BodyPart)
+        (instance BodySideFn BinaryFunction)
+        (rangeSubclass BodySideFn BodyPart)
+        (subclass LeftHand (BodySideFn Left Hand))
+    ";
+
+    #[test]
+    fn range_subclass_function_term_yields_a_parent_edge() {
+        let layer = kif_layer(FIXTURE);
+        let left_hand = layer.syntactic.sym_id("LeftHand").unwrap();
+        let body_part = layer.syntactic.sym_id("BodyPart").unwrap();
+        assert!(
+            layer.has_ancestor_scoped(left_hand, body_part, Scope::Base),
+            "`(subclass LeftHand (BodySideFn Left Hand))` should place LeftHand \
+             under the function's rangeSubclass"
+        );
+        assert!(
+            layer.has_ancestor_by_name_scoped(left_hand, "Entity", Scope::Base),
+            "and therefore give it a derivation to Entity"
+        );
+    }
+
+    #[test]
+    fn function_term_without_range_subclass_yields_no_edge() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Function Relation)
+            (subclass Object Entity)
+            (subclass Hand Object)
+            (instance MysteryFn Function)
+            (subclass LeftHand (MysteryFn Left Hand))
+        ",
+        );
+        let left_hand = layer.syntactic.sym_id("LeftHand").unwrap();
+        assert!(
+            !layer.has_ancestor_by_name_scoped(left_hand, "Entity", Scope::Base),
+            "with no rangeSubclass there is nothing to resolve the term to"
+        );
+    }
+
+    #[test]
+    fn function_term_in_the_child_position_is_still_skipped() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Function Relation)
+            (subclass Object Entity)
+            (subclass BodyPart Object)
+            (subclass Hand BodyPart)
+            (instance BodySideFn Function)
+            (rangeSubclass BodySideFn BodyPart)
+            (subclass (BodySideFn Left Hand) Hand)
+        ",
+        );
+        let body_part = layer.syntactic.sym_id("BodyPart").unwrap();
+        let hand = layer.syntactic.sym_id("Hand").unwrap();
+        assert!(
+            !layer.has_ancestor_scoped(body_part, hand, Scope::Base),
+            "resolving a child-position term would wrongly place the whole \
+             range class beneath the parent"
+        );
+    }
 }
