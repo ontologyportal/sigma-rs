@@ -7,28 +7,58 @@ use crate::semantics::consts::ROOT_SYMBOL;
 use crate::semantics::errors::{semantic_error, BoxedError};
 use crate::semantics::validate::cx::Cx;
 use crate::semantics::validate::traits::{SymbolPos, SymbolValidator};
-use crate::SymbolId;
+use crate::{SentenceId, SymbolId};
 
 #[derive(Debug, Clone, Error)]
 #[error("function '{sym}' should start with an uppercase letter and end in \"Fn\"")]
 pub struct FunctionCase {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(FunctionCase, "W011", "function-case", Warning);
+semantic_error!(
+    FunctionCase,
+    "W011",
+    "function-case",
+    Warning,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 #[derive(Debug, Clone, Error)]
 #[error("predicate '{sym}' should start with a lowercase letter")]
 pub struct PredicateCase {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(PredicateCase, "W012", "predicate-case", Warning);
+semantic_error!(
+    PredicateCase,
+    "W012",
+    "predicate-case",
+    Warning,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 #[derive(Debug, Clone, Error)]
 #[error("term '{sym}' should start with an uppercase letter")]
 pub struct TermCase {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(TermCase, "W031", "term-case", Warning);
+semantic_error!(
+    TermCase,
+    "W031",
+    "term-case",
+    Warning,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 /// Casing conventions over every symbol, in head or argument position alike.
 ///
@@ -55,7 +85,7 @@ impl SymbolCase {
 impl SymbolValidator for SymbolCase {
     type Error = BoxedError;
 
-    fn check(&self, cx: &Cx<'_>, sym: SymbolId, _pos: SymbolPos) -> Vec<BoxedError> {
+    fn check(&self, cx: &Cx<'_>, sym: SymbolId, pos: SymbolPos) -> Vec<BoxedError> {
         if !cx.claim_symbol(Self::TAG, sym) {
             return Vec::new();
         }
@@ -67,14 +97,26 @@ impl SymbolValidator for SymbolCase {
 
         if cx.is_function(sym) {
             if !starts_upper || !name.ends_with("Fn") {
-                return vec![Box::new(FunctionCase { sym: name })];
+                return vec![Box::new(FunctionCase {
+                    sid: pos.sid,
+                    index: pos.index,
+                    sym: name,
+                })];
             }
         } else if cx.is_predicate(sym) {
             if starts_upper {
-                return vec![Box::new(PredicateCase { sym: name })];
+                return vec![Box::new(PredicateCase {
+                    sid: pos.sid,
+                    index: pos.index,
+                    sym: name,
+                })];
             }
         } else if !starts_upper && cx.has_ancestor_by_name(sym, &ROOT_SYMBOL.name()) {
-            return vec![Box::new(TermCase { sym: name })];
+            return vec![Box::new(TermCase {
+                sid: pos.sid,
+                index: pos.index,
+                sym: name,
+            })];
         }
         Vec::new()
     }

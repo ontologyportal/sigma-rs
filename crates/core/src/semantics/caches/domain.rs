@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::consts::DOMAIN_SUBCLASS_RELATION;
+use crate::semantics::consts::{CLASS_SYMBOL, DOMAIN_SUBCLASS_RELATION};
 use crate::semantics::errors::BoxedError;
 use crate::semantics::types::{RelationDomain, Scope, Scoped};
 use crate::semantics::validate::validators::arity::ArityMismatch;
@@ -102,6 +102,7 @@ impl CacheBehavior for Domain {
             "syntactic::sentences",
             "syntactic::residue_index",
             "syntactic::sessions",
+            "semantic::range",
         ]
     }
 
@@ -280,13 +281,20 @@ fn try_extract_domain_from(
         }
     };
     // arg 2 — the class constraining that position.
-    let Some(Element::Symbol(class)) = els.next() else {
-        return Err(Box::new(DomainMismatch {
-            sid,
-            rel: head_name(),
-            arg: 2,
-            domain: "Class".to_string(),
-        }));
+    let class_el = els.next();
+    let class_id = match class_el {
+        Some(Element::Symbol(class)) => class.id(),
+        other => match parent.class_denoted_by(other, Scope::Base) {
+            Some(id) => id,
+            None => {
+                return Err(Box::new(DomainMismatch {
+                    sid,
+                    rel: head_name(),
+                    arg: 2,
+                    domain: CLASS_SYMBOL.name().to_string(),
+                }))
+            }
+        },
     };
     let remaining = els.count();
     if remaining > 0 {
@@ -299,14 +307,14 @@ fn try_extract_domain_from(
     }
 
     let rd = if head_id == domain_id {
-        RelationDomain::Domain(class.id())
+        RelationDomain::Domain(class_id)
     } else {
         debug_assert_eq!(
             head_id,
             DOMAIN_SUBCLASS_RELATION.id(),
             "domain head should have been checked by the filter"
         );
-        RelationDomain::DomainSubclass(class.id())
+        RelationDomain::DomainSubclass(class_id)
     };
     Ok((rel.id(), pos, rd))
 }
@@ -382,5 +390,75 @@ mod tests {
         let layer = kif_layer("(subclass Foo Bar)");
         let foo = layer.syntactic.sym_id("Foo").unwrap();
         assert!(layer.domain(foo).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod class_term_tests {
+    use super::super::test_support::kif_layer;
+    use crate::semantics::types::{RelationDomain, Scope};
+
+    const FIXTURE: &str = "
+        (subclass Abstract Entity)
+        (subclass Relation Abstract)
+        (subclass Function Relation)
+        (subclass BinaryFunction Function)
+        (subclass Object Entity)
+        (subclass Bar Object)
+        (subclass Something Bar)
+        (instance FooFn BinaryFunction)
+        (rangeSubclass FooFn Bar)
+        (instance BazFn BinaryFunction)
+        (domain BazFn 1 (FooFn Something))
+        (instance QuxFn BinaryFunction)
+        (domainSubclass QuxFn 1 (FooFn Something))
+    ";
+
+    #[test]
+    fn domain_class_slot_resolves_a_range_subclass_function_term() {
+        let layer = kif_layer(FIXTURE);
+        let baz = layer.syntactic.sym_id("BazFn").unwrap();
+        let bar = layer.syntactic.sym_id("Bar").unwrap();
+        let dom = layer.domain_scoped(baz, Scope::Base);
+        assert!(
+            matches!(dom.first(), Some(RelationDomain::Domain(id)) if *id == bar),
+            "`(domain BazFn 1 (FooFn Something))` with `(rangeSubclass FooFn Bar)` \
+             should type argument 1 as Bar; got {dom:?}"
+        );
+    }
+
+    #[test]
+    fn domain_subclass_slot_resolves_a_range_subclass_function_term() {
+        let layer = kif_layer(FIXTURE);
+        let qux = layer.syntactic.sym_id("QuxFn").unwrap();
+        let bar = layer.syntactic.sym_id("Bar").unwrap();
+        let dom = layer.domain_scoped(qux, Scope::Base);
+        assert!(
+            matches!(dom.first(), Some(RelationDomain::DomainSubclass(id)) if *id == bar),
+            "got {dom:?}"
+        );
+    }
+
+    #[test]
+    fn domain_class_slot_rejects_a_plain_range_function_term() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Function Relation)
+            (subclass Object Entity)
+            (subclass Bar Object)
+            (instance FooFn Function)
+            (range FooFn Bar)
+            (instance BazFn Function)
+            (domain BazFn 1 (FooFn Something))
+        ",
+        );
+        let baz = layer.syntactic.sym_id("BazFn").unwrap();
+        assert!(
+            layer.domain_scoped(baz, Scope::Base).is_empty(),
+            "a `range` function denotes an individual, not a class, so it \
+             cannot stand in a domain class slot"
+        );
     }
 }

@@ -96,7 +96,7 @@ fn walk_sentence(cx: &Cx<'_>, sid: SentenceId, out: &mut Vec<Box<dyn SemanticErr
     }
 
     match sentence.elements.first() {
-        Some(Element::Symbol(sym)) => visit_symbol(cx, sym.id(), SymbolPos::Head, out),
+        Some(Element::Symbol(sym)) => visit_symbol(cx, sym.id(), SymbolPos { sid, index: 0 }, out),
         Some(Element::Sub(sub)) => walk_sentence(cx, *sub, out),
         _ => {}
     }
@@ -105,10 +105,12 @@ fn walk_sentence(cx: &Cx<'_>, sid: SentenceId, out: &mut Vec<Box<dyn SemanticErr
     // `(MeasureFn 35 Cm)`) and visit argument symbols: a brand-new symbol
     // typically appears ONLY in argument position (`(instance Foo Bar)`), so
     // visiting heads alone would never see it.
-    for arg in &sentence.elements[1..] {
+    for (i, arg) in sentence.elements[1..].iter().enumerate() {
         match arg {
             Element::Sub(sub_id) => walk_sentence(cx, *sub_id, out),
-            Element::Symbol(sym) => visit_symbol(cx, sym.id(), SymbolPos::Argument, out),
+            Element::Symbol(sym) => {
+                visit_symbol(cx, sym.id(), SymbolPos { sid, index: i + 1 }, out)
+            }
             _ => {}
         }
     }
@@ -154,5 +156,78 @@ fn visit_symbol(
 ) {
     for v in validators::SYMBOL {
         v.run(cx, sym, pos, out);
+    }
+}
+
+#[cfg(test)]
+mod symbol_anchoring {
+    use super::test_support::{kif_layer, root_by_head_with};
+    use crate::semantics::types::Scope;
+
+    /// A symbol-level finding anchors to the sentence the symbol occurs in and
+    /// the element index within it, so a renderer can highlight the exact
+    /// argument rather than the whole formula.
+    #[test]
+    fn symbol_findings_carry_their_occurrence_site() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Predicate Relation)
+            (subclass BinaryPredicate Predicate)
+            (instance instance BinaryPredicate)
+            (instance Adam Undeclared)
+        ",
+        );
+        let sid = root_by_head_with(&layer, "instance", "Adam");
+        let errs = layer
+            .validator_scoped(Scope::Base)
+            .validate_sentence_collect(sid);
+        let e = errs
+            .iter()
+            .find(|e| e.code() == "E001" && e.to_string().contains("Undeclared"))
+            .expect("expected E001 for `Undeclared`");
+        assert_eq!(
+            e.anchors(),
+            (vec![sid], 2),
+            "`Undeclared` is argument 2 of the sentence it occurs in"
+        );
+    }
+
+    /// The site is the *nested* sentence when the symbol occurs inside a
+    /// sub-term, not the enclosing root.
+    #[test]
+    fn nested_occurrence_anchors_to_the_sub_sentence() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Function Relation)
+            (subclass BinaryFunction Function)
+            (subclass Predicate Relation)
+            (subclass BinaryPredicate Predicate)
+            (instance instance BinaryPredicate)
+            (instance MeasureFn BinaryFunction)
+            (instance Adam (MeasureFn 35 Undeclared))
+        ",
+        );
+        let root = root_by_head_with(&layer, "instance", "Adam");
+        let errs = layer
+            .validator_scoped(Scope::Base)
+            .validate_sentence_collect(root);
+        let e = errs
+            .iter()
+            .find(|e| e.code() == "E001" && e.to_string().contains("Undeclared"))
+            .expect("expected E001 for `Undeclared`");
+        let (sids, arg) = e.anchors();
+        assert_ne!(
+            sids,
+            vec![root],
+            "should anchor to the nested function term"
+        );
+        assert_eq!(
+            arg, 2,
+            "`Undeclared` is argument 2 of `(MeasureFn 35 Undeclared)`"
+        );
     }
 }

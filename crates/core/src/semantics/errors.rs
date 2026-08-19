@@ -122,6 +122,7 @@ pub use crate::kb::semantics::{
 };
 pub use crate::semantics::caches::range::DoubleRange;
 pub use crate::semantics::validate::validators::arity::ArityMismatch;
+pub use crate::semantics::validate::validators::camel_case::TermCamelCase;
 pub use crate::semantics::validate::validators::domain::DomainMismatch;
 pub use crate::semantics::validate::validators::entity_ancestor::NoEntityAncestor;
 pub use crate::semantics::validate::validators::free_var_in_consequent::FreeVarInConsequent;
@@ -129,13 +130,16 @@ pub use crate::semantics::validate::validators::head_is_relation::HeadNotRelatio
 pub use crate::semantics::validate::validators::iff_shape::ExistentialInIff;
 pub use crate::semantics::validate::validators::implies_shape::ExistentialInAntecedent;
 pub use crate::semantics::validate::validators::non_logical_arg::NonLogicalArg;
+pub use crate::semantics::validate::validators::only_rel::TooGeneralRel;
 pub use crate::semantics::validate::validators::quantifier_vacuous::QuantifierVacuous;
 pub use crate::semantics::validate::validators::relation_metadata::{
     MissingArity, MissingDomain, MissingRange,
 };
 pub use crate::semantics::validate::validators::single_arity::SingleArity;
 pub use crate::semantics::validate::validators::single_use_variable::SingleUseVariable;
-pub use crate::semantics::validate::validators::symbol_case::{FunctionCase, PredicateCase};
+pub use crate::semantics::validate::validators::symbol_case::{
+    FunctionCase, PredicateCase, TermCase,
+};
 pub use crate::semantics::validate::Other;
 
 /// Implement [`SemanticError`] for a finding type.
@@ -294,7 +298,11 @@ mod tests {
 
     #[test]
     fn advisory_findings_map_to_warning_severity() {
-        let err = FunctionCase { sym: "foo".into() };
+        let err = FunctionCase {
+            sid: 1,
+            index: 0,
+            sym: "foo".into(),
+        };
         let d = err.diagnostic();
         assert_eq!(d.severity, Severity::Warning);
         assert_eq!(d.kind, "semantic");
@@ -316,7 +324,11 @@ mod tests {
 
     #[test]
     fn render_without_source_context_includes_code_and_message() {
-        let err = FunctionCase { sym: "Foo".into() };
+        let err = FunctionCase {
+            sid: 1,
+            index: 0,
+            sym: "Foo".into(),
+        };
         let s = err.diagnostic().render(None);
         assert!(s.contains("[semantic/function-case]"), "got {s}");
         assert!(s.contains("uppercase"), "got {s}");

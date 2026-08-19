@@ -7,29 +7,59 @@ use crate::semantics::errors::{semantic_error, BoxedError};
 use crate::semantics::types::RelationRange;
 use crate::semantics::validate::cx::Cx;
 use crate::semantics::validate::traits::{SymbolPos, SymbolValidator};
-use crate::SymbolId;
+use crate::{SentenceId, SymbolId};
 
 #[derive(Debug, Clone, Error)]
 #[error("symbol '{sym}' is missing a domain declaration for argument {idx}")]
 pub struct MissingDomain {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
     pub idx: usize,
 }
-semantic_error!(MissingDomain, "E010", "missing-domain", Error);
+semantic_error!(
+    MissingDomain,
+    "E010",
+    "missing-domain",
+    Error,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 #[derive(Debug, Clone, Error)]
 #[error("relation '{sym}' is missing inheritance from a specific arity stating class (e.g. BinaryRelation)")]
 pub struct MissingArity {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(MissingArity, "W009", "missing-arity", Warning);
+semantic_error!(
+    MissingArity,
+    "W009",
+    "missing-arity",
+    Warning,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 #[derive(Debug, Clone, Error)]
 #[error("function '{sym}' has no range declaration")]
 pub struct MissingRange {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(MissingRange, "E008", "missing-range", Error);
+semantic_error!(
+    MissingRange,
+    "E008",
+    "missing-range",
+    Error,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 /// Raises three distinct findings, so it erases to [`BoxedError`] rather than
 /// naming a single `type Error`.
@@ -41,7 +71,7 @@ impl SymbolValidator for RelationMetadata {
     fn check(&self, cx: &Cx<'_>, sym: SymbolId, pos: SymbolPos) -> Vec<BoxedError> {
         // Relation-signature completeness is a property of the head position;
         // an argument symbol is not being used as a relation here.
-        if pos != SymbolPos::Head || !cx.is_relation(sym) {
+        if !pos.is_head() || !cx.is_relation(sym) {
             return Vec::new();
         }
         let name = cx.sym_name(sym);
@@ -52,6 +82,8 @@ impl SymbolValidator for RelationMetadata {
         for (idx, rd) in cx.domain(sym).iter().enumerate() {
             if rd.id().is_none() {
                 out.push(Box::new(MissingDomain {
+                    sid: pos.sid,
+                    index: pos.index,
                     sym: name.clone(),
                     idx,
                 }));
@@ -61,7 +93,11 @@ impl SymbolValidator for RelationMetadata {
         // A relation must declare its arity via its `BinaryRelation` / ...
         // ancestry.
         if cx.arity(sym).is_none() {
-            out.push(Box::new(MissingArity { sym: name.clone() }));
+            out.push(Box::new(MissingArity {
+                sid: pos.sid,
+                index: pos.index,
+                sym: name.clone(),
+            }));
         }
 
         // A function needs a declared range. `Unknown` covers both "no range"
@@ -69,7 +105,11 @@ impl SymbolValidator for RelationMetadata {
         // surfaced as a DoubleRange diagnostic by the `semantic::range` cache
         // reactor on ingest, so only the missing case is flagged here.
         if cx.is_function(sym) && matches!(cx.range(sym), RelationRange::Unknown) {
-            out.push(Box::new(MissingRange { sym: name }));
+            out.push(Box::new(MissingRange {
+                sid: pos.sid,
+                index: pos.index,
+                sym: name,
+            }));
         }
         out
     }

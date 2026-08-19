@@ -19,7 +19,7 @@ use crate::cache::events::{Event, EventKind};
 use crate::cache::EagerMapBehavior;
 use crate::semantics::errors::BoxedError;
 use crate::semantics::taxonomy::TaxDirection;
-use crate::semantics::types::{RelationRange, Scope, Scoped};
+use crate::semantics::types::{Scope, Scoped};
 use crate::semantics::validate::validators::arity::ArityMismatch;
 use crate::semantics::validate::validators::domain::DomainMismatch;
 use crate::semantics::SemanticLayer;
@@ -456,26 +456,6 @@ fn classify_arg(el: Option<&Element>) -> EdgeArg {
     }
 }
 
-/// The class a complex term denotes, when its head is a function declared with
-/// `rangeSubclass`.
-///
-/// `(subclass LeftHand (BodySideFn Left Hand))` with
-/// `(rangeSubclass BodySideFn BodyPart)` yields `BodyPart`: the term is some
-/// subclass of `BodyPart`, so anything below it is below `BodyPart` too. Only
-/// sound in the parent position -- resolving a term this way discards its
-/// identity, which is an upper bound for a parent but would wrongly place the
-/// whole range class beneath the child.
-fn class_denoted_by(layer: &SemanticLayer, el: Option<&Element>) -> Option<SymbolId> {
-    let Element::Sub(sub) = el? else {
-        return None;
-    };
-    let head = layer.syntactic.sentence(*sub)?.head_symbol()?;
-    match layer.range_scoped(head, Scope::Base) {
-        RelationRange::RangeSubclass(class) => Some(class),
-        _ => None,
-    }
-}
-
 /// Extract a taxonomy edge directly from a sentence body.
 ///
 /// Once the head filter confirms a taxonomy predicate, the two arguments are
@@ -517,7 +497,7 @@ fn try_extract_edge_from(
     };
     let from = match classify_arg(sentence.elements.get(2)) {
         EdgeArg::Id(id) => id,
-        EdgeArg::Skip => class_denoted_by(layer, sentence.elements.get(2))?,
+        EdgeArg::Skip => layer.class_denoted_by(sentence.elements.get(2), Scope::Base)?,
         EdgeArg::Bad => {
             return Some(Err(Box::new(DomainMismatch {
                 sid,

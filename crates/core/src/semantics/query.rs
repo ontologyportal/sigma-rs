@@ -4,9 +4,8 @@
 use std::collections::HashSet;
 
 use super::taxonomy::TaxDirection;
-use super::types::{Scope, Scoped};
+use super::types::{RelationRange, Scope, Scoped};
 use crate::types::SentenceId;
-#[cfg(feature = "ask")]
 use crate::Element;
 use crate::{types::TaxRelation, SymbolId};
 
@@ -335,6 +334,22 @@ impl SemanticLayer {
             }
         }
         out.into_iter().collect()
+    }
+
+    /// The class a complex term denotes, when its head is a function declared
+    /// with `rangeSubclass`.
+    ///
+    /// A `range` (rather than `rangeSubclass`) function denotes an individual,
+    /// not a class, and resolves to `None`.
+    pub(crate) fn class_denoted_by(&self, el: Option<&Element>, scope: Scope) -> Option<SymbolId> {
+        let Element::Sub(sub) = el? else {
+            return None;
+        };
+        let head = self.syntactic.sentence(*sub)?.head_symbol()?;
+        match self.range_scoped(head, scope) {
+            RelationRange::RangeSubclass(class) => Some(class),
+            _ => None,
+        }
     }
 }
 

@@ -89,14 +89,13 @@ fn arg_satisfies_domain(cx: &Cx<'_>, arg: &Element, dom: &RelationDomain) -> boo
                     cx.is_instance(sym_id) && cx.has_ancestor(sym_id, *dom_id)
                 }
                 RelationDomain::DomainSubclass(dom_id) => {
-                    let dom_name = cx.sym_name(*dom_id);
-                    if dom_name == *ROOT_SYMBOL.name() {
-                        return true;
+                    if *dom_id == ROOT_SYMBOL.id() {
+                        true
+                    } else if *dom_id == CLASS_SYMBOL.id() {
+                        cx.is_class(sym_id)
+                    } else {
+                        cx.is_class(sym_id) && cx.has_ancestor(sym_id, *dom_id)
                     }
-                    if dom_name == "Class" {
-                        return cx.is_class(sym_id);
-                    }
-                    cx.is_class(sym_id) && cx.has_ancestor(sym_id, *dom_id)
                 }
                 RelationDomain::Unknown => true,
             }
@@ -318,5 +317,48 @@ mod issue47 {
             "`LeftHand` should reach Entity through `rangeSubclass BodySideFn \
              BodyPart`; got {codes:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod declared_via_function_term {
+    use crate::semantics::validate::test_support::{codes_in, kif_layer, root_by_head_with};
+
+    const FIXTURE: &str = "
+        (subclass Abstract Entity)
+        (subclass Relation Abstract)
+        (subclass Function Relation)
+        (subclass BinaryFunction Function)
+        (subclass Object Entity)
+        (subclass Bar Object)
+        (subclass Something Bar)
+        (instance FooFn BinaryFunction)
+        (rangeSubclass FooFn Bar)
+        (instance BazFn BinaryFunction)
+        (domain BazFn 1 (FooFn Something))
+        (subclass Unrelated Entity)
+        (instance Nope Unrelated)
+        (instance Yep Something)
+        (BazFn Yep Yep)
+        (BazFn Nope Nope)
+    ";
+
+    /// A domain declared through a function term still constrains arguments:
+    /// `(domain BazFn 1 (FooFn Something))` under `(rangeSubclass FooFn Bar)`
+    /// types argument 1 as Bar.
+    #[test]
+    fn resolved_domain_accepts_a_conforming_argument() {
+        let layer = kif_layer(FIXTURE);
+        let sid = root_by_head_with(&layer, "BazFn", "Yep");
+        let codes = codes_in(&layer, sid);
+        assert!(!codes.contains(&"E006"), "got {codes:?}");
+    }
+
+    #[test]
+    fn resolved_domain_rejects_a_non_conforming_argument() {
+        let layer = kif_layer(FIXTURE);
+        let sid = root_by_head_with(&layer, "BazFn", "Nope");
+        let codes = codes_in(&layer, sid);
+        assert!(codes.contains(&"E006"), "got {codes:?}");
     }
 }

@@ -167,7 +167,7 @@ pub use semantics::errors::{
     MissingDocumentation, MissingDomain, MissingFormatString, MissingRange, MissingTermFormat,
     MultipleDocumentation, MutualConstituentDep, NoEntityAncestor, NonLogicalArg, Other,
     PartitionNonMember, PartitionViolation, PredicateCase, QuantifierVacuous, SemanticError,
-    SingleArity, SingleUseVariable, TermNoRule,
+    SingleArity, SingleUseVariable, TermCamelCase, TermCase, TermNoRule, TooGeneralRel,
 };
 
 pub use parse::tptp::syntax::TptpLang;

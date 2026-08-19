@@ -21,6 +21,7 @@ pub(crate) mod head_is_relation;
 pub(crate) mod iff_shape;
 pub(crate) mod implies_shape;
 pub(crate) mod non_logical_arg;
+pub(crate) mod only_rel;
 pub(crate) mod quantifier_vacuous;
 pub(crate) mod relation_metadata;
 pub(crate) mod single_arity;
@@ -55,5 +56,6 @@ pub(super) const SYMBOL: &[&dyn SymbolValidatorDyn] = &[
     &entity_ancestor::EntityAncestor,
     &relation_metadata::RelationMetadata,
     &symbol_case::SymbolCase,
+    &only_rel::OnlyRel,
     &camel_case::CamelCase,
 ];

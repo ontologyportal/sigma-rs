@@ -41,13 +41,27 @@ pub(crate) trait OperatorValidator {
     fn check(&self, cx: &Cx<'_>, sid: SentenceId, op: &OpKind) -> Vec<Self::Error>;
 }
 
-/// Where a symbol sits in its sentence. Head and argument positions are not
-/// interchangeable: relation-signature checks (arity, domain, range, casing)
-/// apply only to a head, while taxonomy checks apply to both.
+/// Where a symbol occurrence sits, as the site a finding anchors to.
+///
+/// `index` is the symbol's position in the sentence's `elements`, so `0` is the
+/// head and `n` the n-th argument. That is the same numbering
+/// [`SemanticError::anchors`](crate::semantics::errors::SemanticError::anchors)
+/// reports as `highlight_arg`, so a finding can carry `sid` and `index`
+/// straight through and render with the exact argument highlighted.
+///
+/// Head and argument positions are not interchangeable: relation-signature
+/// checks (arity, domain, range) apply only to a head, while taxonomy and
+/// naming checks apply to both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SymbolPos {
-    Head,
-    Argument,
+pub(crate) struct SymbolPos {
+    pub sid: SentenceId,
+    pub index: usize,
+}
+
+impl SymbolPos {
+    pub(crate) fn is_head(&self) -> bool {
+        self.index == 0
+    }
 }
 
 /// Runs on every symbol appearing in head or argument position.

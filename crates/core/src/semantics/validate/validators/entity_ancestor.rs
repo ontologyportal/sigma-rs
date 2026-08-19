@@ -7,21 +7,31 @@ use crate::semantics::consts::ROOT_SYMBOL;
 use crate::semantics::errors::semantic_error;
 use crate::semantics::validate::cx::Cx;
 use crate::semantics::validate::traits::{SymbolPos, SymbolValidator};
-use crate::SymbolId;
+use crate::{SentenceId, SymbolId};
 
 #[derive(Debug, Clone, Error)]
 #[error("symbol '{sym}' must have a valid derivation to Entity")]
 pub struct NoEntityAncestor {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(NoEntityAncestor, "E001", "no-entity-ancestor", Error);
+semantic_error!(
+    NoEntityAncestor,
+    "E001",
+    "no-entity-ancestor",
+    Error,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 pub(crate) struct EntityAncestor;
 
 impl SymbolValidator for EntityAncestor {
     type Error = NoEntityAncestor;
 
-    fn check(&self, cx: &Cx<'_>, sym: SymbolId, _pos: SymbolPos) -> Vec<NoEntityAncestor> {
+    fn check(&self, cx: &Cx<'_>, sym: SymbolId, pos: SymbolPos) -> Vec<NoEntityAncestor> {
         // Deduplicated per root pass: the same symbol commonly recurs across a
         // formula (head, arguments, nested subs) and should yield one finding.
         if !cx.claim_symbol("E001", sym) {
@@ -31,6 +41,8 @@ impl SymbolValidator for EntityAncestor {
             return Vec::new();
         }
         vec![NoEntityAncestor {
+            sid: pos.sid,
+            index: pos.index,
             sym: cx.sym_name(sym),
         }]
     }

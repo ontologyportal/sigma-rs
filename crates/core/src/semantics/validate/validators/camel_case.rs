@@ -6,14 +6,24 @@ use thiserror::Error;
 use crate::semantics::errors::semantic_error;
 use crate::semantics::validate::cx::Cx;
 use crate::semantics::validate::traits::{SymbolPos, SymbolValidator};
-use crate::SymbolId;
+use crate::{SentenceId, SymbolId};
 
 #[derive(Debug, Clone, Error)]
 #[error("term '{sym}' should use CamelCase, not underscores or hyphens")]
 pub struct TermCamelCase {
+    pub sid: SentenceId,
+    pub index: usize,
     pub sym: String,
 }
-semantic_error!(TermCamelCase, "W032", "term-camel-case", Warning);
+semantic_error!(
+    TermCamelCase,
+    "W032",
+    "term-camel-case",
+    Warning,
+    fn anchors(&self) -> (Vec<SentenceId>, i32) {
+        (vec![self.sid], self.index as i32)
+    },
+);
 
 pub(crate) struct CamelCase;
 
@@ -24,13 +34,17 @@ impl CamelCase {
 impl SymbolValidator for CamelCase {
     type Error = TermCamelCase;
 
-    fn check(&self, cx: &Cx<'_>, sym: SymbolId, _pos: SymbolPos) -> Vec<TermCamelCase> {
+    fn check(&self, cx: &Cx<'_>, sym: SymbolId, pos: SymbolPos) -> Vec<TermCamelCase> {
         if !cx.claim_symbol(Self::TAG, sym) {
             return Vec::new();
         }
         let name = cx.sym_name(sym);
         if name.contains('_') || name.contains('-') {
-            return vec![TermCamelCase { sym: name }];
+            return vec![TermCamelCase {
+                sid: pos.sid,
+                index: pos.index,
+                sym: name,
+            }];
         }
         Vec::new()
     }

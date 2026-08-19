@@ -59,7 +59,10 @@ impl CacheBehavior for Range {
                         };
                         let class_id = match sentence.elements.get(2) {
                             Some(Element::Symbol(sym)) => sym.id(),
-                            _ => continue,
+                            other => match parent.class_denoted_by(other, scope) {
+                                Some(id) => id,
+                                None => continue,
+                            },
                         };
                         return Some(make(class_id));
                     }
@@ -85,6 +88,13 @@ impl CacheBehavior for Range {
                 return session;
             }
         }
+        RelationRange::Unknown
+    }
+
+    /// A self-referential declaration such as `(range FooFn (FooFn X))` would
+    /// otherwise recurse into this cache for the same key. There is no range to
+    /// report for it.
+    fn on_cycle(&self, _parent: &SemanticLayer, _key: &Scoped<SymbolId>) -> RelationRange {
         RelationRange::Unknown
     }
 
@@ -276,13 +286,20 @@ fn try_extract_range_from(
             domain: "Function".to_string(),
         }));
     };
-    let Some(Element::Symbol(class)) = els.next() else {
-        return Err(Box::new(DomainMismatch {
-            sid,
-            rel: head_name(),
-            arg: 1,
-            domain: "Function".to_string(),
-        }));
+    let class_el = els.next();
+    let class_id = match class_el {
+        Some(Element::Symbol(class)) => class.id(),
+        other => match parent.class_denoted_by(other, Scope::Base) {
+            Some(id) => id,
+            None => {
+                return Err(Box::new(DomainMismatch {
+                    sid,
+                    rel: head_name(),
+                    arg: 1,
+                    domain: "Function".to_string(),
+                }))
+            }
+        },
     };
     let remaining = els.count();
     if remaining > 0 {
@@ -294,14 +311,14 @@ fn try_extract_range_from(
         }));
     }
     if head_id == range_id {
-        Ok((func.id(), RelationRange::Range(class.id())))
+        Ok((func.id(), RelationRange::Range(class_id)))
     } else {
         debug_assert_eq!(
             head_id,
             RANGE_SUB_REL_CLASS.id(),
             "range head should have been checked by the filter"
         );
-        Ok((func.id(), RelationRange::RangeSubclass(class.id())))
+        Ok((func.id(), RelationRange::RangeSubclass(class_id)))
     }
 }
 
@@ -337,5 +354,68 @@ mod tests {
         let layer = kif_layer("(subclass Foo Bar)");
         let foo = layer.syntactic.sym_id("Foo").unwrap();
         assert!(matches!(layer.range(foo), RelationRange::Unknown));
+    }
+}
+
+#[cfg(test)]
+mod class_term_tests {
+    use super::super::test_support::kif_layer;
+    use crate::semantics::types::{RelationRange, Scope};
+
+    const FIXTURE: &str = "
+        (subclass Abstract Entity)
+        (subclass Relation Abstract)
+        (subclass Function Relation)
+        (subclass BinaryFunction Function)
+        (subclass Object Entity)
+        (subclass Bar Object)
+        (subclass Something Bar)
+        (instance FooFn BinaryFunction)
+        (rangeSubclass FooFn Bar)
+        (instance MooFn BinaryFunction)
+        (range MooFn (FooFn Something))
+        (instance NooFn BinaryFunction)
+        (rangeSubclass NooFn (FooFn Something))
+    ";
+
+    #[test]
+    fn range_slot_resolves_a_range_subclass_function_term() {
+        let layer = kif_layer(FIXTURE);
+        let moo = layer.syntactic.sym_id("MooFn").unwrap();
+        let bar = layer.syntactic.sym_id("Bar").unwrap();
+        assert!(
+            matches!(layer.range_scoped(moo, Scope::Base), RelationRange::Range(id) if id == bar),
+            "`(range MooFn (FooFn Something))` with `(rangeSubclass FooFn Bar)` \
+             should give MooFn the range Bar"
+        );
+    }
+
+    #[test]
+    fn range_subclass_slot_resolves_a_range_subclass_function_term() {
+        let layer = kif_layer(FIXTURE);
+        let noo = layer.syntactic.sym_id("NooFn").unwrap();
+        let bar = layer.syntactic.sym_id("Bar").unwrap();
+        assert!(matches!(
+            layer.range_scoped(noo, Scope::Base),
+            RelationRange::RangeSubclass(id) if id == bar
+        ));
+    }
+
+    #[test]
+    fn self_referential_range_declaration_does_not_recurse() {
+        let layer = kif_layer(
+            "
+            (subclass Abstract Entity)
+            (subclass Relation Abstract)
+            (subclass Function Relation)
+            (instance FooFn Function)
+            (range FooFn (FooFn Something))
+        ",
+        );
+        let foo = layer.syntactic.sym_id("FooFn").unwrap();
+        assert!(
+            matches!(layer.range_scoped(foo, Scope::Base), RelationRange::Unknown),
+            "the cycle sentinel should stand in rather than recursing"
+        );
     }
 }
