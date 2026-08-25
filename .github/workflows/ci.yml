@@ -20,7 +20,7 @@
 #                 testing) the `sigmakee` CLI with integrated-prover.
 #                 Catches platform-specific regressions in the
 #                 Vampire C++ build + Rust FFI surface before a
-#                 tagged release hits `release-sumo.yml`.  `fail-
+#                 tagged release hits `release-binaries.yml`.  `fail-
 #                 fast: false` so a Windows-only failure doesn't
 #                 cancel the proven-good platforms.
 #
@@ -32,7 +32,7 @@
 #
 # Editor-side packaging (VSCode extension, Neovim config, etc.) is
 # explicitly out of scope for this CI -- the sigmakee CLI is published
-# via release-sumo.yml.
+# via release-binaries.yml.
 
 name: Testing
 
@@ -177,6 +177,41 @@ jobs:
         if: matrix.test
         run: cargo test --workspace --all-features
 
+  vscode:
+    name: Test Compile VSCode extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        # No Rust toolchain in this job, and none needed: sigmakee builds
+        # its wasm on `prepack`, so a plain install stays Node-only.
+        run: npm ci
+
+      - name: Type-check + compile
+        # `-w sigmakee-vscode` because the scripts live on the workspace
+        # member, not the repo root. This also runs `sync:language`, which
+        # copies the shared grammars out of @sigma/language.
+        run: npm run compile -w sigmakee-vscode
+
+      - name: Package (without bundled server -- smoke only)
+        # Verifies the VSIX assembles cleanly with an empty
+        # server/ dir; the extension's resolver falls back to
+        # PATH lookup at activation time in that mode.
+        #
+        # `--no-dependencies` is correct here: esbuild inlines every runtime
+        # dependency into dist/extension.js, so there is nothing left in
+        # node_modules/ for the VSIX to carry. vsce runs `vscode:prepublish`
+        # itself, which re-syncs assets, type-checks and builds the
+        # production bundle.
+        working-directory: packages/vscode
+        run: npx --no vsce package --pre-release --no-dependencies
+  
   # -- Generalization audit: no LSP leakage into sigmakee-rs-core ---------------------
   audit:
     name: audit / generalization gate

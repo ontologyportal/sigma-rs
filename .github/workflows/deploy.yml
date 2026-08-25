@@ -1,0 +1,156 @@
+# Web application deployment
+#
+# This action triggers on any push or PR to main and builds and 
+# deploys the web application to remote server (Cloudflare)
+name: Web Application Deployment
+
+on:
+  push:
+    branches: ['main']
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  VAMPIRE_VERSION: v5.0.1
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+jobs:
+  cloudflare:
+    name: build web
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # The wasm package is compiled from Rust below, so this job needs a
+      # toolchain. Declared explicitly rather than relying on the runner
+      # image happening to ship one.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deploy-wasm
+
+      - name: Install npm workspace
+        run: npm ci
+
+      - name: Build the wasm package
+        run: npm run build --workspace sigmakee
+
+      # The Vampire (WASM) backend needs its own toolchain: the Emscripten SDK
+      # (compiles Vampire's C++ to wasm) and gawk (the build's patch step
+      # requires GNU awk; Ubuntu's default awk already is gawk, but the script
+      # checks `command -v gawk` explicitly, so install it under that name
+      # too). Best-effort like the Rust wasm toolchain above - a missing
+      # Vampire backend degrades gracefully in the UI (sigma.worker.js).
+      - uses: emscripten-core/setup-emsdk@v15
+        with:
+          actions-cache-folder: emsdk-cache
+
+      - name: Verify emscripten install
+        run: emcc -v
+      
+      - name: Install gawk and cmake
+        run: sudo apt-get update && sudo apt-get install -y gawk cmake
+
+      - name: Verify cmake install
+        run: cmake --version && gawk --version
+
+      # Extract the pinned vampireGuide ref so the expensive C++ -> WASM
+      # compile below is cache-keyed on it: a cache hit means "nothing to do,
+      # the built vampire.wasm from the last run at this pin is still good."
+      - name: Read pinned Vampire guide ref
+        id: vampire-ref
+        run: |
+          ref=$(grep -oE 'VAMPIRE_GUIDE_REF=\$\{VAMPIRE_GUIDE_REF:-[0-9a-f]+\}' packages/vampire/build.sh \
+                | grep -oE '[0-9a-f]{8,}')
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "pinned vampireGuide ref: $ref"
+
+      # Keyed on the pin above. The build's own skip-stamp
+      # (.vampire-cache/BUILT_REF) is not restored here and does not need to
+      # be: a cache hit skips the build step outright, a miss rebuilds fully.
+      - name: Cache Vampire WASM build output
+        id: cache-vampire-wasm
+        uses: actions/cache@v4
+        with:
+          path: packages/vampire/dist
+          key: vampire-wasm-${{ steps.vampire-ref.outputs.ref }}
+
+      - name: Build the Vampire WASM backend
+        if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
+        run: npm run build --workspace @sigma/vampire
+
+      - name: Build & stage the web app
+        id: wapp
+        # SKIP_VAMPIRE/NO_REBUILD: both are already built by the steps above,
+        # so the mirror step only needs to copy Vampire into the site.
+        #
+        # Built twice because the mount point is baked into the bundle: Pages
+        # serves this under /browse/, Cloudflare at its root. See vite.config.js.
+        env:
+          SKIP_VAMPIRE: '1'
+          NO_REBUILD: '1'
+        run: |
+          VITE_BASE=/ npm run build --workspace @sigma/web
+          mkdir -p site-cloudflare
+          cp -R packages/web/dist/* site-cloudflare/
+
+          # The deploy gate below keys off this file.
+          test -f site-cloudflare/index.html
+
+      # Stamp the demo with the workspace crate version + this run's build
+      # number/commit/timestamp. Read client-side by the Settings modal
+      # (app.js fetches ./version.json). Written into the deploy artifact
+      # only — nothing is committed back to the repo — so it updates on
+      # every deploy (push or nightly) with zero write-back complexity.
+      - name: Write web app version info
+        if: steps.wapp.outcome == 'success'
+        run: |
+          pkg_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          cat > site-cloudflare/version.json <<EOF
+          {
+            "version": "${pkg_version}",
+            "build": ${GITHUB_RUN_NUMBER},
+            "commit": "${GITHUB_SHA:0:7}",
+            "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+          cat site-cloudflare/version.json
+
+      # ---- Cloudflare Page Deployment ----
+      # This step skips quietly until the
+      # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.
+      - name: Deploy Web App to Cloudflare Pages
+        if: ${{ steps.wapp.outcome == 'success' && env.CLOUDFLARE_API_TOKEN != '' }}
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy site-cloudflare --project-name=sigma-rs-browse --branch=main
+
+      # Local runs (act) and forks have no Cloudflare credentials, so the
+      # deploy above is skipped. `wrangler pages deploy` has no --dry-run to
+      # stand in for it, so report what WOULD be uploaded instead -- that
+      # still exercises and validates the built artifact end to end.
+      - name: Report deploy contents (no Cloudflare credentials)
+        if: ${{ steps.wapp.outcome == 'success' && env.CLOUDFLARE_API_TOKEN == '' }}
+        run: |
+          set -euo pipefail
+          echo "CLOUDFLARE_API_TOKEN not set -- skipping deploy."
+          echo "Would deploy site-cloudflare/ to sigma-rs-browse (branch main):"
+          du -sh site-cloudflare
+          find site-cloudflare -maxdepth 2 -type f | head -40
+          test -f site-cloudflare/index.html
+          test -f site-cloudflare/version.json

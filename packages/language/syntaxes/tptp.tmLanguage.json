@@ -1,0 +1,256 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "TPTP",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#include-directive" },
+    { "include": "#annotated-formula" },
+    { "include": "#strings" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.percentage.tptp",
+          "match": "%.*$"
+        },
+        {
+          "name": "comment.block.tptp",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "include-directive": {
+      "patterns": [
+        {
+          "name": "keyword.control.include.tptp",
+          "match": "\\binclude\\b"
+        }
+      ]
+    },
+    "annotated-formula": {
+      "patterns": [
+        {
+          "comment": "Formula type keywords: thf, tff, tcf, fof, cnf, tpi",
+          "name": "keyword.control.formula-type.tptp",
+          "match": "\\b(thf|tff|tcf|fof|cnf|tpi)\\b"
+        },
+        {
+          "comment": "Formula roles",
+          "name": "keyword.other.role.tptp",
+          "match": "\\b(axiom|hypothesis|definition|assumption|lemma|theorem|corollary|conjecture|negated_conjecture|plain|type|interpretation|fi_domain|fi_functors|fi_predicates|unknown)\\b"
+        },
+        { "include": "#logical-connectives" },
+        { "include": "#quantifiers" },
+        { "include": "#type-keywords" },
+        { "include": "#defined-symbols" },
+        { "include": "#variables" },
+        { "include": "#atoms" }
+      ]
+    },
+    "logical-connectives": {
+      "patterns": [
+        {
+          "comment": "Equivalence and non-equivalence",
+          "name": "keyword.operator.logical.equivalence.tptp",
+          "match": "<=>|<~>"
+        },
+        {
+          "comment": "Implication operators",
+          "name": "keyword.operator.logical.implication.tptp",
+          "match": "=>|<="
+        },
+        {
+          "comment": "Disjunction and conjunction",
+          "name": "keyword.operator.logical.tptp",
+          "match": "[|&]"
+        },
+        {
+          "comment": "Negation",
+          "name": "keyword.operator.logical.negation.tptp",
+          "match": "~"
+        },
+        {
+          "comment": "Equality and inequality",
+          "name": "keyword.operator.comparison.tptp",
+          "match": "!=|="
+        },
+        {
+          "comment": "Higher-order application",
+          "name": "keyword.operator.application.tptp",
+          "match": "@"
+        },
+        {
+          "comment": "Lambda abstraction",
+          "name": "keyword.operator.lambda.tptp",
+          "match": "\\^"
+        },
+        {
+          "comment": "Type arrow",
+          "name": "keyword.operator.type-arrow.tptp",
+          "match": ">"
+        },
+        {
+          "comment": "Sequent operator",
+          "name": "keyword.operator.sequent.tptp",
+          "match": "-->"
+        }
+      ]
+    },
+    "quantifiers": {
+      "patterns": [
+        {
+          "comment": "Universal quantifier",
+          "name": "keyword.operator.quantifier.universal.tptp",
+          "match": "!"
+        },
+        {
+          "comment": "Existential quantifier",
+          "name": "keyword.operator.quantifier.existential.tptp",
+          "match": "\\?"
+        },
+        {
+          "comment": "Pi type (higher-order universal)",
+          "name": "keyword.operator.quantifier.pi.tptp",
+          "match": "!>"
+        },
+        {
+          "comment": "Sigma type (higher-order existential)",
+          "name": "keyword.operator.quantifier.sigma.tptp",
+          "match": "\\?\\*"
+        },
+        {
+          "comment": "Indefinite description",
+          "name": "keyword.operator.description.indefinite.tptp",
+          "match": "@\\+"
+        },
+        {
+          "comment": "Definite description",
+          "name": "keyword.operator.description.definite.tptp",
+          "match": "@-"
+        }
+      ]
+    },
+    "type-keywords": {
+      "patterns": [
+        {
+          "comment": "Built-in types",
+          "name": "support.type.builtin.tptp",
+          "match": "\\$(i|o|tType|int|rat|real)\\b"
+        }
+      ]
+    },
+    "defined-symbols": {
+      "patterns": [
+        {
+          "comment": "Boolean constants",
+          "name": "constant.language.boolean.tptp",
+          "match": "\\$(true|false)\\b"
+        },
+        {
+          "comment": "Conditional",
+          "name": "support.function.builtin.conditional.tptp",
+          "match": "\\$ite\\b"
+        },
+        {
+          "comment": "Defined predicates (comparison)",
+          "name": "support.function.builtin.comparison.tptp",
+          "match": "\\$(less|lesseq|greater|greatereq|is_int|is_rat)\\b"
+        },
+        {
+          "comment": "Defined arithmetic functions",
+          "name": "support.function.builtin.arithmetic.tptp",
+          "match": "\\$(sum|difference|product|quotient|quotient_e|quotient_t|quotient_f|remainder_e|remainder_t|remainder_f|uminus|abs|floor|ceiling|truncate|round|to_int|to_rat|to_real)\\b"
+        },
+        {
+          "comment": "Distinct predicate",
+          "name": "support.function.builtin.distinct.tptp",
+          "match": "\\$distinct\\b"
+        },
+        {
+          "comment": "Modal operators",
+          "name": "support.function.builtin.modal.tptp",
+          "match": "\\$(modal|alethic_modal|deontic_modal|epistemic_modal|doxastic_modal|temporal_instant)\\b"
+        },
+        {
+          "comment": "Other defined symbols ($ prefix)",
+          "name": "support.function.builtin.tptp",
+          "match": "\\$[a-z][a-zA-Z0-9_]*"
+        },
+        {
+          "comment": "System-defined symbols ($$ prefix)",
+          "name": "support.function.system.tptp",
+          "match": "\\$\\$[a-z][a-zA-Z0-9_]*"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "comment": "Variables start with uppercase or underscore",
+          "name": "variable.other.tptp",
+          "match": "\\b[A-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "atoms": {
+      "patterns": [
+        {
+          "comment": "Single-quoted atoms",
+          "name": "string.quoted.single.tptp",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.tptp",
+              "match": "\\\\."
+            }
+          ]
+        },
+        {
+          "comment": "Lowercase atoms (predicates/functions)",
+          "name": "entity.name.function.tptp",
+          "match": "\\b[a-z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "comment": "Distinct objects (double-quoted)",
+          "name": "string.quoted.double.tptp",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.tptp",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "comment": "Real numbers with exponent",
+          "name": "constant.numeric.real.tptp",
+          "match": "[-+]?\\d+\\.\\d+([eE][-+]?\\d+)?"
+        },
+        {
+          "comment": "Rational numbers",
+          "name": "constant.numeric.rational.tptp",
+          "match": "[-+]?\\d+/\\d+"
+        },
+        {
+          "comment": "Integers",
+          "name": "constant.numeric.integer.tptp",
+          "match": "[-+]?\\d+"
+        }
+      ]
+    }
+  },
+  "scopeName": "source.tptp"
+}

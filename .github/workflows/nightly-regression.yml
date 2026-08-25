@@ -24,7 +24,7 @@
 #
 # One-time repo setup: Settings → Pages → Source: "GitHub Actions".
 
-name: Web App Deployment
+name: Nightly Regression Testing Report
 
 on:
   push:
@@ -54,10 +54,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Bump to track a newer vprover/vampire release; must have a
-  # vampire-Linux-X64.zip release asset (true from v5.0.0 on).
-  VAMPIRE_VERSION: v5.0.1
-  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
   regression:
@@ -204,123 +200,6 @@ jobs:
             curl -fsSL "${url%/}/$f?run=$GITHUB_RUN_ID" -o "site/$f" \
               && echo "restored $f" || echo "no prior $f (first deploy?)"
           done
-
-      # ---- In-browser demo: every build (push + nightly) --------------------
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install npm workspace (for the demo)
-        # Deliberately not best-effort: every step below needs these
-        # node_modules, and sigmakee's `prepare` hook builds the wasm package
-        # here. Also supplies `binaryen` for the wasm-opt size pass.
-        run: npm ci
-
-      # The Vampire (WASM) backend needs its own toolchain: the Emscripten SDK
-      # (compiles Vampire's C++ to wasm) and gawk (the build's patch step
-      # requires GNU awk; Ubuntu's default awk already is gawk, but the script
-      # checks `command -v gawk` explicitly, so install it under that name
-      # too). Best-effort like the Rust wasm toolchain above - a missing
-      # Vampire backend degrades gracefully in the UI (sigma.worker.js).
-      - name: Install Emscripten SDK + gawk (for the Vampire WASM backend)
-        continue-on-error: true
-        uses: mymindstorm/setup-emsdk@v14
-        with:
-          # No specific version pinned here: the Vampire build's own pin
-          # (VAMPIRE_GUIDE_REF) is what determines reproducibility of the
-          # *output*; the emsdk cache below is keyed on that same ref so a
-          # guide bump also gets a fresh emsdk if setup-emsdk's default moves.
-          actions-cache-folder: emsdk-cache
-
-      - name: Install gawk
-        continue-on-error: true
-        run: sudo apt-get install -y gawk
-
-      # Extract the pinned vampireGuide ref so the expensive C++ -> WASM
-      # compile below is cache-keyed on it: a cache hit means "nothing to do,
-      # the built vampire.wasm from the last run at this pin is still good."
-      - name: Read pinned Vampire guide ref
-        id: vampire-ref
-        run: |
-          ref=$(grep -oE 'VAMPIRE_GUIDE_REF=\$\{VAMPIRE_GUIDE_REF:-[0-9a-f]+\}' packages/vampire/build.sh \
-                | grep -oE '[0-9a-f]{8,}')
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "pinned vampireGuide ref: $ref"
-
-      # Keyed on the pin above. The build's own skip-stamp
-      # (.vampire-cache/BUILT_REF) is not restored here and does not need to
-      # be: a cache hit skips the build step outright, a miss rebuilds fully.
-      - name: Cache Vampire WASM build output
-        id: cache-vampire-wasm
-        uses: actions/cache@v4
-        with:
-          path: packages/vampire/dist
-          key: vampire-wasm-${{ steps.vampire-ref.outputs.ref }}
-
-      - name: Build the Vampire WASM backend
-        continue-on-error: true
-        if: steps.cache-vampire-wasm.outputs.cache-hit != 'true'
-        run: npm run build --workspace @sigma/vampire
-
-      - name: Build & stage the in-browser demo at /browse
-        id: demo
-        continue-on-error: true
-        # SKIP_VAMPIRE/NO_REBUILD: both are already built by the steps above,
-        # so the mirror step only needs to copy Vampire into the site.
-        #
-        # Built twice because the mount point is baked into the bundle: Pages
-        # serves this under /browse/, Cloudflare at its root. See vite.config.js.
-        env:
-          SKIP_VAMPIRE: '1'
-          NO_REBUILD: '1'
-        run: |
-          VITE_BASE=/browse/ npm run build --workspace @sigma/web
-          mkdir -p site/browse
-          cp -R packages/web/dist/* site/browse/
-
-          VITE_BASE=/ npm run build --workspace @sigma/web
-          mkdir -p site-cloudflare
-          cp -R packages/web/dist/* site-cloudflare/
-
-          # The deploy gate below keys off this file.
-          test -f site/browse/index.html
-
-      # Stamps the demo with the workspace crate version + this run's build
-      # number/commit/timestamp. Read client-side by the Settings modal
-      # (app.js fetches ./version.json). Written into the deploy artifact
-      # only — nothing is committed back to the repo — so it updates on
-      # every deploy (push or nightly) with zero write-back complexity.
-      - name: Write demo version info
-        if: steps.demo.outcome == 'success'
-        run: |
-          pkg_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          cat > site/browse/version.json <<EOF
-          {
-            "version": "${pkg_version}",
-            "build": ${GITHUB_RUN_NUMBER},
-            "commit": "${GITHUB_SHA:0:7}",
-            "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
-          cat site/browse/version.json
-
-      # ---- Cloudflare Pages: the demo, with COOP/COEP headers ---------------
-      # GitHub Pages cannot send the Cross-Origin-Opener-Policy/-Embedder-Policy
-      # response headers that the pthreads-built vampire.wasm needs for
-      # SharedArrayBuffer, so the demo ALSO deploys to Cloudflare Pages, where
-      # web/_headers supplies them — that copy has a working Vampire backend.
-      # The GitHub Pages /browse copy stays deployed as-is (everything except
-      # Vampire works there). This step skips quietly until the
-      # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.
-      - name: Deploy demo to Cloudflare Pages
-        if: ${{ steps.demo.outcome == 'success' && env.CLOUDFLARE_API_TOKEN != '' }}
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site-cloudflare --project-name=sigma-rs-browse --branch=main
 
       # A Pages deploy REPLACES the whole site, so publishing an artifact with
       # no browse/ in it would delete the live demo -- silently, since the demo

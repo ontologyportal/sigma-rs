@@ -13,11 +13,13 @@
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
-    "./language-configuration.json": "./config/language-configuration.json",
+    "./kif-language-configuration.json": "./configs/kif-language-configuration.json",
+    "./tptp-language-configuration.json": "./configs/tptp-language-configuration.json",
     "./syntaxes/kif.tmLanguage.json": "./syntaxes/kif.tmLanguage.json",
+    "./syntaxes/tptp.tmLanguage.json": "./syntaxes/tptp.tmLanguage.json",
     "./package.json": "./package.json"
   },
-  "files": ["src", "config", "syntaxes"],
+  "files": ["src", "configs", "syntaxes"],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ontologyportal/sigma-rs.git",

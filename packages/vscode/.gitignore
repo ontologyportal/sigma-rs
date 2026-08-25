@@ -1,0 +1,16 @@
+.claude/
+*.vsix
+node_modules/
+dist/
+out/
+.vscode-test/
+# macOS dotfiles
+.DS_Store
+
+# Staged by `npm run sync:assets` (see scripts/sync-assets.mjs): language
+# assets from packages/language, and the webview's vendored UMD bundles.
+# VSCode needs them physically present here; edit the sources, never these.
+/kif-language-configuration.json
+/tptp-language-configuration.json
+/syntaxes/
+/vendor/

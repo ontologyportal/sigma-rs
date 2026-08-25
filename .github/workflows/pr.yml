@@ -1,6 +1,7 @@
----
+# Gates to run on PRs. Right now, all it does is check for the 
+# conventional commit format
 # From: https://jcouball.substack.com/p/enforce-conventional-commits-with
-name: Conventional Commits
+name: Pull Request Gates
 
 permissions:
   contents: read

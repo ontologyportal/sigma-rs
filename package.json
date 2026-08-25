@@ -1,9 +1,14 @@
 {
   "name": "sigma-rs",
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "web": "npm run dev --workspace @sigma/web",
-    "build": "npm run build --workspace sigmakee"
+    "build": "npm run build --workspace sigmakee",
+    "vscode:compile": "npm run compile --workspace sigmakee-vscode",
+    "vscode:package": "npm run package --workspace sigmakee-vscode",
+    "lsp:install": "npm run server:install --workspace sigmakee-vscode"
   }
 }

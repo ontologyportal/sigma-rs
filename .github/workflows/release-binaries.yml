@@ -1,20 +1,16 @@
-# Tag-triggered release workflow for the `sumo` CLI (sigmakee crate).
+# Tag-triggered release workflow for this repo's native binaries:
+# the `sumo` CLI (sigmakee crate) and the `sumo-lsp` language server
+# (bundled by the VSCode extension).
 #
-# Pushing a tag of the form `sigmakee-vX.Y.Z` builds the `sumo`
-# binary for five target triples in parallel and uploads the
-# stripped archives to the corresponding GitHub release:
+# Pushing a tag of the form `sigmakee-vX.Y.Z` builds both binaries
+# for five target triples in parallel and uploads the stripped
+# archives to the corresponding GitHub release:
 #
 #   * darwin-arm64   (macos-15,         Apple Silicon)
 #   * darwin-x64     (macos-15-intel,   Intel)
 #   * linux-x64-gnu  (ubuntu-latest,    x86_64 glibc)
 #   * linux-arm64-gnu (ubuntu-24.04-arm, native arm64 runner)
 #   * win32-x64      (windows-latest,   x86_64 MSVC)
-#
-# Unlike `sumo-lsp`, the `sumo` binary pulls in the full KB stack
-# including the vampire-sys C++ backend via CMake (fetched by Cargo as an
-# ordinary git dependency, no submodule checkout needed), and the Linux
-# job installs `cmake` / `build-essential` explicitly.  macOS + Windows
-# runners ship with CMake preinstalled.
 #
 # Windows is the one exception: vampire-sys's embedded C++ FFI build
 # doesn't currently compile under MSVC, so the win32-x64 job builds
@@ -41,13 +37,13 @@
 # binary above (drops `integrated-prover`; see the script for why) and
 # uploaded as its own release asset, not the same archive.
 
-name: Build Release
+name: Build Binaries
 
 on:
   push:
     tags:
       - 'sigmakee-v*'
-  # Callable from the release-version.yml orchestrator: a tag pushed with the
+  # Callable from the release.yml orchestrator: a tag pushed with the
   # default GITHUB_TOKEN deliberately does not trigger tag workflows
   # (GitHub's recursion guard), so the orchestrator invokes this one
   # directly with the tag it just created.  Manually pushed tags still
@@ -78,26 +74,31 @@ jobs:
             archive: tar.gz
             label:   darwin-arm64
             bin:     sumo
+            lsp:     sumo-lsp
           - target:  x86_64-apple-darwin
             os:      macos-15-intel
             archive: tar.gz
             label:   darwin-x64
             bin:     sumo
+            lsp:     sumo-lsp
           - target:  x86_64-unknown-linux-gnu
             os:      ubuntu-latest
             archive: tar.gz
             label:   linux-x64-gnu
             bin:     sumo
+            lsp:     sumo-lsp
           - target:  aarch64-unknown-linux-gnu
             os:      ubuntu-24.04-arm
             archive: tar.gz
             label:   linux-arm64-gnu
             bin:     sumo
+            lsp:     sumo-lsp
           - target:  x86_64-pc-windows-msvc
             os:      windows-latest
             archive: zip
             label:   win32-x64
             bin:     sumo.exe
+            lsp:     sumo-lsp.exe
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,7 +125,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-sumo-${{ matrix.target }}
+          key: release-binaries-${{ matrix.target }}
 
       - name: Build sumo CLI (release, --target)
         # `SUMO_BUILD_KIND=release` is embedded into the binary by
@@ -191,7 +192,7 @@ jobs:
 
       - name: Upload to release
         # `gh release upload` against a release created up front (by the
-        # release-version.yml orchestrator, or the ensure-step below for
+        # release.yml orchestrator, or the ensure-step below for
         # manually pushed tags).  Replaces softprops/action-gh-release:
         # its per-leg auto-create raced across the matrix and the create
         # call was observed reproducibly 503ing; uploads to an EXISTING
@@ -212,6 +213,67 @@ jobs:
             if gh release upload "${RELEASE_TAG}" \
                  "${STAGING}.${{ matrix.archive }}" \
                  "${STAGING}.${{ matrix.archive }}.sha256" \
+                 --clobber; then
+              exit 0
+            fi
+            echo "upload attempt $i failed; retrying in 20s" >&2
+            sleep 20
+          done
+          exit 1
+
+      # ---- sumo-lsp: the language server the VSCode extension bundles ------
+      #
+      # Built from the same commit and shipped as its own archive rather than
+      # folded into the `sumo` tarball: the extension downloads it on its own,
+      # and `sumo update`'s self-replace flow expects the CLI archive to hold
+      # exactly one binary.
+      #
+      # No CMake and no feature juggling here -- `sumo-lsp` pins the SDK with
+      # `default-features = false`, so it has neither the vampire-sys FFI build
+      # nor LMDB in its graph. That is also why it builds on Windows with the
+      # same command as everywhere else.
+      - name: Build sumo-lsp (release, --target)
+        run: cargo build -p sumo-lsp --release --locked --target ${{ matrix.target }}
+
+      - name: Strip sumo-lsp (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: strip target/${{ matrix.target }}/release/sumo-lsp
+
+      - name: Stage sumo-lsp artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${RELEASE_TAG#sigmakee-v}"
+          staging="sumo-lsp-${ver}-${{ matrix.label }}"
+          mkdir "${staging}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.lsp }}" "${staging}/"
+          echo "LSP_STAGING=${staging}" >> "${GITHUB_ENV}"
+
+      - name: Package sumo-lsp (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          tar -czf "${LSP_STAGING}.tar.gz" "${LSP_STAGING}"
+          shasum -a 256 "${LSP_STAGING}.tar.gz" > "${LSP_STAGING}.tar.gz.sha256"
+
+      - name: Package sumo-lsp (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "$env:LSP_STAGING" -DestinationPath "$env:LSP_STAGING.zip"
+          Get-FileHash "$env:LSP_STAGING.zip" -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $env:LSP_STAGING.zip" } |
+            Out-File -Encoding ASCII "$env:LSP_STAGING.zip.sha256"
+
+      - name: Upload sumo-lsp to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if gh release upload "${RELEASE_TAG}" \
+                 "${LSP_STAGING}.${{ matrix.archive }}" \
+                 "${LSP_STAGING}.${{ matrix.archive }}.sha256" \
                  --clobber; then
               exit 0
             fi

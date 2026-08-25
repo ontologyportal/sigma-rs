@@ -19,7 +19,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "prepare": "npm run build"
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "binaryen": "^132.0.0"

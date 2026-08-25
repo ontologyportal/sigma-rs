@@ -13,7 +13,7 @@
 #               Commits "Release vX.Y.Z" to main and pushes the
 #               `sigmakee-vX.Y.Z` tag.
 #
-#   2. build-cli: calls release-sumo.yml with that tag — the same 5-platform
+#   2. build-cli: calls release-binaries.yml with that tag — the same 5-platform
 #               binary matrix + StarExec package a manually pushed tag gets.
 #               (Called explicitly because a tag pushed with the default
 #               GITHUB_TOKEN does not trigger tag workflows — GitHub's
@@ -24,17 +24,14 @@
 #
 # One-time npm setup (no token, no secret): npmjs.com → the `sigmakee`
 # package → Settings → Trusted Publisher → GitHub Actions, with
-# repository = this repo and workflow filename = `release-version.yml`.
+# repository = this repo and workflow filename = `release.yml`.
 # The npm-publish job then authenticates via OIDC (`id-token: write`);
 # see https://docs.npmjs.com/trusted-publishers.  Requires npm >= 11.5.1
 # (Node 24's bundled npm) and a cloud-hosted runner — both satisfied here.
 # After a release, `git pull` locally — the bump commit lands on the
 # remote main.
-#
-# There is no separate LSP release workflow: the `sumo-lsp` binary is not
-# published on its own cadence any more.
 
-name: Trigger Release
+name: Release
 
 on:
   workflow_dispatch:
@@ -64,11 +61,11 @@ jobs:
         with:
           ref: main
 
-      - uses: dtolnay/rust-toolchain@stable
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Bump workspace version
         id: bump
@@ -95,12 +92,13 @@ jobs:
               { print }
           ' Cargo.toml > Cargo.toml.bump && mv Cargo.toml.bump Cargo.toml
 
-          # `npm version --workspaces` rewrites each package's own version but
-          # NOT the ranges its siblings depend on -- which is why @sigma/web
-          # pins its local deps to "*". Any other range stops matching the
-          # moment the version moves, and npm then falls through to the public
-          # registry and 404s on the private @sigma/language.
-          npm version "$NEW" --workspaces --no-git-tag-version --allow-same-version
+          WS=()
+          while IFS= read -r name; do
+            WS+=("--workspace=$name")
+          done < <(npm query ".workspace" | jq -r '.[].name | select(. != "@sigma/vampire")')
+          [ ${#WS[@]} -gt 0 ] || { echo "no workspaces resolved to bump"; exit 1; }
+          printf 'bumping: %s\n' "${WS[@]}"
+          npm version "$NEW" "${WS[@]}" --no-git-tag-version --allow-same-version
           npm install --package-lock-only
 
           # Sync Cargo.lock's workspace-member entries.
@@ -122,11 +120,6 @@ jobs:
           git push origin main "$TAG"
 
       - name: Create GitHub release
-        # Created HERE, once, so the five build legs never race to create
-        # it — they only upload assets.  Retried because the create call
-        # has been observed 503ing ("Unicorn!" page); if generated notes
-        # are what's failing server-side, fall back to plain notes — a
-        # release without pretty notes beats no release.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -141,9 +134,9 @@ jobs:
             --notes "Automated release $TAG."
 
   build-cli:
-    name: build + release sumo CLI
+    name: build + release native binaries
     needs: bump
-    uses: ./.github/workflows/release-sumo.yml
+    uses: ./.github/workflows/release-binaries.yml
     with:
       tag: ${{ needs.bump.outputs.tag }}
     secrets: inherit
@@ -174,10 +167,14 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Build npm package
-        # sigmakee's `prepare` hook is the build, so this produces dist/ once
-        # and both publish commands below act on those same bytes.
+      - name: Install npm workspace
         run: npm ci
+
+      - name: Build npm package
+        # Explicit: sigmakee builds on `prepack`, not `prepare`, so that a
+        # plain `npm ci` in a Node-only job does not require a Rust toolchain.
+        # Run once here so both publish commands below act on the same bytes.
+        run: npm run build --workspace sigmakee
 
       - name: Publish (npm trusted publishing / OIDC)
         # No token: the job's OIDC identity (repo + this workflow filename,

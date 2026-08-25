@@ -1,0 +1,520 @@
+{
+  "name": "sigmakee-vscode",
+  "displayName": "SigmaKEE",
+  "description": "Full implementation of SigmaKEE, built into VSCode. Provides language support for SUO-KIF, TPTP, and the SUMO ontology",
+  "version": "2.1.3",
+  "publisher": "ontologyportal",
+  "license": "GPL-3.0",
+  "icon": "./images/extension-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ontologyportal/sigma-rs"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Formatters",
+    "Linters"
+  ],
+  "keywords": [
+    "kif",
+    "sumo",
+    "suo-kif",
+    "tptp",
+    "ontology",
+    "lsp",
+    "sigma",
+    "sigmakee"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/*.kif",
+    "workspaceContains:**/*.kif.tq"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "kif",
+        "aliases": [
+          "SUO-KIF",
+          "KIF",
+          "SUMO"
+        ],
+        "extensions": [
+          ".kif",
+          ".kif.tq"
+        ],
+        "configuration": "./kif-language-configuration.json",
+        "icon": {
+          "light": "./images/kif-file-icon.png",
+          "dark": "./images/kif-file-icon.png"
+        }
+      },
+      {
+        "id": "tptp",
+        "aliases": [
+          "TPTP"
+        ],
+        "extensions": [
+          ".p",
+          ".tptp",
+          ".ax"
+        ],
+        "configuration": "./tptp-language-configuration.json",
+        "icon": {
+          "light": "./images/tptp-file-icon.png",
+          "dark": "./images/tptp-file-icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kif",
+        "scopeName": "source.kif",
+        "path": "./syntaxes/kif.tmLanguage.json"
+      },
+      {
+        "language": "tptp",
+        "scopeName": "source.tptp",
+        "path": "./syntaxes/tptp.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "SUMO",
+      "properties": {
+        "sumo.server.path": {
+          "type": "string",
+          "default": "sumo-lsp",
+          "description": "Path to the sumo-lsp binary.  Defaults to `sumo-lsp` on PATH; set to an absolute path for a local debug build (e.g. `/path/to/sumo-parser/target/debug/sumo-lsp`)."
+        },
+        "sumo.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional command-line arguments passed to sumo-lsp on startup."
+        },
+        "sumo.server.env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment variables to set when spawning sumo-lsp.  Common use: `SUMO_LSP_LOG=debug` to enable verbose logging."
+        },
+        "sumo.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VSCode and the sumo-lsp server.  'messages' logs method names only; 'verbose' includes payloads.  Inspect in the Output panel under 'SUMO'."
+        },
+        "sumo.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to SigmaKEE's config.xml (file path or directory containing it).  When empty, the extension checks $SIGMA_HOME/KBs/config.xml then ~/.sigmakee/KBs/config.xml.  Only one config.xml is loaded at a time; edit the path and run 'SUMO: Reload config.xml' to switch."
+        },
+        "sumo.activeKb": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "The knowledge base this VSCode window edits.  Must match a <kb name=\"…\"> attribute in config.xml.  Typically set automatically when the window is opened by the 'SUMO: Open KB in New Window' command via a generated .code-workspace file; you can also commit this to your own .code-workspace to pin a window to a KB."
+        },
+        "sumo.documentation.language": {
+          "type": "string",
+          "default": "EnglishLanguage",
+          "description": "Language tag to prefer when rendering the documentation blurb in the Taxonomy view.  Must match a `(documentation Sym <Language> \"…\")` entry in the KB; falls back to the first available entry if the tag doesn't match."
+        },
+        "sumo.sigma.url": {
+          "type": "string",
+          "default": "https://sigma.ontologyportal.org:8443/sigma",
+          "description": "Base URL for the online Sigma browser used by 'SUMO: Browse Term in Sigma'.  The command appends `/Browse.jsp?kb=<kb>&term=<symbol>`."
+        },
+        "sumo.kernel.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the `sigmakee` binary used for ask/tell/tptp/debug (the `sigmakee serve` subcommand).  When empty, the extension looks for `sigmakee` on your PATH.  Set to an absolute path to pin a specific build.  See the releases page on GitHub for prebuilt binaries."
+        },
+        "sumo.kernel.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override the LMDB directory the kernel opens.  When empty (the default), the extension picks a path automatically per active KB (persistent under global storage for config.xml KBs, ephemeral per-session for temporary KBs).  Setting this wins over auto-derivation — useful for sharing a pre-built DB between tools."
+        },
+        "sumo.kernel.disableCache": {
+          "type": "boolean",
+          "default": false,
+          "description": "Disable the kernel's LMDB cache entirely.  When on, every kernel spawn re-parses the active KB's `.kif` files from scratch and holds the KB purely in memory — no files are written to disk.  Useful when you want fully reproducible state per session, or don't want global storage to accumulate per-KB caches."
+        },
+        "sumo.kernel.vampirePath": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to the Vampire theorem-prover binary.  Defaults to `vampire` on PATH."
+        },
+        "sumo.prover.timeoutSecs": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "Seconds the theorem prover is allowed to run for a single `ask` before returning a Timeout verdict."
+        },
+        "sumo.tptp.lang": {
+          "type": "string",
+          "enum": [
+            "fof",
+            "tff"
+          ],
+          "default": "fof",
+          "description": "TPTP dialect used by 'SUMO: Generate TPTP File' — first-order (fof) or typed first-order (tff).  The kernel does not yet emit THF."
+        },
+        "sumo.diagnostics.ignoredCodes": {
+          "type": "array",
+          "default": [],
+          "description": "Semantic-error codes to suppress from the Problems panel.  Each entry is a kebab-case error name (see enum).  Changes take effect immediately; no restart is needed.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "no-entity-ancestor",
+              "head-not-relation",
+              "head-invalid",
+              "non-logical-arg",
+              "arity-mismatch",
+              "domain-mismatch",
+              "double-range",
+              "missing-range",
+              "missing-arity",
+              "missing-domain",
+              "function-case",
+              "predicate-case",
+              "instance-subclass-conflict",
+              "disjoint-instance",
+              "disjoint-subclass",
+              "other"
+            ],
+            "enumDescriptions": [
+              "E001 — Symbol has no derivation to Entity",
+              "E002 — Sentence head is not a declared relation",
+              "E003 — Sentence head is not a symbol",
+              "E004 — Operator argument is not a logical sentence",
+              "E005 — Relation applied with wrong number of arguments",
+              "E006 — Argument does not satisfy the relation's domain",
+              "E007 — Function has multiple range declarations",
+              "E008 — Function has no range declaration",
+              "W009 — Relation missing inheritance from a BinaryRelation / TernaryRelation / ...",
+              "E010 — Symbol is missing a domain declaration for some argument",
+              "W011 — Function name should start with an uppercase letter",
+              "W012 — Predicate name should start with a lowercase letter",
+              "E013 — Symbol is declared as both an instance and a class",
+              "disjoint-instance — Instance of two disjoint classes",
+              "disjoint-subclass — Subclass of two disjoint classes",
+              "E015 — Other / miscellaneous semantic error"
+            ]
+          }
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sumo.restartServer",
+        "title": "SUMO: Restart Language Server",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.showServerOutput",
+        "title": "SUMO: Show Server Output",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kb.load",
+        "title": "SUMO: Load Knowledge Base...",
+        "category": "SUMO",
+        "icon": "$(library)"
+      },
+      {
+        "command": "sumo.kb.openInNewWindow",
+        "title": "SUMO: Open Knowledge Base in New Window...",
+        "category": "SUMO",
+        "icon": "$(multiple-windows)"
+      },
+      {
+        "command": "sumo.kb.create",
+        "title": "SUMO: Create Knowledge Base...",
+        "category": "SUMO",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "sumo.kb.addFile",
+        "title": "SUMO: Add File to Knowledge Base...",
+        "category": "SUMO",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sumo.kb.removeFile",
+        "title": "SUMO: Remove File from Knowledge Base",
+        "category": "SUMO",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "sumo.kb.close",
+        "title": "SUMO: Close Knowledge Base",
+        "category": "SUMO",
+        "icon": "$(close)"
+      },
+      {
+        "command": "sumo.kb.reloadConfig",
+        "title": "SUMO: Reload config.xml",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kb.showStatus",
+        "title": "SUMO: Show KB Status",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.showTaxonomy",
+        "title": "SUMO: Show Taxonomy",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.browseInSigma",
+        "title": "SUMO: Browse Term in Sigma",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.formatAxiom",
+        "title": "SUMO: Format Axiom",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.generateTPTP",
+        "title": "SUMO: Generate TPTP File",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.openRepl",
+        "title": "SUMO: Open Interactive REPL (Ask/Tell)",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.ask.cursor",
+        "title": "SUMO: Ask (form under cursor)",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.restart",
+        "title": "SUMO: Restart Kernel",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.showOutput",
+        "title": "SUMO: Show Kernel Output",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.rebuildDatabase",
+        "title": "SUMO: Rebuild Kernel Database",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.deleteDatabase",
+        "title": "SUMO: Delete Kernel Database",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.reconcileOpenFiles",
+        "title": "SUMO: Reconcile Open Files",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.kernel.showFileStatus",
+        "title": "SUMO: Show Kernel File Status",
+        "category": "SUMO"
+      },
+      {
+        "command": "sumo.debug.file",
+        "title": "SUMO: Consistency-Check File",
+        "category": "SUMO"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sumo.formatAxiom",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorHasSelection && editorLangId == kif"
+      },
+      {
+        "command": "sumo.browseInSigma",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "editorLangId == kif"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sumoActivityBar",
+          "title": "SUMO",
+          "icon": "./images/extension-icon.png"
+        }
+      ]
+    },
+    "views": {
+      "sumoActivityBar": [
+        {
+          "id": "sumoKnowledgeBases",
+          "name": "Knowledge Base",
+          "icon": "$(library)"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "sumo.kb.load",
+          "when": "view == sumoKnowledgeBases",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sumo.kb.openInNewWindow",
+          "when": "view == sumoKnowledgeBases",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sumo.kb.create",
+          "when": "view == sumoKnowledgeBases",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sumo.kb.reloadConfig",
+          "when": "view == sumoKnowledgeBases",
+          "group": "navigation@4"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "sumo.kb.addFile",
+          "when": "view == sumoKnowledgeBases && viewItem =~ /^sumoKb\\.(config|temporary)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "sumo.kb.close",
+          "when": "view == sumoKnowledgeBases && viewItem =~ /^sumoKb\\.(config|temporary)$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "sumo.kb.removeFile",
+          "when": "view == sumoKnowledgeBases && viewItem =~ /^sumoKb\\.file\\./",
+          "group": "inline@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "sumo.showTaxonomy",
+          "when": "editorLangId == kif",
+          "group": "navigation@10"
+        },
+        {
+          "command": "sumo.ask.cursor",
+          "when": "editorLangId == kif && sumo.kernelAvailable",
+          "group": "navigation@11"
+        },
+        {
+          "command": "sumo.browseInSigma",
+          "when": "editorLangId == kif",
+          "group": "navigation@12"
+        },
+        {
+          "command": "sumo.formatAxiom",
+          "when": "editorLangId == kif && editorHasSelection",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "sumo.generateTPTP",
+          "when": "editorLangId == kif && sumo.kernelAvailable",
+          "group": "2_export@1"
+        },
+        {
+          "command": "sumo.openRepl",
+          "when": "editorLangId == kif && sumo.kernelAvailable",
+          "group": "2_export@2"
+        },
+        {
+          "command": "sumo.debug.file",
+          "when": "editorLangId == kif && sumo.kernelAvailable",
+          "group": "2_export@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sumo.ask.cursor",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.openRepl",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.generateTPTP",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.debug.file",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.kernel.restart",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.kernel.rebuildDatabase",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.kernel.reconcileOpenFiles",
+          "when": "sumo.kernelAvailable"
+        },
+        {
+          "command": "sumo.kernel.showFileStatus",
+          "when": "sumo.kernelAvailable"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run sync:assets && npm run typecheck && npm run bundle -- --production",
+    "compile": "npm run sync:assets && npm run typecheck && npm run bundle",
+    "watch": "npm run sync:assets && node ./scripts/esbuild.mjs --watch",
+    "package": "npm run bundle -- --production && vsce package --no-dependencies",
+    "package:release": "npm run server:install && npm run package",
+    "test": "npm run compile && vscode-test",
+    "test:local-server": "npm run server:install && npm run test",
+    "server:install": "cargo build -p sumo-lsp --release --locked && cp ../../target/release/sumo-lsp server/sumo-lsp",
+    "sync:assets": "node ./scripts/sync-assets.mjs",
+    "typecheck": "tsc --noEmit -p ./",
+    "bundle": "node ./scripts/esbuild.mjs"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.5.6",
+    "mermaid": "^10.9.1",
+    "svg-pan-zoom": "^3.6.2",
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@sigma/language": "^2.1.3",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.3.0"
+  }
+}

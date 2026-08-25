@@ -1,0 +1,22 @@
+.vscode/**
+.vscode-test/**
+.vscode-test.mjs
+out/**
+.github/**
+src/**
+scripts/**
+.gitignore
+.eslintrc.json
+tsconfig.json
+**/*.ts
+**/*.map
+MERGE_REPORT.md
+# Bundled into dist/extension.js by scripts/esbuild.mjs, so nothing
+# under node_modules/ ships. This is what makes
+# `vsce package --no-dependencies` correct rather than lossy.
+node_modules/**
+
+# `server/` is the bundled-binary drop directory.  The README
+# explaining the layout is shipped; the actual binary is staged
+# at package time by CI or scripts/package-platform.sh.
+!server/**

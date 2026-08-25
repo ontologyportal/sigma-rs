@@ -1,0 +1,5 @@
+# Staged binaries (dropped here by CI, scripts/package-platform.sh, or
+# `npm run server:install[:local]`) are build artifacts, never committed.
+*
+!README.md
+!.gitignore

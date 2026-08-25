@@ -1,0 +1,63 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "SUO-KIF",
+    "scopeName": "source.kif",
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#number" },
+        { "include": "#operator" },
+        { "include": "#variable" },
+        { "include": "#row-variable" },
+        { "include": "#symbol" }
+    ],
+    "repository": {
+        "comment": {
+            "name": "comment.line.semicolon.kif",
+            "match": ";.*$"
+        },
+        "string": {
+            "name": "string.quoted.double.kif",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.kif",
+                    "match": "\\\\."
+                },
+                {
+                    "name": "entity.name.tag.reference.kif",
+                    "match": "&%[A-Za-z][A-Za-z0-9_\\-]*"
+                }
+            ]
+        },
+        "number": {
+            "name": "constant.numeric.kif",
+            "match": "-?\\b[0-9]+(\\.[0-9]+)?\\b"
+        },
+        "operator": {
+            "name": "keyword.control.logical.kif",
+            "match": "(?<=[(\\s])(and|or|not|=>|<=>|equal|forall|exists)(?=[\\s)])"
+        },
+        "variable": {
+            "name": "variable.parameter.kif",
+            "match": "\\?[A-Za-z_][A-Za-z0-9_\\-]*"
+        },
+        "row-variable": {
+            "name": "variable.parameter.row.kif",
+            "match": "@[A-Za-z_][A-Za-z0-9_\\-]*"
+        },
+        "symbol": {
+            "patterns": [
+                {
+                    "name": "entity.name.type.class.kif",
+                    "match": "\\b[A-Z][A-Za-z0-9_\\-]*\\b"
+                },
+                {
+                    "name": "entity.name.function.relation.kif",
+                    "match": "\\b[a-z][A-Za-z0-9_\\-]*\\b"
+                }
+            ]
+        }
+    }
+}
