@@ -92,7 +92,7 @@ pub fn extract_bindings(proof: &Proof, qvm: &QueryVarMap) -> Vec<ProofBinding> {
 
     // Identify the conjecture-input step.
     let Some(neg_conj_idx) = find_negated_conjecture(&steps) else {
-        crate::log!(Debug, "sigmakee_rs_core::bindings", format!("no conjecture-like step in proof; cannot extract bindings"));
+        crate::log!(Debug, "sigmakee_rs_core::bindings", "no conjecture-like step in proof; cannot extract bindings".to_string());
         return Vec::new();
     };
 

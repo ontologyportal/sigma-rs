@@ -141,7 +141,7 @@ impl ProverRunner for VampireRunner {
         crate::log!(
             Info,
             "sigmakee_rs_core::prover",
-            format!("starting vampire prover")
+            "starting vampire prover".to_string()
         );
 
         let mut child = match Command::new(&self.vampire_path)

@@ -103,7 +103,7 @@ fn arg_satisfies_domain(cx: &Cx<'_>, arg: &Element, dom: &RelationDomain) -> boo
         Element::Sub(sub_sid) if let Some(sub_sent) = cx.sentence(*sub_sid) => match dom {
             RelationDomain::Domain(dom_id) => {
                 let Some(sym) = sub_sent.head_symbol() else {
-                    return false;
+                    return sub_sent.is_operator() && *dom_id == FORMULA_SYMBOL.id();
                 };
                 if cx.is_predicate(sym) {
                     *dom_id == FORMULA_SYMBOL.id()
@@ -217,7 +217,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod issue47 {
+mod test {
     use crate::semantics::validate::test_support::{
         codes_in, kif_layer, root_by_head, root_by_head_with,
     };
@@ -318,13 +318,8 @@ mod issue47 {
              BodyPart`; got {codes:?}"
         );
     }
-}
 
-#[cfg(test)]
-mod declared_via_function_term {
-    use crate::semantics::validate::test_support::{codes_in, kif_layer, root_by_head_with};
-
-    const FIXTURE: &str = "
+    const FIXTURE2: &str = "
         (subclass Abstract Entity)
         (subclass Relation Abstract)
         (subclass Function Relation)
@@ -348,7 +343,7 @@ mod declared_via_function_term {
     /// types argument 1 as Bar.
     #[test]
     fn resolved_domain_accepts_a_conforming_argument() {
-        let layer = kif_layer(FIXTURE);
+        let layer = kif_layer(FIXTURE2);
         let sid = root_by_head_with(&layer, "BazFn", "Yep");
         let codes = codes_in(&layer, sid);
         assert!(!codes.contains(&"E006"), "got {codes:?}");
@@ -356,9 +351,73 @@ mod declared_via_function_term {
 
     #[test]
     fn resolved_domain_rejects_a_non_conforming_argument() {
-        let layer = kif_layer(FIXTURE);
+        let layer = kif_layer(FIXTURE2);
         let sid = root_by_head_with(&layer, "BazFn", "Nope");
         let codes = codes_in(&layer, sid);
         assert!(codes.contains(&"E006"), "got {codes:?}");
+    }
+
+    const FIXTURE3: &str = "
+        (subclass Abstract Entity)
+        (subclass Relation Abstract)
+        (subclass Function Relation)
+        (subclass BinaryFunction Function)
+        (subclass Predicate Relation)
+        (subclass BinaryPredicate Predicate)
+        (subclass Object Entity)
+        (subclass Bar Object)
+        (subclass Something Bar)
+        (instance Blah Something)
+        (instance Yep Something)
+        (instance FooFn BinaryFunction)
+        (domain FooFn 1 Formula)
+        (instance grasps BinaryPredicate)
+        (domain grasps 1 Something)
+        (domain grasps 2 Something)
+        (instance PredTag Something)
+        (instance OpTag Something)
+        (instance BareTag Something)
+        (instance FuncTag Something)
+        (FooFn (grasps Yep Yep) PredTag)
+        (FooFn (not (grasps Yep Yep)) OpTag)
+        (FooFn Blah BareTag)
+        (FooFn (FooFn Blah Yep) FuncTag)
+    ";
+
+    /// `(domain FooFn 1 Formula)`: a predicate- or operator-headed sentence
+    /// denotes a formula and satisfies the domain, but a bare symbol or a
+    /// function-headed sentence (which denotes an object, not a formula)
+    /// does not.
+    #[test]
+    fn predicate_and_operator_headed_sentences_are_formulas() {
+        let layer = kif_layer(FIXTURE3);
+
+        let predicate_headed = root_by_head_with(&layer, "FooFn", "PredTag");
+        assert!(
+            !codes_in(&layer, predicate_headed).contains(&"E006"),
+            "a predicate-headed sentence denotes a formula and must satisfy \
+             `(domain FooFn 1 Formula)`"
+        );
+
+        let operator_headed = root_by_head_with(&layer, "FooFn", "OpTag");
+        assert!(
+            !codes_in(&layer, operator_headed).contains(&"E006"),
+            "an operator-headed sentence denotes a formula and must satisfy \
+             `(domain FooFn 1 Formula)`"
+        );
+
+        let bare_symbol = root_by_head_with(&layer, "FooFn", "BareTag");
+        assert!(
+            codes_in(&layer, bare_symbol).contains(&"E006"),
+            "a bare symbol does not denote a formula and must not satisfy \
+             `(domain FooFn 1 Formula)`"
+        );
+
+        let function_headed = root_by_head_with(&layer, "FooFn", "FuncTag");
+        assert!(
+            codes_in(&layer, function_headed).contains(&"E006"),
+            "a function-headed sentence denotes an object, not a formula, and \
+             must not satisfy `(domain FooFn 1 Formula)`"
+        );
     }
 }

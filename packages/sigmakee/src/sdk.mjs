@@ -334,11 +334,15 @@ const KIF_REFLOW_SCAN_RE = /(;[^\n]*)|("(?:[^"\\]|\\.)*")|("(?:[^"\\]|\\.)*$)|([
  * break wherever a second open paren would otherwise land on a line that
  * already has one open (except `not`'s argument and a quantifier's variable
  * list — see {@link INLINE_HEAD_EXCEPTIONS}). Never REMOVES an existing line
- * break, so a file that's already broken up more than the rule requires is
- * left alone; it only closes gaps where the rule is violated. `indentUnit`
- * defaults to 3 spaces, matching SUMO's own Merge.kif convention. Comments,
- * strings (including one that happens to span a newline, however unusual),
- * blank lines, and inter-token spacing are otherwise preserved byte-for-byte.
+ * break for anything with content, so a file that's already broken up more
+ * than the rule requires is left alone; it only closes gaps where the rule
+ * is violated. Two exceptions to that, both matching SUMO's own Merge.kif
+ * convention: a head symbol (e.g. `exists`) gets a space inserted before an
+ * immediately-adjacent `(`, and a line consisting solely of closing parens
+ * is folded onto the end of the previous non-blank line rather than left to
+ * trail on its own. `indentUnit` defaults to 3 spaces. Comments, strings
+ * (including one that happens to span a newline, however unusual), blank
+ * lines, and inter-token spacing are otherwise preserved byte-for-byte.
  *
  * @param {string} text
  * @param {{indentUnit?: string}} [opts]
@@ -379,6 +383,8 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
     KIF_REFLOW_SCAN_RE.lastIndex = 0;
     let m;
     let lastWritten = 0;
+    let prevWordEnd = -1;   // end index of the last bare word token, for the
+                             // "head(" adjacency check below
     while ((m = KIF_REFLOW_SCAN_RE.exec(scanText))) {
       const [full, , , openStr, paren, word] = m;   // [full, comment, closedStr, openStr, paren, word]
       if (paren === '(') {
@@ -391,6 +397,11 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
           cur += scanText.slice(lastWritten, m.index).replace(/[ \t]+$/, '');
           out.push(cur);
           startAt(depth);
+          lastWritten = m.index;
+        } else if (emit && prevWordEnd === m.index) {
+          // A head symbol (e.g. `exists`) sitting directly against this '('
+          // with no separating space — always insert one.
+          cur += scanText.slice(lastWritten, m.index) + ' ';
           lastWritten = m.index;
         }
         if (exempt) exceptionOpen[parentLevel] = false;   // one-shot, now used
@@ -406,6 +417,7 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
           headAtLevel[lvl] = word;
           exceptionOpen[lvl] = INLINE_HEAD_EXCEPTIONS.has(word);
         }
+        prevWordEnd = m.index + word.length;
       } else if (openStr !== undefined) {
         inString = true;   // reached EOL still inside a string
       }
@@ -443,7 +455,24 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
     scan(trimmed, true);
     out.push(cur);
   }
-  return out.join('\n');
+
+  // Fold a line that's nothing but closing parens onto the end of the
+  // previous non-blank line, so a form's closes land together instead of
+  // trailing one-per-line. Skipped when the previous line is blank (an
+  // intentional separator) or carries a `;` comment, since appending after
+  // a comment would get swallowed by it.
+  const folded = [];
+  for (const ln of out) {
+    const trimmedLn = ln.trim();
+    const prev = folded[folded.length - 1];
+    if (/^\)+$/.test(trimmedLn) && prev !== undefined
+      && prev.trim().length > 0 && !prev.includes(';')) {
+      folded[folded.length - 1] = prev.replace(/[ \t]+$/, '') + trimmedLn;
+    } else {
+      folded.push(ln);
+    }
+  }
+  return folded.join('\n');
 }
 
 // -- Standalone loaders --------------------------------------------------------
