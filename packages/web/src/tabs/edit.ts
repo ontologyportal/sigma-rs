@@ -250,6 +250,9 @@ async function createEditor() {
     theme: dark ? 'kif-dark' : 'kif-light',
     automaticLayout: true,
     minimap: { enabled: false },
+    // Otherwise a hover diagnostic near the editor's edge gets clipped by the
+    // container's own border/overflow instead of floating over it (#21).
+    fixedOverflowWidgets: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 13,
     // Only the KB's own symbols (via kifCompletionProvider) should be

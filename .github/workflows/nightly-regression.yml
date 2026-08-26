@@ -43,6 +43,10 @@ on:
   schedule:
     - cron: "17 4 * * *"
 
+env:
+  VAMPIRE_VERSION: v5.0.1
+  CARGO_TERM_COLOR: always
+
 permissions:
   contents: read
   pages: write
@@ -52,9 +56,6 @@ concurrency:
   group: regression-pages
   cancel-in-progress: false
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   regression:
     name: build pages
@@ -62,7 +63,6 @@ jobs:
     timeout-minutes: 120
     outputs:
       status: ${{ steps.status.outputs.status }}
-      demo: ${{ steps.demo.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -205,13 +205,11 @@ jobs:
       # no browse/ in it would delete the live demo -- silently, since the demo
       # step is best-effort. Skipping leaves the previous site up.
       - name: Upload Pages artifact
-        if: steps.demo.outcome == 'success'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
       - name: Warn that the Pages deploy was skipped
-        if: steps.demo.outcome != 'success'
         run: |
           echo "::warning::demo build failed; skipping the Pages deploy so the previous site stays live"
 
@@ -220,7 +218,6 @@ jobs:
     needs: regression
     # Nothing is uploaded when the demo build failed, so there would be no
     # artifact to deploy.
-    if: needs.regression.outputs.demo == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -16,13 +16,13 @@
 <body>
   <main>
     <header>
-      <div class="brand">
+      <a class="brand jump" data-tab="browse" aria-label="Go to home page">
         <img src="/logo.png" alt="SigmaKEE logo" />
         <div class="brand-text">
           <h1>SigmaKEE</h1>
           <p class="sub">Explore the Suggested Upper Merged Ontology (SUMO)</p>
         </div>
-      </div>
+      </a>
       <div class="head-meta">
         <div class="head-controls">
           <a id="githubLogin" class="head-btn" href="/api/github-auth" title="Log in with GitHub" aria-label="Log in with GitHub">
@@ -129,7 +129,10 @@
       <div class="card">
         <form id="searchForm">
           <label for="q">Search symbols &amp; documentation <span class="hint kbd-hint">(press <kbd>/</kbd> anywhere)</span></label>
-          <input type="search" id="q" placeholder="e.g. Human, Process, part…" autocomplete="off" />
+          <div class="search-box">
+            <input type="search" id="q" placeholder="e.g. Human, Process, part…" autocomplete="off" />
+            <button type="button" id="qClear" class="search-clear" aria-label="Clear search" hidden>&times;</button>
+          </div>
         </form>
       </div>
       <div id="browseView"></div>

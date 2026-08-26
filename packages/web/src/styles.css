@@ -25,8 +25,14 @@
 body { margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   display: flex; flex-direction: column; min-height: 100vh; }
-main { max-width: 900px; margin: 0 auto; padding: 20px 20px 64px; flex: 1 0 auto; }
-footer { max-width: 900px; margin: 0 auto; padding: 0 20px 24px; text-align: center; color: var(--muted); font-size: 13px; flex: 0 0 auto; }
+/* width: 100% (not just max-width) is required here: main/footer's auto
+   left/right margins are cross-axis margins in this column flex layout, and
+   auto cross-axis margins suppress align-items: stretch per the flexbox
+   spec, leaving width to shrink-to-fit the content instead of filling the
+   viewport up to max-width -- visible as the page narrowing on a short
+   "no results" message. */
+main { width: 100%; max-width: 900px; margin: 0 auto; padding: 20px 20px 64px; flex: 1 0 auto; }
+footer { width: 100%; max-width: 900px; margin: 0 auto; padding: 0 20px 24px; text-align: center; color: var(--muted); font-size: 13px; flex: 0 0 auto; }
 h1 { font-size: 20px; margin: 0; }
 .sub { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
 a { color: var(--accent); cursor: pointer; text-decoration: none; }
@@ -37,7 +43,8 @@ code, .mono { font-family: var(--mono); }
    meta block (theme/bug/settings controls) sits to its right on wide screens
    and becomes a full-width row underneath on narrow ones. */
 header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 16px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; color: inherit; }
+.brand:hover { text-decoration: none; }
 .brand img { width: 50px; flex: 0 0 auto; }
 .brand-text { min-width: 0; }
 .head-meta { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
@@ -178,6 +185,18 @@ input, textarea, button.btn, a.btn {
   border: 1px solid var(--line); border-radius: 7px; padding: 8px 11px;
 }
 input[type=text], input[type=search], input[type=number], textarea { width: 100%; }
+/* Custom clear button instead of the native search-cancel glyph, which is
+   Chrome/WebKit-only and doesn't follow the dark theme. */
+input[type=search]::-webkit-search-cancel-button { display: none; }
+.search-box { position: relative; }
+.search-box input[type=search] { padding-right: 30px; }
+.search-clear {
+  position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
+  width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 6px; padding: 0;
+  font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer;
+}
+.search-clear:hover { color: var(--fg); background: var(--card); }
 textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
 button.btn, a.btn { background: var(--accent); color: #fff; border: 1px solid transparent;
   cursor: pointer; font-weight: 600; padding: 0 16px; height: 41px; line-height: 1;

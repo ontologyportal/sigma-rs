@@ -15,10 +15,35 @@ $('searchForm').addEventListener('submit', (e) => {
   runSearch(q);
 });
 
+/** Show the clear button only once there's something to clear. */
+function updateSearchClear() {
+  $('qClear').hidden = !$('q').value;
+}
+
+/** Reset the search box and results back to the tab's empty state, without
+ *  touching the URL — for navigating to Browse from elsewhere (nav tab,
+ *  the header logo), where the router already owns the address bar. */
+export function resetBrowseView() {
+  $('q').value = '';
+  updateSearchClear();
+  setBrowseHome(true);
+}
+
+/** Same, but also clears the URL's `q` — for the clear button and the Esc
+ *  shortcut below, neither of which goes through the router. */
+function clearSearch() {
+  resetBrowseView();
+  updateParams({});
+  $('q').focus();
+}
+
+$('qClear').addEventListener('click', clearSearch);
+
 // Search-as-you-type: results render live off a short debounce; Enter still
 // works via the submit handler above (same runSearch, seq-guarded below).
 let searchDebounce = 0;
 $('q').addEventListener('input', () => {
+  updateSearchClear();
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
     const q = $('q').value.trim();
@@ -40,6 +65,7 @@ document.addEventListener('click', (e) => {
   if (!a) return;
   e.preventDefault();
   $('q').value = a.textContent;
+  updateSearchClear();
   updateParams({ q: a.textContent });
   runSearch(a.textContent);
 });
@@ -49,6 +75,7 @@ document.addEventListener('click', (e) => {
 let searchSeq = 0;
 
 export async function runSearch(query) {
+  updateSearchClear();
   if (!query) { setBrowseHome(true); return; }
   const seq = ++searchSeq;
   setBrowseHome(false);
@@ -233,9 +260,7 @@ document.addEventListener('keydown', (e) => {
       updateParams({ q });
       if (q) runSearch(q); else setBrowseHome(true);
     } else if (t === $('q') && $('q').value) {
-      $('q').value = '';
-      updateParams({});
-      setBrowseHome(true);
+      clearSearch();
     }
   }
 });

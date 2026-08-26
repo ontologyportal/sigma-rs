@@ -17,7 +17,7 @@ import { call } from './rpc.ts';
 import { $, targetEl } from './dom.ts';
 import { ensureEditorReady, onEditPickerChange, setEditFullscreen } from './tabs/edit.ts';
 import { applyDiagRouteParams } from './tabs/diagnostics.ts';
-import { openManPage, runSearch, setBrowseHome } from './tabs/browse.ts';
+import { openManPage, runSearch, setBrowseHome, resetBrowseView } from './tabs/browse.ts';
 import { loadSumoCatalog } from './tabs/kb-tab.ts';
 import { ensureProverEditors } from './tabs/prover.ts';
 import { ensureHistory } from './tabs/history.ts';
@@ -79,7 +79,9 @@ export function showTab(name: string, { push = true, params }: { push?: boolean;
   }
   for (const p of document.querySelectorAll<HTMLElement>('.panel')) p.hidden = p.id !== `tab-${name}`;
   if (push) syncUrl(name, params ?? new URLSearchParams());
-  if (name === 'browse') refreshHomeStats();
+  // Only reset on a live navigation (nav tab, header logo) — applyRoute's
+  // own `push: false` call still needs the URL's ?q=/?sym= honoured below.
+  if (name === 'browse') { if (push) resetBrowseView(); refreshHomeStats(); }
   if (name === 'kb') loadSumoCatalog();
   if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
   if (name === 'prover') ensureProverEditors().catch(() => {}); // textareas remain the fallback
