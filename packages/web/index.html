@@ -289,7 +289,11 @@
         <details id="pGraphDetails" style="margin-top:10px">
           <summary class="hint">proof graph</summary>
           <div id="pGraphContainer" class="graph-container"></div>
-          <div id="pGraphTip" class="hint graph-tip"></div>
+          <div class="pg-legend">
+            <span class="pg-legend-item" data-kind="axiom"><span class="pg-legend-swatch"></span>axiom</span>
+            <span class="pg-legend-item" data-kind="conjecture"><span class="pg-legend-swatch"></span>conjecture</span>
+            <span class="pg-legend-item" data-kind="lemma"><span class="pg-legend-swatch"></span>derived lemma</span>
+          </div>
           <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre id="pGraphDot"></pre></details>
         </details>
         <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre id="pRaw"></pre></details>

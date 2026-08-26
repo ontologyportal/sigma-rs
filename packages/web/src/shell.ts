@@ -3,6 +3,7 @@
 
 import { APP_REPO, THEME_KEY, SEEN_VERSION_KEY } from './constants.ts';
 import { $ } from './dom.ts';
+import { state } from './state.ts';
 
 // -- Theme toggle: explicit choice wins over the OS preference ----------------
 
@@ -12,7 +13,7 @@ $('themeToggle')?.addEventListener('click', () => {
   const next = current === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
   try { localStorage.setItem(THEME_KEY, next); } catch { /* private mode */ }
-  window.monaco?.editor.setTheme(next === 'dark' ? 'kif-dark' : 'kif-light');
+  state.monaco?.editor.setTheme(next === 'dark' ? 'kif-dark' : 'kif-light');
 });
 
 // -- Bug report: no anonymous issue creation via the GitHub API, so this just
@@ -30,7 +31,7 @@ $('bugReport')?.addEventListener('click', () => {
     `User agent: ${navigator.userAgent}`,
   ].join('\n');
   const url = `https://github.com/${APP_REPO.owner}/${APP_REPO.repo}/issues/new?` +
-    new URLSearchParams({ title: '', body, labels: 'bug' });
+    new URLSearchParams({ title: '', body, labels: 'bug,web-ui' });
   window.open(url, '_blank', 'noopener');
 });
 

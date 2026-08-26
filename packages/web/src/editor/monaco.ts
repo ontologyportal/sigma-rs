@@ -1,43 +1,37 @@
 /**
- * Monaco: the CDN load, the `kif` and `tptp` languages, and the diagnostic
- * marker conversion. Shared by the Edit tab's IDE, the Ask/Tell panes, and the
- * read-only TPTP preview.
+ * Monaco: the lazy npm-package load, the `kif` and `tptp` languages, and the
+ * diagnostic marker conversion. Shared by the Edit tab's IDE, the Ask/Tell
+ * panes, and the read-only TPTP preview.
  */
 
 import { formatKif } from 'sigmakee/sdk';
 import { state } from '../state.ts';
 import { call } from '../rpc.ts';
-
-const MONACO_VERSION = '0.55.1';
-const MONACO_CDN = `https://cdn.jsdelivr.net/npm/monaco-editor@${MONACO_VERSION}/min/vs`;
+import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker';
 
 let monacoLoadPromise = null;
 
-/** The in-flight (or settled) Monaco load, or null if it has not started —
- *  the Cytoscape loader waits on it before hiding the AMD globals. */
+/** The in-flight (or settled) Monaco load, or null if it has not started. */
 export function monacoLoading() {
   return monacoLoadPromise;
 }
 
 /** Load Monaco once, register the languages, and publish the namespace as
- *  `state.monaco` for everything that needs it after the fact. */
+ *  `state.monaco` for everything that needs it after the fact.
+ *
+ *  Imports the slim editor API (no bundled typescript/json/html/css language
+ *  contributions we never use) via a dynamic `import()`, so Vite code-splits
+ *  it into its own chunk fetched only when this actually runs. */
 export function loadMonaco() {
   if (monacoLoadPromise) return monacoLoadPromise;
-  monacoLoadPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = `${MONACO_CDN}/loader.js`;
-    script.onload = () => {
-      window.require.config({ paths: { vs: MONACO_CDN } });
-      window.require(['vs/editor/editor.main'], () => {
-        defineKifLanguage(window.monaco);
-        defineTptpLanguage(window.monaco);
-        state.monaco = window.monaco;
-        resolve(window.monaco);
-      }, reject);
-    };
-    script.onerror = () => reject(new Error(`failed to load Monaco from ${MONACO_CDN}`));
-    document.head.appendChild(script);
-  });
+  monacoLoadPromise = (async () => {
+    self.MonacoEnvironment = { getWorker: () => new EditorWorker() };
+    const monaco = await import('monaco-editor/esm/vs/editor/editor.api.js');
+    defineKifLanguage(monaco);
+    defineTptpLanguage(monaco);
+    state.monaco = monaco;
+    return monaco;
+  })();
   return monacoLoadPromise;
 }
 

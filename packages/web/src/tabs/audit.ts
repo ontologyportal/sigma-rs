@@ -4,7 +4,7 @@
 import { call } from '../rpc.ts';
 import { $, esc } from '../dom.ts';
 import { proverConfig, vampireSelected } from '../prover-config.ts';
-import { wireProofGraph } from '../proof-graph.ts';
+import { wireProofGraph, proofGraphLegendHtml } from '../proof-graph.ts';
 import { renderProofSteps, proseDetails } from '../proof-view.ts';
 
 $('runAudit').onclick = async () => {
@@ -68,17 +68,17 @@ function renderAudit(r, backendLabel) {
         <summary class="hint">proof graph</summary>
         <div class="graph-container"></div>
         <div class="hint graph-tip"></div>
+        ${proofGraphLegendHtml()}
         <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre>${esc(c.graphviz || '(none)')}</pre></details>
       </details>
     </div>`).join('');
 
   $('auditResult').innerHTML = html;
 
-  document.querySelectorAll('#auditResult .proof-graph-details').forEach((details, i) => {
+  document.querySelectorAll<HTMLDetailsElement>('#auditResult .proof-graph-details').forEach((details, i) => {
     wireProofGraph(
       details,
-      details.querySelector('.graph-container'),
-      details.querySelector('.graph-tip'),
+      details.querySelector<HTMLElement>('.graph-container'),
       () => r.contradictions[i].steps,
     );
   });

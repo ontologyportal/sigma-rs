@@ -6,6 +6,8 @@
  * descendants below expand on demand via the lightweight `taxonomy` call.
  */
 
+import type cytoscape from 'cytoscape';
+import type cytoscapeDagre from 'cytoscape-dagre';
 import { call } from '../rpc.ts';
 import { esc, escAttr, isDarkTheme } from '../dom.ts';
 import { loadCytoscape, cytoscapeStyle } from '../proof-graph.ts';
@@ -103,7 +105,7 @@ export async function fillAncestors(p) {
       elements: [...nodes.values(), ...edges],
       style: taxonomyGraphStyle(isDarkTheme()),
       // Edges point child → parent, so rank bottom-to-top puts Entity on top.
-      layout: { name: 'dagre', rankDir: 'BT', nodeSep: 14, rankSep: 46 },
+      layout: { name: 'dagre', rankDir: 'BT', nodeSep: 14, rankSep: 46 } as cytoscapeDagre.DagreLayoutOptions,
       wheelSensitivity: 0.2,
     });
     const tip = document.getElementById('taxTip');
@@ -127,7 +129,7 @@ export async function fillAncestors(p) {
 
 /** Cytoscape style for the taxonomy diagram: node emphasis by role (current /
  *  ancestor / child), edge color by relation kind — matching the legend pills. */
-function taxonomyGraphStyle(dark) {
+function taxonomyGraphStyle(dark: boolean): cytoscape.StylesheetJson {
   const relColor = {
     subclass:     dark ? '#6ea8ff' : '#2d6cdf',   // --accent
     instance:     dark ? '#4ac26b' : '#1a7f37',   // --ok

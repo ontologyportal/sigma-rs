@@ -390,11 +390,39 @@ span.ref-loc, span.loc { color: var(--muted); }
 ol.proof { font-family: var(--mono); font-size: 13px; padding-left: 26px; margin: 8px 0 0; }
 ol.proof .rule { color: var(--accent); }
 details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; overflow-x: auto; }
-.graph-container { height: 340px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); margin-top: 8px; }
+.graph-container {
+  position: relative; height: 340px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--bg); margin-top: 8px;
+}
+/* Native Fullscreen API target — the UA stretches it to the viewport; drop
+   the card chrome so the graph reads as its own view, not a floating box. */
+.graph-container:fullscreen { height: 100%; border: none; border-radius: 0; }
 .graph-tip { min-height: 18px; margin-top: 6px; font-family: var(--mono); white-space: pre-wrap; word-break: break-word; }
 .graph-dot-toggle { margin-top: 8px; }
 .graph-dot-toggle summary { font-size: 12px; color: var(--muted); cursor: pointer; }
 .graph-dot-toggle pre { font-size: 11px; max-height: 200px; overflow-y: auto; }
+
+/* wireProofGraph's permanent children: `pg-mount` (the Cytoscape container)
+   and `pg-status` (loading/error text) are stacked full-bleed layers instead
+   of text dumped straight into .graph-container, because that used to be
+   cleared wholesale on every render — which would also wipe pg-fullscreen-btn
+   if it lived there too. */
+.pg-mount { position: absolute; inset: 0; }
+.pg-status {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 12px; font-family: var(--mono); color: var(--muted);
+  white-space: pre-wrap; word-break: break-word; pointer-events: none;
+}
+.pg-status:empty { display: none; }
+.pg-fullscreen-btn {
+  position: absolute; left: 8px; bottom: 8px; z-index: 2;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: var(--card); color: var(--muted); border: 1px solid var(--line); border-radius: 6px;
+  cursor: pointer; opacity: .85;
+}
+.pg-fullscreen-btn:hover { color: var(--fg); border-color: var(--accent); opacity: 1; }
+.pg-fullscreen-btn svg { display: block; }
 .diag { border-bottom: 1px solid var(--line); border-left: 3px solid transparent; padding: 8px 2px 8px 8px; }
 .diag:last-child { border-bottom: none; }
 .diag[data-sev="error"] { border-left-color: var(--bad); }
@@ -451,6 +479,29 @@ details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; 
 /* A probed symbol with no man page: quiet, not clickable-looking. */
 a.sym-link.sym-dead { cursor: default; opacity: .7; }
 a.sym-link.sym-dead:hover { text-decoration: none; }
+
+/* Proof graph node content: an HTML overlay (cytoscape-node-html-label) over
+   the canvas-drawn, kind-colored node box — shrink-wraps up to max-width, so
+   the underlying node is sized to match (see proof-graph.ts's measureLabel). */
+.pg-node-label {
+  display: inline-block; padding: 6px 8px;
+  font-family: var(--mono); font-size: 10px; line-height: 1.35;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  color: var(--fg); pointer-events: none;
+}
+.pg-node-label .pg-idx { color: var(--muted); margin-right: 4px; }
+
+/* Proof graph legend: one hollow swatch per node category, border-colored to
+   match cytoscapeStyle's node[kind="..."] outline colors (proof-graph.ts). */
+.pg-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.pg-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.pg-legend-swatch {
+  display: inline-block; width: 11px; height: 11px; border-radius: 3px;
+  border: 2px solid; background: var(--card);
+}
+.pg-legend-item[data-kind="axiom"] .pg-legend-swatch { border-color: var(--accent); }
+.pg-legend-item[data-kind="conjecture"] .pg-legend-swatch { border-color: var(--warn); }
+.pg-legend-item[data-kind="lemma"] .pg-legend-swatch { border-color: var(--ok); }
 
 /* Edit tab: one compact toolbar row — picker + filename on the left,
    status + actions pushed right; wraps gracefully when narrow. */

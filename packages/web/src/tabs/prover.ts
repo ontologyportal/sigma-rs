@@ -179,9 +179,9 @@ $('downloadVampireTptp').onclick = () => {
 
 let lastAskProof = [];
 const invalidateAskGraph = wireProofGraph(
-  $('pGraphDetails'), $('pGraphContainer'), $('pGraphTip'), () => lastAskProof);
+  $('pGraphDetails'), $('pGraphContainer'), () => lastAskProof);
 
-function renderProof(r, backendLabel) {
+function renderProof(r, backendLabel: string) {
   $('proverResult').hidden = false;
   $('pStatus').textContent = r.status; $('pStatus').className = 'status ' + r.status;
   $('pBackendBadge').textContent = backendLabel ? `via ${backendLabel}` : '';

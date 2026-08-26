@@ -288,9 +288,9 @@ impl WasmKnowledgeBase {
 /// cfg.wantProof = true;
 /// prover.configure(cfg);
 /// ```
-#[wasm_bindgen(js_name = Config)]
+#[wasm_bindgen]
 #[derive(Clone)]
-pub struct WasmConfig {
+pub struct Config {
     time_limit_secs: u64,
     max_steps: usize,
     max_lits: usize,
@@ -301,7 +301,7 @@ pub struct WasmConfig {
     selection_tolerance_pct: Option<f64>,
 }
 
-impl WasmConfig {
+impl Config {
     /// Build a runtime [`NativeOpts`] seeded with these defaults; per-query
     /// `session` is layered on by the caller.  Mirrors
     /// `NativeProverConfig::to_native_opts`.
@@ -338,7 +338,7 @@ fn selection_budget(axiom_count: usize, pct: f64) -> usize {
 }
 
 #[wasm_bindgen]
-impl WasmConfig {
+impl Config {
     /// Construct a config with the native prover's defaults, except `wantProof`
     /// which is on (proofs are cheap to surface and useful in a UI).
     #[allow(
@@ -466,7 +466,7 @@ impl WasmConfig {
 #[wasm_bindgen]
 pub struct WasmNativeProver {
     inner: KnowledgeBase<ProverLayer<TranslationLayer>>,
-    config: WasmConfig,
+    config: Config,
     /// The sid→line map from the last [`to_tptp_indexed`](Self::to_tptp_indexed)
     /// call, consulted by [`tptp_line_for_position`](Self::tptp_line_for_position).
     /// Never serialized to JS — `SentenceId` doesn't cross the wasm boundary
@@ -489,14 +489,14 @@ impl WasmNativeProver {
     pub fn new() -> Self {
         Self {
             inner: KnowledgeBase::new_native_translating(),
-            config: WasmConfig::new(),
+            config: Config::new(),
             tptp_lines: std::collections::HashMap::new(),
         }
     }
 
     /// Replace the active [`Config`] used by subsequent [`ask`](Self::ask) calls.
     #[wasm_bindgen]
-    pub fn configure(&mut self, config: &WasmConfig) {
+    pub fn configure(&mut self, config: &Config) {
         self.config = config.clone();
     }
 
@@ -688,14 +688,14 @@ impl WasmNativeProver {
     /// diagnostic-message array) on a query that fails to parse or
     /// produces no sentence.
     ///
-    /// `select_all` mirrors [`WasmConfig::selectAll`](WasmConfig::select_all)
+    /// `select_all` mirrors [`Config::selectAll`](Config::select_all)
     /// on the native backend's `Config`, so ONE toggle in the UI means the
     /// same thing for both: `false` (default) SInE-selects a query-relevant
     /// axiom subset (seeded from the assertions + query, via
     /// [`KnowledgeBase::to_tptp_selected`] — the same selection primitive
     /// the native prover and the CLI's external-prover path both use);
     /// `true` emits the whole promoted KB, unfiltered. `selection_tolerance_pct`
-    /// mirrors [`WasmConfig::selectionTolerancePct`](WasmConfig::selection_tolerance_pct)
+    /// mirrors [`Config::selectionTolerancePct`](Config::selection_tolerance_pct)
     /// — ignored when `select_all` is true; `None` uses the engine default
     /// budget. Unlike the native backend's autoscaling loop, this is the
     /// FINAL budget: Vampire runs as a one-shot external engine with no
