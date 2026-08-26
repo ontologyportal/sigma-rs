@@ -103,11 +103,8 @@ jobs:
           NO_REBUILD: '1'
         run: |
           VITE_BASE=/ npm run build --workspace @sigma/web
-          mkdir -p site-cloudflare
-          cp -R packages/web/dist/* site-cloudflare/
-
           # The deploy gate below keys off this file.
-          test -f site-cloudflare/index.html
+          test -f packages/web/dist/index.html
 
       # Stamp the demo with the workspace crate version + this run's build
       # number/commit/timestamp. Read client-side by the Settings modal
@@ -118,7 +115,7 @@ jobs:
         if: steps.wapp.outcome == 'success'
         run: |
           pkg_version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          cat > site-cloudflare/version.json <<EOF
+          cat > packages/web/dist/version.json <<EOF
           {
             "version": "${pkg_version}",
             "build": ${GITHUB_RUN_NUMBER},
@@ -126,10 +123,7 @@ jobs:
             "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
-          cat site-cloudflare/version.json
-
-      - name: Build Pages Functions
-        run: npx wrangler pages functions build packages/web/functions --outfile=site-cloudflare/_worker.js
+          cat packages/web/dist/version.json
 
       # ---- Cloudflare Page Deployment ----
       # This step skips quietly until the
@@ -138,9 +132,10 @@ jobs:
         if: ${{ steps.wapp.outcome == 'success' && env.CLOUDFLARE_API_TOKEN != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
+          workingDirectory: packages/web
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site-cloudflare --project-name=sigma-rs-browse --branch=main
+          command: pages deploy dist --project-name=sigma-rs-browse --branch=main
 
       # Local runs (act) and forks have no Cloudflare credentials, so the
       # deploy above is skipped. `wrangler pages deploy` has no --dry-run to

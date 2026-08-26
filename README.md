@@ -27,8 +27,8 @@ currently supports the following automated theorem provers (ATPs) for automated 
     * [Official Release](#sigmakeedev)
     * [Local Server](#local-server)
   * [VSCode Extension](#vscode-extension-installation)
-    * [Official Release]
-    * [Development Build]
+    * [Official Release](#vscode-extension-marketplace)
+    * [Development Build](#install-extension-from-source)
 - [Workspace Layout](#workspace-layout)
 - [User Guides](#user-guides)
 - [API Documentation](#developer-api-documentation)

@@ -58,7 +58,7 @@ concurrency:
 
 jobs:
   regression:
-    name: build pages
+    name: build regression pages
     runs-on: ubuntu-latest
     timeout-minutes: 120
     outputs:
