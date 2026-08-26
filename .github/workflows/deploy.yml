@@ -129,6 +129,9 @@ jobs:
           EOF
           cat site-cloudflare/version.json
 
+      - name: Build Pages Functions
+        run: npx wrangler pages functions build packages/web/functions --outfile=site-cloudflare/_worker.js
+
       # ---- Cloudflare Page Deployment ----
       # This step skips quietly until the
       # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.

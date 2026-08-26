@@ -1,0 +1,561 @@
+:root {
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #e2e2e2;
+  --card: #f7f7f8; --accent: #2d6cdf; --ok: #1a7f37; --bad: #b42318; --warn: #9a6700; --op: #8250df;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171a; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c2e33;
+    --card: #1e2024; --accent: #6ea8ff; --ok: #4ac26b; --bad: #ff6b5e; --warn: #e3b341; --op: #d2a8ff;
+  }
+}
+/* Explicit theme choice (header toggle) overrides the OS preference. */
+:root[data-theme="light"] {
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --line: #e2e2e2;
+  --card: #f7f7f8; --accent: #2d6cdf; --ok: #1a7f37; --bad: #b42318; --warn: #9a6700; --op: #8250df;
+}
+:root[data-theme="dark"] {
+  --bg: #16171a; --fg: #e6e6e6; --muted: #9aa0a6; --line: #2c2e33;
+  --card: #1e2024; --accent: #6ea8ff; --ok: #4ac26b; --bad: #ff6b5e; --warn: #e3b341; --op: #d2a8ff;
+}
+* { box-sizing: border-box; }
+/* Pin the footer to the bottom of the viewport on short pages instead of
+   letting it float up under the content -- body is the sticky-footer flex
+   column, main is the growing item, footer is the fixed-size one. */
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  display: flex; flex-direction: column; min-height: 100vh; }
+main { max-width: 900px; margin: 0 auto; padding: 20px 20px 64px; flex: 1 0 auto; }
+footer { max-width: 900px; margin: 0 auto; padding: 0 20px 24px; text-align: center; color: var(--muted); font-size: 13px; flex: 0 0 auto; }
+h1 { font-size: 20px; margin: 0; }
+.sub { color: var(--muted); font-size: 13px; margin: 2px 0 0; }
+a { color: var(--accent); cursor: pointer; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, .mono { font-family: var(--mono); }
+
+/* Header: the brand (logo + title + tagline) is one inseparable unit; the
+   meta block (theme/bug/settings controls) sits to its right on wide screens
+   and becomes a full-width row underneath on narrow ones. */
+header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px 16px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.brand img { width: 50px; flex: 0 0 auto; }
+.brand-text { min-width: 0; }
+.head-meta { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; }
+@media (max-width: 620px) {
+  .brand img { width: 38px; }
+  h1 { font-size: 18px; }
+  .sub { font-size: 12px; }
+  .head-meta { margin-left: 0; flex: 1 1 100%; flex-direction: row; align-items: center;
+    justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; text-align: left; }
+  .head-meta .lang-select { margin-top: 0; }
+}
+.lang-select { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.lang-select select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px;
+                      background: var(--bg); color: var(--fg); }
+.head-controls { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; }
+@media (max-width: 620px) { .head-controls { margin-top: 0; } }
+
+nav.tabs {
+  display: flex; gap: 0; margin: 18px 0 16px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+/* Tabs grouped by activity: a quiet label above each cluster. */
+.tab-group { display: flex; gap: 2px; position: relative; padding-top: 14px; flex: 0 0 auto; }
+.tab-group::before {
+  content: attr(data-label); position: absolute; top: 0; left: 14px;
+  font-size: 9px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); opacity: .8;
+}
+.tab-group + .tab-group { margin-left: 10px; padding-left: 10px; border-left: 1px solid var(--line); }
+nav.tabs button {
+  font: inherit; background: none; border: none; color: var(--muted); cursor: pointer;
+  padding: 9px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  flex: 0 0 auto; white-space: nowrap;
+}
+nav.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+nav.tabs button.disabled { opacity: .4; cursor: not-allowed; }
+/* Diagnostics count on its tab button; colored by worst severity. */
+.tab-badge {
+  display: inline-block; min-width: 17px; margin-left: 5px; padding: 0 5px;
+  border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 17px; text-align: center;
+  background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn);
+}
+.tab-badge.err { background: color-mix(in srgb, var(--muted) 22%, transparent); color: var(--muted); }
+/* Header controls: GitHub login/user-menu, bug report, settings -- one
+   shared size and visual style so signing in doesn't change the row's
+   rhythm. Widths differ (icon-only vs. icon+label vs. avatar+name), which
+   is expected; height and style stay identical. */
+.head-btn {
+  font: inherit; font-size: 15px; line-height: 1; cursor: pointer; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 34px; box-sizing: border-box; padding: 0 10px;
+  background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 8px;
+}
+.head-btn:hover { color: var(--fg); border-color: var(--accent); }
+.head-btn[hidden] { display: none; }
+#bugReport svg, #githubLogin svg { display: block; }
+#userAvatar { border-radius: 50%; display: block; }
+#userName { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The gear glyph renders small relative to its em box compared to the SVG
+   icons beside it (bug report) or the avatar (signed in) -- bump it alone. */
+#settingsBtn { font-size: 20px; }
+/* Settings modal */
+dialog#settingsDialog { border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--fg); padding: 22px 28px; width: min(360px, 92vw);
+  box-sizing: border-box; }
+dialog#settingsDialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#settingsDialog h3 { margin: 0 0 16px; font-size: 14px; }
+dialog#settingsDialog .settings-row { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 18px; }
+dialog#settingsDialog .settings-row label { margin: 0; flex: 0 0 auto; }
+/* min-width: 0 lets the select shrink inside the flex row instead of its
+   longest option (e.g. a long language name) pushing past the dialog's
+   padding — a fixed-width dialog can't grow to accommodate it. */
+dialog#settingsDialog .settings-row select { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+dialog#settingsDialog #clearCacheLink { width: 100%; margin-bottom: 16px; }
+dialog#settingsDialog .dialog-actions { display: flex; align-items: center; justify-content: space-between; }
+#settingsVersion { font-size: 11px; color: var(--muted); font-family: var(--mono); opacity: .7; }
+/* Version-change modal */
+dialog#versionDialog { border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--fg); padding: 22px 28px; width: min(360px, 92vw);
+  box-sizing: border-box; }
+dialog#versionDialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#versionDialog h3 { margin: 0 0 10px; font-size: 14px; }
+dialog#versionDialog p { margin: 0 0 18px; }
+dialog#loginDialog, dialog#logoutDialog { border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--fg); padding: 22px 28px; width: min(360px, 92vw);
+  box-sizing: border-box; }
+dialog#loginDialog::backdrop, dialog#logoutDialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#loginDialog h3, dialog#logoutDialog h3 { margin: 0 0 10px; font-size: 14px; }
+dialog#loginDialog p, dialog#logoutDialog p { margin: 0 0 18px; }
+kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px;
+  border-radius: 4px; padding: 0 4px; background: var(--card); }
+.kbd-hint { font-size: 11px; }
+
+/* Ask/Tell prover settings (cog + panel) */
+button.cog {
+  font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; height: 41px;
+  background: var(--bg); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 7px; padding: 0 11px;
+}
+button.cog:hover { color: var(--fg); border-color: var(--accent); }
+button.cog[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+button.btn.ghost { background: none; color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+button.btn.ghost:hover { color: var(--fg); }
+.settings { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.settings[hidden] { display: none; }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.settings .sub { font-size: 11px; margin-top: 2px; }
+.settings-checks { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+/* `display: flex` above would otherwise BEAT the UA's `[hidden]` rule
+   (same author-vs-UA precedence issue as #tptpPane below) — this is the
+   backend-visibility toggle (data-native-only) hiding this row for
+   Vampire. */
+.settings-checks[hidden] { display: none; }
+.settings label.check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--fg); margin: 0; }
+.settings label.check input { width: auto; }
+
+/* Plain-English proof */
+.prose { font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
+.prose:empty::before { content: '(no prose available)'; color: var(--muted); }
+
+#toast { position: fixed; right: 16px; bottom: 16px; display: flex; align-items: center; gap: 10px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.2); font-size: 13px; color: var(--muted); z-index: 50; }
+#toast[hidden] { display: none; }
+#toast .spin { width: 15px; height: 15px; border: 2px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite; }
+
+
+.panel[hidden] { display: none; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+/* One control height everywhere: 8px vertical padding + 1px border on
+   EVERY variant (transparent on solid buttons, so solid/ghost/input/select
+   all share the same 41px box and line up when placed in the same row). */
+input, textarea, button.btn, a.btn {
+  font: inherit; color: inherit; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 7px; padding: 8px 11px;
+}
+input[type=text], input[type=search], input[type=number], textarea { width: 100%; }
+textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
+button.btn, a.btn { background: var(--accent); color: #fff; border: 1px solid transparent;
+  cursor: pointer; font-weight: 600; padding: 0 16px; height: 41px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+button.btn[hidden] { display: none; }
+button.btn:disabled { opacity: .5; cursor: default; }
+.inline { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+
+/* Explicit height: the UA gives <select> a shorter line box than text
+   inputs at the same font/padding, leaving it 3px shy of the shared 41px
+   control height the other rules produce. size>1 listboxes override it. */
+select { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 7px; padding: 8px 10px; height: 41px; }
+select[size], select[multiple] { height: auto; }
+select option { padding: 3px 4px; font-family: var(--mono); font-size: 13px; }
+.loaded-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.loaded-row .rm { color: var(--bad); cursor: pointer; font-size: 13px; }
+.loaded-row a.file-open { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+ul.results { list-style: none; margin: 0; padding: 0; }
+ul.results li { padding: 9px 4px; border-bottom: 1px solid var(--line); }
+ul.results li:last-child { border-bottom: none; }
+.sym { font-weight: 600; font-family: var(--mono); }
+.kinds { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.snippet { color: var(--muted); font-size: 13px; }
+
+.man h2 { font-family: var(--mono); font-size: 20px; margin: 0 0 2px; }
+/* Sticky header: the symbol name + kinds stay pinned while long
+   reference lists scroll underneath. */
+.man-head {
+  position: sticky; top: 0; z-index: 5; background: var(--card);
+  margin: -14px -14px 8px; padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--line); border-radius: 10px 10px 0 0;
+}
+.man .field { margin: 10px 0; }
+/* Taxonomy tree: ancestor chain above the current symbol, lazily
+   expandable descendants below. */
+.taxtree { font-size: 14px; }
+.tax-graph { height: 380px; }
+.tax-graph .hint { display: flex; align-items: center; justify-content: center; height: 100%; }
+.tax-legend { margin-bottom: 4px; }
+/* Edge-kind pills, color-coded per relation. */
+.tax-rel { display: inline-block; font-size: 10px; font-weight: 600; line-height: 1.5;
+  padding: 0 6px; border-radius: 999px; margin-right: 5px; vertical-align: 1px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); }
+.tax-rel[data-rel="subclass"]     { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.tax-rel[data-rel="instance"]     { background: color-mix(in srgb, var(--ok) 15%, transparent);     color: var(--ok); }
+.tax-rel[data-rel="subrelation"]  { background: color-mix(in srgb, var(--op) 15%, transparent);     color: var(--op); }
+.tax-rel[data-rel="subAttribute"] { background: color-mix(in srgb, var(--warn) 20%, transparent);   color: var(--warn); }
+.man .field h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 3px; }
+.man .field .val { font-size: 14px; }
+.man .tax code { display: inline-block; margin: 0 8px 4px 0; }
+ol.refs { list-style: none; margin: 4px 0 0; padding: 0; max-height: 420px; overflow-y: auto; }
+ol.refs li { padding: 8px 2px; border-bottom: 1px solid var(--line); }
+ol.refs .step-num { font-weight: 700; color: var(--fg); font-variant-numeric: tabular-nums; }
+details.cite > summary { cursor: pointer; list-style: none; }
+details.cite > summary::-webkit-details-marker { display: none; }
+details.cite > summary::after { content: '⌄ paraphrase'; display: inline-block; margin-top: 4px;
+                                color: var(--muted); font-size: 11px; }
+details.cite[open] > summary::after { content: '⌃ hide paraphrase'; }
+details.cite > .nl { margin-top: 6px; font-size: 12px; color: var(--muted); font-style: italic; }
+label.ref-filter { display: inline-flex; align-items: center; gap: 6px; margin: 2px 0 8px; }
+label.ref-filter select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px;
+                          background: var(--bg); color: var(--fg); max-width: 320px; }
+ol.refs li:last-child { border-bottom: none; }
+.ref-kif { margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre; overflow-x: auto; }
+.ref-meta { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-top: 4px; }
+.ref-loc { font-family: var(--mono); color: var(--accent); }
+/* Home: welcome + KB summary */
+.welcome-h { font-size: 17px; margin: 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px; margin-bottom: 12px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 14px; text-align: center; }
+.stat-n { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-n.stat-date { font-size: 16px; }
+.stat-l { font-size: 12px; color: var(--muted); margin-top: 3px; }
+/* Coverage meter inside a stat tile */
+.stat .meter { height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 6px 10px 0; }
+.stat .meter > div { height: 100%; width: 0%; background: var(--ok); border-radius: 999px; transition: width .4s ease; }
+/* Clickable tiles: pointer + a universal "more info" glyph top-right. */
+.stat.clickable { cursor: pointer; position: relative; transition: border-color .15s ease; }
+.stat.clickable::after { content: 'ⓘ'; position: absolute; top: 5px; right: 8px;
+  font-size: 12px; color: var(--muted); opacity: .6; transition: opacity .15s ease, color .15s ease; }
+.stat.clickable:hover { border-color: var(--accent); }
+.stat.clickable:hover::after { opacity: 1; color: var(--accent); }
+/* Animated popover anchored to a clicked tile. */
+.stat-pop { position: absolute; z-index: 60; min-width: 220px; max-width: 320px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28); font-size: 13px;
+  opacity: 0; transform: translateY(-6px) scale(.96); transition: opacity .18s ease, transform .18s ease; }
+.stat-pop.show { opacity: 1; transform: none; }
+.stat-pop h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted); }
+.stat-pop .pop-row { display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px;
+  gap: 10px; align-items: center; padding: 3px 0; }
+.stat-pop .pop-row .pop-label { overflow-wrap: anywhere; }
+.stat-pop .pop-row .pop-n { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.stat-pop .pop-row .hint { text-align: right; }
+.stat-pop .pop-row .pop-label.hint, .stat-pop .pop-row .pop-label .hint { text-align: left; }
+
+/* History: commit timeline */
+ol.timeline { list-style: none; margin: 0; padding: 0 0 0 18px; border-left: 2px solid var(--line); }
+ol.timeline li { position: relative; padding: 0 0 14px 14px; }
+ol.timeline li::before { content: ''; position: absolute; left: -23px; top: 5px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--bg); }
+ol.timeline li:last-child { padding-bottom: 0; }
+.commit-msg { font-size: 14px; }
+.commit-msg a { color: var(--fg); }
+.commit-msg a:hover { color: var(--accent); }
+.commit-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.commit-meta .sha { font-family: var(--mono); }
+
+/* GitHub mark inside the Submit-change button */
+#ghPropose { display: inline-flex; align-items: center; gap: 7px; position: relative; }
+.gh-mark { flex: 0 0 auto; }
+/* Unpushed-change count, on the GitHub button. Amber once any tracked file
+   has moved upstream underneath it — the count alone cannot say that. */
+#ghBadge {
+  min-width: 16px; padding: 0 5px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent);
+}
+#ghBadge.stale { background: color-mix(in srgb, var(--warn) 26%, transparent); color: var(--warn); }
+#ghBadge[hidden] { display: none; }
+
+/* Contribute panel: the collapsible list of tracked changes */
+.gh-changes { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+#ghChangesToggle { font: inherit; font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
+  background: none; border: none; color: var(--fg); cursor: pointer; padding: 2px 0; }
+#ghChangesToggle:hover { color: var(--accent); }
+#ghChangesToggle .tri { color: var(--muted); font-size: 11px; width: 10px; }
+#ghChangesList { margin-top: 8px; }
+#ghChangesList[hidden] { display: none; }
+.gh-group { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+  margin: 10px 0 4px; }
+.gh-group:first-child { margin-top: 0; }
+.gh-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; }
+.gh-row:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.gh-row.stale { background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.gh-row input[type=checkbox] { width: auto; margin: 0; flex: 0 0 auto; }
+.gh-row-name { font-size: 13px; overflow-wrap: anywhere; }
+.gh-row-gap { flex: 1 1 auto; }
+.gh-act { font-size: 12px; cursor: pointer; flex: 0 0 auto; }
+.gh-chip { font-size: 10px; padding: 1px 7px; border-radius: 9px; font-weight: 600; white-space: nowrap;
+  background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.gh-chip.st-modified { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.gh-chip.st-amended  { background: color-mix(in srgb, var(--op) 20%, transparent);     color: var(--op); }
+.gh-chip.st-stale    { background: color-mix(in srgb, var(--warn) 22%, transparent);   color: var(--warn); }
+.gh-chip.st-pr       { background: color-mix(in srgb, var(--ok) 18%, transparent);     color: var(--ok); }
+.gh-row-path { display: flex; align-items: center; gap: 8px; padding: 0 6px 8px 30px; }
+.gh-row-path label { font-size: 11px; color: var(--muted); margin: 0; flex: 0 0 auto; }
+.gh-row-path input { font-family: var(--mono); font-size: 12px; padding: 3px 6px; flex: 1 1 auto; }
+
+/* Diff / conflict dialog */
+dialog#ghDiffDialog { border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  color: var(--fg); padding: 18px 20px; width: min(1000px, 94vw); }
+dialog#ghDiffDialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#ghDiffDialog h3 { margin: 0 0 6px; font-size: 14px; }
+dialog#ghDiffDialog p { margin: 0 0 12px; }
+#ghDiffPane { height: min(52vh, 460px); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+dialog#ghDiffDialog .dialog-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+dialog#ghDiffDialog .dialog-actions .spacer { flex: 1 1 auto; }
+
+/* IDE diagnostic count -> Diagnostics tab */
+a.jump-diag { cursor: pointer; color: var(--accent); }
+a.jump-diag:hover { text-decoration: underline; }
+/* Brief flash on the diagnostic a deep link landed on. */
+.diag.diag-target { background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 6px; transition: background 1s ease; }
+
+/* Only citations we can actually open are rendered as <a class="jump-src">;
+   unopenable ones stay as plain <span> and must not look clickable. */
+a.jump-src { cursor: pointer; }
+a.jump-src:hover { text-decoration: underline; }
+span.ref-loc, span.loc { color: var(--muted); }
+
+.status { padding: 3px 9px; border-radius: 20px; font-weight: 700; font-size: 12px; }
+.status.Proved, .status.Inconsistent { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.status.Disproved, .status.Consistent { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.status.InputError, .status.Timeout, .status.Unknown { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+
+/* Audit's own status colors: unlike Ask/Tell's `.status` above (where
+   Inconsistent proving the query's negation is a "good" green result),
+   here Inconsistent means the KB ITSELF derives a contradiction — bad. */
+.audit-status { padding: 3px 9px; border-radius: 20px; font-weight: 700; font-size: 12px; }
+.audit-status.Consistent { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+.audit-status.Inconsistent { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+.audit-status.Timeout, .audit-status.Unknown { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.audit-status.InputError { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.contradiction-hd { font-weight: 600; margin-bottom: 6px; }
+ol.proof { font-family: var(--mono); font-size: 13px; padding-left: 26px; margin: 8px 0 0; }
+ol.proof .rule { color: var(--accent); }
+details pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 10px; overflow-x: auto; }
+.graph-container { height: 340px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); margin-top: 8px; }
+.graph-tip { min-height: 18px; margin-top: 6px; font-family: var(--mono); white-space: pre-wrap; word-break: break-word; }
+.graph-dot-toggle { margin-top: 8px; }
+.graph-dot-toggle summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.graph-dot-toggle pre { font-size: 11px; max-height: 200px; overflow-y: auto; }
+.diag { border-bottom: 1px solid var(--line); border-left: 3px solid transparent; padding: 8px 2px 8px 8px; }
+.diag:last-child { border-bottom: none; }
+.diag[data-sev="error"] { border-left-color: var(--bad); }
+.diag[data-sev="warning"] { border-left-color: var(--warn); }
+.diag[data-sev="info"], .diag[data-sev="hint"] { border-left-color: var(--accent); }
+.diag-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.sev { font-size: 10px; text-transform: uppercase; font-weight: 700; padding: 1px 6px; border-radius: 4px; }
+.sev.error { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); }
+.sev.warning { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+.sev.info, .sev.hint { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+/* Diagnostics filter button + count badge (same shape as the tab-badge
+   diagnostic count) — the four selects live in the #diagFilterPanel
+   .settings panel it toggles, so the row above never wraps. */
+#diagFilterBtn { display: inline-flex; align-items: center; gap: 6px; }
+#diagFilterBtn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+#diagFilterBadge:empty { display: none; }
+#diagFilterBadge {
+  display: inline-block; min-width: 15px; padding: 0 5px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; line-height: 15px; text-align: center;
+  background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent);
+}
+/* One filter per row, full width — a long file path or code name can
+   never push the panel wider than its card, unlike a multi-column grid. */
+.diag-filter-stack { display: flex; flex-direction: column; gap: 10px; }
+.diag-filter-stack select { width: 100%; max-width: 100%; }
+.diag-pager { display: flex; align-items: center; justify-content: center; gap: 12px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.diag-pager button.btn.ghost:disabled { opacity: .35; cursor: default; }
+.diag .loc { font-family: var(--mono); font-size: 12px; color: var(--accent); cursor: pointer; }
+.diag .code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.diag .msg { font-size: 13px; }
+.diag .loc:hover { text-decoration: underline; }
+.hint { color: var(--muted); font-size: 13px; }
+.xref { border-bottom: 1px dotted var(--accent); }
+
+.pane-editor {
+  height: 96px; border: 1px solid var(--line); border-radius: 7px; overflow: hidden;
+}
+.pane-editor-sm { height: 56px; }
+
+.tq-badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; font-weight: 600; }
+.tq-ok  { background: color-mix(in srgb, var(--ok) 18%, transparent);   color: var(--ok); }
+.tq-bad { background: color-mix(in srgb, var(--bad) 18%, transparent);  color: var(--bad); }
+.tq-mut { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.tok-paren { color: var(--muted); font-weight: 600; }
+.tok-kw { color: var(--op); font-weight: 700; font-style: italic; }
+.tok-fn { color: var(--accent); }
+.tok-var { color: var(--warn); }
+.tok-str, .tok-num { color: var(--ok); }
+.tok-com { color: var(--muted); font-style: italic; }
+.sym-focus { background: rgba(255, 214, 10, 0.22); border-radius: 3px; padding: 0 1px; box-decoration-break: clone; }
+.ref-kif a.sym-link { color: inherit; text-decoration: none; cursor: pointer; }
+.ref-kif a.sym-link:hover { text-decoration: underline; }
+/* A probed symbol with no man page: quiet, not clickable-looking. */
+a.sym-link.sym-dead { cursor: default; opacity: .7; }
+a.sym-link.sym-dead:hover { text-decoration: none; }
+
+/* Edit tab: one compact toolbar row — picker + filename on the left,
+   status + actions pushed right; wraps gracefully when narrow. */
+.edit-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.edit-toolbar .spacer { flex: 1 1 0; }
+.edit-toolbar select { min-width: 200px; }
+.edit-toolbar input[type=text] { width: 190px; }
+.edit-toolbar #editStatus { text-align: right; }
+#editFileName { font-family: var(--mono); font-size: 13px; }
+/* Joined icon button group (open · save · download · GitHub). */
+.btn-group { display: inline-flex; border: 1px solid var(--line); border-radius: 8px;
+  overflow: hidden; background: var(--bg); }
+.btn-group > button { font: inherit; display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--fg); cursor: pointer; padding: 0 12px; height: 41px; }
+.btn-group > button + button { border-left: 1px solid var(--line); }
+.btn-group > button:hover { background: var(--card); color: var(--accent); }
+.btn-group > button[aria-expanded="true"], .btn-group > button[aria-pressed="true"] {
+  color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.btn-group > button[hidden] { display: none; }
+/* Download menu (#editDownloadMenu): fixed-position dropdown under the
+   download button; coordinates set by tabs/edit.js when opened. */
+.dl-menu { position: fixed; z-index: 300; min-width: 220px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+.dl-menu > button { display: block; width: 100%; text-align: left; font: inherit;
+  font-size: 13px; background: none; border: none; border-radius: 6px;
+  color: var(--fg); cursor: pointer; padding: 8px 10px; }
+.dl-menu > button:hover { background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent); }
+.dl-menu > button[disabled] { color: var(--muted); cursor: default; background: none; }
+/* Open-file dialog */
+dialog#openDialog { border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+  color: var(--fg); padding: 16px; width: min(420px, 92vw); }
+dialog#openDialog::backdrop { background: rgba(0, 0, 0, .45); }
+dialog#openDialog h3 { margin: 0 0 8px; font-size: 14px; }
+#openList { max-height: 300px; overflow-y: auto; }
+#openList a { font-family: var(--mono); cursor: pointer; }
+#openList .origin { float: right; }
+
+#editPane { padding: 0; overflow: hidden; }
+#editorContainer { height: 520px; }
+#editorContainer:empty::before {
+  content: attr(data-placeholder); color: var(--muted); font-size: 13px;
+  display: flex; align-items: center; justify-content: center; height: 100%;
+}
+
+/* TPTP preview pane: BELOW the editor normally, BESIDE it in fullscreen
+   (see the body.edit-fullscreen rules further down). The toggle button
+   only shows/hides it; placement follows the fullscreen state. */
+#editPane.split { display: flex; flex-direction: column; align-items: stretch; }
+#editPane.split #editorContainer { flex: 0 0 auto; min-width: 0; height: 520px; }
+#tptpPane { flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column;
+  border-top: 1px solid var(--line); height: 300px; }
+/* `display: flex` above would otherwise BEAT the UA's `[hidden]` rule —
+   the closed pane then renders (below the editor, sans Monaco) showing
+   its "Generating…" placeholder forever. Keep `hidden` authoritative. */
+#tptpPane[hidden] { display: none; }
+.tptp-pane-header { display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; font-size: 12px; font-family: var(--mono); color: var(--muted);
+  border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+#tptpContainer { flex: 1 1 auto; min-height: 0; }
+#tptpContainer:empty::before {
+  content: attr(data-placeholder); color: var(--muted); font-size: 13px;
+  display: flex; align-items: center; justify-content: center; height: 100%;
+}
+/* Follow-cursor highlight in the TPTP pane (deltaDecorations className). */
+.tptp-follow-line { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* File-scoped problems panel directly beneath the editor. */
+#editDiagnostics { padding: 0; overflow: hidden; }
+#editDiagnostics > summary {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  list-style: none; padding: 10px 14px; font-size: 13px; font-weight: 600;
+}
+#editDiagnostics > summary::-webkit-details-marker { display: none; }
+#editDiagnostics > summary::before { content: '>'; color: var(--muted); font-size: 15px;
+  line-height: 1; transition: transform .12s ease; }
+#editDiagnostics[open] > summary::before { transform: rotate(90deg); }
+#editDiagSummary { color: var(--muted); font-weight: 400; }
+#editDiagList { max-height: 220px; overflow-y: auto; border-top: 1px solid var(--line); }
+.edit-diag {
+  width: 100%; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline;
+  gap: 8px; padding: 8px 14px; border: 0; border-bottom: 1px solid var(--line);
+  border-left: 3px solid transparent; background: var(--bg); color: var(--fg);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.edit-diag:last-child { border-bottom: 0; }
+.edit-diag:hover, .edit-diag:focus-visible { background: var(--card); outline: none; }
+.edit-diag[data-sev="error"] { border-left-color: var(--bad); }
+.edit-diag[data-sev="warning"] { border-left-color: var(--warn); }
+.edit-diag-loc { color: var(--accent); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.edit-diag-msg { min-width: 0; font-size: 13px; }
+.edit-diag-code { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+#editDiagEmpty { padding: 10px 14px; }
+
+/* Fullscreen editor: #tab-edit (toolbar + editor + editLog) lifted out of
+   <main>'s max-width/flow to cover the viewport. Animated via the View
+   Transitions API where supported (tabs/edit.js wraps the class toggle in
+   document.startViewTransition — this rule only needs to describe the
+   two end states; the browser interpolates the geometry morph between
+   them); toggling the class directly is still correct with no transition
+   library on browsers that lack it. */
+body.edit-fullscreen #tab-edit {
+  position: fixed; inset: 0; z-index: 200; margin: 0; max-width: none;
+  background: var(--bg); padding: 16px 20px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px;
+}
+body.edit-fullscreen #editPane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+body.edit-fullscreen #editorContainer { flex: 1 1 auto; height: auto; }
+/* Fullscreen flips the pane to the side: row layout, equal halves, both
+   columns fluid-height, divider moves from top edge to left edge. */
+body.edit-fullscreen #editPane.split { flex-direction: row; }
+body.edit-fullscreen #editPane.split #editorContainer { flex: 1 1 0; height: auto; }
+body.edit-fullscreen #tptpPane { flex: 1 1 0; height: auto;
+  border-top: none; border-left: 1px solid var(--line); }
+
+#overlay { position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; }
+#overlayTitle { font-size: 15px; font-weight: 600; }
+/* Linear boot progress: a track with a width-animated fill. */
+#bootBar { width: min(380px, 72vw); height: 6px; background: var(--line);
+  border-radius: 999px; overflow: hidden; }
+#bootBarFill { height: 100%; width: 0%; background: var(--accent);
+  border-radius: 999px; transition: width .25s ease; }
+/* The currently-loading constituent, kept deliberately quiet. */
+#overlayMsg { font-size: 12px; color: var(--muted); min-height: 1.2em; }
+@keyframes spin { to { transform: rotate(360deg); } }

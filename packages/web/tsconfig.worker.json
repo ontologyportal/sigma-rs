@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    // WebWorker, not DOM: this file runs as a Worker global scope, not a
+    // window. Combining DOM + WebWorker libs in one config produces
+    // conflicting overloads for shared names like `self.postMessage` --
+    // same reasoning as vite.config.ts's Node-vs-DOM split, one file per
+    // distinct global environment.
+    "lib": ["ES2022", "WebWorker"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false
+  },
+  "include": ["src/sigma.worker.ts"]
+}

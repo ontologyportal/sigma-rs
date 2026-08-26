@@ -169,6 +169,33 @@ To run the sever in development mode (e.g. it will rebuild the sources when you 
 npm run web
 ```
 
+**Important**: this creates a dev server which runs the backend API calls. To utilize the calls, 
+you need to provide the backend server with a GitHub OAuth configuration. If you do not need GitHub
+API access for your dev, skip this step (e.g. you do not need to test the PR features). Otherwise
+follow these instructions to make your own test OAuth application:
+
+1. Open a web browser and navigate to: 
+ [https://github.com/settings/developers](https://github.com/settings/developers) (you will need to 
+ log into GitHub)
+2. Click "New OAuth App"
+3. Create a dummy **Application Name** (e.g. "Test SigmaKEE") 
+4. Enter `https://localhost:8788` as the **Homepage URL**
+5. Enter `https://localhost:8788/api/github-auth-callback` as the **Authorization callback URLs** entry
+6. Uncheck **Expire user access tokens**
+7. Save the **Client ID** code on the next page. You will use it as the `GITHUB_OAUTH_CLIENT_ID`.
+8. Under "Client secrets" click **Generate a new client secret**. It will generate a code. Copy 
+ the code (you can only copy it once, so make sure to do this). You will use this for 
+ `GITHUB_OAUTH_CLIENT_SECRET`.
+9. Create the file `packages/web/.dev.vars`
+10. Populate that file with the following contents (replacing the X's with the values from the previous steps)
+
+```
+GITHUB_OAUTH_CLIENT_ID="XXXXXXXXXXXXXXXXXXXX"
+GITHUB_OAUTH_CLIENT_SECRET="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+```
+
+11. Rerun `npm run web`. It will now properly make OAuth API calls for you.
+
 **Optionally,** use environment variables to customize your local web app build:
 
 | Variable | Effect |
