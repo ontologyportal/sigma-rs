@@ -34,6 +34,7 @@ default            = ["persist", "ask", "parallel", "http", "git"]
 # pass it through.  Activating any of these may change the public
 # API surface (e.g. `ask` adds AskOp / TestOp).
 persist            = ["sigmakee-rs-core/persist"]
+snapshot           = ["sigmakee-rs-core/snapshot"]
 ask                = ["sigmakee-rs-core/ask"]
 native-prover      = ["sigmakee-rs-core/native-prover"]
 integrated-vampire = ["ask", "sigmakee-rs-core/integrated-prover"]

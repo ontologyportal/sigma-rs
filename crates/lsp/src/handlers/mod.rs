@@ -16,6 +16,7 @@ pub mod rename;
 pub mod semantic_tokens;
 pub mod symbols;
 pub mod taxonomy;
+pub mod tptp;
 pub mod workspace_symbols;
 
 pub use completion::handle_completion;
@@ -34,5 +35,9 @@ pub use semantic_tokens::{handle_semantic_tokens_full, semantic_tokens_legend};
 pub use symbols::handle_document_symbol;
 pub use taxonomy::{
     handle_taxonomy, TaxonomyEdgeDto, TaxonomyParams, TaxonomyRequest, TaxonomyResponse,
+};
+pub use tptp::{
+    handle_tptp_export, handle_tptp_line, TptpExportParams, TptpExportRequest, TptpExportResponse,
+    TptpLineRequest, TptpLineResponse, TPTP_EXPORT_METHOD, TPTP_LINE_METHOD,
 };
 pub use workspace_symbols::handle_workspace_symbols;

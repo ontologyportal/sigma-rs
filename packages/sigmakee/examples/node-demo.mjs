@@ -18,14 +18,14 @@ const pkg = join(here, "..", "dist");
 
 const mod = await import(join(pkg, "sumo_parser_wasm.js"));
 const init = mod.default;
-const { WasmNativeProver, WasmKnowledgeBase, Config } = mod;
+const { Session, Config } = mod;
 
 // Instantiate from the .wasm bytes (browser code would just `await init()`,
 // letting it fetch the .wasm sitting next to the JS).
 await init({ module_or_path: await readFile(join(pkg, "sumo_parser_wasm_bg.wasm")) });
 
 // --- Prove in-browser-equivalent -------------------------------------------
-const prover = new WasmNativeProver();
+const prover = new Session();
 
 // Configure the prover (mirrors KBManager's NativeProverConfig).
 const cfg = new Config();
@@ -53,9 +53,7 @@ const neg = prover.ask("(instance Plato Mortal)");
 console.log("\nnon-consequence status:", neg.status);   // Disproved / Unknown
 
 // --- Translate to TPTP ------------------------------------------------------
-const kb = new WasmKnowledgeBase();
-kb.loadKif("(instance Socrates Man)", "demo");
-console.log("\nTPTP:\n" + kb.toTptp("fof", true, undefined));
+console.log("\nTPTP:\n" + prover.toTptpIndexed("fof", true));
 
 if (r.status !== "Proved") {
   console.error("\nFAIL: expected Proved");

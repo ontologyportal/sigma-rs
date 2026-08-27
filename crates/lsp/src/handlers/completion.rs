@@ -16,7 +16,7 @@ use lsp_types::{
     MarkupContent, MarkupKind,
 };
 
-use sigmakee_rs_sdk::{KnowledgeBase, TokenKind};
+use sigmakee_rs_sdk::{KnowledgeBase, TokenKind, TopLayer};
 
 use crate::conv::{position_to_offset, uri_to_tag};
 use crate::state::GlobalState;
@@ -25,8 +25,8 @@ use crate::state::GlobalState;
 
 /// Handle a `textDocument/completion` request, returning context-aware
 /// completion items or `None` when the document or KB is unavailable.
-pub fn handle_completion(
-    state: &GlobalState,
+pub fn handle_completion<L: TopLayer>(
+    state: &GlobalState<L>,
     params: CompletionParams,
 ) -> Option<CompletionResponse> {
     let uri = params.text_document_position.text_document.uri;
@@ -92,6 +92,8 @@ fn classify_cursor_context(
         }
 
         match &tok.kind {
+            // Lexical trivia: neither a head nor an argument.
+            TokenKind::Comment(_) => {}
             TokenKind::LParen => stack.push(Frame::default()),
             TokenKind::RParen => {
                 stack.pop();
@@ -146,7 +148,7 @@ fn classify_cursor_context(
 
 /// Offer every logical operator plus every relation name that appears as a
 /// sentence head in the KB (Skolem symbols excluded).
-fn suggest_heads(kb: &KnowledgeBase) -> Vec<CompletionItem> {
+fn suggest_heads<L: TopLayer>(kb: &KnowledgeBase<L>) -> Vec<CompletionItem> {
     let mut out: Vec<CompletionItem> = OP_KEYWORDS
         .iter()
         .map(|op| CompletionItem {
@@ -174,7 +176,11 @@ const OP_KEYWORDS: &[&str] = &["and", "or", "not", "=>", "<=>", "equal", "forall
 /// Offer symbols satisfying the declared domain at this argument position.
 /// Falls back to every interned symbol when no domain is declared; Skolem
 /// symbols are filtered out.
-fn suggest_args(kb: &KnowledgeBase, head: &str, arg_idx: usize) -> Vec<CompletionItem> {
+fn suggest_args<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    head: &str,
+    arg_idx: usize,
+) -> Vec<CompletionItem> {
     let expected = kb.expected_arg_class(head, arg_idx);
     let mut out: Vec<CompletionItem> = Vec::new();
 
@@ -200,7 +206,7 @@ fn suggest_args(kb: &KnowledgeBase, head: &str, arg_idx: usize) -> Vec<Completio
 
 // -- Shared helpers ----------------------------------------------------------
 
-fn item_for_symbol(kb: &KnowledgeBase, name: &str) -> CompletionItem {
+fn item_for_symbol<L: TopLayer>(kb: &KnowledgeBase<L>, name: &str) -> CompletionItem {
     let kind = classify_completion_kind(kb, name);
     let documentation = kb
         .documentation(name, Some("EnglishLanguage"))
@@ -220,7 +226,7 @@ fn item_for_symbol(kb: &KnowledgeBase, name: &str) -> CompletionItem {
     }
 }
 
-fn classify_completion_kind(kb: &KnowledgeBase, name: &str) -> CompletionItemKind {
+fn classify_completion_kind<L: TopLayer>(kb: &KnowledgeBase<L>, name: &str) -> CompletionItemKind {
     let Some(id) = kb.symbol_id(name) else {
         return CompletionItemKind::TEXT;
     };

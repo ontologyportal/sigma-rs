@@ -1,6 +1,14 @@
-//! LSP message loop.  Receives `Message`s from the lsp-server `Connection`,
-//! dispatches each to a handler, and publishes notifications back on the same
-//! connection.  Handlers run inline on the event-loop thread.
+//! LSP message loop, split into a transport-free core and a stdio shell.
+//!
+//! [`dispatch_message`] is the core: feed it one client->server `Message`, get
+//! back every server->client message it produces (the response, plus any
+//! `publishDiagnostics` notifications).  It has no I/O and no threads, so any
+//! transport can drive it -- the wasm build feeds it JSON strings from
+//! `postMessage`.
+//!
+//! [`run`] is the native shell: the lsp-server `Connection` loop (stdio or
+//! in-memory), the `initialize` handshake, and the initial workspace sweep.
+//! Handlers run inline on the event-loop thread.
 
 use anyhow::Result;
 use lsp_server::{Connection, ExtractError, Message, Notification, Request, Response};
@@ -22,16 +30,17 @@ use lsp_types::{
 use ropey::Rope;
 use serde::de::DeserializeOwned;
 
-use sigmakee_rs_sdk::{parse_document, Parser, SourceFile};
+use sigmakee_rs_sdk::{parse_document, HasTranslation, Parser, SourceFile, TopLayer};
 
 use crate::conv::uri_to_tag;
 use crate::handlers::{
     handle_completion, handle_document_symbol, handle_formatting, handle_goto_definition,
     handle_hover, handle_range_formatting, handle_references, handle_rename,
     handle_semantic_tokens_full, handle_set_active_files, handle_set_ignored_diagnostics,
-    handle_taxonomy, handle_workspace_symbols, publish_diagnostics, semantic_tokens_legend,
-    SetActiveFilesParams, SetIgnoredDiagnosticsParams, TaxonomyRequest, SET_ACTIVE_FILES_METHOD,
-    SET_IGNORED_DIAGNOSTICS_METHOD,
+    handle_taxonomy, handle_tptp_export, handle_tptp_line, handle_workspace_symbols,
+    publish_diagnostics, semantic_tokens_legend, SetActiveFilesParams, SetIgnoredDiagnosticsParams,
+    TaxonomyRequest, TptpExportRequest, TptpLineRequest, SET_ACTIVE_FILES_METHOD,
+    SET_IGNORED_DIAGNOSTICS_METHOD, TPTP_EXPORT_METHOD, TPTP_LINE_METHOD,
 };
 use crate::state::{DocState, GlobalState};
 
@@ -40,14 +49,7 @@ use crate::state::{DocState, GlobalState};
 pub fn run(connection: Connection) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let init_params: InitializeParams = serde_json::from_value(params)?;
-    let result = InitializeResult {
-        capabilities: server_capabilities(),
-        server_info: Some(ServerInfo {
-            name: "sumo-lsp".to_string(),
-            version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        }),
-    };
-    connection.initialize_finish(id, serde_json::to_value(result)?)?;
+    connection.initialize_finish(id, serde_json::to_value(initialize_result())?)?;
 
     log::info!(target: "sumo_lsp", "initialised");
 
@@ -69,28 +71,70 @@ pub fn run(connection: Connection) -> Result<()> {
         log::info!(target: "sumo_lsp",
             "clientManagesFiles=true in init options; skipping workspace sweep");
     } else {
-        initial_workspace_sweep(&connection, &state, &init_params);
+        for out in initial_workspace_sweep(&state, &init_params) {
+            let _ = connection.sender.send(out);
+        }
     }
 
     for msg in &connection.receiver {
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    log::info!(target: "sumo_lsp", "shutdown requested");
-                    return Ok(());
-                }
-                handle_request(&connection, &state, req);
+        if let Message::Request(req) = &msg {
+            if connection.handle_shutdown(req)? {
+                log::info!(target: "sumo_lsp", "shutdown requested");
+                return Ok(());
             }
-            Message::Notification(not) => {
-                if let Err(e) = handle_notification(&connection, &state, not) {
-                    log::warn!(target: "sumo_lsp", "notification handler error: {:?}", e);
-                }
-            }
-            Message::Response(_) => {}
+        }
+        for out in dispatch_message(&state, msg) {
+            let _ = connection.sender.send(out);
         }
     }
 
     Ok(())
+}
+
+// -- Transport-free dispatch --------------------------------------------------
+
+/// Dispatch one client->server message and return every server->client message
+/// it produces -- the response (for requests) plus any notifications
+/// (`publishDiagnostics`) the handling emitted.
+///
+/// This is the whole server minus the transport: no I/O, no threads, no
+/// blocking.  Lifecycle messages are the shell's job and are NOT handled
+/// here -- the native [`run`] loop answers `initialize`/`shutdown`/`exit` via
+/// lsp-server's `Connection`, and an embedding transport (e.g. the wasm
+/// bridge) must answer them itself, using [`initialize_result`] for the
+/// handshake.
+///
+/// The `HasTranslation` bound comes from the `sumo/toTptp` preview export;
+/// both real layer stacks (the standalone binary's `TranslationLayer`, the
+/// wasm build's `ProverLayer<TranslationLayer>`) satisfy it.
+pub fn dispatch_message<L: TopLayer + HasTranslation>(
+    state: &GlobalState<L>,
+    msg: Message,
+) -> Vec<Message> {
+    let mut out = Vec::new();
+    match msg {
+        Message::Request(req) => handle_request(state, req, &mut out),
+        Message::Notification(not) => {
+            if let Err(e) = handle_notification(state, not, &mut out) {
+                log::warn!(target: "sumo_lsp", "notification handler error: {:?}", e);
+            }
+        }
+        Message::Response(_) => {}
+    }
+    out
+}
+
+/// The `InitializeResult` the server answers the `initialize` handshake with.
+/// Public so an embedding transport can perform the same handshake [`run`]
+/// does.
+pub fn initialize_result() -> InitializeResult {
+    InitializeResult {
+        capabilities: server_capabilities(),
+        server_info: Some(ServerInfo {
+            name: "sumo-lsp".to_string(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        }),
+    }
 }
 
 // -- Capabilities -------------------------------------------------------------
@@ -144,7 +188,11 @@ fn server_capabilities() -> ServerCapabilities {
 
 // -- Workspace sweep ----------------------------------------------------------
 
-fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &InitializeParams) {
+fn initial_workspace_sweep<L: TopLayer>(
+    state: &GlobalState<L>,
+    init: &InitializeParams,
+) -> Vec<Message> {
+    let mut out = Vec::new();
     // Prefer `workspace_folders`; fall back to the legacy `root_uri`.
     let folders: Vec<WorkspaceFolder> = match &init.workspace_folders {
         Some(fs) if !fs.is_empty() => fs.clone(),
@@ -157,13 +205,13 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                     name: "root".to_string(),
                 }]
             } else {
-                return;
+                return out;
             }
         }
     };
 
     for folder in &folders {
-        let Ok(dir) = folder.uri.to_file_path() else {
+        let Some(dir) = crate::conv::url_to_file_path(&folder.uri) else {
             continue;
         };
         let kif_files = collect_kif_files(&dir);
@@ -171,7 +219,7 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
             "workspace sweep: {} KIF files in '{}'", kif_files.len(), dir.display());
         for path in kif_files {
             if let Ok(text) = std::fs::read_to_string(&path) {
-                let Ok(uri) = Url::from_file_path(&path) else {
+                let Some(uri) = crate::conv::url_from_file_path(&path) else {
                     continue;
                 };
                 let tag = uri_to_tag(&uri);
@@ -205,15 +253,7 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
                 // (ParsedDocument is not Clone).
                 {
                     let session = state.session.read().expect("kb not poisoned");
-                    publish_diagnostics(
-                        &connection.sender,
-                        &uri,
-                        &rope,
-                        &parsed,
-                        state,
-                        session.kb(),
-                        None,
-                    );
+                    publish_diagnostics(&mut out, &uri, &rope, &parsed, state, session.kb(), None);
                 }
                 {
                     let mut docs = state.docs.write().expect("docs not poisoned");
@@ -224,6 +264,7 @@ fn initial_workspace_sweep(connection: &Connection, state: &GlobalState, init: &
             }
         }
     }
+    out
 }
 
 fn collect_kif_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -250,7 +291,11 @@ fn is_kif_file(path: &std::path::Path) -> bool {
 
 // -- Request dispatch ---------------------------------------------------------
 
-fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
+fn handle_request<L: TopLayer + HasTranslation>(
+    state: &GlobalState<L>,
+    req: Request,
+    out: &mut Vec<Message>,
+) {
     let resp = match req.method.as_str() {
         HoverRequest::METHOD => dispatch::<HoverRequest, _>(req, |p| Some(handle_hover(state, p))),
         GotoDefinition::METHOD => {
@@ -276,6 +321,13 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
         m if m == <TaxonomyRequest as lsp_types::request::Request>::METHOD => {
             dispatch::<TaxonomyRequest, _>(req, |p| Some(handle_taxonomy(state, p)))
         }
+        // Custom extension requests: TPTP preview export + cursor line sync.
+        m if m == TPTP_EXPORT_METHOD => {
+            dispatch::<TptpExportRequest, _>(req, |p| Some(handle_tptp_export(state, p)))
+        }
+        m if m == TPTP_LINE_METHOD => {
+            dispatch::<TptpLineRequest, _>(req, |p| Some(handle_tptp_line(state, p)))
+        }
         _ => Response {
             id: req.id,
             result: None,
@@ -286,7 +338,7 @@ fn handle_request(connection: &Connection, state: &GlobalState, req: Request) {
             }),
         },
     };
-    let _ = connection.sender.send(Message::Response(resp));
+    out.push(Message::Response(resp));
 }
 
 /// Extract the typed `Params` from a `Request`, run the handler, and re-wrap
@@ -335,29 +387,29 @@ where
 
 // -- Notification dispatch ----------------------------------------------------
 
-fn handle_notification(
-    connection: &Connection,
-    state: &GlobalState,
+fn handle_notification<L: TopLayer>(
+    state: &GlobalState<L>,
     not: Notification,
+    out: &mut Vec<Message>,
 ) -> Result<()> {
     match not.method.as_str() {
         DidOpenTextDocument::METHOD => {
             let params = cast_notification::<DidOpenTextDocument>(not)?;
-            on_did_open(connection, state, params);
+            on_did_open(state, params, out);
         }
         DidChangeTextDocument::METHOD => {
             let params = cast_notification::<DidChangeTextDocument>(not)?;
-            on_did_change(connection, state, params);
+            on_did_change(state, params, out);
         }
         DidCloseTextDocument::METHOD => {
             let params = cast_notification::<DidCloseTextDocument>(not)?;
             on_did_close(state, params);
         }
         m if m == SET_ACTIVE_FILES_METHOD => {
-            on_set_active_files(connection, state, not)?;
+            on_set_active_files(state, not, out)?;
         }
         m if m == SET_IGNORED_DIAGNOSTICS_METHOD => {
-            on_set_ignored_diagnostics(connection, state, not)?;
+            on_set_ignored_diagnostics(state, not, out)?;
         }
         _ => {
             log::trace!(target: "sumo_lsp", "ignored notification '{}'", not.method);
@@ -374,7 +426,11 @@ fn cast_notification<N: lsp_types::notification::Notification>(
 
 // -- didOpen ------------------------------------------------------------------
 
-fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenTextDocumentParams) {
+fn on_did_open<L: TopLayer>(
+    state: &GlobalState<L>,
+    params: DidOpenTextDocumentParams,
+    out: &mut Vec<Message>,
+) {
     use std::sync::atomic::Ordering;
 
     let uri = params.text_document.uri;
@@ -411,7 +467,7 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
     {
         let session = state.session.read().expect("kb not poisoned");
         publish_diagnostics(
-            &connection.sender,
+            out,
             &uri,
             &rope,
             &parsed,
@@ -430,10 +486,10 @@ fn on_did_open(connection: &Connection, state: &GlobalState, params: DidOpenText
 
 // -- didChange ----------------------------------------------------------------
 
-fn on_did_change(
-    connection: &Connection,
-    state: &GlobalState,
+fn on_did_change<L: TopLayer>(
+    state: &GlobalState<L>,
     params: DidChangeTextDocumentParams,
+    out: &mut Vec<Message>,
 ) {
     let uri = params.text_document.uri;
     let version = params.text_document.version;
@@ -467,7 +523,7 @@ fn on_did_change(
     {
         let session = state.session.read().expect("kb not poisoned");
         publish_diagnostics(
-            &connection.sender,
+            out,
             &uri,
             &rope,
             &parsed,
@@ -486,7 +542,7 @@ fn on_did_change(
 
 // -- didClose -----------------------------------------------------------------
 
-fn on_did_close(state: &GlobalState, params: DidCloseTextDocumentParams) {
+fn on_did_close<L: TopLayer>(state: &GlobalState<L>, params: DidCloseTextDocumentParams) {
     let uri = params.text_document.uri;
     log::debug!(target: "sumo_lsp", "didClose '{}'", uri_to_tag(&uri));
     let mut docs = state.docs.write().expect("docs not poisoned");
@@ -500,10 +556,10 @@ fn on_did_close(state: &GlobalState, params: DidCloseTextDocumentParams) {
 /// Client-owned KB membership control.  Diffs the client's authoritative file
 /// list against the currently-loaded set, applies the delta, and republishes
 /// diagnostics for every affected file.
-fn on_set_active_files(
-    connection: &Connection,
-    state: &GlobalState,
+fn on_set_active_files<L: TopLayer>(
+    state: &GlobalState<L>,
     not: Notification,
+    out: &mut Vec<Message>,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
 
@@ -530,14 +586,14 @@ fn on_set_active_files(
         let parsed = doc.and_then(|d| d.parsed.as_ref());
 
         match parsed {
-            Some(p) => publish_diagnostics(&connection.sender, &uri, &rope, p, state, kb, None),
+            Some(p) => publish_diagnostics(out, &uri, &rope, p, state, kb, None),
             None => {
                 // No open document for this tag: reparse from disk so
                 // diagnostics reflect current state.
                 if let Ok(text) = std::fs::read_to_string(tag) {
                     let p = parse_document(tag.clone(), text.as_str(), Parser::Kif);
                     let rope = Rope::from_str(&text);
-                    publish_diagnostics(&connection.sender, &uri, &rope, &p, state, kb, None);
+                    publish_diagnostics(out, &uri, &rope, &p, state, kb, None);
                 }
             }
         }
@@ -549,7 +605,7 @@ fn on_set_active_files(
 /// Reverse of `uri_to_tag`: build a `file://` URL from a filesystem-path tag.
 /// Returns `None` on non-file tags.
 fn uri_from_tag(tag: &str) -> Option<Url> {
-    Url::from_file_path(tag).ok()
+    crate::conv::url_from_file_path(tag)
 }
 
 // -- sumo/setIgnoredDiagnostics ----------------------------------------------
@@ -558,10 +614,10 @@ fn uri_from_tag(tag: &str) -> Option<Url> {
 /// client notification and re-publish diagnostics for every
 /// currently-open document so the change takes effect without a
 /// restart.
-fn on_set_ignored_diagnostics(
-    connection: &Connection,
-    state: &GlobalState,
+fn on_set_ignored_diagnostics<L: TopLayer>(
+    state: &GlobalState<L>,
     not: Notification,
+    out: &mut Vec<Message>,
 ) -> Result<()> {
     let params: SetIgnoredDiagnosticsParams =
         serde_json::from_value(not.params).map_err(|e| anyhow::anyhow!(e))?;
@@ -575,7 +631,7 @@ fn on_set_ignored_diagnostics(
         let rope = doc.rope.clone();
         if let Some(parsed) = doc.parsed.as_ref() {
             publish_diagnostics(
-                &connection.sender,
+                out,
                 uri,
                 &rope,
                 parsed,

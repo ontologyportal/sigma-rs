@@ -23,6 +23,7 @@ pub use error::*;
 pub use fingerprint::sentence_fingerprint;
 pub use span::*;
 
+pub use crate::parse::doc::CommentBlock;
 pub use crate::parse::tptp::parser::TptpParseOptions;
 use crate::parse::{doc::DocItem, tq::parse_tq};
 
@@ -41,14 +42,27 @@ pub enum Parser {
 impl Parser {
     /// Perform full parsing on a file input
     pub fn parse(&self, inp: &str, file: &str) -> ParseResult<DocItem> {
-        let (ast, errors) = match self {
+        self.parse_with_comments(inp, file).0
+    }
+
+    /// Like [`Self::parse`], additionally returning the source's consolidated
+    /// [`CommentBlock`]s (KIF only -- the other dialects return none).
+    /// Comments are lexical trivia: they never appear in the returned AST,
+    /// only in this side list.
+    pub fn parse_with_comments(
+        &self,
+        inp: &str,
+        file: &str,
+    ) -> (ParseResult<DocItem>, Vec<CommentBlock>) {
+        let (ast, errors, comments) = match self {
             Parser::Kif => {
                 let (tokens, tok_err) = kif::tokenize(inp, file);
+                let comments = kif::comment_blocks(&tokens);
                 let (ast, parse_err) = kif::parse(tokens, file);
                 let mut errors = tok_err;
                 errors.extend(parse_err);
                 let doc: Vec<DocItem> = ast.into_iter().map(DocItem::Stmt).collect();
-                (doc, wrap_error(errors))
+                (doc, wrap_error(errors), comments)
             }
             Parser::Tptp { options } => {
                 let (tokens, tok_err, metas) = tptp::tokenize_with_meta(inp, file);
@@ -68,14 +82,14 @@ impl Parser {
                 // key back off the document.
                 let mut doc: Vec<DocItem> = metas.into_iter().map(DocItem::Meta).collect();
                 doc.extend(ast.into_iter().map(DocItem::Stmt));
-                (doc, wrap_error(errors))
+                (doc, wrap_error(errors), Vec::new())
             }
             Parser::Tq => {
                 let (doc, errors) = parse_tq(inp, file);
-                (doc, wrap_error(errors))
+                (doc, wrap_error(errors), Vec::new())
             }
         };
-        (ast, errors)
+        ((ast, errors), comments)
     }
 
     /// Perform tokenization ONLY on file contents

@@ -201,7 +201,7 @@ export interface ManPage {
 export class Session {
   constructor(opts?: { backend?: Backend; config?: Config });
   readonly backend: Backend;
-  /** The underlying raw binding (WasmNativeProver | WasmKnowledgeBase). */
+  /** The underlying raw wasm Session binding. */
   readonly kb: unknown;
   configure(config: Config): this;
   /** `{ promote: false }` ingests only (search/man pages work); call `promote` later. */

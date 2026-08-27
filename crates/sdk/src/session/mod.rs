@@ -19,6 +19,9 @@ mod ingest;
 mod ops;
 // Symbol introspection: `Session::manpage` + the `ManPageView` projection.
 pub mod man;
+// FFI-safe view projections of core results (diagnostics, search, man pages,
+// stats, prover outcomes) for JS/RPC facades.
+pub mod views;
 // Proving ops (`ask`/`tell`/`audit`/`test`) currently take `NativeOpts`, so the
 // module is native-prover-specific (the external arm errors as "unwired").
 #[cfg(feature = "native-prover")]

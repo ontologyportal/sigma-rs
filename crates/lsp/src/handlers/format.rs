@@ -19,14 +19,15 @@ use ropey::Rope;
 
 use sigmakee_rs_sdk::AstKif;
 use sigmakee_rs_sdk::AstNode;
+use sigmakee_rs_sdk::TopLayer;
 
 use crate::conv::{offset_to_position, position_to_offset};
 use crate::state::GlobalState;
 
 // -- Full document -----------------------------------------------------------
 
-pub fn handle_formatting(
-    state: &GlobalState,
+pub fn handle_formatting<L: TopLayer>(
+    state: &GlobalState<L>,
     params: DocumentFormattingParams,
 ) -> Option<Vec<TextEdit>> {
     let uri = params.text_document.uri;
@@ -62,8 +63,8 @@ pub fn handle_formatting(
 
 // -- Range formatting --------------------------------------------------------
 
-pub fn handle_range_formatting(
-    state: &GlobalState,
+pub fn handle_range_formatting<L: TopLayer>(
+    state: &GlobalState<L>,
     params: DocumentRangeFormattingParams,
 ) -> Option<Vec<TextEdit>> {
     let uri = params.text_document.uri;

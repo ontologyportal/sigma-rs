@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::Parser;
 use super::Span;
 use crate::diagnostic::{Diagnostic, ToDiagnostic};
-use crate::parse::doc::DocItem;
+use crate::parse::doc::{CommentBlock, DocItem};
 use crate::parse::ParseError;
 
 /// Result of parsing one document.  All fields are owned and
@@ -34,6 +34,11 @@ pub struct ParsedDocument {
     /// Per-root-sentence span, positionally aligned with `ast` and
     /// `root_hashes`.  Carries the `(` through `)` range for each root.
     pub root_spans: Vec<Span>,
+    /// Consolidated `;` comment blocks in source order (KIF documents only;
+    /// empty for other dialects).  Lexical trivia: comments never appear in
+    /// `ast` and never affect `root_hashes` -- this side list exists for
+    /// source-fidelity consumers (formatters, editors).
+    pub comments: Vec<CommentBlock>,
 }
 
 impl ParsedDocument {
@@ -65,7 +70,7 @@ pub fn parse_document(
     let source: String = source.into();
     let text: Arc<str> = text.into();
 
-    let (ast, parse_errors) = doc_type.parse(&text, &source);
+    let ((ast, parse_errors), comments) = doc_type.parse_with_comments(&text, &source);
 
     let root_hashes: Vec<u64> = ast
         .iter()
@@ -89,6 +94,7 @@ pub fn parse_document(
         parse_errors,
         root_hashes,
         root_spans,
+        comments,
     }
 }
 
@@ -107,6 +113,25 @@ mod tests {
         assert_eq!(doc.root_spans.len(), 1);
         assert!(doc.parse_errors.is_empty());
         assert!(!doc.has_errors());
+    }
+
+    #[test]
+    fn comments_ride_the_side_list_and_never_touch_fingerprints() {
+        let plain = parse_document("t", "(subclass Dog Mammal)", Parser::Kif);
+        let commented = parse_document(
+            "t",
+            "; taxonomy\n; two lines\n(subclass Dog ; inline\n Mammal)\n; footer",
+            Parser::Kif,
+        );
+        assert!(!commented.has_errors());
+        // Identical logical content => identical fingerprints; the AST is
+        // comment-free.
+        assert_eq!(plain.root_hashes, commented.root_hashes);
+        // Consolidated blocks: the two header lines merge, the inline and
+        // footer comments stand alone.
+        let texts: Vec<&str> = commented.comments.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["taxonomy\ntwo lines", "inline", "footer"]);
+        assert!(plain.comments.is_empty());
     }
 
     #[test]

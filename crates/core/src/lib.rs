@@ -118,7 +118,9 @@ pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
 pub use parse::kif::dis::AstKif;
 pub use parse::kif::{tokenize as tokenize_kif, Token, TokenKind};
 pub use parse::tptp::syntax::detect_tptp_lang;
-pub use parse::{parse_document, sentence_fingerprint, AstNode, ParsedDocument, Parser, Span};
+pub use parse::{
+    parse_document, sentence_fingerprint, AstNode, CommentBlock, ParsedDocument, Parser, Span,
+};
 pub use syntactic::position::ElementHit;
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]

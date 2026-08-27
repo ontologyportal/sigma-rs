@@ -15,6 +15,59 @@ use sigmakee_rs_sdk::{Diagnostic as KbDiagnostic, Severity, Span};
 
 use crate::state::DocState;
 
+// -- URI <-> file path (cross-target) -------------------------------------------
+//
+// `url`'s `to_file_path` / `from_file_path` are cfg'd out on targets with no
+// notion of a filesystem (wasm32-unknown-unknown).  The wasm LSP still speaks
+// `file://` URIs -- they are opaque KB tags there, never opened -- so these
+// helpers delegate to `url` where available and fall back to plain
+// percent-(de/en)coded `file://` string handling on wasm.
+
+/// `file://` URL -> filesystem path.  `None` on non-file URLs.
+pub fn url_to_file_path(uri: &Url) -> Option<std::path::PathBuf> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        uri.to_file_path().ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if uri.scheme() != "file" {
+            return None;
+        }
+        let decoded = percent_encoding::percent_decode_str(uri.path()).decode_utf8_lossy();
+        Some(std::path::PathBuf::from(decoded.as_ref()))
+    }
+}
+
+/// Filesystem path -> `file://` URL.  `None` on relative or otherwise
+/// unrepresentable paths.
+pub fn url_from_file_path<P: AsRef<std::path::Path>>(path: P) -> Option<Url> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Url::from_file_path(path).ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let s = path.as_ref().to_string_lossy();
+        if !s.starts_with('/') {
+            return None;
+        }
+        // Encode everything a path segment can't carry verbatim in a URL.
+        const SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'?')
+            .add(b'`')
+            .add(b'{')
+            .add(b'}');
+        let encoded = percent_encoding::utf8_percent_encode(&s, SET);
+        Url::parse(&format!("file://{}", encoded)).ok()
+    }
+}
+
 // -- URI ↔ file tag -----------------------------------------------------------
 
 /// Canonical file-tag form for a URL.
@@ -26,8 +79,8 @@ use crate::state::DocState;
 /// Non-file URIs and URIs whose path can't be parsed fall back to the raw
 /// URL string.
 pub fn uri_to_tag(uri: &Url) -> String {
-    match uri.to_file_path() {
-        Ok(path) => {
+    match url_to_file_path(uri) {
+        Some(path) => {
             let s = path.to_string_lossy().to_string();
             if cfg!(windows) && s.len() >= 2 && s.as_bytes()[1] == b':' {
                 let mut chars: Vec<char> = s.chars().collect();
@@ -37,14 +90,14 @@ pub fn uri_to_tag(uri: &Url) -> String {
                 s
             }
         }
-        Err(_) => uri.to_string(),
+        None => uri.to_string(),
     }
 }
 
 /// Inverse of [`uri_to_tag`].  Returns `None` when the tag isn't
 /// a parseable file path (e.g. fallback ad-hoc strings).
 pub fn tag_to_uri(tag: &str) -> Option<Url> {
-    Url::from_file_path(tag).ok()
+    url_from_file_path(tag)
 }
 
 /// Convert a `Span` to an LSP `Range` against whichever buffer
@@ -72,9 +125,9 @@ pub fn span_to_range_with_fallback(docs: &HashMap<Url, DocState>, uri: &Url, spa
 /// Returns `None` (and emits a debug log) when the URI is non-file or the
 /// read fails.
 fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
-    let path = match uri.to_file_path() {
-        Ok(p) => p,
-        Err(_) => {
+    let path = match url_to_file_path(uri) {
+        Some(p) => p,
+        None => {
             log::debug!(target: "sumo_lsp::conv",
                 "non-file URI '{}' in cross-file range lookup; using empty rope", uri);
             return None;

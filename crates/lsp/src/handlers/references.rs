@@ -7,11 +7,15 @@
 // `Location`.
 
 use lsp_types::{Location, ReferenceParams};
+use sigmakee_rs_sdk::TopLayer;
 
 use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
 
-pub fn handle_references(state: &GlobalState, params: ReferenceParams) -> Option<Vec<Location>> {
+pub fn handle_references<L: TopLayer>(
+    state: &GlobalState<L>,
+    params: ReferenceParams,
+) -> Option<Vec<Location>> {
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let include_decl = params.context.include_declaration;

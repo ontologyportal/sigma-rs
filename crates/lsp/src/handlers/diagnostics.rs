@@ -16,18 +16,18 @@
 
 use std::collections::HashSet;
 
-use crossbeam_channel::Sender;
 use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Url};
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{KnowledgeBase, ParsedDocument, Severity};
+use sigmakee_rs_sdk::{KnowledgeBase, ParsedDocument, Severity, TopLayer};
 
 use crate::conv::{kb_diagnostic_to_lsp, uri_to_tag};
 use crate::state::GlobalState;
 
-/// Collect parse + semantic diagnostics for `uri` and emit a
-/// `publishDiagnostics` notification on `sender`.
+/// Collect parse + semantic diagnostics for `uri` and push a
+/// `publishDiagnostics` notification into `out` (the caller's outbox of
+/// server->client messages -- the transport shell sends them).
 ///
 /// `rope` is the current text buffer (used for byte-offset -> LSP
 /// Position conversion).  `parsed` carries the per-document parse
@@ -43,13 +43,13 @@ use crate::state::GlobalState;
 /// KB that's mid-edit, these are advisories, not compile errors,
 /// and keeps the Problems panel dominated by the yellow-triangle
 /// icon.  Hard parse errors remain `Error`.
-pub fn publish_diagnostics(
-    sender: &Sender<Message>,
+pub fn publish_diagnostics<L: TopLayer>(
+    out: &mut Vec<Message>,
     uri: &Url,
     rope: &Rope,
     parsed: &ParsedDocument,
-    state: &GlobalState,
-    kb: &KnowledgeBase,
+    state: &GlobalState<L>,
+    kb: &KnowledgeBase<L>,
     version: Option<i32>,
 ) {
     let ignored = state
@@ -58,15 +58,15 @@ pub fn publish_diagnostics(
         .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
-    publish_diagnostics_filtered(sender, uri, rope, parsed, kb, version, &ignored)
+    publish_diagnostics_filtered(out, uri, rope, parsed, kb, version, &ignored)
 }
 
-fn publish_diagnostics_filtered(
-    sender: &Sender<Message>,
+fn publish_diagnostics_filtered<L: TopLayer>(
+    out: &mut Vec<Message>,
     uri: &Url,
     rope: &Rope,
     parsed: &ParsedDocument,
-    kb: &KnowledgeBase,
+    kb: &KnowledgeBase<L>,
     version: Option<i32>,
     ignored: &HashSet<String>,
 ) {
@@ -109,7 +109,5 @@ fn publish_diagnostics_filtered(
         method: "textDocument/publishDiagnostics".to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    if let Err(e) = sender.send(Message::Notification(not)) {
-        log::warn!(target: "sumo_lsp", "publishDiagnostics send failed: {}", e);
-    }
+    out.push(Message::Notification(not));
 }

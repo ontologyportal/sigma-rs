@@ -96,6 +96,16 @@ pub use session::man::{
 };
 pub use sigmakee_rs_core::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 
+// FFI-safe view projections (see `session::views`): boundary-safe serde
+// structs a JS/RPC facade can serialize directly.
+pub use session::views::{
+    man_kind_from_str, DiagnosticView, DocLangView, DocView, DomainView, EdgeView, KbStatsView,
+    LangView, ManPageDetail, ManPageRefView, ScratchValidationView, SearchHitView, SortView,
+    TaxonomyView, TestCaseView,
+};
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+pub use session::views::{AskResultView, AuditResultView, ContradictionView, ProofStepView};
+
 #[cfg(feature = "native-prover")]
 pub use session::{
     szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutcome, TestOutcome,
@@ -129,7 +139,7 @@ pub use sigmakee_rs_core::{
 // `SourceFile`s.  Lets an editor front-end (e.g. sumo-lsp) build on the SDK
 // alone, without a direct sigmakee-rs-core dependency.
 pub use sigmakee_rs_core::{
-    tokenize_kif, FileOrigin, LocalProvenance, ParsedDocument, Token, TokenKind,
+    tokenize_kif, CommentBlock, FileOrigin, LocalProvenance, ParsedDocument, Token, TokenKind,
 };
 
 // Diagnostics machinery beyond the `Diagnostic` type itself. Severity is now

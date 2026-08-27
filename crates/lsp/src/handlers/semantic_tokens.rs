@@ -16,7 +16,7 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{tokenize_kif, KnowledgeBase, TokenKind};
+use sigmakee_rs_sdk::{tokenize_kif, KnowledgeBase, TokenKind, TopLayer};
 
 use crate::conv::{offset_to_position, uri_to_tag};
 use crate::state::GlobalState;
@@ -35,6 +35,7 @@ pub const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::VARIABLE, // 3: ?X, @X
     SemanticTokenType::STRING,   // 4: "string literals"
     SemanticTokenType::NUMBER,   // 5: numeric literals
+    SemanticTokenType::COMMENT,  // 6: ; line comments
 ];
 
 // Indices into TOKEN_TYPES.  `u32` matches LSP's wire type.
@@ -44,6 +45,7 @@ const T_FUNCTION: u32 = 2;
 const T_VARIABLE: u32 = 3;
 const T_STRING: u32 = 4;
 const T_NUMBER: u32 = 5;
+const T_COMMENT: u32 = 6;
 
 /// Assemble the legend value used in server capabilities.
 pub fn semantic_tokens_legend() -> SemanticTokensLegend {
@@ -58,8 +60,8 @@ pub fn semantic_tokens_legend() -> SemanticTokensLegend {
 /// Handle a `textDocument/semanticTokens/full` request, returning the
 /// document's classified tokens in LSP delta-encoded form, or `None` when the
 /// document or KB is unavailable.
-pub fn handle_semantic_tokens_full(
-    state: &GlobalState,
+pub fn handle_semantic_tokens_full<L: TopLayer>(
+    state: &GlobalState<L>,
     params: SemanticTokensParams,
 ) -> Option<SemanticTokensResult> {
     let uri = params.text_document.uri;
@@ -98,7 +100,10 @@ struct ClassifiedToken {
     type_idx: u32,
 }
 
-fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<ClassifiedToken> {
+fn classify_token<L: TopLayer>(
+    tok: &sigmakee_rs_sdk::Token,
+    kb: &KnowledgeBase<L>,
+) -> Option<ClassifiedToken> {
     let type_idx = match &tok.kind {
         TokenKind::LParen | TokenKind::RParen => return None,
         TokenKind::Operator(_) => T_KEYWORD,
@@ -106,6 +111,7 @@ fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<Cl
         TokenKind::Number(_) => T_NUMBER,
         TokenKind::Variable(_) | TokenKind::RowVariable(_) => T_VARIABLE,
         TokenKind::Symbol(name) => classify_symbol(name, kb),
+        TokenKind::Comment(_) => T_COMMENT,
     };
     Some(ClassifiedToken {
         start_offset: tok.span.offset,
@@ -117,7 +123,7 @@ fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<Cl
 /// Decide the semantic-token type for a symbol name. Queries the KB first
 /// (taxonomy-aware); falls back to a title-case heuristic (capitalized ->
 /// type, otherwise function) for symbols the KB has not classified.
-fn classify_symbol(name: &str, kb: &KnowledgeBase) -> u32 {
+fn classify_symbol<L: TopLayer>(name: &str, kb: &KnowledgeBase<L>) -> u32 {
     if let Some(id) = kb.symbol_id(name) {
         if kb.is_class(id) {
             return T_TYPE;

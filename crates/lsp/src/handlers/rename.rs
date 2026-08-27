@@ -23,6 +23,7 @@
 // emitted, so clients that applied edits in order during the
 // refactor are free to accept or reject.
 
+use sigmakee_rs_sdk::TopLayer;
 use std::collections::HashMap;
 
 use lsp_types::{RenameParams, TextEdit, Url, WorkspaceEdit};
@@ -33,7 +34,10 @@ use crate::conv::{
 };
 use crate::state::GlobalState;
 
-pub fn handle_rename(state: &GlobalState, params: RenameParams) -> Option<WorkspaceEdit> {
+pub fn handle_rename<L: TopLayer>(
+    state: &GlobalState<L>,
+    params: RenameParams,
+) -> Option<WorkspaceEdit> {
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
     let new_name = params.new_name;

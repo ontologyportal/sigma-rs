@@ -8,4 +8,4 @@ pub mod parser;
 pub mod tokenizer;
 
 pub use parser::parse;
-pub use tokenizer::{tokenize, Token, TokenKind};
+pub use tokenizer::{comment_blocks, tokenize, Token, TokenKind};

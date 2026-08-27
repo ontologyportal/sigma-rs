@@ -4,6 +4,7 @@ use std::fmt::Display;
 
 use super::super::Span;
 use super::error::KifParseError;
+use crate::parse::doc::CommentBlock;
 
 // -- Token types ---------------------------------------------------------------
 
@@ -68,6 +69,8 @@ pub enum TokenKind {
     Number(String),
     /// A KIF logical operator keyword.
     Operator(OpTok),
+    /// A KIF source comment
+    Comment(String),
 }
 
 impl TokenKind {
@@ -94,6 +97,7 @@ impl Display for TokenKind {
             TokenKind::Str(str) => write!(f, "\"{}\"", str),
             TokenKind::Number(num) => write!(f, "{}", num),
             TokenKind::Operator(op_tok) => write!(f, "{}", op_tok),
+            TokenKind::Comment(comm) => write!(f, "; {}", comm),
         }
     }
 }
@@ -184,12 +188,20 @@ impl<'src> Tokenizer<'src> {
         self.peeked.map(|(_, ch)| ch)
     }
 
-    fn skip_line_comment(&mut self) {
-        while let Some(ch) = self.peek() {
-            self.advance();
-            if ch == '\n' {
-                break;
+    fn read_line_comment(&mut self, start_span: Span) -> Token {
+        let mut comm = String::new();
+        loop {
+            match self.advance() {
+                None | Some('\n') => {
+                    break;
+                }
+                Some(ch) => comm.push(ch),
             }
+        }
+        let span = self.seal(start_span);
+        Token {
+            kind: TokenKind::Comment(comm.trim().to_string()),
+            span,
         }
     }
 
@@ -299,10 +311,7 @@ impl<'src> Tokenizer<'src> {
             Some(c) => c,
         };
         match ch {
-            ';' => {
-                self.skip_line_comment();
-                self.next_token()
-            }
+            ';' => Ok(Some(self.read_line_comment(start))),
             '(' => {
                 let span = self.seal(start);
                 Ok(Some(Token {
@@ -399,6 +408,46 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
     (tokens, errors)
 }
 
+/// Collect the comment tokens in `tokens` into consolidated
+/// [`CommentBlock`]s, in source order.
+///
+/// Consecutive comments merge into one block when the next comment starts on
+/// the line immediately after the block's last line AND no significant
+/// (non-comment) token appeared between them in the stream.  A blank line or
+/// any intervening code starts a new block.
+pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
+    let mut blocks: Vec<CommentBlock> = Vec::new();
+    // True while the last token seen was the tail of the open block -- any
+    // significant token breaks the run.
+    let mut run_open = false;
+    // Start line of the open block's LAST comment.  Adjacency is judged
+    // against this, not `span.end_line`: a comment token's span swallows its
+    // terminating newline, so its end position sits on the following line.
+    let mut last_line = 0u32;
+    for tok in tokens {
+        let TokenKind::Comment(text) = &tok.kind else {
+            run_open = false;
+            continue;
+        };
+        match blocks.last_mut() {
+            Some(block) if run_open && tok.span.line == last_line + 1 => {
+                block.text.push('\n');
+                block.text.push_str(text);
+                block.span.end_line = tok.span.end_line;
+                block.span.end_col = tok.span.end_col;
+                block.span.end_offset = tok.span.end_offset;
+            }
+            _ => blocks.push(CommentBlock {
+                text: text.clone(),
+                span: tok.span.clone(),
+            }),
+        }
+        run_open = true;
+        last_line = tok.span.line;
+    }
+    blocks
+}
+
 // -- Tests ---------------------------------------------------------------------
 
 #[cfg(test)]
@@ -473,9 +522,62 @@ mod tests {
     }
 
     #[test]
-    fn comment_skipped() {
+    fn line_comment_ingested() {
         let kinds = toks("; this is a comment\n(foo)");
-        assert_eq!(kinds.len(), 3);
+        assert!(matches!(&kinds[0], TokenKind::Comment(s) if s == "this is a comment"));
+        assert_eq!(kinds.len(), 4);
+    }
+
+    #[test]
+    fn end_of_line_comment_ingested() {
+        let kinds = toks("(foo) ; this is a comment");
+        assert!(matches!(&kinds[3], TokenKind::Comment(s) if s == "this is a comment"));
+        assert_eq!(kinds.len(), 4);
+    }
+
+    #[test]
+    fn comment_blocks_merge_consecutive_lines() {
+        let (tokens, errors) = tokenize("; line one\n; line two\n(foo)", "test");
+        assert!(errors.is_empty());
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "line one\nline two");
+        assert_eq!(blocks[0].span.line, 1);
+        // The block span covers both comment lines (a comment token's span
+        // swallows its terminating newline, so end_line may sit one past).
+        assert!(blocks[0].span.end_line >= 2);
+    }
+
+    #[test]
+    fn comment_blocks_split_on_blank_line() {
+        let (tokens, _) = tokenize("; first\n\n; second", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "first");
+        assert_eq!(blocks[1].text, "second");
+    }
+
+    #[test]
+    fn comment_blocks_split_on_intervening_code() {
+        // The comments sit on consecutive lines, but `(foo)` intervenes in
+        // the token stream -- they must not merge.
+        let (tokens, _) = tokenize("; header\n(foo) ; trailing", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "header");
+        assert_eq!(blocks[1].text, "trailing");
+    }
+
+    #[test]
+    fn comment_blocks_trailing_then_full_line_merge() {
+        // A trailing comment and a full-line comment directly under it are
+        // adjacent with nothing between them, so they form one block; the
+        // span start records that the block began inline (col > 1).
+        let (tokens, _) = tokenize("(foo) ; explains foo\n; and continues", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "explains foo\nand continues");
+        assert!(blocks[0].span.col > 1);
     }
 
     #[test]

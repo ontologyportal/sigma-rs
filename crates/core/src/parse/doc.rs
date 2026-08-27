@@ -34,6 +34,31 @@ pub struct MetaNode {
     pub span: Span,
 }
 
+/// A contiguous block of `;` source comments, consolidated from the comment
+/// tokens the KIF tokenizer emits.
+///
+/// Comments are lexical trivia, not logic: they never enter the [`AstNode`]
+/// tree (which would perturb the content-addressed sentence fingerprints) and
+/// never reach the sentence store.  They ride on
+/// [`ParsedDocument::comments`](crate::parse::ParsedDocument) as a
+/// span-ordered side list for consumers that care about source fidelity
+/// (formatters, editors).
+///
+/// Consecutive comment lines -- each starting on the line immediately after
+/// the previous one, with no significant token between them -- are merged
+/// into one block.  Whether a block began inline after code is recoverable
+/// from `span` (its start column / surrounding token spans), not modeled
+/// here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommentBlock {
+    /// The comment text: one line per source comment, `;` markers and
+    /// surrounding whitespace stripped, lines joined with `\n`.
+    pub text: String,
+    /// Source span covering the whole block, from the first `;` through the
+    /// end of the last comment line.
+    pub span: Span,
+}
+
 /// One top-level item of a parsed document: a logical statement (an
 /// [`AstNode`], possibly `Annotated` with a [`Role`](crate::parse::ast::Role))
 /// or a non-logical [`MetaNode`] directive.

@@ -10,7 +10,7 @@ Two layers are shipped:
   `Source`, `Backend`, `Config`) that mirrors the [`sigmakee-rs-sdk`](../sdk)
   crate's surface. **Start here.**
 - **`sigmakee`** (package root) — the raw wasm-bindgen classes
-  (`WasmNativeProver`, `WasmKnowledgeBase`, `Config`) for direct, lower-level
+  (`Session`, `Config`) for direct, lower-level
   control.
 
 > **What runs in-browser.** Native proving, KIF parsing, TPTP translation, and
@@ -179,10 +179,9 @@ The facade wraps these; use them directly for finer control. Two classes:
 
 | Class | Purpose |
 | --- | --- |
-| **`WasmNativeProver`** | In-browser prover. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`. |
-| **`WasmKnowledgeBase`** | KIF → TPTP. `loadKif`, `tell`, `toTptp(lang?, hideNumbers?, session?)`, `lookup`, `flushSession`, and `ask(query, askHook)` to drive an external prover through a JS callback. |
+| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)` and `toTptpForAsk(assertions, query, selectAll?, tolerancePct?)` for driving an external prover. |
 
-Both also expose the query methods `validate()`, `validateFormula(kif)`,
+It also exposes the query methods `validate()`, `validateFormula(kif)`,
 `search(query, kind?, language?, limit?)`, and `manpage(symbol)` (the facade's
 `Session` wraps these; the raw `search`/`manpage` take positional args).
 

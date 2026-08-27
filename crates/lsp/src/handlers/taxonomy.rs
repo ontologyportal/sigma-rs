@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 
 use lsp_types::request::Request;
 use serde::{Deserialize, Serialize};
-use sigmakee_rs_sdk::{DocBlock, DocSpan};
+use sigmakee_rs_sdk::{DocBlock, DocSpan, TopLayer};
 
 use crate::state::GlobalState;
 
@@ -90,7 +90,10 @@ const MAX_NODES: usize = 2048;
 ///
 /// Always returns a response; an unknown symbol is signalled via
 /// `TaxonomyResponse.unknown = true` with empty payload fields.
-pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyResponse {
+pub fn handle_taxonomy<L: TopLayer>(
+    state: &GlobalState<L>,
+    params: TaxonomyParams,
+) -> TaxonomyResponse {
     let root = params.symbol;
 
     let Ok(session) = state.session.read() else {
