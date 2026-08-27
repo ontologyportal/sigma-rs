@@ -1,6 +1,0 @@
-# Cloudflare Pages SPA fallback: the demo does client-side path routing
-# (/edit, /diagnostics, …, see app.js's routeFromLocation/syncUrl), so any
-# sub-path that isn't a real static file must still resolve to index.html and
-# let the router take over. GitHub Pages has no equivalent rewrite — deep
-# links there rely on in-app navigation rather than a hard refresh/external link.
-/*  /index.html  200

@@ -125,17 +125,37 @@ jobs:
           EOF
           cat packages/web/dist/version.json
 
+      - name: Compile Pages Functions into Worker script
+        run: |
+          npx wrangler pages functions build packages/web/functions \
+            --outdir packages/web/worker-dist
+          # wrangler's output filename here has varied between versions
+          # (index.js vs _worker.js) -- normalize to a fixed name so
+          # wrangler.jsonc's `main` doesn't need to track that.
+          cd packages/web/worker-dist
+          if [ -f _worker.js ]; then
+            mv _worker.js worker.js
+          elif [ -f index.js ]; then
+            mv index.js worker.js
+          else
+            echo "Expected _worker.js or index.js in worker-dist/, found:"
+            ls -la
+            exit 1
+          fi
+          cd -
+          test -f packages/web/worker-dist/worker.js
+
       # ---- Cloudflare Page Deployment ----
       # This step skips quietly until the
       # CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID repo secrets are set.
-      - name: Deploy Web App to Cloudflare Pages
+      - name: Deploy Web App to Cloudflare Workers
         if: ${{ steps.wapp.outcome == 'success' && env.CLOUDFLARE_API_TOKEN != '' }}
         uses: cloudflare/wrangler-action@v3
         with:
           workingDirectory: packages/web
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy dist --project-name=sigma-rs-browse --branch=main
+          command: deploy
 
       # Local runs (act) and forks have no Cloudflare credentials, so the
       # deploy above is skipped. `wrangler pages deploy` has no --dry-run to
@@ -146,8 +166,9 @@ jobs:
         run: |
           set -euo pipefail
           echo "CLOUDFLARE_API_TOKEN not set -- skipping deploy."
-          echo "Would deploy site-cloudflare/ to sigma-rs-browse (branch main):"
-          du -sh site-cloudflare
-          find site-cloudflare -maxdepth 2 -type f | head -40
-          test -f site-cloudflare/index.html
-          test -f site-cloudflare/version.json
+          echo "Would deploy sigma-rs-browse from packages/web/dist (worker: worker-dist/_worker.js):"
+          du -sh packages/web/dist packages/web/worker-dist
+          find packages/web/dist -maxdepth 2 -type f | head -40
+          test -f packages/web/dist/index.html
+          test -f packages/web/dist/version.json
+          test -f packages/web/worker-dist/_worker.js
