@@ -24,6 +24,8 @@ export default defineConfig({
     },
   },
 
+  plugins: [],
+
   // Serve index.html for unmatched paths: they are client-side routes
   // (see src/router.ts's routeFromLocation), not missing assets.
   appType: 'spa',
