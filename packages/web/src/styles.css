@@ -65,6 +65,11 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 nav.tabs {
   display: flex; gap: 0; margin: 18px 0 16px; border-bottom: 1px solid var(--line);
   overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  /* On a narrow viewport this strip scrolls horizontally with no native
+     scrollbar on most mobile browsers — fade both edges so a clipped tab
+     reads as "more to scroll to," not as the strip simply ending there. */
+  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
 }
 /* Tabs grouped by activity: a quiet label above each cluster. */
 .tab-group { display: flex; gap: 2px; position: relative; padding-top: 14px; flex: 0 0 auto; }
