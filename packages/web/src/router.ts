@@ -67,8 +67,14 @@ export function syncUrl(tab, params = new URLSearchParams(), { replace = false }
  * Show a tab. By default this records a history entry so Back/Forward work;
  * pass `{ push: false }` when reacting to the URL (boot, popstate) so we don't
  * re-push what we just read. `params` is carried into the address bar.
+ * `resetBrowse` (default true) controls whether landing on Browse clears its
+ * search/man-page state — the header logo's "go home" jump wants that, but a
+ * bare tab-bar click back to Browse doesn't: see the nav.tabs listener below.
  */
-export function showTab(name: string, { push = true, params }: { push?: boolean; params?: URLSearchParams } = {}) {
+export function showTab(
+  name: string,
+  { push = true, params, resetBrowse = true }: { push?: boolean; params?: URLSearchParams; resetBrowse?: boolean } = {},
+) {
   if (state.promoting && PROMOTE_TABS.includes(name)) return; // greyed while post-processing
   // Navigating away from Edit — a tab-bar click, a citation's "open man page"
   // link, browser Back, anything that routes through here — always deflates
@@ -78,10 +84,16 @@ export function showTab(name: string, { push = true, params }: { push?: boolean;
     btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
   }
   for (const p of document.querySelectorAll<HTMLElement>('.panel')) p.hidden = p.id !== `tab-${name}`;
-  if (push) syncUrl(name, params ?? new URLSearchParams());
-  // Only reset on a live navigation (nav tab, header logo) — applyRoute's
+  // A bare tab-bar re-entry to Browse (resetBrowse: false, no explicit
+  // params) is "come back to what I was looking at," not a fresh navigation
+  // — leave the address bar's existing ?sym=/?q= alone instead of
+  // overwriting it with an empty query, the same way Edit/Diagnostics don't
+  // touch the URL on a bare tab-bar re-entry.
+  if (push && !(name === 'browse' && !resetBrowse)) syncUrl(name, params ?? new URLSearchParams());
+  // Only reset on a live navigation that asks for it (header logo) — a plain
+  // tab-bar click back to Browse restores prior state instead. applyRoute's
   // own `push: false` call still needs the URL's ?q=/?sym= honoured below.
-  if (name === 'browse') { if (push) resetBrowseView(); refreshHomeStats(); }
+  if (name === 'browse') { if (push && resetBrowse) resetBrowseView(); refreshHomeStats(); }
   if (name === 'kb') loadSumoCatalog();
   if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
   if (name === 'prover') ensureProverEditors().catch(() => {}); // textareas remain the fallback
@@ -160,7 +172,9 @@ export function updateParams(obj) {
 
 document.querySelector('nav.tabs').addEventListener('click', (e) => {
   const btn = targetEl(e).closest('button');
-  if (btn && btn.getAttribute('aria-disabled') !== 'true') showTab(btn.dataset.tab);
+  // resetBrowse: false — see showTab's doc comment. Switching tabs and back
+  // should restore what was there, not silently drop it (issue #67).
+  if (btn && btn.getAttribute('aria-disabled') !== 'true') showTab(btn.dataset.tab, { resetBrowse: false });
 });
 document.addEventListener('click', (e) => {
   const jump = targetEl(e).closest<HTMLElement>('.jump');
