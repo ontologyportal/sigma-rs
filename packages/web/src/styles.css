@@ -589,7 +589,12 @@ dialog#openDialog h3 { margin: 0 0 8px; font-size: 14px; }
   font: inherit; text-align: left; cursor: pointer;
 }
 .edit-diag:last-child { border-bottom: 0; }
-.edit-diag:hover, .edit-diag:focus-visible { background: var(--card); outline: none; }
+.edit-diag:hover { background: var(--card); }
+/* Inset outline, not the ~1-2% luminance hover swap: this row sits inside a
+   scrolling list (#editDiagList), and it's the interactive control here a
+   keyboard user is most likely to arrow/tab through. An outside outline
+   would also get clipped by the list's overflow-y. */
+.edit-diag:focus-visible { background: var(--card); outline: 2px solid var(--accent); outline-offset: -2px; }
 .edit-diag[data-sev="error"] { border-left-color: var(--bad); }
 .edit-diag[data-sev="warning"] { border-left-color: var(--warn); }
 .edit-diag-loc { color: var(--accent); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
