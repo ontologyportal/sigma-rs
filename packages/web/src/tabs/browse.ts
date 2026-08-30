@@ -135,6 +135,14 @@ function linkifyDoc(text) {
   }).join('');
 }
 
+/** A bare symbol name (no `&%` marker — the Signature block's arg/range
+ *  types are already just class names) as the same man-page link linkifyDoc
+ *  produces, so they're clickable like every other cross-reference on the
+ *  page instead of inert text. */
+function linkifySymbol(symbol) {
+  return `<a class="open xref" data-sym="${esc(symbol)}">${esc(symbol)}</a>`;
+}
+
 /** Doc entries in the selected language, falling back to English then to all,
  *  so a symbol never renders blank just because it lacks the chosen language. */
 function docsForLanguage(entries) {
@@ -153,8 +161,8 @@ export async function openManPage(symbol) {
   const sig = () => {
     const parts = [];
     if (p.arity != null) parts.push(`arity ${p.arity < 0 ? 'variable' : p.arity}`);
-    for (const d of p.domains) parts.push(`arg ${d.position}: ${esc(d.sort.class)}${d.sort.subclass ? ' (class)' : ''}`);
-    if (p.range) parts.push(`range: ${esc(p.range.class)}`);
+    for (const d of p.domains) parts.push(`arg ${d.position}: ${linkifySymbol(d.sort.class)}${d.sort.subclass ? ' (class)' : ''}`);
+    if (p.range) parts.push(`range: ${linkifySymbol(p.range.class)}`);
     return parts.length ? parts.join('<br>') : '<span class="hint">none declared</span>';
   };
   const field = (title, html) => `<div class="field"><h3>${title}</h3><div class="val">${html}</div></div>`;
