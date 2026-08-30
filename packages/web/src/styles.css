@@ -65,6 +65,11 @@ header { display: flex; justify-content: space-between; align-items: flex-start;
 nav.tabs {
   display: flex; gap: 0; margin: 18px 0 16px; border-bottom: 1px solid var(--line);
   overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  /* On a narrow viewport this strip scrolls horizontally with no native
+     scrollbar on most mobile browsers — fade both edges so a clipped tab
+     reads as "more to scroll to," not as the strip simply ending there. */
+  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
 }
 /* Tabs grouped by activity: a quiet label above each cluster. */
 .tab-group { display: flex; gap: 2px; position: relative; padding-top: 14px; flex: 0 0 auto; }
@@ -288,7 +293,14 @@ ol.refs li:last-child { border-bottom: none; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, .28); font-size: 13px;
   opacity: 0; transform: translateY(-6px) scale(.96); transition: opacity .18s ease, transform .18s ease; }
 .stat-pop.show { opacity: 1; transform: none; }
-.stat-pop h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
+.stat-pop-close {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 6px; padding: 0;
+  font-size: 16px; line-height: 1; color: var(--muted); cursor: pointer;
+}
+.stat-pop-close:hover { color: var(--fg); background: var(--bg); }
+.stat-pop h4 { margin: 0 22px 8px 0; font-size: 12px; text-transform: uppercase;
   letter-spacing: .04em; color: var(--muted); }
 .stat-pop .pop-row { display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px;
   gap: 10px; align-items: center; padding: 3px 0; }

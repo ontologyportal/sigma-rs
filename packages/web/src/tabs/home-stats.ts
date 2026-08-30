@@ -66,6 +66,15 @@ function showStatPopover(tile, html) {
   pop.className = 'stat-pop';
   pop.dataset.for = tile.id;
   pop.innerHTML = html;
+  // Outside-click/Esc/re-click already dismiss it, but a visible close
+  // affordance matters on touch, where none of those are discoverable.
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'stat-pop-close';
+  close.setAttribute('aria-label', 'Close');
+  close.innerHTML = '&times;';
+  close.addEventListener('click', closeStatPopover);
+  pop.prepend(close);
   document.body.appendChild(pop);
   const r = tile.getBoundingClientRect();
   pop.style.top = `${r.bottom + 6 + scrollY}px`;
@@ -159,12 +168,11 @@ export async function refreshHomeStats() {
     $('statDoc').closest('.stat').title =
       `${fmtNum(stats.documented)} of ${fmtNum(stats.symbols)} symbols have documentation; ` +
       `${fmtNum(stats.labeled)} have a termFormat label`;
-    // Diagnostics split: errors in red, warnings in amber.
-    const errs  = state.diagnostics.filter((d) => d.severity === 'error').length;
-    const warns = state.diagnostics.filter((d) => d.severity === 'warning').length;
-    $('statDiag').innerHTML = state.diagnostics.length
-      ? `<span style="color:var(--bad)">${fmtNum(errs)}</span> · <span style="color:var(--warn)">${fmtNum(warns)}</span>`
-      : '<span style="color:var(--ok)">0</span>';
+    // Diagnostics (errors/warnings) are intentionally not on this stat grid —
+    // the landing view leads with what's loaded, not what's wrong with it.
+    // The count is still fully visible, just under its own tab: the
+    // Diagnostics tab-bar badge (diagnostics.ts renderDiagnostics) and that
+    // tab's own summary line.
     updateHomeNote();
   } catch (e) {
     statsFresh = false;
