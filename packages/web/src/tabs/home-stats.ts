@@ -66,6 +66,15 @@ function showStatPopover(tile, html) {
   pop.className = 'stat-pop';
   pop.dataset.for = tile.id;
   pop.innerHTML = html;
+  // Outside-click/Esc/re-click already dismiss it, but a visible close
+  // affordance matters on touch, where none of those are discoverable.
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'stat-pop-close';
+  close.setAttribute('aria-label', 'Close');
+  close.innerHTML = '&times;';
+  close.addEventListener('click', closeStatPopover);
+  pop.prepend(close);
   document.body.appendChild(pop);
   const r = tile.getBoundingClientRect();
   pop.style.top = `${r.bottom + 6 + scrollY}px`;
