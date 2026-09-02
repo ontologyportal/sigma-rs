@@ -20,6 +20,9 @@
 
 use std::collections::HashMap;
 
+use crate::semantics::consts::{
+    DOMAIN_RELATION, INSTANCE_RELATION, RANGE_RELATION, SUBCLASS_RELATION, SUBRELATION_RELATION,
+};
 use crate::semantics::taxonomy::TaxRelation;
 
 thread_local! {
@@ -70,13 +73,13 @@ impl Default for TaxonomyRoles {
     /// The hard-coded names used as the fallback.
     fn default() -> Self {
         Self {
-            instance: Symbol::hash_name("instance"),
-            subclass: Symbol::hash_name("subclass"),
-            subrelation: Symbol::hash_name("subrelation"),
+            instance: INSTANCE_RELATION.id(),
+            subclass: SUBCLASS_RELATION.id(),
+            subrelation: SUBRELATION_RELATION.id(),
             transitive: Symbol::hash_name("TransitiveRelation"),
             symmetric: Symbol::hash_name("SymmetricRelation"),
-            domain: Symbol::hash_name("domain"),
-            range: Symbol::hash_name("range"),
+            domain: DOMAIN_RELATION.id(),
+            range: RANGE_RELATION.id(),
             disjoint: Symbol::hash_name("disjoint"),
             partition: Symbol::hash_name("partition"),
         }

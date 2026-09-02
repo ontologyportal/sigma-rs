@@ -1,9 +1,12 @@
 // crates/sumo-lsp/src/handlers/format.rs
 //
 // `textDocument/formatting` and `textDocument/rangeFormatting`
-// handlers.  Both delegate to `AstNode::pretty_print(indent)`
-// on the retained `ParsedDocument.ast` -- no new formatting
-// machinery introduced in the LSP crate.
+// handlers.  Both delegate to the core's comment-preserving
+// document formatter (`format_document` / `format_forms`) over
+// the retained `ParsedDocument` -- a full round trip through the
+// parsed representation: the AST is re-emitted in canonical
+// layout and the document's comment blocks are re-interleaved by
+// source position, so formatting never deletes a comment.
 //
 // Safety rail: if the document has any error-severity
 // diagnostics we decline to format.  Pretty-printing a
@@ -17,9 +20,9 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_sdk::AstKif;
-use sigmakee_rs_sdk::AstNode;
+use sigmakee_rs_sdk::DocItem;
 use sigmakee_rs_sdk::TopLayer;
+use sigmakee_rs_sdk::{format_document, format_forms};
 
 use crate::conv::{offset_to_position, position_to_offset};
 use crate::state::GlobalState;
@@ -42,7 +45,7 @@ pub fn handle_formatting<L: TopLayer>(
         return Some(Vec::new());
     }
 
-    let formatted = render_forms(parsed.ast.iter().filter_map(|i| i.as_stmt()));
+    let formatted = format_document(parsed)?;
 
     // Replace the entire document -- one TextEdit covering
     // [0, end_of_buffer).  LSP clients accept this shape; they
@@ -80,32 +83,40 @@ pub fn handle_range_formatting<L: TopLayer>(
     let start_off = position_to_offset(&doc.rope, range.start);
     let end_off = position_to_offset(&doc.rope, range.end);
 
-    // Pick the root AST nodes whose span intersects the requested
-    // range.  A node is "in range" if its span overlaps [start, end)
-    // at all -- partial overlap pulls the whole node in so we don't
-    // emit mid-sentence edits.
-    let nodes: Vec<&AstNode> = parsed
+    // Pick the top-level items (statements AND directives) whose span
+    // intersects the requested range.  An item is "in range" if its span
+    // overlaps [start, end) at all -- partial overlap pulls the whole item
+    // in so we don't emit mid-sentence edits.
+    let items: Vec<&DocItem> = parsed
         .ast
         .iter()
-        .filter_map(|i| i.as_stmt())
-        .filter(|n| {
-            let s = n.span();
+        .filter(|i| {
+            let s = i.span();
             !(s.end_offset <= start_off || s.offset >= end_off)
         })
         .collect();
-    if nodes.is_empty() {
+    if items.is_empty() {
         return Some(Vec::new());
     }
 
-    // Edit range = union of selected-node spans, snapped to whole
+    // Edit range = union of selected-item spans, snapped to whole
     // lines at the start (so leading indentation disappears) and
-    // through the end of the last selected node.
-    let first = nodes.first().expect("non-empty").span();
-    let last = nodes.last().expect("non-empty").span();
+    // through the end of the last selected item.
+    let first = items.first().expect("non-empty").span();
+    let last = items.last().expect("non-empty").span();
     let union_start = offset_to_position(&doc.rope, first.offset);
     let union_end = offset_to_position(&doc.rope, last.end_offset);
 
-    let formatted = render_forms(nodes.iter().copied());
+    // Comment blocks inside the edited window ride along; anything outside
+    // it (including a trailing comment after the last item's `)`) is not
+    // touched by the edit and needs no re-emission.
+    let comments: Vec<sigmakee_rs_sdk::CommentBlock> = parsed
+        .comments
+        .iter()
+        .filter(|c| c.span.offset >= first.offset && c.span.offset < last.end_offset)
+        .cloned()
+        .collect();
+    let formatted = format_forms(&parsed.text, &items, &comments);
 
     Some(vec![TextEdit {
         range: Range {
@@ -117,19 +128,6 @@ pub fn handle_range_formatting<L: TopLayer>(
 }
 
 // -- Shared rendering --------------------------------------------------------
-
-/// Pretty-print every node in `nodes` using the plain-text
-/// formatter (no ANSI colour) and join with blank-line separators.
-fn render_forms<'a>(nodes: impl IntoIterator<Item = &'a AstNode>) -> String {
-    let mut out = String::new();
-    for (i, node) in nodes.into_iter().enumerate() {
-        if i > 0 {
-            out.push_str("\n\n");
-        }
-        out.push_str(&node.format_plain(0));
-    }
-    out
-}
 
 /// End-of-buffer position, used for full-document formatting.
 fn rope_end_position(rope: &Rope) -> Position {

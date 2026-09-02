@@ -42,6 +42,7 @@ impl Session {
             kind: kind.as_deref().and_then(man_kind_from_str),
             language: language.as_deref(),
             limit: limit.map(|n| n as usize),
+            taxonomy: Vec::new(),
         };
         to_js(&session_guard.search_view(query, &opts))
     }

@@ -97,7 +97,7 @@ mod tests {
     use crate::KnowledgeBase;
 
     fn parse_one(kif: &str) -> AstNode {
-        let doc = parse_document("test", kif, Parser::Kif);
+        let doc = parse_document("test", kif, Parser::Kif { options: None });
         assert!(!doc.has_errors(), "parse errors: {:?}", doc.parse_errors);
         doc.ast
             .into_iter()
@@ -288,7 +288,7 @@ mod tests {
             (subclass Dog Mammal)\n\
         ";
         // First and third are dup — canonical hash is the same.
-        let _p = Parser::Kif; // silences unused-import warnings if the parse path changes
+        let _p = Parser::Kif { options: None }; // silences unused-import warnings if the parse path changes
         let kb = kb_with(src);
         let idx = kb.build_axiom_source_index();
         // 2 distinct alpha-classes (Dog/Mammal, Cat/Mammal).

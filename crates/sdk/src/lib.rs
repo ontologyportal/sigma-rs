@@ -114,8 +114,8 @@ pub use session::{Backend, Session};
 pub use source::Source;
 
 pub use sigmakee_rs_core::{
-    Diagnostic, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId, SortSig,
-    TptpLang, TptpOptions,
+    Diagnostic, Instant, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
+    SortSig, TptpLang, TptpOptions,
 };
 
 // Layer stack: the concrete top layers plus the traits downstream backend
@@ -130,7 +130,8 @@ pub use sigmakee_rs_core::{HasTranslation, TopLayer, TranslationLayer};
 
 // Parsing / AST surface: document parsing, the KIF renderer, and the node types.
 pub use sigmakee_rs_core::{
-    parse_document, parse_test_content, AstKif, AstNode, DocEntry, Parser, SourceFile, Span,
+    is_tq_directive, parse_document, parse_test_content, AstKif, AstNode, DocEntry, Parser,
+    SourceFile, Span, TestCase,
 };
 
 // Editor-tooling surface: the retained parse (spans + per-document findings),
@@ -139,7 +140,13 @@ pub use sigmakee_rs_core::{
 // `SourceFile`s.  Lets an editor front-end (e.g. sumo-lsp) build on the SDK
 // alone, without a direct sigmakee-rs-core dependency.
 pub use sigmakee_rs_core::{
-    tokenize_kif, CommentBlock, FileOrigin, LocalProvenance, ParsedDocument, Token, TokenKind,
+    format_document, format_forms, tokenize_kif, CommentBlock, DocItem, FileOrigin,
+    KifParseOptions, LocalProvenance, MetaNode, OpTok, ParsedDocument, Token, TokenKind,
+};
+
+// Semantic Types
+pub use sigmakee_rs_core::types::{
+    ClassInference, RelationDomain, RelationRange, TaxDirection, TaxRelation,
 };
 
 // Diagnostics machinery beyond the `Diagnostic` type itself. Severity is now
@@ -156,7 +163,7 @@ pub use sigmakee_rs_core::RenderReport;
 pub use sigmakee_rs_core::Strategy;
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
-pub use sigmakee_rs_core::{SearchOpts, SearchSource};
+pub use sigmakee_rs_core::{SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT};
 
 // The whole prover module (backends, runners, result types) for path-style
 // access (`sigmakee_rs_sdk::prover::external::backends::…`).
@@ -172,7 +179,7 @@ pub use sigmakee_rs_core::Prover;
 // Prover-facing types for the native-prover proving ops.
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::{
-    Binding, KifProofStep, NativeOpts, ProverResult, ProverStatus, SineParams, TestCase,
+    Binding, KifProofStep, NativeOpts, ProverResult, ProverStatus, SineParams,
 };
 
 // Proof-emission dialect seam — lets callers (e.g. the `--proof tptp` CLI

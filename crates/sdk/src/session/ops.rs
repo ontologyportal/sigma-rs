@@ -102,7 +102,7 @@ impl<L: TopLayer> Session<L> {
         // empty" and retracts every sentence the file previously contributed.
         // Vet the syntax first (parse-only, milliseconds) and report just
         // those findings.
-        let parse_diags = sigmakee_rs_core::kif_parse_diagnostics(text, file);
+        let parse_diags = sigmakee_rs_core::try_parse_file(text, file);
         if !parse_diags.is_empty() {
             return parse_diags;
         }

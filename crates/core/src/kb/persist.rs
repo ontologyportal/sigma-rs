@@ -287,7 +287,7 @@ mod round_trip_tests {
         {
             let mut kb = KnowledgeBase::<TranslationLayer>::open(&dir, None).expect("open new DB");
             let sf = crate::types::SourceFile {
-                parser: crate::Parser::Kif,
+                parser: crate::Parser::Kif { options: None },
                 name: "origin.kif".to_string(),
                 path: std::path::PathBuf::from("origin.kif"),
                 origin: origin.clone(),

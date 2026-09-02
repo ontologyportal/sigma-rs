@@ -69,6 +69,14 @@ pub enum DocItem {
 }
 
 impl DocItem {
+    /// The item's source span: the statement's, or the directive form's.
+    pub fn span(&self) -> &Span {
+        match self {
+            DocItem::Stmt(n) => n.span(),
+            DocItem::Meta(m) => &m.span,
+        }
+    }
+
     /// The statement, if this item is one.
     pub fn as_stmt(&self) -> Option<&AstNode> {
         match self {

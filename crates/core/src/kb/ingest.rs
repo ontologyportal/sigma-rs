@@ -231,7 +231,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             }
             let _ = self.ingest_source(
                 SourceFile {
-                    parser: crate::Parser::Kif,
+                    parser: crate::Parser::Kif { options: None },
                     name: src,
                     path: PathBuf::new(),
                     origin: crate::types::FileOrigin::Inline,
@@ -2030,6 +2030,7 @@ mod tests {
             kind: None,
             language: None,
             limit: None,
+            taxonomy: Vec::new(),
         };
         assert!(
             kb.search("half typed", &opts).is_empty(),

@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn skipped_for_kif_parser() {
         let mut node = dummy_symbol("$true");
-        decode_tptp_literals(&mut node, &Parser::Kif);
+        decode_tptp_literals(&mut node, &Parser::Kif { options: None });
         // Must be unchanged — macro is TPTP-only.
         assert!(matches!(node, AstNode::Symbol { name, .. } if name == "$true"));
     }

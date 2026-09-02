@@ -40,11 +40,6 @@ pub struct Session {
     /// [`WasmLsp`]: crate::WasmLsp
     pub(crate) session: std::sync::Arc<std::sync::RwLock<sigmakee_rs_sdk::Session<NativeStack>>>,
     config: Config,
-    /// The sid -> line map from the last [`to_tptp_indexed`](Session::to_tptp_indexed)
-    /// call, consulted by [`tptp_line_for_position`](Session::tptp_line_for_position).
-    /// Never serialized to JS -- `SentenceId` doesn't cross the wasm boundary
-    /// (u64 content hashes overflow JS's safe-integer range).
-    tptp_lines: std::collections::HashMap<sigmakee_rs_core::SentenceId, u32>,
 }
 
 #[wasm_bindgen]
@@ -70,7 +65,6 @@ impl Session {
                 ),
             )),
             config: Config::new(),
-            tptp_lines: std::collections::HashMap::new(),
         }
     }
 

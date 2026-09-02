@@ -146,7 +146,7 @@ impl ProvingLayer for ExternalProverLayer {
         let _ = self.cascade(vec![Event::SourceAdded {
             session: Arc::new(tag.to_owned()),
             file: SourceFile {
-                parser: Parser::Kif,
+                parser: Parser::Kif { options: None },
                 name: tag.to_string(),
                 path: std::path::PathBuf::new(),
                 origin: FileOrigin::Inline,

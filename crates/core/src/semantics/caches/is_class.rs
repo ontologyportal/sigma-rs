@@ -1,6 +1,6 @@
 //! `semantic::is_class` cache: memoises whether a symbol denotes a class.
 
-use crate::cache::{CacheBehavior, EntryCache};
+use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::types::{Scope, Scoped, TaxRelation};
 use crate::semantics::SemanticLayer;
 use crate::SymbolId;
@@ -18,8 +18,18 @@ impl CacheBehavior for IsClass {
     type Value = bool;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = SymbolId;
 
     const NAME: &'static str = "semantic::is_class";
+    const TAG_INDEXED: bool = true;
+
+    /// `None` for Base-scope keys: their key is deterministic
+    /// (`Scoped{Base, sym}`), so `react` reconstructs and evicts it directly
+    /// rather than paying to index it. Session-scope keys are indexed so a
+    /// batch invalidation by symbol doesn't need to scan the whole store.
+    fn tag_of(key: &Scoped<SymbolId>) -> Option<SymbolId> {
+        (key.scope != Scope::Base).then_some(key.key)
+    }
 
     fn generate(
         &self,
@@ -37,22 +47,32 @@ impl CacheBehavior for IsClass {
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["semantic::tax_edges", "syntactic::sessions"]
+        &[
+            crate::syntactic::caches::session::SessionCache::NAME,
+            super::tax_edges::TaxEdges::NAME,
+        ]
     }
 
     fn react(
         &self,
         _parent: &SemanticLayer,
         events: &[&crate::cache::events::Event],
-        store: &EntryCache<Scoped<SymbolId>, bool>,
+        store: &EntryCache<Scoped<SymbolId>, bool, SymbolId>,
         _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events
-            .iter()
-            .any(|e| matches!(e, Event::TaxonomyChanged { .. }))
-        {
-            store.clear();
+        for event in events.iter() {
+            if let Event::TaxonomyChanged { syms } = event {
+                let base_keys: Vec<_> = syms
+                    .iter()
+                    .map(|&sym| Scoped {
+                        scope: Scope::Base,
+                        key: sym,
+                    })
+                    .collect();
+                store.evict_keys(&base_keys);
+                store.evict_by_tag(syms);
+            }
         }
         Vec::new()
     }

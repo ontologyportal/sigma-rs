@@ -141,7 +141,8 @@ mod tests {
             let _ = kb.make_session_axiomatic(TAG);
         }
         let uri = Url::from_file_path(TAG).expect("file url");
-        let parsed = sigmakee_rs_sdk::parse_document(TAG.to_string(), KIF, Parser::Kif);
+        let parsed =
+            sigmakee_rs_sdk::parse_document(TAG.to_string(), KIF, Parser::Kif { options: None });
         let mut ds = DocState::new(KIF, 1);
         ds.parsed = Some(parsed);
         state

@@ -106,6 +106,27 @@ fn shutdown(client: &Connection) {
         .expect("exit");
 }
 
+/// Full-document `didChange` — the realistic route into a mid-typing
+/// (syntactically broken) buffer: the server refuses to load broken text
+/// into the KB, so tests must open valid content first and then edit.
+fn change(client: &Connection, uri: &Url, version: i32, text: &str) {
+    send_notification::<lsp_types::notification::DidChangeTextDocument>(
+        client,
+        lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.to_string(),
+            }],
+        },
+    );
+    drain_publish_diagnostics_for(client, uri);
+}
+
 fn open(client: &Connection, uri: &Url, text: &str) {
     send_notification::<DidOpenTextDocument>(
         client,
@@ -277,6 +298,35 @@ fn formatting_clean_document_emits_single_replacement_edit() {
 }
 
 #[test]
+fn formatting_preserves_comments() {
+    let (server_conn, client) = Connection::memory();
+    let server = spawn_server(server_conn);
+
+    initialize(&client);
+
+    let uri = Url::parse("file:///tmp/fmt-comments.kif").expect("url");
+    let text =
+        "; header\n(subclass   Dog   Mammal) ; trailing\n\n; between\n\n(subclass Cat Mammal)";
+    open(&client, &uri, text);
+
+    let edits = formatting(&client, &uri, 32).expect("formatting edits");
+    assert_eq!(edits.len(), 1);
+    let new_text = &edits[0].new_text;
+    // The round-trip formatter re-interleaves every comment: the header stays
+    // above its sentence, the trailing comment stays on its line, and the
+    // standalone block keeps its blank-line separation.
+    assert!(new_text.starts_with("; header\n"), "got: {new_text}");
+    assert!(
+        new_text.contains("(subclass Dog Mammal) ; trailing"),
+        "got: {new_text}"
+    );
+    assert!(new_text.contains("\n\n; between\n\n"), "got: {new_text}");
+
+    shutdown(&client);
+    server.join().expect("join");
+}
+
+#[test]
 fn formatting_document_with_errors_returns_empty_edits() {
     let (server_conn, client) = Connection::memory();
     let server = spawn_server(server_conn);
@@ -373,35 +423,62 @@ fn completion_after_open_paren_offers_operators_and_heads() {
     initialize(&client);
 
     let uri = Url::parse("file:///tmp/comp.kif").expect("url");
-    // Seed the KB with a few sentences so head_names() has
-    // content to offer.
-    let text = "(subclass Human Animal)\n(instance Fido Dog)\n(";
+    // Seed the KB with a few sentences so head_names() has content to
+    // offer, then TYPE the `(` via didChange -- an open buffer with a
+    // dangling paren never loads (the mid-typing guard), so the seed must
+    // land from a syntactically-valid open first.  `subclass`/`instance`
+    // need their own `Predicate` declaration (as real SUMO content
+    // has) for `is_predicate` to recognize them as formula heads --
+    // top-level completion only offers predicates, since a well-formed KIF
+    // assertion's head always is one.
+    let text = "(instance subclass Predicate)\n(instance instance Predicate)\n(subclass Human Animal)\n(instance Fido Dog)\n";
     open(&client, &uri, text);
+    change(
+        &client,
+        &uri,
+        4,
+        "(instance subclass Predicate)\n(instance instance Predicate)\n(subclass Human Animal)\n(instance Fido Dog)\n(",
+    );
 
-    // Cursor on line 2, just after `(`.
-    let resp = completion(&client, &uri, 2, 1, 50).expect("completion response");
+    // Cursor on line 4, just after `(`, nothing typed yet: operators only --
+    // no relation-name enumeration until the user starts typing (search's
+    // empty-query-and-no-taxonomy guard naturally suppresses it).
+    let resp = completion(&client, &uri, 4, 1, 50).expect("completion response");
     let items = match resp {
         CompletionResponse::Array(v) => v,
         CompletionResponse::List(list) => list.items,
     };
     let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
 
-    // Operators should be present.
     assert!(labels.contains(&"and"), "missing 'and' in {:?}", labels);
     assert!(
         labels.contains(&"forall"),
         "missing 'forall' in {:?}",
         labels
     );
-    // Relations that have appeared as heads should be present.
+    assert!(
+        !labels.contains(&"subclass"),
+        "no relation names before typing starts, got {:?}",
+        labels
+    );
+
+    // Typing "s" shunts to the search path: relation names matching the
+    // prefix now appear.
+    change(
+        &client,
+        &uri,
+        5,
+        "(instance subclass Predicate)\n(instance instance Predicate)\n(subclass Human Animal)\n(instance Fido Dog)\n(s",
+    );
+    let resp = completion(&client, &uri, 4, 2, 50).expect("completion response");
+    let items = match resp {
+        CompletionResponse::Array(v) => v,
+        CompletionResponse::List(list) => list.items,
+    };
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
     assert!(
         labels.contains(&"subclass"),
         "missing 'subclass' in {:?}",
-        labels
-    );
-    assert!(
-        labels.contains(&"instance"),
-        "missing 'instance' in {:?}",
         labels
     );
 
@@ -444,11 +521,23 @@ fn completion_inside_arg_position_returns_nonempty() {
     initialize(&client);
 
     let uri = Url::parse("file:///tmp/comp-arg.kif").expect("url");
-    let text = "(subclass Human Animal)\n(instance Fido Dog)\n(subclass ";
+    // Valid open seeds the KB; the mid-typing `(subclass H` arrives by edit
+    // (a broken buffer never loads -- see the guard in `load_buffer`). A
+    // character is typed (not just `(subclass `) because arg-position
+    // completion with nothing typed and no expressible taxonomy constraint
+    // now returns nothing -- see `suggest_args`'s "nothing until typing"
+    // rule -- so this exercises the typed-prefix search path instead.
+    let text = "(subclass Human Animal)\n(instance Fido Dog)\n";
     open(&client, &uri, text);
+    change(
+        &client,
+        &uri,
+        2,
+        "(subclass Human Animal)\n(instance Fido Dog)\n(subclass H",
+    );
 
-    // Cursor right after `(subclass ` on line 2.
-    let resp = completion(&client, &uri, 2, 10, 70).expect("response");
+    // Cursor right after `(subclass H` on line 2.
+    let resp = completion(&client, &uri, 2, 11, 70).expect("response");
     let items = match resp {
         CompletionResponse::Array(v) => v,
         CompletionResponse::List(list) => list.items,
@@ -465,6 +554,56 @@ fn completion_inside_arg_position_returns_nonempty() {
             || labels.contains(&"Fido")
             || labels.contains(&"Dog"),
         "expected at least one interned symbol in {:?}",
+        labels
+    );
+
+    shutdown(&client);
+    server.join().expect("join");
+}
+
+#[test]
+fn completion_for_class_domain_includes_classes_reached_via_narrower_subclass() {
+    let (server_conn, client) = Connection::memory();
+    let server = spawn_server(server_conn);
+
+    initialize(&client);
+
+    let uri = Url::parse("file:///tmp/comp-class-domain.kif").expect("url");
+    // `Elephant` is a class only via `SetOrClass` -- never declared
+    // `(instance Elephant Class)` directly. `takesAClass`'s domain is the
+    // bare `Class` symbol (SUMO's implicit superclass of every
+    // class-denoting symbol), which must still offer `Elephant`:
+    // `instances_of("Class")` alone would miss it. A prefix is typed
+    // ("El") because the bare-`Class` domain can't be expressed as a search
+    // taxonomy constraint (see `suggest_args`'s `class_type_fallback`), so
+    // an empty prefix now returns nothing -- this exercises the typed-prefix
+    // path, where the `is_class` post-filter still does its job.
+    let text = "(instance takesAClass BinaryPredicate)\n\
+                (domain takesAClass 1 Class)\n\
+                (subclass SetOrClass Class)\n\
+                (instance Elephant SetOrClass)\n";
+    open(&client, &uri, text);
+    change(
+        &client,
+        &uri,
+        2,
+        "(instance takesAClass BinaryPredicate)\n\
+         (domain takesAClass 1 Class)\n\
+         (subclass SetOrClass Class)\n\
+         (instance Elephant SetOrClass)\n\
+         (takesAClass El",
+    );
+
+    // Cursor right after `(takesAClass El` on line 4 (0-based).
+    let resp = completion(&client, &uri, 4, 15, 70).expect("response");
+    let items = match resp {
+        CompletionResponse::Array(v) => v,
+        CompletionResponse::List(list) => list.items,
+    };
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"Elephant"),
+        "Class-domain completion should include a class reached only via a narrower subclass; got {:?}",
         labels
     );
 

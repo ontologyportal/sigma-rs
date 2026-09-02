@@ -9,7 +9,7 @@ use crate::parse::doc::CommentBlock;
 // -- Token types ---------------------------------------------------------------
 
 /// A KIF logical operator keyword.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpTok {
     And,
     Or,
@@ -53,7 +53,7 @@ impl Display for OpTok {
 }
 
 /// A lexical token class produced by the tokenizer.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     LParen,
     RParen,
@@ -71,6 +71,12 @@ pub enum TokenKind {
     Operator(OpTok),
     /// A KIF source comment
     Comment(String),
+}
+
+impl Default for TokenKind {
+    fn default() -> Self {
+        Self::Symbol(String::new())
+    }
 }
 
 impl TokenKind {
@@ -103,7 +109,7 @@ impl Display for TokenKind {
 }
 
 /// A single token with its source span.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Default)]
 pub struct Token {
     /// The token's lexical class.
     pub kind: TokenKind,
@@ -408,6 +414,16 @@ pub fn tokenize(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
     (tokens, errors)
 }
 
+/// [`tokenize`], with `;` comments dropped from the stream -- the historical
+/// comment-free view, for consumers that treat comments as pure whitespace
+/// and want no [`TokenKind::Comment`] entries to skip over.  Spans and errors
+/// are unaffected; only the comment tokens are omitted.
+pub fn tokenize_without_comments(src: &str, file: &str) -> (Vec<Token>, Vec<KifParseError>) {
+    let (mut tokens, errors) = tokenize(src, file);
+    tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
+    (tokens, errors)
+}
+
 /// Collect the comment tokens in `tokens` into consolidated
 /// [`CommentBlock`]s, in source order.
 ///
@@ -533,6 +549,28 @@ mod tests {
         let kinds = toks("(foo) ; this is a comment");
         assert!(matches!(&kinds[3], TokenKind::Comment(s) if s == "this is a comment"));
         assert_eq!(kinds.len(), 4);
+    }
+
+    #[test]
+    fn tokenize_without_comments_restores_the_comment_free_stream() {
+        let src = "; header\n(subclass Dog ; inline\n Mammal) ; trailing";
+        let (with, errs_a) = tokenize(src, "test");
+        let (without, errs_b) = tokenize_without_comments(src, "test");
+        assert!(errs_a.is_empty() && errs_b.is_empty());
+        assert!(without
+            .iter()
+            .all(|t| !matches!(t.kind, TokenKind::Comment(_))));
+        // Exactly the non-comment tokens survive, order and spans untouched.
+        let significant: Vec<_> = with
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Comment(_)))
+            .map(|t| (t.kind.clone(), t.span.offset))
+            .collect();
+        let stripped: Vec<_> = without
+            .iter()
+            .map(|t| (t.kind.clone(), t.span.offset))
+            .collect();
+        assert_eq!(significant, stripped);
     }
 
     #[test]

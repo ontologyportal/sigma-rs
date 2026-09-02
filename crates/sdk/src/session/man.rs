@@ -168,6 +168,16 @@ impl<L: TopLayer> Session<L> {
         self.kb.manpage(symbol).map(view_from_manpage)
     }
 
+    /// Direct taxonomy edges of `symbol` -- `(parents, children)` -- without
+    /// building a full [`ManPageView`].  The lightweight peer of
+    /// [`Self::manpage`] for callers (e.g. a taxonomy-graph walk) that only
+    /// need adjacency, not signature/documentation/reference data.  Both
+    /// empty when `symbol` isn't interned. Mirrors
+    /// [`KnowledgeBase::taxonomy_edges`](sigmakee_rs_core::KnowledgeBase).
+    pub fn taxonomy_edges(&self, symbol: &str) -> (Vec<ParentEdge>, Vec<ParentEdge>) {
+        self.kb.taxonomy_edges(symbol)
+    }
+
     /// Search for a symbol by a broad query.
     ///
     /// This will find symbols whose name or documentation entries somehow

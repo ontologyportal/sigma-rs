@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EagerMapBehavior, WholeCacheBehavior};
 use crate::semantics::caches::domain::Domain;
+use crate::semantics::consts::DOMAIN_RELATION;
 use crate::syntactic::caches::sentences::SentenceCache;
 use crate::trans::caches::numeric_ancestor_set::NumericAncestorSet;
 use crate::trans::caches::numeric_sorts::NumericSorts;
@@ -34,7 +35,13 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         // the `semantic::domain` cache (which already folds in `domainSubclass`,
         // position ordering, scope, and base/session conflict rules) rather than
         // re-parsing `(domain Relation Position Class)` out of the raw sentence.
-        for sid in parent.semantic.syntactic.by_head("domain").iter().copied() {
+        for sid in parent
+            .semantic
+            .syntactic
+            .by_head_id(&DOMAIN_RELATION.id())
+            .iter()
+            .copied()
+        {
             let Some(sentence) = parent.semantic.syntactic.sentence(sid) else {
                 continue;
             };

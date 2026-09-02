@@ -24,6 +24,7 @@ impl CacheBehavior for SymbolSort {
     type Value = Result<Sort, TranslationError>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::lazy_sort";
 

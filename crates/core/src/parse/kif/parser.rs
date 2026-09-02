@@ -4,6 +4,14 @@ use super::tokenizer::{OpTok, Token, TokenKind};
 
 use super::super::{AstNode, OpKind, Span};
 
+/// Options for the KIF parser (the [`Parser::Kif`](crate::Parser::Kif)
+/// variant's payload, mirroring `Parser::Tptp { options }`).
+#[derive(Debug, Clone, Default)]
+pub struct KifParseOptions {
+    /// Drop `;` comments at the tokenizer
+    pub skip_comments: bool,
+}
+
 /// Recursive-descent parser over a stream of KIF tokens.
 pub struct KifParser {
     tokens: Vec<Token>,

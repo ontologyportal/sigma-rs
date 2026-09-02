@@ -483,6 +483,44 @@ fn find_by_pattern_with_head_filter_returns_matching_sentences() {
 }
 
 #[test]
+fn find_by_pattern_indexes_on_ground_non_head_seat_without_head_hint() {
+    // No `head` argument is passed -- the pre-generalization code would
+    // have fallen back to a full `root_sids()` scan here. The pattern's own
+    // ground head (seat 0) and ground arg2 (seat 2) should still narrow the
+    // candidate set via the residue index.
+    let mut store = SyntacticLayer::default();
+    store.load_kif(
+        "(range subclass SetOrClass)
+         (range instance SetOrClass)
+         (range documentation SubjectOfDocumentation)",
+        "test",
+    );
+
+    let pat = SentencePattern(vec![
+        PatternElement::Exact(mkey("range")),
+        PatternElement::AnyCapture(0),
+        PatternElement::Exact(mkey("SetOrClass")),
+    ]);
+    let results = store.patterns().find_by_pattern(&pat, None, None);
+    assert_eq!(
+        results.len(),
+        2,
+        "subclass and instance have range SetOrClass"
+    );
+    let heads: std::collections::HashSet<String> = results
+        .iter()
+        .filter_map(|(_, b)| match b.elements.get(&0) {
+            Some(Element::Symbol(s)) => Some(s.name().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        heads,
+        std::collections::HashSet::from(["subclass".to_string(), "instance".to_string()])
+    );
+}
+
+#[test]
 fn find_by_pattern_any_captures_all_instance_sentences() {
     let mut store = SyntacticLayer::default();
     store.load_kif(

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::cache::events::{Event, EventKind};
-use crate::cache::{CacheBehavior, EntryCache};
+use crate::cache::{CacheBehavior, EagerBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::consts::{CLASS_SYMBOL, DOMAIN_SUBCLASS_RELATION};
 use crate::semantics::errors::BoxedError;
 use crate::semantics::types::{RelationDomain, Scope, Scoped};
@@ -27,6 +27,7 @@ impl CacheBehavior for Domain {
     type Value = Arc<Vec<RelationDomain>>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "semantic::domain";
 
@@ -99,10 +100,10 @@ impl CacheBehavior for Domain {
 
     fn reads(&self) -> &'static [&'static str] {
         &[
-            "syntactic::sentences",
-            "syntactic::residue_index",
-            "syntactic::sessions",
-            "semantic::range",
+            crate::syntactic::caches::sentences::SentenceCache::NAME,
+            crate::syntactic::caches::residue_index::ResidueCache::NAME,
+            crate::syntactic::caches::session::SessionCache::NAME,
+            super::range::Range::NAME,
         ]
     }
 

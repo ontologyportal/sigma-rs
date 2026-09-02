@@ -1,6 +1,7 @@
 //! Symbol store interactions for the KB.
 
 use super::KnowledgeBase;
+use crate::syntactic::pattern::SentencePattern;
 use crate::{Sentence, SentenceId, SymbolId};
 
 impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
@@ -23,7 +24,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// kb.lookup("(=> (instance ?X PositiveInteger) ?Q)")  // implications about PositiveInteger
     /// ```
     pub fn lookup(&self, pattern: &str) -> Vec<SentenceId> {
-        use crate::syntactic::pattern::{MatchKey, PatternElement, PatternFromKifError};
+        use crate::syntactic::pattern::PatternFromKifError;
         let syntactic = &self.layer.semantic().syntactic;
         let pat = match syntactic.patterns().pattern_from_kif(pattern) {
             Ok(p) => p,
@@ -32,9 +33,22 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
                 panic!("KnowledgeBase::lookup: unknown symbol '{sym}' in pattern \"{pattern}\"")
             }
         };
+        self.lookup_compiled(&pat)
+    }
 
+    /// [`Self::lookup`], from an already-compiled [`SentencePattern`] instead
+    /// of a KIF string.
+    ///
+    /// `lookup` itself is just `pattern_from_kif` followed by this: a
+    /// programmatic caller that builds (or reuses) a `SentencePattern`
+    /// directly -- rather than formatting a KIF string only to have it
+    /// re-parsed on every call -- skips that parse entirely.  Crate-internal:
+    /// the pattern types aren't part of the public API surface.
+    pub(crate) fn lookup_compiled(&self, pattern: &SentencePattern) -> Vec<SentenceId> {
+        use crate::syntactic::pattern::{MatchKey, PatternElement};
+        let syntactic = &self.layer.semantic().syntactic;
         let head: Option<String> =
-            if let Some(PatternElement::Exact(MatchKey::Symbol(sym))) = pat.0.first() {
+            if let Some(PatternElement::Exact(MatchKey::Symbol(sym))) = pattern.0.first() {
                 Some(sym.name().to_string())
             } else {
                 None
@@ -42,7 +56,7 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
 
         syntactic
             .patterns()
-            .find_by_pattern(&pat, head.as_deref(), None)
+            .find_by_pattern(pattern, head.as_deref(), None)
             .into_iter()
             .map(|(sid, _)| sid)
             .collect()
@@ -218,6 +232,17 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
             .collect()
     }
 
+    /// Every distinct head-predicate name currently indexed in the store
+    /// (the relations / predicates / functions that appear as sentence heads).
+    pub fn head_syms(&self) -> Vec<(SymbolId, String)> {
+        let store = &self.layer.semantic().syntactic;
+        store
+            .residue_head_symbols()
+            .into_iter()
+            .filter_map(|id| store.sym_name(id).map(|s| (id, s.name().to_string())))
+            .collect()
+    }
+
     /// The content fingerprints a file contributed. Order is unspecified.
     pub fn file_hashes(&self, file: &str) -> Vec<u64> {
         self.layer.semantic().syntactic.file_fingerprints(file)
@@ -240,5 +265,64 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// whether the source has changed since.
     pub fn file_origin(&self, file: &str) -> Option<crate::FileOrigin> {
         self.layer.semantic().syntactic.file_origin(file)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syntactic::pattern::{MatchKey, PatternElement};
+    use crate::types::Symbol;
+
+    fn sym(name: &str) -> PatternElement {
+        PatternElement::Exact(MatchKey::Symbol(Symbol::from(name)))
+    }
+
+    #[test]
+    fn lookup_compiled_matches_lookup_for_the_same_pattern() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(instance Dog Animal)(instance Cat Animal)(instance Dog Pet)",
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        let via_str = kb.lookup("(instance ?X Animal)");
+
+        // The same query, hand-built -- no KIF string ever parsed.
+        let pat = SentencePattern(vec![
+            sym("instance"),
+            PatternElement::AnyCapture(0),
+            sym("Animal"),
+        ]);
+        let via_compiled = kb.lookup_compiled(&pat);
+
+        assert_eq!(via_str.len(), 2);
+        let a: std::collections::HashSet<_> = via_str.into_iter().collect();
+        let b: std::collections::HashSet<_> = via_compiled.into_iter().collect();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn lookup_compiled_needs_no_ground_head_to_narrow() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            "(range subclass SetOrClass)(range instance SetOrClass)(range documentation Formula)",
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        // (range ?R SetOrClass): head "range" is ground, but a hand-built
+        // pattern derives that itself -- the caller passes no head hint.
+        let pat = SentencePattern(vec![
+            sym("range"),
+            PatternElement::AnyCapture(0),
+            sym("SetOrClass"),
+        ]);
+        assert_eq!(kb.lookup_compiled(&pat).len(), 2);
     }
 }

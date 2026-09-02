@@ -39,6 +39,8 @@ define_symbols_from_env! {
     // --- Domain/Range Relations ---
     DOMAIN_SUBCLASS_RELATION => "SUMO_DOMAIN_SUBCLASS_RELATION",
     RANGE_SUB_REL_CLASS      => "SUMO_RANGE_SUBCLASS_RELATION",
+    DOMAIN_RELATION          => "SUMO_DOMAIN_RELATION",
+    RANGE_RELATION           => "SUMO_RANGE_RELATION",
 
     // --- Metadata Relations ---
     DOC_RELATION          => "SUMO_DOC_RELATION",
@@ -58,6 +60,10 @@ symbol_set!(
     /// `termFormat`) — the subset of the env-derived symbols carrying
     /// human-facing descriptions, for code that processes only those.
     DOCUMENTATION_RELATIONS => DOC_RELATION, FORMAT_RELATION, TERM_RELATION
+);
+
+symbol_set!(
+    SUBINSTANCE_RELATIONS => SUBATTRIBUTE_RELATION, SUBRELATION_RELATION
 );
 
 /// Maps SUMO arity-constant symbol names to their integer arity (`-1` = variable).

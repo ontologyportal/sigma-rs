@@ -4,4 +4,4 @@
 
 pub mod parser;
 
-pub use parser::{parse_test_content, parse_tq, TestCase};
+pub use parser::{is_tq_directive, parse_test_content, parse_tq, TestCase};

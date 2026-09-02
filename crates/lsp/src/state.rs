@@ -7,7 +7,9 @@ use std::sync::{Arc, RwLock};
 use lsp_types::Url;
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{ParsedDocument, SentenceId, Session, TopLayer, TranslationLayer};
+use sigmakee_rs_sdk::{
+    Instant, ParsedDocument, SentenceId, Session, Token, TopLayer, TranslationLayer,
+};
 
 /// Per-document session state held by the server.
 pub struct DocState {
@@ -20,6 +22,11 @@ pub struct DocState {
     /// Most recent parse, corresponding to `rope` at `version`. `None` on
     /// freshly-opened docs until the first parse completes.
     pub parsed: Option<ParsedDocument>,
+    /// The KIF token stream for `rope` at `version` -- computed once per
+    /// reparse and shared by every handler that needs raw tokens (completion,
+    /// semantic tokens, rename) instead of each re-tokenizing the whole
+    /// buffer per request.  Empty until the first parse completes.
+    pub tokens: Vec<Token>,
 }
 
 impl DocState {
@@ -29,6 +36,7 @@ impl DocState {
             rope: Rope::from_str(text),
             version,
             parsed: None,
+            tokens: Vec::new(),
         }
     }
 
@@ -36,6 +44,27 @@ impl DocState {
     pub fn text_string(&self) -> String {
         String::from(&self.rope)
     }
+}
+
+/// A debounced KB reload + diagnostics publish awaiting its deadline.
+///
+/// `didChange` always updates `DocState.parsed`/`tokens` immediately (cheap:
+/// pure parsing, no KB interaction) so completion's cursor-context and other
+/// syntax-only handlers see the just-typed text right away. The expensive
+/// part -- reconciling the buffer into the KB (retract + reingest, which
+/// fires the full reactive cache cascade) and semantic validation -- is
+/// deferred here instead, and only actually runs once `due` has passed,
+/// coalescing any edits that land before then into one reload.
+pub struct PendingReload {
+    /// The buffer text as of the edit that (re)scheduled this reload.
+    pub text: String,
+    /// That edit's client-reported version, carried on the eventual
+    /// diagnostics so stale results can still be discarded.
+    pub version: i32,
+    /// When this reload becomes due. Reset forward on every further edit to
+    /// the same document, so a burst of keystrokes reloads once, after
+    /// typing settles, rather than once per keystroke.
+    pub due: Instant,
 }
 
 /// Session name for the server's shared KB.  The LSP is translation-only
@@ -82,6 +111,11 @@ pub struct GlobalState<L: TopLayer = TranslationLayer> {
     /// consulted by `sumo/tptpLineForPosition`.  Server-local cache, not KB
     /// state: stale after any KB mutation until the client re-exports.
     pub tptp_lines: Arc<RwLock<HashMap<SentenceId, u32>>>,
+    /// Per-URI debounced KB reload awaiting its deadline (see
+    /// [`PendingReload`]). `didChange` inserts/overwrites an entry here
+    /// instead of reloading the KB inline; `flush_due_reloads` drains
+    /// whichever entries are due.
+    pub pending_reloads: Arc<RwLock<HashMap<Url, PendingReload>>>,
 }
 
 // Manual impl: `#[derive(Clone)]` would demand `L: Clone`, but every field is
@@ -95,6 +129,7 @@ impl<L: TopLayer> Clone for GlobalState<L> {
             ignored_diagnostic_codes: Arc::clone(&self.ignored_diagnostic_codes),
             fresh_session: self.fresh_session,
             tptp_lines: Arc::clone(&self.tptp_lines),
+            pending_reloads: Arc::clone(&self.pending_reloads),
         }
     }
 }
@@ -112,6 +147,7 @@ impl<L: TopLayer> GlobalState<L> {
             ignored_diagnostic_codes: Arc::new(RwLock::new(HashSet::new())),
             fresh_session: None,
             tptp_lines: Arc::new(RwLock::new(HashMap::new())),
+            pending_reloads: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }

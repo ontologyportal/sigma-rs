@@ -476,7 +476,7 @@ impl AskResultView {
             let goal_doc = sigmakee_rs_core::parse_document(
                 "__prose_goal__",
                 query_kif.to_string(),
-                sigmakee_rs_core::Parser::Kif,
+                sigmakee_rs_core::Parser::Kif { options: None },
             );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report =
@@ -703,7 +703,7 @@ impl<L: TopLayer> Session<L> {
         let doc = sigmakee_rs_core::parse_document(
             "__sdk:render_nl__",
             kif.to_string(),
-            sigmakee_rs_core::Parser::Kif,
+            sigmakee_rs_core::Parser::Kif { options: None },
         );
         match doc.ast.iter().find_map(|d| d.as_stmt()) {
             Some(ast) => self.kb.render_formula(ast, language).rendered,

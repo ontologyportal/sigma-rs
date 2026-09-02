@@ -10,7 +10,7 @@
 //   * Variable rename -- resolved from the DOCUMENT, not the KB: the
 //     content-addressed sentence store no longer carries scope-
 //     qualified variable ids (`id_at_offset` refuses variables), so
-//     the handler re-tokenizes the live buffer and renames every
+//     the handler walks the document's cached token stream and renames every
 //     same-named variable token inside the top-level form under the
 //     cursor.  Variables never leak across root sentences in KIF, so
 //     the containing form is the correct scope boundary; intra-form
@@ -56,7 +56,13 @@ pub fn handle_rename<L: TopLayer>(
     if hit.is_variable {
         let name = hit.name?;
         return rename_variable_in_document(
-            &doc.rope, &tag, &uri, offset, &name, hit.is_row, &new_name,
+            &doc.rope,
+            &doc.tokens,
+            &uri,
+            offset,
+            &name,
+            hit.is_row,
+            &new_name,
         );
     }
 
@@ -95,14 +101,14 @@ pub fn handle_rename<L: TopLayer>(
 /// Rename every occurrence of the variable `name` (sigil-less, as reported by
 /// `element_at_offset`) inside the top-level form containing `cursor_offset`.
 ///
-/// Re-tokenizes the buffer, walks paren depth to find the boundaries of the
-/// root form under the cursor, and emits one `TextEdit` per matching
-/// `Variable` / `RowVariable` token in that range.  Row and plain variables
-/// are distinct namespaces (`@X` vs `?X`), so only the cursor's own kind is
-/// touched.
+/// Walks paren depth over the document's cached token stream to find the
+/// boundaries of the root form under the cursor, and emits one `TextEdit`
+/// per matching `Variable` / `RowVariable` token in that range.  Row and
+/// plain variables are distinct namespaces (`@X` vs `?X`), so only the
+/// cursor's own kind is touched.
 fn rename_variable_in_document(
     rope: &ropey::Rope,
-    tag: &str,
+    tokens: &[sigmakee_rs_sdk::Token],
     uri: &Url,
     cursor_offset: usize,
     name: &str,
@@ -121,14 +127,11 @@ fn rename_variable_in_document(
         format!("?{}", name)
     };
 
-    let text = String::from(rope);
-    let (tokens, _errs) = sigmakee_rs_sdk::tokenize_kif(&text, tag);
-
     // Locate the top-level form [start, end] whose span covers the cursor.
     let mut depth = 0usize;
     let mut form_start = 0usize;
     let mut form: Option<(usize, usize)> = None;
-    for tok in &tokens {
+    for tok in tokens {
         match tok.kind {
             sigmakee_rs_sdk::TokenKind::LParen => {
                 if depth == 0 {
@@ -150,7 +153,7 @@ fn rename_variable_in_document(
     let (start, end) = form?;
 
     let mut edits: Vec<TextEdit> = Vec::new();
-    for tok in &tokens {
+    for tok in tokens {
         if tok.span.offset < start || tok.span.end_offset > end {
             continue;
         }

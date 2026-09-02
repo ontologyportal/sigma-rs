@@ -160,7 +160,7 @@ where
         let goal_doc = sigmakee_rs_sdk::parse_document(
             "__prose_goal__",
             conjecture.to_string(),
-            sigmakee_rs_sdk::Parser::Kif,
+            sigmakee_rs_sdk::Parser::Kif { options: None },
         );
         let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
         let report = session

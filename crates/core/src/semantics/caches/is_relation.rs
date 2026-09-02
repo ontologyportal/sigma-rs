@@ -31,8 +31,15 @@ impl CacheBehavior for IsRelation {
     type Value = bool;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = SymbolId;
 
     const NAME: &'static str = "semantic::is_relation";
+    const TAG_INDEXED: bool = true;
+
+    /// Same Base-vs-session split as `is_class`'s `tag_of`.
+    fn tag_of(key: &Scoped<SymbolId>) -> Option<SymbolId> {
+        (key.scope != Scope::Base).then_some(key.key)
+    }
 
     fn generate(
         &self,
@@ -48,22 +55,35 @@ impl CacheBehavior for IsRelation {
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["semantic::is_instance", "semantic::has_ancestor"]
+        &[
+            super::is_instance::IsInstance::NAME,
+            super::has_ancestor::HasAncestor::NAME,
+        ]
     }
 
     fn react(
         &self,
         _parent: &SemanticLayer,
         events: &[&crate::cache::events::Event],
-        store: &EntryCache<Scoped<SymbolId>, bool>,
+        store: &EntryCache<Scoped<SymbolId>, bool, SymbolId>,
         _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events
-            .iter()
-            .any(|e| matches!(e, Event::TaxonomyChanged { .. }))
-        {
-            store.clear();
+        for event in events.iter() {
+            match event {
+                Event::TaxonomyChanged { syms } => {
+                    let base_keys: Vec<_> = syms
+                        .iter()
+                        .map(|&sym| Scoped {
+                            scope: Scope::Base,
+                            key: sym,
+                        })
+                        .collect();
+                    store.evict_keys(&base_keys);
+                    store.evict_by_tag(syms);
+                }
+                _ => continue,
+            }
         }
         Vec::new()
     }

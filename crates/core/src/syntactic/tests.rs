@@ -1,6 +1,6 @@
 //! End-to-end exercise of the syntactic cascade: feed `SourceAdded` (via
-//! `load_kif_assert`) and assert the whole pipeline — source AST → sentences →
-//! symbols → indices — plus file-diff, empty-file clearing, the two refcount
+//! `load_kif_assert`) and assert the whole pipeline -- source AST -> sentences ->
+//! symbols -> indices -- plus file-diff, empty-file clearing, the two refcount
 //! layers, and hash consistency.
 
 #![cfg(test)]
@@ -28,7 +28,7 @@ fn source_ingests_into_ast_then_sentences_and_symbols() {
 
     // AST node landed in the source cache (keyed by content fingerprint).
     let fps = layer.file_fingerprints("a.kif");
-    assert_eq!(fps.len(), 1, "one formula → one source fingerprint");
+    assert_eq!(fps.len(), 1, "one formula -> one source fingerprint");
     assert!(
         layer.source_ast(fps[0]).is_some(),
         "source AST node retained"
@@ -144,7 +144,11 @@ fn refcount_fact_in_two_files_survives_partial_removal() {
     assert_eq!(layer.num_roots(), 1, "still referenced by b.kif");
 
     layer.load_kif_assert("", "b.kif");
-    assert_eq!(layer.num_roots(), 0, "last referencing file gone → removed");
+    assert_eq!(
+        layer.num_roots(),
+        0,
+        "last referencing file gone -> removed"
+    );
 }
 
 // 6b ─ Reference counters: one sentence produced by two *different* source
@@ -172,7 +176,7 @@ fn refcount_one_sentence_from_two_formulas() {
     assert_eq!(
         layer.num_roots(),
         2,
-        "shared sentence survives — still produced by the <=>"
+        "shared sentence survives -- still produced by the <=>"
     );
 
     // Drop the <=> file: both implications gone.
@@ -207,10 +211,10 @@ fn refcount_shared_sub_sentence() {
     layer.load_kif_assert("", "x.kif");
     assert!(
         layer.sentence(inst_ab).is_some(),
-        "shared sub survives — still a standalone root"
+        "shared sub survives -- still a standalone root"
     );
 
-    // Remove the standalone file: now nothing references it → gone.
+    // Remove the standalone file: now nothing references it -> gone.
     layer.load_kif_assert("", "y.kif");
     assert!(
         layer.sentence(inst_ab).is_none(),
@@ -226,15 +230,15 @@ fn hashing_is_consistent() {
     l1.load_kif_assert("(p a b)", "f.kif");
     l2.load_kif_assert("(p a b)", "g.kif");
 
-    // Same concrete sentence → identical content-hash SentenceId across layers.
+    // Same concrete sentence -> identical content-hash SentenceId across layers.
     let s1 = roots(&l1);
     let s2 = roots(&l2);
     assert_eq!(
         s1, s2,
-        "identical concrete sentence → identical SentenceId across layers"
+        "identical concrete sentence -> identical SentenceId across layers"
     );
 
-    // SymbolId is the content hash of the name — stable across layers and equal
+    // SymbolId is the content hash of the name -- stable across layers and equal
     // to `Symbol::hash_name`.
     for name in ["p", "a", "b"] {
         assert_eq!(l1.sym_id(name), l2.sym_id(name));
@@ -242,7 +246,7 @@ fn hashing_is_consistent() {
     }
 }
 
-// 8 ─ Promotion is event-driven: `SessionAxiomatized` → the session cache fans
+// 8 ─ Promotion is event-driven: `SessionAxiomatized` -> the session cache fans
 //     out `AxiomsPromoted`, which the `axiom_index` and `sine` reactors consume.
 //     Transient assertions are in neither index until promoted.
 #[test]
@@ -264,7 +268,7 @@ fn promotion_populates_axiom_index_and_sine() {
         "SInE empty pre-promotion"
     );
 
-    // Promote the session → AxiomsPromoted cascade.
+    // Promote the session -> AxiomsPromoted cascade.
     let _ = layer.cascade(vec![Event::SessionAxiomatized {
         session: "a.kif".to_string(),
     }]);
@@ -280,7 +284,7 @@ fn promotion_populates_axiom_index_and_sine() {
     );
 }
 
-// 9 ─ Retracting a promoted axiom (empty re-ingest → RootRemoved) drops it from
+// 9 ─ Retracting a promoted axiom (empty re-ingest -> RootRemoved) drops it from
 //     both the axiom index and SInE, and clears its axiom status.
 #[test]
 fn retracting_axiom_drops_it_from_axiom_index_and_sine() {
@@ -314,7 +318,7 @@ fn retracting_axiom_drops_it_from_axiom_index_and_sine() {
 #[test]
 fn shared_axiom_promoted_once_and_survives_until_last_ref() {
     let mut layer = SyntacticLayer::default();
-    // Same concrete fact in two files/sessions → one (deduped) root sentence.
+    // Same concrete fact in two files/sessions -> one (deduped) root sentence.
     layer.load_kif_assert("(instance Fido Dog)", "a.kif");
     layer.load_kif_assert("(instance Fido Dog)", "b.kif");
     assert_eq!(layer.num_roots(), 1);
@@ -348,7 +352,7 @@ fn shared_axiom_promoted_once_and_survives_until_last_ref() {
     // Still one axiom occurrence, not double-counted.
     assert!(layer.axiom_sentences_of(inst).contains(&sid));
 
-    // Drop one file: the fact is still produced by the other → survives.
+    // Drop one file: the fact is still produced by the other -> survives.
     layer.load_kif_assert("", "a.kif");
     assert!(
         layer.axiom_sentences_of(inst).contains(&sid),
@@ -381,7 +385,7 @@ fn cache_snapshot_round_trips_the_store() {
     layer.load_kif_assert("(subclass Human Animal)(instance Fido Dog)", "a.kif");
     let _ = layer.cascade(vec![Event::SessionAxiomatized {
         session: "a.kif".to_string(),
-    }]); // promote → sine + axiom_index + promoted set
+    }]); // promote -> sine + axiom_index + promoted set
     let roots_before = roots(&layer);
     let sub = layer.sym_id("subclass").unwrap();
     let gen_before = layer.sine.with_ref(|idx| idx.generality(sub));
@@ -402,7 +406,7 @@ fn cache_snapshot_round_trips_the_store() {
     assert_eq!(restored.num_roots(), 2);
     for &sid in &roots_before {
         assert!(restored.sentence(sid).is_some(), "sentence body restored");
-        // Session `promoted` side round-trips → axiom status preserved.
+        // Session `promoted` side round-trips -> axiom status preserved.
         assert!(restored.is_axiom(sid), "axiom status round-trips");
     }
     // SInE index (eager value) round-trips.
@@ -429,7 +433,7 @@ fn ingest_outcome(
     file: &str,
 ) -> crate::cache::router::RouteOutcome {
     let source = crate::types::SourceFile {
-        parser: crate::Parser::Kif,
+        parser: crate::Parser::Kif { options: None },
         name: file.to_owned(),
         path: std::path::PathBuf::from(file),
         origin: crate::types::FileOrigin::Inline,
@@ -496,4 +500,43 @@ fn removal_events_carry_sentence_bodies() {
     );
 
     assert_eq!(layer.num_roots(), 0, "store is empty afterwards");
+}
+
+// N -- `symbols_with_prefix` returns exactly the case-insensitively
+// prefix-matching symbols, sorted by name, and stays fresh across a later
+// mutation (the lazily-rebuilt sorted-name index must not serve a stale
+// snapshot from its first build).
+#[test]
+fn symbols_with_prefix_matches_case_insensitively_and_stays_fresh() {
+    let mut layer = SyntacticLayer::default();
+    layer.load_kif_assert("(subclass Human Animal)(subclass Hamster Animal)", "a.kif");
+
+    let hits = layer.symbols_with_prefix("hu");
+    let names: Vec<String> = hits.iter().map(|(sym, _)| sym.name().to_string()).collect();
+    assert_eq!(
+        names,
+        vec!["Human".to_string()],
+        "case-insensitive prefix match against a lowercased query"
+    );
+
+    // A symbol interned AFTER the index was already built (and queried
+    // above) must still show up -- the dirty flag must catch this later
+    // mutation, not just the first build.
+    layer.load_kif_assert("(subclass Humanoid Animal)", "b.kif");
+    let hits2 = layer.symbols_with_prefix("hu");
+    let mut names2: Vec<String> = hits2
+        .iter()
+        .map(|(sym, _)| sym.name().to_string())
+        .collect();
+    names2.sort();
+    assert_eq!(
+        names2,
+        vec!["Human".to_string(), "Humanoid".to_string()],
+        "index rebuilds after a later mutation, not just on first use"
+    );
+
+    assert!(
+        layer.symbols_with_prefix("zz").is_empty(),
+        "no symbol starts with an unmatched prefix"
+    );
 }

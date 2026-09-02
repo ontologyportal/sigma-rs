@@ -2,7 +2,6 @@
 //
 // Display focused function implementations
 
-use crate::parse::doc::DocItem;
 use crate::parse::kif::dis::AstKif;
 use crate::SentenceId; // `.flat()` / `.pretty_print()` / `.format_plain()`
 
@@ -26,7 +25,7 @@ impl<L: crate::layer::TopLayer> crate::diagnostic::DiagnosticSource for Knowledg
         // Diagnostics want the *source* formula(s) the user wrote — the
         // normalized sentence carries no source syntax (spans were dropped at
         // build).  Falls back to the normalized form for synthetic sentences.
-        Some(store.display_source_pretty(sid, crate::syntactic::SourceMode::All))
+        Some(store.display_source_pretty(sid, crate::syntactic::SourceMode::All, 0))
     }
 
     fn sentence_location(&self, sid: crate::types::SentenceId) -> Option<crate::parse::Span> {
@@ -111,25 +110,54 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
     /// at `base_indent` are kept on a single line; longer ones break
     /// across lines with each top-level argument indented two columns
     /// further.
+    ///
+    /// Renders the **normalized (canonicalized)** sentence structure
+    /// directly — no source syntax involved. See [`Self::display_source_pretty`]
+    /// to render the original source formula(s) instead.
     pub fn pretty_print_sentence(&self, sid: SentenceId, base_indent: usize) -> String {
-        let kif = self.sentence_kif_str(sid);
-        let doc = crate::parse::parse_document("<display>", kif.as_str(), crate::Parser::Kif);
-        match doc.ast.into_iter().next() {
-            Some(DocItem::Stmt(node)) => node.pretty_print(base_indent),
-            _ => kif,
-        }
+        self.layer
+            .semantic()
+            .syntactic
+            .sentence_to_ast(sid)
+            .pretty_print(base_indent)
     }
 
     /// [`Self::pretty_print_sentence`]'s plain-text twin: the same indented,
     /// width-wrapped layout with no ANSI colour codes — safe for contexts
     /// that aren't a terminal (e.g. a browser DOM).
     pub fn pretty_print_sentence_plain(&self, sid: SentenceId, base_indent: usize) -> String {
-        let kif = self.sentence_kif_str(sid);
-        let doc = crate::parse::parse_document("<display>", kif.as_str(), crate::Parser::Kif);
-        match doc.ast.into_iter().next() {
-            Some(DocItem::Stmt(node)) => node.format_plain(base_indent),
-            _ => kif,
-        }
+        self.layer
+            .semantic()
+            .syntactic
+            .sentence_to_ast(sid)
+            .format_plain(base_indent)
+    }
+
+    /// Render every **source** formula that produced `sid`, ANSI-colour
+    /// pretty-printed, in the original syntax it was parsed from (case,
+    /// macro sugar, etc. preserved) rather than the canonicalized structure.
+    /// A content-addressed sentence can have several source formulas (logical
+    /// equivalents collapse to one sentence id); each is shown under a
+    /// `; source i/n` header when there is more than one. Falls back to
+    /// [`Self::pretty_print_sentence`]'s canonicalized rendering when no
+    /// source AST is recorded (a synthetic sentence, or one rehydrated from
+    /// persistence without its source).
+    pub fn display_source_pretty(&self, sid: SentenceId, base_indent: usize) -> String {
+        self.layer.semantic().syntactic.display_source_pretty(
+            sid,
+            crate::syntactic::SourceMode::All,
+            base_indent,
+        )
+    }
+
+    /// [`Self::display_source_pretty`]'s plain-text twin — no ANSI colour
+    /// codes, safe for contexts that aren't a terminal.
+    pub fn display_source_pretty_plain(&self, sid: SentenceId, base_indent: usize) -> String {
+        self.layer.semantic().syntactic.display_source_plain(
+            sid,
+            crate::syntactic::SourceMode::All,
+            base_indent,
+        )
     }
 
     /// Print a SemanticError with formula context to the log.

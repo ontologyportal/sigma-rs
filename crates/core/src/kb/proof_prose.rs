@@ -418,7 +418,7 @@ mod tests {
     }
 
     fn formula(kif: &str) -> AstNode {
-        crate::parse_document("t", kif, Parser::Kif)
+        crate::parse_document("t", kif, Parser::Kif { options: None })
             .ast
             .into_iter()
             .next()

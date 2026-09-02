@@ -66,6 +66,7 @@ impl CacheBehavior for HoSignatures {
     type Value = Option<HoSignature>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::ho_signatures";
 

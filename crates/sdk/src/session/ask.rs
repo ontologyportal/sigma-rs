@@ -440,7 +440,7 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
         let kb = self.session_mut().kb_mut();
         let res = kb.load(
             SourceFile {
-                parser: Parser::Kif,
+                parser: Parser::Kif { options: None },
                 name: session_name.clone(),
                 path: PathBuf::new(),
                 origin: sigmakee_rs_core::FileOrigin::Inline,
@@ -468,7 +468,11 @@ impl<L: ProvingLayer> OpenSession<'_, L> {
 
 /// Parse `kif` to its formulas (statements), erroring on any parse error.
 fn parse_formulas(kif: &str) -> Result<Vec<AstNode>, Vec<SdkError>> {
-    let doc = parse_document("sdk::session", kif.to_string(), Parser::Kif);
+    let doc = parse_document(
+        "sdk::session",
+        kif.to_string(),
+        Parser::Kif { options: None },
+    );
     if doc.has_errors() {
         return Err(doc
             .parse_errors

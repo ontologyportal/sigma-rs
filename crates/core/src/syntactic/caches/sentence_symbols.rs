@@ -23,6 +23,7 @@ impl CacheBehavior for SentenceSymbols {
     type Value = HashSet<SymbolId>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "syntactic::sentence_symbols";
 

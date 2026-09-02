@@ -41,11 +41,11 @@ fn scope_of_buffer_added_sentences() {
 
 /// Parse-only vetting: no KB, no state, and diagnostics for broken text.
 #[test]
-fn kif_parse_diagnostics_reports_unbalanced_parens() {
-    let diags = sigmakee_rs_core::kif_parse_diagnostics("(instance Broken\n", "b.kif");
+fn try_parse_file_reports_unbalanced_parens() {
+    let diags = sigmakee_rs_core::try_parse_file("(instance Broken\n", "b.kif");
     assert!(
         diags.iter().any(|d| d.code == "kif/unbalanced-parens"),
         "expected an unbalanced-parens diagnostic, got {diags:?}"
     );
-    assert!(sigmakee_rs_core::kif_parse_diagnostics("(instance A B)", "b.kif").is_empty());
+    assert!(sigmakee_rs_core::try_parse_file("(instance A B)", "b.kif").is_empty());
 }

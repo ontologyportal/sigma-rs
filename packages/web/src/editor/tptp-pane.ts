@@ -10,9 +10,9 @@
  */
 
 import { state } from '../state.ts';
-import { call } from '../rpc.ts';
 import { $, isDarkTheme } from '../dom.ts';
 import { loadMonaco } from './monaco.ts';
+import { lspRequest, tagToUri } from './lsp-client.ts';
 
 // Retranslating the whole KB is the heavy half of this feature, so it gets a
 // longer debounce than edit-validate's 400ms rather than riding along with it.
@@ -105,7 +105,7 @@ export async function refreshTptpPane() {
   if (!tptpPaneOpen || !tptpEditor) return;
   $('tptpStatus').textContent = 'generating…';
   try {
-    const { text } = await call('toTptpIndexed', {});
+    const text = (await lspRequest<{ tptp: string }>('sumo/toTptp', {}))?.tptp ?? '';
     if (!tptpEditor) return;
     // Most edits leave the dump untouched; setValue on a KB-sized model resets
     // its tokenization, folding and scroll position, so skip an identical one.
@@ -145,18 +145,17 @@ async function followTptpCursor() {
   const model = editor.getModel();
   const pos = editor.getPosition();
   if (!model || !pos) return;
-  // Rust's offsets are UTF-8 BYTE offsets; Monaco's are UTF-16 code-unit
-  // offsets — re-encode the prefix rather than assuming they coincide (true
-  // only for pure-ASCII text, which SUMO's documentation strings aren't
-  // always).
-  const prefix = model.getValueInRange({
-    startLineNumber: 1, startColumn: 1,
-    endLineNumber: pos.lineNumber, endColumn: pos.column,
-  });
-  const offset = new TextEncoder().encode(prefix).length;
+  // LSP positions are UTF-16 code units (the server advertises UTF-16),
+  // which is exactly Monaco's column encoding — only the 1-based -> 0-based
+  // shift applies; the server does its own byte-offset conversion against
+  // the open document.
   let line;
   try {
-    ({ line } = await call('tptpLineForPosition', { file: state.editCurrentFile.name, offset }));
+    const r = await lspRequest<{ line: number | null }>('sumo/tptpLineForPosition', {
+      textDocument: { uri: tagToUri(state.editCurrentFile.name) },
+      position: { line: pos.lineNumber - 1, character: pos.column - 1 },
+    });
+    line = r?.line;
   } catch { return; }
   if (line == null || !tptpEditor) return;
   const lineNumber = line + 1; // 0-based from Rust -> Monaco's 1-based

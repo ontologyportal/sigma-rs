@@ -14,10 +14,9 @@ pub use crate::syntactic::sentence::SymbolId;
 
 // -- Per-layer type facade ----------------------------------------------------
 
-#[allow(unused_imports)]
-pub(crate) use crate::semantics::types::{ClassInference, RelationDomain, RelationRange};
-#[allow(unused_imports)]
-pub use crate::semantics::types::{DocEntry, TaxDirection, TaxRelation};
+pub use crate::semantics::types::{
+    ClassInference, DocEntry, RelationDomain, RelationRange, TaxDirection, TaxRelation,
+};
 
 #[allow(unused_imports)]
 pub(crate) use crate::trans::types::CachedFormula;
@@ -193,7 +192,7 @@ impl SourceFile {
     /// [`Self::from_file`]).
     pub fn kif(file: PathBuf, contents: String) -> Self {
         Self {
-            parser: crate::Parser::Kif,
+            parser: crate::Parser::Kif { options: None },
             name: file
                 .file_name()
                 .unwrap_or_default()
@@ -210,7 +209,7 @@ impl SourceFile {
     /// Builds an inline KIF source file from a name and its contents.
     pub fn inline_kif(name: &str, contents: String) -> Self {
         Self {
-            parser: crate::Parser::Kif,
+            parser: crate::Parser::Kif { options: None },
             name: name.to_string(),
             path: PathBuf::new(),
             origin: FileOrigin::Inline,
@@ -222,7 +221,7 @@ impl SourceFile {
     /// Builds a KIF source file for `file` with empty contents.
     pub fn truncate(file: PathBuf) -> Self {
         Self {
-            parser: crate::Parser::Kif,
+            parser: crate::Parser::Kif { options: None },
             name: file
                 .file_name()
                 .unwrap_or_default()

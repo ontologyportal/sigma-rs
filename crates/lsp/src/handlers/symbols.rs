@@ -13,7 +13,7 @@
 
 use lsp_types::{DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolKind};
 use sigmakee_rs_sdk::AstKif;
-use sigmakee_rs_sdk::{parse_document, AstNode, Parser, TopLayer};
+use sigmakee_rs_sdk::{parse_document, AstNode, TopLayer};
 
 use crate::conv::{span_to_range, uri_to_tag};
 use crate::state::GlobalState;
@@ -29,7 +29,7 @@ pub fn handle_document_symbol<L: TopLayer>(
     let doc = docs.get(&uri)?;
 
     let text = doc.rope.to_string();
-    let parsed = parse_document(tag, text, Parser::Kif);
+    let parsed = parse_document(tag.clone(), text, crate::server::parser_for(&tag));
     if parsed.ast.is_empty() {
         return Some(DocumentSymbolResponse::Nested(Vec::new()));
     }

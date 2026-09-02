@@ -9,7 +9,7 @@ use crate::{SentenceId, SymbolId};
 
 /// Describes the expected type of a relation argument value.
 #[derive(Debug, Clone)]
-pub(crate) enum RelationDomain {
+pub enum RelationDomain {
     /// Argument must be an instance of this class.
     Domain(SymbolId),
     /// Argument must be a subclass of this class.
@@ -31,7 +31,7 @@ impl RelationDomain {
 /// Describes the expected type of a relation return value.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub(crate) enum RelationRange {
+pub enum RelationRange {
     /// Argument must be an instance of this class.
     Range(SymbolId),
     /// Argument must be a subclass of this class.
@@ -76,7 +76,7 @@ pub struct DocEntry {
 
 /// Helper Enum. Used to wrap output of [`SemanticLayer::infer_class_scoped`](super::SemanticLayer::infer_class_scoped)
 #[derive(Debug, Clone)]
-pub(crate) enum ClassInference {
+pub enum ClassInference {
     /// The inference could not determine the type of the symbol
     Unknown,
     /// The symbol is a class and not an instance of any particular class

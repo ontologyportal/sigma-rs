@@ -2814,6 +2814,7 @@ name = "sumo-parser-wasm"
 version = "2.1.3"
 dependencies = [
  "js-sys",
+ "log",
  "lsp-server",
  "parking_lot_core",
  "serde",

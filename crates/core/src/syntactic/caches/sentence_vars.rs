@@ -24,6 +24,7 @@ impl CacheBehavior for SentenceVars {
     type Value = HashMap<SymbolId, u32>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "syntactic::sentence_vars";
 

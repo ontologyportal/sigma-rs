@@ -50,7 +50,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
         // truncating anything else removes nothing and the hypotheses
         // leak into the store for every later ask.
         let staged: Option<SourceFile> = (!tc.axioms.is_empty()).then(|| SourceFile {
-            parser: Parser::Kif,
+            parser: Parser::Kif { options: None },
             name: tc.file_name.clone(),
             path: tc.file_name.clone().into(),
             origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -61,7 +61,7 @@ impl<L: ProvingLayer + TopLayer + Layer> KnowledgeBase<L> {
             let p = tc.file_name.clone().into();
             let outcome = self.ingest_source(
                 SourceFile {
-                    parser: Parser::Kif,
+                    parser: Parser::Kif { options: None },
                     name: tc.file_name,
                     path: p,
                     origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -153,7 +153,11 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
     ) -> ProverResult {
         opts.selection = sine;
         opts.session = session.map(|s| s.to_string());
-        let doc = crate::parse_document("ask_query", query_kif.to_string(), Parser::Kif);
+        let doc = crate::parse_document(
+            "ask_query",
+            query_kif.to_string(),
+            Parser::Kif { options: None },
+        );
         // A malformed query is an input error, not an unprovable goal — and it
         // must leave no residue (the parse never reached the atom table).
         if doc.has_errors() {

@@ -107,35 +107,56 @@ impl SyntacticLayer {
     /// [`SourceMode::All`] groups them (each under a `; source i/n` header).
     /// Falls back to the normalized form when no source is recorded (a
     /// synthetic sentence).
-    pub(crate) fn display_source_pretty(&self, sid: SentenceId, mode: SourceMode) -> String {
-        self.display_source_styled(sid, mode, true)
+    pub(crate) fn display_source_pretty(
+        &self,
+        sid: SentenceId,
+        mode: SourceMode,
+        base_indent: usize,
+    ) -> String {
+        self.display_source_styled(sid, mode, true, base_indent)
     }
 
-    fn display_source_styled(&self, sid: SentenceId, mode: SourceMode, color: bool) -> String {
+    /// [`Self::display_source_pretty`]'s plain-text twin — no ANSI colour
+    /// codes, safe for contexts that aren't a terminal.
+    pub(crate) fn display_source_plain(
+        &self,
+        sid: SentenceId,
+        mode: SourceMode,
+        base_indent: usize,
+    ) -> String {
+        self.display_source_styled(sid, mode, false, base_indent)
+    }
+
+    fn display_source_styled(
+        &self,
+        sid: SentenceId,
+        mode: SourceMode,
+        color: bool,
+        base_indent: usize,
+    ) -> String {
         let fps = self.source_fingerprints(sid);
         let nodes: Vec<AstNode> = match mode {
             SourceMode::All => fps.iter().filter_map(|fp| self.source_ast(*fp)).collect(),
         };
         let render = |n: &AstNode| {
             if color {
-                n.pretty_print(0)
+                n.pretty_print(base_indent)
             } else {
-                n.format_plain(0)
+                n.format_plain(base_indent)
             }
         };
 
         match nodes.as_slice() {
             // No source AST (synthetic, source evicted, or a nested sub-sentence
             // that only exists embedded in a root) — render the *normalized*
-            // sentence instead, colourised too when requested so these don't
-            // appear as the lone un-highlighted snippet in diagnostic output.
+            // (canonicalized) sentence instead, so these don't appear as a
+            // blank entry in diagnostic / man-page output.
             [] => {
+                let normalized = self.sentence_to_ast(sid);
                 if color {
-                    // Reconstruct the normalized sentence and render it through the
-                    // one KIF emitter (canonical width-based layout), colourised.
-                    self.sentence_to_ast(sid).pretty_print(0)
+                    normalized.pretty_print(base_indent)
                 } else {
-                    self.display_normalized(sid)
+                    normalized.format_plain(base_indent)
                 }
             }
             [only] => render(only),

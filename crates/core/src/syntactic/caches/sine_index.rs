@@ -14,7 +14,7 @@
 //     a no-op for sentences that were never axioms).
 
 use crate::cache::events::{Event, EventKind};
-use crate::cache::{EagerBehavior, EagerIndex};
+use crate::cache::{EagerBehavior, EagerIndex, EagerMapBehavior};
 use crate::syntactic::sine::SineIndex;
 use crate::syntactic::SyntacticLayer;
 
@@ -39,7 +39,7 @@ impl EagerBehavior for SineCache {
     // `react` derives each promoted sid's symbols via `parent.sentence_symbols`,
     // which reads the sentence store; the sentence reactor must run first.
     fn reads(&self) -> &'static [&'static str] {
-        &["syntactic::sentences"]
+        &[crate::syntactic::caches::sentences::SentenceCache::NAME]
     }
 
     fn react(

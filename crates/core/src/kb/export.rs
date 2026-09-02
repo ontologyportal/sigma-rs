@@ -237,7 +237,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Intern the hypotheses into the session as force-included support axioms.
         let support = self.ingest_source(
             SourceFile {
-                parser: Parser::Kif,
+                parser: Parser::Kif { options: None },
                 name: tc.file_name.clone(),
                 path: tc.file_name.clone().into(),
                 origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -266,7 +266,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
                 let syms = Conjecture::seed(&normalized);
                 let res = self.ingest_source(
                     SourceFile {
-                        parser: Parser::Kif,
+                        parser: Parser::Kif { options: None },
                         name: tc.file_name.clone(),
                         path: tc.file_name.clone().into(),
                         origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -400,6 +400,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
 /// source their exclusion set from this list. Per-call overrides for
 /// non-default exclusion sets stay on `TptpOptions::excluded`.
 pub fn default_excluded_heads() -> &'static [&'static str] {
+    // TODO replace with semantic constants
     &[
         // Signature metadata — redundant once translation has emitted a
         // `tff(..., type, ...)` declaration for the head.

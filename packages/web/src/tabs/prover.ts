@@ -65,8 +65,12 @@ async function createProverEditors() {
     hideCursorInOverviewRuler: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 13,
-    // Only the KB's own symbols (via kifCompletionProvider) should be
-    // suggested, not arbitrary strings already typed in the buffer.
+    // These scratch panes have no LSP document identity, so
+    // `lspCompletionProvider` never serves them (see its own guard) --
+    // Monaco's default word-based suggestions (any string already typed in
+    // the buffer) would be the only fallback, and that has no notion of
+    // what's actually a SUMO term, so it stays off rather than suggesting
+    // noise.
     wordBasedSuggestions: 'off',
   };
   const mount = (mountId, taId) => {

@@ -42,6 +42,7 @@ impl<S: TopLayer + 'static> CacheBehavior for ClauseStore<S> {
     type Value = Arc<Vec<PClause>>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "saturate::clause_store";
 

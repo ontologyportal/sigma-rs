@@ -48,10 +48,23 @@ impl WasmLsp {
         // dispatch, which ignores unknown notifications.
         if let lsp_server::Message::Request(req) = &msg {
             let lifecycle = match req.method.as_str() {
-                "initialize" => Some(lsp_server::Response::new_ok(
-                    req.id.clone(),
-                    sumo_lsp::server::initialize_result(),
-                )),
+                "initialize" => {
+                    if req
+                        .params
+                        .get("initializationOptions")
+                        .and_then(|v| v.get("clientManagesFiles"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        self.state
+                            .client_manages_files
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Some(lsp_server::Response::new_ok(
+                        req.id.clone(),
+                        sumo_lsp::server::initialize_result(),
+                    ))
+                }
                 "shutdown" => Some(lsp_server::Response::new_ok(
                     req.id.clone(),
                     serde_json::Value::Null,

@@ -242,7 +242,7 @@ mod tests {
     use crate::parse::Parser;
 
     fn hash_of(src: &str) -> Vec<u64> {
-        let (ast, errs) = Parser::Kif.parse(src, "test");
+        let (ast, errs) = Parser::Kif { options: None }.parse(src, "test");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         ast.iter()
             .map(|d| sentence_fingerprint(&d.as_stmt().cloned().unwrap()))
@@ -316,7 +316,7 @@ mod tests {
 
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     fn canon_hash_of(src: &str) -> Vec<u64> {
-        let (ast, errs) = Parser::Kif.parse(src, "test");
+        let (ast, errs) = Parser::Kif { options: None }.parse(src, "test");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
         ast.iter()
             .map(|d| canonical_sentence_fingerprint(&d.as_stmt().cloned().unwrap()))

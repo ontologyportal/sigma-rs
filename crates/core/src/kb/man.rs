@@ -11,10 +11,14 @@
 //! signature data from the semantic layer. All queries are pure reads.
 
 use crate::layer::{Layer, TopLayer};
-use crate::semantics::consts::{DOC_RELATION, FORMAT_RELATION, TERM_RELATION};
+use crate::semantics::consts::{
+    DOC_RELATION, FORMAT_RELATION, INSTANCE_RELATION, RANGE_RELATION, RANGE_SUB_REL_CLASS,
+    SUBINSTANCE_RELATIONS, TERM_RELATION,
+};
+use crate::syntactic::pattern::{MatchKey, PatternElement, SentencePattern};
 use crate::syntactic::SyntacticLayer;
 use crate::types::{DocEntry, RelationDomain, RelationRange};
-use crate::types::{Element, SymbolId};
+use crate::types::{Element, Symbol, SymbolId};
 use crate::SentenceId;
 
 use super::KnowledgeBase;
@@ -231,56 +235,151 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let Some(sym_id) = self.symbol_id(symbol) else {
             return (Vec::new(), Vec::new());
         };
-        let store = &self.layer.semantic().syntactic;
-        (
-            collect_parents(store, sym_id),
-            collect_children(store, sym_id),
-        )
+        let sem = self.layer.semantic();
+        (collect_parents(sem, sym_id), collect_children(sem, sym_id))
+    }
+
+    /// The downward transitive `subclass` closure from `root`, INCLUDING
+    /// `root` itself: `(subclass CHILD PARENT)` edges walked child-ward via
+    /// the cached [`SemanticLayer::walk_subclass_closure`] -- one lookup
+    /// against the maintained `tax_edges` map per hop, no relation rescan.
+    fn subclass_closure(&self, root: SymbolId) -> std::collections::HashSet<SymbolId> {
+        let mut classes: std::collections::HashSet<SymbolId> = std::iter::once(root).collect();
+        self.layer
+            .semantic()
+            .walk_subclass_closure(root, false, |sym| {
+                classes.insert(sym);
+                true
+            });
+        classes
+    }
+
+    /// Every transitive `subclass` descendant of `class` (the class itself
+    /// excluded).  Sorted, deduped; empty when `class` is not interned.
+    pub fn subclasses_of(&self, class: &str) -> Vec<String> {
+        let Some(root) = self.symbol_id(class) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = self
+            .subclass_closure(root)
+            .into_iter()
+            .filter(|&id| id != root)
+            .filter_map(|id| self.sym_name(id))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// The downward transitive "subinstance" closure from `root`, INCLUDING
+    /// `root` itself: edges walked child-ward over every relation in
+    /// [`SUBINSTANCE_RELATIONS`] (`subrelation`, `subAttribute`) -- the
+    /// analog of [`Self::subclass_closure`] for relations/attributes, which
+    /// form a taxonomy among themselves despite being instances rather than
+    /// classes.
+    fn subinstance_closure(&self, root: SymbolId) -> std::collections::HashSet<SymbolId> {
+        let sem = self.layer.semantic();
+        let subinstance_rel_ids: std::collections::HashSet<SymbolId> = SUBINSTANCE_RELATIONS
+            .iter()
+            .map(|&(_, sym)| sym.id())
+            .collect();
+        let mut members: std::collections::HashSet<SymbolId> = std::iter::once(root).collect();
+        let mut frontier = vec![root];
+        while let Some(c) = frontier.pop() {
+            for (child, rel) in sem.children_of(c) {
+                if subinstance_rel_ids.contains(&rel.as_sym().id()) && members.insert(child) {
+                    frontier.push(child);
+                }
+            }
+        }
+        members
+    }
+
+    /// Every transitive `subrelation` / `subAttribute` descendant of
+    /// `instance` (the instance itself excluded).  Sorted, deduped; empty
+    /// when `instance` is not interned.
+    pub fn subinstances_of(&self, instance: &str) -> Vec<String> {
+        let Some(root) = self.symbol_id(instance) else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = self
+            .subinstance_closure(root)
+            .into_iter()
+            .filter(|&id| id != root)
+            .filter_map(|id| self.sym_name(id))
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Every symbol declared `(instance X C)` where `C` is `class` or a
-    /// transitive `subclass` descendant of it.  One pass over the `subclass`
-    /// and `instance` head indexes — no man-page assembly.  Sorted, deduped;
-    /// empty when `class` is not interned.
+    /// transitive `subclass` descendant of it, together with every
+    /// transitive subinstance (`subrelation` / `subAttribute` descendant) of
+    /// each such `X` -- a subinstance is, by definition, itself an instance
+    /// of `X`'s classes.  One pass over the `subclass` / `instance` head
+    /// indexes plus a subinstance-closure walk per direct instance found --
+    /// no man-page assembly.  Sorted, deduped; empty when `class` is not
+    /// interned.
     pub fn instances_of(&self, class: &str) -> Vec<String> {
         let store = &self.layer.semantic().syntactic;
         let Some(root) = self.symbol_id(class) else {
             return Vec::new();
         };
+        let classes = self.subclass_closure(root);
 
-        // Downward subclass closure from `root`: (subclass CHILD PARENT).
-        let mut edges: std::collections::HashMap<SymbolId, Vec<SymbolId>> =
-            std::collections::HashMap::new();
-        for sid in store.by_head("subclass").iter().copied() {
+        let mut all: std::collections::HashSet<SymbolId> = std::collections::HashSet::new();
+        for sid in store.by_head_id(&INSTANCE_RELATION.id()).iter().copied() {
             let Some(sent) = store.sentence(sid) else {
                 continue;
             };
-            if let (Some(Element::Symbol(child)), Some(Element::Symbol(parent))) =
+            if let (Some(Element::Symbol(inst)), Some(Element::Symbol(cls))) =
                 (sent.elements.get(1), sent.elements.get(2))
             {
-                edges.entry(parent.id()).or_default().push(child.id());
-            }
-        }
-        let mut classes: std::collections::HashSet<SymbolId> = std::iter::once(root).collect();
-        let mut frontier = vec![root];
-        while let Some(c) = frontier.pop() {
-            for &child in edges.get(&c).map(Vec::as_slice).unwrap_or(&[]) {
-                if classes.insert(child) {
-                    frontier.push(child);
+                if classes.contains(&cls.id()) {
+                    all.extend(self.subinstance_closure(inst.id()));
                 }
             }
         }
 
+        let mut out: Vec<String> = all.into_iter().filter_map(|id| self.sym_name(id)).collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Every relation whose declared range is `class` or a transitive
+    /// `subclass` descendant of it.  `subclass_range` selects `rangeSubclass`
+    /// (SUMO's convention for a function that itself returns a
+    /// class-denoting term) instead of plain `range` (a function returning
+    /// an instance).  One [`Self::lookup_compiled`] probe per candidate
+    /// class -- no KIF string is ever built or reparsed.  Sorted, deduped;
+    /// empty when `class` is not interned.
+    pub fn relations_with_range(&self, class: &str, subclass_range: bool) -> Vec<String> {
+        let Some(root) = self.symbol_id(class) else {
+            return Vec::new();
+        };
+        let head = if subclass_range {
+            &RANGE_SUB_REL_CLASS
+        } else {
+            &RANGE_RELATION
+        };
+        let head_key = PatternElement::Exact(MatchKey::Symbol((**head).clone()));
+
         let mut out: Vec<String> = Vec::new();
-        for sid in store.by_head("instance").iter().copied() {
-            let Some(sent) = store.sentence(sid) else {
+        for cid in self.subclass_closure(root) {
+            let Some(cname) = self.sym_name(cid) else {
                 continue;
             };
-            if let (Some(Element::Symbol(inst)), Some(Element::Symbol(class))) =
-                (sent.elements.get(1), sent.elements.get(2))
-            {
-                if classes.contains(&class.id()) {
-                    out.push(inst.to_string());
+            let pattern = SentencePattern(vec![
+                head_key.clone(),
+                PatternElement::AnyCapture(0),
+                PatternElement::Exact(MatchKey::Symbol(Symbol::from(cname.as_str()))),
+            ]);
+            for sid in self.lookup_compiled(&pattern) {
+                let Some(sent) = self.sentence(sid) else {
+                    continue;
+                };
+                if let Some(Element::Symbol(rel)) = sent.elements.get(1) {
+                    out.push(rel.to_string());
                 }
             }
         }
@@ -337,9 +436,10 @@ fn build_manpage<L: TopLayer + Layer>(
 ) -> ManPage {
     let kinds = kb.kinds_of(sym_id);
 
-    let store = &kb.layer.semantic().syntactic;
-    let parents = collect_parents(store, sym_id);
-    let children = collect_children(store, sym_id);
+    let sem = kb.layer.semantic();
+    let store = &sem.syntactic;
+    let parents = collect_parents(sem, sym_id);
+    let children = collect_children(sem, sym_id);
     let (arity, domains, range) = signature(kb, sym_id);
     let (ref_args, ref_nested) = collect_refs(store, sym_id);
 
@@ -400,61 +500,33 @@ fn antecedent_consequent(_store: &SyntacticLayer, _sym_id: SymbolId) -> (Vec<Sen
     (vec![], 0)
 }
 
-fn collect_parents(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge> {
-    const TAX_RELATIONS: &[&str] = &["subclass", "instance", "subrelation", "subAttribute"];
-    let mut out = Vec::new();
-    for &rel_head in TAX_RELATIONS {
-        for sid in store.by_head(rel_head).iter().copied() {
-            let Some(sent) = store.sentence(sid) else {
-                continue;
-            };
-            // Shape: (rel CHILD PARENT) -- child at elements[1], parent at [2].
-            let child_ok = matches!(
-                sent.elements.get(1),
-                Some(Element::Symbol(sym)) if sym.id() == sym_id
-            );
-            if !child_ok {
-                continue;
-            }
-            if let Some(Element::Symbol(parent)) = sent.elements.get(2) {
-                out.push(ParentEdge {
-                    relation: rel_head.to_string(),
-                    parent: parent.to_string(),
-                });
-            }
-        }
-    }
-    out
+fn collect_parents(sem: &crate::semantics::SemanticLayer, sym_id: SymbolId) -> Vec<ParentEdge> {
+    sem.parents_of(sym_id)
+        .into_iter()
+        .filter_map(|(parent_id, rel)| {
+            let parent = sem.syntactic.sym_name(parent_id)?.name().to_string();
+            Some(ParentEdge {
+                relation: rel.as_sym().name().to_string(),
+                parent,
+            })
+        })
+        .collect()
 }
 
 /// Inverse of [`collect_parents`]: find `(rel CHILD sym)` edges — the
 /// symbols that declare `sym` as their parent.  `relation` is the KIF
 /// head; the returned `ParentEdge.parent` field holds the *child*.
-fn collect_children(store: &SyntacticLayer, sym_id: SymbolId) -> Vec<ParentEdge> {
-    const TAX_RELATIONS: &[&str] = &["subclass", "instance", "subrelation", "subAttribute"];
-    let mut out = Vec::new();
-    for &rel_head in TAX_RELATIONS {
-        for sid in store.by_head(rel_head).iter().copied() {
-            let Some(sent) = store.sentence(sid) else {
-                continue;
-            };
-            // Shape: (rel CHILD PARENT) — parent at elements[2] must be `sym`.
-            let parent_ok = matches!(
-                sent.elements.get(2),
-                Some(Element::Symbol(sym)) if sym.id() == sym_id
-            );
-            if !parent_ok {
-                continue;
-            }
-            if let Some(Element::Symbol(child)) = sent.elements.get(1) {
-                out.push(ParentEdge {
-                    relation: rel_head.to_string(),
-                    parent: child.to_string(),
-                });
-            }
-        }
-    }
-    out
+fn collect_children(sem: &crate::semantics::SemanticLayer, sym_id: SymbolId) -> Vec<ParentEdge> {
+    sem.children_of(sym_id)
+        .into_iter()
+        .filter_map(|(child_id, rel)| {
+            let child = sem.syntactic.sym_name(child_id)?.name().to_string();
+            Some(ParentEdge {
+                relation: rel.as_sym().name().to_string(),
+                parent: child,
+            })
+        })
+        .collect()
 }
 
 fn signature<L: TopLayer + Layer>(
@@ -1067,5 +1139,88 @@ mod tests {
         // RomanceLanguage was never linked under NaturalLanguage here.
         assert!(!langs.contains(&"FrenchLanguage".to_string()));
         assert!(kb.instances_of("NoSuchClass").is_empty());
+    }
+
+    #[test]
+    fn subinstances_of_walks_subrelation_and_subattribute() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            r#"
+            (subrelation part component)
+            (subrelation piece part)
+            (subAttribute Warm Temperature)
+        "#,
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        let subs = kb.subinstances_of("component");
+        assert_eq!(subs, vec!["part".to_string(), "piece".to_string()]);
+        assert_eq!(kb.subinstances_of("Temperature"), vec!["Warm".to_string()]);
+        assert!(kb.subinstances_of("NoSuchRelation").is_empty());
+        // The root itself is excluded.
+        assert!(!subs.contains(&"component".to_string()));
+    }
+
+    #[test]
+    fn instances_of_includes_subinstances_of_direct_instances() {
+        // part is declared an instance of BinaryRelation; piece is a
+        // subrelation of part, so it must count as an instance of
+        // BinaryRelation too, without its own (instance ...) declaration.
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            r#"
+            (instance part BinaryRelation)
+            (subrelation piece part)
+            (subrelation atom piece)
+        "#,
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        let insts = kb.instances_of("BinaryRelation");
+        for want in ["part", "piece", "atom"] {
+            assert!(
+                insts.contains(&want.to_string()),
+                "missing {want} in {insts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn relations_with_range_walks_subclass_descendants() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(
+            r#"
+            (subclass ChildOfEntity Entity)
+            (range subclass ChildOfEntity)
+            (range instance ChildOfEntity)
+            (subclass NaturalLanguage ChildOfEntity)
+            (range documentation NaturalLanguage)
+            (rangeSubclass UnionFn ChildOfEntity)
+        "#,
+            &std::path::PathBuf::from("t.kif"),
+            "t.kif",
+        );
+        assert!(r.ok);
+        assert!(kb.make_session_axiomatic("t.kif").is_ok());
+
+        let range_hits = kb.relations_with_range("ChildOfEntity", false);
+        for want in ["subclass", "instance", "documentation"] {
+            assert!(
+                range_hits.contains(&want.to_string()),
+                "missing {want} in {range_hits:?}"
+            );
+        }
+        assert!(!range_hits.contains(&"UnionFn".to_string()));
+
+        let range_subclass_hits = kb.relations_with_range("ChildOfEntity", true);
+        assert_eq!(range_subclass_hits, vec!["UnionFn".to_string()]);
+
+        assert!(kb.relations_with_range("NoSuchClass", false).is_empty());
     }
 }

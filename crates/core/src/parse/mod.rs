@@ -24,40 +24,64 @@ pub use fingerprint::sentence_fingerprint;
 pub use span::*;
 
 pub use crate::parse::doc::CommentBlock;
+pub use crate::parse::kif::parser::KifParseOptions;
 pub use crate::parse::tptp::parser::TptpParseOptions;
-use crate::parse::{doc::DocItem, tq::parse_tq};
+use crate::{
+    parse::{doc::DocItem, tq::parse_tq},
+    Diagnostic, ToDiagnostic,
+};
 
 pub(crate) type ParseResult<T> = (Vec<T>, Vec<(Span, Box<dyn ParseError>)>);
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub enum Parser {
-    #[default]
-    Kif,
-    Tptp {
-        options: Option<TptpParseOptions>,
-    },
+    Kif { options: Option<KifParseOptions> },
+    Tptp { options: Option<TptpParseOptions> },
     Tq,
 }
 
+// Manual impl: `#[derive(Default)]`'s `#[default]` attribute only accepts a
+// unit variant, and `Kif` now carries options.
+impl Default for Parser {
+    fn default() -> Self {
+        Parser::Kif { options: None }
+    }
+}
+
 impl Parser {
-    /// Perform full parsing on a file input
+    /// Perform full parsing on a file input.
+    ///
+    /// Comments are lexical trivia and never appear in the returned AST; the
+    /// consolidated [`CommentBlock`] side list surfaces on
+    /// [`ParsedDocument::comments`](crate::ParsedDocument) via
+    /// [`parse_document`](crate::parse_document).
     pub fn parse(&self, inp: &str, file: &str) -> ParseResult<DocItem> {
-        self.parse_with_comments(inp, file).0
+        self.parse_full(inp, file).0
     }
 
-    /// Like [`Self::parse`], additionally returning the source's consolidated
-    /// [`CommentBlock`]s (KIF only -- the other dialects return none).
-    /// Comments are lexical trivia: they never appear in the returned AST,
-    /// only in this side list.
-    pub fn parse_with_comments(
+    /// The one parse implementation: AST + errors plus the consolidated
+    /// [`CommentBlock`]s (KIF only, and empty under
+    /// [`KifParseOptions::skip_comments`]).  Crate-internal: the public
+    /// surface is [`Self::parse`] and `parse_document` (which carries the
+    /// comments out on the document).
+    pub(crate) fn parse_full(
         &self,
         inp: &str,
         file: &str,
     ) -> (ParseResult<DocItem>, Vec<CommentBlock>) {
         let (ast, errors, comments) = match self {
-            Parser::Kif => {
-                let (tokens, tok_err) = kif::tokenize(inp, file);
-                let comments = kif::comment_blocks(&tokens);
+            Parser::Kif { options } => {
+                let skip = options.as_ref().is_some_and(|o| o.skip_comments);
+                let (tokens, tok_err) = if skip {
+                    kif::tokenize_without_comments(inp, file)
+                } else {
+                    kif::tokenize(inp, file)
+                };
+                let comments = if skip {
+                    Vec::new()
+                } else {
+                    kif::comment_blocks(&tokens)
+                };
                 let (ast, parse_err) = kif::parse(tokens, file);
                 let mut errors = tok_err;
                 errors.extend(parse_err);
@@ -66,6 +90,12 @@ impl Parser {
             }
             Parser::Tptp { options } => {
                 let (tokens, tok_err, metas) = tptp::tokenize_with_meta(inp, file);
+                let skip = options.as_ref().is_some_and(|o| o.skip_comments);
+                let comments = if skip {
+                    Vec::new()
+                } else {
+                    tptp::comment_blocks(&tokens)
+                };
                 let (mut ast, parse_err) = tptp::parse(tokens, file, options.clone());
                 let mut errors = tok_err;
                 errors.extend(parse_err);
@@ -82,11 +112,11 @@ impl Parser {
                 // key back off the document.
                 let mut doc: Vec<DocItem> = metas.into_iter().map(DocItem::Meta).collect();
                 doc.extend(ast.into_iter().map(DocItem::Stmt));
-                (doc, wrap_error(errors), Vec::new())
+                (doc, wrap_error(errors), comments)
             }
             Parser::Tq => {
-                let (doc, errors) = parse_tq(inp, file);
-                (doc, wrap_error(errors), Vec::new())
+                let (doc, errors, comments) = parse_tq(inp, file);
+                (doc, wrap_error(errors), comments)
             }
         };
         ((ast, errors), comments)
@@ -95,7 +125,23 @@ impl Parser {
     /// Perform tokenization ONLY on file contents
     pub fn tokenize(&self, inp: &str, file: &str) -> ParseResult<String> {
         match self {
-            Parser::Kif | Parser::Tq => {
+            Parser::Kif { options } => {
+                let skip = options.as_ref().is_some_and(|o| o.skip_comments);
+                let (tokens, err) = if skip {
+                    kif::tokenize_without_comments(inp, file)
+                } else {
+                    kif::tokenize(inp, file)
+                };
+                let errors = wrap_error(err);
+                (
+                    tokens
+                        .iter()
+                        .map(|t| format!("{}", t).to_uppercase())
+                        .collect(),
+                    errors,
+                )
+            }
+            Parser::Tq => {
                 let (tokens, err) = kif::tokenize(inp, file);
                 let errors = wrap_error(err);
                 (
@@ -106,8 +152,13 @@ impl Parser {
                     errors,
                 )
             }
-            Parser::Tptp { .. } => {
-                let (tokens, err) = tptp::tokenize(inp, file);
+            Parser::Tptp { options } => {
+                let skip = options.as_ref().is_some_and(|o| o.skip_comments);
+                let (tokens, err) = if skip {
+                    tptp::tokenize_without_comments(inp, file)
+                } else {
+                    tptp::tokenize(inp, file)
+                };
                 let errors = wrap_error(err);
                 (
                     tokens
@@ -123,7 +174,7 @@ impl Parser {
     /// Determine if the parser is for a test file
     pub fn is_test(&self) -> bool {
         match self {
-            Parser::Kif => false,
+            Parser::Kif { .. } => false,
             Parser::Tptp { options } => options.as_ref().is_some_and(|o| o.keep_conjectures),
             Parser::Tq => true,
         }
@@ -134,7 +185,7 @@ impl Parser {
     pub fn from_filename(filename: &str) -> Option<Self> {
         let ext = filename.split(".").last()?;
         let p = match ext {
-            "kif" => Parser::Kif,
+            "kif" => Parser::Kif { options: None },
             // A `.p` / `.tptp` file is a theorem-proving *problem*: keep its
             // conjecture so it is recognized as a test (`is_test`) and its goal
             // surfaces as the `TestCase` query.
@@ -169,10 +220,27 @@ impl Parser {
             return Some(Parser::Tptp { options: None });
         }
         if head.trim_start().starts_with('(') {
-            return Some(Parser::Kif);
+            return Some(Parser::Kif { options: None });
         }
         None
     }
+}
+
+/// Parse-only syntax check of KIF text — no KB, no ingestion, no state.
+/// Returns the tokenizer/parser diagnostics; empty means the text is
+/// syntactically well-formed.  `file` names the source in each diagnostic's
+/// span.  Use this to vet a transient editor buffer BEFORE staging it into a
+/// [`KnowledgeBase`]: staging syntactically broken content reads as "the file
+/// is now empty" and retracts every sentence the file previously contributed.
+pub fn try_parse_file(text: &str, file: &str) -> Vec<Diagnostic> {
+    let Some(parser) = Parser::from_filename(file) else {
+        return vec![GenericParseError::UnknownFileType {
+            filename: file.to_string(),
+        }
+        .to_diagnostic()];
+    };
+    let (_, errors) = parser.parse(text, file);
+    errors.iter().map(|(_, e)| e.to_diagnostic()).collect()
 }
 
 fn wrap_error<E: ParseError + 'static>(err: Vec<E>) -> Vec<(Span, Box<dyn ParseError>)> {

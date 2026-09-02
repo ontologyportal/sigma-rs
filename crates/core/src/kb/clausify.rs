@@ -41,7 +41,11 @@ impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
     /// and render its clauses as flat SUO-KIF. Returns an empty vec on a
     /// parse error or a formula that clausifies to nothing.
     pub fn clausify_formula(&self, kif: &str) -> Vec<String> {
-        let doc = crate::parse_document("clausify", kif.to_string(), crate::Parser::Kif);
+        let doc = crate::parse_document(
+            "clausify",
+            kif.to_string(),
+            crate::Parser::Kif { options: None },
+        );
         if doc.has_errors() {
             return Vec::new();
         }

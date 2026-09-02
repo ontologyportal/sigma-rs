@@ -81,64 +81,30 @@ impl Session {
         })
     }
 
-    /// Revalidate an edited buffer for `file` **with full KB context**, updating
-    /// the live KB to match the buffer.
-    ///
-    /// Staging the buffer under the file's own name is a diff, so only the
-    /// lines that changed are processed -- judging a 600KB constituent costs a
-    /// handful of sentences, not a re-ingest -- and the changed sentences are
-    /// validated against the whole KB, so symbol resolution works. The change
-    /// is committed and left in place; the KB tracks the editor.
-    ///
-    /// Prefer [`validate_formula`](Session::validate_formula) for scratch input
-    /// that belongs to no file.
-    #[wasm_bindgen(js_name = validateBuffer)]
-    pub fn validate_buffer(&mut self, file: &str, text: &str) -> Result<JsValue, JsValue> {
-        let mut session_guard = self.session.write().expect("kb lock not poisoned");
-        // Whole-file findings, not just the changed sentences': markers are
-        // replaced wholesale on the JS side, so a diff-only result would erase
-        // every pre-existing finding.
-        let diags = session_guard.validate_buffer(file, text);
-        to_js(&DiagnosticView::from_slice(&diags))
-    }
-
     /// Render the WHOLE KB as TPTP -- `lang` `"fof"` (default) or `"tff"`,
-    /// `hide_numbers` replaces numeric literals with `n__N` tokens -- and
-    /// remember which line each axiom landed on, for
-    /// [`tptpLineForPosition`](Session::tptp_line_for_position) to consult.
+    /// `hide_numbers` replaces numeric literals with `n__N` tokens.
     ///
-    /// Intended for an occasional "generate/refresh the TPTP preview" action,
-    /// not a per-keystroke call -- this re-translates the entire KB (thousands
-    /// of axioms for a full SUMO load), whereas `tptpLineForPosition` itself
-    /// is cheap and fine to call on every cursor move.
+    /// Intended for an occasional "generate the TPTP dump" action, not a
+    /// per-keystroke call -- this re-translates the entire KB (thousands of
+    /// axioms for a full SUMO load).  Editor-lane TPTP preview (per-line
+    /// indexing, cursor follow) lives on the LSP facade instead:
+    /// `sumo/toTptp` / `sumo/tptpLineForPosition` via [`WasmLsp`].
+    ///
+    /// [`WasmLsp`]: crate::WasmLsp
     #[wasm_bindgen(js_name = toTptpIndexed)]
     pub fn to_tptp_indexed(&mut self, lang: Option<String>, hide_numbers: Option<bool>) -> String {
         let mut session_guard = self.session.write().expect("kb lock not poisoned");
         let inner = session_guard.kb_mut();
         let opts = TptpOptions {
             lang: match lang.as_deref() {
+                Some("thf") => TptpLang::Thf,
                 Some("tff") => TptpLang::Tff,
                 _ => TptpLang::Fof,
             },
             hide_numbers: hide_numbers.unwrap_or(true),
             ..TptpOptions::default()
         };
-        self.tptp_lines.clear();
-        inner.to_tptp_indexed(&opts, None, Some(&mut self.tptp_lines))
-    }
-
-    /// The 0-based line in the last [`toTptpIndexed`](Session::to_tptp_indexed)
-    /// output that renders the sentence enclosing byte `offset` in `file` --
-    /// e.g. wherever the editor's cursor currently sits. `null` when `file`
-    /// isn't loaded, `offset` falls outside every sentence, or that sentence
-    /// wasn't part of the last generated TPTP (stale index -- the KB changed
-    /// since; call `toTptpIndexed` again first).
-    #[wasm_bindgen(js_name = tptpLineForPosition)]
-    pub fn tptp_line_for_position(&self, file: &str, offset: usize) -> Option<u32> {
-        let session_guard = self.session.read().expect("kb lock not poisoned");
-        let inner = session_guard.kb();
-        let sid = inner.sentence_at(file, offset)?;
-        self.tptp_lines.get(&sid).copied()
+        inner.to_tptp_indexed(&opts, None, None)
     }
 
     /// Build a standalone TPTP problem for an external prover: whole-KB

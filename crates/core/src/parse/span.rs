@@ -58,12 +58,15 @@ impl Span {
     pub fn synthetic() -> Self {
         Self {
             file: "<synthetic>".to_string(),
-            line: 0,
-            col: 0,
-            offset: 0,
-            end_line: 0,
-            end_col: 0,
-            end_offset: 0,
+            ..Default::default()
+        }
+    }
+
+    /// Span for file-level parse errors (no specific line)
+    pub fn whole_file(filename: String) -> Self {
+        Self {
+            file: filename,
+            ..Default::default()
         }
     }
 

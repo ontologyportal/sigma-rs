@@ -27,6 +27,12 @@ sumo-lsp         = { path = "../lsp" }
 lsp-server       = "0.7"
 serde.workspace            = true
 serde_json.workspace       = true
+# Bridges `sumo-lsp`'s existing `log::debug!`/`log::info!` calls (already
+# used for request tracing, e.g. handle_completion) to the browser console --
+# without this, those calls compile fine (the `log` macros silently no-op
+# with no logger registered) but are invisible in the browser. See
+# console_log.rs.
+log.workspace              = true
 wasm-bindgen               = "0.2"
 serde-wasm-bindgen         = "0.6"
 js-sys                     = "0.3"
