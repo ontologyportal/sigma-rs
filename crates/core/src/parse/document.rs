@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::Parser;
 use super::Span;
 use crate::diagnostic::{Diagnostic, ToDiagnostic};
-use crate::parse::doc::DocItem;
+use crate::parse::doc::{CommentBlock, DocItem};
 use crate::parse::ParseError;
 
 /// Result of parsing one document.  All fields are owned and
@@ -34,6 +34,11 @@ pub struct ParsedDocument {
     /// Per-root-sentence span, positionally aligned with `ast` and
     /// `root_hashes`.  Carries the `(` through `)` range for each root.
     pub root_spans: Vec<Span>,
+    /// Consolidated `;` comment blocks in source order (KIF documents only;
+    /// empty for other dialects).  Lexical trivia: comments never appear in
+    /// `ast` and never affect `root_hashes` -- this side list exists for
+    /// source-fidelity consumers (formatters, editors).
+    pub comments: Vec<CommentBlock>,
 }
 
 impl ParsedDocument {
@@ -65,12 +70,15 @@ pub fn parse_document(
     let source: String = source.into();
     let text: Arc<str> = text.into();
 
-    let (ast, parse_errors) = doc_type.parse(&text, &source);
+    let ((ast, parse_errors), comments) = doc_type.parse_full(&text, &source);
 
     let root_hashes: Vec<u64> = ast
         .iter()
         .filter_map(|node| match node {
-            DocItem::Stmt(node) => Some(node.fingerprint()),
+            // Fingerprint the bare formula: an `Annotated` statement (a `.tq`
+            // hypothesis/query, a TPTP role wrapper) panics if fingerprinted
+            // directly, and the store hashes stripped formulas anyway.
+            DocItem::Stmt(node) => Some(node.formula().fingerprint()),
             _ => None,
         })
         .collect();
@@ -89,6 +97,7 @@ pub fn parse_document(
         parse_errors,
         root_hashes,
         root_spans,
+        comments,
     }
 }
 
@@ -101,7 +110,11 @@ mod tests {
 
     #[test]
     fn pure_parse_returns_owned_ast() {
-        let doc = parse_document("t", "(subclass Human Animal)", Parser::Kif);
+        let doc = parse_document(
+            "t",
+            "(subclass Human Animal)",
+            Parser::Kif { options: None },
+        );
         assert_eq!(doc.ast.len(), 1);
         assert_eq!(doc.root_hashes.len(), 1);
         assert_eq!(doc.root_spans.len(), 1);
@@ -110,11 +123,92 @@ mod tests {
     }
 
     #[test]
+    fn comments_ride_the_side_list_and_never_touch_fingerprints() {
+        let plain = parse_document("t", "(subclass Dog Mammal)", Parser::Kif { options: None });
+        let commented = parse_document(
+            "t",
+            "; taxonomy\n; two lines\n(subclass Dog ; inline\n Mammal)\n; footer",
+            Parser::Kif { options: None },
+        );
+        assert!(!commented.has_errors());
+        // Identical logical content => identical fingerprints; the AST is
+        // comment-free.
+        assert_eq!(plain.root_hashes, commented.root_hashes);
+        // Consolidated blocks: the two header lines merge, the inline and
+        // footer comments stand alone.
+        let texts: Vec<&str> = commented.comments.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["taxonomy\ntwo lines", "inline", "footer"]);
+        assert!(plain.comments.is_empty());
+    }
+
+    #[test]
+    fn skip_comments_option_restores_the_comment_free_parse() {
+        let doc = parse_document(
+            "t",
+            "; header\n(subclass Dog Mammal) ; trailing",
+            Parser::Kif {
+                options: Some(crate::parse::KifParseOptions {
+                    skip_comments: true,
+                }),
+            },
+        );
+        assert!(!doc.has_errors());
+        assert_eq!(doc.ast.len(), 1, "the sentence still parses");
+        assert!(
+            doc.comments.is_empty(),
+            "skip_comments must leave no comment blocks"
+        );
+    }
+
+    #[test]
+    fn tptp_comments_ride_the_side_list_and_never_touch_fingerprints() {
+        let plain = parse_document(
+            "t.p",
+            "fof(a1, axiom, subclass(dog, mammal)).",
+            Parser::Tptp { options: None },
+        );
+        let commented = parse_document(
+            "t.p",
+            "% header\n% two lines\nfof(a1, axiom, /* inline */ subclass(dog, mammal)). % footer",
+            Parser::Tptp { options: None },
+        );
+        assert!(!commented.has_errors());
+        assert_eq!(plain.root_hashes, commented.root_hashes);
+        let texts: Vec<&str> = commented.comments.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["header\ntwo lines", "inline", "footer"]);
+        assert!(plain.comments.is_empty());
+    }
+
+    #[test]
+    fn tptp_skip_comments_option_restores_the_comment_free_parse() {
+        let doc = parse_document(
+            "t.p",
+            "% header\nfof(a1, axiom, subclass(dog, mammal)). % trailing",
+            Parser::Tptp {
+                options: Some(crate::parse::TptpParseOptions {
+                    skip_comments: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        assert!(!doc.has_errors());
+        assert_eq!(doc.ast.len(), 1, "the sentence still parses");
+        assert!(
+            doc.comments.is_empty(),
+            "skip_comments must leave no comment blocks"
+        );
+    }
+
+    #[test]
     fn malformed_file_preserves_valid_sentences() {
         // `(` alone is malformed; the second sentence is well-formed.
         // The AST should still contain the valid sentence; diagnostics
         // should capture the bad one.
-        let doc = parse_document("t", "(\n(subclass Human Animal)", Parser::Kif);
+        let doc = parse_document(
+            "t",
+            "(\n(subclass Human Animal)",
+            Parser::Kif { options: None },
+        );
         assert!(doc.has_errors(), "expected error diagnostic");
         assert!(!doc.ast.is_empty(), "valid sentence must survive");
         assert!(doc
@@ -125,7 +219,7 @@ mod tests {
 
     #[test]
     fn parse_errors_carry_spans() {
-        let doc = parse_document("t", "(", Parser::Kif);
+        let doc = parse_document("t", "(", Parser::Kif { options: None });
         assert!(!doc.parse_errors.is_empty());
         let d = doc.diagnostics();
         assert_eq!(d[0].kind, "parse");
@@ -137,7 +231,7 @@ mod tests {
         let doc = parse_document(
             "t",
             "(instance A B) (instance A B) (instance C D)",
-            Parser::Kif,
+            Parser::Kif { options: None },
         );
         assert_eq!(doc.ast.len(), 3);
         assert_eq!(doc.root_hashes.len(), 3);
@@ -149,7 +243,7 @@ mod tests {
     #[test]
     fn root_span_covers_full_sentence() {
         let src = "(subclass Human Animal)";
-        let doc = parse_document("t", src, Parser::Kif);
+        let doc = parse_document("t", src, Parser::Kif { options: None });
         let sp = &doc.root_spans[0];
         assert_eq!(sp.offset, 0);
         assert_eq!(sp.end_offset, src.len());
@@ -157,7 +251,7 @@ mod tests {
 
     #[test]
     fn text_is_shared_cheaply() {
-        let doc = parse_document("t", "(P)", Parser::Kif);
+        let doc = parse_document("t", "(P)", Parser::Kif { options: None });
         let text2 = Arc::clone(&doc.text);
         assert!(Arc::ptr_eq(&doc.text, &text2));
     }

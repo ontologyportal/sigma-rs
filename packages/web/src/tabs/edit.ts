@@ -5,6 +5,7 @@ import { state } from '../state.ts';
 import { call } from '../rpc.ts';
 import { $, esc, escAttr, downloadText, isDarkTheme } from '../dom.ts';
 import { loadMonaco, diagsToMarkers } from '../editor/monaco.ts';
+import { lspRequest, lspSyncDocument } from '../editor/lsp-client.ts';
 import { refreshTptpPane, scheduleTptpRefresh, scheduleTptpFollow } from '../editor/tptp-pane.ts';
 import { updateConstituentText } from '../kb.ts';
 import { checkStaleOnOpen } from './contribute.ts';
@@ -44,6 +45,17 @@ $('editDiagList').addEventListener('click', (e) => {
   state.monacoEditor.focus();
 });
 
+// One console line per LANE CHANGE (not per keystroke): tells apart "the LSP
+// lane engaged for file X" from "this buffer has no backing constituent, so
+// only parse checking runs" — the two look identical in the UI when the LSP
+// lane fails to engage.
+let lastValidateLane = '';
+function logValidateLane(lane) {
+  if (lane === lastValidateLane) return;
+  lastValidateLane = lane;
+  console.info('[edit] validate lane:', lane);
+}
+
 function scheduleEditValidate() {
   clearTimeout(editValidateTimer);
   editValidateTimer = setTimeout(() => { updateEditFileLabel(); runEditValidate(); }, 400);
@@ -80,12 +92,13 @@ async function runEditValidateNow() {
   // no backing file, so it falls back to parse-only checking in a throwaway KB.
   const known = state.editCurrentFile
     && state.constituents.find((c) => c.name === state.editCurrentFile.name && c.origin === state.editCurrentFile.origin);
+  logValidateLane(known ? `lsp (${known.name})` : 'scratch (parse-only)');
   let diags = [];
   try {
     diags = known
-      ? (await call('validateBuffer', { file: known.name, text })).diagnostics
+      ? await lspSyncDocument(known.name, text)
       : (await call('validateFormula', { kif: text })).diagnostics;
-  } catch (e) { $('editStatus').textContent = 'parse error: ' + (e && e.message || e); return; }
+  } catch (e) { $('editStatus').textContent = 'validate failed: ' + (e && e.message || e); return; }
   if (!state.monacoEditor || state.monacoEditor.getModel() !== model
       || model?.getVersionId() !== version
       || validatingFile !== (state.editCurrentFile ? `${state.editCurrentFile.name}|${state.editCurrentFile.origin}` : '')) return;
@@ -255,11 +268,16 @@ async function createEditor() {
     fixedOverflowWidgets: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
     fontSize: 13,
-    // Only the KB's own symbols (via kifCompletionProvider) should be
+    // Only the KB's own symbols (via lspCompletionProvider) should be
     // suggested, not arbitrary strings already typed in the buffer.
     wordBasedSuggestions: 'off',
+    // The default ('configuredByTheme') would silently no-op unless a
+    // theme opts in; force it on so the LSP's KB-aware semantic tokens
+    // (see `lspSemanticTokensProvider`) actually render.
+    'semanticHighlighting.enabled': true,
   });
   state.monacoEditor = editor;
+  (window as any).__sigmaEditor = editor; // debug handle (automation/devtools)
   editor.onDidChangeModelContent(scheduleEditValidate);
   editor.onDidChangeCursorPosition(scheduleTptpFollow);
 
@@ -350,8 +368,8 @@ $('dlTptpBtn').onclick = async () => {
   const prior = status.textContent;
   status.textContent = 'generating TPTP…';
   try {
-    const { text } = await call('toTptpIndexed', {});
-    downloadText('knowledge-base.tptp', text);
+    const r = await lspRequest<{ tptp: string }>('sumo/toTptp', {});
+    downloadText('knowledge-base.tptp', r?.tptp ?? '');
     status.textContent = prior;
   } catch (e) {
     status.textContent = 'TPTP translation failed: ' + (e && e.message || e);

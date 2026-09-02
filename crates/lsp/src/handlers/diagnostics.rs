@@ -16,18 +16,18 @@
 
 use std::collections::HashSet;
 
-use crossbeam_channel::Sender;
 use lsp_server::{Message, Notification};
 use lsp_types::{PublishDiagnosticsParams, Url};
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{KnowledgeBase, ParsedDocument, Severity};
+use sigmakee_rs_sdk::{AstNode, Diagnostic, KnowledgeBase, ParsedDocument, Severity, TopLayer};
 
 use crate::conv::{kb_diagnostic_to_lsp, uri_to_tag};
 use crate::state::GlobalState;
 
-/// Collect parse + semantic diagnostics for `uri` and emit a
-/// `publishDiagnostics` notification on `sender`.
+/// Collect parse + semantic diagnostics for `uri` and push a
+/// `publishDiagnostics` notification into `out` (the caller's outbox of
+/// server->client messages -- the transport shell sends them).
 ///
 /// `rope` is the current text buffer (used for byte-offset -> LSP
 /// Position conversion).  `parsed` carries the per-document parse
@@ -43,13 +43,13 @@ use crate::state::GlobalState;
 /// KB that's mid-edit, these are advisories, not compile errors,
 /// and keeps the Problems panel dominated by the yellow-triangle
 /// icon.  Hard parse errors remain `Error`.
-pub fn publish_diagnostics(
-    sender: &Sender<Message>,
+pub fn publish_diagnostics<L: TopLayer>(
+    out: &mut Vec<Message>,
     uri: &Url,
     rope: &Rope,
     parsed: &ParsedDocument,
-    state: &GlobalState,
-    kb: &KnowledgeBase,
+    state: &GlobalState<L>,
+    kb: &KnowledgeBase<L>,
     version: Option<i32>,
 ) {
     let ignored = state
@@ -58,15 +58,15 @@ pub fn publish_diagnostics(
         .ok()
         .map(|g| g.clone())
         .unwrap_or_default();
-    publish_diagnostics_filtered(sender, uri, rope, parsed, kb, version, &ignored)
+    publish_diagnostics_filtered(out, uri, rope, parsed, kb, version, &ignored)
 }
 
-fn publish_diagnostics_filtered(
-    sender: &Sender<Message>,
+fn publish_diagnostics_filtered<L: TopLayer>(
+    out: &mut Vec<Message>,
     uri: &Url,
     rope: &Rope,
     parsed: &ParsedDocument,
-    kb: &KnowledgeBase,
+    kb: &KnowledgeBase<L>,
     version: Option<i32>,
     ignored: &HashSet<String>,
 ) {
@@ -86,17 +86,56 @@ fn publish_diagnostics_filtered(
     // so the client sees an immediate change the next time
     // diagnostics are published.
     let file_tag = uri_to_tag(uri);
-    let roots = kb.file_roots(&file_tag);
-    for sid in roots {
-        // The validator now returns ranged Diagnostics directly; force
-        // Warning severity per the module doc and apply the ignore list
-        // against code/kind.
-        for mut d in kb.validate_sentence(sid) {
-            if ignored.contains(d.code) || ignored.contains(d.kind) {
-                continue;
+    let is_tq = crate::server::is_tq(&file_tag);
+    // ONE bulk validation call for the whole file, not a per-sentence loop
+    let findings = if is_tq {
+        kb.validate_file_in_session(&file_tag, &file_tag)
+    } else {
+        kb.validate_file(&file_tag)
+    };
+    for mut d in findings {
+        // Force Warning severity per the module doc and apply the ignore
+        // list against code/kind.
+        if ignored.contains(d.code) || ignored.contains(d.kind) {
+            continue;
+        }
+        d.severity = Severity::Warning;
+        diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
+    }
+
+    // (3) `.tq` directive checks.  `(file "X")` names a background library
+    // the test expects
+    if is_tq {
+        let loaded = kb.iter_files();
+        for meta in parsed
+            .ast
+            .iter()
+            .filter_map(|i| i.as_meta())
+            .filter(|m| m.key == "file")
+        {
+            for arg in &meta.args {
+                let name = match arg {
+                    AstNode::Str { value, .. } => value.trim_matches('"').to_string(),
+                    AstNode::Symbol { name, .. } => name.clone(),
+                    _ => continue,
+                };
+                let found = loaded.iter().any(|f| {
+                    f == &name
+                        || std::path::Path::new(f)
+                            .file_name()
+                            .is_some_and(|b| b == name.as_str())
+                });
+                if !found {
+                    let mut d = Diagnostic::new_error(
+                        "tq",
+                        "file-not-loaded",
+                        format!("background file '{name}' is not loaded as a KB constituent"),
+                    );
+                    d.severity = Severity::Warning;
+                    d.range = meta.span.clone();
+                    diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
+                }
             }
-            d.severity = Severity::Warning;
-            diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
         }
     }
 
@@ -109,7 +148,5 @@ fn publish_diagnostics_filtered(
         method: "textDocument/publishDiagnostics".to_string(),
         params: serde_json::to_value(&params).expect("serialisable"),
     };
-    if let Err(e) = sender.send(Message::Notification(not)) {
-        log::warn!(target: "sumo_lsp", "publishDiagnostics send failed: {}", e);
-    }
+    out.push(Message::Notification(not));
 }

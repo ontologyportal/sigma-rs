@@ -144,7 +144,7 @@ impl SyntacticLayer {
     ///   `Event::Diagnostic`.
     pub(crate) fn load_kif_assert(&mut self, text: &str, file: &str) -> Vec<crate::Diagnostic> {
         let source = crate::types::SourceFile {
-            parser: crate::Parser::Kif,
+            parser: crate::Parser::Kif { options: None },
             name: file.to_owned(),
             // `path` is stamped into each node's `span.file`; keep it equal to
             // the file tag.

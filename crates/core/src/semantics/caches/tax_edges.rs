@@ -17,6 +17,7 @@ use dashmap::DashMap;
 
 use crate::cache::events::{Event, EventKind};
 use crate::cache::EagerMapBehavior;
+use crate::semantics::consts::ROOT_SYMBOL;
 use crate::semantics::errors::BoxedError;
 use crate::semantics::taxonomy::TaxDirection;
 use crate::semantics::types::{Scope, Scoped};
@@ -163,6 +164,54 @@ fn remove_edge(store: &EdgeStore, scope: Scope, from: SymbolId, to: SymbolId, re
     }
 }
 
+/// `include` (kept as bare members of the result, never walked) plus every
+/// symbol transitively reachable from `children` via `Base` `From(_)` (child)
+/// edges -- the full set whose `has_ancestor`/`is_class`/`is_predicate`/
+/// `is_function`/`is_relation` caches can have a stale answer when the
+/// changed edge's CHILD-side symbol has its own parent set altered: any
+/// descendant's cached ancestor walk may have passed straight through it.
+///
+/// Only the child side seeds the downward walk -- the parent side's *other*
+/// children (siblings of the one that actually changed) are unaffected by
+/// this edge and must not be swept in. The parent side itself still belongs
+/// in the result (it's one of the two symbols the underlying edge names),
+/// just not as a walk seed: its own cached classification depends on its
+/// *own* parent edges, never on which children it has.
+///
+/// `Base` only: a change confined to a session's own transient overlay can
+/// leave a stale entry in that session's *own* scope uncaught here (Base's
+/// graph, and therefore Base-scoped entries, are unaffected either way).
+/// Sessions are short-lived per-document overlays, so any such gap is
+/// bounded to that session's own lifetime.
+fn widen_with_descendants(
+    store: &EdgeStore,
+    include: &[SymbolId],
+    children: &[SymbolId],
+) -> Vec<SymbolId> {
+    let mut affected: HashSet<SymbolId> = include.iter().copied().collect();
+    affected.extend(children.iter().copied());
+    // Always walk from every child seed, even one already present via
+    // `include` (e.g. the same symbol is both a changed edge's child and
+    // separately named) -- membership in `affected` must not gate whether
+    // we still expand its own descendants.
+    let mut frontier: Vec<SymbolId> = children.to_vec();
+    while let Some(sym) = frontier.pop() {
+        let key = Scoped {
+            scope: Scope::Base,
+            key: TaxDirection::From(sym),
+        };
+        let Some(kids) = store.get(&key) else {
+            continue;
+        };
+        for (child, _) in kids.iter() {
+            if affected.insert(*child) {
+                frontier.push(*child);
+            }
+        }
+    }
+    affected.into_iter().collect()
+}
+
 /// The scope(s) a root `sid`'s edge belongs to: `Base` once promoted, else every
 /// session that references it (transient overlay).
 fn edge_scopes(parent: &SemanticLayer, sid: SentenceId) -> Vec<Scope> {
@@ -277,7 +326,7 @@ impl EagerMapBehavior for TaxEdges {
                                 },
                             );
                             out.push(Event::TaxonomyChanged {
-                                syms: vec![from, to],
+                                syms: widen_with_descendants(store, &[from, to], &[to]),
                             });
                         }
                         Some(Err(err)) => out.push(Event::Diagnostic(err.to_diagnostic())),
@@ -309,7 +358,7 @@ impl EagerMapBehavior for TaxEdges {
                             rec.scopes = std::iter::once(Scope::Base).collect();
                         }
                         out.push(Event::TaxonomyChanged {
-                            syms: vec![from, to],
+                            syms: widen_with_descendants(store, &[from, to], &[to]),
                         });
                     }
                 }
@@ -320,6 +369,7 @@ impl EagerMapBehavior for TaxEdges {
                 Event::SessionReferenced { session, sids } => {
                     let scope = Scope::Session(session_id(session));
                     let mut syms = Vec::new();
+                    let mut children = Vec::new();
                     for sid in sids {
                         let Some(mut rec) = side.edges.get_mut(sid) else {
                             continue;
@@ -335,10 +385,13 @@ impl EagerMapBehavior for TaxEdges {
                             bump_overlay(side, scope);
                             syms.push(rec.from);
                             syms.push(rec.to);
+                            children.push(rec.to);
                         }
                     }
                     if !syms.is_empty() {
-                        out.push(Event::TaxonomyChanged { syms });
+                        out.push(Event::TaxonomyChanged {
+                            syms: widen_with_descendants(store, &syms, &children),
+                        });
                     }
                 }
                 // A session is dropped wholesale.  Edges it held *alone* already
@@ -351,17 +404,21 @@ impl EagerMapBehavior for TaxEdges {
                         continue;
                     }
                     let mut syms = Vec::new();
+                    let mut children = Vec::new();
                     side.edges.retain(|_, rec| {
                         if rec.scopes.remove(&scope) {
                             remove_edge(store, scope, rec.from, rec.to, rec.rel.clone());
                             unbump_overlay(side, scope);
                             syms.push(rec.from);
                             syms.push(rec.to);
+                            children.push(rec.to);
                         }
                         !rec.scopes.is_empty()
                     });
                     if !syms.is_empty() {
-                        out.push(Event::TaxonomyChanged { syms });
+                        out.push(Event::TaxonomyChanged {
+                            syms: widen_with_descendants(store, &syms, &children),
+                        });
                     }
                 }
                 Event::RelationRemoved { sid, .. } => {
@@ -371,7 +428,7 @@ impl EagerMapBehavior for TaxEdges {
                             unbump_overlay(side, *scope);
                         }
                         out.push(Event::TaxonomyChanged {
-                            syms: vec![rec.from, rec.to],
+                            syms: widen_with_descendants(store, &[rec.from, rec.to], &[rec.to]),
                         });
                     }
                 }
@@ -491,7 +548,7 @@ fn try_extract_edge_from(
                 sid,
                 rel: rel_name(),
                 arg: 0,
-                domain: "Entity".to_string(),
+                domain: ROOT_SYMBOL.name().to_string(),
             })))
         }
     };
@@ -508,6 +565,76 @@ fn try_extract_edge_from(
         }
     };
     Some(Ok((from, to, rel)))
+}
+
+#[cfg(test)]
+mod widen_tests {
+    use super::*;
+
+    #[test]
+    fn widen_with_descendants_includes_the_whole_downstream_chain() {
+        // A <- B <- C <- D (subclass chain): D isa C isa B isa A.
+        let store = EdgeStore::default();
+        add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass); // A -> B
+        add_edge(&store, Scope::Base, 2, 3, TaxRelation::Subclass); // B -> C
+        add_edge(&store, Scope::Base, 3, 4, TaxRelation::Subclass); // C -> D
+
+        // Simulate "B's own edge to A changed": the raw event names the two
+        // endpoints A (parent) and B (child); only B seeds the walk.
+        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
+            .into_iter()
+            .collect();
+        assert_eq!(
+            widened,
+            HashSet::from([1, 2, 3, 4]),
+            "must include B's transitive descendants C and D, not just A and B"
+        );
+    }
+
+    #[test]
+    fn widen_with_descendants_does_not_sweep_in_the_parents_other_children() {
+        // A has two children, B and E; only B's edge changed.  E (and its
+        // own descendant F) is a sibling of B, unaffected by B's edge, and
+        // must NOT appear in the widened set even though A (their shared
+        // parent) is one of the two named symbols.
+        let store = EdgeStore::default();
+        add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass); // A -> B
+        add_edge(&store, Scope::Base, 1, 5, TaxRelation::Subclass); // A -> E (sibling)
+        add_edge(&store, Scope::Base, 5, 6, TaxRelation::Subclass); // E -> F
+
+        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
+            .into_iter()
+            .collect();
+        assert_eq!(
+            widened,
+            HashSet::from([1, 2]),
+            "A's sibling subtree (E, F) must not be swept in by A's mere presence"
+        );
+    }
+
+    #[test]
+    fn widen_with_descendants_ignores_unrelated_subtrees() {
+        let store = EdgeStore::default();
+        add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass);
+        add_edge(&store, Scope::Base, 10, 20, TaxRelation::Subclass); // unrelated
+
+        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
+            .into_iter()
+            .collect();
+        assert_eq!(widened, HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn widen_with_descendants_terminates_on_a_cycle() {
+        let store = EdgeStore::default();
+        add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass);
+        add_edge(&store, Scope::Base, 2, 1, TaxRelation::Subclass); // malformed cycle
+
+        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1], &[1])
+            .into_iter()
+            .collect();
+        assert_eq!(widened, HashSet::from([1, 2]));
+    }
 }
 
 #[cfg(test)]

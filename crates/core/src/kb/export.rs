@@ -146,10 +146,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         }
 
         let sine_params = match budget_pct {
-            Some(pct) => {
-                let total = self.sine_axiom_count().max(1);
-                crate::SineParams::auto(sine_budget_from_pct(total, pct))
-            }
+            Some(pct) => crate::SineParams::auto_pct(self.sine_axiom_count(), pct),
             None => crate::SineParams::default(),
         };
 
@@ -240,7 +237,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Intern the hypotheses into the session as force-included support axioms.
         let support = self.ingest_source(
             SourceFile {
-                parser: Parser::Kif,
+                parser: Parser::Kif { options: None },
                 name: tc.file_name.clone(),
                 path: tc.file_name.clone().into(),
                 origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -269,7 +266,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
                 let syms = Conjecture::seed(&normalized);
                 let res = self.ingest_source(
                     SourceFile {
-                        parser: Parser::Kif,
+                        parser: Parser::Kif { options: None },
                         name: tc.file_name.clone(),
                         path: tc.file_name.clone().into(),
                         origin: crate::FileOrigin::Local(crate::types::LocalProvenance::UNKNOWN),
@@ -396,15 +393,6 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     }
 }
 
-/// Convert a selection-budget percentage (0-100, clamped) of `total_axioms`
-/// into the absolute SInE auto-tolerance budget [`crate::SineParams::auto`]
-/// expects. Always at least 1, so a non-empty KB never gets a zero budget
-/// from a very low percentage.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-fn sine_budget_from_pct(total_axioms: usize, pct: f64) -> usize {
-    (((total_axioms as f64) * (pct.clamp(0.0, 100.0) / 100.0)).round() as usize).max(1)
-}
-
 /// Canonical SUMO bookkeeping predicates that are noise for a theorem
 /// prover and are filtered out of any TPTP shipped to Vampire.
 ///
@@ -412,6 +400,7 @@ fn sine_budget_from_pct(total_axioms: usize, pct: f64) -> usize {
 /// source their exclusion set from this list. Per-call overrides for
 /// non-default exclusion sets stay on `TptpOptions::excluded`.
 pub fn default_excluded_heads() -> &'static [&'static str] {
+    // TODO replace with semantic constants
     &[
         // Signature metadata — redundant once translation has emitted a
         // `tff(..., type, ...)` declaration for the head.

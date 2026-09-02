@@ -15,7 +15,65 @@ use sigmakee_rs_sdk::{Diagnostic as KbDiagnostic, Severity, Span};
 
 use crate::state::DocState;
 
+// -- URI <-> file path (cross-target) -------------------------------------------
+//
+// `url`'s `to_file_path` / `from_file_path` are cfg'd out on targets with no
+// notion of a filesystem (wasm32-unknown-unknown).  The wasm LSP still speaks
+// `file://` URIs -- they are opaque KB tags there, never opened -- so these
+// helpers delegate to `url` where available and fall back to plain
+// percent-(de/en)coded `file://` string handling on wasm.
+
+/// `file://` URL -> filesystem path.  `None` on non-file URLs.
+pub fn url_to_file_path(uri: &Url) -> Option<std::path::PathBuf> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        uri.to_file_path().ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if uri.scheme() != "file" {
+            return None;
+        }
+        let decoded = percent_encoding::percent_decode_str(uri.path()).decode_utf8_lossy();
+        Some(std::path::PathBuf::from(decoded.as_ref()))
+    }
+}
+
+/// Filesystem path -> `file://` URL.  `None` on relative or otherwise
+/// unrepresentable paths.
+pub fn url_from_file_path<P: AsRef<std::path::Path>>(path: P) -> Option<Url> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Url::from_file_path(path).ok()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let s = path.as_ref().to_string_lossy();
+        if !s.starts_with('/') {
+            return None;
+        }
+        // Encode everything a path segment can't carry verbatim in a URL.
+        const SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+            .add(b' ')
+            .add(b'"')
+            .add(b'#')
+            .add(b'<')
+            .add(b'>')
+            .add(b'?')
+            .add(b'`')
+            .add(b'{')
+            .add(b'}');
+        let encoded = percent_encoding::utf8_percent_encode(&s, SET);
+        Url::parse(&format!("file://{}", encoded)).ok()
+    }
+}
+
 // -- URI ↔ file tag -----------------------------------------------------------
+
+/// URI scheme for browser embedders whose documents are named blobs, not
+/// filesystem paths: `kif:/Merge.kif` maps to the bare KB tag `Merge.kif`.
+/// See [`uri_to_tag`].
+pub const KIF_SCHEME: &str = "kif";
 
 /// Canonical file-tag form for a URL.
 ///
@@ -23,11 +81,19 @@ use crate::state::DocState;
 /// every mutation path keys on.  On Windows the drive letter is lower-cased
 /// so paths with differing drive-letter casing map to the same tag.
 ///
-/// Non-file URIs and URIs whose path can't be parsed fall back to the raw
-/// URL string.
+/// A `kif:` URI (see [`KIF_SCHEME`]) maps to its percent-decoded path with
+/// the leading slash stripped: `kif:/Merge.kif` -> `Merge.kif`.  This is the
+/// browser-embedder lane -- a web IDE tags its KB files by bare name (there
+/// is no filesystem), and its editor-model URIs must derive those exact
+/// tags.  Other non-file URIs and URIs whose path can't be parsed fall back
+/// to the raw URL string.
 pub fn uri_to_tag(uri: &Url) -> String {
-    match uri.to_file_path() {
-        Ok(path) => {
+    if uri.scheme() == KIF_SCHEME {
+        let decoded = percent_encoding::percent_decode_str(uri.path()).decode_utf8_lossy();
+        return decoded.trim_start_matches('/').to_string();
+    }
+    match url_to_file_path(uri) {
+        Some(path) => {
             let s = path.to_string_lossy().to_string();
             if cfg!(windows) && s.len() >= 2 && s.as_bytes()[1] == b':' {
                 let mut chars: Vec<char> = s.chars().collect();
@@ -37,14 +103,33 @@ pub fn uri_to_tag(uri: &Url) -> String {
                 s
             }
         }
-        Err(_) => uri.to_string(),
+        None => uri.to_string(),
     }
 }
 
-/// Inverse of [`uri_to_tag`].  Returns `None` when the tag isn't
-/// a parseable file path (e.g. fallback ad-hoc strings).
+/// Inverse of [`uri_to_tag`]: an absolute-path tag becomes a `file://` URL;
+/// a bare-name tag (the browser-embedder shape) becomes a `kif:/` URL.
+/// Returns `None` only for tags that fit neither (e.g. empty or internal
+/// `__...` scratch tags).
 pub fn tag_to_uri(tag: &str) -> Option<Url> {
-    Url::from_file_path(tag).ok()
+    if let Some(url) = url_from_file_path(tag) {
+        return Some(url);
+    }
+    if tag.is_empty() || tag.starts_with("__") {
+        return None;
+    }
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}');
+    let encoded = percent_encoding::utf8_percent_encode(tag, SET);
+    Url::parse(&format!("{KIF_SCHEME}:/{encoded}")).ok()
 }
 
 /// Convert a `Span` to an LSP `Range` against whichever buffer
@@ -72,9 +157,9 @@ pub fn span_to_range_with_fallback(docs: &HashMap<Url, DocState>, uri: &Url, spa
 /// Returns `None` (and emits a debug log) when the URI is non-file or the
 /// read fails.
 fn read_rope_from_disk(uri: &Url) -> Option<Rope> {
-    let path = match uri.to_file_path() {
-        Ok(p) => p,
-        Err(_) => {
+    let path = match url_to_file_path(uri) {
+        Some(p) => p,
+        None => {
             log::debug!(target: "sumo_lsp::conv",
                 "non-file URI '{}' in cross-file range lookup; using empty rope", uri);
             return None;
@@ -207,6 +292,29 @@ fn placeholder_url() -> Url {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kif_scheme_maps_to_bare_tag_and_back() {
+        // The browser-embedder lane: `kif:/Merge.kif` <-> tag "Merge.kif".
+        let uri = Url::parse("kif:/Merge.kif").expect("url");
+        assert_eq!(uri_to_tag(&uri), "Merge.kif");
+        let back = tag_to_uri("Merge.kif").expect("uri");
+        assert_eq!(uri_to_tag(&back), "Merge.kif");
+        // Percent-encoded names decode.
+        let spaced = Url::parse("kif:/My%20Ontology.kif").expect("url");
+        assert_eq!(uri_to_tag(&spaced), "My Ontology.kif");
+        let back2 = tag_to_uri("My Ontology.kif").expect("uri");
+        assert_eq!(uri_to_tag(&back2), "My Ontology.kif");
+        // Nested "directory" names keep their inner slashes.
+        let nested = Url::parse("kif:/tests/plain/T1.kif.tq").expect("url");
+        assert_eq!(uri_to_tag(&nested), "tests/plain/T1.kif.tq");
+    }
+
+    #[test]
+    fn tag_to_uri_skips_internal_scratch_tags() {
+        assert!(tag_to_uri("__inline(1)__").is_none());
+        assert!(tag_to_uri("").is_none());
+    }
 
     #[test]
     fn uri_tag_round_trip_file() {

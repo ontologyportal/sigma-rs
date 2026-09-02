@@ -20,16 +20,22 @@ use super::behaviors::{CacheBehavior, EagerBehavior, EagerMapBehavior, WholeCach
 /// [`get`](Self::get) / [`react`](Self::react).
 pub(crate) struct Cache<B: CacheBehavior> {
     behavior: B,
-    store: EntryCache<B::Key, B::Value>,
+    store: EntryCache<B::Key, B::Value, B::Tag>,
     side: B::Side,
 }
 
 #[allow(dead_code)] // full cache API; not every method is consumed yet
 impl<B: CacheBehavior> Cache<B> {
-    /// Create a cache sharing `config`, named by `B::NAME`.
+    /// Create a cache sharing `config`, named by `B::NAME`.  Builds a
+    /// [`B::tag_of`](CacheBehavior::tag_of) index when `B::TAG_INDEXED`.
     pub(crate) fn new(config: &CacheConfig, behavior: B) -> Self {
+        let store = if B::TAG_INDEXED {
+            EntryCache::with_tag_index(config, B::NAME, B::tag_of)
+        } else {
+            EntryCache::new(config, B::NAME)
+        };
         Self {
-            store: EntryCache::new(config, B::NAME),
+            store,
             side: B::Side::default(),
             behavior,
         }
@@ -79,6 +85,12 @@ impl<B: CacheBehavior> Cache<B> {
         self.store.evict_keys(keys);
     }
 
+    /// Remove exactly the entries indexed under `tags` -- O(|tags| + affected
+    /// entries), not a full-store scan. No-op unless `B::TAG_INDEXED`.
+    pub(crate) fn evict_by_tag(&self, tags: &[B::Tag]) {
+        self.store.evict_by_tag(tags);
+    }
+
     /// Remove entries for which `predicate` returns `false`.  No-op when disabled.
     pub(crate) fn retain<F>(&self, predicate: F)
     where
@@ -108,7 +120,7 @@ impl<B: CacheBehavior> Cache<B> {
     }
 
     /// Direct access to the backing store for snapshot/restore and tests.
-    pub(crate) fn store(&self) -> &EntryCache<B::Key, B::Value> {
+    pub(crate) fn store(&self) -> &EntryCache<B::Key, B::Value, B::Tag> {
         &self.store
     }
 }
@@ -117,6 +129,7 @@ impl<B: CacheBehavior> std::fmt::Debug for Cache<B>
 where
     B::Key: std::fmt::Debug,
     B::Value: std::fmt::Debug,
+    B::Tag: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cache")

@@ -21,6 +21,7 @@ impl CacheBehavior for FormulasThf {
     type Value = ThfEntry;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::formulas_thf";
 

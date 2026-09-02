@@ -13,13 +13,13 @@
 
 use lsp_types::{DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolKind};
 use sigmakee_rs_sdk::AstKif;
-use sigmakee_rs_sdk::{parse_document, AstNode, Parser};
+use sigmakee_rs_sdk::{parse_document, AstNode, TopLayer};
 
 use crate::conv::{span_to_range, uri_to_tag};
 use crate::state::GlobalState;
 
-pub fn handle_document_symbol(
-    state: &GlobalState,
+pub fn handle_document_symbol<L: TopLayer>(
+    state: &GlobalState<L>,
     params: DocumentSymbolParams,
 ) -> Option<DocumentSymbolResponse> {
     let uri = params.text_document.uri;
@@ -29,7 +29,7 @@ pub fn handle_document_symbol(
     let doc = docs.get(&uri)?;
 
     let text = doc.rope.to_string();
-    let parsed = parse_document(tag, text, Parser::Kif);
+    let parsed = parse_document(tag.clone(), text, crate::server::parser_for(&tag));
     if parsed.ast.is_empty() {
         return Some(DocumentSymbolResponse::Nested(Vec::new()));
     }
@@ -86,8 +86,8 @@ fn head_node(node: &AstNode) -> Option<&AstNode> {
 /// - Name: the head symbol or operator keyword.
 /// - Detail: a short preview of the rest of the sentence.
 /// - Kind: maps the head through the KB's classification caches.
-fn describe_node(
-    kb: &sigmakee_rs_sdk::KnowledgeBase,
+fn describe_node<L: TopLayer>(
+    kb: &sigmakee_rs_sdk::KnowledgeBase<L>,
     node: &AstNode,
 ) -> (String, Option<String>, SymbolKind) {
     let AstNode::List { elements, .. } = node else {

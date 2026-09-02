@@ -42,6 +42,7 @@ impl CacheBehavior for SubrelLattice {
     type Value = Arc<BelowMap>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "semantic::subrel_lattice";
 

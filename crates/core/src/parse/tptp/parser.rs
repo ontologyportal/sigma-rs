@@ -90,6 +90,9 @@ pub struct TptpParseOptions {
     /// Emit `conjecture`-role formulas (as `Annotated { role: Conjecture, … }`)
     /// so callers can partition them from axioms by role. Off by default.
     pub keep_conjectures: bool,
+    /// Drop `%` / `/* */` comments at the tokenize. Header pragma
+    /// recognition (`% Status : <word>`) is unaffected either way.
+    pub skip_comments: bool,
 }
 
 impl TptpParseOptions {
@@ -102,6 +105,7 @@ impl TptpParseOptions {
             remap_formula_expansions: false,
             formulas_only: false,
             keep_conjectures: false,
+            skip_comments: false,
         }
     }
 }
@@ -114,6 +118,7 @@ impl Default for TptpParseOptions {
             remap_formula_expansions: true,
             formulas_only: false,
             keep_conjectures: false,
+            skip_comments: false,
         }
     }
 }
@@ -129,7 +134,8 @@ pub struct TptpParser {
 }
 
 impl TptpParser {
-    fn new(tokens: Vec<Token>, file: &str, options: Option<TptpParseOptions>) -> Self {
+    fn new(mut tokens: Vec<Token>, file: &str, options: Option<TptpParseOptions>) -> Self {
+        tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
         Self {
             tokens,
             pos: 0,
@@ -1518,6 +1524,7 @@ mod tests {
                 remap_formula_expansions: true,
                 formulas_only: false,
                 keep_conjectures: false,
+                skip_comments: false,
             },
         );
         if let AstNode::List { elements, .. } = &nodes_nopoly[0] {

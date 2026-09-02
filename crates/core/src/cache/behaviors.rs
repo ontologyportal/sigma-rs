@@ -33,10 +33,22 @@ pub(crate) trait CacheBehavior: Send + Sync + Sized {
     /// `snapshot_side`/`restore_side` convert between the (interior-mutable)
     /// live side and this form.  Use `()` when the side isn't persisted.
     type SideSnapshot: serde::Serialize + serde::de::DeserializeOwned + Default + Send + Sync;
+    /// Invalidation-tag type for [`tag_of`](Self::tag_of) (see
+    /// [`EntryCache::evict_by_tag`]). This module knows nothing about what a
+    /// tag means -- it's whatever projection of `Key` the behavior chooses
+    /// (typically a [`SymbolId`](crate::SymbolId)). Use `()` when this cache
+    /// doesn't tag-index (the common case).
+    type Tag: Eq + Hash + Clone + Send + Sync;
 
     /// Cache name for [`CacheConfig`] enable/disable and cycle diagnostics.
     /// Conventionally the layer-prefixed constant, e.g. `semantic::is_instance`.
     const NAME: &'static str;
+
+    /// Whether this cache's store maintains a [`tag_of`](Self::tag_of) index.
+    /// When `false` (the default), `Cache::new` builds no index at all --
+    /// not even an empty one -- so a cache that never overrides `tag_of`
+    /// pays nothing for it.
+    const TAG_INDEXED: bool = false;
 
     /// Event kinds this cache reacts to (reactive graph; default: none).
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
@@ -61,6 +73,18 @@ pub(crate) trait CacheBehavior: Send + Sync + Sized {
     /// those would observe a different result under partition.  Default: serial.
     fn event_parallel(&self) -> bool {
         false
+    }
+
+    /// Invalidation-tag projection for this cache's keys, enabling
+    /// [`EntryCache::evict_by_tag`](super::backends::EntryCache::evict_by_tag)
+    /// (O(|tags|), not a full-store scan) in `react`. Return `None` from an
+    /// override to opt a specific key out of indexing (e.g. a Base-scope key
+    /// that's cheaper to reconstruct and evict directly via `evict_keys` --
+    /// see `EntryCache`'s `TagIndex` doc comment). Default: `None` always --
+    /// no tag index is built for this cache's store, so overriding costs
+    /// nothing for caches that never do.
+    fn tag_of(_key: &Self::Key) -> Option<Self::Tag> {
+        None
     }
 
     /// Compute the value for `key` on a miss, using `parent` to reach sibling
@@ -93,7 +117,7 @@ pub(crate) trait CacheBehavior: Send + Sync + Sized {
         &self,
         _parent: &Self::Parent,
         _events: &[&crate::cache::events::Event],
-        _store: &EntryCache<Self::Key, Self::Value>,
+        _store: &EntryCache<Self::Key, Self::Value, Self::Tag>,
         _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         Vec::new()

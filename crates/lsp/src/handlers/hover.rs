@@ -7,7 +7,7 @@
 
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
-use sigmakee_rs_sdk::{DocBlock, DocSpan, ManPageView};
+use sigmakee_rs_sdk::{DocBlock, DocSpan, ManPageView, TopLayer};
 
 use crate::conv::{position_to_offset, span_to_range, uri_to_tag};
 use crate::state::GlobalState;
@@ -16,7 +16,7 @@ use crate::state::GlobalState;
 ///
 /// Returns `None` when the cursor isn't on a recognisable symbol or when the
 /// document hasn't been opened in the server yet.
-pub fn handle_hover(state: &GlobalState, params: HoverParams) -> Option<Hover> {
+pub fn handle_hover<L: TopLayer>(state: &GlobalState<L>, params: HoverParams) -> Option<Hover> {
     let uri = params.text_document_position_params.text_document.uri;
     let position = params.text_document_position_params.position;
 

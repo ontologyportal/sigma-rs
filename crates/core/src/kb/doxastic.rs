@@ -234,7 +234,11 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
         query_kif: &str,
         opts: crate::NativeOpts,
     ) -> crate::prover::ProverResult {
-        let doc = crate::parse_document("doxastic_ask", query_kif.to_string(), crate::Parser::Kif);
+        let doc = crate::parse_document(
+            "doxastic_ask",
+            query_kif.to_string(),
+            crate::Parser::Kif { options: None },
+        );
         if doc.has_errors() {
             return crate::prover::ProverResult {
                 status: crate::prover::ProverStatus::InputError,

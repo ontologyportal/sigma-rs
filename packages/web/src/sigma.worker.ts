@@ -4,6 +4,7 @@
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
 import { init, Session, Config, Backend, parseTest } from 'sigmakee/sdk';
+import { WasmLsp } from 'sigmakee';
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
 // no `document`/`window`), and even a type-only import pulls the whole file
@@ -21,10 +22,15 @@ interface ProverConfig {
 }
 
 let session = null;
+// Language-server facade over the SAME knowledge base as `session` (the
+// shared-KB seam: `new WasmLsp(session.kb)` clones the KB Arc). Lazily
+// (re)built by the `lsp` handler, dropped whenever the session is replaced.
+let wasmLsp = null;
 // Site base URL, supplied by the page at boot(); see loadVampireRunner().
 let siteBaseUrl = self.location.href;
 
 function newSession() {
+  wasmLsp = null;
   return new Session({ backend: Backend.Native, config: makeConfig() });
 }
 
@@ -80,12 +86,15 @@ const handlers = {
   restore({ bytes }) { session.restore(bytes); return { ok: true }; },
 
   /**
-   * Revalidate an edited constituent with FULL KB context by diffing the buffer
-   * into its own session and committing it — the live KB tracks the editor.
-   * Symbols resolve against the real KB, so semantic diagnostics are meaningful.
+   * One LSP JSON-RPC message body in, every server->client message it
+   * produced out (response first, then notifications) — `WasmLsp` is the
+   * transport-free `sumo-lsp` dispatch core sharing this worker's KB, so
+   * `didChange` diffs the buffer into the live KB exactly like the old
+   * `validateBuffer` lane did, and diagnostics ride back in the same batch.
    */
-  validateBuffer({ file, text }) {
-    return { diagnostics: session.kb.validateBuffer(file, text) };
+  lsp({ json }: { json: string }) {
+    if (!wasmLsp) wasmLsp = new WasmLsp(session.kb);
+    return { out: wasmLsp.handleMessage(json) };
   },
 
   /**
@@ -109,17 +118,6 @@ const handlers = {
 
   parseTest({ name, text }) { return { test: parseTest(name, text) }; },
 
-  // Whole-KB TPTP dump (Edit tab's split TPTP pane). `toTptpIndexed` is the
-  // heavy call (re-translates every axiom) — the page only fires it on the
-  // edit-validate debounce, not per keystroke. `tptpLineForPosition` is cheap
-  // (cache lookups against the last generated dump) and safe to call on
-  // every cursor move.
-  toTptpIndexed({ lang, hideNumbers }) {
-    return { text: session.kb.toTptpIndexed(lang, hideNumbers) };
-  },
-  tptpLineForPosition({ file, offset }) {
-    return { line: session.kb.tptpLineForPosition(file, offset) ?? null };
-  },
   search({ query, limit, language, kind }) {
     return {
       hits: session.search(query, {

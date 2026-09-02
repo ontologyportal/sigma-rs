@@ -423,7 +423,7 @@ mod tests {
     // -- emit_proof dispatcher ------------------------------------------------
 
     fn step(index: usize, rule: &str, kif: &str, premises: Vec<usize>) -> KifProofStep {
-        let doc = crate::parse::parse_document("t", kif, crate::Parser::Kif);
+        let doc = crate::parse::parse_document("t", kif, crate::Parser::Kif { options: None });
         KifProofStep {
             index,
             rule: rule.into(),

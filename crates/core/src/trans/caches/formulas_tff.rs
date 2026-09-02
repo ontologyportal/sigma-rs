@@ -21,6 +21,7 @@ impl CacheBehavior for FormulasTff {
     type Value = Option<CachedFormula>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::formulas_tff";
 

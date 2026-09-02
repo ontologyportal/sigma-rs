@@ -9,6 +9,7 @@
 //! KBs open at once send the union of every active KB's files.
 
 use serde::{Deserialize, Serialize};
+use sigmakee_rs_sdk::TopLayer;
 
 use crate::state::GlobalState;
 
@@ -32,8 +33,8 @@ pub const METHOD: &str = "sumo/setActiveFiles";
 /// then applies adds / removes directly via [`sigmakee_rs_core::KnowledgeBase::load`].
 /// Returns the files that were added and those that were removed so callers
 /// can republish diagnostics for each.
-pub fn handle_set_active_files(
-    state: &GlobalState,
+pub fn handle_set_active_files<L: TopLayer>(
+    state: &GlobalState<L>,
     params: SetActiveFilesParams,
 ) -> SetActiveFilesReport {
     use sigmakee_rs_sdk::{FileOrigin, LocalProvenance, Severity, SourceFile};
@@ -55,8 +56,11 @@ pub fn handle_set_active_files(
     // `KnowledgeBase::remove_file` is O(total occurrences in the KB) per call,
     // so removing many files individually is quadratic. When more files are
     // being removed than kept, discard the KB and rebuild only the requested
-    // files instead.
-    let rebuild_is_cheaper = to_remove.len() >= requested.len();
+    // files instead -- but only when this server is the KB's sole owner
+    // (`fresh_session` is set): a session shared with other facades via
+    // `GlobalState::with_session` must not be discarded wholesale, since it
+    // may hold content those facades loaded.
+    let rebuild_is_cheaper = to_remove.len() >= requested.len() && state.fresh_session.is_some();
 
     log::info!(target: "sumo_lsp::kb",
         "setActiveFiles: {} requested, {} to add, {} to remove{}",
@@ -67,9 +71,7 @@ pub fn handle_set_active_files(
     let mut session = state.session.write().expect("kb lock not poisoned");
 
     let files_to_ingest: Vec<String> = if rebuild_is_cheaper {
-        *session = sigmakee_rs_sdk::Session::<sigmakee_rs_sdk::TranslationLayer>::new(
-            crate::state::LSP_SESSION.to_string(),
-        );
+        *session = (state.fresh_session.expect("guarded by rebuild_is_cheaper"))();
         report.removed = currently_loaded.into_iter().collect();
         requested.into_iter().collect()
     } else {
@@ -169,8 +171,8 @@ pub struct SetIgnoredDiagnosticsParams {
 /// the client's new list.  The caller is responsible for
 /// re-publishing diagnostics for every open document so the UI
 /// reflects the change immediately.
-pub fn handle_set_ignored_diagnostics(
-    state: &crate::state::GlobalState,
+pub fn handle_set_ignored_diagnostics<L: TopLayer>(
+    state: &crate::state::GlobalState<L>,
     params: SetIgnoredDiagnosticsParams,
 ) {
     use std::collections::HashSet;

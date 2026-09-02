@@ -62,6 +62,7 @@ impl CacheBehavior for SortAnnotationsCache {
     type Value = SortAnnotation;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::sort_annotations";
 

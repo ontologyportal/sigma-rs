@@ -3,7 +3,7 @@
  *
  * This surface mirrors the `sigmakee-rs-sdk` crate — `Session`, `Source`,
  * `Backend`, `Config` — for the browser. For the lower-level bindings
- * (`WasmNativeProver` etc.) see `node-demo.mjs`.
+ * (the raw `Session` etc.) see `node-demo.mjs`.
  *
  * Import from the published subpath:
  *     import { init, Session, Source } from "sigmakee/sdk";

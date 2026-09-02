@@ -16,7 +16,7 @@
 // non-formula nodes into the store.
 
 use crate::parse::ast::{AstNode, OpKind, Role};
-use crate::parse::doc::{DocItem, MetaNode};
+use crate::parse::doc::{CommentBlock, DocItem, MetaNode};
 use crate::parse::kif;
 use crate::parse::kif::error::KifParseError;
 use crate::parse::{ParseError, Parser, Span, TptpParseOptions};
@@ -26,6 +26,14 @@ use crate::{DiagResult, ToDiagnostic};
 /// [`MetaNode`] rather than a logical statement.  `query` is **not** here —
 /// it carries a formula, so it becomes a `Conjecture` statement.
 const DIRECTIVES: &[&str] = &["note", "time", "answer", "file"];
+
+/// True when `name` heads a `.kif.tq` harness form: a [`MetaNode`] directive
+/// (`note` / `time` / `answer` / `file`) or the formula-bearing `query` /
+/// `ask`.  For editor tooling -- these deserve keyword-class highlighting in
+/// test files, where the KB can never classify them.
+pub fn is_tq_directive(name: &str) -> bool {
+    DIRECTIVES.contains(&name) || matches!(name, "query" | "ask")
+}
 
 type ParsedTestCase = (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>);
 
@@ -342,14 +350,19 @@ fn annotate(role: Role, formula: AstNode, file: &str) -> AstNode {
 /// Parse a `.kif.tq` source into a classified document.  Reuses the KIF grammar
 /// (`Parser::Kif`) for the raw nodes, then sorts each top-level form into a
 /// [`DocItem`].  Parse errors are forwarded verbatim (positionally independent
-/// of the returned items, like every other parser).
-pub fn parse_tq(content: &str, file: &str) -> (Vec<DocItem>, Vec<KifParseError>) {
+/// of the returned items, like every other parser).  The third element is the
+/// source's consolidated comment blocks (same side channel as the KIF path).
+pub fn parse_tq(
+    content: &str,
+    file: &str,
+) -> (Vec<DocItem>, Vec<KifParseError>, Vec<CommentBlock>) {
     let (tokens, tok_err) = kif::tokenize(content, file);
+    let comments = kif::comment_blocks(&tokens);
     let (nodes, parse_err) = kif::parse(tokens, file);
     let items = nodes.into_iter().map(|n| classify(n, file)).collect();
     let mut errors = tok_err;
     errors.extend(parse_err);
-    (items, errors)
+    (items, errors, comments)
 }
 
 /// Classify one raw KIF top-level node into a [`DocItem`].
@@ -388,7 +401,7 @@ fn classify(node: AstNode, file: &str) -> DocItem {
 /// Parse a `.kif.tq` source straight into a [`TestCase`] — `parse_tq` followed
 /// by [`TestCase::from_doc_items`].  Aborts on the first hard parse error.
 pub fn parse_test_content(content: &str, file_name: &str) -> DiagResult<TestCase> {
-    let (items, mut errors) = parse_tq(content, file_name);
+    let (items, mut errors, _) = parse_tq(content, file_name);
     if !errors.is_empty() {
         return Err(errors.remove(0).to_diagnostic().into());
     }
@@ -423,7 +436,14 @@ mod tests {
     #[test]
     fn from_doc_items_partitions_by_role() {
         let f = |kif: &str| parse_tq(kif, "t").0.into_iter().next().unwrap();
-        let k = |kif: &str| Parser::Kif.parse(kif, "t").0.into_iter().next().unwrap();
+        let k = |kif: &str| {
+            Parser::Kif { options: None }
+                .parse(kif, "t")
+                .0
+                .into_iter()
+                .next()
+                .unwrap()
+        };
         let items = vec![
             k("(subclass A B)"),
             f("(instance x A)"),
@@ -446,7 +466,14 @@ mod tests {
     // in an extra `not`, so the prover's refutation negation restores ¬C.
     #[test]
     fn negated_conjecture_is_re_negated_into_the_query() {
-        let f = |kif: &str| Parser::Kif.parse(kif, "t").0.into_iter().next().unwrap();
+        let f = |kif: &str| {
+            Parser::Kif { options: None }
+                .parse(kif, "t")
+                .0
+                .into_iter()
+                .next()
+                .unwrap()
+        };
         let neg = f("(not (mammal rex))");
         let s = neg.as_stmt().cloned().unwrap().strip_annotation();
         let items = vec![DocItem::Stmt(annotate(Role::NegatedConjecture, s, "t"))];
@@ -518,7 +545,7 @@ mod tests {
     #[test]
     fn parse_tq_yields_docitems_with_meta_and_stmts() {
         let src = "(note \"a test\") (time 12) (subclass A B) (query (instance x B))";
-        let (items, errors) = parse_tq(src, "T.kif.tq");
+        let (items, errors, _) = parse_tq(src, "T.kif.tq");
         assert!(errors.is_empty());
         // note + time → Meta; subclass → Stmt(Hypothesis); query → Stmt(Conjecture).
         let metas: Vec<&str> = items

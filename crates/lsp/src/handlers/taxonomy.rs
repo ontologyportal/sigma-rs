@@ -9,7 +9,7 @@ use std::collections::{HashSet, VecDeque};
 
 use lsp_types::request::Request;
 use serde::{Deserialize, Serialize};
-use sigmakee_rs_sdk::{DocBlock, DocSpan};
+use sigmakee_rs_sdk::{DocBlock, DocSpan, TopLayer};
 
 use crate::state::GlobalState;
 
@@ -90,7 +90,10 @@ const MAX_NODES: usize = 2048;
 ///
 /// Always returns a response; an unknown symbol is signalled via
 /// `TaxonomyResponse.unknown = true` with empty payload fields.
-pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyResponse {
+pub fn handle_taxonomy<L: TopLayer>(
+    state: &GlobalState<L>,
+    params: TaxonomyParams,
+) -> TaxonomyResponse {
     let root = params.symbol;
 
     let Ok(session) = state.session.read() else {
@@ -127,13 +130,8 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
 
     visited.insert(root.clone());
 
-    push_parent_edges(
-        &root,
-        &root_view.parents,
-        &mut edges,
-        &mut visited,
-        &mut queue,
-    );
+    let (root_parents, _root_children) = session.taxonomy_edges(&root);
+    push_parent_edges(&root, &root_parents, &mut edges, &mut visited, &mut queue);
 
     while let Some(current) = queue.pop_front() {
         if visited.len() >= MAX_NODES {
@@ -143,16 +141,8 @@ pub fn handle_taxonomy(state: &GlobalState, params: TaxonomyParams) -> TaxonomyR
             break;
         }
 
-        let Some(view) = session.manpage(&current) else {
-            continue;
-        };
-        push_parent_edges(
-            &current,
-            &view.parents,
-            &mut edges,
-            &mut visited,
-            &mut queue,
-        );
+        let (parents, _children) = session.taxonomy_edges(&current);
+        push_parent_edges(&current, &parents, &mut edges, &mut visited, &mut queue);
     }
 
     TaxonomyResponse {

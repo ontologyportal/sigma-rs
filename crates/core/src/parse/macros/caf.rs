@@ -391,7 +391,7 @@ mod tests {
     use crate::parse::{parse_document, Parser};
 
     fn parse_one(kif: &str) -> AstNode {
-        let doc = parse_document("test", kif, Parser::Kif);
+        let doc = parse_document("test", kif, Parser::Kif { options: None });
         assert!(
             doc.parse_errors.is_empty(),
             "parse errors: {:?}",

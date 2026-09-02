@@ -47,6 +47,7 @@ where
         kind: kind_filter,
         language: lang.as_deref(),
         limit: if limit == 0 { None } else { Some(limit) },
+        taxonomy: Vec::new(),
     };
 
     let Ok(hits) = session.search(&query, &opts) else {

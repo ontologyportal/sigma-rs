@@ -21,6 +21,7 @@ impl CacheBehavior for Documentation {
     type Value = Vec<DocEntry>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "semantic::documentation";
 
@@ -39,7 +40,6 @@ impl CacheBehavior for Documentation {
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
         use crate::cache::events::EventKind;
         &[
-            EventKind::TaxonomyChanged,
             EventKind::OtherRootsChanged,
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
@@ -64,7 +64,7 @@ impl CacheBehavior for Documentation {
         use crate::cache::events::Event;
         for event in events {
             match event {
-                Event::TaxonomyChanged { .. } | Event::OtherRootsChanged { .. } => {
+                Event::OtherRootsChanged { .. } => {
                     store.clear();
                     return Vec::new();
                 }

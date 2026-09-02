@@ -112,6 +112,7 @@ impl CacheBehavior for TermFactsCache {
     type Value = TermFacts;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "syntactic::term_facts";
 

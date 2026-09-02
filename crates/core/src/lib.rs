@@ -34,7 +34,7 @@ pub(crate) mod parse;
 pub mod progress;
 pub(crate) mod semantics;
 pub(crate) mod syntactic;
-pub(crate) mod types;
+pub mod types;
 
 pub(crate) mod trans;
 
@@ -56,6 +56,13 @@ pub use crate::trans::TranslationLayer;
 
 /// A generic trait used to control the active KB layer.
 pub use crate::layer::TopLayer;
+
+/// Monotonic-clock shim (`std::time::Instant` off wasm32, a `Date.now()`
+/// work-alike on it, since `Instant::now()` panics there). Any caller that
+/// needs to measure elapsed time or compute a deadline and might run on
+/// wasm32 -- rather than only `cfg(not(target_arch = "wasm32"))` -- should
+/// use this instead of `std::time::Instant` directly.
+pub use crate::clock::Instant;
 
 pub use crate::trans::HasTranslation;
 
@@ -81,27 +88,13 @@ pub use crate::prover::saturate::strategy::Strategy;
 
 // -- Public re-exports --------------------------------------------------------
 
-/// Parse-only syntax check of KIF text — no KB, no ingestion, no state.
-/// Returns the tokenizer/parser diagnostics; empty means the text is
-/// syntactically well-formed.  `file` names the source in each diagnostic's
-/// span.  Use this to vet a transient editor buffer BEFORE staging it into a
-/// [`KnowledgeBase`]: staging syntactically broken content reads as "the file
-/// is now empty" and retracts every sentence the file previously contributed.
-pub fn kif_parse_diagnostics(text: &str, file: &str) -> Vec<Diagnostic> {
-    parse::Parser::Kif
-        .parse(text, file)
-        .1
-        .iter()
-        .map(|(_, e)| e.to_diagnostic())
-        .collect()
-}
-
 #[cfg(feature = "ask")]
 pub use kb::natural_lang::RenderReport;
 
 pub use diagnostic::{
     DiagResult, Diagnostic, DiagnosticSource, RelatedInfo, Severity, ToDiagnostic,
 };
+
 pub use types::{
     hash_file_contents, Element, FileOrigin, GitProvenance, Literal, LocalProvenance, Occurrence,
     OccurrenceKind, OpKind, Sentence, SentenceId, SourceFile, SymbolId,
@@ -112,13 +105,19 @@ pub use semantics::types::{TaxDirection, TaxRelation};
 
 pub use cache::CacheConfig;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
-pub use kb::search::{SearchHit, SearchOpts, SearchSource};
+pub use kb::search::{SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT};
 pub use kb::KnowledgeBase;
 pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
+pub use parse::doc::{DocItem, MetaNode};
 pub use parse::kif::dis::AstKif;
-pub use parse::kif::{tokenize as tokenize_kif, Token, TokenKind};
+pub use parse::kif::{format_document, format_forms};
+pub use parse::kif::{tokenize as tokenize_kif, OpTok, Token, TokenKind};
 pub use parse::tptp::syntax::detect_tptp_lang;
-pub use parse::{parse_document, sentence_fingerprint, AstNode, ParsedDocument, Parser, Span};
+pub use parse::KifParseOptions;
+pub use parse::{
+    parse_document, sentence_fingerprint, try_parse_file, AstNode, CommentBlock, ParsedDocument,
+    Parser, Span,
+};
 pub use syntactic::position::ElementHit;
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -138,7 +137,7 @@ pub use prover::ProverMode;
 pub use prover::vampire_proof::{parse_vampire_result, VampireProofResult};
 // `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they
 // live in the `ask`-only `external` module, absent on native/wasm builds.
-pub use parse::tq::{parse_test_content, TestCase};
+pub use parse::tq::{is_tq_directive, parse_test_content, TestCase};
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use prover::axiom_source::{AxiomSource, AxiomSourceIndex};
 #[cfg(any(feature = "ask", feature = "native-prover"))]

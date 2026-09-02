@@ -131,6 +131,15 @@ impl SineParams {
             autoscale: false,
         }
     }
+    /// Auto-tolerance with a budget given as a percentage (0-100, clamped)
+    /// of `total_axioms` -- the KB-relative form of [`Self::auto`].  The
+    /// resolved budget is always at least 1, so a non-empty KB never gets a
+    /// zero budget from a very low percentage.
+    pub fn auto_pct(total_axioms: usize, pct: f64) -> Self {
+        let budget = ((total_axioms as f64) * (pct.clamp(0.0, 100.0) / 100.0)).round() as usize;
+        Self::auto(budget.max(1))
+    }
+
     /// Auto-tolerance with the given starting budget, autoscaling enabled.
     pub fn auto(budget: usize) -> Self {
         Self {
@@ -213,4 +222,18 @@ pub fn scale_predvar_cap() -> usize {
         .and_then(|s| s.parse().ok())
         .filter(|&n| n >= 1)
         .unwrap_or(32)
+}
+
+#[cfg(test)]
+mod auto_pct_tests {
+    use super::SineParams;
+
+    #[test]
+    fn auto_pct_resolves_a_kb_relative_budget() {
+        assert_eq!(SineParams::auto_pct(1000, 25.0).auto_budget, Some(250));
+        // Clamped percentage and a floor of 1.
+        assert_eq!(SineParams::auto_pct(1000, 150.0).auto_budget, Some(1000));
+        assert_eq!(SineParams::auto_pct(1000, 0.0).auto_budget, Some(1));
+        assert_eq!(SineParams::auto_pct(0, 50.0).auto_budget, Some(1));
+    }
 }

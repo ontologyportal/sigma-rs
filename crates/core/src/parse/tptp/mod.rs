@@ -9,4 +9,6 @@ pub mod syntax;
 pub(crate) mod tokenizer;
 
 pub use parser::parse;
-pub(crate) use tokenizer::{tokenize, tokenize_with_meta};
+pub(crate) use tokenizer::{
+    comment_blocks, tokenize, tokenize_with_meta, tokenize_without_comments,
+};

@@ -6,7 +6,7 @@
 use std::fmt::Display;
 
 use super::super::ast::AstNode;
-use super::super::doc::MetaNode;
+use super::super::doc::{CommentBlock, MetaNode};
 use super::super::Span;
 use super::error::TptpParseError;
 
@@ -109,6 +109,10 @@ pub enum TokenKind {
     Rational(String),
     /// Real literal — decimal point or exponent notation.
     Real(String),
+
+    /// A `%`-style line comment or `/* ... */` block comment, with the
+    /// comment markers stripped.
+    Comment(String),
 }
 
 impl Display for TokenKind {
@@ -120,6 +124,7 @@ impl Display for TokenKind {
             TokenKind::Caret => write!(f, "^"),
             TokenKind::Colon => write!(f, ":"),
             TokenKind::Comma => write!(f, ","),
+            TokenKind::Comment(comm) => write!(f, "% {}", comm),
             TokenKind::DollarDollarWord(word) => write!(f, "$${}", word),
             TokenKind::DollarWord(word) => write!(f, "${}", word),
             TokenKind::Dot => write!(f, "."),
@@ -229,19 +234,29 @@ impl<'src> Tokenizer<'src> {
 
     // ── Comment skipping ──────────────────────────────────────────
 
-    /// Skip a `%`-style line comment (TPTP) — identical to KIF `;` comments.
-    /// `start` is the comment's opening `%` position, so a recognized header
-    /// pragma (`% Status : Theorem`) gets a span covering the whole line.
-    fn skip_line_comment(&mut self, start: Span) {
+    /// Read a `%`-style line comment (TPTP), also checked for the `Status`
+    /// header pragma.  `start` is the comment's opening `%` position.  The
+    /// terminating newline is left unconsumed (picked up by the next
+    /// `next_token` call's whitespace skip) so the token's span ends exactly
+    /// at the comment's last character -- unlike a `/* ... */` block
+    /// comment's `*/`, a bare `\n` isn't part of the comment's own content,
+    /// and [`comment_blocks`] needs `span.end_line` to mean the same thing
+    /// for both comment styles.
+    fn read_line_comment(&mut self, start: Span) -> Token {
         let mut text = String::new();
         while let Some(ch) = self.peek() {
-            self.advance();
             if ch == '\n' {
                 break;
             }
+            self.advance();
             text.push(ch);
         }
-        self.record_status_pragma(&text, start);
+        let span = self.seal(start);
+        self.record_status_pragma(&text, span.clone());
+        Token {
+            kind: TokenKind::Comment(text.trim().to_string()),
+            span,
+        }
     }
 
     /// Recognize a `Status : <word>` TPTP header pragma inside one `%`
@@ -268,19 +283,25 @@ impl<'src> Tokenizer<'src> {
         });
     }
 
-    /// Skip a `/* … */` block comment (TPTP extension).
+    /// Read a `/* … */` block comment (TPTP extension).
     /// Returns an error if EOF is reached before `*/`.
-    fn skip_block_comment(&mut self, start: Span) -> Result<(), TptpParseError> {
+    fn read_block_comment(&mut self, start: Span) -> Result<Token, TptpParseError> {
+        let mut text = String::new();
         loop {
             match self.advance() {
                 None => return Err(TptpParseError::UnterminatedBlockComment { span: start }),
                 Some('*') if self.peek() == Some('/') => {
                     self.advance(); // consume '/'
-                    return Ok(());
+                    break;
                 }
-                _ => {}
+                Some(ch) => text.push(ch),
             }
         }
+        let span = self.seal(start);
+        Ok(Token {
+            kind: TokenKind::Comment(text.trim().to_string()),
+            span,
+        })
     }
 
     // ── String / quoted-atom readers ─────────────────────────────
@@ -428,14 +449,10 @@ impl<'src> Tokenizer<'src> {
 
         match ch {
             // ── Comments ──────────────────────────────────────────
-            '%' => {
-                self.skip_line_comment(self.seal(start.clone()));
-                self.next_token()
-            }
+            '%' => Ok(Some(self.read_line_comment(start))),
             '/' if self.peek() == Some('*') => {
                 self.advance(); // consume '*'
-                self.skip_block_comment(start)?;
-                self.next_token()
+                Ok(Some(self.read_block_comment(start)?))
             }
 
             // ── Parentheses / brackets ────────────────────────────
@@ -760,6 +777,59 @@ pub fn tokenize_with_meta(
     (tokens, errors, tok.metas)
 }
 
+/// [`tokenize`], with `%` / `/* */` comments dropped from the stream -- the
+/// historical comment-free view, for consumers that treat comments as pure
+/// whitespace and want no [`TokenKind::Comment`] entries to skip over. Spans
+/// and errors are unaffected; only the comment tokens are omitted.
+pub fn tokenize_without_comments(src: &str, file: &str) -> (Vec<Token>, Vec<TptpParseError>) {
+    let (mut tokens, errors) = tokenize(src, file);
+    tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
+    (tokens, errors)
+}
+
+/// Collect the comment tokens in `tokens` into consolidated
+/// [`CommentBlock`]s, in source order.
+///
+/// Consecutive comments merge into one block when the next comment starts on
+/// the line immediately after the block's last line AND no significant
+/// (non-comment) token appeared between them in the stream.  A blank line or
+/// any intervening code starts a new block.  A `/* … */` block comment can
+/// itself span multiple lines, so adjacency is judged against its *last*
+/// line (`span.end_line`), not its opening line.
+pub fn comment_blocks(tokens: &[Token]) -> Vec<CommentBlock> {
+    let mut blocks: Vec<CommentBlock> = Vec::new();
+    // True while the last token seen was the tail of the open block -- any
+    // significant token breaks the run.
+    let mut run_open = false;
+    // End line of the open block's LAST comment.  Adjacency is judged
+    // against this: a comment token's span swallows its terminating newline
+    // (or, for a block comment, may span many lines), so its end position is
+    // what the next comment's start line must be adjacent to.
+    let mut last_end_line = 0u32;
+    for tok in tokens {
+        let TokenKind::Comment(text) = &tok.kind else {
+            run_open = false;
+            continue;
+        };
+        match blocks.last_mut() {
+            Some(block) if run_open && tok.span.line == last_end_line + 1 => {
+                block.text.push('\n');
+                block.text.push_str(text);
+                block.span.end_line = tok.span.end_line;
+                block.span.end_col = tok.span.end_col;
+                block.span.end_offset = tok.span.end_offset;
+            }
+            _ => blocks.push(CommentBlock {
+                text: text.clone(),
+                span: tok.span.clone(),
+            }),
+        }
+        run_open = true;
+        last_end_line = tok.span.end_line;
+    }
+    blocks
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -927,18 +997,84 @@ mod tests {
     // ── Comments ─────────────────────────────────────────────────
 
     #[test]
-    fn line_comment_skipped() {
-        // A `%` comment should vanish entirely.
+    fn line_comment_ingested() {
         let kinds = toks("% this is a TPTP comment\nfoo");
-        assert_eq!(kinds.len(), 1);
-        assert!(matches!(&kinds[0], TokenKind::LowerWord(s) if s == "foo"));
+        assert!(matches!(&kinds[0], TokenKind::Comment(s) if s == "this is a TPTP comment"));
+        assert!(matches!(&kinds[1], TokenKind::LowerWord(s) if s == "foo"));
+        assert_eq!(kinds.len(), 2);
     }
 
     #[test]
-    fn block_comment_skipped() {
+    fn block_comment_ingested() {
         let kinds = toks("/* block */ bar");
-        assert_eq!(kinds.len(), 1);
-        assert!(matches!(&kinds[0], TokenKind::LowerWord(s) if s == "bar"));
+        assert!(matches!(&kinds[0], TokenKind::Comment(s) if s == "block"));
+        assert!(matches!(&kinds[1], TokenKind::LowerWord(s) if s == "bar"));
+        assert_eq!(kinds.len(), 2);
+    }
+
+    #[test]
+    fn multiline_block_comment_ingested_as_one_token() {
+        let kinds = toks("/* line one\nline two */ bar");
+        assert!(matches!(&kinds[0], TokenKind::Comment(s) if s == "line one\nline two"));
+        assert!(matches!(&kinds[1], TokenKind::LowerWord(s) if s == "bar"));
+    }
+
+    #[test]
+    fn tokenize_without_comments_restores_the_comment_free_stream() {
+        let src = "% header\nfof(a, axiom, /* inline */ p). % trailing";
+        let (with, errs_a) = tokenize(src, "test");
+        let (without, errs_b) = tokenize_without_comments(src, "test");
+        assert!(errs_a.is_empty() && errs_b.is_empty());
+        assert!(without
+            .iter()
+            .all(|t| !matches!(t.kind, TokenKind::Comment(_))));
+        let significant: Vec<_> = with
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Comment(_)))
+            .map(|t| (t.kind.clone(), t.span.offset))
+            .collect();
+        let stripped: Vec<_> = without
+            .iter()
+            .map(|t| (t.kind.clone(), t.span.offset))
+            .collect();
+        assert_eq!(significant, stripped);
+    }
+
+    #[test]
+    fn comment_blocks_merge_consecutive_lines() {
+        let (tokens, _) = tokenize("% line one\n% line two\nfoo", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "line one\nline two");
+    }
+
+    #[test]
+    fn comment_blocks_split_on_blank_line() {
+        let (tokens, _) = tokenize("% line one\n\n% line two\nfoo", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "line one");
+        assert_eq!(blocks[1].text, "line two");
+    }
+
+    #[test]
+    fn comment_blocks_split_on_intervening_code() {
+        let (tokens, _) = tokenize("% before\nfoo\n% after\nbar", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "before");
+        assert_eq!(blocks[1].text, "after");
+    }
+
+    #[test]
+    fn comment_blocks_do_not_merge_across_a_block_comment_gap() {
+        // The block comment ends two lines below where it started, so a
+        // line comment starting on the very next line after it must still
+        // merge -- adjacency is judged from `span.end_line`, not `span.line`.
+        let (tokens, _) = tokenize("/* line one\nline two */\n% line three\nfoo", "test");
+        let blocks = comment_blocks(&tokens);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "line one\nline two\nline three");
     }
 
     #[test]

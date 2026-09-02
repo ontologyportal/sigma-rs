@@ -2,6 +2,7 @@
 //! asks the KB for the symbol's defining sentence, and returns its `Location`.
 
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location};
+use sigmakee_rs_sdk::TopLayer;
 
 use crate::conv::{position_to_offset, span_to_range_with_fallback, tag_to_uri, uri_to_tag};
 use crate::state::GlobalState;
@@ -9,8 +10,8 @@ use crate::state::GlobalState;
 /// Handle a `textDocument/definition` request. Returns `None` when the cursor
 /// isn't on a known symbol, or the symbol has no defining sentence in the
 /// workspace.
-pub fn handle_goto_definition(
-    state: &GlobalState,
+pub fn handle_goto_definition<L: TopLayer>(
+    state: &GlobalState<L>,
     params: GotoDefinitionParams,
 ) -> Option<GotoDefinitionResponse> {
     let uri = params.text_document_position_params.text_document.uri;

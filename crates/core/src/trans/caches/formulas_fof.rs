@@ -18,6 +18,7 @@ impl CacheBehavior for FormulasFof {
     type Value = Option<CachedFormula>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "translation::formulas_fof";
 

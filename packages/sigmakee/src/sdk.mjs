@@ -13,10 +13,11 @@
  *     await s.ingest(Source.kif("(instance Socrates Man)"));
  *     s.ask("(instance Socrates Man)");   // -> { status: "Proved", ... }
  *
- * The raw bindings (`WasmNativeProver`, `WasmKnowledgeBase`) remain available
- * from the package root for direct, lower-level control.
+ * The raw binding (`Session`, exported from the package root) remains
+ * available for direct, lower-level control; it is aliased to `WasmSession`
+ * here so this facade's own `Session` class can wrap it.
  */
-import initWasm, { WasmNativeProver, WasmKnowledgeBase, Config, parseTest as wasmParseTest } from './sumo_parser_wasm.js';
+import initWasm, { Session as WasmSession, Config, parseTest as wasmParseTest } from './sumo_parser_wasm.js';
 
 export { Config };
 
@@ -147,9 +148,10 @@ export class Session {
   /** @param {{ backend?: string, config?: Config }} [opts] */
   constructor({ backend = Backend.Native, config } = {}) {
     this.#backend = backend;
-    this.#kb = backend === Backend.TranslationOnly
-      ? new WasmKnowledgeBase()
-      : new WasmNativeProver();
+    // One binding for both backends: the raw wasm `Session` carries the whole
+    // stack (native proving AND TPTP translation); `Backend.TranslationOnly`
+    // only changes how `ask`/`translate` behave on the facade.
+    this.#kb = new WasmSession();
     if (config) this.configure(config);
   }
 
@@ -219,7 +221,7 @@ export class Session {
       if (typeof opts.hook !== 'function') {
         throw new Error('ask() on a TranslationOnly session needs opts.hook(tptp)');
       }
-      return this.#kb.ask(queryKif, opts.hook);
+      return opts.hook(this.#kb.toTptpForAsk('', queryKif));
     }
     return this.#kb.ask(queryKif, opts.session);
   }
@@ -239,14 +241,11 @@ export class Session {
   }
 
   /**
-   * Render the KB as TPTP (TranslationOnly backend).
-   * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean, session?: string }} [opts]
+   * Render the whole KB as TPTP.
+   * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean }} [opts]
    */
-  translate({ lang = 'fof', hideNumbers = true, session } = {}) {
-    if (typeof this.#kb.toTptp !== 'function') {
-      throw new Error('translate() requires a TranslationOnly session');
-    }
-    return this.#kb.toTptp(lang, hideNumbers, session);
+  translate({ lang = 'fof', hideNumbers = true } = {}) {
+    return this.#kb.toTptpIndexed(lang, hideNumbers);
   }
 
   /** Pattern lookup; "_" is a wildcard. */
@@ -476,9 +475,9 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
 }
 
 // -- Standalone loaders --------------------------------------------------------
-// The same fetch/File logic as Session#ingest, but operating directly on a raw
-// binding (`WasmNativeProver` / `WasmKnowledgeBase`) for callers not using the
-// Session facade. Any object with `loadKif(text, tag) => string[]` works.
+// The same fetch/File logic as Session#ingest, but operating directly on the
+// raw wasm `Session` binding for callers not using this facade. Any object
+// with `loadKif(text, tag) => string[]` works.
 
 /** @param {{loadKif(t:string,g:string):string[]}} kb @returns {Promise<LoadReport>} */
 export function loadFromUrl(kb, url, tag = url) { return ingestUrl(kb, { url, tag }); }

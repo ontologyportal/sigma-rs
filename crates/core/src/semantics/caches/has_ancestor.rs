@@ -1,7 +1,7 @@
 //! `semantic::has_ancestor` cache: memoises whether `ancestor` lies anywhere in
 //! `sym`'s taxonomy chain.
 
-use crate::cache::{CacheBehavior, EntryCache};
+use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::types::{Scope, Scoped};
 use crate::semantics::SemanticLayer;
 use crate::SymbolId;
@@ -48,8 +48,20 @@ impl CacheBehavior for HasAncestor {
     type Value = bool;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = SymbolId;
 
     const NAME: &'static str = "semantic::has_ancestor";
+    const TAG_INDEXED: bool = true;
+
+    /// Unlike `is_class`/`is_instance`/etc (one entry per `sym` per scope, so
+    /// a Base-scope entry's key is fully deterministic and cheap to
+    /// reconstruct), `has_ancestor`'s key also varies over `ancestor` -- a
+    /// single `sym` can have arbitrarily many cached `(sym, ancestor)` pairs
+    /// even within Base scope. So every entry is indexed, Base included;
+    /// there's no cheaper direct-reconstruction path here.
+    fn tag_of(key: &Scoped<(SymbolId, SymbolId)>) -> Option<SymbolId> {
+        Some(key.key.0)
+    }
 
     fn generate(
         &self,
@@ -77,22 +89,24 @@ impl CacheBehavior for HasAncestor {
     }
 
     fn reads(&self) -> &'static [&'static str] {
-        &["semantic::tax_edges", "syntactic::sessions"]
+        &[
+            super::tax_edges::TaxEdges::NAME,
+            crate::syntactic::caches::session::SessionCache::NAME,
+        ]
     }
 
     fn react(
         &self,
         _parent: &SemanticLayer,
         events: &[&crate::cache::events::Event],
-        store: &EntryCache<Scoped<(SymbolId, SymbolId)>, bool>,
+        store: &EntryCache<Scoped<(SymbolId, SymbolId)>, bool, SymbolId>,
         _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events
-            .iter()
-            .any(|e| matches!(e, Event::TaxonomyChanged { .. }))
-        {
-            store.clear();
+        for event in events.iter() {
+            if let Event::TaxonomyChanged { syms } = event {
+                store.evict_by_tag(syms);
+            }
         }
         Vec::new()
     }
@@ -110,6 +124,19 @@ mod tests {
             layer.has_ancestor(human, human),
             "every symbol is its own ancestor (short-circuit)"
         );
+    }
+
+    #[test]
+    fn has_ancestor_true_for_chain() {
+        let layer = kif_layer(
+            "
+            (subclass Dog Animal)
+            (instance Rex Dog)
+        ",
+        );
+        let rex = layer.syntactic.sym_id("Rex").unwrap();
+        let animal = layer.syntactic.sym_id("Animal").unwrap();
+        assert!(layer.has_ancestor(rex, animal));
     }
 
     #[test]

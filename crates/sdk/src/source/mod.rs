@@ -490,7 +490,10 @@ mod tests {
         assert_eq!(files.len(), 1, "one SourceFile per http source");
         let sf = files.pop().unwrap();
         assert_eq!(sf.name, "Merge.kif", "name comes from the last URL segment");
-        assert!(matches!(sf.parser, Parser::Kif), "`.kif` detected as KIF");
+        assert!(
+            matches!(sf.parser, Parser::Kif { .. }),
+            "`.kif` detected as KIF"
+        );
         assert!(
             matches!(sf.origin, FileOrigin::Remote),
             "tagged as a remote fetch"
@@ -519,7 +522,7 @@ mod tests {
         );
         let merge = &files[0];
         assert_eq!(merge.name, "Merge.kif");
-        assert!(matches!(merge.parser, Parser::Kif));
+        assert!(matches!(merge.parser, Parser::Kif { .. }));
         match &merge.origin {
             FileOrigin::Git(prov) => {
                 assert_eq!(prov.branch, "master", "records the branch that was fetched");
@@ -550,7 +553,7 @@ mod tests {
             .iter()
             .find(|sf| sf.name == "CarBrands.kif")
             .expect("CarBrands.kif surfaced from the SimpleFacts directory");
-        assert!(matches!(car.parser, Parser::Kif));
+        assert!(matches!(car.parser, Parser::Kif { .. }));
         assert!(matches!(car.origin, FileOrigin::Git(_)));
         assert!(!car.contents.trim().is_empty(), "blob should have content");
     }

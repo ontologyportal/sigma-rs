@@ -122,7 +122,7 @@ mod tests {
 
     fn parse_kif_formula(kif: &str) -> AstNode {
         use crate::parse::parse_document;
-        let doc = parse_document("test", kif, crate::Parser::Kif);
+        let doc = parse_document("test", kif, crate::Parser::Kif { options: None });
         assert!(!doc.has_errors(), "parse errors: {:?}", doc.parse_errors);
         doc.ast
             .into_iter()

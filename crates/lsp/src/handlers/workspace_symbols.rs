@@ -9,6 +9,7 @@ use lsp_types::{
 
 use crate::conv::{span_to_range_with_fallback, tag_to_uri};
 use crate::state::GlobalState;
+use sigmakee_rs_sdk::TopLayer;
 
 /// Hard cap on how many symbols are streamed back per query.
 const MAX_RESULTS: usize = 500;
@@ -16,8 +17,8 @@ const MAX_RESULTS: usize = 500;
 /// Handle a `workspace/symbol` request, returning up to [`MAX_RESULTS`] symbols
 /// whose names contain `query` (case-insensitive). Returns `None` if the shared
 /// state locks cannot be acquired.
-pub fn handle_workspace_symbols(
-    state: &GlobalState,
+pub fn handle_workspace_symbols<L: TopLayer>(
+    state: &GlobalState<L>,
     params: WorkspaceSymbolParams,
 ) -> Option<WorkspaceSymbolResponse> {
     let query = params.query.to_lowercase();
@@ -67,7 +68,7 @@ pub fn handle_workspace_symbols(
 }
 
 /// Map a sigmakee-rs-core symbol to an LSP `SymbolKind` by taxonomy role.
-fn classify_symbol(kb: &sigmakee_rs_sdk::KnowledgeBase, name: &str) -> SymbolKind {
+fn classify_symbol<L: TopLayer>(kb: &sigmakee_rs_sdk::KnowledgeBase<L>, name: &str) -> SymbolKind {
     let Some(id) = kb.symbol_id(name) else {
         return SymbolKind::NULL;
     };

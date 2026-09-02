@@ -4,11 +4,12 @@
 //! in a requested document is classified and emitted in LSP's delta-encoded
 //! 5-tuple form `[deltaLine, deltaStart, length, typeIdx, modifiersBitset]`.
 //!
-//! Tokens come from re-tokenising the current rope's text via
-//! `sigmakee_rs_core::tokenize_kif`. Symbol classification consults the shared
-//! KB: `KnowledgeBase::is_class` highlights as `type`; a
-//! predicate/function/relation as `function`; anything else falls back to a
-//! title-case heuristic. Operators are always `keyword`.
+//! Tokens come from the document's cached token stream (`DocState::tokens`,
+//! computed once per reparse). Symbol classification consults the shared
+//! KB: `KnowledgeBase::is_class` highlights as `type`; `is_function` as
+//! `function`; a predicate or any other non-function relation as
+//! `relation`; anything else falls back to a title-case heuristic.
+//! Operators are always `keyword`.
 
 use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
@@ -16,7 +17,7 @@ use lsp_types::{
 };
 use ropey::Rope;
 
-use sigmakee_rs_sdk::{tokenize_kif, KnowledgeBase, TokenKind};
+use sigmakee_rs_sdk::{KnowledgeBase, TokenKind, TopLayer};
 
 use crate::conv::{offset_to_position, uri_to_tag};
 use crate::state::GlobalState;
@@ -29,12 +30,14 @@ use crate::state::GlobalState;
 /// Order matters: the client uses the index to look up the type name. Never
 /// reorder without bumping the legend version.
 pub const TOKEN_TYPES: &[SemanticTokenType] = &[
-    SemanticTokenType::KEYWORD,  // 0: logical operators
-    SemanticTokenType::TYPE,     // 1: class-like symbols
-    SemanticTokenType::FUNCTION, // 2: predicate / function / relation symbols
-    SemanticTokenType::VARIABLE, // 3: ?X, @X
-    SemanticTokenType::STRING,   // 4: "string literals"
-    SemanticTokenType::NUMBER,   // 5: numeric literals
+    SemanticTokenType::KEYWORD,         // 0: logical operators
+    SemanticTokenType::TYPE,            // 1: class-like symbols
+    SemanticTokenType::FUNCTION,        // 2: function symbols (is_function)
+    SemanticTokenType::VARIABLE,        // 3: ?X, @X
+    SemanticTokenType::STRING,          // 4: "string literals"
+    SemanticTokenType::NUMBER,          // 5: numeric literals
+    SemanticTokenType::COMMENT,         // 6: ; line comments
+    SemanticTokenType::new("relation"), // 7: predicate / non-function relation symbols
 ];
 
 // Indices into TOKEN_TYPES.  `u32` matches LSP's wire type.
@@ -44,6 +47,8 @@ const T_FUNCTION: u32 = 2;
 const T_VARIABLE: u32 = 3;
 const T_STRING: u32 = 4;
 const T_NUMBER: u32 = 5;
+const T_COMMENT: u32 = 6;
+const T_RELATION: u32 = 7;
 
 /// Assemble the legend value used in server capabilities.
 pub fn semantic_tokens_legend() -> SemanticTokensLegend {
@@ -58,8 +63,8 @@ pub fn semantic_tokens_legend() -> SemanticTokensLegend {
 /// Handle a `textDocument/semanticTokens/full` request, returning the
 /// document's classified tokens in LSP delta-encoded form, or `None` when the
 /// document or KB is unavailable.
-pub fn handle_semantic_tokens_full(
-    state: &GlobalState,
+pub fn handle_semantic_tokens_full<L: TopLayer>(
+    state: &GlobalState<L>,
     params: SemanticTokensParams,
 ) -> Option<SemanticTokensResult> {
     let uri = params.text_document.uri;
@@ -71,12 +76,37 @@ pub fn handle_semantic_tokens_full(
     let kb = session.kb();
 
     let rope = &doc.rope;
-
-    let text = String::from(rope);
-    let (tokens, _errs) = tokenize_kif(&text, &tag);
+    let tokens = &doc.tokens;
     let mut classified: Vec<ClassifiedToken> = Vec::with_capacity(tokens.len());
-    for tok in &tokens {
-        if let Some(ct) = classify_token(tok, kb) {
+    // In a `.kif.tq` test file, a harness-directive head (`note` / `time` /
+    // `answer` / `file` / `query` / `ask`) at the top level is a keyword --
+    // the KB can never classify it, so the symbol fallback would paint it as
+    // an ordinary function.  Track "first token after a top-level `(`" with
+    // a depth counter; comments are transparent to head position.
+    let is_tq = crate::server::is_tq(&tag);
+    let mut depth = 0usize;
+    let mut head_pending = false;
+    for tok in tokens {
+        let directive_head = is_tq
+            && depth == 1
+            && head_pending
+            && matches!(&tok.kind, TokenKind::Symbol(n) if sigmakee_rs_sdk::is_tq_directive(n));
+        match &tok.kind {
+            TokenKind::LParen => {
+                depth += 1;
+                head_pending = true;
+            }
+            TokenKind::RParen => {
+                depth = depth.saturating_sub(1);
+                head_pending = false;
+            }
+            TokenKind::Comment(_) => {}
+            _ => head_pending = false,
+        }
+        if let Some(mut ct) = classify_token(tok, kb) {
+            if directive_head {
+                ct.type_idx = T_KEYWORD;
+            }
             classified.push(ct);
         }
     }
@@ -98,7 +128,10 @@ struct ClassifiedToken {
     type_idx: u32,
 }
 
-fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<ClassifiedToken> {
+fn classify_token<L: TopLayer>(
+    tok: &sigmakee_rs_sdk::Token,
+    kb: &KnowledgeBase<L>,
+) -> Option<ClassifiedToken> {
     let type_idx = match &tok.kind {
         TokenKind::LParen | TokenKind::RParen => return None,
         TokenKind::Operator(_) => T_KEYWORD,
@@ -106,6 +139,7 @@ fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<Cl
         TokenKind::Number(_) => T_NUMBER,
         TokenKind::Variable(_) | TokenKind::RowVariable(_) => T_VARIABLE,
         TokenKind::Symbol(name) => classify_symbol(name, kb),
+        TokenKind::Comment(_) => T_COMMENT,
     };
     Some(ClassifiedToken {
         start_offset: tok.span.offset,
@@ -117,7 +151,12 @@ fn classify_token(tok: &sigmakee_rs_sdk::Token, kb: &KnowledgeBase) -> Option<Cl
 /// Decide the semantic-token type for a symbol name. Queries the KB first
 /// (taxonomy-aware); falls back to a title-case heuristic (capitalized ->
 /// type, otherwise function) for symbols the KB has not classified.
-fn classify_symbol(name: &str, kb: &KnowledgeBase) -> u32 {
+///
+/// A function (`is_function`) and a non-function relation (a predicate, or
+/// any other declared relation) get distinct token types -- `function` vs
+/// `relation` -- so a client theme can color `(SuccessorFn ?X)` differently
+/// from `(subclass ?X ?Y)`.
+fn classify_symbol<L: TopLayer>(name: &str, kb: &KnowledgeBase<L>) -> u32 {
     if let Some(id) = kb.symbol_id(name) {
         if kb.is_class(id) {
             return T_TYPE;
@@ -125,11 +164,8 @@ fn classify_symbol(name: &str, kb: &KnowledgeBase) -> u32 {
         if kb.is_function(id) {
             return T_FUNCTION;
         }
-        if kb.is_predicate(id) {
-            return T_FUNCTION;
-        }
-        if kb.is_relation(id) {
-            return T_FUNCTION;
+        if kb.is_predicate(id) || kb.is_relation(id) {
+            return T_RELATION;
         }
         // Known but unclassified: fall through to the heuristic.
     }
@@ -192,7 +228,7 @@ fn encode_delta(tokens: &[ClassifiedToken], rope: &Rope) -> Vec<SemanticToken> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sigmakee_rs_sdk::KnowledgeBase;
+    use sigmakee_rs_sdk::{tokenize_kif, KnowledgeBase};
 
     /// Build a KB with `text` loaded as `file`.
     fn kb_with(text: &str, file: &str) -> KnowledgeBase {
@@ -286,6 +322,28 @@ mod tests {
         let toks = tokens_for("(P)", "t.kif");
         let classified: Vec<_> = toks.iter().filter_map(|t| classify_token(t, &kb)).collect();
         assert_eq!(classified.len(), 1);
+    }
+
+    #[test]
+    fn declared_function_is_function_declared_predicate_is_relation() {
+        let src = "(instance SuccessorFn Function)\n(instance likes Predicate)";
+        let mut kb = kb_with(src, "t.kif");
+        // `is_function`/`is_predicate` read `Base` scope; an ingested-but-
+        // unpromoted session isn't visible there yet.
+        kb.make_session_axiomatic("t.kif").expect("promote to Base");
+        let toks = tokens_for(src, "t.kif");
+
+        let func_tok = toks
+            .iter()
+            .find(|t| matches!(&t.kind, TokenKind::Symbol(s) if s == "SuccessorFn"))
+            .expect("SuccessorFn token");
+        assert_eq!(classify_token(func_tok, &kb).unwrap().type_idx, T_FUNCTION);
+
+        let pred_tok = toks
+            .iter()
+            .find(|t| matches!(&t.kind, TokenKind::Symbol(s) if s == "likes"))
+            .expect("likes token");
+        assert_eq!(classify_token(pred_tok, &kb).unwrap().type_idx, T_RELATION);
     }
 
     #[test]

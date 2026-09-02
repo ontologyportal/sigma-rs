@@ -111,7 +111,7 @@ impl<L: TopLayer> Session<L> {
                 // ordinary, promotable axioms — not as `tc.axioms` support.
                 if !background.is_empty() {
                     errs.extend(self.ingest_inner(SourceFile {
-                        parser: Parser::Kif,
+                        parser: Parser::Kif { options: None },
                         name: sf.name.clone(),
                         path: sf.path.clone(),
                         origin: sf.origin,

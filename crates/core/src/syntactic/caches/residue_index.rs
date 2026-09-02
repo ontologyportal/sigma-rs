@@ -56,6 +56,18 @@ pub(crate) enum CoinMeaning {
     Lit,
 }
 
+/// A ground value for one seat, for [`ResidueIndex::probe_ground`] — the
+/// residue-index-representable subset of a pattern element.  A pattern
+/// variable is never ground here: the index can't distinguish "this
+/// specific variable" from any other, so a `Var` position is left as an
+/// open seat by the caller instead of being represented as a `GroundSeat`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GroundSeat<'a> {
+    Sym(SymbolId),
+    Op(&'a crate::parse::OpKind),
+    Literal(&'a Literal),
+}
+
 /// The coin for `meaning` sitting in `seat`.  Nonzero (0 is the XOR
 /// identity and can never participate in a sketch).
 fn coin(seat: u8, meaning: &CoinMeaning) -> u64 {
@@ -349,6 +361,48 @@ impl ResidueIndex {
         out
     }
 
+    /// Roots at `arity` whose seats named in `ground` hold exactly the
+    /// given values; every other seat is treated as open.  Generalizes
+    /// [`Self::by_head_ids`] / [`Self::by_head_arg1_ids`] to an arbitrary
+    /// ground-seat subset (e.g. head + arg2 ground, arg1 open) — the
+    /// underlying probe is unchanged, only the choice of pinned seats
+    /// differs.  `None` when `arity` exceeds [`MAX_SEATS`] and no seat-0
+    /// (head) symbol is given to fall back to the head-only `oversize`
+    /// bucket — the caller should use a non-indexed scan in that case.
+    fn probe_ground(
+        &mut self,
+        arity: u8,
+        ground: &[(usize, GroundSeat)],
+    ) -> Option<Vec<SentenceId>> {
+        if arity as usize > MAX_SEATS {
+            let head = ground.iter().find_map(|&(seat, v)| match (seat, v) {
+                (0, GroundSeat::Sym(h)) => Some(h),
+                _ => None,
+            });
+            return head.map(|h| {
+                self.oversize
+                    .get(&h)
+                    .map(|b| b.to_vec())
+                    .unwrap_or_default()
+            });
+        }
+        let mut p_coins = vec![0u64; arity as usize];
+        let mut keep = Vec::with_capacity(ground.len());
+        for &(seat, value) in ground {
+            let c = match value {
+                GroundSeat::Sym(id) => coin(seat as u8, &CoinMeaning::Sym(id)),
+                GroundSeat::Op(op) => coin(seat as u8, &CoinMeaning::Sym(u64::from(op_byte(op)))),
+                GroundSeat::Literal(lit) => coin_lit(seat as u8, lit),
+            };
+            p_coins[seat] = c;
+            keep.push(seat);
+        }
+        let p_mask = mask_all_but(arity, &keep);
+        let mut out = Vec::new();
+        self.probe(arity, p_mask, &p_coins, &mut out);
+        Some(out)
+    }
+
     /// Ground binary facts `(head subject OBJ)` with the object recovered
     /// by decoding the residual, without resolving the sentence. Returns
     /// `(object, sid)` pairs; a symbol object decodes to `Some`, while a
@@ -561,6 +615,21 @@ impl SyntacticLayer {
             .update_with(|idx| idx.by_head_arg1_ids(head, subject))
     }
 
+    /// Roots at `arity` whose seats in `ground` hold exactly the given
+    /// values — the general form behind [`Self::by_head_id`] /
+    /// [`Self::by_head_arg1`], for callers (the pattern matcher) that know
+    /// more ground positions than just the head/subject.  `None` when the
+    /// caller should fall back to a non-indexed scan (see
+    /// [`ResidueIndex::probe_ground`]).
+    pub(crate) fn probe_ground(
+        &self,
+        arity: u8,
+        ground: &[(usize, GroundSeat)],
+    ) -> Option<Vec<SentenceId>> {
+        self.residue
+            .update_with(|idx| idx.probe_ground(arity, ground))
+    }
+
     /// Ground binary facts `(head subject OBJ)` with the object
     /// recovered by residual decoding where possible (`None` object ⇒
     /// caller resolves the sentence — non-symbol object or collision).
@@ -713,5 +782,43 @@ mod tests {
             assert!(matches!(s.elements.get(2),
                 Some(crate::Element::Symbol(sym)) if sym.id() == b));
         }
+    }
+
+    /// The generalized [`SyntacticLayer::probe_ground`] finds `(located ? B)`
+    /// by second argument -- the public entry point the pattern matcher
+    /// calls, exercising the same seats [`probe_by_second_argument`] drives
+    /// through the private `probe` directly.
+    #[test]
+    fn probe_ground_by_second_argument() {
+        let mut layer = SyntacticLayer::default();
+        layer.load_kif("(located A B)(located C B)(located B D)", "test");
+        let located = layer.sym_id("located").unwrap();
+        let b = layer.sym_id("B").unwrap();
+
+        let ground = [
+            (0, super::GroundSeat::Sym(located)),
+            (2, super::GroundSeat::Sym(b)),
+        ];
+        let sids = layer.probe_ground(3, &ground).expect("indexable");
+        assert_eq!(sids.len(), 2, "(located A B) and (located C B)");
+        for sid in sids {
+            let s = layer.sentence(sid).unwrap();
+            assert!(matches!(s.elements.get(2),
+                Some(crate::Element::Symbol(sym)) if sym.id() == b));
+        }
+    }
+
+    /// A ground head with no other ground seats still narrows correctly
+    /// (equivalent to `by_head_id`, just reached through the generalized
+    /// path with an empty tail of ground seats).
+    #[test]
+    fn probe_ground_head_only() {
+        let mut layer = SyntacticLayer::default();
+        layer.load_kif("(foo A B)(foo B C)(bar X Y)", "test");
+        let foo = layer.sym_id("foo").unwrap();
+
+        let ground = [(0, super::GroundSeat::Sym(foo))];
+        let sids = layer.probe_ground(3, &ground).expect("indexable");
+        assert_eq!(sids.len(), 2);
     }
 }

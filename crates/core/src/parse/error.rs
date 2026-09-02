@@ -36,4 +36,39 @@ use Severity as _UnusedSeverity;
 pub enum GenericParseError {
     #[error("duplicate formula")]
     DuplicateNode { span: Span },
+    #[error(
+        "unknown file type ({filename}): file could not be matched to a parser by its extension"
+    )]
+    UnknownFileType { filename: String },
+}
+
+impl ParseError for GenericParseError {
+    fn get_span(&self) -> Span {
+        match self {
+            GenericParseError::DuplicateNode { span } => span.clone(),
+            GenericParseError::UnknownFileType { filename } => {
+                Span::whole_file(filename.to_owned())
+            }
+        }
+    }
+}
+
+impl ToDiagnostic for GenericParseError {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let code: &'static str = match self {
+            GenericParseError::DuplicateNode { .. } => "duplicate-node",
+            GenericParseError::UnknownFileType { .. } => "unknown-filetype",
+        };
+        Diagnostic {
+            kind: "parse",
+            range: self.get_span(),
+            severity: Severity::Error,
+            code,
+            message: self.to_string(),
+            related: Vec::new(),
+            sids: Vec::new(),
+            highlight_arg: -1,
+            highlight_var: None,
+        }
+    }
 }

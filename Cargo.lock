@@ -2801,6 +2801,7 @@ dependencies = [
  "log",
  "lsp-server",
  "lsp-types",
+ "percent-encoding",
  "ropey",
  "serde",
  "serde_json",
@@ -2813,11 +2814,15 @@ name = "sumo-parser-wasm"
 version = "2.1.3"
 dependencies = [
  "js-sys",
+ "log",
+ "lsp-server",
  "parking_lot_core",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "sigmakee-rs-core",
+ "sigmakee-rs-sdk",
+ "sumo-lsp",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
 ]

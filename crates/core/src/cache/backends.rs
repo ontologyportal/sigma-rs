@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 // ---------------------------------------------------------------------------
 // Cycle detection — `get_or_insert_with` / `get_or_init` re-entry guard
@@ -242,7 +242,7 @@ impl CacheConfig {
 /// Wasted CPU on contended first-time misses is bounded by the number of
 /// concurrent rayon workers (≤ NUM_CPUS).
 #[derive(Debug)]
-pub(crate) struct EntryCache<K: Eq + Hash, V> {
+pub(crate) struct EntryCache<K: Eq + Hash, V, T: Eq + Hash + Clone = ()> {
     map: DashMap<K, V>,
     config: CacheConfig,
     name: &'static str,
@@ -250,9 +250,39 @@ pub(crate) struct EntryCache<K: Eq + Hash, V> {
     /// (`clear`/`evict_keys`/`retain`/`update`/`restore`), so a lazy fill that
     /// overlapped such a mutation refuses to memoise.  See [`Epoch`].
     epoch: Epoch,
+    /// Optional reverse index from an invalidation tag `T` (some projection of
+    /// the key the owning cache's `CacheBehavior` chooses -- this module knows
+    /// nothing about what `T` means) to the exact keys currently cached for
+    /// it, so [`evict_by_tag`](Self::evict_by_tag) can remove exactly the
+    /// affected entries in O(|tags|) instead of a full-map
+    /// [`retain`](Self::retain) scan.  `None` for caches that never opt in via
+    /// [`with_tag_index`](Self::with_tag_index) -- zero overhead for them.
+    tag_index: Option<TagIndex<K, T>>,
 }
 
-impl<K: Eq + Hash, V> EntryCache<K, V> {
+/// Reverse index backing [`EntryCache::evict_by_tag`].  `tag_of` may return
+/// `None` for a given key to opt it out of indexing entirely -- no entry is
+/// added to `index`, and no bookkeeping happens on insert or eviction for it.
+///
+/// This is the mechanism session-scoped caches use to reconcile "a symbol may
+/// be cached under an unbounded number of session scopes" (needs the index)
+/// against "a Base-scope entry's key is fully deterministic, so it costs
+/// nothing extra to reconstruct and evict directly" (`tag_of` returns `None`
+/// for it, and the caller evicts the literal Base key itself).
+struct TagIndex<K: Eq + Hash, T: Eq + Hash + Clone> {
+    tag_of: fn(&K) -> Option<T>,
+    index: DashMap<T, DashSet<K>>,
+}
+
+impl<K: Eq + Hash, T: Eq + Hash + Clone> std::fmt::Debug for TagIndex<K, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TagIndex")
+            .field("tags", &self.index.len())
+            .finish()
+    }
+}
+
+impl<K: Eq + Hash, V, T: Eq + Hash + Clone> EntryCache<K, V, T> {
     /// Create a new, empty cache sharing `config`, identified by `name`.
     pub(crate) fn new(config: &CacheConfig, name: &'static str) -> Self {
         Self {
@@ -260,6 +290,28 @@ impl<K: Eq + Hash, V> EntryCache<K, V> {
             config: config.clone(),
             name,
             epoch: Epoch::default(),
+            tag_index: None,
+        }
+    }
+
+    /// Like [`new`](Self::new), but additionally maintains a [`TagIndex`] keyed
+    /// by `tag_of`'s projection, enabling O(|tags|) [`evict_by_tag`](Self::evict_by_tag)
+    /// invalidation. `tag_of` returning `None` for a key opts it out of the
+    /// index (see [`TagIndex`]'s doc comment).
+    pub(crate) fn with_tag_index(
+        config: &CacheConfig,
+        name: &'static str,
+        tag_of: fn(&K) -> Option<T>,
+    ) -> Self {
+        Self {
+            map: DashMap::new(),
+            config: config.clone(),
+            name,
+            epoch: Epoch::default(),
+            tag_index: Some(TagIndex {
+                tag_of,
+                index: DashMap::new(),
+            }),
         }
     }
 
@@ -269,7 +321,7 @@ impl<K: Eq + Hash, V> EntryCache<K, V> {
     }
 }
 
-impl<K: Eq + Hash, V> Default for EntryCache<K, V> {
+impl<K: Eq + Hash, V, T: Eq + Hash + Clone> Default for EntryCache<K, V, T> {
     /// Constructs a standalone, always-enabled cache with no shared config.
     /// Prefer explicit `new(config, name)` for production use so caches share
     /// a single `CacheConfig` and respond to runtime `enable`/`disable` calls.
@@ -279,7 +331,7 @@ impl<K: Eq + Hash, V> Default for EntryCache<K, V> {
 }
 
 #[allow(dead_code)]
-impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
+impl<K: Eq + Hash + Clone, V: Clone, T: Eq + Hash + Clone> EntryCache<K, V, T> {
     /// Return a clone of the cached value for `key`, or `None` if absent
     /// or if the cache is disabled.
     pub(crate) fn get(&self, key: &K) -> Option<V> {
@@ -367,14 +419,41 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
         let v = f(&key);
         if !epoch_gated || self.epoch.now() == entry_epoch {
             self.map.insert(key.clone(), v.clone());
+            self.index_insert(&key);
         }
         v
+    }
+
+    /// Add `key` to the tag index, if this cache has one and `tag_of(key)`
+    /// returns `Some`.  No-op otherwise.
+    fn index_insert(&self, key: &K) {
+        let Some(ti) = &self.tag_index else { return };
+        let Some(tag) = (ti.tag_of)(key) else { return };
+        ti.index.entry(tag).or_default().insert(key.clone());
+    }
+
+    /// Remove `key` from the tag index, if present, dropping the tag's entry
+    /// entirely once it holds no more keys (so retracted tags don't linger).
+    fn index_remove(&self, key: &K) {
+        let Some(ti) = &self.tag_index else { return };
+        let Some(tag) = (ti.tag_of)(key) else { return };
+        let now_empty = match ti.index.get(&tag) {
+            Some(set) => {
+                set.remove(key);
+                set.is_empty()
+            }
+            None => false,
+        };
+        if now_empty {
+            ti.index.remove(&tag);
+        }
     }
 
     /// Insert or overwrite the entry for `key`.  No-op when disabled.
     pub(crate) fn update(&self, key: K, value: V) {
         if self.enabled() {
-            self.map.insert(key, value);
+            self.map.insert(key.clone(), value);
+            self.index_insert(&key);
             self.epoch.bump();
         }
     }
@@ -384,15 +463,43 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
         if self.enabled() && !keys.is_empty() {
             for k in keys {
                 self.map.remove(k);
+                self.index_remove(k);
             }
             self.epoch.bump();
         }
+    }
+
+    /// Remove exactly the entries indexed under `tags` (see
+    /// [`with_tag_index`](Self::with_tag_index)), in O(|tags| + affected
+    /// entries) rather than a full-map [`retain`](Self::retain) scan.
+    ///
+    /// No-op for a cache with no tag index. Keys a behavior's `tag_of` opted
+    /// out of indexing (returned `None` for) are untouched here -- the caller
+    /// is expected to reconstruct and evict those deterministically via
+    /// [`evict_keys`](Self::evict_keys) instead (see [`TagIndex`]'s doc
+    /// comment for why that's cheaper than indexing them too).
+    pub(crate) fn evict_by_tag(&self, tags: &[T]) {
+        let Some(ti) = &self.tag_index else { return };
+        if !self.enabled() || tags.is_empty() {
+            return;
+        }
+        for tag in tags {
+            if let Some((_, keys)) = ti.index.remove(tag) {
+                for k in keys {
+                    self.map.remove(&k);
+                }
+            }
+        }
+        self.epoch.bump();
     }
 
     /// Remove all entries.  No-op when disabled.
     pub(crate) fn clear(&self) {
         if self.enabled() {
             self.map.clear();
+            if let Some(ti) = &self.tag_index {
+                ti.index.clear();
+            }
             self.epoch.bump();
         }
     }
@@ -404,7 +511,21 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
         F: FnMut(&K, &mut V) -> bool,
     {
         if self.enabled() {
-            self.map.retain(|k, v| predicate(k, v));
+            if self.tag_index.is_some() {
+                let mut removed = Vec::new();
+                self.map.retain(|k, v| {
+                    let keep = predicate(k, v);
+                    if !keep {
+                        removed.push(k.clone());
+                    }
+                    keep
+                });
+                for k in &removed {
+                    self.index_remove(k);
+                }
+            } else {
+                self.map.retain(|k, v| predicate(k, v));
+            }
             self.epoch.bump();
         }
     }
@@ -424,8 +545,12 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     pub(crate) fn restore(&self, map: HashMap<K, V>) {
         if self.enabled() {
             self.map.clear();
+            if let Some(ti) = &self.tag_index {
+                ti.index.clear();
+            }
             for (k, v) in map {
-                self.map.insert(k, v);
+                self.map.insert(k.clone(), v);
+                self.index_insert(&k);
             }
             self.epoch.bump();
         }
@@ -479,7 +604,7 @@ impl<K: Eq + Hash + Clone, V: Clone> EntryCache<K, V> {
     }
 }
 
-impl<K: Eq + Hash + Clone, V: Default> EntryCache<K, V> {
+impl<K: Eq + Hash + Clone, V: Default, T: Eq + Hash + Clone> EntryCache<K, V, T> {
     /// Call `f` on the entry for `key`, inserting a `V::default()` if
     /// absent.  Useful for `Vec`-valued maps where individual items are
     /// pushed incrementally.  No-op when disabled.

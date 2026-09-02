@@ -8,6 +8,7 @@ import { $, esc, escAttr, withBusy } from '../dom.ts';
 import { fetchText, fetchAllTexts } from '../sources.ts';
 import { fetchSumoTree } from '../github-api.ts';
 import { ingestConstituent, removeConstituent, reprocess } from '../kb.ts';
+import { lspReset } from '../editor/lsp-client.ts';
 import { addTest, isTestFile, loadedSumoTestNames } from './tests.ts';
 import { navigate } from '../router.ts';
 
@@ -74,6 +75,7 @@ async function loadPreset(key) {
     state.savedConstituents = [];
     localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(state.savedConstituents));
     await call('newSession');
+    lspReset(); // the worker dropped its WasmLsp with the session
     renderConstituents();
 
     const total = preset.files.length;

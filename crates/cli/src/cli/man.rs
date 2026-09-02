@@ -453,7 +453,11 @@ fn push_sentence_block(
 
     match mode {
         FormulaMode::Kif => {
-            let pretty = kb.pretty_print_sentence(sid, 4);
+            // Show every source formula that produced this sentence
+            // (logical equivalents collapse to one sid), flattened into the
+            // listing as consecutive lines; falls back to the canonicalized
+            // sentence when no source AST is recorded.
+            let pretty = kb.display_source_pretty(sid, 4);
             for line in pretty.lines() {
                 doc.push_line(vec![plain("    "), pre_styled(line.to_string())]);
             }

@@ -11,6 +11,7 @@ import { state } from './state.ts';
 import { call } from './rpc.ts';
 import { $, esc } from './dom.ts';
 import { scheduleKbCacheSave } from './kb-cache.ts';
+import { lspReset, lspSyncDocument } from './editor/lsp-client.ts';
 import { recordSave, forgetChange } from './changes.ts';
 import { refreshChangeUi } from './tabs/contribute.ts';
 import { currentTab, routeFromLocation, showTab } from './router.ts';
@@ -43,6 +44,7 @@ export async function ingestConstituent(name, text, origin = 'sumo') {
 /** Rebuild the worker session from the current (cached) constituents — used by remove/reset/edit. */
 async function rebuildSession() {
   await call('newSession');
+  lspReset(); // the worker dropped its WasmLsp with the session
   for (const c of state.constituents) await call('ingest', { name: c.name, text: c.text });
 }
 
@@ -74,13 +76,13 @@ export async function updateConstituentText(name, text, origin = 'file') {
     return r;
   }
   state.constituents[idx] = { ...state.constituents[idx], text };
-  // In-place diff-commit instead of rebuildSession(): validateBuffer stages
-  // the buffer under the file's own name and commits it, so only the changed
+  // In-place diff-commit instead of rebuildSession(): the LSP didChange lane
+  // reconciles the buffer under the file's own name, so only the changed
   // sentences are processed — a one-formula edit costs a diff, not a full
   // re-ingest of every constituent. reprocess() then re-promotes (no-op for
   // untouched files) and re-validates for correct whole-KB diagnostics.
   // Remove/reset below genuinely retract whole files, so they keep the rebuild.
-  await call('validateBuffer', { file: name, text });
+  await lspSyncDocument(name, text);
   await reprocess();
   return { added: false, notices: [] };
 }

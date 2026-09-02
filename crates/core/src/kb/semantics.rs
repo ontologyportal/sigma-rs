@@ -4,9 +4,10 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::layer::{Layer, TopLayer};
+use crate::semantics::consts::{CLASS_SYMBOL, FORMULA_SYMBOL};
 use crate::semantics::errors::semantic_error;
 use crate::semantics::errors::SemanticError;
-use crate::types::Element;
+use crate::types::{Element, RelationDomain, RelationRange};
 use crate::{Diagnostic, SentenceId, SymbolId, ToDiagnostic};
 
 use super::KnowledgeBase;
@@ -433,13 +434,14 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     }
 
     /// Expected domain class for argument `arg_idx` (1-based) of
-    /// relation `head`, or `None` when the relation has no explicit
-    /// `(domain head arg_idx class)` axiom for this position.
+    /// relation `head`, or `None` when `head` isn't interned or `arg_idx`
+    /// is out of range for its declared domains.
     ///
-    /// Returns the declared class name (instance-of / subclass-of flag folded
-    /// away).  Callers that need the distinction use the lower-level
-    /// `SemanticLayer::domain` path.
-    pub fn expected_arg_class(&self, head: &str, arg_idx: usize) -> Option<String> {
+    /// Distinguishes instance-of (`RelationDomain::Domain`) from
+    /// subclass-of (`RelationDomain::DomainSubclass`) constraints;
+    /// `RelationDomain::Unknown` means `head` is interned but declares no
+    /// `(domain head arg_idx class)` axiom for this position.
+    pub fn domain(&self, head: &str, arg_idx: usize) -> Option<RelationDomain> {
         let head_id = self.symbol_id(head)?;
         let domains = self.layer.semantic().domain(head_id);
         // `arg_idx` is 1-based (element-index convention); `domains`
@@ -448,8 +450,38 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             return None;
         }
         let rd = &domains[arg_idx - 1];
-        let class_id = rd.id()?;
-        self.sym_name(class_id)
+        Some(rd.clone())
+    }
+
+    /// Expected range class of relation `head`, or `None` when `head` isn't
+    /// interned in this KB.
+    ///
+    /// Distinguishes instance-of (`RelationRange::Range`) from subclass-of
+    /// (`RelationRange::RangeSubclass`) constraints -- the latter is SUMO's
+    /// convention for a function that itself returns a class-denoting term
+    /// rather than an instance; `RelationRange::Unknown` means `head` is
+    /// interned but declares no `(range ...)` / `(rangeSubclass ...)` axiom.
+    pub fn range(&self, head: &str) -> Option<RelationRange> {
+        let head_id = self.symbol_id(head)?;
+        Some(self.layer.semantic().range(head_id))
+    }
+
+    /// Utility function which checks whether a given ID corresponds to the specific
+    /// type which indicates a sub-formula (a formula appearing in a term position)
+    pub fn is_formula_type(&self, id: SymbolId) -> bool {
+        id == FORMULA_SYMBOL.id()
+    }
+
+    /// Utility function which checks whether a given ID corresponds to SUMO's
+    /// `Class` symbol -- the implicit superclass of every class-denoting
+    /// symbol, whether or not it's explicitly declared `(instance X Class)`
+    /// (most classes are declared instances of a narrower subclass of
+    /// `Class` instead, e.g. `SetOrClass`). Callers needing "every symbol
+    /// that IS a class" for a `Class`-typed domain should use
+    /// [`Self::is_class`] over all symbols rather than [`Self::instances_of`],
+    /// which would only catch the ones declared instance of `Class` itself.
+    pub fn is_class_type(&self, id: SymbolId) -> bool {
+        id == CLASS_SYMBOL.id()
     }
 
     // -- Validation ------------------------------------------------------------
@@ -605,6 +637,18 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
 #[cfg(test)]
 mod tests {
     use crate::KnowledgeBase;
+
+    #[test]
+    fn is_class_type_matches_only_the_class_symbol() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell("(subclass SetOrClass Class)(instance Dog SetOrClass)", "s");
+        assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
+
+        let class_id = kb.symbol_id("Class").expect("Class interned");
+        let dog_id = kb.symbol_id("Dog").expect("Dog interned");
+        assert!(kb.is_class_type(class_id));
+        assert!(!kb.is_class_type(dog_id));
+    }
 
     #[test]
     fn validate_clean_target_yields_empty_vec() {

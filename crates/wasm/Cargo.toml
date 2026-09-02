@@ -15,8 +15,24 @@ crate-type = ["cdylib", "rlib"]
 # (`parse_vampire_result`) needs no feature of its own — it's ungated, part
 # of core's default build (regex is a hard dependency there).
 sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover", "snapshot"] }
+# The SDK Session is the sharing seam: WasmNativeProver holds its KB as an
+# `Arc<RwLock<Session<ProverLayer<TranslationLayer>>>>` so the LSP facade
+# (`WasmLsp`, below) can run against the SAME knowledge base.  Same
+# direct-path / default-features = false posture as the core dep -- sdk's
+# default `http`/`git`/`persist`/`ask` features are all wasm-hostile.
+sigmakee-rs-sdk  = { path = "../sdk", default-features = false, features = ["native-prover", "snapshot"] }
+# The LSP server library (transport-free dispatch core only -- the stdio shell
+# is never invoked here) + the lsp-server message types the JSON bridge speaks.
+sumo-lsp         = { path = "../lsp" }
+lsp-server       = "0.7"
 serde.workspace            = true
 serde_json.workspace       = true
+# Bridges `sumo-lsp`'s existing `log::debug!`/`log::info!` calls (already
+# used for request tracing, e.g. handle_completion) to the browser console --
+# without this, those calls compile fine (the `log` macros silently no-op
+# with no logger registered) but are invisible in the browser. See
+# console_log.rs.
+log.workspace              = true
 wasm-bindgen               = "0.2"
 serde-wasm-bindgen         = "0.6"
 js-sys                     = "0.3"

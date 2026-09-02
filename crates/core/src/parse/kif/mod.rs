@@ -7,5 +7,6 @@ pub mod error;
 pub mod parser;
 pub mod tokenizer;
 
+pub use dis::{format_document, format_forms};
 pub use parser::parse;
-pub use tokenizer::{tokenize, Token, TokenKind};
+pub use tokenizer::{comment_blocks, tokenize, tokenize_without_comments, OpTok, Token, TokenKind};

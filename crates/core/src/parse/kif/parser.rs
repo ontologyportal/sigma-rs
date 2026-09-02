@@ -4,6 +4,14 @@ use super::tokenizer::{OpTok, Token, TokenKind};
 
 use super::super::{AstNode, OpKind, Span};
 
+/// Options for the KIF parser (the [`Parser::Kif`](crate::Parser::Kif)
+/// variant's payload, mirroring `Parser::Tptp { options }`).
+#[derive(Debug, Clone, Default)]
+pub struct KifParseOptions {
+    /// Drop `;` comments at the tokenizer
+    pub skip_comments: bool,
+}
+
 /// Recursive-descent parser over a stream of KIF tokens.
 pub struct KifParser {
     tokens: Vec<Token>,
@@ -12,7 +20,14 @@ pub struct KifParser {
 }
 
 impl KifParser {
-    fn new(tokens: Vec<Token>, file: &str) -> Self {
+    fn new(mut tokens: Vec<Token>, file: &str) -> Self {
+        // Comments are lexical trivia: they must never enter the AST (the
+        // node tree feeds the content-addressed sentence fingerprints), and
+        // skipping them mid-parse is bug-prone (a comment directly before a
+        // `)` would land in element position).  Strip them here, wholesale;
+        // callers that want them use `tokenizer::comment_blocks` on the
+        // original stream.
+        tokens.retain(|t| !matches!(t.kind, TokenKind::Comment(_)));
         Self {
             tokens,
             pos: 0,
@@ -267,6 +282,9 @@ impl KifParser {
                 self.advance();
                 Ok(node)
             }
+            TokenKind::Comment(_) => {
+                unreachable!("comment tokens are stripped in KifParser::new")
+            }
         }
     }
 
@@ -320,6 +338,21 @@ mod tests {
         let nodes = parse_kif("(subclass Human Animal)");
         assert_eq!(nodes.len(), 1);
         assert!(matches!(&nodes[0], AstNode::List { elements, .. } if elements.len() == 3));
+    }
+
+    #[test]
+    fn comments_are_stripped_everywhere() {
+        // Comments in every position -- before a sentence, between elements,
+        // directly before the closing paren, and trailing -- must vanish
+        // without perturbing the parse.  The before-`)` case is the
+        // regression: a skip-inside-parse_node approach turns it into an
+        // unexpected-RParen error.
+        let nodes = parse_kif(
+            "; header\n(subclass ; mid\n Human Animal ; before close\n) ; trailing\n(instance Rex Human)",
+        );
+        assert_eq!(nodes.len(), 2);
+        assert!(matches!(&nodes[0], AstNode::List { elements, .. } if elements.len() == 3));
+        assert!(matches!(&nodes[1], AstNode::List { elements, .. } if elements.len() == 3));
     }
 
     #[test]

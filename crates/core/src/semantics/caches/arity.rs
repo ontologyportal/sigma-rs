@@ -17,6 +17,7 @@ impl CacheBehavior for Arity {
     type Value = Option<i32>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "semantic::arity";
 
@@ -59,13 +60,23 @@ impl CacheBehavior for Arity {
         _side: &Self::Side,
     ) -> Vec<crate::cache::events::Event> {
         use crate::cache::events::Event;
-        if events.iter().any(|e| {
-            matches!(
-                e,
-                Event::TaxonomyChanged { .. } | Event::OtherRootsChanged { .. }
-            )
-        }) {
-            store.clear();
+        for event in events {
+            match event {
+                Event::TaxonomyChanged { syms } | Event::OtherRootsChanged { syms } => {
+                    // `arity(sym)` is transitive (`has_ancestor_by_name`/
+                    // `is_relation`/`is_function` all recurse through sym's
+                    // own ancestor chain), so evicting exactly `syms` is only
+                    // sound because `syms` already carries every symbol
+                    // transitively affected -- see
+                    // `tax_edges::widen_with_descendants` for
+                    // `TaxonomyChanged`; `OtherRootsChanged` is assumed to
+                    // carry the same kind of complete symbol set. `Arity`'s
+                    // key IS the bare `SymbolId`, so this is a direct O(|syms|)
+                    // removal, not a scan.
+                    store.evict_keys(syms);
+                }
+                _ => {}
+            }
         }
         Vec::new()
     }

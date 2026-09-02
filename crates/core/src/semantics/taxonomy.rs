@@ -44,7 +44,6 @@ impl TaxRelation {
     }
 
     /// Return the KIF relation name for this variant.
-    #[allow(dead_code)] // inverse of the name→variant parse; kept for symmetry
     pub(crate) fn as_sym(&self) -> &'static Lazy<Symbol> {
         match self {
             TaxRelation::Subclass => &SUBCLASS_RELATION,

@@ -28,6 +28,7 @@ impl CacheBehavior for Validate {
     type Value = Arc<Vec<BoxedError>>;
     type Side = ();
     type SideSnapshot = ();
+    type Tag = ();
 
     const NAME: &'static str = "semantic::validate";
 
