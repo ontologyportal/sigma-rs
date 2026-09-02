@@ -17,6 +17,8 @@ use crate::{SdkError, SdkResult};
 #[cfg(feature = "git")]
 mod git;
 #[cfg(feature = "git")]
+pub(crate) use git::fetch_repo_sparse;
+#[cfg(feature = "git")]
 pub(crate) use git::remote_branch_head;
 mod tptp;
 

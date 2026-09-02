@@ -18,6 +18,9 @@ persist = ["dep:heed", "snapshot"]
 # and all `KnowledgeBase::ask*` entry points.
 # NOT available on wasm32 -- enforced by compile_error! in lib.rs.
 ask     = []
+# Offline WordNet 3.0 lexicon sidecar (`crate::lexicon`), the read-only index
+# behind synonym-aware search.
+lexicon = []
 # Native saturation prover (residue index + theory oracle + given-clause
 # loop).  Pure Rust, no external prover, no new dependencies.
 # Adds the ProverLayer top layer and KnowledgeBase::new_native.

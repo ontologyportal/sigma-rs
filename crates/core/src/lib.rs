@@ -51,6 +51,11 @@ pub(crate) mod persist;
 
 pub mod kb;
 
+/// Offline WordNet 3.0 lexicon with SUMO anchors -- pure in-memory parsing,
+/// no filesystem access.  See [`lexicon`] for the module-level docs.
+#[cfg(feature = "lexicon")]
+pub mod lexicon;
+
 #[doc(hidden)]
 pub use crate::trans::TranslationLayer;
 

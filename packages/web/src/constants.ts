@@ -13,6 +13,11 @@ export const MIDLEVEL = 'Mid-level-ontology.kif';     // also loaded on startup
 
 export const rawUrl = (path) => `https://raw.githubusercontent.com/${SUMO.owner}/${SUMO.repo}/${SUMO.ref}/${path}`;
 
+/** The WordNet-SUMO mapping directory -- same repo/ref as MERGE/MIDLEVEL
+ *  above, so `rawUrl(\`${WORDNET_DIR}/<name>\`)` resolves the same way the
+ *  main KIF constituents do (see wordnet.ts). */
+export const WORDNET_DIR = 'WordNetMappings';
+
 /** This app's own repository — the bug-report link's target. */
 export const APP_REPO = { owner: 'ontologyportal', repo: 'sigma-rs' };
 

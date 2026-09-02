@@ -27,7 +27,7 @@ default-target    = "x86_64-unknown-linux-gnu"
 # Default mirrors sigmakee-rs-core's "everything-on, no C++" sweet spot — the
 # SDK is most useful when ask/test work, but we don't force CMake on
 # casual consumers.  Equivalent to `sigmakee-rs-core` without `integrated-prover`.
-default            = ["persist", "ask", "parallel", "http", "git"]
+default            = ["persist", "ask", "parallel", "http", "git", "lexicon"]
 
 # 1:1 forwards to the matching sigmakee-rs-core feature.  The SDK never gates
 # differently from sigmakee-rs-core; downstream consumers enable here and we
@@ -39,6 +39,9 @@ ask                = ["sigmakee-rs-core/ask"]
 native-prover      = ["sigmakee-rs-core/native-prover"]
 integrated-vampire = ["ask", "sigmakee-rs-core/integrated-prover"]
 parallel           = ["sigmakee-rs-core/parallel", "dep:rayon"]
+# WordNet lexicon (`sigmakee_rs_sdk::lexicon`, re-exporting
+# `sigmakee_rs_core::lexicon`).  The sidecar's own parsing is wasm-safe
+lexicon            = ["sigmakee-rs-core/lexicon"]
 
 # Add remote file processing to the SDK
 http               = ["dep:ureq", "dep:tempfile"]

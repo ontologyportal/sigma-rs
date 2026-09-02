@@ -80,6 +80,8 @@ compile_error!(
 
 pub mod error;
 pub mod freshness;
+#[cfg(feature = "lexicon")]
+pub mod lexicon;
 pub mod manager;
 pub mod session;
 pub mod source;
