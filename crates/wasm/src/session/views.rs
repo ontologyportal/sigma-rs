@@ -98,11 +98,13 @@ impl Session {
     }
 
     /// Natural-language paraphrase of a single KIF formula in `language`. Empty
-    /// when the KIF doesn't parse to a statement.
+    /// when the KIF doesn't parse to a statement. When `generic_vars` is set,
+    /// variables render as generic noun phrases ("an entity" / "the entity")
+    /// instead of `?Var`.
     #[wasm_bindgen(js_name = renderNl)]
-    pub fn render_nl(&self, kif: &str, language: &str) -> String {
+    pub fn render_nl(&self, kif: &str, language: &str, generic_vars: bool) -> String {
         let session_guard = self.session.read().expect("kb lock not poisoned");
-        session_guard.render_nl(kif, language)
+        session_guard.render_nl(kif, language, generic_vars)
     }
 
     /// Summary counts describing the loaded KB, for an overview page.

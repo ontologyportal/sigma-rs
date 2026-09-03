@@ -176,8 +176,8 @@ const handlers = {
   naturalLanguages() {
     return { languages: session.naturalLanguages() };
   },
-  renderNl({ kif, language }) {
-    return { text: session.renderNl(kif, language) };
+  renderNl({ kif, language, genericVars }) {
+    return { text: session.renderNl(kif, language, genericVars) };
   },
 
   prove({ assertions, query, config, session: sess }) {

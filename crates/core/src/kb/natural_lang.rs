@@ -76,6 +76,16 @@ impl<L: crate::layer::TopLayer> KnowledgeBase<L> {
             .semantic()
             .render_formula_colored(formula, language)
     }
+
+    /// Same as [`render_formula`](Self::render_formula) but paraphrases
+    /// variables as generic noun phrases (e.g. "an entity" / "the entity",
+    /// or the variable's asserted class when an `instance` / `subclass`
+    /// conjunct declares one) instead of showing `?Var`.
+    pub fn render_formula_paraphrase(&self, formula: &AstNode, language: &str) -> RenderReport {
+        self.layer
+            .semantic()
+            .render_formula_paraphrase(formula, language)
+    }
 }
 
 // -- Tests --------------------------------------------------------------------
@@ -659,5 +669,43 @@ mod tests {
         assert!(r.missing.iter().any(|m| m == "format:instance"));
         assert!(r.missing.iter().any(|m| m == "termFormat:Fido"));
         assert!(r.missing.iter().any(|m| m == "termFormat:Dog"));
+    }
+
+    #[test]
+    fn paraphrase_uses_generic_noun_with_article_then_definite() {
+        let kb = kb_with_english_templates("");
+        let f = parse_kif_formula("(and (instance ?X Dog) (instance ?X Animal))");
+        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        assert_eq!(
+            r.rendered,
+            "a dog is an instance of dog and the dog is an instance of animal"
+        );
+    }
+
+    #[test]
+    fn paraphrase_falls_back_to_entity_without_a_sort_conjunct() {
+        let kb = kb_with_english_templates("");
+        let f = parse_kif_formula("(likes ?X Fido)");
+        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "an entity likes fido");
+    }
+
+    #[test]
+    fn paraphrase_quantifier_binding_uses_bare_sort_noun() {
+        let kb = kb_with_english_templates("");
+        let f = parse_kif_formula("(forall (?X) (instance ?X Animal))");
+        let r = kb.render_formula_paraphrase(&f, "EnglishLanguage");
+        assert_eq!(
+            r.rendered,
+            "for every animal , the animal is an instance of animal"
+        );
+    }
+
+    #[test]
+    fn paraphrase_off_by_default_leaves_variables_literal() {
+        let kb = kb_with_english_templates("");
+        let f = parse_kif_formula("(instance ?X Dog)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "?X is an instance of dog");
     }
 }

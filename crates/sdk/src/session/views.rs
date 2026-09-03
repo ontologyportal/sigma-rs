@@ -834,16 +834,24 @@ impl<L: TopLayer> Session<L> {
 
     /// Natural-language paraphrase of a single KIF formula in `language`,
     /// using the KB's format / termFormat templates.  Empty string when the
-    /// KIF does not parse to a statement.
+    /// KIF does not parse to a statement.  When `generic_vars` is set,
+    /// variables render as generic noun phrases ("an entity" / "the
+    /// entity") instead of `?Var`.
     #[cfg(any(feature = "ask", feature = "native-prover"))]
-    pub fn render_nl(&self, kif: &str, language: &str) -> String {
+    pub fn render_nl(&self, kif: &str, language: &str, generic_vars: bool) -> String {
         let doc = sigmakee_rs_core::parse_document(
             "__sdk:render_nl__",
             kif.to_string(),
             sigmakee_rs_core::Parser::Kif { options: None },
         );
         match doc.ast.iter().find_map(|d| d.as_stmt()) {
-            Some(ast) => self.kb.render_formula(ast, language).rendered,
+            Some(ast) => {
+                if generic_vars {
+                    self.kb.render_formula_paraphrase(ast, language).rendered
+                } else {
+                    self.kb.render_formula(ast, language).rendered
+                }
+            }
             None => String::new(),
         }
     }

@@ -45,6 +45,10 @@ export const state = {
   /** Header selector: the language for term/format rendering and NL paraphrases. */
   uiLanguage: "EnglishLanguage",
 
+  /** Settings toggle: render NL paraphrase variables as generic noun phrases
+   *  ("an entity" / "the entity") instead of `?VarName`. */
+  genericVars: false,
+
   /** OPFS root, opened once at boot. */
   opfsRoot: null,
 

@@ -61,12 +61,24 @@ document.addEventListener('toggle', (e) => {
   if (!nl || nl.dataset.lang === state.uiLanguage) return;
   nl.dataset.lang = state.uiLanguage;
   nl.textContent = 'rendering…';
-  call('renderNl', { kif: nl.dataset.kif, language: state.uiLanguage })
+  call('renderNl', { kif: nl.dataset.kif, language: state.uiLanguage, genericVars: state.genericVars })
     .then(({ text }) => { nl.textContent = text && text.trim() ? text : 'no paraphrase available'; })
     // A failed call is not a verdict — clear the language stamp so the next
     // expand retries instead of treating the failure as a cached answer.
     .catch(() => { nl.dataset.lang = ''; nl.textContent = 'paraphrase failed — reopen to retry'; });
 }, true);
+
+// The generic-vars settings toggle changes what an already-open paraphrase
+// should say — clear every open row's language stamp so the toggle listener
+// above re-renders it on the next open, and re-render any already open now.
+document.getElementById('genericVarsToggle')?.addEventListener('change', (e) => {
+  state.genericVars = (e.target as HTMLInputElement).checked;
+  for (const d of document.querySelectorAll<HTMLDetailsElement>('details.cite[open]')) {
+    const nl = d.querySelector<HTMLElement>('.nl');
+    if (nl) nl.dataset.lang = '';
+    d.dispatchEvent(new Event('toggle'));
+  }
+});
 
 /** One proof/contradiction step as an <li>. `pos` is the 0-based fallback when a
  *  step carries no explicit `index` — the number shown must match `premiseRefs`

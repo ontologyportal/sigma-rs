@@ -79,7 +79,9 @@ impl SemanticLayer {
     /// ANSI escapes) — safe for logs / files / JSON.
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn render_formula(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.render_formula_impl(formula, language, /*coloured=*/ false)
+        self.render_formula_impl(
+            formula, language, /*coloured=*/ false, /*generic_vars=*/ false,
+        )
     }
 
     /// Same as [`render_formula`](SemanticLayer::render_formula) but wraps
@@ -87,7 +89,24 @@ impl SemanticLayer {
     /// operators in ANSI colour escapes for terminal output.
     #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
-        self.render_formula_impl(formula, language, /*coloured=*/ true)
+        self.render_formula_impl(
+            formula, language, /*coloured=*/ true, /*generic_vars=*/ false,
+        )
+    }
+
+    /// Same as [`render_formula`](SemanticLayer::render_formula) but
+    /// paraphrases variables as generic noun phrases (e.g. "an entity" /
+    /// "the entity", or the variable's asserted class from an `instance` /
+    /// `subclass` conjunct when one is present) instead of showing `?Var`.
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    pub(crate) fn render_formula_paraphrase(
+        &self,
+        formula: &AstNode,
+        language: &str,
+    ) -> RenderReport {
+        self.render_formula_impl(
+            formula, language, /*coloured=*/ false, /*generic_vars=*/ true,
+        )
     }
 
     #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -96,18 +115,64 @@ impl SemanticLayer {
         formula: &AstNode,
         language: &str,
         coloured: bool,
+        generic_vars: bool,
     ) -> RenderReport {
+        let var_sorts = if generic_vars {
+            let mut sorts = std::collections::HashMap::new();
+            collect_variable_sorts(self, language, formula, &mut sorts);
+            sorts
+        } else {
+            std::collections::HashMap::new()
+        };
         let mut ctx = RenderCtx {
             sem: self,
             language,
             missing: BTreeSet::new(),
             coloured,
+            generic_vars,
+            var_sorts,
+            mentioned: BTreeSet::new(),
         };
         let rendered = ctx.render(formula, /*negated=*/ false);
         RenderReport {
             rendered,
             missing: ctx.missing.into_iter().collect(),
         }
+    }
+}
+
+/// Prepass for [`SemanticLayer::render_formula_paraphrase`]: maps each
+/// variable name to a rendered noun phrase for the class it is asserted an
+/// `instance` or `subclass` of, when such a conjunct is present anywhere in
+/// `node`. The first conjunct found for a variable wins.
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+fn collect_variable_sorts(
+    sem: &SemanticLayer,
+    language: &str,
+    node: &AstNode,
+    out: &mut std::collections::HashMap<String, String>,
+) {
+    match node {
+        AstNode::List { elements, .. } => {
+            if let [AstNode::Symbol { name: head, .. }, AstNode::Variable { name: var, .. }, AstNode::Symbol { name: class, .. }] =
+                elements.as_slice()
+            {
+                if head == "instance" || head == "subclass" {
+                    out.entry(var.clone()).or_insert_with(|| {
+                        sem.term_format_named(class, Some(language))
+                            .into_iter()
+                            .next()
+                            .map(|e| e.text)
+                            .unwrap_or_else(|| class.clone())
+                    });
+                }
+            }
+            for e in elements {
+                collect_variable_sorts(sem, language, e, out);
+            }
+        }
+        AstNode::Annotated { formula, .. } => collect_variable_sorts(sem, language, formula, out),
+        _ => {}
     }
 }
 
@@ -129,6 +194,15 @@ struct RenderCtx<'a> {
     language: &'a str,
     missing: BTreeSet<String>,
     coloured: bool,
+    /// When set, variables paraphrase as generic noun phrases instead of
+    /// `?Var` (see [`SemanticLayer::render_formula_paraphrase`]).
+    generic_vars: bool,
+    /// Variable name -> rendered class noun phrase, from an `instance` /
+    /// `subclass` conjunct elsewhere in the formula.
+    var_sorts: std::collections::HashMap<String, String>,
+    /// Variable names already paraphrased once, so later occurrences use
+    /// "the X" instead of "a/an X".
+    mentioned: BTreeSet<String>,
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -153,7 +227,7 @@ impl<'a> RenderCtx<'a> {
         match node {
             AstNode::List { elements, .. } => self.render_list(elements, negated),
             AstNode::Symbol { name, .. } => self.render_term_symbol(name),
-            AstNode::Variable { name, .. } => self.col(&format!("?{}", name), ANSI_VAR),
+            AstNode::Variable { name, .. } => self.render_variable(name),
             AstNode::RowVariable { name, .. } => self.col(&format!("@{}", name), ANSI_VAR),
             AstNode::Str { value, .. } => value.clone(),
             AstNode::Number { value, .. } => value.clone(),
@@ -294,7 +368,7 @@ impl<'a> RenderCtx<'a> {
                 } else {
                     var_names
                         .into_iter()
-                        .map(|v| self.col(&format!("?{}", v), ANSI_VAR))
+                        .map(|v| self.render_quantified_var(&v))
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
@@ -433,6 +507,45 @@ impl<'a> RenderCtx<'a> {
         collapse_whitespace(&out)
     }
 
+    /// Render a `?Var` occurrence: literally when `generic_vars` is off,
+    /// otherwise as a noun phrase — "a/an <sort>" on first mention, "the
+    /// <sort>" afterward, falling back to "entity" when no `instance` /
+    /// `subclass` conjunct declared the variable's sort.
+    fn render_variable(&mut self, name: &str) -> String {
+        if !self.generic_vars {
+            return self.col(&format!("?{}", name), ANSI_VAR);
+        }
+        let noun = self
+            .var_sorts
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "entity".to_owned());
+        let phrase = if self.mentioned.insert(name.to_owned()) {
+            format!("{} {}", indefinite_article(&noun), noun)
+        } else {
+            format!("the {}", noun)
+        };
+        self.col(&phrase, ANSI_VAR)
+    }
+
+    /// Render a `?Var` at a quantifier binding site: `?Var` literally when
+    /// `generic_vars` is off, otherwise the bare sort noun (e.g. "entity",
+    /// no article — "for every entity" / "there exists some entity"), with
+    /// later body occurrences of the same variable rendered as "the <sort>"
+    /// via [`render_variable`](Self::render_variable).
+    fn render_quantified_var(&mut self, name: &str) -> String {
+        if !self.generic_vars {
+            return self.col(&format!("?{}", name), ANSI_VAR);
+        }
+        let noun = self
+            .var_sorts
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "entity".to_owned());
+        self.mentioned.insert(name.to_owned());
+        self.col(&noun, ANSI_VAR)
+    }
+
     /// Render a term/relation name: try `termFormat` in the chosen language,
     /// fall back to the raw name.  Records a miss when the lookup fails.
     fn render_term_symbol(&mut self, name: &str) -> String {
@@ -464,6 +577,17 @@ impl<'a> RenderCtx<'a> {
 /// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
 /// `(exists …)` argument list.  Returns `(names, body_ast)`.
 #[cfg(any(feature = "ask", feature = "native-prover"))]
+/// `"an"` before a leading vowel sound, `"a"` otherwise. A rough heuristic
+/// (English exceptions like "an hour" aren't handled) that's fine for the
+/// class names actually seen in `termFormat` output.
+#[cfg(any(feature = "ask", feature = "native-prover"))]
+fn indefinite_article(word: &str) -> &'static str {
+    match word.chars().next() {
+        Some(c) if "aeiouAEIOU".contains(c) => "an",
+        _ => "a",
+    }
+}
+
 fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<AstNode>) {
     let mut names = Vec::new();
     let body = if args.len() >= 2 {
