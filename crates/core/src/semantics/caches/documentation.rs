@@ -5,7 +5,9 @@
 //! stored; the wrapper filters by language.
 
 use crate::cache::{CacheBehavior, EntryCache};
-use crate::semantics::consts::{DOCUMENTATION_RELATIONS, DOC_RELATION};
+use crate::semantics::consts::{
+    DOCUMENTATION_RELATIONS, DOC_RELATION, FORMAT_RELATION, TERM_RELATION,
+};
 use crate::semantics::types::{DocEntry, Scope, Scoped};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
@@ -119,6 +121,29 @@ impl SemanticLayer {
             out.extend(collect_doc_entries_any(self, rel.id(), sym));
         }
         filter_lang(&out, language)
+    }
+
+    /// Every language symbol that is the first argument of at least one
+    /// `(format <lang> ...)` or `(termFormat <lang> ...)` fact in the `Base`
+    /// taxonomy -- i.e. a language with actual renderable content, as
+    /// opposed to every declared `instance`/`subclass` of `NaturalLanguage`.
+    pub(crate) fn languages_with_format_or_term_format(
+        &self,
+    ) -> std::collections::BTreeSet<SymbolId> {
+        let store = &self.syntactic;
+        let mut out = std::collections::BTreeSet::new();
+        for head in [FORMAT_RELATION.id(), TERM_RELATION.id()] {
+            let sids = self.scope_filter_sids(store.by_head_id(&head).iter().copied(), Scope::Base);
+            for sid in sids {
+                let Some(sent) = store.sentence(sid) else {
+                    continue;
+                };
+                if let Some(Element::Symbol(lang)) = sent.elements.get(1) {
+                    out.insert(lang.id());
+                }
+            }
+        }
+        out
     }
 }
 

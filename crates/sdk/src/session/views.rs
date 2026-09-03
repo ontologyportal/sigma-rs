@@ -807,13 +807,19 @@ impl<L: TopLayer> Session<L> {
     }
 
     /// The `(instance ? NaturalLanguage)` symbols -- including instances of
-    /// `NaturalLanguage` subclasses -- each with the English label from its
-    /// `termFormat` (falling back to the bare symbol name).  Sorted by label,
-    /// with `EnglishLanguage` guaranteed present.  Powers a UI language
-    /// selector.
+    /// `NaturalLanguage` subclasses -- restricted to those with at least one
+    /// `format`/`termFormat` entry of their own (a declared language with no
+    /// renderable content isn't a usable UI choice), each with the English
+    /// label from its `termFormat` (falling back to the bare symbol name).
+    /// Sorted by label, with `EnglishLanguage` guaranteed present.  Powers a
+    /// UI language selector.
     pub fn natural_languages_view(&self) -> Vec<LangView> {
+        let documented = self.kb.documented_languages();
         let mut langs: Vec<LangView> = Vec::new();
         for symbol in self.kb.instances_of("NaturalLanguage") {
+            if !documented.iter().any(|l| l == &symbol) {
+                continue;
+            }
             let label = self
                 .kb
                 .term_format(&symbol, Some("EnglishLanguage"))
@@ -1133,6 +1139,25 @@ mod tests {
         let s = session_with("(subclass Dog Mammal)\n");
         let langs = s.natural_languages_view();
         assert!(langs.iter().any(|l| l.symbol == "EnglishLanguage"));
+    }
+
+    #[test]
+    fn natural_languages_view_excludes_languages_without_format_or_term_format() {
+        let s = session_with(
+            "(instance FooLanguage NaturalLanguage)\n\
+             (instance BarLanguage NaturalLanguage)\n\
+             (format BarLanguage subclass \"%1 is %n a subclass of %2\")\n",
+        );
+        let langs = s.natural_languages_view();
+        let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
+        assert!(
+            symbols.contains(&"BarLanguage"),
+            "BarLanguage has a format entry and should be listed: {symbols:?}"
+        );
+        assert!(
+            !symbols.contains(&"FooLanguage"),
+            "FooLanguage has no format/termFormat entry and should be excluded: {symbols:?}"
+        );
     }
 
     #[test]

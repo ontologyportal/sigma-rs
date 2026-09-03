@@ -200,6 +200,17 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         self.layer.semantic().format_string(relation, language)
     }
 
+    /// Language symbol names with at least one `format`/`termFormat` entry
+    /// in the `Base` taxonomy -- i.e. languages with actual renderable
+    /// content, as opposed to every declared `NaturalLanguage` instance.
+    pub fn documented_languages(&self) -> Vec<String> {
+        let sem = self.layer.semantic();
+        sem.languages_with_format_or_term_format()
+            .into_iter()
+            .filter_map(|id| sem.syntactic.sym_name(id).map(|s| s.name().to_string()))
+            .collect()
+    }
+
     /// `documentation` / `termFormat` / `format` for `symbol` from **every**
     /// source — promoted axioms and un-promoted (ingested-but-not-yet-axiomatic)
     /// sessions alike. Man pages use these so metadata renders immediately on
