@@ -15,6 +15,9 @@
 //! failure is a hard error.
 
 mod ingest;
+// WordNet lexicon installation, separate from KIF ingestion
+#[cfg(feature = "lexicon")]
+mod lexicon;
 // Non-proving ops: validate / translate / load / open.
 mod ops;
 // Symbol introspection: `Session::manpage` + the `ManPageView` projection.
@@ -56,6 +59,13 @@ pub enum Backend {
 pub struct Session<L: TopLayer> {
     kb: KnowledgeBase<L>,
     name: String,
+    /// The WordNet lexicon, if loaded (see [`Session::load_lexicon`] /
+    /// [`Session::set_lexicon`] in `session::lexicon`). `Arc`, not owned: a
+    /// ~30 MB static sidecar shared cheaply across a [`fork`](Session::fork)
+    /// or any other place a `Session` gets cloned/duplicated, and never
+    /// mutated once loaded.
+    #[cfg(feature = "lexicon")]
+    lexicon: Option<std::sync::Arc<sigmakee_rs_core::lexicon::WordNet>>,
 }
 
 #[cfg(feature = "native-prover")]
@@ -65,6 +75,8 @@ impl Session<ProverLayer> {
         Self {
             kb: KnowledgeBase::new_native(),
             name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
         }
     }
 }
@@ -76,6 +88,8 @@ impl Session<ExternalProverLayer> {
         Self {
             kb: KnowledgeBase::new_external(prover),
             name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
         }
     }
 
@@ -93,6 +107,8 @@ impl Session<TranslationLayer> {
         Self {
             kb: KnowledgeBase::new(),
             name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
         }
     }
 }
@@ -132,6 +148,8 @@ impl<L: TopLayer> Session<L> {
         Self {
             kb,
             name: session_name,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
         }
     }
 
@@ -149,6 +167,8 @@ impl<L: TopLayer> Session<L> {
         Ok(Self {
             kb,
             name: self.name.clone(),
+            #[cfg(feature = "lexicon")]
+            lexicon: self.lexicon.clone(),
         })
     }
 

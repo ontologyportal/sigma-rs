@@ -7,17 +7,34 @@
  * (`constituents`, `uiLanguage`, …) needs one owning object either way.
  */
 
-import { MERGE, MIDLEVEL, SUMO_FILE_SETTING } from './constants.ts';
+import {
+  MERGE,
+  MIDLEVEL,
+  SUMO_FILE_SETTING,
+  WORDNET_ENABLED_KEY,
+} from "./constants.ts";
 
 export const state = {
   /** [{ name, text, origin }] — the page's source of truth for what is loaded. */
   constituents: [],
 
   /** [{ name, origin }] mirrored to localStorage — what the next boot reloads. */
-  savedConstituents: JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || 'null') || [
-    { name: MERGE, origin: 'sumo' },
-    { name: MIDLEVEL, origin: 'sumo' },
+  savedConstituents: JSON.parse(
+    localStorage.getItem(SUMO_FILE_SETTING) || "null",
+  ) || [
+    { name: MERGE, origin: "sumo" },
+    { name: MIDLEVEL, origin: "sumo" },
   ],
+
+  /** Whether the WordNet synonym-search lexicon should be loaded, mirrored
+   *  to localStorage — see boot.ts's loadWordNetIntoWorker / tabs/kb-tab.ts's
+   *  WordNet panel. Defaults on; only the literal string 'false' turns it off. */
+  wordnetEnabled: localStorage.getItem(WORDNET_ENABLED_KEY) !== "false",
+
+  /** [{ name, size }] the WordNet mapping files last fetched this session (byte
+   *  sizes), for the KB tab's WordNet panel. Empty before the first fetch
+   *  resolves, or permanently while wordnetEnabled is false. */
+  wordnetFiles: [],
 
   /** The KB's validation findings, as of the last validate(). */
   diagnostics: [],
@@ -26,7 +43,7 @@ export const state = {
   sumoCatalog: null,
 
   /** Header selector: the language for term/format rendering and NL paraphrases. */
-  uiLanguage: 'EnglishLanguage',
+  uiLanguage: "EnglishLanguage",
 
   /** OPFS root, opened once at boot. */
   opfsRoot: null,

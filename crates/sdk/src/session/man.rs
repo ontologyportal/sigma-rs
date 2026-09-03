@@ -181,8 +181,18 @@ impl<L: TopLayer> Session<L> {
     /// Search for a symbol by a broad query.
     ///
     /// This will find symbols whose name or documentation entries somehow
-    /// match the query
+    /// match the query.
+    ///
+    /// `opts.lexicon` is always overridden with this session's own
+    /// installed lexicon (see [`Session::load_lexicon`] /
+    /// [`Session::set_lexicon`]) -- a caller never threads it through by
+    /// hand; `opts.wordnet_only` still applies as given.
     pub fn search(&self, query: &str, opts: &SearchOpts) -> SdkResult<Vec<SearchHit>> {
+        #[cfg(feature = "lexicon")]
+        let opts = &SearchOpts {
+            lexicon: self.lexicon.as_deref(),
+            ..opts.clone()
+        };
         Ok(self.kb.search(query, opts))
     }
 }

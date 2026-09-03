@@ -2,7 +2,7 @@
  * SDK-shaped facade over the raw wasm bindings — mirrors `sigmakee-rs-sdk`'s
  * `Session` / `Source` / `Backend` / `Config` for the browser.
  */
-import { Config } from './sumo_parser_wasm';
+import { Config } from "./sumo_parser_wasm";
 
 export { Config };
 
@@ -16,8 +16,13 @@ export interface LoadReport {
 /** Native-prover result (from a Native-backed {@link Session.ask}). */
 export interface AskResult {
   status:
-    | 'Proved' | 'Disproved' | 'Consistent' | 'Inconsistent'
-    | 'Timeout' | 'InputError' | 'Unknown';
+    | "Proved"
+    | "Disproved"
+    | "Consistent"
+    | "Inconsistent"
+    | "Timeout"
+    | "InputError"
+    | "Unknown";
   proved: boolean;
   given_steps: number | null;
   raw_output: string;
@@ -44,7 +49,7 @@ export interface AuditStep {
 
 /** Consistency-audit result (from a Native-backed {@link Session.auditConsistency}). */
 export interface AuditResult {
-  status: 'Consistent' | 'Inconsistent' | 'Timeout' | 'InputError' | 'Unknown';
+  status: "Consistent" | "Inconsistent" | "Timeout" | "InputError" | "Unknown";
   inconsistent: boolean;
   given_steps: number | null;
   raw_output: string;
@@ -61,8 +66,8 @@ export interface AuditResult {
 
 /** Which engine a {@link Session} drives (browser subset of the SDK `Backend`). */
 export const Backend: {
-  readonly Native: 'native';
-  readonly TranslationOnly: 'translation';
+  readonly Native: "native";
+  readonly TranslationOnly: "translation";
 };
 export type Backend = (typeof Backend)[keyof typeof Backend];
 
@@ -120,7 +125,11 @@ export function parseTest(name: string, text: string): ParsedTest;
 
 /** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
 export function formatTest(opts?: {
-  note?: string; timeout?: number; assertions?: string; query?: string; expectedProof?: boolean | null;
+  note?: string;
+  timeout?: number;
+  assertions?: string;
+  query?: string;
+  expectedProof?: boolean | null;
 }): string;
 
 export interface AskOpts {
@@ -128,7 +137,7 @@ export interface AskOpts {
   hook?: (tptp: string) => string;
 }
 export interface TranslateOpts {
-  lang?: 'fof' | 'tff';
+  lang?: "fof" | "tff";
   hideNumbers?: boolean;
   session?: string;
 }
@@ -138,33 +147,105 @@ export interface TellResult {
 }
 
 export interface Diagnostic {
-  severity: 'Error' | 'Warning' | 'Info' | 'Hint';
-  kind: string;      // coarse category, e.g. "semantic"
-  code: string;      // leaf id, e.g. "free-var-in-consequent"
+  severity: "Error" | "Warning" | "Info" | "Hint";
+  kind: string; // coarse category, e.g. "semantic"
+  code: string; // leaf id, e.g. "free-var-in-consequent"
   message: string;
-  file: string;      // source tag the sentence was loaded under
-  line: number;      // 1-based
-  col: number;       // 1-based
+  file: string; // source tag the sentence was loaded under
+  line: number; // 1-based
+  col: number; // 1-based
   end_line: number;
   end_col: number;
 }
 
+/** One labeled contribution to a {@link SearchHit.rank} score. */
+export interface RankComponent {
+  label: string;
+  value: number;
+}
+/** One WordNet synset anchored to a SUMO symbol — e.g. for `Canine`:
+ * `{ words: "dog, domestic dog, Canis familiaris", pos: "n", mapping:
+ * "subsuming", suffix: "+", gloss: "a member of the genus Canis..." }`.
+ * Not query-scoped: every synset anchored to the symbol is listed,
+ * independent of how the symbol was found (see {@link SearchHit.wordnet} /
+ * {@link ManPage.wordnet}). */
+export interface WordNetMapping {
+  /** The synset's word(s) (near-synonyms share one synset), comma-joined. */
+  words: string;
+  /** WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`. */
+  pos: string;
+  /** How this synset is anchored to the symbol: `"equivalent"`,
+   * `"subsuming"`, `"instance"`, or `"other"`. */
+  mapping: string;
+  /** The mapping-kind suffix in the mappings files' own notation (`=`, `+`,
+   * `@`, or another character), for compact rendering. */
+  suffix: string;
+  /** The synset's gloss (definition). */
+  gloss: string;
+}
 export interface SearchHit {
   symbol: string;
   kinds: string[];
   source: string;
   language: string;
   text: string;
-  /** Relevance score, higher = better. Hits are returned sorted by this desc. */
+  /** For a WordNet-sourced hit (`source === "wn"`): the sense tag, e.g.
+   * `"dog#n#1+"`. Empty for every other source. */
+  sense: string;
+  /** Relevance score, higher = better. Hits are returned sorted by this desc.
+   * The sum of {@link rank_breakdown}'s values. */
   rank: number;
+  /** The named contributions {@link rank} sums to -- e.g. a name-match tier,
+   * a source tier, a match position, and a usage-frequency nudge for a text
+   * hit; an anchor-strength tier and a most-frequent-sense bonus for a
+   * WordNet hit. For surfacing *why* a hit ranked where it did (e.g. a hover
+   * tooltip). */
+  rank_breakdown: RankComponent[];
+  /** Every WordNet synset anchored to {@link symbol}, regardless of this
+   * hit's own {@link source} — populated whenever a lexicon is installed,
+   * empty otherwise. A plain documentation-text hit still lists the
+   * symbol's WordNet senses here, if it has any. */
+  wordnet: WordNetMapping[];
 }
+/**
+ * One taxonomic constraint on search hits (see {@link SearchOpts.taxonomy}),
+ * keyed to a class name. `subclassOf`/`instanceOf` walk the `subclass` /
+ * `instance` taxonomy; `rangeOf`/`rangeSubclassOf` are a schema probe over
+ * relations' declared `range`/`rangeSubclass`.
+ */
+export type TaxConstraint =
+  | { subclassOf: string }
+  | { instanceOf: string }
+  | { rangeOf: string }
+  | { rangeSubclassOf: string };
 export interface SearchOpts {
   kind?: string;
   language?: string;
   limit?: number;
+  /** Return only WordNet synonym hits (see {@link Session.loadWordNet}). */
+  wordnetOnly?: boolean;
+  /** ANDed taxonomic constraints (every hit must satisfy all of them). */
+  taxonomy?: TaxConstraint[];
 }
-export interface DocBlock { language: string; text: string; }
-export interface SortSig { class: string; subclass: boolean; }
+/** The four mapping-file contents plus optional companions for {@link Session.loadWordNet}. */
+export interface WordNetFiles {
+  noun: string;
+  verb: string;
+  adj: string;
+  adv: string;
+  /** `index.sense` contents (most-frequent-sense ordering). */
+  indexSense?: string;
+  /** `noun.exc` + `verb.exc` contents, concatenated. */
+  exceptions?: string;
+}
+export interface DocBlock {
+  language: string;
+  text: string;
+}
+export interface SortSig {
+  class: string;
+  subclass: boolean;
+}
 /** One formula referencing the man-paged symbol. `position` is the symbol's
  * 0-based root-level position in the sentence, or `null` when it only occurs
  * nested inside a sub-sentence. `file`/`line` are `null` for sentences with
@@ -185,6 +266,10 @@ export interface ManPage {
   name: string;
   kinds: string[];
   documentation: DocBlock[];
+  /** Every WordNet synset anchored to this symbol — see
+   * {@link SearchHit.wordnet}'s doc comment for the shape. Populated
+   * whenever a lexicon is installed, empty otherwise. */
+  wordnet: WordNetMapping[];
   term_format: DocBlock[];
   format: DocBlock[];
   parents: Array<{ relation: string; parent: string }>;
@@ -222,8 +307,19 @@ export class Session {
   validate(): Diagnostic[];
   validateFormula(kif: string): Diagnostic[];
   /** Ask/Tell pair validated in one scratch session against the live KB. */
-  validateScratch(assertions: string, query: string): { assertions: Diagnostic[]; query: Diagnostic[] };
+  validateScratch(
+    assertions: string,
+    query: string,
+  ): { assertions: Diagnostic[]; query: Diagnostic[] };
   search(query: string, opts?: SearchOpts): SearchHit[];
+  /** Load the WordNet-SUMO lexicon from already-fetched mapping-file text
+   * (the browser fetches; there is no filesystem here). Separate from KIF
+   * ingestion — once loaded, `search` gains WordNet synonym hits. Returns
+   * the number of synsets indexed. */
+  loadWordNet(files: WordNetFiles): number;
+  /** Drop the currently installed WordNet lexicon, if any — the inverse of
+   * `loadWordNet`. A no-op if none was loaded. */
+  clearWordNet(): void;
   manpage(symbol: string): ManPage | null;
   /** Direct taxonomy edges — the lightweight peer of `manpage` for lazy tree
    * expansion. Downward rows carry the child in `parent`, as in

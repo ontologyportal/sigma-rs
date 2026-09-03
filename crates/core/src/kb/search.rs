@@ -29,24 +29,27 @@ use crate::SentenceId;
 /// hits by source relevance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchSource {
-    /// Hit was in the third arg of `(termFormat …)` -- the symbol's
-    /// short natural-language name.
+    /// Hit was in the third arg of `(termFormat …)`
     TermFormat,
-    /// Hit was in the third arg of `(documentation …)` -- the long
-    /// English description.
+    /// Hit was in the third arg of `(documentation …)``
     Documentation,
-    /// Hit was in the third arg of `(format …)` -- a relation's
-    /// natural-language template.
+    /// Hit was in the third arg of `(format …)`
     Format,
+    /// Hit came from the WordNet lexicon (see `SearchOpts::lexicon`, only
+    /// ever produced with the `lexicon` feature)
+    /// `SearchHit::sense` carries the sense tag; `SearchHit::text` carries
+    /// the synset gloss.
+    WordNet,
 }
 
 impl SearchSource {
-    /// Short label for this source (`"term"`, `"doc"`, or `"format"`).
+    /// Short label for this source (`"term"`, `"doc"`, `"format"`, or `"wn"`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::TermFormat => "term",
             Self::Documentation => "doc",
             Self::Format => "format",
+            Self::WordNet => "wn",
         }
     }
 }
@@ -75,12 +78,33 @@ pub struct SearchHit {
     /// SentenceId of the matching axiom, or `SentenceId::MAX` for an
     /// unsourced name-match hit (no backing axiom to cite).
     pub sid: SentenceId,
+    /// For [`SearchSource::WordNet`] hits: the matched sense plus the
+    /// mapping-kind suffix in the mappings files' own notation
+    /// For example: `"dog#n#1+"` (`=` equivalent, `+` subsuming, `@` instance).
+    /// This field is empty for all other hit sources
+    pub sense: String,
     /// Relevance score, higher = better.  Combines symbol-name match quality
     /// (exact > prefix > substring > name doesn't contain the query), the
     /// source tier (termFormat > documentation > format), and how early the
     /// query appears in the matched text.  Hits are returned sorted by this
-    /// descending (ties broken by symbol name, then `sid`).
+    /// descending (ties broken by symbol name, then `sid`).  The sum of
+    /// [`rank_breakdown`](Self::rank_breakdown)'s values.
     pub rank: f32,
+    /// The named contributions [`rank`](Self::rank) is the sum of
+    pub rank_breakdown: Vec<RankComponent>,
+}
+
+/// One labeled contribution to a [`SearchHit::rank`] score.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RankComponent {
+    /// Human-readable name of this contribution, e.g. `"exact name match"`.
+    pub label: &'static str,
+    /// This contribution's share of [`SearchHit::rank`].  Every component
+    /// that could apply to this hit's tier is always present, even at
+    /// `0.0` -- e.g. a `format`-sourced hit still lists its source-tier
+    /// component (worth `0.0`), so the breakdown is a complete accounting
+    /// of the formula, not just the nonzero terms.
+    pub value: f32,
 }
 
 /// A constraint on search hits, checked as a symbol-name membership test
@@ -91,7 +115,13 @@ pub struct SearchHit {
 /// as `-subclass->Class` / `-instance->Class` tokens (see
 /// [`KnowledgeBase::search`]); a non-empty explicit [`SearchOpts::taxonomy`]
 /// wins over the inline form rather than combining with it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Serialize`/`Deserialize` use serde's default externally-tagged newtype
+/// representation (e.g. `{"subclassOf": "Animal"}`) -- the shape the wasm
+/// search binding's `taxonomy` parameter takes from JS (see
+/// `crates/wasm/src/session/views.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TaxConstraint {
     /// Transitive subclasses of the class (the class itself excluded):
     /// with `(subclass A B)` `(subclass B C)`, `SubclassOf("C")` yields
@@ -146,6 +176,18 @@ pub struct SearchOpts<'a> {
     /// (AND).  Empty accepts everything (unless the query string carries an
     /// inline constraint).
     pub taxonomy: Vec<TaxConstraint>,
+    /// Synonym expansion: when set, the query is also looked up as a word in
+    /// this WordNet lexicon and every SUMO term its synsets are anchored to
+    /// becomes a [`SearchSource::WordNet`] hit. IF a hit is on a symbol not
+    /// currently present in the KB, it is filtered out. All other filters still
+    /// apply
+    #[cfg(feature = "lexicon")]
+    pub lexicon: Option<&'a crate::lexicon::WordNet>,
+    /// WordNet-only mode: skip the documentation/termFormat/format text scan
+    /// and the symbol-name pass entirely; return only lexicon hits. With no
+    /// [`SearchOpts::lexicon`] set this will always result in an empty array.
+    #[cfg(feature = "lexicon")]
+    pub wordnet_only: bool,
 }
 
 impl<'a> Default for SearchOpts<'a> {
@@ -155,6 +197,10 @@ impl<'a> Default for SearchOpts<'a> {
             language: None,
             limit: Some(DEFAULT_CANDIDATE_LIMIT),
             taxonomy: Vec::new(),
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
+            #[cfg(feature = "lexicon")]
+            wordnet_only: false,
         }
     }
 }
@@ -162,29 +208,31 @@ impl<'a> Default for SearchOpts<'a> {
 // -- KB method ---------------------------------------------------------------
 
 impl<L: TopLayer + Layer> KnowledgeBase<L> {
-    /// Substring search across SUMO's natural-language fields, **plus** a
-    /// direct match against symbol names.
+    /// The primary search API for symbols in the `KnowledgeBase`. It takes
+    /// a variety of parameters and sorts outputs based on a relevance metric.
+    /// The search looks for the search query using the following strategies:
     ///
-    /// Returns every documentation / termFormat / format axiom whose
-    /// payload string contains `query` (case-insensitive), paired
-    /// with the symbol it describes and the symbol's kind.
+    /// 1. Returns every `documentation` / `termFormat` / `format` axiom whose
+    ///    payload string contains `query` (case-insensitive), paired
+    ///    with the symbol it describes and the symbol's kind.
     ///
-    /// That text scan alone misses well-known symbols whose own prose never
-    /// repeats their name -- e.g. SUMO's `Human` class is glossed as "Modern
-    /// man, the only remaining species of the Homo genus." and has no
-    /// `termFormat` entry, so a query for `"Human"` would never find `Human`
-    /// itself, only symbols like `HumanDoll` whose *documentation* happens to
-    /// contain the substring "Human". To close that gap, a second pass (see
-    /// [`name_match_hits`]) matches `query` directly against every symbol's
-    /// own name, independent of what its documentation says.
+    /// 2. (see [`name_match_hits`]) Matches `query` directly against every
+    ///    symbol's own name, independent of what its documentation says.
+    ///
+    /// 3. When the `lexicon` parameter is set, the search will also attempt
+    ///    to find WordNet synsets that match the query and return the
+    ///    corresponding SUMO symbol mapping as defined by the WordNet lexicon.
+    ///    Importantly, WordNet filtering happens independent of text based
+    ///    search
     ///
     /// Hits are sorted by [`SearchHit::rank`] (relevance, descending): a
     /// symbol whose *name* matches the query (exact > prefix > substring)
     /// outranks one that only matched inside a documentation blurb, with the
     /// source tier (termFormat -> documentation -> format) and match position as
-    /// tie-breakers, then symbol name and `sid` for determinism.  Apply
-    /// [`SearchOpts::kind`] / [`SearchOpts::language`] for narrowing; pass
-    /// `SearchOpts::default()` for no filtering.
+    /// tie-breakers, then symbol name and `sid` for determinism.  
+    ///
+    /// See [`SearchOpts`] for additional options that can be used to control
+    /// and filter results.
     pub fn search(&self, query: &str, opts: &SearchOpts) -> Vec<SearchHit> {
         // Inline taxonomy syntax: `-subclass->Class` / `-instance->Class`
         // tokens anywhere in the query restrict hits to that transitive
@@ -219,6 +267,61 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             })
         });
         let q = text_query.to_lowercase();
+
+        // Potentially skip the naive text searches
+        #[cfg(feature = "lexicon")]
+        let text_passes = !opts.wordnet_only;
+        #[cfg(not(feature = "lexicon"))]
+        let text_passes = true;
+
+        let mut hits = if text_passes {
+            self.text_and_name_hits(&q, opts, &tax_allow)
+        } else {
+            Vec::new()
+        };
+
+        // WordNet synonym expansion: added AFTER the text/name passes (so it
+        // can dedup against their symbols) but BEFORE the taxonomy filter
+        // below, so a WordNet hit outside an active taxonomy constraint's
+        // closure is excluded exactly like any other hit.
+        #[cfg(feature = "lexicon")]
+        if let Some(wn) = opts.lexicon {
+            self.apply_wordnet(&q, wn, opts, &mut hits);
+        }
+
+        // Taxonomy filter: one choke point AFTER every pass, BEFORE
+        // rank-sort and the limit -- so the cap counts only in-closure hits.
+        if let Some(allow) = &tax_allow {
+            hits.retain(|h| allow.contains(&h.symbol));
+        }
+
+        // Sort by relevance (descending), then deterministic tie-breaks. The
+        // stable sort preserves KB order for hits with an identical key.
+        hits.sort_by(|a, b| {
+            b.rank
+                .partial_cmp(&a.rank)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.symbol.cmp(&b.symbol))
+                .then_with(|| a.sid.cmp(&b.sid))
+        });
+
+        if let Some(n) = opts.limit {
+            hits.truncate(n);
+        }
+        hits
+    }
+
+    /// The text-field scan plus the name-match pass (everything
+    /// [`Self::search`] does except WordNet expansion). Skipped entirely in
+    /// `SearchOpts::wordnet_only` mode. `tax_allow` is read only to decide
+    /// whether the name-match fallback scan's limit short-circuit is safe
+    /// (see [`Self::name_match_hits`]'s doc comment)
+    fn text_and_name_hits(
+        &self,
+        q: &str,
+        opts: &SearchOpts,
+        tax_allow: &Option<HashSet<String>>,
+    ) -> Vec<SearchHit> {
         let syn = &self.layer.semantic().syntactic;
 
         // Best text hit per symbol -- one row per symbol, keeping the
@@ -281,7 +384,7 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 }
 
                 let text_lc = text.to_lowercase();
-                let Some(match_idx) = text_lc.find(&q) else {
+                let Some(match_idx) = text_lc.find(q) else {
                     continue;
                 };
 
@@ -303,7 +406,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                     None => continue,
                 };
                 let occurrence = syn.sine_current(|idx| idx.generality(sym_id));
-                let rank = search_rank(&q, &symbol, source, match_idx, occurrence);
+                let rank_breakdown = search_rank(q, &symbol, source, match_idx, occurrence);
+                let rank = sum_rank(&rank_breakdown);
                 let keep = text_hits.get(&sym_id).is_none_or(|cur| rank > cur.rank);
                 if keep {
                     text_hits.insert(
@@ -315,7 +419,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                             language: lang,
                             text: strip_quotes(text),
                             sid,
+                            sense: String::new(),
                             rank,
+                            rank_breakdown,
                         },
                     );
                 }
@@ -339,10 +445,10 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         let mut hits: Vec<SearchHit> = text_hits.into_values().collect();
         let already_hit: HashSet<&str> = hits.iter().map(|h| h.symbol.as_str()).collect();
         // The fallback substring scan inside `name_match_hits` may be
-        // skipped once enough higher-ranked hits already exist -- but ONLY
+        // skipped once enough higher-ranked hits already exist, but ONLY
         // when no taxonomy constraint is active. `tax_allow` filters `hits`
         // (including whatever `name_match_hits` itself finds via its own
-        // prefix fast path) *after* this point, so with a constraint set, no
+        // prefix fast path) later in `search`, so with a constraint set, no
         // count taken now -- of `hits` or of the fast path's own results --
         // can predict how many will actually survive that later filter.
         let short_circuit_limit = if tax_allow.is_none() {
@@ -351,28 +457,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             None
         };
         let name_hits =
-            self.name_match_hits(&q, opts, &backing, &already_hit, &hits, short_circuit_limit);
+            self.name_match_hits(q, opts, &backing, &already_hit, &hits, short_circuit_limit);
         hits.extend(name_hits);
-
-        // Taxonomy filter: one choke point AFTER both passes, BEFORE
-        // rank-sort and the limit -- so the cap counts only in-closure hits.
-        if let Some(allow) = &tax_allow {
-            hits.retain(|h| allow.contains(&h.symbol));
-        }
-
-        // Sort by relevance (descending), then deterministic tie-breaks. The
-        // stable sort preserves KB order for hits with an identical key.
-        hits.sort_by(|a, b| {
-            b.rank
-                .partial_cmp(&a.rank)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.symbol.cmp(&b.symbol))
-                .then_with(|| a.sid.cmp(&b.sid))
-        });
-
-        if let Some(n) = opts.limit {
-            hits.truncate(n);
-        }
         hits
     }
 
@@ -455,7 +541,8 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
             };
 
             let occurrence = syn.sine_current(|idx| idx.generality(sym_id));
-            let rank = search_rank(q, name, source, 0, occurrence);
+            let rank_breakdown = search_rank(q, name, source, 0, occurrence);
+            let rank = sum_rank(&rank_breakdown);
             out.push(SearchHit {
                 symbol: name.to_string(),
                 kinds,
@@ -463,7 +550,9 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
                 language,
                 text,
                 sid,
+                sense: String::new(),
                 rank,
+                rank_breakdown,
             });
         };
 
@@ -491,11 +580,83 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
         });
         out
     }
+
+    /// WordNet synonym expansion (see [`SearchOpts::lexicon`]): every SUMO
+    /// term `q`'s senses anchor to, applied in place to `hits`.
+    ///
+    /// A term can match on both the normal doc string name search and the
+    /// WordNet-sourced row for the same query. Its WordNet
+    /// evidence is folded into the existing hit's `rank_breakdown`/`rank` as
+    /// an extra component
+    ///
+    /// Two graceful-degradation points, both silent (never an error):
+    ///   - a synset may anchor to a SUMO term the *loaded* KB doesn't
+    ///     currently have (e.g. only `Merge.kif` is loaded, but the synset
+    ///     anchors to a `Mid-level-ontology.kif` term) -- `symbol_id` returns
+    ///     `None` and that anchor is skipped, so results are filtered to
+    ///     terms that actually exist in the loaded KB;
+    ///   - every anchor kind is included regardless of strength (`=`, `+`,
+    ///     `@`, or the rare negated forms) -- none are dropped, only ranked
+    ///     lower (see [`wordnet_rank`]).
+    #[cfg(feature = "lexicon")]
+    fn apply_wordnet(
+        &self,
+        q: &str,
+        wn: &crate::lexicon::WordNet,
+        opts: &SearchOpts,
+        hits: &mut Vec<SearchHit>,
+    ) {
+        let mut existing_idx: HashMap<String, usize> = HashMap::new();
+        for (i, h) in hits.iter().enumerate() {
+            existing_idx.entry(h.symbol.clone()).or_insert(i);
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut new_hits = Vec::new();
+        for sense in wn.senses(q) {
+            for anchor in &sense.synset.sumo {
+                if !seen.insert(anchor.term.clone()) {
+                    continue;
+                }
+                let Some(sym_id) = self.symbol_id(&anchor.term) else {
+                    continue;
+                };
+                let kinds = self.kinds_of(sym_id);
+                if let Some(want) = opts.kind {
+                    if !kind_matches(&kinds, want) {
+                        continue;
+                    }
+                }
+                let rank_breakdown = wordnet_rank(anchor.kind, sense.sense_no);
+                if let Some(&i) = existing_idx.get(&anchor.term) {
+                    let existing = &mut hits[i];
+                    existing.rank += sum_rank(&rank_breakdown);
+                    existing.rank_breakdown.extend(rank_breakdown);
+                    if existing.sense.is_empty() {
+                        existing.sense = format!("{}{}", sense.label(), anchor.kind.suffix());
+                    }
+                    continue;
+                }
+                new_hits.push(SearchHit {
+                    symbol: anchor.term.clone(),
+                    kinds,
+                    source: SearchSource::WordNet,
+                    language: String::new(),
+                    text: sense.synset.gloss.clone(),
+                    sid: SentenceId::MAX,
+                    sense: format!("{}{}", sense.label(), anchor.kind.suffix()),
+                    rank: sum_rank(&rank_breakdown),
+                    rank_breakdown,
+                });
+            }
+        }
+        hits.extend(new_hits);
+    }
 }
 
 // -- Helpers -----------------------------------------------------------------
 
-/// Relevance score for a search hit (higher = better).
+/// Relevance breakdown for a search hit -- [`SearchHit::rank`] is the sum of
+/// these components' values (higher = better).
 ///
 /// `query_lc` and the compared symbol are lowercased; `match_idx` is the byte
 /// offset of the query within the (already lowercased) matched text.  The
@@ -508,30 +669,50 @@ fn search_rank(
     source: SearchSource,
     match_idx: usize,
     occurrence: usize,
-) -> f32 {
+) -> Vec<RankComponent> {
     let sym_lc = symbol.to_lowercase();
-    let name = if sym_lc == query_lc {
-        100.0
+    let (name_label, name_value) = if sym_lc == query_lc {
+        ("exact name match", 100.0)
     } else if sym_lc.starts_with(query_lc) {
-        60.0
+        ("prefix name match", 60.0)
     } else if sym_lc.contains(query_lc) {
-        40.0
+        ("substring name match", 40.0)
     } else {
-        0.0
+        ("no name match", 0.0)
     };
-    let src = match source {
-        SearchSource::TermFormat => 12.0,
-        SearchSource::Documentation => 6.0,
-        SearchSource::Format => 0.0,
+    let (src_label, src_value) = match source {
+        SearchSource::TermFormat => ("termFormat source", 12.0),
+        SearchSource::Documentation => ("documentation source", 6.0),
+        SearchSource::Format => ("format source", 0.0),
+        // WordNet hits are scored by `wordnet_rank`, never routed here; the
+        // arm only exists for match correctness.
+        SearchSource::WordNet => ("wordnet source", 0.0),
     };
     // Earlier matches score a little higher; a match at the very start gets a
     // small flat bonus.
-    let pos = if match_idx == 0 {
+    let pos_value = if match_idx == 0 {
         4.0
     } else {
         2.0 / (1.0 + match_idx as f32)
     };
-    name + src + pos + occurrence_bonus(occurrence)
+    vec![
+        RankComponent {
+            label: name_label,
+            value: name_value,
+        },
+        RankComponent {
+            label: src_label,
+            value: src_value,
+        },
+        RankComponent {
+            label: "match position",
+            value: pos_value,
+        },
+        RankComponent {
+            label: "usage frequency",
+            value: occurrence_bonus(occurrence),
+        },
+    ]
 }
 
 /// Diminishing-returns nudge toward symbols that appear in more axioms
@@ -553,7 +734,42 @@ fn source_preview_rank(source: SearchSource) -> u8 {
         SearchSource::Documentation => 0,
         SearchSource::TermFormat => 1,
         SearchSource::Format => 2,
+        // Exhaustiveness only.
+        SearchSource::WordNet => 3,
     }
+}
+
+/// Relevance score for a WordNet synonym hit. The base tier tracks how
+/// strong the anchor is:
+/// 1. An `=` (equivalent) mapping is the best possible synonym evidence
+///    and lands just above a termFormat text hit
+/// 2. A `+` (subsuming) sits between termFormat and documentation tiers
+///    and a most-frequent-sense bonus decays hyperbolically so `dog#n#1`
+///    outranks `dog#n#7`.
+///
+/// NOTE: Exact/prefix *name* matches (100/60) always outrank any
+/// WordNet hit, by design.
+#[cfg(feature = "lexicon")]
+fn wordnet_rank(kind: crate::lexicon::MappingKind, sense_no: usize) -> Vec<RankComponent> {
+    use crate::lexicon::MappingKind::*;
+    let (label, base) = match kind {
+        Equivalent => ("equivalent WordNet anchor", 20.0),
+        Subsuming => ("subsuming WordNet anchor", 8.0),
+        Instance => ("instance WordNet anchor", 6.0),
+        Other(_) => ("weak WordNet anchor", 2.0),
+    };
+    vec![
+        RankComponent { label, value: base },
+        RankComponent {
+            label: "most-frequent-sense bonus",
+            value: 4.0 / sense_no.max(1) as f32,
+        },
+    ]
+}
+
+/// Sum a rank breakdown's components into the flat [`SearchHit::rank`] score.
+fn sum_rank(components: &[RankComponent]) -> f32 {
+    components.iter().map(|c| c.value).sum()
 }
 
 /// Split inline taxonomy tokens (`-subclass->Class` / `-instance->Class`)
@@ -892,6 +1108,7 @@ mod tests {
             language: None,
             limit: None,
             taxonomy: Vec::new(),
+            ..SearchOpts::default()
         };
         let hits = kb.search("half typed", &opts);
         assert!(
@@ -1060,6 +1277,267 @@ mod tests {
         assert!(
             pos_z < pos_a,
             "more frequently used FooZ must outrank FooA: {syms:?}"
+        );
+    }
+
+    #[cfg(feature = "lexicon")]
+    fn fixture_lexicon() -> crate::lexicon::WordNet {
+        crate::lexicon::WordNet::from_texts(
+            [(
+                "02084071 05 n 03 dog 0 domestic_dog 0 Canis_familiaris 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n\
+                 02121620 05 n 01 cat 0 001 @ 02120997 n 0000 | feline mammal &%Feline+\n",
+                crate::lexicon::Pos::Noun,
+            )],
+            None,
+            None,
+        )
+    }
+
+    /// The synonym-expansion payoff: no KB string contains "dog", yet the
+    /// query surfaces `Canine` via the lexicon -- while `Feline`, whose
+    /// anchoring synset doesn't match the query, and any anchored term *not
+    /// interned in the KB* stay absent.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_expansion_surfaces_anchored_terms_present_in_kb() {
+        let kb = kb_from(
+            r#"
+            (documentation Canine EnglishLanguage "A carnivorous mammal of the family Canidae.")
+            (subclass Canine Mammal)
+            "#,
+        );
+        let wn = fixture_lexicon();
+
+        let plain = kb.search("dog", &SearchOpts::default());
+        assert!(
+            plain.is_empty(),
+            "no lexicon -> no hits, got {:?}",
+            plain.iter().map(|h| &h.symbol).collect::<Vec<_>>()
+        );
+
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            ..Default::default()
+        };
+        let hits = kb.search("dog", &opts);
+        assert_eq!(
+            hits.len(),
+            1,
+            "got {:?}",
+            hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
+        );
+        let h = &hits[0];
+        assert_eq!(h.symbol, "Canine");
+        assert_eq!(h.source, SearchSource::WordNet);
+        assert_eq!(h.sense, "dog#n#1+");
+        assert_eq!(h.text, "a domesticated canine");
+        assert_eq!(h.sid, SentenceId::MAX);
+
+        // `cat` anchors to `Feline`, which is not interned in this KB.
+        assert!(
+            kb.search("cat", &opts).is_empty(),
+            "an anchored term missing from the KB must not be recommended"
+        );
+    }
+
+    /// A symbol already surfaced by the text/name passes must not appear a
+    /// second time as a WordNet row (never-twice invariant) -- but its
+    /// WordNet evidence still counts: the anchor's rank components are folded
+    /// into the existing hit instead of being dropped, and its `sense` tag is
+    /// filled in.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_hits_deduplicate_against_other_passes() {
+        let kb = kb_from(r#"(documentation Canine EnglishLanguage "The dog family.")"#);
+        let wn = fixture_lexicon();
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            ..Default::default()
+        };
+        // "dog" text-matches Canine's documentation AND anchors to Canine.
+        let hits = kb.search("dog", &opts);
+        let canine: Vec<_> = hits.iter().filter(|h| h.symbol == "Canine").collect();
+        assert_eq!(
+            canine.len(),
+            1,
+            "duplicate rows: {:?}",
+            hits.iter()
+                .map(|h| (&h.symbol, h.source))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(canine[0].source, SearchSource::Documentation);
+        assert_eq!(canine[0].sense, "dog#n#1+");
+        assert!(
+            canine[0]
+                .rank_breakdown
+                .iter()
+                .any(|c| c.label == "subsuming WordNet anchor"),
+            "expected a folded-in WordNet rank component, got {:?}",
+            canine[0].rank_breakdown
+        );
+        assert_eq!(canine[0].rank, sum_rank(&canine[0].rank_breakdown));
+    }
+
+    /// `wordnet_only` suppresses the text and name passes: the same KB where
+    /// "dog" text-matches Canine's documentation yields exactly one hit, and
+    /// it is the WordNet row (which, with no other passes to dedup against,
+    /// now carries the gloss + sense tag).
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_only_suppresses_text_and_name_passes() {
+        let kb = kb_from(r#"(documentation Canine EnglishLanguage "The dog family.")"#);
+        let wn = fixture_lexicon();
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            wordnet_only: true,
+            ..Default::default()
+        };
+        let hits = kb.search("dog", &opts);
+        assert_eq!(
+            hits.len(),
+            1,
+            "got {:?}",
+            hits.iter()
+                .map(|h| (&h.symbol, h.source))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(hits[0].symbol, "Canine");
+        assert_eq!(hits[0].source, SearchSource::WordNet);
+        assert_eq!(hits[0].sense, "dog#n#1+");
+    }
+
+    /// `wordnet_only` with no lexicon supplied yields nothing -- never a
+    /// silent fall-back to the text passes.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_only_without_lexicon_is_empty() {
+        let kb = kb_from(r#"(documentation Canine EnglishLanguage "The dog family.")"#);
+        let opts = SearchOpts {
+            wordnet_only: true,
+            ..Default::default()
+        };
+        assert!(kb.search("dog", &opts).is_empty());
+    }
+
+    /// New reconciliation behavior versus the branch this was ported from:
+    /// an active taxonomy constraint filters WordNet hits exactly like any
+    /// other hit -- a synonym-expansion result outside the constrained
+    /// closure must not leak through.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn wordnet_hits_are_filtered_by_an_active_taxonomy_constraint() {
+        let kb = kb_from(
+            r#"
+            (subclass Canine Mammal)
+            (subclass Rock Entity)
+            "#,
+        );
+        let wn = fixture_lexicon();
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            taxonomy: vec![TaxConstraint::SubclassOf("Entity".into())],
+            ..Default::default()
+        };
+        // "dog" anchors to Canine, which is a Mammal, not a subclass of
+        // Entity via this KB's (deliberately disconnected) taxonomy.
+        let hits = kb.search("dog", &opts);
+        assert!(
+            hits.iter().all(|h| h.symbol != "Canine"),
+            "WordNet hit outside the taxonomy closure must be filtered: {:?}",
+            hits.iter().map(|h| &h.symbol).collect::<Vec<_>>()
+        );
+    }
+
+    /// The wasm search binding deserializes `TaxConstraint` from a JS array
+    /// of externally-tagged newtype objects (`{"subclassOf": "Animal"}`);
+    /// this is the plain-JSON shape that decodes into, one variant per test.
+    #[test]
+    fn tax_constraint_deserializes_from_externally_tagged_json() {
+        let cases = [
+            (
+                r#"{"subclassOf":"Animal"}"#,
+                TaxConstraint::SubclassOf("Animal".into()),
+            ),
+            (
+                r#"{"instanceOf":"Human"}"#,
+                TaxConstraint::InstanceOf("Human".into()),
+            ),
+            (
+                r#"{"rangeOf":"Human"}"#,
+                TaxConstraint::RangeOf("Human".into()),
+            ),
+            (
+                r#"{"rangeSubclassOf":"Human"}"#,
+                TaxConstraint::RangeSubclassOf("Human".into()),
+            ),
+        ];
+        for (json, want) in cases {
+            let got: TaxConstraint = serde_json::from_str(json).expect("deserializes");
+            assert_eq!(got, want, "for {json}");
+        }
+    }
+
+    #[test]
+    fn rank_breakdown_sums_to_rank_for_a_text_hit() {
+        let kb = kb_from(r#"(documentation Triangle EnglishLanguage "A three-sided polygon.")"#);
+        let hits = kb.search("Triangle", &SearchOpts::default());
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Triangle")
+            .expect("Triangle hit");
+        let summed: f32 = hit.rank_breakdown.iter().map(|c| c.value).sum();
+        assert!(
+            (hit.rank - summed).abs() < 1e-4,
+            "rank {} != breakdown sum {} ({:?})",
+            hit.rank,
+            summed,
+            hit.rank_breakdown
+        );
+        // Exact name match -> its labeled component is present and dominant.
+        assert!(
+            hit.rank_breakdown
+                .iter()
+                .any(|c| c.label == "exact name match" && c.value == 100.0),
+            "{:?}",
+            hit.rank_breakdown
+        );
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn rank_breakdown_sums_to_rank_for_a_wordnet_hit() {
+        let kb = kb_from(r#"(instance Canine SetOrClass)"#);
+        let wn = fixture_lexicon();
+        let opts = SearchOpts {
+            lexicon: Some(&wn),
+            ..Default::default()
+        };
+        let hits = kb.search("dog", &opts);
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Canine")
+            .expect("Canine hit");
+        let summed: f32 = hit.rank_breakdown.iter().map(|c| c.value).sum();
+        assert!(
+            (hit.rank - summed).abs() < 1e-4,
+            "rank {} != breakdown sum {} ({:?})",
+            hit.rank,
+            summed,
+            hit.rank_breakdown
+        );
+        assert!(
+            hit.rank_breakdown
+                .iter()
+                .any(|c| c.label == "subsuming WordNet anchor" && c.value == 8.0),
+            "{:?}",
+            hit.rank_breakdown
+        );
+        assert!(
+            hit.rank_breakdown
+                .iter()
+                .any(|c| c.label == "most-frequent-sense bonus"),
+            "{:?}",
+            hit.rank_breakdown
         );
     }
 }

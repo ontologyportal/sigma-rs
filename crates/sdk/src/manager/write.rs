@@ -30,6 +30,7 @@ impl KBManager {
                 write_error_elevation(w, &self.elevate_warnings);
                 write_prover(w, "native", &self.native_prover);
                 write_prover(w, "external", &self.external_prover);
+                write_lexicon(w, &self.lexicon);
                 for kb in &self.kbs {
                     write_kb(w, kb);
                 }
@@ -77,6 +78,7 @@ fn write_preferences(w: &mut W, m: &KBManager) {
     pref(w, LANGUAGE, &m.language);
     pref(w, LEO_EXECUTABLE, &m.leo_executable.display().to_string());
     pref(w, LIMIT, &m.limit.to_string());
+    pref(w, LOAD_LEXICONS, yn(m.load_lexicons));
     pref(w, LOG_DIR, &m.log_dir.display().to_string());
     pref(w, LOG_LEVEL, super::severity_str(m.log_level));
     pref(w, OLLAMA_HOST, &m.ollama_host);
@@ -138,6 +140,25 @@ fn write_prover<T: serde::Serialize>(w: &mut W, kind: &str, cfg: &T) {
             Ok(())
         })
         .expect("write <prover>");
+}
+
+/// Write the `<lexicon>` section from [`KBManager::lexicon`] -- same
+/// dotted-flattening as [`write_prover`], but one section, no `type`
+/// attribute. `None` leaves (every field when [`LexiconConfig`](super::LexiconConfig)
+/// is at its default) are omitted, same as `write_prover`.
+fn write_lexicon<T: serde::Serialize>(w: &mut W, cfg: &T) {
+    let value = serde_json::to_value(cfg).expect("lexicon config serializes to JSON");
+    let obj = value
+        .as_object()
+        .expect("lexicon config serializes to a JSON object");
+    w.create_element("lexicon")
+        .write_inner_content(|w| {
+            for (k, v) in obj {
+                write_pref_tree(w, k, v);
+            }
+            Ok(())
+        })
+        .expect("write <lexicon>");
 }
 
 fn write_pref_tree(w: &mut W, name: &str, v: &Value) {

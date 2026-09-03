@@ -3,8 +3,8 @@
 // Session; the page (src/main.ts and friends) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
-import { init, Session, Config, Backend, parseTest } from 'sigmakee/sdk';
-import { WasmLsp } from 'sigmakee';
+import { init, Session, Config, Backend, parseTest } from "sigmakee/sdk";
+import { WasmLsp } from "sigmakee";
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
 // no `document`/`window`), and even a type-only import pulls the whole file
@@ -42,14 +42,15 @@ function makeConfig(o: ProverConfig = {}) {
   const cfg = new Config();
   cfg.wantProof = o.wantProof !== undefined ? !!o.wantProof : true;
   if (o.timeLimitSecs != null) cfg.timeLimitSecs = o.timeLimitSecs;
-  if (o.maxSteps     != null) cfg.maxSteps     = o.maxSteps;
-  if (o.maxLits      != null) cfg.maxLits      = o.maxLits;
+  if (o.maxSteps != null) cfg.maxSteps = o.maxSteps;
+  if (o.maxLits != null) cfg.maxLits = o.maxLits;
   if (o.forwardClose != null) cfg.forwardClose = !!o.forwardClose;
-  if (o.profile      != null) cfg.profile      = !!o.profile;
+  if (o.profile != null) cfg.profile = !!o.profile;
   // 0 means "engine default" (see src/prover-config.ts's CFG_KNOBS) — leave the wasm
   // Config field unset (its own default is `None`, same effect) rather than
   // pass a literal 0% budget. 100 searches the whole KB.
-  if (o.selectionTolerancePct) cfg.selectionTolerancePct = o.selectionTolerancePct;
+  if (o.selectionTolerancePct)
+    cfg.selectionTolerancePct = o.selectionTolerancePct;
   return cfg;
 }
 
@@ -70,6 +71,28 @@ const handlers = {
   ingest({ name, text }) {
     return { notices: session.kb.ingest(text, name) };
   },
+
+  // Install the WordNet lexicon from already-fetched mapping-file text (the
+  // page fetches -- see boot.ts's loadWordNetIntoWorker -- this worker only
+  // ever parses/installs). Separate from KIF ingestion, same as the SDK/wasm
+  // API this mirrors (`Session::loadWordNet` / `Session::ingest`).
+  loadWordNet({ noun, verb, adj, adv, indexSense, exceptions }) {
+    const synsets = session.loadWordNet({
+      noun,
+      verb,
+      adj,
+      adv,
+      indexSense,
+      exceptions,
+    });
+    return { synsets };
+  },
+  // Drop the currently installed WordNet lexicon, if any -- the KB tab's
+  // disable toggle. A no-op if none was loaded.
+  clearWordNet() {
+    session.clearWordNet();
+    return { ok: true };
+  },
   // Promote a batch of ingested constituents into the axiom base (the deferred,
   // heavier step). Already-promoted names are a fast no-op in core.
   promoteAll({ names }) {
@@ -77,13 +100,22 @@ const handlers = {
     return { ok: true };
   },
 
-  validate() { return { diagnostics: session.validate() }; },
-  stats() { return { stats: session.kb.stats() }; },
+  validate() {
+    return { diagnostics: session.validate() };
+  },
+  stats() {
+    return { stats: session.kb.stats() };
+  },
 
   // Freeze/thaw seam for the page's OPFS boot cache (see src/kb-cache.ts's
   // tryRestoreFromCache/saveKbCache) — native backend only, per the SDK doc.
-  snapshot() { return { bytes: session.snapshot() }; },
-  restore({ bytes }) { session.restore(bytes); return { ok: true }; },
+  snapshot() {
+    return { bytes: session.snapshot() };
+  },
+  restore({ bytes }) {
+    session.restore(bytes);
+    return { ok: true };
+  },
 
   /**
    * One LSP JSON-RPC message body in, every server->client message it
@@ -104,8 +136,9 @@ const handlers = {
    * diagnostics are meaningful without context, so the rest are dropped.
    */
   validateFormula({ kif }) {
-    const diagnostics = newSession().validateFormula(kif)
-      .filter((d) => d.kind === 'parse');
+    const diagnostics = newSession()
+      .validateFormula(kif)
+      .filter((d) => d.kind === "parse");
     return { diagnostics };
   },
 
@@ -113,32 +146,50 @@ const handlers = {
   // against the LIVE KB, so symbol references resolve and the assertions'
   // own declarations are in scope for the query.
   validateScratch({ assertions, query }) {
-    return session.kb.validateScratch(assertions || '', query || '');
+    return session.kb.validateScratch(assertions || "", query || "");
   },
 
-  parseTest({ name, text }) { return { test: parseTest(name, text) }; },
+  parseTest({ name, text }) {
+    return { test: parseTest(name, text) };
+  },
 
-  search({ query, limit, language, kind }) {
+  search({ query, limit, language, kind, wordnetOnly, taxonomy }) {
+    // WordNet is loaded eagerly at boot (see boot.ts's loadWordNetIntoWorker);
+    // if that failed or hasn't finished, `search` just runs without WordNet
+    // hits -- the SDK/wasm session tolerates no lexicon installed.
     return {
       hits: session.search(query, {
         limit: limit ?? 100,
         language,
         kind,
+        wordnetOnly,
+        taxonomy,
       }),
     };
   },
-  manpage({ symbol }) { return { page: session.manpage(symbol) }; },
-  taxonomy({ symbol }) { return { tax: session.taxonomy(symbol) }; },
-  naturalLanguages() { return { languages: session.naturalLanguages() }; },
-  renderNl({ kif, language }) { return { text: session.renderNl(kif, language) }; },
+  manpage({ symbol }) {
+    return { page: session.manpage(symbol) };
+  },
+  taxonomy({ symbol }) {
+    return { tax: session.taxonomy(symbol) };
+  },
+  naturalLanguages() {
+    return { languages: session.naturalLanguages() };
+  },
+  renderNl({ kif, language }) {
+    return { text: session.renderNl(kif, language) };
+  },
 
   prove({ assertions, query, config, session: sess }) {
     session.configure(makeConfig(config));
-    const tag = sess || 'user-assertions';
+    const tag = sess || "user-assertions";
     session.flushSession(tag);
     if (assertions && assertions.trim()) {
       const t = session.tell(assertions, tag);
-      if (!t.ok) throw new Error('assertion parse errors: ' + t.errors.slice(0, 3).join('; '));
+      if (!t.ok)
+        throw new Error(
+          "assertion parse errors: " + t.errors.slice(0, 3).join("; "),
+        );
     }
     return { result: session.ask(query, { session: tag }) };
   },
@@ -173,10 +224,24 @@ const handlers = {
   // not validated beyond what Vampire itself rejects. `tptp` rides back
   // alongside `result` so the page can offer it as a download without a
   // second worker round-trip to recompute the same selection.
-  async proveVampire({ assertions, query, timeLimitSecs, selectionTolerancePct, extraArgs }) {
-    const tptp = session.kb.toTptpForAsk(assertions || '', query, false, selectionTolerancePct || null);
+  async proveVampire({
+    assertions,
+    query,
+    timeLimitSecs,
+    selectionTolerancePct,
+    extraArgs,
+  }) {
+    const tptp = session.kb.toTptpForAsk(
+      assertions || "",
+      query,
+      false,
+      selectionTolerancePct || null,
+    );
     const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);
-    return { result: session.kb.parseVampireAskResult(raw_output, query || ''), tptp };
+    return {
+      result: session.kb.parseVampireAskResult(raw_output, query || ""),
+      tptp,
+    };
   },
   async auditVampire({ timeLimitSecs, extraArgs }) {
     const tptp = session.kb.toTptpIndexed(undefined, true);
@@ -197,7 +262,7 @@ const handlers = {
 let vampireRunnerPromise = null;
 function loadVampireRunner() {
   if (!vampireRunnerPromise) {
-    const url = new URL('vampire/vampire-runner.js', siteBaseUrl).href;
+    const url = new URL("vampire/vampire-runner.js", siteBaseUrl).href;
     // Don't cache a rejection: a deploy missing public/vampire/ fails every
     // call identically, but a later redeploy — or a transient network blip
     // fetching the chunk — should get a fresh attempt instead of being stuck
@@ -205,8 +270,8 @@ function loadVampireRunner() {
     vampireRunnerPromise = import(/* @vite-ignore */ url).catch(() => {
       vampireRunnerPromise = null;
       throw new Error(
-        'The Vampire (WASM) backend is not included in this deployment ' +
-        '(@sigma/vampire output missing). Use the Native backend instead.'
+        "The Vampire (WASM) backend is not included in this deployment " +
+          "(@sigma/vampire output missing). Use the Native backend instead.",
       );
     });
   }
@@ -224,7 +289,8 @@ function loadVampireRunner() {
 //    lines — Vampire's default human-readable proof format doesn't parse.
 //  --output_axiom_names on: preserve our `kb_<sid>` axiom names in the
 //    proof transcript, so steps cite back to file:line like the native path.
-const VAMPIRE_ARGS = '--mode vampire --sine_selection off -p tptp --output_axiom_names on';
+const VAMPIRE_ARGS =
+  "--mode vampire --sine_selection off -p tptp --output_axiom_names on";
 
 async function runVampireProblem(tptp, timeLimitSecs, extraArgs) {
   const { runVampire } = await loadVampireRunner();
@@ -232,9 +298,10 @@ async function runVampireProblem(tptp, timeLimitSecs, extraArgs) {
   // User-supplied args go last, so they can override a preceding default
   // (Vampire, like most CLIs, takes the last occurrence of a repeated flag).
   const extra = extraArgs && String(extraArgs).trim();
-  const args = `${VAMPIRE_ARGS} --input_syntax tptp -t ${t}` + (extra ? ` ${extra}` : '');
+  const args =
+    `${VAMPIRE_ARGS} --input_syntax tptp -t ${t}` + (extra ? ` ${extra}` : "");
   const res = await runVampire(tptp, args, {});
-  return res.stdout + (res.stderr ? '\n' + res.stderr : '');
+  return res.stdout + (res.stderr ? "\n" + res.stderr : "");
 }
 
 /** Hand a result's byte payload over instead of copying it, when it owns its
@@ -243,8 +310,11 @@ function transferables(result) {
   const b = result?.bytes;
   if (!(b instanceof Uint8Array)) return [];
   const buf = b.buffer;
-  return buf instanceof ArrayBuffer && b.byteOffset === 0 && b.byteLength === buf.byteLength
-    ? [buf] : [];
+  return buf instanceof ArrayBuffer &&
+    b.byteOffset === 0 &&
+    b.byteLength === buf.byteLength
+    ? [buf]
+    : [];
 }
 
 self.onmessage = async (e) => {
@@ -255,6 +325,6 @@ self.onmessage = async (e) => {
     const result = await fn(args || {});
     self.postMessage({ id, result }, transferables(result));
   } catch (err) {
-    self.postMessage({ id, error: String(err && err.message || err) });
+    self.postMessage({ id, error: String((err && err.message) || err) });
   }
 };

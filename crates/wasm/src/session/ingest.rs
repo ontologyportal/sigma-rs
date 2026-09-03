@@ -89,4 +89,47 @@ impl Session {
         let inner = session_guard.kb_mut();
         inner.flush_session(session);
     }
+
+    /// Load the WordNet-SUMO lexicon from the contents of the four
+    /// `WordNetMappings30-*.txt` files. To be WASM safe the browser
+    /// fetches the bytes and passes strings here. `indexSense`
+    /// (most-frequent-sense ordering) and `exceptions` (`noun.exc` +
+    /// `verb.exc` concatenated) are optional refinements.
+    /// Returns the number of synsets indexed.
+    #[wasm_bindgen(js_name = loadWordNet)]
+    pub fn load_wordnet(
+        &mut self,
+        noun: &str,
+        verb: &str,
+        adj: &str,
+        adv: &str,
+        index_sense: Option<String>,
+        exceptions: Option<String>,
+    ) -> u32 {
+        use sigmakee_rs_core::lexicon::{Pos, WordNet};
+        let wn = WordNet::from_texts(
+            [
+                (noun, Pos::Noun),
+                (verb, Pos::Verb),
+                (adj, Pos::Adj),
+                (adv, Pos::Adv),
+            ],
+            index_sense.as_deref(),
+            exceptions.as_deref(),
+        );
+        let n = wn.len() as u32;
+        let mut session_guard = self.session.write().expect("kb lock not poisoned");
+        session_guard.set_lexicon(Some(std::sync::Arc::new(wn)));
+        n
+    }
+
+    /// Drop the currently installed WordNet lexicon, if any -- the inverse
+    /// of [`loadWordNet`](Session::load_wordnet). Subsequent
+    /// [`search`](Session::search) calls stop returning WordNet hits, same
+    /// as if none had ever been loaded. A no-op if none was loaded.
+    #[wasm_bindgen(js_name = clearWordNet)]
+    pub fn clear_wordnet(&mut self) {
+        let mut session_guard = self.session.write().expect("kb lock not poisoned");
+        session_guard.set_lexicon(None);
+    }
 }

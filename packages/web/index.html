@@ -1,556 +1,1077 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SigmaKEE</title>
-  <link rel="stylesheet" href="./src/styles.css" />
-  <script>
-    // Apply a saved theme choice before first paint to avoid a flash.
-    try {
-      const t = localStorage.getItem('sumoBrowserTheme');
-      if (t) document.documentElement.dataset.theme = t;
-    } catch { /* storage unavailable — fall back to the OS preference */ }
-  </script>
-</head>
-<body>
-  <main>
-    <header>
-      <a class="brand jump" data-tab="browse" aria-label="Go to home page">
-        <img src="/logo.png" alt="SigmaKEE logo" />
-        <div class="brand-text">
-          <h1>SigmaKEE</h1>
-          <p class="sub">Explore the Suggested Upper Merged Ontology (SUMO)</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SigmaKEE</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script>
+      // Apply a saved theme choice before first paint to avoid a flash.
+      try {
+        const t = localStorage.getItem("sumoBrowserTheme");
+        if (t) document.documentElement.dataset.theme = t;
+      } catch {
+        /* storage unavailable — fall back to the OS preference */
+      }
+    </script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <a class="brand jump" data-tab="browse" aria-label="Go to home page">
+          <img src="/logo.png" alt="SigmaKEE logo" />
+          <div class="brand-text">
+            <h1>SigmaKEE</h1>
+            <p class="sub">
+              Explore the Suggested Upper Merged Ontology (SUMO)
+            </p>
+          </div>
+        </a>
+        <div class="head-meta">
+          <div class="head-controls">
+            <a
+              id="githubLogin"
+              class="head-btn"
+              href="/api/github-auth"
+              title="Log in with GitHub"
+              aria-label="Log in with GitHub"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                />
+              </svg>
+              <span>Log in</span>
+            </a>
+            <button
+              id="userMenu"
+              class="head-btn"
+              type="button"
+              hidden
+              title="Signed in with GitHub — click to log out"
+              aria-haspopup="dialog"
+              aria-controls="logoutDialog"
+            >
+              <img id="userAvatar" alt="" width="20" height="20" />
+              <span id="userName"></span>
+            </button>
+            <button
+              id="bugReport"
+              class="head-btn"
+              type="button"
+              title="Report a bug"
+              aria-label="Report a bug"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="7" y="7" width="10" height="12" rx="5" />
+                <path d="M9 7V6a3 3 0 0 1 6 0v1" />
+                <path d="M12 10v9" />
+                <path d="M7 11H3" />
+                <path d="M7 15H4" />
+                <path d="M17 11h4" />
+                <path d="M17 15h3" />
+                <path d="m8.5 4 1.5 2" />
+                <path d="m15.5 4-1.5 2" />
+              </svg>
+            </button>
+            <button
+              id="settingsBtn"
+              class="head-btn"
+              type="button"
+              title="Settings"
+              aria-label="Settings"
+              aria-haspopup="dialog"
+              aria-controls="settingsDialog"
+            >
+              ⚙
+            </button>
+          </div>
         </div>
-      </a>
-      <div class="head-meta">
-        <div class="head-controls">
-          <a id="githubLogin" class="head-btn" href="/api/github-auth" title="Log in with GitHub" aria-label="Log in with GitHub">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-            <span>Log in</span>
-          </a>
-          <button id="userMenu" class="head-btn" type="button" hidden
-                  title="Signed in with GitHub — click to log out" aria-haspopup="dialog" aria-controls="logoutDialog">
-            <img id="userAvatar" alt="" width="20" height="20" />
-            <span id="userName"></span>
+      </header>
+
+      <nav class="tabs" role="tablist">
+        <div class="tab-group" data-label="Explore">
+          <button role="tab" data-tab="browse" aria-selected="true">
+            Browse
           </button>
-          <button id="bugReport" class="head-btn" type="button" title="Report a bug" aria-label="Report a bug">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="12" rx="5"/>
-              <path d="M9 7V6a3 3 0 0 1 6 0v1"/>
-              <path d="M12 10v9"/>
-              <path d="M7 11H3"/>
-              <path d="M7 15H4"/>
-              <path d="M17 11h4"/>
-              <path d="M17 15h3"/>
-              <path d="m8.5 4 1.5 2"/>
-              <path d="m15.5 4-1.5 2"/>
-            </svg>
-          </button>
-          <button id="settingsBtn" class="head-btn" type="button" title="Settings" aria-label="Settings"
-                  aria-haspopup="dialog" aria-controls="settingsDialog">⚙</button>
         </div>
-      </div>
-    </header>
+        <div class="tab-group" data-label="Reason">
+          <button role="tab" data-tab="prover" aria-selected="false">
+            Ask/Tell
+          </button>
+          <button role="tab" data-tab="audit" aria-selected="false">
+            Audit
+          </button>
+        </div>
+        <div class="tab-group" data-label="Develop">
+          <button role="tab" data-tab="edit" aria-selected="false">Edit</button>
+          <button role="tab" data-tab="diagnostics" aria-selected="false">
+            Diagnostics
+          </button>
+        </div>
+        <div class="tab-group" data-label="Manage">
+          <button role="tab" data-tab="kb" aria-selected="false">
+            Knowledge base
+          </button>
+          <button role="tab" data-tab="history" aria-selected="false">
+            History
+          </button>
+        </div>
+      </nav>
 
-    <nav class="tabs" role="tablist">
-      <div class="tab-group" data-label="Explore">
-        <button role="tab" data-tab="browse" aria-selected="true">Browse</button>
-      </div>
-      <div class="tab-group" data-label="Reason">
-        <button role="tab" data-tab="prover" aria-selected="false">Ask/Tell</button>
-        <button role="tab" data-tab="audit" aria-selected="false">Audit</button>
-      </div>
-      <div class="tab-group" data-label="Develop">
-        <button role="tab" data-tab="edit" aria-selected="false">Edit</button>
-        <button role="tab" data-tab="diagnostics" aria-selected="false">Diagnostics</button>
-      </div>
-      <div class="tab-group" data-label="Manage">
-        <button role="tab" data-tab="kb" aria-selected="false">Knowledge base</button>
-        <button role="tab" data-tab="history" aria-selected="false">History</button>
-      </div>
-    </nav>
-
-    <!-- Prover settings (the wasm `Config`) — shared by Ask/Tell and Audit,
+      <!-- Prover settings (the wasm `Config`) — shared by Ask/Tell and Audit,
          which both toggle this SAME panel (see their own cog buttons) rather
          than each carrying a copy, so backend/knobs never drift out of sync
          between the two. Lives outside any one tab's <section> so it stays
          reachable regardless of which tab is active. -->
-    <div id="proverSettings" class="settings" hidden>
-      <div class="settings-grid">
-        <div>
-          <label for="proverBackend">backend</label>
-          <select id="proverBackend">
-            <option value="native">SUPr</option>
-            <option value="vampire">Vampire</option>
-          </select>
-          <div class="hint sub" id="proverBackendHint">given-clause knobs below apply to the native backend only</div>
-        </div>
-        <div>
-          <label for="cfgTimeLimit">time limit (s)</label>
-          <input type="number" id="cfgTimeLimit" min="0" step="1" value="30" />
-          <div class="hint sub">0 = no wall-clock limit</div>
-        </div>
-        <div data-native-only>
-          <label for="cfgMaxSteps">max steps</label>
-          <input type="number" id="cfgMaxSteps" min="0" step="100" value="4000" />
-          <div class="hint sub">given-clause loop budget</div>
-        </div>
-        <div data-native-only>
-          <label for="cfgMaxLits">max literals</label>
-          <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
-          <div class="hint sub">per retained clause</div>
-        </div>
-        <div>
-          <label for="cfgSelectionPct">selection budget</label>
-          <input type="range" id="cfgSelectionPct" min="0" max="100" step="1" value="0" />
-          <div class="hint sub" id="cfgSelectionPctVal">engine default — % of axioms a query-relevant selection may admit (also applies to Vampire; 100% searches the whole KB)</div>
-        </div>
-        <div data-vampire-only hidden>
-          <label for="cfgVampireArgs">extra CLI args</label>
-          <input type="text" id="cfgVampireArgs" placeholder="e.g. --avatar off" spellcheck="false" />
-          <div class="hint sub">appended to Vampire's command line (advanced)</div>
-        </div>
-      </div>
-      <div class="settings-checks" data-native-only>
-        <label class="check"><input type="checkbox" id="cfgForwardClose" checked /> forward closure <span class="hint">— saturate the theory before the loop</span></label>
-        <label class="check"><input type="checkbox" id="cfgWantProof" checked /> want proof <span class="hint">— populate the proof, graph and prose</span></label>
-        <label class="check"><input type="checkbox" id="cfgProfile" /> profile <span class="hint">— emit phase timings into raw output</span></label>
-      </div>
-      <div class="inline" style="justify-content:flex-end; margin-top:10px">
-        <button class="btn ghost" id="cfgReset" type="button">Reset to defaults</button>
-      </div>
-    </div>
-
-    <!-- Browse: symbol search → results → man page. The welcome card + KB
-         stats double as the tab's empty state (shown until a search runs). -->
-    <section id="tab-browse" class="panel" role="tabpanel">
-      <div class="card">
-        <form id="searchForm">
-          <label for="q">Search symbols &amp; documentation <span class="hint kbd-hint">(press <kbd>/</kbd> anywhere)</span></label>
-          <div class="search-box">
-            <input type="search" id="q" placeholder="e.g. Human, Process, part…" autocomplete="off" />
-            <button type="button" id="qClear" class="search-clear" aria-label="Clear search" hidden>&times;</button>
-          </div>
-        </form>
-      </div>
-      <div id="browseView"></div>
-      <div id="browseHome">
-        <div class="card">
-          <h2 class="welcome-h">SUMO in your browser</h2>
-          <p class="hint" style="margin:6px 0 0">
-            The <code>sigmakee-rs</code> native prover compiled to WebAssembly. Search above to
-            explore the ontology — try <a class="try-q">Human</a>, <a class="try-q">Process</a> or
-            <a class="try-q">part</a> — manage what is loaded under
-            <a class="jump" data-tab="kb">Knowledge base</a>, prove things under
-            <a class="jump" data-tab="prover">Ask/Tell</a>, and edit or contribute changes under
-            <a class="jump" data-tab="edit">Edit</a>. Everything runs locally: <strong>no server</strong>.
-          </p>
-        </div>
-        <div class="stats">
-          <div class="stat"><div class="stat-n" id="statFiles">—</div><div class="stat-l">constituent files</div></div>
-          <div class="stat"><div class="stat-n" id="statSymbols">—</div><div class="stat-l">symbols</div></div>
-          <div class="stat"><div class="stat-n" id="statAxioms">—</div><div class="stat-l">axioms</div></div>
-          <div class="stat"><div class="stat-n" id="statRules">—</div><div class="stat-l">rules</div></div>
-          <div class="stat"><div class="stat-n" id="statClasses">—</div><div class="stat-l">classes</div></div>
-          <div class="stat"><div class="stat-n" id="statInstances">—</div><div class="stat-l">instances</div></div>
-          <div class="stat clickable" id="tileRelations" title="Predicates vs functions"><div class="stat-n" id="statRelations">—</div><div class="stat-l">relations</div></div>
-          <div class="stat clickable" id="tileDoc" title="Coverage by language"><div class="stat-n" id="statDoc">—</div><div class="meter"><div id="statDocBar"></div></div><div class="stat-l">symbols documented</div></div>
-          <div class="stat"><div class="stat-n stat-date" id="statCommit">—</div><div class="stat-l">last upstream commit</div></div>
-        </div>
-        <div id="statNote" class="hint"></div>
-      </div>
-    </section>
-
-    <!-- Knowledge base: manage constituents -->
-    <section id="tab-kb" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <div class="inline" style="justify-content:space-between; gap:10px; flex-wrap:wrap">
+      <div id="proverSettings" class="settings" hidden>
+        <div class="settings-grid">
           <div>
-            <div style="font-weight:600">Load a standard set</div>
-            <div class="hint">Replaces everything currently loaded.</div>
+            <label for="proverBackend">backend</label>
+            <select id="proverBackend">
+              <option value="native">SUPr</option>
+              <option value="vampire">Vampire</option>
+            </select>
+            <div class="hint sub" id="proverBackendHint">
+              given-clause knobs below apply to the native backend only
+            </div>
           </div>
-          <div class="inline" style="gap:8px">
-            <button class="btn" id="loadMinimal" type="button">Minimal SUMO</button>
-            <button class="btn" id="loadFull" type="button">Full SUMO</button>
+          <div>
+            <label for="cfgTimeLimit">time limit (s)</label>
+            <input
+              type="number"
+              id="cfgTimeLimit"
+              min="0"
+              step="1"
+              value="30"
+            />
+            <div class="hint sub">0 = no wall-clock limit</div>
+          </div>
+          <div data-native-only>
+            <label for="cfgMaxSteps">max steps</label>
+            <input
+              type="number"
+              id="cfgMaxSteps"
+              min="0"
+              step="100"
+              value="4000"
+            />
+            <div class="hint sub">given-clause loop budget</div>
+          </div>
+          <div data-native-only>
+            <label for="cfgMaxLits">max literals</label>
+            <input type="number" id="cfgMaxLits" min="0" step="1" value="8" />
+            <div class="hint sub">per retained clause</div>
+          </div>
+          <div>
+            <label for="cfgSelectionPct">selection budget</label>
+            <input
+              type="range"
+              id="cfgSelectionPct"
+              min="0"
+              max="100"
+              step="1"
+              value="0"
+            />
+            <div class="hint sub" id="cfgSelectionPctVal">
+              engine default — % of axioms a query-relevant selection may admit
+              (also applies to Vampire; 100% searches the whole KB)
+            </div>
+          </div>
+          <div data-vampire-only hidden>
+            <label for="cfgVampireArgs">extra CLI args</label>
+            <input
+              type="text"
+              id="cfgVampireArgs"
+              placeholder="e.g. --avatar off"
+              spellcheck="false"
+            />
+            <div class="hint sub">
+              appended to Vampire's command line (advanced)
+            </div>
           </div>
         </div>
-        <div id="presetNote" class="hint" style="margin-top:8px"></div>
-      </div>
-
-      <div class="card">
-        <div class="inline" style="justify-content:space-between">
-          <div id="kbTotals" class="hint"></div>
+        <div class="settings-checks" data-native-only>
+          <label class="check"
+            ><input type="checkbox" id="cfgForwardClose" checked /> forward
+            closure
+            <span class="hint"
+              >— saturate the theory before the loop</span
+            ></label
+          >
+          <label class="check"
+            ><input type="checkbox" id="cfgWantProof" checked /> want proof
+            <span class="hint"
+              >— populate the proof, graph and prose</span
+            ></label
+          >
+          <label class="check"
+            ><input type="checkbox" id="cfgProfile" /> profile
+            <span class="hint"
+              >— emit phase timings into raw output</span
+            ></label
+          >
         </div>
-        <ul id="loadedList" class="results" style="margin-top:8px"></ul>
-      </div>
-
-      <div class="card">
-        <label for="fileFilter">Add SUMO constituents from <code>ontologyportal/sumo</code></label>
-        <input type="search" id="fileFilter" placeholder="filter file list…" autocomplete="off" />
-        <select id="sumoPicker" multiple size="10" style="width:100%; margin-top:8px"></select>
-        <div class="inline" style="margin-top:8px; justify-content:space-between; align-items:center">
-          <span id="pickerStatus" class="hint"></span>
-          <button class="btn" id="addSumo" type="button">Add selected</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <label>Add a constituent from elsewhere</label>
-        <div class="inline" style="flex-wrap:nowrap">
-          <input type="text" id="kbUrl" placeholder="https://example.org/ontology.kif" style="flex:1 1 auto; width:auto; min-width:0" />
-          <button class="btn" id="addUrl" type="button">Add URL</button>
-        </div>
-        <div style="margin-top:10px"><label for="kbFile">Upload a .kif or .kif.tq file</label><input type="file" id="kbFile" accept=".kif,.tq,.txt,text/plain" /></div>
-      </div>
-
-      <div class="card">
-        <label>Tests — <code>.kif.tq</code></label>
-        <div id="testsEmpty" class="hint">No tests imported. Add <code>.kif.tq</code> files through the picker,
-          URL, or upload above — they run against the loaded KB instead of joining it.</div>
-        <ul id="testsList" class="results"></ul>
-        <div class="inline" style="margin-top:8px; align-items:center">
-          <button class="btn" id="runAllTests" type="button" hidden>Run all</button>
-          <span id="testsLog" class="hint"></span>
+        <div class="inline" style="justify-content: flex-end; margin-top: 10px">
+          <button class="btn ghost" id="cfgReset" type="button">
+            Reset to defaults
+          </button>
         </div>
       </div>
 
-      <div id="kbLog" class="hint"></div>
-    </section>
+      <!-- Browse: symbol search → results → man page. The welcome card + KB
+         stats double as the tab's empty state (shown until a search runs). -->
+      <section id="tab-browse" class="panel" role="tabpanel">
+        <div class="card">
+          <form id="searchForm">
+            <label for="q"
+              >Search symbols &amp; documentation
+              <span class="hint kbd-hint"
+                >(press <kbd>/</kbd> anywhere)</span
+              ></label
+            >
+            <div class="search-box">
+              <input
+                type="search"
+                id="q"
+                placeholder="e.g. Human, Process, part…"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                id="qClear"
+                class="search-clear"
+                aria-label="Clear search"
+                hidden
+              >
+                &times;
+              </button>
+            </div>
+          </form>
+          <details id="advancedSearch" style="margin-top: 10px">
+            <summary class="hint">Advanced search</summary>
+            <label class="check" style="margin-top: 8px">
+              <input type="checkbox" id="searchWordnetOnly" /> WordNet only
+              <span class="hint"
+                >— show only WordNet synonym-expansion hits (requires the
+                WordNet lexicon; see the
+                <a class="jump" data-tab="kb">Knowledge base</a> tab)</span
+              >
+            </label>
+          </details>
+        </div>
+        <div id="browseView"></div>
+        <div id="browseHome">
+          <div class="card">
+            <h2 class="welcome-h">SUMO in your browser</h2>
+            <p class="hint" style="margin: 6px 0 0">
+              The <code>sigmakee-rs</code> native prover compiled to
+              WebAssembly. Search above to explore the ontology — try
+              <a class="try-q">Human</a>, <a class="try-q">Process</a> or
+              <a class="try-q">part</a> — manage what is loaded under
+              <a class="jump" data-tab="kb">Knowledge base</a>, prove things
+              under <a class="jump" data-tab="prover">Ask/Tell</a>, and edit or
+              contribute changes under <a class="jump" data-tab="edit">Edit</a>.
+              Everything runs locally: <strong>no server</strong>.
+            </p>
+          </div>
+          <div class="stats">
+            <div class="stat">
+              <div class="stat-n" id="statFiles">—</div>
+              <div class="stat-l">constituent files</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n" id="statSymbols">—</div>
+              <div class="stat-l">symbols</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n" id="statAxioms">—</div>
+              <div class="stat-l">axioms</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n" id="statRules">—</div>
+              <div class="stat-l">rules</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n" id="statClasses">—</div>
+              <div class="stat-l">classes</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n" id="statInstances">—</div>
+              <div class="stat-l">instances</div>
+            </div>
+            <div
+              class="stat clickable"
+              id="tileRelations"
+              title="Predicates vs functions"
+            >
+              <div class="stat-n" id="statRelations">—</div>
+              <div class="stat-l">relations</div>
+            </div>
+            <div
+              class="stat clickable"
+              id="tileDoc"
+              title="Coverage by language"
+            >
+              <div class="stat-n" id="statDoc">—</div>
+              <div class="meter"><div id="statDocBar"></div></div>
+              <div class="stat-l">symbols documented</div>
+            </div>
+            <div class="stat">
+              <div class="stat-n stat-date" id="statCommit">—</div>
+              <div class="stat-l">last upstream commit</div>
+            </div>
+          </div>
+          <div id="statNote" class="hint"></div>
+        </div>
+      </section>
 
-    <!-- Diagnostics -->
-    <section id="tab-diagnostics" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <div class="inline" style="justify-content:space-between">
-          <div id="diagSummary" class="hint"></div>
-          <div class="inline" style="gap:8px">
-            <button class="btn ghost" id="diagFilterBtn" type="button"
-                    aria-expanded="false" aria-controls="diagFilterPanel" title="Filter diagnostics">
-              <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M1 2.75A.75.75 0 0 1 1.75 2h12.5a.75.75 0 0 1 .6 1.2L10 9.65v4.6a.75.75 0 0 1-1.14.64l-2.5-1.5A.75.75 0 0 1 6 12.75V9.65L1.15 3.2A.75.75 0 0 1 1 2.75Z"/></svg>
-              Filter<span id="diagFilterBadge"></span>
+      <!-- Knowledge base: manage constituents -->
+      <section id="tab-kb" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div
+            class="inline"
+            style="justify-content: space-between; gap: 10px; flex-wrap: wrap"
+          >
+            <div>
+              <div style="font-weight: 600">Load a standard set</div>
+              <div class="hint">Replaces everything currently loaded.</div>
+            </div>
+            <div class="inline" style="gap: 8px">
+              <button class="btn" id="loadMinimal" type="button">
+                Minimal SUMO
+              </button>
+              <button class="btn" id="loadFull" type="button">Full SUMO</button>
+            </div>
+          </div>
+          <div id="presetNote" class="hint" style="margin-top: 8px"></div>
+        </div>
+
+        <div class="card">
+          <div class="inline" style="justify-content: space-between">
+            <div id="kbTotals" class="hint"></div>
+          </div>
+          <ul id="loadedList" class="results" style="margin-top: 8px"></ul>
+        </div>
+
+        <div class="card">
+          <div style="font-weight: 600">WordNet lexicon</div>
+          <div class="hint">
+            Powers synonym-aware search (results tagged "wn") — fetched from the
+            same <code>ontologyportal/sumo</code> repo as the KIF constituents
+            above.
+          </div>
+          <label class="check" style="margin-top: 8px"
+            ><input type="checkbox" id="wordnetEnabled" checked /> Enable
+            WordNet search</label
+          >
+          <ul id="wordnetFileList" class="results" style="margin-top: 8px"></ul>
+        </div>
+
+        <div class="card">
+          <label for="fileFilter"
+            >Add SUMO constituents from <code>ontologyportal/sumo</code></label
+          >
+          <input
+            type="search"
+            id="fileFilter"
+            placeholder="filter file list…"
+            autocomplete="off"
+          />
+          <select
+            id="sumoPicker"
+            multiple
+            size="10"
+            style="width: 100%; margin-top: 8px"
+          ></select>
+          <div
+            class="inline"
+            style="
+              margin-top: 8px;
+              justify-content: space-between;
+              align-items: center;
+            "
+          >
+            <span id="pickerStatus" class="hint"></span>
+            <button class="btn" id="addSumo" type="button">Add selected</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <label>Add a constituent from elsewhere</label>
+          <div class="inline" style="flex-wrap: nowrap">
+            <input
+              type="text"
+              id="kbUrl"
+              placeholder="https://example.org/ontology.kif"
+              style="flex: 1 1 auto; width: auto; min-width: 0"
+            />
+            <button class="btn" id="addUrl" type="button">Add URL</button>
+          </div>
+          <div style="margin-top: 10px">
+            <label for="kbFile">Upload a .kif or .kif.tq file</label
+            ><input type="file" id="kbFile" accept=".kif,.tq,.txt,text/plain" />
+          </div>
+        </div>
+
+        <div class="card">
+          <label>Tests — <code>.kif.tq</code></label>
+          <div id="testsEmpty" class="hint">
+            No tests imported. Add <code>.kif.tq</code> files through the
+            picker, URL, or upload above — they run against the loaded KB
+            instead of joining it.
+          </div>
+          <ul id="testsList" class="results"></ul>
+          <div class="inline" style="margin-top: 8px; align-items: center">
+            <button class="btn" id="runAllTests" type="button" hidden>
+              Run all
             </button>
-            <button class="btn" id="revalidate" type="button">Re-validate</button>
+            <span id="testsLog" class="hint"></span>
           </div>
         </div>
-        <div id="diagFilterPanel" class="settings" hidden>
-          <div class="diag-filter-stack">
-            <div>
-              <label for="diagFileFilter">File</label>
-              <select id="diagFileFilter"><option value="">All files</option></select>
-            </div>
-            <div>
-              <label for="diagSevFilter">Severity</label>
-              <select id="diagSevFilter"><option value="">All severities</option></select>
-            </div>
-            <div>
-              <label for="diagKindFilter">Type</label>
-              <select id="diagKindFilter"><option value="">All types</option></select>
-            </div>
-            <div>
-              <label for="diagCodeFilter">Code</label>
-              <select id="diagCodeFilter"><option value="">All codes</option></select>
-            </div>
-          </div>
-        </div>
-        <div id="diagList" style="margin-top:10px"></div>
-        <div id="diagPager" class="diag-pager"></div>
-      </div>
-    </section>
 
-    <!-- Theorem prover -->
-    <section id="tab-prover" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <label for="assertions">Assertions — <code>tell</code> (added to the KB for this query)</label>
-        <!-- Monaco mounts replace the textareas once the editor loads; the
+        <div id="kbLog" class="hint"></div>
+      </section>
+
+      <!-- Diagnostics -->
+      <section id="tab-diagnostics" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div class="inline" style="justify-content: space-between">
+            <div id="diagSummary" class="hint"></div>
+            <div class="inline" style="gap: 8px">
+              <button
+                class="btn ghost"
+                id="diagFilterBtn"
+                type="button"
+                aria-expanded="false"
+                aria-controls="diagFilterPanel"
+                title="Filter diagnostics"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="13"
+                  height="13"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M1 2.75A.75.75 0 0 1 1.75 2h12.5a.75.75 0 0 1 .6 1.2L10 9.65v4.6a.75.75 0 0 1-1.14.64l-2.5-1.5A.75.75 0 0 1 6 12.75V9.65L1.15 3.2A.75.75 0 0 1 1 2.75Z"
+                  />
+                </svg>
+                Filter<span id="diagFilterBadge"></span>
+              </button>
+              <button class="btn" id="revalidate" type="button">
+                Re-validate
+              </button>
+            </div>
+          </div>
+          <div id="diagFilterPanel" class="settings" hidden>
+            <div class="diag-filter-stack">
+              <div>
+                <label for="diagFileFilter">File</label>
+                <select id="diagFileFilter">
+                  <option value="">All files</option>
+                </select>
+              </div>
+              <div>
+                <label for="diagSevFilter">Severity</label>
+                <select id="diagSevFilter">
+                  <option value="">All severities</option>
+                </select>
+              </div>
+              <div>
+                <label for="diagKindFilter">Type</label>
+                <select id="diagKindFilter">
+                  <option value="">All types</option>
+                </select>
+              </div>
+              <div>
+                <label for="diagCodeFilter">Code</label>
+                <select id="diagCodeFilter">
+                  <option value="">All codes</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="diagList" style="margin-top: 10px"></div>
+          <div id="diagPager" class="diag-pager"></div>
+        </div>
+      </section>
+
+      <!-- Theorem prover -->
+      <section id="tab-prover" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <label for="assertions"
+            >Assertions — <code>tell</code> (added to the KB for this
+            query)</label
+          >
+          <!-- Monaco mounts replace the textareas once the editor loads; the
              textareas stay as the working fallback when the CDN is unreachable. -->
-        <div id="assertionsEd" class="pane-editor" hidden></div>
-        <textarea id="assertions" rows="4" spellcheck="false">(instance Rex Dog)
+          <div id="assertionsEd" class="pane-editor" hidden></div>
+          <textarea id="assertions" rows="4" spellcheck="false">
+(instance Rex Dog)
 (subclass Dog Mammal)</textarea>
-        <label for="pquery" style="margin-top:10px">Query — <code>ask</code></label>
-        <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
-        <textarea id="pquery" rows="2" spellcheck="false">(instance Rex Animal)</textarea>
-        <div class="inline" style="margin-top:10px; gap:8px; align-items:center">
-          <button class="btn" id="prove" type="button">Prove</button>
-          <button class="btn ghost" id="saveTq" type="button" title="Download this assertion/query pair as a .kif.tq test file">Save .kif.tq</button>
-          <button class="btn ghost" id="downloadVampireTptp" type="button" hidden
-                  title="Download the exact TPTP problem text handed to Vampire for the last run">Download TPTP input</button>
-          <button class="cog" id="proverSettingsBtn" type="button"
-                  title="Prover settings" aria-label="Prover settings"
-                  aria-expanded="false" aria-controls="proverSettings">⚙</button>
-          <span id="proverCfgSummary" class="hint"></span>
-        </div>
-      </div>
-      <div id="proverResult" class="card" hidden>
-        <div><span id="pStatus" class="status"></span> <span id="pBackendBadge" class="hint"></span> <span id="pSteps" class="hint"></span></div>
-        <ol id="pProof" class="refs"></ol>
-        <div id="pProseSlot"></div>
-        <details id="pGraphDetails" style="margin-top:10px">
-          <summary class="hint">proof graph</summary>
-          <div id="pGraphContainer" class="graph-container"></div>
-          <div class="pg-legend">
-            <span class="pg-legend-item" data-kind="axiom"><span class="pg-legend-swatch"></span>axiom</span>
-            <span class="pg-legend-item" data-kind="conjecture"><span class="pg-legend-swatch"></span>conjecture</span>
-            <span class="pg-legend-item" data-kind="lemma"><span class="pg-legend-swatch"></span>derived lemma</span>
+          <label for="pquery" style="margin-top: 10px"
+            >Query — <code>ask</code></label
+          >
+          <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
+          <textarea id="pquery" rows="2" spellcheck="false">
+(instance Rex Animal)</textarea>
+          <div
+            class="inline"
+            style="margin-top: 10px; gap: 8px; align-items: center"
+          >
+            <button class="btn" id="prove" type="button">Prove</button>
+            <button
+              class="btn ghost"
+              id="saveTq"
+              type="button"
+              title="Download this assertion/query pair as a .kif.tq test file"
+            >
+              Save .kif.tq
+            </button>
+            <button
+              class="btn ghost"
+              id="downloadVampireTptp"
+              type="button"
+              hidden
+              title="Download the exact TPTP problem text handed to Vampire for the last run"
+            >
+              Download TPTP input
+            </button>
+            <button
+              class="cog"
+              id="proverSettingsBtn"
+              type="button"
+              title="Prover settings"
+              aria-label="Prover settings"
+              aria-expanded="false"
+              aria-controls="proverSettings"
+            >
+              ⚙
+            </button>
+            <span id="proverCfgSummary" class="hint"></span>
           </div>
-          <details class="graph-dot-toggle"><summary>graphviz (DOT) source</summary><pre id="pGraphDot"></pre></details>
-        </details>
-        <details style="margin-top:10px"><summary class="hint">raw engine output</summary><pre id="pRaw"></pre></details>
-      </div>
-    </section>
+        </div>
+        <div id="proverResult" class="card" hidden>
+          <div>
+            <span id="pStatus" class="status"></span>
+            <span id="pBackendBadge" class="hint"></span>
+            <span id="pSteps" class="hint"></span>
+          </div>
+          <ol id="pProof" class="refs"></ol>
+          <div id="pProseSlot"></div>
+          <details id="pGraphDetails" style="margin-top: 10px">
+            <summary class="hint">proof graph</summary>
+            <div id="pGraphContainer" class="graph-container"></div>
+            <div class="pg-legend">
+              <span class="pg-legend-item" data-kind="axiom"
+                ><span class="pg-legend-swatch"></span>axiom</span
+              >
+              <span class="pg-legend-item" data-kind="conjecture"
+                ><span class="pg-legend-swatch"></span>conjecture</span
+              >
+              <span class="pg-legend-item" data-kind="lemma"
+                ><span class="pg-legend-swatch"></span>derived lemma</span
+              >
+            </div>
+            <details class="graph-dot-toggle">
+              <summary>graphviz (DOT) source</summary>
+              <pre id="pGraphDot"></pre>
+            </details>
+          </details>
+          <details style="margin-top: 10px">
+            <summary class="hint">raw engine output</summary>
+            <pre id="pRaw"></pre>
+          </details>
+        </div>
+      </section>
 
-    <!-- Audit: whole-KB consistency check -->
-    <section id="tab-audit" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <div class="inline" style="justify-content:space-between">
-          <p class="hint" style="margin:0">
-            Saturates the loaded KB looking for a logical contradiction and prints the proofs for said contradictions.
-          </p>
-          <div class="inline" style="gap:10px">
-            <div style="width:110px"><label for="auditTime">time limit (s)</label><input type="number" id="auditTime" value="15" min="0" /></div>
-            <div style="width:110px" data-native-only><label for="auditLimit">max found</label><input type="number" id="auditLimit" value="5" min="1" /></div>
-            <button class="btn" id="runAudit" type="button">Run audit</button>
-            <!-- Toggles the SAME #proverSettings panel Ask/Tell uses (see its
+      <!-- Audit: whole-KB consistency check -->
+      <section id="tab-audit" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div class="inline" style="justify-content: space-between">
+            <p class="hint" style="margin: 0">
+              Saturates the loaded KB looking for a logical contradiction and
+              prints the proofs for said contradictions.
+            </p>
+            <div class="inline" style="gap: 10px">
+              <div style="width: 110px">
+                <label for="auditTime">time limit (s)</label
+                ><input type="number" id="auditTime" value="15" min="0" />
+              </div>
+              <div style="width: 110px" data-native-only>
+                <label for="auditLimit">max found</label
+                ><input type="number" id="auditLimit" value="5" min="1" />
+              </div>
+              <button class="btn" id="runAudit" type="button">Run audit</button>
+              <!-- Toggles the SAME #proverSettings panel Ask/Tell uses (see its
                  own cog button) — one shared component, not a copy, so
                  backend/knobs can't drift out of sync between the two tabs. -->
-            <button class="cog" id="auditSettingsBtn" type="button"
-                    title="Prover settings" aria-label="Prover settings"
-                    aria-expanded="false" aria-controls="proverSettings">⚙</button>
+              <button
+                class="cog"
+                id="auditSettingsBtn"
+                type="button"
+                title="Prover settings"
+                aria-label="Prover settings"
+                aria-expanded="false"
+                aria-controls="proverSettings"
+              >
+                ⚙
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-      <div id="auditResult"></div>
-    </section>
+        <div id="auditResult"></div>
+      </section>
 
-    <!-- Edit: in-browser IDE (Monaco) for KIF constituents -->
-    <section id="tab-edit" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <div class="edit-toolbar">
-          <div class="btn-group" role="toolbar" aria-label="Editor actions">
-            <button id="editOpen" type="button" title="Open a file, or create a new one" aria-label="Open a file, or create a new one">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z"/></svg>
-            </button>
-            <button id="editSave" type="button" title="Save to the in-browser knowledge base" aria-label="Save to the in-browser knowledge base">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.75 2.75h8.19a1 1 0 0 1 .7.3l1.31 1.3a1 1 0 0 1 .3.71v8.19h-10.5z"/><path d="M5 2.75V6.25h5V2.75M5 13.25V9.25h6v4"/></svg>
-            </button>
-            <button id="editFormat" type="button" title="Format document (fix indentation to match paren nesting)" aria-label="Format document">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 3h12M2 6.5h8M2 10h10M2 13.5h6"/></svg>
-            </button>
-            <button id="editDownload" type="button" aria-haspopup="menu" aria-expanded="false"
-                    title="Download…" aria-label="Download this file or the TPTP translation">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7.25 1.75a.75.75 0 0 1 1.5 0v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06l2.22 2.22ZM2.5 13a.75.75 0 0 0 0 1.5h11a.75.75 0 0 0 0-1.5Z"/></svg>
-            </button>
-            <button id="ghPropose" type="button" aria-expanded="false" aria-controls="ghPanel"
-                    title="Submit changes to GitHub as a pull request" aria-label="Submit changes to GitHub as a pull request">
-              <svg class="gh-mark" viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-              <span id="ghBadge" hidden></span>
-            </button>
-            <button id="editFullscreen" type="button" aria-pressed="false"
-                    title="Toggle fullscreen editor" aria-label="Toggle fullscreen editor">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M2 5.5V2.75A.75.75 0 0 1 2.75 2h2.75M2 10.5v2.75c0 .414.336.75.75.75h2.75M14 5.5V2.75a.75.75 0 0 0-.75-.75h-2.75M14 10.5v2.75a.75.75 0 0 1-.75.75h-2.75"/>
-              </svg>
-            </button>
-            <button id="editTptpToggle" type="button" aria-pressed="false" aria-haspopup="menu" aria-expanded="false"
-                    title="Split-screen views…" aria-label="Split-screen views">
-              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <rect x="1" y="2.5" width="6" height="11" rx="1"/><rect x="9" y="2.5" width="6" height="11" rx="1"/>
-              </svg>
-            </button>
-          </div>
-          <span id="editFileName"></span>
-          <span class="spacer"></span>
-          <span id="editStatus" class="hint"></span>
-          <select id="editPicker" hidden aria-hidden="true"><option value="__new__">+ New file…</option></select>
-          <!-- Download menu for #editDownload. Lives OUTSIDE .btn-group (whose
+      <!-- Edit: in-browser IDE (Monaco) for KIF constituents -->
+      <section id="tab-edit" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div class="edit-toolbar">
+            <div class="btn-group" role="toolbar" aria-label="Editor actions">
+              <button
+                id="editOpen"
+                type="button"
+                title="Open a file, or create a new one"
+                aria-label="Open a file, or create a new one"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2A1.75 1.75 0 0 0 5 1H1.75Z"
+                  />
+                </svg>
+              </button>
+              <button
+                id="editSave"
+                type="button"
+                title="Save to the in-browser knowledge base"
+                aria-label="Save to the in-browser knowledge base"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2.75 2.75h8.19a1 1 0 0 1 .7.3l1.31 1.3a1 1 0 0 1 .3.71v8.19h-10.5z"
+                  />
+                  <path d="M5 2.75V6.25h5V2.75M5 13.25V9.25h6v4" />
+                </svg>
+              </button>
+              <button
+                id="editFormat"
+                type="button"
+                title="Format document (fix indentation to match paren nesting)"
+                aria-label="Format document"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M2 3h12M2 6.5h8M2 10h10M2 13.5h6" />
+                </svg>
+              </button>
+              <button
+                id="editDownload"
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="Download…"
+                aria-label="Download this file or the TPTP translation"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M7.25 1.75a.75.75 0 0 1 1.5 0v6.69l2.22-2.22a.75.75 0 1 1 1.06 1.06l-3.5 3.5a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 1 1 1.06-1.06l2.22 2.22ZM2.5 13a.75.75 0 0 0 0 1.5h11a.75.75 0 0 0 0-1.5Z"
+                  />
+                </svg>
+              </button>
+              <button
+                id="ghPropose"
+                type="button"
+                aria-expanded="false"
+                aria-controls="ghPanel"
+                title="Submit changes to GitHub as a pull request"
+                aria-label="Submit changes to GitHub as a pull request"
+              >
+                <svg
+                  class="gh-mark"
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+                  />
+                </svg>
+                <span id="ghBadge" hidden></span>
+              </button>
+              <button
+                id="editFullscreen"
+                type="button"
+                aria-pressed="false"
+                title="Toggle fullscreen editor"
+                aria-label="Toggle fullscreen editor"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2 5.5V2.75A.75.75 0 0 1 2.75 2h2.75M2 10.5v2.75c0 .414.336.75.75.75h2.75M14 5.5V2.75a.75.75 0 0 0-.75-.75h-2.75M14 10.5v2.75a.75.75 0 0 1-.75.75h-2.75"
+                  />
+                </svg>
+              </button>
+              <button
+                id="editTptpToggle"
+                type="button"
+                aria-pressed="false"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="Split-screen views…"
+                aria-label="Split-screen views"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="16"
+                  height="16"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <rect x="1" y="2.5" width="6" height="11" rx="1" />
+                  <rect x="9" y="2.5" width="6" height="11" rx="1" />
+                </svg>
+              </button>
+            </div>
+            <span id="editFileName"></span>
+            <span class="spacer"></span>
+            <span id="editStatus" class="hint"></span>
+            <select id="editPicker" hidden aria-hidden="true">
+              <option value="__new__">+ New file…</option>
+            </select>
+            <!-- Download menu for #editDownload. Lives OUTSIDE .btn-group (whose
                overflow:hidden would clip it, and whose `button + button`
                divider chain a nested div would break); tabs/edit.js positions it
                fixed under the button when opened. -->
-          <div id="editDownloadMenu" class="dl-menu" role="menu" hidden>
-            <button id="dlKifBtn" type="button" role="menuitem">This file (KIF)</button>
-            <button id="dlTptpBtn" type="button" role="menuitem">Whole knowledge base (TPTP)</button>
-          </div>
-          <!-- Split-screen menu for #editTptpToggle — same fixed-position
+            <div id="editDownloadMenu" class="dl-menu" role="menu" hidden>
+              <button id="dlKifBtn" type="button" role="menuitem">
+                This file (KIF)
+              </button>
+              <button id="dlTptpBtn" type="button" role="menuitem">
+                Whole knowledge base (TPTP)
+              </button>
+            </div>
+            <!-- Split-screen menu for #editTptpToggle — same fixed-position
                pattern as the download menu above. -->
-          <div id="editTptpMenu" class="dl-menu" role="menu" hidden>
-            <button id="tptpTranslationBtn" type="button" role="menuitem">TPTP Translation</button>
+            <div id="editTptpMenu" class="dl-menu" role="menu" hidden>
+              <button id="tptpTranslationBtn" type="button" role="menuitem">
+                TPTP Translation
+              </button>
+            </div>
           </div>
-        </div>
-        <!-- Save feedback (success/error) lives right under the toolbar, not
+          <!-- Save feedback (success/error) lives right under the toolbar, not
              buried below the editor — the one place a user glances after
              clicking Save. -->
-        <div id="editSaveStatus" class="hint"></div>
+          <div id="editSaveStatus" class="hint"></div>
 
-        <!-- Open-file dialog: pick a loaded constituent or start a new file.
+          <!-- Open-file dialog: pick a loaded constituent or start a new file.
              A new file starts unnamed — Save prompts for a filename the
              first time, rather than asking for one up front here. -->
-        <dialog id="openDialog">
-          <h3>Open file</h3>
-          <ul id="openList" class="results"></ul>
-          <div style="text-align:right; margin-top:12px">
-            <button class="btn ghost" id="openCancel" type="button">Cancel</button>
-            <button class="btn" id="editCreate" type="button">+ New file</button>
-          </div>
-        </dialog>
+          <dialog id="openDialog">
+            <h3>Open file</h3>
+            <ul id="openList" class="results"></ul>
+            <div style="text-align: right; margin-top: 12px">
+              <button class="btn ghost" id="openCancel" type="button">
+                Cancel
+              </button>
+              <button class="btn" id="editCreate" type="button">
+                + New file
+              </button>
+            </div>
+          </dialog>
 
-        <!-- Contribute the selected changes upstream as a branch + pull request -->
-        <div id="ghPanel" class="settings" hidden>
-          <!-- Every tracked change, collapsed by default: the badge says how
+          <!-- Contribute the selected changes upstream as a branch + pull request -->
+          <div id="ghPanel" class="settings" hidden>
+            <!-- Every tracked change, collapsed by default: the badge says how
                many there are, this says which. -->
-          <div class="gh-changes">
-            <button id="ghChangesToggle" type="button" aria-expanded="false" aria-controls="ghChangesList">
-              <span class="tri">▸</span> Files changed <span id="ghChangesCount" class="hint"></span>
-            </button>
-            <div id="ghChangesList" hidden></div>
-          </div>
-          <p class="hint" style="margin:0 0 10px">
-            Opens a pull request against <code>ontologyportal/sumo</code> with the ticked files,
-            as one commit. You will be forked automatically if you lack push access.
-          </p>
-          <div class="settings-grid">
-            <div>
-              <label for="ghTitle">Pull request title</label>
-              <input type="text" id="ghTitle" placeholder="Update Merge.kif" />
+            <div class="gh-changes">
+              <button
+                id="ghChangesToggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="ghChangesList"
+              >
+                <span class="tri">▸</span> Files changed
+                <span id="ghChangesCount" class="hint"></span>
+              </button>
+              <div id="ghChangesList" hidden></div>
             </div>
-          </div>
-          <div style="margin-top:10px">
-            <label for="ghBody">Description</label>
-            <textarea id="ghBody" rows="3" placeholder="What changed and why."></textarea>
-          </div>
-          <div class="inline" style="justify-content:space-between; margin-top:10px">
-            <span id="ghStatus" class="hint"></span>
-            <div class="inline" style="gap:8px">
-              <button class="btn" id="ghSubmit" type="button">Create pull request</button>
+            <p class="hint" style="margin: 0 0 10px">
+              Opens a pull request against <code>ontologyportal/sumo</code> with
+              the ticked files, as one commit. You will be forked automatically
+              if you lack push access.
+            </p>
+            <div class="settings-grid">
+              <div>
+                <label for="ghTitle">Pull request title</label>
+                <input
+                  type="text"
+                  id="ghTitle"
+                  placeholder="Update Merge.kif"
+                />
+              </div>
             </div>
+            <div style="margin-top: 10px">
+              <label for="ghBody">Description</label>
+              <textarea
+                id="ghBody"
+                rows="3"
+                placeholder="What changed and why."
+              ></textarea>
+            </div>
+            <div
+              class="inline"
+              style="justify-content: space-between; margin-top: 10px"
+            >
+              <span id="ghStatus" class="hint"></span>
+              <div class="inline" style="gap: 8px">
+                <button class="btn" id="ghSubmit" type="button">
+                  Create pull request
+                </button>
+              </div>
+            </div>
+            <div id="ghResult" class="hint" style="margin-top: 8px"></div>
           </div>
-          <div id="ghResult" class="hint" style="margin-top:8px"></div>
-        </div>
 
-        <!-- Side-by-side upstream vs. local. Doubles as the conflict dialog:
+          <!-- Side-by-side upstream vs. local. Doubles as the conflict dialog:
              the only difference when upstream has moved is the wording and
              what "take upstream" costs. -->
-        <dialog id="ghDiffDialog">
-          <h3 id="ghDiffTitle">Local changes</h3>
-          <p id="ghDiffMsg" class="hint"></p>
-          <div id="ghDiffPane"></div>
-          <div class="dialog-actions">
-            <span id="ghDiffStatus" class="hint"></span>
-            <span class="spacer"></span>
-            <button class="btn ghost" id="ghDiffTake" type="button">Revert to upstream</button>
-            <button class="btn" id="ghDiffKeep" type="button">Keep mine</button>
-          </div>
-        </dialog>
-      </div>
-      <div class="card" id="editPane">
-        <div id="editorContainer" data-placeholder="Loading editor…"></div>
-        <div id="tptpPane" hidden>
-          <div class="tptp-pane-header">
-            <span>TPTP — whole knowledge base</span>
-            <span id="tptpStatus" class="hint"></span>
-          </div>
-          <div id="tptpContainer" data-placeholder="Generating…"></div>
+          <dialog id="ghDiffDialog">
+            <h3 id="ghDiffTitle">Local changes</h3>
+            <p id="ghDiffMsg" class="hint"></p>
+            <div id="ghDiffPane"></div>
+            <div class="dialog-actions">
+              <span id="ghDiffStatus" class="hint"></span>
+              <span class="spacer"></span>
+              <button class="btn ghost" id="ghDiffTake" type="button">
+                Revert to upstream
+              </button>
+              <button class="btn" id="ghDiffKeep" type="button">
+                Keep mine
+              </button>
+            </div>
+          </dialog>
         </div>
-      </div>
-      <details class="card" id="editDiagnostics" open>
-        <summary>
-          <span>Problems</span>
-          <span id="editDiagSummary">Checking...</span>
-        </summary>
-        <div id="editDiagList" aria-live="polite"></div>
-      </details>
-      <div id="editLog" class="hint"></div>
-    </section>
-
-    <!-- History: the file's commit timeline from GitHub -->
-    <section id="tab-history" class="panel" role="tabpanel" hidden>
-      <div class="card">
-        <div class="inline" style="justify-content:space-between">
-          <div style="min-width:260px">
-            <label for="historyPicker">File</label>
-            <select id="historyPicker"></select>
-          </div>
-          <div class="inline" style="gap:8px">
-            <span id="historyStatus" class="hint"></span>
-            <button class="btn" id="historyRefresh" type="button">Refresh</button>
+        <div class="card" id="editPane">
+          <div id="editorContainer" data-placeholder="Loading editor…"></div>
+          <div id="tptpPane" hidden>
+            <div class="tptp-pane-header">
+              <span>TPTP — whole knowledge base</span>
+              <span id="tptpStatus" class="hint"></span>
+            </div>
+            <div id="tptpContainer" data-placeholder="Generating…"></div>
           </div>
         </div>
-        <p class="hint" style="margin:8px 0 0">
-          Commit history from <code>ontologyportal/sumo</code> via the public GitHub API
-          (no sign-in; unauthenticated requests are rate-limited to 60/hour).
-        </p>
+        <details class="card" id="editDiagnostics" open>
+          <summary>
+            <span>Problems</span>
+            <span id="editDiagSummary">Checking...</span>
+          </summary>
+          <div id="editDiagList" aria-live="polite"></div>
+        </details>
+        <div id="editLog" class="hint"></div>
+      </section>
+
+      <!-- History: the file's commit timeline from GitHub -->
+      <section id="tab-history" class="panel" role="tabpanel" hidden>
+        <div class="card">
+          <div class="inline" style="justify-content: space-between">
+            <div style="min-width: 260px">
+              <label for="historyPicker">File</label>
+              <select id="historyPicker"></select>
+            </div>
+            <div class="inline" style="gap: 8px">
+              <span id="historyStatus" class="hint"></span>
+              <button class="btn" id="historyRefresh" type="button">
+                Refresh
+              </button>
+            </div>
+          </div>
+          <p class="hint" style="margin: 8px 0 0">
+            Commit history from <code>ontologyportal/sumo</code> via the public
+            GitHub API (no sign-in; unauthenticated requests are rate-limited to
+            60/hour).
+          </p>
+        </div>
+        <div id="historyList"></div>
+      </section>
+    </main>
+
+    <footer>
+      <small>
+        <a href="https://ontologyportal.github.io/sigma-rs"
+          >Latest Inference Tests</a
+        >
+        -- <a href="https://ontologyportal.org">ontologyportal.org</a> --
+        <a href="https://github.com/ontologyportal/sigma-rs/blob/main/LICENSE"
+          >GPL-3.0</a
+        >
+      </small>
+    </footer>
+
+    <dialog id="settingsDialog">
+      <h3>Settings</h3>
+      <div class="settings-row">
+        <span>Theme</span>
+        <button
+          id="themeToggle"
+          class="btn ghost"
+          type="button"
+          title="Toggle light/dark theme"
+          aria-label="Toggle light/dark theme"
+        >
+          ◐ Toggle
+        </button>
       </div>
-      <div id="historyList"></div>
-    </section>
-  </main>
+      <div class="settings-row">
+        <label for="langSelect">Language</label>
+        <select id="langSelect">
+          <option value="EnglishLanguage">English</option>
+        </select>
+      </div>
+      <button
+        class="btn ghost"
+        id="clearCacheLink"
+        type="button"
+        title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch"
+      >
+        Clear cache
+      </button>
+      <div class="dialog-actions">
+        <span id="settingsVersion">dev build</span>
+        <button class="btn ghost" id="settingsClose" type="button">
+          Close
+        </button>
+      </div>
+    </dialog>
 
-  <footer>
-    <small>
-      <a href="https://ontologyportal.github.io/sigma-rs">Latest Inference Tests</a> --
-      <a href="https://ontologyportal.org">ontologyportal.org</a> --
-      <a href="https://github.com/ontologyportal/sigma-rs/blob/main/LICENSE">GPL-3.0</a>
-    </small>
-  </footer>
+    <dialog id="versionDialog">
+      <h3 id="versionDialogTitle">Welcome to SigmaKEE</h3>
+      <p id="versionDialogBody" class="hint"></p>
+      <div class="dialog-actions" style="justify-content: flex-end">
+        <button class="btn ghost" id="versionDialogClose" type="button">
+          Got it
+        </button>
+      </div>
+    </dialog>
 
-  <dialog id="settingsDialog">
-    <h3>Settings</h3>
-    <div class="settings-row">
-      <span>Theme</span>
-      <button id="themeToggle" class="btn ghost" type="button" title="Toggle light/dark theme" aria-label="Toggle light/dark theme">◐ Toggle</button>
+    <dialog id="loginDialog">
+      <h3>Log in required</h3>
+      <p class="hint">
+        GitHub's API is rate-limited for anonymous requests. Log in with GitHub
+        to continue.
+      </p>
+      <div class="dialog-actions" style="justify-content: flex-end; gap: 8px">
+        <button class="btn ghost" id="loginDialogCancel" type="button">
+          Cancel
+        </button>
+        <a class="btn" id="loginDialogConfirm" href="/api/github-auth"
+          >Log in with GitHub</a
+        >
+      </div>
+    </dialog>
+
+    <dialog id="logoutDialog">
+      <h3>Log out of GitHub?</h3>
+      <p class="hint">
+        You will need to log in again to submit changes or raise the API rate
+        limit.
+      </p>
+      <div class="dialog-actions" style="justify-content: flex-end; gap: 8px">
+        <button class="btn ghost" id="logoutDialogCancel" type="button">
+          Cancel
+        </button>
+        <button class="btn" id="logoutDialogConfirm" type="button">
+          Log out
+        </button>
+      </div>
+    </dialog>
+
+    <div id="toast" hidden>
+      <div class="spin"></div>
+      <span
+        >Post-processing — some features may not be available until
+        complete.</span
+      >
     </div>
-    <div class="settings-row">
-      <label for="langSelect">Language</label>
-      <select id="langSelect"><option value="EnglishLanguage">English</option></select>
-    </div>
-    <button class="btn ghost" id="clearCacheLink" type="button"
-            title="Clear the cached KB build in this browser — the next load re-fetches and re-builds from scratch">
-      Clear cache
-    </button>
-    <div class="dialog-actions">
-      <span id="settingsVersion">dev build</span>
-      <button class="btn ghost" id="settingsClose" type="button">Close</button>
-    </div>
-  </dialog>
 
-  <dialog id="versionDialog">
-    <h3 id="versionDialogTitle">Welcome to SigmaKEE</h3>
-    <p id="versionDialogBody" class="hint"></p>
-    <div class="dialog-actions" style="justify-content:flex-end">
-      <button class="btn ghost" id="versionDialogClose" type="button">Got it</button>
+    <div id="overlay">
+      <div id="overlayTitle">Loading SUMO</div>
+      <div
+        id="bootBar"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="0"
+      >
+        <div id="bootBarFill"></div>
+      </div>
+      <div id="overlayMsg">Starting the engine…</div>
+      <div id="overlayErr" class="hint" style="color: var(--bad)"></div>
     </div>
-  </dialog>
 
-  <dialog id="loginDialog">
-    <h3>Log in required</h3>
-    <p class="hint">GitHub's API is rate-limited for anonymous requests. Log in with GitHub to continue.</p>
-    <div class="dialog-actions" style="justify-content:flex-end; gap:8px">
-      <button class="btn ghost" id="loginDialogCancel" type="button">Cancel</button>
-      <a class="btn" id="loginDialogConfirm" href="/api/github-auth">Log in with GitHub</a>
-    </div>
-  </dialog>
-
-  <dialog id="logoutDialog">
-    <h3>Log out of GitHub?</h3>
-    <p class="hint">You will need to log in again to submit changes or raise the API rate limit.</p>
-    <div class="dialog-actions" style="justify-content:flex-end; gap:8px">
-      <button class="btn ghost" id="logoutDialogCancel" type="button">Cancel</button>
-      <button class="btn" id="logoutDialogConfirm" type="button">Log out</button>
-    </div>
-  </dialog>
-
-  <div id="toast" hidden>
-    <div class="spin"></div>
-    <span>Post-processing — some features may not be available until complete.</span>
-  </div>
-
-  <div id="overlay">
-    <div id="overlayTitle">Loading SUMO</div>
-    <div id="bootBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-      <div id="bootBarFill"></div>
-    </div>
-    <div id="overlayMsg">Starting the engine…</div>
-    <div id="overlayErr" class="hint" style="color:var(--bad)"></div>
-  </div>
-
-  <script type="module" src="./src/main.ts"></script>
-</body>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
 </html>

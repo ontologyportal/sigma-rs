@@ -26,33 +26,39 @@
  * stale content silently.
  */
 
-import { state } from './state.ts';
-import { call } from './rpc.ts';
-import { $ } from './dom.ts';
-import { fromOrigin } from './sources.ts';
-import { opfsSafeName, editsFingerprint } from './changes.ts';
-import { bootProgress, resetBootProgress } from './boot.ts';
-import { fetchLastCommitInfo } from './tabs/home-stats.ts';
+import { state } from "./state.ts";
+import { call } from "./rpc.ts";
+import { $ } from "./dom.ts";
+import { fromOrigin } from "./sources.ts";
+import { opfsSafeName, editsFingerprint } from "./changes.ts";
+import {
+  bootProgress,
+  resetBootProgress,
+  loadWordNetIntoWorker,
+} from "./boot.ts";
+import { fetchLastCommitInfo } from "./tabs/home-stats.ts";
 
-const SUMO_CACHE_DIR      = 'sumo-cache';
-const SUMO_CACHE_META     = 'meta.json';
-const SUMO_CACHE_SNAPSHOT = 'snapshot.bin';
+const SUMO_CACHE_DIR = "sumo-cache";
+const SUMO_CACHE_META = "meta.json";
+const SUMO_CACHE_SNAPSHOT = "snapshot.bin";
 
 // A snapshot costs hundreds of ms of WORKER time (blocking every query behind
 // it) plus a multi-MB write, and only ever pays off on the next boot — so a
 // burst of mutations coalesces into one write instead of one write each.
 const KB_CACHE_SAVE_DELAY_MS = 5000;
 
-let sumoCacheDirHandle = null;   // lazily opened, separate from the top-level
-                                 // OPFS dir 'file'-origin uploads already use
+let sumoCacheDirHandle = null; // lazily opened, separate from the top-level
+// OPFS dir 'file'-origin uploads already use
 
 // name -> the exact text last written to the cache this session.
 const cachedText = new Map();
 
 async function getSumoCacheDir() {
   if (sumoCacheDirHandle) return sumoCacheDirHandle;
-  if (!state.opfsRoot) throw new Error('File system not initialized yet');
-  sumoCacheDirHandle = await state.opfsRoot.getDirectoryHandle(SUMO_CACHE_DIR, { create: true });
+  if (!state.opfsRoot) throw new Error("File system not initialized yet");
+  sumoCacheDirHandle = await state.opfsRoot.getDirectoryHandle(SUMO_CACHE_DIR, {
+    create: true,
+  });
   return sumoCacheDirHandle;
 }
 
@@ -69,15 +75,22 @@ async function writeOpfsFile(dir, name, contents) {
  *  leaving the commit SHA and the file set both unchanged) still invalidates
  *  the snapshot it no longer matches. */
 function constituentsFingerprint() {
-  const files = state.savedConstituents.map((c) => `${c.origin}:${c.name}`).sort().join('|');
+  const files = state.savedConstituents
+    .map((c) => `${c.origin}:${c.name}`)
+    .sort()
+    .join("|");
   return `${files}#${editsFingerprint()}`;
 }
 
 /** `false` when any loaded constituent has no stable version signal to cache
  *  against (`url` origin) — caching is skipped entirely for that boot. */
 function kbCacheEligible() {
-  return state.savedConstituents.length > 0
-    && state.savedConstituents.every((c) => c.origin === 'sumo' || c.origin === 'file');
+  return (
+    state.savedConstituents.length > 0 &&
+    state.savedConstituents.every(
+      (c) => c.origin === "sumo" || c.origin === "file",
+    )
+  );
 }
 
 /**
@@ -97,10 +110,16 @@ export async function tryRestoreFromCache() {
   // whole boot — the normal path needs this same network access anyway, so a
   // cache miss here doesn't cost anything a fresh boot wasn't already risking.
   let info;
-  try { info = await fetchLastCommitInfo(); } catch { info = null; }
+  try {
+    info = await fetchLastCommitInfo();
+  } catch {
+    info = null;
+  }
   try {
     const dir = await getSumoCacheDir();
-    const meta = JSON.parse(await (await (await dir.getFileHandle(SUMO_CACHE_META)).getFile()).text());
+    const meta = JSON.parse(
+      await (await (await dir.getFileHandle(SUMO_CACHE_META)).getFile()).text(),
+    );
     if (info && meta.commitSha !== info.sha) return false;
     if (meta.fingerprint !== constituentsFingerprint()) return false;
 
@@ -110,27 +129,39 @@ export async function tryRestoreFromCache() {
     // step counter kept climbing once per file, so the bar rushed to 100%
     // almost immediately and then sat pinned there while the per-file status
     // label kept changing underneath it.
-    resetBootProgress(2);   // short, fixed sequence — unlike the fetch loop, not sized per constituent
-    bootProgress('Restoring from cache…');
-    const bytes = new Uint8Array(await (await (await dir.getFileHandle(SUMO_CACHE_SNAPSHOT)).getFile()).arrayBuffer());
-    await call('restore', { bytes }, [bytes.buffer]);
+    // short, fixed sequence — unlike the fetch loop, not sized per constituent.
+    // +2 of these are the WordNet lexicon fetch/load: the snapshot restore
+    // below only covers the KB itself, not the lexicon (a separate sidecar,
+    // never part of the snapshot), so it's fetched fresh here too.
+    resetBootProgress(4);
+    bootProgress("Restoring from cache…");
+    const bytes = new Uint8Array(
+      await (
+        await (await dir.getFileHandle(SUMO_CACHE_SNAPSHOT)).getFile()
+      ).arrayBuffer(),
+    );
+    await call("restore", { bytes }, [bytes.buffer]);
+    await loadWordNetIntoWorker();
 
     const built = [];
     for (const { name, origin } of state.savedConstituents) {
-      const text = origin === 'sumo'
-        ? await (await (await dir.getFileHandle(opfsSafeName(name))).getFile()).text()
-        : await fromOrigin(origin, name);
-      if (origin === 'sumo') cachedText.set(name, text);
+      const text =
+        origin === "sumo"
+          ? await (
+              await (await dir.getFileHandle(opfsSafeName(name))).getFile()
+            ).text()
+          : await fromOrigin(origin, name);
+      if (origin === "sumo") cachedText.set(name, text);
       built.push({ name, origin, text });
     }
     state.constituents = built;
     // The restored KB is already promoted — this is the read-only structural
     // pass reprocess() would otherwise run, not a rebuild, so it's cheap.
-    state.diagnostics = (await call('validate')).diagnostics;
-    bootProgress('Cache restored');
+    state.diagnostics = (await call("validate")).diagnostics;
+    bootProgress("Cache restored");
     return true;
   } catch {
-    return false;   // no cache dir yet, a missing/corrupt entry, restore() rejected, …
+    return false; // no cache dir yet, a missing/corrupt entry, restore() rejected, …
   }
 }
 
@@ -146,22 +177,27 @@ async function saveKbCache() {
   try {
     const info = await fetchLastCommitInfo();
     if (!info?.sha) return;
-    const bytes = (await call('snapshot')).bytes;
+    const bytes = (await call("snapshot")).bytes;
     const dir = await getSumoCacheDir();
     for (const { name, origin, text } of state.constituents) {
       // Upstream text cannot change within a session and a local edit changes
       // it at most once per save, so the comparison writes each file about
       // once rather than on every promote.
-      if (origin !== 'sumo' || cachedText.get(name) === text) continue;
+      if (origin !== "sumo" || cachedText.get(name) === text) continue;
       await writeOpfsFile(dir, opfsSafeName(name), text);
       cachedText.set(name, text);
     }
     await writeOpfsFile(dir, SUMO_CACHE_SNAPSHOT, bytes);
-    await writeOpfsFile(dir, SUMO_CACHE_META, JSON.stringify({
-      commitSha: info.sha, fingerprint: constituentsFingerprint(),
-    }));
+    await writeOpfsFile(
+      dir,
+      SUMO_CACHE_META,
+      JSON.stringify({
+        commitSha: info.sha,
+        fingerprint: constituentsFingerprint(),
+      }),
+    );
   } catch (e) {
-    console.warn('KB snapshot cache: failed to save', e);
+    console.warn("KB snapshot cache: failed to save", e);
   }
 }
 
@@ -177,8 +213,8 @@ export function scheduleKbCacheSave() {
 
 // Leaving the page must not lose a pending write — the whole point of the
 // cache is the boot after this one.
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && saveScheduled) {
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && saveScheduled) {
     clearTimeout(saveTimer);
     saveKbCache();
   }
@@ -188,16 +224,19 @@ document.addEventListener('visibilitychange', () => {
 // corrupt cache, not a feature to promote day-to-day. Only clears the
 // persisted OPFS cache; the live in-memory KB is untouched, so a fresh boot
 // (a manual reload) is what actually exercises the change.
-$('clearCacheLink')?.addEventListener('click', async (e) => {
+$("clearCacheLink")?.addEventListener("click", async (e) => {
   e.preventDefault();
-  const link = $('clearCacheLink');
+  const link = $("clearCacheLink");
   const original = link.textContent;
   try {
-    if (state.opfsRoot) await state.opfsRoot.removeEntry(SUMO_CACHE_DIR, { recursive: true });
+    if (state.opfsRoot)
+      await state.opfsRoot.removeEntry(SUMO_CACHE_DIR, { recursive: true });
   } catch {
     // Nothing cached yet is not a failure — either way the cache is now clear.
   }
-  sumoCacheDirHandle = null;   // the lazily-opened handle would otherwise point at a removed directory
-  link.textContent = 'cache cleared';
-  setTimeout(() => { link.textContent = original; }, 2000);
+  sumoCacheDirHandle = null; // the lazily-opened handle would otherwise point at a removed directory
+  link.textContent = "cache cleared";
+  setTimeout(() => {
+    link.textContent = original;
+  }, 2000);
 });

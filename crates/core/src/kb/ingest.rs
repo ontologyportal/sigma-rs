@@ -2031,6 +2031,7 @@ mod tests {
             language: None,
             limit: None,
             taxonomy: Vec::new(),
+            ..crate::kb::search::SearchOpts::default()
         };
         assert!(
             kb.search("half typed", &opts).is_empty(),

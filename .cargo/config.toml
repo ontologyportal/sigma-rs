@@ -74,6 +74,18 @@ SUMO_SUBCLASS_RELATION    = "subclass"
 SUMO_SUBRELATION_RELATION = "subrelation"
 SUMO_SUBATTRIBUTE_RELATION = "subAttribute"
 
+
+# ---------------------------------------------------------------------------
+# WordNet configuration
+# ---------------------------------------------------------------------------
+WORDNET_NOUN_FILE      = "WordNetMappings30-noun.txt"
+WORDNET_VERB_FILE      = "WordNetMappings30-verb.txt"
+WORDNET_ADJV_FILE      = "WordNetMappings30-adj.txt"
+WORDNET_ADVR_FILE      = "WordNetMappings30-adv.txt"
+WORDNET_SENSE_IDX      = "index.sense"
+WORDNET_WSD_FILE       = "wordFrequencies_combined.txt"
+WORDNET_GIT_SUBDIR     = "WordNetMappings"
+
 # getrandom 0.3 (pulled in transitively by graphviz-rust's `tempfile` dep, used
 # only by its non-wasm `exec`/`exec_dot` process-spawning path — core's own
 # graphviz DOT-string rendering never calls it) requires wasm targets to pick

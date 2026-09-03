@@ -274,6 +274,9 @@ const OPTIONS: &[OptionMeta] = &[
     OptionMeta { field: "language", json_paths: &["language"], long: "language", short: None,
         env: None, scope: Scope::Subsystems(&[Man, Search, Ask, Audit]), kind: Kind::Str,
         help: "Natural language for documentation / term-format entries and proof rendering (e.g. EnglishLanguage)." },
+    OptionMeta { field: "load_lexicons", json_paths: &["load_lexicons"], long: "load-lexicons", short: None,
+        env: None, scope: Scope::Subsystems(&[Man, Search]), kind: Kind::Bool,
+        help: "Automatically load and enable WordNet synonym expansion for search / man (default: on). Location and file names come from the config's <lexicon> section." },
 
     // -- Translation knobs (translate / ask / test) --------------------------
     OptionMeta { field: "holds_prefix", json_paths: &["holds_prefix"], long: "holds-prefix", short: None,
@@ -432,7 +435,7 @@ mod tests {
         for key in obj.keys() {
             if matches!(
                 key.as_str(),
-                "kbs" | "native_prover" | "external_prover" | "unknown_preferences"
+                "kbs" | "native_prover" | "external_prover" | "lexicon" | "unknown_preferences"
             ) {
                 continue; // collections + nested configs handled via nested paths
             }

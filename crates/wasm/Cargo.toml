@@ -14,13 +14,15 @@ crate-type = ["cdylib", "rlib"]
 # that runs in-browser. Vampire (WASM) proof-transcript parsing
 # (`parse_vampire_result`) needs no feature of its own — it's ungated, part
 # of core's default build (regex is a hard dependency there).
-sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover", "snapshot"] }
+sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover", "snapshot", "lexicon"] }
 # The SDK Session is the sharing seam: WasmNativeProver holds its KB as an
 # `Arc<RwLock<Session<ProverLayer<TranslationLayer>>>>` so the LSP facade
 # (`WasmLsp`, below) can run against the SAME knowledge base.  Same
 # direct-path / default-features = false posture as the core dep -- sdk's
-# default `http`/`git`/`persist`/`ask` features are all wasm-hostile.
-sigmakee-rs-sdk  = { path = "../sdk", default-features = false, features = ["native-prover", "snapshot"] }
+# default `http`/`git`/`persist`/`ask` features are all wasm-hostile. `lexicon`
+# is the one exception: it's pure Rust, no I/O of its own (WordNet's only
+# constructor is `from_texts` over already-read strings)
+sigmakee-rs-sdk  = { path = "../sdk", default-features = false, features = ["native-prover", "snapshot", "lexicon"] }
 # The LSP server library (transport-free dispatch core only -- the stdio shell
 # is never invoked here) + the lsp-server message types the JSON bridge speaks.
 sumo-lsp         = { path = "../lsp" }

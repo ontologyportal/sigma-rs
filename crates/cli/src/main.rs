@@ -711,6 +711,9 @@ fn dispatch_translation(
 /// end-of-run report. `git`/`branch` mirror `--git`/`--branch`: `git = Some`
 /// re-roots the constituents onto that repo (see
 /// `KBManager::resolve_sources`); `branch` only matters alongside it.
+///
+/// Also installs the WordNet lexicon per `manager`'s `<lexicon>` /
+/// `loadLexicons` config (see [`Session::load_lexicon`])
 fn ingest_constituents<L: TopLayer>(
     session: &mut Session<L>,
     manager: &KBManager,
@@ -741,6 +744,7 @@ fn ingest_constituents<L: TopLayer>(
             }
         }
     }
+    session.load_lexicon(manager);
 }
 
 // -- helpers -----------------------------------------------------------------
