@@ -17,7 +17,11 @@
  * available for direct, lower-level control; it is aliased to `WasmSession`
  * here so this facade's own `Session` class can wrap it.
  */
-import initWasm, { Session as WasmSession, Config, parseTest as wasmParseTest } from './sumo_parser_wasm.js';
+import initWasm, {
+  Session as WasmSession,
+  Config,
+  parseTest as wasmParseTest,
+} from "./sumo_parser_wasm.js";
 
 export { Config };
 
@@ -27,7 +31,9 @@ export { Config };
  * extraFiles }`; throws with the parse diagnostic's message on malformed
  * input.
  */
-export function parseTest(name, text) { return wasmParseTest(name, text); }
+export function parseTest(name, text) {
+  return wasmParseTest(name, text);
+}
 
 /**
  * Render an Ask/Tell pair as `.kif.tq` test-file text — the inverse of
@@ -35,16 +41,23 @@ export function parseTest(name, text) { return wasmParseTest(name, text); }
  * building, no WASM needed.  The query is wrapped in the format's
  * `(query …)` directive; `expectedProof` becomes `(answer yes|no)`.
  */
-export function formatTest({ note = '', timeout = 0, assertions = '', query = '', expectedProof = null } = {}) {
+export function formatTest({
+  note = "",
+  timeout = 0,
+  assertions = "",
+  query = "",
+  expectedProof = null,
+} = {}) {
   const out = [];
-  if (note) out.push(`(note "${String(note).replace(/"/g, "'")}")`);   // .tq notes have no escape syntax
+  if (note) out.push(`(note "${String(note).replace(/"/g, "'")}")`); // .tq notes have no escape syntax
   if (timeout > 0) out.push(`(time ${Math.round(timeout)})`);
   const a = assertions.trim();
   if (a) out.push(a);
   const q = query.trim();
   if (q) out.push(`(query ${q})`);
-  if (expectedProof !== null) out.push(`(answer ${expectedProof ? 'yes' : 'no'})`);
-  return out.join('\n') + '\n';
+  if (expectedProof !== null)
+    out.push(`(answer ${expectedProof ? "yes" : "no"})`);
+  return out.join("\n") + "\n";
 }
 
 /**
@@ -54,9 +67,9 @@ export function formatTest({ note = '', timeout = 0, assertions = '', query = ''
  */
 export const Backend = Object.freeze({
   /** In-browser native saturation prover (`ask` proves). */
-  Native: 'native',
+  Native: "native",
   /** Parse / translate / lookup only; `ask` needs an external hook. */
-  TranslationOnly: 'translation',
+  TranslationOnly: "translation",
 });
 
 /**
@@ -65,21 +78,33 @@ export const Backend = Object.freeze({
  */
 export class Source {
   /** @param {string} kind @param {object} spec */
-  constructor(kind, spec) { this.kind = kind; this.spec = spec; }
+  constructor(kind, spec) {
+    this.kind = kind;
+    this.spec = spec;
+  }
 
   /** Inline KIF text (SDK `Source::Reader`). */
-  static kif(text, tag = 'inline') { return new Source('kif', { text, tag }); }
+  static kif(text, tag = "inline") {
+    return new Source("kif", { text, tag });
+  }
   /** A single document over HTTP (SDK `Source::Http`). CORS applies. */
-  static url(url, tag) { return new Source('url', { url, tag: tag ?? url }); }
+  static url(url, tag) {
+    return new Source("url", { url, tag: tag ?? url });
+  }
   /** A browser `File` upload (SDK `Source::Local`). */
-  static file(file) { return new Source('file', { file }); }
+  static file(file) {
+    return new Source("file", { file });
+  }
   /**
    * Every matching file in a public GitHub repo (SDK `Source::Git`).
    * @param {{owner:string, repo:string, ref?:string, dir?:string, match?:RegExp, token?:string}} o
    */
   static gitHub(o) {
-    return new Source('github', {
-      ref: 'HEAD', dir: '', match: /\.kif$/i, ...o,
+    return new Source("github", {
+      ref: "HEAD",
+      dir: "",
+      match: /\.kif$/i,
+      ...o,
     });
   }
 }
@@ -99,40 +124,66 @@ export function init(input) {
 
 // `load` is the binding method to use: 'loadKif' (fused ingest+promote) or
 // 'ingest' (ingest only; the caller promotes later via Session.promote).
-async function ingestUrl(kb, { url, tag }, load = 'loadKif') {
+async function ingestUrl(kb, { url, tag }, load = "loadKif") {
   const res = await fetch(url);
-  if (!res.ok) return { loaded: 0, files: [], errors: [`${url}: HTTP ${res.status}`] };
+  if (!res.ok)
+    return { loaded: 0, files: [], errors: [`${url}: HTTP ${res.status}`] };
   const errors = kb[load](await res.text(), tag);
   return { loaded: errors.length ? 0 : 1, files: [tag], errors };
 }
 
-async function ingestFile(kb, { file }, load = 'loadKif') {
+async function ingestFile(kb, { file }, load = "loadKif") {
   const errors = kb[load](await file.text(), file.name);
   return { loaded: errors.length ? 0 : 1, files: [file.name], errors };
 }
 
-async function ingestGitHub(kb, { owner, repo, ref, dir, match, token }, load = 'loadKif') {
+async function ingestGitHub(
+  kb,
+  { owner, repo, ref, dir, match, token },
+  load = "loadKif",
+) {
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
   const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`;
   const treeRes = await fetch(treeUrl, { headers });
-  if (!treeRes.ok) return { loaded: 0, files: [], errors: [`${treeUrl}: HTTP ${treeRes.status}`] };
-  const prefix = dir ? dir.replace(/^\/+|\/+$/g, '') + '/' : '';
+  if (!treeRes.ok)
+    return {
+      loaded: 0,
+      files: [],
+      errors: [`${treeUrl}: HTTP ${treeRes.status}`],
+    };
+  const prefix = dir ? dir.replace(/^\/+|\/+$/g, "") + "/" : "";
   const paths = ((await treeRes.json()).tree || [])
-    .filter((e) => e.type === 'blob' && e.path.startsWith(prefix) && match.test(e.path))
-    .map((e) => e.path).sort();
+    .filter(
+      (e) =>
+        e.type === "blob" && e.path.startsWith(prefix) && match.test(e.path),
+    )
+    .map((e) => e.path)
+    .sort();
   if (paths.length === 0) {
-    return { loaded: 0, files: [], errors: [`no files matching ${match} under "${dir}"`] };
+    return {
+      loaded: 0,
+      files: [],
+      errors: [`no files matching ${match} under "${dir}"`],
+    };
   }
   const report = { loaded: 0, files: [], errors: [] };
   for (const path of paths) {
     const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`;
     try {
       const r = await fetch(rawUrl, { headers });
-      if (!r.ok) { report.errors.push(`${path}: HTTP ${r.status}`); continue; }
+      if (!r.ok) {
+        report.errors.push(`${path}: HTTP ${r.status}`);
+        continue;
+      }
       const errs = kb[load](await r.text(), path);
       if (errs.length) report.errors.push(...errs.map((e) => `${path}: ${e}`));
-      else { report.loaded += 1; report.files.push(path); }
-    } catch (e) { report.errors.push(`${path}: ${e}`); }
+      else {
+        report.loaded += 1;
+        report.files.push(path);
+      }
+    } catch (e) {
+      report.errors.push(`${path}: ${e}`);
+    }
   }
   return report;
 }
@@ -143,7 +194,8 @@ async function ingestGitHub(kb, { owner, repo, ref, dir, match, token }, load = 
  * reachable via {@link Session#kb} for anything the facade doesn't cover.
  */
 export class Session {
-  #kb; #backend;
+  #kb;
+  #backend;
 
   /** @param {{ backend?: string, config?: Config }} [opts] */
   constructor({ backend = Backend.Native, config } = {}) {
@@ -156,12 +208,19 @@ export class Session {
   }
 
   /** The selected {@link Backend}. */
-  get backend() { return this.#backend; }
+  get backend() {
+    return this.#backend;
+  }
   /** The underlying raw binding (escape hatch). */
-  get kb() { return this.#kb; }
+  get kb() {
+    return this.#kb;
+  }
 
   /** Set the active {@link Config} (native backend only). Returns `this`. */
-  configure(config) { this.#kb.configure?.(config); return this; }
+  configure(config) {
+    this.#kb.configure?.(config);
+    return this;
+  }
 
   /**
    * Load a {@link Source} into the KB. Async because URL/GitHub sources fetch.
@@ -173,22 +232,28 @@ export class Session {
    * @returns {Promise<LoadReport>}
    */
   async ingest(source, { promote = true } = {}) {
-    const load = promote ? 'loadKif' : 'ingest';
+    const load = promote ? "loadKif" : "ingest";
     switch (source.kind) {
-      case 'kif': {
+      case "kif": {
         const { text, tag } = source.spec;
         const errors = this.#kb[load](text, tag);
         return { loaded: errors.length ? 0 : 1, files: [tag], errors };
       }
-      case 'url':    return ingestUrl(this.#kb, source.spec, load);
-      case 'file':   return ingestFile(this.#kb, source.spec, load);
-      case 'github': return ingestGitHub(this.#kb, source.spec, load);
-      default: throw new Error(`unknown Source kind: ${source.kind}`);
+      case "url":
+        return ingestUrl(this.#kb, source.spec, load);
+      case "file":
+        return ingestFile(this.#kb, source.spec, load);
+      case "github":
+        return ingestGitHub(this.#kb, source.spec, load);
+      default:
+        throw new Error(`unknown Source kind: ${source.kind}`);
     }
   }
 
   /** Promote an ingested source (by tag) into the axiom base. Native only. */
-  promote(tag) { return this.#kb.promote(tag); }
+  promote(tag) {
+    return this.#kb.promote(tag);
+  }
 
   /**
    * Freeze the whole KB to a portable `Uint8Array` (native backend). Stash it
@@ -196,17 +261,23 @@ export class Session {
    * instead of re-ingesting. Heed-free; the bytes carry the promoted axiom base.
    * @returns {Uint8Array}
    */
-  snapshot() { return this.#kb.snapshot(); }
+  snapshot() {
+    return this.#kb.snapshot();
+  }
 
   /**
    * Thaw a KB frozen by {@link Session#snapshot}, replacing this session's
    * contents in place (native backend). The active {@link Config} is preserved.
    * @param {Uint8Array} bytes
    */
-  restore(bytes) { return this.#kb.restore(bytes); }
+  restore(bytes) {
+    return this.#kb.restore(bytes);
+  }
 
   /** Assert one formula into an in-memory session (default "default"). */
-  tell(kif, session) { return this.#kb.tell(kif, session); }
+  tell(kif, session) {
+    return this.#kb.tell(kif, session);
+  }
 
   /**
    * Prove `queryKif`.
@@ -218,10 +289,12 @@ export class Session {
    */
   ask(queryKif, opts = {}) {
     if (this.#backend === Backend.TranslationOnly) {
-      if (typeof opts.hook !== 'function') {
-        throw new Error('ask() on a TranslationOnly session needs opts.hook(tptp)');
+      if (typeof opts.hook !== "function") {
+        throw new Error(
+          "ask() on a TranslationOnly session needs opts.hook(tptp)",
+        );
       }
-      return opts.hook(this.#kb.toTptpForAsk('', queryKif));
+      return opts.hook(this.#kb.toTptpForAsk("", queryKif));
     }
     return this.#kb.ask(queryKif, opts.session);
   }
@@ -234,8 +307,8 @@ export class Session {
    * @returns {import('./sdk').AuditResult}
    */
   auditConsistency(limit) {
-    if (typeof this.#kb.auditConsistency !== 'function') {
-      throw new Error('auditConsistency() requires a Native session');
+    if (typeof this.#kb.auditConsistency !== "function") {
+      throw new Error("auditConsistency() requires a Native session");
     }
     return this.#kb.auditConsistency(limit);
   }
@@ -244,51 +317,99 @@ export class Session {
    * Render the whole KB as TPTP.
    * @param {{ lang?: "fof"|"tff", hideNumbers?: boolean }} [opts]
    */
-  translate({ lang = 'fof', hideNumbers = true } = {}) {
+  translate({ lang = "fof", hideNumbers = true } = {}) {
     return this.#kb.toTptpIndexed(lang, hideNumbers);
   }
 
   /** Pattern lookup; "_" is a wildcard. */
-  lookup(pattern) { return this.#kb.lookup(pattern); }
+  lookup(pattern) {
+    return this.#kb.lookup(pattern);
+  }
 
   /** Semantic validation over the whole KB. Returns a `string[]` (empty ⇒ clean). */
-  validate() { return this.#kb.validate(); }
+  validate() {
+    return this.#kb.validate();
+  }
 
   /** Validate one inline formula without mutating the KB. Returns a `string[]`. */
-  validateFormula(kif) { return this.#kb.validateFormula(kif); }
+  validateFormula(kif) {
+    return this.#kb.validateFormula(kif);
+  }
 
   /**
    * Validate an Ask/Tell pair — assertions then query — in one scratch
    * session against the live KB, so the assertions' own declarations are in
    * scope for the query. Returns `{ assertions, query }` diagnostic arrays.
    */
-  validateScratch(assertions, query) { return this.#kb.validateScratch(assertions, query); }
+  validateScratch(assertions, query) {
+    return this.#kb.validateScratch(assertions, query);
+  }
 
   /**
-   * Symbol / full-text search over the KB.
+   * Symbol / full-text search over the KB. With a lexicon loaded (see
+   * {@link Session#loadWordNet}), results include WordNet synonym hits
+   * (`source: "wn"`, with a `sense` tag like `"dog#n#1+"`); `wordnetOnly:
+   * true` returns only those. `taxonomy` ANDs a list of taxonomic
+   * constraints (see {@link TaxConstraint}) -- `subclassOf`/`instanceOf` are
+   * also expressible inline in `query` itself (`-subclass->Class` /
+   * `-instance->Class`); a non-empty `taxonomy` here wins over that inline
+   * form rather than combining with it.
    * @param {string} query
-   * @param {{ kind?: string, language?: string, limit?: number }} [opts]
-   * @returns {Array<{symbol:string, kinds:string[], source:string, language:string, text:string}>}
+   * @param {{ kind?: string, language?: string, limit?: number, wordnetOnly?: boolean, taxonomy?: TaxConstraint[] }} [opts]
+   * @returns {Array<{symbol:string, kinds:string[], source:string, language:string, text:string, sense:string, rank:number, rank_breakdown:Array<{label:string,value:number}>, wordnet:Array<{words:string,pos:string,mapping:string,suffix:string,gloss:string}>}>}
    */
-  search(query, { kind, language, limit } = {}) {
-    return this.#kb.search(query, kind, language, limit);
+  search(query, { kind, language, limit, wordnetOnly, taxonomy } = {}) {
+    return this.#kb.search(query, kind, language, limit, wordnetOnly, taxonomy);
+  }
+
+  /**
+   * Load the WordNet-SUMO lexicon from the contents of the four
+   * `WordNetMappings30-*.txt` files — the browser fetches the bytes (there
+   * is no filesystem here) and passes strings. `indexSense`
+   * (most-frequent-sense ordering) and `exceptions` (`noun.exc` + `verb.exc`
+   * concatenated) are optional refinements.
+   *
+   * Installation is separate from KIF ingestion ({@link Session#ingest}):
+   * once loaded, {@link Session#search} gains WordNet synonym hits.
+   * @param {{ noun: string, verb: string, adj: string, adv: string, indexSense?: string, exceptions?: string }} files
+   * @returns {number} the number of synsets indexed
+   */
+  loadWordNet({ noun, verb, adj, adv, indexSense, exceptions }) {
+    return this.#kb.loadWordNet(noun, verb, adj, adv, indexSense, exceptions);
+  }
+
+  /** Drop the currently installed WordNet lexicon, if any — the inverse of
+   *  {@link Session#loadWordNet}. Subsequent {@link Session#search} calls
+   *  stop returning WordNet hits. A no-op if none was loaded. */
+  clearWordNet() {
+    this.#kb.clearWordNet();
   }
 
   /** Structured man page for a symbol, or `null` if unknown. */
-  manpage(symbol) { return this.#kb.manpage(symbol); }
+  manpage(symbol) {
+    return this.#kb.manpage(symbol);
+  }
 
   /** Direct taxonomy edges `{parents, children}` — the lightweight peer of
    *  `manpage` for lazy tree expansion. */
-  taxonomy(symbol) { return this.#kb.taxonomy(symbol); }
+  taxonomy(symbol) {
+    return this.#kb.taxonomy(symbol);
+  }
 
   /** `NaturalLanguage` instances as `[{symbol, label}]`, for the UI selector. */
-  naturalLanguages() { return this.#kb.naturalLanguages(); }
+  naturalLanguages() {
+    return this.#kb.naturalLanguages();
+  }
 
   /** Natural-language paraphrase of a single KIF formula in `language`. */
-  renderNl(kif, language) { return this.#kb.renderNl(kif, language); }
+  renderNl(kif, language) {
+    return this.#kb.renderNl(kif, language);
+  }
 
   /** Drop a session's assertions. */
-  flushSession(session) { this.#kb.flushSession(session); }
+  flushSession(session) {
+    this.#kb.flushSession(session);
+  }
 }
 
 // -- KIF formatting -------------------------------------------------------------
@@ -315,7 +436,7 @@ export class Session {
  *  (`exists`/`forall`) variable list — both conventionally sit on the same
  *  line as the symbol that introduces them. Every other case of a second
  *  open before the first has closed gets a line break inserted before it. */
-const INLINE_HEAD_EXCEPTIONS = new Set(['not', 'exists', 'forall']);
+const INLINE_HEAD_EXCEPTIONS = new Set(["not", "exists", "forall"]);
 
 /** Tokenizer for the reflow pass: comments/strings/parens as before (see
  *  the two-alternative closed-vs-unterminated-string split below), plus a
@@ -325,7 +446,8 @@ const INLINE_HEAD_EXCEPTIONS = new Set(['not', 'exists', 'forall']);
  *  match rather than a whole token), but that's harmless here: all that
  *  matters for anything besides parens/words is *that* something occupied
  *  the position, invalidating a pending inline exception — not what it was. */
-const KIF_REFLOW_SCAN_RE = /(;[^\n]*)|("(?:[^"\\]|\\.)*")|("(?:[^"\\]|\\.)*$)|([()])|([A-Za-z_][A-Za-z0-9_-]*)|(\S)/g;
+const KIF_REFLOW_SCAN_RE =
+  /(;[^\n]*)|("(?:[^"\\]|\\.)*")|("(?:[^"\\]|\\.)*$)|([()])|([A-Za-z_][A-Za-z0-9_-]*)|(\S)/g;
 
 /**
  * Reformat `text` (raw KIF source, need not even be syntactically valid):
@@ -347,12 +469,12 @@ const KIF_REFLOW_SCAN_RE = /(;[^\n]*)|("(?:[^"\\]|\\.)*")|("(?:[^"\\]|\\.)*$)|([
  * @param {{indentUnit?: string}} [opts]
  * @returns {string}
  */
-export function formatKif(text, { indentUnit = '   ' } = {}) {
-  const srcLines = text.split('\n');
+export function formatKif(text, { indentUnit = "   " } = {}) {
+  const srcLines = text.split("\n");
   const out = [];
 
   let depth = 0;
-  let inString = false;   // true mid-line ⇒ carried over an unterminated "…\n
+  let inString = false; // true mid-line ⇒ carried over an unterminated "…\n
   // One-shot per-nesting-level bookkeeping (0-based: level d == paren depth
   // d+1): headAtLevel[d] is the head symbol of the form open at that level,
   // once its first token is seen; exceptionOpen[d] is true only until that
@@ -362,7 +484,7 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
 
   // The output line currently being assembled — one source line may expand
   // into several of these when a break gets inserted mid-line.
-  let cur = '';
+  let cur = "";
   // A one-way latch, NOT a count of still-open parens: once any '(' has
   // landed on this line, it stays true even after that form fully closes —
   // "two open parens on one line" is a textual rule, not "two simultaneously
@@ -370,7 +492,10 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
   // still isn't allowed to share the line just because the first already
   // closed (e.g. `(instance ?X Dog) (instance ?X Animal)` still splits).
   let openedOnCur = false;
-  const startAt = (indentDepth) => { cur = indentUnit.repeat(Math.max(0, indentDepth)); openedOnCur = false; };
+  const startAt = (indentDepth) => {
+    cur = indentUnit.repeat(Math.max(0, indentDepth));
+    openedOnCur = false;
+  };
 
   /** Scans `scanText` for parens/heads, updating depth/head state. When
    *  `emit` is true, also reconstructs the text into `cur` (flushing to
@@ -382,34 +507,36 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
     KIF_REFLOW_SCAN_RE.lastIndex = 0;
     let m;
     let lastWritten = 0;
-    let prevWordEnd = -1;   // end index of the last bare word token, for the
-                             // "head(" adjacency check below
+    let prevWordEnd = -1; // end index of the last bare word token, for the
+    // "head(" adjacency check below
     while ((m = KIF_REFLOW_SCAN_RE.exec(scanText))) {
-      const [full, , , openStr, paren, word] = m;   // [full, comment, closedStr, openStr, paren, word]
-      if (paren === '(') {
+      const [full, , , openStr, paren, word] = m; // [full, comment, closedStr, openStr, paren, word]
+      if (paren === "(") {
         const parentLevel = depth - 1;
-        const exempt = parentLevel >= 0 && exceptionOpen[parentLevel]
-          && INLINE_HEAD_EXCEPTIONS.has(headAtLevel[parentLevel]);
+        const exempt =
+          parentLevel >= 0 &&
+          exceptionOpen[parentLevel] &&
+          INLINE_HEAD_EXCEPTIONS.has(headAtLevel[parentLevel]);
         if (emit && openedOnCur && !exempt) {
           // Flush everything up to (not including) this '(' first, trimming
           // the dangling trailing space a line break would otherwise leave.
-          cur += scanText.slice(lastWritten, m.index).replace(/[ \t]+$/, '');
+          cur += scanText.slice(lastWritten, m.index).replace(/[ \t]+$/, "");
           out.push(cur);
           startAt(depth);
           lastWritten = m.index;
         } else if (emit && prevWordEnd === m.index) {
           // A head symbol (e.g. `exists`) sitting directly against this '('
           // with no separating space — always insert one.
-          cur += scanText.slice(lastWritten, m.index) + ' ';
+          cur += scanText.slice(lastWritten, m.index) + " ";
           lastWritten = m.index;
         }
-        if (exempt) exceptionOpen[parentLevel] = false;   // one-shot, now used
+        if (exempt) exceptionOpen[parentLevel] = false; // one-shot, now used
         depth++;
         headAtLevel[depth - 1] = undefined;
         exceptionOpen[depth - 1] = false;
         if (emit) openedOnCur = true;
-      } else if (paren === ')') {
-        depth--;   // does NOT clear openedOnCur — see the latch comment above
+      } else if (paren === ")") {
+        depth--; // does NOT clear openedOnCur — see the latch comment above
       } else if (word !== undefined) {
         const lvl = depth - 1;
         if (lvl >= 0 && headAtLevel[lvl] === undefined) {
@@ -418,7 +545,7 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
         }
         prevWordEnd = m.index + word.length;
       } else if (openStr !== undefined) {
-        inString = true;   // reached EOL still inside a string
+        inString = true; // reached EOL still inside a string
       }
       // comment / a fully-closed string: no effect on depth or inString.
     }
@@ -436,20 +563,23 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
       // by one for every such form, and the drift compounds across the file.
       out.push(line);
       const m = /^(?:[^"\\]|\\.)*"/.exec(line);
-      if (!m) continue;   // still open at EOL — nothing on this line to scan
+      if (!m) continue; // still open at EOL — nothing on this line to scan
       inString = false;
       scan(line.slice(m[0].length), false);
       continue;
     }
 
-    const trimmed = line.replace(/^[ \t]+/, '');
-    if (trimmed.length === 0) { out.push(''); continue; }
+    const trimmed = line.replace(/^[ \t]+/, "");
+    if (trimmed.length === 0) {
+      out.push("");
+      continue;
+    }
     // This line's own indent reflects depth AFTER any closing parens it
     // opens with (`)  )  qux)` should sit at the depth *after* those closes,
     // not before) — a plain run of leading ')' can't be inside a string or
     // comment, so counting it directly (ahead of the full scan below) is safe.
     let leadDepth = depth;
-    for (let i = 0; trimmed[i] === ')'; i++) leadDepth--;
+    for (let i = 0; trimmed[i] === ")"; i++) leadDepth--;
     startAt(leadDepth);
     scan(trimmed, true);
     out.push(cur);
@@ -464,14 +594,18 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
   for (const ln of out) {
     const trimmedLn = ln.trim();
     const prev = folded[folded.length - 1];
-    if (/^\)+$/.test(trimmedLn) && prev !== undefined
-      && prev.trim().length > 0 && !prev.includes(';')) {
-      folded[folded.length - 1] = prev.replace(/[ \t]+$/, '') + trimmedLn;
+    if (
+      /^\)+$/.test(trimmedLn) &&
+      prev !== undefined &&
+      prev.trim().length > 0 &&
+      !prev.includes(";")
+    ) {
+      folded[folded.length - 1] = prev.replace(/[ \t]+$/, "") + trimmedLn;
     } else {
       folded.push(ln);
     }
   }
-  return folded.join('\n');
+  return folded.join("\n");
 }
 
 // -- Standalone loaders --------------------------------------------------------
@@ -480,10 +614,14 @@ export function formatKif(text, { indentUnit = '   ' } = {}) {
 // with `loadKif(text, tag) => string[]` works.
 
 /** @param {{loadKif(t:string,g:string):string[]}} kb @returns {Promise<LoadReport>} */
-export function loadFromUrl(kb, url, tag = url) { return ingestUrl(kb, { url, tag }); }
+export function loadFromUrl(kb, url, tag = url) {
+  return ingestUrl(kb, { url, tag });
+}
 /** @param {{loadKif(t:string,g:string):string[]}} kb @param {File} file */
-export function loadFromFile(kb, file) { return ingestFile(kb, { file }); }
+export function loadFromFile(kb, file) {
+  return ingestFile(kb, { file });
+}
 /** @param {{loadKif(t:string,g:string):string[]}} kb */
 export function loadFromGitHubRepo(kb, opts = {}) {
-  return ingestGitHub(kb, { ref: 'HEAD', dir: '', match: /\.kif$/i, ...opts });
+  return ingestGitHub(kb, { ref: "HEAD", dir: "", match: /\.kif$/i, ...opts });
 }

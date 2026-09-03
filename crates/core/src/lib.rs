@@ -110,7 +110,9 @@ pub use semantics::types::{TaxDirection, TaxRelation};
 
 pub use cache::CacheConfig;
 pub use kb::man::{ManKind, ManPage, ParentEdge, SentenceRef, SortSig};
-pub use kb::search::{SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT};
+pub use kb::search::{
+    RankComponent, SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
+};
 pub use kb::KnowledgeBase;
 pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
 pub use parse::doc::{DocItem, MetaNode};

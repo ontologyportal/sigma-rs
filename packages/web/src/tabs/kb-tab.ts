@@ -1,38 +1,118 @@
 /** Knowledge base tab: the loaded-constituent list, the standard presets, and
  *  the three import channels (GitHub picker / URL / upload). */
 
-import { MERGE, SUMO_FILE_SETTING } from '../constants.ts';
-import { state } from '../state.ts';
-import { call } from '../rpc.ts';
-import { $, esc, escAttr, withBusy } from '../dom.ts';
-import { fetchText, fetchAllTexts } from '../sources.ts';
-import { fetchSumoTree } from '../github-api.ts';
-import { ingestConstituent, removeConstituent, reprocess } from '../kb.ts';
-import { lspReset } from '../editor/lsp-client.ts';
-import { addTest, isTestFile, loadedSumoTestNames } from './tests.ts';
-import { navigate } from '../router.ts';
+import { MERGE, SUMO_FILE_SETTING, WORDNET_ENABLED_KEY } from "../constants.ts";
+import { state } from "../state.ts";
+import { call } from "../rpc.ts";
+import { $, esc, escAttr, withBusy } from "../dom.ts";
+import { fetchText, fetchAllTexts } from "../sources.ts";
+import { fetchSumoTree } from "../github-api.ts";
+import { ingestConstituent, removeConstituent, reprocess } from "../kb.ts";
+import { reinstallWordNetIfEnabled } from "../boot.ts";
+import { lspReset } from "../editor/lsp-client.ts";
+import { addTest, isTestFile, loadedSumoTestNames } from "./tests.ts";
+import { navigate } from "../router.ts";
 
 // -- Constituent management ---------------------------------------------------
 
 export function renderConstituents() {
-  const kb = $('kbTotals');
-  if (kb) kb.innerHTML = `<b>${state.constituents.length}</b> constituent(s) loaded · ${state.diagnostics.length} diagnostic(s)`;
-  const list = $('loadedList');
+  const kb = $("kbTotals");
+  if (kb)
+    kb.innerHTML = `<b>${state.constituents.length}</b> constituent(s) loaded · ${state.diagnostics.length} diagnostic(s)`;
+  const list = $("loadedList");
   if (!list) return;
-  const ORIGIN_LABELS = { sumo: 'GitHub', file: 'Local File', url: 'Remote URL' };
-  list.innerHTML = state.constituents.map((c) => `
+  const ORIGIN_LABELS = {
+    sumo: "GitHub",
+    file: "Local File",
+    url: "Remote URL",
+  };
+  list.innerHTML = state.constituents
+    .map(
+      (c) => `
     <li class="loaded-row">
       <span><a class="file-open" data-name="${escAttr(c.name)}" title="Open in the editor">${esc(c.name)}</a>
         <span class="hint">${(c.text.length / 1000).toFixed(0)} KB · ${ORIGIN_LABELS[c.origin] || esc(c.origin)}</span></span>
       ${c.name === MERGE ? '<span class="hint">core</span>' : `<a class="rm" data-name="${esc(c.name)}" data-source="${c.origin}">remove</a>`}
-    </li>`).join('');
+    </li>`,
+    )
+    .join("");
 }
 
-$('loadedList').addEventListener('click', (e) => {
-  const rm = e.target.closest('.rm');
-  if (rm) { $('kbLog').textContent = ''; removeConstituent(rm.dataset.name, rm.dataset.source); return; }
-  const open = e.target.closest('.file-open');
-  if (open) navigate('edit', { file: open.dataset.name });
+$("loadedList").addEventListener("click", (e) => {
+  const rm = e.target.closest(".rm");
+  if (rm) {
+    $("kbLog").textContent = "";
+    removeConstituent(rm.dataset.name, rm.dataset.source);
+    return;
+  }
+  const open = e.target.closest(".file-open");
+  if (open) navigate("edit", { file: open.dataset.name });
+});
+
+// -- WordNet lexicon -----------------------------------------------------------
+//
+// Hardcoded source (the same SUMO repo/ref as the KIF constituents — see
+// wordnet.ts); the only user-facing control is on/off. Enable/disable acts on
+// the LIVE session immediately (clearWordNet / reinstallWordNetIfEnabled),
+// separate from the persisted setting that decides what the NEXT boot does.
+
+/** `bytes` as a human-readable size — KB for anything under 1 MB (matching
+ *  the loaded-constituent list's units), MB above that: the mapping files
+ *  run into the tens of megabytes, where an all-KB number is unreadable. */
+function formatSize(bytes) {
+  return bytes >= 1e6
+    ? `${(bytes / 1e6).toFixed(1)} MB`
+    : `${Math.round(bytes / 1000)} KB`;
+}
+
+export function renderWordNetPanel() {
+  const box = $("wordnetEnabled");
+  if (box) box.checked = state.wordnetEnabled;
+  const list = $("wordnetFileList");
+  if (!list) return;
+  if (!state.wordnetEnabled) {
+    list.innerHTML =
+      '<li class="hint">Disabled — search runs without WordNet synonym expansion.</li>';
+    return;
+  }
+  if (!state.wordnetFiles.length) {
+    list.innerHTML = '<li class="hint">Loading…</li>';
+    return;
+  }
+  const total = state.wordnetFiles.reduce((sum, f) => sum + f.size, 0);
+  const rows = state.wordnetFiles
+    .map(
+      (f) => `
+    <li class="loaded-row">
+      <span class="mono">${esc(f.name)}</span>
+      <span class="hint">${formatSize(f.size)}</span>
+    </li>`,
+    )
+    .join("");
+  list.innerHTML = `${rows}
+    <li class="loaded-row"><span><b>Total</b></span><span class="hint">${formatSize(total)}</span></li>`;
+}
+
+$("wordnetEnabled")?.addEventListener("change", async (e) => {
+  const enabled = e.target.checked;
+  state.wordnetEnabled = enabled;
+  try {
+    localStorage.setItem(WORDNET_ENABLED_KEY, String(enabled));
+  } catch {
+    /* private mode */
+  }
+  e.target.disabled = true;
+  try {
+    if (enabled) {
+      renderWordNetPanel(); // shows "Loading…" immediately
+      await reinstallWordNetIfEnabled();
+    } else {
+      await call("clearWordNet");
+    }
+  } finally {
+    e.target.disabled = false;
+    renderWordNetPanel();
+  }
 });
 
 // -- Standard constituent sets ------------------------------------------------
@@ -43,166 +123,273 @@ $('loadedList').addEventListener('click', (e) => {
 
 const PRESETS = {
   minimal: {
-    label: 'Minimal SUMO',
-    files: ['Merge.kif', 'Mid-level-ontology.kif', 'english_format.kif', 'domainEnglishFormat.kif'],
+    label: "Minimal SUMO",
+    files: [
+      "Merge.kif",
+      "Mid-level-ontology.kif",
+      "english_format.kif",
+      "domainEnglishFormat.kif",
+    ],
   },
   full: {
-    label: 'Full SUMO',
+    label: "Full SUMO",
     files: [
-      'english_format.kif', 'domainEnglishFormat.kif', 'ArabicCulture.kif', 'Anatomy.kif',
-      'arteries.kif', 'Biography.kif', 'Cars.kif', 'Catalog.kif', 'Communications.kif',
-      'ComputerInput.kif', 'ComputingBrands.kif', 'CountriesAndRegions.kif', 'Dining.kif',
-      'Economy.kif', 'emotion.kif', 'engineering.kif', 'Facebook.kif', 'FinancialOntology.kif',
-      'Food.kif', 'Geography.kif', 'Government.kif', 'Hotel.kif', 'Justice.kif', 'Languages.kif',
-      'Law.kif', 'Media.kif', 'Medicine.kif', 'Merge.kif', 'Mid-level-ontology.kif',
-      'MilitaryDevices.kif', 'Military.kif', 'MilitaryPersons.kif', 'MilitaryProcesses.kif',
-      'Music.kif', 'development/Muscles.kif', 'naics.kif', 'People.kif', 'pictureList.kif',
-      'pictureList-ImageNet.kif', 'QoSontology.kif', 'Sports.kif', 'TransnationalIssues.kif',
-      'Transportation.kif', 'TransportDetail.kif', 'UXExperimentalTerms.kif',
-      'VirusProteinAndCellPart.kif', 'Weather.kif', 'WMD.kif', 'capabilities.kif',
+      "english_format.kif",
+      "domainEnglishFormat.kif",
+      "ArabicCulture.kif",
+      "Anatomy.kif",
+      "arteries.kif",
+      "Biography.kif",
+      "Cars.kif",
+      "Catalog.kif",
+      "Communications.kif",
+      "ComputerInput.kif",
+      "ComputingBrands.kif",
+      "CountriesAndRegions.kif",
+      "Dining.kif",
+      "Economy.kif",
+      "emotion.kif",
+      "engineering.kif",
+      "Facebook.kif",
+      "FinancialOntology.kif",
+      "Food.kif",
+      "Geography.kif",
+      "Government.kif",
+      "Hotel.kif",
+      "Justice.kif",
+      "Languages.kif",
+      "Law.kif",
+      "Media.kif",
+      "Medicine.kif",
+      "Merge.kif",
+      "Mid-level-ontology.kif",
+      "MilitaryDevices.kif",
+      "Military.kif",
+      "MilitaryPersons.kif",
+      "MilitaryProcesses.kif",
+      "Music.kif",
+      "development/Muscles.kif",
+      "naics.kif",
+      "People.kif",
+      "pictureList.kif",
+      "pictureList-ImageNet.kif",
+      "QoSontology.kif",
+      "Sports.kif",
+      "TransnationalIssues.kif",
+      "Transportation.kif",
+      "TransportDetail.kif",
+      "UXExperimentalTerms.kif",
+      "VirusProteinAndCellPart.kif",
+      "Weather.kif",
+      "WMD.kif",
+      "capabilities.kif",
     ],
   },
 };
 
 async function loadPreset(key) {
   const preset = PRESETS[key];
-  const buttons = [$('loadMinimal'), $('loadFull')];
-  buttons.forEach((b) => { b.disabled = true; });
-  const note = $('presetNote');
+  const buttons = [$("loadMinimal"), $("loadFull")];
+  buttons.forEach((b) => {
+    b.disabled = true;
+  });
+  const note = $("presetNote");
   try {
     // A preset describes a whole KB, so it replaces rather than merges.
     state.constituents = [];
     state.savedConstituents = [];
-    localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(state.savedConstituents));
-    await call('newSession');
+    localStorage.setItem(
+      SUMO_FILE_SETTING,
+      JSON.stringify(state.savedConstituents),
+    );
+    await call("newSession");
     lspReset(); // the worker dropped its WasmLsp with the session
+    await reinstallWordNetIfEnabled(); // newSession() also dropped WordNet
     renderConstituents();
 
     const total = preset.files.length;
-    note.style.color = '';
+    note.style.color = "";
     note.textContent = `Fetching ${preset.label} — 0/${total}…`;
-    const texts = await fetchAllTexts(preset.files, 6,
-      (n) => { note.textContent = `Fetching ${preset.label} — ${n}/${total}…`; });
+    const texts = await fetchAllTexts(preset.files, 6, (n) => {
+      note.textContent = `Fetching ${preset.label} — ${n}/${total}…`;
+    });
 
     const failed = [];
     for (let i = 0; i < preset.files.length; i++) {
-      const name = preset.files[i], text = texts[i];
-      if (text instanceof Error) { failed.push(`${name}: ${text.message}`); continue; }
+      const name = preset.files[i],
+        text = texts[i];
+      if (text instanceof Error) {
+        failed.push(`${name}: ${text.message}`);
+        continue;
+      }
       note.textContent = `Reading ${name} (${i + 1}/${total})…`;
-      try { await ingestConstituent(name, text, 'sumo'); }
-      catch (e) { failed.push(`${name}: ${e.message || e}`); }
+      try {
+        await ingestConstituent(name, text, "sumo");
+      } catch (e) {
+        failed.push(`${name}: ${e.message || e}`);
+      }
     }
     renderConstituents();
     note.textContent = `Axiomatizing ${state.constituents.length} constituent(s)…`;
     await reprocess();
 
-    note.style.color = failed.length ? 'var(--bad)' : '';
+    note.style.color = failed.length ? "var(--bad)" : "";
     note.textContent = failed.length
       ? `${preset.label}: loaded ${state.constituents.length}/${total}, ${failed.length} failed — ${failed[0]}`
       : `${preset.label} loaded — ${state.constituents.length} constituents.`;
   } catch (e) {
-    note.style.color = 'var(--bad)';
-    note.textContent = String(e && e.message || e);
+    note.style.color = "var(--bad)";
+    note.textContent = String((e && e.message) || e);
   } finally {
-    buttons.forEach((b) => { b.disabled = false; });
+    buttons.forEach((b) => {
+      b.disabled = false;
+    });
   }
 }
 
-$('loadMinimal').onclick = () => loadPreset('minimal');
-$('loadFull').onclick = () => loadPreset('full');
+$("loadMinimal").onclick = () => loadPreset("minimal");
+$("loadFull").onclick = () => loadPreset("full");
 
 // -- The upstream file catalog ------------------------------------------------
 
 export async function loadSumoCatalog() {
   if (state.sumoCatalog) return;
-  $('pickerStatus').textContent = 'loading file list…';
+  $("pickerStatus").textContent = "loading file list…";
   try {
     // Via the shared client so a rate-limited response raises rather than
     // silently yielding `undefined.tree`, and via the shared tree read so this
     // and the change tracker's staleness check cost one request between them.
     const tree = await fetchSumoTree();
     state.sumoCatalog = tree
-      .filter((e) => e.type === 'blob' && /\.kif(\.tq)?$/i.test(e.path))
+      .filter((e) => e.type === "blob" && /\.kif(\.tq)?$/i.test(e.path))
       .map((e) => e.path)
       .sort();
     renderPicker();
   } catch (e) {
-    $('pickerStatus').textContent = 'could not load file list: ' + (e.message || e);
+    $("pickerStatus").textContent =
+      "could not load file list: " + (e.message || e);
   }
 }
 
 export function renderPicker() {
-  const filter = $('fileFilter').value.toLowerCase();
-  const loaded = new Set(state.constituents.filter((c) => c.origin === 'sumo').map((c) => c.name));
+  const filter = $("fileFilter").value.toLowerCase();
+  const loaded = new Set(
+    state.constituents.filter((c) => c.origin === "sumo").map((c) => c.name),
+  );
   for (const name of loadedSumoTestNames()) loaded.add(name);
-  const avail = state.sumoCatalog.filter((p) => !loaded.has(p) && p.toLowerCase().includes(filter));
-  $('sumoPicker').innerHTML = avail.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
-  $('pickerStatus').textContent = `${avail.length} file(s) available`;
+  const avail = state.sumoCatalog.filter(
+    (p) => !loaded.has(p) && p.toLowerCase().includes(filter),
+  );
+  $("sumoPicker").innerHTML = avail
+    .map((p) => `<option value="${esc(p)}">${esc(p)}</option>`)
+    .join("");
+  $("pickerStatus").textContent = `${avail.length} file(s) available`;
 }
 
-$('fileFilter').addEventListener('input', () => { if (state.sumoCatalog) renderPicker(); });
+$("fileFilter").addEventListener("input", () => {
+  if (state.sumoCatalog) renderPicker();
+});
 
 // -- Import channels ----------------------------------------------------------
 
-$('addSumo').onclick = (e) => withBusy(e.target, async () => {
-  const paths = [...$('sumoPicker').selectedOptions].map((o) => o.value);
-  if (!paths.length) { $('kbLog').textContent = 'Select one or more files first.'; return; }
-  // Ingest (fetch + parse) under the busy button — no toast yet. Fetches run
-  // batched, like the presets: a multi-select of a dozen files is otherwise a
-  // dozen serial round-trips.
-  let added = 0, notices = 0; const failed = [];
-  $('kbLog').style.color = '';
-  const texts = await fetchAllTexts(paths, 6,
-    (n) => { $('kbLog').textContent = `Fetching — ${n}/${paths.length}…`; });
-  for (let i = 0; i < paths.length; i++) {
-    const path = paths[i], text = texts[i];
-    if (text instanceof Error) { failed.push(`${path}: ${text.message}`); continue; }
-    try {
-      const r = isTestFile(path) ? await addTest(path, text, 'sumo') : await ingestConstituent(path, text);
-      if (r.added) added += 1; notices += r.notices.length;
+$("addSumo").onclick = (e) =>
+  withBusy(e.target, async () => {
+    const paths = [...$("sumoPicker").selectedOptions].map((o) => o.value);
+    if (!paths.length) {
+      $("kbLog").textContent = "Select one or more files first.";
+      return;
     }
-    catch (err) { failed.push(`${path}: ${err.message || err}`); }
-  }
-  renderConstituents();
-  $('kbLog').textContent = `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`;
-  await reprocess();   // toast → promote → validate → untoast
-  if (failed.length) { $('kbLog').style.color = 'var(--bad)'; $('kbLog').textContent = `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`; }
-  else $('kbLog').textContent = `Added ${added}/${paths.length} constituent(s)` + (notices ? ` (${notices} load notice(s))` : '') + '.';
-});
+    // Ingest (fetch + parse) under the busy button — no toast yet. Fetches run
+    // batched, like the presets: a multi-select of a dozen files is otherwise a
+    // dozen serial round-trips.
+    let added = 0,
+      notices = 0;
+    const failed = [];
+    $("kbLog").style.color = "";
+    const texts = await fetchAllTexts(paths, 6, (n) => {
+      $("kbLog").textContent = `Fetching — ${n}/${paths.length}…`;
+    });
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i],
+        text = texts[i];
+      if (text instanceof Error) {
+        failed.push(`${path}: ${text.message}`);
+        continue;
+      }
+      try {
+        const r = isTestFile(path)
+          ? await addTest(path, text, "sumo")
+          : await ingestConstituent(path, text);
+        if (r.added) added += 1;
+        notices += r.notices.length;
+      } catch (err) {
+        failed.push(`${path}: ${err.message || err}`);
+      }
+    }
+    renderConstituents();
+    $("kbLog").textContent =
+      `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`;
+    await reprocess(); // toast → promote → validate → untoast
+    if (failed.length) {
+      $("kbLog").style.color = "var(--bad)";
+      $("kbLog").textContent =
+        `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`;
+    } else
+      $("kbLog").textContent =
+        `Added ${added}/${paths.length} constituent(s)` +
+        (notices ? ` (${notices} load notice(s))` : "") +
+        ".";
+  });
 
-$('addUrl').onclick = (e) => withBusy(e.target, async () => {
-  const url = $('kbUrl').value.trim();
-  if (!url) { $('kbLog').textContent = 'Enter a URL first.'; return; }
-  const text = await fetchText(url);
-  $('kbLog').style.color = '';
-  if (isTestFile(url)) {
-    const r = await addTest(url, text, 'url');
-    $('kbLog').textContent = r.added ? `Imported test ${url}.` : r.notices.join(' | ');
-    return;
-  }
-  const r = await ingestConstituent(url, text, 'url');
-  renderConstituents();
-  $('kbLog').textContent = r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(' | ');
-  if (r.added) await reprocess();
-});
+$("addUrl").onclick = (e) =>
+  withBusy(e.target, async () => {
+    const url = $("kbUrl").value.trim();
+    if (!url) {
+      $("kbLog").textContent = "Enter a URL first.";
+      return;
+    }
+    const text = await fetchText(url);
+    $("kbLog").style.color = "";
+    if (isTestFile(url)) {
+      const r = await addTest(url, text, "url");
+      $("kbLog").textContent = r.added
+        ? `Imported test ${url}.`
+        : r.notices.join(" | ");
+      return;
+    }
+    const r = await ingestConstituent(url, text, "url");
+    renderConstituents();
+    $("kbLog").textContent = r.added
+      ? `Ingested ${url}; axiomatizing…`
+      : r.notices.join(" | ");
+    if (r.added) await reprocess();
+  });
 
-$('kbFile').onchange = (e) => withBusy($('addUrl'), async () => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const text = await file.text();
-  if (state.opfsRoot === null) throw new Error('File system not yet initialized');
-  const handle = await state.opfsRoot.getFileHandle(file.name, { create: true });
-  const stream = await handle.createWritable();
-  await stream.write(text);
-  await stream.close();
-  $('kbLog').style.color = '';
-  if (isTestFile(file.name)) {
-    const r = await addTest(file.name, text, 'file');
-    $('kbLog').textContent = r.added ? `Imported test ${file.name}.` : r.notices.join(' | ');
-    return;
-  }
-  const r = await ingestConstituent(file.name, text, 'file');
-  renderConstituents();
-  $('kbLog').textContent = r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(' | ');
-  if (r.added) await reprocess();
-});
+$("kbFile").onchange = (e) =>
+  withBusy($("addUrl"), async () => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    if (state.opfsRoot === null)
+      throw new Error("File system not yet initialized");
+    const handle = await state.opfsRoot.getFileHandle(file.name, {
+      create: true,
+    });
+    const stream = await handle.createWritable();
+    await stream.write(text);
+    await stream.close();
+    $("kbLog").style.color = "";
+    if (isTestFile(file.name)) {
+      const r = await addTest(file.name, text, "file");
+      $("kbLog").textContent = r.added
+        ? `Imported test ${file.name}.`
+        : r.notices.join(" | ");
+      return;
+    }
+    const r = await ingestConstituent(file.name, text, "file");
+    renderConstituents();
+    $("kbLog").textContent = r.added
+      ? `Ingested ${file.name}; axiomatizing…`
+      : r.notices.join(" | ");
+    if (r.added) await reprocess();
+  });

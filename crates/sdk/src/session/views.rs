@@ -71,6 +71,89 @@ pub struct ScratchValidationView {
 
 // -- Search --------------------------------------------------------------------
 
+/// One labeled contribution to a [`SearchHitView::rank`] score -- the
+/// boundary-safe projection of [`sigmakee_rs_core::RankComponent`].
+#[derive(serde::Serialize)]
+pub struct RankComponentView {
+    pub label: String,
+    pub value: f32,
+}
+
+impl From<&sigmakee_rs_core::RankComponent> for RankComponentView {
+    fn from(c: &sigmakee_rs_core::RankComponent) -> Self {
+        Self {
+            label: c.label.to_string(),
+            value: c.value,
+        }
+    }
+}
+
+/// One WordNet synset anchored to a SUMO symbol -- e.g. for `Canine`:
+/// `{ words: "dog, domestic dog, Canis familiaris", pos: "n", mapping:
+/// "subsuming", suffix: "+", gloss: "a member of the genus Canis..." }`
+/// (`words` has the mapping files' own underscored multi-word lemmas, e.g.
+/// `domestic_dog`, converted to spaces for display).
+/// Every synset anchored to the symbol is listed (see
+/// [`SearchHitView::wordnet`] / [`ManPageDetail::wordnet`]), independent of
+/// any particular search query -- unlike [`SearchHitView::sense`] (one
+/// specific matched sense on a WordNet-*sourced* hit), this is the full
+/// reverse mapping, shown for every symbol that has one regardless of how
+/// it was found.
+#[derive(serde::Serialize)]
+pub struct WordNetMappingView {
+    /// The synset's word(s) (near-synonyms share one synset), comma-joined.
+    pub words: String,
+    /// WordNet part-of-speech tag: `"n"`, `"v"`, `"a"`, or `"r"`.
+    pub pos: String,
+    /// How this synset is anchored to the symbol: `"equivalent"`,
+    /// `"subsuming"`, `"instance"`, or `"other"`.
+    pub mapping: String,
+    /// The mapping-kind suffix in the mappings files' own notation (`=`,
+    /// `+`, `@`, or another character), for compact rendering.
+    pub suffix: String,
+    /// The synset's gloss (definition), e.g. `"a domesticated carnivorous
+    /// mammal..."`.
+    pub gloss: String,
+}
+
+/// Every WordNet synset anchored to `symbol`, boundary-safe -- the reverse
+/// lookup behind [`SearchHitView::wordnet`] / [`ManPageDetail::wordnet`].
+/// Empty when no lexicon is loaded or `symbol` has no WordNet mapping.
+#[cfg(feature = "lexicon")]
+fn wordnet_mappings_for(
+    wn: &sigmakee_rs_core::lexicon::WordNet,
+    symbol: &str,
+) -> Vec<WordNetMappingView> {
+    use sigmakee_rs_core::lexicon::MappingKind;
+    let mapping_label = |k: MappingKind| match k {
+        MappingKind::Equivalent => "equivalent",
+        MappingKind::Subsuming => "subsuming",
+        MappingKind::Instance => "instance",
+        MappingKind::Other(_) => "other",
+    };
+    wn.synsets_of_term(symbol)
+        .into_iter()
+        .flat_map(|synset| {
+            synset
+                .sumo
+                .iter()
+                .filter(move |a| a.term == symbol)
+                .map(move |anchor| WordNetMappingView {
+                    words: synset
+                        .words
+                        .iter()
+                        .map(|w| w.replace('_', " "))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    pos: synset.pos.as_char().to_string(),
+                    mapping: mapping_label(anchor.kind).to_string(),
+                    suffix: anchor.kind.suffix().to_string(),
+                    gloss: synset.gloss.clone(),
+                })
+        })
+        .collect()
+}
+
 /// A boundary-safe search hit (the internal `sid` is dropped).
 #[derive(serde::Serialize)]
 pub struct SearchHitView {
@@ -79,7 +162,20 @@ pub struct SearchHitView {
     pub source: String,
     pub language: String,
     pub text: String,
+    /// For a WordNet-sourced hit (`source == "wn"`): the sense tag, e.g.
+    /// `"dog#n#1+"`. Empty for every other source.
+    pub sense: String,
     pub rank: f32,
+    /// The named contributions [`rank`](Self::rank) sums to -- see
+    /// [`sigmakee_rs_core::SearchHit::rank_breakdown`].
+    pub rank_breakdown: Vec<RankComponentView>,
+    /// Every WordNet synset anchored to [`symbol`](Self::symbol), regardless
+    /// of this hit's own [`source`](Self::source) -- populated by
+    /// [`Session::search_view`] when a lexicon is installed, empty
+    /// otherwise. Not query-scoped, unlike [`sense`](Self::sense): a hit
+    /// found via plain documentation text still lists every sense the
+    /// symbol has, if any.
+    pub wordnet: Vec<WordNetMappingView>,
 }
 
 impl From<&SearchHit> for SearchHitView {
@@ -90,7 +186,14 @@ impl From<&SearchHit> for SearchHitView {
             source: h.source.as_str().to_string(),
             language: h.language.clone(),
             text: h.text.clone(),
+            sense: h.sense.clone(),
             rank: h.rank,
+            rank_breakdown: h
+                .rank_breakdown
+                .iter()
+                .map(RankComponentView::from)
+                .collect(),
+            wordnet: Vec::new(), // filled in by Session::search_view, which has the lexicon
         }
     }
 }
@@ -180,6 +283,11 @@ pub struct ManPageDetail {
     pub name: String,
     pub kinds: Vec<String>,
     pub documentation: Vec<DocView>,
+    /// Every WordNet synset anchored to this symbol -- see
+    /// [`SearchHitView::wordnet`]'s doc comment for the shape. Populated by
+    /// [`Session::manpage_detail`] when a lexicon is installed, empty
+    /// otherwise.
+    pub wordnet: Vec<WordNetMappingView>,
     pub term_format: Vec<DocView>,
     pub format: Vec<DocView>,
     pub parents: Vec<EdgeView>,
@@ -305,6 +413,7 @@ impl ManPageDetail {
             name: p.name.clone(),
             kinds: p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
             documentation: docs(&p.documentation),
+            wordnet: Vec::new(),
             term_format: docs(&p.term_format),
             format: docs(&p.format),
             parents: edges(&p.parents),
@@ -574,9 +683,16 @@ impl<L: TopLayer> Session<L> {
     /// The full symbol card for `symbol` (see [`ManPageDetail`]), or `None`
     /// when the symbol is unknown.
     pub fn manpage_detail(&self, symbol: &str) -> Option<ManPageDetail> {
-        self.kb
+        #[allow(unused_mut)]
+        let mut detail = self
+            .kb
             .manpage(symbol)
-            .map(|p| ManPageDetail::project(&self.kb, &p))
+            .map(|p| ManPageDetail::project(&self.kb, &p))?;
+        #[cfg(feature = "lexicon")]
+        if let Some(wn) = self.lexicon.as_deref() {
+            detail.wordnet = wordnet_mappings_for(wn, symbol);
+        }
+        Some(detail)
     }
 
     /// Direct taxonomy edges of `symbol` (see [`TaxonomyView`]).
@@ -593,12 +709,33 @@ impl<L: TopLayer> Session<L> {
     }
 
     /// Full-text / symbol search projected to boundary-safe hits.
+    ///
+    /// `opts.lexicon` is always overridden with this session's own
+    /// installed lexicon (see [`Session::load_lexicon`] /
+    /// [`Session::set_lexicon`]) -- a caller never threads it through by
+    /// hand; `opts.wordnet_only` still applies as given. Every hit's
+    /// [`SearchHitView::wordnet`] is populated when a lexicon is installed,
+    /// independent of `wordnet_only` and of the hit's own source -- a plain
+    /// documentation match still lists the symbol's WordNet senses, if any.
     pub fn search_view(
         &self,
         query: &str,
         opts: &sigmakee_rs_core::SearchOpts,
     ) -> Vec<SearchHitView> {
-        SearchHitView::from_slice(&self.kb.search(query, opts))
+        #[cfg(feature = "lexicon")]
+        let opts = &sigmakee_rs_core::SearchOpts {
+            lexicon: self.lexicon.as_deref(),
+            ..opts.clone()
+        };
+        #[allow(unused_mut)]
+        let mut hits = SearchHitView::from_slice(&self.kb.search(query, opts));
+        #[cfg(feature = "lexicon")]
+        if let Some(wn) = self.lexicon.as_deref() {
+            for hit in &mut hits {
+                hit.wordnet = wordnet_mappings_for(wn, &hit.symbol);
+            }
+        }
+        hits
     }
 
     /// Summary counts describing the loaded KB (see [`KbStatsView`]).
@@ -812,6 +949,113 @@ mod tests {
         s
     }
 
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn search_view_carries_wordnet_sense_and_uses_installed_lexicon() {
+        use sigmakee_rs_core::lexicon::{Pos, WordNet};
+
+        let mut s =
+            session_with("(documentation Canine EnglishLanguage \"A carnivorous mammal.\")");
+        let wn = std::sync::Arc::new(WordNet::from_texts(
+            [(
+                "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a dog &%Canine+\n",
+                Pos::Noun,
+            )],
+            None,
+            None,
+        ));
+        s.set_lexicon(Some(wn));
+
+        let hits = s.search_view("dog", &sigmakee_rs_core::SearchOpts::default());
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Canine")
+            .expect("WordNet-sourced Canine hit");
+        assert_eq!(hit.source, "wn");
+        assert_eq!(hit.sense, "dog#n#1+");
+
+        let summed: f32 = hit.rank_breakdown.iter().map(|c| c.value).sum();
+        assert!(
+            (hit.rank - summed).abs() < 1e-4,
+            "rank {} != breakdown sum {summed}",
+            hit.rank
+        );
+        assert!(
+            hit.rank_breakdown
+                .iter()
+                .any(|c| c.label == "subsuming WordNet anchor"),
+            "breakdown missing anchor-strength label: {:?}",
+            hit.rank_breakdown
+                .iter()
+                .map(|c| &c.label)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The key behavior the WordNet-mappings field exists for: a hit found
+    /// purely by plain documentation text (source "doc", nothing to do with
+    /// WordNet) still lists the symbol's WordNet senses when it has any --
+    /// `wordnet` is populated for every hit, not just WordNet-*sourced*
+    /// ones, and independent of `wordnet_only`.
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn search_view_lists_wordnet_mappings_on_a_non_wordnet_sourced_hit() {
+        use sigmakee_rs_core::lexicon::{Pos, WordNet};
+
+        let mut s =
+            session_with("(documentation Canine EnglishLanguage \"A carnivorous mammal.\")");
+        let wn = std::sync::Arc::new(WordNet::from_texts(
+            [(
+                "02084071 05 n 03 dog 0 domestic_dog 0 Canis_familiaris 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n",
+                Pos::Noun,
+            )],
+            None,
+            None,
+        ));
+        s.set_lexicon(Some(wn));
+
+        // "canine" matches Canine's own documentation text directly -- a
+        // plain "doc" hit, not routed through WordNet expansion at all.
+        let hits = s.search_view("canine", &sigmakee_rs_core::SearchOpts::default());
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Canine")
+            .expect("Canine hit");
+        assert_eq!(
+            hit.source, "doc",
+            "this hit must come from the text scan, not WordNet"
+        );
+        assert_eq!(
+            hit.sense, "",
+            "no particular sense matched -- this wasn't a WordNet hit"
+        );
+
+        assert_eq!(
+            hit.wordnet.len(),
+            1,
+            "{:?}",
+            hit.wordnet.iter().map(|w| &w.words).collect::<Vec<_>>()
+        );
+        let m = &hit.wordnet[0];
+        assert_eq!(m.words, "dog, domestic dog, Canis familiaris");
+        assert_eq!(m.pos, "n");
+        assert_eq!(m.mapping, "subsuming");
+        assert_eq!(m.suffix, "+");
+        assert_eq!(m.gloss, "a domesticated canine");
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn search_view_wordnet_mappings_empty_without_a_lexicon() {
+        let s = session_with("(documentation Canine EnglishLanguage \"A carnivorous mammal.\")");
+        let hits = s.search_view("canine", &sigmakee_rs_core::SearchOpts::default());
+        let hit = hits
+            .iter()
+            .find(|h| h.symbol == "Canine")
+            .expect("Canine hit");
+        assert!(hit.wordnet.is_empty());
+    }
+
     #[test]
     fn stats_view_counts_files_axioms_and_rules() {
         let s =
@@ -838,6 +1082,33 @@ mod tests {
             d.references.iter().map(|r| &r.kif).collect::<Vec<_>>()
         );
         assert!(s.manpage_detail("NoSuchSymbol__").is_none());
+    }
+
+    #[cfg(feature = "lexicon")]
+    #[test]
+    fn manpage_detail_lists_wordnet_mappings_when_a_lexicon_is_installed() {
+        use sigmakee_rs_core::lexicon::{Pos, WordNet};
+
+        let mut s = session_with("(instance Canine SetOrClass)");
+        let wn = std::sync::Arc::new(WordNet::from_texts(
+            [(
+                "02084071 05 n 01 dog 0 001 @ 02083346 n 0000 | a domesticated canine &%Canine+\n",
+                Pos::Noun,
+            )],
+            None,
+            None,
+        ));
+        s.set_lexicon(Some(wn));
+
+        let d = s.manpage_detail("Canine").expect("Canine has a man page");
+        assert_eq!(d.wordnet.len(), 1);
+        assert_eq!(d.wordnet[0].words, "dog");
+        assert_eq!(d.wordnet[0].mapping, "subsuming");
+        assert_eq!(d.wordnet[0].gloss, "a domesticated canine");
+
+        // A symbol with no WordNet anchor gets an empty list, not an error.
+        let unrelated = s.manpage_detail("SetOrClass").expect("core SUMO symbol");
+        assert!(unrelated.wordnet.is_empty());
     }
 
     #[test]

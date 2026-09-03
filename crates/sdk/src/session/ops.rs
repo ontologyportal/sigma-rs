@@ -171,7 +171,12 @@ impl<L: TopLayer> Session<L> {
     ) -> SdkResult<Session<TranslationLayer>> {
         let kb =
             sigmakee_rs_core::KnowledgeBase::open(path.as_ref(), sink).map_err(SdkError::from)?;
-        Ok(Session { kb, name: session })
+        Ok(Session {
+            kb,
+            name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
+        })
     }
 
     /// Store an open session to the LMDB backend at the given path. Importantly:

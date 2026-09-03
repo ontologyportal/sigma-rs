@@ -102,8 +102,8 @@ pub use sigmakee_rs_core::{DynSink, LogLevel, ProgressEvent, ProgressSink};
 // structs a JS/RPC facade can serialize directly.
 pub use session::views::{
     man_kind_from_str, DiagnosticView, DocLangView, DocView, DomainView, EdgeView, KbStatsView,
-    LangView, ManPageDetail, ManPageRefView, ScratchValidationView, SearchHitView, SortView,
-    TaxonomyView, TestCaseView,
+    LangView, ManPageDetail, ManPageRefView, RankComponentView, ScratchValidationView,
+    SearchHitView, SortView, TaxonomyView, TestCaseView,
 };
 #[cfg(any(feature = "ask", feature = "native-prover"))]
 pub use session::views::{AskResultView, AuditResultView, ContradictionView, ProofStepView};

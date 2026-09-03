@@ -1,6 +1,5 @@
 //! Word-sense disambiguation auxillary module
 
-
 use std::collections::HashMap;
 use std::fmt;
 
@@ -8,10 +7,10 @@ use super::Pos;
 
 /// Index to represent SUMO's WSD data (`wordFrequencies_combined.txt`)
 /// per sense key
-/// 
+///
 /// The WSD index helps to further decide a word's given sense / mapping
 /// based on the co-occurence of other words with a given word sense word.
-/// For example, the word "dog" corresponds to multiple senses (e.g. the 
+/// For example, the word "dog" corresponds to multiple senses (e.g. the
 /// animal, the action of persisting upon someone), the coincidence of the
 /// word "woof" may indicate the term is its first sense and corresponds to
 /// the SUMO term "DomesticDog".
@@ -113,7 +112,7 @@ impl WsdIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn wsd_index_parses_and_scores() {
         let wsd = WsdIndex::from_text(
@@ -133,5 +132,5 @@ Word: junk line without markers
             "POS-keyed: noun `run` has no entries"
         );
         assert_eq!(wsd.term_score("walk", Pos::Verb, "Walking", &ctx), 0);
-    }    
+    }
 }

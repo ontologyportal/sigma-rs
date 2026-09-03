@@ -5,6 +5,8 @@
 // `from_config_xml` ingests the legacy SUMO `config.xml` (a flat list of
 // `<preference name=.. value=..>` plus `<kb>`/`<constituent>` elements).
 
+#[cfg(feature = "lexicon")]
+mod lexicon;
 mod sources;
 mod write;
 // Clap-agnostic option metadata — projects KBManager into a CLI parser.
@@ -106,6 +108,13 @@ pub struct KBManager {
     pub real_numbers: Option<bool>,
     /// The path to the vampire binary
     pub vampire: PathBuf,
+    /// Whether to automatically load and enable WordNet synonym expansion
+    /// (`SearchOpts::lexicon`) in a session constructed from this manager.
+    /// `true` by default
+    pub load_lexicons: bool,
+    /// Where to find the WordNet-SUMO mapping files, and overrides for their
+    /// file names, when [`load_lexicons`](Self::load_lexicons) is set
+    pub lexicon: LexiconConfig,
     /// The various KBs associated with the system
     pub kbs: Vec<KB>,
     /// Default options for the native saturation prover (from a
@@ -155,6 +164,8 @@ impl Default for KBManager {
             tptp_lang: "auto".into(),
             real_numbers: None,
             vampire: PathBuf::new(),
+            load_lexicons: true,
+            lexicon: LexiconConfig::default(),
             kbs: Vec::new(),
             native_prover: NativeProverConfig::default(),
             external_prover: ExternalProverConfig::default(),
@@ -271,6 +282,58 @@ impl ExternalProverConfig {
             session: None,
         }
     }
+}
+
+/// Where to fetch the WordNet-SUMO mapping files from: the same three
+/// origins a KIF constituent can come from (see [`Source`]), but held as its
+/// own explicitly-tagged config value rather than sniffed from one string --
+/// unlike `--git`, which re-roots every constituent at once, a `<lexicon>`
+/// section names exactly one location, so there is no reason to guess.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum LexiconSource {
+    /// A local directory (`<preference name="source.type" value="local"/>`
+    /// `<preference name="source.path" value="..">`). Resolved like a
+    /// constituent path: absolute as-is, otherwise relative to
+    /// [`KBManager::kb_dir`], itself relative to [`KBManager::base_dir`].
+    Local { path: PathBuf },
+    /// A base URL serving the mapping files directly (feature `http`).
+    Http { url: String },
+    /// A git repository containing the mapping files (feature `git`).
+    /// `branch: None` follows the remote's own default branch.
+    Git {
+        url: String,
+        #[serde(default)]
+        branch: Option<String>,
+    },
+}
+
+/// Where to find the WordNet-SUMO mapping files, and overrides for their
+/// file names: see [`KBManager::lexicon`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LexiconConfig {
+    /// `None` = the default local `<kbDir>/WordNetMappings` directory (see
+    /// [`KBManager::lexicon`]'s doc comment).
+    pub source: Option<LexiconSource>,
+    /// Subdirectory under [`source`](Self::source) where the mapping files
+    /// live. `None` = `WordNetMappings` (the SigmaKEE convention), for every
+    /// source kind -- a local directory's own root, a URL's base path, or a
+    /// git repository's checked-out subpath.
+    pub directory: Option<String>,
+    /// Override for the noun mappings file name. `None` = the compiled-in
+    /// default (`WordNetMappings30-noun.txt`, or `WORDNET_NOUN_FILE` if set
+    /// at build time -- see `.cargo/config.toml`).
+    pub noun: Option<String>,
+    /// Override for the verb mappings file name. `None` = the compiled-in
+    /// default (`WordNetMappings30-verb.txt` / `WORDNET_VERB_FILE`).
+    pub verb: Option<String>,
+    /// Override for the adjective mappings file name. `None` = the
+    /// compiled-in default (`WordNetMappings30-adj.txt` / `WORDNET_ADJV_FILE`).
+    pub adj: Option<String>,
+    /// Override for the adverb mappings file name. `None` = the compiled-in
+    /// default (`WordNetMappings30-adv.txt` / `WORDNET_ADVR_FILE`).
+    pub adv: Option<String>,
 }
 
 /// Bridge from a [`KBManager`]'s configuration to a proving layer's
@@ -423,6 +486,7 @@ impl KBManager {
             prefs,
             kbs,
             provers,
+            lexicon,
             errors,
         } = parse_config_xml(xml)?;
 
@@ -470,6 +534,9 @@ impl KBManager {
             if let Ok(n) = v.parse() {
                 m.limit = n;
             }
+        }
+        if let Some(v) = get(LOAD_LEXICONS) {
+            m.load_lexicons = parse_bool(v);
         }
         if let Some(v) = get(LOG_DIR) {
             m.log_dir = PathBuf::from(v);
@@ -547,6 +614,11 @@ impl KBManager {
                 "external" => m.external_prover = prover_config_from_prefs(pp)?,
                 _ => {}
             }
+        }
+
+        // The single `<lexicon>` section, if present.
+        if let Some(lp) = &lexicon {
+            m.lexicon = prover_config_from_prefs(lp)?;
         }
 
         // Any top-level preference not consumed by a `get(..)` call above
@@ -1049,6 +1121,7 @@ pub(crate) mod pref_keys {
     pub const LANGUAGE: &str = "language";
     pub const LEO_EXECUTABLE: &str = "leoExec";
     pub const LIMIT: &str = "limit";
+    pub const LOAD_LEXICONS: &str = "loadLexicons";
     pub const LOG_DIR: &str = "logDir";
     pub const LOG_LEVEL: &str = "logLevel";
     pub const OLLAMA_HOST: &str = "ollamaHost";
@@ -1082,6 +1155,7 @@ pub(crate) mod pref_keys {
         LANGUAGE,
         LEO_EXECUTABLE,
         LIMIT,
+        LOAD_LEXICONS,
         LOG_DIR,
         LOG_LEVEL,
         OLLAMA_HOST,
@@ -1110,11 +1184,12 @@ const KNOWN_PREFERENCES: &[&str] = pref_keys::ALL;
 type ProverSection = (String, HashMap<String, String>);
 
 /// Parse a `config.xml` into its top-level `<preference>` map, its `<kb>` list,
-/// and its `<prover type="..">` sections.
+/// its `<prover type="..">` sections, and its single `<lexicon>` section.
 struct ParsedConfig {
     prefs: HashMap<String, String>,
     kbs: Vec<KB>,
     provers: Vec<ProverSection>,
+    lexicon: Option<HashMap<String, String>>,
     errors: Vec<String>,
 }
 
@@ -1123,10 +1198,12 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
     let mut prefs: HashMap<String, String> = HashMap::new();
     let mut kbs: Vec<KB> = Vec::new();
     let mut provers: Vec<ProverSection> = Vec::new();
+    let mut lexicon: Option<HashMap<String, String>> = None;
     // `<error name=../code=..>` elements: warning codes to elevate to errors.
     let mut errors: Vec<String> = Vec::new();
     let mut cur_kb: Option<KB> = None;
     let mut cur_prover: Option<ProverSection> = None;
+    let mut cur_lexicon: Option<HashMap<String, String>> = None;
     let mut buf = Vec::new();
 
     loop {
@@ -1140,13 +1217,18 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
                 b"preference" => {
                     if let (Some(name), Some(value)) = (attr(&e, b"name"), attr(&e, b"value")) {
-                        // A preference inside a <prover> belongs to that prover;
-                        // otherwise it is a top-level configuration preference.
-                        match cur_prover.as_mut() {
-                            Some((_, pp)) => {
+                        // A preference inside a <lexicon> belongs to it; inside
+                        // a <prover> belongs to that prover; otherwise it is a
+                        // top-level configuration preference. <lexicon> and
+                        // <prover> never nest, so this precedence is exhaustive.
+                        match (cur_lexicon.as_mut(), cur_prover.as_mut()) {
+                            (Some(lp), _) => {
+                                lp.insert(name, value);
+                            }
+                            (None, Some((_, pp))) => {
                                 pp.insert(name, value);
                             }
-                            None => {
+                            (None, None) => {
                                 prefs.insert(name, value);
                             }
                         }
@@ -1170,7 +1252,10 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
                 b"prover" => {
                     cur_prover = Some((attr(&e, b"type").unwrap_or_default(), HashMap::new()));
                 }
-                b"error" if cur_prover.is_none() => {
+                b"lexicon" => {
+                    cur_lexicon = Some(HashMap::new());
+                }
+                b"error" if cur_prover.is_none() && cur_lexicon.is_none() => {
                     // `<error code="E005"/>` or `<error name="E005"/>` — a
                     // top-level warning code to elevate to a hard error.
                     if let Some(code) = attr(&e, b"code").or_else(|| attr(&e, b"name")) {
@@ -1190,6 +1275,11 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
                         provers.push(p);
                     }
                 }
+                b"lexicon" => {
+                    if let Some(lp) = cur_lexicon.take() {
+                        lexicon = Some(lp);
+                    }
+                }
                 _ => {}
             },
             Event::Eof => break,
@@ -1201,6 +1291,7 @@ fn parse_config_xml(xml: &str) -> SdkResult<ParsedConfig> {
         prefs,
         kbs,
         provers,
+        lexicon,
         errors,
     })
 }
@@ -2034,6 +2125,83 @@ mod tests {
         let m = KBManager::from_config_xml(SAMPLE).unwrap();
         assert_eq!(m.native_prover, NativeProverConfig::default());
         assert_eq!(m.external_prover, ExternalProverConfig::default());
+    }
+
+    #[test]
+    fn load_lexicons_defaults_true_and_lexicon_defaults_local() {
+        // SAMPLE has no <lexicon> section and no loadLexicons preference.
+        let m = KBManager::from_config_xml(SAMPLE).unwrap();
+        assert!(m.load_lexicons, "loadLexicons defaults to true");
+        assert_eq!(m.lexicon, LexiconConfig::default());
+        assert_eq!(m.lexicon.source, None, "no source → local default");
+    }
+
+    const WITH_LEXICON_GIT: &str = r#"<configuration>
+  <preference name="sumokbname" value="SUMO"/>
+  <preference name="loadLexicons" value="no"/>
+  <kb name="SUMO"><constituent filename="Merge.kif"/></kb>
+  <lexicon>
+    <preference name="source.type" value="git"/>
+    <preference name="source.url" value="https://github.com/ontologyportal/sumo"/>
+    <preference name="source.branch" value="master"/>
+    <preference name="directory" value="WordNetMappings"/>
+    <preference name="noun" value="custom-noun.txt"/>
+  </lexicon>
+</configuration>"#;
+
+    #[test]
+    fn parses_lexicon_git_source_and_load_lexicons_off() {
+        let m = KBManager::from_config_xml(WITH_LEXICON_GIT).unwrap();
+        assert!(!m.load_lexicons, "loadLexicons=no → false");
+        assert_eq!(
+            m.lexicon.source,
+            Some(LexiconSource::Git {
+                url: "https://github.com/ontologyportal/sumo".into(),
+                branch: Some("master".into()),
+            })
+        );
+        assert_eq!(m.lexicon.directory.as_deref(), Some("WordNetMappings"));
+        assert_eq!(m.lexicon.noun.as_deref(), Some("custom-noun.txt"));
+        // Fields not set in the section keep their defaults.
+        assert_eq!(m.lexicon.verb, None);
+    }
+
+    const WITH_LEXICON_LOCAL: &str = r#"<configuration>
+  <preference name="sumokbname" value="SUMO"/>
+  <kb name="SUMO"><constituent filename="Merge.kif"/></kb>
+  <lexicon>
+    <preference name="source.type" value="local"/>
+    <preference name="source.path" value="/opt/sumo/WordNetMappings"/>
+  </lexicon>
+</configuration>"#;
+
+    #[test]
+    fn parses_lexicon_local_source() {
+        let m = KBManager::from_config_xml(WITH_LEXICON_LOCAL).unwrap();
+        assert_eq!(
+            m.lexicon.source,
+            Some(LexiconSource::Local {
+                path: PathBuf::from("/opt/sumo/WordNetMappings")
+            })
+        );
+    }
+
+    #[test]
+    fn lexicon_and_load_lexicons_round_trip() {
+        let mut m = KBManager::from_config_xml(SAMPLE).unwrap();
+        m.load_lexicons = false;
+        m.lexicon = LexiconConfig {
+            source: Some(LexiconSource::Http {
+                url: "https://raw.githubusercontent.com/ontologyportal/sumo/master".into(),
+            }),
+            directory: Some("WordNetMappings".into()),
+            adj: Some("custom-adj.txt".into()),
+            ..Default::default()
+        };
+        let xml = m.to_config_xml();
+        let round = KBManager::from_config_xml(&xml).unwrap();
+        assert_eq!(round.load_lexicons, m.load_lexicons);
+        assert_eq!(round.lexicon, m.lexicon);
     }
 
     #[test]

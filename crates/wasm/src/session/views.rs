@@ -3,7 +3,7 @@
 // Query projections: search / man pages / taxonomy / stats / NL rendering /
 // pattern lookup -- the wasm face of the SDK's `session/views.rs` ops.
 
-use sigmakee_rs_sdk::{man_kind_from_str, SearchOpts};
+use sigmakee_rs_sdk::{man_kind_from_str, SearchOpts, TaxConstraint};
 use wasm_bindgen::prelude::*;
 
 use crate::types::to_js;
@@ -28,7 +28,17 @@ impl Session {
     /// Full-text / symbol search over the KB. `kind` filters by
     /// `"class"|"relation"|"function"|"predicate"|"instance"|"individual"`,
     /// `language` by tag (e.g. `"EnglishLanguage"`), `limit` caps results.
-    /// Returns `{ symbol, kinds, source, language, text }[]`.
+    /// With a lexicon loaded ([`loadWordNet`](Session::load_wordnet)),
+    /// results include WordNet synonym hits (`source: "wn"`); `wordnetOnly:
+    /// true` returns only those. `taxonomy` ANDs a list of taxonomic
+    /// constraints (all satisfied to keep a hit), each one of
+    /// `{subclassOf}`/`{instanceOf}`/`{rangeOf}`/`{rangeSubclassOf}` keyed to
+    /// a class name, e.g. `[{subclassOf: "Animal"}]` -- `undefined`/`null`/
+    /// `[]` means unconstrained. `subclassOf`/`instanceOf` are also
+    /// expressible inline in `query` itself (`-subclass->Class` /
+    /// `-instance->Class`); a non-empty `taxonomy` here wins over that
+    /// inline form rather than combining with it. Returns `{ symbol, kinds,
+    /// source, language, text, sense, rank }[]`.
     #[wasm_bindgen]
     pub fn search(
         &self,
@@ -36,13 +46,23 @@ impl Session {
         kind: Option<String>,
         language: Option<String>,
         limit: Option<u32>,
+        wordnet_only: Option<bool>,
+        taxonomy: JsValue,
     ) -> Result<JsValue, JsValue> {
+        let taxonomy: Vec<TaxConstraint> = if taxonomy.is_undefined() || taxonomy.is_null() {
+            Vec::new()
+        } else {
+            serde_wasm_bindgen::from_value(taxonomy)
+                .map_err(|e| JsValue::from_str(&format!("invalid taxonomy: {e}")))?
+        };
         let session_guard = self.session.read().expect("kb lock not poisoned");
         let opts = SearchOpts {
             kind: kind.as_deref().and_then(man_kind_from_str),
             language: language.as_deref(),
             limit: limit.map(|n| n as usize),
-            taxonomy: Vec::new(),
+            taxonomy,
+            lexicon: None, // overridden by `search_view` from the session's own installed lexicon
+            wordnet_only: wordnet_only.unwrap_or(false),
         };
         to_js(&session_guard.search_view(query, &opts))
     }

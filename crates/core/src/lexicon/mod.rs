@@ -67,8 +67,8 @@ impl Pos {
 }
 
 /// How a synset is anchored to its SUMO term, denoted as a single character
-///  appended to the `&%Term<kind>` annotation.  `Equivalent` (`=`) means the 
-///  term *is* the concept; `Subsuming` (`+`) means the term is the nearest 
+///  appended to the `&%Term<kind>` annotation.  `Equivalent` (`=`) means the
+///  term *is* the concept; `Subsuming` (`+`) means the term is the nearest
 ///  SUMO ancestor; `Instance` (`@`) anchors the synset to an individual.  
 ///  The rare negated forms (`:`, `[`, `]`) and anything unrecognized land
 ///  in `Other`.

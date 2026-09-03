@@ -48,6 +48,7 @@ where
         language: lang.as_deref(),
         limit: if limit == 0 { None } else { Some(limit) },
         taxonomy: Vec::new(),
+        ..SearchOpts::default()
     };
 
     let Ok(hits) = session.search(&query, &opts) else {
@@ -83,6 +84,14 @@ where
             SearchSource::TermFormat => "term  ",
             SearchSource::Documentation => "doc   ",
             SearchSource::Format => "format",
+            SearchSource::WordNet => "wn    ",
+        };
+
+        // WordNet hits carry a sense tag (`dog#n#1+`) instead of a language;
+        let bracket = if hit.sense.is_empty() {
+            &hit.language
+        } else {
+            &hit.sense
         };
 
         // Truncate long snippets and inline the language tag for
@@ -99,7 +108,7 @@ where
             hit.symbol,
             kinds_str,
             src_label,
-            hit.language,
+            bracket,
             snippet,
             sym_w = max_sym,
             kind_w = max_kind,

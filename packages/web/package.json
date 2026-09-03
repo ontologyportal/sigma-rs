@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "mirror": "node scripts/mirror.mjs",
-    "predev": "npm run mirror",
+    "predev": "npm run mirror && vite build",
     "dev": "npm-run-all -p dev:http dev:proxy",
     "dev:http": "wrangler pages dev --kv=SESSIONS --port 8443 -- vite",
     "dev:proxy": "local-ssl-proxy --source 8788 --target 8443",

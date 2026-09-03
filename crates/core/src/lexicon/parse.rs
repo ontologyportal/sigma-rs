@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use super::{WordNet, Pos, SynsetId, Synset, SumoAnchor, MappingKind};
+use super::{MappingKind, Pos, SumoAnchor, Synset, SynsetId, WordNet};
 
 impl WordNet {
-    /// Parse `(data text, pos)` pairs -- the contents of the 
-    /// `WordNetMappings30-*.txt` files -- plus the optional `index.sense` 
+    /// Parse `(data text, pos)` pairs -- the contents of the
+    /// `WordNetMappings30-*.txt` files -- plus the optional `index.sense`
     /// and exception-list (`noun.exc`/`verb.exc`, concatenated) contents
     pub fn from_texts<'a>(
         texts: impl IntoIterator<Item = (&'a str, Pos)>,

@@ -21,10 +21,13 @@ pub use sigmakee_rs_core::lexicon::*;
 
 use std::path::Path;
 
+use crate::manager::LexiconConfig;
 use crate::{SdkError, SdkResult};
 
-/// The four required mapping files, in `(file name, pos)` order.
-const MAPPING_FILES: &[(&str, Pos)] = &[
+/// The four required mapping files' compiled-in defaults, in `(file name,
+/// pos)` order -- overridable per file via
+/// [`LexiconConfig::noun`]/`verb`/`adj`/`adv` (see [`mapping_files`]).
+const DEFAULT_MAPPING_FILES: &[(&str, Pos)] = &[
     (env!("WORDNET_NOUN_FILE"), Pos::Noun),
     (env!("WORDNET_VERB_FILE"), Pos::Verb),
     (env!("WORDNET_ADJV_FILE"), Pos::Adj),
@@ -32,17 +35,35 @@ const MAPPING_FILES: &[(&str, Pos)] = &[
 ];
 
 /// The optional companions: sense ordering, then the two irregular
-/// inflection tables (concatenated into one exception list).
+/// inflection tables (concatenated into one exception list). Not
+/// overridable via [`LexiconConfig`] -- only the four required mapping
+/// files are (see [`LexiconConfig`]'s doc comments).
 const INDEX_SENSE: &str = env!("WORDNET_SENSE_IDX");
 const EXC_FILES: &[&str] = &["noun.exc", "verb.exc"];
 
-/// Assemble a [`WordNet`] from any per-file-name text fetcher.  Required
-/// mapping files propagate the fetcher's error; the optional companions are
-/// skipped on failure.  Every loader below is this function plus a fetcher.
-fn load_with(mut fetch: impl FnMut(&str) -> SdkResult<String>) -> SdkResult<WordNet> {
-    let mut texts = Vec::with_capacity(MAPPING_FILES.len());
-    for (name, pos) in MAPPING_FILES {
-        texts.push((fetch(name)?, *pos));
+/// The four required mapping files with `names`'
+/// [`noun`](LexiconConfig::noun)/`verb`/`adj`/`adv` overrides applied,
+/// falling back to [`DEFAULT_MAPPING_FILES`] per file.
+fn mapping_files(names: &LexiconConfig) -> [(&str, Pos); 4] {
+    let over = [&names.noun, &names.verb, &names.adj, &names.adv];
+    std::array::from_fn(|i| {
+        let (default_name, pos) = DEFAULT_MAPPING_FILES[i];
+        (over[i].as_deref().unwrap_or(default_name), pos)
+    })
+}
+
+/// Assemble a [`WordNet`] from any per-file-name text fetcher, with `names`'
+/// per-file overrides applied. Required mapping files propagate the
+/// fetcher's error; the optional companions are skipped on failure. Every
+/// loader below is this function plus a fetcher.
+fn load_with(
+    names: &LexiconConfig,
+    mut fetch: impl FnMut(&str) -> SdkResult<String>,
+) -> SdkResult<WordNet> {
+    let files = mapping_files(names);
+    let mut texts = Vec::with_capacity(files.len());
+    for (name, pos) in files {
+        texts.push((fetch(name)?, pos));
     }
     let index_sense = fetch(INDEX_SENSE).ok();
     let mut exc = String::new();
@@ -70,7 +91,13 @@ fn load_with(mut fetch: impl FnMut(&str) -> SdkResult<String>) -> SdkResult<Word
 /// required four) and handed to [`WordNet::from_texts`]; the raw text is
 /// dropped once the index is built.
 pub fn load_dir(dir: &Path) -> SdkResult<WordNet> {
-    load_with(|name| {
+    load_dir_with(dir, &LexiconConfig::default())
+}
+
+/// Like [`load_dir`], but with `names`' file-name overrides applied (see
+/// [`LexiconConfig::noun`]/`verb`/`adj`/`adv`).
+pub fn load_dir_with(dir: &Path, names: &LexiconConfig) -> SdkResult<WordNet> {
+    load_with(names, |name| {
         let path = dir.join(name);
         std::fs::read_to_string(&path).map_err(|e| SdkError::Io { path, source: e })
     })
@@ -82,8 +109,14 @@ pub fn load_dir(dir: &Path) -> SdkResult<WordNet> {
 /// degrades exactly like its absence from a local directory.
 #[cfg(feature = "http")]
 pub fn load_http(base_url: &str) -> SdkResult<WordNet> {
+    load_http_with(base_url, &LexiconConfig::default())
+}
+
+/// Like [`load_http`], but with `names`' file-name overrides applied.
+#[cfg(feature = "http")]
+pub fn load_http_with(base_url: &str, names: &LexiconConfig) -> SdkResult<WordNet> {
     let base = base_url.trim_end_matches('/');
-    load_with(|name| fetch_text(&format!("{base}/{name}")))
+    load_with(names, |name| fetch_text(&format!("{base}/{name}")))
 }
 
 /// One HTTP GET -> body text.  The default ureq body cap is 10 MiB and the
@@ -121,7 +154,20 @@ pub fn load_wsd(dir: &Path) -> SdkResult<WsdIndex> {
 /// None` follows the remote's default branch.
 #[cfg(feature = "git")]
 pub fn load_git(url: &str, branch: Option<&str>, subdir: Option<&str>) -> SdkResult<WordNet> {
-    let subdir = subdir.unwrap_or(option_env!("WORDNET_GIT_SUBDIR").unwrap_or("/")).trim_matches('/');
+    load_git_with(url, branch, subdir, &LexiconConfig::default())
+}
+
+/// Like [`load_git`], but with `names`' file-name overrides applied.
+#[cfg(feature = "git")]
+pub fn load_git_with(
+    url: &str,
+    branch: Option<&str>,
+    subdir: Option<&str>,
+    names: &LexiconConfig,
+) -> SdkResult<WordNet> {
+    let subdir = subdir
+        .unwrap_or(option_env!("WORDNET_GIT_SUBDIR").unwrap_or("/"))
+        .trim_matches('/');
     let (_checkout_guard, dir, provenance) =
         crate::source::fetch_repo_sparse(url, &[subdir.to_string()], branch)?;
     log::debug!(
@@ -129,7 +175,7 @@ pub fn load_git(url: &str, branch: Option<&str>, subdir: Option<&str>) -> SdkRes
         provenance.branch,
         provenance.commit
     );
-    load_dir(&dir.join(subdir))
+    load_dir_with(&dir.join(subdir), names)
 }
 
 #[cfg(test)]

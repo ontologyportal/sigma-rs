@@ -156,14 +156,10 @@ fn ranked_candidates<L: TopLayer>(
     let opts = SearchOpts {
         kind,
         language: None,
-        // One past the display cap, not a big multiplier: just enough for
-        // the caller's own `names.len() > COMPLETION_CANDIDATES`-style check
-        // to detect "more exist" and set `isIncomplete`, since `search`
-        // itself now truncates internally at `limit` (that's the whole
-        // point of passing a small `limit` here) rather than the caller
-        // fetching everything and truncating after the fact.
         limit: Some(COMPLETION_CANDIDATES + 1),
         taxonomy,
+        // NOTE: WordNet matching is not used here
+        ..SearchOpts::default()
     };
     let prefix_lc = prefix.to_ascii_lowercase();
     let mut seen = std::collections::HashSet::new();
