@@ -403,9 +403,27 @@ function filterRefs(refs, filter) {
   return refs.filter((r) => r.kind === filter);
 }
 
+// Formulas from these files are shown first, in this order, then everything
+// else in its existing relative order.
+const FILE_SORT_PRIORITY = ['Merge.kif', 'Mid-level-ontology.kif'];
+
+function fileSortRank(file) {
+  const i = FILE_SORT_PRIORITY.indexOf(file);
+  return i === -1 ? FILE_SORT_PRIORITY.length : i;
+}
+
+/** Stable sort of refs by source-file priority: Merge.kif, then MILO, then
+ *  everything else. */
+function sortRefsByFile(refs) {
+  return refs
+    .map((r, i) => [r, i])
+    .sort(([a, ai], [b, bi]) => fileSortRank(a.file) - fileSortRank(b.file) || ai - bi)
+    .map(([r]) => r);
+}
+
 /** The filtered <ol> of reference rows for man-page subject `name`. */
 function renderRefList(refs, filter, name) {
-  const shown = filterRefs(refs, filter);
+  const shown = sortRefsByFile(filterRefs(refs, filter));
   if (!shown.length)
     return '<span class="hint">no formulas match this filter</span>';
   const rows = shown
