@@ -72,7 +72,7 @@ function renderCfgSummary() {
 // The panel is one shared instance toggled by either tab's cog — keep BOTH
 // buttons' aria-expanded in sync with it (only the one actually clicked would
 // otherwise update, leaving the other stale after a tab switch).
-function toggleProverSettings(force?: boolean) {
+export function toggleProverSettings(force?: boolean) {
   const open = togglePanel('proverSettingsBtn', 'proverSettings', force);
   $('auditSettingsBtn').setAttribute('aria-expanded', String(open));
   return open;

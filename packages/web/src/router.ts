@@ -20,6 +20,7 @@ import { applyDiagRouteParams } from './tabs/diagnostics.ts';
 import { openManPage, runSearch, setBrowseHome, resetBrowseView } from './tabs/browse.ts';
 import { loadSumoCatalog } from './tabs/kb-tab.ts';
 import { ensureProverEditors } from './tabs/prover.ts';
+import { toggleProverSettings } from './prover-config.ts';
 import { ensureHistory } from './tabs/history.ts';
 import { refreshHomeStats } from './tabs/home-stats.ts';
 
@@ -84,6 +85,9 @@ export function showTab(
     btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
   }
   for (const p of document.querySelectorAll<HTMLElement>('.panel')) p.hidden = p.id !== `tab-${name}`;
+  // The prover options panel is shared between the Prover and Audit tabs; it
+  // should stay open across those two but close on any other tab.
+  if (name !== 'prover' && name !== 'audit') toggleProverSettings(false);
   // A bare tab-bar re-entry to Browse (resetBrowse: false, no explicit
   // params) is "come back to what I was looking at," not a fresh navigation
   // — leave the address bar's existing ?sym=/?q= alone instead of
