@@ -464,7 +464,9 @@ fn main_worker() {
 
 /// Running totals of diagnostics seen across every source ingested during
 /// this invocation, kept so the end-of-run `load` report can summarize them
-/// without re-walking `manager.current_sources_owned()`.
+/// without re-walking `manager.current_sources_owned()`. `sources` tallies
+/// individual tracked KIF files, not top-level config/directory entries --
+/// one directory entry can expand into many files.
 #[derive(Default)]
 struct IngestStats {
     sources: usize,
@@ -482,7 +484,7 @@ fn report_load(ok: bool, db: Option<&std::path::Path>, stats: &IngestStats) {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "<in-memory, no --db>".to_string());
     let counts = format!(
-        "{} source{} ingested, {} error{}, {} warning{}",
+        "{} tracked source{}, {} error{}, {} warning{}",
         stats.sources,
         if stats.sources == 1 { "" } else { "s" },
         stats.errors,
@@ -722,8 +724,9 @@ fn ingest_constituents<L: TopLayer>(
     stats: &mut IngestStats,
 ) {
     for src in manager.resolve_sources(git, branch) {
-        stats.sources += 1;
-        for e in session.ingest(src, false) {
+        let (n, errs) = session.ingest_counted(src, false);
+        stats.sources += n;
+        for e in errs {
             match e.severity() {
                 sigmakee_rs_sdk::Severity::Error => {
                     stats.errors += 1;

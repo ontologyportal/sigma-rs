@@ -21,10 +21,18 @@ impl<L: TopLayer> Session<L> {
     /// axioms.  Errors if the format can't be detected or the source fails to
     /// parse.  Works on every backend (ingestion is layer-agnostic).
     pub fn ingest(&mut self, src: Source, abort: bool) -> Vec<SdkError> {
+        self.ingest_counted(src, abort).1
+    }
+
+    /// Same as [`ingest`](Self::ingest), but also returns how many individual
+    /// source files were actually read -- a single [`Source`] (e.g. a
+    /// directory or a git-repo path list) can expand into many.
+    pub fn ingest_counted(&mut self, src: Source, abort: bool) -> (usize, Vec<SdkError>) {
         let sources = match src.read(self.sink().as_ref()).map_err(|e| vec![e]) {
-            Err(e) => return e,
+            Err(e) => return (0, e),
             Ok(sources) => sources,
         };
+        let count = sources.len();
         let mut errs = vec![];
         // Load (reconcile) + promote.  `load` is layer-agnostic; promotion is
         // per-layer (the prover layers take the 1-arg `make_session_axiomatic`,
@@ -33,13 +41,13 @@ impl<L: TopLayer> Session<L> {
             errs.extend(self.ingest_inner(src));
         }
         if abort && errs.iter().any(|e| e.is_err()) {
-            return errs;
+            return (count, errs);
         }
         let Err(e) = self.after_ingest() else {
-            return errs;
+            return (count, errs);
         };
         errs.push(e);
-        errs
+        (count, errs)
     }
 
     /// Rollback all changes to the KB made during this session. What this does
@@ -154,5 +162,36 @@ impl<L: TopLayer> Session<L> {
             return Err(vec![SdkError::NoProblem]);
         }
         Ok(tcs.into_iter().next().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sigmakee_rs_core::TranslationLayer;
+
+    // A directory source expands into multiple files; `ingest_counted`
+    // should report that per-file count, not "1" for the directory itself.
+    #[test]
+    fn ingest_counted_reports_per_file_not_per_source() {
+        use std::fs;
+        let root = std::env::temp_dir().join("sdk-ingest-counted");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("a.kif"), "(subclass A B)").unwrap();
+        fs::write(root.join("b.kif"), "(subclass C D)").unwrap();
+
+        let mut s = Session::<TranslationLayer>::new("ingest-counted-test".into());
+        let (n, errs) = s.ingest_counted(Source::Local(vec![root.clone()]), false);
+        assert_eq!(
+            n, 2,
+            "two files in the directory should count as two sources"
+        );
+        assert!(
+            errs.iter().all(|e| !e.is_err()),
+            "unexpected ingest errors: {errs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
