@@ -270,15 +270,16 @@ export async function openManPage(symbol) {
       .join("");
   const sig = () => {
     const parts = [];
+
     if (p.arity != null)
-      parts.push(`arity ${p.arity < 0 ? "variable" : p.arity}`);
-    for (const d of p.domains)
+      parts.push(`arity ${p.arity < 0 ? 'variable' : p.arity}`);
+    for (const d of p.domains) 
       parts.push(
-        `arg ${d.position}: ${linkifySymbol(d.sort.class)}${d.sort.subclass ? " (class)" : ""}`,
+        `arg ${d.position}: ${linkifySymbol(d.sort.class)}${d.sort.subclass ? ' (class)' : ''}`
       );
-    if (p.range) parts.push(`range: ${linkifySymbol(p.range.class)}`);
+    if (p.range) parts.push(`${p.range.subclass ? 'rangeSubclass' : 'range'}: ${linkifySymbol(p.range.class)}`);
     return parts.length
-      ? parts.join("<br>")
+      ? parts.join('<br>')
       : '<span class="hint">none declared</span>';
   };
   const field = (title, html) =>
