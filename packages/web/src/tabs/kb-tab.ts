@@ -168,7 +168,6 @@ const PRESETS = {
       "MilitaryPersons.kif",
       "MilitaryProcesses.kif",
       "Music.kif",
-      "development/Muscles.kif",
       "naics.kif",
       "People.kif",
       "pictureList.kif",
