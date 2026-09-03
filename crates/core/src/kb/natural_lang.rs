@@ -271,6 +271,59 @@ mod tests {
         assert!(r.rendered.contains("likes"), "got: {}", r.rendered);
     }
 
+    /// `%p{TEXT}` emits `TEXT` in a positive (non-negated) context — used
+    /// for verb agreement suffixes like `meet%p{s}` -> "meets".
+    #[test]
+    fn positive_directive_marker_is_appended_in_positive_context() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage meetsSpatially "%1 meet%p{s} %2")
+               (termFormat EnglishLanguage meetsSpatially "meets")"#,
+        );
+        let f = parse_kif_formula("(meetsSpatially Fido Juno)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido meets juno");
+    }
+
+    /// `%p{TEXT}` on its own (not part of a compound word) also emits `TEXT`
+    /// in a positive context, e.g. an irregular verb substitution.
+    #[test]
+    fn positive_directive_marker_standalone_in_positive_context() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage hasPurpose "%1 %p{has} the purpose %2")
+               (termFormat EnglishLanguage hasPurpose "has purpose")"#,
+        );
+        let f = parse_kif_formula("(hasPurpose Fido Juno)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido has the purpose juno");
+    }
+
+    /// `%p{TEXT}` is `%n{TEXT}`'s paired counterpart: in a negated context it
+    /// is dropped (empty), not emitted — `meet%p{s}` must NOT render "meets"
+    /// under `(not ...)`.
+    #[test]
+    fn positive_directive_marker_dropped_when_negated() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage meetsSpatially "%1 %n{does not }meet%p{s} %2")
+               (termFormat EnglishLanguage meetsSpatially "meets")"#,
+        );
+        let f = parse_kif_formula("(not (meetsSpatially Fido Juno))");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido does not meet juno");
+    }
+
+    /// A bare `%p` (no `{TEXT}` body) is a documented no-op: it contributes
+    /// nothing, regardless of polarity.
+    #[test]
+    fn bare_positive_directive_marker_is_a_no_op() {
+        let kb = kb_with_english_templates(
+            r#"(format EnglishLanguage meetsSpatially "%1 meet%p %2")
+               (termFormat EnglishLanguage meetsSpatially "meets")"#,
+        );
+        let f = parse_kif_formula("(meetsSpatially Fido Juno)");
+        let r = kb.render_formula(&f, "EnglishLanguage");
+        assert_eq!(r.rendered, "fido meet juno");
+    }
+
     #[test]
     fn cross_reference_uses_termformat() {
         // The `instance` template references `attribute` nowhere, but

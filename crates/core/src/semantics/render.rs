@@ -19,6 +19,7 @@
 //! | `&%Symbol`   | Cross-reference: render via `termFormat(Symbol, lang)` with a fallback to the raw name. |
 //! | `%n`         | Negation placeholder: empty in positive context, `" not "` in negative. |
 //! | `%n{TEXT}`   | Custom negation phrase: empty in positive context, `TEXT` in negative. |
+//! | `%p{TEXT}`   | Positive-context counterpart to `%n{TEXT}`: `TEXT` in positive context, empty when negated (e.g. `meet%p{s}` -> `"meets"` positive, `"meet"` negated). |
 //!
 //! Logical connectives have no `format` entry and render structurally
 //! (`and`/`or`/`if…then`/`for every`/`there exists some`/…).  Missing `format`
@@ -314,8 +315,9 @@ impl<'a> RenderCtx<'a> {
         }
     }
 
-    /// Substitute `%1`-`%9`, `&%Symbol`, `%n`, `%n{…}` in `template` against
-    /// `args`.  Unknown markers are left literal so template bugs are visible.
+    /// Substitute `%1`-`%9`, `&%Symbol`, `%n`, `%n{…}`, `%p{…}` in `template`
+    /// against `args`.  Unknown markers are left literal so template bugs are
+    /// visible.
     fn apply_template(&mut self, template: &str, args: &[AstNode], negated: bool) -> String {
         let bytes = template.as_bytes();
         let mut out = String::with_capacity(template.len() + 16);
@@ -379,6 +381,22 @@ impl<'a> RenderCtx<'a> {
                                 out.push_str(&self.col("not", ANSI_NEG));
                                 out.push(' ');
                             }
+                            i += 2;
+                        }
+                        b'p' => {
+                            if i + 2 < bytes.len() && bytes[i + 2] == b'{' {
+                                if let Some(close) = find_matching(&bytes[i + 3..], b'}') {
+                                    let text = &template[i + 3..i + 3 + close];
+                                    // `%p{TEXT}` is `%n{TEXT}`'s positive-context
+                                    // counterpart: kept only when NOT negated.
+                                    if !negated {
+                                        out.push_str(text);
+                                    }
+                                    i += 3 + close + 1;
+                                    continue;
+                                }
+                            }
+                            // Bare `%p` (no braces) is a documented no-op.
                             i += 2;
                         }
                         _ => {
