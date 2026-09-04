@@ -1637,6 +1637,9 @@ details pre {
 .pane-editor-sm {
   height: 56px;
 }
+.pane-editor-tall {
+  height: 320px;
+}
 
 .tq-badge {
   font-size: 11px;

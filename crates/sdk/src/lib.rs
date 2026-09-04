@@ -144,6 +144,7 @@ pub use sigmakee_rs_core::{
 pub use sigmakee_rs_core::{
     format_document, format_forms, tokenize_kif, CommentBlock, DocItem, FileOrigin,
     KifParseOptions, LocalProvenance, MetaNode, OpTok, ParsedDocument, Token, TokenKind,
+    TptpParseOptions,
 };
 
 // Semantic Types
@@ -195,4 +196,4 @@ pub use sigmakee_rs_core::prover::ProverTimings;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::render_graphviz;
 #[cfg(feature = "native-prover")]
-pub use sigmakee_rs_core::{tptp_highlight, Emitter};
+pub use sigmakee_rs_core::{tptp_highlight, ConvertedStmt, Emitter};

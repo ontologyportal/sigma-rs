@@ -218,6 +218,20 @@ impl SourceFile {
         }
     }
 
+    /// Builds an inline TPTP source file from a name and its contents -- the
+    /// TPTP-dialect counterpart to [`Self::inline_kif`], for input routed
+    /// through a TPTP-mode `tell` (see the web UI's proof-language toggle).
+    pub fn inline_tptp(name: &str, contents: String) -> Self {
+        Self {
+            parser: crate::Parser::Tptp { options: None },
+            name: name.to_string(),
+            path: PathBuf::new(),
+            origin: FileOrigin::Inline,
+            contents,
+            prebuilt: None,
+        }
+    }
+
     /// Builds a KIF source file for `file` with empty contents.
     pub fn truncate(file: PathBuf) -> Self {
         Self {

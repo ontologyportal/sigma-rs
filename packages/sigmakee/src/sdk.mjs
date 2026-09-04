@@ -21,6 +21,7 @@ import initWasm, {
   Session as WasmSession,
   Config,
   parseTest as wasmParseTest,
+  parseTptpTest as wasmParseTptpTest,
 } from "./sumo_parser_wasm.js";
 
 export { Config };
@@ -33,6 +34,18 @@ export { Config };
  */
 export function parseTest(name, text) {
   return wasmParseTest(name, text);
+}
+
+/**
+ * Parse a standalone TPTP problem (`.p` / `.tptp`) as a test file (requires
+ * {@link init}) -- the TPTP-dialect counterpart to {@link parseTest}. Same
+ * return shape; `queryKif`/`axiomKif` carry the problem's conjecture/theory
+ * translated to SUO-KIF. `remap` (default `false`) decodes SUMO-mangled
+ * symbol names back to their real SUMO names. Throws with the parse
+ * diagnostic's message on malformed input.
+ */
+export function parseTptpTest(name, text, remap = false) {
+  return wasmParseTptpTest(name, text, remap);
 }
 
 /**
@@ -274,29 +287,36 @@ export class Session {
     return this.#kb.restore(bytes);
   }
 
-  /** Assert one formula into an in-memory session (default "default"). */
-  tell(kif, session) {
-    return this.#kb.tell(kif, session);
+  /**
+   * Assert one formula into an in-memory session (default "default").
+   * @param {string} text
+   * @param {string} [session]
+   * @param {boolean} [tptp] parse `text` as TPTP instead of SUO-KIF.
+   */
+  tell(text, session, tptp) {
+    return this.#kb.tell(text, session, tptp);
   }
 
   /**
-   * Prove `queryKif`.
+   * Prove `query`.
    * - Native backend: returns the result object (`{ status, proved, proof, … }`).
    * - TranslationOnly backend: requires `opts.hook(tptp) => string` and returns
    *   the hook's raw output.
-   * @param {string} queryKif
-   * @param {{ session?: string, hook?: (tptp: string) => string }} [opts]
+   * @param {string} query
+   * @param {{ session?: string, tptp?: boolean, hook?: (tptp: string) => string }} [opts]
    */
-  ask(queryKif, opts = {}) {
+  ask(query, opts = {}) {
     if (this.#backend === Backend.TranslationOnly) {
       if (typeof opts.hook !== "function") {
         throw new Error(
           "ask() on a TranslationOnly session needs opts.hook(tptp)",
         );
       }
-      return opts.hook(this.#kb.toTptpForAsk("", queryKif));
+      return opts.hook(
+        this.#kb.toTptpForAsk("", query, false, null, opts.tptp),
+      );
     }
-    return this.#kb.ask(queryKif, opts.session);
+    return this.#kb.ask(query, opts.session, opts.tptp);
   }
 
   /**

@@ -114,12 +114,14 @@ pub use kb::search::{
     RankComponent, SearchHit, SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT,
 };
 pub use kb::KnowledgeBase;
-pub use parse::dialect::{tptp_highlight, DroppedStmt, EmitResult, Emitter};
+pub use parse::dialect::{tptp_highlight, ConvertedStmt, EmitResult, Emitter};
 pub use parse::doc::{DocItem, MetaNode};
 pub use parse::kif::dis::AstKif;
 pub use parse::kif::{format_document, format_forms};
 pub use parse::kif::{tokenize as tokenize_kif, OpTok, Token, TokenKind};
+pub use parse::tptp::parser::TptpParseOptions;
 pub use parse::tptp::syntax::detect_tptp_lang;
+pub use parse::tptp::test_case::parse_tptp_test_content;
 pub use parse::KifParseOptions;
 pub use parse::{
     parse_document, sentence_fingerprint, try_parse_file, AstNode, CommentBlock, ParsedDocument,

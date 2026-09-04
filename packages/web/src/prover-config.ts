@@ -79,8 +79,51 @@ export function toggleProverSettings(force?: boolean) {
 }
 $('proverSettingsBtn').onclick = () => toggleProverSettings();
 $('auditSettingsBtn').onclick = () => toggleProverSettings();
-$('cfgReset').onclick = () => applyProverConfig(CFG_DEFAULTS);
+$('cfgReset').onclick = () => {
+  applyProverConfig(CFG_DEFAULTS);
+  $('cfgProofLang').value = 'kif';
+  $('cfgProofLang').dispatchEvent(new Event('change'));
+  (($('cfgPlainProof') as HTMLInputElement)).checked = false;
+  $('cfgPlainProof').dispatchEvent(new Event('change'));
+  (($('cfgUseSumo') as HTMLInputElement)).checked = false;
+};
 for (const { id } of CFG_KNOBS) $(id).addEventListener('input', renderCfgSummary);
+
+/** `"kif"` (default) or `"tptp"` -- which rendering of the proof/contradiction
+ *  transcript to show, per the shared `#proverSettings` panel's select. For
+ *  a proof/contradiction *result* this is a pure display choice: every step
+ *  carries both a `kif` and a `tptp` rendering (see `ProofStepView` in the
+ *  sdk), so switching it just re-renders the last result rather than
+ *  re-running the query. On the Ask/Tell tab it ALSO selects the *input*
+ *  dialect: `"tptp"` parses the assertions/query text as TPTP instead of
+ *  SUO-KIF before it's asked (see `prover.ts`'s `prove`/`proveVampire`
+ *  calls) -- so switching it there also live-revalidates the editors and,
+ *  if a proof is showing, re-runs nothing on its own (the user must press
+ *  Prove again with the new input dialect). */
+export function proofLanguage(): 'kif' | 'tptp' {
+  return $('cfgProofLang').value === 'tptp' ? 'tptp' : 'kif';
+}
+
+/** Settings panel's "plain proof" checkbox: render proof/contradiction steps
+ *  as unstyled plain text (no citation footer, paraphrase, syntax
+ *  highlighting, or symbol links) -- just the formula text, one per line, in
+ *  whichever dialect {@link proofLanguage} selects. Orthogonal to the
+ *  dialect choice. */
+export function plainProof(): boolean {
+  return ($('cfgPlainProof') as HTMLInputElement).checked;
+}
+
+/** Ask/Tell's TPTP-mode "Use SUMO" checkbox: off (default) proves the pane's
+ *  TPTP problem standalone, with its own local axioms as the only support and
+ *  no symbol decoding. On, it proves against the whole loaded KB (SInE-selected,
+ *  same as an ordinary KIF Ask/Tell) with SUMO-mangled symbol names (`s__foo`,
+ *  …) decoded back to their real SUMO names first, so a SUMO-generated TPTP
+ *  problem's symbols actually unify with the live KB's. Meaningless outside
+ *  TPTP mode. */
+export function useSumo(): boolean {
+  const el = $('cfgUseSumo') as HTMLInputElement | null;
+  return !!el && el.checked;
+}
 
 // -- Backend-specific settings visibility -------------------------------------
 //

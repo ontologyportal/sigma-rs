@@ -12,16 +12,27 @@ use super::Session;
 
 #[wasm_bindgen]
 impl Session {
-    /// Assert a single KIF formula into the KB under the given session key.
+    /// Assert a single formula into the KB under the given session key.
     ///
-    /// `session` defaults to `"default"` if omitted.
+    /// `session` defaults to `"default"` if omitted. `tptp` (default
+    /// `false`) parses `text` as TPTP instead of SUO-KIF -- the entry point
+    /// for the web UI's proof-language toggle.
     /// Returns `{ ok: bool, errors: string[] }`.
     #[wasm_bindgen]
-    pub fn tell(&mut self, kif_text: &str, session: Option<String>) -> Result<JsValue, JsValue> {
+    pub fn tell(
+        &mut self,
+        text: &str,
+        session: Option<String>,
+        tptp: Option<bool>,
+    ) -> Result<JsValue, JsValue> {
         let mut session_guard = self.session.write().expect("kb lock not poisoned");
         let inner = session_guard.kb_mut();
         let s = session.as_deref().unwrap_or("default");
-        let result = inner.tell(kif_text, s);
+        let result = if tptp.unwrap_or(false) {
+            inner.tell_tptp(text, s)
+        } else {
+            inner.tell(text, s)
+        };
         let obj = js_sys::Object::new();
         js_sys::Reflect::set(&obj, &"ok".into(), &JsValue::from_bool(result.ok))
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
@@ -48,14 +59,30 @@ impl Session {
     /// * `proved` -- `true` iff `status === "Proved"`;
     /// * `given_steps` -- given-clause steps the native loop executed (or `null`);
     /// * `raw_output` -- the engine's human-readable trace;
-    /// * `proof` -- on `Proved`, the SUO-KIF proof as
-    ///   `{ index, rule, premises, kif }[]` (empty otherwise);
+    /// * `proof` -- on `Proved`, the SUO-KIF proof as `{ index, rule,
+    ///   premises, kif, tptp, file, line }[]` (empty otherwise); `tptp` is
+    ///   that same step reconstructed as TPTP (framed `cnf`/`fof`/`tff`/…
+    ///   text, dialect chosen per the whole proof), or an inline `;`
+    ///   comment explaining why the step couldn't be represented;
+    /// * `proof_tptp_prologue` -- whole-proof TPTP material that doesn't
+    ///   belong to any single step (e.g. TFF's type-declaration preamble),
+    ///   to show once ahead of the per-step `tptp` text; empty for untyped
+    ///   dialects or when `proof` is empty;
     /// * `graphviz` -- the same proof rendered as a Graphviz DOT digraph
     ///   (always a syntactically valid graph, even when `proof` is empty).
     ///
+    /// `tptp` (default `false`) parses `query` as TPTP instead of SUO-KIF --
+    /// the entry point for the web UI's proof-language toggle; the reported
+    /// proof steps still carry both `kif` and `tptp` renderings either way.
+    ///
     /// [`Config`]: crate::Config
     #[wasm_bindgen]
-    pub fn ask(&self, query_kif: &str, session: Option<String>) -> Result<JsValue, JsValue> {
+    pub fn ask(
+        &self,
+        query: &str,
+        session: Option<String>,
+        tptp: Option<bool>,
+    ) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");
         // Curated, JS-safe projection of `ProverResult` (see `AskResultView`).
         // The raw result is deliberately NOT serialized: its
@@ -64,7 +91,12 @@ impl Session {
         let opts = self
             .config
             .to_native_opts(session_guard.kb().sine_axiom_count());
-        to_js(&session_guard.ask_view(query_kif, session.as_deref(), opts))
+        let dialect = if tptp.unwrap_or(false) {
+            sigmakee_rs_sdk::Parser::Tptp { options: None }
+        } else {
+            sigmakee_rs_sdk::Parser::Kif { options: None }
+        };
+        to_js(&session_guard.ask_view_dialect(query, session.as_deref(), opts, dialect))
     }
 
     /// Audit the whole KB for logical consistency via the native saturation
@@ -82,10 +114,12 @@ impl Session {
     /// * `given_steps` -- given-clause steps the native loop executed (or `null`);
     /// * `raw_output` -- the engine's human-readable trace;
     /// * `contradictions` -- one entry per distinct contradiction found, each
-    ///   `{ steps: { index, rule, premises, kif, file, line }[], graphviz }`;
-    ///   `file`/`line` are `null` for derived/anonymous steps that don't trace
-    ///   to an input axiom; `graphviz` is that contradiction's derivation
-    ///   rendered as a DOT digraph.
+    ///   `{ steps: { index, rule, premises, kif, tptp, file, line }[],
+    ///   graphviz, proof_tptp_prologue }` (see [`ask`](Session::ask) for
+    ///   `tptp`/`proof_tptp_prologue`); `file`/`line` are `null` for
+    ///   derived/anonymous steps that don't trace to an input axiom;
+    ///   `graphviz` is that contradiction's derivation rendered as a DOT
+    ///   digraph.
     ///
     /// [`Config`]: crate::Config
     #[wasm_bindgen(js_name = auditConsistency)]

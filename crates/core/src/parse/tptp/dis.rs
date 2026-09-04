@@ -12,7 +12,7 @@
 use super::syntax;
 use super::tokenizer::{tokenize, TokenKind};
 use crate::parse::ast::{AstNode, OpKind, Role, Source, Span};
-use crate::parse::dialect::{DroppedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
+use crate::parse::dialect::{ConvertedStmt, Emit, EmitResult, PrettyEmit, TptpLang};
 
 /// ANSI-colourised TPTP text — tokenizes `text` (the real TPTP lexer, not an
 /// ad-hoc regex) and re-emits it with each token's ORIGINAL bytes wrapped in
@@ -138,11 +138,14 @@ impl Emit for TptpEmit {
     }
 
     fn emit_document(&self, doc: &[AstNode]) -> EmitResult {
-        // Resolve `Auto` over the whole document: CNF iff every statement is a
-        // clause, else FOF (the universal untyped fallback).
+        // Resolve `Auto` over the whole document
         let lang = match self.lang {
             TptpLang::Auto => {
-                if doc.iter().all(|s| is_clause(s.formula())) {
+                if doc.iter().any(|s| has_higher_order(s.formula())) {
+                    TptpLang::Thf
+                } else if doc.iter().any(|s| has_arith(s.formula())) {
+                    TptpLang::Tff
+                } else if doc.iter().all(|s| is_clause(s.formula())) {
                     TptpLang::Cnf
                 } else {
                     TptpLang::Fof
@@ -157,15 +160,12 @@ impl Emit for TptpEmit {
         // sound but unsorted; lifting SUMO sorts from instance-guards is a
         // future enhancement.
         if lang.is_typed() {
-            out.text.push_str(&tff_type_preamble(doc));
+            out.preamble.push(tff_type_preamble(doc));
         }
         for (i, stmt) in doc.iter().enumerate() {
             match frame_stmt(stmt, i + 1, lang) {
-                Ok(t) => {
-                    out.text.push_str(&t);
-                    out.text.push('\n');
-                }
-                Err(r) => out.dropped.push(DroppedStmt {
+                Ok(t) => out.converted.push(ConvertedStmt::Converted(t)),
+                Err(r) => out.converted.push(ConvertedStmt::Dropped {
                     name: stmt_name_or(stmt, i + 1).into(),
                     reason: r,
                 }),
@@ -527,6 +527,21 @@ fn is_atom(f: &AstNode) -> bool {
     }
 }
 
+/// Crate private method that checks if a formula has a number with arithmetic
+/// and therefore should be rendered using TFF
+pub(crate) fn has_arith(_f: &AstNode) -> bool {
+    // TODO!
+    false
+}
+
+/// Crate private method that checks if a formula has any higher order
+/// constructs, specifically, if it includes certain key relations
+/// or uses a formula as a term
+pub(crate) fn has_higher_order(_f: &AstNode) -> bool {
+    // TODO!
+    false
+}
+
 /// AST → untyped TPTP formula text (FOF/CNF).  Symbols are TPTP-legal (else
 /// single-quoted) and variables upper-cased / armored.  All token spellings
 /// come from [`syntax`], the layer shared with the typed (`trans`) emitter.
@@ -704,6 +719,8 @@ fn styled(node: &AstNode, indent: usize, _color: bool, typed: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
     use crate::parse::ast::Span;
     use crate::parse::dialect::Emitter;
@@ -736,41 +753,32 @@ mod tests {
 
     #[test]
     fn fof_frames_quantified_formula() {
-        // A KIF-convention open formula (free ?X = implicitly universal) is
-        // explicitly closed on framing: fof formulas must have no free
-        // variables (GDV rejects them).
         let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
-        assert_eq!(
-            r.text.trim_end(),
-            "fof(a1, axiom, (! [X] : (instance(X,'Human') => mortal(X))))."
-        );
         assert!(r.is_complete());
+        assert_matches!(
+            r.converted.last(),
+            Some(ConvertedStmt::Converted(s)) if s == "fof(a1, axiom, (! [X] : (instance(X,'Human') => mortal(X))))."
+        );
     }
 
     #[test]
     fn fof_closure_skips_bound_vars_and_keeps_order() {
-        // Only genuinely free variables are closed over — ?Y is bound by the
-        // inner exists and must not reappear in the outer binder.  Free vars
-        // bind in first-appearance order.
         let f = parse_one("(=> (p ?X ?Z) (exists (?Y) (q ?X ?Y)))");
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Plain, "f7", f));
-        assert_eq!(
-            r.text.trim_end(),
-            "fof(f7, plain, (! [X,Z] : (p(X,Z) => (? [Y] : q(X,Y)))))."
+        assert_matches!(
+            r.converted.last(),
+            Some(ConvertedStmt::Converted(s)) if s == "fof(f7, plain, (! [X,Z] : (p(X,Z) => (? [Y] : q(X,Y)))))."
         );
     }
 
     #[test]
     fn cnf_keeps_free_variables_open() {
-        // cnf clauses are the one TPTP form where free variables are legal
-        // (implicitly universal) — no closure there.
         let clause = parse_one("(or (p ?X) (not (q ?X)))");
         let r = Emitter::Tptp(TptpLang::Cnf).emit_one(&ann(Role::Axiom, "c1", clause));
-        assert!(
-            r.text.contains("p(X) | (~ q(X))") && !r.text.contains("! ["),
-            "{}",
-            r.text
+        assert_matches!(
+            r.converted.last(),
+            Some(ConvertedStmt::Converted(s)) if s == "cnf(c1, axiom, (p(X) | (~ q(X))))."
         );
     }
 
@@ -783,13 +791,18 @@ mod tests {
             ann(Role::Axiom, "c2", quant),
         ];
         let r = Emitter::Tptp(TptpLang::Cnf).emit(&doc);
-        assert!(
-            r.text.starts_with("cnf(c1, axiom,") && r.text.contains("p(X) | (~ q(X))"),
-            "{}",
-            r.text
+        assert_matches!(
+            &r.converted[0],
+            ConvertedStmt::Converted(s) if s.starts_with("cnf(c1, axiom,") && s.contains("p(X) | (~ q(X))"),
+            "unexpected conversion: {:?}",
+            r.converted[0]
         );
-        assert_eq!(r.dropped.len(), 1);
-        assert_eq!(r.dropped[0].name.as_deref(), Some("c2"));
+        assert_matches!(
+            &r.converted[1],
+            ConvertedStmt::Dropped { name, .. } if name.as_deref() == Some("c2"),
+            "expected dropped c2, got: {:?}",
+            r.converted[1]
+        );
     }
 
     #[test]
@@ -797,18 +810,32 @@ mod tests {
         let c1 = ann(Role::Axiom, "c1", parse_one("(p ?X)"));
         let c2 = ann(Role::Axiom, "c2", parse_one("(or (p ?X) (q ?X))"));
         let all_clausal = Emitter::Tptp(TptpLang::Auto).emit(&[c1.clone(), c2.clone()]);
-        assert!(
-            all_clausal.text.contains("cnf(c1") && all_clausal.text.contains("cnf(c2"),
-            "{}",
-            all_clausal.text
+        assert_matches!(
+            &all_clausal.converted[0],
+            ConvertedStmt::Converted(s) if s.contains("cnf(c1"),
+            "expected cnf(c1), got: {:?}",
+            all_clausal.converted[0]
+        );
+        assert_matches!(
+            &all_clausal.converted[1],
+            ConvertedStmt::Converted(s) if s.contains("cnf(c2"),
+            "expected cnf(c2), got: {:?}",
+            all_clausal.converted[1]
         );
 
         let quant = ann(Role::Conjecture, "g", parse_one("(forall (?X) (p ?X))"));
         let mixed = Emitter::Tptp(TptpLang::Auto).emit(&[c1, quant]);
-        assert!(
-            mixed.text.contains("fof(c1") && mixed.text.contains("fof(g, conjecture"),
-            "{}",
-            mixed.text
+        assert_matches!(
+            &mixed.converted[0],
+            ConvertedStmt::Converted(s) if s.contains("fof(c1"),
+            "expected fof(c1), got: {:?}",
+            mixed.converted[0]
+        );
+        assert_matches!(
+            &mixed.converted[1],
+            ConvertedStmt::Converted(s) if s.contains("fof(g, conjecture"),
+            "expected fof(g, conjecture), got: {:?}",
+            mixed.converted[1]
         );
         assert!(mixed.is_complete());
     }
@@ -825,8 +852,6 @@ mod tests {
 
     #[test]
     fn source_becomes_fourth_argument() {
-        // An input axiom cites `file('...')`; a derived step cites an inference
-        // with status `thm`; a `negate_conjecture` step uses status `cth`.
         let input = ann_src(
             Role::Axiom,
             "f1",
@@ -855,21 +880,28 @@ mod tests {
             parse_one("(not (q a))"),
         );
         let r = Emitter::Tptp(TptpLang::Fof).emit(&[input, derived, negc]);
-        let lines: Vec<&str> = r.text.lines().collect();
-        assert_eq!(lines[0], "fof(f1, axiom, (! [X] : p(X)), file('p.kif')).");
-        assert_eq!(
-            lines[1],
-            "fof(f3, plain, q(a), inference(resolution, [status(thm)], [f1,f2]))."
+        assert_matches!(
+            &r.converted[0],
+            ConvertedStmt::Converted(s) if s == "fof(f1, axiom, (! [X] : p(X)), file('p.kif')).",
+            "got: {:?}",
+            r.converted[0]
         );
-        assert_eq!(lines[2],
-            "fof(f2, negated_conjecture, (~ q(a)), inference(negate_conjecture, [status(cth)], [])).");
+        assert_matches!(
+            &r.converted[1],
+            ConvertedStmt::Converted(s) if s == "fof(f3, plain, q(a), inference(resolution, [status(thm)], [f1,f2])).",
+            "got: {:?}",
+            r.converted[1]
+        );
+        assert_matches!(
+            &r.converted[2],
+            ConvertedStmt::Converted(s) if s == "fof(f2, negated_conjecture, (~ q(a)), inference(negate_conjecture, [status(cth)], [])).",
+            "got: {:?}",
+            r.converted[2]
+        );
     }
 
     #[test]
     fn tff_emits_typed_binders_and_type_preamble() {
-        // A document emits a `$i`-monomorphic type preamble (one decl per
-        // symbol, sorted by emitted name) then the framed statements; binders
-        // carry an explicit `: $i` sort.
         let ax = ann(
             Role::Axiom,
             "a1",
@@ -877,48 +909,76 @@ mod tests {
         );
         let hy = ann(Role::Hypothesis, "a2", parse_one("(human socrates)"));
         let r = Emitter::Tptp(TptpLang::Tff).emit(&[ax, hy]);
-        assert!(r.is_complete(), "dropped: {:?}", r.dropped);
+        assert!(r.is_complete());
         // Type preamble: human/1 and mortal/1 are predicates; socrates is a const.
         assert!(
-            r.text.contains("tff(ty0, type, human: $i > $o)."),
-            "{}",
-            r.text
+            r.preamble
+                .iter()
+                .any(|p| p.contains("tff(ty0, type, human: $i > $o).")),
+            "preamble: {:?}",
+            r.preamble
         );
-        assert!(r.text.contains("type, mortal: $i > $o)."), "{}", r.text);
-        assert!(r.text.contains("type, socrates: $i)."), "{}", r.text);
+        assert!(
+            r.preamble
+                .iter()
+                .any(|p| p.contains("type, mortal: $i > $o).")),
+            "preamble: {:?}",
+            r.preamble
+        );
+        assert!(
+            r.preamble
+                .iter()
+                .any(|p| p.contains("type, socrates: $i).")),
+            "preamble: {:?}",
+            r.preamble
+        );
         // Framed statements with typed binder.
         assert!(
-            r.text
-                .contains("tff(a1, axiom, (! [X: $i] : (human(X) => mortal(X))))."),
-            "{}",
-            r.text
+            r.converted.iter().any(|c| {
+                matches!(c, ConvertedStmt::Converted(s) if s.contains("tff(a1, axiom, (! [X: $i] : (human(X) => mortal(X))))."))
+            }),
+            "converted: {:?}",
+            r.converted
         );
         assert!(
-            r.text.contains("tff(a2, hypothesis, human(socrates))."),
-            "{}",
-            r.text
+            r.converted.iter().any(|c| {
+                matches!(c, ConvertedStmt::Converted(s) if s.contains("tff(a2, hypothesis, human(socrates))."))
+            }),
+            "converted: {:?}",
+            r.converted
         );
     }
 
     #[test]
     fn tff_function_and_equality_typing() {
-        // `f` is a function ($i>$i), `c` a constant, equality is built-in (no decl).
         let ax = ann(Role::Axiom, "a1", parse_one("(equal (f c) c)"));
         let r = Emitter::Tptp(TptpLang::Tff).emit(&[ax]);
-        assert!(r.text.contains("type, f: $i > $i)."), "{}", r.text);
-        assert!(r.text.contains("type, c: $i)."), "{}", r.text);
         assert!(
-            !r.text.contains("'='"),
-            "equality must not be declared: {}",
-            r.text
+            r.preamble.iter().any(|p| p.contains("type, f: $i > $i).")),
+            "preamble: {:?}",
+            r.preamble
         );
-        assert!(r.text.contains("tff(a1, axiom, (f(c) = c))."), "{}", r.text);
+        assert!(
+            r.preamble.iter().any(|p| p.contains("type, c: $i).")),
+            "preamble: {:?}",
+            r.preamble
+        );
+        assert!(
+            !r.preamble.iter().any(|p| p.contains("'='")),
+            "equality must not be declared: {:?}",
+            r.preamble
+        );
+        assert!(
+            r.converted.iter().any(|c| {
+                matches!(c, ConvertedStmt::Converted(s) if s.contains("tff(a1, axiom, (f(c) = c))."))
+            }),
+            "converted: {:?}",
+            r.converted
+        );
     }
 
     #[test]
     fn short_formula_pretty_matches_flat() {
-        // Under LINE_WIDTH, `emit_pretty` and the flat `Emit` renderer agree —
-        // no gratuitous wrapping of short forms.
         let f = parse_one("(=> (instance ?X Human) (mortal ?X))");
         let pretty = TptpEmit {
             lang: TptpLang::Fof,
@@ -951,9 +1011,6 @@ mod tests {
 
     #[test]
     fn long_formula_in_a_framed_statement_indents_under_the_frame() {
-        // `frame_stmt` (driven by `Emit::emit_statement`/`emit_document`) picks
-        // up the wrap automatically — proof/document output never needs a
-        // separate pretty-only call site.
         let f = parse_one(
             "(and (instanceOfSomeVeryLongPredicateName ?X ?Y ?Z) \
                   (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \
@@ -961,8 +1018,12 @@ mod tests {
         );
         let r = Emitter::Tptp(TptpLang::Fof).emit_one(&ann(Role::Axiom, "a1", f));
         assert!(r.is_complete());
-        assert!(r.text.starts_with("fof(a1, axiom,\n  ("), "{}", r.text);
-        assert!(r.text.trim_end().ends_with("))."), "{}", r.text);
+        assert_matches!(
+            &r.converted[0],
+            ConvertedStmt::Converted(s) if s.starts_with("fof(a1, axiom,\n  (") && s.trim_end().ends_with("))."),
+            "got: {:?}",
+            r.converted[0]
+        );
     }
 
     #[test]
@@ -981,10 +1042,6 @@ mod tests {
 
     #[test]
     fn pretty_output_is_still_valid_tptp_when_reparsed_flat() {
-        // Multi-line output isn't just for humans — collapse whitespace and
-        // it must still be byte-identical to the flat renderer's formula
-        // (same tokens, same order), so anything parsing TPTP downstream
-        // (a prover, a round-trip test) sees the same formula either way.
         let f = parse_one(
             "(and (instanceOfSomeVeryLongPredicateName ?X ?Y ?Z) \
                   (anotherVeryLongPredicateNameHereToo ?A ?B ?C) \

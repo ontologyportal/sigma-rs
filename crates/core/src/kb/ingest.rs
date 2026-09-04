@@ -66,6 +66,13 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
         self.stage(SourceFile::inline_kif("", kif.to_string()), session)
     }
 
+    /// Assert an inline TPTP string into a named session -- the TPTP-dialect
+    /// counterpart to [`Self::tell`], for input routed through a TPTP-mode
+    /// `tell` (see the web UI's proof-language toggle).
+    pub fn tell_tptp(&mut self, tptp: &str, session: &str) -> IngestResult {
+        self.stage(SourceFile::inline_tptp("", tptp.to_string()), session)
+    }
+
     /// Test-only shorthand staging `SourceFile::kif(file, text)` into `session`.
     #[cfg(test)]
     pub(crate) fn reload_kif(
@@ -586,6 +593,29 @@ mod tests {
             "after removing the equality, B should be Single(Dog), got {:?}",
             kb.layer.semantic.infer_class_scoped(b, Scope::Base)
         );
+    }
+
+    #[test]
+    fn tell_tptp_asserts_an_inline_tptp_formula() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell_tptp("fof(a1, axiom, subclass('Dog', 'Mammal')).", "s");
+        assert!(r.ok, "tell_tptp failed: {:?}", r.diagnostics);
+
+        let dog = kb.symbol_id("Dog").expect("Dog interned");
+        let mammal = kb.symbol_id("Mammal").expect("Mammal interned");
+        let subclass = kb.symbol_id("subclass").expect("subclass interned");
+        assert!(
+            dog != mammal && dog != subclass,
+            "distinct symbols resolved"
+        );
+    }
+
+    #[test]
+    fn tell_tptp_reports_a_parse_error_for_malformed_input() {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.tell_tptp("fof(a1, axiom, subclass('Dog', 'Mammal'", "s"); // missing `)).`
+        assert!(!r.ok, "malformed TPTP should fail to ingest");
+        assert!(!r.diagnostics.is_empty());
     }
 
     #[test]

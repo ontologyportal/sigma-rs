@@ -378,13 +378,8 @@ $("kbFile").onchange = (e) =>
     await stream.write(text);
     await stream.close();
     $("kbLog").style.color = "";
-    if (isTestFile(file.name)) {
-      const r = await addTest(file.name, text, "file");
-      $("kbLog").textContent = r.added
-        ? `Imported test ${file.name}.`
-        : r.notices.join(" | ");
-      return;
-    }
+    // Test files (.kif.tq / .p / .tptp) import through the Ask/Tell tab's
+    // "Load test" instead -- this uploader is KIF-constituent-only.
     const r = await ingestConstituent(file.name, text, "file");
     renderConstituents();
     $("kbLog").textContent = r.added

@@ -6,6 +6,7 @@ pub(crate) mod dis;
 pub mod error;
 pub mod parser;
 pub mod syntax;
+pub mod test_case;
 pub(crate) mod tokenizer;
 
 pub use parser::parse;

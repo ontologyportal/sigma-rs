@@ -16,7 +16,10 @@
 use sigmakee_rs_core::{Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer};
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
-use sigmakee_rs_core::{AstKif as _, AxiomSourceIndex, KifProofStep, ProverStatus};
+use sigmakee_rs_core::{
+    AstKif as _, AxiomSourceIndex, ConvertedStmt, EmitResult, Emitter, KifProofStep, ProverStatus,
+    TptpLang,
+};
 
 use super::Session;
 
@@ -507,6 +510,8 @@ pub struct ProofStepView {
     pub rule: String,
     pub premises: Vec<usize>,
     pub kif: String,
+    /// Optional TPTP translation of the proof step
+    pub tptp: Option<String>,
     pub file: Option<String>,
     pub line: Option<u32>,
 }
@@ -515,18 +520,34 @@ pub struct ProofStepView {
 impl ProofStepView {
     /// Project a proof/contradiction transcript, citing each step's source
     /// axiom (via `src_idx`) where it has one.
-    pub fn project(steps: &[KifProofStep], src_idx: &AxiomSourceIndex) -> Vec<Self> {
+    pub fn project(
+        steps: &[KifProofStep],
+        src_idx: &AxiomSourceIndex,
+        tptp: EmitResult,
+    ) -> Vec<Self> {
         steps
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(i, s)| {
                 let loc = s.source_sid.and_then(|sid| src_idx.lookup_by_sid(sid));
+                let kif = s.formula.format_plain(0);
                 Self {
                     index: s.index,
                     rule: s.rule.clone(),
                     premises: s.premises.clone(),
-                    kif: s.formula.format_plain(0),
                     file: loc.map(|a| a.file.clone()),
                     line: loc.map(|a| a.line),
+                    tptp: match tptp.converted.get(i) {
+                        Some(ConvertedStmt::Converted(s)) => Some(s.to_owned()),
+                        Some(ConvertedStmt::Dropped { reason, .. }) => {
+                            Some(format!("; could not convert to TPTP: {}: {}", reason, kif))
+                        }
+                        None => Some(format!(
+                            "; could not convert to TPTP: unknown reason: {}",
+                            kif
+                        )),
+                    },
+                    kif,
                 }
             })
             .collect()
@@ -554,6 +575,12 @@ pub struct AskResultView {
     /// Symbols the prose showed by bare name because they have no
     /// `format`/`termFormat` in the rendering language.  Sorted, de-duplicated.
     pub prose_missing: Vec<String>,
+    /// Whole-document TPTP material that doesn't map to a single proof step
+    /// -- e.g. TFF's `$i`-monomorphic type-declaration preamble -- to render
+    /// once, ahead of `proof`'s per-step `tptp` text, when the proof
+    /// language is TPTP. Empty for untyped dialects or when there is no
+    /// proof.
+    pub proof_tptp_prologue: String,
 }
 
 #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -577,11 +604,18 @@ impl AskResultView {
     ) -> Self {
         let status_str = format!("{:?}", status);
         let graphviz = sigmakee_rs_core::render_graphviz(proof_kif, "ask", &status_str);
+        let tptp = Emitter::Tptp(TptpLang::Auto).emit(
+            &proof_kif
+                .iter()
+                .map(|s| s.formula.clone())
+                .collect::<Vec<_>>(),
+        );
+        let proof_tptp_prologue = tptp.preamble.join("\n");
         let (proof, prose, prose_missing) = if proof_kif.is_empty() {
             (Vec::new(), String::new(), Vec::new())
         } else {
             let src_idx = kb.build_axiom_source_index();
-            let proof = ProofStepView::project(proof_kif, &src_idx);
+            let proof = ProofStepView::project(proof_kif, &src_idx, tptp);
             let goal_doc = sigmakee_rs_core::parse_document(
                 "__prose_goal__",
                 query_kif.to_string(),
@@ -601,6 +635,7 @@ impl AskResultView {
             graphviz,
             prose,
             prose_missing,
+            proof_tptp_prologue,
         }
     }
 }
@@ -614,6 +649,8 @@ pub struct ContradictionView {
     pub graphviz: String,
     pub prose: String,
     pub prose_missing: Vec<String>,
+    /// See [`AskResultView::proof_tptp_prologue`].
+    pub proof_tptp_prologue: String,
 }
 
 /// Curated consistency-audit result.
@@ -655,6 +692,10 @@ impl AuditResultView {
                 // derivation.
                 let prose_report =
                     kb.render_proof_prose_with(None, steps, "EnglishLanguage", src_idx);
+                let tptp = Emitter::Tptp(TptpLang::Auto)
+                    .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
+                let proof_tptp_prologue = tptp.preamble.join("\n");
+
                 ContradictionView {
                     graphviz: sigmakee_rs_core::render_graphviz(
                         steps,
@@ -663,7 +704,8 @@ impl AuditResultView {
                     ),
                     prose: prose_report.rendered,
                     prose_missing: prose_report.missing,
-                    steps: ProofStepView::project(steps, src_idx),
+                    steps: ProofStepView::project(steps, src_idx, tptp),
+                    proof_tptp_prologue,
                 }
             })
             .collect();
@@ -918,15 +960,38 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
         session: Option<&str>,
         opts: sigmakee_rs_core::NativeOpts,
     ) -> AskResultView {
+        self.ask_view_dialect(
+            query_kif,
+            session,
+            opts,
+            sigmakee_rs_core::Parser::Kif { options: None },
+        )
+    }
+
+    /// Same as [`ask_view`](Self::ask_view) but parses `query` in `dialect`
+    /// instead of always assuming SUO-KIF -- the entry point for a TPTP-mode
+    /// query (see the web UI's proof-language toggle). The prose narration
+    /// still restates the goal from a SUO-KIF reparse of `query` regardless
+    /// of `dialect`; a TPTP-framed query just drops that opener line (same
+    /// best-effort fallback as any other prose parse failure).
+    pub fn ask_view_dialect(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        opts: sigmakee_rs_core::NativeOpts,
+        dialect: sigmakee_rs_core::Parser,
+    ) -> AskResultView {
         let sine = opts.selection;
-        let result = self.kb.ask_query(query_kif, session, sine, opts);
+        let result = self
+            .kb
+            .ask_query_dialect(query, session, sine, opts, dialect);
         AskResultView::project(
             &self.kb,
             result.status,
             result.given_steps,
             result.raw_output,
             &result.proof_kif,
-            query_kif,
+            query,
         )
     }
 
@@ -1123,6 +1188,49 @@ mod tests {
         // A symbol with no WordNet anchor gets an empty list, not an error.
         let unrelated = s.manpage_detail("SetOrClass").expect("core SUMO symbol");
         assert!(unrelated.wordnet.is_empty());
+    }
+
+    #[test]
+    fn ask_result_view_reconstructs_proof_as_tptp() {
+        let s = session_with("(subclass Dog Mammal)\n");
+        let raw = "\
+% SZS status Theorem for input
+% SZS output start Proof for input
+fof(f1,axiom,(
+  s__subclass(s__Dog,s__Mammal)),
+  file('/work/input.p',kb_1)).
+fof(f2,axiom,(
+  $false),
+  inference(resolution,[],[f1])).
+% SZS output end Proof for input
+";
+        let view = s.vampire_ask_view(raw, "(subclass Dog Mammal)");
+        assert_eq!(view.proof.len(), 2);
+        // Both steps are ground clausal literals, so `Auto` reconstructs
+        // them as `cnf(...)`, not `fof(...)` -- either is a correctly
+        // reconstructed framed statement.
+        assert!(
+            view.proof.iter().all(|s| {
+                s.tptp
+                    .as_deref()
+                    .is_some_and(|t| t.contains("cnf(") || t.contains("fof("))
+            }),
+            "expected each step's tptp field to carry a reconstructed TPTP statement, got: {:?}",
+            view.proof.iter().map(|s| &s.tptp).collect::<Vec<_>>()
+        );
+        assert!(
+            view.proof_tptp_prologue.is_empty(),
+            "untyped FOF has no preamble"
+        );
+    }
+
+    #[test]
+    fn ask_result_view_proof_tptp_empty_without_a_proof() {
+        let s = session_with("(subclass Dog Mammal)\n");
+        // No SZS proof section -- Unknown/no proof.
+        let view = s.vampire_ask_view("% SZS status Unknown for input\n", "(subclass Dog Mammal)");
+        assert!(view.proof.is_empty());
+        assert!(view.proof_tptp_prologue.is_empty());
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::parse::ast::{AstNode, OpKind, Role};
 use crate::parse::doc::{CommentBlock, DocItem, MetaNode};
 use crate::parse::kif;
 use crate::parse::kif::error::KifParseError;
-use crate::parse::{ParseError, Parser, Span, TptpParseOptions};
+use crate::parse::Span;
 use crate::{DiagResult, ToDiagnostic};
 
 /// Directive head keywords that classify a top-level `(kw …)` list as a
@@ -34,8 +34,6 @@ const DIRECTIVES: &[&str] = &["note", "time", "answer", "file"];
 pub fn is_tq_directive(name: &str) -> bool {
     DIRECTIVES.contains(&name) || matches!(name, "query" | "ask")
 }
-
-type ParsedTestCase = (TestCase, Vec<AstNode>, Vec<(Span, Box<dyn ParseError>)>);
 
 /// A parsed `.kif.tq` test: its logical content (as role-tagged statements) plus
 /// the harness directives.
@@ -195,35 +193,6 @@ impl TestCase {
         let accounted = query_stmts + tc.axioms.len() + leftover.len();
         tc.unaccounted_inputs = tc.input_formulas.saturating_sub(accounted);
         (tc, leftover)
-    }
-
-    /// Build a test case from a TPTP problem `text` (FOF / CNF / TFF).  Parses
-    /// with conjectures kept, then partitions by role exactly like
-    /// [`from_doc_items`](Self::from_doc_items): `conjecture` /
-    /// `negated_conjecture` → query, `hypothesis` → support, and the background
-    /// theory (`axiom` / `plain` / …) is returned as the background-axiom
-    /// `Vec<AstNode>` for the caller to ingest as ordinary, SInE-selectable KB
-    /// axioms.  (TPTP carries no harness directives, so the leftover is all
-    /// statements — flattened to bare `AstNode`s here for the caller's
-    /// convenience.)  `include(...)` directives must already be spliced by the
-    /// caller (filesystem work the core deliberately leaves to the SDK).
-    pub fn from_tptp(text: &str, name: &str) -> ParsedTestCase {
-        let probe = Parser::Tptp {
-            options: Some(TptpParseOptions {
-                keep_conjectures: true,
-                ..TptpParseOptions::none()
-            }),
-        };
-        let (items, errors) = probe.parse(text, name);
-        let (tc, leftover) = TestCase::from_doc_items(&items, name);
-        let background = leftover
-            .into_iter()
-            .filter_map(|d| match d {
-                DocItem::Stmt(n) => Some(n),
-                DocItem::Meta(_) => None,
-            })
-            .collect();
-        (tc, background, errors)
     }
 
     /// Fold one harness directive into the test case.
@@ -413,6 +382,7 @@ pub fn parse_test_content(content: &str, file_name: &str) -> DiagResult<TestCase
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parse::Parser;
 
     #[test]
     fn classifies_axioms_query_and_metadata() {
@@ -482,64 +452,6 @@ mod tests {
         let q = tc.query.expect("query");
         assert!(matches!(q.role(), Some(Role::Conjecture)));
         assert_eq!(q.formula().to_string(), "(not (not (mammal rex)))");
-    }
-
-    // ALL `negated_conjecture` statements are kept (GRA001-1's shape: a CNF
-    // problem whose clauses are all goal-role).  The query is
-    // `(not (and NC₁ … NCₖ))`, so the prover's refutation negation restores
-    // every NC clause; keeping only the last one silently dropped the rest
-    // and produced false Satisfiable verdicts.
-    #[test]
-    fn multiple_negated_conjectures_all_kept() {
-        let problem = "\
-            cnf(c1, negated_conjecture, a | b).\n\
-            cnf(c2, negated_conjecture, ~a).\n\
-            cnf(c3, negated_conjecture, ~b).\n";
-        let (tc, background, errors) = TestCase::from_tptp(problem, "multi");
-        assert!(errors.is_empty(), "{errors:?}");
-        assert!(background.is_empty());
-        assert!(
-            !tc.has_fof_conjecture,
-            "pure-NC problems report Unsat/Sat SZS"
-        );
-        assert_eq!(tc.input_formulas, 3);
-        assert_eq!(tc.unaccounted_inputs, 0, "every parsed formula accounted");
-        let q = tc.query.expect("query").formula().to_string();
-        assert_eq!(q, "(not (and (or a b) (not a) (not b)))", "query: {q}");
-    }
-
-    // Multiple positive conjectures conjoin (TPTP: prove them together).
-    #[test]
-    fn multiple_conjectures_conjoin() {
-        let problem = "\
-            fof(g1, conjecture, p(a)).\n\
-            fof(g2, conjecture, q(a)).\n";
-        let (tc, _, errors) = TestCase::from_tptp(problem, "multi2");
-        assert!(errors.is_empty(), "{errors:?}");
-        assert!(tc.has_fof_conjecture);
-        assert_eq!(tc.unaccounted_inputs, 0);
-        let q = tc.query.expect("query").formula().to_string();
-        assert_eq!(q, "(and (p a) (q a))", "query: {q}");
-    }
-
-    // End-to-end through the real TPTP parser: `axiom` → background leftover,
-    // `hypothesis` → support, `conjecture` → query.
-    #[test]
-    fn from_tptp_partitions_by_role() {
-        let problem = "\
-            fof(a1, axiom, ![X] : (dog(X) => mammal(X))).\n\
-            fof(h1, hypothesis, dog(rex)).\n\
-            fof(g, conjecture, mammal(rex)).\n";
-        let (tc, background, errors) = TestCase::from_tptp(problem, "mini");
-        assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(background.len(), 1, "the `axiom` is background theory");
-        assert!(matches!(background[0].role(), Some(Role::Axiom)));
-        assert_eq!(tc.axioms.len(), 1, "the `hypothesis` is support");
-        assert!(matches!(tc.axioms[0].role(), Some(Role::Hypothesis)));
-        assert!(matches!(
-            tc.query.and_then(|q| q.role().cloned()),
-            Some(Role::Conjecture)
-        ));
     }
 
     #[test]

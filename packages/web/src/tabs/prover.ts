@@ -7,20 +7,22 @@
  * whichever is active.
  */
 
-import { formatTest } from 'sigmakee/sdk';
 import { state } from '../state.ts';
 import { call } from '../rpc.ts';
 import { $, downloadText, isDarkTheme } from '../dom.ts';
 import { loadMonaco, diagsToMarkers } from '../editor/monaco.ts';
-import { proverConfig, vampireSelected } from '../prover-config.ts';
+import { proverConfig, vampireSelected, proofLanguage, plainProof, useSumo } from '../prover-config.ts';
 import { wireProofGraph } from '../proof-graph.ts';
-import { renderProofSteps, proseDetails } from '../proof-view.ts';
+import { renderProofBody, proseDetails } from '../proof-view.ts';
 
 let assertionsEditor = null;
 let queryEditor = null;
 let proverEditorsPromise = null;
 
-function paneValue(name) {
+/** Current text of the `assertions`/`query` pane -- exported for `tests.ts`'s
+ *  "Save test" (kept one-way: tests.ts already depends on this module for
+ *  `ensureProverEditors`/`setProverPanes`, so this avoids a back-import). */
+export function paneValue(name) {
   if (name === 'assertions') return assertionsEditor ? assertionsEditor.getValue() : $('assertions').value;
   return queryEditor ? queryEditor.getValue() : $('pquery').value;
 }
@@ -84,6 +86,7 @@ async function createProverEditors() {
   };
   assertionsEditor = mount('assertionsEd', 'assertions');
   queryEditor = mount('pqueryEd', 'pquery');
+  applyProofLanguageToPanes();
   runScratchValidate();
 }
 
@@ -98,6 +101,14 @@ function scheduleScratchValidate() {
 
 async function runScratchValidate() {
   if (!assertionsEditor) return;
+  // `validateScratch` only understands SUO-KIF -- in TPTP mode it would
+  // paint the editors with spurious "parse error" squiggles under
+  // perfectly valid TPTP text, so just clear any stale markers instead.
+  if (proofLanguage() === 'tptp') {
+    state.monaco.editor.setModelMarkers(assertionsEditor.getModel(), 'sigma', []);
+    state.monaco.editor.setModelMarkers(queryEditor.getModel(), 'sigma', []);
+    return;
+  }
   if (scratchValidateBusy) { scratchValidateQueued = true; return; }
   scratchValidateBusy = true;
   try {
@@ -116,17 +127,35 @@ async function runScratchValidate() {
 }
 
 // -- Prover: tell + ask -------------------------------------------------------
+//
+// "Open test" / "Load test" / "Save test" (the .kif.tq / .p / .tptp import
+// and save-back workflow) are wired in tests.ts, which owns the imported-test
+// collection and its OPFS/localStorage persistence; this module only exports
+// paneValue() for it to read the current panes.
 
-$('saveTq').onclick = () => {
-  const query = paneValue('query').trim();
-  if (!query) { $('proverCfgSummary').textContent = 'Enter a query first.'; return; }
-  downloadText('test.kif.tq', formatTest({
-    timeout: proverConfig().timeLimitSecs,
-    assertions: paneValue('assertions'),
-    query,
-    expectedProof: true,
-  }));
-};
+const ASSERTIONS_LABEL_KIF_HTML = 'Assertions — <code>tell</code> (added to the KB for this query)';
+const ASSERTIONS_LABEL_TPTP_HTML = 'TPTP problem — axioms + an embedded <code>conjecture</code>, read as one document';
+
+/** Show the KIF two-pane split (assertions + query) or, in TPTP mode, a
+ *  single pane holding the whole problem -- a TPTP problem is naturally one
+ *  role-tagged document, not two independently composed pieces (its
+ *  conjecture is embedded by role, not a separate box). Also switches the
+ *  assertions pane's Monaco language (kif/tptp, for syntax highlighting) and
+ *  height (TPTP problems run longer than a handful of assertions) and shows
+ *  the "Use SUMO" toggle only where it applies. Called on load and whenever
+ *  the proof-language select changes. */
+function applyProofLanguageToPanes() {
+  const tptp = proofLanguage() === 'tptp';
+  $('queryGroup').hidden = tptp;
+  $('useSumoGroup').hidden = !tptp;
+  $('assertionsLabel').innerHTML = tptp ? ASSERTIONS_LABEL_TPTP_HTML : ASSERTIONS_LABEL_KIF_HTML;
+  $('assertionsEd').classList.toggle('pane-editor-tall', tptp);
+  (($('assertions') as HTMLTextAreaElement)).rows = tptp ? 16 : 4;
+  if (assertionsEditor) {
+    state.monaco.editor.setModelLanguage(assertionsEditor.getModel(), tptp ? 'tptp' : 'kif');
+  }
+}
+applyProofLanguageToPanes();
 
 // The exact TPTP problem text handed to Vampire for the most recent Ask/Tell
 // run — `proveVampire` returns it alongside the result (computed anyway to
@@ -142,10 +171,28 @@ $('prove').onclick = async () => {
   $('downloadVampireTptp').hidden = true;
   try {
     let result;
+    const tptp = proofLanguage() === 'tptp';
+    // TPTP mode reads the single pane as one whole problem (axioms + an
+    // embedded conjecture), routed by role rather than split assertions/query
+    // boxes -- see applyProofLanguageToPanes. Reuse the existing
+    // `parseTptpTest` RPC (built for the test-import workflow) to split that
+    // document into KIF text, then run the ordinary KIF prove/proveVampire
+    // RPCs against it.
+    let assertions = paneValue('assertions').trim();
+    let query = tptp ? '' : paneValue('query');
+    if (tptp) {
+      const { test } = await call('parseTptpTest', {
+        name: 'problem',
+        text: assertions,
+        remap: useSumo(),
+      });
+      assertions = test.axiomKif;
+      query = test.queryKif;
+    }
     if (vampire) {
       const res = await call('proveVampire', {
-        assertions: paneValue('assertions').trim(),
-        query: paneValue('query'),
+        assertions,
+        query,
         timeLimitSecs: proverConfig().timeLimitSecs,
         selectionTolerancePct: proverConfig().selectionTolerancePct,
         extraArgs: $('cfgVampireArgs').value.trim(),
@@ -155,8 +202,8 @@ $('prove').onclick = async () => {
       $('downloadVampireTptp').hidden = false;
     } else {
       ({ result } = await call('prove', {
-        assertions: paneValue('assertions').trim(),
-        query: paneValue('query'),
+        assertions,
+        query,
         config: proverConfig(),
         session: 'user-assertions',
       }));
@@ -185,15 +232,30 @@ let lastAskProof = [];
 const invalidateAskGraph = wireProofGraph(
   $('pGraphDetails'), $('pGraphContainer'), () => lastAskProof);
 
+// Cached so the proof-language select (see prover-config.ts) can re-render
+// the last result in place, without re-running the query.
+let lastAskResult = null;
+let lastAskBackend = '';
+
 function renderProof(r, backendLabel: string) {
+  lastAskResult = r; lastAskBackend = backendLabel;
   $('proverResult').hidden = false;
   $('pStatus').textContent = r.status; $('pStatus').className = 'status ' + r.status;
   $('pBackendBadge').textContent = backendLabel ? `via ${backendLabel}` : '';
   $('pSteps').textContent = r.given_steps != null ? `${r.given_steps} given-clause steps` : '';
-  $('pProof').innerHTML = renderProofSteps(r.proof);
+  $('pProof').innerHTML = renderProofBody(r.proof, r.proof_tptp_prologue, proofLanguage(), plainProof());
   $('pRaw').textContent = r.raw_output || '(none)';
   $('pGraphDot').textContent = r.graphviz || '(none)';
   $('pProseSlot').innerHTML = proseDetails(r.prose, r.prose_missing);
   lastAskProof = r.proof;
   invalidateAskGraph();
 }
+
+$('cfgProofLang').addEventListener('change', () => {
+  applyProofLanguageToPanes();
+  if (lastAskResult) renderProof(lastAskResult, lastAskBackend);
+  runScratchValidate();
+});
+$('cfgPlainProof').addEventListener('change', () => {
+  if (lastAskResult) renderProof(lastAskResult, lastAskBackend);
+});

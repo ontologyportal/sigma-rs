@@ -153,6 +153,14 @@
             </div>
           </div>
           <div>
+            <label for="cfgProofLang">proof language</label>
+            <select id="cfgProofLang">
+              <option value="kif" selected>SUO-KIF</option>
+              <option value="tptp">TPTP</option>
+            </select>
+            <div class="hint sub">proof/contradiction display format; on Ask/Tell, TPTP also parses the assertions/query as TPTP</div>
+          </div>
+          <div>
             <label for="cfgTimeLimit">time limit (s)</label>
             <input
               type="number"
@@ -426,24 +434,8 @@
             <button class="btn" id="addUrl" type="button">Add URL</button>
           </div>
           <div style="margin-top: 10px">
-            <label for="kbFile">Upload a .kif or .kif.tq file</label
-            ><input type="file" id="kbFile" accept=".kif,.tq,.txt,text/plain" />
-          </div>
-        </div>
-
-        <div class="card">
-          <label>Tests — <code>.kif.tq</code></label>
-          <div id="testsEmpty" class="hint">
-            No tests imported. Add <code>.kif.tq</code> files through the
-            picker, URL, or upload above — they run against the loaded KB
-            instead of joining it.
-          </div>
-          <ul id="testsList" class="results"></ul>
-          <div class="inline" style="margin-top: 8px; align-items: center">
-            <button class="btn" id="runAllTests" type="button" hidden>
-              Run all
-            </button>
-            <span id="testsLog" class="hint"></span>
+            <label for="kbFile">Upload a .kif file</label
+            ><input type="file" id="kbFile" accept=".kif,.txt,text/plain" />
           </div>
         </div>
 
@@ -518,22 +510,40 @@
       <!-- Theorem prover -->
       <section id="tab-prover" class="panel" role="tabpanel" hidden>
         <div class="card">
-          <label for="assertions"
+          <label for="assertions" id="assertionsLabel"
             >Assertions — <code>tell</code> (added to the KB for this
             query)</label
           >
           <!-- Monaco mounts replace the textareas once the editor loads; the
-             textareas stay as the working fallback when the CDN is unreachable. -->
+             textareas stay as the working fallback when the CDN is unreachable.
+             In TPTP mode this single pane holds the whole problem (axioms +
+             an embedded conjecture) instead of just the assertions -- see
+             prover.ts's applyProofLanguageToPanes -- so the query pane below
+             is hidden rather than being a second, artificially split entry;
+             a TPTP problem is naturally one role-tagged document read as a
+             whole, not composed from separate pieces. -->
           <div id="assertionsEd" class="pane-editor" hidden></div>
           <textarea id="assertions" rows="4" spellcheck="false">
 (instance Rex Dog)
 (subclass Dog Mammal)</textarea>
-          <label for="pquery" style="margin-top: 10px"
-            >Query — <code>ask</code></label
-          >
-          <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
-          <textarea id="pquery" rows="2" spellcheck="false">
+          <div id="queryGroup">
+            <label for="pquery" style="margin-top: 10px"
+              >Query — <code>ask</code></label
+            >
+            <div id="pqueryEd" class="pane-editor pane-editor-sm" hidden></div>
+            <textarea id="pquery" rows="2" spellcheck="false">
 (instance Rex Animal)</textarea>
+          </div>
+          <div id="useSumoGroup" hidden>
+            <label class="check"
+              ><input type="checkbox" id="cfgUseSumo" /> Use SUMO
+              <span class="hint"
+                >— prove against all of SUMO as background axioms and decode
+                SUMO-mangled symbol names; off proves the file standalone,
+                unmangled</span
+              ></label
+            >
+          </div>
           <div
             class="inline"
             style="margin-top: 10px; gap: 8px; align-items: center"
@@ -541,11 +551,35 @@
             <button class="btn" id="prove" type="button">Prove</button>
             <button
               class="btn ghost"
-              id="saveTq"
+              id="openTestBtn"
               type="button"
-              title="Download this assertion/query pair as a .kif.tq test file"
+              aria-expanded="false"
+              aria-controls="testsPanel"
+              title="Open a previously imported test"
             >
-              Save .kif.tq
+              Open test
+            </button>
+            <button
+              class="btn ghost"
+              id="loadTestBtn"
+              type="button"
+              title="Import a new .kif.tq or .p/.tptp test file"
+            >
+              Load test
+            </button>
+            <input
+              type="file"
+              id="loadTestFile"
+              accept=".tq,.p,.tptp,text/plain"
+              hidden
+            />
+            <button
+              class="btn ghost"
+              id="saveTestBtn"
+              type="button"
+              title="Save the current assertions/query as a test"
+            >
+              Save test
             </button>
             <button
               class="btn ghost"
@@ -569,12 +603,35 @@
             </button>
             <span id="proverCfgSummary" class="hint"></span>
           </div>
+          <div id="openTestHint" class="hint" style="margin-top: 6px"></div>
         </div>
+
+        <div id="testsPanel" class="card" hidden>
+          <label>Tests — <code>.kif.tq</code> / <code>.p</code> / <code>.tptp</code></label>
+          <div id="testsEmpty" class="hint">
+            No tests imported. Use "Load test" above to import a
+            <code>.kif.tq</code>, <code>.p</code>, or <code>.tptp</code>
+            file — tests run against the loaded KB instead of joining it.
+          </div>
+          <ul id="testsList" class="results"></ul>
+          <div class="inline" style="margin-top: 8px; align-items: center">
+            <button class="btn" id="runAllTests" type="button" hidden>
+              Run all
+            </button>
+            <span id="testsLog" class="hint"></span>
+          </div>
+        </div>
+
         <div id="proverResult" class="card" hidden>
-          <div>
-            <span id="pStatus" class="status"></span>
-            <span id="pBackendBadge" class="hint"></span>
-            <span id="pSteps" class="hint"></span>
+          <div class="inline" style="justify-content: space-between">
+            <div>
+              <span id="pStatus" class="status"></span>
+              <span id="pBackendBadge" class="hint"></span>
+              <span id="pSteps" class="hint"></span>
+            </div>
+            <label class="check"
+              ><input type="checkbox" id="cfgPlainProof" /> Plain Proof</label
+            >
           </div>
           <ol id="pProof" class="refs"></ol>
           <div id="pProseSlot"></div>

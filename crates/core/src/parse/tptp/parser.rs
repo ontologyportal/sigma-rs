@@ -1071,9 +1071,15 @@ impl TptpParser {
                 );
                 let raw_name = match &t.kind {
                     TokenKind::LowerWord(s)
-                    | TokenKind::SingleQuoted(s)
                     | TokenKind::DollarWord(s)
                     | TokenKind::DollarDollarWord(s) => s.clone(),
+                    // The tokenizer retains the quotes/escapes verbatim (see
+                    // `read_single_quoted`) — unwrap to the bare atom before
+                    // any `__`-mangling remap, so a quoted SUMO-cased
+                    // constant (`'Dog'`, our own `Emitter::Tptp`'s own
+                    // round-trip convention for capitalized symbols) resolves
+                    // to the same KB symbol as the unquoted `Dog`.
+                    TokenKind::SingleQuoted(s) => unquote_single_quoted(s),
                     _ => unreachable!(),
                 };
                 let head_span = t.span.clone();
@@ -1178,6 +1184,28 @@ impl TptpParser {
         }
         (nodes, errors)
     }
+}
+
+/// Unwrap a `single_quoted` token's stored text (which the tokenizer keeps
+/// verbatim, quotes and escapes included -- see `read_single_quoted`) into
+/// the bare atom: strips the outer `'...'` and un-escapes `\\` and `\'`.
+fn unquote_single_quoted(raw: &str) -> String {
+    let inner = raw
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(raw);
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(esc) = chars.next() {
+                out.push(esc);
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -1668,9 +1696,12 @@ mod tests {
 
     #[test]
     fn single_quoted_functor() {
+        // The tokenizer keeps the quotes; the parser must unwrap them so a
+        // quoted functor/constant resolves to the same symbol its unquoted
+        // spelling would (see `unquote_single_quoted`).
         let nodes = parse_tptp("fof(f, axiom, 'sos'(a)).");
         if let AstNode::List { elements, .. } = &nodes[0] {
-            assert!(matches!(&elements[0], AstNode::Symbol { name, .. } if name == "'sos'"));
+            assert!(matches!(&elements[0], AstNode::Symbol { name, .. } if name == "sos"));
         }
     }
 
@@ -2061,6 +2092,55 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn single_quoted_constant_is_unwrapped_to_the_bare_atom() {
+        let src = "fof(a1, axiom, subclass('Dog', 'Mammal')).";
+        let (tokens, _) = tokenize(src, "f");
+        let (nodes, errors) = parse(tokens, "f", None);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let AstNode::Annotated { formula, .. } = &nodes[0] else {
+            panic!("expected an annotated statement, got: {:?}", nodes[0]);
+        };
+        let AstNode::List { elements, .. } = formula.as_ref() else {
+            panic!("expected a list formula, got: {formula:?}");
+        };
+        let names: Vec<&str> = elements
+            .iter()
+            .map(|e| match e {
+                AstNode::Symbol { name, .. } => name.as_str(),
+                other => panic!("expected a symbol, got: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["subclass", "Dog", "Mammal"],
+            "quotes must not leak into the symbol name"
+        );
+    }
+
+    #[test]
+    fn single_quoted_constant_unescapes_backslash_and_quote() {
+        // TPTP single_quoted escapes: only `\\` and `\'` are legal.
+        let src = r"fof(a1, axiom, p('it\'s', 'back\\slash')).";
+        let (tokens, _) = tokenize(src, "f");
+        let (nodes, errors) = parse(tokens, "f", None);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        let AstNode::Annotated { formula, .. } = &nodes[0] else {
+            panic!("expected an annotated statement, got: {:?}", nodes[0]);
+        };
+        let AstNode::List { elements, .. } = formula.as_ref() else {
+            panic!("expected a list formula, got: {formula:?}");
+        };
+        let names: Vec<&str> = elements
+            .iter()
+            .map(|e| match e {
+                AstNode::Symbol { name, .. } => name.as_str(),
+                other => panic!("expected a symbol, got: {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["p", "it's", r"back\slash"]);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 // Session; the page (src/main.ts and friends) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
-import { init, Session, Config, Backend, parseTest } from "sigmakee/sdk";
+import { init, Session, Config, Backend, parseTest, parseTptpTest } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
@@ -152,6 +152,9 @@ const handlers = {
   parseTest({ name, text }) {
     return { test: parseTest(name, text) };
   },
+  parseTptpTest({ name, text, remap }) {
+    return { test: parseTptpTest(name, text, !!remap) };
+  },
 
   search({ query, limit, language, kind, wordnetOnly, taxonomy }) {
     // WordNet is loaded eagerly at boot (see boot.ts's loadWordNetIntoWorker);
@@ -180,18 +183,18 @@ const handlers = {
     return { text: session.renderNl(kif, language, genericVars) };
   },
 
-  prove({ assertions, query, config, session: sess }) {
+  prove({ assertions, query, config, session: sess, tptp }) {
     session.configure(makeConfig(config));
     const tag = sess || "user-assertions";
     session.flushSession(tag);
     if (assertions && assertions.trim()) {
-      const t = session.tell(assertions, tag);
+      const t = session.tell(assertions, tag, !!tptp);
       if (!t.ok)
         throw new Error(
           "assertion parse errors: " + t.errors.slice(0, 3).join("; "),
         );
     }
-    return { result: session.ask(query, { session: tag }) };
+    return { result: session.ask(query, { session: tag, tptp: !!tptp }) };
   },
 
   audit({ config, limit }) {
@@ -230,16 +233,12 @@ const handlers = {
     timeLimitSecs,
     selectionTolerancePct,
     extraArgs,
+    tptp: tptpInput,
   }) {
-    const tptp = session.kb.toTptpForAsk(
-      assertions || "",
-      query,
-      false,
-      selectionTolerancePct || null,
-    );
+    const tptp = session.kb.toTptpForAsk(assertions || "", query, false, selectionTolerancePct || null, !!tptpInput);
     const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);
     return {
-      result: session.kb.parseVampireAskResult(raw_output, query || ""),
+      result: session.kb.parseVampireAskResult(raw_output, query ?? ""),
       tptp,
     };
   },

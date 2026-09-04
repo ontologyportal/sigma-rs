@@ -12,7 +12,7 @@
 // Plus `parse_kb_axiom_name`, the `kb_<sid>` source-name decoder both paths use
 // to recover a step's originating `SentenceId`.
 
-use crate::parse::ast::AstNode;
+use crate::parse::{ast::AstNode, Role, Source};
 
 /// One step of a proof carrying a structured IR formula — backend-agnostic.
 ///
@@ -54,15 +54,55 @@ pub struct KifProofStep {
     /// consumers (e.g. proof-display in the CLI) should prefer this
     /// for O(1) source lookup when present and fall back to the
     /// canonical-hash path on [`crate::axiom_source::AxiomSourceIndex`]
-    /// when `None` — the hash path is robust to alpha-renaming and
-    /// quantifier-normalisation but requires a whole-KB scan.
-    ///
-    /// Serialisation: `#[serde(default, skip_serializing_if = …)]`
-    /// keeps the JSON wire format compatible — old consumers that
-    /// don't know about this field deserialize it as `None`; new
-    /// consumers omit the field from the output when it's `None`.
+    /// when `None`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_sid: Option<crate::types::SentenceId>,
+}
+
+impl KifProofStep {
+    pub(crate) fn to_ast(&self, problem: &str) -> AstNode {
+        let role = Role::from_str_plain(&self.rule.to_lowercase());
+        let source = if self.premises.is_empty() {
+            match self.rule.as_str() {
+                "negated_conjecture" => Source::Inference {
+                    rule: "negate_conjecture".into(),
+                    parents: Vec::new(),
+                },
+                // Genuine inputs cite the problem; any other premise-less
+                // step is prover-synthesized (subrel_schema, list_theory,
+                // modal_k, …) and must not masquerade as a stated axiom.
+                "axiom" | "hypothesis" | "conjecture" => Source::Input {
+                    file: problem.to_string(),
+                    name: None,
+                },
+                other => Source::Introduced(other.to_string()),
+            }
+        } else {
+            // The negated conjecture cites the `negate_conjecture` inference
+            // (whose TPTP status is `cth`, see `render_source`) over its
+            // conjecture parent — not its own role word as a rule name.
+            let rule = if self.rule == "negated_conjecture" {
+                "negate_conjecture".to_string()
+            } else {
+                self.rule.clone()
+            };
+            Source::Inference {
+                rule,
+                parents: self
+                    .premises
+                    .iter()
+                    .map(|p| format!("f{}", p + 1))
+                    .collect(),
+            }
+        };
+        AstNode::Annotated {
+            role,
+            name: Some(format!("f{}", self.index + 1)),
+            source: Some(source),
+            formula: Box::new(self.formula.clone()),
+            span: crate::parse::Span::synthetic(),
+        }
+    }
 }
 
 /// Parse an axiom name of the form `"kb_<digits>"` into a

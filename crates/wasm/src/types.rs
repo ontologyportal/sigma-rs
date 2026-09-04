@@ -20,3 +20,16 @@ pub fn parse_test(name: &str, text: &str) -> Result<JsValue, JsValue> {
         .map_err(|d| JsValue::from_str(&d.to_string()))?;
     to_js(&sigmakee_rs_sdk::TestCaseView::from(&tc))
 }
+
+/// Parse a standalone TPTP problem (`.p` / `.tptp`) as a test file -- the
+/// TPTP-dialect counterpart to [`parse_test`]. Pure: no KB, no state. Throws
+/// with the parse diagnostic's message on malformed input.
+///
+/// `remap` (default `false`) decodes SUMO-mangled symbol names back to their
+/// real SUMO names -- see `parse_tptp_test_content`'s doc comment.
+#[wasm_bindgen(js_name = parseTptpTest)]
+pub fn parse_tptp_test(name: &str, text: &str, remap: Option<bool>) -> Result<JsValue, JsValue> {
+    let tc = sigmakee_rs_core::parse_tptp_test_content(text, name, remap.unwrap_or(false))
+        .map_err(|d| JsValue::from_str(&d.to_string()))?;
+    to_js(&sigmakee_rs_sdk::TestCaseView::from(&tc))
+}

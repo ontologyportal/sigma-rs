@@ -7,31 +7,65 @@
 // knobs like `TptpLang` never leak into a generic method signature — the same
 // shape as `Parser::Tptp { options }` on the parse side).
 
+use crate::parse::dialect::ConvertedStmt::Converted;
+
 use super::ast::AstNode;
 
 // The TPTP language enum lives in the shared lexical layer so the dialect, the
 // translation layer, and the public API all name the same type.
 pub use super::tptp::syntax::TptpLang;
 
-/// A statement that a dialect could not represent, with why — so callers learn
-/// the output was filtered rather than silently truncated.
+/// A converted statement (or a dropped statement)
 #[derive(Debug, Clone)]
-pub struct DroppedStmt {
-    pub name: Option<String>,
-    pub reason: String,
+pub enum ConvertedStmt {
+    Converted(String),
+    Dropped {
+        name: Option<String>,
+        reason: String,
+    },
+}
+
+impl Default for ConvertedStmt {
+    fn default() -> Self {
+        Self::Converted(String::default())
+    }
 }
 
 /// The result of emitting a document: the rendered text plus any statements
 /// that did not conform to the chosen dialect/language and were skipped.
 #[derive(Debug, Clone, Default)]
 pub struct EmitResult {
-    pub text: String,
-    pub dropped: Vec<DroppedStmt>,
+    /// Any conversions not relating to a node (e.g. typing preambles)
+    pub preamble: Vec<String>,
+    /// Conversions for each formula, in the source, either a converted
+    /// statement or a dropped statement and why it was dropped. Index
+    /// in the converted output corresponds to the index of the input
+    pub converted: Vec<ConvertedStmt>,
 }
 
 impl EmitResult {
     pub fn is_complete(&self) -> bool {
-        self.dropped.is_empty()
+        self.converted.iter().all(|c| matches!(c, Converted(_)))
+    }
+
+    /// The whole-document preamble (if any) followed by every converted
+    /// statement, one per line -- convenience for callers that just want the
+    /// resulting text rather than per-statement structure. Dropped
+    /// statements contribute nothing; check [`is_complete`](Self::is_complete)
+    /// first if silently losing one would matter.
+    pub fn joined_text(&self) -> String {
+        let mut out = String::new();
+        for p in &self.preamble {
+            out.push_str(p);
+            out.push('\n');
+        }
+        for c in &self.converted {
+            if let Converted(s) = c {
+                out.push_str(s);
+                out.push('\n');
+            }
+        }
+        out
     }
 }
 
@@ -88,11 +122,8 @@ pub(crate) trait Emit {
         let mut out = EmitResult::default();
         for stmt in doc {
             match self.emit_statement(stmt) {
-                Ok(t) => {
-                    out.text.push_str(&t);
-                    out.text.push('\n');
-                }
-                Err(reason) => out.dropped.push(DroppedStmt {
+                Ok(t) => out.converted.push(ConvertedStmt::Converted(t)),
+                Err(reason) => out.converted.push(ConvertedStmt::Dropped {
                     name: stmt_name(stmt),
                     reason,
                 }),

@@ -700,6 +700,9 @@ mod format_document_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::parse::dialect::ConvertedStmt;
+    use std::assert_matches;
+
     use super::*;
     use crate::parse::ast::{Role, Span};
     use crate::parse::dialect::Emitter;
@@ -771,8 +774,8 @@ mod tests {
     fn kif_emit_matches_format_plain() {
         let n = parse_one("(exists (?A ?B) (and (member ?A ?P) (instance ?A SomeLongClassName)))");
         let r = Emitter::Kif.emit_one(&n);
-        assert_eq!(r.text.trim_end(), n.format_plain(0));
         assert!(r.is_complete());
+        assert_matches!(r.converted.last(), Some(ConvertedStmt::Converted(s)) if *s == n.format_plain(0));
     }
 
     #[test]
@@ -785,11 +788,11 @@ mod tests {
             formula: Box::new(inner.clone()),
             span: Span::default(),
         };
-        assert_eq!(
-            Emitter::Kif.emit_one(&ann).text.trim_end(),
-            inner.format_plain(0)
-        );
         assert_eq!(ann.flat(), inner.flat());
+        assert_matches!(
+            Emitter::Kif.emit_one(&ann).converted.last(),
+            Some(ConvertedStmt::Converted(s)) if *s == inner.format_plain(0)
+        );
     }
 
     /// Count consecutive `((` runs on one line — i.e. two opens landing back

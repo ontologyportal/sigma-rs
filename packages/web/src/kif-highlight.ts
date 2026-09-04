@@ -9,9 +9,9 @@ const KIF_KEYWORDS = new Set(['and', 'or', 'not', 'forall', 'exists', 'equal']);
 
 /** Prover-internal vocabulary that has no man page: Skolem constants
  *  (`sK1`, `esk2_0`, …) and scope-qualified variable interning keys
- *  (`Human__15551`) that can leak into prover-emitted KIF. Linking them
- *  would only offer dead ends. */
-function isInternalSymbol(word) {
+ *  (`Human__15551`) that can leak into prover-emitted KIF/TPTP. Linking
+ *  them would only offer dead ends. Shared with `tptp-highlight.ts`. */
+export function isInternalSymbol(word) {
   return /^(sK|esk|epred)\d/.test(word) || /__\d+$/.test(word);
 }
 

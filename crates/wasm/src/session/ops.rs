@@ -133,6 +133,8 @@ impl Session {
     /// feedback retry, so a query that needs more of the KB than the given
     /// percentage admits will fail here even though the native backend
     /// might still find it by widening its own selection.
+    /// `tptp` (default `false`) parses `assertions_kif`/`query_kif` as TPTP
+    /// instead of SUO-KIF before staging
     #[wasm_bindgen(js_name = toTptpForAsk)]
     pub fn to_tptp_for_ask(
         &mut self,
@@ -140,6 +142,7 @@ impl Session {
         query_kif: &str,
         select_all: Option<bool>,
         selection_tolerance_pct: Option<f64>,
+        tptp: Option<bool>,
     ) -> Result<String, JsValue> {
         let mut session_guard = self.session.write().expect("kb lock not poisoned");
         session_guard
@@ -148,6 +151,7 @@ impl Session {
                 query_kif,
                 select_all.unwrap_or(false),
                 selection_tolerance_pct,
+                tptp.unwrap_or(false),
             )
             .map_err(|errs| {
                 let errors: Vec<String> = errs.iter().map(|e| e.to_string()).collect();

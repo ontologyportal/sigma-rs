@@ -17,8 +17,8 @@ use sigmakee_rs_sdk::AstKif;
 use sigmakee_rs_sdk::AstNode;
 use sigmakee_rs_sdk::TopLayer;
 use sigmakee_rs_sdk::{
-    emit_proof, render_graphviz, tptp_highlight, AxiomSourceIndex, Emitter, KifProofStep,
-    KnowledgeBase, ProverResult, RenderReport, SzsStatus,
+    emit_proof, render_graphviz, tptp_highlight, AxiomSourceIndex, ConvertedStmt, Emitter,
+    KifProofStep, KnowledgeBase, ProverResult, RenderReport, SzsStatus,
 };
 
 /// `true` for the "machine-readable, nothing else on stdout" formats —
@@ -101,19 +101,23 @@ fn resolve_tptp_proof_text(result: &ProverResult) -> Option<String> {
         Emitter::Tptp(result.proof_tptp_lang),
     );
     if !emitted.is_complete() {
+        let dropped: Vec<(&Option<String>, &String)> = emitted
+            .converted
+            .iter()
+            .filter_map(|c| match c {
+                ConvertedStmt::Dropped { name, reason } => Some((name, reason)),
+                ConvertedStmt::Converted(_) => None,
+            })
+            .collect();
         eprintln!(
             "{color_bright_yellow}warning:{color_reset} {} proof step(s) could not be represented in TPTP:",
-            emitted.dropped.len(),
+            dropped.len(),
         );
-        for d in &emitted.dropped {
-            eprintln!(
-                "  - {}: {}",
-                d.name.as_deref().unwrap_or("<unnamed>"),
-                d.reason,
-            );
+        for (name, reason) in &dropped {
+            eprintln!("  - {}: {}", name.as_deref().unwrap_or("<unnamed>"), reason);
         }
     }
-    Some(emitted.text)
+    Some(emitted.joined_text())
 }
 
 fn print_step(text: &str) {

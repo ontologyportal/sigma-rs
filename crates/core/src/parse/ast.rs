@@ -72,6 +72,31 @@ pub enum Role {
     Other(String),
 }
 
+impl Role {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "axiom" => Self::Axiom,
+            "hypothesis" => Self::Hypothesis,
+            "conjecture" => Self::Conjecture,
+            "negated_conjecture" => Self::NegatedConjecture,
+            "lemma" => Self::Lemma,
+            "type" => Self::Type,
+            "definition" => Self::Definition,
+            other => Self::Other(other.to_string()),
+        }
+    }
+
+    pub fn from_str_plain(s: &str) -> Self {
+        match s {
+            "axiom" => Self::Axiom,
+            "hypothesis" => Self::Hypothesis,
+            "conjecture" => Self::Conjecture,
+            "negated_conjecture" => Self::NegatedConjecture,
+            _ => Self::Plain,
+        }
+    }
+}
+
 /// Provenance of a statement — where it came from. Populated for proof steps
 /// and file-attributed input; absent (`Option<Source>` is `None`) for plain
 /// input with no recorded origin.

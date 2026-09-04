@@ -149,15 +149,42 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
         query_kif: &str,
         session: Option<&str>,
         sine: SineParams,
+        opts: crate::NativeOpts,
+    ) -> ProverResult {
+        self.ask_query_dialect(
+            query_kif,
+            session,
+            sine,
+            opts,
+            Parser::Kif { options: None },
+        )
+    }
+
+    /// Same as [`ask_query`](Self::ask_query) but parses `query` in `dialect`
+    /// instead of always assuming SUO-KIF
+    pub fn ask_query_dialect(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        sine: SineParams,
         mut opts: crate::NativeOpts,
+        dialect: Parser,
     ) -> ProverResult {
         opts.selection = sine;
         opts.session = session.map(|s| s.to_string());
-        let doc = crate::parse_document(
-            "ask_query",
-            query_kif.to_string(),
-            Parser::Kif { options: None },
-        );
+        // A query is never an axiom-library ingest, so a TPTP-framed query
+        // must keep `conjecture`-role formulas
+        let dialect = match dialect {
+            Parser::Tptp { options } => {
+                let mut options = options.unwrap_or_default();
+                options.keep_conjectures = true;
+                Parser::Tptp {
+                    options: Some(options),
+                }
+            }
+            other => other,
+        };
+        let doc = crate::parse_document("ask_query", query.to_string(), dialect);
         // A malformed query is an input error, not an unprovable goal — and it
         // must leave no residue (the parse never reached the atom table).
         if doc.has_errors() {
@@ -170,11 +197,69 @@ impl<S: TopLayer + 'static> KnowledgeBase<crate::prover::saturate::ProverLayer<S
                 ..Default::default()
             };
         }
+        // `as_stmt()` keeps a TPTP `fof(name, role, formula)`'s `Annotated`
+        // framing; `prove_native` (like every KIF-parsed query, which never
+        // carries that framing) wants the bare formula.
         let asts: Vec<crate::AstNode> = doc
             .ast
             .into_iter()
-            .filter_map(|d| d.as_stmt().cloned())
+            .filter_map(|d| d.as_stmt().map(|n| n.formula().clone()))
             .collect();
         self.layer.prove_native(asts, opts, &self.prove_ctx())
+    }
+}
+
+#[cfg(all(test, feature = "native-prover"))]
+mod dialect_tests {
+    use super::KnowledgeBase;
+    use crate::prover::{ProverLayer, ProverStatus};
+    use crate::{NativeOpts, Parser, SineParams};
+
+    fn kb_native(kif: &str) -> KnowledgeBase<ProverLayer> {
+        let mut kb = KnowledgeBase::new_native();
+        let r = kb.reload_kif(kif, &std::path::PathBuf::from("test.kif"), "test.kif");
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("test.kif").expect("promote");
+        kb
+    }
+
+    fn fast() -> NativeOpts {
+        NativeOpts {
+            time_limit_secs: 10,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ask_query_dialect_proves_a_tptp_conjecture() {
+        let kb = kb_native("(subclass Dog Mammal)\n(subclass Mammal Animal)\n");
+        let res = kb.ask_query_dialect(
+            "fof(g, conjecture, subclass('Dog', 'Animal')).",
+            None,
+            SineParams::default(),
+            fast(),
+            Parser::Tptp { options: None },
+        );
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    }
+
+    #[test]
+    fn ask_query_dialect_reports_input_error_for_malformed_tptp() {
+        let kb = kb_native("(subclass Dog Mammal)\n");
+        let res = kb.ask_query_dialect(
+            "fof(g, conjecture, subclass('Dog'", // missing close
+            None,
+            SineParams::default(),
+            fast(),
+            Parser::Tptp { options: None },
+        );
+        assert_eq!(res.status, ProverStatus::InputError);
+    }
+
+    #[test]
+    fn ask_query_still_defaults_to_kif() {
+        let kb = kb_native("(subclass Dog Mammal)\n");
+        let res = kb.ask_query("(subclass Dog Mammal)", None, SineParams::default(), fast());
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
     }
 }

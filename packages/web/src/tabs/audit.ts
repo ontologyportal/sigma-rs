@@ -3,9 +3,14 @@
 
 import { call } from '../rpc.ts';
 import { $, esc } from '../dom.ts';
-import { proverConfig, vampireSelected } from '../prover-config.ts';
+import { proverConfig, vampireSelected, proofLanguage, plainProof } from '../prover-config.ts';
 import { wireProofGraph, proofGraphLegendHtml } from '../proof-graph.ts';
-import { renderProofSteps, proseDetails } from '../proof-view.ts';
+import { renderProofBody, proseDetails } from '../proof-view.ts';
+
+// Cached so the proof-language select (see prover-config.ts) can re-render
+// the last result in place, without re-running the audit.
+let lastAuditResult = null;
+let lastAuditBackend = '';
 
 $('runAudit').onclick = async () => {
   const btn = $('runAudit');
@@ -33,6 +38,7 @@ $('runAudit').onclick = async () => {
 };
 
 function renderAudit(r, backendLabel) {
+  lastAuditResult = r; lastAuditBackend = backendLabel;
   const badge = `<span class="audit-status ${esc(r.status)}">${esc(r.status)}</span>`;
   const backend = backendLabel ? `<span class="hint">via ${esc(backendLabel)}</span>` : '';
   const steps = r.given_steps != null ? `<span class="hint">${r.given_steps} given-clause steps</span>` : '';
@@ -62,7 +68,7 @@ function renderAudit(r, backendLabel) {
   html += r.contradictions.map((c, i) => `
     <div class="card">
       <div class="contradiction-hd">Contradiction #${i + 1} — ${c.steps.length} step${c.steps.length === 1 ? '' : 's'}</div>
-      <ol class="refs">${renderProofSteps(c.steps)}</ol>
+      <ol class="refs">${renderProofBody(c.steps, c.proof_tptp_prologue, proofLanguage(), plainProof())}</ol>
       ${proseDetails(c.prose, c.prose_missing)}
       <details class="proof-graph-details" style="margin-top:10px">
         <summary class="hint">proof graph</summary>
@@ -83,3 +89,10 @@ function renderAudit(r, backendLabel) {
     );
   });
 }
+
+$('cfgProofLang').addEventListener('change', () => {
+  if (lastAuditResult) renderAudit(lastAuditResult, lastAuditBackend);
+});
+$('cfgPlainProof').addEventListener('change', () => {
+  if (lastAuditResult) renderAudit(lastAuditResult, lastAuditBackend);
+});

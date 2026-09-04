@@ -122,6 +122,9 @@ export interface ParsedTest {
 
 /** Parse a `.kif.tq` test file (requires {@link init}); throws on malformed input. */
 export function parseTest(name: string, text: string): ParsedTest;
+/** TPTP-dialect counterpart to {@link parseTest}: parses a `.p`/`.tptp` problem.
+ *  `remap` (default `false`) decodes SUMO-mangled symbol names. */
+export function parseTptpTest(name: string, text: string, remap?: boolean): ParsedTest;
 
 /** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
 export function formatTest(opts?: {
@@ -134,6 +137,8 @@ export function formatTest(opts?: {
 
 export interface AskOpts {
   session?: string;
+  /** Parse `query` as TPTP instead of SUO-KIF. */
+  tptp?: boolean;
   hook?: (tptp: string) => string;
 }
 export interface TranslateOpts {
@@ -297,9 +302,10 @@ export class Session {
   snapshot(): Uint8Array;
   /** Thaw a KB frozen by {@link Session.snapshot}, replacing this session in place. Native backend only. */
   restore(bytes: Uint8Array): void;
-  tell(kif: string, session?: string): TellResult;
+  /** `tptp` parses `text` as TPTP instead of SUO-KIF. */
+  tell(text: string, session?: string, tptp?: boolean): TellResult;
   /** Native backend → AskResult; TranslationOnly backend (with hook) → string. */
-  ask(queryKif: string, opts?: AskOpts): AskResult | string;
+  ask(query: string, opts?: AskOpts): AskResult | string;
   /** Native backend only: consistency-audit the whole KB. `limit` caps distinct contradictions (default 5). */
   auditConsistency(limit?: number): AuditResult;
   translate(opts?: TranslateOpts): string;
