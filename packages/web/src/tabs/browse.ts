@@ -1,18 +1,139 @@
 /** Browse (Home) tab: search → results → man page, plus the `/` and Esc
  *  shortcuts that drive it. */
 
+import { loadMonaco } from "../editor/monaco.ts";
+import type { editor } from "monaco-editor";
 import { state } from "../state.ts";
 import { call } from "../rpc.ts";
-import { $, esc, escAttr, targetEl } from "../dom.ts";
+import { $, esc, escAttr, targetEl, isDarkTheme } from "../dom.ts";
 import { kifCiteRow } from "../proof-view.ts";
 import { taxonomyWidget, fillAncestors } from "./taxonomy.ts";
 import { currentTab, showTab, updateParams } from "../router.ts";
 
-$("searchForm").addEventListener("submit", (e) => {
-  e.preventDefault();
+let searchEditor: editor.IStandaloneCodeEditor | null = null;
+let searchEditorPromise: Promise<void> | null = null;
+let settingSearchValue = false;
+
+/** Set the query for navigation without scheduling another search. */
+export function setBrowseQuery(value: string) {
+  clearTimeout(searchDebounce);
+  const query = value.replace(/[\r\n]+/g, " ");
+  $("q").value = query;
+  if (searchEditor && searchEditor.getValue() !== query) {
+    settingSearchValue = true;
+    try {
+      searchEditor.setValue(query);
+    } finally {
+      settingSearchValue = false;
+    }
+  }
+  updateSearchClear();
+}
+
+function focusSearch(select = false) {
+  if (searchEditor) {
+    searchEditor.focus();
+    if (select)
+      searchEditor.setSelection(searchEditor.getModel().getFullModelRange());
+  } else {
+    $("q").focus();
+    if (select) $("q").select();
+  }
+}
+
+/** Mount a compact editor, retaining the native field if loading fails. */
+export function ensureBrowseEditor() {
+  if (!searchEditorPromise) {
+    searchEditorPromise = createBrowseEditor().catch((error) => {
+      searchEditorPromise = null;
+      throw error;
+    });
+  }
+  return searchEditorPromise;
+}
+
+async function createBrowseEditor() {
+  if (searchEditor) return;
+  const m = await loadMonaco();
+  const input = $<HTMLInputElement>("q");
+  const focused = document.activeElement === input;
+  const box = $("qEditor");
+  searchEditor = m.editor.create(box, {
+    value: input.value,
+    language: "plaintext",
+    theme: isDarkTheme() ? "kif-dark" : "kif-light",
+    ariaLabel: "Search symbols and documentation",
+    placeholder: input.placeholder,
+    automaticLayout: true,
+    minimap: { enabled: false },
+    lineNumbers: "off",
+    folding: false,
+    glyphMargin: false,
+    lineDecorationsWidth: 0,
+    lineNumbersMinChars: 0,
+    overviewRulerLanes: 0,
+    hideCursorInOverviewRuler: true,
+    scrollBeyondLastLine: false,
+    scrollbar: {
+      vertical: "hidden",
+      horizontal: "hidden",
+      handleMouseWheel: false,
+    },
+    wordWrap: "off",
+    wordBasedSuggestions: "off",
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    acceptSuggestionOnEnter: "off",
+    tabCompletion: "off",
+    tabFocusMode: true,
+    contextmenu: false,
+    renderLineHighlight: "none",
+    fontFamily: "system-ui, sans-serif",
+    fontSize: 14,
+    lineHeight: 23,
+    padding: { top: 8, bottom: 8 },
+  });
+  searchEditor.onDidChangeModelContent(() => {
+    if (settingSearchValue) return;
+    const value = searchEditor.getValue();
+    const query = value.replace(/[\r\n]+/g, " ");
+    if (query !== value) {
+      searchEditor.executeEdits("single-line", [
+        {
+          range: searchEditor.getModel().getFullModelRange(),
+          text: query,
+        },
+      ]);
+      return;
+    }
+    input.value = query;
+    scheduleSearch();
+  });
+  searchEditor.addCommand(m.KeyCode.Enter, submitSearch);
+  searchEditor.addCommand(m.KeyMod.Shift | m.KeyCode.Enter, submitSearch);
+  searchEditor.addCommand(m.KeyCode.Escape, () => escapeBrowse(true));
+  input.hidden = true;
+  box.hidden = false;
+  searchEditor.layout();
+  if (focused) focusSearch();
+}
+
+function submitSearch() {
+  clearTimeout(searchDebounce);
   const q = $("q").value.trim();
   updateParams({ q });
   runSearch(q);
+}
+
+$("searchForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  submitSearch();
+});
+document.querySelector('label[for="q"]').addEventListener("click", (e) => {
+  if (searchEditor) {
+    e.preventDefault();
+    focusSearch();
+  }
 });
 
 /** Show the clear button only once there's something to clear. */
@@ -24,8 +145,9 @@ function updateSearchClear() {
  *  touching the URL — for navigating to Browse from elsewhere (nav tab,
  *  the header logo), where the router already owns the address bar. */
 export function resetBrowseView() {
-  $("q").value = "";
+  setBrowseQuery("");
   updateSearchClear();
+  searchSeq++;
   setBrowseHome(true);
 }
 
@@ -34,7 +156,7 @@ export function resetBrowseView() {
 function clearSearch() {
   resetBrowseView();
   updateParams({});
-  $("q").focus();
+  focusSearch();
 }
 
 $("qClear").addEventListener("click", clearSearch);
@@ -42,7 +164,7 @@ $("qClear").addEventListener("click", clearSearch);
 // Search-as-you-type: results render live off a short debounce; Enter still
 // works via the submit handler above (same runSearch, seq-guarded below).
 let searchDebounce = 0;
-$("q").addEventListener("input", () => {
+function scheduleSearch() {
   updateSearchClear();
   clearTimeout(searchDebounce);
   searchDebounce = setTimeout(() => {
@@ -50,7 +172,8 @@ $("q").addEventListener("input", () => {
     updateParams({ q });
     runSearch(q);
   }, 150);
-});
+}
+$("q").addEventListener("input", scheduleSearch);
 
 // Advanced search options. Not persisted (session-only, like the language
 // selector) — re-read fresh on every search rather than mirrored into
@@ -76,7 +199,7 @@ document.addEventListener("click", (e) => {
   const a = targetEl(e).closest<HTMLElement>("a.try-q");
   if (!a) return;
   e.preventDefault();
-  $("q").value = a.textContent;
+  setBrowseQuery(a.textContent);
   updateSearchClear();
   updateParams({ q: a.textContent });
   runSearch(a.textContent);
@@ -272,14 +395,17 @@ export async function openManPage(symbol) {
     const parts = [];
 
     if (p.arity != null)
-      parts.push(`arity ${p.arity < 0 ? 'variable' : p.arity}`);
-    for (const d of p.domains) 
+      parts.push(`arity ${p.arity < 0 ? "variable" : p.arity}`);
+    for (const d of p.domains)
       parts.push(
-        `arg ${d.position}: ${linkifySymbol(d.sort.class)}${d.sort.subclass ? ' (class)' : ''}`
+        `arg ${d.position}: ${linkifySymbol(d.sort.class)}${d.sort.subclass ? " (class)" : ""}`,
       );
-    if (p.range) parts.push(`${p.range.subclass ? 'rangeSubclass' : 'range'}: ${linkifySymbol(p.range.class)}`);
+    if (p.range)
+      parts.push(
+        `${p.range.subclass ? "rangeSubclass" : "range"}: ${linkifySymbol(p.range.class)}`,
+      );
     return parts.length
-      ? parts.join('<br>')
+      ? parts.join("<br>")
       : '<span class="hint">none declared</span>';
   };
   const field = (title, html) =>
@@ -405,7 +531,7 @@ function filterRefs(refs, filter) {
 
 // Formulas from these files are shown first, in this order, then everything
 // else in its existing relative order.
-const FILE_SORT_PRIORITY = ['Merge.kif', 'Mid-level-ontology.kif'];
+const FILE_SORT_PRIORITY = ["Merge.kif", "Mid-level-ontology.kif"];
 
 function fileSortRank(file) {
   const i = FILE_SORT_PRIORITY.indexOf(file);
@@ -417,7 +543,10 @@ function fileSortRank(file) {
 function sortRefsByFile(refs) {
   return refs
     .map((r, i) => [r, i])
-    .sort(([a, ai], [b, bi]) => fileSortRank(a.file) - fileSortRank(b.file) || ai - bi)
+    .sort(
+      ([a, ai], [b, bi]) =>
+        fileSortRank(a.file) - fileSortRank(b.file) || ai - bi,
+    )
     .map(([r]) => r);
 }
 
@@ -446,22 +575,24 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
     e.preventDefault();
     showTab("browse");
-    $("q").focus();
-    $("q").select();
+    focusSearch(true);
   } else if (
     e.key === "Escape" &&
     currentTab() === "browse" &&
     (!typing || t === $("q"))
   ) {
-    const params = new URLSearchParams(location.search);
-    const q = params.get("q") || $("q").value.trim();
-    if (params.get("sym")) {
-      // Man page open → back to the search results (or the welcome state).
-      updateParams({ q });
-      if (q) runSearch(q);
-      else setBrowseHome(true);
-    } else if (t === $("q") && $("q").value) {
-      clearSearch();
-    }
+    escapeBrowse(t === $("q"));
   }
 });
+
+function escapeBrowse(inSearch: boolean) {
+  const params = new URLSearchParams(location.search);
+  const q = params.get("q") || $("q").value.trim();
+  if (params.get("sym")) {
+    updateParams({ q });
+    if (q) runSearch(q);
+    else setBrowseHome(true);
+  } else if (inSearch && $("q").value) {
+    clearSearch();
+  }
+}

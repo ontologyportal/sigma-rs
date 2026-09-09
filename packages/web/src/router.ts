@@ -17,7 +17,7 @@ import { call } from './rpc.ts';
 import { $, targetEl } from './dom.ts';
 import { ensureEditorReady, onEditPickerChange, setEditFullscreen } from './tabs/edit.ts';
 import { applyDiagRouteParams } from './tabs/diagnostics.ts';
-import { openManPage, runSearch, setBrowseHome, resetBrowseView } from './tabs/browse.ts';
+import { openManPage, runSearch, resetBrowseView, ensureBrowseEditor, setBrowseQuery } from './tabs/browse.ts';
 import { loadSumoCatalog } from './tabs/kb-tab.ts';
 import { ensureProverEditors } from './tabs/prover.ts';
 import { toggleProverSettings } from './prover-config.ts';
@@ -97,7 +97,7 @@ export function showTab(
   // Only reset on a live navigation that asks for it (header logo) — a plain
   // tab-bar click back to Browse restores prior state instead. applyRoute's
   // own `push: false` call still needs the URL's ?q=/?sym= honoured below.
-  if (name === 'browse') { if (push && resetBrowse) resetBrowseView(); refreshHomeStats(); }
+  if (name === 'browse') { ensureBrowseEditor().catch(() => {}); if (push && resetBrowse) resetBrowseView(); refreshHomeStats(); }
   if (name === 'kb') loadSumoCatalog();
   if (name === 'edit') ensureEditorReady().catch(() => {}); // surfaced in-panel
   if (name === 'prover') ensureProverEditors().catch(() => {}); // textareas remain the fallback
@@ -150,8 +150,8 @@ export async function applyRoute() {
     const sym = params.get('sym');
     const q = params.get('q');
     if (sym) { openManPage(sym); }
-    else if (q) { $('q').value = q; runSearch(q); }
-    else { setBrowseHome(true); }
+    else if (q) { setBrowseQuery(q); runSearch(q); }
+    else { resetBrowseView(); }
   }
 
 }
