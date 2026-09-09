@@ -109,9 +109,17 @@ async function createBrowseEditor() {
     input.value = query;
     scheduleSearch();
   });
-  searchEditor.addCommand(m.KeyCode.Enter, submitSearch);
-  searchEditor.addCommand(m.KeyMod.Shift | m.KeyCode.Enter, submitSearch);
-  searchEditor.addCommand(m.KeyCode.Escape, () => escapeBrowse(true));
+  searchEditor.onKeyDown((event) => {
+    if (event.browserEvent.isComposing) return;
+    if (event.keyCode === m.KeyCode.Enter) {
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.keyCode === m.KeyCode.Escape) {
+      event.preventDefault();
+      event.stopPropagation();
+      escapeBrowse(true);
+    }
+  });
   input.hidden = true;
   box.hidden = false;
   searchEditor.layout();
