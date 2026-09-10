@@ -1,6 +1,6 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
-import '../assets/styles.css';
+import "../assets/styles.css";
 
 import { router } from "./router";
 import App from "./App.vue";
@@ -8,4 +8,5 @@ import App from "./App.vue";
 const app = createApp(App);
 const pinia = createPinia();
 
-app.use(router).use(pinia).mount("#app")
+// Pinia first: the router's guards call `useKBStore()`.
+app.use(pinia).use(router).mount("#app");

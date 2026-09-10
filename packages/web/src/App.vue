@@ -1,15 +1,133 @@
 <script setup lang="ts">
-import LoadingScreen from './components/LoadingScreen.vue';
-import { useBootStore } from './stores/boot.ts';
+import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { useRoute, type LocationQuery } from "vue-router";
+import LoadingScreen from "./components/LoadingScreen.vue";
+import SettingsDialog from "./components/SettingsDialog.vue";
+import LoginDialog from "./components/LoginDialog.vue";
+import LogoutDialog from "./components/LogoutDialog.vue";
+import VersionDialog from "./components/VersionDialog.vue";
+import { PROMOTE_TABS } from "./constants";
+import { navigate, router, type TabName } from "./router";
+import { installFlushOnHide } from "./services/kb-cache";
+import { useAuthStore } from "./stores/auth";
+import { useBootStore } from "./stores/boot";
+import { useKBStore } from "./stores/kb";
+import { useShellStore } from "./stores/shell";
 
+const kb = useKBStore();
 const boot = useBootStore();
+const shell = useShellStore();
+const auth = useAuthStore();
+const route = useRoute();
+
+/** The nav strip, grouped by activity: `[routeName, label]` pairs. */
+const TAB_GROUPS: { label: string; tabs: [TabName, string][] }[] = [
+  { label: "Explore", tabs: [["browse", "Browse"]] },
+  {
+    label: "Reason",
+    tabs: [
+      ["prover", "Ask/Tell"],
+      ["audit", "Audit"],
+    ],
+  },
+  {
+    label: "Develop",
+    tabs: [
+      ["edit", "Edit"],
+      ["diagnostics", "Diagnostics"],
+    ],
+  },
+  {
+    label: "Manage",
+    tabs: [
+      ["kb", "Knowledge base"],
+      ["history", "History"],
+    ],
+  },
+];
+
+const errorCount = computed(
+  () => kb.diagnostics.filter((d) => d.severity === "error").length,
+);
+
+function isSelected(name: TabName): boolean {
+  if (name === "browse")
+    return route.name === "home" || route.name === "browse";
+  return route.name === name;
+}
+
+function gated(name: TabName): boolean {
+  return kb.promoting && PROMOTE_TABS.includes(name);
+}
+
+function go(name: TabName) {
+  if (gated(name)) return;
+  navigate(name);
+}
+
+// A promote-gated tab that is showing when promotion starts is evicted to
+// Browse and restored once the KB is usable again. `router.replace`, not
+// `push`: an automatic eviction is not a navigation the user should have to
+// hit Back through.
+let evicted: { name: TabName; query: LocationQuery } | null = null;
+
+watch(
+  () => kb.promoting,
+  (promoting) => {
+    const current =
+      route.name === "home" || !route.name ? "browse" : String(route.name);
+    if (promoting) {
+      if (PROMOTE_TABS.includes(current)) {
+        evicted = { name: current as TabName, query: { ...route.query } };
+        router.replace({ name: "browse" });
+      }
+    } else if (evicted && current === "browse") {
+      router.replace({ name: evicted.name, query: evicted.query });
+      evicted = null;
+    }
+  },
+);
+
+function onKeydown(e: KeyboardEvent) {
+  const t = e.target;
+  const typing =
+    t instanceof HTMLInputElement ||
+    t instanceof HTMLTextAreaElement ||
+    t instanceof HTMLSelectElement ||
+    (t instanceof HTMLElement && t.isContentEditable);
+  if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
+    e.preventDefault();
+    navigate("browse");
+    shell.requestSearchFocus();
+  }
+}
+
+let removeFlush: (() => void) | null = null;
+
+onMounted(() => {
+  shell.init();
+  shell.loadVersion();
+  auth.init();
+  removeFlush = installFlushOnHide();
+  document.addEventListener("keydown", onKeydown);
+});
+
+onBeforeUnmount(() => {
+  removeFlush?.();
+  document.removeEventListener("keydown", onKeydown);
+});
 </script>
 
 <template>
-    <loading-screen v-if="!boot.finished"/>
-    <main v-else>
+  <LoadingScreen v-if="!boot.finished" />
+  <template v-else>
+    <main>
       <header>
-        <a class="brand jump" data-tab="browse" aria-label="Go to home page">
+        <router-link
+          :to="{ name: 'browse' }"
+          class="brand"
+          aria-label="Go to home page"
+        >
           <img src="/logo.png" alt="SigmaKEE logo" />
           <div class="brand-text">
             <h1>SigmaKEE</h1>
@@ -17,11 +135,11 @@ const boot = useBootStore();
               Explore the Suggested Upper Merged Ontology (SUMO)
             </p>
           </div>
-        </a>
+        </router-link>
         <div class="head-meta">
           <div class="head-controls">
             <a
-              id="githubLogin"
+              v-if="!auth.signedIn"
               class="head-btn"
               href="/api/github-auth"
               title="Log in with GitHub"
@@ -41,23 +159,28 @@ const boot = useBootStore();
               <span>Log in</span>
             </a>
             <button
-              id="userMenu"
-              class="head-btn"
+              v-else
+              class="head-btn user-menu"
               type="button"
-              hidden
               title="Signed in with GitHub — click to log out"
               aria-haspopup="dialog"
-              aria-controls="logoutDialog"
+              @click="auth.logoutDialogOpen = true"
             >
-              <img id="userAvatar" alt="" width="20" height="20" />
-              <span id="userName"></span>
+              <img
+                :src="auth.user.avatarUrl"
+                :alt="auth.user.name"
+                width="20"
+                height="20"
+                class="user-avatar"
+              />
+              <span class="user-name">{{ auth.user.name }}</span>
             </button>
             <button
-              id="bugReport"
               class="head-btn"
               type="button"
               title="Report a bug"
               aria-label="Report a bug"
+              @click="shell.openBugReport()"
             >
               <svg
                 width="16"
@@ -82,13 +205,12 @@ const boot = useBootStore();
               </svg>
             </button>
             <button
-              id="settingsBtn"
-              class="head-btn"
+              class="head-btn settings-btn"
               type="button"
               title="Settings"
               aria-label="Settings"
               aria-haspopup="dialog"
-              aria-controls="settingsDialog"
+              @click="shell.settingsOpen = true"
             >
               ⚙
             </button>
@@ -97,34 +219,283 @@ const boot = useBootStore();
       </header>
 
       <nav class="tabs" role="tablist">
-        <div class="tab-group" data-label="Explore">
-          <button role="tab" data-tab="browse" :aria-selected="$route.name == 'home' || $route.name == 'browse'">
-            Browse
-          </button>
-        </div>
-        <div class="tab-group" data-label="Reason">
-          <button role="tab" data-tab="prover" :aria-selected="$route.name == 'prover'">
-            Ask/Tell
-          </button>
-          <button role="tab" data-tab="audit" :aria-selected="$route.name == 'audit'">
-            Audit
-          </button>
-        </div>
-        <div class="tab-group" data-label="Develop">
-          <button role="tab" data-tab="edit" :aria-selected="$route.name == 'edit'">Edit</button>
-          <button role="tab" data-tab="diagnostics" :aria-selected="$route.name == 'diagnostics'">
-            Diagnostics
-          </button>
-        </div>
-        <div class="tab-group" data-label="Manage">
-          <button role="tab" data-tab="kb" :aria-selected="$route.name == 'kb'">
-            Knowledge base
-          </button>
-          <button role="tab" data-tab="history" :aria-selected="$route.name == 'history'">
-            History
+        <div
+          v-for="group in TAB_GROUPS"
+          :key="group.label"
+          class="tab-group"
+          :data-label="group.label"
+        >
+          <button
+            v-for="[name, label] in group.tabs"
+            :key="name"
+            role="tab"
+            type="button"
+            :aria-selected="isSelected(name)"
+            :class="{ disabled: gated(name) }"
+            :aria-disabled="gated(name)"
+            @click="go(name)"
+          >
+            {{ label }}
+            <span
+              v-if="name === 'diagnostics' && kb.diagnostics.length"
+              class="tab-badge"
+              :class="{ err: errorCount > 0 }"
+              >{{ kb.diagnostics.length }}</span
+            >
           </button>
         </div>
       </nav>
-    <router-view />
+
+      <router-view v-slot="{ Component }">
+        <keep-alive>
+          <component :is="Component" />
+        </keep-alive>
+      </router-view>
     </main>
+
+    <div class="toast" v-show="kb.promoting" role="status">
+      <span class="spin"></span>
+      <span>Post-processing — axiomatizing the knowledge base…</span>
+    </div>
+
+    <SettingsDialog />
+    <LoginDialog />
+    <LogoutDialog />
+    <VersionDialog />
+  </template>
 </template>
+
+<style scoped>
+/* Header: the brand (logo + title + tagline) is one inseparable unit; the
+   meta block (theme/bug/settings controls) sits to its right on wide screens
+   and becomes a full-width row underneath on narrow ones. */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  color: inherit;
+}
+.brand:hover {
+  text-decoration: none;
+}
+.brand img {
+  width: 50px;
+  flex: 0 0 auto;
+}
+.brand-text {
+  min-width: 0;
+}
+.head-meta {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+}
+@media (max-width: 620px) {
+  .brand img {
+    width: 38px;
+  }
+  h1 {
+    font-size: 18px;
+  }
+  .sub {
+    font-size: 12px;
+  }
+  .head-meta {
+    margin-left: 0;
+    flex: 1 1 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    text-align: left;
+  }
+}
+.head-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+@media (max-width: 620px) {
+  .head-controls {
+    margin-top: 0;
+  }
+}
+
+nav.tabs {
+  display: flex;
+  gap: 0;
+  margin: 18px 0 16px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  /* On a narrow viewport this strip scrolls horizontally with no native
+     scrollbar on most mobile browsers -- fade both edges so a clipped tab
+     reads as "more to scroll to," not as the strip simply ending there. */
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 16px,
+    black calc(100% - 16px),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 16px,
+    black calc(100% - 16px),
+    transparent
+  );
+}
+/* Tabs grouped by activity: a quiet label above each cluster. */
+.tab-group {
+  display: flex;
+  gap: 2px;
+  position: relative;
+  padding-top: 14px;
+  flex: 0 0 auto;
+}
+.tab-group::before {
+  content: attr(data-label);
+  position: absolute;
+  top: 0;
+  left: 14px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--muted);
+  opacity: 0.8;
+}
+.tab-group + .tab-group {
+  margin-left: 10px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+nav.tabs button {
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 9px 14px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+nav.tabs button[aria-selected="true"] {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+nav.tabs button.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* Diagnostics count on its tab button; colored by worst severity. */
+.tab-badge {
+  display: inline-block;
+  min-width: 17px;
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--warn);
+}
+.tab-badge.err {
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  color: var(--muted);
+}
+/* Header controls: GitHub login/user-menu, bug report, settings -- one
+   shared size and visual style so signing in doesn't change the row's
+   rhythm. Widths differ (icon-only vs. icon+label vs. avatar+name), which
+   is expected; height and style stay identical. */
+.head-btn {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.head-btn:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.head-btn svg {
+  display: block;
+}
+.user-avatar {
+  border-radius: 50%;
+  display: block;
+}
+.user-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The gear glyph renders small relative to its em box compared to the SVG
+   icons beside it (bug report) or the avatar (signed in) -- bump it alone. */
+.settings-btn {
+  font-size: 20px;
+}
+
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  color: var(--muted);
+  z-index: 50;
+}
+.toast .spin {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

@@ -4,6 +4,7 @@
  *  branch the KIF fetch does. */
 
 import { defineStore } from "pinia";
+import { toRaw } from "vue";
 import { call } from "../services/sigma";
 import { fetchText } from "../services/sources";
 import { rawUrl, WORDNET_DIR, WORDNET_ENABLED_KEY } from "../constants";
@@ -76,14 +77,18 @@ export const useWordNetStore = defineStore("wordnet", {
           ),
         ),
       );
-      const mappingFiles = texts.map(([text, , name]) => ({ name, size: byteSize(text) }));
+      const mappingFiles = texts.map(([text, , name]) => ({
+        name,
+        size: byteSize(text),
+      }));
 
-      const indexSenseText = await fetchText(rawUrl(`${WORDNET_DIR}/${INDEX_SENSE}`)).catch(
-        () => null,
-      );
-      const indexSenseFile = indexSenseText === null
-        ? []
-        : [{ name: INDEX_SENSE, size: byteSize(indexSenseText) }];
+      const indexSenseText = await fetchText(
+        rawUrl(`${WORDNET_DIR}/${INDEX_SENSE}`),
+      ).catch(() => null);
+      const indexSenseFile =
+        indexSenseText === null
+          ? []
+          : [{ name: INDEX_SENSE, size: byteSize(indexSenseText) }];
 
       const excResults = await Promise.all(
         EXC_FILES.map((name) =>
@@ -92,8 +97,13 @@ export const useWordNetStore = defineStore("wordnet", {
             .catch(() => null),
         ),
       );
-      const excHits = excResults.filter((r): r is { name: string; text: string } => r !== null);
-      const excFiles = excHits.map(({ name, text }) => ({ name, size: byteSize(text) }));
+      const excHits = excResults.filter(
+        (r): r is { name: string; text: string } => r !== null,
+      );
+      const excFiles = excHits.map(({ name, text }) => ({
+        name,
+        size: byteSize(text),
+      }));
       const exceptions = excHits.map((r) => r.text).join("\n");
 
       const byPos = Object.fromEntries(texts.map(([text, pos]) => [pos, text]));
@@ -117,7 +127,8 @@ export const useWordNetStore = defineStore("wordnet", {
       if (!this.enabled) return;
       try {
         const payload = await this.fetchPayload();
-        await call("loadWordNet", payload);
+        // A reactive proxy cannot be structured-cloned across postMessage.
+        await call("loadWordNet", { ...toRaw(payload) });
       } catch (e) {
         console.warn("WordNet lexicon install failed:", e);
       }

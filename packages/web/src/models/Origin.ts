@@ -17,7 +17,12 @@ export class GitOrigin extends Origin {
   repo: string;
   branch: string;
 
-  constructor(service: "github" | "gitlab", owner: string, repo: string, branch: string) {
+  constructor(
+    service: "github" | "gitlab",
+    owner: string,
+    repo: string,
+    branch: string,
+  ) {
     super();
     this.service = service;
     this.owner = owner;

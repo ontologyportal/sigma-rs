@@ -7,7 +7,12 @@
  * imported from anywhere without introducing a cycle.
  */
 
-export const SUMO = { owner: "ontologyportal", repo: "sumo", branch: "master", ref: "HEAD" };
+export const SUMO = {
+  owner: "ontologyportal",
+  repo: "sumo",
+  branch: "master",
+  ref: "HEAD",
+};
 export const MERGE = "Merge.kif"; // the foundational ontology, loaded on startup
 export const MIDLEVEL = "Mid-level-ontology.kif"; // also loaded on startup
 
@@ -36,5 +41,13 @@ export const PROMOTE_TABS = ["diagnostics", "prover", "audit"];
 
 export const BASE = import.meta.env.BASE_URL;
 
-export const TABS = ['browse', 'kb', 'diagnostics', 'prover', 'audit', 'edit', 'history'] as const;
-export type TabName = typeof TABS[number];
+export const TABS = [
+  "browse",
+  "kb",
+  "diagnostics",
+  "prover",
+  "audit",
+  "edit",
+  "history",
+] as const;
+export type TabName = (typeof TABS)[number];

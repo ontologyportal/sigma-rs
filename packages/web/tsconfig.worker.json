@@ -17,5 +17,5 @@
     "strict": false,
     "noImplicitAny": false
   },
-  "include": ["src/sigma.worker.ts"]
+  "include": ["src/worker/sigma.worker.ts"]
 }

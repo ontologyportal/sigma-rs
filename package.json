@@ -10,5 +10,12 @@
     "vscode:compile": "npm run compile --workspace sigmakee-vscode",
     "vscode:package": "npm run package --workspace sigmakee-vscode",
     "lsp:install": "npm run server:install --workspace sigmakee-vscode"
+  },
+  "dependencies": {
+    "vue": "^3.5.42",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8"
   }
 }

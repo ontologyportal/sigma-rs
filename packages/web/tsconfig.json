@@ -24,5 +24,5 @@
   // sigma.worker.ts has its own config (tsconfig.worker.json): it runs in
   // a Worker global scope, not a window, and needs the WebWorker lib instead
   // of DOM.
-  "exclude": ["node_modules", "dist", "functions", "src/sigma.worker.ts"]
+  "exclude": ["node_modules", "dist", "functions", "src/worker/sigma.worker.ts"]
 }

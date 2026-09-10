@@ -4,6 +4,7 @@
 import { rawUrl } from "../constants";
 import type { Origin } from "../models/Origin";
 import { useBootStore } from "../stores/boot";
+import { useChangesStore } from "../stores/changes";
 
 export async function fetchText(url: string): Promise<string> {
   const r = await fetch(url);
@@ -11,10 +12,19 @@ export async function fetchText(url: string): Promise<string> {
   return r.text();
 }
 
-export async function fromOrigin(name: string, origin: Origin): Promise<string> {
+export async function fromOrigin(
+  name: string,
+  origin: Origin,
+): Promise<string> {
   switch (origin.kind) {
-    case "sumo":
-      return fetchText(rawUrl(name));
+    case "sumo": {
+      // An unpushed local edit outranks upstream. The edit store is separate
+      // from the KB snapshot cache for exactly this reason: an upstream commit
+      // discards that cache and sends every 'sumo' file back through here,
+      // which would otherwise silently restore the pre-edit text.
+      const edited = await useChangesStore().readEdit(name);
+      return edited ?? (await fetchText(rawUrl(name)));
+    }
     case "url":
       return fetchText(name);
     case "file": {
@@ -49,6 +59,8 @@ export async function fetchAllTexts(
       onDone(++done);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, names.length) }, worker));
+  await Promise.all(
+    Array.from({ length: Math.min(limit, names.length) }, worker),
+  );
   return out;
 }
