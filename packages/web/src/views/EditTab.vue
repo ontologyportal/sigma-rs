@@ -481,6 +481,10 @@ function onTaken(t: string) {
     text.value = t;
 }
 
+function onKeep(row: ChangeRow) {
+  changes.acknowledgeUpstream(row.name, row.origin);
+}
+
 function onJump({ line, col }: { line: number; col: number }) {
   ed.value?.revealLine(line, col);
 }
@@ -690,7 +694,12 @@ function onJump({ line, col }: { line: number; col: number }) {
         @diff="openDiff"
       />
 
-      <DiffDialog v-model="diffOpen" :row="diffRow" @taken="onTaken" />
+      <DiffDialog
+        v-model="diffOpen"
+        :row="diffRow"
+        @taken="onTaken"
+        @keep="onKeep"
+      />
     </Card>
 
     <Card class="edit-pane" :class="{ split: tptpOpen }">

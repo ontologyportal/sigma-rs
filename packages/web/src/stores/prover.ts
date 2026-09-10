@@ -113,7 +113,7 @@ export const useProverStore = defineStore("prover", {
     /** Current settings as a plain object for the worker. Numeric fields
      *  coerce to u32-safe ints (falling back to the default when not a
      *  non-negative number); `overrides` wins, so callers with their own
-     *  input (Audit's time limit) get the same coercion. */
+     *  input get the same coercion. */
     config(overrides: ProverConfig = {}): ProverConfig {
       const out: Record<string, number | boolean> = {};
       for (const { key, dflt } of CFG_KNOBS) {

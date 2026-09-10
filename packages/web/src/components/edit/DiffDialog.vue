@@ -23,6 +23,10 @@ const emit = defineEmits<{
   "update:modelValue": [value: boolean];
   /** Upstream's text replaced the local copy (already saved to the KB). */
   taken: [text: string];
+  /** The user chose to keep the local copy of a STALE row over the moved
+   *  upstream; the owner acknowledges the new upstream base. Not emitted
+   *  for a plain diff review of a non-stale row. */
+  keep: [row: ChangeRow];
 }>();
 
 const changes = useChangesStore();
@@ -39,7 +43,7 @@ const message = computed(() => {
   const row = props.row;
   if (!row) return "";
   return row.stale
-    ? `${row.name} changed upstream after you started editing it. Keeping yours leaves your copy based on the older version; taking upstream's discards every local change to this file.`
+    ? `${row.name} changed upstream after you started editing it. Keeping yours proceeds with your copy, so your next pull request replaces the newer upstream text; taking upstream's discards every local change to this file.`
     : `${row.name} — upstream on the left, your saved copy on the right.`;
 });
 const takeLabel = computed(() =>
@@ -53,6 +57,12 @@ const localText = computed(() =>
 
 function close() {
   emit("update:modelValue", false);
+}
+
+function keep() {
+  const row = props.row;
+  if (row?.stale) emit("keep", row);
+  close();
 }
 
 async function load() {
@@ -115,7 +125,7 @@ async function take() {
       <button class="btn ghost" type="button" :disabled="busy" @click="take">
         {{ takeLabel }}
       </button>
-      <button class="btn" type="button" @click="close">Keep mine</button>
+      <button class="btn" type="button" @click="keep">Keep mine</button>
     </template>
   </BaseDialog>
 </template>

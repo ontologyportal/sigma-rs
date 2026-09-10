@@ -391,6 +391,22 @@ export const useChangesStore = defineStore("changes", {
       return this.index[k];
     },
 
+    /**
+     * Accept upstream's current version as the base of a tracked edit: the
+     * user has seen that upstream moved and chose to keep their copy anyway,
+     * so it stops reading as stale. Keeping local changes over a moved
+     * upstream means the next pull request intentionally replaces the newer
+     * upstream text. No-op when the record or upstream's SHA is unknown.
+     */
+    acknowledgeUpstream(name: string, origin: OriginKind): void {
+      const rec = this.index[key(name, origin)];
+      if (!rec) return;
+      const up = this.upstreamSha(rec.path);
+      if (!up || rec.baseBlobSha === up) return;
+      rec.baseBlobSha = up;
+      this.persist();
+    },
+
     /** Stamp every file just pushed with the pull request now carrying it. */
     markProposed(
       entries: {

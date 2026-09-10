@@ -14,7 +14,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { updateParams } from "../router";
+import { navigate, updateParams } from "../router";
 import { call } from "../services/sigma";
 import { useKBStore } from "../stores/kb";
 import { useShellStore } from "../stores/shell";
@@ -37,6 +37,8 @@ const inputEl = ref<HTMLInputElement | null>(null);
 const input = ref("");
 const wordnetOnly = ref(false);
 const hits = shallowRef<any[] | null>(null);
+/** Keyboard-highlighted result row, -1 for none. */
+const selected = ref(-1);
 const langNote = ref("");
 const searchError = ref("");
 const page = shallowRef<any | null>(null);
@@ -59,6 +61,7 @@ function clearResults() {
   searchSeq += 1;
   lastSearch = null;
   hits.value = null;
+  selected.value = -1;
   langNote.value = "";
   searchError.value = "";
 }
@@ -95,11 +98,13 @@ async function runSearch(text: string) {
         note = ` (no ${kb.langLabel(language)} matches — showing all languages)`;
     }
     hits.value = found;
+    selected.value = -1;
     langNote.value = note;
   } catch (e) {
     if (seq !== searchSeq) return;
     lastSearch = null;
     hits.value = [];
+    selected.value = -1;
     searchError.value = errMsg(e);
   }
 }
@@ -196,10 +201,34 @@ function onInput() {
   }, 150);
 }
 
+/** Results are showing for the search box's text (not a man page). */
+function resultsShowing(): boolean {
+  return (
+    !sym.value && searchIsCurrent(input.value.trim()) && !!hits.value?.length
+  );
+}
+
+/** Open the highlighted result, or the first when none is highlighted. */
+function openSelected() {
+  const list = hits.value;
+  if (!list?.length) return;
+  const hit = list[Math.max(selected.value, 0)];
+  navigate("browse", { q: q.value, sym: hit.symbol });
+}
+
+function moveSelection(delta: number) {
+  const n = hits.value?.length ?? 0;
+  if (!n) return;
+  selected.value = Math.min(n - 1, Math.max(0, selected.value + delta));
+}
+
+/** Enter: open a result when this text's results are already showing,
+ *  otherwise run the search without waiting for the debounce. */
 function onSubmit() {
   clearTimeout(debounce);
   debounce = 0;
-  updateParams({ q: input.value.trim() });
+  if (resultsShowing()) openSelected();
+  else updateParams({ q: input.value.trim() });
 }
 
 function onClear() {
@@ -227,7 +256,6 @@ function backToResults() {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  if (e.key !== "Escape") return;
   const t = e.target;
   const typing =
     t instanceof HTMLInputElement ||
@@ -235,8 +263,25 @@ function onKeydown(e: KeyboardEvent) {
     t instanceof HTMLSelectElement ||
     (t instanceof HTMLElement && t.isContentEditable);
   if (typing && t !== inputEl.value) return;
-  if (sym.value) backToResults();
-  else if (t === inputEl.value && input.value) onClear();
+  switch (e.key) {
+    case "Escape":
+      if (sym.value) backToResults();
+      else if (t === inputEl.value && input.value) onClear();
+      break;
+    case "ArrowDown":
+    case "ArrowUp":
+      if (!resultsShowing()) return;
+      e.preventDefault();
+      moveSelection(e.key === "ArrowDown" ? 1 : -1);
+      break;
+    case "Enter":
+      // In the search box Enter is the form submit; elsewhere it opens the
+      // highlighted result the same way.
+      if (t === inputEl.value || !resultsShowing()) return;
+      e.preventDefault();
+      openSelected();
+      break;
+  }
 }
 
 // The request can arrive while this view is still deactivated, or before it
@@ -329,6 +374,7 @@ onActivated(() => {
       v-else-if="hits"
       :hits="hits"
       :query="q"
+      :selected="selected"
       :lang-note="langNote"
     />
   </template>

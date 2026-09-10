@@ -144,7 +144,7 @@ async function render() {
         nodeSep: 14,
         rankSep: 46,
       } as cytoscapeDagre.DagreLayoutOptions,
-      wheelSensitivity: 0.2,
+      wheelSensitivity: 0.5,
     });
     status.value = "";
     cy.on("tap", "node", (e) => {

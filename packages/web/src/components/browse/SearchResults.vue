@@ -1,17 +1,31 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from "vue";
 import { navigate } from "../../router";
 import { esc } from "../../utils/format";
 import Card from "../Card.vue";
 import WordNetEntry from "./WordNetEntry.vue";
 
-defineProps<{
+const props = defineProps<{
   /** The worker's `search` hits, newest query only. */
   hits: any[];
   /** The query the hits answer, for the count line and the WordNet narrowing. */
   query: string;
+  /** Index of the keyboard-highlighted row, -1 for none. */
+  selected: number;
   /** Appended to the count line when the hits came from the all-languages fallback. */
   langNote: string;
 }>();
+
+const listEl = ref<HTMLUListElement | null>(null);
+
+watch(
+  () => props.selected,
+  async (i) => {
+    if (i < 0) return;
+    await nextTick();
+    listEl.value?.children[i]?.scrollIntoView({ block: "nearest" });
+  },
+);
 
 /** Plain-text breakdown of a search hit's rank score, one labeled
  *  contribution per line plus the total -- rendered as a native `title`
@@ -70,8 +84,8 @@ function boldifyDoc(text: unknown): string {
       <code>{{ query }}</code
       >{{ langNote }}
     </div>
-    <ul class="results">
-      <li v-for="(h, i) in hits" :key="i">
+    <ul ref="listEl" class="results">
+      <li v-for="(h, i) in hits" :key="i" :class="{ selected: i === selected }">
         <a
           class="sym open"
           @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
@@ -101,6 +115,10 @@ function boldifyDoc(text: unknown): string {
 }
 .count {
   margin-bottom: 6px;
+}
+.results li.selected {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 6px;
 }
 .snippet {
   color: var(--muted);

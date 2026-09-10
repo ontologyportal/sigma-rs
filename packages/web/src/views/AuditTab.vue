@@ -11,7 +11,6 @@ import ProverSettings from "../components/ProverSettings.vue";
 
 const prover = useProverStore();
 
-const auditTimeSecs = ref(15);
 const auditLimit = ref(5);
 const auditing = ref(false);
 const error = ref("");
@@ -57,16 +56,16 @@ async function runAudit() {
   auditing.value = true;
   error.value = "";
   try {
-    // Audit inherits the Ask/Tell prover settings (including backend, via
-    // the shared settings panel both tabs toggle), but keeps its own time
-    // limit.
+    // Audit inherits the Ask/Tell prover settings (including backend and
+    // time limit) via the shared settings panel both tabs toggle.
+    const config = prover.config();
     const res = vampire
       ? await call("auditVampire", {
-          timeLimitSecs: auditTimeSecs.value,
+          timeLimitSecs: config.timeLimitSecs,
           extraArgs: prover.vampireArgs.trim(),
         })
       : await call("audit", {
-          config: prover.config({ timeLimitSecs: auditTimeSecs.value }),
+          config,
           limit: Math.max(1, Number(auditLimit.value) || 5),
         });
     result.value = res.result;
@@ -88,15 +87,6 @@ async function runAudit() {
           the proofs for said contradictions.
         </div>
         <div class="inline">
-          <div class="num-field">
-            <label for="auditTime">time limit (s)</label
-            ><input
-              type="number"
-              id="auditTime"
-              v-model.number="auditTimeSecs"
-              min="0"
-            />
-          </div>
           <div class="num-field" v-if="!prover.vampireSelected">
             <label for="auditLimit">max found</label
             ><input

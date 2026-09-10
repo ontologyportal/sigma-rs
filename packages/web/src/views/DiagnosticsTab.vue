@@ -33,6 +33,37 @@ const DIM_LABEL: Record<Dim, string> = {
   code: "Code",
 };
 
+/** `?sort=` values; `""` (absent) keeps the validator's reported order. */
+const SORT_OPTIONS: Option[] = [
+  { value: "", label: "As reported" },
+  { value: "location", label: "File and line" },
+  { value: "code", label: "Type and code" },
+];
+const SORT_VALUES = new Set(SORT_OPTIONS.map((o) => o.value));
+
+const cmpStr = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const cmpSev = (a: Diagnostic, b: Diagnostic) =>
+  DIAG_SEV_ORDER.indexOf(a.severity) - DIAG_SEV_ORDER.indexOf(b.severity);
+
+const SORT_CMP: Record<string, (a: Diagnostic, b: Diagnostic) => number> = {
+  location: (a, b) =>
+    cmpStr(a.file || "", b.file || "") ||
+    (a.line || 0) - (b.line || 0) ||
+    (a.col || 0) - (b.col || 0),
+  code: (a, b) =>
+    cmpStr(a.kind, b.kind) || cmpStr(a.code, b.code) || cmpSev(a, b),
+};
+
+/** `list` reordered by `sort` (unchanged when `sort` is empty/unknown).
+ *  `Array.prototype.sort` is stable, so ties keep the reported order. */
+function sortDiagnostics<T extends { d: Diagnostic }>(
+  list: T[],
+  sort: string,
+): T[] {
+  const cmp = SORT_CMP[sort];
+  return cmp ? [...list].sort((a, b) => cmp(a.d, b.d)) : list;
+}
+
 /**
  * One pass over `diagnostics` yielding everything a render needs:
  *
@@ -130,6 +161,10 @@ const filter = computed<Filter>(() => ({
   code: str(query.value.code),
 }));
 const page = computed(() => Math.max(0, (num(query.value.p) ?? 1) - 1));
+const sort = computed(() => {
+  const s = str(query.value.sort);
+  return SORT_VALUES.has(s) ? s : "";
+});
 
 /** The URL's filter with any value that matches nothing in its dimension
  *  cleared -- a sibling filter, a fresh validate(), or a stale deep link can
@@ -180,12 +215,21 @@ const selectOptions = computed<Record<Dim, Option[]>>(() => {
 });
 
 const activeCount = computed(
-  () => DIAG_DIMS.filter((k) => effectiveFilter.value[k]).length,
+  () =>
+    DIAG_DIMS.filter((k) => effectiveFilter.value[k]).length +
+    (sort.value ? 1 : 0),
 );
-const filterActive = computed(() => activeCount.value > 0);
+const filterActive = computed(() =>
+  DIAG_DIMS.some((k) => effectiveFilter.value[k]),
+);
 const total = computed(() => kb.diagnostics.length);
 const errors = computed(() => facets.value.errors);
-const filteredCount = computed(() => facets.value.filtered.length);
+/** The filtered list in display order -- what paging and deep-link
+ *  scrolling index into. */
+const sorted = computed(() =>
+  sortDiagnostics(facets.value.filtered, sort.value),
+);
+const filteredCount = computed(() => sorted.value.length);
 
 // Clamp the page to the current (possibly just-filtered/shrunk) result set
 // so a filter change or a smaller re-validation never strands the view
@@ -196,7 +240,7 @@ const pageCount = computed(() =>
 const pageIndex = computed(() => Math.min(page.value, pageCount.value - 1));
 const pageItems = computed(() => {
   const start = pageIndex.value * DIAG_PAGE_SIZE;
-  return facets.value.filtered.slice(start, start + DIAG_PAGE_SIZE);
+  return sorted.value.slice(start, start + DIAG_PAGE_SIZE);
 });
 const emptyHint = computed(() =>
   pageItems.value.length
@@ -229,14 +273,16 @@ function toggleFilterPanel() {
   filterOpen.value = !filterOpen.value;
 }
 
-/** The URL keys for a filter (`p` is 1-based in the URL -- friendlier to
- *  read/type than the internal 0-based index; omitted on the first page). */
-function filterParams(f: Filter, pageIdx: number) {
+/** The URL keys for a filter, sort and page (`p` is 1-based in the URL --
+ *  friendlier to read/type than the internal 0-based index; omitted on the
+ *  first page). */
+function filterParams(f: Filter, sortValue: string, pageIdx: number) {
   return {
     file: f.file,
     sev: f.severity,
     kind: f.kind,
     code: f.code,
+    sort: sortValue,
     p: pageIdx ? pageIdx + 1 : null,
   };
 }
@@ -246,15 +292,20 @@ function setFilter(dim: Dim, value: string) {
   // Picking a type invalidates a code chosen under a different type -- clear
   // it rather than leave a stale, now-impossible combination active.
   if (dim === "kind") next.code = "";
-  updateParams(filterParams(next, 0));
+  updateParams(filterParams(next, sort.value, 0));
 }
 
 function onSelect(dim: Dim, e: Event) {
   setFilter(dim, (e.target as HTMLSelectElement).value);
 }
 
+function onSortSelect(e: Event) {
+  const value = (e.target as HTMLSelectElement).value;
+  updateParams(filterParams(effectiveFilter.value, value, 0));
+}
+
 function goToPage(pageIdx: number) {
-  updateParams(filterParams(effectiveFilter.value, pageIdx));
+  updateParams(filterParams(effectiveFilter.value, sort.value, pageIdx));
 }
 
 async function revalidate() {
@@ -275,7 +326,7 @@ async function revalidate() {
  * nothing left to do).
  */
 async function scrollToDiagnostic(line: number) {
-  const { filtered } = facets.value;
+  const filtered = sorted.value;
   let bestPos = -1;
   let bestDist = Infinity;
   filtered.forEach(({ d }, pos) => {
@@ -324,7 +375,8 @@ onQuery((q) => {
   const changed =
     !lastApplied || DIAG_DIMS.some((k) => lastApplied![k] !== next[k]);
   lastApplied = next;
-  if (changed && DIAG_DIMS.some((k) => next[k])) filterOpen.value = true;
+  if (changed && (DIAG_DIMS.some((k) => next[k]) || str(q.sort)))
+    filterOpen.value = true;
   // `?l` (deep-link to one diagnostic) takes precedence over `?p` -- it jumps
   // to whatever page that diagnostic actually falls on.
   const line = num(q.l);
@@ -395,6 +447,14 @@ onQuery((q) => {
               :key="o.value"
               :value="o.value"
             >
+              {{ o.label }}
+            </option>
+          </select>
+        </div>
+        <div>
+          <label for="diag-sort">Sort</label>
+          <select id="diag-sort" :value="sort" @change="onSortSelect">
+            <option v-for="o in SORT_OPTIONS" :key="o.value" :value="o.value">
               {{ o.label }}
             </option>
           </select>
@@ -499,7 +559,7 @@ onQuery((q) => {
   transition: background 1s ease;
 }
 /* Filter button + count badge (same shape as the tab-badge diagnostic
-   count) -- the four selects live in the .settings panel it toggles, so the
+   count) -- the filter and sort selects live in the .settings panel it toggles, so the
    row above never wraps. */
 .filter-btn {
   display: inline-flex;
