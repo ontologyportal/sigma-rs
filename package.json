@@ -9,13 +9,22 @@
     "build": "npm run build --workspace sigmakee",
     "vscode:compile": "npm run compile --workspace sigmakee-vscode",
     "vscode:package": "npm run package --workspace sigmakee-vscode",
-    "lsp:install": "npm run server:install --workspace sigmakee-vscode"
+    "lsp:install": "npm run server:install --workspace sigmakee-vscode",
+    "lint": "eslint .",
+    "fmt": "prettier --write \"packages/**/*.{js,mjs,cjs,ts,vue,css,json}\"",
+    "fmt:check": "prettier --check \"packages/**/*.{js,mjs,cjs,ts,vue,css,json}\""
   },
   "dependencies": {
     "vue": "^3.5.42",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.8"
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "eslint": "^10.10.0",
+    "eslint-plugin-vue": "^10.11.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.70.0"
   }
 }

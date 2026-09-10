@@ -95,7 +95,44 @@ else
 fi
 rm -f "$test_log"
 
-if [ -n "$build_failed" ] || [ -n "$test_failed" ]  || [ -n "$clippy_failed" ]  || [ -n "$lint_failed" ]; then
+js_fmt_failed=""
+js_lint_failed=""
+
+# JavaScript/TypeScript workspace (packages/): prettier + eslint, via the
+# root package.json scripts. Skipped when npm or node_modules is missing.
+if command -v npm >/dev/null 2>&1 && [ -f "package.json" ] && [ -d "node_modules" ]; then
+    echo -n "🎀 Running Format Check: prettier (pre-commit check)..."
+    js_fmt_log=$(mktemp)
+    if ! npm run -s fmt:check >"$js_fmt_log" 2>&1; then
+        echo -e "${RED}failed${NC}"
+        echo "⚠️  prettier failed (run 'npm run fmt'):" >&2
+        echo "----------------------------------------" >&2
+        tail -n 40 "$js_fmt_log" >&2
+        echo "----------------------------------------" >&2
+        js_fmt_failed=1
+    else
+        printf "${GRE}ok${NC}\n"
+    fi
+    rm -f "$js_fmt_log"
+
+    echo -n "🔍 Running Static Code Check: eslint (pre-commit check)..."
+    js_lint_log=$(mktemp)
+    if ! npm run -s lint >"$js_lint_log" 2>&1; then
+        echo -e "${RED}failed${NC}"
+        echo "⚠️  eslint failed:" >&2
+        echo "----------------------------------------" >&2
+        tail -n 40 "$js_lint_log" >&2
+        echo "----------------------------------------" >&2
+        js_lint_failed=1
+    else
+        printf "${GRE}ok${NC}\n"
+    fi
+    rm -f "$js_lint_log"
+else
+    echo "⚠️  npm or node_modules not found — skipping prettier/eslint checks." >&2
+fi
+
+if [ -n "$build_failed" ] || [ -n "$test_failed" ]  || [ -n "$clippy_failed" ]  || [ -n "$lint_failed" ] || [ -n "$js_fmt_failed" ] || [ -n "$js_lint_failed" ]; then
     echo "" >&2
     echo "⚠️  Build and/or tests failed. This commit won't pass CI/PR checks as-is." >&2
 

@@ -10,55 +10,64 @@
 // The TPTP dialect (`fof` | `tff`) is read from the
 // `sumo.tptp.lang` setting.
 
-import * as path from 'path';
-import { Uri, window, workspace } from 'vscode';
+import * as path from "path";
+import { Uri, window, workspace } from "vscode";
 
-import { SumoKernelClient } from './kernelClient';
-import { ActiveKb } from './kbSession';
+import { SumoKernelClient } from "./kernelClient";
+import { ActiveKb } from "./kbSession";
 
 export async function generateTptpCommand(
-    kernel:    SumoKernelClient,
-    getActive: () => ActiveKb | null,
+  kernel: SumoKernelClient,
+  getActive: () => ActiveKb | null,
 ): Promise<void> {
-    const active = getActive();
-    if (!active) {
-        window.showInformationMessage('No active knowledge base.  Load one first.');
-        return;
-    }
+  const active = getActive();
+  if (!active) {
+    window.showInformationMessage("No active knowledge base.  Load one first.");
+    return;
+  }
 
-    const lang = workspace.getConfiguration('sumo')
-        .get<string>('tptp.lang', 'fof');
+  const lang = workspace
+    .getConfiguration("sumo")
+    .get<string>("tptp.lang", "fof");
 
-    let result: { tptp: string; formulaCount: number };
-    try {
-        result = await window.withProgress(
-            { location: { viewId: 'sumoKnowledgeBases' }, title: 'SUMO: generating TPTP…', cancellable: false },
-            () => kernel.generateTptp({ lang }),
-        );
-    } catch (err) {
-        window.showErrorMessage(`TPTP generation failed: ${String(err)}`);
-        return;
-    }
-
-    const target = await window.showSaveDialog({
-        defaultUri: defaultTargetUri(active),
-        filters:    { TPTP: ['p', 'tptp'] },
-        title:      'Save generated TPTP',
-    });
-    if (!target) { return; }
-
-    await workspace.fs.writeFile(target, Buffer.from(result.tptp, 'utf8'));
-    const doc = await workspace.openTextDocument(target);
-    await window.showTextDocument(doc, { preview: false });
-    window.setStatusBarMessage(
-        `TPTP saved: ${result.formulaCount} formula${result.formulaCount === 1 ? '' : 's'}`,
-        5000,
+  let result: { tptp: string; formulaCount: number };
+  try {
+    result = await window.withProgress(
+      {
+        location: { viewId: "sumoKnowledgeBases" },
+        title: "SUMO: generating TPTP…",
+        cancellable: false,
+      },
+      () => kernel.generateTptp({ lang }),
     );
+  } catch (err) {
+    window.showErrorMessage(`TPTP generation failed: ${String(err)}`);
+    return;
+  }
+
+  const target = await window.showSaveDialog({
+    defaultUri: defaultTargetUri(active),
+    filters: { TPTP: ["p", "tptp"] },
+    title: "Save generated TPTP",
+  });
+  if (!target) {
+    return;
+  }
+
+  await workspace.fs.writeFile(target, Buffer.from(result.tptp, "utf8"));
+  const doc = await workspace.openTextDocument(target);
+  await window.showTextDocument(doc, { preview: false });
+  window.setStatusBarMessage(
+    `TPTP saved: ${result.formulaCount} formula${result.formulaCount === 1 ? "" : "s"}`,
+    5000,
+  );
 }
 
 function defaultTargetUri(active: ActiveKb): Uri | undefined {
-    const first = Array.from(active.files).sort()[0];
-    const dir = first ? path.dirname(first) : undefined;
-    if (!dir) { return undefined; }
-    return Uri.file(path.join(dir, `${active.name}.p`));
+  const first = Array.from(active.files).sort()[0];
+  const dir = first ? path.dirname(first) : undefined;
+  if (!dir) {
+    return undefined;
+  }
+  return Uri.file(path.join(dir, `${active.name}.p`));
 }

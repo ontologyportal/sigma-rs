@@ -8,48 +8,45 @@
 // streaming support.  The panel is disposed when the user closes it;
 // the next ask spawns a fresh one.
 
-import {
-    Uri,
-    ViewColumn,
-    WebviewPanel,
-    window,
-} from 'vscode';
+import { Uri, ViewColumn, WebviewPanel, window } from "vscode";
 
-import type { AskResult } from './kernelClient';
+import type { AskResult } from "./kernelClient";
 
 /**
  * Show an ask-result panel for `result`.  `query` is the conjecture
  * that was sent; echoed in the header for context.
  */
 export function showAskResult(query: string, result: AskResult): WebviewPanel {
-    const panel = window.createWebviewPanel(
-        'sumoAsk',
-        `Ask: ${truncate(query, 40)}`,
-        ViewColumn.Beside,
-        {
-            enableScripts: false,      // the page is fully static
-            localResourceRoots: [],    // defence in depth
-            retainContextWhenHidden: true,
-        },
-    );
-    panel.webview.html = renderHtml(query, result);
-    return panel;
+  const panel = window.createWebviewPanel(
+    "sumoAsk",
+    `Ask: ${truncate(query, 40)}`,
+    ViewColumn.Beside,
+    {
+      enableScripts: false, // the page is fully static
+      localResourceRoots: [], // defence in depth
+      retainContextWhenHidden: true,
+    },
+  );
+  panel.webview.html = renderHtml(query, result);
+  return panel;
 }
 
 function renderHtml(query: string, result: AskResult): string {
-    const { cls, icon } = verdictStyle(result.status);
-    const proof = result.proofKif.length === 0
-        ? '<p class="muted">(no proof steps — the prover did not emit a proof section, or the conjecture was disproved / timed out)</p>'
-        : `<ol class="proof">${result.proofKif.map(s => `<li><code>${escapeHtml(s)}</code></li>`).join('')}</ol>`;
+  const { cls, icon } = verdictStyle(result.status);
+  const proof =
+    result.proofKif.length === 0
+      ? '<p class="muted">(no proof steps — the prover did not emit a proof section, or the conjecture was disproved / timed out)</p>'
+      : `<ol class="proof">${result.proofKif.map((s) => `<li><code>${escapeHtml(s)}</code></li>`).join("")}</ol>`;
 
-    const bindings = result.bindings.length === 0
-        ? ''
-        : `<section>
+  const bindings =
+    result.bindings.length === 0
+      ? ""
+      : `<section>
              <h3>Bindings</h3>
-             <ul>${result.bindings.map(b => `<li><code>${escapeHtml(b)}</code></li>`).join('')}</ul>
+             <ul>${result.bindings.map((b) => `<li><code>${escapeHtml(b)}</code></li>`).join("")}</ul>
            </section>`;
 
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -130,36 +127,44 @@ function renderHtml(query: string, result: AskResult): string {
 
   <details>
     <summary>Raw Vampire output</summary>
-    <pre>${escapeHtml(result.raw || '(empty)')}</pre>
+    <pre>${escapeHtml(result.raw || "(empty)")}</pre>
   </details>
 </body>
 </html>`;
 }
 
 function verdictStyle(status: string): { cls: string; icon: string } {
-    switch (status) {
-        case 'Proved':       return { cls: 'proved',       icon: '✓' };
-        case 'Disproved':    return { cls: 'disproved',    icon: '✗' };
-        case 'Consistent':   return { cls: 'consistent',   icon: '≈' };
-        case 'Inconsistent': return { cls: 'inconsistent', icon: '⊥' };
-        case 'Timeout':      return { cls: 'timeout',      icon: '⏱' };
-        case 'Unknown':
-        default:             return { cls: 'unknown',      icon: '?' };
-    }
+  switch (status) {
+    case "Proved":
+      return { cls: "proved", icon: "✓" };
+    case "Disproved":
+      return { cls: "disproved", icon: "✗" };
+    case "Consistent":
+      return { cls: "consistent", icon: "≈" };
+    case "Inconsistent":
+      return { cls: "inconsistent", icon: "⊥" };
+    case "Timeout":
+      return { cls: "timeout", icon: "⏱" };
+    case "Unknown":
+    default:
+      return { cls: "unknown", icon: "?" };
+  }
 }
 
 function truncate(s: string, max: number): string {
-    if (s.length <= max) { return s; }
-    return s.slice(0, max - 1) + '…';
+  if (s.length <= max) {
+    return s;
+  }
+  return s.slice(0, max - 1) + "…";
 }
 
 function escapeHtml(s: string): string {
-    return s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // Unused-import guard so `Uri` isn't stripped when the file is

@@ -530,7 +530,7 @@ export function formatKif(text, { indentUnit = "   " } = {}) {
     let prevWordEnd = -1; // end index of the last bare word token, for the
     // "head(" adjacency check below
     while ((m = KIF_REFLOW_SCAN_RE.exec(scanText))) {
-      const [full, , , openStr, paren, word] = m; // [full, comment, closedStr, openStr, paren, word]
+      const [, , , openStr, paren, word] = m; // [full, comment, closedStr, openStr, paren, word]
       if (paren === "(") {
         const parentLevel = depth - 1;
         const exempt =

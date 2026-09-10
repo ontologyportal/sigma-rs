@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue'
+import { defineConfig } from "vite";
+import vue from "@vitejs/plugin-vue";
 
 // vite.config.ts runs under Node, not the browser -- but this is a browser
 // package, so pulling in @types/node globally would leak Node's `setTimeout`
@@ -13,27 +13,25 @@ export default defineConfig({
   // SPA fallback serves index.html at deeper paths (/edit/), where
   // './assets/main.js' resolves to '/edit/assets/main.js', comes back as
   // index.html, and is rejected on MIME type, so the page renders blank.
-  base: process.env.VITE_BASE || '/',
+  base: process.env.VITE_BASE || "/",
 
   server: {
     port: 8080,
     // Cross-origin isolation, which is what grants SharedArrayBuffer to the
     // pthreads-built vampire.wasm. Mirrors public/_headers.
     headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
     },
   },
 
-  plugins: [
-    vue()
-  ],
+  plugins: [vue()],
 
   // Serve index.html for unmatched paths: they are client-side routes (see
   // src/router.ts's vue-router instance), not missing assets.
-  appType: 'spa',
+  appType: "spa",
 
   worker: {
-    format: 'es',
+    format: "es",
   },
 });

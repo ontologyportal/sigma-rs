@@ -17,26 +17,32 @@
 // paths, so this keeps working whether npm hoists a package to the workspace
 // root or installs it locally.
 
-import { cp, mkdir, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cp, mkdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const extRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const extRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Absolute path to an installed package's root directory. */
 function packageRoot(spec) {
   return dirname(fileURLToPath(import.meta.resolve(`${spec}/package.json`)));
 }
 
-const languageRoot = packageRoot('@sigma/language');
+const languageRoot = packageRoot("@sigma/language");
 const languageAssets = [
-  ['configs/kif-language-configuration.json', 'kif-language-configuration.json'],
-  ['configs/tptp-language-configuration.json', 'tptp-language-configuration.json'],
-  ['syntaxes/kif.tmLanguage.json', 'syntaxes/kif.tmLanguage.json'],
-  ['syntaxes/tptp.tmLanguage.json', 'syntaxes/tptp.tmLanguage.json'],
+  [
+    "configs/kif-language-configuration.json",
+    "kif-language-configuration.json",
+  ],
+  [
+    "configs/tptp-language-configuration.json",
+    "tptp-language-configuration.json",
+  ],
+  ["syntaxes/kif.tmLanguage.json", "syntaxes/kif.tmLanguage.json"],
+  ["syntaxes/tptp.tmLanguage.json", "syntaxes/tptp.tmLanguage.json"],
 ];
 
-await mkdir(join(extRoot, 'syntaxes'), { recursive: true });
+await mkdir(join(extRoot, "syntaxes"), { recursive: true });
 for (const [from, to] of languageAssets) {
   await cp(join(languageRoot, from), join(extRoot, to));
   console.log(`synced ${to}`);
@@ -47,14 +53,14 @@ for (const [from, to] of languageAssets) {
 // mermaid.min.js is self-contained (no dynamic imports of its siblings).
 // Mirrored under vendor/<name>/ -- see src/taxonomy.ts.
 const vendorBundles = [
-  ['mermaid', 'mermaid.min.js'],
-  ['svg-pan-zoom', 'svg-pan-zoom.min.js'],
+  ["mermaid", "mermaid.min.js"],
+  ["svg-pan-zoom", "svg-pan-zoom.min.js"],
 ];
 
-await rm(join(extRoot, 'vendor'), { recursive: true, force: true });
+await rm(join(extRoot, "vendor"), { recursive: true, force: true });
 for (const [pkg, file] of vendorBundles) {
-  const to = join('vendor', pkg, file);
-  await mkdir(join(extRoot, 'vendor', pkg), { recursive: true });
-  await cp(join(packageRoot(pkg), 'dist', file), join(extRoot, to));
+  const to = join("vendor", pkg, file);
+  await mkdir(join(extRoot, "vendor", pkg), { recursive: true });
+  await cp(join(packageRoot(pkg), "dist", file), join(extRoot, to));
   console.log(`synced ${to}`);
 }

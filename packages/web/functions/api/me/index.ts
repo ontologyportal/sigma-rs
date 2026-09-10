@@ -50,6 +50,6 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
       avatarUrl: user.avatar_url,
       token,
     }),
-    { headers: { "Content-Type": "application/json" } }
+    { headers: { "Content-Type": "application/json" } },
   );
 };

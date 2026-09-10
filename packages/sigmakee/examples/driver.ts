@@ -11,7 +11,12 @@
  *     import { init, Session, Source } from "../dist/sdk.mjs";
  */
 import {
-  init, Session, Source, Backend, Config, type AskResult,
+  init,
+  Session,
+  Source,
+  Backend,
+  Config,
+  type AskResult,
 } from "sigmakee/sdk";
 
 export async function main(): Promise<void> {
@@ -25,10 +30,15 @@ export async function main(): Promise<void> {
   const session = new Session({ backend: Backend.Native, config: cfg });
 
   // Load axioms from any Source. `ingest` is async (URL/GitHub sources fetch).
-  await session.ingest(Source.kif(`
+  await session.ingest(
+    Source.kif(
+      `
     (instance Socrates Man)
     (=> (instance ?X Man) (instance ?X Mortal))
-  `, "socrates"));
+  `,
+      "socrates",
+    ),
+  );
 
   // Other sources — same call shape:
   //   await session.ingest(Source.url("https://example.org/ontology.kif"));
@@ -36,15 +46,17 @@ export async function main(): Promise<void> {
   //   await session.ingest(Source.gitHub({ owner: "ontologyportal", repo: "sumo", dir: "tests" }));
 
   const result = session.ask("(instance Socrates Mortal)") as AskResult;
-  console.log("status:", result.status);          // "Proved"
+  console.log("status:", result.status); // "Proved"
   for (const step of result.proof) {
     console.log(`  [${step.index}] ${step.rule}: ${step.kif}`);
   }
 
   // Session-scoped hypotheses.
   session.tell("(instance Plato Man)", "s1");
-  const scoped = session.ask("(instance Plato Mortal)", { session: "s1" }) as AskResult;
-  console.log("scoped:", scoped.status);           // "Proved"
+  const scoped = session.ask("(instance Plato Mortal)", {
+    session: "s1",
+  }) as AskResult;
+  console.log("scoped:", scoped.status); // "Proved"
   session.flushSession("s1");
 
   // --- 2. Translation-only session: TPTP + external prover hook -------------

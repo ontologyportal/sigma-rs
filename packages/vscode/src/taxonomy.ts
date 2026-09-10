@@ -26,40 +26,40 @@
 // rendered page has small inline event-handlers (`onclick="..."`).
 // Mermaid itself does not require `'unsafe-eval'`.
 
-import * as path from 'path';
+import * as path from "path";
 import {
-    ExtensionContext,
-    OutputChannel,
-    Uri,
-    ViewColumn,
-    window,
-    workspace,
-} from 'vscode';
-import { LanguageClient } from 'vscode-languageclient/node';
+  ExtensionContext,
+  OutputChannel,
+  Uri,
+  ViewColumn,
+  window,
+  workspace,
+} from "vscode";
+import { LanguageClient } from "vscode-languageclient/node";
 
 // -- Wire types (must match crates/sumo-lsp/src/handlers/taxonomy.rs) --------
 
 interface TaxonomyEdgeDto {
-    from:     string;
-    to:       string;
-    relation: string;
+  from: string;
+  to: string;
+  relation: string;
 }
 
 interface DocEntryDto {
-    language: string;
-    text:     string;
+  language: string;
+  text: string;
 }
 
 interface TaxonomyResponse {
-    symbol:        string;
-    unknown:       boolean;
-    documentation: DocEntryDto[];
-    edges:         TaxonomyEdgeDto[];
+  symbol: string;
+  unknown: boolean;
+  documentation: DocEntryDto[];
+  edges: TaxonomyEdgeDto[];
 }
 
 interface HistoryState {
-    canGoBack:    boolean;
-    canGoForward: boolean;
+  canGoBack: boolean;
+  canGoForward: boolean;
 }
 
 // -- Public entry point -------------------------------------------------------
@@ -76,154 +76,169 @@ interface HistoryState {
  * symbol name.
  */
 export async function showTaxonomyCommand(
-    context:   ExtensionContext,
-    getClient: () => LanguageClient | undefined,
-    output:    OutputChannel,
-    argSymbol?: unknown,
+  context: ExtensionContext,
+  getClient: () => LanguageClient | undefined,
+  output: OutputChannel,
+  argSymbol?: unknown,
 ): Promise<void> {
-    let symbol: string | undefined =
-        typeof argSymbol === 'string' && argSymbol.length > 0 ? argSymbol : undefined;
+  let symbol: string | undefined =
+    typeof argSymbol === "string" && argSymbol.length > 0
+      ? argSymbol
+      : undefined;
 
-    if (!symbol) {
-        const editor = window.activeTextEditor;
-        if (!editor) {
-            window.showInformationMessage(
-                'Open a .kif file and place the cursor on a symbol to view its taxonomy.',
-            );
-            return;
-        }
-        const range = editor.document.getWordRangeAtPosition(editor.selection.active);
-        if (!range) {
-            window.showInformationMessage(
-                'Place the cursor on a symbol before running "SUMO: Show Taxonomy".',
-            );
-            return;
-        }
-        symbol = editor.document.getText(range);
+  if (!symbol) {
+    const editor = window.activeTextEditor;
+    if (!editor) {
+      window.showInformationMessage(
+        "Open a .kif file and place the cursor on a symbol to view its taxonomy.",
+      );
+      return;
+    }
+    const range = editor.document.getWordRangeAtPosition(
+      editor.selection.active,
+    );
+    if (!range) {
+      window.showInformationMessage(
+        'Place the cursor on a symbol before running "SUMO: Show Taxonomy".',
+      );
+      return;
+    }
+    symbol = editor.document.getText(range);
+  }
+
+  const panel = window.createWebviewPanel(
+    "sumoTaxonomy",
+    `Taxonomy: ${symbol}`,
+    ViewColumn.Beside,
+    {
+      enableScripts: true,
+      // Only the vendored bundles are reachable from the
+      // webview.  Tightening these roots contains the blast
+      // radius of a hypothetical script injection.
+      localResourceRoots: [
+        Uri.file(path.join(context.extensionPath, "vendor", "mermaid")),
+        Uri.file(path.join(context.extensionPath, "vendor", "svg-pan-zoom")),
+      ],
+      retainContextWhenHidden: true,
+    },
+  );
+
+  const mermaidUri = panel.webview.asWebviewUri(
+    Uri.file(
+      path.join(context.extensionPath, "vendor", "mermaid", "mermaid.min.js"),
+    ),
+  );
+  const svgPanZoomUri = panel.webview.asWebviewUri(
+    Uri.file(
+      path.join(
+        context.extensionPath,
+        "vendor",
+        "svg-pan-zoom",
+        "svg-pan-zoom.min.js",
+      ),
+    ),
+  );
+
+  // Panel-local navigation history.  Stays live until the panel
+  // is disposed; re-opening the command spawns a fresh history.
+  let history: string[] = [];
+  let currentIndex = -1;
+
+  const updateWebview = async (
+    target: string,
+    fromHistory = false,
+  ): Promise<void> => {
+    if (!fromHistory) {
+      // Truncate any "forward" entries; a new navigation
+      // invalidates them, same as a browser.
+      if (currentIndex < history.length - 1) {
+        history = history.slice(0, currentIndex + 1);
+      }
+      history.push(target);
+      currentIndex++;
     }
 
-    const panel = window.createWebviewPanel(
-        'sumoTaxonomy',
-        `Taxonomy: ${symbol}`,
-        ViewColumn.Beside,
-        {
-            enableScripts: true,
-            // Only the vendored bundles are reachable from the
-            // webview.  Tightening these roots contains the blast
-            // radius of a hypothetical script injection.
-            localResourceRoots: [
-                Uri.file(path.join(context.extensionPath, 'vendor', 'mermaid')),
-                Uri.file(path.join(context.extensionPath, 'vendor', 'svg-pan-zoom')),
-            ],
-            retainContextWhenHidden: true,
-        },
-    );
+    panel.title = `Taxonomy: ${target}`;
+    panel.webview.html = renderLoadingHtml(target);
 
-    const mermaidUri = panel.webview.asWebviewUri(Uri.file(
-        path.join(context.extensionPath, 'vendor', 'mermaid', 'mermaid.min.js'),
-    ));
-    const svgPanZoomUri = panel.webview.asWebviewUri(Uri.file(
-        path.join(context.extensionPath, 'vendor', 'svg-pan-zoom', 'svg-pan-zoom.min.js'),
-    ));
+    // Yield once so the loading screen actually paints before we
+    // block on the LSP round-trip.  25 ms is enough on all
+    // common platforms without being user-visible.
+    await new Promise((resolve) => setTimeout(resolve, 25));
 
-    // Panel-local navigation history.  Stays live until the panel
-    // is disposed; re-opening the command spawns a fresh history.
-    let history: string[] = [];
-    let currentIndex = -1;
+    const client = getClient();
+    if (!client) {
+      panel.webview.html = renderErrorHtml(
+        target,
+        'The sumo-lsp server is not running.  Check the "SUMO / KIF" output channel.',
+      );
+      return;
+    }
 
-    const updateWebview = async (target: string, fromHistory = false): Promise<void> => {
-        if (!fromHistory) {
-            // Truncate any "forward" entries; a new navigation
-            // invalidates them, same as a browser.
-            if (currentIndex < history.length - 1) {
-                history = history.slice(0, currentIndex + 1);
-            }
-            history.push(target);
-            currentIndex++;
-        }
+    let response: TaxonomyResponse;
+    try {
+      response = await client.sendRequest<TaxonomyResponse>("sumo/taxonomy", {
+        symbol: target,
+      });
+    } catch (err) {
+      output.appendLine(`[taxonomy] request for "${target}" failed: ${err}`);
+      panel.webview.html = renderErrorHtml(
+        target,
+        `The server rejected the taxonomy request: ${String(err)}`,
+      );
+      return;
+    }
 
-        panel.title = `Taxonomy: ${target}`;
-        panel.webview.html = renderLoadingHtml(target);
+    if (response.unknown) {
+      panel.webview.html = renderErrorHtml(
+        target,
+        `Symbol "${target}" is not defined in the active knowledge base.`,
+      );
+      return;
+    }
 
-        // Yield once so the loading screen actually paints before we
-        // block on the LSP round-trip.  25 ms is enough on all
-        // common platforms without being user-visible.
-        await new Promise(resolve => setTimeout(resolve, 25));
-
-        const client = getClient();
-        if (!client) {
-            panel.webview.html = renderErrorHtml(
-                target,
-                'The sumo-lsp server is not running.  Check the "SUMO / KIF" output channel.',
-            );
-            return;
-        }
-
-        let response: TaxonomyResponse;
-        try {
-            response = await client.sendRequest<TaxonomyResponse>(
-                'sumo/taxonomy',
-                { symbol: target },
-            );
-        } catch (err) {
-            output.appendLine(`[taxonomy] request for "${target}" failed: ${err}`);
-            panel.webview.html = renderErrorHtml(
-                target,
-                `The server rejected the taxonomy request: ${String(err)}`,
-            );
-            return;
-        }
-
-        if (response.unknown) {
-            panel.webview.html = renderErrorHtml(
-                target,
-                `Symbol "${target}" is not defined in the active knowledge base.`,
-            );
-            return;
-        }
-
-        const state: HistoryState = {
-            canGoBack:    currentIndex > 0,
-            canGoForward: currentIndex < history.length - 1,
-        };
-        panel.webview.html = generateTaxonomyHtml(
-            response,
-            mermaidUri.toString(),
-            svgPanZoomUri.toString(),
-            panel.webview.cspSource,
-            state,
-        );
+    const state: HistoryState = {
+      canGoBack: currentIndex > 0,
+      canGoForward: currentIndex < history.length - 1,
     };
+    panel.webview.html = generateTaxonomyHtml(
+      response,
+      mermaidUri.toString(),
+      svgPanZoomUri.toString(),
+      panel.webview.cspSource,
+      state,
+    );
+  };
 
-    panel.webview.onDidReceiveMessage((message) => {
-        switch (message?.command) {
-            case 'openTaxonomy':
-                if (typeof message.symbol === 'string' && message.symbol.length > 0) {
-                    void updateWebview(message.symbol);
-                }
-                return;
-            case 'goBack':
-                if (currentIndex > 0) {
-                    currentIndex--;
-                    void updateWebview(history[currentIndex], true);
-                }
-                return;
-            case 'goForward':
-                if (currentIndex < history.length - 1) {
-                    currentIndex++;
-                    void updateWebview(history[currentIndex], true);
-                }
-                return;
+  panel.webview.onDidReceiveMessage((message) => {
+    switch (message?.command) {
+      case "openTaxonomy":
+        if (typeof message.symbol === "string" && message.symbol.length > 0) {
+          void updateWebview(message.symbol);
         }
-    });
+        return;
+      case "goBack":
+        if (currentIndex > 0) {
+          currentIndex--;
+          void updateWebview(history[currentIndex], true);
+        }
+        return;
+      case "goForward":
+        if (currentIndex < history.length - 1) {
+          currentIndex++;
+          void updateWebview(history[currentIndex], true);
+        }
+        return;
+    }
+  });
 
-    await updateWebview(symbol);
+  await updateWebview(symbol);
 }
 
 // -- HTML generation ----------------------------------------------------------
 
 function renderLoadingHtml(symbol: string): string {
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"></head>
 <body style="font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background);">
@@ -233,7 +248,7 @@ function renderLoadingHtml(symbol: string): string {
 }
 
 function renderErrorHtml(symbol: string, message: string): string {
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"></head>
 <body style="font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-editor-foreground); background-color: var(--vscode-editor-background);">
@@ -252,77 +267,78 @@ function renderErrorHtml(symbol: string, message: string): string {
  * render it, then hands the resulting SVG to svg-pan-zoom.
  */
 function generateTaxonomyHtml(
-    response:      TaxonomyResponse,
-    mermaidUri:    string,
-    svgPanZoomUri: string,
-    cspSource:     string,
-    history:       HistoryState,
+  response: TaxonomyResponse,
+  mermaidUri: string,
+  svgPanZoomUri: string,
+  cspSource: string,
+  history: HistoryState,
 ): string {
-    const targetLang =
-        workspace.getConfiguration('sumo').get<string>('documentation.language')
-        || 'EnglishLanguage';
+  const targetLang =
+    workspace.getConfiguration("sumo").get<string>("documentation.language") ||
+    "EnglishLanguage";
 
-    // Prefer the configured language; fall back to any available
-    // documentation entry rather than showing nothing.
-    const docEntry =
-        response.documentation.find(d => d.language === targetLang)
-        ?? response.documentation[0];
-    const rawDoc = docEntry?.text ?? 'No documentation found in workspace.';
+  // Prefer the configured language; fall back to any available
+  // documentation entry rather than showing nothing.
+  const docEntry =
+    response.documentation.find((d) => d.language === targetLang) ??
+    response.documentation[0];
+  const rawDoc = docEntry?.text ?? "No documentation found in workspace.";
 
-    // Escape first, then linkify `&%Symbol` references.  Order
-    // matters: after escape, `&` has become `&amp;`, so the regex
-    // matches `&amp;%...`.  The capture group is restricted to
-    // alnum + `_` + `-`, so emitting it raw into the inline
-    // `onclick='openSymbol("...")'` handler is injection-safe.
-    const linkified = escapeHtml(rawDoc).replace(
-        /&amp;%([A-Za-z0-9_-]+)/g,
-        (_m, sym) => `<a href="#" onclick="openSymbol('${sym}'); return false;">${sym}</a>`,
+  // Escape first, then linkify `&%Symbol` references.  Order
+  // matters: after escape, `&` has become `&amp;`, so the regex
+  // matches `&amp;%...`.  The capture group is restricted to
+  // alnum + `_` + `-`, so emitting it raw into the inline
+  // `onclick='openSymbol("...")'` handler is injection-safe.
+  const linkified = escapeHtml(rawDoc).replace(
+    /&amp;%([A-Za-z0-9_-]+)/g,
+    (_m, sym) =>
+      `<a href="#" onclick="openSymbol('${sym}'); return false;">${sym}</a>`,
+  );
+
+  // Collect every node reachable from the root.  The root is
+  // unconditionally a node even when it has no parents (edges
+  // list is empty).
+  const nodeSet = new Set<string>([response.symbol]);
+  for (const e of response.edges) {
+    nodeSet.add(e.from);
+    nodeSet.add(e.to);
+  }
+
+  // Emit Mermaid source.  IDs are sanitised because Mermaid's
+  // node-ID grammar is stricter than SUMO's symbol grammar
+  // (hyphens are legal in SUMO but would tokenise as minus in
+  // Mermaid).  Labels are the original names with quotes
+  // replaced -- Mermaid doesn't support escaping inside `"..."`.
+  const lines: string[] = [
+    "graph TD",
+    "classDef default fill:#2d2d2d,stroke:#555,stroke-width:1px,color:#fff;",
+    "classDef target fill:#0e639c,stroke:#007acc,stroke-width:2px,color:#fff;",
+  ];
+  for (const node of nodeSet) {
+    const cls = node === response.symbol ? "target" : "default";
+    const id = mermaidId(node);
+    lines.push(`${id}["${escapeMermaidLabel(node)}"]:::${cls}`);
+    lines.push(`click ${id} callOpenSymbol`);
+  }
+  for (const edge of response.edges) {
+    lines.push(
+      `${mermaidId(edge.from)} -->|${escapeMermaidLabel(edge.relation)}| ${mermaidId(edge.to)}`,
     );
+  }
+  const mermaidGraph = lines.join("\n");
 
-    // Collect every node reachable from the root.  The root is
-    // unconditionally a node even when it has no parents (edges
-    // list is empty).
-    const nodeSet = new Set<string>([response.symbol]);
-    for (const e of response.edges) {
-        nodeSet.add(e.from);
-        nodeSet.add(e.to);
-    }
+  // Mermaid click handlers get the raw node-ID back, not the
+  // display label.  The webview side maps ID -> original symbol
+  // via the embedded `nodeIdToSymbol` table below so
+  // round-tripping through sanitisation doesn't lose the
+  // original name.
+  const idMap: Record<string, string> = {};
+  for (const node of nodeSet) {
+    idMap[mermaidId(node)] = node;
+  }
+  const idMapJson = JSON.stringify(idMap);
 
-    // Emit Mermaid source.  IDs are sanitised because Mermaid's
-    // node-ID grammar is stricter than SUMO's symbol grammar
-    // (hyphens are legal in SUMO but would tokenise as minus in
-    // Mermaid).  Labels are the original names with quotes
-    // replaced -- Mermaid doesn't support escaping inside `"..."`.
-    const lines: string[] = [
-        'graph TD',
-        'classDef default fill:#2d2d2d,stroke:#555,stroke-width:1px,color:#fff;',
-        'classDef target fill:#0e639c,stroke:#007acc,stroke-width:2px,color:#fff;',
-    ];
-    for (const node of nodeSet) {
-        const cls = node === response.symbol ? 'target' : 'default';
-        const id  = mermaidId(node);
-        lines.push(`${id}["${escapeMermaidLabel(node)}"]:::${cls}`);
-        lines.push(`click ${id} callOpenSymbol`);
-    }
-    for (const edge of response.edges) {
-        lines.push(
-            `${mermaidId(edge.from)} -->|${escapeMermaidLabel(edge.relation)}| ${mermaidId(edge.to)}`,
-        );
-    }
-    const mermaidGraph = lines.join('\n');
-
-    // Mermaid click handlers get the raw node-ID back, not the
-    // display label.  The webview side maps ID -> original symbol
-    // via the embedded `nodeIdToSymbol` table below so
-    // round-tripping through sanitisation doesn't lose the
-    // original name.
-    const idMap: Record<string, string> = {};
-    for (const node of nodeSet) {
-        idMap[mermaidId(node)] = node;
-    }
-    const idMapJson = JSON.stringify(idMap);
-
-    return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -385,8 +401,8 @@ function generateTaxonomyHtml(
 </head>
 <body>
   <div class="nav-buttons">
-    <button class="nav-btn" onclick="goBack()" ${history.canGoBack ? '' : 'disabled'}>&larr; Back</button>
-    <button class="nav-btn" onclick="goForward()" ${history.canGoForward ? '' : 'disabled'}>Forward &rarr;</button>
+    <button class="nav-btn" onclick="goBack()" ${history.canGoBack ? "" : "disabled"}>&larr; Back</button>
+    <button class="nav-btn" onclick="goForward()" ${history.canGoForward ? "" : "disabled"}>Forward &rarr;</button>
   </div>
   <h1>Taxonomy: ${escapeHtml(response.symbol)}</h1>
   <div class="doc-block">${linkified}</div>
@@ -453,12 +469,12 @@ ${mermaidGraph}
 // -- Escaping helpers ---------------------------------------------------------
 
 function escapeHtml(s: string): string {
-    return s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 /**
@@ -468,13 +484,13 @@ function escapeHtml(s: string): string {
  * Mermaid would otherwise reject as syntax.
  */
 function mermaidId(name: string): string {
-    const cleaned = name.replace(/[^A-Za-z0-9_]/g, '_');
-    // Prefix if empty or starts with a digit -- Mermaid IDs must
-    // begin with a letter/underscore.
-    if (cleaned.length === 0 || /^[0-9]/.test(cleaned)) {
-        return '_' + cleaned;
-    }
-    return cleaned;
+  const cleaned = name.replace(/[^A-Za-z0-9_]/g, "_");
+  // Prefix if empty or starts with a digit -- Mermaid IDs must
+  // begin with a letter/underscore.
+  if (cleaned.length === 0 || /^[0-9]/.test(cleaned)) {
+    return "_" + cleaned;
+  }
+  return cleaned;
 }
 
 /**
@@ -483,5 +499,5 @@ function mermaidId(name: string): string {
  * similar unicode variant; Mermaid has no real escape syntax.
  */
 function escapeMermaidLabel(s: string): string {
-    return s.replace(/"/g, '\u201C');
+  return s.replace(/"/g, "\u201C");
 }

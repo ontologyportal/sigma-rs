@@ -3,7 +3,14 @@
 // Session; the page (src/main.ts and friends) owns the constituent list, OPFS, localStorage, and
 // the editor, and drives this worker over a tiny id-keyed RPC.
 
-import { init, Session, Config, Backend, parseTest, parseTptpTest } from "sigmakee/sdk";
+import {
+  init,
+  Session,
+  Config,
+  Backend,
+  parseTest,
+  parseTptpTest,
+} from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
 
 // Not imported from prover-config.ts: that file is DOM code (this worker has
@@ -235,7 +242,13 @@ const handlers = {
     extraArgs,
     tptp: tptpInput,
   }) {
-    const tptp = session.kb.toTptpForAsk(assertions || "", query, false, selectionTolerancePct || null, !!tptpInput);
+    const tptp = session.kb.toTptpForAsk(
+      assertions || "",
+      query,
+      false,
+      selectionTolerancePct || null,
+      !!tptpInput,
+    );
     const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);
     return {
       result: session.kb.parseVampireAskResult(raw_output, query ?? ""),

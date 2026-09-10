@@ -30,7 +30,11 @@ export function getCookie(request: Request, name: string): string | null {
 /** One `Set-Cookie` value builder for every cookie this app sets (the
  *  session cookie, the OAuth CSRF state cookie) -- HttpOnly + Secure +
  *  Path=/ + SameSite=Lax everywhere. Pass `maxAgeSeconds: 0` to clear. */
-export function cookieHeader(name: string, value: string, maxAgeSeconds: number): string {
+export function cookieHeader(
+  name: string,
+  value: string,
+  maxAgeSeconds: number,
+): string {
   return `${name}=${value}; HttpOnly; Secure; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax`;
 }
 
@@ -40,9 +44,15 @@ function sessionKey(sessionId: string): string {
 
 /** Create a session for `accessToken` and return the `Set-Cookie` header
  *  that hands its id to the browser. */
-export async function createSession(accessToken: string, env: SessionEnv): Promise<string> {
+export async function createSession(
+  accessToken: string,
+  env: SessionEnv,
+): Promise<string> {
   const sessionId = crypto.randomUUID();
-  const data: SessionData = { access_token: accessToken, created_at: Date.now() };
+  const data: SessionData = {
+    access_token: accessToken,
+    created_at: Date.now(),
+  };
   await env.SESSIONS.put(sessionKey(sessionId), JSON.stringify(data), {
     expirationTtl: SESSION_MAX_AGE_S,
   });
@@ -55,7 +65,7 @@ export async function createSession(accessToken: string, env: SessionEnv): Promi
  *  deleted rather than left to fail the same way on every future request. */
 export async function getSession(
   request: Request,
-  env: SessionEnv
+  env: SessionEnv,
 ): Promise<{ sessionId: string; accessToken: string } | null> {
   const sessionId = getCookie(request, SESSION_COOKIE);
   if (!sessionId) return null;
@@ -76,7 +86,10 @@ export async function getSession(
 /** Delete a session by id. The cookie itself is cleared separately -- see
  *  clearSessionCookie -- since a caller may want to delete without a
  *  Response to attach a Set-Cookie header to. */
-export function deleteSession(sessionId: string, env: SessionEnv): Promise<void> {
+export function deleteSession(
+  sessionId: string,
+  env: SessionEnv,
+): Promise<void> {
   return env.SESSIONS.delete(sessionKey(sessionId));
 }
 
@@ -92,7 +105,7 @@ export function clearSessionCookie(): string {
  */
 export async function getGithubToken(
   request: Request,
-  env: SessionEnv
+  env: SessionEnv,
 ): Promise<string | null> {
   const session = await getSession(request, env);
   return session?.accessToken ?? null;

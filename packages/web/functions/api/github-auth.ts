@@ -21,7 +21,10 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   const state = crypto.randomUUID();
 
   const authorizeUrl = new URL("https://github.com/login/oauth/authorize");
-  authorizeUrl.searchParams.set("client_id", context.env.GITHUB_OAUTH_CLIENT_ID);
+  authorizeUrl.searchParams.set(
+    "client_id",
+    context.env.GITHUB_OAUTH_CLIENT_ID,
+  );
   authorizeUrl.searchParams.set("redirect_uri", redirectUri.toString());
   authorizeUrl.searchParams.set("scope", SCOPE);
   authorizeUrl.searchParams.set("state", state);

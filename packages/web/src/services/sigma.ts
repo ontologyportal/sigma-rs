@@ -21,7 +21,8 @@ worker.onmessage = (e) => {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
-  error ? p.reject(new Error(error)) : p.resolve(result);
+  if (error) p.reject(new Error(error));
+  else p.resolve(result);
 };
 
 // `T` defaults to `any` rather than modelling every command's response shape:

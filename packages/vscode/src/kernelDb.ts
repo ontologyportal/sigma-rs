@@ -32,23 +32,23 @@
 //     that skipped `deactivate()`.  Anything under `ephemeral/`
 //     older than the session map is prunable.
 
-import * as fs   from 'fs';
-import * as path from 'path';
-import * as crypto from 'crypto';
+import * as fs from "fs";
+import * as path from "path";
+import * as crypto from "crypto";
 
-import { ExtensionContext, OutputChannel } from 'vscode';
+import { ExtensionContext, OutputChannel } from "vscode";
 
-import { ActiveKb } from './kbSession';
+import { ActiveKb } from "./kbSession";
 
 // -- Path resolution ---------------------------------------------------------
 
-export type KbKind = 'config' | 'ephemeral';
+export type KbKind = "config" | "ephemeral";
 
 export interface KernelDbPath {
-    /** Absolute filesystem path to the LMDB directory. */
-    lmdb: string;
-    /** Kind, echoed for lifecycle decisions (e.g. delete-on-close). */
-    kind: KbKind;
+  /** Absolute filesystem path to the LMDB directory. */
+  lmdb: string;
+  /** Kind, echoed for lifecycle decisions (e.g. delete-on-close). */
+  kind: KbKind;
 }
 
 /**
@@ -60,37 +60,41 @@ export interface KernelDbPath {
  * Returns `undefined` when `active` is `null` (no KB open).
  */
 export function resolveKernelDbPath(
-    context: ExtensionContext,
-    active:  ActiveKb | null,
+  context: ExtensionContext,
+  active: ActiveKb | null,
 ): KernelDbPath | undefined {
-    if (!active) { return undefined; }
-    const root = globalKbsRoot(context);
-    if (active.source === 'config' && active.configKbName) {
-        return {
-            lmdb: path.join(root, 'config', slugify(active.configKbName) + '.lmdb'),
-            kind: 'config',
-        };
-    }
-    // Ephemeral: require a sessionId.  If missing (shouldn't happen
-    // -- KbState.openTemp allocates one) bail to undefined so the
-    // extension falls back to `--no-db` gracefully.
-    if (!active.sessionId) { return undefined; }
+  if (!active) {
+    return undefined;
+  }
+  const root = globalKbsRoot(context);
+  if (active.source === "config" && active.configKbName) {
     return {
-        lmdb: path.join(root, 'ephemeral', active.sessionId + '.lmdb'),
-        kind: 'ephemeral',
+      lmdb: path.join(root, "config", slugify(active.configKbName) + ".lmdb"),
+      kind: "config",
     };
+  }
+  // Ephemeral: require a sessionId.  If missing (shouldn't happen
+  // -- KbState.openTemp allocates one) bail to undefined so the
+  // extension falls back to `--no-db` gracefully.
+  if (!active.sessionId) {
+    return undefined;
+  }
+  return {
+    lmdb: path.join(root, "ephemeral", active.sessionId + ".lmdb"),
+    kind: "ephemeral",
+  };
 }
 
 /** Root dir under which all per-KB LMDBs live.  Created on demand. */
 function globalKbsRoot(context: ExtensionContext): string {
-    const base = context.globalStorageUri.fsPath;
-    const root = path.join(base, 'kbs');
-    // `mkdirSync` is a no-op if the dir exists; recursive handles
-    // the missing `globalStorage` dir on first-ever activation.
-    fs.mkdirSync(root, { recursive: true });
-    fs.mkdirSync(path.join(root, 'config'),    { recursive: true });
-    fs.mkdirSync(path.join(root, 'ephemeral'), { recursive: true });
-    return root;
+  const base = context.globalStorageUri.fsPath;
+  const root = path.join(base, "kbs");
+  // `mkdirSync` is a no-op if the dir exists; recursive handles
+  // the missing `globalStorage` dir on first-ever activation.
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(path.join(root, "config"), { recursive: true });
+  fs.mkdirSync(path.join(root, "ephemeral"), { recursive: true });
+  return root;
 }
 
 /**
@@ -99,9 +103,13 @@ function globalKbsRoot(context: ExtensionContext): string {
  * `foo/bar` and `foo_bar` still get distinct dirs.
  */
 function slugify(name: string): string {
-    const cleaned = name.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 64);
-    const hash    = crypto.createHash('sha256').update(name).digest('hex').slice(0, 8);
-    return `${cleaned}-${hash}`;
+  const cleaned = name.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64);
+  const hash = crypto
+    .createHash("sha256")
+    .update(name)
+    .digest("hex")
+    .slice(0, 8);
+  return `${cleaned}-${hash}`;
 }
 
 // -- Lifecycle ----------------------------------------------------------------
@@ -112,13 +120,15 @@ function slugify(name: string): string {
  * session id.  Idempotent.
  */
 export function deleteEphemeralDb(
-    context: ExtensionContext,
-    active:  ActiveKb | null,
-    output:  OutputChannel,
+  context: ExtensionContext,
+  active: ActiveKb | null,
+  output: OutputChannel,
 ): void {
-    const resolved = resolveKernelDbPath(context, active);
-    if (!resolved || resolved.kind !== 'ephemeral') { return; }
-    tryRmDir(resolved.lmdb, output);
+  const resolved = resolveKernelDbPath(context, active);
+  if (!resolved || resolved.kind !== "ephemeral") {
+    return;
+  }
+  tryRmDir(resolved.lmdb, output);
 }
 
 /**
@@ -127,13 +137,15 @@ export function deleteEphemeralDb(
  * responsible for stopping the kernel first (LMDB fd held open).
  */
 export function deletePersistentDb(
-    context: ExtensionContext,
-    active:  ActiveKb | null,
-    output:  OutputChannel,
+  context: ExtensionContext,
+  active: ActiveKb | null,
+  output: OutputChannel,
 ): boolean {
-    const resolved = resolveKernelDbPath(context, active);
-    if (!resolved || resolved.kind !== 'config') { return false; }
-    return tryRmDir(resolved.lmdb, output);
+  const resolved = resolveKernelDbPath(context, active);
+  if (!resolved || resolved.kind !== "config") {
+    return false;
+  }
+  return tryRmDir(resolved.lmdb, output);
 }
 
 /**
@@ -149,40 +161,49 @@ export function deletePersistentDb(
  * pass them in.
  */
 export function cleanupOrphanEphemerals(
-    context:        ExtensionContext,
-    liveSessionIds: Set<string>,
-    output:         OutputChannel,
+  context: ExtensionContext,
+  liveSessionIds: Set<string>,
+  output: OutputChannel,
 ): number {
-    const dir = path.join(globalKbsRoot(context), 'ephemeral');
-    let dropped = 0;
-    let entries: fs.Dirent[];
-    try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (e) {
-        // Dir might not exist yet; benign.
-        return 0;
+  const dir = path.join(globalKbsRoot(context), "ephemeral");
+  let dropped = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    // Dir might not exist yet; benign.
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
     }
-    for (const entry of entries) {
-        if (!entry.isDirectory()) { continue; }
-        const suffix = '.lmdb';
-        if (!entry.name.endsWith(suffix)) { continue; }
-        const sessionId = entry.name.slice(0, -suffix.length);
-        if (liveSessionIds.has(sessionId)) { continue; }
-        if (tryRmDir(path.join(dir, entry.name), output)) { dropped++; }
+    const suffix = ".lmdb";
+    if (!entry.name.endsWith(suffix)) {
+      continue;
     }
-    if (dropped > 0) {
-        output.appendLine(
-            `[kernel-db] pruned ${dropped} orphan ephemeral database(s)`);
+    const sessionId = entry.name.slice(0, -suffix.length);
+    if (liveSessionIds.has(sessionId)) {
+      continue;
     }
-    return dropped;
+    if (tryRmDir(path.join(dir, entry.name), output)) {
+      dropped++;
+    }
+  }
+  if (dropped > 0) {
+    output.appendLine(
+      `[kernel-db] pruned ${dropped} orphan ephemeral database(s)`,
+    );
+  }
+  return dropped;
 }
 
 function tryRmDir(p: string, output: OutputChannel): boolean {
-    try {
-        fs.rmSync(p, { recursive: true, force: true });
-        return true;
-    } catch (e) {
-        output.appendLine(`[kernel-db] failed to delete '${p}': ${e}`);
-        return false;
-    }
+  try {
+    fs.rmSync(p, { recursive: true, force: true });
+    return true;
+  } catch (e) {
+    output.appendLine(`[kernel-db] failed to delete '${p}': ${e}`);
+    return false;
+  }
 }

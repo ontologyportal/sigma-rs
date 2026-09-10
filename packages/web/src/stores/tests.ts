@@ -203,9 +203,7 @@ export const useTestsStore = defineStore("tests", {
      *  a read-only origin (`sumo`/`url`) that can't be written back --
      *  prompts for a new file name and saves as a new local test.
      *  `saved: false` means the user cancelled the name prompt. */
-    async saveCurrent(
-      formattedTq: string,
-    ): Promise<{
+    async saveCurrent(formattedTq: string): Promise<{
       saved: boolean;
       name?: string;
       overwritten?: boolean;

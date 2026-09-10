@@ -60,11 +60,14 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   if (!tokenData.access_token) {
     return new Response(
       `GitHub auth failed: ${tokenData.error_description || tokenData.error || "unknown error"}`,
-      { status: 400 }
+      { status: 400 },
     );
   }
 
-  const sessionCookie = await createSession(tokenData.access_token, context.env);
+  const sessionCookie = await createSession(
+    tokenData.access_token,
+    context.env,
+  );
 
   const headers = new Headers();
   headers.set("Location", "/"); // send them back to the app

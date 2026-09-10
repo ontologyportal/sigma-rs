@@ -180,7 +180,7 @@ async function validateNow() {
   // no backing file, so it falls back to parse-only checking in a throwaway KB.
   const known = file ? kb.find(file.name, file.origin.kind) : undefined;
   logValidateLane(known ? `lsp (${known.name})` : "scratch (parse-only)");
-  let result: any[] = [];
+  let result: any[];
   try {
     result = known
       ? await lspSyncDocument(known.name, buffer)

@@ -14,7 +14,7 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { navigate, updateParams } from "../router";
+import { updateParams } from "../router";
 import { call } from "../services/sigma";
 import { useKBStore } from "../stores/kb";
 import { useShellStore } from "../stores/shell";

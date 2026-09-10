@@ -124,7 +124,11 @@ export interface ParsedTest {
 export function parseTest(name: string, text: string): ParsedTest;
 /** TPTP-dialect counterpart to {@link parseTest}: parses a `.p`/`.tptp` problem.
  *  `remap` (default `false`) decodes SUMO-mangled symbol names. */
-export function parseTptpTest(name: string, text: string, remap?: boolean): ParsedTest;
+export function parseTptpTest(
+  name: string,
+  text: string,
+  remap?: boolean,
+): ParsedTest;
 
 /** Render an Ask/Tell pair as `.kif.tq` text (pure; the inverse of {@link parseTest}). */
 export function formatTest(opts?: {

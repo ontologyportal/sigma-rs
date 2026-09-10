@@ -9,30 +9,30 @@
 // Type checking is NOT done here -- esbuild strips types without checking
 // them. `npm run typecheck` (tsc --noEmit) is the gate for that.
 
-import { build, context } from 'esbuild';
+import { build, context } from "esbuild";
 
-const watch = process.argv.includes('--watch');
-const production = process.argv.includes('--production');
+const watch = process.argv.includes("--watch");
+const production = process.argv.includes("--production");
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
-  entryPoints: ['src/extension.ts'],
-  outfile: 'dist/extension.js',
+  entryPoints: ["src/extension.ts"],
+  outfile: "dist/extension.js",
   bundle: true,
-  platform: 'node',
-  format: 'cjs',
+  platform: "node",
+  format: "cjs",
   // Matches the `engines.vscode` floor: VSCode 1.85 ships Node 18.
-  target: 'node18',
-  external: ['vscode'],
+  target: "node18",
+  external: ["vscode"],
   minify: production,
-  sourcemap: production ? false : 'linked',
-  logLevel: 'info',
+  sourcemap: production ? false : "linked",
+  logLevel: "info",
 };
 
 if (watch) {
   const ctx = await context(options);
   await ctx.watch();
-  console.log('esbuild: watching');
+  console.log("esbuild: watching");
 } else {
   await build(options);
 }

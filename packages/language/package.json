@@ -19,12 +19,18 @@
     "./syntaxes/tptp.tmLanguage.json": "./syntaxes/tptp.tmLanguage.json",
     "./package.json": "./package.json"
   },
-  "files": ["src", "configs", "syntaxes"],
+  "files": [
+    "src",
+    "configs",
+    "syntaxes"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ontologyportal/sigma-rs.git",
     "directory": "packages/language"
   },
-  "bugs": { "url": "https://github.com/ontologyportal/sigma-rs/issues" },
+  "bugs": {
+    "url": "https://github.com/ontologyportal/sigma-rs/issues"
+  },
   "homepage": "https://github.com/ontologyportal/sigma-rs/tree/main/packages/language"
 }

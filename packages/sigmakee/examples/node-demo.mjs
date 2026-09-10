@@ -22,7 +22,9 @@ const { Session, Config } = mod;
 
 // Instantiate from the .wasm bytes (browser code would just `await init()`,
 // letting it fetch the .wasm sitting next to the JS).
-await init({ module_or_path: await readFile(join(pkg, "sumo_parser_wasm_bg.wasm")) });
+await init({
+  module_or_path: await readFile(join(pkg, "sumo_parser_wasm_bg.wasm")),
+});
 
 // --- Prove in-browser-equivalent -------------------------------------------
 const prover = new Session();
@@ -42,15 +44,15 @@ prover.loadKif(
 );
 
 const r = prover.ask("(instance Socrates Mortal)");
-console.log("status      :", r.status);        // Proved
-console.log("proved      :", r.proved);        // true
+console.log("status      :", r.status); // Proved
+console.log("proved      :", r.proved); // true
 console.log("given_steps :", r.given_steps);
 console.log("proof steps :");
 for (const s of r.proof) console.log(`  [${s.index}] ${s.rule}: ${s.kif}`);
 
 // A non-consequence must NOT come back Proved.
 const neg = prover.ask("(instance Plato Mortal)");
-console.log("\nnon-consequence status:", neg.status);   // Disproved / Unknown
+console.log("\nnon-consequence status:", neg.status); // Disproved / Unknown
 
 // --- Translate to TPTP ------------------------------------------------------
 console.log("\nTPTP:\n" + prover.toTptpIndexed("fof", true));
