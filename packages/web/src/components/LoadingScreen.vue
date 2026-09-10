@@ -29,7 +29,7 @@ onMounted(() => {
       <div id="bootBarFill" :style="{ width: `${pct}%` }"></div>
     </div>
     <div id="overlayMsg">{{ boot.failed ? "" : boot.msg }}</div>
-    <div v-if="boot.failed" id="overlayErr" class="hint bad">
+    <div v-if="boot.failed" class="hint bad">
       {{ boot.error }}
     </div>
   </div>

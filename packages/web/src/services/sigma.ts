@@ -5,6 +5,8 @@
  * localStorage, and the editor.
  */
 
+import { useBootStore } from "../stores/boot";
+
 const worker = new Worker(
   new URL("../worker/sigma.worker.ts", import.meta.url),
   { type: "module" },
@@ -40,9 +42,15 @@ export const call = <T = any>(
     worker.postMessage({ id, cmd, args }, transfer);
   });
 
+// An uncaught worker error during boot is fatal for the page: surface it
+// on the loading screen. Later ones are logged; the failing call itself
+// rejects through the pending map.
 worker.onerror = (e) => {
   const m = e.message || `${e.filename || ""}:${e.lineno || ""}`;
-  const ov = document.getElementById("overlayErr");
-  if (ov) ov.textContent = "worker: " + m;
   console.error("worker error", e);
+  const boot = useBootStore();
+  if (!boot.finished) {
+    boot.failed = true;
+    boot.error = "worker: " + m;
+  }
 };
