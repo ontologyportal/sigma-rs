@@ -103,6 +103,7 @@ impl CacheBehavior for Range {
         &[
             EventKind::RelationAdded,
             EventKind::RelationRemoved,
+            EventKind::AxiomsPromoted,
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
         ]
@@ -133,11 +134,21 @@ impl CacheBehavior for Range {
         let mut out = vec![];
         let mut dirty = false;
         for event in events {
+            if let Event::AxiomsPromoted { sids } = event {
+                for sid in sids {
+                    if let Some(rel) = range_edge_relation(parent, *sid) {
+                        dirty = true;
+                        out.push(Event::DomainRangeChanged { syms: vec![rel] });
+                    }
+                }
+                continue;
+            }
             if let Event::SessionReferenced { session, sids } = event {
                 let s = Scope::Session(session_id(session));
                 for sid in sids {
                     if let Some(rel) = range_edge_relation(parent, *sid) {
                         store.evict_keys(&[Scoped { scope: s, key: rel }]);
+                        out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
                 continue;
@@ -210,8 +221,8 @@ impl CacheBehavior for Range {
     }
 }
 
-/// The relation a sentence declares a range for, iff `sid` is a well-formed
-/// `(range | rangeSubclass rel Class)` edge — used to target session-scope
+/// The relation named by a `range` / `rangeSubclass` root, including one whose
+/// class term cannot yet be resolved - used to target session-scope
 /// invalidation at just the affected relation's entry.
 fn range_edge_relation(parent: &SemanticLayer, sid: SentenceId) -> Option<SymbolId> {
     let sentence = parent.syntactic.sentence(sid)?;
@@ -220,9 +231,10 @@ fn range_edge_relation(parent: &SemanticLayer, sid: SentenceId) -> Option<Symbol
     if head != range_id && head != RANGE_SUB_REL_CLASS.id() {
         return None;
     }
-    try_extract_range_from(parent, head, range_id, sid, &sentence)
-        .ok()
-        .map(|(rel, _)| rel)
+    match sentence.elements.get(1) {
+        Some(Element::Symbol(rel)) => Some(rel.id()),
+        _ => None,
+    }
 }
 
 impl SemanticLayer {

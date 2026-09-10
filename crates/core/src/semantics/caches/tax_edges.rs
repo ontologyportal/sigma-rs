@@ -36,7 +36,7 @@ type EdgeStore =
 /// Where one tax-edge root's edge currently lives, recorded so removal and
 /// promotion-graduation touch exactly the right scope entries without a full-map
 /// scan.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct EdgeRecord {
     from: SymbolId,
     to: SymbolId,
@@ -44,11 +44,12 @@ struct EdgeRecord {
     scopes: HashSet<Scope>,
 }
 
+/// A root can resolve to different parents in different session scopes.
 /// Companion side state: `sid → EdgeRecord` for every tax-edge root — the
 /// authoritative "where does this edge live" index.
 #[derive(Debug, Default)]
 pub(crate) struct TaxEdgesSide {
-    edges: DashMap<SentenceId, EdgeRecord>,
+    edges: DashMap<SentenceId, Vec<EdgeRecord>>,
     /// Refcount of overlay edges per session scope: `session_overlay[S] > 0` ⇔
     /// session `S` carries at least one transient taxonomy edge.  Lets the
     /// transitive `has_ancestor` / `is_relation` / `is_predicate` / `is_function`
@@ -58,10 +59,13 @@ pub(crate) struct TaxEdgesSide {
 }
 
 impl TaxEdgesSide {
-    /// The taxonomy edge `(from, to, rel)` a sentence id produced, if it is a
-    /// tracked tax edge.
+    /// The base taxonomy edge `(from, to, rel)` a tracked sentence produced.
     pub(crate) fn edge_of(&self, sid: SentenceId) -> Option<(SymbolId, SymbolId, TaxRelation)> {
-        self.edges.get(&sid).map(|r| (r.from, r.to, r.rel.clone()))
+        self.edges
+            .get(&sid)?
+            .iter()
+            .find(|r| r.scopes.contains(&Scope::Base))
+            .map(|r| (r.from, r.to, r.rel.clone()))
     }
 
     /// `true` iff `scope` is a session with ≥1 transient taxonomy edge.
@@ -84,8 +88,7 @@ impl SemanticLayer {
         self.tax_edges.side().session_active(scope)
     }
 
-    /// The taxonomy edge `(from, to, rel)` a sentence id produced, if it is a
-    /// tracked tax edge.
+    /// The base taxonomy edge `(from, to, rel)` a tracked sentence produced.
     pub(crate) fn tax_edge_of(&self, sid: SentenceId) -> Option<(SymbolId, SymbolId, TaxRelation)> {
         self.tax_edges.side().edge_of(sid)
     }
@@ -164,48 +167,35 @@ fn remove_edge(store: &EdgeStore, scope: Scope, from: SymbolId, to: SymbolId, re
     }
 }
 
-/// `include` (kept as bare members of the result, never walked) plus every
-/// symbol transitively reachable from `children` via `Base` `From(_)` (child)
-/// edges -- the full set whose `has_ancestor`/`is_class`/`is_predicate`/
-/// `is_function`/`is_relation` caches can have a stale answer when the
-/// changed edge's CHILD-side symbol has its own parent set altered: any
-/// descendant's cached ancestor walk may have passed straight through it.
-///
-/// Only the child side seeds the downward walk -- the parent side's *other*
-/// children (siblings of the one that actually changed) are unaffected by
-/// this edge and must not be swept in. The parent side itself still belongs
-/// in the result (it's one of the two symbols the underlying edge names),
-/// just not as a walk seed: its own cached classification depends on its
-/// *own* parent edges, never on which children it has.
-///
-/// `Base` only: a change confined to a session's own transient overlay can
-/// leave a stale entry in that session's *own* scope uncaught here (Base's
-/// graph, and therefore Base-scoped entries, are unaffected either way).
-/// Sessions are short-lived per-document overlays, so any such gap is
-/// bounded to that session's own lifetime.
+/// The changed endpoints and all descendants of changed children across scopes.
+/// Parent endpoints are included but not expanded into unrelated sibling trees.
 fn widen_with_descendants(
     store: &EdgeStore,
     include: &[SymbolId],
     children: &[SymbolId],
+    scopes: &[Scope],
 ) -> Vec<SymbolId> {
     let mut affected: HashSet<SymbolId> = include.iter().copied().collect();
     affected.extend(children.iter().copied());
-    // Always walk from every child seed, even one already present via
-    // `include` (e.g. the same symbol is both a changed edge's child and
-    // separately named) -- membership in `affected` must not gate whether
-    // we still expand its own descendants.
     let mut frontier: Vec<SymbolId> = children.to_vec();
+    let mut expanded = HashSet::new();
     while let Some(sym) = frontier.pop() {
-        let key = Scoped {
-            scope: Scope::Base,
-            key: TaxDirection::From(sym),
-        };
-        let Some(kids) = store.get(&key) else {
+        if !expanded.insert(sym) {
             continue;
-        };
-        for (child, _) in kids.iter() {
-            if affected.insert(*child) {
-                frontier.push(*child);
+        }
+        for scope in scopes {
+            let key = Scoped {
+                scope: *scope,
+                key: TaxDirection::From(sym),
+            };
+            let Some(kids) = store.get(&key) else {
+                continue;
+            };
+            for (child, _) in kids.iter() {
+                affected.insert(*child);
+                if !expanded.contains(child) {
+                    frontier.push(*child);
+                }
             }
         }
     }
@@ -244,6 +234,7 @@ impl EagerMapBehavior for TaxEdges {
         &[
             EventKind::RelationAdded,
             EventKind::RelationRemoved,
+            EventKind::DomainRangeChanged,
             EventKind::AxiomsPromoted,
             EventKind::SessionRetracted,
             EventKind::SessionReferenced,
@@ -265,15 +256,19 @@ impl EagerMapBehavior for TaxEdges {
     fn snapshot_side(&self, side: &TaxEdgesSide) -> Vec<EdgeSnap> {
         side.edges
             .iter()
-            .map(|e| {
-                let r = e.value();
-                (
-                    *e.key(),
-                    r.from,
-                    r.to,
-                    r.rel.clone(),
-                    r.scopes.iter().copied().collect(),
-                )
+            .flat_map(|e| {
+                e.value()
+                    .iter()
+                    .map(|r| {
+                        (
+                            *e.key(),
+                            r.from,
+                            r.to,
+                            r.rel.clone(),
+                            r.scopes.iter().copied().collect(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -283,15 +278,12 @@ impl EagerMapBehavior for TaxEdges {
             for scope in &scopes {
                 bump_overlay(side, *scope);
             }
-            side.edges.insert(
-                sid,
-                EdgeRecord {
-                    from,
-                    to,
-                    rel,
-                    scopes: scopes.into_iter().collect(),
-                },
-            );
+            side.edges.entry(sid).or_default().push(EdgeRecord {
+                from,
+                to,
+                rel,
+                scopes: scopes.into_iter().collect(),
+            });
         }
     }
 
@@ -303,137 +295,126 @@ impl EagerMapBehavior for TaxEdges {
         side: &TaxEdgesSide,
     ) -> Vec<Event> {
         let mut out = Vec::new();
+        let mut sids = HashSet::new();
+        let mut refresh_terms = false;
         for event in events {
             match event {
-                Event::RelationAdded { sid, head_id } => {
-                    if parent.tax_role_of(*head_id).is_none() {
-                        continue;
-                    }
-                    match parent.try_extract_edge(*sid) {
-                        Some(Ok((from, to, rel))) => {
-                            let scopes = edge_scopes(parent, *sid);
-                            for scope in &scopes {
-                                add_edge(store, *scope, from, to, rel.clone());
-                                bump_overlay(side, *scope);
-                            }
-                            side.edges.insert(
-                                *sid,
-                                EdgeRecord {
-                                    from,
-                                    to,
-                                    rel,
-                                    scopes: scopes.into_iter().collect(),
-                                },
-                            );
-                            out.push(Event::TaxonomyChanged {
-                                syms: widen_with_descendants(store, &[from, to], &[to]),
-                            });
-                        }
-                        Some(Err(err)) => out.push(Event::Diagnostic(err.to_diagnostic())),
-                        None => {}
-                    }
-                }
-                // Move the promoted edge from its session overlay(s) into `Base`.
-                Event::AxiomsPromoted { sids } => {
-                    for sid in sids {
-                        let Some((from, to, rel, session_scopes)) =
-                            side.edges.get(sid).map(|rec| {
-                                let ss: Vec<Scope> = rec
-                                    .scopes
-                                    .iter()
-                                    .copied()
-                                    .filter(|s| matches!(s, Scope::Session(_)))
-                                    .collect();
-                                (rec.from, rec.to, rec.rel.clone(), ss)
-                            })
-                        else {
-                            continue;
-                        };
-                        add_edge(store, Scope::Base, from, to, rel.clone());
-                        for scope in &session_scopes {
-                            remove_edge(store, *scope, from, to, rel.clone());
-                            unbump_overlay(side, *scope);
-                        }
-                        if let Some(mut rec) = side.edges.get_mut(sid) {
-                            rec.scopes = std::iter::once(Scope::Base).collect();
-                        }
-                        out.push(Event::TaxonomyChanged {
-                            syms: widen_with_descendants(store, &[from, to], &[to]),
-                        });
-                    }
-                }
-                // A dedup re-assert associates existing roots with a NEW session.
-                // No `RelationAdded` fired (the root already existed), so extend
-                // the edge's scope set here.  Only edges already tracked in
-                // `side.edges` (taxonomy) match; everything else is an O(1) miss.
-                Event::SessionReferenced { session, sids } => {
-                    let scope = Scope::Session(session_id(session));
-                    let mut syms = Vec::new();
-                    let mut children = Vec::new();
-                    for sid in sids {
-                        let Some(mut rec) = side.edges.get_mut(sid) else {
-                            continue;
-                        };
-                        // Already in Base: the session sees it there.  A redundant
-                        // overlay would wrongly mark the session active and defeat
-                        // the Base fall-through.
-                        if rec.scopes.contains(&Scope::Base) {
-                            continue;
-                        }
-                        if rec.scopes.insert(scope) {
-                            add_edge(store, scope, rec.from, rec.to, rec.rel.clone());
-                            bump_overlay(side, scope);
-                            syms.push(rec.from);
-                            syms.push(rec.to);
-                            children.push(rec.to);
-                        }
-                    }
-                    if !syms.is_empty() {
-                        out.push(Event::TaxonomyChanged {
-                            syms: widen_with_descendants(store, &syms, &children),
-                        });
-                    }
-                }
-                // A session is dropped wholesale.  Edges it held *alone* already
-                // left via `RelationRemoved`, so the only survivors are edges still
-                // shared with another session; strip just this session's scope from
-                // them, keeping the edge for its other owners.
-                Event::SessionRetracted { session } => {
-                    let scope = Scope::Session(session_id(session));
-                    if !side.session_overlay.contains_key(&scope) {
-                        continue;
-                    }
-                    let mut syms = Vec::new();
-                    let mut children = Vec::new();
-                    side.edges.retain(|_, rec| {
-                        if rec.scopes.remove(&scope) {
-                            remove_edge(store, scope, rec.from, rec.to, rec.rel.clone());
-                            unbump_overlay(side, scope);
-                            syms.push(rec.from);
-                            syms.push(rec.to);
-                            children.push(rec.to);
-                        }
-                        !rec.scopes.is_empty()
-                    });
-                    if !syms.is_empty() {
-                        out.push(Event::TaxonomyChanged {
-                            syms: widen_with_descendants(store, &syms, &children),
-                        });
-                    }
+                Event::RelationAdded { sid, head_id } if parent.tax_role_of(*head_id).is_some() => {
+                    sids.insert(*sid);
                 }
                 Event::RelationRemoved { sid, .. } => {
-                    if let Some((_, rec)) = side.edges.remove(sid) {
-                        for scope in &rec.scopes {
-                            remove_edge(store, *scope, rec.from, rec.to, rec.rel.clone());
-                            unbump_overlay(side, *scope);
-                        }
-                        out.push(Event::TaxonomyChanged {
-                            syms: widen_with_descendants(store, &[rec.from, rec.to], &[rec.to]),
-                        });
-                    }
+                    sids.insert(*sid);
                 }
+                Event::AxiomsPromoted { sids: changed }
+                | Event::SessionReferenced { sids: changed, .. } => {
+                    sids.extend(changed.iter().copied());
+                    refresh_terms = true;
+                }
+                Event::SessionRetracted { session } => {
+                    let scope = Scope::Session(session_id(session));
+                    for entry in &side.edges {
+                        if entry.value().iter().any(|r| r.scopes.contains(&scope)) {
+                            sids.insert(*entry.key());
+                        }
+                    }
+                    refresh_terms = true;
+                }
+                Event::DomainRangeChanged { .. } => refresh_terms = true,
                 _ => {}
             }
+        }
+        if refresh_terms {
+            // Include unresolved roots: they have no side record to revisit yet.
+            for sid in parent.syntactic.root_sids() {
+                let Some(sentence) = parent.syntactic.sentence(sid) else {
+                    continue;
+                };
+                if sentence
+                    .head_symbol()
+                    .and_then(|h| parent.tax_role_of(h))
+                    .is_some()
+                    && matches!(sentence.elements.get(2), Some(Element::Sub(_)))
+                {
+                    sids.insert(sid);
+                }
+            }
+        }
+
+        let mut removed = HashSet::new();
+        let mut syms = Vec::new();
+        let mut children = Vec::new();
+        for sid in sids {
+            let mut next: Vec<EdgeRecord> = Vec::new();
+            for scope in edge_scopes(parent, sid) {
+                match parent.try_extract_edge(sid, scope) {
+                    Some(Ok((from, to, rel))) => {
+                        if let Some(rec) = next
+                            .iter_mut()
+                            .find(|r| r.from == from && r.to == to && r.rel == rel)
+                        {
+                            rec.scopes.insert(scope);
+                        } else {
+                            next.push(EdgeRecord {
+                                from,
+                                to,
+                                rel,
+                                scopes: HashSet::from([scope]),
+                            });
+                        }
+                    }
+                    Some(Err(err)) => {
+                        out.push(Event::Diagnostic(err.to_diagnostic()));
+                        break;
+                    }
+                    None => {}
+                }
+            }
+            let previous = side.edges.get(&sid).map(|r| r.clone()).unwrap_or_default();
+            if previous.len() == next.len() && previous.iter().all(|r| next.contains(r)) {
+                continue;
+            }
+            for rec in previous {
+                for scope in rec.scopes {
+                    remove_edge(store, scope, rec.from, rec.to, rec.rel.clone());
+                    unbump_overlay(side, scope);
+                    removed.insert((scope, rec.from, rec.to, rec.rel.clone()));
+                }
+                syms.extend([rec.from, rec.to]);
+                children.push(rec.to);
+            }
+            if next.is_empty() {
+                side.edges.remove(&sid);
+            } else {
+                for rec in &next {
+                    for scope in &rec.scopes {
+                        add_edge(store, *scope, rec.from, rec.to, rec.rel.clone());
+                        bump_overlay(side, *scope);
+                    }
+                    syms.extend([rec.from, rec.to]);
+                    children.push(rec.to);
+                }
+                side.edges.insert(sid, next);
+            }
+        }
+        if !removed.is_empty() {
+            // Several assertions can support the same adjacency entry.
+            for entry in &side.edges {
+                for rec in entry.value() {
+                    for scope in &rec.scopes {
+                        if removed.contains(&(*scope, rec.from, rec.to, rec.rel.clone())) {
+                            add_edge(store, *scope, rec.from, rec.to, rec.rel.clone());
+                        }
+                    }
+                }
+            }
+        }
+        if !syms.is_empty() {
+            let scopes: Vec<_> = std::iter::once(Scope::Base)
+                .chain(side.session_overlay.iter().map(|e| *e.key()))
+                .collect();
+            out.push(Event::TaxonomyChanged {
+                syms: widen_with_descendants(store, &syms, &children, &scopes),
+            });
         }
         out
     }
@@ -452,21 +433,17 @@ impl EagerMapBehavior for TaxEdges {
         // out of rule hypotheses.
         let sids: Vec<SentenceId> = parent.syntactic.root_sids();
         for sid in sids {
-            if let Some(Ok((from, to, rel))) = parent.try_extract_edge(sid) {
-                let scopes = edge_scopes(parent, sid);
-                for scope in &scopes {
-                    add_edge(store, *scope, from, to, rel.clone());
-                    bump_overlay(side, *scope);
-                }
-                side.edges.insert(
-                    sid,
-                    EdgeRecord {
+            for scope in edge_scopes(parent, sid) {
+                if let Some(Ok((from, to, rel))) = parent.try_extract_edge(sid, scope) {
+                    add_edge(store, scope, from, to, rel.clone());
+                    bump_overlay(side, scope);
+                    side.edges.entry(sid).or_default().push(EdgeRecord {
                         from,
                         to,
                         rel,
-                        scopes: scopes.into_iter().collect(),
-                    },
-                );
+                        scopes: HashSet::from([scope]),
+                    });
+                }
             }
         }
     }
@@ -484,9 +461,10 @@ impl SemanticLayer {
     fn try_extract_edge(
         &self,
         sid: SentenceId,
+        scope: Scope,
     ) -> Option<Result<(SymbolId, SymbolId, TaxRelation), BoxedError>> {
         let sentence = self.syntactic.sentence(sid)?;
-        try_extract_edge_from(self, sid, &sentence)
+        try_extract_edge_from(self, sid, &sentence, scope)
     }
 }
 
@@ -524,6 +502,7 @@ fn try_extract_edge_from(
     layer: &SemanticLayer,
     sid: SentenceId,
     sentence: &Sentence,
+    scope: Scope,
 ) -> Option<Result<(SymbolId, SymbolId, TaxRelation), BoxedError>> {
     let head_sym = sentence.head_symbol()?;
     let rel = layer.tax_role_of(head_sym)?; // not a taxonomy edge → skip
@@ -554,7 +533,7 @@ fn try_extract_edge_from(
     };
     let from = match classify_arg(sentence.elements.get(2)) {
         EdgeArg::Id(id) => id,
-        EdgeArg::Skip => layer.class_denoted_by(sentence.elements.get(2), Scope::Base)?,
+        EdgeArg::Skip => layer.class_denoted_by(sentence.elements.get(2), scope)?,
         EdgeArg::Bad => {
             return Some(Err(Box::new(DomainMismatch {
                 sid,
@@ -581,9 +560,10 @@ mod widen_tests {
 
         // Simulate "B's own edge to A changed": the raw event names the two
         // endpoints A (parent) and B (child); only B seeds the walk.
-        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
-            .into_iter()
-            .collect();
+        let widened: HashSet<SymbolId> =
+            widen_with_descendants(&store, &[1, 2], &[2], &[Scope::Base])
+                .into_iter()
+                .collect();
         assert_eq!(
             widened,
             HashSet::from([1, 2, 3, 4]),
@@ -602,9 +582,10 @@ mod widen_tests {
         add_edge(&store, Scope::Base, 1, 5, TaxRelation::Subclass); // A -> E (sibling)
         add_edge(&store, Scope::Base, 5, 6, TaxRelation::Subclass); // E -> F
 
-        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
-            .into_iter()
-            .collect();
+        let widened: HashSet<SymbolId> =
+            widen_with_descendants(&store, &[1, 2], &[2], &[Scope::Base])
+                .into_iter()
+                .collect();
         assert_eq!(
             widened,
             HashSet::from([1, 2]),
@@ -618,9 +599,10 @@ mod widen_tests {
         add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass);
         add_edge(&store, Scope::Base, 10, 20, TaxRelation::Subclass); // unrelated
 
-        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1, 2], &[2])
-            .into_iter()
-            .collect();
+        let widened: HashSet<SymbolId> =
+            widen_with_descendants(&store, &[1, 2], &[2], &[Scope::Base])
+                .into_iter()
+                .collect();
         assert_eq!(widened, HashSet::from([1, 2]));
     }
 
@@ -630,7 +612,7 @@ mod widen_tests {
         add_edge(&store, Scope::Base, 1, 2, TaxRelation::Subclass);
         add_edge(&store, Scope::Base, 2, 1, TaxRelation::Subclass); // malformed cycle
 
-        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1], &[1])
+        let widened: HashSet<SymbolId> = widen_with_descendants(&store, &[1], &[1], &[Scope::Base])
             .into_iter()
             .collect();
         assert_eq!(widened, HashSet::from([1, 2]));
