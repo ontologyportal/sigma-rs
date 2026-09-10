@@ -49,6 +49,9 @@ const IGNORED_CONSOLE = [
   /wheel sensitivity/,
   /Do not assign mappings/,
   /style value of `label`/,
+  // GitHub's anonymous API quota (60/hour per IP) is environmental, not a
+  // regression; the app answers it with the login dialog, dismissed below.
+  /status of 403/,
 ];
 
 const problems = [];
@@ -66,10 +69,23 @@ page.on("requestfailed", (r) => {
   problems.push(`[requestfailed] ${u} ${r.failure()?.errorText}`);
 });
 
+/** Close the "Log in required" dialog the app raises when the anonymous
+ *  GitHub quota is exhausted, which would otherwise block every click. */
+async function dismissLoginDialog() {
+  const cancel = page.locator(
+    'dialog[open]:has-text("Log in required") button',
+    {
+      hasText: "Cancel",
+    },
+  );
+  if (await cancel.count()) await cancel.click();
+}
+
 let failures = 0;
 const step = async (name, fn) => {
   const before = problems.length;
   try {
+    await dismissLoginDialog();
     await fn();
     await page.waitForTimeout(400);
     await page.screenshot({
@@ -185,7 +201,7 @@ await step("40-diagnostics", async () => {
 await step("41-diagnostics-filter", async () => {
   await page.locator("button", { hasText: "Filter" }).first().click();
   await page.waitForTimeout(300);
-  const sel = page.locator("select").nth(1); // severity
+  const sel = page.locator("select#diag-filter-severity");
   const opts = await sel.locator("option").allTextContents();
   const pick = opts.find((o) => /^Warning/.test(o)) || opts[1];
   if (pick) {
@@ -248,6 +264,25 @@ await step("80-slash-shortcut", async () => {
   );
   if (focused !== "search")
     throw new Error("search box not focused after /: " + focused);
+});
+
+await step("90-mobile-nav", async () => {
+  await page.setViewportSize({ width: 420, height: 800 });
+  await page.waitForTimeout(300);
+  if (await page.locator("nav.tabs").isVisible())
+    throw new Error("tab strip still visible on a narrow viewport");
+  const overflow = await page.evaluate(
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth,
+  );
+  if (overflow)
+    throw new Error("page scrolls horizontally on a narrow viewport");
+  await page.locator(".tab-select select").selectOption("kb");
+  await page.waitForSelector("text=constituent(s) loaded", { timeout: 30_000 });
+  if (!page.url().includes("/kb"))
+    throw new Error("select did not navigate: " + page.url());
+  await page.setViewportSize({ width: 1200, height: 900 });
 });
 
 await browser.close();
