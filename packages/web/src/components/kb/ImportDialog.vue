@@ -1,15 +1,19 @@
 <script setup lang="ts">
-/** "Import into the library": add local .kif files (singly or a folder), a
- *  single-file URL, or a whole GitHub repo+branch. Nothing here loads into
- *  the KB -- imported files show up as `available` rows in the table.
- *  Emits `imported` with a one-line summary the tab logs. */
+/** "Import into the library": add local files (singly or a folder), a
+ *  single-file URL, or a whole GitHub repo+branch. `accept` picks which
+ *  local/URL files count: `.kif` constituents (the Knowledge base tab) or
+ *  test files (the Problems tab); a repo is listed whole either way.
+ *  Nothing here loads into the KB -- imported files show up as `available`
+ *  rows in the table. Emits `imported` with a one-line summary the tab logs. */
 import { computed, ref, watch } from "vue";
 import { GitOrigin } from "../../models/Origin";
 import { useKBStore } from "../../stores/kb";
 import {
+  acceptsFile,
   useLibraryStore,
   isDefaultRepo,
   originForRepo,
+  type ImportAccept,
   type RepoRef,
 } from "../../stores/library";
 import { useStatus } from "../../composables/useStatus";
@@ -17,10 +21,22 @@ import BaseDialog from "../BaseDialog.vue";
 import BusyButton from "../BusyButton.vue";
 import StatusLine from "../StatusLine.vue";
 
-const props = defineProps<{
-  /** Open state (v-model). */
-  modelValue: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** Open state (v-model). */
+    modelValue: boolean;
+    /** Which local/URL files to take: `.kif` constituents or test files. */
+    accept?: ImportAccept;
+  }>(),
+  { accept: "kif" },
+);
+
+/** The `<input type=file>` accept list and the wording for `accept`. */
+const kinds = computed(() =>
+  props.accept === "kif"
+    ? { exts: ".kif", label: ".kif", example: "ontology.kif" }
+    : { exts: ".tq,.p,.tptp", label: "test", example: "TQG1.kif.tq" },
+);
 
 const emit = defineEmits<{
   "update:modelValue": [value: boolean];
@@ -49,7 +65,7 @@ const folderInput = ref<HTMLInputElement | null>(null);
 function onFilesChange(e: Event) {
   const input = e.target as HTMLInputElement;
   files.value = Array.from(input.files ?? []).filter((f) =>
-    /\.kif$/i.test(f.webkitRelativePath || f.name),
+    acceptsFile(props.accept, f.webkitRelativePath || f.name),
   );
   status.clear();
 }
@@ -94,14 +110,22 @@ async function doImport() {
     let message = "";
     if (mode.value === "local") {
       if (!files.value.length) {
-        status.set("Choose one or more .kif files first.", true);
+        status.set(
+          `Choose one or more ${kinds.value.label} files first.`,
+          true,
+        );
         return;
       }
       status.set(`Importing ${files.value.length} file(s)…`);
-      const { added, skipped } = await library.importFiles(files.value);
+      const { added, skipped } = await library.importFiles(
+        files.value,
+        props.accept,
+      );
       message =
         `Imported ${added.length} file(s) into the library` +
-        (skipped.length ? ` (${skipped.length} skipped, not .kif).` : ".");
+        (skipped.length
+          ? ` (${skipped.length} skipped, not ${kinds.value.label}).`
+          : ".");
       resetFileInputs();
     } else if (mode.value === "url") {
       if (!url.value.trim()) {
@@ -171,7 +195,7 @@ watch(
         id="importFiles"
         ref="fileInput"
         type="file"
-        accept=".kif"
+        :accept="kinds.exts"
         multiple
         @change="onFilesChange"
       />
@@ -184,16 +208,18 @@ watch(
         multiple
         @change="onFilesChange"
       />
-      <div class="hint mt-sm">{{ files.length }} .kif file(s) selected</div>
+      <div class="hint mt-sm">
+        {{ files.length }} {{ kinds.label }} file(s) selected
+      </div>
     </div>
 
     <div v-else-if="mode === 'url'" class="mt">
-      <label for="importUrl">Address of a .kif file</label>
+      <label for="importUrl">Address of a {{ kinds.label }} file</label>
       <input
         id="importUrl"
         v-model="url"
         type="text"
-        placeholder="https://example.org/ontology.kif"
+        :placeholder="`https://example.org/${kinds.example}`"
         @keydown.enter="doImport"
       />
     </div>

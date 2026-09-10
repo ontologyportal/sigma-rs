@@ -42,6 +42,7 @@ export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";
 export const PROMOTE_TABS: readonly TabName[] = [
   "diagnostics",
   "prover",
+  "problems",
   "audit",
 ];
 
@@ -50,6 +51,7 @@ export const BASE = import.meta.env.BASE_URL;
 export const TABS = [
   "browse",
   "kb",
+  "problems",
   "diagnostics",
   "prover",
   "audit",

@@ -273,6 +273,51 @@ await step("13-kb-local-library", async () => {
   fs.unlinkSync(tmp);
 });
 
+await step("15-problems", async () => {
+  await tab("Problems").click();
+  await page.waitForSelector("table tbody tr", { timeout: 60_000 });
+  // The upstream catalog is a GitHub API read; wait for it (or its error).
+  await page.waitForFunction(
+    () => document.querySelectorAll("table tbody tr").length > 1,
+    null,
+    { timeout: 60_000 },
+  );
+  const search = page.locator('input[type="search"]').last();
+  await search.fill(".kif.tq");
+  await page.waitForTimeout(300);
+  const row = page.locator("table tbody tr", { hasText: ".kif.tq" }).first();
+  await row.waitFor({ timeout: 5000 });
+  const name = (await row.locator(".name").innerText()).trim();
+  if (!name.endsWith(".kif.tq"))
+    throw new Error("first matching row is not a .kif.tq test: " + name);
+  await row.locator('input[type="checkbox"]').check();
+  await row.locator("text=will import").waitFor({ timeout: 3000 });
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
+  await page.waitForSelector("text=/Imported 1/", { timeout: 60_000 });
+  // Now imported: tick it again and run it.
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("button.btn", { hasText: "Run selected" }).click();
+  await row.locator("td.col-extra .result").waitFor({ timeout: 180_000 });
+  await page.waitForSelector("text=/passed\\./", { timeout: 180_000 });
+  // Its name opens it in Ask/Tell.
+  await row.locator("a.name").click();
+  await page.waitForURL(/\/prover\?test=/, { timeout: 10_000 });
+  await page.waitForSelector(".monaco-editor", { timeout: 60_000 });
+  await page.waitForFunction(
+    () => document.querySelector(".monaco-editor .view-lines")?.textContent,
+    null,
+    { timeout: 30_000 },
+  );
+  // Back to Problems (the tab returns to its last query) and remove it.
+  await tab("Problems").click();
+  await row.waitFor({ timeout: 5000 });
+  await row.locator('input[type="checkbox"]').check();
+  await row.locator("text=will remove").waitFor({ timeout: 3000 });
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
+  await page.waitForSelector("text=/removed 1/", { timeout: 60_000 });
+  await search.fill("");
+});
+
 await step("20-history", async () => {
   await tab("History").click();
   await page.waitForTimeout(4000);

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { formatTest } from "sigmakee/sdk";
+import { useTabQuery } from "../composables/useTabQuery";
+import { useStatus } from "../composables/useStatus";
+import { navigate } from "../router";
 import { call } from "../services/sigma";
 import { downloadText, errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
@@ -10,7 +13,7 @@ import Card from "../components/Card.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverSettings from "../components/ProverSettings.vue";
-import TestsPanel from "../components/prover/TestsPanel.vue";
+import StatusLine from "../components/StatusLine.vue";
 
 const prover = useProverStore();
 const tests = useTestsStore();
@@ -27,13 +30,11 @@ const queryEd = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const tptpMode = computed(() => prover.proofLang === "tptp");
 
 const proving = ref(false);
-const testsOpen = ref(false);
-const loadingTest = ref(false);
 const savingTest = ref(false);
-const testsLog = ref("");
+/** The save-test result line under the button row. */
+const testLog = useStatus();
 /** Transient note shown in place of the settings summary ("Enter a query first."). */
 const cfgNote = ref("");
-const loadTestFile = ref<HTMLInputElement | null>(null);
 
 // The exact TPTP problem text handed to Vampire for the most recent Ask/Tell
 // run -- `proveVampire` returns it alongside the result (computed anyway to
@@ -187,67 +188,69 @@ function downloadVampireTptp() {
   downloadText("vampire-input.tptp", lastVampireTptp);
 }
 
-// -- tests: open / load / save ------------------------------------------------
+// -- tests: open / save -------------------------------------------------------
 
-/** Load a parsed test's fields into the panes. Every test's panes carry KIF
- *  text regardless of source dialect (`.p`/`.tptp` imports come back
- *  translated); if the proof-language toggle is on TPTP's single-pane mode,
- *  switch it back to KIF, or that text would be misread as one whole TPTP
- *  problem with its query pane hidden. */
-function openParsed(parsed: any) {
-  assertions.value = parsed.axiomKif || "";
-  query.value = parsed.queryKif || "";
-  if (prover.proofLang === "tptp") prover.proofLang = "kif";
-}
-
-function onOpenTest(t: TestEntry) {
-  openParsed(t.parsed);
-  tests.setOpen({ name: t.name, origin: t.origin });
-  testsOpen.value = false;
-}
-
-async function onLoadTestFile(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = ""; // allow re-picking the same file name later
-  if (!file) return;
-  loadingTest.value = true;
-  try {
-    const r = await tests.loadFile(file.name, await file.text());
-    if (r.parsed) openParsed(r.parsed);
-    testsLog.value = r.added
-      ? `Imported and opened ${file.name}.`
-      : r.notices.join(" | ");
-  } catch (err) {
-    testsLog.value = errMsg(err);
-  } finally {
-    loadingTest.value = false;
+/** Load an imported test into the panes in its own dialect: a `.kif.tq`
+ *  fills assertions + query with the parsed KIF, a `.p`/`.tptp` puts the
+ *  whole problem text into TPTP mode's single pane. */
+function openTest(t: TestEntry) {
+  if (tests.dialect(t.name) === "kif") {
+    prover.proofLang = "kif";
+    assertions.value = t.parsed.axiomKif || "";
+    query.value = t.parsed.queryKif || "";
+  } else {
+    prover.proofLang = "tptp";
+    assertions.value = t.text;
+    query.value = "";
   }
+  tests.setOpen({ name: t.name, origin: t.origin });
 }
+
+const { onQuery, str } = useTabQuery(["prover"]);
+
+// `?test=<name>` opens an imported test (the Problems tab's name link).
+onQuery((q) => {
+  const name = str(q.test);
+  if (!name || name === tests.openTest?.name) return;
+  const t = tests.find(name);
+  if (t) openTest(t);
+  else cfgNote.value = `${name} is not imported (see the Problems tab)`;
+});
 
 async function saveTest() {
-  const q = query.value.trim();
-  if (!q) {
-    cfgNote.value = "Enter a query first.";
-    return;
+  let text: string;
+  if (tptpMode.value) {
+    text = assertions.value;
+    if (!text.trim()) {
+      cfgNote.value = "Enter a problem first.";
+      return;
+    }
+  } else {
+    const q = query.value.trim();
+    if (!q) {
+      cfgNote.value = "Enter a query first.";
+      return;
+    }
+    text = formatTest({
+      timeout: prover.config().timeLimitSecs,
+      assertions: assertions.value,
+      query: q,
+      expectedProof: true,
+    });
   }
-  const formatted = formatTest({
-    timeout: prover.config().timeLimitSecs,
-    assertions: assertions.value,
-    query: q,
-    expectedProof: true,
-  });
   savingTest.value = true;
   try {
-    const r = await tests.saveCurrent(formatted);
+    const r = await tests.saveCurrent(text, tptpMode.value ? "tptp" : "kif");
     if (!r.saved) return; // cancelled the save-as prompt
-    testsLog.value = r.overwritten
-      ? `Saved changes to ${r.name}.`
-      : r.notices && r.notices.length
-        ? r.notices.join(" | ")
-        : `Saved as ${r.name}.`;
+    testLog.set(
+      r.overwritten
+        ? `Saved changes to ${r.name}.`
+        : r.notices && r.notices.length
+          ? r.notices.join(" | ")
+          : `Saved as ${r.name}.`,
+    );
   } catch (err) {
-    testsLog.value = errMsg(err);
+    testLog.fail(err);
   } finally {
     savingTest.value = false;
   }
@@ -300,36 +303,21 @@ async function saveTest() {
         busy-label="Proving…"
         @click="prove"
       />
-      <button
-        class="btn ghost"
-        type="button"
-        :aria-expanded="testsOpen"
-        title="Open a previously imported test"
-        @click="testsOpen = !testsOpen"
-      >
-        Open test
-      </button>
-      <BusyButton
-        ghost
-        :busy="loadingTest"
-        label="Load test"
-        title="Import a new .kif.tq or .p/.tptp test file"
-        @click="loadTestFile?.click()"
-      />
-      <input
-        ref="loadTestFile"
-        type="file"
-        accept=".tq,.p,.tptp,text/plain"
-        hidden
-        @change="onLoadTestFile"
-      />
       <BusyButton
         ghost
         :busy="savingTest"
         label="Save test"
-        title="Save the current assertions/query as a test"
+        title="Save the current assertions/query as a test in the library"
         @click="saveTest"
       />
+      <button
+        class="btn ghost"
+        type="button"
+        title="Import, run, and open test files"
+        @click="navigate('problems')"
+      >
+        Problems
+      </button>
       <button
         class="btn ghost"
         type="button"
@@ -354,11 +342,10 @@ async function saveTest() {
     <div class="hint mt-sm">
       {{ tests.openTest ? "Editing test: " + tests.openTest.name : "" }}
     </div>
+    <StatusLine :text="testLog.text" :error="testLog.error" />
   </Card>
 
   <ProverSettings />
-
-  <TestsPanel v-show="testsOpen" v-model:log="testsLog" @open="onOpenTest" />
 
   <Card v-if="error || result">
     <div class="inline between">

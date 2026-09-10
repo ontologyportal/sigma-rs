@@ -50,6 +50,11 @@ export const router = createRouter({
     },
     { name: "kb", path: "/kb", component: () => import("../views/KbTab.vue") },
     {
+      name: "problems",
+      path: "/problems",
+      component: () => import("../views/ProblemsTab.vue"),
+    },
+    {
       name: "history",
       path: "/history",
       component: () => import("../views/HistoryTab.vue"),

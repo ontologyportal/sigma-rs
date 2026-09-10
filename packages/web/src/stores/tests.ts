@@ -2,21 +2,28 @@
  * Tests: `.kif.tq` (SUO-KIF harness directives) and `.p`/`.tptp` (standalone
  * TPTP problems, parsed via `parseTptpTest`).
  *
- * Tests share the constituent import channels (GitHub picker / URL) but are a
- * separate collection: a test's (query ...) must never be ingested as an
- * axiom. Running one reuses the prove pipeline with the test's own axioms,
- * query, and (time N) budget. This store owns the imported-tests collection
- * and its OPFS/localStorage persistence; the Ask/Tell tab owns loading a
- * test's text into its panes.
+ * Tests live in the same library as the constituents (repo catalogs, local
+ * uploads, URLs) but are a separate collection: a test's (query ...) must
+ * never be ingested as an axiom. Running one reuses the prove pipeline with
+ * the test's own axioms, query, and (time N) budget. This store owns the
+ * imported-tests collection and its localStorage persistence; the Problems
+ * tab imports/removes/runs, the Ask/Tell tab opens a test into its panes.
  */
 
 import { defineStore } from "pinia";
 import { TQ_SETTING } from "../constants";
-import { OriginKind, originForKind } from "../models/Origin";
+import {
+  LocalOrigin,
+  Origin,
+  OriginJson,
+  originId,
+  parseOrigin,
+  serializeOrigin,
+} from "../models/Origin";
 import { call } from "../services/sigma";
 import { fromOrigin } from "../services/sources";
 import { errMsg } from "../utils/format";
-import { useBootStore } from "./boot";
+import { useLibraryStore } from "./library";
 import { useProverStore } from "./prover";
 
 export interface TestOutcome {
@@ -27,19 +34,27 @@ export interface TestOutcome {
 
 export interface TestEntry {
   name: string;
-  origin: OriginKind;
+  origin: Origin;
   text: string;
   /** The worker's `TestCaseView`. */
   parsed: any;
   outcome: TestOutcome | null;
 }
 
+/** What's mirrored to localStorage -- enough to refetch the test's text on
+ *  the next boot (the same shape the KB uses for constituents). */
 export interface SavedTest {
   name: string;
-  origin: OriginKind;
+  origin: OriginJson;
 }
 
+export type TestDialect = "kif" | "tptp";
+
 export const isTestFile = (name: string) => /\.(tq|p|tptp)$/i.test(name);
+
+/** `.kif.tq` files are KIF harness tests; `.p` / `.tptp` are TPTP problems. */
+export const testDialect = (name: string): TestDialect =>
+  /\.tq$/i.test(name) ? "kif" : "tptp";
 
 /** The RPC that understands `name`'s dialect: `.kif.tq` (SUO-KIF harness
  *  directives) vs `.p`/`.tptp` (a standalone TPTP problem -- see
@@ -47,27 +62,23 @@ export const isTestFile = (name: string) => /\.(tq|p|tptp)$/i.test(name);
  *  shape (KIF text either way; a TPTP test's theory/conjecture come back
  *  translated). */
 function testParseRpc(name: string) {
-  return /\.tq$/i.test(name) ? "parseTest" : "parseTptpTest";
+  return testDialect(name) === "kif" ? "parseTest" : "parseTptpTest";
 }
 
 function loadSavedTests(): SavedTest[] {
   try {
     const raw = JSON.parse(localStorage.getItem(TQ_SETTING) || "[]");
-    return Array.isArray(raw) ? raw : [];
+    if (!Array.isArray(raw)) return [];
+    // Entries saved before the library carried a bare kind string.
+    return raw
+      .filter((t: any) => t && typeof t.name === "string")
+      .map((t: any) => ({
+        name: t.name,
+        origin: serializeOrigin(parseOrigin(t.origin, t.name)),
+      }));
   } catch {
     return [];
   }
-}
-
-/** Write `text` to `name` in OPFS, creating or overwriting it -- shared by
- *  test upload and save-back. */
-async function writeOpfsFile(name: string, text: string) {
-  const boot = useBootStore();
-  if (!boot.opfsRoot) throw new Error("File system not yet initialized");
-  const handle = await boot.opfsRoot.getFileHandle(name, { create: true });
-  const stream = await handle.createWritable();
-  await stream.write(text);
-  await stream.close();
 }
 
 function gradeTest(parsed: any, result: any): TestOutcome {
@@ -97,15 +108,16 @@ export const useTestsStore = defineStore("tests", {
     /** Mirrored to localStorage -- what the next boot re-imports. */
     saved: loadSavedTests(),
     /** The test currently loaded into the Ask/Tell panes, if any. Set by
-     *  opening, loading, or saving-as a test; cleared if that test is
-     *  removed. */
+     *  opening or saving-as a test; cleared if that test is removed. */
     openTest: null as SavedTest | null,
   }),
   getters: {
-    /** Names of the imported tests that came from the upstream repo -- the
-     *  KB tab's picker hides them alongside the loaded constituents. */
-    sumoTestNames: (state) =>
-      state.tests.filter((t) => t.origin === "sumo").map((t) => t.name),
+    /** The editor mode a test opens in: `.tq` = kif, else tptp. */
+    dialect: () => testDialect,
+    find:
+      (state) =>
+      (name: string): TestEntry | undefined =>
+        state.tests.find((t) => t.name === name),
   },
   actions: {
     persistSaved() {
@@ -116,94 +128,64 @@ export const useTestsStore = defineStore("tests", {
     async add(
       name: string,
       text: string,
-      origin: OriginKind,
+      origin: Origin,
     ): Promise<{ added: boolean; notices: string[] }> {
       if (this.tests.some((t) => t.name === name)) {
         return { added: false, notices: [`${name}: already imported`] };
       }
       const { test } = await call(testParseRpc(name), { name, text });
       this.tests.push({ name, origin, text, parsed: test, outcome: null });
-      if (!this.saved.some((t) => t.name === name && t.origin === origin)) {
-        this.saved.push({ name, origin });
+      const id = originId(origin);
+      if (
+        !this.saved.some((t) => t.name === name && originId(t.origin) === id)
+      ) {
+        this.saved.push({ name, origin: serializeOrigin(origin) });
         this.persistSaved();
       }
       return { added: true, notices: [] };
     },
 
-    /** Drop a test; a `file`-origin test's OPFS copy goes with it. */
-    async remove(name: string, origin: OriginKind) {
-      this.tests = this.tests.filter(
-        (t) => t.name !== name || t.origin !== origin,
-      );
-      this.saved = this.saved.filter(
-        (t) => t.name !== name || t.origin !== origin,
-      );
+    /** Drop a test from the imported set. Its library copy stays (removing
+     *  is not deleting). */
+    async remove(name: string, id: string) {
+      const gone = (t: { name: string; origin: Origin | OriginJson }) =>
+        t.name === name && originId(t.origin) === id;
+      this.tests = this.tests.filter((t) => !gone(t));
+      this.saved = this.saved.filter((t) => !gone(t));
       this.persistSaved();
-      if (origin === "file") {
-        const boot = useBootStore();
-        try {
-          await boot.opfsRoot?.removeEntry(name);
-        } catch {
-          /* already gone */
-        }
-      }
-      if (
-        this.openTest &&
-        this.openTest.name === name &&
-        this.openTest.origin === origin
-      ) {
-        this.openTest = null;
-      }
+      if (this.openTest && gone(this.openTest)) this.openTest = null;
     },
 
     /** Boot: re-import every saved test, best-effort per test. */
     async restore() {
-      for (const { name, origin } of this.saved) {
+      for (const { name, origin: json } of this.saved) {
         try {
-          await this.add(
-            name,
-            await fromOrigin(name, originForKind(origin)),
-            origin,
-          );
+          const origin = parseOrigin(json, name);
+          await this.add(name, await fromOrigin(name, origin), origin);
         } catch (e) {
           console.warn(`test ${name}: ${errMsg(e)}`);
         }
       }
     },
 
-    setOpen(t: SavedTest | null) {
-      this.openTest = t ? { name: t.name, origin: t.origin } : null;
+    setOpen(t: { name: string; origin: Origin } | null) {
+      this.openTest = t
+        ? { name: t.name, origin: serializeOrigin(t.origin) }
+        : null;
     },
 
-    /** Import a freshly uploaded test file (Ask/Tell's "Load test"): persist
-     *  it to OPFS, parse + add it to the imported-tests list, and mark it as
-     *  the currently open test. Throws on a non-test extension or a parse
-     *  failure (nothing is left half-added since `add` only pushes after a
-     *  successful parse). Returns `parsed` so the caller can load it into
-     *  the panes. */
-    async loadFile(
-      name: string,
+    /** Save the Ask/Tell panes as a test: `text` is the `.kif.tq` the caller
+     *  built (via `formatTest`) or the raw TPTP problem, per `dialect`.
+     *  Overwrites the currently open test in place when it is a local
+     *  library file of the same dialect (round-trips cleanly, same format);
+     *  otherwise -- nothing open, a different dialect, or a read-only origin
+     *  (`sumo`/`url`) that can't be written back -- prompts for a new file
+     *  name and saves as a new local test. `saved: false` means the user
+     *  cancelled the name prompt. */
+    async saveCurrent(
       text: string,
-    ): Promise<{ added: boolean; notices: string[]; parsed?: any }> {
-      if (!isTestFile(name))
-        throw new Error(`${name}: not a .kif.tq / .p / .tptp test file`);
-      await writeOpfsFile(name, text);
-      const r = await this.add(name, text, "file");
-      if (!r.added) return r;
-      const t = this.tests.find((x) => x.name === name && x.origin === "file");
-      this.openTest = { name, origin: "file" };
-      return { ...r, parsed: t?.parsed };
-    },
-
-    /** Save the Ask/Tell assertions/query as a test. `formattedTq` is the
-     *  `.kif.tq` text the caller built (via `formatTest`) from the current
-     *  panes. Overwrites the currently open test in place when it's a `.tq`
-     *  file-origin import (round-trips cleanly, same format); otherwise --
-     *  nothing open, or the open test is a `.p`/`.tptp` import or came from
-     *  a read-only origin (`sumo`/`url`) that can't be written back --
-     *  prompts for a new file name and saves as a new local test.
-     *  `saved: false` means the user cancelled the name prompt. */
-    async saveCurrent(formattedTq: string): Promise<{
+      dialect: TestDialect,
+    ): Promise<{
       saved: boolean;
       name?: string;
       overwritten?: boolean;
@@ -211,30 +193,39 @@ export const useTestsStore = defineStore("tests", {
     }> {
       const open = this.openTest;
       const canOverwrite =
-        !!open && open.origin === "file" && /\.tq$/i.test(open.name);
-      let name = open ? open.name : "test.kif.tq";
+        !!open &&
+        open.origin.kind === "file" &&
+        testDialect(open.name) === dialect;
+      const ext = dialect === "kif" ? ".kif.tq" : ".p";
+      const matches = (n: string) =>
+        testDialect(n) === dialect && isTestFile(n);
+      let name = open
+        ? open.name
+        : dialect === "kif"
+          ? "test.kif.tq"
+          : "problem.p";
       if (!canOverwrite) {
-        name = /\.tq$/i.test(name)
-          ? name
-          : name.replace(/\.(p|tptp)$/i, "") + ".kif.tq";
+        if (!matches(name))
+          name = name.replace(/\.(kif\.tq|tq|p|tptp)$/i, "") + ext;
         const chosen = (window.prompt("Save test as:", name) || "").trim();
         if (!chosen) return { saved: false };
-        name = /\.tq$/i.test(chosen) ? chosen : `${chosen}.kif.tq`;
+        name = matches(chosen) ? chosen : `${chosen}${ext}`;
       }
-      await writeOpfsFile(name, formattedTq);
+      const origin = new LocalOrigin();
+      await useLibraryStore().writeLocal(name, text);
       const existing = this.tests.find(
-        (t) => t.name === name && t.origin === "file",
+        (t) => t.name === name && t.origin.kind === "file",
       );
       if (existing) {
-        existing.text = formattedTq;
-        const { test } = await call("parseTest", { name, text: formattedTq });
+        const { test } = await call(testParseRpc(name), { name, text });
+        existing.text = text;
         existing.parsed = test;
         existing.outcome = null;
-        this.openTest = { name, origin: "file" };
+        this.setOpen({ name, origin });
         return { saved: true, name, overwritten: true };
       }
-      const r = await this.add(name, formattedTq, "file");
-      if (r.added) this.openTest = { name, origin: "file" };
+      const r = await this.add(name, text, origin);
+      if (r.added) this.setOpen({ name, origin });
       return { saved: r.added, name, overwritten: false, notices: r.notices };
     },
 
@@ -253,14 +244,16 @@ export const useTestsStore = defineStore("tests", {
       t.outcome = { ...gradeTest(t.parsed, result), status: result.status };
     },
 
-    /** Run every test that has a query, in order; a throwing run counts as
-     *  a failure rather than aborting the rest. */
+    /** Run `list` (default: every imported test) in order, skipping tests
+     *  without a query; a throwing run counts as a failure rather than
+     *  aborting the rest. */
     async runAll(
       onProgress?: (t: TestEntry) => void,
+      list: TestEntry[] = this.tests,
     ): Promise<{ pass: number; ran: number }> {
       let pass = 0;
       let ran = 0;
-      for (const t of this.tests) {
+      for (const t of list) {
         if (!t.parsed.queryKif) continue;
         onProgress?.(t);
         try {

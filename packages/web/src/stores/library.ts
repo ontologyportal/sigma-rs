@@ -15,6 +15,7 @@ import { fetchText } from "../services/sources";
 import { errMsg } from "../utils/format";
 import { useBootStore } from "./boot";
 import { opfsSafeName } from "./changes";
+import { isTestFile } from "./tests";
 
 /** A registered git repository + branch (GitHub only for now). */
 export interface RepoRef {
@@ -40,14 +41,21 @@ export interface UrlEntry {
 
 export type LibraryEntry = LocalEntry | UrlEntry;
 
-/** One `.kif` / `.kif.tq` blob in a repo, with its byte size. */
+/** One `.kif` / `.kif.tq` / `.p` / `.tptp` blob in a repo, with its byte size. */
 export interface CatalogEntry {
   path: string;
   size: number;
 }
 
 const LIBRARY_DIR = "library";
-const isKif = (name: string) => /\.kif$/i.test(name);
+export const isKif = (name: string) => /\.kif$/i.test(name);
+/** What the library lists: KIF constituents and test files. */
+const isLibraryFile = (name: string) => isKif(name) || isTestFile(name);
+
+/** The extension filter for an import: `kif` constituents or `test` files. */
+export type ImportAccept = "kif" | "test";
+export const acceptsFile = (accept: ImportAccept, name: string) =>
+  accept === "kif" ? isKif(name) : isTestFile(name);
 
 export const DEFAULT_REPO: RepoRef = {
   owner: SUMO.owner,
@@ -120,7 +128,7 @@ function urlBaseName(url: string): string {
 export const useLibraryStore = defineStore("library", {
   state: () => ({
     ...loadPersisted(),
-    /** Per repo id: its `.kif` / `.kif.tq` blobs, or null until listed. */
+    /** Per repo id: its KIF and test-file blobs, or null until listed. */
     catalogs: {} as Record<string, CatalogEntry[] | null>,
     catalogErrors: {} as Record<string, string>,
   }),
@@ -133,11 +141,28 @@ export const useLibraryStore = defineStore("library", {
         state.entries.find((e) => e.name === name && e.kind === kind),
     /** Every non-test file the library knows about. */
     size: (state) =>
-      state.entries.length +
+      state.entries.filter((e) => !isTestFile(e.name)).length +
       Object.values(state.catalogs).reduce(
-        (n, c) => n + (c ?? []).filter((e) => !/\.tq$/i.test(e.path)).length,
+        (n, c) => n + (c ?? []).filter((e) => !isTestFile(e.path)).length,
         0,
       ),
+    /** One line for the tables' hint: the catalogs still listing, or the
+     *  repos whose listing failed. */
+    catalogNote: (state): { text: string; error: boolean } => {
+      const errors = state.repos
+        .map((r) => {
+          const err = state.catalogErrors[repoId(r)];
+          return err ? `${originForRepo(r).label}: ${err}` : "";
+        })
+        .filter(Boolean);
+      if (errors.length)
+        return {
+          text: `could not load file list — ${errors.join("; ")}`,
+          error: true,
+        };
+      const pending = state.repos.some((r) => !state.catalogs[repoId(r)]);
+      return { text: pending ? "loading file lists…" : "", error: false };
+    },
   },
   actions: {
     persist() {
@@ -147,8 +172,8 @@ export const useLibraryStore = defineStore("library", {
       );
     },
 
-    /** List a repo's KIF files -- one tree read per repo, shared with the
-     *  change tracker for the default repo (which reads `SUMO.ref`). */
+    /** List a repo's KIF and test files -- one tree read per repo, shared
+     *  with the change tracker for the default repo (which reads `SUMO.ref`). */
     async loadCatalog(repo: RepoRef, { force = false } = {}): Promise<void> {
       const id = repoId(repo);
       if (this.catalogs[id] && !force) return;
@@ -161,9 +186,7 @@ export const useLibraryStore = defineStore("library", {
           { force },
         );
         this.catalogs[id] = tree
-          .filter(
-            (e: any) => e.type === "blob" && /\.kif(\.tq)?$/i.test(e.path),
-          )
+          .filter((e: any) => e.type === "blob" && isLibraryFile(e.path))
           .map((e: any) => ({
             path: e.path as string,
             size: Number(e.size) || 0,
@@ -188,7 +211,7 @@ export const useLibraryStore = defineStore("library", {
     },
 
     /** Register a repo, validating it by listing its tree. Rejects
-     *  duplicates and repos with no KIF files. */
+     *  duplicates and repos with no KIF or test files. */
     async addRepo(r: RepoRef): Promise<void> {
       const repo: RepoRef = {
         owner: r.owner.trim(),
@@ -204,7 +227,7 @@ export const useLibraryStore = defineStore("library", {
       await this.loadCatalog(repo);
       if (!this.catalogs[repoId(repo)]?.length)
         throw new Error(
-          `${repo.owner}/${repo.repo}@${repo.branch} has no .kif files.`,
+          `${repo.owner}/${repo.repo}@${repo.branch} has no .kif or test files.`,
         );
       this.repos.push(repo);
       this.persist();
@@ -244,16 +267,18 @@ export const useLibraryStore = defineStore("library", {
       return entry;
     },
 
-    /** Import picked files: `.kif` only; a file's name is its path relative
-     *  to the picked folder (or its bare name for a single pick). */
+    /** Import picked files of the `accept`ed kind (`.kif`, or the test
+     *  extensions); a file's name is its path relative to the picked folder
+     *  (or its bare name for a single pick). */
     async importFiles(
       files: File[],
+      accept: ImportAccept = "kif",
     ): Promise<{ added: string[]; skipped: string[] }> {
       const added: string[] = [];
       const skipped: string[] = [];
       for (const file of files) {
         const name = file.webkitRelativePath || file.name;
-        if (!isKif(name)) {
+        if (!acceptsFile(accept, name)) {
           skipped.push(name);
           continue;
         }
@@ -263,13 +288,14 @@ export const useLibraryStore = defineStore("library", {
       return { added, skipped };
     },
 
-    /** Register a URL after fetching it once to validate it and record its
-     *  size. The entry's name is the URL's file name unless that would
-     *  collide with a different URL already in the library. */
+    /** Register a URL (a `.kif` constituent or a test file) after fetching
+     *  it once to validate it and record its size. The entry's name is the
+     *  URL's file name unless that would collide with a different URL
+     *  already in the library. */
     async importUrl(url: string): Promise<UrlEntry> {
       url = url.trim();
       if (!/^https?:\/\//i.test(url))
-        throw new Error("Enter an http(s) URL of a .kif file.");
+        throw new Error("Enter an http(s) URL of a .kif or test file.");
       const text = await fetchText(url);
       let name = urlBaseName(url);
       const clash = this.entries.find(

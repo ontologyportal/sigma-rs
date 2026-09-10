@@ -158,6 +158,19 @@ export function parseOrigin(
   }
 }
 
+/** The library tables' Source column text: `GitHub` for the upstream repo,
+ *  `owner/repo@branch` for any other, `Local`, or `URL`. */
+export function sourceLabel(o: Origin): string {
+  switch (o.kind) {
+    case "sumo":
+      return (o as GitOrigin).isDefault ? "GitHub" : (o as GitOrigin).label;
+    case "file":
+      return "Local";
+    case "url":
+      return "URL";
+  }
+}
+
 /** A short stable identity for an origin, independent of any file: the git
  *  id for repos, `file` for local uploads, `url:<url>` for URLs. Used with a
  *  name to fingerprint the loaded constituent set. */

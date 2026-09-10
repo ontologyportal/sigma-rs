@@ -34,6 +34,7 @@ const TAB_GROUPS: { label: string; tabs: [TabName, string][] }[] = [
     label: "Manage",
     tabs: [
       ["kb", "Knowledge base"],
+      ["problems", "Problems"],
       ["history", "History"],
     ],
   },
@@ -199,7 +200,8 @@ nav.tabs button.disabled {
 }
 
 /* Narrow screens: one native select in place of the strip. The strip's
-   seven tabs need ~720px, so the switch happens well above phone widths. */
+   eight tabs need ~800px (it wraps below that), so the switch happens well
+   above phone widths. */
 .tab-select {
   display: none;
   align-items: center;
