@@ -169,8 +169,35 @@ await step("05-browse-home", async () => {
 
 await step("10-kb", async () => {
   await tab("Knowledge base").click();
-  await page.waitForSelector("text=constituent(s) loaded", { timeout: 30_000 });
-  await page.waitForTimeout(2500);
+  await page.waitForSelector("table tbody tr", { timeout: 60_000 });
+  // The upstream catalog is a GitHub API read; wait for it (or its error).
+  await page.waitForFunction(
+    () => document.querySelectorAll("table tbody tr").length > 2,
+    null,
+    { timeout: 60_000 },
+  );
+});
+
+await step("11-kb-add-remove", async () => {
+  const search = page.locator('input[type="search"]').last();
+  await search.fill("Weather");
+  await page.waitForTimeout(300);
+  const row = page
+    .locator("table tbody tr", { hasText: "Weather.kif" })
+    .first();
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("button.btn", { hasText: "Apply changes" }).click();
+  await page.waitForSelector("text=/Added 1/", { timeout: 180_000 });
+  await page.waitForFunction(
+    () => !document.querySelector(".toast")?.checkVisibility?.(),
+    null,
+    { timeout: 180_000 },
+  );
+  // Now loaded: selecting it again schedules a removal.
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("button.btn", { hasText: "Apply changes" }).click();
+  await page.waitForSelector("text=/removed 1/", { timeout: 180_000 });
+  await search.fill("");
 });
 
 await step("20-history", async () => {
@@ -279,7 +306,7 @@ await step("90-mobile-nav", async () => {
   if (overflow)
     throw new Error("page scrolls horizontally on a narrow viewport");
   await page.locator(".tab-select select").selectOption("kb");
-  await page.waitForSelector("text=constituent(s) loaded", { timeout: 30_000 });
+  await page.waitForSelector("table tbody tr", { timeout: 60_000 });
   if (!page.url().includes("/kb"))
     throw new Error("select did not navigate: " + page.url());
   await page.setViewportSize({ width: 1200, height: 900 });

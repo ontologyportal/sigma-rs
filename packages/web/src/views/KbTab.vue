@@ -1,21 +1,21 @@
 <script setup lang="ts">
-/** Knowledge base tab: standard constituent sets, the loaded list, the
- *  WordNet panel, and the three import channels (upstream picker, URL,
- *  local upload). */
-import { onActivated, onMounted, ref } from "vue";
+/** Knowledge base tab: the unified constituent table (with the standard-set
+ *  presets in its header), the URL / local-upload channels, and the WordNet
+ *  panel. */
+import { computed, onActivated, onMounted, ref } from "vue";
 import { GitOrigin, LocalOrigin, RemoteOrigin } from "../models/Origin";
 import { fetchText, fetchAllTexts } from "../services/sources";
 import { useKBStore } from "../stores/kb";
 import { useBootStore } from "../stores/boot";
 import { useTestsStore, isTestFile } from "../stores/tests";
 import { useStatus } from "../composables/useStatus";
-import { errMsg } from "../utils/format";
+import { formatSize } from "../utils/format";
 import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
+import DropMenu from "../components/DropMenu.vue";
 import StatusLine from "../components/StatusLine.vue";
-import ConstituentList from "../components/kb/ConstituentList.vue";
+import ConstituentTable from "../components/kb/ConstituentTable.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
-import SumoPicker from "../components/kb/SumoPicker.vue";
 
 const kb = useKBStore();
 const boot = useBootStore();
@@ -23,6 +23,19 @@ const tests = useTestsStore();
 
 onMounted(() => kb.loadSumoCatalog());
 onActivated(() => kb.loadSumoCatalog());
+
+const kbLog = useStatus();
+const tableLog = useStatus();
+
+const summary = computed(() => {
+  const loaded = kb.constituents.length;
+  const loadedNames = new Set(kb.sumoNames);
+  const available = (kb.sumoCatalog ?? []).filter(
+    (e) => !loadedNames.has(e.path) && !/\.tq$/i.test(e.path),
+  ).length;
+  const bytes = kb.constituents.reduce((sum, c) => sum + c.text.length, 0);
+  return `${loaded} loaded · ${available} available upstream · ${formatSize(bytes)} loaded`;
+});
 
 // -- Standard constituent sets ------------------------------------------------
 //
@@ -96,9 +109,11 @@ const PRESETS: Record<string, { label: string; files: string[] }> = {
 };
 
 const presetsBusy = ref(false);
-const presetNote = useStatus();
+const presetBtn = ref<HTMLElement | null>(null);
+const presetMenuOpen = ref(false);
 
 async function loadPreset(key: string) {
+  presetMenuOpen.value = false;
   const preset = PRESETS[key];
   presetsBusy.value = true;
   try {
@@ -106,37 +121,30 @@ async function loadPreset(key: string) {
     await kb.replaceAll();
 
     const total = preset.files.length;
-    presetNote.set(`Fetching ${preset.label} — 0/${total}…`);
+    tableLog.set(`Fetching ${preset.label} — 0/${total}…`);
     const texts = await fetchAllTexts(preset.files, 6, (n) => {
-      presetNote.set(`Fetching ${preset.label} — ${n}/${total}…`);
+      tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`);
     });
 
     const failed: string[] = [];
-    for (let i = 0; i < preset.files.length; i++) {
-      const name = preset.files[i];
+    const add: { name: string; text: string; origin: GitOrigin }[] = [];
+    preset.files.forEach((name, i) => {
       const text = texts[i];
-      if (text instanceof Error) {
-        failed.push(`${name}: ${text.message}`);
-        continue;
-      }
-      presetNote.set(`Reading ${name} (${i + 1}/${total})…`);
-      try {
-        await kb.ingest(name, text, GitOrigin.default());
-      } catch (e) {
-        failed.push(`${name}: ${errMsg(e)}`);
-      }
-    }
-    presetNote.set(`Axiomatizing ${kb.constituents.length} constituent(s)…`);
-    await kb.reprocess();
+      if (text instanceof Error) failed.push(`${name}: ${text.message}`);
+      else add.push({ name, text, origin: GitOrigin.default() });
+    });
+    tableLog.set(`Axiomatizing ${add.length} constituent(s)…`);
+    const r = await kb.applyChanges({ add });
+    failed.push(...r.failed);
 
-    presetNote.set(
+    tableLog.set(
       failed.length
         ? `${preset.label}: loaded ${kb.constituents.length}/${total}, ${failed.length} failed — ${failed[0]}`
         : `${preset.label} loaded — ${kb.constituents.length} constituents.`,
       failed.length > 0,
     );
   } catch (e) {
-    presetNote.fail(e);
+    tableLog.fail(e);
   } finally {
     presetsBusy.value = false;
   }
@@ -144,68 +152,8 @@ async function loadPreset(key: string) {
 
 // -- Import channels ----------------------------------------------------------
 
-const kbLog = useStatus();
-const addSumoBusy = ref(false);
 const addUrlBusy = ref(false);
 const kbUrl = ref("");
-
-function clearLog() {
-  kbLog.clear();
-}
-
-async function addSumoSelected(paths: string[]) {
-  if (!paths.length) {
-    kbLog.set("Select one or more files first.");
-    return;
-  }
-  addSumoBusy.value = true;
-  try {
-    // Ingest (fetch + parse) under the busy button -- no toast yet. Fetches
-    // run batched, like the presets: a multi-select of a dozen files is
-    // otherwise a dozen serial round-trips.
-    let added = 0;
-    let notices = 0;
-    const failed: string[] = [];
-    const texts = await fetchAllTexts(paths, 6, (n) => {
-      kbLog.set(`Fetching — ${n}/${paths.length}…`);
-    });
-    for (let i = 0; i < paths.length; i++) {
-      const path = paths[i];
-      const text = texts[i];
-      if (text instanceof Error) {
-        failed.push(`${path}: ${text.message}`);
-        continue;
-      }
-      try {
-        const r = isTestFile(path)
-          ? await tests.add(path, text, "sumo")
-          : await kb.ingest(path, text, GitOrigin.default());
-        if (r.added) added += 1;
-        notices += r.notices.length;
-      } catch (err) {
-        failed.push(`${path}: ${errMsg(err)}`);
-      }
-    }
-    kbLog.set(
-      `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`,
-    );
-    await kb.reprocess();
-    if (failed.length) {
-      kbLog.set(
-        `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`,
-        true,
-      );
-    } else {
-      kbLog.set(
-        `Added ${added}/${paths.length} constituent(s)` +
-          (notices ? ` (${notices} load notice(s))` : "") +
-          ".",
-      );
-    }
-  } finally {
-    addSumoBusy.value = false;
-  }
-}
 
 async function addUrl() {
   const url = kbUrl.value.trim();
@@ -226,6 +174,8 @@ async function addUrl() {
       r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(" | "),
     );
     if (r.added) await kb.reprocess();
+  } catch (e) {
+    kbLog.fail(e);
   } finally {
     addUrlBusy.value = false;
   }
@@ -249,6 +199,8 @@ async function uploadKbFile(file: File) {
       r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(" | "),
     );
     if (r.added) await kb.reprocess();
+  } catch (e) {
+    kbLog.fail(e);
   } finally {
     addUrlBusy.value = false;
   }
@@ -263,57 +215,44 @@ function onKbFileChange(e: Event) {
 </script>
 
 <template>
-  <Card
-    title="Load a standard set"
-    description="Replaces everything currently loaded."
-  >
+  <Card title="Constituents" :description="summary">
     <template #header>
-      <div class="inline tight">
-        <button
-          class="btn"
-          type="button"
-          :disabled="presetsBusy"
-          @click="loadPreset('minimal')"
-        >
-          Minimal SUMO
-        </button>
-        <button
-          class="btn"
-          type="button"
-          :disabled="presetsBusy"
-          @click="loadPreset('full')"
-        >
-          Full SUMO
-        </button>
-      </div>
+      <button
+        ref="presetBtn"
+        class="btn ghost"
+        type="button"
+        :disabled="presetsBusy"
+        :aria-expanded="presetMenuOpen"
+        aria-haspopup="menu"
+        @click="presetMenuOpen = !presetMenuOpen"
+      >
+        {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
+      </button>
     </template>
-    <StatusLine
-      class="note"
-      :text="presetNote.text"
-      :error="presetNote.error"
-    />
+    <DropMenu v-model="presetMenuOpen" :anchor="presetBtn">
+      <button
+        v-for="(preset, key) in PRESETS"
+        :key="key"
+        type="button"
+        role="menuitem"
+        @click="loadPreset(key)"
+      >
+        {{ preset.label }}
+      </button>
+    </DropMenu>
+    <ConstituentTable @log="(text, error) => tableLog.set(text, error)" />
+    <StatusLine class="mt-sm" :text="tableLog.text" :error="tableLog.error" />
   </Card>
 
-  <Card><ConstituentList @removed="clearLog" /></Card>
-
-  <Card title="WordNet lexicon">
-    <template #description>
-      Powers synonym-aware search (results tagged "wn") — fetched from the same
-      <code>ontologyportal/sumo</code> repo as the KIF constituents above.
-    </template>
-    <WordNetPanel />
-  </Card>
-
-  <Card><SumoPicker :busy="addSumoBusy" @add="addSumoSelected" /></Card>
-
-  <Card>
-    <label>Add a constituent from elsewhere</label>
+  <Card title="Add from elsewhere">
     <div class="inline url-row">
       <input
         v-model="kbUrl"
         type="text"
         class="url-input"
         placeholder="https://example.org/ontology.kif"
+        aria-label="Constituent URL"
+        @keydown.enter="addUrl"
       />
       <BusyButton :busy="addUrlBusy" label="Add URL" @click="addUrl" />
     </div>
@@ -326,15 +265,19 @@ function onKbFileChange(e: Event) {
         @change="onKbFileChange"
       />
     </div>
+    <StatusLine class="mt-sm" :text="kbLog.text" :error="kbLog.error" />
   </Card>
 
-  <StatusLine :text="kbLog.text" :error="kbLog.error" />
+  <Card title="WordNet lexicon">
+    <template #description>
+      Powers synonym-aware search (results tagged "wn") — fetched from the same
+      <code>ontologyportal/sumo</code> repo as the KIF constituents above.
+    </template>
+    <WordNetPanel />
+  </Card>
 </template>
 
 <style scoped>
-.note {
-  margin-top: 8px;
-}
 .url-row {
   flex-wrap: nowrap;
 }

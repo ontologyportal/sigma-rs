@@ -13,6 +13,7 @@ import { fromOrigin } from "../services/sources";
 import { lspReset, lspSyncDocument } from "../services/lsp";
 import { scheduleSave as scheduleKbCacheSave } from "../services/kb-cache";
 import { fetchSumoTree } from "../api/github";
+import { errMsg } from "../utils/format";
 import { useWordNetStore } from "./wordnet";
 import { useBootStore } from "./boot";
 import { useChangesStore } from "./changes";
@@ -89,8 +90,9 @@ export const useKBStore = defineStore("kb", {
     stats: null as any,
     /** Counts change only when the KB does; `refreshStats` re-asks only when set. */
     statsStale: true,
-    /** `*.kif` / `*.kif.tq` paths in the upstream repo, or null before first load. */
-    sumoCatalog: null as string[] | null,
+    /** `*.kif` / `*.kif.tq` blobs in the upstream repo with their byte
+     *  sizes, or null before first load. */
+    sumoCatalog: null as { path: string; size: number }[] | null,
     catalogError: "",
   }),
   getters: {
@@ -204,25 +206,81 @@ export const useKBStore = defineStore("kb", {
       await useWordNetStore().install();
     },
 
-    async remove(name: string, kind: OriginKind = "sumo") {
-      const boot = useBootStore();
-      this.constituents = this.constituents.filter(
-        (c) => !(c.name === name && c.origin.kind === kind),
-      );
-      this.saved = this.saved.filter(
-        (c) => !(c.name === name && c.origin === kind),
-      );
-      persistSaved(this.saved);
-      if (kind === "file" && boot.opfsRoot) {
-        try {
-          await boot.opfsRoot.removeEntry(name);
-        } catch {
-          /* already gone */
-        }
-      }
-      await useChangesStore().forget(name, kind);
+    /** Untrack `entries` (and delete `file`-origin OPFS copies), then
+     *  rebuild the session and post-process ONCE for the whole batch. */
+    async removeMany(entries: { name: string; kind: OriginKind }[]) {
+      if (!entries.length) return;
+      await this.untrack(entries);
       await this.rebuildSession();
       await this.reprocess();
+    },
+
+    async remove(name: string, kind: OriginKind = "sumo") {
+      await this.removeMany([{ name, kind }]);
+    },
+
+    /** The bookkeeping half of removal: drop `entries` from the tracked and
+     *  persisted lists, delete their OPFS files, forget their edits. The
+     *  session is left stale -- callers rebuild it. */
+    async untrack(entries: { name: string; kind: OriginKind }[]) {
+      const boot = useBootStore();
+      const changes = useChangesStore();
+      const gone = (name: string, kind: OriginKind) =>
+        entries.some((e) => e.name === name && e.kind === kind);
+      this.constituents = this.constituents.filter(
+        (c) => !gone(c.name, c.origin.kind),
+      );
+      this.saved = this.saved.filter((c) => !gone(c.name, c.origin));
+      persistSaved(this.saved);
+      for (const { name, kind } of entries) {
+        if (kind === "file" && boot.opfsRoot) {
+          try {
+            await boot.opfsRoot.removeEntry(name);
+          } catch {
+            /* already gone */
+          }
+        }
+        await changes.forget(name, kind);
+      }
+    },
+
+    /** One batched mutation: ingest every `add` (a per-file failure is
+     *  collected, not thrown), untrack every `remove`, and post-process
+     *  exactly once. The session is rebuilt only when something was
+     *  removed. Callers fetch the texts themselves. */
+    async applyChanges({
+      add = [],
+      remove = [],
+    }: {
+      add?: { name: string; text: string; origin: Origin }[];
+      remove?: { name: string; kind: OriginKind }[];
+    }): Promise<{
+      added: number;
+      removed: number;
+      notices: number;
+      failed: string[];
+    }> {
+      let added = 0;
+      let notices = 0;
+      const failed: string[] = [];
+      for (const { name, text, origin } of add) {
+        try {
+          const r = await this.ingest(name, text, origin);
+          if (r.added) added += 1;
+          notices += r.notices.length;
+        } catch (e) {
+          failed.push(`${name}: ${errMsg(e)}`);
+        }
+      }
+      let removed = 0;
+      if (remove.length) {
+        const before = this.constituents.length;
+        await this.untrack(remove);
+        removed = before - this.constituents.length;
+        await this.rebuildSession();
+      }
+      await this.reprocess();
+      return { added, removed, notices, failed };
     },
 
     async resetToMerge() {
@@ -337,8 +395,11 @@ export const useKBStore = defineStore("kb", {
           .filter(
             (e: any) => e.type === "blob" && /\.kif(\.tq)?$/i.test(e.path),
           )
-          .map((e: any) => e.path as string)
-          .sort();
+          .map((e: any) => ({
+            path: e.path as string,
+            size: Number(e.size) || 0,
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path));
       } catch (e) {
         this.catalogError = String((e as Error)?.message || e);
       }
