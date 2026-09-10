@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue'
 
 // vite.config.ts runs under Node, not the browser -- but this is a browser
 // package, so pulling in @types/node globally would leak Node's `setTimeout`
@@ -24,10 +25,12 @@ export default defineConfig({
     },
   },
 
-  plugins: [],
+  plugins: [
+    vue()
+  ],
 
-  // Serve index.html for unmatched paths: they are client-side routes
-  // (see src/router.ts's routeFromLocation), not missing assets.
+  // Serve index.html for unmatched paths: they are client-side routes (see
+  // src/router.ts's vue-router instance), not missing assets.
   appType: 'spa',
 
   worker: {

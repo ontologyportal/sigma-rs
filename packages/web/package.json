@@ -10,6 +10,7 @@
     "dev": "npm-run-all -p dev:http dev:proxy",
     "dev:http": "wrangler pages dev --kv=SESSIONS --port 8443 -- vite",
     "dev:proxy": "local-ssl-proxy --source 8788 --target 8443",
+    "dev:vite": "vite",
     "prebuild": "npm run mirror",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
@@ -23,7 +24,9 @@
     "cytoscape-dagre": "^4.0.0",
     "cytoscape-node-html-label": "^1.2.2",
     "monaco-editor": "^0.55.1",
-    "sigmakee": "*"
+    "pinia": "^4.0.3",
+    "sigmakee": "*",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260825.1",
