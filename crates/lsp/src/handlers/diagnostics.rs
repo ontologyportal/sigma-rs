@@ -35,14 +35,7 @@ use crate::state::GlobalState;
 /// the document version the diagnostics correspond to, echoed back
 /// so the client can match against its local state.
 ///
-/// Semantic-diagnostic severity: the sigmakee-rs-core validator's default
-/// severity for every check is `Warning` (promoted to `Error` only
-/// via the CLI's `-Wall` / `--warning=<code>` flags, which the LSP
-/// does not set).  We therefore force every semantic diagnostic
-/// to `Warning` here -- matches the user's expectation that in a
-/// KB that's mid-edit, these are advisories, not compile errors,
-/// and keeps the Problems panel dominated by the yellow-triangle
-/// icon.  Hard parse errors remain `Error`.
+/// Preserve the severity assigned by the parser and semantic validator.
 pub fn publish_diagnostics<L: TopLayer>(
     out: &mut Vec<Message>,
     uri: &Url,
@@ -78,13 +71,7 @@ fn publish_diagnostics_filtered<L: TopLayer>(
         diagnostics.push(kb_diagnostic_to_lsp(rope, d));
     }
 
-    // (2) Semantic diagnostics -- every check the validator
-    // raises on each root sentence, including the warning-level
-    // ones the severity-aware `validate_sentence` would have
-    // swallowed.  Severity is forced to Warning (see module
-    // doc).  Codes / names in the ignore-list are dropped here
-    // so the client sees an immediate change the next time
-    // diagnostics are published.
+    // (2) Semantic diagnostics, filtered by ignored code or kind.
     let file_tag = uri_to_tag(uri);
     let is_tq = crate::server::is_tq(&file_tag);
     // ONE bulk validation call for the whole file, not a per-sentence loop
@@ -93,13 +80,10 @@ fn publish_diagnostics_filtered<L: TopLayer>(
     } else {
         kb.validate_file(&file_tag)
     };
-    for mut d in findings {
-        // Force Warning severity per the module doc and apply the ignore
-        // list against code/kind.
+    for d in findings {
         if ignored.contains(d.code) || ignored.contains(d.kind) {
             continue;
         }
-        d.severity = Severity::Warning;
         diagnostics.push(kb_diagnostic_to_lsp(rope, &d));
     }
 

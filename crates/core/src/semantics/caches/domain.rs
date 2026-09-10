@@ -89,6 +89,7 @@ impl CacheBehavior for Domain {
         &[
             EventKind::RelationAdded,
             EventKind::RelationRemoved,
+            EventKind::AxiomsPromoted,
             EventKind::SessionReferenced,
             EventKind::SessionRetracted,
         ]
@@ -120,6 +121,15 @@ impl CacheBehavior for Domain {
         let mut out = vec![];
         let mut dirty = false;
         for event in events {
+            if let Event::AxiomsPromoted { sids } = event {
+                for sid in sids {
+                    if let Some(rel) = domain_edge_relation(parent, *sid) {
+                        dirty = true;
+                        out.push(Event::DomainRangeChanged { syms: vec![rel] });
+                    }
+                }
+                continue;
+            }
             // A session newly references a `domain` edge → drop only that
             // session's entry for the edge's relation.
             if let Event::SessionReferenced { session, sids } = event {
@@ -127,6 +137,7 @@ impl CacheBehavior for Domain {
                 for sid in sids {
                     if let Some(rel) = domain_edge_relation(parent, *sid) {
                         store.evict_keys(&[Scoped { scope: s, key: rel }]);
+                        out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
                 continue;
