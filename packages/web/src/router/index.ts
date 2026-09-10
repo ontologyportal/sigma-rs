@@ -23,13 +23,9 @@ export const router = createRouter({
   history: createWebHistory(BASE),
   routes: [
     {
-      name: "home",
-      path: "/",
-      component: () => import("../views/BrowseTab.vue"),
-    },
-    {
       name: "browse",
-      path: "/browse",
+      path: "/",
+      alias: "/browse",
       component: () => import("../views/BrowseTab.vue"),
     },
     {
@@ -58,14 +54,14 @@ export const router = createRouter({
       path: "/history",
       component: () => import("../views/HistoryTab.vue"),
     },
-    { path: "/:pathMatch(.*)*", redirect: { name: "home" } },
+    { path: "/:pathMatch(.*)*", redirect: { name: "browse" } },
   ],
 });
 
 // Legacy `?tab=` bookmarks (the old query-string scheme) resolve onto the
 // real path, dropping the query param.
 router.beforeEach((to) => {
-  if (to.name && to.name !== "home" && to.name !== "browse") return true;
+  if (to.name !== "browse") return true;
   const legacy = to.query.tab;
   if (
     typeof legacy !== "string" ||
@@ -74,7 +70,6 @@ router.beforeEach((to) => {
     return true;
   const query = { ...to.query };
   delete query.tab;
-  if (legacy === "browse") return { name: "browse", query, replace: true };
   return { name: legacy, query, replace: true };
 });
 
@@ -83,15 +78,14 @@ router.beforeEach((to) => {
 // already showing when promotion starts, and returning to it afterwards.
 router.beforeEach((to) => {
   const kb = useKBStore();
-  if (kb.promoting && PROMOTE_TABS.includes(String(to.name)))
+  if (kb.promoting && PROMOTE_TABS.includes(to.name as TabName))
     return { name: "browse" };
   return true;
 });
 
-/** The active tab, `'browse'` for the home route. */
+/** The active tab. */
 export function currentTab(): TabName {
-  const name = router.currentRoute.value.name;
-  return name === "home" || !name ? "browse" : (name as TabName);
+  return (router.currentRoute.value.name as TabName) ?? "browse";
 }
 
 function toQuery(obj: Record<string, unknown> | undefined): LocationQueryRaw {
@@ -113,7 +107,7 @@ export function navigate(tab: TabName, query?: Record<string, unknown>) {
  *  shareable without a history entry per keystroke/filter change. */
 export function updateParams(query: Record<string, unknown>) {
   return router.replace({
-    name: router.currentRoute.value.name ?? "home",
+    name: currentTab(),
     query: toQuery(query),
   });
 }

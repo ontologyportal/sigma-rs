@@ -50,19 +50,28 @@ const errorCount = computed(
   () => kb.diagnostics.filter((d) => d.severity === "error").length,
 );
 
+const currentTab = computed(() => (route.name as TabName) ?? "browse");
+
 function isSelected(name: TabName): boolean {
-  if (name === "browse")
-    return route.name === "home" || route.name === "browse";
-  return route.name === name;
+  return currentTab.value === name;
 }
 
 function gated(name: TabName): boolean {
   return kb.promoting && PROMOTE_TABS.includes(name);
 }
 
+// The tab bar returns to where each tab was left (its last query), so a
+// visit elsewhere never resets a man page, a filter, or an open file.
+const lastQuery = new Map<TabName, LocationQuery>();
+watch(
+  () => route.fullPath,
+  () => lastQuery.set(currentTab.value, { ...route.query }),
+  { immediate: true },
+);
+
 function go(name: TabName) {
-  if (gated(name)) return;
-  navigate(name);
+  if (gated(name) || name === currentTab.value) return;
+  navigate(name, lastQuery.get(name));
 }
 
 // A promote-gated tab that is showing when promotion starts is evicted to
@@ -74,11 +83,10 @@ let evicted: { name: TabName; query: LocationQuery } | null = null;
 watch(
   () => kb.promoting,
   (promoting) => {
-    const current =
-      route.name === "home" || !route.name ? "browse" : String(route.name);
+    const current = currentTab.value;
     if (promoting) {
       if (PROMOTE_TABS.includes(current)) {
-        evicted = { name: current as TabName, query: { ...route.query } };
+        evicted = { name: current, query: { ...route.query } };
         router.replace({ name: "browse" });
       }
     } else if (evicted && current === "browse") {

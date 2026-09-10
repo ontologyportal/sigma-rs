@@ -37,7 +37,11 @@ export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
 export const WORDNET_ENABLED_KEY = "sumoBrowserWordNetEnabled";
 
 /** Tabs that need the KB axiomatized; greyed while a promote is in flight. */
-export const PROMOTE_TABS = ["diagnostics", "prover", "audit"];
+export const PROMOTE_TABS: readonly TabName[] = [
+  "diagnostics",
+  "prover",
+  "audit",
+];
 
 export const BASE = import.meta.env.BASE_URL;
 

@@ -28,7 +28,7 @@ import SearchResults from "../components/browse/SearchResults.vue";
 
 const kb = useKBStore();
 const shell = useShellStore();
-const { query, onQuery, str } = useTabQuery(["home", "browse"]);
+const { query, onQuery, str } = useTabQuery(["browse"]);
 
 const q = computed(() => str(query.value.q).trim());
 const sym = computed(() => str(query.value.sym));

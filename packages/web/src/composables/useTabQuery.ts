@@ -15,6 +15,20 @@ import {
 
 type QueryValue = LocationQueryValue | LocationQueryValue[] | undefined;
 
+/** A query value as a string ('' when absent; the first of a repeated key). */
+export const str = (v: QueryValue): string => {
+  const one = Array.isArray(v) ? v[0] : v;
+  return one == null ? "" : String(one);
+};
+
+/** A query value as a positive finite number, else null. */
+export const num = (v: QueryValue): number | null => {
+  const s = str(v);
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
 /** `query` is a computed of the current route's query while this tab is the
  *  active route (frozen at its last value while inactive, so a deactivated
  *  view never reacts to another tab's URL). `onQuery(handler)` runs `handler`
@@ -62,18 +76,6 @@ export function useTabQuery(tabs: string[]): {
     });
     onActivated(run);
   }
-
-  const str = (v: QueryValue): string => {
-    const one = Array.isArray(v) ? v[0] : v;
-    return one == null ? "" : String(one);
-  };
-
-  const num = (v: QueryValue): number | null => {
-    const s = str(v);
-    if (!s) return null;
-    const n = Number(s);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  };
 
   return { query, onQuery, str, num };
 }

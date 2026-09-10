@@ -74,7 +74,7 @@ function boldifyDoc(text: unknown): string {
       <li v-for="(h, i) in hits" :key="i">
         <a
           class="sym open"
-          @click.prevent="navigate('browse', { sym: h.symbol })"
+          @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
           >{{ h.symbol }}</a
         >
         <span class="kinds"

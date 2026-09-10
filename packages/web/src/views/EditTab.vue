@@ -299,7 +299,7 @@ onQuery(async (q) => {
     if (c) openFile(c);
     else log.set(`${file} is not among the loaded constituents.`, true);
   }
-  const line = num(q.l ?? q.line);
+  const line = num(q.l);
   if (line) {
     await editorReady;
     await nextTick();
