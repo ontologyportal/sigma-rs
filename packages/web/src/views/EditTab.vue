@@ -10,7 +10,6 @@ import {
   onActivated,
   onBeforeUnmount,
   onDeactivated,
-  reactive,
   ref,
   shallowRef,
   watch,
@@ -19,11 +18,13 @@ import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 import Card from "../components/Card.vue";
 import DropMenu from "../components/DropMenu.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
+import StatusLine from "../components/StatusLine.vue";
 import ContributePanel from "../components/edit/ContributePanel.vue";
 import DiffDialog from "../components/edit/DiffDialog.vue";
 import OpenFileDialog from "../components/edit/OpenFileDialog.vue";
 import ProblemsPanel from "../components/edit/ProblemsPanel.vue";
 import TptpPane from "../components/edit/TptpPane.vue";
+import { useStatus } from "../composables/useStatus";
 import { useTabQuery } from "../composables/useTabQuery";
 import type { Constituent } from "../models/Constituent";
 import { LocalOrigin, type Origin } from "../models/Origin";
@@ -64,8 +65,8 @@ const cursor = ref<{ lineNumber: number; column: number } | null>(null);
  *  Diagnostics tab, filtered to this file. */
 const status = ref("");
 const statusLink = ref<{ file: string; line: number } | null>(null);
-const saveStatus = reactive({ text: "", isError: false });
-const log = reactive({ text: "", isError: false });
+const saveStatus = useStatus();
+const log = useStatus();
 const saving = ref(false);
 const fullscreen = ref(false);
 const tptpOpen = ref(false);
@@ -121,8 +122,7 @@ function onReady(editor: Monaco.editor.IStandaloneCodeEditor, _m: MonacoNs) {
 }
 
 function onFailed(e: Error) {
-  log.text = "Failed to load the editor: " + errMsg(e);
-  log.isError = true;
+  log.set("Failed to load the editor: " + errMsg(e), true);
   resolveReady();
 }
 
@@ -234,11 +234,6 @@ const fileLabel = computed(() => {
  *  store. A `url` buffer has nowhere to be saved. */
 const saveHidden = computed(() => current.value?.origin.kind === "url");
 
-function setSaveStatus(t: string, bad: boolean) {
-  saveStatus.text = t;
-  saveStatus.isError = bad;
-}
-
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
 
 // Files the user has already been shown a conflict dialog for; reset when
@@ -271,13 +266,13 @@ function checkStaleOnOpen() {
 function openFile(c: Constituent | null) {
   current.value = c ? { name: c.name, origin: c.origin } : null;
   text.value = c ? c.text : NEW_FILE_TEXT;
-  setSaveStatus("", false);
+  saveStatus.clear();
   const kind = c ? c.origin.kind : "file"; // an unsaved new file is local
-  log.isError = false;
-  log.text =
+  log.set(
     kind === "url"
       ? "Loaded from a URL — it can be edited and downloaded here, but not saved or submitted."
-      : "";
+      : "",
+  );
   scheduleValidate();
   checkStaleOnOpen();
 }
@@ -302,10 +297,7 @@ onQuery(async (q) => {
     // Match on name alone -- a deep link shouldn't have to know the origin.
     const c = kb.find(file);
     if (c) openFile(c);
-    else {
-      log.text = `${file} is not among the loaded constituents.`;
-      log.isError = true;
-    }
+    else log.set(`${file} is not among the loaded constituents.`, true);
   }
   const line = num(q.l ?? q.line);
   if (line) {
@@ -331,7 +323,7 @@ async function onSave() {
     if (entered === null) return; // cancelled -- leave the buffer as-is, no status change
     name = entered.trim();
     if (!name) {
-      setSaveStatus("Enter a filename to save.", true);
+      saveStatus.set("Enter a filename to save.", true);
       return;
     }
     origin = new LocalOrigin();
@@ -341,16 +333,15 @@ async function onSave() {
   try {
     const r = await kb.updateConstituentText(name, text.value, origin);
     current.value = { name, origin };
-    log.text = "";
-    log.isError = false;
+    log.clear();
     scheduleValidate();
     const saved =
       origin.kind === "sumo"
         ? `Saved ${name} locally — it stays here until you push it to GitHub.`
         : `Saved ${name}.`;
-    setSaveStatus(r.notices.length ? r.notices.join(" | ") : saved, false);
+    saveStatus.set(r.notices.length ? r.notices.join(" | ") : saved);
   } catch (e) {
-    setSaveStatus(errMsg(e), true);
+    saveStatus.fail(e);
   } finally {
     saving.value = false;
   }
@@ -679,12 +670,7 @@ function onJump({ line, col }: { line: number; col: number }) {
       <!-- Save feedback (success/error) lives right under the toolbar, not
          buried below the editor -- the one place a user glances after
          clicking Save. -->
-      <div
-        class="hint"
-        :style="{ color: saveStatus.isError ? 'var(--bad)' : '' }"
-      >
-        {{ saveStatus.text }}
-      </div>
+      <StatusLine :text="saveStatus.text" :error="saveStatus.error" />
 
       <!-- Open-file dialog: pick a loaded constituent or start a new file.
          A new file starts unnamed -- Save prompts for a filename the
@@ -730,9 +716,7 @@ function onJump({ line, col }: { line: number; col: number }) {
     </Card>
 
     <ProblemsPanel :diags="diags" :file="current?.name" @jump="onJump" />
-    <div class="hint" :style="{ color: log.isError ? 'var(--bad)' : '' }">
-      {{ log.text }}
-    </div>
+    <StatusLine :text="log.text" :error="log.error" />
 
     <!-- Both menus live OUTSIDE .btn-group (whose overflow:hidden would clip
        them, and whose `button + button` divider chain a nested div would

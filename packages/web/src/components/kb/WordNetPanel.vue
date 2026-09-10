@@ -29,11 +29,6 @@ async function onChange(e: Event) {
 </script>
 
 <template>
-  <div class="title">WordNet lexicon</div>
-  <div class="hint">
-    Powers synonym-aware search (results tagged "wn") — fetched from the same
-    <code>ontologyportal/sumo</code> repo as the KIF constituents above.
-  </div>
   <label class="check toggle">
     <input
       type="checkbox"
@@ -62,9 +57,6 @@ async function onChange(e: Event) {
 </template>
 
 <style scoped>
-.title {
-  font-weight: 600;
-}
 .toggle,
 .list {
   margin-top: 8px;

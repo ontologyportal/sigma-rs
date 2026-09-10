@@ -2,14 +2,17 @@
 /** Knowledge base tab: standard constituent sets, the loaded list, the
  *  WordNet panel, and the three import channels (upstream picker, URL,
  *  local upload). */
-import { onActivated, onMounted, reactive, ref } from "vue";
+import { onActivated, onMounted, ref } from "vue";
 import { GitOrigin, LocalOrigin, RemoteOrigin } from "../models/Origin";
 import { fetchText, fetchAllTexts } from "../services/sources";
 import { useKBStore } from "../stores/kb";
 import { useBootStore } from "../stores/boot";
 import { useTestsStore, isTestFile } from "../stores/tests";
+import { useStatus } from "../composables/useStatus";
 import { errMsg } from "../utils/format";
+import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
+import StatusLine from "../components/StatusLine.vue";
 import ConstituentList from "../components/kb/ConstituentList.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
 import SumoPicker from "../components/kb/SumoPicker.vue";
@@ -93,7 +96,7 @@ const PRESETS: Record<string, { label: string; files: string[] }> = {
 };
 
 const presetsBusy = ref(false);
-const presetNote = reactive({ text: "", isError: false });
+const presetNote = useStatus();
 
 async function loadPreset(key: string) {
   const preset = PRESETS[key];
@@ -103,10 +106,9 @@ async function loadPreset(key: string) {
     await kb.replaceAll();
 
     const total = preset.files.length;
-    presetNote.isError = false;
-    presetNote.text = `Fetching ${preset.label} — 0/${total}…`;
+    presetNote.set(`Fetching ${preset.label} — 0/${total}…`);
     const texts = await fetchAllTexts(preset.files, 6, (n) => {
-      presetNote.text = `Fetching ${preset.label} — ${n}/${total}…`;
+      presetNote.set(`Fetching ${preset.label} — ${n}/${total}…`);
     });
 
     const failed: string[] = [];
@@ -117,23 +119,24 @@ async function loadPreset(key: string) {
         failed.push(`${name}: ${text.message}`);
         continue;
       }
-      presetNote.text = `Reading ${name} (${i + 1}/${total})…`;
+      presetNote.set(`Reading ${name} (${i + 1}/${total})…`);
       try {
         await kb.ingest(name, text, GitOrigin.default());
       } catch (e) {
         failed.push(`${name}: ${errMsg(e)}`);
       }
     }
-    presetNote.text = `Axiomatizing ${kb.constituents.length} constituent(s)…`;
+    presetNote.set(`Axiomatizing ${kb.constituents.length} constituent(s)…`);
     await kb.reprocess();
 
-    presetNote.isError = failed.length > 0;
-    presetNote.text = failed.length
-      ? `${preset.label}: loaded ${kb.constituents.length}/${total}, ${failed.length} failed — ${failed[0]}`
-      : `${preset.label} loaded — ${kb.constituents.length} constituents.`;
+    presetNote.set(
+      failed.length
+        ? `${preset.label}: loaded ${kb.constituents.length}/${total}, ${failed.length} failed — ${failed[0]}`
+        : `${preset.label} loaded — ${kb.constituents.length} constituents.`,
+      failed.length > 0,
+    );
   } catch (e) {
-    presetNote.isError = true;
-    presetNote.text = errMsg(e);
+    presetNote.fail(e);
   } finally {
     presetsBusy.value = false;
   }
@@ -141,20 +144,18 @@ async function loadPreset(key: string) {
 
 // -- Import channels ----------------------------------------------------------
 
-const kbLog = reactive({ text: "", isError: false });
+const kbLog = useStatus();
 const addSumoBusy = ref(false);
 const addUrlBusy = ref(false);
 const kbUrl = ref("");
 
 function clearLog() {
-  kbLog.text = "";
-  kbLog.isError = false;
+  kbLog.clear();
 }
 
 async function addSumoSelected(paths: string[]) {
   if (!paths.length) {
-    kbLog.text = "Select one or more files first.";
-    kbLog.isError = false;
+    kbLog.set("Select one or more files first.");
     return;
   }
   addSumoBusy.value = true;
@@ -165,9 +166,8 @@ async function addSumoSelected(paths: string[]) {
     let added = 0;
     let notices = 0;
     const failed: string[] = [];
-    kbLog.isError = false;
     const texts = await fetchAllTexts(paths, 6, (n) => {
-      kbLog.text = `Fetching — ${n}/${paths.length}…`;
+      kbLog.set(`Fetching — ${n}/${paths.length}…`);
     });
     for (let i = 0; i < paths.length; i++) {
       const path = paths[i];
@@ -186,17 +186,21 @@ async function addSumoSelected(paths: string[]) {
         failed.push(`${path}: ${errMsg(err)}`);
       }
     }
-    kbLog.text = `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`;
+    kbLog.set(
+      `Ingested ${added}/${paths.length} constituent(s); axiomatizing…`,
+    );
     await kb.reprocess();
     if (failed.length) {
-      kbLog.isError = true;
-      kbLog.text = `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`;
+      kbLog.set(
+        `Added ${added}/${paths.length}; ${failed.length} failed — ${failed[0]}`,
+        true,
+      );
     } else {
-      kbLog.isError = false;
-      kbLog.text =
+      kbLog.set(
         `Added ${added}/${paths.length} constituent(s)` +
-        (notices ? ` (${notices} load notice(s))` : "") +
-        ".";
+          (notices ? ` (${notices} load notice(s))` : "") +
+          ".",
+      );
     }
   } finally {
     addSumoBusy.value = false;
@@ -206,23 +210,21 @@ async function addSumoSelected(paths: string[]) {
 async function addUrl() {
   const url = kbUrl.value.trim();
   if (!url) {
-    kbLog.text = "Enter a URL first.";
-    kbLog.isError = false;
+    kbLog.set("Enter a URL first.");
     return;
   }
   addUrlBusy.value = true;
   try {
     const text = await fetchText(url);
-    kbLog.isError = false;
     if (isTestFile(url)) {
       const r = await tests.add(url, text, "url");
-      kbLog.text = r.added ? `Imported test ${url}.` : r.notices.join(" | ");
+      kbLog.set(r.added ? `Imported test ${url}.` : r.notices.join(" | "));
       return;
     }
     const r = await kb.ingest(url, text, new RemoteOrigin());
-    kbLog.text = r.added
-      ? `Ingested ${url}; axiomatizing…`
-      : r.notices.join(" | ");
+    kbLog.set(
+      r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(" | "),
+    );
     if (r.added) await kb.reprocess();
   } finally {
     addUrlBusy.value = false;
@@ -240,13 +242,12 @@ async function uploadKbFile(file: File) {
     const stream = await handle.createWritable();
     await stream.write(text);
     await stream.close();
-    kbLog.isError = false;
     // Test files (.kif.tq / .p / .tptp) import through the Ask/Tell tab's
     // "Load test" instead -- this uploader is KIF-constituent-only.
     const r = await kb.ingest(file.name, text, new LocalOrigin());
-    kbLog.text = r.added
-      ? `Ingested ${file.name}; axiomatizing…`
-      : r.notices.join(" | ");
+    kbLog.set(
+      r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(" | "),
+    );
     if (r.added) await kb.reprocess();
   } finally {
     addUrlBusy.value = false;
@@ -262,13 +263,12 @@ function onKbFileChange(e: Event) {
 </script>
 
 <template>
-  <Card>
-    <div class="inline presets">
-      <div>
-        <div class="title">Load a standard set</div>
-        <div class="hint">Replaces everything currently loaded.</div>
-      </div>
-      <div class="inline preset-buttons">
+  <Card
+    title="Load a standard set"
+    description="Replaces everything currently loaded."
+  >
+    <template #header>
+      <div class="inline tight">
         <button
           class="btn"
           type="button"
@@ -286,15 +286,23 @@ function onKbFileChange(e: Event) {
           Full SUMO
         </button>
       </div>
-    </div>
-    <div class="hint note" :class="{ bad: presetNote.isError }">
-      {{ presetNote.text }}
-    </div>
+    </template>
+    <StatusLine
+      class="note"
+      :text="presetNote.text"
+      :error="presetNote.error"
+    />
   </Card>
 
   <Card><ConstituentList @removed="clearLog" /></Card>
 
-  <Card><WordNetPanel /></Card>
+  <Card title="WordNet lexicon">
+    <template #description>
+      Powers synonym-aware search (results tagged "wn") — fetched from the same
+      <code>ontologyportal/sumo</code> repo as the KIF constituents above.
+    </template>
+    <WordNetPanel />
+  </Card>
 
   <Card><SumoPicker :busy="addSumoBusy" @add="addSumoSelected" /></Card>
 
@@ -307,11 +315,9 @@ function onKbFileChange(e: Event) {
         class="url-input"
         placeholder="https://example.org/ontology.kif"
       />
-      <button class="btn" type="button" :disabled="addUrlBusy" @click="addUrl">
-        {{ addUrlBusy ? "Working…" : "Add URL" }}
-      </button>
+      <BusyButton :busy="addUrlBusy" label="Add URL" @click="addUrl" />
     </div>
-    <div class="upload">
+    <div class="mt">
       <label for="kbFile">Upload a .kif file</label>
       <input
         id="kbFile"
@@ -322,26 +328,12 @@ function onKbFileChange(e: Event) {
     </div>
   </Card>
 
-  <div class="hint" :class="{ bad: kbLog.isError }">{{ kbLog.text }}</div>
+  <StatusLine :text="kbLog.text" :error="kbLog.error" />
 </template>
 
 <style scoped>
-.presets {
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.preset-buttons {
-  gap: 8px;
-}
-.title {
-  font-weight: 600;
-}
 .note {
   margin-top: 8px;
-}
-.bad {
-  color: var(--bad);
 }
 .url-row {
   flex-wrap: nowrap;
@@ -350,8 +342,5 @@ function onKbFileChange(e: Event) {
   flex: 1 1 auto;
   width: auto;
   min-width: 0;
-}
-.upload {
-  margin-top: 10px;
 }
 </style>

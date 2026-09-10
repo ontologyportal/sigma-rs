@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useProverStore } from "../stores/prover";
 import { highlightTptp } from "../utils/highlight-tptp";
 import CiteRow from "./CiteRow.vue";
+import Disclosure from "./Disclosure.vue";
 import ProofGraph from "./ProofGraph.vue";
 
 const props = defineProps<{
@@ -89,16 +90,14 @@ const missingNote = computed(() =>
         </CiteRow>
       </template>
     </ol>
-    <details class="prose-details">
-      <summary class="hint">proof in plain English</summary>
+    <Disclosure summary="proof in plain English">
       <div class="prose">{{ prose || "" }}</div>
-      <div v-if="missingNote" class="hint missing-note">{{ missingNote }}</div>
-    </details>
+      <div v-if="missingNote" class="hint mt-sm">{{ missingNote }}</div>
+    </Disclosure>
     <ProofGraph :steps="steps" :dot="graphviz" />
-    <details v-if="rawOutput !== undefined">
-      <summary class="hint">raw engine output</summary>
+    <Disclosure v-if="rawOutput !== undefined" summary="raw engine output">
       <pre>{{ rawOutput || "(none)" }}</pre>
-    </details>
+    </Disclosure>
   </div>
 </template>
 
@@ -133,9 +132,6 @@ ol.refs .step-num {
   overflow-x: auto;
 }
 /* Plain-English proof */
-.prose-details {
-  margin-top: 10px;
-}
 .prose {
   font-size: 14px;
   line-height: 1.65;
@@ -144,18 +140,5 @@ ol.refs .step-num {
 .prose:empty::before {
   content: "(no prose available)";
   color: var(--muted);
-}
-.missing-note {
-  margin-top: 6px;
-}
-details pre {
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 10px;
-  overflow-x: auto;
 }
 </style>

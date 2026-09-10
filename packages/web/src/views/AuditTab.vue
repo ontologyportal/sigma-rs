@@ -3,7 +3,9 @@ import { ref, shallowRef, computed } from "vue";
 import { call } from "../services/sigma";
 import { errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
+import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
+import Disclosure from "../components/Disclosure.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverSettings from "../components/ProverSettings.vue";
 
@@ -80,13 +82,13 @@ async function runAudit() {
 <template>
   <div>
     <Card>
-      <div class="inline" style="justify-content: space-between">
-        <p class="hint" style="margin: 0">
+      <div class="inline between">
+        <div class="hint">
           Saturates the loaded KB looking for a logical contradiction and prints
           the proofs for said contradictions.
-        </p>
-        <div class="inline" style="gap: 10px">
-          <div style="width: 110px">
+        </div>
+        <div class="inline">
+          <div class="num-field">
             <label for="auditTime">time limit (s)</label
             ><input
               type="number"
@@ -95,7 +97,7 @@ async function runAudit() {
               min="0"
             />
           </div>
-          <div style="width: 110px" v-if="!prover.vampireSelected">
+          <div class="num-field" v-if="!prover.vampireSelected">
             <label for="auditLimit">max found</label
             ><input
               type="number"
@@ -104,14 +106,12 @@ async function runAudit() {
               min="1"
             />
           </div>
-          <button
-            class="btn"
-            type="button"
-            :disabled="auditing"
+          <BusyButton
+            :busy="auditing"
+            label="Run audit"
+            busy-label="Auditing…"
             @click="runAudit"
-          >
-            {{ auditing ? "Auditing…" : "Run audit" }}
-          </button>
+          />
           <button
             class="cog"
             type="button"
@@ -127,21 +127,18 @@ async function runAudit() {
     </Card>
     <ProverSettings />
     <div>
-      <Card v-if="error" class="hint" style="color: var(--bad)">{{
-        error
-      }}</Card>
+      <Card v-if="error" class="hint bad">{{ error }}</Card>
       <template v-else-if="result">
         <Card>
-          <div class="inline" style="gap: 10px">
+          <div class="inline">
             <span :class="badgeClass">{{ result.status }}</span>
             <span class="hint">{{ backendText }}</span>
             <span class="hint">{{ stepsText }}</span>
           </div>
-          <div class="hint" style="margin-top: 8px">{{ verdict }}</div>
-          <details style="margin-top: 10px">
-            <summary class="hint">raw engine output</summary>
+          <div class="hint verdict">{{ verdict }}</div>
+          <Disclosure summary="raw engine output">
             <pre>{{ rawOutput }}</pre>
-          </details>
+          </Disclosure>
         </Card>
         <Card v-for="(c, i) in contradictions" :key="i">
           <div class="contradiction-hd">{{ heading(c, i) }}</div>
@@ -159,18 +156,14 @@ async function runAudit() {
 </template>
 
 <style scoped>
+.num-field {
+  width: 110px;
+}
+.verdict {
+  margin-top: 8px;
+}
 .contradiction-hd {
   font-weight: 600;
   margin-bottom: 6px;
-}
-details pre {
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 10px;
-  overflow-x: auto;
 }
 </style>

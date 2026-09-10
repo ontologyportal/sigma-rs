@@ -5,6 +5,7 @@ import { call } from "../services/sigma";
 import { downloadText, errMsg } from "../utils/format";
 import { useProverStore } from "../stores/prover";
 import { useTestsStore, type TestEntry } from "../stores/tests";
+import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import MonacoEditor from "../components/MonacoEditor.vue";
 import ProofView from "../components/ProofView.vue";
@@ -272,7 +273,7 @@ async function saveTest() {
       />
     </div>
     <div v-show="!tptpMode">
-      <label style="margin-top: 10px">Query — <code>ask</code></label>
+      <label class="mt">Query — <code>ask</code></label>
       <div class="pane-editor pane-editor-sm">
         <MonacoEditor
           ref="queryEd"
@@ -292,10 +293,13 @@ async function saveTest() {
         ></label
       >
     </div>
-    <div class="inline" style="margin-top: 10px; gap: 8px; align-items: center">
-      <button class="btn" type="button" :disabled="proving" @click="prove">
-        {{ proving ? "Proving…" : "Prove" }}
-      </button>
+    <div class="inline tight center mt">
+      <BusyButton
+        :busy="proving"
+        label="Prove"
+        busy-label="Proving…"
+        @click="prove"
+      />
       <button
         class="btn ghost"
         type="button"
@@ -305,15 +309,13 @@ async function saveTest() {
       >
         Open test
       </button>
-      <button
-        class="btn ghost"
-        type="button"
-        :disabled="loadingTest"
+      <BusyButton
+        ghost
+        :busy="loadingTest"
+        label="Load test"
         title="Import a new .kif.tq or .p/.tptp test file"
         @click="loadTestFile?.click()"
-      >
-        {{ loadingTest ? "Working…" : "Load test" }}
-      </button>
+      />
       <input
         ref="loadTestFile"
         type="file"
@@ -321,15 +323,13 @@ async function saveTest() {
         hidden
         @change="onLoadTestFile"
       />
-      <button
-        class="btn ghost"
-        type="button"
-        :disabled="savingTest"
+      <BusyButton
+        ghost
+        :busy="savingTest"
+        label="Save test"
         title="Save the current assertions/query as a test"
         @click="saveTest"
-      >
-        {{ savingTest ? "Working…" : "Save test" }}
-      </button>
+      />
       <button
         class="btn ghost"
         type="button"
@@ -351,7 +351,7 @@ async function saveTest() {
       </button>
       <span class="hint">{{ cfgNote || prover.cfgSummary }}</span>
     </div>
-    <div class="hint" style="margin-top: 6px">
+    <div class="hint mt-sm">
       {{ tests.openTest ? "Editing test: " + tests.openTest.name : "" }}
     </div>
   </Card>
@@ -361,8 +361,8 @@ async function saveTest() {
   <TestsPanel v-show="testsOpen" v-model:log="testsLog" @open="onOpenTest" />
 
   <Card v-if="error || result">
-    <div class="inline" style="justify-content: space-between">
-      <div class="inline result-head">
+    <div class="inline between">
+      <div class="inline tight center">
         <span class="status" :class="error ? 'InputError' : result.status">{{
           error ? "Error" : result.status
         }}</span>
@@ -387,10 +387,6 @@ async function saveTest() {
 </template>
 
 <style scoped>
-.result-head {
-  gap: 8px;
-  align-items: center;
-}
 .pane-editor {
   height: 96px;
   border: 1px solid var(--line);

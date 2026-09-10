@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
+import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import SourceLoc from "../components/SourceLoc.vue";
 import { useTabQuery } from "../composables/useTabQuery";
@@ -333,7 +334,7 @@ onQuery((q) => {
 
 <template>
   <Card>
-    <div class="inline" style="justify-content: space-between">
+    <div class="inline between">
       <div class="hint">
         <template v-if="total">
           <template v-if="filterActive">
@@ -352,7 +353,7 @@ onQuery((q) => {
         </template>
         <template v-else>No diagnostics — the loaded KB is clean.</template>
       </div>
-      <div class="inline" style="gap: 8px">
+      <div class="inline tight">
         <button
           class="btn ghost filter-btn"
           type="button"
@@ -373,14 +374,11 @@ onQuery((q) => {
           </svg>
           Filter<span class="filter-badge">{{ activeCount || "" }}</span>
         </button>
-        <button
-          class="btn"
-          type="button"
-          :disabled="revalidating"
+        <BusyButton
+          :busy="revalidating"
+          label="Re-validate"
           @click="revalidate"
-        >
-          {{ revalidating ? "Working…" : "Re-validate" }}
-        </button>
+        />
       </div>
     </div>
     <div class="settings" v-show="filterOpen">
@@ -403,7 +401,7 @@ onQuery((q) => {
         </div>
       </div>
     </div>
-    <div ref="listRef" style="margin-top: 10px">
+    <div ref="listRef" class="mt">
       <div v-if="emptyHint" class="hint">{{ emptyHint }}</div>
       <div
         v-for="{ i, d } in pageItems"
@@ -507,10 +505,6 @@ onQuery((q) => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-}
-.filter-btn[aria-expanded="true"] {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 .filter-badge:empty {
   display: none;

@@ -21,6 +21,7 @@ import { useShellStore } from "../stores/shell";
 import { useTabQuery } from "../composables/useTabQuery";
 import { errMsg } from "../utils/format";
 import Card from "../components/Card.vue";
+import Disclosure from "../components/Disclosure.vue";
 import HomeStats from "../components/browse/HomeStats.vue";
 import ManPage from "../components/browse/ManPage.vue";
 import SearchResults from "../components/browse/SearchResults.vue";
@@ -287,9 +288,8 @@ onActivated(() => {
         </button>
       </div>
     </form>
-    <details style="margin-top: 10px">
-      <summary class="hint">Advanced search</summary>
-      <label class="check" style="margin-top: 8px">
+    <Disclosure summary="Advanced search">
+      <label class="check wordnet-only">
         <input
           v-model="wordnetOnly"
           type="checkbox"
@@ -303,7 +303,7 @@ onActivated(() => {
           tab)</span
         >
       </label>
-    </details>
+    </Disclosure>
   </Card>
 
   <ManPage
@@ -335,7 +335,7 @@ onActivated(() => {
   <template v-else>
     <Card>
       <h2 class="welcome-h">SUMO in your browser</h2>
-      <p class="hint" style="margin: 6px 0 0">
+      <p class="hint welcome-p">
         The <code>sigmakee-rs</code> native prover compiled to WebAssembly.
         Search above to explore the ontology — try
         <a class="try-q" @click.prevent="tryQuery('Human')">Human</a>,
@@ -387,9 +387,15 @@ onActivated(() => {
 .kbd-hint {
   font-size: 11px;
 }
+label.check.wordnet-only {
+  margin-top: 8px;
+}
 /* Home: welcome + KB summary */
 .welcome-h {
   font-size: 17px;
   margin: 0;
+}
+.welcome-p {
+  margin: 6px 0 0;
 }
 </style>

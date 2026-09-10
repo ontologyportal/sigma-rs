@@ -106,8 +106,8 @@ function commitSha(c: any): string {
 
 <template>
   <Card>
-    <div class="inline" style="justify-content: space-between">
-      <div style="min-width: 260px">
+    <div class="inline between">
+      <div class="picker">
         <label for="historyPicker">File</label>
         <select id="historyPicker" :value="file" @change="onPickerChange">
           <option v-if="!files.length" value="">
@@ -116,18 +116,18 @@ function commitSha(c: any): string {
           <option v-for="f in files" :key="f" :value="f">{{ f }}</option>
         </select>
       </div>
-      <div class="inline" style="gap: 8px">
+      <div class="inline tight">
         <span class="hint">{{ status }}</span>
         <button class="btn" type="button" @click="refresh">Refresh</button>
       </div>
     </div>
-    <p class="hint" style="margin: 8px 0 0">
+    <p class="hint blurb">
       Commit history from <code>ontologyportal/sumo</code> via the public GitHub
       API (no sign-in; unauthenticated requests are rate-limited to 60/hour).
     </p>
   </Card>
   <div>
-    <Card v-if="error" class="hint" style="color: var(--bad)">{{ error }}</Card>
+    <Card v-if="error" class="hint bad">{{ error }}</Card>
     <Card v-else-if="file && !commits.length && !status" class="hint">
       No commits found for <code>{{ file }}</code
       >.
@@ -147,14 +147,7 @@ function commitSha(c: any): string {
           </div>
         </li>
       </ol>
-      <div
-        class="hint"
-        style="
-          margin-top: 12px;
-          padding-top: 10px;
-          border-top: 1px solid var(--line);
-        "
-      >
+      <div class="hint more">
         Showing the {{ commits.length }} most recent —
         <a :href="allCommitsUrl" target="_blank" rel="noopener"
           >full commit history for {{ file }} on GitHub ↗</a
@@ -165,6 +158,17 @@ function commitSha(c: any): string {
 </template>
 
 <style scoped>
+.picker {
+  min-width: 260px;
+}
+.blurb {
+  margin: 8px 0 0;
+}
+.more {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
 ol.timeline {
   list-style: none;
   margin: 0;

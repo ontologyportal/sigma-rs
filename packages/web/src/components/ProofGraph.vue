@@ -4,6 +4,7 @@ import type cytoscape from "cytoscape";
 import { PROOF_GRAPH_LEGEND, renderProofGraph } from "../services/proof-graph";
 import { useShellStore } from "../stores/shell";
 import { errMsg } from "../utils/format";
+import Disclosure from "./Disclosure.vue";
 
 const props = defineProps<{
   /** The `{index, rule, premises, kif}[]` transcript to draw. */
@@ -37,9 +38,9 @@ async function render() {
 }
 
 /** Lazily render the first time the details opens; re-fit on later opens. */
-function onToggle(e: Event) {
-  isOpen.value = (e.target as HTMLDetailsElement).open;
-  if (!isOpen.value) return;
+function onToggle(open: boolean) {
+  isOpen.value = open;
+  if (!open) return;
   if (cy) {
     cy.resize();
     cy.fit();
@@ -80,8 +81,7 @@ onBeforeUnmount(destroy);
 </script>
 
 <template>
-  <details class="proof-graph-details" @toggle="onToggle">
-    <summary class="hint">proof graph</summary>
+  <Disclosure summary="proof graph" @toggle="onToggle">
     <div
       ref="container"
       class="graph-container"
@@ -142,24 +142,13 @@ onBeforeUnmount(destroy);
         <span class="pg-legend-swatch"></span>{{ k.label }}
       </span>
     </div>
-    <details class="graph-dot-toggle">
-      <summary>graphviz (DOT) source</summary>
+    <Disclosure class="graph-dot-toggle" summary="graphviz (DOT) source">
       <pre>{{ dot || "(none)" }}</pre>
-    </details>
-  </details>
+    </Disclosure>
+  </Disclosure>
 </template>
 
 <style scoped>
-details pre {
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre-wrap;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 10px;
-  overflow-x: auto;
-}
 .graph-container {
   position: relative;
   height: 340px;
@@ -182,15 +171,7 @@ details pre {
   white-space: pre-wrap;
   word-break: break-word;
 }
-.graph-dot-toggle {
-  margin-top: 8px;
-}
-.graph-dot-toggle summary {
-  font-size: 12px;
-  color: var(--muted);
-  cursor: pointer;
-}
-.graph-dot-toggle pre {
+details.graph-dot-toggle pre {
   font-size: 11px;
   max-height: 200px;
   overflow-y: auto;

@@ -2,6 +2,7 @@
 import { navigate } from "../../router";
 import { esc } from "../../utils/format";
 import Card from "../Card.vue";
+import WordNetEntry from "./WordNetEntry.vue";
 
 defineProps<{
   /** The worker's `search` hits, newest query only. */
@@ -64,7 +65,7 @@ function boldifyDoc(text: unknown): string {
 
 <template>
   <Card>
-    <div class="hint" style="margin-bottom: 6px">
+    <div class="hint count">
       {{ hits.length }} result{{ hits.length === 1 ? "" : "s" }} for
       <code>{{ query }}</code
       >{{ langNote }}
@@ -83,14 +84,11 @@ function boldifyDoc(text: unknown): string {
           ></span
         >
         <div v-if="h.text" class="snippet" v-html="boldifyDoc(h.text)"></div>
-        <div
+        <WordNetEntry
           v-for="(m, j) in relevantWordnet(h.wordnet, query)"
           :key="j"
-          class="wn-entry"
-        >
-          <div>"{{ m.words }}" ({{ m.pos }}) — {{ m.mapping }} mapping</div>
-          <div class="hint">{{ m.gloss }}</div>
-        </div>
+          :entry="m"
+        />
       </li>
     </ul>
   </Card>
@@ -101,18 +99,11 @@ function boldifyDoc(text: unknown): string {
   cursor: help;
   border-bottom: 1px dotted currentColor;
 }
+.count {
+  margin-bottom: 6px;
+}
 .snippet {
   color: var(--muted);
   font-size: 13px;
-}
-/* WordNet mapping entries inline beneath a search-result snippet. */
-.wn-entry {
-  font-size: 13px;
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid var(--line);
-}
-.wn-entry + .wn-entry {
-  margin-top: 8px;
 }
 </style>

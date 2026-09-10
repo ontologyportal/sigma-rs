@@ -16,6 +16,9 @@
  * PR in place instead of opening a competing second one.
  */
 import { computed, reactive, ref, watch } from "vue";
+import BusyButton from "../BusyButton.vue";
+import StatusLine from "../StatusLine.vue";
+import { useStatus } from "../../composables/useStatus";
 import { SUMO } from "../../constants";
 import { contributeFiles } from "../../api/github";
 import { useAuthStore } from "../../stores/auth";
@@ -120,7 +123,7 @@ const submitLabel = computed(() => {
     ? `Update pull request #${[...prs.keys()][0]}`
     : "Create pull request";
 });
-const submitDisabled = computed(() => !chosen.value.length);
+const canSubmit = computed(() => chosen.value.length > 0);
 
 /** A title that describes the selection, not whatever file is open. */
 function defaultTitle(list: ChangeRow[]) {
@@ -131,7 +134,7 @@ function defaultTitle(list: ChangeRow[]) {
 const listOpen = ref(false);
 const title = ref("");
 const body = ref("");
-const status = reactive({ text: "", isError: false });
+const status = useStatus();
 const submitBusy = ref(false);
 
 type Result =
@@ -148,11 +151,6 @@ type Result =
     };
 const result = ref<Result | null>(null);
 
-function setStatus(text: string, bad = false) {
-  status.text = text;
-  status.isError = bad;
-}
-
 const pathId = (r: ChangeRow) => `ghPath-${rowKey(r)}`;
 const pathOf = (r: ChangeRow) => localPaths.get(rowKey(r)) ?? r.path;
 
@@ -167,7 +165,7 @@ function setPath(r: ChangeRow, e: Event) {
 }
 
 async function onOpened() {
-  setStatus("");
+  status.clear();
   if (!title.value) title.value = defaultTitle(chosen.value);
   // Costs at most one tree read plus one read per tracked pull request, and
   // only when something is actually tracked (both are no-ops otherwise).
@@ -190,7 +188,7 @@ async function submit() {
   // selection is reported as such rather than as "you're not logged in".
   let picked = chosen.value;
   if (!picked.length) {
-    setStatus("Tick at least one file to include.", true);
+    status.set("Tick at least one file to include.", true);
     return;
   }
 
@@ -198,7 +196,7 @@ async function submit() {
   // last-saved version without the user realizing.
   const open = props.current;
   if (open && selected.has(`${open.origin.kind}:${open.name}`) && props.dirty) {
-    setStatus(
+    status.set(
       `Save ${open.name} first — the editor has unsaved changes.`,
       true,
     );
@@ -210,7 +208,7 @@ async function submit() {
   const prs = openPrs(picked);
   if (prs.size > 1) {
     const names = [...prs.keys()].map((n) => `#${n}`).join(" and ");
-    setStatus(
+    status.set(
       `The selected files belong to different pull requests (${names}) — a single commit can only go on one branch, so submit them separately.`,
       true,
     );
@@ -219,7 +217,7 @@ async function submit() {
 
   const missingPath = picked.find((r) => !pathOf(r)?.trim());
   if (missingPath) {
-    setStatus(`Give ${missingPath.name} a path in the repository.`, true);
+    status.set(`Give ${missingPath.name} a path in the repository.`, true);
     return;
   }
 
@@ -234,7 +232,7 @@ async function submit() {
   try {
     // Authoritative staleness check: the panel's own check may be minutes old,
     // and this is the last moment before a write.
-    setStatus("Checking for upstream changes…");
+    status.set("Checking for upstream changes…");
     await changes.refreshUpstreamShas({ force: true });
     const fresh = chosen.value;
     const landed = picked.filter(
@@ -242,7 +240,7 @@ async function submit() {
     );
     picked = fresh;
     if (!picked.length) {
-      setStatus("");
+      status.clear();
       result.value = {
         kind: "text",
         text: landed.length
@@ -253,7 +251,7 @@ async function submit() {
     }
     const stale = picked.find((r) => r.stale);
     if (stale) {
-      setStatus(
+      status.set(
         `${stale.name} changed upstream — resolve it before submitting.`,
         true,
       );
@@ -279,13 +277,13 @@ async function submit() {
       title: prTitle,
       body: body.value.trim(),
       existing,
-      onStep: (s) => setStatus(s),
+      onStep: (s) => status.set(s),
     });
     changes.markProposed(
       files.map((f, i) => ({ ...f, blobSha: pr.blobShas[i] })),
       pr,
     );
-    setStatus("");
+    status.clear();
     const what = `${files.length} file${files.length === 1 ? "" : "s"}`;
     result.value = {
       kind: "pr",
@@ -297,7 +295,7 @@ async function submit() {
       what,
     };
   } catch (e) {
-    setStatus("");
+    status.clear();
     result.value = { kind: "error", text: errMsg(e) };
   } finally {
     submitBusy.value = false;
@@ -384,7 +382,7 @@ async function submit() {
         </template>
       </div>
     </div>
-    <p class="hint" style="margin: 0 0 10px">
+    <p class="hint intro">
       Opens a pull request against <code>ontologyportal/sumo</code> with the
       ticked files, as one commit. You will be forked automatically if you lack
       push access.
@@ -400,7 +398,7 @@ async function submit() {
         />
       </div>
     </div>
-    <div style="margin-top: 10px">
+    <div class="mt">
       <label for="ghBody">Description</label>
       <textarea
         id="ghBody"
@@ -409,27 +407,19 @@ async function submit() {
         placeholder="What changed and why."
       ></textarea>
     </div>
-    <div
-      class="inline"
-      style="justify-content: space-between; margin-top: 10px"
-    >
-      <span
-        class="hint"
-        :style="{ color: status.isError ? 'var(--bad)' : '' }"
-        >{{ status.text }}</span
-      >
-      <div class="inline" style="gap: 8px">
-        <button
-          class="btn"
-          type="button"
-          :disabled="submitDisabled || submitBusy"
+    <div class="inline between mt">
+      <StatusLine :text="status.text" :error="status.error" />
+      <div class="inline tight">
+        <BusyButton
+          :busy="submitBusy"
+          :label="submitLabel"
+          busy-label="Submitting…"
+          :disabled="!canSubmit"
           @click="submit"
-        >
-          {{ submitBusy ? "Submitting…" : submitLabel }}
-        </button>
+        />
       </div>
     </div>
-    <div class="hint" style="margin-top: 8px">
+    <div class="hint mt-sm">
       <template v-if="result?.kind === 'pr'">
         <template v-if="result.amended"
           >Added {{ result.what }} to
@@ -569,7 +559,7 @@ async function submit() {
   padding: 3px 6px;
   flex: 1 1 auto;
 }
-.bad {
-  color: var(--bad);
+.intro {
+  margin: 0 0 10px;
 }
 </style>

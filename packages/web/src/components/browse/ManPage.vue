@@ -6,6 +6,7 @@ import { esc } from "../../utils/format";
 import Card from "../Card.vue";
 import CiteRow from "../CiteRow.vue";
 import TaxonomyGraph from "./TaxonomyGraph.vue";
+import WordNetEntry from "./WordNetEntry.vue";
 
 const props = defineProps<{
   /** The worker's `manpage` payload, or null when the symbol has none. */
@@ -189,12 +190,7 @@ const shownRefs = computed(() =>
   <div v-else ref="root">
     <Card class="man">
       <div class="man-head">
-        <a
-          class="hint back"
-          style="cursor: pointer"
-          @click.prevent="emit('back')"
-          >← back to results</a
-        >
+        <a class="hint back" @click.prevent="emit('back')">← back to results</a>
         <h2>{{ page.name }}</h2>
         <div class="kinds">{{ page.kinds.join(" · ") || "symbol" }}</div>
         <div v-if="hasWordnet" class="man-subtabs" role="tablist">
@@ -266,7 +262,7 @@ const shownRefs = computed(() =>
           <h3>References</h3>
           <div class="val">
             <template v-if="page.references.length">
-              <div class="hint" style="margin-bottom: 4px">{{ refsNote }}</div>
+              <div class="hint refs-note">{{ refsNote }}</div>
               <label class="ref-filter"
                 ><span class="hint">Filter</span>
                 <select v-model="filter">
@@ -296,10 +292,7 @@ const shownRefs = computed(() =>
         </div>
       </div>
       <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
-        <div v-for="(m, i) in page.wordnet" :key="i" class="wn-entry">
-          <div>"{{ m.words }}" ({{ m.pos }}) — {{ m.mapping }} mapping</div>
-          <div class="hint">{{ m.gloss }}</div>
-        </div>
+        <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
       </div>
     </Card>
   </div>
@@ -362,6 +355,9 @@ const shownRefs = computed(() =>
   display: inline-block;
   margin: 0 8px 4px 0;
 }
+.refs-note {
+  margin-bottom: 4px;
+}
 label.ref-filter {
   display: inline-flex;
   align-items: center;
@@ -379,16 +375,6 @@ label.ref-filter select {
 }
 :deep(.xref) {
   border-bottom: 1px dotted var(--accent);
-}
-/* WordNet mapping entries under the man page's WordNet tab. */
-.wn-entry {
-  font-size: 13px;
-  margin-top: 4px;
-  padding-left: 8px;
-  border-left: 2px solid var(--line);
-}
-.wn-entry + .wn-entry {
-  margin-top: 8px;
 }
 ol.refs {
   list-style: none;

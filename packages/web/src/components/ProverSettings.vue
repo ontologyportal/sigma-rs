@@ -111,7 +111,7 @@ const prover = useProverStore();
         <span class="hint">— emit phase timings into raw output</span></label
       >
     </div>
-    <div class="inline" style="justify-content: flex-end; margin-top: 10px">
+    <div class="inline mt actions">
       <button class="btn ghost" type="button" @click="prover.reset()">
         Reset to defaults
       </button>
@@ -119,4 +119,8 @@ const prover = useProverStore();
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.actions {
+  justify-content: flex-end;
+}
+</style>

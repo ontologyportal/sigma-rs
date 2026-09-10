@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import BusyButton from "../BusyButton.vue";
 import Card from "../Card.vue";
+import StatusLine from "../StatusLine.vue";
 import { useKBStore } from "../../stores/kb";
 import { useTestsStore, type TestEntry } from "../../stores/tests";
 import { errMsg } from "../../utils/format";
@@ -85,10 +87,7 @@ async function runAll() {
           <span v-if="t.parsed.expectedAnswer" class="hint"
             >answer: {{ t.parsed.expectedAnswer.join(" ") }}</span
           >
-          <span
-            v-if="missingFiles(t.parsed).length"
-            class="hint"
-            style="color: var(--warn)"
+          <span v-if="missingFiles(t.parsed).length" class="hint warn"
             >needs {{ missingFiles(t.parsed).join(", ") }}</span
           >
           <span
@@ -108,22 +107,25 @@ async function runAll() {
         </span>
       </li>
     </ul>
-    <div class="inline" style="margin-top: 8px; align-items: center">
-      <button
+    <div class="inline center run-row">
+      <BusyButton
         v-show="tests.tests.length"
-        class="btn"
-        type="button"
-        :disabled="runningAll"
+        :busy="runningAll"
+        label="Run all"
         @click="runAll"
-      >
-        {{ runningAll ? "Working…" : "Run all" }}
-      </button>
-      <span class="hint">{{ log }}</span>
+      />
+      <StatusLine :text="log" />
     </div>
   </Card>
 </template>
 
 <style scoped>
+.warn {
+  color: var(--warn);
+}
+.run-row {
+  margin-top: 8px;
+}
 .tq-badge {
   font-size: 11px;
   padding: 1px 7px;

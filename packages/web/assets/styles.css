@@ -131,6 +131,9 @@ kbd {
   color: var(--muted);
   font-size: 13px;
 }
+.bad {
+  color: var(--bad);
+}
 
 /* -- Form controls ---------------------------------------------------------- */
 
@@ -198,6 +201,11 @@ button.btn.ghost {
 button.btn.ghost:hover {
   color: var(--fg);
 }
+/* A ghost button that toggles a panel lights up while it is open. */
+button.btn.ghost[aria-expanded="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 /* Prover settings cog (Ask/Tell + Audit). */
 button.cog {
   font: inherit;
@@ -226,6 +234,22 @@ button.cog[aria-expanded="true"] {
   gap: 10px;
   align-items: end;
   flex-wrap: wrap;
+}
+.inline.between {
+  justify-content: space-between;
+}
+.inline.center {
+  align-items: center;
+}
+.inline.tight {
+  gap: 8px;
+}
+/* Vertical rhythm helpers for stacked blocks inside a card. */
+.mt-sm {
+  margin-top: 6px;
+}
+.mt {
+  margin-top: 10px;
 }
 /* Explicit height: the UA gives <select> a shorter line box than text
    inputs at the same font/padding, leaving it 3px shy of the shared 41px
