@@ -186,6 +186,8 @@ await step("11-kb-add-remove", async () => {
     .locator("table tbody tr", { hasText: "Weather.kif" })
     .first();
   await row.locator('input[type="checkbox"]').check();
+  await row.locator("text=will load").waitFor({ timeout: 3000 });
+  await page.locator("text=Unsaved changes").first().waitFor({ timeout: 3000 });
   await page.locator("button.btn", { hasText: "Save changes" }).click();
   await page.waitForSelector("text=/Added 1/", { timeout: 180_000 });
   await page.waitForFunction(

@@ -220,6 +220,10 @@ watch(rows, (list) => {
 const selectedRows = computed(() =>
   rows.value.filter((r) => selected.value.has(r.key)),
 );
+/** Tooltip for every pending-change indicator. */
+const PENDING_TIP =
+  "Unsaved change: nothing is loaded or unloaded until you click Save changes.";
+
 const pendingAdds = computed(() => selectedRows.value.filter((r) => !r.loaded));
 const pendingRemoves = computed(() =>
   selectedRows.value.filter((r) => r.loaded),
@@ -414,6 +418,9 @@ async function save() {
               :checked="selected.has(row.key)"
               :disabled="row.core"
               :aria-label="`Select ${row.name}`"
+              :title="
+                row.loaded ? 'Tick to unload on save' : 'Tick to load on save'
+              "
               @click.stop="toggle(row, $event)"
             />
           </td>
@@ -430,7 +437,14 @@ async function save() {
           <td class="hint col-source">{{ row.source }}</td>
           <td class="hint num">{{ formatSize(row.size) }}</td>
           <td class="status-cell">
-            <span v-if="row.loaded && !row.core" class="pill">loaded</span>
+            <span
+              v-if="selected.has(row.key)"
+              class="pill pending"
+              :class="{ unload: row.loaded }"
+              :title="PENDING_TIP"
+              >{{ row.loaded ? "will unload" : "will load" }}</span
+            >
+            <span v-else-if="row.loaded && !row.core" class="pill">loaded</span>
             <span v-else class="hint">{{ statusLabel(row) }}</span>
             <a
               v-if="row.deletable"
@@ -449,9 +463,12 @@ async function save() {
   </div>
 
   <div v-if="selectedRows.length" class="action-bar inline between center">
-    <span class="hint">
-      {{ selectedRows.length }} selected — load {{ pendingAdds.length }}, unload
-      {{ pendingRemoves.length }}
+    <span class="inline tight center">
+      <span class="pill pending" :title="PENDING_TIP">Unsaved changes</span>
+      <span class="hint">
+        {{ selectedRows.length }} selected — load {{ pendingAdds.length }},
+        unload {{ pendingRemoves.length }}
+      </span>
     </span>
     <span class="inline tight">
       <button
@@ -562,6 +579,17 @@ tbody tr.selected {
   font-size: 12px;
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
+}
+/* A ticked row's pending change: accent for a load, amber for an unload. */
+.pill.pending {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px dashed var(--accent);
+  cursor: help;
+}
+.pill.pending.unload {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 .action-bar {
   position: sticky;
