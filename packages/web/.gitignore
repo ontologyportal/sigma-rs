@@ -1,3 +1,4 @@
 .dev.vars
 worker-dist/
 dist/
+e2e/shots/

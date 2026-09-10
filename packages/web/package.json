@@ -16,7 +16,8 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p . && tsc --noEmit -p tsconfig.worker.json",
     "fmt": "prettier --write .",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "node e2e/smoke.mjs"
   },
   "dependencies": {
     "@sigma/language": "*",

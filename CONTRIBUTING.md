@@ -135,6 +135,34 @@ can simulate that with:
 cargo build --release
 ```
 
+The JavaScript workspace (`packages/`) has its own checks, also run by
+the commit hooks:
+
+```
+# Format check / auto-format
+npm run fmt:check
+npm run fmt
+# Lint
+npm run lint
+# Type-check the web app (templates included)
+npm run typecheck --workspace @sigma/web
+```
+
+The web app also has a browser-driven end-to-end smoke test that boots the
+demo in headless Chromium and walks every tab (search, man page, editor
+deep link, diagnostics filter, a proof, the dialogs). It needs the network
+(it fetches SUMO from GitHub) and a Chromium from Playwright, so it is not
+part of the hooks:
+
+```
+npx playwright install chromium      # once
+npm run test:e2e --workspace @sigma/web
+# or against a deployment:
+BASE_URL=https://sigmakee.dev/ npm run test:e2e --workspace @sigma/web
+```
+
+Screenshots of every step are written to `packages/web/e2e/shots/`.
+
 ### Simulating the GitHub Actions locally
 
 Workflow changes are easy to get wrong and slow to iterate on through
