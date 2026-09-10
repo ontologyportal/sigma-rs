@@ -253,9 +253,24 @@ onBeforeUnmount(() => {
       </router-view>
     </main>
 
+    <footer>
+      <small>
+        <a href="https://ontologyportal.github.io/sigma-rs"
+          >Latest Inference Tests</a
+        >
+        -- <a href="https://ontologyportal.org">ontologyportal.org</a> --
+        <a href="https://github.com/ontologyportal/sigma-rs/blob/main/LICENSE"
+          >GPL-3.0</a
+        >
+      </small>
+    </footer>
+
     <div class="toast" v-show="kb.promoting" role="status">
       <span class="spin"></span>
-      <span>Post-processing — axiomatizing the knowledge base…</span>
+      <span
+        >Post-processing — some features may not be available until
+        complete.</span
+      >
     </div>
 
     <SettingsDialog />
