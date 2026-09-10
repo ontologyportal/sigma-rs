@@ -7,16 +7,22 @@
 import { defineStore } from "pinia";
 import { MERGE, SUMO_FILE_SETTING } from "../constants";
 import { Constituent } from "../models/Constituent";
-import { Origin, GitOrigin, OriginKind, originForKind } from "../models/Origin";
+import {
+  Origin,
+  GitOrigin,
+  OriginKind,
+  OriginJson,
+  parseOrigin,
+  serializeOrigin,
+} from "../models/Origin";
 import { call } from "../services/sigma";
 import { fromOrigin } from "../services/sources";
 import { lspReset, lspSyncDocument } from "../services/lsp";
 import { scheduleSave as scheduleKbCacheSave } from "../services/kb-cache";
-import { fetchSumoTree } from "../api/github";
 import { errMsg } from "../utils/format";
 import { useWordNetStore } from "./wordnet";
-import { useBootStore } from "./boot";
 import { useChangesStore } from "./changes";
+import { useLibraryStore } from "./library";
 
 /** One validation finding, as the worker's `validate` reports it. */
 export interface Diagnostic {
@@ -35,7 +41,7 @@ export interface Diagnostic {
  *  and refetch its text on the next boot. */
 export interface SavedConstituent {
   name: string;
-  origin: OriginKind;
+  origin: OriginJson;
 }
 
 // Keep the post-processing state visible at least this long, so it is
@@ -45,29 +51,26 @@ const MIN_PROMOTING_MS = 650;
 function loadSavedConstituents(): SavedConstituent[] {
   try {
     const raw = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || "null");
-    if (Array.isArray(raw) && raw.length) return raw;
+    if (Array.isArray(raw) && raw.length) {
+      // Entries saved before the library carried a bare kind string.
+      return raw
+        .filter((c: any) => c && typeof c.name === "string")
+        .map((c: any) => ({
+          name: c.name,
+          origin: serializeOrigin(parseOrigin(c.origin, c.name)),
+        }));
+    }
   } catch {
     /* corrupt value */
   }
   return Constituent.defaults().map((c) => ({
     name: c.name,
-    origin: c.origin.kind,
+    origin: serializeOrigin(c.origin),
   }));
 }
 
 function persistSaved(saved: SavedConstituent[]) {
   localStorage.setItem(SUMO_FILE_SETTING, JSON.stringify(saved));
-}
-
-async function writeOpfsFile(
-  root: FileSystemDirectoryHandle,
-  name: string,
-  text: string,
-) {
-  const handle = await root.getFileHandle(name, { create: true });
-  const stream = await handle.createWritable();
-  await stream.write(text);
-  await stream.close();
 }
 
 export const useKBStore = defineStore("kb", {
@@ -90,10 +93,6 @@ export const useKBStore = defineStore("kb", {
     stats: null as any,
     /** Counts change only when the KB does; `refreshStats` re-asks only when set. */
     statsStale: true,
-    /** `*.kif` / `*.kif.tq` blobs in the upstream repo with their byte
-     *  sizes, or null before first load. */
-    sumoCatalog: null as { path: string; size: number }[] | null,
-    catalogError: "",
   }),
   getters: {
     isLoaded: (state) => (name: string) =>
@@ -129,30 +128,29 @@ export const useKBStore = defineStore("kb", {
       });
       this.constituents.push(new Constituent(name, origin, text));
       if (
-        !this.saved.some((c) => c.name === name && c.origin === origin.kind)
+        !this.saved.some(
+          (c) => c.name === name && c.origin.kind === origin.kind,
+        )
       ) {
-        this.saved.push({ name, origin: origin.kind });
+        this.saved.push({ name, origin: serializeOrigin(origin) });
         persistSaved(this.saved);
       }
       return { added: true, notices };
     },
 
     /** Save `text` as constituent `name`/`origin` -- in place if loaded, else
-     *  added. `file`-origin text is persisted to OPFS FIRST (a `file` entry
-     *  with no OPFS handle would throw on next boot and abort loading every
-     *  other constituent too); a `sumo`-origin save goes to the separate
-     *  edit store and stays local until pushed. */
+     *  added. `file`-origin text is persisted to the library FIRST (a `file`
+     *  entry with no OPFS copy would throw on next boot and abort loading
+     *  every other constituent too); a `sumo`-origin save goes to the
+     *  separate edit store and stays local until pushed. */
     async updateConstituentText(
       name: string,
       text: string,
       origin: Origin,
     ): Promise<{ added: boolean; notices: string[] }> {
-      const boot = useBootStore();
       const changes = useChangesStore();
-      if (origin.kind === "file") {
-        if (!boot.opfsRoot) throw new Error("File system not initialized yet");
-        await writeOpfsFile(boot.opfsRoot, name, text);
-      }
+      if (origin.kind === "file")
+        await useLibraryStore().writeLocal(name, text);
       const idx = this.constituents.findIndex(
         (c) => c.name === name && c.origin.kind === origin.kind,
       );
@@ -206,8 +204,8 @@ export const useKBStore = defineStore("kb", {
       await useWordNetStore().install();
     },
 
-    /** Untrack `entries` (and delete `file`-origin OPFS copies), then
-     *  rebuild the session and post-process ONCE for the whole batch. */
+    /** Untrack `entries`, then rebuild the session and post-process ONCE for
+     *  the whole batch. Library copies are kept. */
     async removeMany(entries: { name: string; kind: OriginKind }[]) {
       if (!entries.length) return;
       await this.untrack(entries);
@@ -220,28 +218,19 @@ export const useKBStore = defineStore("kb", {
     },
 
     /** The bookkeeping half of removal: drop `entries` from the tracked and
-     *  persisted lists, delete their OPFS files, forget their edits. The
-     *  session is left stale -- callers rebuild it. */
+     *  persisted lists and forget their edits. Their library copies stay
+     *  (unloading is not deleting). The session is left stale -- callers
+     *  rebuild it. */
     async untrack(entries: { name: string; kind: OriginKind }[]) {
-      const boot = useBootStore();
       const changes = useChangesStore();
       const gone = (name: string, kind: OriginKind) =>
         entries.some((e) => e.name === name && e.kind === kind);
       this.constituents = this.constituents.filter(
         (c) => !gone(c.name, c.origin.kind),
       );
-      this.saved = this.saved.filter((c) => !gone(c.name, c.origin));
+      this.saved = this.saved.filter((c) => !gone(c.name, c.origin.kind));
       persistSaved(this.saved);
-      for (const { name, kind } of entries) {
-        if (kind === "file" && boot.opfsRoot) {
-          try {
-            await boot.opfsRoot.removeEntry(name);
-          } catch {
-            /* already gone */
-          }
-        }
-        await changes.forget(name, kind);
-      }
+      for (const { name, kind } of entries) await changes.forget(name, kind);
     },
 
     /** One batched mutation: ingest every `add` (a per-file failure is
@@ -289,7 +278,9 @@ export const useKBStore = defineStore("kb", {
       const dropped = this.constituents.filter((c) => c !== merge);
       for (const c of dropped) await changes.forget(c.name, c.origin.kind);
       this.constituents = merge ? [merge] : [];
-      this.saved = merge ? [{ name: MERGE, origin: merge.origin.kind }] : [];
+      this.saved = merge
+        ? [{ name: MERGE, origin: serializeOrigin(merge.origin) }]
+        : [];
       persistSaved(this.saved);
       await this.rebuildSession();
       await this.reprocess();
@@ -375,33 +366,12 @@ export const useKBStore = defineStore("kb", {
     ) {
       const total = this.saved.length;
       let i = 0;
-      for (const { name, origin: kind } of this.saved) {
+      for (const { name, origin: json } of this.saved) {
         i += 1;
         onProgress?.(name, i, total);
-        const origin = originForKind(kind);
+        const origin = parseOrigin(json, name);
         const text = await fromOrigin(name, origin);
         await this.ingest(name, text, origin);
-      }
-    },
-
-    /** The upstream repo's KIF file list, for the Knowledge base picker.
-     *  One tree read, shared with the change tracker's staleness check. */
-    async loadSumoCatalog() {
-      if (this.sumoCatalog) return;
-      this.catalogError = "";
-      try {
-        const tree = await fetchSumoTree();
-        this.sumoCatalog = tree
-          .filter(
-            (e: any) => e.type === "blob" && /\.kif(\.tq)?$/i.test(e.path),
-          )
-          .map((e: any) => ({
-            path: e.path as string,
-            size: Number(e.size) || 0,
-          }))
-          .sort((a, b) => a.path.localeCompare(b.path));
-      } catch (e) {
-        this.catalogError = String((e as Error)?.message || e);
       }
     },
   },

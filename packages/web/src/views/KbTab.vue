@@ -1,40 +1,32 @@
 <script setup lang="ts">
 /** Knowledge base tab: the unified constituent table (with the standard-set
- *  presets in its header), the URL / local-upload channels, and the WordNet
- *  panel. */
+ *  presets and the Import dialog in its header) and the WordNet panel. */
 import { computed, onActivated, onMounted, ref } from "vue";
-import { GitOrigin, LocalOrigin, RemoteOrigin } from "../models/Origin";
-import { fetchText, fetchAllTexts } from "../services/sources";
+import { GitOrigin } from "../models/Origin";
+import { fetchAllTexts } from "../services/sources";
 import { useKBStore } from "../stores/kb";
-import { useBootStore } from "../stores/boot";
-import { useTestsStore, isTestFile } from "../stores/tests";
+import { useLibraryStore } from "../stores/library";
 import { useStatus } from "../composables/useStatus";
 import { formatSize } from "../utils/format";
-import BusyButton from "../components/BusyButton.vue";
 import Card from "../components/Card.vue";
 import DropMenu from "../components/DropMenu.vue";
 import StatusLine from "../components/StatusLine.vue";
 import ConstituentTable from "../components/kb/ConstituentTable.vue";
+import ImportDialog from "../components/kb/ImportDialog.vue";
 import WordNetPanel from "../components/kb/WordNetPanel.vue";
 
 const kb = useKBStore();
-const boot = useBootStore();
-const tests = useTestsStore();
+const library = useLibraryStore();
 
-onMounted(() => kb.loadSumoCatalog());
-onActivated(() => kb.loadSumoCatalog());
+onMounted(() => library.loadCatalogs());
+onActivated(() => library.loadCatalogs());
 
-const kbLog = useStatus();
 const tableLog = useStatus();
 
 const summary = computed(() => {
   const loaded = kb.constituents.length;
-  const loadedNames = new Set(kb.sumoNames);
-  const available = (kb.sumoCatalog ?? []).filter(
-    (e) => !loadedNames.has(e.path) && !/\.tq$/i.test(e.path),
-  ).length;
   const bytes = kb.constituents.reduce((sum, c) => sum + c.text.length, 0);
-  return `${loaded} loaded · ${available} available upstream · ${formatSize(bytes)} loaded`;
+  return `${loaded} loaded · ${library.size} in library · ${formatSize(bytes)} loaded`;
 });
 
 // -- Standard constituent sets ------------------------------------------------
@@ -111,6 +103,7 @@ const PRESETS: Record<string, { label: string; files: string[] }> = {
 const presetsBusy = ref(false);
 const presetBtn = ref<HTMLElement | null>(null);
 const presetMenuOpen = ref(false);
+const importOpen = ref(false);
 
 async function loadPreset(key: string) {
   presetMenuOpen.value = false;
@@ -121,17 +114,22 @@ async function loadPreset(key: string) {
     await kb.replaceAll();
 
     const total = preset.files.length;
+    const origin = GitOrigin.default();
     tableLog.set(`Fetching ${preset.label} — 0/${total}…`);
-    const texts = await fetchAllTexts(preset.files, 6, (n) => {
-      tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`);
-    });
+    const texts = await fetchAllTexts(
+      preset.files.map((name) => ({ name, origin })),
+      6,
+      (n) => {
+        tableLog.set(`Fetching ${preset.label} — ${n}/${total}…`);
+      },
+    );
 
     const failed: string[] = [];
     const add: { name: string; text: string; origin: GitOrigin }[] = [];
     preset.files.forEach((name, i) => {
       const text = texts[i];
       if (text instanceof Error) failed.push(`${name}: ${text.message}`);
-      else add.push({ name, text, origin: GitOrigin.default() });
+      else add.push({ name, text, origin });
     });
     tableLog.set(`Axiomatizing ${add.length} constituent(s)…`);
     const r = await kb.applyChanges({ add });
@@ -149,85 +147,27 @@ async function loadPreset(key: string) {
     presetsBusy.value = false;
   }
 }
-
-// -- Import channels ----------------------------------------------------------
-
-const addUrlBusy = ref(false);
-const kbUrl = ref("");
-
-async function addUrl() {
-  const url = kbUrl.value.trim();
-  if (!url) {
-    kbLog.set("Enter a URL first.");
-    return;
-  }
-  addUrlBusy.value = true;
-  try {
-    const text = await fetchText(url);
-    if (isTestFile(url)) {
-      const r = await tests.add(url, text, "url");
-      kbLog.set(r.added ? `Imported test ${url}.` : r.notices.join(" | "));
-      return;
-    }
-    const r = await kb.ingest(url, text, new RemoteOrigin());
-    kbLog.set(
-      r.added ? `Ingested ${url}; axiomatizing…` : r.notices.join(" | "),
-    );
-    if (r.added) await kb.reprocess();
-  } catch (e) {
-    kbLog.fail(e);
-  } finally {
-    addUrlBusy.value = false;
-  }
-}
-
-async function uploadKbFile(file: File) {
-  addUrlBusy.value = true; // shares the "Add URL" busy indicator
-  try {
-    const text = await file.text();
-    if (!boot.opfsRoot) throw new Error("File system not yet initialized");
-    const handle = await boot.opfsRoot.getFileHandle(file.name, {
-      create: true,
-    });
-    const stream = await handle.createWritable();
-    await stream.write(text);
-    await stream.close();
-    // Test files (.kif.tq / .p / .tptp) import through the Ask/Tell tab's
-    // "Load test" instead -- this uploader is KIF-constituent-only.
-    const r = await kb.ingest(file.name, text, new LocalOrigin());
-    kbLog.set(
-      r.added ? `Ingested ${file.name}; axiomatizing…` : r.notices.join(" | "),
-    );
-    if (r.added) await kb.reprocess();
-  } catch (e) {
-    kbLog.fail(e);
-  } finally {
-    addUrlBusy.value = false;
-  }
-}
-
-function onKbFileChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = "";
-  if (file) uploadKbFile(file);
-}
 </script>
 
 <template>
   <Card title="Constituents" :description="summary">
     <template #header>
-      <button
-        ref="presetBtn"
-        class="btn ghost"
-        type="button"
-        :disabled="presetsBusy"
-        :aria-expanded="presetMenuOpen"
-        aria-haspopup="menu"
-        @click="presetMenuOpen = !presetMenuOpen"
-      >
-        {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
-      </button>
+      <span class="inline tight">
+        <button
+          ref="presetBtn"
+          class="btn ghost"
+          type="button"
+          :disabled="presetsBusy"
+          :aria-expanded="presetMenuOpen"
+          aria-haspopup="menu"
+          @click="presetMenuOpen = !presetMenuOpen"
+        >
+          {{ presetsBusy ? "Loading…" : "Load a standard set ▾" }}
+        </button>
+        <button class="btn ghost" type="button" @click="importOpen = true">
+          Import…
+        </button>
+      </span>
     </template>
     <DropMenu v-model="presetMenuOpen" :anchor="presetBtn">
       <button
@@ -244,29 +184,7 @@ function onKbFileChange(e: Event) {
     <StatusLine class="mt-sm" :text="tableLog.text" :error="tableLog.error" />
   </Card>
 
-  <Card title="Add from elsewhere">
-    <div class="inline url-row">
-      <input
-        v-model="kbUrl"
-        type="text"
-        class="url-input"
-        placeholder="https://example.org/ontology.kif"
-        aria-label="Constituent URL"
-        @keydown.enter="addUrl"
-      />
-      <BusyButton :busy="addUrlBusy" label="Add URL" @click="addUrl" />
-    </div>
-    <div class="mt">
-      <label for="kbFile">Upload a .kif file</label>
-      <input
-        id="kbFile"
-        type="file"
-        accept=".kif,.txt,text/plain"
-        @change="onKbFileChange"
-      />
-    </div>
-    <StatusLine class="mt-sm" :text="kbLog.text" :error="kbLog.error" />
-  </Card>
+  <ImportDialog v-model="importOpen" @imported="(msg) => tableLog.set(msg)" />
 
   <Card title="WordNet lexicon">
     <template #description>
@@ -276,14 +194,3 @@ function onKbFileChange(e: Event) {
     <WordNetPanel />
   </Card>
 </template>
-
-<style scoped>
-.url-row {
-  flex-wrap: nowrap;
-}
-.url-input {
-  flex: 1 1 auto;
-  width: auto;
-  min-width: 0;
-}
-</style>

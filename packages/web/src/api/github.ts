@@ -362,35 +362,53 @@ export function githubApi(path: string): Promise<any> {
 }
 
 // Cache the promise, not the resolved value: the file picker and the change
-// tracker both want this tree, and two overlapping callers would otherwise
-// spend two of the 60/hour unauthenticated budget on the same read.
-let sumoTreePromise: Promise<any[]> | null = null;
+// tracker both want the upstream tree, and two overlapping callers would
+// otherwise spend two of the 60/hour unauthenticated budget on the same read.
+const treePromises = new Map<string, Promise<any[]>>();
 
 /**
- * Every blob in the upstream repository at `SUMO.ref`, as
- * `[{ path, type, sha }]`. One request answers both "which files exist"
- * (the KB tab's picker) and "what does upstream hold right now" (the change
- * tracker's staleness check, which needs a current blob SHA per tracked path).
+ * Every blob in `owner/repo` at `ref`, as `[{ path, type, sha, size }]`, one
+ * recursive tree read per repo+ref, memoized.
  *
  * `force` re-reads instead of reusing the memoized tree -- the check
  * immediately before a pull request must not be answered from a tree fetched
  * minutes ago.
  */
+export function fetchRepoTree(
+  owner: string,
+  repo: string,
+  ref: string,
+  { force = false }: { force?: boolean } = {},
+): Promise<any[]> {
+  const key = `${owner}/${repo}@${ref}`;
+  if (force) treePromises.delete(key);
+  let p = treePromises.get(key);
+  if (!p) {
+    p = githubApi(`/repos/${owner}/${repo}/git/trees/${ref}?recursive=1`)
+      .then((t) => {
+        if (t?.truncated)
+          console.warn(`${key}: tree listing truncated by GitHub`);
+        return t.tree || [];
+      })
+      .catch((e) => {
+        treePromises.delete(key);
+        throw e;
+      });
+    treePromises.set(key, p);
+  }
+  return p;
+}
+
+/**
+ * The upstream repository's tree at `SUMO.ref`. One request answers both
+ * "which files exist" (the KB tab's library) and "what does upstream hold
+ * right now" (the change tracker's staleness check, which needs a current
+ * blob SHA per tracked path).
+ */
 export function fetchSumoTree({
   force = false,
 }: { force?: boolean } = {}): Promise<any[]> {
-  if (force) sumoTreePromise = null;
-  if (!sumoTreePromise) {
-    sumoTreePromise = githubApi(
-      `/repos/${SUMO.owner}/${SUMO.repo}/git/trees/${SUMO.ref}?recursive=1`,
-    )
-      .then((t) => t.tree || [])
-      .catch((e) => {
-        sumoTreePromise = null;
-        throw e;
-      });
-  }
-  return sumoTreePromise;
+  return fetchRepoTree(SUMO.owner, SUMO.repo, SUMO.ref, { force });
 }
 
 // Cache the promise, not the resolved value: two overlapping callers would

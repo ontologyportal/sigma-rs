@@ -29,6 +29,8 @@ export const APP_REPO = { owner: "ontologyportal", repo: "sigma-rs" };
 
 export const SUMO_FILE_SETTING = "sumoFiles";
 export const TQ_SETTING = "sumoTests";
+/** The constituent library: registered repos + local/URL entries. */
+export const LIBRARY_KEY = "sumoLibrary";
 export const EDITS_KEY = "sumoBrowserEdits";
 export const THEME_KEY = "sumoBrowserTheme";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";

@@ -186,7 +186,7 @@ await step("11-kb-add-remove", async () => {
     .locator("table tbody tr", { hasText: "Weather.kif" })
     .first();
   await row.locator('input[type="checkbox"]').check();
-  await page.locator("button.btn", { hasText: "Apply changes" }).click();
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
   await page.waitForSelector("text=/Added 1/", { timeout: 180_000 });
   await page.waitForFunction(
     () => !document.querySelector(".toast")?.checkVisibility?.(),
@@ -195,9 +195,80 @@ await step("11-kb-add-remove", async () => {
   );
   // Now loaded: selecting it again schedules a removal.
   await row.locator('input[type="checkbox"]').check();
-  await page.locator("button.btn", { hasText: "Apply changes" }).click();
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
   await page.waitForSelector("text=/removed 1/", { timeout: 180_000 });
   await search.fill("");
+});
+
+await step("12-kb-import-dialog", async () => {
+  await page.locator("button.btn", { hasText: "Import" }).first().click();
+  const dialog = page.locator(
+    'dialog[open]:has-text("Import into the library")',
+  );
+  await dialog.waitFor({ timeout: 5000 });
+  await dialog.locator("button", { hasText: "GitHub" }).click();
+  await dialog
+    .locator("text=ontologyportal/sumo@master")
+    .waitFor({ timeout: 5000 });
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    () => !document.querySelector("dialog[open]"),
+    null,
+    { timeout: 5000 },
+  );
+});
+
+await step("13-kb-local-library", async () => {
+  const os = await import("node:os");
+  const tmp = path.join(os.tmpdir(), "SmokeLocal.kif");
+  fs.writeFileSync(tmp, "(instance SmokeLocalThing Entity)\n");
+  page.once("dialog", (d) => d.accept()); // the delete confirmation, later
+  await page.locator("button.btn", { hasText: "Import" }).first().click();
+  const dialog = page.locator(
+    'dialog[open]:has-text("Import into the library")',
+  );
+  await dialog.waitFor({ timeout: 5000 });
+  await dialog.locator("button", { hasText: "Local" }).click();
+  await dialog.locator("#importFiles").setInputFiles(tmp);
+  await dialog
+    .locator("button.btn", { hasText: /^Import/ })
+    .last()
+    .click();
+  await dialog.locator("text=/Imported 1 file/").waitFor({ timeout: 15_000 });
+  await dialog.locator("button", { hasText: "Close" }).click();
+  await page.waitForFunction(
+    () => !document.querySelector("dialog[open]"),
+    null,
+    { timeout: 15_000 },
+  );
+  const search = page.locator('input[type="search"]').last();
+  await search.fill("SmokeLocal");
+  const row = page
+    .locator("table tbody tr", { hasText: "SmokeLocal.kif" })
+    .first();
+  await row.waitFor({ timeout: 5000 });
+  if (!/Local/.test(await row.innerText()))
+    throw new Error("imported file is not marked Local");
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
+  await page.waitForSelector("text=/Added 1/", { timeout: 180_000 });
+  await page.waitForFunction(
+    () => !document.querySelector(".toast")?.checkVisibility?.(),
+    null,
+    { timeout: 180_000 },
+  );
+  await row.locator('input[type="checkbox"]').check();
+  await page.locator("button.btn", { hasText: "Save changes" }).click();
+  await page.waitForSelector("text=/removed 1/", { timeout: 180_000 });
+  if (!(await row.isVisible()))
+    throw new Error("unloading removed the file from the library");
+  await row.locator("text=delete").click();
+  await page.waitForSelector("text=/Deleted SmokeLocal.kif/", {
+    timeout: 5000,
+  });
+  if (await row.count()) throw new Error("deleted entry still listed");
+  await search.fill("");
+  fs.unlinkSync(tmp);
 });
 
 await step("20-history", async () => {

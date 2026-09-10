@@ -30,7 +30,7 @@ import { call } from "./sigma";
 import { fromOrigin } from "./sources";
 import { fetchLastCommitInfo } from "../api/github";
 import { Constituent } from "../models/Constituent";
-import { originForKind } from "../models/Origin";
+import { GitOrigin, originId, parseOrigin } from "../models/Origin";
 import { useBootStore } from "../stores/boot";
 import { useKBStore } from "../stores/kb";
 import { useChangesStore, opfsSafeName } from "../stores/changes";
@@ -87,19 +87,24 @@ async function readOpfsText(
  *  still invalidates the snapshot it no longer matches. */
 function constituentsFingerprint(): string {
   const files = useKBStore()
-    .saved.map((c) => `${c.origin}:${c.name}`)
+    .saved.map((c) => `${originId(c.origin)}:${c.name}`)
     .sort()
     .join("|");
   return `${files}#${useChangesStore().fingerprint}`;
 }
 
 /** `false` when any loaded constituent has no stable version signal to cache
- *  against (`url` origin) -- caching is skipped entirely for that boot. */
+ *  against (`url` origin, or a git repo other than upstream -- only
+ *  upstream's commit SHA is checked) -- caching is skipped entirely for that
+ *  boot. */
 function kbCacheEligible(): boolean {
   const { saved } = useKBStore();
+  const upstream = originId(GitOrigin.default());
   return (
     saved.length > 0 &&
-    saved.every((c) => c.origin === "sumo" || c.origin === "file")
+    saved.every(
+      (c) => c.origin.kind === "file" || originId(c.origin) === upstream,
+    )
   );
 }
 
@@ -150,13 +155,14 @@ export async function tryRestore(
     onProgress("Loading WordNet lexicon...");
 
     const built: Constituent[] = [];
-    for (const { name, origin } of kb.saved) {
+    for (const { name, origin: json } of kb.saved) {
+      const origin = parseOrigin(json, name);
       const text =
-        origin === "sumo"
+        origin.kind === "sumo"
           ? await readOpfsText(dir, opfsSafeName(name))
-          : await fromOrigin(name, originForKind(origin));
-      if (origin === "sumo") cachedText.set(name, text);
-      built.push(new Constituent(name, originForKind(origin), text));
+          : await fromOrigin(name, origin);
+      if (origin.kind === "sumo") cachedText.set(name, text);
+      built.push(new Constituent(name, origin, text));
     }
     kb.constituents = built;
     // The restored KB is already promoted -- this is the read-only structural

@@ -1,83 +1,136 @@
 <script setup lang="ts">
-/** One unified list of every constituent -- loaded (KB constituents and
- *  imported tests) and available upstream -- with search/filter/sort and a
- *  checkbox multi-select whose "Apply changes" adds the unloaded rows and
- *  removes the loaded ones in ONE batch (one post-processing pass).
+/** One unified list of every file in the library -- loaded (KB constituents
+ *  and imported tests) and available (unloaded library entries and repo
+ *  catalog files) -- with search/filter/sort and a checkbox multi-select
+ *  whose "Save changes" loads the unloaded rows and unloads the loaded ones
+ *  in ONE batch (one post-processing pass). Unloading keeps a file in the
+ *  library; local/URL entries have a separate "delete" action.
  *  Emits `log` for the messages the parent shows in its status line. */
 import { computed, ref, watch } from "vue";
 import { MERGE } from "../../constants";
-import { GitOrigin, type OriginKind } from "../../models/Origin";
+import {
+  GitOrigin,
+  LocalOrigin,
+  RemoteOrigin,
+  originForKind,
+  type Origin,
+  type OriginKind,
+} from "../../models/Origin";
 import { navigate } from "../../router";
 import { fetchAllTexts } from "../../services/sources";
 import { useKBStore } from "../../stores/kb";
+import { useLibraryStore, originForRepo } from "../../stores/library";
 import { useTestsStore } from "../../stores/tests";
 import { errMsg, formatSize } from "../../utils/format";
 import BusyButton from "../BusyButton.vue";
 
-/** One table row: a loaded constituent/test or an upstream file. */
+/** One table row: a loaded constituent/test or an available library file. */
 export interface Row {
   /** `kind:name` -- what the selection set holds. */
   key: string;
   name: string;
   kind: OriginKind;
-  /** Text length when loaded, the upstream blob size otherwise. */
+  origin: Origin;
+  /** Source column text: `GitHub` (upstream), `owner/repo@branch`, `Local`, `URL`. */
+  source: string;
+  /** Text length when loaded, the library/upstream size otherwise. */
   size: number;
   loaded: boolean;
   /** The foundational file (Merge.kif): shown, never selectable. */
   core: boolean;
   /** A `.kif.tq` test -- imported to the tests store, not the KB. */
   test: boolean;
+  /** A local/URL library entry that is not loaded: can be deleted. */
+  deletable: boolean;
 }
 
 const emit = defineEmits<{ log: [text: string, error?: boolean] }>();
 
 const kb = useKBStore();
 const tests = useTestsStore();
-
-const SOURCE_LABELS: Record<OriginKind, string> = {
-  sumo: "GitHub",
-  file: "Local",
-  url: "URL",
-};
+const library = useLibraryStore();
 
 const isTest = (name: string) => /\.tq$/i.test(name);
 const rowKey = (kind: OriginKind, name: string) => `${kind}:${name}`;
+
+function sourceLabel(origin: Origin): string {
+  switch (origin.kind) {
+    case "sumo":
+      return (origin as GitOrigin).isDefault
+        ? "GitHub"
+        : (origin as GitOrigin).label;
+    case "file":
+      return "Local";
+    case "url":
+      return "URL";
+  }
+}
 
 const rows = computed<Row[]>(() => {
   const out: Row[] = kb.constituents.map((c) => ({
     key: rowKey(c.origin.kind, c.name),
     name: c.name,
     kind: c.origin.kind,
+    origin: c.origin,
+    source: sourceLabel(c.origin),
     size: c.text.length,
     loaded: true,
     core: c.name === MERGE,
     test: isTest(c.name),
+    deletable: false,
   }));
   for (const t of tests.tests) {
+    const origin = originForKind(t.origin);
     out.push({
       key: rowKey(t.origin, t.name),
       name: t.name,
       kind: t.origin,
+      origin,
+      source: sourceLabel(origin),
       size: t.text.length,
       loaded: true,
       core: false,
       test: true,
+      deletable: false,
     });
   }
-  const loadedSumo = new Set(
-    out.filter((r) => r.kind === "sumo").map((r) => r.name),
-  );
-  for (const e of kb.sumoCatalog ?? []) {
-    if (loadedSumo.has(e.path)) continue;
+  const loaded = new Set(out.map((r) => r.key));
+  for (const e of library.entries) {
+    if (loaded.has(rowKey(e.kind, e.name))) continue;
+    const origin =
+      e.kind === "url" ? new RemoteOrigin(e.url) : new LocalOrigin();
     out.push({
-      key: rowKey("sumo", e.path),
-      name: e.path,
-      kind: "sumo",
+      key: rowKey(e.kind, e.name),
+      name: e.name,
+      kind: e.kind,
+      origin,
+      source: sourceLabel(origin),
       size: e.size,
       loaded: false,
       core: false,
-      test: isTest(e.path),
+      test: false,
+      deletable: true,
     });
+  }
+  for (const repo of library.repos) {
+    const origin = originForRepo(repo);
+    const source = sourceLabel(origin);
+    for (const e of library.catalogs[library.repoId(repo)] ?? []) {
+      const name = origin.nameFor(e.path);
+      if (loaded.has(rowKey("sumo", name))) continue;
+      out.push({
+        key: rowKey("sumo", name),
+        name,
+        kind: "sumo",
+        origin,
+        source,
+        size: e.size,
+        loaded: false,
+        core: false,
+        test: isTest(e.path),
+        deletable: false,
+      });
+    }
   }
   return out;
 });
@@ -85,7 +138,7 @@ const rows = computed<Row[]>(() => {
 // -- Toolbar ------------------------------------------------------------------
 
 type StatusFilter = "all" | "loaded" | "available";
-type SourceFilter = "all" | OriginKind;
+type SourceFilter = "all" | "github" | "repos" | "file" | "url";
 type SortKey = "name" | "size" | "source" | "status";
 
 const search = ref("");
@@ -98,6 +151,19 @@ const statusRank = (r: Row) => (r.core ? 0 : r.loaded ? 1 : 2);
 const statusLabel = (r: Row) =>
   r.core ? "core" : r.loaded ? "loaded" : "available";
 
+function matchesSource(r: Row): boolean {
+  switch (sourceFilter.value) {
+    case "all":
+      return true;
+    case "github":
+      return r.kind === "sumo" && (r.origin as GitOrigin).isDefault;
+    case "repos":
+      return r.kind === "sumo" && !(r.origin as GitOrigin).isDefault;
+    default:
+      return r.kind === sourceFilter.value;
+  }
+}
+
 const visible = computed<Row[]>(() => {
   const needle = search.value.trim().toLowerCase();
   const list = rows.value.filter((r) => {
@@ -105,9 +171,7 @@ const visible = computed<Row[]>(() => {
     if (needle && !r.name.toLowerCase().includes(needle)) return false;
     if (statusFilter.value === "loaded" && !r.loaded) return false;
     if (statusFilter.value === "available" && r.loaded) return false;
-    if (sourceFilter.value !== "all" && r.kind !== sourceFilter.value)
-      return false;
-    return true;
+    return matchesSource(r);
   });
   const byName = (a: Row, b: Row) => a.name.localeCompare(b.name);
   switch (sortKey.value) {
@@ -115,9 +179,7 @@ const visible = computed<Row[]>(() => {
       return list.sort((a, b) => b.size - a.size || byName(a, b));
     case "source":
       return list.sort(
-        (a, b) =>
-          SOURCE_LABELS[a.kind].localeCompare(SOURCE_LABELS[b.kind]) ||
-          byName(a, b),
+        (a, b) => a.source.localeCompare(b.source) || byName(a, b),
       );
     case "status":
       return list.sort((a, b) => statusRank(a) - statusRank(b) || byName(a, b));
@@ -126,11 +188,21 @@ const visible = computed<Row[]>(() => {
   }
 });
 
+const catalogErrors = computed(() =>
+  library.repos
+    .map((r) => {
+      const err = library.catalogErrors[library.repoId(r)];
+      return err ? `${originForRepo(r).label}: ${err}` : "";
+    })
+    .filter(Boolean),
+);
 const catalogNote = computed(() => {
-  if (kb.sumoCatalog) return "";
-  if (kb.catalogError)
-    return `could not load upstream file list: ${kb.catalogError}`;
-  return "loading upstream file list…";
+  if (catalogErrors.value.length)
+    return `could not load file list — ${catalogErrors.value.join("; ")}`;
+  const pending = library.repos.some(
+    (r) => !library.catalogs[library.repoId(r)],
+  );
+  return pending ? "loading file lists…" : "";
 });
 
 // -- Selection ----------------------------------------------------------------
@@ -189,27 +261,40 @@ function clearSelection() {
   lastToggled.value = null;
 }
 
-// -- Apply --------------------------------------------------------------------
+// -- Delete -------------------------------------------------------------------
 
-const applying = ref(false);
+async function deleteRow(row: Row) {
+  if (!row.deletable) return;
+  if (!window.confirm(`Delete ${row.name} from the library?`)) return;
+  try {
+    await library.deleteEntry(row.name, row.kind);
+    selected.value.delete(row.key);
+    emit("log", `Deleted ${row.name} from the library.`);
+  } catch (e) {
+    emit("log", errMsg(e), true);
+  }
+}
 
-async function apply() {
+// -- Save ---------------------------------------------------------------------
+
+const saving = ref(false);
+
+async function save() {
   const adds = pendingAdds.value;
   const removes = pendingRemoves.value;
   if (!adds.length && !removes.length) return;
-  applying.value = true;
+  saving.value = true;
   try {
     let added = 0;
     let removed = 0;
     const failed: string[] = [];
 
-    const names = adds.map((r) => r.name);
-    const texts = names.length
-      ? await fetchAllTexts(names, 6, (n) => {
-          emit("log", `Fetching ${n}/${names.length}…`);
+    const texts = adds.length
+      ? await fetchAllTexts(adds, 6, (n) => {
+          emit("log", `Fetching ${n}/${adds.length}…`);
         })
       : [];
-    const kbAdds: { name: string; text: string; origin: GitOrigin }[] = [];
+    const kbAdds: { name: string; text: string; origin: Origin }[] = [];
     for (let i = 0; i < adds.length; i++) {
       const row = adds[i];
       const text = texts[i];
@@ -218,11 +303,11 @@ async function apply() {
         continue;
       }
       if (!row.test) {
-        kbAdds.push({ name: row.name, text, origin: GitOrigin.default() });
+        kbAdds.push({ name: row.name, text, origin: row.origin });
         continue;
       }
       try {
-        const r = await tests.add(row.name, text, "sumo");
+        const r = await tests.add(row.name, text, row.kind);
         if (r.added) added += 1;
         else failed.push(...r.notices);
       } catch (e) {
@@ -241,7 +326,7 @@ async function apply() {
     if (kbAdds.length || kbRemoves.length) {
       emit(
         "log",
-        `Applying ${kbAdds.length} addition(s), ${kbRemoves.length} removal(s); axiomatizing…`,
+        `Loading ${kbAdds.length}, unloading ${kbRemoves.length}; axiomatizing…`,
       );
       const r = await kb.applyChanges({ add: kbAdds, remove: kbRemoves });
       added += r.added;
@@ -259,7 +344,7 @@ async function apply() {
   } catch (e) {
     emit("log", errMsg(e), true);
   } finally {
-    applying.value = false;
+    saving.value = false;
   }
 }
 </script>
@@ -281,7 +366,8 @@ async function apply() {
     </select>
     <select v-model="sourceFilter" aria-label="Source filter">
       <option value="all">All sources</option>
-      <option value="sumo">GitHub</option>
+      <option value="github">GitHub</option>
+      <option value="repos">Other repos</option>
       <option value="file">Local</option>
       <option value="url">URL</option>
     </select>
@@ -298,8 +384,8 @@ async function apply() {
   </div>
 
   <div class="hint mt-sm">
-    Select files with the checkboxes, then apply. Shift-click selects a range.
-    <span v-if="catalogNote" :class="{ bad: !!kb.catalogError }">
+    Tick files to load or unload them, then save. Shift-click selects a range.
+    <span v-if="catalogNote" :class="{ bad: catalogErrors.length > 0 }">
       {{ catalogNote }}
     </span>
   </div>
@@ -341,11 +427,18 @@ async function apply() {
             >
             <span v-else class="mono name">{{ row.name }}</span>
           </td>
-          <td class="hint col-source">{{ SOURCE_LABELS[row.kind] }}</td>
+          <td class="hint col-source">{{ row.source }}</td>
           <td class="hint num">{{ formatSize(row.size) }}</td>
-          <td>
+          <td class="status-cell">
             <span v-if="row.loaded && !row.core" class="pill">loaded</span>
             <span v-else class="hint">{{ statusLabel(row) }}</span>
+            <a
+              v-if="row.deletable"
+              class="hint delete"
+              title="Remove from the library"
+              @click="deleteRow(row)"
+              >delete</a
+            >
           </td>
         </tr>
         <tr v-if="!visible.length">
@@ -357,23 +450,23 @@ async function apply() {
 
   <div v-if="selectedRows.length" class="action-bar inline between center">
     <span class="hint">
-      {{ selectedRows.length }} selected — add {{ pendingAdds.length }}, remove
+      {{ selectedRows.length }} selected — load {{ pendingAdds.length }}, unload
       {{ pendingRemoves.length }}
     </span>
     <span class="inline tight">
       <button
         class="btn ghost"
         type="button"
-        :disabled="applying"
+        :disabled="saving"
         @click="clearSelection"
       >
         Clear
       </button>
       <BusyButton
-        :busy="applying"
-        label="Apply changes"
-        busy-label="Applying…"
-        @click="apply"
+        :busy="saving"
+        label="Save changes"
+        busy-label="Saving…"
+        @click="save"
       />
     </span>
   </div>
@@ -451,6 +544,16 @@ tbody tr.selected {
 }
 .empty {
   text-align: center;
+}
+.status-cell {
+  white-space: nowrap;
+}
+.delete {
+  margin-left: 10px;
+  font-size: 12px;
+}
+.delete:hover {
+  color: var(--bad);
 }
 .pill {
   padding: 2px 9px;
