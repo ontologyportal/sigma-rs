@@ -190,6 +190,75 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
         .collect()
 }
 
+// -- Command line ---------------------------------------------------------------
+
+/// The Vampire command-line arguments every text-driven runner uses (the
+/// subprocess runner appends the input path; the browser bridge lets the
+/// Emscripten runner add its own).
+///
+/// **SInE handling.**  The KB already performs SInE axiom selection
+/// internally before handing TPTP to Vampire (see
+/// `KnowledgeBase::ask`).  To prevent Vampire from re-applying SInE on
+/// top of our already-filtered input — which would risk over-selection
+/// (dropping axioms our external filter deliberately kept) — we
+/// explicitly:
+///
+/// 1. Set `--mode vampire` (single-strategy, no portfolio).  The
+///    `casc` portfolio's strategies are encoded as option-strings like
+///    `ss=axioms:st=1.5` which `readFromEncodedOptions` applies per
+///    strategy, overriding command-line SInE settings.  The only
+///    reliable way to disable SInE across the whole run is to avoid
+///    the portfolio entirely.
+/// 2. Set `--sine_selection off` as a defensive belt-and-braces
+///    measure.  Vampire's default for this option is already `off`,
+///    but spelling it out makes the intent explicit and survives any
+///    future default change.
+///
+/// If the single-strategy default proof search turns out to be
+/// insufficient on hard queries, options are:
+/// - Loosen the external SInE tolerance (`SineParams::benevolent(..)`)
+///   to feed more axioms into Vampire.
+/// - Switch back to `--mode casc` and accept the minor over-selection
+///   risk (CASC portfolio strategies may re-filter; non-SInE
+///   strategies still receive the full external-SInE set).
+#[cfg(feature = "external-prover")]
+pub fn vampire_cli_args(timeout_secs: &str) -> Vec<String> {
+    vec![
+        "--mode".into(),
+        "vampire".into(),
+        "--input_syntax".into(),
+        "tptp".into(),
+        "--sine_selection".into(),
+        "off".into(),
+        // Emit proofs in TSTP/TPTP format.  Without this Vampire
+        // defaults to `--proof on` which prints steps as
+        //     `36373. FORMULA [input(axiom)]`
+        // — a human-readable format `parse::szs::parse_szs` (which reuses
+        // the TPTP grammar) can't parse.  Setting `-p tptp` produces
+        //     `fof(f36373, axiom, (FORMULA), inference(...,[],[...])).`
+        // which our parser *does* understand, and the `--proof`
+        // CLI flag's SUO-KIF translation (`proof_kif`) depends on
+        // that parse succeeding.  Kept on unconditionally: proof-
+        // parsing is cheap and only happens when Vampire actually
+        // emitted an "SZS output start" block.
+        "-p".into(),
+        "tptp".into(),
+        "-t".into(),
+        timeout_secs.into(),
+        // Preserve our `kb_<sid>` axiom names in the proof
+        // transcript's source annotation.  Vampire's default strips
+        // them (axiom tails become `file('/dev/stdin', unknown)`);
+        // with this option on the tails become
+        // `file('/dev/stdin', kb_42)`, letting the proof-display
+        // path map each axiom-role step back to its source sid in
+        // O(1) via `AxiomSourceIndex::lookup_by_sid` — much cheaper
+        // and more robust (survives CNF transforms and alpha-
+        // renaming) than the canonical-fingerprint fallback.
+        "--output_axiom_names".into(),
+        "on".into(),
+    ]
+}
+
 // -- Transcript -> ProverResult -------------------------------------------------
 
 /// Everything a Vampire runner does after capturing the CLI's stdout and
@@ -554,5 +623,88 @@ fof(f2,axiom,(
                 "False".to_string(),
             ]
         );
+    }
+}
+
+// -- Vampire args construction tests -----------------------------------------
+
+#[cfg(all(test, feature = "external-prover"))]
+mod args_tests {
+    use super::vampire_cli_args;
+
+    #[test]
+    fn args_use_single_strategy_vampire_mode() {
+        // `casc` would pull the CASC portfolio, whose per-strategy
+        // encoded options include `ss=axioms` and thus override any
+        // command-line `--sine_selection off`.  We therefore use the
+        // single-strategy `vampire` mode so SInE is genuinely disabled
+        // across the entire run.
+        let args = vampire_cli_args("60");
+        let mode_idx = args
+            .iter()
+            .position(|a| a == "--mode")
+            .expect("--mode flag must be present");
+        assert_eq!(
+            args[mode_idx + 1],
+            "vampire",
+            "must use vampire mode to prevent CASC portfolio strategies \
+             from re-applying SInE on our already-filtered input"
+        );
+        assert!(
+            !args.iter().any(|a| a == "casc"),
+            "must not invoke CASC portfolio: {:?}",
+            args
+        );
+    }
+
+    #[test]
+    fn args_explicitly_disable_sine_selection() {
+        // Defensive belt-and-braces: Vampire's default is off, but we
+        // spell it out so the intent survives any future default change
+        // and is self-documenting in logs.
+        let args = vampire_cli_args("60");
+        let ss_idx = args
+            .iter()
+            .position(|a| a == "--sine_selection")
+            .expect("--sine_selection flag must be present");
+        assert_eq!(
+            args[ss_idx + 1],
+            "off",
+            "SInE must be explicitly disabled on Vampire's side; \
+             the KB applies its own SInE filter before invoking the prover"
+        );
+    }
+
+    #[test]
+    fn args_include_timeout() {
+        let args = vampire_cli_args("42");
+        let t_idx = args
+            .iter()
+            .position(|a| a == "-t")
+            .expect("-t flag must be present");
+        assert_eq!(args[t_idx + 1], "42");
+    }
+
+    #[test]
+    fn args_use_tptp_input_syntax() {
+        let args = vampire_cli_args("60");
+        let is_idx = args
+            .iter()
+            .position(|a| a == "--input_syntax")
+            .expect("--input_syntax flag must be present");
+        assert_eq!(args[is_idx + 1], "tptp");
+    }
+
+    #[test]
+    fn args_preserve_axiom_names() {
+        // Without this flag the proof transcript's axiom tails read
+        // `file('/dev/stdin', unknown)` and we lose the mapping from
+        // proof step back to input sid.  Must stay on.
+        let args = vampire_cli_args("60");
+        let idx = args
+            .iter()
+            .position(|a| a == "--output_axiom_names")
+            .expect("--output_axiom_names flag must be present");
+        assert_eq!(args[idx + 1], "on");
     }
 }

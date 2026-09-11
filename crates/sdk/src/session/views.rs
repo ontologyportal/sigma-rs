@@ -581,6 +581,11 @@ pub struct AskResultView {
     /// language is TPTP. Empty for untyped dialects or when there is no
     /// proof.
     pub proof_tptp_prologue: String,
+    /// The exact problem text handed to an external prover for the last
+    /// run, when the caller asked to keep it (the browser's "download the
+    /// TPTP" affordance).  Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tptp: Option<String>,
 }
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
@@ -636,6 +641,7 @@ impl AskResultView {
             prose,
             prose_missing,
             proof_tptp_prologue,
+            input_tptp: None,
         }
     }
 }

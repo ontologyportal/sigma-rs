@@ -14,6 +14,7 @@ mod console_log;
 pub mod lsp;
 pub mod session;
 pub mod types;
+pub mod vampire;
 
 pub use config::*;
 pub use lsp::*;

@@ -176,9 +176,14 @@ pub use sigmakee_rs_core::prover;
 
 // The external-backend selector + the trait for plugging in a custom runner.
 #[cfg(feature = "external-prover")]
+pub use sigmakee_rs_core::prover::ProverOpts;
+#[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::prover::ProverRunner;
 #[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::Prover;
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+pub use sigmakee_rs_core::ProverMode;
+pub use sigmakee_rs_core::{result_from_transcript, vampire_cli_args, ExternalOpts};
 
 // Prover-facing types for the native-prover proving ops.
 #[cfg(feature = "native-prover")]

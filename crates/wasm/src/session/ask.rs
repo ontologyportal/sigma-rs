@@ -6,6 +6,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::config::Backend;
 use crate::types::to_js;
 
 use super::Session;
@@ -44,12 +45,15 @@ impl Session {
         Ok(obj.into())
     }
 
-    /// Prove `query_kif` (a single KIF conjecture) in-browser against the KB
-    /// plus optional `session` support, using the active [`Config`] (set via
-    /// [`configure`](Session::configure)).
+    /// Prove `query_kif` (a single KIF conjecture) against the KB plus
+    /// optional `session` support, with the backend the active [`Config`]
+    /// selects (set via [`configure`](Session::configure)): the in-browser
+    /// native prover, or the Emscripten Vampire through the page's bridge
+    /// (see [`crate::vampire`]).
     ///
     /// The wall-clock deadline (`Config.timeLimitSecs`) is enforced through
-    /// `Date.now()`; termination is also bounded by the step budget
+    /// `Date.now()` for the native prover and passed as `-t` to Vampire;
+    /// native termination is also bounded by the step budget
     /// (`Config.maxSteps`), so a query cannot run unbounded.
     ///
     /// Returns a JS object describing the outcome:
@@ -58,10 +62,11 @@ impl Session {
     ///   `"Inconsistent"`, `"Timeout"`, `"InputError"`, `"Unknown"`;
     /// * `proved` -- `true` iff `status === "Proved"`;
     /// * `given_steps` -- given-clause steps the native loop executed (or `null`);
-    /// * `raw_output` -- the engine's human-readable trace;
+    /// * `raw_output` -- the engine's human-readable trace (Vampire: its
+    ///   captured stdout + stderr);
     /// * `proof` -- on `Proved`, the SUO-KIF proof as `{ index, rule,
     ///   premises, kif, tptp, file, line }[]` (empty otherwise); `tptp` is
-    ///   that same step reconstructed as TPTP (framed `cnf`/`fof`/`tff`/…
+    ///   that same step reconstructed as TPTP (framed `cnf`/`fof`/`tff`/...
     ///   text, dialect chosen per the whole proof), or an inline `;`
     ///   comment explaining why the step couldn't be represented;
     /// * `proof_tptp_prologue` -- whole-proof TPTP material that doesn't
@@ -69,7 +74,9 @@ impl Session {
     ///   to show once ahead of the per-step `tptp` text; empty for untyped
     ///   dialects or when `proof` is empty;
     /// * `graphviz` -- the same proof rendered as a Graphviz DOT digraph
-    ///   (always a syntactically valid graph, even when `proof` is empty).
+    ///   (always a syntactically valid graph, even when `proof` is empty);
+    /// * `input_tptp` -- Vampire backend with `Config.keepTptp` only: the
+    ///   exact problem text handed to Vampire on the last run.
     ///
     /// `tptp` (default `false`) parses `query` as TPTP instead of SUO-KIF --
     /// the entry point for the web UI's proof-language toggle; the reported
@@ -84,27 +91,43 @@ impl Session {
         tptp: Option<bool>,
     ) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");
-        // Curated, JS-safe projection of `ProverResult` (see `AskResultView`).
-        // The raw result is deliberately NOT serialized: its
-        // `bindings`/`proof_kif` carry u64 symbol/sentence hashes that
-        // overflow JS's safe-integer range and abort serde-wasm-bindgen.
-        let opts = self
-            .config
-            .to_native_opts(session_guard.kb().sine_axiom_count());
         let dialect = if tptp.unwrap_or(false) {
             sigmakee_rs_sdk::Parser::Tptp { options: None }
         } else {
             sigmakee_rs_sdk::Parser::Kif { options: None }
         };
-        to_js(&session_guard.ask_view_dialect(query, session.as_deref(), opts, dialect))
+        let axiom_count = session_guard.kb().sine_axiom_count();
+        // Curated, JS-safe projection of `ProverResult` (see `AskResultView`).
+        // The raw result is deliberately NOT serialized: its
+        // `bindings`/`proof_kif` carry u64 symbol/sentence hashes that
+        // overflow JS's safe-integer range and abort serde-wasm-bindgen.
+        match self.config.selected_backend() {
+            Backend::Native => {
+                let opts = self.config.to_native_opts(axiom_count);
+                to_js(&session_guard.ask_view_dialect_native(
+                    query,
+                    session.as_deref(),
+                    opts,
+                    dialect,
+                ))
+            }
+            Backend::Vampire => {
+                let opts = self.config.to_external_opts(axiom_count);
+                let mut view =
+                    session_guard.ask_view_dialect(query, session.as_deref(), &opts, dialect);
+                view.input_tptp = self.vampire.last_tptp();
+                to_js(&view)
+            }
+        }
     }
 
-    /// Audit the whole KB for logical consistency via the native saturation
-    /// prover -- enumerates up to `limit` (default 5) distinct contradictions,
-    /// each cited back to `file:line` wherever a step traces to an input
-    /// axiom. In-browser analogue of the `sumo audit` CLI command; uses the
-    /// active [`Config`] (set via [`configure`](Session::configure)) for its
-    /// time/step budget.
+    /// Audit the whole KB for logical consistency with the backend the
+    /// active [`Config`] selects -- the native saturation prover enumerates
+    /// up to `limit` (default 5) distinct contradictions; Vampire's one-shot
+    /// run yields at most one.  Each contradiction is cited back to
+    /// `file:line` wherever a step traces to an input axiom.  In-browser
+    /// analogue of the `sumo audit` CLI command; uses the active config for
+    /// its time/step budget.
     ///
     /// Returns a JS object:
     ///
@@ -125,10 +148,17 @@ impl Session {
     #[wasm_bindgen(js_name = auditConsistency)]
     pub fn audit_consistency(&self, limit: Option<u32>) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");
-        let opts = self
-            .config
-            .to_native_opts(session_guard.kb().sine_axiom_count());
-        to_js(&session_guard.audit_view(opts, limit.unwrap_or(5) as usize))
+        let axiom_count = session_guard.kb().sine_axiom_count();
+        match self.config.selected_backend() {
+            Backend::Native => {
+                let opts = self.config.to_native_opts(axiom_count);
+                to_js(&session_guard.audit_view_native(opts, limit.unwrap_or(5) as usize))
+            }
+            Backend::Vampire => {
+                let opts = self.config.to_external_opts(axiom_count);
+                to_js(&session_guard.audit_view(opts))
+            }
+        }
     }
 
     /// Clausify the KB and return its CNF form as SUO-KIF, via the native

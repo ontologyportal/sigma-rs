@@ -44,10 +44,13 @@ impl Session {
     /// this instance's contents. The active [`Config`](crate::Config) is preserved.
     #[wasm_bindgen]
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
-        let mut session_guard = self.session.write().expect("kb lock not poisoned");
-        session_guard
+        self.session
+            .write()
+            .expect("kb lock not poisoned")
             .restore_bytes(bytes)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        self.install_runner();
+        Ok(())
     }
 
     /// Run semantic validation over the whole KB. Returns a JS array of

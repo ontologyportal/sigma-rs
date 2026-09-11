@@ -13,54 +13,84 @@ use crate::types::SentenceId;
 
 use super::KnowledgeBase;
 
+/// Clausify every axiom currently loaded into `layer` and render each
+/// resulting clause as flat SUO-KIF (`(or lit1 lit2 ...)`, bare literal for
+/// unit clauses). One entry per clause; axioms are visited in `SentenceId`
+/// order for determinism. Skolem symbols introduced during clausification
+/// are renamed `SkFnN`/`SkCN`, consistently across the whole call.
+fn clausify_all_in<S: TopLayer + 'static>(
+    layer: &ProverLayer<S>,
+    mut roots: Vec<SentenceId>,
+) -> Vec<String> {
+    roots.sort_unstable();
+    let syn = &layer.semantic().syntactic;
+    let mut sk = SkolemNames::default();
+    roots
+        .iter()
+        .flat_map(|&root| {
+            let clauses = layer.clauses_for(root);
+            clauses
+                .iter()
+                .map(|c| clause_to_kif(c, &layer.atoms, syn, &mut sk))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Clausify a single ad hoc KIF formula (not pulled from the KB store) with
+/// `layer`'s clausifier and render its clauses as flat SUO-KIF. Returns an
+/// empty vec on a parse error or a formula that clausifies to nothing.
+fn clausify_formula_in<S: TopLayer + 'static>(layer: &ProverLayer<S>, kif: &str) -> Vec<String> {
+    let doc = crate::parse_document(
+        "clausify",
+        kif.to_string(),
+        crate::Parser::Kif { options: None },
+    );
+    if doc.has_errors() {
+        return Vec::new();
+    }
+    let asts: Vec<crate::AstNode> = doc
+        .ast
+        .into_iter()
+        .filter_map(|d| d.as_stmt().cloned())
+        .collect();
+    let clauses = layer.clausify_asts(asts);
+    let syn = &layer.semantic().syntactic;
+    let mut sk = SkolemNames::default();
+    clauses
+        .iter()
+        .map(|c| clause_to_kif(c, &layer.atoms, syn, &mut sk))
+        .collect()
+}
+
 impl<S: TopLayer + 'static> KnowledgeBase<ProverLayer<S>> {
-    /// Clausify every axiom currently loaded and render each resulting
-    /// clause as flat SUO-KIF (`(or lit1 lit2 ...)`, bare literal for unit
-    /// clauses). One entry per clause; axioms are visited in `SentenceId`
-    /// order for determinism. Skolem symbols introduced during
-    /// clausification are renamed `SkFnN`/`SkCN`, consistently across the
-    /// whole call.
+    /// See [`clausify_all_in`].
     pub fn clausify_all(&self) -> Vec<String> {
-        let mut roots: Vec<SentenceId> = self.axiom_ids_set().into_iter().collect();
-        roots.sort_unstable();
-        let syn = &self.layer.semantic().syntactic;
-        let mut sk = SkolemNames::default();
-        roots
-            .iter()
-            .flat_map(|&root| {
-                let clauses = self.layer.clauses_for(root);
-                clauses
-                    .iter()
-                    .map(|c| clause_to_kif(c, &self.layer.atoms, syn, &mut sk))
-                    .collect::<Vec<_>>()
-            })
-            .collect()
+        clausify_all_in(&self.layer, self.axiom_ids_set().into_iter().collect())
     }
 
-    /// Clausify a single ad hoc KIF formula (not pulled from the KB store)
-    /// and render its clauses as flat SUO-KIF. Returns an empty vec on a
-    /// parse error or a formula that clausifies to nothing.
+    /// See [`clausify_formula_in`].
     pub fn clausify_formula(&self, kif: &str) -> Vec<String> {
-        let doc = crate::parse_document(
-            "clausify",
-            kif.to_string(),
-            crate::Parser::Kif { options: None },
-        );
-        if doc.has_errors() {
-            return Vec::new();
-        }
-        let asts: Vec<crate::AstNode> = doc
-            .ast
-            .into_iter()
-            .filter_map(|d| d.as_stmt().cloned())
-            .collect();
-        let clauses = self.layer.clausify_asts(asts);
-        let syn = &self.layer.semantic().syntactic;
-        let mut sk = SkolemNames::default();
-        clauses
-            .iter()
-            .map(|c| clause_to_kif(c, &self.layer.atoms, syn, &mut sk))
-            .collect()
+        clausify_formula_in(&self.layer, kif)
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl<S: crate::trans::HasTranslation + 'static>
+    KnowledgeBase<crate::prover::ExternalProverLayer<ProverLayer<S>>>
+{
+    /// See [`clausify_all_in`] -- the native prover nested under the
+    /// external layer does the clausifying.
+    pub fn clausify_all(&self) -> Vec<String> {
+        clausify_all_in(
+            self.layer.inner_layer(),
+            self.axiom_ids_set().into_iter().collect(),
+        )
+    }
+
+    /// See [`clausify_formula_in`].
+    pub fn clausify_formula(&self, kif: &str) -> Vec<String> {
+        clausify_formula_in(self.layer.inner_layer(), kif)
     }
 }
 
