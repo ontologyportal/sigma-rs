@@ -1,14 +1,18 @@
 //! `semantic::is_class` cache: memoises whether a symbol denotes a class.
 
+use std::collections::HashSet;
+
 use crate::cache::{CacheBehavior, EagerMapBehavior, EntryCache};
+use crate::semantics::consts::CLASS_SYMBOL;
 use crate::semantics::types::{Scope, Scoped, TaxRelation};
 use crate::semantics::SemanticLayer;
 use crate::SymbolId;
 
 /// Behavior for the `semantic::is_class` cache.
 ///
-/// A symbol is a class when all of its taxonomy parents are reached via
-/// `subclass` edges (a symbol with no parents counts as a class).
+/// A symbol is a class when every taxonomy parent is reached via a `subclass`
+/// edge, or via an `instance` edge whose parent is `Class` or a subclass of it
+/// (a symbol with no parents counts as a class).
 #[derive(Debug, Default)]
 pub(crate) struct IsClass;
 
@@ -39,7 +43,11 @@ impl CacheBehavior for IsClass {
         parent
             .parents_of_scoped(sym, scope)
             .iter()
-            .all(|(_, rel)| *rel == TaxRelation::Subclass)
+            .all(|(from, rel)| match rel {
+                TaxRelation::Subclass => true,
+                TaxRelation::Instance => subclass_of_class(parent, *from, scope),
+                _ => false,
+            })
     }
 
     fn consumes(&self) -> &'static [crate::cache::events::EventKind] {
@@ -78,6 +86,27 @@ impl CacheBehavior for IsClass {
     }
 }
 
+/// Whether `sym` is `Class` or reaches it through `subclass` edges alone.
+fn subclass_of_class(layer: &SemanticLayer, sym: SymbolId, scope: Scope) -> bool {
+    let class = CLASS_SYMBOL.id();
+    let mut stack = vec![sym];
+    let mut seen: HashSet<SymbolId> = HashSet::new();
+    while let Some(n) = stack.pop() {
+        if n == class {
+            return true;
+        }
+        if !seen.insert(n) {
+            continue;
+        }
+        for (m, rel) in layer.parents_of_scoped(n, scope) {
+            if rel == TaxRelation::Subclass {
+                stack.push(m);
+            }
+        }
+    }
+    false
+}
+
 impl SemanticLayer {
     /// Whether `sym` denotes a class (vs. an instance) in the `Base` taxonomy.
     pub(crate) fn is_class(&self, sym: SymbolId) -> bool {
@@ -87,7 +116,7 @@ impl SemanticLayer {
     /// `is_class` in an explicit [`Scope`] — reasons over `Base` ∪ the session
     /// overlay when `scope` is a session.
     pub(crate) fn is_class_scoped(&self, sym: SymbolId, scope: Scope) -> bool {
-        let scope = self.direct_scope(sym, scope);
+        let scope = self.closure_scope(scope);
         self.is_class.get(self, Scoped { scope, key: sym })
     }
 }
@@ -108,6 +137,37 @@ mod tests {
         let layer = base_layer();
         let sub = layer.syntactic.sym_id("subclass").unwrap();
         assert!(!layer.is_class(sub));
+    }
+
+    #[test]
+    fn is_class_true_for_instance_of_class_subclass() {
+        let layer = kif_layer(
+            "
+            (subclass SetOrClass Class)
+            (instance Elephant SetOrClass)
+            (instance Entity Class)
+        ",
+        );
+        let elephant = layer.syntactic.sym_id("Elephant").unwrap();
+        let entity = layer.syntactic.sym_id("Entity").unwrap();
+        assert!(layer.is_class(elephant));
+        assert!(layer.is_class(entity));
+    }
+
+    #[test]
+    fn is_class_false_for_instance_of_a_class_instance() {
+        let layer = kif_layer(
+            "
+            (subclass SetOrClass Class)
+            (instance Dog SetOrClass)
+            (instance Rex Dog)
+            (instance Fido Animal)
+        ",
+        );
+        let rex = layer.syntactic.sym_id("Rex").unwrap();
+        let fido = layer.syntactic.sym_id("Fido").unwrap();
+        assert!(!layer.is_class(rex));
+        assert!(!layer.is_class(fido));
     }
 
     #[test]

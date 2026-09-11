@@ -1080,9 +1080,9 @@ mod tests {
 
     #[test]
     fn fall_through_to_base_avoids_redundant_session_entries() {
-        // A session-scoped query for a symbol the session does not touch is
-        // keyed under Base, so no redundant per-session cache entry is created
-        // and the shared Base memo is reused.
+        // A session-scoped query in a session that declares no taxonomy of
+        // its own is keyed under Base, so no redundant per-session cache entry
+        // is created and the shared Base memo is reused.
         use crate::semantics::types::{Scope, Scoped};
         use crate::syntactic::caches::session::session_id;
 
@@ -1102,9 +1102,9 @@ mod tests {
         let sb = Scope::Session(session_id("session_b")); // never asserted → inactive
         let sem = &kb.layer.semantic;
 
-        // Direct cache, per-symbol fall-through: Dog has no overlay in the
-        // (otherwise active) session_a → is_class(Dog) keys under Base.
-        assert!(sem.is_class_scoped(dog, sa));
+        // Per-session fall-through: session_b declares no taxonomy at all ->
+        // is_class(Dog) keys under Base.
+        assert!(sem.is_class_scoped(dog, sb));
         assert!(
             sem.is_class
                 .peek(&Scoped {
@@ -1117,11 +1117,11 @@ mod tests {
         assert!(
             sem.is_class
                 .peek(&Scoped {
-                    scope: sa,
+                    scope: sb,
                     key: dog
                 })
                 .is_none(),
-            "no redundant session-keyed is_class(Dog) entry"
+            "no redundant session-keyed is_class(Dog) entry for an inactive session"
         );
 
         // Transitive cache, per-session fall-through: session_b declares no
@@ -1146,7 +1146,7 @@ mod tests {
             "no redundant session-keyed has_ancestor entry for an inactive session"
         );
 
-        // Sanity: an active session DOES get its own entry for a symbol it touches.
+        // Sanity: an active session DOES get its own entries.
         let cat = kb.symbol_id("Cat").unwrap();
         assert!(sem.is_class_scoped(cat, sa));
         assert!(
@@ -1156,7 +1156,7 @@ mod tests {
                     key: cat
                 })
                 .is_some(),
-            "Cat carries a session_a overlay edge → keyed under the session"
+            "session_a carries an overlay edge -> keyed under the session"
         );
     }
 

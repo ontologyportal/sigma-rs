@@ -81,9 +81,7 @@ impl SemanticLayer {
 
     /// `is_instance` in an explicit [`Scope`].
     pub(crate) fn is_instance_scoped(&self, sym: SymbolId, scope: Scope) -> bool {
-        // `is_instance` is `!is_class`, also a direct (parents-of-`sym`-only)
-        // query, so the same fall-through-to-Base applies (refinement #2).
-        let scope = self.direct_scope(sym, scope);
+        let scope = self.closure_scope(scope);
         self.is_instance.get(self, Scoped { scope, key: sym })
     }
 }

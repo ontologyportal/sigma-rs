@@ -203,35 +203,6 @@ impl SemanticLayer {
         self.tax_neighbours(TaxDirection::From(sym), scope)
     }
 
-    /// The cache scope to key a *direct* (parents-of-`sym`-only) query under.
-    ///
-    /// `is_class` / `is_instance` depend solely on `sym`'s own incoming edges, so
-    /// a session overlay can change the answer only if it carries an edge **into**
-    /// `sym` (a non-empty `To(sym)` overlay) or hides an edge via a tombstone.
-    /// Otherwise the session result equals the `Base` result and is keyed under
-    /// `Base`.
-    pub(crate) fn direct_scope(&self, sym: SymbolId, scope: Scope) -> Scope {
-        match scope {
-            Scope::Base => Scope::Base,
-            Scope::Session(s) => {
-                let has_overlay = self
-                    .tax_edges
-                    .get(&Scoped {
-                        scope,
-                        key: TaxDirection::To(sym),
-                    })
-                    .is_some_and(|s| !s.is_empty());
-                // A session that hides an edge (tombstone) must not fold onto Base.
-                let hides = !self.syntactic.sessions.active_tombstones(s).is_empty();
-                if has_overlay || hides {
-                    scope
-                } else {
-                    Scope::Base
-                }
-            }
-        }
-    }
-
     /// The cache scope to key a *transitive* taxonomy query under — `has_ancestor`
     /// and the relation-kind caches (`is_relation` / `is_predicate` / `is_function`).
     ///
