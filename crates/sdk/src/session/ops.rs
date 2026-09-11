@@ -370,6 +370,79 @@ mod tests {
     use crate::Source;
     use sigmakee_rs_core::{TptpLang, TptpOptions, TranslationLayer};
 
+    /// A starved selection budget must not drop a link of the subclass chain
+    /// between an asserted class and the queried class: the chain facts are
+    /// injected regardless of SInE's ranking.
+    #[cfg(feature = "ask")]
+    #[test]
+    fn tptp_for_ask_keeps_the_taxonomy_chain_under_a_starved_budget() {
+        let mut s = Session::<TranslationLayer>::new("ops-chain".into());
+        s.ingest(
+            reader(
+                "t.kif",
+                "(subclass Mammal WarmBloodedVertebrate)\n\
+                 (subclass WarmBloodedVertebrate Vertebrate)\n\
+                 (subclass Vertebrate Animal)\n\
+                 (subclass Animal Organism)\n\
+                 (=> (and (subclass ?X ?Y) (instance ?Z ?X)) (instance ?Z ?Y))\n\
+                 (subclass Rock Object)\n",
+            ),
+            true,
+        );
+        let tptp = s
+            .tptp_for_ask(
+                "(instance Rex Dog)\n(subclass Dog Mammal)",
+                "(instance Rex Animal)",
+                false,
+                Some(0.0001),
+                false,
+            )
+            .expect("tptp_for_ask");
+        for link in [
+            "s__subclass(s__Dog,s__Mammal)",
+            "s__subclass(s__Mammal,s__WarmBloodedVertebrate)",
+            "s__subclass(s__WarmBloodedVertebrate,s__Vertebrate)",
+            "s__subclass(s__Vertebrate,s__Animal)",
+        ] {
+            assert!(tptp.contains(link), "missing chain link {link}:\n{tptp}");
+        }
+    }
+
+    /// The Ask/Tell default: assertions that the query needs must reach the
+    /// external prover as support, both with SInE selection and without.
+    #[cfg(feature = "ask")]
+    #[test]
+    fn tptp_for_ask_emits_the_assertions_as_support() {
+        let mut s = Session::<TranslationLayer>::new("ops-ask".into());
+        s.ingest(reader("t.kif", "(subclass Mammal Animal)"), true);
+        for select_all in [false, true] {
+            let tptp = s
+                .tptp_for_ask(
+                    "(instance Rex Dog)\n(subclass Dog Mammal)",
+                    "(instance Rex Animal)",
+                    select_all,
+                    None,
+                    false,
+                )
+                .expect("tptp_for_ask");
+            let support: Vec<&str> = tptp
+                .lines()
+                .filter(|l| l.contains("s__Rex") && !l.contains("conjecture"))
+                .collect();
+            assert!(
+                !support.is_empty(),
+                "select_all={select_all}: the asserted (instance Rex Dog) never reached the problem:\n{tptp}"
+            );
+            assert!(
+                tptp.lines().any(|l| l.contains("s__Dog")
+                    && l.contains("s__Mammal")
+                    && !l.contains("conjecture")),
+                "select_all={select_all}: the asserted (subclass Dog Mammal) is missing:\n{tptp}"
+            );
+            assert_eq!(tptp.matches("conjecture").count(), 1, "{tptp}");
+        }
+    }
+
     fn reader(name: &str, kif: &str) -> Source {
         Source::Reader {
             name: name.into(),

@@ -57,10 +57,6 @@ pub struct KnowledgeBase<L = TranslationLayer> {
     /// inner layers via [`Self::syntactic`] and [`Self::semantic`].
     pub(crate) layer: L,
 
-    /// In-memory session assertions: session name → `Vec<SentenceId>`.
-    /// Sentences here have NOT been promoted to axioms yet.
-    pub(in crate::kb) sessions: HashMap<String, Vec<SentenceId>>,
-
     /// Syntax-level dedup table.
     ///
     /// Maps `sentence_fingerprint(ast) -> SentenceId` for every accepted
@@ -130,7 +126,6 @@ impl<L: TopLayer + Layer> KnowledgeBase<L> {
     pub(in crate::kb) fn from_layer(layer: L) -> Self {
         Self {
             layer,
-            sessions: HashMap::new(),
             syntax_fingerprints: HashMap::new(),
             #[cfg(feature = "persist")]
             db: None,

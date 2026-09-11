@@ -82,7 +82,6 @@ impl<L: TopLayer> KnowledgeBase<L> {
 
         // Carry the KB-level fields that aren't layer caches.
         let mut kb = Self::from_layer(layer);
-        kb.sessions = self.sessions.clone();
         kb.syntax_fingerprints = self.syntax_fingerprints.clone();
         kb.progress = self.progress.clone();
         Ok(kb)
