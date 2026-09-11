@@ -156,8 +156,14 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             &ctx,
         );
 
+        let tax = self.layer.semantic().taxonomy_closure_facts_scoped(
+            &seed,
+            4000,
+            crate::semantics::types::Scope::Base,
+        );
         let mut axioms_sorted: Vec<SentenceId> = selected
             .into_iter()
+            .chain(tax)
             .filter(|&sid| {
                 !self.sentence_excluded(sid, &opts.excluded)
                     && !self
