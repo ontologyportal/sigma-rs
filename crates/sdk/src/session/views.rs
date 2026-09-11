@@ -1010,6 +1010,112 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
     }
 }
 
+#[cfg(feature = "external-prover")]
+impl<T: sigmakee_rs_core::HasTranslation + 'static>
+    Session<sigmakee_rs_core::ExternalProverLayer<T>>
+{
+    /// Prove `query_kif` with the external prover and project the outcome
+    /// (see [`AskResultView`]).  `session` names optional in-memory support
+    /// assertions; `opts` carries the budget and SInE selection.
+    pub fn ask_view(
+        &self,
+        query_kif: &str,
+        session: Option<&str>,
+        opts: &sigmakee_rs_core::ExternalOpts,
+    ) -> AskResultView {
+        self.ask_view_dialect(
+            query_kif,
+            session,
+            opts,
+            sigmakee_rs_core::Parser::Kif { options: None },
+        )
+    }
+
+    /// [`ask_view`](Self::ask_view) with the query parsed in `dialect`.
+    pub fn ask_view_dialect(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        opts: &sigmakee_rs_core::ExternalOpts,
+        dialect: sigmakee_rs_core::Parser,
+    ) -> AskResultView {
+        let result = self.kb.ask_query_dialect(query, session, opts, dialect);
+        AskResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.proof_kif,
+            query,
+        )
+    }
+
+    /// Audit the KB for consistency with the external prover (one-shot: at
+    /// most one contradiction) and project the outcome (see
+    /// [`AuditResultView`]).
+    pub fn audit_view(&self, opts: sigmakee_rs_core::ExternalOpts) -> AuditResultView {
+        let result = self.kb.audit_consistency(&[], opts, 1);
+        let proofs: Vec<Vec<KifProofStep>> =
+            if result.status == ProverStatus::Inconsistent && !result.proof_kif.is_empty() {
+                vec![result.proof_kif]
+            } else {
+                result.contradiction_proofs
+            };
+        AuditResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &proofs,
+        )
+    }
+}
+
+#[cfg(all(feature = "external-prover", feature = "native-prover"))]
+impl<S: sigmakee_rs_core::HasTranslation + 'static>
+    Session<sigmakee_rs_core::ExternalProverLayer<sigmakee_rs_core::ProverLayer<S>>>
+{
+    /// [`ask_view_dialect`](Self::ask_view_dialect) on the nested native
+    /// prover instead of the external backend.
+    pub fn ask_view_dialect_native(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        opts: sigmakee_rs_core::NativeOpts,
+        dialect: sigmakee_rs_core::Parser,
+    ) -> AskResultView {
+        let sine = opts.selection;
+        let result = self
+            .kb
+            .ask_query_dialect_native(query, session, sine, opts, dialect);
+        AskResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.proof_kif,
+            query,
+        )
+    }
+
+    /// [`audit_view`](Self::audit_view) on the nested native prover, which
+    /// enumerates up to `limit` distinct contradictions.
+    pub fn audit_view_native(
+        &self,
+        opts: sigmakee_rs_core::NativeOpts,
+        limit: usize,
+    ) -> AuditResultView {
+        let result = self.kb.audit_consistency_native(&[], opts, limit);
+        AuditResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.contradiction_proofs,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -497,17 +497,7 @@ fn parse_one(kif: &str) -> Result<AstNode, Vec<SdkError>> {
 
 fn synthetic_case(query: AstNode, hypotheses: Vec<AstNode>) -> TestCase {
     TestCase {
-        file_name: "sdk::session".into(),
-        note: String::new(),
-        timeout: 0,
-        query: Some(query),
-        expected_proof: None,
-        expected_answer: None,
         axioms: hypotheses,
-        extra_files: Vec::new(),
-        expected_status: None,
-        has_fof_conjecture: false,
-        input_formulas: 0,
-        unaccounted_inputs: 0,
+        ..TestCase::conjecture("sdk::session", query)
     }
 }

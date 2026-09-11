@@ -207,7 +207,35 @@ impl KnowledgeBase<crate::prover::ExternalProverLayer> {
             TranslationLayer::new(SemanticLayer::new(SyntacticLayer::default())),
         ))
     }
+}
 
+#[cfg(all(feature = "external-prover", feature = "native-prover"))]
+impl
+    KnowledgeBase<crate::prover::ExternalProverLayer<crate::prover::ProverLayer<TranslationLayer>>>
+{
+    /// Constructs a KnowledgeBase carrying BOTH provers over one store: the
+    /// native saturation prover (with TPTP export, as in
+    /// [`new_native_translating`](KnowledgeBase::new_native_translating))
+    /// topped by an [`ExternalProverLayer`] driving `backend`.  [`ask`] runs
+    /// the external backend; [`ask_query_dialect_native`] /
+    /// [`audit_consistency_native`] run the native one.
+    ///
+    /// [`ExternalProverLayer`]: crate::prover::ExternalProverLayer
+    /// [`ask`]: KnowledgeBase::ask
+    /// [`ask_query_dialect_native`]: KnowledgeBase::ask_query_dialect_native
+    /// [`audit_consistency_native`]: KnowledgeBase::audit_consistency_native
+    pub fn new_external_native(backend: crate::prover::external::Prover) -> Self {
+        Self::from_layer(crate::prover::ExternalProverLayer::new(
+            backend,
+            crate::prover::ProverLayer::new(TranslationLayer::new(SemanticLayer::new(
+                SyntacticLayer::default(),
+            ))),
+        ))
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl<T: HasTranslation + 'static> KnowledgeBase<crate::prover::ExternalProverLayer<T>> {
     /// Swaps the external prover backend (e.g. E or a custom Vampire path)
     /// without rebuilding the KB.
     pub fn set_prover(&mut self, backend: crate::prover::external::Prover) {

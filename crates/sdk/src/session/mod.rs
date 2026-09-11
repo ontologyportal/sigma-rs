@@ -92,12 +92,30 @@ impl Session<ExternalProverLayer> {
             lexicon: None,
         }
     }
+}
 
+#[cfg(feature = "external-prover")]
+impl<T: sigmakee_rs_core::HasTranslation + 'static> Session<ExternalProverLayer<T>> {
     /// Override the prover backend on an external session — e.g. after
     /// [`from_kb`](Session::from_kb) on an opened DB, whose layer carries the
     /// default runner.
     pub fn set_runner(&mut self, prover: Prover) {
         self.kb.set_prover(prover);
+    }
+}
+
+#[cfg(all(feature = "external-prover", feature = "native-prover"))]
+impl Session<ExternalProverLayer<ProverLayer<TranslationLayer>>> {
+    /// Open a session carrying BOTH provers over one KB: `prover` (external)
+    /// behind [`ask`](Session::ask) / [`ask_view`](Session::ask_view), the
+    /// native saturation prover behind the `*_native` twins.
+    pub fn new_with_native(session: String, prover: Prover) -> Self {
+        Self {
+            kb: KnowledgeBase::new_external_native(prover),
+            name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
+        }
     }
 }
 

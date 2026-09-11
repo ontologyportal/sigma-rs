@@ -13,7 +13,7 @@ use crate::progress::ProveCtx;
 use crate::semantics::types::Scope;
 use crate::{profile_span, SentenceId, SineParams, SymbolId};
 
-impl ExternalProverLayer {
+impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
     pub(super) fn ext_prove_once(
         &self,
         conj: &Conjecture,
@@ -35,7 +35,7 @@ impl ExternalProverLayer {
         // the goal are reachable.
         let assertion_ids: HashSet<SentenceId> = session
             .map(|s| {
-                self.translation
+                self.translation()
                     .semantic
                     .syntactic
                     .sessions
@@ -51,7 +51,7 @@ impl ExternalProverLayer {
         // skipping.
         let mut seed: HashSet<SymbolId> = HashSet::new();
         for &sid in query_sids.iter().chain(assertion_ids.iter()) {
-            seed.extend(self.translation.semantic.syntactic.sentence_symbols(sid));
+            seed.extend(self.translation().semantic.syntactic.sentence_symbols(sid));
         }
 
         // Shared relevance pass: SInE → head-filter → Liu rescue.  The external
@@ -65,7 +65,7 @@ impl ExternalProverLayer {
             liu_top_k: 32,
         };
         let (selected, _frontier) = self
-            .translation
+            .translation()
             .semantic
             .syntactic
             .select_relevant(&seed, params, &sel, ctx);
@@ -81,7 +81,7 @@ impl ExternalProverLayer {
         // Taxonomy-closure injection: pull in the subclass/instance chain facts
         // connecting the conjecture's (and assertions') class symbols — the
         // same conjecture ∪ assertions symbol union already built as `seed`.
-        let tax = self.translation.semantic.taxonomy_closure_facts_scoped(
+        let tax = self.translation().semantic.taxonomy_closure_facts_scoped(
             &seed,
             4000,
             query_scope(session),
@@ -107,7 +107,7 @@ impl ExternalProverLayer {
             let (problem, sid_map) = {
                 profile_span!(ctx, "ask.build_problem");
                 let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
-                self.translation.assemble_problem_thf(
+                self.translation().assemble_problem_thf(
                     &axiom_sids,
                     &seeds,
                     query_sids,
@@ -135,7 +135,7 @@ impl ExternalProverLayer {
         // actual problem upgrades it to Tff; `assertion_ids` is already
         // folded into `axiom_sids` above, so it's covered by that scan.
         let mode = self
-            .translation
+            .translation()
             .semantic
             .syntactic
             .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
@@ -147,7 +147,7 @@ impl ExternalProverLayer {
         let (problem, sid_map, _qvm) = {
             profile_span!(ctx, "ask.build_problem");
             let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
-            self.translation.assemble_problem(
+            self.translation().assemble_problem(
                 &axiom_sids,
                 &seeds,
                 query_sids,
