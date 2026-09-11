@@ -144,6 +144,16 @@ await step("02-browse-manpage", async () => {
   if (!page.url().includes("sym="))
     throw new Error("URL missing ?sym=: " + page.url());
   await page.waitForTimeout(3000); // the taxonomy graph streams in
+  await page.getByRole("tab", { name: "Formulas" }).click();
+  if (!page.url().includes("view=formulas"))
+    throw new Error("URL missing view=formulas: " + page.url());
+  await page.waitForSelector("ol.refs li", { timeout: 60_000 });
+  await page.getByRole("tab", { name: "Overview" }).click();
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await page.waitForSelector("h4:has-text('Ancestors')", { timeout: 60_000 });
+  await page.waitForSelector("h4:has-text('Ancestors') ~ ul a.xref", {
+    timeout: 60_000,
+  });
 });
 
 await step("03-browse-back", async () => {
@@ -165,6 +175,34 @@ await step("05-browse-home", async () => {
   await page.waitForSelector(".stats", { timeout: 60_000 });
   if (/[?]/.test(page.url()))
     throw new Error("brand link kept a query: " + page.url());
+});
+
+/** Pick the man-page layout through the Settings dialog. */
+async function setLayout(value) {
+  await page.locator("button.settings-btn").click();
+  await page.waitForSelector("dialog[open]", { timeout: 5000 });
+  await page.locator("dialog[open] #layoutSelect").selectOption(value);
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(
+    () => !document.querySelector("dialog[open]"),
+    null,
+    { timeout: 5000 },
+  );
+}
+
+await step("06-browse-classic", async () => {
+  await setLayout("classic");
+  await page.goto(base + "?sym=Human", { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("text=appearance as argument number 1", {
+    timeout: BOOT_TIMEOUT,
+  });
+  const box = await page.locator(".classic-root").boundingBox();
+  if (!box || box.width <= 900)
+    throw new Error(`classic page not full width: ${box?.width}`);
+  await page.waitForSelector("table.classic tr .jump-src", {
+    timeout: 60_000,
+  });
+  await setLayout("comfortable");
 });
 
 await step("10-kb", async () => {

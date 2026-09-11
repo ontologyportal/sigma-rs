@@ -271,8 +271,17 @@ pub struct ManPageRefView {
     pub kif: String,
     pub file: Option<String>,
     pub line: Option<u32>,
+    /// `"fact"`, a top-level operator (`"=>"`, `"<=>"`, `"and"`, `"or"`),
+    /// `"doc"` (a documentation / termFormat / format sentence),
+    /// `"taxonomy"` (a subclass / instance / subrelation / subAttribute
+    /// sentence), or `"other"`.
     pub kind: String,
     pub arg_pos: Option<usize>,
+    /// The sentence's head relation, when it has one.
+    pub head: Option<String>,
+    /// For a rule (`=>` / `<=>`): which side(s) the symbol occurs on,
+    /// `"antecedent"` and/or `"consequent"`. Empty for every other kind.
+    pub roles: Vec<String>,
 }
 
 /// The full symbol card, boundary-safe: the human-facing [`ManPage`] fields
@@ -322,6 +331,51 @@ pub struct LangView {
 
 /// Classify a reference formula's top-level shape for the man-page filter.
 /// Returns `(kind, arg_pos)` as documented on [`ManPageRefView`].
+/// Does the sentence tree rooted at `sid` mention `target` at any depth?
+fn subtree_mentions<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
+    target: sigmakee_rs_core::SymbolId,
+) -> bool {
+    use sigmakee_rs_core::Element;
+    let Some(sent) = kb.sentence(sid) else {
+        return false;
+    };
+    sent.elements.iter().any(|el| match el {
+        Element::Symbol(s) => s.id() == target,
+        Element::Sub(inner) => subtree_mentions(kb, *inner, target),
+        _ => false,
+    })
+}
+
+/// Which side(s) of a rule (`=>` / `<=>`) mention `target`: the element
+/// after the operator is the antecedent, the one after that the consequent
+/// (a biconditional reports both sides it mentions, the same way Sigma's
+/// browser lists such a rule under both headings).
+fn rule_roles<L: TopLayer>(
+    kb: &KnowledgeBase<L>,
+    sid: sigmakee_rs_core::SentenceId,
+    target: sigmakee_rs_core::SymbolId,
+) -> Vec<String> {
+    use sigmakee_rs_core::Element;
+    let Some(root) = kb.sentence(sid) else {
+        return Vec::new();
+    };
+    let side_mentions = |el: Option<&Element>| match el {
+        Some(Element::Symbol(s)) => s.id() == target,
+        Some(Element::Sub(inner)) => subtree_mentions(kb, *inner, target),
+        _ => false,
+    };
+    let mut roles = Vec::new();
+    if side_mentions(root.elements.get(1)) {
+        roles.push("antecedent".to_string());
+    }
+    if side_mentions(root.elements.get(2)) {
+        roles.push("consequent".to_string());
+    }
+    roles
+}
+
 fn classify_reference<L: TopLayer>(
     kb: &KnowledgeBase<L>,
     sid: sigmakee_rs_core::SentenceId,
@@ -390,12 +444,31 @@ impl ManPageDetail {
             subclass: s.subclass,
         };
         let target = kb.symbol_id(&p.name);
+        let head_of = |sid: sigmakee_rs_core::SentenceId| -> Option<String> {
+            kb.sentence(sid)?
+                .head_symbol()
+                .and_then(|id| kb.sym_name(id))
+        };
         let reference =
             |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefView {
                 let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+                let head = head_of(sid);
                 let (kind, arg_pos) = match target {
                     Some(t) => classify_reference(kb, sid, t),
                     None => ("other".to_string(), None),
+                };
+                // Documentation / format / taxonomy sentences are facts too,
+                // but readers want them grouped by role rather than shape.
+                let kind = match head.as_deref() {
+                    Some("documentation" | "termFormat" | "format") => "doc".to_string(),
+                    Some("subclass" | "instance" | "subrelation" | "subAttribute") => {
+                        "taxonomy".to_string()
+                    }
+                    _ => kind,
+                };
+                let roles = match (kind.as_str(), target) {
+                    ("=>" | "<=>", Some(t)) => rule_roles(kb, sid, t),
+                    _ => Vec::new(),
                 };
                 ManPageRefView {
                     position,
@@ -404,6 +477,8 @@ impl ManPageDetail {
                     line: span.as_ref().map(|s| s.line),
                     kind,
                     arg_pos,
+                    head,
+                    roles,
                 }
             };
         let mut references: Vec<ManPageRefView> = p
@@ -412,6 +487,11 @@ impl ManPageDetail {
             .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos)))
             .collect();
         references.extend(p.ref_nested.iter().map(|&sid| reference(sid, None)));
+        references.extend(
+            p.ref_meta
+                .iter()
+                .map(|sigmakee_rs_core::SentenceRef(pos, sid)| reference(*sid, Some(*pos))),
+        );
         Self {
             name: p.name.clone(),
             kinds: p.kinds.iter().map(|k| k.as_str().to_string()).collect(),
@@ -1217,9 +1297,9 @@ mod tests {
 
     #[test]
     fn manpage_detail_projects_references_with_kif_text() {
-        // Taxonomy heads (`instance`/`subclass`) are excluded from the
-        // reference list by design (they render as edges instead), so the
-        // reference fixture is a rule mentioning Dog.
+        // The rule is an ordinary reference; the `subclass` sentence rides
+        // along as a `taxonomy`-kind reference (the core keeps it out of its
+        // own REFERENCES bucket, the detail view lists every occurrence).
         let s =
             session_with("(subclass Dog Mammal)\n(=> (instance ?X Dog) (instance ?X Mammal))\n");
         let d = s.manpage_detail("Dog").expect("Dog has a man page");
@@ -1229,6 +1309,28 @@ mod tests {
             "references should carry rendered KIF; got {:?}",
             d.references.iter().map(|r| &r.kif).collect::<Vec<_>>()
         );
+        let taxonomy: Vec<_> = d
+            .references
+            .iter()
+            .filter(|r| r.kind == "taxonomy")
+            .collect();
+        assert_eq!(taxonomy.len(), 1, "one subclass reference expected");
+        assert_eq!(taxonomy[0].head.as_deref(), Some("subclass"));
+        assert_eq!(taxonomy[0].arg_pos, Some(1));
+        let rule = d
+            .references
+            .iter()
+            .find(|r| r.kind == "=>")
+            .expect("the rule is a reference");
+        // `(=> (instance ?X Dog) (instance ?X Mammal))`: Dog only on the left.
+        assert_eq!(rule.roles, vec!["antecedent".to_string()]);
+        let mammal = s.manpage_detail("Mammal").expect("Mammal has a man page");
+        let rule = mammal
+            .references
+            .iter()
+            .find(|r| r.kind == "=>")
+            .expect("rule");
+        assert_eq!(rule.roles, vec!["consequent".to_string()]);
         assert!(s.manpage_detail("NoSuchSymbol__").is_none());
     }
 

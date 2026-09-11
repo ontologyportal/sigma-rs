@@ -113,6 +113,13 @@ pub struct ManPage {
     /// so consumers can display them under a dedicated heading without
     /// mis-reporting an argument position.
     pub ref_nested: Vec<SentenceId>,
+    /// Sentences whose head is one of the documentation / format /
+    /// taxonomy relations ([`EXCLUDED_REF_HEADS`]) in which the symbol
+    /// appears at root level, with the position of its first occurrence.
+    /// Kept apart from `ref_args` so listings that already surface these
+    /// as DOCUMENTATION / PARENTS sections can skip them, while a full
+    /// occurrence list can still show every formula.
+    pub ref_meta: Vec<SentenceRef>,
     /// Total number of root formulas this symbol occurs in (at any
     /// depth), from the syntactic occurrence index.  Includes
     /// documentation / taxonomy / format sentences — the raw
@@ -452,7 +459,7 @@ fn build_manpage<L: TopLayer + Layer>(
     let parents = collect_parents(sem, sym_id);
     let children = collect_children(sem, sym_id);
     let (arity, domains, range) = signature(kb, sym_id);
-    let (ref_args, ref_nested) = collect_refs(store, sym_id);
+    let (ref_args, ref_nested, ref_meta) = collect_refs(store, sym_id);
 
     let appears_in_count = store.axiom_sentences_of(sym_id).len();
     let (antecedent_refs, consequent_count) = antecedent_consequent(store, sym_id);
@@ -474,6 +481,7 @@ fn build_manpage<L: TopLayer + Layer>(
         range,
         ref_args,
         ref_nested,
+        ref_meta,
         appears_in_count,
         antecedent_refs,
         consequent_count,
@@ -603,13 +611,20 @@ fn sort_sig<L: TopLayer + Layer>(kb: &KnowledgeBase<L>, rd: &RelationDomain) -> 
 ///   argument slot).
 /// - **`ref_nested`** — the symbol appears only inside a nested
 ///   sub-sentence, never at the root level.
+/// - **`ref_meta`** — the sentence's head is an [`EXCLUDED_REF_HEADS`]
+///   relation (documentation / format / taxonomy) and the symbol appears
+///   at root level; these never enter the first two buckets.
 ///
-/// Both lists are sorted by sid for deterministic output and
+/// All lists are sorted by sid for deterministic output and
 /// deduplicated (one entry per root sid even if the symbol occurs
 /// multiple times in that sentence).
-fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, Vec<SentenceId>) {
+fn collect_refs(
+    store: &SyntacticLayer,
+    sym_id: SymbolId,
+) -> (Vec<SentenceRef>, Vec<SentenceId>, Vec<SentenceRef>) {
     let mut args: Vec<SentenceRef> = Vec::new();
     let mut nested: Vec<SentenceId> = Vec::new();
+    let mut meta: Vec<SentenceRef> = Vec::new();
     let mut sids: Vec<SentenceId> = store.axiom_sentences_of(sym_id).iter().copied().collect();
     sids.sort_unstable();
 
@@ -617,13 +632,10 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
         let Some(sent) = store.sentence(sid) else {
             continue;
         };
-        if let Some(head_id) = sent.head_symbol() {
-            if let Some(head_name) = store.sym_name(head_id) {
-                if EXCLUDED_REF_HEADS.contains(&head_name.name().as_ref()) {
-                    continue;
-                }
-            }
-        }
+        let excluded_head = sent
+            .head_symbol()
+            .and_then(|head_id| store.sym_name(head_id))
+            .is_some_and(|head_name| EXCLUDED_REF_HEADS.contains(&head_name.name().as_ref()));
         let root_hit = sent
             .elements
             .iter()
@@ -633,7 +645,14 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
                 _ => None,
             });
         if let Some(pos) = root_hit {
-            args.push(SentenceRef(pos, sid));
+            if excluded_head {
+                meta.push(SentenceRef(pos, sid));
+            } else {
+                args.push(SentenceRef(pos, sid));
+            }
+            continue;
+        }
+        if excluded_head {
             continue;
         }
         let appears_nested = sent.elements.iter().any(|el| match el {
@@ -645,7 +664,7 @@ fn collect_refs(store: &SyntacticLayer, sym_id: SymbolId) -> (Vec<SentenceRef>, 
         }
     }
 
-    (args, nested)
+    (args, nested, meta)
 }
 
 /// Does the sentence tree rooted at `sid` contain any direct
@@ -862,6 +881,15 @@ mod tests {
             man.ref_args.iter().any(|r| r.0 == 1),
             "expected the located sentence (arg pos 1), got {:?}",
             man.ref_args
+        );
+        // The excluded ones are still reachable through `ref_meta`, each
+        // with Human at arg-1 of its (subclass / instance / documentation)
+        // sentence.
+        assert_eq!(man.ref_meta.len(), 3, "ref_meta={:?}", man.ref_meta);
+        assert!(
+            man.ref_meta.iter().all(|r| r.0 == 1),
+            "ref_meta={:?}",
+            man.ref_meta
         );
     }
 

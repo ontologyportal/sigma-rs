@@ -24,6 +24,7 @@ import Card from "../components/Card.vue";
 import Disclosure from "../components/Disclosure.vue";
 import HomeStats from "../components/browse/HomeStats.vue";
 import ManPage from "../components/browse/ManPage.vue";
+import ManPageClassic from "../components/browse/ManPageClassic.vue";
 import SearchResults from "../components/browse/SearchResults.vue";
 
 const kb = useKBStore();
@@ -32,6 +33,7 @@ const { query, onQuery, str } = useTabQuery(["browse"]);
 
 const q = computed(() => str(query.value.q).trim());
 const sym = computed(() => str(query.value.sym));
+const view = computed(() => str(query.value.view));
 
 const inputEl = ref<HTMLInputElement | null>(null);
 const input = ref("");
@@ -351,11 +353,19 @@ onActivated(() => {
     </Disclosure>
   </Card>
 
-  <ManPage
-    v-if="page || pageMissing"
+  <ManPageClassic
+    v-if="(page || pageMissing) && shell.layout === 'classic'"
     :page="page"
     :symbol="pageMissing || page.name"
     @back="backToResults"
+  />
+  <ManPage
+    v-else-if="page || pageMissing"
+    :page="page"
+    :symbol="pageMissing || page.name"
+    :view="view"
+    @back="backToResults"
+    @update:view="(v) => updateParams({ q, sym, view: v })"
   />
   <template v-else-if="q || sym">
     <Card v-if="searchError" class="hint"

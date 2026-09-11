@@ -33,6 +33,8 @@ export const TQ_SETTING = "sumoTests";
 export const LIBRARY_KEY = "sumoLibrary";
 export const EDITS_KEY = "sumoBrowserEdits";
 export const THEME_KEY = "sumoBrowserTheme";
+/** The man-page layout: `comfortable` (default) or the classic Sigma look. */
+export const LAYOUT_KEY = "sumoBrowserLayout";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */

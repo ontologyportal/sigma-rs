@@ -4,7 +4,12 @@
  */
 
 import { defineStore } from "pinia";
-import { APP_REPO, SEEN_VERSION_KEY, THEME_KEY } from "../constants";
+import {
+  APP_REPO,
+  LAYOUT_KEY,
+  SEEN_VERSION_KEY,
+  THEME_KEY,
+} from "../constants";
 
 /** The deployed build's identity, from `version.json`. */
 export interface AppVersion {
@@ -14,6 +19,9 @@ export interface AppVersion {
 }
 
 export type Theme = "light" | "dark";
+/** How the Browse tab renders a man page: the card layout, or the classic
+ *  full-width Sigma table layout. */
+export type Layout = "comfortable" | "classic";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
@@ -22,12 +30,18 @@ function applyTheme(theme: Theme | null) {
   else delete document.documentElement.dataset.theme;
 }
 
+function applyLayout(layout: Layout) {
+  document.documentElement.dataset.layout = layout;
+}
+
 export const useShellStore = defineStore("shell", {
   state: () => ({
     /** The explicit header choice (localStorage THEME_KEY); null follows the OS. */
     theme: null as Theme | null,
     /** The OS preference, kept current via matchMedia. */
     systemDark: false,
+    /** The man-page layout (localStorage LAYOUT_KEY). */
+    layout: "comfortable" as Layout,
     version: null as AppVersion | null,
     settingsOpen: false,
     /** Welcome on first visit, notice on upgrade. */
@@ -42,16 +56,21 @@ export const useShellStore = defineStore("shell", {
       state.theme ? state.theme === "dark" : state.systemDark,
   },
   actions: {
-    /** Read the persisted theme, apply it, and follow the OS preference. */
+    /** Read the persisted theme and layout, apply them, and follow the OS
+     *  preference. */
     init() {
       let saved: string | null = null;
+      let savedLayout: string | null = null;
       try {
         saved = localStorage.getItem(THEME_KEY);
+        savedLayout = localStorage.getItem(LAYOUT_KEY);
       } catch {
         /* private mode */
       }
       this.theme = saved === "dark" || saved === "light" ? saved : null;
       applyTheme(this.theme);
+      this.layout = savedLayout === "classic" ? "classic" : "comfortable";
+      applyLayout(this.layout);
       const mq = window.matchMedia?.(DARK_QUERY);
       if (!mq) return;
       this.systemDark = mq.matches;
@@ -69,6 +88,16 @@ export const useShellStore = defineStore("shell", {
         /* private mode */
       }
       applyTheme(next);
+    },
+
+    setLayout(layout: Layout) {
+      this.layout = layout;
+      try {
+        localStorage.setItem(LAYOUT_KEY, layout);
+      } catch {
+        /* private mode */
+      }
+      applyLayout(layout);
     },
 
     /** Fetch `version.json` (absent in local dev) and, when the version
