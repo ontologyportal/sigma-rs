@@ -135,6 +135,9 @@ impl SineParams {
     /// of `total_axioms` -- the KB-relative form of [`Self::auto`].  The
     /// resolved budget is always at least 1, so a non-empty KB never gets a
     /// zero budget from a very low percentage.
+    /// At or above 100% this is [`Self::whole_kb`] outright: a budget equal
+    /// to the axiom count would still admit only symbol-reachable axioms,
+    /// so the slider's top stop means "no selection at all".
     pub fn auto_pct(total_axioms: usize, pct: f64) -> Self {
         if pct >= 100.0 {
             return Self::whole_kb();
