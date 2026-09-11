@@ -137,6 +137,16 @@ const handlers = {
   },
 
   /**
+   * Apply the server's pending debounced reloads (see `WasmLsp.flushReloads`)
+   * and return the messages they produce -- the `publishDiagnostics` a
+   * `didChange` defers. `force` applies them regardless of the debounce.
+   */
+  lspFlush({ force }: { force?: boolean } = {}) {
+    if (!wasmLsp) return { out: [] };
+    return { out: wasmLsp.flushReloads(!!force) };
+  },
+
+  /**
    * Validate scratch input (the Ask/Tell box, or an editor buffer with no
    * backing file) in a THROWAWAY session — never the live KB. That session has
    * no SUMO loaded, so every symbol reference reads "unknown"; only `parse`

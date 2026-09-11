@@ -82,6 +82,22 @@ impl WasmLsp {
             .map(|m| serde_json::to_string(&m).expect("serialisable"))
             .collect())
     }
+
+    /// Apply pending debounced KB reloads (a `didChange` defers the
+    /// reconcile of its buffer into the KB and the diagnostics that follow)
+    /// and return the resulting server->client messages. The stdio server
+    /// drives this from an idle poll; this bridge has none, so a client must
+    /// call it. With `force`, every pending reload is applied now regardless
+    /// of its debounce deadline -- for a client that already debounces its
+    /// own edits and wants the diagnostics for the text it just sent.
+    #[wasm_bindgen(js_name = flushReloads)]
+    pub fn flush_reloads(&self, force: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        sumo_lsp::server::flush_reloads(&self.state, &mut out, force);
+        out.into_iter()
+            .map(|m| serde_json::to_string(&m).expect("serialisable"))
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -636,12 +636,19 @@ fn on_did_change<L: TopLayer>(state: &GlobalState<L>, params: DidChangeTextDocum
 /// `recv_timeout` so a typing pause still flushes even if the client sends
 /// no further notification before the next keystroke.
 fn flush_due_reloads<L: TopLayer>(state: &GlobalState<L>, out: &mut Vec<Message>) {
+    flush_reloads(state, out, false);
+}
+
+/// [`flush_due_reloads`] with an override: `force` applies every pending
+/// reload now, deadline or not. For use with an embedding transport with 
+/// no idle poll
+pub fn flush_reloads<L: TopLayer>(state: &GlobalState<L>, out: &mut Vec<Message>, force: bool) {
     let now = sigmakee_rs_sdk::Instant::now();
     let due: Vec<(Url, crate::state::PendingReload)> = {
         let mut pending = state.pending_reloads.write().expect("pending not poisoned");
         let ready: Vec<Url> = pending
             .iter()
-            .filter(|(_, p)| p.due <= now)
+            .filter(|(_, p)| force || p.due <= now)
             .map(|(u, _)| u.clone())
             .collect();
         ready
@@ -892,6 +899,54 @@ mod tq_session_tests {
                 .expect("pending")
                 .contains_key(&uri),
             "pending entry consumed after flush"
+        );
+    }
+
+    #[test]
+    fn a_forced_flush_applies_a_pending_reload_and_publishes_diagnostics() {
+        let state = GlobalState::new();
+        let uri = Url::parse("file:///tmp/forced.kif").expect("url");
+        open(&state, &uri, "(subclass Dog Mammal)");
+        // didChange alone publishes nothing: the reload is deferred.
+        let inline = change(&state, &uri, 2, "(subclass Dog Mammal)\n(instance Rex Cat)");
+        assert!(
+            !inline.iter().any(|m| matches!(m, Message::Notification(n) if n.method == "textDocument/publishDiagnostics")),
+            "didChange must not publish inline"
+        );
+
+        let mut out = Vec::new();
+        flush_reloads(&state, &mut out, true);
+        {
+            let session = state.session.read().expect("kb");
+            assert!(
+                session.kb().symbol_id("Rex").is_some(),
+                "a forced flush applies the reload before its deadline"
+            );
+        }
+        let published = out.iter().find_map(|m| match m {
+            Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(n.params.clone()).ok()
+            }
+            _ => None,
+        });
+        let published = published.expect("the flush publishes diagnostics for the document");
+        assert_eq!(published.uri, uri);
+        assert_eq!(published.version, Some(2));
+        assert!(
+            published
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("Cat")),
+            "the reconciled buffer's own findings must be reported: {:?}",
+            published.diagnostics
+        );
+        assert!(
+            !state
+                .pending_reloads
+                .read()
+                .expect("pending")
+                .contains_key(&uri),
+            "pending entry consumed"
         );
     }
 
