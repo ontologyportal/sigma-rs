@@ -349,6 +349,36 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[test]
+    fn ask_translation_includes_assertions_and_cleans_up_sessions() {
+        let mut s = Session::<TranslationLayer>::new("ask-export".into());
+        s.ingest(reader("base.kif", "(subclass Mammal Animal)"), true);
+        for select_all in [false, true] {
+            let tptp = s
+                .tptp_for_ask(
+                    "(instance Rex Dog)\n(subclass Dog Mammal)",
+                    "(instance Rex Animal)",
+                    select_all,
+                    Some(100.0),
+                )
+                .unwrap();
+            assert!(tptp.contains("s__instance(s__Rex,s__Dog)"), "{tptp}");
+            assert!(tptp.contains("s__subclass(s__Dog,s__Mammal)"), "{tptp}");
+            assert!(tptp.contains("s__subclass(s__Mammal,s__Animal)"), "{tptp}");
+            assert!(tptp.contains("fof(query_0, conjecture,"), "{tptp}");
+            assert_eq!(tptp.matches("s__instance(s__Rex,s__Animal)").count(), 1);
+
+            let without_assertions = s
+                .tptp_for_ask("", "(instance Rex Animal)", select_all, Some(100.0))
+                .unwrap();
+            assert!(
+                !without_assertions.contains("s__Dog"),
+                "{without_assertions}"
+            );
+        }
+    }
+
     #[cfg(feature = "snapshot")]
     #[test]
     fn snapshot_bytes_roundtrips_through_restore() {

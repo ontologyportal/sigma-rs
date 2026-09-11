@@ -9,6 +9,7 @@ import { navigate, updateParams, routeFromLocation } from '../router.ts';
 import { markStatsStale } from './home-stats.ts';
 
 const DIAG_SEV_ORDER = ['error', 'warning', 'info', 'hint'];
+const DIAG_SEV_RANK = new Map(DIAG_SEV_ORDER.map((severity, index) => [severity, index]));
 
 // A full SUMO load can produce thousands of Hint-severity completeness
 // findings alone; pagination keeps `diagList` from rendering them all as DOM
