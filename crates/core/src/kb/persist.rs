@@ -231,9 +231,9 @@ mod round_trip_tests {
                 "s1",
             );
             assert!(r.ok, "ingest failed: {:?}", r.diagnostics);
-            #[cfg(feature = "ask")]
+            #[cfg(feature = "external-prover")]
             kb.make_session_axiomatic("s1").expect("promote");
-            #[cfg(not(feature = "ask"))]
+            #[cfg(not(feature = "external-prover"))]
             kb.make_session_axiomatic("s1").expect("promote");
 
             let syn = &kb.layer.semantic.syntactic;

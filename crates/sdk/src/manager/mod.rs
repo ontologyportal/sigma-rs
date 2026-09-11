@@ -264,7 +264,7 @@ impl Default for ExternalProverConfig {
 
 /// Build a runtime [`ProverOpts`](sigmakee_rs_core::prover::ProverOpts) seeded
 /// with the configured timeout.  `mode` is left at its default (`Prove`).
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl ExternalProverConfig {
     pub fn to_prover_opts(&self) -> sigmakee_rs_core::prover::ExternalOpts {
         sigmakee_rs_core::prover::ExternalOpts {
@@ -368,7 +368,7 @@ impl ProverOptsFor for sigmakee_rs_core::NativeOpts {
     }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl ProverOptsFor for sigmakee_rs_core::prover::ExternalOpts {
     fn from_manager(manager: &KBManager) -> Self {
         manager.external_prover().to_prover_opts()
@@ -2220,7 +2220,7 @@ mod tests {
         assert_eq!(m.native_prover.max_steps, 4000);
     }
 
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[test]
     fn external_config_builds_prover_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();

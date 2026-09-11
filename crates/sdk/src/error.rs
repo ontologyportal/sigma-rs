@@ -65,14 +65,14 @@ pub enum SdkError {
 
     /// The configured Vampire binary could not be located. Carries the
     /// candidate path or name.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[error("vampire binary not found: {0}")]
     VampireNotFound(String),
 
     /// The prover ran but returned an unrecoverable error before a proof or
     /// refutation could be produced. Distinct from a `ProverStatus::Unknown`
     /// outcome, which is a successful run with a "couldn't decide" verdict.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[error("prover failure: {0}")]
     Prover(String),
 
@@ -150,9 +150,9 @@ impl SdkError {
             SdkError::Config(_) => Severity::Error,
             #[cfg(feature = "persist")]
             SdkError::Persist(_) => Severity::Error,
-            #[cfg(feature = "ask")]
+            #[cfg(feature = "external-prover")]
             SdkError::VampireNotFound(_) => Severity::Error,
-            #[cfg(feature = "ask")]
+            #[cfg(feature = "external-prover")]
             SdkError::Prover(_) => Severity::Error,
             #[cfg(any(feature = "http", feature = "git"))]
             SdkError::TempDir(_, _) => Severity::Error,

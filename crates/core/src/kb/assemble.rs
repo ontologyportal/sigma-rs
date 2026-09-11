@@ -168,7 +168,7 @@ pub fn assemble_tptp_indexed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     use crate::trans::ir::Sort as IrSort;
     use crate::trans::ir::{
         Formula as IrF, Function as IrFn, Predicate as IrPd, Problem as IrProblem, Term as IrT,
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn custom_role_and_conjecture_name() {
         let p = IrPd::new("P", 0);
         let mut pb = IrProblem::new();
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn axiom_filter_preserves_conjecture() {
         // Filtering applies to axioms; the conjecture is emitted
         // unconditionally when `problem.conjecture_ref()` is `Some`.
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn tff_mode_emits_type_declarations_first() {
         let person = IrSort::new("person");
         let alice = IrFn::typed("alice", &[], person.clone());

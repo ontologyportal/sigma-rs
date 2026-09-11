@@ -22,7 +22,7 @@ pub use std::time::Instant;
 /// so millisecond granularity (all `Date::now()` offers) is fine on wasm.
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(feature = "ask", feature = "native-prover")
+    any(feature = "external-prover", feature = "native-prover")
 ))]
 pub fn epoch_nanos() -> u128 {
     std::time::SystemTime::now()
@@ -36,7 +36,7 @@ pub use wasm::Instant;
 
 #[cfg(all(
     target_arch = "wasm32",
-    any(feature = "ask", feature = "native-prover")
+    any(feature = "external-prover", feature = "native-prover")
 ))]
 pub fn epoch_nanos() -> u128 {
     // `Date::now()` is f64 milliseconds since the Unix epoch.

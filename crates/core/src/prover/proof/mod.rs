@@ -32,5 +32,5 @@ pub use model::{IrProofStep, KifProofStep};
 pub(crate) use emit::proof_steps_to_kif_ast;
 pub use emit::{emit_proof, formula_to_ast, formula_to_kif, proof_steps_to_kif, proof_to_ast};
 pub use graphviz::render_graphviz;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub(crate) use model::parse_kb_axiom_name;

@@ -26,10 +26,10 @@
 //! or `termFormat` specifiers are collected in [`RenderReport::missing`] rather
 //! than silently guessed.
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use std::collections::BTreeSet;
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use crate::parse::ast::{AstNode, OpKind};
 use crate::semantics::consts::{FORMAT_RELATION, TERM_RELATION};
 use crate::semantics::types::DocEntry;
@@ -41,7 +41,7 @@ use super::SemanticLayer;
 /// `rendered` is always populated with a best-effort rendering (missing
 /// templates → bare symbol names).  Callers that require strict fidelity
 /// should check `missing` before displaying the text.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(Debug, Clone, Default)]
 pub struct RenderReport {
     /// The rendered natural-language string.
@@ -77,7 +77,7 @@ impl SemanticLayer {
     /// Render `formula` to natural language in `language` (e.g.
     /// `"EnglishLanguage"`).  See module docs for the template DSL.  Plain (no
     /// ANSI escapes) — safe for logs / files / JSON.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub(crate) fn render_formula(&self, formula: &AstNode, language: &str) -> RenderReport {
         self.render_formula_impl(
             formula, language, /*coloured=*/ false, /*generic_vars=*/ false,
@@ -87,7 +87,7 @@ impl SemanticLayer {
     /// Same as [`render_formula`](SemanticLayer::render_formula) but wraps
     /// variables, `&%Symbol` cross-references, negations, and structural
     /// operators in ANSI colour escapes for terminal output.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub(crate) fn render_formula_colored(&self, formula: &AstNode, language: &str) -> RenderReport {
         self.render_formula_impl(
             formula, language, /*coloured=*/ true, /*generic_vars=*/ false,
@@ -98,7 +98,7 @@ impl SemanticLayer {
     /// paraphrases variables as generic noun phrases (e.g. "an entity" /
     /// "the entity", or the variable's asserted class from an `instance` /
     /// `subclass` conjunct when one is present) instead of showing `?Var`.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub(crate) fn render_formula_paraphrase(
         &self,
         formula: &AstNode,
@@ -109,7 +109,7 @@ impl SemanticLayer {
         )
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     fn render_formula_impl(
         &self,
         formula: &AstNode,
@@ -145,7 +145,7 @@ impl SemanticLayer {
 /// variable name to a rendered noun phrase for the class it is asserted an
 /// `instance` or `subclass` of, when such a conjunct is present anywhere in
 /// `node`. The first conjunct found for a variable wins.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn collect_variable_sorts(
     sem: &SemanticLayer,
     language: &str,
@@ -179,7 +179,7 @@ fn collect_variable_sorts(
 // ANSI colour classes, aliased from `inline_colorization` so the mapping from
 // *semantic class* (variable, linked symbol, negation, operator) to *palette
 // colour* stays tunable from one place.  `ANSI_RESET` follows every open.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) use inline_colorization::{
     color_bright_blue as ANSI_LINKED, // `&%Symbol` cross-references
     color_bright_red as ANSI_NEG,     // negations
@@ -188,7 +188,7 @@ pub(crate) use inline_colorization::{
     color_reset as ANSI_RESET,
 };
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 struct RenderCtx<'a> {
     sem: &'a SemanticLayer,
     language: &'a str,
@@ -205,7 +205,7 @@ struct RenderCtx<'a> {
     mentioned: BTreeSet<String>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl<'a> RenderCtx<'a> {
     /// Wrap `text` in an ANSI colour class when `self.coloured` is on.
     fn col(&self, text: &str, class: &str) -> String {
@@ -574,10 +574,13 @@ impl<'a> RenderCtx<'a> {
     }
 }
 
+/// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
+/// `(exists …)` argument list.  Returns `(names, body_ast)`.
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 /// `"an"` before a leading vowel sound, `"a"` otherwise. A rough heuristic
 /// (English exceptions like "an hour" aren't handled) that's fine for the
 /// class names actually seen in `termFormat` output.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn indefinite_article(word: &str) -> &'static str {
     match word.chars().next() {
         Some(c) if "aeiouAEIOU".contains(c) => "an",
@@ -608,7 +611,7 @@ fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<As
 }
 
 /// A parsed `%*{N-Z}[sep]` multi-argument marker.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 struct MultiMarker {
     /// First argument token number, numbered as in `%N`.
     start: usize,
@@ -630,7 +633,7 @@ struct MultiMarker {
 /// `\[,]` separates with `,` alone.
 ///
 /// Returns `None` for a malformed marker so the caller can leave it literal.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn parse_multi_marker(bytes: &[u8], i: usize) -> Option<MultiMarker> {
     let mut p = i + 2; // past "%*"
     if *bytes.get(p)? != b'{' {
@@ -674,7 +677,7 @@ fn parse_multi_marker(bytes: &[u8], i: usize) -> Option<MultiMarker> {
 
 /// Byte offset of the next `target`, ignoring nested `{…}` groups (so `%n{TEXT}`
 /// parses without tripping on a `}` inside `TEXT`).
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn find_matching(bytes: &[u8], target: u8) -> Option<usize> {
     let mut depth: usize = 0;
     for (i, &b) in bytes.iter().enumerate() {
@@ -692,7 +695,7 @@ fn find_matching(bytes: &[u8], target: u8) -> Option<usize> {
 
 /// Collapse consecutive spaces into a single space and trim ends.  Conservative
 /// — preserves newlines/tabs so templates with intentional spacing stay readable.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_space = false;

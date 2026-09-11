@@ -66,7 +66,7 @@ fn emit_sub(out: &mut String, f: &Formula, parent: Prec) {
 }
 
 /// Serialises a [`Term`] to TPTP syntax.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub(crate) fn term_to_tptp(t: &Term) -> String {
     let mut s = String::new();
     emit_term(&mut s, t);
@@ -214,7 +214,7 @@ impl Term {
     /// let t = Term::apply(f, vec![Term::var(0), Term::int("1")]);
     /// assert_eq!(t.to_tptp(), "f(X0,1)");
     /// ```
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn to_tptp(&self) -> String {
         term_to_tptp(self)
     }
@@ -239,13 +239,13 @@ impl Formula {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     use super::super::symbol::Function;
     use super::super::symbol::Predicate;
     use super::*;
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn term_to_tptp() {
         let f = Function::new("f", 2);
         let t = Term::apply(f, vec![Term::var(0), Term::int("1")]);

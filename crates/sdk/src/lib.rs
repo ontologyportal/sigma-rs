@@ -52,7 +52,8 @@
 //! | Flag | Default | Adds |
 //! |---|---|---|
 //! | `persist` | ✓ | LMDB-backed `Session::open` / `Session::load` |
-//! | `ask` | ✓ | the external-prover `Backend::External` selector |
+//! | `external-prover` |   | the `Backend::External` selector over any `ProverRunner` (`Prover::Custom`); wasm-safe |
+//! | `ask` | ✓ | `external-prover` plus the shipped subprocess runners (Vampire / E) |
 //! | `native-prover` |   | the in-process `Backend::Native` saturation prover + the proving ops (`ask` / `tell` / `audit` / `test`) |
 //! | `parallel` | ✓ | rayon-backed hot paths inside `sigmakee-rs-core` |
 //! | `http` | ✓ | `Source::Http` remote fetch (native targets only) |
@@ -105,7 +106,7 @@ pub use session::views::{
     LangView, ManPageDetail, ManPageRefView, RankComponentView, ScratchValidationView,
     SearchHitView, SortView, TaxonomyView, TestCaseView,
 };
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use session::views::{AskResultView, AuditResultView, ContradictionView, ProofStepView};
 
 #[cfg(feature = "native-prover")]
@@ -122,11 +123,11 @@ pub use sigmakee_rs_core::{
 
 // Layer stack: the concrete top layers plus the traits downstream backend
 // dispatch bounds on.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::ExternalProverLayer;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::ProverLayer;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use sigmakee_rs_core::ProvingLayer;
 pub use sigmakee_rs_core::{HasTranslation, TopLayer, TranslationLayer};
 
@@ -160,23 +161,23 @@ pub use sigmakee_rs_core::types::{
 pub use sigmakee_rs_core::{DiagResult, Severity, TellResult, ToDiagnostic};
 
 // Proof-source indexing + search + shared prover opts.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::RenderReport;
 #[cfg(feature = "native-prover")]
 pub use sigmakee_rs_core::Strategy;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use sigmakee_rs_core::{AxiomSource, AxiomSourceIndex, CommonProverOpts};
 pub use sigmakee_rs_core::{SearchOpts, SearchSource, TaxConstraint, DEFAULT_CANDIDATE_LIMIT};
 
 // The whole prover module (backends, runners, result types) for path-style
 // access (`sigmakee_rs_sdk::prover::external::backends::…`).
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use sigmakee_rs_core::prover;
 
 // The external-backend selector + the trait for plugging in a custom runner.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::prover::ProverRunner;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use sigmakee_rs_core::Prover;
 
 // Prover-facing types for the native-prover proving ops.

@@ -1,9 +1,9 @@
 //! Prover subsystem: the external provers (and their backends) and the native
 //! prover (`saturate`).
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use crate::layer::TopLayer;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use crate::SineParams;
 
 // The external (subprocess) prover spawns `vampire`/`E` — `std::process`
@@ -12,7 +12,7 @@ use crate::SineParams;
 // (`saturate`) shares none of it. TSTP/SZS transcript *parsing* (regex over
 // an already-captured string, no process spawning) is NOT gated the same
 // way — see `proof::tstp` / `vampire_proof` below.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub mod external;
 #[cfg(feature = "native-prover")]
 pub mod saturate;
@@ -38,14 +38,16 @@ pub(crate) mod scale;
 /// capability but not wired into the live search yet — so they compile
 /// warning-free while staying grep-able. Unwrapping an item is the
 /// signal that it went live.
+#[cfg(any(feature = "native-prover", feature = "ask"))]
 macro_rules! parked {
     ($($item:item)*) => { $(#[allow(dead_code)] $item)* };
 }
+#[cfg(any(feature = "native-prover", feature = "ask"))]
 pub(crate) use parked;
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use external::backends::{Prover, ProverMode, ProverOpts, ProverRunner};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use external::{ExternalOpts, ExternalProverLayer};
 pub use result::*;
 #[cfg(feature = "native-prover")]
@@ -70,7 +72,7 @@ pub use saturate::ProverLayer;
 /// mutability, so `prove` is read-only at the `&self` level and one loaded KB
 /// can be shared across threads. [`ProveCtx`](crate::ProveCtx) carries the
 /// progress/log sink.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[allow(dead_code)]
 pub trait ProvingLayer: TopLayer {
     /// Backend-specific prover options (native: `NativeOpts`; external:
@@ -238,7 +240,7 @@ pub trait ProvingLayer: TopLayer {
 /// consolidated opts struct (`NativeOpts`, `ExternalOpts`) implements it.  The
 /// per-backend `session` and TPTP-`mode` fields are read concretely inside each
 /// engine's `prove_once`, so they stay off this shared accessor.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub trait CommonProverOpts {
     /// The SInE axiom-selection seed the autoscaling loop perturbs per slice.
     fn selection(&self) -> SineParams;
@@ -271,7 +273,7 @@ pub trait CommonProverOpts {
 /// wherever its engine resolves the conjecture (native: the prover-local atom
 /// table; external: the shared store).  The `SentenceId`s are content hashes,
 /// so the same conjecture yields the same ids in either store.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub struct Conjecture {
     /// The conjecture root sentences: `(sentence, content-hash id)`.
     pub sents: Vec<(std::sync::Arc<crate::types::Sentence>, crate::SentenceId)>,
@@ -285,7 +287,7 @@ pub struct Conjecture {
     pub dropped: usize,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl Conjecture {
     /// Macro-expand + normalize the raw conjecture ASTs (preserving a leading
     /// `(forall …)` so the refutation negation skolemizes).  The second
@@ -320,7 +322,7 @@ impl Conjecture {
 
 /// Collect every concrete symbol mentioned in `node` into `out` — the
 /// conjecture's SInE seed.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn collect_ast_symbols(
     node: &crate::AstNode,
     out: &mut std::collections::HashSet<crate::SymbolId>,

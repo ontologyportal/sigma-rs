@@ -70,7 +70,7 @@ impl SemanticLayer {
     /// ancestors.  Only `Base` axiom fact sentences are returned.
     // Callers: the external prover's SInE seeding and the selected TPTP
     // export (both prover-feature-gated).
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub(crate) fn taxonomy_closure_facts_scoped(
         &self,
         seed_syms: &HashSet<SymbolId>,

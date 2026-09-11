@@ -2,8 +2,8 @@
 //
 // Proving driver for external provers
 
+use crate::clock::Instant;
 use std::collections::HashSet;
-use std::time::Instant;
 
 use super::super::ProverResult;
 use super::backends::{ProverMode, ProverOpts, ProverRunner};

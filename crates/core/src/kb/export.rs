@@ -2,18 +2,18 @@
 //! `format_sentence_tptp`, and their helpers.
 
 use std::collections::HashSet;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::assemble::{assemble_tptp_indexed, AssemblyOpts};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::cache::events::Event;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::prover::Conjecture;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::syntactic::SelectionParams;
 use crate::types::SentenceId;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::{Diagnostic, ExternalOpts, Parser, ProveCtx, SourceFile, TestCase};
 use crate::{HasTranslation, TptpLang};
 
@@ -120,7 +120,7 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     /// autoscaling feedback loop here (unlike the native prover's `ask`
     /// path) — whatever this resolves to is the FINAL selection, so a
     /// too-low percentage can under-select for a given query.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn to_tptp_selected(
         &mut self,
         opts: &TptpOptions,
@@ -217,7 +217,12 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     ///
     /// Like [`KnowledgeBase::to_tptp`], but accepts optional [`ExternalOpts`]
     /// controlling axiom selection.
-    #[cfg(feature = "ask")]
+    ///
+    /// # Errors
+    ///
+    /// Returns the ingestion diagnostics if interning the testcase's
+    /// hypotheses or conjecture fails.
+    #[cfg(feature = "external-prover")]
     pub fn tc_to_tptp(
         &self,
         tc: TestCase,

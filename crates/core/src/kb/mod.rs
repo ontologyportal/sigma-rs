@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::layer::{Layer, TopLayer};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use crate::prover::ProvingLayer;
 use crate::semantics::SemanticLayer;
 use crate::syntactic::SyntacticLayer;
@@ -28,7 +28,7 @@ pub mod ingest;
 pub mod man;
 #[cfg(any(feature = "snapshot", feature = "persist"))]
 pub mod persist;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub mod prove;
 pub mod search;
 pub mod semantics;
@@ -39,9 +39,9 @@ pub mod store;
 // consumes it to narrate proofs, which the native prover also produces.  Both
 // need a prover backend present (they import `KifProofStep`/`AxiomSource`), so
 // they ride the same `any(ask, native-prover)` gate.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) mod natural_lang;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) mod proof_prose;
 
 /// The base structure defining a knowledge base.
@@ -156,7 +156,7 @@ impl Default for KnowledgeBase {
     }
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl<L: ProvingLayer> KnowledgeBase<L> {
     /// Read-only access to the proving top layer.
     pub fn prover(&self) -> &L {
@@ -195,7 +195,7 @@ impl KnowledgeBase<crate::prover::ProverLayer<TranslationLayer>> {
     }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl KnowledgeBase<crate::prover::ExternalProverLayer> {
     /// Constructs a new KnowledgeBase over the external-prover stack: the
     /// translation layer topped by an [`ExternalProverLayer`] driving `backend`.

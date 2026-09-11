@@ -153,7 +153,7 @@ impl TranslationLayer {
     /// entry (`trans/poly_expand.rs`): the same rule lowers once per plausible
     /// numeric sort of its poly-position variables, so it can join facts
     /// emitted at those variants.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn lower_axiom_variant(
         &self,
         sid: SentenceId,
@@ -201,7 +201,7 @@ impl TranslationLayer {
     /// proving one arbitrarily-ordered conjunct alone is unsound in both
     /// directions (a bare `(greaterThan ?X ?Y)` conjunct is trivially true).
     /// All-or-nothing: `None` if any conjunct fails to convert.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn lower_conjecture_set(
         &self,
         sids: &[SentenceId],
@@ -964,7 +964,7 @@ fn tff_sort_suffix(args: &[Sort], ret: Option<Sort>) -> String {
 /// `map`.  Indices absent from the map are left unchanged.  Used when
 /// conjoining separately-lowered bodies whose per-root `var_index` spaces
 /// collide.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 fn remap_formula_vars(f: &mut Formula, map: &HashMap<u32, u32>) {
     fn remap_var(v: &mut VarId, map: &HashMap<u32, u32>) {
         if let Some(&g) = map.get(&v.0) {

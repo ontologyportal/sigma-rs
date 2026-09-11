@@ -27,8 +27,14 @@ use crate::parse::ast::{AstNode, Role, Source};
 use crate::parse::doc::DocItem;
 use crate::parse::szs::parse_szs;
 
+#[cfg(feature = "external-prover")]
+use super::proof::proof_steps_to_kif;
 use super::proof::{proof_steps_to_kif_ast, KifProofStep};
 use super::result::{Binding, ProverMode, ProverStatus};
+#[cfg(feature = "external-prover")]
+use super::result::{ProverResult, ProverTimings, TerminationReason};
+#[cfg(feature = "external-prover")]
+use super::tptp_proof::proof_steps_to_ir;
 use super::tptp_proof::{kif_proof_inputs, ProofStep, TptpProofProcessor};
 
 // -- Status classification -----------------------------------------------------
@@ -182,6 +188,208 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
             _ => None,
         })
         .collect()
+}
+
+// -- Transcript -> ProverResult -------------------------------------------------
+
+/// Everything a Vampire runner does after capturing the CLI's stdout and
+/// stderr: SZS classification, the Theorem-vs-ContradictoryAxioms
+/// correction, answer-binding extraction, both proof lowerings, and the
+/// termination reason the autoscaling loop reads.  Shared by every runner
+/// that drives Vampire as a TPTP-text CLI -- the subprocess runner and the
+/// browser bridge to the Emscripten build -- so their results are identical
+/// for identical transcripts.  `prover_run` is the wall-clock time the caller
+/// measured around the run.
+#[cfg(feature = "external-prover")]
+pub fn result_from_transcript(
+    stdout: &str,
+    stderr: &str,
+    mode: ProverMode,
+    prover_run: std::time::Duration,
+) -> ProverResult {
+    let t_parse = crate::clock::Instant::now();
+    let combined = format!("{}{}", stdout, stderr);
+
+    let (doc, _parse_errors) = parse_szs(&combined, "vampire");
+    let status_word = szs_status_word(&doc);
+    let status = determine_status(&combined, status_word, &mode);
+    let parsed_steps = docitems_to_proof_steps(&doc);
+    let has_proof = !parsed_steps.is_empty();
+    // Distinguish a genuine Theorem from ContradictoryAxioms that Vampire
+    // mislabels: some schedules report `SZS status Theorem` even when the
+    // refutation never used the negated conjecture (the axioms alone derive
+    // bottom -- SUMO carries known inconsistencies).  A proof without a
+    // negated-conjecture STEP (checked on the parsed roles, not the raw
+    // text -- the substring can appear in echoed input or schedule chatter)
+    // is an Inconsistent verdict, not a Proved one.
+    let status = if matches!(mode, ProverMode::Prove)
+        && matches!(status, ProverStatus::Proved)
+        && has_proof
+        && !parsed_steps.iter().any(|s| s.role == "negated_conjecture")
+    {
+        ProverStatus::Inconsistent
+    } else {
+        status
+    };
+    crate::log!(
+        Info,
+        "sigmakee_rs_core::prover",
+        format!("vampire result: {:?}", status_label(&status))
+    );
+
+    // Surface Vampire's `User error: ...` (parse/type-check) detail that
+    // would otherwise be buried in raw_output behind `Unknown`.
+    if matches!(status, ProverStatus::InputError) {
+        let detail = extract_input_error(&combined).unwrap_or_else(|| combined.trim().to_string());
+        crate::log!(
+            Warn,
+            "sigmakee_rs_core::prover",
+            format!("vampire rejected the input: {}", detail)
+        );
+    }
+
+    // Only extract bindings when Vampire proved the conjecture via a genuine
+    // refutation (SZS Theorem).  ContradictoryAxioms / Unsatisfiable proofs
+    // derive contradiction purely from the axioms and carry no
+    // negated-conjecture steps, so there are no variable bindings to find.
+    let bindings = if matches!(mode, ProverMode::Prove) && status_word == Some("Theorem") {
+        let mut proc = TptpProofProcessor::new();
+        proc.load_proof(&parsed_steps);
+        proc.extract_answers()
+    } else {
+        Vec::new()
+    };
+
+    // Preserve the raw SZS proof section verbatim so the `--proof tptp` CLI
+    // path can emit Vampire's output without re-parsing.
+    let proof_tptp = if has_proof {
+        combined
+            .find("SZS output start")
+            .and_then(|s| combined[s..].find('\n').map(|nl| s + nl + 1))
+            .and_then(|body_start| {
+                combined[body_start..]
+                    .find("SZS output end")
+                    .map(|len| combined[body_start..body_start + len].to_string())
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let proof_kif = if has_proof {
+        proof_steps_to_kif(&kif_proof_inputs(&parsed_steps))
+    } else {
+        Vec::new()
+    };
+    let ir_proof = if has_proof {
+        proof_steps_to_ir(&parsed_steps)
+    } else {
+        Vec::new()
+    };
+
+    let output_parse = t_parse.elapsed();
+    let termination = extract_termination_reason(&combined);
+    ProverResult {
+        complete_saturation: None,
+        given_steps: None,
+        phase_profile: Vec::new(),
+        contradiction_proofs: Vec::new(),
+        status,
+        raw_output: combined,
+        termination,
+        bindings,
+        proof_kif,
+        ir_proof,
+        proof_tptp,
+        proof_tptp_lang: crate::parse::dialect::TptpLang::default(),
+        timings: ProverTimings {
+            prover_run,
+            output_parse,
+            ..Default::default()
+        },
+    }
+}
+
+/// Classify *why* Vampire stopped, for the autoscaling loop.  Parses the
+/// `% Termination reason:` tail line (and a couple of phase banners),
+/// mapping to a backend-agnostic [`TerminationReason`].
+///
+/// Wall-clock / resource exhaustion (`Time limit`, `Memory limit`,
+/// `Refutation not found, ...`) signals an over-large premise set -> narrow.
+/// A clean `Saturation` or a `CounterSatisfiable` verdict signals the
+/// conjecture isn't entailed by the *selected* axioms -> widen.  Returns
+/// `None` when no termination marker is present (e.g. a clean proof).
+#[cfg(feature = "external-prover")]
+pub(crate) fn extract_termination_reason(output: &str) -> Option<TerminationReason> {
+    // A successful refutation isn't a "stopped without a verdict" case.
+    if output.contains("SZS status Theorem")
+        || output.contains("SZS status Unsatisfiable")
+        || output.contains("SZS status ContradictoryAxioms")
+        || output.contains("Termination reason: Refutation")
+    {
+        return None;
+    }
+    if is_timeout(output) {
+        return Some(TerminationReason::TimeLimit);
+    }
+    if output.contains("Memory limit")
+        || output.contains("Refutation not found, incomplete strategy")
+        || output.contains("Refutation not found, non-redundant clauses discarded")
+    {
+        return Some(TerminationReason::ResourceOut);
+    }
+    if output.contains("Termination reason: Satisfiable")
+        || output.contains("Termination reason: Saturation")
+        || output.contains("SZS status CounterSatisfiable")
+        || output.contains("SZS status Satisfiable")
+    {
+        return Some(TerminationReason::Saturation);
+    }
+    if output.contains("SZS status GaveUp") || output.contains("Termination reason:") {
+        return Some(TerminationReason::GaveUp);
+    }
+    None
+}
+
+/// Pull out the single most informative line of a Vampire input-error
+/// report for logging.  Prefers the `User error:` line (and the line
+/// after it, which carries the sort/term detail); falls back to the
+/// first line mentioning an error.
+#[cfg(feature = "external-prover")]
+pub(crate) fn extract_input_error(output: &str) -> Option<String> {
+    let lines: Vec<&str> = output.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("User error")
+            || line.contains("Parse error")
+            || line.contains("Syntax error")
+        {
+            // Vampire's type errors span two lines: the `User error:`
+            // header and a follow-up describing the offending sort/term.
+            let mut msg = line.trim().to_string();
+            if let Some(next) = lines.get(i + 1) {
+                let next = next.trim();
+                if !next.is_empty() && !next.starts_with('%') {
+                    msg.push(' ');
+                    msg.push_str(next);
+                }
+            }
+            return Some(msg);
+        }
+    }
+    None
+}
+
+#[cfg(feature = "external-prover")]
+fn status_label(s: &ProverStatus) -> &'static str {
+    match s {
+        ProverStatus::Proved => "Proved",
+        ProverStatus::Disproved => "Disproved",
+        ProverStatus::Consistent => "Consistent",
+        ProverStatus::Inconsistent => "Inconsistent",
+        ProverStatus::Timeout => "Timeout",
+        ProverStatus::InputError => "InputError",
+        ProverStatus::Unknown => "Unknown",
+    }
 }
 
 // -- Public entry point ---------------------------------------------------------

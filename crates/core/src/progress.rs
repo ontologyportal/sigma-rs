@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::semantics::errors::SemanticError;
 use crate::types::SentenceId;
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::prover::ProverStatus;
 
 /// RAII guard returned by [`profile_span!`] that emits `PhaseFinished` on drop.
@@ -288,23 +288,23 @@ pub enum ProgressEvent {
     /// CNF clausification finished.
     ClausifyFinished { clauses: usize, elapsed: Duration },
 
-    // -- Prover (cfg(feature = "ask")) ---------------------------------------
+    // -- Prover (cfg(feature = "external-prover")) ---------------------------------------
     /// Ask query started.  `backend` is `"subprocess"` or `"embedded"`.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     AskInvoked {
         backend: &'static str,
         query: String,
     },
 
     /// Ask query returned.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     AskReturned {
         status: ProverStatus,
         elapsed: Duration,
     },
 
     /// Vampire subprocess spawned.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     ProverSpawned { binary: PathBuf, timeout_secs: u32 },
 
     // -- Diagnostics (warnings) ---------------------------------------------
@@ -378,7 +378,7 @@ pub enum ProgressEvent {
     AskStarted { backend: &'static str },
 
     /// SDK ask op returned.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     AskFinished {
         status: ProverStatus,
         elapsed: Duration,

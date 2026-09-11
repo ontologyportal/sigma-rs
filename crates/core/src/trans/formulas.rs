@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 
 use crate::parse::tptp::syntax::TptpLang;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::trans::lower::QueryVarMap;
 use crate::trans::{ir, CachedFormula, TranslationError};
 use crate::types::{Element, SentenceId};
@@ -136,7 +136,7 @@ impl TranslationLayer {
     ///
     /// Returns `(tff_map, fof_map)` containing every populated entry
     /// in each cache (including `None` entries for suppressed sids).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[allow(dead_code)]
     pub(crate) fn snapshot_formula_caches(
         &self,
@@ -153,7 +153,7 @@ impl TranslationLayer {
     /// Replaces any existing in-memory entries with the supplied maps
     /// wholesale; the caller is responsible for ensuring the maps are
     /// `kb_version`-consistent with the loaded sentence store.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[allow(dead_code)]
     pub(crate) fn restore_formula_caches(
         &self,
@@ -265,7 +265,7 @@ impl TranslationLayer {
     ///
     /// Returns `(problem, sid_map, qvm)`; `qvm` is `None` when no conjecture
     /// was requested or none of the candidates converted.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn assemble_problem(
         &self,
         axiom_sids: &[SentenceId],

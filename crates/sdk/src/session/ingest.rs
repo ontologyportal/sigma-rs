@@ -2,11 +2,11 @@
 //
 // Ingestion logic for sessions
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::Parser;
 use sigmakee_rs_core::PromoteError;
 use sigmakee_rs_core::SourceFile;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::TestCase;
 use sigmakee_rs_core::ToDiagnostic;
 use sigmakee_rs_core::TopLayer;
@@ -87,7 +87,7 @@ impl<L: TopLayer> Session<L> {
     /// The returned `TestCase`'s `axioms` therefore hold only hypotheses; `kb.ask`
     /// stages those session-scoped. (`include` directives were already spliced by
     /// [`Source::read`].)
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub(super) fn source_to_test_case(
         &mut self,
         test_src: Source,

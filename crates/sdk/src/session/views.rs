@@ -15,7 +15,7 @@
 
 use sigmakee_rs_core::{Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer};
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::{
     AstKif as _, AxiomSourceIndex, ConvertedStmt, EmitResult, Emitter, KifProofStep, ProverStatus,
     TptpLang,
@@ -503,7 +503,7 @@ impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
 
 /// One step of a cited derivation -- a refutation proof or an audit
 /// contradiction; both project to this single shape.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct ProofStepView {
     pub index: usize,
@@ -516,7 +516,7 @@ pub struct ProofStepView {
     pub line: Option<u32>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl ProofStepView {
     /// Project a proof/contradiction transcript, citing each step's source
     /// axiom (via `src_idx`) where it has one.
@@ -556,7 +556,7 @@ impl ProofStepView {
 
 /// Curated prover ask result: SZS-ish status, the cited proof, and three
 /// renderings of it (Graphviz DOT, English prose, raw engine trace).
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct AskResultView {
     pub status: String,
@@ -583,7 +583,7 @@ pub struct AskResultView {
     pub proof_tptp_prologue: String,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl AskResultView {
     /// Project a prover outcome (from the native engine or a parsed external
     /// transcript) against the KB that ran it.  `query_kif` is reparsed only
@@ -642,7 +642,7 @@ impl AskResultView {
 
 /// One distinct contradiction an audit found -- a full derivation to `FALSE`,
 /// with the same three renderings as [`AskResultView`].
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct ContradictionView {
     pub steps: Vec<ProofStepView>,
@@ -654,7 +654,7 @@ pub struct ContradictionView {
 }
 
 /// Curated consistency-audit result.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct AuditResultView {
     pub status: String,
@@ -664,7 +664,7 @@ pub struct AuditResultView {
     pub contradictions: Vec<ContradictionView>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl AuditResultView {
     /// Project an audit outcome against the KB that ran it.  The axiom source
     /// index is built once and shared across all contradictions -- rendering N
@@ -885,7 +885,7 @@ impl<L: TopLayer> Session<L> {
     /// KIF does not parse to a statement.  When `generic_vars` is set,
     /// variables render as generic noun phrases ("an entity" / "the
     /// entity") instead of `?Var`.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn render_nl(&self, kif: &str, language: &str, generic_vars: bool) -> String {
         let doc = sigmakee_rs_core::parse_document(
             "__sdk:render_nl__",
@@ -909,7 +909,7 @@ impl<L: TopLayer> Session<L> {
     /// Theorem-vs-ContradictoryAxioms mislabelling corrected), proof steps,
     /// Graphviz digraph, and English prose -- so both backends render through
     /// one UI code path.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn vampire_ask_view(&self, raw_output: &str, query_kif: &str) -> AskResultView {
         let parsed =
             sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
@@ -926,7 +926,7 @@ impl<L: TopLayer> Session<L> {
     /// Parse a captured Vampire consistency-check run into the same shape a
     /// native audit projects to.  Vampire's one-shot run yields at most a
     /// single contradiction, so `contradictions` has 0 or 1 entries.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn vampire_audit_view(&self, raw_output: &str) -> AuditResultView {
         let parsed = sigmakee_rs_core::parse_vampire_result(
             raw_output,

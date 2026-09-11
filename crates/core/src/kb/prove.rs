@@ -5,7 +5,7 @@
 //! reachable by the native saturation prover WITHOUT the subprocess `ask`
 //! feature — the native prover is the only proving backend that runs on wasm32.
 
-#![cfg(any(feature = "ask", feature = "native-prover"))]
+#![cfg(any(feature = "external-prover", feature = "native-prover"))]
 
 use std::path::PathBuf;
 
@@ -261,5 +261,140 @@ mod dialect_tests {
         let kb = kb_native("(subclass Dog Mammal)\n");
         let res = kb.ask_query("(subclass Dog Mammal)", None, SineParams::default(), fast());
         assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+    }
+}
+
+#[cfg(all(test, feature = "external-prover"))]
+mod custom_runner_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::KnowledgeBase;
+    use crate::prover::vampire_proof::result_from_transcript;
+    use crate::prover::{
+        ExternalOpts, Prover, ProverOpts, ProverResult, ProverRunner, ProverStatus,
+        TerminationReason,
+    };
+    use crate::{parse_document, Parser, TestCase};
+
+    /// A runner that records every problem it is handed and answers with a
+    /// canned Vampire transcript -- what an embedder's bridge to a remote or
+    /// in-browser prover looks like from the layer's side.
+    struct Canned {
+        transcript: &'static str,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl ProverRunner for Canned {
+        fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult {
+            self.seen.lock().unwrap().push(tptp.to_string());
+            result_from_transcript(self.transcript, "", opts.mode, std::time::Duration::ZERO)
+        }
+        fn name(&self) -> &str {
+            "canned"
+        }
+    }
+
+    const THEOREM: &str = "% SZS status Theorem for input\n\
+% SZS output start Proof for input\n\
+fof(f1, axiom, p, file('/dev/stdin', kb_1)).\n\
+fof(f2, conjecture, p, file('/dev/stdin', query_0)).\n\
+fof(f3, negated_conjecture, ~p, inference(negated_conjecture, [], [f2])).\n\
+fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
+% SZS output end Proof for input\n";
+
+    fn kb_with(runner: Arc<Canned>) -> KnowledgeBase<crate::prover::ExternalProverLayer> {
+        let mut kb = KnowledgeBase::new_external(Prover::Custom(runner));
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(subclass Mammal Animal)\n(instance Rex Dog)\n",
+            &std::path::PathBuf::from("test.kif"),
+            "test.kif",
+        );
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("test.kif").expect("promote");
+        kb
+    }
+
+    fn query(kif: &str) -> TestCase {
+        let doc = parse_document("test", kif.to_string(), Parser::Kif { options: None });
+        let ast = doc
+            .ast
+            .iter()
+            .filter_map(|d| d.as_stmt().cloned())
+            .next()
+            .expect("one formula");
+        TestCase {
+            file_name: "test::query".into(),
+            note: String::new(),
+            timeout: 0,
+            query: Some(ast),
+            expected_proof: None,
+            expected_answer: None,
+            axioms: Vec::new(),
+            extra_files: Vec::new(),
+            expected_status: None,
+            has_fof_conjecture: false,
+            input_formulas: 0,
+            unaccounted_inputs: 0,
+        }
+    }
+
+    #[test]
+    fn a_custom_runner_receives_the_translated_problem_and_its_verdict_is_the_result() {
+        let runner = Arc::new(Canned {
+            transcript: THEOREM,
+            seen: Mutex::new(Vec::new()),
+        });
+        let kb = kb_with(runner.clone());
+        let res = kb.ask(
+            query("(instance Rex Animal)"),
+            None,
+            &ExternalOpts::default(),
+        );
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        assert_eq!(res.proof_kif.len(), 4, "proof steps: {:?}", res.proof_kif);
+
+        let seen = runner.seen.lock().unwrap();
+        assert!(!seen.is_empty(), "the runner was never invoked");
+        let tptp = &seen[0];
+        assert!(tptp.contains("conjecture"), "no conjecture in:\n{tptp}");
+        assert!(tptp.contains("fof(kb_"), "no KB axioms in:\n{tptp}");
+        assert!(
+            tptp.contains("s__Rex") && tptp.contains("s__Animal"),
+            "conjecture symbols missing in:\n{tptp}"
+        );
+    }
+
+    #[test]
+    fn a_custom_runner_saturation_verdict_is_classified_like_a_subprocess_one() {
+        let runner = Arc::new(Canned {
+            transcript: "% SZS status CounterSatisfiable for input\n\
+% Termination reason: Satisfiable\n",
+            seen: Mutex::new(Vec::new()),
+        });
+        let kb = kb_with(runner.clone());
+        let res = kb.ask(
+            query("(instance Rex Animal)"),
+            None,
+            &ExternalOpts::default(),
+        );
+        // A saturated verdict on a three-axiom KB has nowhere to widen to,
+        // so the loop's classification is what reaches the caller.
+        assert_eq!(
+            res.status,
+            ProverStatus::Disproved,
+            "raw: {}",
+            res.raw_output
+        );
+        assert_eq!(res.termination, Some(TerminationReason::Saturation));
+        assert_eq!(runner.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn custom_debug_prints_the_runner_name() {
+        let p = Prover::Custom(Arc::new(Canned {
+            transcript: "",
+            seen: Mutex::new(Vec::new()),
+        }));
+        assert_eq!(format!("{p:?}"), "Custom(\"canned\")");
     }
 }

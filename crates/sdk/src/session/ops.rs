@@ -4,13 +4,13 @@
 
 #[cfg(feature = "persist")]
 use sigmakee_rs_core::DynSink;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use sigmakee_rs_core::ExternalOpts;
 #[cfg(feature = "persist")]
 use sigmakee_rs_core::TranslationLayer;
 use sigmakee_rs_core::{Diagnostic, HasTranslation, TopLayer, TptpLang, TptpOptions};
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::Source;
 
 use super::super::{SdkError, SdkResult};
@@ -223,7 +223,7 @@ impl<L: HasTranslation> Session<L> {
     }
 
     /// Translate a [`TestCase`] into TPTP
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn translate_test(
         &mut self,
         src: Source,
@@ -251,7 +251,7 @@ impl<L: HasTranslation> Session<L> {
     /// promoted KB unfiltered.
     /// `tptp` parses `assertions_kif`/`query_kif` as TPTP instead of SUO-KIF
     /// before staging.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn tptp_for_ask(
         &mut self,
         assertions_kif: &str,
@@ -370,7 +370,7 @@ mod tests {
     /// A starved selection budget must not drop a link of the subclass chain
     /// between an asserted class and the queried class: the chain facts are
     /// injected regardless of SInE's ranking.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[test]
     fn tptp_for_ask_keeps_the_taxonomy_chain_under_a_starved_budget() {
         let mut s = Session::<TranslationLayer>::new("ops-chain".into());
@@ -406,7 +406,7 @@ mod tests {
 
     /// The Ask/Tell default: assertions that the query needs must reach the
     /// external prover as support, both with SInE selection and without.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     #[test]
     fn tptp_for_ask_emits_the_assertions_as_support() {
         let mut s = Session::<TranslationLayer>::new("ops-ask".into());

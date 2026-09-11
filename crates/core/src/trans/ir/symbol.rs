@@ -41,7 +41,7 @@ impl Sort {
     /// let animal = Sort::new("animal");
     /// assert_eq!(animal.tptp_name(), "animal");
     /// ```
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -70,7 +70,7 @@ impl Sort {
     }
 
     /// Returns the Boolean sort (`$o`).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn bool() -> Self {
         Self::builtin("$o")
     }
@@ -597,7 +597,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn sort_new_and_builtins() {
         let person = Sort::new("person");
         assert_eq!(person.tptp_name(), "person");
@@ -609,21 +609,21 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn sort_new_tptp_name() {
         let animal = Sort::new("animal");
         assert_eq!(animal.tptp_name(), "animal");
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn sort_tptp_name() {
         assert_eq!(Sort::int().tptp_name(), "$int");
         assert_eq!(Sort::new("person").tptp_name(), "person");
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn sort_tptp_decl() {
         let animal = Sort::new("animal");
         assert_eq!(
@@ -634,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn function_new_and_typed() {
         let plus = Function::new("plus", 2);
         assert_eq!(plus.arity(), 2);
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     // `person` is also moved into `ret_sort` below, so `slice::from_ref` (which
     // would keep the borrow alive) doesn't typecheck here; the clone is required.
     #[allow(clippy::cloned_ref_to_slice_refs)]
@@ -670,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn function_tptp_decl() {
         let person = Sort::new("person");
         let nil = Function::typed("nil", &[], person.clone());
@@ -686,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn predicate_new_and_typed() {
         let mortal = Predicate::new("mortal", 1);
         assert_eq!(mortal.arity(), 1);
@@ -699,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn predicate_tptp_decl() {
         let person = Sort::new("person");
         let likes = Predicate::typed("likes", &[person.clone(), person]);

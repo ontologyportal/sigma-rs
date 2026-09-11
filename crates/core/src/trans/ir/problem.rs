@@ -79,7 +79,7 @@ impl Problem {
     }
 
     /// Sets (or overwrites) the conjecture.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn conjecture(&mut self, f: Formula) -> &mut Self {
         self.conjecture = Some(f);
         self
@@ -195,13 +195,13 @@ impl Problem {
     }
 }
 
-#[cfg(all(test, feature = "ask"))]
+#[cfg(all(test, feature = "external-prover"))]
 mod tests {
     use super::super::term::Term;
     use super::*;
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn problem_axiom_and_conjecture() {
         let p = Predicate::new("P", 1);
         let socrates = Term::constant(Function::new("socrates", 0));
@@ -216,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn problem_tff_declarations() {
         let mut problem = Problem::new_tff();
         let person = Sort::new("person");
