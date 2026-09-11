@@ -18,7 +18,7 @@ import StatusLine from "../components/StatusLine.vue";
 const prover = useProverStore();
 const tests = useTestsStore();
 
-const assertions = ref("(instance Rex Dog)\n(subclass Dog Mammal)");
+const assertions = ref("(instance Rex DomesticDog)");
 const query = ref("(instance Rex Animal)");
 const assertionsEd = ref<InstanceType<typeof MonacoEditor> | null>(null);
 const queryEd = ref<InstanceType<typeof MonacoEditor> | null>(null);
