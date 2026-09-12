@@ -505,6 +505,28 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
     }
 
     #[test]
+    fn thf_mode_hands_the_runner_a_higher_order_problem() {
+        let runner = Arc::new(Canned {
+            transcript: THEOREM,
+            seen: Mutex::new(Vec::new()),
+        });
+        let kb = kb_with(runner.clone());
+        let opts = ExternalOpts {
+            mode: crate::TptpLang::Thf,
+            ..ExternalOpts::default()
+        };
+        let res = kb.ask(query("(instance Rex Animal)"), None, &opts);
+        assert_eq!(res.status, ProverStatus::Proved, "raw: {}", res.raw_output);
+        let seen = runner.seen.lock().unwrap();
+        let tptp = &seen[0];
+        assert!(tptp.contains("thf("), "expected a THF problem:\n{tptp}");
+        assert!(
+            !tptp.contains("fof("),
+            "first-order framing leaked into THF:\n{tptp}"
+        );
+    }
+
+    #[test]
     fn custom_debug_prints_the_runner_name() {
         let p = Prover::Custom(Arc::new(Canned {
             transcript: "",

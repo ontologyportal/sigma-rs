@@ -44,13 +44,11 @@ pub struct ExternalOpts {
     pub session: Option<String>,
     /// Wall-clock budget in seconds (0 = unlimited).
     pub timeout_secs: u64,
-    /// TPTP language for the generated problem file (FOF / TFF).
+    /// TPTP language for the generated problem: `Auto` / `Fof` / `Tff` go
+    /// through the first-order pipeline (`Auto` upgrades to TFF when the
+    /// selected axioms carry numerals); `Thf` assembles through the
+    /// translation layer's higher-order pipeline instead.
     pub mode: TptpLang,
-    /// Higher-order mode: assemble a THF problem through the translation
-    /// layer's HO pipeline instead of `mode`'s first-order one.  A separate
-    /// flag (rather than a `TptpLang` variant) so the parse subsystem's
-    /// dialect enum stays untouched.
-    pub hol: bool,
 }
 
 impl CommonProverOpts for ExternalOpts {

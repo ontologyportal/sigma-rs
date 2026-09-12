@@ -270,15 +270,13 @@ impl ExternalProverConfig {
         sigmakee_rs_core::prover::ExternalOpts {
             timeout_secs: self.timeout_secs,
             selection: self.selection,
-            mode: match self.tptp_lang.as_str() {
+            mode: match self.tptp_lang.to_ascii_lowercase().as_str() {
                 "fof" => TptpLang::Fof,
                 "tff" => TptpLang::Tff,
                 "cnf" => TptpLang::Cnf,
-                // Higher-order rides the `hol` flag; `mode` is inert then.
-                "thf" => TptpLang::Fof,
+                "thf" => TptpLang::Thf,
                 _ => TptpLang::Auto,
             },
-            hol: self.tptp_lang.eq_ignore_ascii_case("thf"),
             session: None,
         }
     }
@@ -2221,6 +2219,20 @@ mod tests {
     }
 
     #[cfg(feature = "external-prover")]
+    #[cfg(feature = "external-prover")]
+    #[test]
+    fn external_config_thf_selects_the_higher_order_dialect() {
+        for lang in ["thf", "THF"] {
+            let cfg = ExternalProverConfig {
+                tptp_lang: lang.into(),
+                ..ExternalProverConfig::default()
+            };
+            assert_eq!(cfg.to_prover_opts().mode, TptpLang::Thf, "{lang}");
+        }
+        let cfg = ExternalProverConfig::default();
+        assert_eq!(cfg.to_prover_opts().mode, TptpLang::Auto);
+    }
+
     #[test]
     fn external_config_builds_prover_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();

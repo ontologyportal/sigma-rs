@@ -11,7 +11,7 @@ use super::{Conjecture, ExternalOpts, ExternalProverLayer};
 
 use crate::progress::ProveCtx;
 use crate::semantics::types::Scope;
-use crate::{profile_span, SentenceId, SineParams, SymbolId};
+use crate::{profile_span, SentenceId, SineParams, SymbolId, TptpLang};
 
 impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
     pub(super) fn ext_prove_once(
@@ -103,7 +103,7 @@ impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
         // backends serialise the 1-to-1 THF themselves (the `prove_ho`
         // default), the embedded backend lowers the HO IR straight into the
         // FFI solver's native structures.
-        if opts.hol {
+        if mode == TptpLang::Thf {
             let (problem, sid_map) = {
                 profile_span!(ctx, "ask.build_problem");
                 let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
