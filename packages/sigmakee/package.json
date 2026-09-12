@@ -15,6 +15,10 @@
       "types": "./dist/sdk.d.ts",
       "default": "./dist/sdk.mjs"
     },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.mjs"
+    },
     "./sumo_parser_wasm_bg.wasm": "./dist/sumo_parser_wasm_bg.wasm"
   },
   "scripts": {

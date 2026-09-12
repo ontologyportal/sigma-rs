@@ -91,7 +91,7 @@ The facade maps the `sigmakee-rs-sdk` crate onto the browser:
 | SDK crate (Rust) | This facade (JS) | Notes |
 | --- | --- | --- |
 | `Session::new` | `new Session({ backend, config })` | |
-| `Backend::{Native, TranslationOnly}` | `Backend.{Native, TranslationOnly}` | `External` → TranslationOnly + a JS `hook` |
+| `Backend::{Native, External, TranslationOnly}` | `Backend.{Native, Vampire, TranslationOnly}` | `External` = Vampire behind a JS bridge (see below) |
 | `Source::{Http, Git, Local/Reader}` | `Source.{url, gitHub, file, kif}` | |
 | `Session::ingest(Source)` | `session.ingest(source)` | async (URL/GitHub fetch) |
 | `Session::tell` / `ask` | `session.tell` / `ask` | |
@@ -109,7 +109,7 @@ new Session(opts?: { backend?: Backend; config?: Config })   // default backend:
 session.configure(config: Config): this
 session.ingest(source: Source): Promise<{ loaded: number; files: string[]; errors: string[] }>
 session.tell(kif: string, session?: string): { ok: boolean; errors: string[] }
-session.ask(query: string, opts?: { session?: string; hook?: (tptp: string) => string }): AskResult | string
+session.ask(query: string, opts?: { session?: string; tptp?: boolean; hook?: VampireBridge }): AskResult
 session.translate(opts?: { lang?: "fof" | "tff"; hideNumbers?: boolean; session?: string }): string
 session.lookup(pattern: string): string[]
 session.validate(): Diagnostic[]                             // whole-KB diagnostics ([] = clean)
@@ -128,8 +128,8 @@ carries `{ name, kinds, documentation, term_format, format, parents, children,
 arity, domains, range, appears_in_count, consequent_count }` (see `sdk.d.ts`).
 These project out the KB's internal `u64` ids and run on either backend.
 
-`ask` returns an `AskResult` on a Native session, or the hook's string on a
-TranslationOnly session:
+`ask` returns an `AskResult` on a Native or Vampire session (TranslationOnly
+sessions throw):
 
 ```ts
 interface AskResult {
@@ -141,6 +141,29 @@ interface AskResult {
   proof: Array<{ index: number; rule: string; premises: number[]; kif: string }>;
 }
 ```
+
+### Vampire backend
+
+A `Backend.Vampire` session runs the same engine path as the CLI's external
+prover -- axiom selection with autoscaling, hypothesis staging, transcript
+parsing -- and only delegates the prover run itself to a bridge you install:
+`(tptp, args, timeoutMs) => { stdout, stderr, code }`, called synchronously.
+The `sigmakee/node` module builds one over `spawnSync`:
+
+```js
+import { init, Session, Backend } from "sigmakee/sdk";
+import { installVampireBridge, vampireBridge } from "sigmakee/node";
+
+installVampireBridge(vampireBridge({ vampirePath: "/usr/local/bin/vampire" }));
+const s = new Session({ backend: Backend.Vampire });
+```
+
+In the browser the bridge parks the calling worker on `Atomics.wait` while a
+page-owned worker runs the Emscripten Vampire (`@sigma/web` ships that
+plumbing); it needs cross-origin isolation for `SharedArrayBuffer`. A per-call
+bridge can be passed as `ask(query, { hook })`. `Config.vampireArgs` appends
+raw CLI text; `Config.keepTptp` returns the exact problem text as
+`result.input_tptp`.
 
 ### `Source`
 
@@ -179,7 +202,7 @@ The facade wraps these; use them directly for finer control. Two classes:
 
 | Class | Purpose |
 | --- | --- |
-| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)` and `toTptpForAsk(assertions, query, tolerancePct?, tptp?)` for driving an external prover. |
+| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)`. `Config.backend` (`"native"` / `"vampire"`) selects the prover `ask`/`auditConsistency` run. |
 
 It also exposes the query methods `validate()`, `validateFormula(kif)`,
 `search(query, kind?, language?, limit?)`, and `manpage(symbol)` (the facade's

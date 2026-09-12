@@ -909,49 +909,6 @@ impl<L: TopLayer> Session<L> {
             None => String::new(),
         }
     }
-
-    /// Parse a captured Vampire run's combined stdout+stderr into the same
-    /// shape a native ask projects to -- status (with Vampire's own
-    /// Theorem-vs-ContradictoryAxioms mislabelling corrected), proof steps,
-    /// Graphviz digraph, and English prose -- so both backends render through
-    /// one UI code path.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub fn vampire_ask_view(&self, raw_output: &str, query_kif: &str) -> AskResultView {
-        let parsed =
-            sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
-        AskResultView::project(
-            &self.kb,
-            parsed.status,
-            None,
-            raw_output.to_string(),
-            &parsed.proof,
-            query_kif,
-        )
-    }
-
-    /// Parse a captured Vampire consistency-check run into the same shape a
-    /// native audit projects to.  Vampire's one-shot run yields at most a
-    /// single contradiction, so `contradictions` has 0 or 1 entries.
-    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-    pub fn vampire_audit_view(&self, raw_output: &str) -> AuditResultView {
-        let parsed = sigmakee_rs_core::parse_vampire_result(
-            raw_output,
-            sigmakee_rs_core::ProverMode::CheckConsistency,
-        );
-        let proofs: Vec<Vec<KifProofStep>> =
-            if parsed.status == ProverStatus::Inconsistent && !parsed.proof.is_empty() {
-                vec![parsed.proof]
-            } else {
-                Vec::new()
-            };
-        AuditResultView::project(
-            &self.kb,
-            parsed.status,
-            None,
-            raw_output.to_string(),
-            &proofs,
-        )
-    }
 }
 
 #[cfg(feature = "native-prover")]
@@ -1302,6 +1259,20 @@ mod tests {
         assert!(unrelated.wordnet.is_empty());
     }
 
+    /// Project a captured Vampire transcript the way the external layer's
+    /// runners do (shared parser, then the ask view).
+    #[cfg(feature = "external-prover")]
+    fn transcript_view(s: &Session<TranslationLayer>, raw: &str, query: &str) -> AskResultView {
+        let r = sigmakee_rs_core::result_from_transcript(
+            raw,
+            "",
+            sigmakee_rs_core::ProverMode::Prove,
+            std::time::Duration::ZERO,
+        );
+        AskResultView::project(s.kb(), r.status, None, r.raw_output, &r.proof_kif, query)
+    }
+
+    #[cfg(feature = "external-prover")]
     #[test]
     fn ask_result_view_reconstructs_proof_as_tptp() {
         let s = session_with("(subclass Dog Mammal)\n");
@@ -1316,7 +1287,7 @@ fof(f2,axiom,(
   inference(resolution,[],[f1])).
 % SZS output end Proof for input
 ";
-        let view = s.vampire_ask_view(raw, "(subclass Dog Mammal)");
+        let view = transcript_view(&s, raw, "(subclass Dog Mammal)");
         assert_eq!(view.proof.len(), 2);
         // Both steps are ground clausal literals, so `Auto` reconstructs
         // them as `cnf(...)`, not `fof(...)` -- either is a correctly
@@ -1336,11 +1307,16 @@ fof(f2,axiom,(
         );
     }
 
+    #[cfg(feature = "external-prover")]
     #[test]
     fn ask_result_view_proof_tptp_empty_without_a_proof() {
         let s = session_with("(subclass Dog Mammal)\n");
         // No SZS proof section -- Unknown/no proof.
-        let view = s.vampire_ask_view("% SZS status Unknown for input\n", "(subclass Dog Mammal)");
+        let view = transcript_view(
+            &s,
+            "% SZS status Unknown for input\n",
+            "(subclass Dog Mammal)",
+        );
         assert!(view.proof.is_empty());
         assert!(view.proof_tptp_prologue.is_empty());
     }

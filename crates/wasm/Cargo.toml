@@ -10,10 +10,9 @@ crate-type = ["cdylib", "rlib"]
 # Direct path dep with `default-features = false` (NOT `workspace = true`):
 # the workspace edge turns on core's default `ask` feature, which spawns
 # subprocess provers and is `compile_error!`-banned on wasm32.  We enable only
-# `native-prover` — the pure-Rust saturation prover, the one proving backend
-# that runs in-browser. Vampire (WASM) proof-transcript parsing
-# (`parse_vampire_result`) needs no feature of its own — it's ungated, part
-# of core's default build (regex is a hard dependency there).
+# `native-prover` (the pure-Rust saturation prover) and `external-prover` (the
+# process-free external layer the browser's Vampire bridge plugs into through
+# `Prover::Custom`).
 sigmakee-rs-core = { path = "../core", default-features = false, features = ["native-prover", "external-prover", "snapshot", "lexicon"] }
 # The SDK Session is the sharing seam: WasmNativeProver holds its KB as an
 # `Arc<RwLock<Session<ProverLayer<TranslationLayer>>>>` so the LSP facade

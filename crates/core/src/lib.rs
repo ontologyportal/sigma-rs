@@ -143,7 +143,6 @@ pub use prover::ProverMode;
 // builds with `native-prover`; reached through the gated `prover` module,
 // so the re-export carries that gate. See `prover::vampire_proof`.
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
-pub use prover::vampire_proof::{parse_vampire_result, VampireProofResult};
 #[cfg(feature = "external-prover")]
 pub use prover::vampire_proof::{result_from_transcript, vampire_cli_args};
 // `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they

@@ -14,14 +14,10 @@
 // (`kif_proof_inputs`, `TptpProofProcessor`), and apply the
 // Theorem-without-a-negated-conjecture → Inconsistent correction.
 //
-// This is the parsing half of what `external`'s `ask`-gated
-// `vampire::subprocess::VampireRunner` also uses: that backend spawns the
-// `vampire` binary as a subprocess (impossible on wasm32) and then calls
-// straight into functions defined here (`is_timeout`/`is_input_error`) to
-// classify its stdout. A standalone Vampire build compiled to WASM has no
-// subprocess to spawn — its stdout is captured directly by the caller (e.g.
-// the wasm crate's JS glue) — so [`parse_vampire_result`] is the equivalent
-// entry point for that path, producing the same status + proof-graph shape.
+// Every runner that drives Vampire as a TPTP-text CLI -- the `ask`-gated
+// subprocess runner and the browser's bridge to the Emscripten build -- hands
+// its captured stdout + stderr to [`result_from_transcript`] here, so they
+// produce identical results for identical transcripts.
 
 use crate::parse::ast::{AstNode, Role, Source};
 use crate::parse::doc::DocItem;
@@ -29,13 +25,12 @@ use crate::parse::szs::parse_szs;
 
 #[cfg(feature = "external-prover")]
 use super::proof::proof_steps_to_kif;
-use super::proof::{proof_steps_to_kif_ast, KifProofStep};
-use super::result::{Binding, ProverMode, ProverStatus};
+use super::result::{ProverMode, ProverStatus};
 #[cfg(feature = "external-prover")]
 use super::result::{ProverResult, ProverTimings, TerminationReason};
+use super::tptp_proof::ProofStep;
 #[cfg(feature = "external-prover")]
-use super::tptp_proof::proof_steps_to_ir;
-use super::tptp_proof::{kif_proof_inputs, ProofStep, TptpProofProcessor};
+use super::tptp_proof::{kif_proof_inputs, proof_steps_to_ir, TptpProofProcessor};
 
 // -- Status classification -----------------------------------------------------
 
@@ -149,7 +144,7 @@ fn role_str(role: &Role) -> &str {
 /// `pub(crate)`: shared with the `ask`-gated subprocess `VampireRunner`
 /// (same backend, different transport — spawns the binary instead of
 /// running it as WASM), which uses `parse::szs::parse_szs` + this adapter
-/// the same way this module's own [`parse_vampire_result`] does.
+/// the same way [`result_from_transcript`] does.
 pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
     doc.iter()
         .filter_map(DocItem::as_stmt)
@@ -461,105 +456,14 @@ fn status_label(s: &ProverStatus) -> &'static str {
     }
 }
 
-// -- Public entry point ---------------------------------------------------------
-
-/// A Vampire transcript parsed the same way the native `ask`-gated
-/// subprocess backend parses one: SZS status (with the same
-/// Theorem-without-a-negated-conjecture → Inconsistent correction the
-/// subprocess backend applies) plus the proof lowered to this crate's shared
-/// [`KifProofStep`] proof-graph vocabulary — the same type the native
-/// saturation prover's proofs use, so callers can render both through one
-/// code path (`render_graphviz`, `render_proof_prose_with`, …).
-pub struct VampireProofResult {
-    pub status: ProverStatus,
-    pub proof: Vec<KifProofStep>,
-    pub bindings: Vec<Binding>,
-}
-
-/// Parse a captured Vampire run's combined stdout+stderr into a
-/// [`VampireProofResult`]. `mode` selects Prove-vs-CheckConsistency SZS
-/// classification, mirroring [`ProverOpts::mode`](crate::prover::ProverOpts)
-/// on the native subprocess path.
-pub fn parse_vampire_result(raw_output: &str, mode: ProverMode) -> VampireProofResult {
-    let (doc, _errors) = parse_szs(raw_output, "vampire");
-    let status_word = szs_status_word(&doc);
-    let status = determine_status(raw_output, status_word, &mode);
-
-    let proof_steps = docitems_to_proof_steps(&doc);
-    let has_proof = !proof_steps.is_empty();
-
-    // Distinguish a genuine Theorem from ContradictoryAxioms that Vampire
-    // mislabels: some schedules report `SZS status Theorem` even when the
-    // refutation never used the negated conjecture (the axioms alone derive
-    // ⊥ — SUMO carries known inconsistencies). A proof without a
-    // negated-conjecture STEP (checked on the parsed roles, not the raw
-    // text — the substring can appear in echoed input or schedule chatter)
-    // is an Inconsistent verdict, not a Proved one.
-    let status = if matches!(mode, ProverMode::Prove)
-        && matches!(status, ProverStatus::Proved)
-        && has_proof
-        && !proof_steps.iter().any(|s| s.role == "negated_conjecture")
-    {
-        ProverStatus::Inconsistent
-    } else {
-        status
-    };
-
-    // Only extract bindings when Vampire proved the conjecture via a
-    // genuine refutation (SZS Theorem). ContradictoryAxioms/Unsatisfiable
-    // proofs derive contradiction purely from the axioms and carry no
-    // negated-conjecture steps, so there are no variable bindings to find.
-    let bindings = if matches!(mode, ProverMode::Prove) && status_word == Some("Theorem") {
-        let mut proc = TptpProofProcessor::new();
-        proc.load_proof(&proof_steps);
-        proc.extract_answers()
-    } else {
-        Vec::new()
-    };
-
-    let proof = if has_proof {
-        let inputs = kif_proof_inputs(&proof_steps);
-        let formulas = docitems_to_ast_formulas(&doc);
-        let inputs: Vec<_> = inputs
-            .into_iter()
-            .zip(formulas)
-            .map(|((_, role, premises, source_name), formula)| {
-                (formula, role, premises, source_name)
-            })
-            .collect();
-        proof_steps_to_kif_ast(&inputs)
-    } else {
-        Vec::new()
-    };
-
-    VampireProofResult {
-        status,
-        proof,
-        bindings,
-    }
-}
-
-/// The parsed formula `AstNode` of each named statement in `doc`, in the same
-/// order [`docitems_to_proof_steps`] visits them — pairs with
-/// [`kif_proof_inputs`]'s per-step tuples by position.
-fn docitems_to_ast_formulas(doc: &[DocItem]) -> Vec<AstNode> {
-    doc.iter()
-        .filter_map(DocItem::as_stmt)
-        .filter_map(|node| match node {
-            AstNode::Annotated {
-                name: Some(_),
-                formula,
-                ..
-            } => Some((**formula).clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-#[cfg(test)]
+#[cfg(all(test, feature = "external-prover"))]
 mod tests {
     use super::*;
     use crate::parse::kif::dis::AstKif;
+
+    fn parsed(raw: &str) -> ProverResult {
+        result_from_transcript(raw, "", ProverMode::Prove, std::time::Duration::ZERO)
+    }
 
     #[test]
     fn derived_steps_are_labeled_by_their_inference_rule_not_plain() {
@@ -583,8 +487,8 @@ fof(f5,plain,(
   inference(resolution,[],[f1,f4])).
 % SZS output end Proof for input
 ";
-        let result = parse_vampire_result(raw, ProverMode::Prove);
-        let rules: Vec<&str> = result.proof.iter().map(|s| s.rule.as_str()).collect();
+        let result = parsed(raw);
+        let rules: Vec<&str> = result.proof_kif.iter().map(|s| s.rule.as_str()).collect();
         assert_eq!(
             rules,
             vec![
@@ -614,8 +518,8 @@ fof(f2,axiom,(
   inference(resolution,[],[f1])).
 % SZS output end Proof for input
 ";
-        let result = parse_vampire_result(raw, ProverMode::Prove);
-        let rendered: Vec<String> = result.proof.iter().map(|s| s.formula.flat()).collect();
+        let result = parsed(raw);
+        let rendered: Vec<String> = result.proof_kif.iter().map(|s| s.formula.flat()).collect();
         assert_eq!(
             rendered,
             vec![

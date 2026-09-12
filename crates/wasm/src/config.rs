@@ -222,9 +222,8 @@ impl Config {
     /// own default budget (a fixed axiom count, not a percentage -- see
     /// `SineParams::default`) instead of a KB-relative one; `100` emits the
     /// whole KB with no selection. Applies to BOTH the
-    /// native backend (as the auto-tolerance loop's starting budget, which
-    /// may still widen from there) and Vampire (as the final, one-shot
-    /// budget -- see [`Session::to_tptp_for_ask`](crate::Session::to_tptp_for_ask)).
+    /// native backend and Vampire, as the autoscaling loop's starting
+    /// budget (it may still widen from there).
     #[wasm_bindgen(getter = selectionTolerancePct)]
     pub fn selection_tolerance_pct(&self) -> Option<f64> {
         self.selection_tolerance_pct

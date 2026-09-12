@@ -175,40 +175,4 @@ impl Session {
         };
         serde_wasm_bindgen::to_value(&clauses).map_err(|e| JsValue::from_str(&e.to_string()))
     }
-
-    /// Parse a captured Vampire (WASM) run's combined stdout+stderr into the
-    /// SAME shape [`ask`](Session::ask) returns for the native prover -- status
-    /// (with Vampire's own Theorem-vs-ContradictoryAxioms mislabelling
-    /// corrected, same as the native `ask`/subprocess `VampireRunner` paths),
-    /// proof steps, Graphviz digraph, and English prose -- so both backends
-    /// render through one UI code path.
-    ///
-    /// `raw_output` -- Vampire's stdout+stderr, verbatim (see the demo's
-    /// `sigma.worker.js`, which runs the Vampire WASM binary and hands its
-    /// captured output straight to this method).
-    /// `query_kif` -- the conjecture KIF text, reparsed only for the prose's
-    /// goal restatement; a parse failure just drops that opener line.
-    #[wasm_bindgen(js_name = parseVampireAskResult)]
-    pub fn parse_vampire_ask_result(
-        &self,
-        raw_output: &str,
-        query_kif: &str,
-    ) -> Result<JsValue, JsValue> {
-        let session_guard = self.session.read().expect("kb lock not poisoned");
-        to_js(&session_guard.vampire_ask_view(raw_output, query_kif))
-    }
-
-    /// Parse a captured Vampire (WASM) consistency-check run into the SAME
-    /// shape [`audit_consistency`](Session::audit_consistency) returns for the
-    /// native prover. Vampire's one-shot run yields at most a single
-    /// contradiction (no enumerator, unlike the native audit's driver), so
-    /// `contradictions` has 0 or 1 entries.
-    ///
-    /// `raw_output` -- Vampire's stdout+stderr, verbatim, from a run over the
-    /// whole-KB TPTP dump (no conjecture -- see the demo's `auditVampire`).
-    #[wasm_bindgen(js_name = parseVampireAuditResult)]
-    pub fn parse_vampire_audit_result(&self, raw_output: &str) -> Result<JsValue, JsValue> {
-        let session_guard = self.session.read().expect("kb lock not poisoned");
-        to_js(&session_guard.vampire_audit_view(raw_output))
-    }
 }

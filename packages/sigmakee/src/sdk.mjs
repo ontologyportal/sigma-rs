@@ -81,9 +81,33 @@ export function formatTest({
 export const Backend = Object.freeze({
   /** In-browser native saturation prover (`ask` proves). */
   Native: "native",
-  /** Parse / translate / lookup only; `ask` needs an external hook. */
+  /** Vampire, driven by the engine's external prover layer through the
+   *  `globalThis.__sigmaRunVampireSync` bridge (see
+   *  {@link installVampireBridge}; the `sigmakee/node` module builds a
+   *  `spawnSync` one). */
+  Vampire: "vampire",
+  /** Parse / translate / lookup only; proving ops throw. */
   TranslationOnly: "translation",
 });
+
+/**
+ * Install the synchronous bridge the engine's Vampire runner calls:
+ * `(tptp, args, timeoutMs) => { stdout, stderr, code }`, running Vampire on
+ * the problem text with the given command line (it already carries `-t`).
+ * A legacy `(tptp) => string` hook returning the raw transcript is accepted
+ * too. `null` uninstalls.
+ * @param {VampireBridge | ((tptp: string) => string) | null} bridge
+ */
+export function installVampireBridge(bridge) {
+  globalThis.__sigmaRunVampireSync = bridge ? adaptBridge(bridge) : undefined;
+}
+
+function adaptBridge(bridge) {
+  return (tptp, args, timeoutMs) => {
+    const out = bridge(tptp, args, timeoutMs);
+    return typeof out === "string" ? { stdout: out, stderr: "", code: 0 } : out;
+  };
+}
 
 /**
  * A knowledge-base source, mirroring the SDK's `Source` enum. Construct via the
@@ -213,11 +237,12 @@ export class Session {
   /** @param {{ backend?: string, config?: Config }} [opts] */
   constructor({ backend = Backend.Native, config } = {}) {
     this.#backend = backend;
-    // One binding for both backends: the raw wasm `Session` carries the whole
-    // stack (native proving AND TPTP translation); `Backend.TranslationOnly`
-    // only changes how `ask`/`translate` behave on the facade.
+    // One binding for every backend: the raw wasm `Session` carries the whole
+    // stack (native proving, the external layer for Vampire, and TPTP
+    // translation); the facade's backend selects which engine `ask` runs and
+    // whether `TranslationOnly` refuses proving ops.
     this.#kb = new WasmSession();
-    if (config) this.configure(config);
+    this.configure(config ?? new Config());
   }
 
   /** The selected {@link Backend}. */
@@ -229,8 +254,12 @@ export class Session {
     return this.#kb;
   }
 
-  /** Set the active {@link Config} (native backend only). Returns `this`. */
+  /** Set the active {@link Config}. A `Backend.Vampire` session pins the
+   *  config's `backend` to Vampire; a Native session leaves it as given, so
+   *  the raw `Config.backend` can still pick the prover per call. Returns
+   *  `this`. */
   configure(config) {
+    if (this.#backend === Backend.Vampire) config.backend = "vampire";
     this.#kb.configure?.(config);
     return this;
   }
@@ -298,35 +327,40 @@ export class Session {
   }
 
   /**
-   * Prove `query`.
-   * - Native backend: returns the result object (`{ status, proved, proof, … }`).
-   * - TranslationOnly backend: requires `opts.hook(tptp) => string` and returns
-   *   the hook's raw output.
+   * Prove `query` with this session's backend and return the result object
+   * (`{ status, proved, proof, ... }`). On a Vampire session `opts.hook`
+   * (see {@link installVampireBridge}) runs the prover for this call only;
+   * otherwise the installed bridge does. TranslationOnly sessions throw.
    * @param {string} query
-   * @param {{ session?: string, tptp?: boolean, hook?: (tptp: string) => string }} [opts]
+   * @param {{ session?: string, tptp?: boolean, hook?: VampireBridge | ((tptp: string) => string) }} [opts]
    */
   ask(query, opts = {}) {
     if (this.#backend === Backend.TranslationOnly) {
-      if (typeof opts.hook !== "function") {
-        throw new Error(
-          "ask() on a TranslationOnly session needs opts.hook(tptp)",
-        );
+      throw new Error("ask() needs a proving backend (Native or Vampire)");
+    }
+    if (opts.hook && this.#backend === Backend.Vampire) {
+      const previous = globalThis.__sigmaRunVampireSync;
+      installVampireBridge(opts.hook);
+      try {
+        return this.#kb.ask(query, opts.session, opts.tptp);
+      } finally {
+        globalThis.__sigmaRunVampireSync = previous;
       }
-      return opts.hook(this.#kb.toTptpForAsk("", query, null, opts.tptp));
     }
     return this.#kb.ask(query, opts.session, opts.tptp);
   }
 
   /**
-   * Consistency-audit the whole KB (Native backend only): enumerates up to
-   * `limit` distinct contradictions via the native saturation prover, each
-   * cited back to `file:line` wherever a step traces to an input axiom.
+   * Consistency-audit the whole KB with this session's backend: the native
+   * prover enumerates up to `limit` distinct contradictions, Vampire's
+   * one-shot run reports at most one; each is cited back to `file:line`
+   * wherever a step traces to an input axiom. TranslationOnly sessions throw.
    * @param {number} [limit] caps distinct contradictions found (default 5).
    * @returns {import('./sdk').AuditResult}
    */
   auditConsistency(limit) {
-    if (typeof this.#kb.auditConsistency !== "function") {
-      throw new Error("auditConsistency() requires a Native session");
+    if (this.#backend === Backend.TranslationOnly) {
+      throw new Error("auditConsistency() needs a proving backend");
     }
     return this.#kb.auditConsistency(limit);
   }

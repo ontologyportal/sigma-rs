@@ -482,3 +482,87 @@ impl TptpOptions {
         }
     }
 }
+
+#[cfg(all(test, any(feature = "external-prover", feature = "native-prover")))]
+mod session_support_tests {
+    use super::KnowledgeBase;
+    use crate::TptpOptions;
+
+    fn kb_with(kif: &str) -> KnowledgeBase {
+        let mut kb = KnowledgeBase::new();
+        let r = kb.reload_kif(kif, &std::path::PathBuf::from("t.kif"), "t.kif");
+        assert!(r.ok, "load failed: {:?}", r.diagnostics);
+        kb.make_session_axiomatic("t.kif").expect("promote");
+        kb
+    }
+
+    /// Stage assertions + query in two tags and select from both, as an
+    /// external ask does; returns the selected problem text.
+    fn selected(kb: &mut KnowledgeBase, assertions: &str, query: &str, pct: Option<f64>) -> String {
+        assert!(kb.tell(assertions, "s").ok);
+        assert!(kb.tell(query, "q").ok);
+        let mut seed = kb.session_sids("s");
+        seed.extend(kb.session_sids("q"));
+        let opts = TptpOptions {
+            hide_numbers: true,
+            ..TptpOptions::default()
+        };
+        let out = kb.to_tptp_selected(&opts, &seed, Some("s"), None, pct);
+        kb.flush_session("s");
+        kb.flush_session("q");
+        out
+    }
+
+    /// A starved selection budget must not drop a link of the subclass chain
+    /// between an asserted class and the queried class: the chain facts are
+    /// injected regardless of SInE's ranking.
+    #[test]
+    fn a_starved_budget_keeps_the_taxonomy_chain() {
+        let mut kb = kb_with(
+            "(subclass Mammal WarmBloodedVertebrate)\n\
+             (subclass WarmBloodedVertebrate Vertebrate)\n\
+             (subclass Vertebrate Animal)\n\
+             (subclass Animal Organism)\n\
+             (=> (and (subclass ?X ?Y) (instance ?Z ?X)) (instance ?Z ?Y))\n\
+             (subclass Rock Object)\n",
+        );
+        let tptp = selected(
+            &mut kb,
+            "(instance Rex Dog)\n(subclass Dog Mammal)",
+            "(instance Rex Animal)",
+            Some(0.0001),
+        );
+        for link in [
+            "s__subclass(s__Dog,s__Mammal)",
+            "s__subclass(s__Mammal,s__WarmBloodedVertebrate)",
+            "s__subclass(s__WarmBloodedVertebrate,s__Vertebrate)",
+            "s__subclass(s__Vertebrate,s__Animal)",
+        ] {
+            assert!(tptp.contains(link), "missing chain link {link}:\n{tptp}");
+        }
+    }
+
+    /// Session assertions the query needs must reach the problem as support,
+    /// both with SInE selection and without.
+    #[test]
+    fn session_assertions_are_emitted_as_support() {
+        let mut kb = kb_with("(subclass Mammal Animal)");
+        for pct in [None, Some(100.0)] {
+            let tptp = selected(
+                &mut kb,
+                "(instance Rex Dog)\n(subclass Dog Mammal)",
+                "(instance Rex Animal)",
+                pct,
+            );
+            assert!(
+                tptp.lines().any(|l| l.contains("s__Rex")),
+                "pct={pct:?}: the asserted (instance Rex Dog) never reached the problem:\n{tptp}"
+            );
+            assert!(
+                tptp.lines()
+                    .any(|l| l.contains("s__Dog") && l.contains("s__Mammal")),
+                "pct={pct:?}: the asserted (subclass Dog Mammal) is missing:\n{tptp}"
+            );
+        }
+    }
+}

@@ -24,12 +24,14 @@ pub mod proof;
 // string) — no subprocess spawning, so unlike `external` this compiles on
 // every target including wasm32. Ungated: consumed by the `ask`-gated
 // subprocess backends AND by the wasm-safe `vampire_proof` wrapper below.
+#[cfg(feature = "external-prover")]
 pub(crate) use proof::tstp as tptp_proof;
 // Pure SZS/TSTP parsing for a captured Vampire transcript — status
 // classification + proof-step extraction, no subprocess spawning. See the
 // module doc for how this relates to `external`'s `ask`-gated
 // `VampireRunner`.
 pub mod axiom_source;
+#[cfg(feature = "external-prover")]
 pub mod vampire_proof;
 
 pub(crate) mod scale;
