@@ -218,14 +218,7 @@ impl TranslationLayer {
         }
         let mut bodies: Vec<Formula> = Vec::with_capacity(sids.len());
         let mut decls = Decls::default();
-        // `var_index` numbering is PER ROOT (each split conjunct numbers its
-        // own variables from 0), while SymbolIds are shared across the split —
-        // so conjoined bodies must be re-indexed into one global space keyed by
-        // SymbolId, or `?C` and `?F` from different conjuncts both emit as
-        // `X0` and the conjunction's meaning collapses.
-        let mut global_idx: HashMap<SymbolId, u32> = HashMap::new();
-        let mut next_idx: u32 = 0;
-        let mut bound: HashSet<SymbolId> = HashSet::new();
+        let mut vars = ConjunctionVars::default();
         let mut var_sorts_all: VarSorts = VarSorts::new();
 
         for &sid in sids {
@@ -239,22 +232,7 @@ impl TranslationLayer {
                 scope: s,
             };
             let sentence = self.semantic.syntactic.sentence(sid)?;
-
-            // This root's local variable numbering, in local-index order for
-            // deterministic global assignment.
-            let mut vids: HashMap<SymbolId, u32> = HashMap::new();
-            self.semantic.syntactic.collect_vars(sid, &mut vids);
-            let mut locals: Vec<(SymbolId, u32)> = vids.iter().map(|(k, v)| (*k, *v)).collect();
-            locals.sort_by_key(|&(_, l)| l);
-            let mut remap: HashMap<u32, u32> = HashMap::new();
-            for (sym, local) in locals {
-                let g = *global_idx.entry(sym).or_insert_with(|| {
-                    let g = next_idx;
-                    next_idx += 1;
-                    g
-                });
-                remap.insert(local, g);
-            }
+            let (remap, vids) = vars.register(&self.semantic.syntactic, sid);
 
             let var_sorts: VarSorts = if typed {
                 self.semantic
@@ -270,9 +248,6 @@ impl TranslationLayer {
             let mut body = self.sid_to_formula(&sentence, mode, &var_sorts, &mut decls)?;
             remap_formula_vars(&mut body, &remap);
             bodies.push(body);
-            self.semantic
-                .syntactic
-                .collect_bound_vars(sid, true, &mut bound);
             // Shared variable ids must agree; a later conjunct's evidence can
             // only sharpen (most-specific wins via `max`).
             for (k, v) in var_sorts {
@@ -290,12 +265,7 @@ impl TranslationLayer {
             hide_numbers,
             scope: scope.unwrap_or(Scope::Base),
         };
-        let mut free: Vec<(SymbolId, u32)> = global_idx
-            .iter()
-            .filter(|(id, _)| !bound.contains(id))
-            .map(|(id, idx)| (*id, *idx))
-            .collect();
-        free.sort_by_key(|&(_, idx)| idx);
+        let free = vars.free();
 
         let mut formula = Formula::and(bodies);
         for &(id, idx) in &free {
@@ -304,9 +274,9 @@ impl TranslationLayer {
         }
 
         let qvm = QueryVarMap {
-            var_mapping: global_idx
-                .iter()
-                .map(|(&id, &idx)| (id, (idx, self.sym_name_string(id))))
+            var_mapping: vars
+                .all()
+                .map(|(id, idx)| (id, (idx, self.sym_name_string(id))))
                 .collect(),
             free_vars: free.iter().map(|&(id, _)| id).collect(),
         };
@@ -317,6 +287,28 @@ impl TranslationLayer {
             pred_decls: decls.preds,
         };
         Some((cf, qvm))
+    }
+
+    /// All variables of a root (`SymbolId -> local var index`) and, of those,
+    /// the FREE ones -- not bound by any quantifier in the root -- sorted by
+    /// index for a deterministic binder order.  The free-variable wrap of
+    /// every dialect's lowering starts here.
+    pub(in crate::trans) fn root_vars(
+        &self,
+        sid: SentenceId,
+    ) -> (HashMap<SymbolId, u32>, Vec<(SymbolId, u32)>) {
+        let syn = &self.semantic.syntactic;
+        let mut all: HashMap<SymbolId, u32> = HashMap::new();
+        syn.collect_vars(sid, &mut all);
+        let mut bound: HashSet<SymbolId> = HashSet::new();
+        syn.collect_bound_vars(sid, true, &mut bound);
+        let mut free: Vec<(SymbolId, u32)> = all
+            .iter()
+            .filter(|(id, _)| !bound.contains(id))
+            .map(|(id, idx)| (*id, *idx))
+            .collect();
+        free.sort_by_key(|&(_, idx)| idx);
+        (all, free)
     }
 
     /// The scope a sentence's classification evidence resolves in: `Base` for
@@ -361,8 +353,7 @@ impl TranslationLayer {
 
         // All variables of the root, collected once: the classification filter,
         // the query map, and the free-var wrap all read this.
-        let mut all: HashMap<SymbolId, u32> = HashMap::new();
-        self.semantic.syntactic.collect_vars(sid, &mut all);
+        let (all, free) = self.root_vars(sid);
 
         // Variable sorts come from the formula ITSELF (instance guards, domain
         // positions, defining literal equalities), resolved once per root.
@@ -385,17 +376,6 @@ impl TranslationLayer {
         }
         let mut decls = Decls::default();
         let body = self.sid_to_formula(&sentence, mode, &var_sorts, &mut decls)?;
-
-        let mut bound: HashSet<SymbolId> = HashSet::new();
-        self.semantic
-            .syntactic
-            .collect_bound_vars(sid, true, &mut bound);
-        let mut free: Vec<(SymbolId, u32)> = all
-            .iter()
-            .filter(|(id, _)| !bound.contains(id))
-            .map(|(id, idx)| (*id, *idx))
-            .collect();
-        free.sort_by_key(|&(_, idx)| idx); // determinism
 
         let mut formula = body;
         for &(id, idx) in &free {
@@ -958,6 +938,64 @@ fn tff_sort_suffix(args: &[Sort], ret: Option<Sort>) -> String {
     }
     out.push_str(if ret.is_some() { "Fn" } else { "Pred" });
     out
+}
+
+/// One global variable space for a multi-root conjecture.  `var_index`
+/// numbering is PER ROOT (each CAF-split conjunct numbers its own variables
+/// from 0) while `SymbolId`s are shared across the split, so separately
+/// lowered bodies must be re-indexed into one space keyed by `SymbolId` --
+/// or `?C` and `?F` from different conjuncts both emit as `X0` and the
+/// conjunction's meaning collapses.  Both dialects' conjecture lowerings
+/// drive this.
+#[cfg(feature = "external-prover")]
+#[derive(Default)]
+pub(in crate::trans) struct ConjunctionVars {
+    global_idx: HashMap<SymbolId, u32>,
+    bound: HashSet<SymbolId>,
+}
+
+#[cfg(feature = "external-prover")]
+impl ConjunctionVars {
+    /// Register one root: assign a global index to each of its variables (in
+    /// local-index order, for deterministic numbering), union its bound
+    /// variables, and return the root's `local -> global` remap along with
+    /// its local variable map.
+    pub(in crate::trans) fn register(
+        &mut self,
+        syn: &crate::syntactic::SyntacticLayer,
+        sid: SentenceId,
+    ) -> (HashMap<u32, u32>, HashMap<SymbolId, u32>) {
+        let mut vids: HashMap<SymbolId, u32> = HashMap::new();
+        syn.collect_vars(sid, &mut vids);
+        let mut locals: Vec<(SymbolId, u32)> = vids.iter().map(|(k, v)| (*k, *v)).collect();
+        locals.sort_by_key(|&(_, l)| l);
+        let mut remap: HashMap<u32, u32> = HashMap::new();
+        for (sym, local) in locals {
+            let next = self.global_idx.len() as u32;
+            let g = *self.global_idx.entry(sym).or_insert(next);
+            remap.insert(local, g);
+        }
+        syn.collect_bound_vars(sid, true, &mut self.bound);
+        (remap, vids)
+    }
+
+    /// The conjunction's free variables `(symbol, global index)`, sorted by
+    /// index -- the binders of the single existential wrap.
+    pub(in crate::trans) fn free(&self) -> Vec<(SymbolId, u32)> {
+        let mut free: Vec<(SymbolId, u32)> = self
+            .global_idx
+            .iter()
+            .filter(|(id, _)| !self.bound.contains(id))
+            .map(|(id, idx)| (*id, *idx))
+            .collect();
+        free.sort_by_key(|&(_, idx)| idx);
+        free
+    }
+
+    /// Every variable of the conjunction `(symbol, global index)`.
+    pub(in crate::trans) fn all(&self) -> impl Iterator<Item = (SymbolId, u32)> + '_ {
+        self.global_idx.iter().map(|(&id, &idx)| (id, idx))
+    }
 }
 
 /// Rewrite every variable index in `f` (binders and occurrences) through

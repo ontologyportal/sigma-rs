@@ -33,6 +33,8 @@ use crate::trans::caches::ho_signatures::{HoSignature, KAPPA_FN};
 #[cfg(feature = "external-prover")]
 use crate::trans::ir::HoProblem;
 use crate::trans::ir::{HoSort, ThfConst, ThfExpr};
+#[cfg(feature = "external-prover")]
+use crate::trans::lower::ConjunctionVars;
 use crate::trans::TranslationLayer;
 use crate::types::{Element, Literal, OpKind, Sentence};
 use crate::{SentenceId, SymbolId};
@@ -136,9 +138,7 @@ impl TranslationLayer {
         }
         let mut bodies: Vec<ThfExpr> = Vec::with_capacity(sids.len());
         let mut decls = ThfDecls::default();
-        let mut global_idx: HashMap<SymbolId, u32> = HashMap::new();
-        let mut next_idx: u32 = 0;
-        let mut bound: HashSet<SymbolId> = HashSet::new();
+        let mut vars = ConjunctionVars::default();
         let mut var_sorts_all: HashMap<SymbolId, HoSort> = HashMap::new();
 
         for &sid in sids {
@@ -147,20 +147,7 @@ impl TranslationLayer {
             }
             let s = scope.unwrap_or_else(|| self.scope_of(sid));
             let sentence = self.semantic.syntactic.sentence(sid)?;
-
-            let mut vids: HashMap<SymbolId, u32> = HashMap::new();
-            self.semantic.syntactic.collect_vars(sid, &mut vids);
-            let mut locals: Vec<(SymbolId, u32)> = vids.iter().map(|(k, v)| (*k, *v)).collect();
-            locals.sort_by_key(|&(_, l)| l);
-            let mut remap: HashMap<u32, u32> = HashMap::new();
-            for (sym, local) in locals {
-                let g = *global_idx.entry(sym).or_insert_with(|| {
-                    let g = next_idx;
-                    next_idx += 1;
-                    g
-                });
-                remap.insert(local, g);
-            }
+            let (remap, _vids) = vars.register(&self.semantic.syntactic, sid);
 
             let var_sorts = self.thf_var_sorts(sid, s);
             let ctx = ThfCtx {
@@ -170,9 +157,6 @@ impl TranslationLayer {
             let mut body = self.thf_formula(&sentence, &ctx, &mut decls).ok()?;
             remap_thf_vars(&mut body, &remap);
             bodies.push(body);
-            self.semantic
-                .syntactic
-                .collect_bound_vars(sid, true, &mut bound);
             for (k, v) in var_sorts {
                 // `$o` evidence from any conjunct wins for the shared binder.
                 var_sorts_all
@@ -186,12 +170,7 @@ impl TranslationLayer {
             }
         }
 
-        let mut free: Vec<(SymbolId, u32)> = global_idx
-            .iter()
-            .filter(|(id, _)| !bound.contains(id))
-            .map(|(id, idx)| (*id, *idx))
-            .collect();
-        free.sort_by_key(|&(_, idx)| idx);
+        let free = vars.free();
 
         let mut expr = if bodies.len() == 1 {
             bodies.pop().unwrap()
@@ -232,18 +211,7 @@ impl TranslationLayer {
         let body = self.thf_formula(&sentence, &ctx, &mut decls)?;
 
         // Free variables wrap at their inferred sorts.
-        let mut all: HashMap<SymbolId, u32> = HashMap::new();
-        self.semantic.syntactic.collect_vars(sid, &mut all);
-        let mut bound: HashSet<SymbolId> = HashSet::new();
-        self.semantic
-            .syntactic
-            .collect_bound_vars(sid, true, &mut bound);
-        let mut free: Vec<(SymbolId, u32)> = all
-            .iter()
-            .filter(|(id, _)| !bound.contains(id))
-            .map(|(id, idx)| (*id, *idx))
-            .collect();
-        free.sort_by_key(|&(_, idx)| idx);
+        let (_all, free) = self.root_vars(sid);
 
         let mut expr = body;
         for &(id, idx) in free.iter().rev() {

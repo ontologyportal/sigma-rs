@@ -19,6 +19,7 @@
 use crate::types::SentenceId;
 #[cfg(feature = "external-prover")]
 use std::collections::HashSet;
+#[cfg(feature = "external-prover")]
 use std::fmt::Write as _;
 
 /// A TH0 sort: `$i`, `$o`, or a (right-associated, curried) arrow.
