@@ -18,6 +18,10 @@ export interface ProverConfig {
   wantProof?: boolean;
   profile?: boolean;
   selectionTolerancePct?: number;
+  /** Which prover runs the query; the worker's Config carries it. */
+  backend?: "native" | "vampire";
+  /** Raw extra CLI text for the Vampire backend. */
+  vampireArgs?: string;
 }
 
 /** The Config knobs with every field present. */
@@ -128,7 +132,11 @@ export const useProverStore = defineStore("prover", {
         const v = Math.floor(Number(raw));
         out[key] = Number.isFinite(v) && v >= 0 ? v : dflt;
       }
-      return out as ProverConfig;
+      return {
+        ...(out as ProverConfig),
+        backend: this.backend,
+        vampireArgs: this.vampireArgs.trim(),
+      };
     },
 
     /** Reset every prover setting (Config knobs, proof language, plain

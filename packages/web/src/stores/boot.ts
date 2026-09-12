@@ -3,7 +3,7 @@
  *  driving the LoadingScreen's progress bar until the app is usable. */
 
 import { defineStore } from "pinia";
-import { call } from "../services/sigma";
+import { call, connectVampire } from "../services/sigma";
 import { tryRestore } from "../services/kb-cache";
 import { BASE } from "../constants";
 import { useKBStore } from "./kb";
@@ -35,11 +35,14 @@ export const useBootStore = defineStore("boot", {
       this.total = Math.max(1, total);
     },
 
-    /** Boot the worker's wasm engine. The worker resolves the optional
-     *  Vampire runner against this URL; its own file sits in the bundle's
-     *  asset directory, so it cannot derive the base itself. */
+    /** Boot the worker's wasm engine, then connect the page-owned Vampire
+     *  worker to it. The Vampire runner asset resolves against this URL:
+     *  the workers' own files sit in the bundle's asset directory, so they
+     *  cannot derive the base themselves. */
     async bootWorker() {
-      await call("boot", { baseUrl: new URL(BASE, location.href).href });
+      const baseUrl = new URL(BASE, location.href).href;
+      await call("boot", { baseUrl });
+      connectVampire(baseUrl);
     },
 
     /** Reconcile tracked local changes against upstream in the background.

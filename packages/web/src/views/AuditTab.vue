@@ -59,15 +59,10 @@ async function runAudit() {
     // Audit inherits the Ask/Tell prover settings (including backend and
     // time limit) via the shared settings panel both tabs toggle.
     const config = prover.config();
-    const res = vampire
-      ? await call("auditVampire", {
-          timeLimitSecs: config.timeLimitSecs,
-          extraArgs: prover.vampireArgs.trim(),
-        })
-      : await call("audit", {
-          config,
-          limit: Math.max(1, Number(auditLimit.value) || 5),
-        });
+    const res = await call("audit", {
+      config,
+      limit: Math.max(1, Number(auditLimit.value) || 5),
+    });
     result.value = res.result;
     backendLabel.value = vampire ? "Vampire" : "SUPr";
   } catch (e) {
