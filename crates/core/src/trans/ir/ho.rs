@@ -15,12 +15,11 @@
 // taxonomy stays as `instance` guards, exactly like the FOF encoding).
 
 #[cfg(feature = "external-prover")]
-use std::collections::HashSet;
-#[cfg(feature = "external-prover")]
-use std::fmt::Write as _;
-
 #[cfg(feature = "external-prover")]
 use crate::types::SentenceId;
+#[cfg(feature = "external-prover")]
+use std::collections::HashSet;
+use std::fmt::Write as _;
 
 /// A TH0 sort: `$i`, `$o`, or a (right-associated, curried) arrow.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -205,40 +204,20 @@ impl HoProblem {
         &self.decls
     }
 
-    /// Assemble the full THF text.  `sid_map[i]` names `axioms[i]` as
-    /// `kb_<sid>` (repeats suffixed `_v<n>`, mirroring the FO assembler);
-    /// unmapped axioms are `ax_<i>`.  The conjecture is named
-    /// `conjecture_name`.
+    /// The full THF text with the standard `kb_<sid>` axiom naming: the
+    /// shared [`assemble_tptp_indexed`](crate::kb::assemble::assemble_tptp_indexed)
+    /// with default options (repeats suffixed `_v<n>`, unmapped axioms
+    /// `kb_anon_<i>`).
     pub fn to_thf(&self, sid_map: &[SentenceId], conjecture_name: &str) -> String {
-        let mut out = String::new();
-        for d in &self.decls {
-            let _ = writeln!(
-                out,
-                "thf({}_tp, type, {}: {}).",
-                d.name,
-                d.name,
-                d.sort.thf()
-            );
-        }
-        let mut seen: std::collections::HashMap<SentenceId, u32> = std::collections::HashMap::new();
-        for (i, ax) in self.axioms.iter().enumerate() {
-            let name = match sid_map.get(i) {
-                Some(&sid) => {
-                    let n = *seen.entry(sid).and_modify(|n| *n += 1).or_insert(0u32);
-                    if n == 0 {
-                        format!("kb_{sid}")
-                    } else {
-                        format!("kb_{sid}_v{n}")
-                    }
-                }
-                None => format!("ax_{i}"),
-            };
-            let _ = writeln!(out, "thf({name}, axiom, {}).", ax.thf());
-        }
-        if let Some(c) = &self.conjecture {
-            let _ = writeln!(out, "thf({conjecture_name}, conjecture, {}).", c.thf());
-        }
-        out
+        crate::kb::assemble::assemble_tptp_indexed(
+            self,
+            sid_map,
+            &crate::kb::assemble::AssemblyOpts {
+                conjecture_name,
+                ..Default::default()
+            },
+            None,
+        )
     }
 }
 

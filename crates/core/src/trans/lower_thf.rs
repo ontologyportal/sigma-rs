@@ -785,22 +785,7 @@ impl TranslationLayer {
         conjecture: &[SentenceId],
         query_scope: Option<Scope>,
     ) -> (HoProblem, Vec<SentenceId>) {
-        // Same sid-set preparation as the FO assembly.
-        let mut sids: Vec<SentenceId> = axiom_sids.to_vec();
-        sids.sort_unstable();
-        sids.dedup();
-        let extra = self.synthetic_replacements(&sids);
-        sids.extend(extra);
-        let pv = {
-            let mut seed: Vec<SentenceId> = conjecture.to_vec();
-            seed.extend(seed_sids.iter().copied());
-            let mut scope: Vec<SentenceId> = conjecture.to_vec();
-            scope.extend(sids.iter().copied());
-            self.instantiate_predvars(&seed, &scope, query_scope.unwrap_or(Scope::Base))
-        };
-        sids.extend(pv);
-        sids.sort_unstable();
-        sids.dedup();
+        let sids = self.prepare_problem_sids(axiom_sids, seed_sids, conjecture, query_scope);
 
         // Prewarm the per-sentence cache in parallel (read-only vs `self`).
         #[cfg(feature = "parallel")]
@@ -925,7 +910,7 @@ impl TranslationLayer {
                 Box::new(ThfExpr::Forall(1, HoSort::I, Box::new(body))),
             );
             problem.with_axiom(ax);
-            // No sid_map entry: `to_thf` names trailing unmapped axioms ax_<i>.
+            // No sid_map entry: the assembler names trailing unmapped axioms kb_anon_<i>.
         }
 
         (problem, sid_map)

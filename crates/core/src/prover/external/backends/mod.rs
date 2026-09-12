@@ -77,7 +77,15 @@ pub trait ProverRunner: Send + Sync {
         conjecture_name: &str,
         opts: &ProverOpts,
     ) -> ProverResult {
-        let text = problem.to_thf(sid_map, conjecture_name);
+        let text = crate::kb::assemble::assemble_tptp_indexed(
+            problem,
+            sid_map,
+            &crate::kb::assemble::AssemblyOpts {
+                conjecture_name,
+                ..Default::default()
+            },
+            None,
+        );
         self.prove(&text, opts)
     }
 

@@ -5,11 +5,78 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
+#[cfg(feature = "external-prover")]
+use crate::trans::ir::HoProblem;
 use crate::trans::ir::{LogicMode, Problem as IrProblem};
 
 use crate::semantics::SemanticLayer;
 use crate::syntactic::sentence_to_plain_kif;
 use crate::types::SentenceId;
+
+/// What the assembler needs from a problem representation: the language
+/// keyword, the declaration preamble, and each axiom / the conjecture as
+/// formula text.  The first-order [`IrProblem`] and the higher-order
+/// [`HoProblem`] both implement it, so `kb_<sid>` naming, line indexing,
+/// filtering, and KIF comments are one implementation for every dialect.
+pub trait TptpProblem {
+    /// `fof` / `tff` / `thf`.
+    fn keyword(&self) -> &'static str;
+    /// Declaration lines emitted ahead of the axioms, in order.
+    fn preamble_lines(&self) -> Vec<String>;
+    /// Each axiom's formula text, in `sid_map` order.
+    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_>;
+    /// The conjecture's formula text, if the problem has one.
+    fn conjecture_text(&self) -> Option<String>;
+}
+
+impl TptpProblem for IrProblem {
+    fn keyword(&self) -> &'static str {
+        match self.mode() {
+            LogicMode::Tff => "tff",
+            LogicMode::Fof => "fof",
+        }
+    }
+
+    fn preamble_lines(&self) -> Vec<String> {
+        // Sort / function / predicate declarations in insertion order.
+        self.sort_decls()
+            .iter()
+            .filter_map(|s| s.tptp_decl())
+            .chain(self.fn_decls().iter().filter_map(|f| f.tptp_decl()))
+            .chain(self.pred_decls().iter().filter_map(|p| p.tptp_decl()))
+            .collect()
+    }
+
+    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        Box::new(self.axioms().iter().map(|ax| ax.to_tptp()))
+    }
+
+    fn conjecture_text(&self) -> Option<String> {
+        self.conjecture_ref().map(|c| c.to_tptp())
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl TptpProblem for HoProblem {
+    fn keyword(&self) -> &'static str {
+        "thf"
+    }
+
+    fn preamble_lines(&self) -> Vec<String> {
+        self.decls()
+            .iter()
+            .map(|d| format!("thf({}_tp, type, {}: {}).", d.name, d.name, d.sort.thf()))
+            .collect()
+    }
+
+    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        Box::new(self.axioms().iter().map(|ax| ax.thf()))
+    }
+
+    fn conjecture_text(&self) -> Option<String> {
+        self.conjecture_ref().map(|c| c.thf())
+    }
+}
 
 /// Configuration for [`assemble_tptp_indexed`].
 pub struct AssemblyOpts<'a> {
@@ -75,40 +142,24 @@ impl<'a> Default for AssemblyOpts<'a> {
 /// `_v<n>` naming (a sid pairing with several axioms) keeps only its FIRST
 /// line. Tracking is an O(1)-per-axiom running counter, not a re-scan, so
 /// passing `None` costs nothing extra.
-pub fn assemble_tptp_indexed(
-    problem: &IrProblem,
+pub fn assemble_tptp_indexed<P: TptpProblem + ?Sized>(
+    problem: &P,
     sid_map: &[SentenceId],
     opts: &AssemblyOpts,
     mut axiom_lines: Option<&mut std::collections::HashMap<SentenceId, u32>>,
 ) -> String {
-    let kw = match problem.mode() {
-        LogicMode::Tff => "tff",
-        LogicMode::Fof => "fof",
-    };
+    let kw = problem.keyword();
     let mut out = String::new();
 
-    // Preamble: sort / function / predicate declarations in insertion order.
-    for s in problem.sort_decls() {
-        if let Some(d) = s.tptp_decl() {
-            let _ = writeln!(out, "{}", d);
-        }
-    }
-    for f in problem.fn_decls() {
-        if let Some(d) = f.tptp_decl() {
-            let _ = writeln!(out, "{}", d);
-        }
-    }
-    for p in problem.pred_decls() {
-        if let Some(d) = p.tptp_decl() {
-            let _ = writeln!(out, "{}", d);
-        }
+    for d in problem.preamble_lines() {
+        let _ = writeln!(out, "{}", d);
     }
 
     // Axioms.  Anonymous axioms (no sid) bypass `axiom_filter`.
     let mut seen_sids: std::collections::HashMap<SentenceId, u32> =
         std::collections::HashMap::new();
     let mut line_no: u32 = out.matches('\n').count() as u32;
-    for (i, ax) in problem.axioms().iter().enumerate() {
+    for (i, ax) in problem.axiom_texts().enumerate() {
         let sid = sid_map.get(i).copied();
         if let (Some(s), Some(filter)) = (sid, opts.axiom_filter) {
             if !filter.contains(&s) {
@@ -140,26 +191,12 @@ pub fn assemble_tptp_indexed(
             }
             None => format!("{}anon_{}", opts.axiom_prefix, i),
         };
-        let _ = writeln!(
-            out,
-            "{}({}, {}, {}).",
-            kw,
-            name,
-            opts.axiom_role,
-            ax.to_tptp()
-        );
+        let _ = writeln!(out, "{}({}, {}, {}).", kw, name, opts.axiom_role, ax);
         line_no += 1;
     }
 
-    // Conjecture.
-    if let Some(c) = problem.conjecture_ref() {
-        let _ = writeln!(
-            out,
-            "{}({}, conjecture, {}).",
-            kw,
-            opts.conjecture_name,
-            c.to_tptp(),
-        );
+    if let Some(c) = problem.conjecture_text() {
+        let _ = writeln!(out, "{}({}, conjecture, {}).", kw, opts.conjecture_name, c);
     }
 
     out
@@ -352,6 +389,64 @@ mod tests {
             tptp.contains("tff(kb_3, axiom, mortal(alice))."),
             "{}",
             tptp
+        );
+    }
+}
+
+#[cfg(all(test, feature = "external-prover"))]
+mod thf_tests {
+    use super::*;
+    use crate::trans::ir::{HoSort, ThfConst, ThfExpr};
+    use std::collections::HashMap;
+
+    fn problem() -> HoProblem {
+        let mut p = HoProblem::new();
+        p.declare(ThfConst {
+            name: "s__p".into(),
+            sort: HoSort::O,
+        });
+        p.with_axiom(ThfExpr::Const("s__p".into()));
+        p.with_axiom(ThfExpr::Not(Box::new(ThfExpr::False)));
+        p.conjecture(ThfExpr::Const("s__p".into()));
+        p
+    }
+
+    #[test]
+    fn thf_goes_through_the_indexed_assembler_with_line_numbers() {
+        let mut lines: HashMap<SentenceId, u32> = HashMap::new();
+        let text = assemble_tptp_indexed(
+            &problem(),
+            &[SentenceId::from(3u64), SentenceId::from(4u64)],
+            &AssemblyOpts::default(),
+            Some(&mut lines),
+        );
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(rows[0], "thf(s__p_tp, type, s__p: $o).");
+        assert_eq!(rows[1], "thf(kb_3, axiom, s__p).");
+        assert_eq!(rows[2], "thf(kb_4, axiom, (~ $false)).");
+        assert_eq!(rows[3], "thf(conjecture, conjecture, s__p).");
+        assert_eq!(lines[&SentenceId::from(3u64)], 1);
+        assert_eq!(lines[&SentenceId::from(4u64)], 2);
+    }
+
+    #[test]
+    fn thf_honours_the_axiom_filter_and_role() {
+        let keep: HashSet<SentenceId> = [SentenceId::from(4u64)].into_iter().collect();
+        let opts = AssemblyOpts {
+            axiom_role: "hypothesis",
+            axiom_filter: Some(&keep),
+            ..Default::default()
+        };
+        let text = assemble_tptp_indexed(
+            &problem(),
+            &[SentenceId::from(3u64), SentenceId::from(4u64)],
+            &opts,
+            None,
+        );
+        assert!(!text.contains("kb_3"), "{text}");
+        assert!(
+            text.contains("thf(kb_4, hypothesis, (~ $false))."),
+            "{text}"
         );
     }
 }

@@ -274,31 +274,7 @@ impl TranslationLayer {
         mode: TptpLang,
         query_scope: Option<crate::semantics::types::Scope>,
     ) -> (ir::Problem, Vec<SentenceId>, Option<QueryVarMap>) {
-        // -- synthetic-eligibility scan over the selection --------------------
-        let mut sids: Vec<SentenceId> = axiom_sids.to_vec();
-        sids.sort_unstable();
-        sids.dedup();
-
-        // Replacements of suppressed originals in the selection.
-        let extra = self.synthetic_replacements(&sids);
-        sids.extend(extra);
-
-        // Predicate-variable schema instantiation, scoped to this problem's
-        // relations (conjecture + seeds prioritised under the cap).
-        let pv = {
-            let mut seed: Vec<SentenceId> = conjecture.to_vec();
-            seed.extend(seed_sids.iter().copied());
-            let mut scope: Vec<SentenceId> = conjecture.to_vec();
-            scope.extend(sids.iter().copied());
-            self.instantiate_predvars(
-                &seed,
-                &scope,
-                query_scope.unwrap_or(crate::semantics::types::Scope::Base),
-            )
-        };
-        sids.extend(pv);
-        sids.sort_unstable();
-        sids.dedup();
+        let sids = self.prepare_problem_sids(axiom_sids, seed_sids, conjecture, query_scope);
 
         // -- translate ---------------------------------------------------------
         let (mut problem, mut sid_map, mut decl_seen) = self.build_problem_with_decls(&sids, mode);
@@ -333,6 +309,42 @@ impl TranslationLayer {
         }
 
         (problem, sid_map, qvm)
+    }
+
+    /// The synthetic-eligibility scan every problem assembly starts with,
+    /// whatever dialect it emits: dedup the selection, add the rewrite-pass
+    /// replacements of suppressed originals ([`Self::synthetic_replacements`]),
+    /// and instantiate the predicate-variable schemas for the relations this
+    /// problem actually uses ([`Self::instantiate_predvars`]; conjecture and
+    /// `seed_sids` get cap priority).  Sorted and deduplicated.
+    #[cfg(feature = "external-prover")]
+    pub(crate) fn prepare_problem_sids(
+        &self,
+        axiom_sids: &[SentenceId],
+        seed_sids: &[SentenceId],
+        conjecture: &[SentenceId],
+        query_scope: Option<crate::semantics::types::Scope>,
+    ) -> Vec<SentenceId> {
+        let mut sids: Vec<SentenceId> = axiom_sids.to_vec();
+        sids.sort_unstable();
+        sids.dedup();
+        let extra = self.synthetic_replacements(&sids);
+        sids.extend(extra);
+        let pv = {
+            let mut seed: Vec<SentenceId> = conjecture.to_vec();
+            seed.extend(seed_sids.iter().copied());
+            let mut scope: Vec<SentenceId> = conjecture.to_vec();
+            scope.extend(sids.iter().copied());
+            self.instantiate_predvars(
+                &seed,
+                &scope,
+                query_scope.unwrap_or(crate::semantics::types::Scope::Base),
+            )
+        };
+        sids.extend(pv);
+        sids.sort_unstable();
+        sids.dedup();
+        sids
     }
 
     /// Given a set of selected sentence ids, return the synthetic sentences
