@@ -71,7 +71,11 @@ impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
         // round-trip).  No conjecture in a consistency check, so the
         // conjecture name is the assembler default.
         profile_span!(ctx, "check.prover_run");
-        self.backend
-            .prove_ir(&problem, &sid_map, "conjecture", &prover_opts)
+        self.backend.prove_ir(
+            &crate::trans::ir::ProblemIr::Fo(Box::new(problem)),
+            &sid_map,
+            "conjecture",
+            &prover_opts,
+        )
     }
 }

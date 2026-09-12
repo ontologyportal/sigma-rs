@@ -60,21 +60,38 @@ impl ProverRunner for IntegratedVampireRunner {
         };
         let parse_time = t_input.elapsed();
 
-        let mut result = self.prove_ir(&ir_problem, &[], "query_0", opts);
+        let mut result = self.prove_ir(
+            &crate::trans::ir::ProblemIr::Fo(Box::new(ir_problem)),
+            &[],
+            "query_0",
+            opts,
+        );
         result.timings.input_gen += parse_time;
         result
     }
 
-    /// Direct HO-IR entry: lower the THF [`HoProblem`] straight into the FFI
-    /// solver's native Kernel structures — no TPTP text round-trip
-    /// (`lower_ho.rs`), mirroring the first-order [`ProverRunner::prove_ir`].
-    fn prove_ho(
+    /// Direct-IR entry: lower either representation straight into the FFI
+    /// solver -- no TPTP serialisation, no re-parse.  (`sid_map` /
+    /// `conjecture_name` are text-path concerns: the embedded proof steps map
+    /// back by formula content, not by axiom name.)
+    fn prove_ir(
         &self,
-        problem: &crate::trans::ir::HoProblem,
+        problem: &crate::trans::ir::ProblemIr,
         _sid_map: &[crate::types::SentenceId],
         _conjecture_name: &str,
         opts: &ProverOpts,
     ) -> ProverResult {
+        match problem {
+            crate::trans::ir::ProblemIr::Fo(p) => self.prove_fo(p, opts),
+            crate::trans::ir::ProblemIr::Ho(p) => self.prove_ho(p, opts),
+        }
+    }
+}
+
+impl IntegratedVampireRunner {
+    /// Lower the THF [`HoProblem`] into the solver's native Kernel structures
+    /// (`lower_ho.rs`).
+    fn prove_ho(&self, problem: &crate::trans::ir::HoProblem, opts: &ProverOpts) -> ProverResult {
         use std::time::Instant;
 
         let mut vp_opts = Options::new();
@@ -114,17 +131,9 @@ impl ProverRunner for IntegratedVampireRunner {
         result
     }
 
-    /// Direct-IR entry: lower the [`ir::Problem`](crate::trans::ir::Problem)
-    /// straight into the FFI solver — no TPTP serialisation, no re-parse.
-    /// (`sid_map` / `conjecture_name` are text-path concerns: the embedded
-    /// proof steps map back by formula content, not by axiom name.)
-    fn prove_ir(
-        &self,
-        ir_problem: &crate::trans::ir::Problem,
-        _sid_map: &[crate::types::SentenceId],
-        _conjecture_name: &str,
-        opts: &ProverOpts,
-    ) -> ProverResult {
+    /// Lower the first-order [`ir::Problem`](crate::trans::ir::Problem) into
+    /// the solver's native structures (`lower.rs`).
+    fn prove_fo(&self, ir_problem: &crate::trans::ir::Problem, opts: &ProverOpts) -> ProverResult {
         use std::time::Instant;
 
         let input_gen = std::time::Duration::ZERO;

@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 
 #[cfg(feature = "external-prover")]
-use crate::trans::ir::HoProblem;
+use crate::trans::ir::{HoProblem, ProblemIr};
 use crate::trans::ir::{LogicMode, Problem as IrProblem};
 
 use crate::semantics::SemanticLayer;
@@ -75,6 +75,37 @@ impl TptpProblem for HoProblem {
 
     fn conjecture_text(&self) -> Option<String> {
         self.conjecture_ref().map(|c| c.thf())
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl TptpProblem for ProblemIr {
+    fn keyword(&self) -> &'static str {
+        match self {
+            ProblemIr::Fo(p) => p.keyword(),
+            ProblemIr::Ho(p) => p.keyword(),
+        }
+    }
+
+    fn preamble_lines(&self) -> Vec<String> {
+        match self {
+            ProblemIr::Fo(p) => p.preamble_lines(),
+            ProblemIr::Ho(p) => p.preamble_lines(),
+        }
+    }
+
+    fn axiom_texts(&self) -> Box<dyn Iterator<Item = String> + '_> {
+        match self {
+            ProblemIr::Fo(p) => p.axiom_texts(),
+            ProblemIr::Ho(p) => p.axiom_texts(),
+        }
+    }
+
+    fn conjecture_text(&self) -> Option<String> {
+        match self {
+            ProblemIr::Fo(p) => p.conjecture_text(),
+            ProblemIr::Ho(p) => p.conjecture_text(),
+        }
     }
 }
 

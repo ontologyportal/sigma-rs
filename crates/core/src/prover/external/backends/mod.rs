@@ -36,17 +36,18 @@ use super::super::result::ProverResult;
 pub trait ProverRunner: Send + Sync {
     fn prove(&self, tptp: &str, opts: &ProverOpts) -> ProverResult;
 
-    /// Prove a structured [`ir::Problem`](crate::trans::ir::Problem) directly.
+    /// Prove an assembled [`ProblemIr`](crate::trans::ir::ProblemIr) --
+    /// first-order (FOF / TFF) or higher-order (THF) -- directly.
     ///
     /// Backends that can consume the IR override this to skip TPTP
-    /// serialisation entirely (the embedded FFI prover lowers the `Problem`
-    /// straight into the solver).  The default serialises with the standard
-    /// `kb_<sid>` axiom naming and delegates to [`Self::prove`] — correct for
-    /// every text-driven subprocess backend, including its `tptp_dump_path`
-    /// (`--keep`) behavior.
+    /// serialisation entirely (the embedded FFI prover lowers either
+    /// representation straight into the solver).  The default serialises
+    /// with the standard `kb_<sid>` axiom naming and delegates to
+    /// [`Self::prove`] -- correct for every text-driven backend, including its
+    /// `tptp_dump_path` (`--keep`) behavior.
     fn prove_ir(
         &self,
-        problem: &crate::trans::ir::Problem,
+        problem: &crate::trans::ir::ProblemIr,
         sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
         opts: &ProverOpts,
@@ -61,32 +62,6 @@ pub trait ProverRunner: Send + Sync {
             None,
         );
         self.prove(&tptp, opts)
-    }
-
-    /// Prove a structured [`HoProblem`](crate::trans::ir::HoProblem) (THF).
-    ///
-    /// The default serialises the 1-to-1 THF text and delegates to
-    /// [`Self::prove`] — correct for every text-driven subprocess backend.
-    /// The embedded backend overrides this to lower the HO IR straight into
-    /// the FFI solver's native structures (no text round-trip), mirroring
-    /// [`Self::prove_ir`].
-    fn prove_ho(
-        &self,
-        problem: &crate::trans::ir::HoProblem,
-        sid_map: &[crate::types::SentenceId],
-        conjecture_name: &str,
-        opts: &ProverOpts,
-    ) -> ProverResult {
-        let text = crate::kb::assemble::assemble_tptp_indexed(
-            problem,
-            sid_map,
-            &crate::kb::assemble::AssemblyOpts {
-                conjecture_name,
-                ..Default::default()
-            },
-            None,
-        );
-        self.prove(&text, opts)
     }
 
     /// The timeout this runner will apply to the prover, in seconds.
@@ -198,12 +173,12 @@ impl ProverRunner for Prover {
         }
     }
 
-    // Delegate — the enum must forward to each variant's own `prove_ir` (the
+    // Delegate -- the enum must forward to each variant's own `prove_ir` (the
     // trait default would re-serialise, costing the embedded backend its
     // direct-IR path).
     fn prove_ir(
         &self,
-        problem: &crate::trans::ir::Problem,
+        problem: &crate::trans::ir::ProblemIr,
         sid_map: &[crate::types::SentenceId],
         conjecture_name: &str,
         opts: &ProverOpts,
@@ -216,25 +191,6 @@ impl ProverRunner for Prover {
             Prover::Custom(r) => r.prove_ir(problem, sid_map, conjecture_name, opts),
             #[cfg(feature = "integrated-prover")]
             Prover::VampireIntegrated(r) => r.prove_ir(problem, sid_map, conjecture_name, opts),
-            Prover::None => ProverResult::default(),
-        }
-    }
-
-    fn prove_ho(
-        &self,
-        problem: &crate::trans::ir::HoProblem,
-        sid_map: &[crate::types::SentenceId],
-        conjecture_name: &str,
-        opts: &ProverOpts,
-    ) -> ProverResult {
-        match self {
-            #[cfg(feature = "ask")]
-            Prover::VampireSubprocess(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
-            #[cfg(feature = "ask")]
-            Prover::Eprover(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
-            Prover::Custom(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
-            #[cfg(feature = "integrated-prover")]
-            Prover::VampireIntegrated(r) => r.prove_ho(problem, sid_map, conjecture_name, opts),
             Prover::None => ProverResult::default(),
         }
     }

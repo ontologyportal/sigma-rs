@@ -526,6 +526,61 @@ fof(f4, plain, $false, inference(resolution, [], [f1, f3])).\n\
         );
     }
 
+    /// A runner that consumes the structured problem, recording which
+    /// representation the driver handed it.
+    struct Structured(Mutex<Vec<&'static str>>);
+
+    impl ProverRunner for Structured {
+        fn prove(&self, _tptp: &str, _opts: &ProverOpts) -> ProverResult {
+            unreachable!("the driver must call prove_ir, not the text path")
+        }
+        fn prove_ir(
+            &self,
+            problem: &crate::trans::ir::ProblemIr,
+            _sid_map: &[crate::SentenceId],
+            _conjecture_name: &str,
+            opts: &ProverOpts,
+        ) -> ProverResult {
+            self.0.lock().unwrap().push(match problem {
+                crate::trans::ir::ProblemIr::Fo(_) => "fo",
+                crate::trans::ir::ProblemIr::Ho(_) => "ho",
+            });
+            result_from_transcript(THEOREM, "", opts.mode, std::time::Duration::ZERO)
+        }
+    }
+
+    #[test]
+    fn the_driver_hands_the_runner_the_representation_mode_selects() {
+        let runner = Arc::new(Structured(Mutex::new(Vec::new())));
+        let mut kb = KnowledgeBase::new_external(Prover::Custom(runner.clone()));
+        let r = kb.reload_kif(
+            "(subclass Dog Mammal)\n(instance Rex Dog)\n",
+            &std::path::PathBuf::from("test.kif"),
+            "test.kif",
+        );
+        assert!(r.ok);
+        kb.make_session_axiomatic("test.kif").expect("promote");
+        for (mode, expect) in [
+            (crate::TptpLang::Auto, "fo"),
+            (crate::TptpLang::Tff, "fo"),
+            (crate::TptpLang::Thf, "ho"),
+        ] {
+            runner.0.lock().unwrap().clear();
+            let opts = ExternalOpts {
+                mode,
+                ..ExternalOpts::default()
+            };
+            let res = kb.ask(query("(instance Rex Mammal)"), None, &opts);
+            assert_eq!(
+                res.status,
+                ProverStatus::Proved,
+                "{mode:?}: {}",
+                res.raw_output
+            );
+            assert_eq!(runner.0.lock().unwrap().as_slice(), [expect], "{mode:?}");
+        }
+    }
+
     #[test]
     fn custom_debug_prints_the_runner_name() {
         let p = Prover::Custom(Arc::new(Canned {
