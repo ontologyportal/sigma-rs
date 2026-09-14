@@ -33,6 +33,9 @@ let openVersion = 0;
 // round-trip -- and the parse/tokenize it triggers server-side -- entirely.
 let lastSyncedText: string | null = null;
 let lastSyncedDiags: any[] = [];
+// Whether the last sync forced the server's reconcile of that text (a
+// completion-triggered sync leaves it pending -- see `lspSyncDocument`).
+let lastSyncReconciled = false;
 
 /** KB file tag -> `kif:` scheme URI (the server derives the tag back). */
 export function tagToUri(tag: string): string {
@@ -89,6 +92,7 @@ export function lspReset(): void {
   openTag = null;
   openVersion = 0;
   lastSyncedText = null;
+  lastSyncReconciled = false;
   lastSyncedDiags = [];
 }
 
@@ -116,26 +120,47 @@ export async function lspRequest<T = any>(
   return result;
 }
 
+async function flush(force: boolean): Promise<any[]> {
+  const { out } = await call<{ out: string[] }>("lspFlush", { force });
+  return out.map((s) => JSON.parse(s));
+}
+
 /**
  * Sync the server's copy of `tag` to `text` (didOpen on first sight or after
  * a reset, didChange after) and return the document's diagnostics, converted
  * to the legacy `{ line, col, end_line, end_col, severity, kind, code,
  * message }` shape the edit tab's markers/renderers already consume.
  *
- * The server's `didChange` reconciles the buffer into the live KB (the same
- * diff-and-commit the old `validateBuffer` lane did), so this call IS the
- * "KB tracks the editor" step, not just a query.
+ * The server defers a `didChange`'s reconcile of the buffer into the live
+ * KB (and the diagnostics that follow) behind its own debounce, and the wasm
+ * bridge has no idle poll to flush it. With `reconcile` (the default) this
+ * call forces that flush, so it IS the "KB tracks the editor" step and the
+ * diagnostics it returns describe the text it was given. Callers that only
+ * need the server's document text current (completion, on every keystroke)
+ * pass `reconcile: false`, leaving the reload pending for a later sync.
+ *
+ * If no `publishDiagnostics` for this document comes back (a non-reconciling
+ * sync), the previous diagnostics are returned rather than an empty list --
+ * the markers must not vanish between edits.
  */
 export async function lspSyncDocument(
   tag: string,
   text: string,
+  opts: { reconcile?: boolean } = {},
 ): Promise<any[]> {
+  const reconcile = opts.reconcile !== false;
   await ensureInitialized();
   // Same doc, same text as last sync (e.g. a completion-triggered sync
   // followed moments later by the validate debounce's sync of the still-
-  // unchanged buffer): nothing changed server-side, so return the diagnostics
-  // from that sync instead of round-tripping another didChange.
-  if (openTag === tag && lastSyncedText === text) return lastSyncedDiags;
+  // unchanged buffer): nothing to send, unless that earlier sync left the
+  // reconcile pending and this one wants it done.
+  if (
+    openTag === tag &&
+    lastSyncedText === text &&
+    (lastSyncReconciled || !reconcile)
+  ) {
+    return lastSyncedDiags;
+  }
   const uri = tagToUri(tag);
   let msgs: any[];
   if (openTag !== tag) {
@@ -157,7 +182,7 @@ export async function lspSyncDocument(
         textDocument: { uri, languageId: "kif", version: openVersion, text },
       },
     });
-  } else {
+  } else if (lastSyncedText !== text) {
     openVersion += 1;
     msgs = await send({
       jsonrpc: "2.0",
@@ -167,13 +192,19 @@ export async function lspSyncDocument(
         contentChanges: [{ text }],
       },
     });
+  } else {
+    msgs = [];
   }
+  if (reconcile) msgs = msgs.concat(await flush(true));
   const diags = msgs.find(
     (m) =>
       m.method === "textDocument/publishDiagnostics" && m.params?.uri === uri,
   );
   lastSyncedText = text;
-  lastSyncedDiags = (diags?.params?.diagnostics ?? []).map(lspDiagToLegacy);
+  lastSyncReconciled = reconcile;
+  if (diags) {
+    lastSyncedDiags = (diags.params.diagnostics ?? []).map(lspDiagToLegacy);
+  }
   return lastSyncedDiags;
 }
 

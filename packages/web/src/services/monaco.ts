@@ -186,8 +186,9 @@ function lspCompletionProvider(
         // non-completable context and an empty list, so the widget never
         // opens. The mid-typing guard makes this safe: a didChange with a
         // dangling paren updates the server's document rope (what completion
-        // reads) without touching the KB.
-        await lspSyncDocument(tag, model.getValue());
+        // reads) without touching the KB. `reconcile: false`: never force
+        // the KB reload on a keystroke; the validate debounce does that.
+        await lspSyncDocument(tag, model.getValue(), { reconcile: false });
         const resp = await lspRequest<any>("textDocument/completion", {
           textDocument: { uri: tagToUri(tag) },
           position: {
