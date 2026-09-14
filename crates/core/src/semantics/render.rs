@@ -574,9 +574,6 @@ impl<'a> RenderCtx<'a> {
     }
 }
 
-/// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
-/// `(exists …)` argument list.  Returns `(names, body_ast)`.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
 /// `"an"` before a leading vowel sound, `"a"` otherwise. A rough heuristic
 /// (English exceptions like "an hour" aren't handled) that's fine for the
 /// class names actually seen in `termFormat` output.
@@ -588,6 +585,9 @@ fn indefinite_article(word: &str) -> &'static str {
     }
 }
 
+/// Extract bound variable names from `(forall (?V1 ?V2 …) body)` /
+/// `(exists …)` argument list.  Returns `(names, body_ast)`.
+#[cfg(any(feature = "ask", feature = "native-prover"))]
 fn extract_quantifier_vars_and_body(args: &[AstNode]) -> (Vec<String>, Option<AstNode>) {
     let mut names = Vec::new();
     let body = if args.len() >= 2 {
