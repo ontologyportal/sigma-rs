@@ -47,6 +47,11 @@ pub(crate) struct ProofStep {
     /// Names of the steps this one was derived from, already resolved by the
     /// backend parser.  Empty for input/leaf steps.
     pub parents: Vec<String>,
+    /// The inference rule named in the step's `inference(<rule>, ...)`
+    /// annotation (`resolution`, `superposition`, `cnf_transformation`,
+    /// ...).  `None` for input steps and any source the backend parser
+    /// didn't recognise.
+    pub rule: Option<String>,
     /// Original axiom name preserved by the prover's source annotation
     /// (`file('…', kb_42)` → `Some("kb_42")`).  `None` for derived steps and
     /// builds that don't preserve names.
@@ -73,7 +78,19 @@ fn premise_indices(steps: &[ProofStep]) -> Vec<Vec<usize>> {
         .collect()
 }
 
-/// Build the `(formula, role, premise_indices, source_name)` tuples that
+/// The name the proof-graph vocabulary (`KifProofStep::rule`) uses for a
+/// step: the role word for inputs and the (negated) conjecture -- the same
+/// convention the native prover's own proofs follow -- and the inference
+/// rule for a derived step, whose TPTP role is only ever the uninformative
+/// `plain`.  A derived step with no recognised rule keeps its role word.
+fn display_rule(step: &ProofStep) -> String {
+    match (step.role.as_str(), &step.rule) {
+        ("plain", Some(rule)) => rule.clone(),
+        _ => step.role.clone(),
+    }
+}
+
+/// Build the `(formula, rule, premise_indices, source_name)` tuples that
 /// [`crate::prover::proof::proof_steps_to_kif`] consumes.
 pub(crate) fn kif_proof_inputs(
     steps: &[ProofStep],
@@ -85,7 +102,7 @@ pub(crate) fn kif_proof_inputs(
         .map(|(s, prem)| {
             (
                 s.formula.clone(),
-                s.role.clone(),
+                display_rule(s),
                 prem,
                 s.source_name.clone(),
             )
@@ -127,7 +144,7 @@ pub(crate) fn proof_steps_to_ir(steps: &[ProofStep]) -> Vec<crate::prover::proof
 
             IrProofStep {
                 index: i,
-                rule: step.role.clone(),
+                rule: display_rule(step),
                 premises: prem,
                 formula,
                 source_sid,

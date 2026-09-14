@@ -220,7 +220,6 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     pub fn flush_session(&mut self, session: &str) {
         with_guard!(self);
         let sids = self.session_sids(session);
-        self.sessions.remove(session);
         if sids.is_empty() {
             self.layer
                 .semantic()
@@ -291,14 +290,7 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
     /// A persistent store (if attached) is untouched; call
     /// `KnowledgeBase::persist` to flush.
     pub fn remove_file(&mut self, file: &str) {
-        let outcome = self.load(SourceFile::truncate(PathBuf::from(file)), file);
-        let removed = outcome.removed_sids;
-        let removed_set: HashSet<SentenceId> = removed.into_iter().collect();
-
-        // Prune the session mirror of any sentences that were removed.
-        for sids in self.sessions.values_mut() {
-            sids.retain(|s| !removed_set.contains(s));
-        }
+        let _ = self.load(SourceFile::truncate(PathBuf::from(file)), file);
     }
 
     /// Promote `session`'s assertions to axioms.
@@ -345,8 +337,6 @@ impl<L: crate::layer::TopLayer + crate::layer::Layer> KnowledgeBase<L> {
             session
         ));
         report.promoted = sids.to_vec();
-
-        self.sessions.remove(session);
 
         Ok(report)
     }

@@ -136,6 +136,9 @@ impl SineParams {
     /// resolved budget is always at least 1, so a non-empty KB never gets a
     /// zero budget from a very low percentage.
     pub fn auto_pct(total_axioms: usize, pct: f64) -> Self {
+        if pct >= 100.0 {
+            return Self::whole_kb();
+        }
         let budget = ((total_axioms as f64) * (pct.clamp(0.0, 100.0) / 100.0)).round() as usize;
         Self::auto(budget.max(1))
     }
@@ -231,9 +234,15 @@ mod auto_pct_tests {
     #[test]
     fn auto_pct_resolves_a_kb_relative_budget() {
         assert_eq!(SineParams::auto_pct(1000, 25.0).auto_budget, Some(250));
-        // Clamped percentage and a floor of 1.
-        assert_eq!(SineParams::auto_pct(1000, 150.0).auto_budget, Some(1000));
+        // Floor of 1.
         assert_eq!(SineParams::auto_pct(1000, 0.0).auto_budget, Some(1));
         assert_eq!(SineParams::auto_pct(0, 50.0).auto_budget, Some(1));
+        // The top stop is whole-KB, not a budget the size of the KB.
+        for pct in [100.0, 150.0] {
+            let p = SineParams::auto_pct(1000, pct);
+            assert!(p.select_all, "{pct}% must select the whole KB");
+            assert_eq!(p.auto_budget, None);
+        }
+        assert!(!SineParams::auto_pct(1000, 99.9).select_all);
     }
 }

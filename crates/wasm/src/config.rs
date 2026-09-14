@@ -14,12 +14,11 @@ use wasm_bindgen::prelude::*;
 /// `maxSteps`, `forwardClose`, `wantProof`, ...).  Per-query runtime fields
 /// (`session`, `cancel`) are excluded.
 ///
-/// On top of the wrapped config, two UI-facing selection knobs
-/// ([`selectAll`](Self::select_all) /
-/// [`selectionTolerancePct`](Self::selection_tolerance_pct)) express SInE
-/// selection KB-relatively; they resolve to concrete
+/// On top of the wrapped config, one UI-facing selection knob
+/// ([`selectionTolerancePct`](Self::selection_tolerance_pct)) expresses SInE
+/// selection KB-relatively; it resolves to concrete
 /// [`SineParams`](sigmakee_rs_core::SineParams) against the live KB's axiom
-/// count at ask time.
+/// count at ask time (100 = the whole KB, no selection).
 ///
 /// ```js
 /// const cfg = new Config();
@@ -31,7 +30,6 @@ use wasm_bindgen::prelude::*;
 #[derive(Clone)]
 pub struct Config {
     inner: NativeProverConfig,
-    select_all: bool,
     selection_tolerance_pct: Option<f64>,
 }
 
@@ -45,9 +43,7 @@ impl Config {
     /// SInE auto-budget the engine actually takes.
     pub(crate) fn to_native_opts(&self, axiom_count: usize) -> NativeOpts {
         let mut opts = self.inner.to_native_opts();
-        if self.select_all {
-            opts.selection = sigmakee_rs_core::SineParams::whole_kb();
-        } else if let Some(pct) = self.selection_tolerance_pct {
+        if let Some(pct) = self.selection_tolerance_pct {
             opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
         }
         opts
@@ -69,7 +65,6 @@ impl Config {
                 want_proof: true,
                 ..NativeProverConfig::default()
             },
-            select_all: false,
             selection_tolerance_pct: None,
         }
     }
@@ -134,27 +129,12 @@ impl Config {
         self.inner.profile = v;
     }
 
-    /// Disable SInE axiom selection -- search the WHOLE promoted KB instead of
-    /// a query-relevant subset. Off (`false`) by default, matching the
-    /// engine's own default (`SineParams::default()`, auto-budget SInE on);
-    /// `true` uses `SineParams::whole_kb()`. Slower and more memory-hungry,
-    /// but sidesteps selection ever excluding an axiom the query actually
-    /// needs -- useful for debugging a query that fails under selection.
-    #[wasm_bindgen(getter = selectAll)]
-    pub fn select_all(&self) -> bool {
-        self.select_all
-    }
-    #[wasm_bindgen(setter = selectAll)]
-    pub fn set_select_all(&mut self, v: bool) {
-        self.select_all = v;
-    }
-
     /// SInE selection budget, as a percentage (0-100) of the KB's total
     /// axiom count -- how much of the ontology a query-relevant selection is
     /// allowed to admit. `null`/`undefined` (the default) uses the engine's
     /// own default budget (a fixed axiom count, not a percentage -- see
-    /// `SineParams::default`) instead of a KB-relative one. Ignored when
-    /// [`Self::selectAll`](Self::select_all) is set. Applies to BOTH the
+    /// `SineParams::default`) instead of a KB-relative one; `100` emits the
+    /// whole KB with no selection. Applies to BOTH the
     /// native backend (as the auto-tolerance loop's starting budget, which
     /// may still widen from there) and Vampire (as the final, one-shot
     /// budget -- see [`Session::to_tptp_for_ask`](crate::Session::to_tptp_for_ask)).

@@ -179,7 +179,7 @@ The facade wraps these; use them directly for finer control. Two classes:
 
 | Class | Purpose |
 | --- | --- |
-| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)` and `toTptpForAsk(assertions, query, selectAll?, tolerancePct?)` for driving an external prover. |
+| **`Session` (raw)** | The full in-browser KB. `configure(config)`, `loadKif(text, tag)`, `tell(kif, session?)`, `ask(query, session?)`, `lookup(pattern)`, `flushSession(session)`, plus TPTP export via `toTptpIndexed(lang?, hideNumbers?)` and `toTptpForAsk(assertions, query, tolerancePct?, tptp?)` for driving an external prover. |
 
 It also exposes the query methods `validate()`, `validateFormula(kif)`,
 `search(query, kind?, language?, limit?)`, and `manpage(symbol)` (the facade's

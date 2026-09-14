@@ -69,16 +69,14 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Session assertions (hypotheses) fold into the axiom list so one
         // `build_problem` pass assembles everything.
         if let Some(name) = session {
-            if let Some(sids) = self.sessions.get(name) {
-                for &sid in sids {
-                    if self.sentence_excluded(sid, &opts.excluded) {
-                        continue;
-                    }
-                    axioms_sorted.push(sid);
+            for sid in self.session_sids(name) {
+                if self.sentence_excluded(sid, &opts.excluded) {
+                    continue;
                 }
-                axioms_sorted.sort_unstable();
-                axioms_sorted.dedup();
+                axioms_sorted.push(sid);
             }
+            axioms_sorted.sort_unstable();
+            axioms_sorted.dedup();
         }
 
         // Whole-KB translate has no selection step — "the selected axioms"
@@ -177,17 +175,27 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Session assertions (hypotheses) fold in UNFILTERED by selection —
         // see doc comment above.
         if let Some(name) = session {
-            if let Some(sids) = self.sessions.get(name) {
-                for &sid in sids {
-                    if self.sentence_excluded(sid, &opts.excluded) {
-                        continue;
-                    }
-                    axioms_sorted.push(sid);
+            for sid in self.session_sids(name) {
+                if self.sentence_excluded(sid, &opts.excluded) {
+                    continue;
                 }
-                axioms_sorted.sort_unstable();
-                axioms_sorted.dedup();
+                axioms_sorted.push(sid);
             }
         }
+        // Ensure that all taxonomy chains are correctly closed
+        let scope = match session {
+            Some(name) => crate::semantics::types::Scope::Session(
+                crate::syntactic::caches::session::session_id(name),
+            ),
+            None => crate::semantics::types::Scope::Base,
+        };
+        axioms_sorted.extend(
+            self.layer
+                .semantic()
+                .taxonomy_closure_facts_scoped(&seed, 4000, scope),
+        );
+        axioms_sorted.sort_unstable();
+        axioms_sorted.dedup();
 
         let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);
         let (axiom_problem, axiom_sid_map) =
@@ -209,11 +217,6 @@ impl<L: HasTranslation> KnowledgeBase<L> {
     ///
     /// Like [`KnowledgeBase::to_tptp`], but accepts optional [`ExternalOpts`]
     /// controlling axiom selection.
-    ///
-    /// # Errors
-    ///
-    /// Returns the ingestion diagnostics if interning the testcase's
-    /// hypotheses or conjecture fails.
     #[cfg(feature = "ask")]
     pub fn tc_to_tptp(
         &self,

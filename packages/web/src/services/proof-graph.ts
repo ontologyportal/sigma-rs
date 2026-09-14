@@ -99,10 +99,13 @@ function measureLabel(html: string): { w: number; h: number } {
     labelProbe.style.visibility = "hidden";
     labelProbe.style.left = "-9999px";
     labelProbe.style.top = "0";
+    labelProbe.style.width = "max-content";
     document.body.appendChild(labelProbe);
   }
   labelProbe.innerHTML = html;
-  return { w: labelProbe.offsetWidth, h: labelProbe.offsetHeight };
+  const el = (labelProbe.firstElementChild as HTMLElement | null) ?? labelProbe;
+  const { width, height } = el.getBoundingClientRect();
+  return { w: Math.ceil(width), h: Math.ceil(height) };
 }
 
 /** Proof/contradiction steps -> Cytoscape elements: one node per step, one edge per premise. */

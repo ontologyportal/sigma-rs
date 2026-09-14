@@ -312,9 +312,7 @@ export class Session {
           "ask() on a TranslationOnly session needs opts.hook(tptp)",
         );
       }
-      return opts.hook(
-        this.#kb.toTptpForAsk("", query, false, null, opts.tptp),
-      );
+      return opts.hook(this.#kb.toTptpForAsk("", query, null, opts.tptp));
     }
     return this.#kb.ask(query, opts.session, opts.tptp);
   }

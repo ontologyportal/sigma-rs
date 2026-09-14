@@ -226,24 +226,6 @@ details.graph-dot-toggle pre {
 .pg-fullscreen-btn svg {
   display: block;
 }
-/* Proof graph node content: an HTML overlay (cytoscape-node-html-label) over
-   the canvas-drawn, kind-colored node box -- shrink-wraps up to max-width, so
-   the underlying node is sized to match (see proof-graph.ts's measureLabel). */
-:deep(.pg-node-label) {
-  display: inline-block;
-  padding: 6px 8px;
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--fg);
-  pointer-events: none;
-}
-:deep(.pg-node-label .pg-idx) {
-  color: var(--muted);
-  margin-right: 4px;
-}
 /* Proof graph legend: one hollow swatch per node category, border-colored to
    match cytoscapeStyle's node[kind="..."] outline colors (proof-graph.ts). */
 .pg-legend {

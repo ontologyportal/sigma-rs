@@ -190,10 +190,7 @@ impl<L: TopLayer> Session<L> {
 }
 
 impl<L: HasTranslation> Session<L> {
-    /// Emit the KB as a TPTP problem in `lang` (FOF / TFF / …).  Only the
-    /// `TranslationOnly` backend can translate — the native prover has no
-    /// translation layer, and the external backend's inner translation layer is
-    /// not exposed for direct emission.
+    /// Emit the KB as a TPTP problem in `lang` (FOF / TFF / …)
     pub fn translate(&mut self, opts: TptpOptions) -> SdkResult<String> {
         Ok(self.kb.to_tptp(&opts, None))
     }
@@ -247,11 +244,11 @@ impl<L: HasTranslation> Session<L> {
     /// Empty `assertions_kif` is fine (no session created).  Errors when the
     /// assertions or query fail to parse, or the query produces no sentence.
     ///
-    /// `select_all = false` SInE-selects a query-relevant axiom subset
-    /// (seeded from BOTH the assertions and the query, so an assertion's own
-    /// vocabulary can pull in axioms it needs); `true` emits the whole
-    /// promoted KB, unfiltered.  `selection_tolerance_pct` tunes the SInE
-    /// budget (ignored under `select_all`; `None` uses the engine default).
+    /// SInE-selects a query-relevant axiom subset (seeded from BOTH the
+    /// assertions and the query, so an assertion's own vocabulary can pull
+    /// in axioms it needs).  `selection_tolerance_pct` tunes the budget:
+    /// `None` uses the engine default, `100` (or more) emits the whole
+    /// promoted KB unfiltered.
     /// `tptp` parses `assertions_kif`/`query_kif` as TPTP instead of SUO-KIF
     /// before staging.
     #[cfg(any(feature = "ask", feature = "native-prover"))]
@@ -259,7 +256,6 @@ impl<L: HasTranslation> Session<L> {
         &mut self,
         assertions_kif: &str,
         query_kif: &str,
-        select_all: bool,
         selection_tolerance_pct: Option<f64>,
         tptp: bool,
     ) -> Result<String, Vec<SdkError>> {
@@ -331,7 +327,8 @@ impl<L: HasTranslation> Session<L> {
             hide_numbers: true,
             ..TptpOptions::default()
         };
-        let mut tptp = if select_all {
+        let whole_kb = selection_tolerance_pct.is_some_and(|pct| pct >= 100.0);
+        let mut tptp = if whole_kb {
             kb.to_tptp(&kb_opts, Some(ASSERT_TAG))
         } else {
             // Seed relevance from BOTH the assertions and the query -- same
@@ -369,6 +366,77 @@ mod tests {
     use super::Session;
     use crate::Source;
     use sigmakee_rs_core::{TptpLang, TptpOptions, TranslationLayer};
+
+    /// A starved selection budget must not drop a link of the subclass chain
+    /// between an asserted class and the queried class: the chain facts are
+    /// injected regardless of SInE's ranking.
+    #[cfg(feature = "ask")]
+    #[test]
+    fn tptp_for_ask_keeps_the_taxonomy_chain_under_a_starved_budget() {
+        let mut s = Session::<TranslationLayer>::new("ops-chain".into());
+        s.ingest(
+            reader(
+                "t.kif",
+                "(subclass Mammal WarmBloodedVertebrate)\n\
+                 (subclass WarmBloodedVertebrate Vertebrate)\n\
+                 (subclass Vertebrate Animal)\n\
+                 (subclass Animal Organism)\n\
+                 (=> (and (subclass ?X ?Y) (instance ?Z ?X)) (instance ?Z ?Y))\n\
+                 (subclass Rock Object)\n",
+            ),
+            true,
+        );
+        let tptp = s
+            .tptp_for_ask(
+                "(instance Rex Dog)\n(subclass Dog Mammal)",
+                "(instance Rex Animal)",
+                Some(0.0001),
+                false,
+            )
+            .expect("tptp_for_ask");
+        for link in [
+            "s__subclass(s__Dog,s__Mammal)",
+            "s__subclass(s__Mammal,s__WarmBloodedVertebrate)",
+            "s__subclass(s__WarmBloodedVertebrate,s__Vertebrate)",
+            "s__subclass(s__Vertebrate,s__Animal)",
+        ] {
+            assert!(tptp.contains(link), "missing chain link {link}:\n{tptp}");
+        }
+    }
+
+    /// The Ask/Tell default: assertions that the query needs must reach the
+    /// external prover as support, both with SInE selection and without.
+    #[cfg(feature = "ask")]
+    #[test]
+    fn tptp_for_ask_emits_the_assertions_as_support() {
+        let mut s = Session::<TranslationLayer>::new("ops-ask".into());
+        s.ingest(reader("t.kif", "(subclass Mammal Animal)"), true);
+        for pct in [None, Some(100.0)] {
+            let tptp = s
+                .tptp_for_ask(
+                    "(instance Rex Dog)\n(subclass Dog Mammal)",
+                    "(instance Rex Animal)",
+                    pct,
+                    false,
+                )
+                .expect("tptp_for_ask");
+            let support: Vec<&str> = tptp
+                .lines()
+                .filter(|l| l.contains("s__Rex") && !l.contains("conjecture"))
+                .collect();
+            assert!(
+                !support.is_empty(),
+                "pct={pct:?}: the asserted (instance Rex Dog) never reached the problem:\n{tptp}"
+            );
+            assert!(
+                tptp.lines().any(|l| l.contains("s__Dog")
+                    && l.contains("s__Mammal")
+                    && !l.contains("conjecture")),
+                "pct={pct:?}: the asserted (subclass Dog Mammal) is missing:\n{tptp}"
+            );
+            assert_eq!(tptp.matches("conjecture").count(), 1, "{tptp}");
+        }
+    }
 
     fn reader(name: &str, kif: &str) -> Source {
         Source::Reader {
@@ -466,9 +534,8 @@ mod tests {
             .tptp_for_ask(
                 "fof(a1, axiom, subclass('Dog', 'Mammal')).",
                 "fof(g, conjecture, subclass('Dog', 'Mammal')).",
-                true, // whole KB, no SInE selection needed for this tiny fixture
-                None,
-                true, // parse assertions/query as TPTP
+                Some(100.0), // whole KB, no SInE selection needed for this tiny fixture
+                true,        // parse assertions/query as TPTP
             )
             .unwrap();
         assert!(
@@ -487,7 +554,7 @@ mod tests {
         // silently dropped (the TPTP parser's default ingestion behavior,
         // correct for axiom-file loading, is wrong for a query).
         let mut s = Session::<TranslationLayer>::new("ops-tptp-ask-conj".into());
-        let err = s.tptp_for_ask("", "fof(g, conjecture, p(a)).", true, None, true);
+        let err = s.tptp_for_ask("", "fof(g, conjecture, p(a)).", Some(100.0), true);
         assert!(
             err.is_ok(),
             "a conjecture-framed TPTP query should parse and stage, got: {err:?}"

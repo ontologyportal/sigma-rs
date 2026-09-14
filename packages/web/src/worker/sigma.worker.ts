@@ -245,7 +245,6 @@ const handlers = {
     const tptp = session.kb.toTptpForAsk(
       assertions || "",
       query,
-      false,
       selectionTolerancePct || null,
       !!tptpInput,
     );

@@ -119,17 +119,12 @@ impl Session {
     /// diagnostic-message array) on a query that fails to parse or
     /// produces no sentence.
     ///
-    /// `select_all` mirrors [`Config::selectAll`](crate::Config::select_all)
-    /// on the native backend's `Config`, so ONE toggle in the UI means the
-    /// same thing for both: `false` (default) SInE-selects a query-relevant
-    /// axiom subset (seeded from the assertions + query, via the same
-    /// selection primitive the native prover and the CLI's external-prover
-    /// path both use); `true` emits the whole promoted KB, unfiltered.
     /// `selection_tolerance_pct` mirrors
-    /// [`Config::selectionTolerancePct`](crate::Config::selection_tolerance_pct)
-    /// -- ignored when `select_all` is true; `None` uses the engine default
-    /// budget. Unlike the native backend's autoscaling loop, this is the
-    /// FINAL budget: Vampire runs as a one-shot external engine with no
+    /// [`Config::selectionTolerancePct`](crate::Config::selection_tolerance_pct),
+    /// so ONE slider in the UI means the same thing for both backends:
+    /// `None` uses the engine default budget, `100` emits the whole promoted
+    /// KB unfiltered. Unlike the native backend's autoscaling loop, this is
+    /// the FINAL budget: Vampire runs as a one-shot external engine with no
     /// feedback retry, so a query that needs more of the KB than the given
     /// percentage admits will fail here even though the native backend
     /// might still find it by widening its own selection.
@@ -140,7 +135,6 @@ impl Session {
         &mut self,
         assertions_kif: &str,
         query_kif: &str,
-        select_all: Option<bool>,
         selection_tolerance_pct: Option<f64>,
         tptp: Option<bool>,
     ) -> Result<String, JsValue> {
@@ -149,7 +143,6 @@ impl Session {
             .tptp_for_ask(
                 assertions_kif,
                 query_kif,
-                select_all.unwrap_or(false),
                 selection_tolerance_pct,
                 tptp.unwrap_or(false),
             )

@@ -43,6 +43,10 @@ static RE_IDENT: Lazy<Regex> = Lazy::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*"
 /// Our `kb_<sid>` axiom name, as preserved in E's leaf source annotation
 /// `file('<stdin>', kb_42)`.  Mirrors the Vampire runner's regex; E preserves
 /// input formula names automatically (no flag needed).
+/// The outermost inference rule of a source annotation:
+/// `inference(rw, [...], [inference(spm, ...)])` -> `rw`.
+static RE_INFERENCE_RULE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\s*inference\(\s*([A-Za-z_][A-Za-z0-9_]*)").unwrap());
 static RE_AXIOM_NAME: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"file\('[^']*',\s*(kb_\d+)\s*\)").unwrap());
 
@@ -414,6 +418,9 @@ fn parse_eprover_proof(input: &str) -> Vec<ProofStep> {
             role: r.role.clone(),
             formula: r.formula.clone(),
             parents: resolve_parents(&r.source, &r.id, &names),
+            rule: RE_INFERENCE_RULE
+                .captures(&r.source)
+                .map(|c| c[1].to_string()),
             source_name: RE_AXIOM_NAME.captures(&r.source).map(|c| c[1].to_string()),
         })
         .collect()
@@ -763,6 +770,20 @@ cnf(c_0_9, plain, ($false), inference(sr,[status(thm)],[inference(spm,[status(th
         // Non-kb leaf (`g`) and derived steps carry no kb_<sid> source name.
         assert_eq!(step(&steps, "g").source_name, None);
         assert_eq!(step(&steps, "c_0_9").source_name, None);
+    }
+
+    #[test]
+    fn derived_steps_carry_the_outermost_inference_rule() {
+        let steps = parse_eprover_proof(REFUTATION);
+        assert_eq!(step(&steps, "c_0_4").rule.as_deref(), Some("fof_nnf"));
+        assert_eq!(
+            step(&steps, "c_0_6").rule.as_deref(),
+            Some("split_conjunct")
+        );
+        // Nested inferences: the OUTERMOST rule names the step.
+        assert_eq!(step(&steps, "c_0_9").rule.as_deref(), Some("sr"));
+        assert_eq!(step(&steps, "kb_42").rule, None);
+        assert_eq!(step(&steps, "g").rule, None);
     }
 
     #[test]

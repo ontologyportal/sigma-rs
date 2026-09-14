@@ -162,6 +162,10 @@ pub(crate) fn docitems_to_proof_steps(doc: &[DocItem]) -> Vec<ProofStep> {
                     Some(Source::Inference { parents, .. }) => parents.clone(),
                     _ => Vec::new(),
                 },
+                rule: match source {
+                    Some(Source::Inference { rule, .. }) => Some(rule.clone()),
+                    _ => None,
+                },
                 // Only our own `kb_<sid>` naming convention is meaningful
                 // here — Vampire builds without `--output_axiom_names` (or
                 // older ones) emit `file('/dev/stdin', unknown)`, which must
@@ -279,6 +283,46 @@ fn docitems_to_ast_formulas(doc: &[DocItem]) -> Vec<AstNode> {
 mod tests {
     use super::*;
     use crate::parse::kif::dis::AstKif;
+
+    #[test]
+    fn derived_steps_are_labeled_by_their_inference_rule_not_plain() {
+        let raw = "\
+% SZS status Theorem for input
+% SZS output start Proof for input
+fof(f1,axiom,(
+  s__instance(s__Rex,s__Dog)),
+  file('/work/input.p',kb_1)).
+fof(f2,conjecture,(
+  s__instance(s__Rex,s__Dog)),
+  file('/work/input.p',conjecture)).
+fof(f3,negated_conjecture,(
+  ~s__instance(s__Rex,s__Dog)),
+  inference(negated_conjecture,[],[f2])).
+fof(f4,plain,(
+  ~s__instance(s__Rex,s__Dog)),
+  inference(cnf_transformation,[],[f3])).
+fof(f5,plain,(
+  $false),
+  inference(resolution,[],[f1,f4])).
+% SZS output end Proof for input
+";
+        let result = parse_vampire_result(raw, ProverMode::Prove);
+        let rules: Vec<&str> = result.proof.iter().map(|s| s.rule.as_str()).collect();
+        assert_eq!(
+            rules,
+            vec![
+                "axiom",
+                "conjecture",
+                "negated_conjecture",
+                "cnf_transformation",
+                "resolution"
+            ]
+        );
+        assert!(
+            !rules.contains(&"plain"),
+            "a derived step must never surface the bare TPTP role: {rules:?}"
+        );
+    }
 
     #[test]
     fn proof_step_formulas_render_as_kif_not_quoted_tptp() {
