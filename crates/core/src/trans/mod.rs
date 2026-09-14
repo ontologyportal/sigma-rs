@@ -19,7 +19,7 @@ pub mod literal;
 pub(crate) mod lower;
 pub(crate) mod lower_thf;
 pub mod operator;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub(crate) mod poly_expand;
 pub(crate) mod rewrite;
 pub mod sort;

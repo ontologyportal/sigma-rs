@@ -146,6 +146,7 @@ run_step "cargo fmt"    cargo fmt --check
 run_step "cargo clippy" cargo clippy --workspace --all-features --tests -- -D warnings
 run_step "cargo build"  env RUSTFLAGS="-D warnings" cargo build --release
 run_step "cargo test"   cargo test
+run_step "cargo test lsp" cargo test -p sumo-lsp
 
 # JavaScript/TypeScript workspace (packages/): prettier + eslint, via the
 # root package.json scripts. Skipped when npm or node_modules is missing.

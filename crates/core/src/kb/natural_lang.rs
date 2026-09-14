@@ -50,7 +50,7 @@
 
 // Available under either prover backend: the native prover also produces
 // proofs whose steps get rendered through `render_formula` (see `proof_prose`).
-#![cfg(any(feature = "ask", feature = "native-prover"))]
+#![cfg(any(feature = "external-prover", feature = "native-prover"))]
 
 use super::KnowledgeBase;
 use crate::parse::ast::AstNode;

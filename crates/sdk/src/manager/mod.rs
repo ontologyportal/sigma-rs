@@ -264,21 +264,19 @@ impl Default for ExternalProverConfig {
 
 /// Build a runtime [`ProverOpts`](sigmakee_rs_core::prover::ProverOpts) seeded
 /// with the configured timeout.  `mode` is left at its default (`Prove`).
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl ExternalProverConfig {
     pub fn to_prover_opts(&self) -> sigmakee_rs_core::prover::ExternalOpts {
         sigmakee_rs_core::prover::ExternalOpts {
             timeout_secs: self.timeout_secs,
             selection: self.selection,
-            mode: match self.tptp_lang.as_str() {
+            mode: match self.tptp_lang.to_ascii_lowercase().as_str() {
                 "fof" => TptpLang::Fof,
                 "tff" => TptpLang::Tff,
                 "cnf" => TptpLang::Cnf,
-                // Higher-order rides the `hol` flag; `mode` is inert then.
-                "thf" => TptpLang::Fof,
+                "thf" => TptpLang::Thf,
                 _ => TptpLang::Auto,
             },
-            hol: self.tptp_lang.eq_ignore_ascii_case("thf"),
             session: None,
         }
     }
@@ -368,7 +366,7 @@ impl ProverOptsFor for sigmakee_rs_core::NativeOpts {
     }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl ProverOptsFor for sigmakee_rs_core::prover::ExternalOpts {
     fn from_manager(manager: &KBManager) -> Self {
         manager.external_prover().to_prover_opts()
@@ -2220,7 +2218,21 @@ mod tests {
         assert_eq!(m.native_prover.max_steps, 4000);
     }
 
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
+    #[cfg(feature = "external-prover")]
+    #[test]
+    fn external_config_thf_selects_the_higher_order_dialect() {
+        for lang in ["thf", "THF"] {
+            let cfg = ExternalProverConfig {
+                tptp_lang: lang.into(),
+                ..ExternalProverConfig::default()
+            };
+            assert_eq!(cfg.to_prover_opts().mode, TptpLang::Thf, "{lang}");
+        }
+        let cfg = ExternalProverConfig::default();
+        assert_eq!(cfg.to_prover_opts().mode, TptpLang::Auto);
+    }
+
     #[test]
     fn external_config_builds_prover_opts() {
         let m = KBManager::from_config_xml(WITH_PROVERS).unwrap();

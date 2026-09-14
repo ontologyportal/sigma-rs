@@ -14,13 +14,13 @@
 // phase-1 bi-sorted scheme: `$i`, `$o`, and arrows over them (SUMO's class
 // taxonomy stays as `instance` guards, exactly like the FOF encoding).
 
-#[cfg(feature = "ask")]
-use std::collections::HashSet;
-#[cfg(feature = "ask")]
-use std::fmt::Write as _;
-
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
+#[cfg(feature = "external-prover")]
 use crate::types::SentenceId;
+#[cfg(feature = "external-prover")]
+use std::collections::HashSet;
+#[cfg(feature = "external-prover")]
+use std::fmt::Write as _;
 
 /// A TH0 sort: `$i`, `$o`, or a (right-associated, curried) arrow.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -43,7 +43,7 @@ impl HoSort {
 
     /// The THF rendering.  Arrows are parenthesized when they appear in
     /// argument position (`($i > $o) > $i`), bare otherwise.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn thf(&self) -> String {
         match self {
             HoSort::I => "$i".to_string(),
@@ -77,7 +77,7 @@ pub enum ThfExpr {
     /// Application `f @ x` (curried; spines flatten on emission).
     App(Box<ThfExpr>, Box<ThfExpr>),
     /// Lambda `^[X<n>: σ]: body`.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     Lam(u32, HoSort, Box<ThfExpr>),
     Not(Box<ThfExpr>),
     And(Vec<ThfExpr>),
@@ -100,7 +100,7 @@ impl ThfExpr {
 
     /// Render as THF text.  Conservative parenthesization: every composite
     /// is wrapped, application spines flatten to `(f @ a @ b)`.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn thf(&self) -> String {
         match self {
             ThfExpr::Const(n) => n.clone(),
@@ -140,7 +140,7 @@ impl ThfExpr {
         }
     }
 
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn assoc(op: &str, es: &[ThfExpr]) -> String {
         match es {
             [] => "$true".to_string(),
@@ -163,7 +163,7 @@ impl ThfExpr {
 /// A complete THF problem: constant declarations, axioms (paired with their
 /// origin sentences via `sid_map`, exactly like the FO `Problem`), and an
 /// optional conjecture.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 #[derive(Debug, Clone, Default)]
 pub struct HoProblem {
     decls: Vec<ThfConst>,
@@ -172,7 +172,7 @@ pub struct HoProblem {
     conjecture: Option<ThfExpr>,
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl HoProblem {
     pub fn new() -> Self {
         Self::default()
@@ -205,46 +205,26 @@ impl HoProblem {
         &self.decls
     }
 
-    /// Assemble the full THF text.  `sid_map[i]` names `axioms[i]` as
-    /// `kb_<sid>` (repeats suffixed `_v<n>`, mirroring the FO assembler);
-    /// unmapped axioms are `ax_<i>`.  The conjecture is named
-    /// `conjecture_name`.
+    /// The full THF text with the standard `kb_<sid>` axiom naming: the
+    /// shared [`assemble_tptp_indexed`](crate::kb::assemble::assemble_tptp_indexed)
+    /// with default options (repeats suffixed `_v<n>`, unmapped axioms
+    /// `kb_anon_<i>`).
     pub fn to_thf(&self, sid_map: &[SentenceId], conjecture_name: &str) -> String {
-        let mut out = String::new();
-        for d in &self.decls {
-            let _ = writeln!(
-                out,
-                "thf({}_tp, type, {}: {}).",
-                d.name,
-                d.name,
-                d.sort.thf()
-            );
-        }
-        let mut seen: std::collections::HashMap<SentenceId, u32> = std::collections::HashMap::new();
-        for (i, ax) in self.axioms.iter().enumerate() {
-            let name = match sid_map.get(i) {
-                Some(&sid) => {
-                    let n = *seen.entry(sid).and_modify(|n| *n += 1).or_insert(0u32);
-                    if n == 0 {
-                        format!("kb_{sid}")
-                    } else {
-                        format!("kb_{sid}_v{n}")
-                    }
-                }
-                None => format!("ax_{i}"),
-            };
-            let _ = writeln!(out, "thf({name}, axiom, {}).", ax.thf());
-        }
-        if let Some(c) = &self.conjecture {
-            let _ = writeln!(out, "thf({conjecture_name}, conjecture, {}).", c.thf());
-        }
-        out
+        crate::kb::assemble::assemble_tptp_indexed(
+            self,
+            sid_map,
+            &crate::kb::assemble::AssemblyOpts {
+                conjecture_name,
+                ..Default::default()
+            },
+            None,
+        )
     }
 }
 
 // -- Tests ---------------------------------------------------------------------
 
-#[cfg(all(test, feature = "ask"))]
+#[cfg(all(test, feature = "external-prover"))]
 mod tests {
     use super::*;
 

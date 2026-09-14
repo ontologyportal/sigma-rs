@@ -19,6 +19,7 @@ use super::result::ProverResult;
 use crate::cache::events::Event;
 use crate::kb::session_tags::SESSION_QUERY;
 use crate::prover::CommonProverOpts;
+use crate::trans::HasTranslation;
 use crate::types::{FileOrigin, SentenceId, SourceFile};
 use crate::{
     cache::CacheConfig,
@@ -43,13 +44,11 @@ pub struct ExternalOpts {
     pub session: Option<String>,
     /// Wall-clock budget in seconds (0 = unlimited).
     pub timeout_secs: u64,
-    /// TPTP language for the generated problem file (FOF / TFF).
+    /// TPTP language for the generated problem: `Auto` / `Fof` / `Tff` go
+    /// through the first-order pipeline (`Auto` upgrades to TFF when the
+    /// selected axioms carry numerals); `Thf` assembles through the
+    /// translation layer's higher-order pipeline instead.
     pub mode: TptpLang,
-    /// Higher-order mode: assemble a THF problem through the translation
-    /// layer's HO pipeline instead of `mode`'s first-order one.  A separate
-    /// flag (rather than a `TptpLang` variant) so the parse subsystem's
-    /// dialect enum stays untouched.
-    pub hol: bool,
 }
 
 impl CommonProverOpts for ExternalOpts {
@@ -72,22 +71,29 @@ impl CommonProverOpts for ExternalOpts {
 // the roots into `Conjecture.sents`, and truncates the tag in `cleanup`.
 pub(crate) use super::Conjecture;
 
+/// The external-prover top layer: `backend` drives a TPTP prover over problems
+/// the stack beneath translates.  `T` is that stack -- the bare
+/// [`TranslationLayer`] for the CLI's external backends, or the native
+/// [`ProverLayer<TranslationLayer>`](crate::prover::ProverLayer) when both
+/// engines must share one KB (the browser toggles per query).  External sits
+/// on top because it registers no reactors of its own, so every event still
+/// reaches the native layer's caches beneath it.
 #[derive(Debug)]
-pub struct ExternalProverLayer {
+pub struct ExternalProverLayer<T: HasTranslation + 'static = TranslationLayer> {
     /// The external prover configured for this layer
     backend: Prover,
-    /// The translation sublayer
-    translation: TranslationLayer,
+    /// The stack beneath: translation, possibly with the native prover on top
+    inner: T,
     /// The cache config object
     config: crate::cache::CacheConfig,
 }
 
-impl ExternalProverLayer {
-    /// Create a new external prover layer from a backend and translation layer
-    pub(crate) fn new(backend: Prover, translation: TranslationLayer) -> Self {
+impl<T: HasTranslation + 'static> ExternalProverLayer<T> {
+    /// Create a new external prover layer from a backend and the stack beneath
+    pub(crate) fn new(backend: Prover, inner: T) -> Self {
         Self {
             backend,
-            translation,
+            inner,
             config: CacheConfig::default(),
         }
     }
@@ -97,24 +103,45 @@ impl ExternalProverLayer {
     pub fn set_backend(&mut self, backend: Prover) {
         self.backend = backend;
     }
+
+    /// The stack beneath this layer (e.g. the native prover, when nested).
+    pub fn inner_layer(&self) -> &T {
+        &self.inner
+    }
+
+    /// The translation layer somewhere beneath this one.
+    fn translation(&self) -> &TranslationLayer {
+        self.inner.translation()
+    }
 }
 
-impl Layer for ExternalProverLayer {
-    type Inner = TranslationLayer;
+impl<T: HasTranslation + 'static> Layer for ExternalProverLayer<T> {
+    type Inner = T;
 
     type Outer = NoLayer;
 
     fn inner(&self) -> Option<&Self::Inner> {
-        Some(&self.translation)
+        Some(&self.inner)
     }
 
     fn own_reactors(&self) -> Vec<crate::cache::router::ReactorEntry<'_>> {
         vec![]
     }
 
+    // One cell per concrete `T`: a `static` inside a generic fn is shared by
+    // every instantiation, which would dispatch one stack's cascade schedule
+    // to another's reactors (same guard as `ProverLayer<S>`).
     fn schedule_cell(&self) -> &'static crate::layer::ScheduleCell {
-        static CELL: crate::layer::ScheduleCell = std::sync::OnceLock::new();
-        &CELL
+        use std::any::TypeId;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        static CELLS: Mutex<Option<HashMap<TypeId, &'static crate::layer::ScheduleCell>>> =
+            Mutex::new(None);
+        let mut cells = CELLS.lock().unwrap();
+        cells
+            .get_or_insert_with(HashMap::new)
+            .entry(TypeId::of::<T>())
+            .or_insert_with(|| Box::leak(Box::new(std::sync::OnceLock::new())))
     }
 
     fn cache_config(&self) -> &crate::cache::CacheConfig {
@@ -126,12 +153,12 @@ impl Layer for ExternalProverLayer {
     }
 }
 
-impl ProvingLayer for ExternalProverLayer {
+impl<T: HasTranslation + 'static> ProvingLayer for ExternalProverLayer<T> {
     type Opts = ExternalOpts;
 
     /// Deferred rewrite pass + predicate-variable schema detection (idempotent).
     fn warm_up(&self) {
-        self.translation.ensure_rewrite_pass();
+        self.translation().ensure_rewrite_pass();
     }
 
     /// Intern the conjecture into the **shared store** under the query tag (the
@@ -156,7 +183,7 @@ impl ProvingLayer for ExternalProverLayer {
             staged: false,
         }]);
         // Full tag membership (new + content-addressed dups alike), resolved.
-        let syn = &self.translation.semantic.syntactic;
+        let syn = &self.translation().semantic.syntactic;
         syn.file_root_sids(tag)
             .into_iter()
             .filter_map(|sid| syn.sentence(sid).map(|arc| (arc, sid)))
@@ -193,45 +220,41 @@ impl ProvingLayer for ExternalProverLayer {
     }
 }
 
-impl TopLayer for ExternalProverLayer {
+impl<T: HasTranslation + 'static> TopLayer for ExternalProverLayer<T> {
     fn from_semantic(semantic: crate::semantics::SemanticLayer) -> Self {
         Self {
-            translation: TranslationLayer::from_semantic(semantic),
+            inner: T::from_semantic(semantic),
             backend: Prover::default(),
             config: crate::cache::CacheConfig::default(),
         }
     }
 
-    /// Carry the configured prover backend + cache config onto a clone — the
+    /// Carry the configured prover backend + cache config onto a clone -- the
     /// default `from_semantic` would reset them, leaving the clone unable to
-    /// invoke the external prover.
+    /// invoke the external prover.  The stack beneath carries its own config
+    /// the same way (the translation layer's emission mode, for one).
     fn fresh_config_clone(&self, semantic: crate::semantics::SemanticLayer) -> Self {
-        let translation = TranslationLayer::from_semantic(semantic);
-        // Emission config is not a cache — carry it (the per-test
-        // `snapshot_clone` path otherwise silently drops it).
-        translation.set_reals_only(self.translation.reals_only());
         Self {
-            translation,
+            inner: self.inner.fresh_config_clone(semantic),
             backend: self.backend.clone(),
             config: self.config.clone(),
         }
     }
 
     fn semantic(&self) -> &crate::semantics::SemanticLayer {
-        &self.translation.semantic
+        self.inner.semantic()
     }
 
     fn semantic_mut(&mut self) -> &mut crate::semantics::SemanticLayer {
-        &mut self.translation.semantic
+        self.inner.semantic_mut()
     }
 }
 
-impl crate::trans::HasTranslation for ExternalProverLayer {
-    // trans is one hop down
+impl<T: HasTranslation + 'static> HasTranslation for ExternalProverLayer<T> {
     fn translation(&self) -> &TranslationLayer {
-        &self.translation
+        self.inner.translation()
     }
     fn translation_mut(&mut self) -> &mut TranslationLayer {
-        &mut self.translation
+        self.inner.translation_mut()
     }
 }

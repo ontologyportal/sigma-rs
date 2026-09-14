@@ -28,7 +28,7 @@ impl VarId {
     }
 
     /// The TPTP identifier for this variable (`X0`, `X1`, ...).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn tptp_name(self) -> String {
         format!("X{}", self.0)
     }
@@ -160,18 +160,18 @@ impl Term {
     /// let vars: Vec<u32> = t.free_vars().map(|v| v.index()).collect();
     /// assert_eq!(vars, vec![0, 1]);
     /// ```
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub fn free_vars(&self) -> impl Iterator<Item = VarId> + '_ {
         FreeVarsIter { stack: vec![self] }
     }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 struct FreeVarsIter<'a> {
     stack: Vec<&'a Term>,
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl<'a> Iterator for FreeVarsIter<'a> {
     type Item = VarId;
 
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn var_id_index_and_tptp_name() {
         let v = VarId(3);
         assert_eq!(v.index(), 3);
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn term_free_vars() {
         let f = Function::new("f", 2);
         let t = Term::apply(f, vec![Term::var(0), Term::var(1)]);

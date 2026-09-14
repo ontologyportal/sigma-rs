@@ -65,7 +65,7 @@ pub(crate) struct RewriteProgram {
     /// Predicate-variable schema templates (transitivity / symmetry /
     /// subrelation-propagation); instantiated lazily per query elsewhere
     /// (`instantiate_predvars`, which is `ask`-gated).
-    #[cfg_attr(not(feature = "ask"), allow(dead_code))]
+    #[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
     pub predvar_schemas: Vec<PredVarSchema>,
     /// Source implication ids (rule sources ∪ schema sources, plus any
     /// `synthetic_origin` they derive from) whose rewritten / instantiated forms

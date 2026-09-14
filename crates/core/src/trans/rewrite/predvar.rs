@@ -1,20 +1,20 @@
 use std::collections::HashSet;
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use smallvec::smallvec;
 
 use super::augment::collect_conjuncts;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use super::augment::substitute_var;
 use super::extract::var_appears_as_predicate;
 use super::preprocess::decompose_implication;
 use crate::parse::ast::OpKind;
 use crate::syntactic::SyntacticLayer;
 use crate::trans::TranslationLayer;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::types::TaxRelation;
 use crate::types::{Element, SentenceId, SymbolId};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use crate::types::{ElementVec, InternedSym};
 
 // ---------------------------------------------------------------------------
@@ -24,7 +24,7 @@ use crate::types::{ElementVec, InternedSym};
 /// A taxonomy guard constraining a schema's predicate variables.
 // Constructed by `detect_predvar_schemas` (live without `ask`); the fields are
 // only READ by the `ask`-gated instantiation path below.
-#[cfg_attr(not(feature = "ask"), allow(dead_code))]
+#[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PvGuard {
     /// `(instance ?V class)` — `?V` must be an instance of `class`.
@@ -44,7 +44,7 @@ pub(crate) enum PvGuard {
 ///   - subrelation propagation: `(=> (and (subrelation ?R1 ?R2)(instance ?R1 Predicate)(instance ?R2 Predicate)(?R1 …)) (?R2 …))`
 // Constructed by `detect_predvar_schemas` (live without `ask`); most fields are
 // only READ by the `ask`-gated instantiation path below.
-#[cfg_attr(not(feature = "ask"), allow(dead_code))]
+#[cfg_attr(not(feature = "external-prover"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(crate) struct PredVarSchema {
     /// The (CAF-normalized) implication carrying the schema.
@@ -236,7 +236,7 @@ fn is_pure_predvar_schema(
 /// `true` iff `csid` is a taxonomy guard atom (`instance`/`subrelation`
 /// headed) mentioning one of the predicate variables — i.e. a guard to drop
 /// during instantiation (as opposed to a body atom).
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 fn is_taxonomy_guard_atom(
     syntactic: &SyntacticLayer,
     csid: SentenceId,
@@ -280,7 +280,7 @@ pub(crate) fn is_bare_positive_assertion(syntactic: &SyntacticLayer, sid: Senten
 /// Instantiate `schema` for one binding (`pred_var -> concrete relation`):
 /// substitute every predicate variable, drop the taxonomy guard conjuncts,
 /// and push the result as a synthetic implication (origin = the schema).
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 fn instantiate_schema(
     syntactic: &SyntacticLayer,
     schema: &PredVarSchema,
@@ -358,7 +358,7 @@ impl TranslationLayer {
     /// candidate count exceeds the per-problem cap the rules kept are the ones
     /// touching the query/assertions rather than arbitrary KB relations that
     /// happened to ride in on SInE selection.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn instantiate_predvars(
         &self,
         seed_sids: &[SentenceId],
@@ -476,7 +476,7 @@ impl TranslationLayer {
     /// bindings are returned; when the candidate set is larger, bindings that
     /// touch a **seed symbol** (conjecture / assertion relations) are kept
     /// first.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn find_predvar_bindings(
         &self,
         schema: &PredVarSchema,
@@ -602,7 +602,7 @@ impl TranslationLayer {
     }
 
     /// `true` iff `binding` (var->relation) satisfies all of `schema`'s guards.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn binding_satisfies_guards(
         &self,
         schema: &PredVarSchema,
@@ -629,7 +629,7 @@ impl TranslationLayer {
     /// `instance` edge and the subclass walk both see the session overlay,
     /// so a relation declared transitive inside a test session satisfies the
     /// schema guard.  `Base` scope is byte-identical to the unscoped form.
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     fn reaches_via_instance_scoped(
         &self,
         sym: SymbolId,

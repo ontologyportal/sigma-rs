@@ -67,9 +67,28 @@ export interface AuditResult {
 /** Which engine a {@link Session} drives (browser subset of the SDK `Backend`). */
 export const Backend: {
   readonly Native: "native";
+  /** Vampire through the engine's external prover layer and the
+   *  `__sigmaRunVampireSync` bridge (see {@link installVampireBridge}). */
+  readonly Vampire: "vampire";
   readonly TranslationOnly: "translation";
 };
 export type Backend = (typeof Backend)[keyof typeof Backend];
+
+/** The synchronous bridge the engine's Vampire runner calls: run Vampire on
+ *  `tptp` with the command line `args` (it already carries `-t`), giving up
+ *  after `timeoutMs` (0 = none), and return its captured output. */
+export type VampireBridge = (
+  tptp: string,
+  args: string,
+  timeoutMs: number,
+) => { stdout: string; stderr: string; code?: number };
+
+/** Install the bridge the engine's Vampire runner calls; a legacy
+ *  `(tptp) => string` hook returning the raw transcript is accepted too.
+ *  `null` uninstalls. */
+export function installVampireBridge(
+  bridge: VampireBridge | ((tptp: string) => string) | null,
+): void;
 
 export interface GitHubSpec {
   owner: string;
@@ -143,7 +162,8 @@ export interface AskOpts {
   session?: string;
   /** Parse `query` as TPTP instead of SUO-KIF. */
   tptp?: boolean;
-  hook?: (tptp: string) => string;
+  /** Vampire backend: run the prover for this call only (see {@link installVampireBridge}). */
+  hook?: VampireBridge | ((tptp: string) => string);
 }
 export interface TranslateOpts {
   lang?: "fof" | "tff";
@@ -308,9 +328,9 @@ export class Session {
   restore(bytes: Uint8Array): void;
   /** `tptp` parses `text` as TPTP instead of SUO-KIF. */
   tell(text: string, session?: string, tptp?: boolean): TellResult;
-  /** Native backend → AskResult; TranslationOnly backend (with hook) → string. */
-  ask(query: string, opts?: AskOpts): AskResult | string;
-  /** Native backend only: consistency-audit the whole KB. `limit` caps distinct contradictions (default 5). */
+  /** Prove with this session's backend (Native or Vampire); TranslationOnly throws. */
+  ask(query: string, opts?: AskOpts): AskResult;
+  /** Consistency-audit the whole KB with this session's backend. `limit` caps distinct contradictions (default 5; Vampire reports at most one). */
   auditConsistency(limit?: number): AuditResult;
   translate(opts?: TranslateOpts): string;
   lookup(pattern: string): string[];

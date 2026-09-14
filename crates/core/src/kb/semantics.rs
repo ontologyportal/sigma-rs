@@ -741,9 +741,9 @@ mod session_validate_probe {
             kb.semantic().parents_of(o).is_empty(),
             "transient roots must not populate the Base taxonomy"
         );
-        #[cfg(feature = "ask")]
+        #[cfg(feature = "external-prover")]
         kb.make_session_axiomatic("load").expect("promote");
-        #[cfg(not(feature = "ask"))]
+        #[cfg(not(feature = "external-prover"))]
         kb.make_session_axiomatic("load").expect("promote");
         assert!(
             !kb.semantic().parents_of(o).is_empty(),
@@ -767,9 +767,9 @@ mod session_validate_probe {
             "load",
         );
         assert!(r.ok);
-        #[cfg(feature = "ask")]
+        #[cfg(feature = "external-prover")]
         kb.make_session_axiomatic("load").expect("promote");
-        #[cfg(not(feature = "ask"))]
+        #[cfg(not(feature = "external-prover"))]
         kb.make_session_axiomatic("load").expect("promote");
 
         assert!(kb.tell("(orientation A B Right)", "case").ok);

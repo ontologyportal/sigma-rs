@@ -2,7 +2,7 @@
 //! whitespace, span information, and `SentenceId` / `SymbolId` allocations, so
 //! two syntactically-identical sentences always hash the same.
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use std::collections::HashMap;
 
 use xxhash_rust::xxh64::Xxh64;
@@ -29,7 +29,7 @@ impl AstNode {
 
     /// Canonical fingerprint of this node (variable names are irrelevant;
     /// tracked by first-occurrence index).
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[allow(dead_code)]
     pub(crate) fn canonical_fingerprint(&self) -> u64 {
         canonical_sentence_fingerprint(self)
@@ -97,7 +97,7 @@ fn emit_variable_plain(h: &mut Xxh64, name: &str, is_row: bool) {
 /// Emit a canonical (renumbered in first-occurrence order) [`AstNode::Variable`].
 /// Two variables with the same canonical index hash identically regardless of
 /// their surface names.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[inline]
 fn emit_variable_canonical(
     h: &mut Xxh64,
@@ -157,7 +157,7 @@ fn hash_node(h: &mut Xxh64, node: &AstNode) {
 /// `(=> (P ?X) (Q ?X))` and `(forall (?X) (=> (P ?X) (Q ?X)))` hash identically.
 /// The strip is outer-only: a nested `(forall …)` inside a body stays
 /// structural.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub(crate) fn canonical_sentence_fingerprint(node: &AstNode) -> u64 {
     let mut h = Xxh64::new(SEED);
     let mut vars: HashMap<String, u32> = HashMap::new();
@@ -169,7 +169,7 @@ pub(crate) fn canonical_sentence_fingerprint(node: &AstNode) -> u64 {
 /// Peel all outer `(forall (?vars…) body)` wrappers off an AST node and
 /// return a reference to the innermost body.  Non-forall nodes are
 /// returned unchanged.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn strip_leading_forall(mut node: &AstNode) -> &AstNode {
     loop {
         let AstNode::List { elements, .. } = node else {
@@ -193,7 +193,7 @@ fn strip_leading_forall(mut node: &AstNode) -> &AstNode {
     }
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 fn hash_node_canonical(
     h: &mut Xxh64,
     node: &AstNode,
@@ -314,7 +314,7 @@ mod tests {
 
     // -- Canonical (alpha-equivalent) fingerprint ----------------------------
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     fn canon_hash_of(src: &str) -> Vec<u64> {
         let (ast, errs) = Parser::Kif { options: None }.parse(src, "test");
         assert!(errs.is_empty(), "parse errors: {:?}", errs);
@@ -323,7 +323,7 @@ mod tests {
             .collect()
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_collapses_variable_renames() {
         let a = canon_hash_of("(=> (P ?X) (Q ?X))");
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(a, c);
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_preserves_distinct_variable_positions() {
         let a = canon_hash_of("(=> (P ?X) (Q ?X))");
@@ -341,7 +341,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_preserves_symbol_names() {
         let a = canon_hash_of("(=> (P ?X) (Q ?X))");
@@ -349,7 +349,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_strips_leading_forall() {
         let implicit = canon_hash_of("(=> (P ?X) (Q ?X))");
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(implicit, renamed);
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_strips_multiple_outer_foralls_but_not_nested() {
         let source = canon_hash_of("(=> (R ?A ?B ?C) (S ?A ?B ?C))");
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(source, vampire_style);
     }
 
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     #[test]
     fn canonical_preserves_inner_foralls() {
         let outer = canon_hash_of("(forall (?X) (=> (P ?X) (Q ?X)))");

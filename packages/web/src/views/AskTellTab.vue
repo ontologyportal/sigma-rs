@@ -37,9 +37,9 @@ const testLog = useStatus();
 const cfgNote = ref("");
 
 // The exact TPTP problem text handed to Vampire for the most recent Ask/Tell
-// run -- `proveVampire` returns it alongside the result (computed anyway to
-// run the query, previously discarded); the download button just hands back
-// what's already in memory, no extra worker round-trip.
+// run -- a Vampire result carries it as `input_tptp` (the worker's Config
+// asks the engine to keep it); the download button just hands back what's
+// already in memory, no extra worker round-trip.
 let lastVampireTptp: string | null = null;
 const showDownloadTptp = ref(false);
 
@@ -143,7 +143,7 @@ async function prove() {
     if (tptpMode.value) {
       // Reuse the `parseTptpTest` RPC (built for the test-import workflow)
       // to split the single-pane problem into KIF text, then run the
-      // ordinary KIF prove/proveVampire RPCs against it.
+      // ordinary KIF prove RPC against it.
       const { test } = await call("parseTptpTest", {
         name: "problem",
         text: asserted,
@@ -152,25 +152,14 @@ async function prove() {
       asserted = test.axiomKif;
       asked = test.queryKif;
     }
-    if (vampire) {
-      const res = await call("proveVampire", {
-        assertions: asserted,
-        query: asked,
-        timeLimitSecs: prover.config().timeLimitSecs,
-        selectionTolerancePct: prover.config().selectionTolerancePct,
-        extraArgs: prover.vampireArgs.trim(),
-      });
-      r = res.result;
-      lastVampireTptp = res.tptp;
-      showDownloadTptp.value = true;
-    } else {
-      ({ result: r } = await call("prove", {
-        assertions: asserted,
-        query: asked,
-        config: prover.config(),
-        session: "user-assertions",
-      }));
-    }
+    ({ result: r } = await call("prove", {
+      assertions: asserted,
+      query: asked,
+      config: prover.config(),
+      session: "user-assertions",
+    }));
+    lastVampireTptp = r?.input_tptp ?? null;
+    showDownloadTptp.value = !!lastVampireTptp;
     error.value = "";
     result.value = r;
     resultBackend.value = vampire ? "Vampire" : "SUPr";

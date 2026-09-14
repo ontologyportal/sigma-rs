@@ -38,7 +38,7 @@ pub mod types;
 
 pub(crate) mod trans;
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub mod prover;
 
 // Crate-internal alias so `crate::saturate::…` paths resolve.
@@ -75,12 +75,12 @@ pub use crate::trans::HasTranslation;
 #[doc(hidden)]
 pub use crate::prover::saturate::ProverLayer;
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 #[doc(hidden)]
 pub use crate::prover::ExternalProverLayer;
 
 /// External-prover options (selection, session, budget, TPTP mode).
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use crate::prover::ExternalOpts;
 
 /// Native-prover options (budget, step caps, `Strategy`).
@@ -93,7 +93,7 @@ pub use crate::prover::saturate::strategy::Strategy;
 
 // -- Public re-exports --------------------------------------------------------
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use kb::natural_lang::RenderReport;
 
 pub use diagnostic::{
@@ -129,35 +129,36 @@ pub use parse::{
 };
 pub use syntactic::position::ElementHit;
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::{Binding, ProverResult, ProverStatus, ProverTimings};
 // `ProverMode` is a plain data enum in `prover::result` with no
 // prover-backend dependency (see its doc comment for why it lives there
 // rather than under `external::backends`), but it is reached through the
 // `prover` module, whose declaration is gated -- so this re-export carries
 // the same gate.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::ProverMode;
 // Pure SZS/TSTP parsing for a captured Vampire transcript (status +
 // `KifProofStep`s), no subprocess spawning. Available on wasm32, which
 // builds with `native-prover`; reached through the gated `prover` module,
 // so the re-export carries that gate. See `prover::vampire_proof`.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
-pub use prover::vampire_proof::{parse_vampire_result, VampireProofResult};
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[cfg(feature = "external-prover")]
+pub use prover::vampire_proof::{result_from_transcript, vampire_cli_args};
 // `ProverRunner`/`Prover` are the subprocess-backend trait and handle — they
 // live in the `ask`-only `external` module, absent on native/wasm builds.
 pub use parse::tq::{is_tq_directive, parse_test_content, TestCase};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::axiom_source::{AxiomSource, AxiomSourceIndex};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::proof::{emit_proof, render_graphviz, IrProofStep, KifProofStep};
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::CommonProverOpts;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use prover::Prover;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use prover::ProverRunner;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 pub use prover::{Conjecture, ProvingLayer};
 
 pub use syntactic::sine::{SineIndex, SineParams};

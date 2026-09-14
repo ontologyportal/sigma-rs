@@ -11,7 +11,7 @@ use crate::{
     ProveCtx, ProverResult, ProverRunner, SentenceId,
 };
 
-impl ExternalProverLayer {
+impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
     /// KB-wide satisfiability check (no conjecture): SInE-select from the
     /// session seed (or the whole axiom base), build, and saturate.
     pub(super) fn ext_check_consistency(
@@ -19,13 +19,13 @@ impl ExternalProverLayer {
         opts: &ExternalOpts,
         ctx: &ProveCtx,
     ) -> ProverResult {
-        self.translation.ensure_rewrite_pass();
+        self.translation().ensure_rewrite_pass();
 
         let session_sids: Vec<SentenceId> = opts
             .session
             .as_deref()
             .map(|s| {
-                self.translation
+                self.translation()
                     .semantic
                     .syntactic
                     .sessions
@@ -34,14 +34,14 @@ impl ExternalProverLayer {
             .unwrap_or_default();
 
         let mut sorted: Vec<SentenceId> = if session_sids.is_empty() {
-            self.translation
+            self.translation()
                 .semantic
                 .syntactic
                 .axiom_ids_set()
                 .into_iter()
                 .collect()
         } else {
-            self.translation
+            self.translation()
                 .semantic
                 .syntactic
                 .sine_select_for_sids(&session_sids, opts.selection, ctx)
@@ -51,7 +51,7 @@ impl ExternalProverLayer {
         sorted.extend(session_sids.iter().copied());
         sorted.sort_unstable();
         sorted.dedup();
-        let extra = self.translation.synthetic_replacements(&sorted);
+        let extra = self.translation().synthetic_replacements(&sorted);
         if !extra.is_empty() {
             sorted.extend(extra);
             sorted.sort_unstable();
@@ -60,7 +60,7 @@ impl ExternalProverLayer {
 
         let (problem, sid_map) = {
             profile_span!(ctx, "check.build_problem");
-            self.translation.build_problem(&sorted, opts.mode)
+            self.translation().build_problem(&sorted, opts.mode)
         };
         let prover_opts = ProverOpts {
             timeout_secs: opts.timeout_secs,
@@ -71,7 +71,11 @@ impl ExternalProverLayer {
         // round-trip).  No conjecture in a consistency check, so the
         // conjecture name is the assembler default.
         profile_span!(ctx, "check.prover_run");
-        self.backend
-            .prove_ir(&problem, &sid_map, "conjecture", &prover_opts)
+        self.backend.prove_ir(
+            &crate::trans::ir::ProblemIr::Fo(Box::new(problem)),
+            &sid_map,
+            "conjecture",
+            &prover_opts,
+        )
     }
 }

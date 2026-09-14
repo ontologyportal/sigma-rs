@@ -17,5 +17,9 @@
     "strict": false,
     "noImplicitAny": false
   },
-  "include": ["src/worker/sigma.worker.ts"]
+  "include": [
+    "src/worker/sigma.worker.ts",
+    "src/worker/vampire-bridge.ts",
+    "src/worker/vampire.worker.ts"
+  ]
 }

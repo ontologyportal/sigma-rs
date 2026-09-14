@@ -78,6 +78,25 @@ pub struct TestCase {
 }
 
 impl TestCase {
+    /// A synthetic case: one bare conjecture, no hypotheses, no expectations
+    /// -- what an ad hoc `ask` builds around a parsed query.
+    pub fn conjecture(file_name: impl Into<String>, query: AstNode) -> Self {
+        Self {
+            file_name: file_name.into(),
+            note: String::new(),
+            timeout: 0,
+            query: Some(query),
+            expected_proof: None,
+            expected_answer: None,
+            axioms: Vec::new(),
+            extra_files: Vec::new(),
+            expected_status: None,
+            has_fof_conjecture: false,
+            input_formulas: 0,
+            unaccounted_inputs: 0,
+        }
+    }
+
     /// The hypotheses rendered as newline-joined KIF — for string-based
     /// consumers (TPTP translation, sweep).  Byte-identical to the old
     /// `axioms.join("\n")` since each hypothesis is its bare formula.

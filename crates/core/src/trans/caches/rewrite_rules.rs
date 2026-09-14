@@ -78,13 +78,13 @@ impl TranslationLayer {
     /// The extracted [`RewriteProgram`] for the current KB, building it on first
     /// access and caching the `Arc`.  Consumed by `instantiate_predvars` as
     /// the schema source (its templates instantiate per problem).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn rewrite_program(&self) -> Arc<RewriteProgram> {
         self.rewrite_rules.get(self)
     }
 }
 
-#[cfg(all(test, feature = "ask"))]
+#[cfg(all(test, feature = "external-prover"))]
 mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;

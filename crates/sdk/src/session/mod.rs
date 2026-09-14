@@ -38,7 +38,7 @@ pub use ask::{szs_status, ExpectedOutcome, OpenSession, SzsStatus, TestCaseOutco
 use sigmakee_rs_core::ProverLayer;
 use sigmakee_rs_core::TopLayer;
 use sigmakee_rs_core::{DynSink, KnowledgeBase, TranslationLayer};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 use sigmakee_rs_core::{ExternalProverLayer, Prover};
 
 /// Which top layer (and prover) backs a [`Session`].
@@ -48,7 +48,7 @@ pub enum Backend {
     Native,
     /// An external subprocess prover — built-in Vampire/E or, via the
     /// `Prover` selector, a custom [`ProverRunner`](sigmakee_rs_core::ProverRunner).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     External(Prover),
     /// Parsing / translation / validation only.  Proving ops error.
     TranslationOnly,
@@ -81,7 +81,7 @@ impl Session<ProverLayer> {
     }
 }
 
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 impl Session<ExternalProverLayer> {
     /// Open a new session of a KB using the external prover backend
     pub fn new(session: String, prover: Prover) -> Self {
@@ -92,12 +92,30 @@ impl Session<ExternalProverLayer> {
             lexicon: None,
         }
     }
+}
 
+#[cfg(feature = "external-prover")]
+impl<T: sigmakee_rs_core::HasTranslation + 'static> Session<ExternalProverLayer<T>> {
     /// Override the prover backend on an external session — e.g. after
     /// [`from_kb`](Session::from_kb) on an opened DB, whose layer carries the
     /// default runner.
     pub fn set_runner(&mut self, prover: Prover) {
         self.kb.set_prover(prover);
+    }
+}
+
+#[cfg(all(feature = "external-prover", feature = "native-prover"))]
+impl Session<ExternalProverLayer<ProverLayer<TranslationLayer>>> {
+    /// Open a session carrying BOTH provers over one KB: `prover` (external)
+    /// behind [`ask`](Session::ask) / [`ask_view`](Session::ask_view), the
+    /// native saturation prover behind the `*_native` twins.
+    pub fn new_with_native(session: String, prover: Prover) -> Self {
+        Self {
+            kb: KnowledgeBase::new_external_native(prover),
+            name: session,
+            #[cfg(feature = "lexicon")]
+            lexicon: None,
+        }
     }
 }
 

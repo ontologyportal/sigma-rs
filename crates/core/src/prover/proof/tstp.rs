@@ -120,7 +120,7 @@ pub(crate) fn kif_proof_inputs(
 /// `ask`-only: `parse_tptp`/`TptpParser` is a separate, heavier TPTP grammar
 /// gated on `ask` — the wasm-safe `prover::vampire_proof` entry point
 /// doesn't need `IrProofStep` and calls only [`kif_proof_inputs`] instead.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub(crate) fn proof_steps_to_ir(steps: &[ProofStep]) -> Vec<crate::prover::proof::IrProofStep> {
     use crate::prover::proof::IrProofStep;
 

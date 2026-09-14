@@ -1,6 +1,6 @@
 //! WASM bindings for Prover Options
 use sigmakee_rs_sdk::manager::NativeProverConfig;
-use sigmakee_rs_sdk::NativeOpts;
+use sigmakee_rs_sdk::{ExternalOpts, NativeOpts};
 use wasm_bindgen::prelude::*;
 
 // -- Config --------------------------------------------------------------------
@@ -31,9 +31,47 @@ use wasm_bindgen::prelude::*;
 pub struct Config {
     inner: NativeProverConfig,
     selection_tolerance_pct: Option<f64>,
+    backend: Backend,
+    vampire_args: String,
+    keep_tptp: bool,
+}
+
+/// Which prover a [`Session`](crate::Session) ask runs against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Backend {
+    /// The in-process saturation prover.
+    Native,
+    /// The Emscripten Vampire, through the page-installed bridge (see
+    /// [`crate::vampire`]).
+    Vampire,
 }
 
 impl Config {
+    pub(crate) fn selected_backend(&self) -> Backend {
+        self.backend
+    }
+
+    pub(crate) fn vampire_args(&self) -> &str {
+        &self.vampire_args
+    }
+
+    pub(crate) fn keep_tptp(&self) -> bool {
+        self.keep_tptp
+    }
+
+    /// Build the external prover's [`ExternalOpts`] from these settings: the
+    /// same time limit and selection budget the native backend reads.
+    pub(crate) fn to_external_opts(&self, axiom_count: usize) -> ExternalOpts {
+        let mut opts = ExternalOpts {
+            timeout_secs: self.inner.time_limit_secs,
+            ..ExternalOpts::default()
+        };
+        if let Some(pct) = self.selection_tolerance_pct {
+            opts.selection = sigmakee_rs_core::SineParams::auto_pct(axiom_count, pct);
+        }
+        opts
+    }
+
     /// Build a runtime [`NativeOpts`] seeded with these defaults; per-query
     /// `session` is layered on by the caller.
     ///
@@ -66,7 +104,56 @@ impl Config {
                 ..NativeProverConfig::default()
             },
             selection_tolerance_pct: None,
+            backend: Backend::Native,
+            vampire_args: String::new(),
+            keep_tptp: false,
         }
+    }
+
+    /// Which prover `ask` / `auditConsistency` run: `"native"` (default) or
+    /// `"vampire"` (the Emscripten Vampire behind the page's bridge).  Any
+    /// other value is rejected.
+    #[wasm_bindgen(getter)]
+    pub fn backend(&self) -> String {
+        match self.backend {
+            Backend::Native => "native".into(),
+            Backend::Vampire => "vampire".into(),
+        }
+    }
+    #[wasm_bindgen(setter)]
+    pub fn set_backend(&mut self, v: &str) -> Result<(), JsValue> {
+        self.backend = match v {
+            "native" => Backend::Native,
+            "vampire" => Backend::Vampire,
+            other => {
+                return Err(JsValue::from_str(&format!(
+                    "unknown backend {other:?}: expected \"native\" or \"vampire\""
+                )))
+            }
+        };
+        Ok(())
+    }
+
+    /// Extra Vampire CLI text appended after the fixed arguments (Vampire
+    /// backend only; later flags win).
+    #[wasm_bindgen(getter = vampireArgs)]
+    pub fn vampire_args_js(&self) -> String {
+        self.vampire_args.clone()
+    }
+    #[wasm_bindgen(setter = vampireArgs)]
+    pub fn set_vampire_args(&mut self, v: String) {
+        self.vampire_args = v;
+    }
+
+    /// Keep the exact problem text handed to Vampire on the last run and
+    /// return it as the result's `input_tptp` (Vampire backend only).
+    #[wasm_bindgen(getter = keepTptp)]
+    pub fn keep_tptp_js(&self) -> bool {
+        self.keep_tptp
+    }
+    #[wasm_bindgen(setter = keepTptp)]
+    pub fn set_keep_tptp(&mut self, v: bool) {
+        self.keep_tptp = v;
     }
 
     /// Wall-clock budget in seconds (0 = unlimited; the step cap still bounds it).
@@ -135,9 +222,8 @@ impl Config {
     /// own default budget (a fixed axiom count, not a percentage -- see
     /// `SineParams::default`) instead of a KB-relative one; `100` emits the
     /// whole KB with no selection. Applies to BOTH the
-    /// native backend (as the auto-tolerance loop's starting budget, which
-    /// may still widen from there) and Vampire (as the final, one-shot
-    /// budget -- see [`Session::to_tptp_for_ask`](crate::Session::to_tptp_for_ask)).
+    /// native backend and Vampire, as the autoscaling loop's starting
+    /// budget (it may still widen from there).
     #[wasm_bindgen(getter = selectionTolerancePct)]
     pub fn selection_tolerance_pct(&self) -> Option<f64> {
         self.selection_tolerance_pct

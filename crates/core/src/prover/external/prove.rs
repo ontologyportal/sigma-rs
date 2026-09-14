@@ -2,8 +2,8 @@
 //
 // Proving driver for external provers
 
+use crate::clock::Instant;
 use std::collections::HashSet;
-use std::time::Instant;
 
 use super::super::ProverResult;
 use super::backends::{ProverMode, ProverOpts, ProverRunner};
@@ -11,9 +11,10 @@ use super::{Conjecture, ExternalOpts, ExternalProverLayer};
 
 use crate::progress::ProveCtx;
 use crate::semantics::types::Scope;
-use crate::{profile_span, SentenceId, SineParams, SymbolId};
+use crate::trans::ir::ProblemIr;
+use crate::{profile_span, SentenceId, SineParams, SymbolId, TptpLang};
 
-impl ExternalProverLayer {
+impl<T: crate::trans::HasTranslation + 'static> ExternalProverLayer<T> {
     pub(super) fn ext_prove_once(
         &self,
         conj: &Conjecture,
@@ -35,7 +36,7 @@ impl ExternalProverLayer {
         // the goal are reachable.
         let assertion_ids: HashSet<SentenceId> = session
             .map(|s| {
-                self.translation
+                self.translation()
                     .semantic
                     .syntactic
                     .sessions
@@ -51,7 +52,7 @@ impl ExternalProverLayer {
         // skipping.
         let mut seed: HashSet<SymbolId> = HashSet::new();
         for &sid in query_sids.iter().chain(assertion_ids.iter()) {
-            seed.extend(self.translation.semantic.syntactic.sentence_symbols(sid));
+            seed.extend(self.translation().semantic.syntactic.sentence_symbols(sid));
         }
 
         // Shared relevance pass: SInE → head-filter → Liu rescue.  The external
@@ -65,7 +66,7 @@ impl ExternalProverLayer {
             liu_top_k: 32,
         };
         let (selected, _frontier) = self
-            .translation
+            .translation()
             .semantic
             .syntactic
             .select_relevant(&seed, params, &sel, ctx);
@@ -81,7 +82,7 @@ impl ExternalProverLayer {
         // Taxonomy-closure injection: pull in the subclass/instance chain facts
         // connecting the conjecture's (and assertions') class symbols — the
         // same conjecture ∪ assertions symbol union already built as `seed`.
-        let tax = self.translation.semantic.taxonomy_closure_facts_scoped(
+        let tax = self.translation().semantic.taxonomy_closure_facts_scoped(
             &seed,
             4000,
             query_scope(session),
@@ -98,62 +99,40 @@ impl ExternalProverLayer {
             mode: ProverMode::Prove,
         };
 
-        // Higher-order (THF) mode: assemble through the translation layer's
-        // HO pipeline and hand the structured problem to the runner — text
-        // backends serialise the 1-to-1 THF themselves (the `prove_ho`
-        // default), the embedded backend lowers the HO IR straight into the
-        // FFI solver's native structures.
-        if opts.hol {
-            let (problem, sid_map) = {
-                profile_span!(ctx, "ask.build_problem");
-                let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
-                self.translation.assemble_problem_thf(
+        // Assemble in the dialect `mode` selects.  `Thf` goes through the
+        // translation layer's higher-order pipeline; otherwise `Auto` resolves
+        // against exactly the axioms this run selected (plus the query) --
+        // never the whole KB -- so a numeral anywhere in the actual problem
+        // upgrades it to TFF (`assertion_ids` is already folded into
+        // `axiom_sids`, so it is covered by that scan).  Either way the
+        // selection is first scanned for synthetics (rewrite replacements +
+        // predicate-variable instantiation), the axioms come from the formula
+        // caches, and the conjecture installs as one existentially wrapped
+        // conjunction with numbers hidden exactly as the axioms.
+        let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
+        let scope = Some(query_scope(session));
+        let (problem, sid_map, mode) = {
+            profile_span!(ctx, "ask.build_problem");
+            if mode == TptpLang::Thf {
+                let (p, m) =
+                    self.translation()
+                        .assemble_problem_thf(&axiom_sids, &seeds, query_sids, scope);
+                (ProblemIr::Ho(Box::new(p)), m, mode)
+            } else {
+                let mode = self
+                    .translation()
+                    .semantic
+                    .syntactic
+                    .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
+                let (p, m, _qvm) = self.translation().assemble_problem(
                     &axiom_sids,
                     &seeds,
                     query_sids,
-                    Some(query_scope(session)),
-                )
-            };
-            let input_gen = t_input.elapsed();
-            ctx.debug(format!(
-                "ask(thf): {} selected + {} assertions, {} axiom rows",
-                raw_selected,
-                assertion_ids.len(),
-                problem.axioms().len()
-            ));
-            let mut result = {
-                profile_span!(ctx, "ask.prover_run");
-                self.backend
-                    .prove_ho(&problem, &sid_map, "query_0", &prover_opts)
-            };
-            result.timings.input_gen += input_gen;
-            return (result, raw_selected);
-        }
-
-        // `Auto` resolves against exactly the axioms this run selected (plus
-        // the query) — never the whole KB — so a numeral anywhere in the
-        // actual problem upgrades it to Tff; `assertion_ids` is already
-        // folded into `axiom_sids` above, so it's covered by that scan.
-        let mode = self
-            .translation
-            .semantic
-            .syntactic
-            .resolve_tptp_lang(mode, axiom_sids.iter().chain(query_sids.iter()));
-
-        // Translate through the translation layer: on-demand synthetic scan
-        // over the selected axioms (replacements + predicate-variable
-        // instantiation), cached axiom translation, and the conjecture install
-        // (first convertible candidate; numbers hidden exactly as the axioms).
-        let (problem, sid_map, _qvm) = {
-            profile_span!(ctx, "ask.build_problem");
-            let seeds: Vec<SentenceId> = assertion_ids.iter().copied().collect();
-            self.translation.assemble_problem(
-                &axiom_sids,
-                &seeds,
-                query_sids,
-                mode,
-                Some(query_scope(session)),
-            )
+                    mode,
+                    scope,
+                );
+                (ProblemIr::Fo(Box::new(p)), m, mode)
+            }
         };
         let input_gen = t_input.elapsed();
         ctx.debug(format!(
@@ -161,13 +140,13 @@ impl ExternalProverLayer {
             mode,
             raw_selected,
             assertion_ids.len(),
-            problem.axioms().len()
+            problem.axiom_count()
         ));
 
         // Hand the structured problem to the runner.  Text backends serialise
-        // it themselves (the `prove_ir` default → `assemble_tptp` → `prove`,
-        // which also honours `--keep`); the embedded backend lowers the IR
-        // straight into the FFI solver with no TPTP round-trip.
+        // it themselves (the `prove_ir` default -> `assemble_tptp_indexed` ->
+        // `prove`, which also honours `--keep`); the embedded backend lowers
+        // the IR straight into the FFI solver with no TPTP round-trip.
         let mut result = {
             profile_span!(ctx, "ask.prover_run");
             self.backend

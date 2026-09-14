@@ -20,20 +20,43 @@ pub mod problem;
 pub mod symbol;
 pub mod term;
 pub(crate) mod tptp_emit;
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub mod tptp_parse;
 
 pub use formula::Formula;
+
+/// A fully assembled problem in either representation, as handed to a
+/// [`ProverRunner`](crate::prover::ProverRunner): first-order (`Problem`,
+/// FOF or TFF) or higher-order (`HoProblem`, THF).  The text runners
+/// serialise whichever it is through the shared assembler; the embedded
+/// backend lowers each into the solver's native structures.
+#[cfg(feature = "external-prover")]
+#[derive(Debug, Clone)]
+pub enum ProblemIr {
+    Fo(Box<Problem>),
+    Ho(Box<HoProblem>),
+}
+
+#[cfg(feature = "external-prover")]
+impl ProblemIr {
+    /// Number of axioms in the problem, whichever representation.
+    pub fn axiom_count(&self) -> usize {
+        match self {
+            ProblemIr::Fo(p) => p.axioms().len(),
+            ProblemIr::Ho(p) => p.axioms().len(),
+        }
+    }
+}
 pub use symbol::{Function, Interp, Predicate, Sort};
 pub use term::{Term, VarId};
 // `Clause`/`Literal`/`LitKind` are the native TPTP IR clause types.
 #[allow(unused_imports)]
 pub use clause::{Clause, LitKind, Literal as IrLiteral};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use ho::HoProblem;
 pub use ho::{HoSort, ThfConst, ThfExpr};
 pub use problem::{LogicMode, Problem};
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub use tptp_parse::{ParseError as TptpParseError, TptpParser};
 
 /// Parse a TPTP string into an [`Problem`].
@@ -41,7 +64,7 @@ pub use tptp_parse::{ParseError as TptpParseError, TptpParser};
 /// This is the primary entry point for the TPTP→IR parser.  Handles both
 /// FOF and TFF dialects.  Returns an error if the input is syntactically
 /// invalid.
-#[cfg(feature = "ask")]
+#[cfg(feature = "external-prover")]
 pub fn parse_tptp(input: &str) -> Result<Problem, TptpParseError> {
     TptpParser::parse(input)
 }

@@ -186,7 +186,7 @@ if (wasmOpt) {
 // license scanners look; only the workspace-root copy exists, and `npm publish`
 // cannot reach outside the package directory.
 console.log("==> Staging SDK facade and license");
-for (const f of ["sdk.mjs", "sdk.d.ts"]) {
+for (const f of ["sdk.mjs", "sdk.d.ts", "node.mjs", "node.d.ts"]) {
   copyFileSync(join(PKG_DIR, "src", f), join(OUT_DIR, f));
 }
 if (existsSync(join(WORKSPACE_ROOT, "LICENSE"))) {

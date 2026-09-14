@@ -26,7 +26,7 @@ pub struct RelSort {
 
 impl RelSort {
     /// The per-argument sorts of this variant (one per declared position).
-    #[cfg(feature = "ask")]
+    #[cfg(feature = "external-prover")]
     pub(crate) fn arg_sorts(&self) -> &[Sort] {
         &self.arg_sorts
     }

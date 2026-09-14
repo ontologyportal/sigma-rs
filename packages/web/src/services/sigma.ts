@@ -6,6 +6,7 @@
  */
 
 import { useBootStore } from "../stores/boot";
+import { spawnVampireWorker } from "./vampire-host";
 
 const worker = new Worker(
   new URL("../worker/sigma.worker.ts", import.meta.url),
@@ -18,7 +19,22 @@ const pending = new Map<
   { resolve: (value: any) => void; reject: (reason?: unknown) => void }
 >();
 
+/** Site base the Vampire runner asset resolves against; set at boot. */
+let vampireBaseUrl = location.href;
+
+/** Spawn the Vampire worker and hand the sigma worker its port. */
+export function connectVampire(baseUrl: string) {
+  vampireBaseUrl = baseUrl;
+  const port = spawnVampireWorker(baseUrl);
+  worker.postMessage({ cmd: "vampirePort", args: { port } }, [port]);
+}
+
 worker.onmessage = (e) => {
+  // The sigma worker's bridge gave up on a Vampire run: replace the worker.
+  if (e.data?.type === "vampire-restart") {
+    connectVampire(vampireBaseUrl);
+    return;
+  }
   const { id, result, error } = e.data;
   const p = pending.get(id);
   if (!p) return;

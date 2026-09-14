@@ -15,7 +15,7 @@
 
 use sigmakee_rs_core::{Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer};
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::{
     AstKif as _, AxiomSourceIndex, ConvertedStmt, EmitResult, Emitter, KifProofStep, ProverStatus,
     TptpLang,
@@ -503,7 +503,7 @@ impl From<&sigmakee_rs_core::TestCase> for TestCaseView {
 
 /// One step of a cited derivation -- a refutation proof or an audit
 /// contradiction; both project to this single shape.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct ProofStepView {
     pub index: usize,
@@ -516,7 +516,7 @@ pub struct ProofStepView {
     pub line: Option<u32>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl ProofStepView {
     /// Project a proof/contradiction transcript, citing each step's source
     /// axiom (via `src_idx`) where it has one.
@@ -556,7 +556,7 @@ impl ProofStepView {
 
 /// Curated prover ask result: SZS-ish status, the cited proof, and three
 /// renderings of it (Graphviz DOT, English prose, raw engine trace).
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct AskResultView {
     pub status: String,
@@ -581,9 +581,14 @@ pub struct AskResultView {
     /// language is TPTP. Empty for untyped dialects or when there is no
     /// proof.
     pub proof_tptp_prologue: String,
+    /// The exact problem text handed to an external prover for the last
+    /// run, when the caller asked to keep it (the browser's "download the
+    /// TPTP" affordance).  Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tptp: Option<String>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl AskResultView {
     /// Project a prover outcome (from the native engine or a parsed external
     /// transcript) against the KB that ran it.  `query_kif` is reparsed only
@@ -636,13 +641,14 @@ impl AskResultView {
             prose,
             prose_missing,
             proof_tptp_prologue,
+            input_tptp: None,
         }
     }
 }
 
 /// One distinct contradiction an audit found -- a full derivation to `FALSE`,
 /// with the same three renderings as [`AskResultView`].
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct ContradictionView {
     pub steps: Vec<ProofStepView>,
@@ -654,7 +660,7 @@ pub struct ContradictionView {
 }
 
 /// Curated consistency-audit result.
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 #[derive(serde::Serialize)]
 pub struct AuditResultView {
     pub status: String,
@@ -664,7 +670,7 @@ pub struct AuditResultView {
     pub contradictions: Vec<ContradictionView>,
 }
 
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
 impl AuditResultView {
     /// Project an audit outcome against the KB that ran it.  The axiom source
     /// index is built once and shared across all contradictions -- rendering N
@@ -885,7 +891,7 @@ impl<L: TopLayer> Session<L> {
     /// KIF does not parse to a statement.  When `generic_vars` is set,
     /// variables render as generic noun phrases ("an entity" / "the
     /// entity") instead of `?Var`.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[cfg(any(feature = "external-prover", feature = "native-prover"))]
     pub fn render_nl(&self, kif: &str, language: &str, generic_vars: bool) -> String {
         let doc = sigmakee_rs_core::parse_document(
             "__sdk:render_nl__",
@@ -902,49 +908,6 @@ impl<L: TopLayer> Session<L> {
             }
             None => String::new(),
         }
-    }
-
-    /// Parse a captured Vampire run's combined stdout+stderr into the same
-    /// shape a native ask projects to -- status (with Vampire's own
-    /// Theorem-vs-ContradictoryAxioms mislabelling corrected), proof steps,
-    /// Graphviz digraph, and English prose -- so both backends render through
-    /// one UI code path.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
-    pub fn vampire_ask_view(&self, raw_output: &str, query_kif: &str) -> AskResultView {
-        let parsed =
-            sigmakee_rs_core::parse_vampire_result(raw_output, sigmakee_rs_core::ProverMode::Prove);
-        AskResultView::project(
-            &self.kb,
-            parsed.status,
-            None,
-            raw_output.to_string(),
-            &parsed.proof,
-            query_kif,
-        )
-    }
-
-    /// Parse a captured Vampire consistency-check run into the same shape a
-    /// native audit projects to.  Vampire's one-shot run yields at most a
-    /// single contradiction, so `contradictions` has 0 or 1 entries.
-    #[cfg(any(feature = "ask", feature = "native-prover"))]
-    pub fn vampire_audit_view(&self, raw_output: &str) -> AuditResultView {
-        let parsed = sigmakee_rs_core::parse_vampire_result(
-            raw_output,
-            sigmakee_rs_core::ProverMode::CheckConsistency,
-        );
-        let proofs: Vec<Vec<KifProofStep>> =
-            if parsed.status == ProverStatus::Inconsistent && !parsed.proof.is_empty() {
-                vec![parsed.proof]
-            } else {
-                Vec::new()
-            };
-        AuditResultView::project(
-            &self.kb,
-            parsed.status,
-            None,
-            raw_output.to_string(),
-            &proofs,
-        )
     }
 }
 
@@ -1000,6 +963,112 @@ impl<S: TopLayer + 'static> Session<sigmakee_rs_core::ProverLayer<S>> {
     /// the outcome (see [`AuditResultView`]).
     pub fn audit_view(&self, opts: sigmakee_rs_core::NativeOpts, limit: usize) -> AuditResultView {
         let result = self.kb.audit_consistency(&[], opts, limit);
+        AuditResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.contradiction_proofs,
+        )
+    }
+}
+
+#[cfg(feature = "external-prover")]
+impl<T: sigmakee_rs_core::HasTranslation + 'static>
+    Session<sigmakee_rs_core::ExternalProverLayer<T>>
+{
+    /// Prove `query_kif` with the external prover and project the outcome
+    /// (see [`AskResultView`]).  `session` names optional in-memory support
+    /// assertions; `opts` carries the budget and SInE selection.
+    pub fn ask_view(
+        &self,
+        query_kif: &str,
+        session: Option<&str>,
+        opts: &sigmakee_rs_core::ExternalOpts,
+    ) -> AskResultView {
+        self.ask_view_dialect(
+            query_kif,
+            session,
+            opts,
+            sigmakee_rs_core::Parser::Kif { options: None },
+        )
+    }
+
+    /// [`ask_view`](Self::ask_view) with the query parsed in `dialect`.
+    pub fn ask_view_dialect(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        opts: &sigmakee_rs_core::ExternalOpts,
+        dialect: sigmakee_rs_core::Parser,
+    ) -> AskResultView {
+        let result = self.kb.ask_query_dialect(query, session, opts, dialect);
+        AskResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.proof_kif,
+            query,
+        )
+    }
+
+    /// Audit the KB for consistency with the external prover (one-shot: at
+    /// most one contradiction) and project the outcome (see
+    /// [`AuditResultView`]).
+    pub fn audit_view(&self, opts: sigmakee_rs_core::ExternalOpts) -> AuditResultView {
+        let result = self.kb.audit_consistency(&[], opts, 1);
+        let proofs: Vec<Vec<KifProofStep>> =
+            if result.status == ProverStatus::Inconsistent && !result.proof_kif.is_empty() {
+                vec![result.proof_kif]
+            } else {
+                result.contradiction_proofs
+            };
+        AuditResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &proofs,
+        )
+    }
+}
+
+#[cfg(all(feature = "external-prover", feature = "native-prover"))]
+impl<S: sigmakee_rs_core::HasTranslation + 'static>
+    Session<sigmakee_rs_core::ExternalProverLayer<sigmakee_rs_core::ProverLayer<S>>>
+{
+    /// [`ask_view_dialect`](Self::ask_view_dialect) on the nested native
+    /// prover instead of the external backend.
+    pub fn ask_view_dialect_native(
+        &self,
+        query: &str,
+        session: Option<&str>,
+        opts: sigmakee_rs_core::NativeOpts,
+        dialect: sigmakee_rs_core::Parser,
+    ) -> AskResultView {
+        let sine = opts.selection;
+        let result = self
+            .kb
+            .ask_query_dialect_native(query, session, sine, opts, dialect);
+        AskResultView::project(
+            &self.kb,
+            result.status,
+            result.given_steps,
+            result.raw_output,
+            &result.proof_kif,
+            query,
+        )
+    }
+
+    /// [`audit_view`](Self::audit_view) on the nested native prover, which
+    /// enumerates up to `limit` distinct contradictions.
+    pub fn audit_view_native(
+        &self,
+        opts: sigmakee_rs_core::NativeOpts,
+        limit: usize,
+    ) -> AuditResultView {
+        let result = self.kb.audit_consistency_native(&[], opts, limit);
         AuditResultView::project(
             &self.kb,
             result.status,
@@ -1190,6 +1259,20 @@ mod tests {
         assert!(unrelated.wordnet.is_empty());
     }
 
+    /// Project a captured Vampire transcript the way the external layer's
+    /// runners do (shared parser, then the ask view).
+    #[cfg(feature = "external-prover")]
+    fn transcript_view(s: &Session<TranslationLayer>, raw: &str, query: &str) -> AskResultView {
+        let r = sigmakee_rs_core::result_from_transcript(
+            raw,
+            "",
+            sigmakee_rs_core::ProverMode::Prove,
+            std::time::Duration::ZERO,
+        );
+        AskResultView::project(s.kb(), r.status, None, r.raw_output, &r.proof_kif, query)
+    }
+
+    #[cfg(feature = "external-prover")]
     #[test]
     fn ask_result_view_reconstructs_proof_as_tptp() {
         let s = session_with("(subclass Dog Mammal)\n");
@@ -1204,7 +1287,7 @@ fof(f2,axiom,(
   inference(resolution,[],[f1])).
 % SZS output end Proof for input
 ";
-        let view = s.vampire_ask_view(raw, "(subclass Dog Mammal)");
+        let view = transcript_view(&s, raw, "(subclass Dog Mammal)");
         assert_eq!(view.proof.len(), 2);
         // Both steps are ground clausal literals, so `Auto` reconstructs
         // them as `cnf(...)`, not `fof(...)` -- either is a correctly
@@ -1224,11 +1307,16 @@ fof(f2,axiom,(
         );
     }
 
+    #[cfg(feature = "external-prover")]
     #[test]
     fn ask_result_view_proof_tptp_empty_without_a_proof() {
         let s = session_with("(subclass Dog Mammal)\n");
         // No SZS proof section -- Unknown/no proof.
-        let view = s.vampire_ask_view("% SZS status Unknown for input\n", "(subclass Dog Mammal)");
+        let view = transcript_view(
+            &s,
+            "% SZS status Unknown for input\n",
+            "(subclass Dog Mammal)",
+        );
         assert!(view.proof.is_empty());
         assert!(view.proof_tptp_prologue.is_empty());
     }

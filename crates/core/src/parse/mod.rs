@@ -12,7 +12,8 @@ pub mod fingerprint;
 pub mod kif;
 pub mod macros;
 pub mod span;
-#[cfg(any(feature = "ask", feature = "native-prover"))]
+#[cfg(any(feature = "external-prover", feature = "native-prover"))]
+#[cfg(feature = "external-prover")]
 pub mod szs;
 pub mod tptp;
 pub mod tq;

@@ -16,14 +16,18 @@ mod ask;
 // Query projections: search / manpage / taxonomy / stats / NL rendering.
 mod views;
 
-use sigmakee_rs_sdk::{KnowledgeBase, ProverLayer, TranslationLayer};
+use std::sync::Arc;
+
+use sigmakee_rs_sdk::{ExternalProverLayer, KnowledgeBase, Prover, ProverLayer, TranslationLayer};
 use wasm_bindgen::prelude::*;
 
+use crate::vampire::WasmVampireRunner;
 use crate::Config;
 
-/// The layer stack behind the wasm facade: native proving AND TPTP export
-/// off one shared KB.
-pub(crate) type NativeStack = ProverLayer<TranslationLayer>;
+/// The layer stack behind the wasm facade: the external layer (driving the
+/// Vampire bridge) over the native prover over TPTP translation -- both
+/// provers and TPTP export off one shared KB.
+pub(crate) type NativeStack = ExternalProverLayer<ProverLayer<TranslationLayer>>;
 
 /// Session name for the shared in-browser KB.
 const WASM_SESSION: &str = "sumo-wasm";
@@ -40,6 +44,9 @@ pub struct Session {
     /// [`WasmLsp`]: crate::WasmLsp
     pub(crate) session: std::sync::Arc<std::sync::RwLock<sigmakee_rs_sdk::Session<NativeStack>>>,
     config: Config,
+    /// The runner installed in the external layer, kept here so the last
+    /// problem text can be read back after an ask.
+    pub(crate) vampire: Arc<WasmVampireRunner>,
 }
 
 #[wasm_bindgen]
@@ -55,16 +62,19 @@ impl Session {
     )]
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        let config = Config::new();
+        let vampire = Arc::new(WasmVampireRunner::default());
         Self {
             // Explicit session name: `from_kb(.., None)` generates one from
             // `SystemTime::now()`, which panics on wasm32-unknown-unknown.
             session: std::sync::Arc::new(std::sync::RwLock::new(
                 sigmakee_rs_sdk::Session::from_kb(
-                    KnowledgeBase::new_native_translating(),
+                    KnowledgeBase::new_external_native(Prover::Custom(vampire.clone())),
                     Some(WASM_SESSION.to_string()),
                 ),
             )),
-            config: Config::new(),
+            config,
+            vampire,
         }
     }
 
@@ -72,5 +82,22 @@ impl Session {
     #[wasm_bindgen]
     pub fn configure(&mut self, config: &Config) {
         self.config = config.clone();
+        self.install_runner();
+    }
+}
+
+impl Session {
+    /// (Re)build the Vampire runner from the active config and install it in
+    /// the external layer -- after a config change, and after a restore
+    /// (which rebuilds the stack with no runner).
+    pub(crate) fn install_runner(&mut self) {
+        self.vampire = Arc::new(WasmVampireRunner::new(
+            self.config.vampire_args().to_string(),
+            self.config.keep_tptp(),
+        ));
+        self.session
+            .write()
+            .expect("kb lock not poisoned")
+            .set_runner(Prover::Custom(self.vampire.clone()));
     }
 }
