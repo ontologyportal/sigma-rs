@@ -69,16 +69,14 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Session assertions (hypotheses) fold into the axiom list so one
         // `build_problem` pass assembles everything.
         if let Some(name) = session {
-            if let Some(sids) = self.sessions.get(name) {
-                for &sid in sids {
-                    if self.sentence_excluded(sid, &opts.excluded) {
-                        continue;
-                    }
-                    axioms_sorted.push(sid);
+            for sid in self.session_sids(name) {
+                if self.sentence_excluded(sid, &opts.excluded) {
+                    continue;
                 }
-                axioms_sorted.sort_unstable();
-                axioms_sorted.dedup();
+                axioms_sorted.push(sid);
             }
+            axioms_sorted.sort_unstable();
+            axioms_sorted.dedup();
         }
 
         // Whole-KB translate has no selection step — "the selected axioms"
@@ -158,8 +156,14 @@ impl<L: HasTranslation> KnowledgeBase<L> {
             &ctx,
         );
 
+        let tax = self.layer.semantic().taxonomy_closure_facts_scoped(
+            &seed,
+            4000,
+            crate::semantics::types::Scope::Base,
+        );
         let mut axioms_sorted: Vec<SentenceId> = selected
             .into_iter()
+            .chain(tax)
             .filter(|&sid| {
                 !self.sentence_excluded(sid, &opts.excluded)
                     && !self
@@ -177,16 +181,14 @@ impl<L: HasTranslation> KnowledgeBase<L> {
         // Session assertions (hypotheses) fold in UNFILTERED by selection —
         // see doc comment above.
         if let Some(name) = session {
-            if let Some(sids) = self.sessions.get(name) {
-                for &sid in sids {
-                    if self.sentence_excluded(sid, &opts.excluded) {
-                        continue;
-                    }
-                    axioms_sorted.push(sid);
+            for sid in self.session_sids(name) {
+                if self.sentence_excluded(sid, &opts.excluded) {
+                    continue;
                 }
-                axioms_sorted.sort_unstable();
-                axioms_sorted.dedup();
+                axioms_sorted.push(sid);
             }
+            axioms_sorted.sort_unstable();
+            axioms_sorted.dedup();
         }
 
         let mode = syn.resolve_tptp_lang(mode, &axioms_sorted);

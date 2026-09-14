@@ -377,6 +377,74 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[test]
+    fn ask_translation_includes_assertions_and_cleans_up_sessions() {
+        let mut s = Session::<TranslationLayer>::new("ask-export".into());
+        s.ingest(reader("base.kif", "(subclass Mammal Animal)"), true);
+        for select_all in [false, true] {
+            let tptp = s
+                .tptp_for_ask(
+                    "(instance Rex Dog)\n(subclass Dog Mammal)",
+                    "(instance Rex Animal)",
+                    select_all,
+                    Some(100.0),
+                    false,
+                )
+                .unwrap();
+            assert!(tptp.contains("s__instance(s__Rex,s__Dog)"), "{tptp}");
+            assert!(tptp.contains("s__subclass(s__Dog,s__Mammal)"), "{tptp}");
+            assert!(tptp.contains("s__subclass(s__Mammal,s__Animal)"), "{tptp}");
+            assert!(tptp.contains("fof(query_0, conjecture,"), "{tptp}");
+            assert_eq!(tptp.matches("s__instance(s__Rex,s__Animal)").count(), 1);
+
+            let without_assertions = s
+                .tptp_for_ask("", "(instance Rex Animal)", select_all, Some(100.0), false)
+                .unwrap();
+            assert!(
+                !without_assertions.contains("s__Dog"),
+                "{without_assertions}"
+            );
+        }
+    }
+
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
+    #[test]
+    fn ask_translation_preserves_taxonomy_despite_symbol_frequency() {
+        let mut s = Session::<TranslationLayer>::new("ask-taxonomy".into());
+        let mut base = String::from(
+            "(subclass Mammal WarmBloodedVertebrate)\n\
+             (subclass WarmBloodedVertebrate Vertebrate)\n\
+             (subclass Vertebrate Animal)\n",
+        );
+        for i in 0..1600 {
+            base.push_str(&format!(
+                "(mentions Mammal Noise{i})\n\
+                 (mentions Animal Noise{i})\n\
+                 (subclass Decoy{i} Other{i})\n"
+            ));
+        }
+        s.ingest(reader("base.kif", &base), true);
+        let tptp = s
+            .tptp_for_ask(
+                "(instance Rex Dog)\n(subclass Dog Mammal)",
+                "(instance Rex Animal)",
+                false,
+                Some(1.0),
+                false,
+            )
+            .unwrap();
+        for fact in [
+            "s__instance(s__Rex,s__Dog)",
+            "s__subclass(s__Dog,s__Mammal)",
+            "s__subclass(s__Mammal,s__WarmBloodedVertebrate)",
+            "s__subclass(s__WarmBloodedVertebrate,s__Vertebrate)",
+            "s__subclass(s__Vertebrate,s__Animal)",
+        ] {
+            assert!(tptp.contains(fact), "missing {fact}: {tptp}");
+        }
+    }
+
     #[cfg(feature = "snapshot")]
     #[test]
     fn snapshot_bytes_roundtrips_through_restore() {

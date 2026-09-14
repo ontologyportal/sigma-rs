@@ -242,11 +242,12 @@ const handlers = {
     extraArgs,
     tptp: tptpInput,
   }) {
+    const selectAll = selectionTolerancePct >= 100;
     const tptp = session.kb.toTptpForAsk(
       assertions || "",
       query,
-      false,
-      selectionTolerancePct || null,
+      selectAll,
+      selectAll ? null : selectionTolerancePct || null,
       !!tptpInput,
     );
     const raw_output = await runVampireProblem(tptp, timeLimitSecs, extraArgs);

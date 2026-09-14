@@ -68,8 +68,7 @@ impl SemanticLayer {
     /// facts.  The upward walk follows `Base` ∪ the session overlay (via
     /// `parents_of_scoped`) so a session-local class chains up to its base
     /// ancestors.  Only `Base` axiom fact sentences are returned.
-    // Sole caller is the external prover's SInE seeding (ask-gated).
-    #[cfg(feature = "ask")]
+    #[cfg(any(feature = "ask", feature = "native-prover"))]
     pub(crate) fn taxonomy_closure_facts_scoped(
         &self,
         seed_syms: &HashSet<SymbolId>,
