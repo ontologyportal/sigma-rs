@@ -472,3 +472,24 @@ a.sym-link.sym-dead {
 a.sym-link.sym-dead:hover {
   text-decoration: none;
 }
+
+/* Proof graph node content: an HTML overlay (cytoscape-node-html-label) over
+   the canvas-drawn, kind-colored node box. Global for the same reason as the
+   .tok-* rules above, and additionally because proof-graph.ts's measureLabel
+   renders this markup detached from any component to size the node box --
+   scoping it would leave that probe unstyled and mis-measured. */
+.pg-node-label {
+  display: inline-block;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+  pointer-events: none;
+}
+.pg-node-label .pg-idx {
+  color: var(--muted);
+  margin-right: 4px;
+}
