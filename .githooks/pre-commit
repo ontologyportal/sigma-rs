@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 
-# Colors
-RED='\033[0;31m'
-GRE='\033[0;32m'
-NC='\033[0m'
+# Colors (only when writing to a terminal)
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GRE='\033[0;32m'
+    DIM='\033[2m'
+    NC='\033[0m'
+else
+    RED='' GRE='' DIM='' NC=''
+fi
 
 # Prompt on the controlling terminal (not stdin) — git commit may
 # not have a normal stdin attached, e.g. when run from a GUI client.
@@ -34,122 +39,143 @@ if [ ! -f "Cargo.toml" ]; then
     exit 0
 fi
 
-build_failed=""
-lint_failed=""
-clippy_failed=""
-test_failed=""
+# Millisecond clock; perl (always present on macOS/Linux) gives sub-second
+# resolution, bash 3.2 has no $EPOCHREALTIME.
+now_ms() {
+    perl -MTime::HiRes=time -e 'printf "%d\n", time*1000' 2>/dev/null || echo $(( $(date +%s) * 1000 ))
+}
 
-echo -n "🧹 Running Linting Check: cargo fmt (pre-commit check)..."
-lint_log=$(mktemp)
-if ! cargo fmt --check >"$lint_log" 2>&1; then
-    echo -e "${RED}failed${NC}"
-    echo "⚠️  cargo fmt failed:" >&2
-    echo "----------------------------------------" >&2
-    tail -n 40 "$lint_log" >&2
-    echo "----------------------------------------" >&2
-    lint_failed=1
-else 
-    printf "${GRE}ok${NC}\n"
-fi
-rm -f "$lint_log"
+fmt_secs() {
+    local ms=$1
+    printf "%d.%01ds" $(( ms / 1000 )) $(( (ms % 1000) / 100 ))
+}
 
-echo -n "📎 Running Static Code Check: cargo clippy (pre-commit check)..."
-clippy_log=$(mktemp)
-if ! cargo clippy --workspace --all-features --tests -- -D warnings >"$clippy_log" 2>&1; then
-    echo -e "${RED}failed${NC}"
-    echo "⚠️  cargo clippy failed:" >&2
-    echo "----------------------------------------" >&2
-    tail -n 40 "$clippy_log" >&2
-    echo "----------------------------------------" >&2
-    clippy_failed=1
-else 
-    printf "${GRE}ok${NC}\n"
-fi
-rm -f "$clippy_log"
+step_no=0
+failed_steps=""
 
-echo -n "🔧 Running Build Check: cargo build --release (pre-commit check)..."
-build_log=$(mktemp)
-if ! RUSTFLAGS="-D warnings" cargo build --release >"$build_log" 2>&1; then
-    echo -e "${RED}failed${NC}"
-    echo "⚠️  cargo build --release failed:" >&2
-    echo "----------------------------------------" >&2
-    tail -n 40 "$build_log" >&2
-    echo "----------------------------------------" >&2
-    build_failed=1
-else 
-    printf "${GRE}ok${NC}\n"
-fi
-rm -f "$build_log"
+# Rolling window height. 0 = plain streaming (used when stdout is not a
+# terminal, since the redraw relies on cursor movement).
+if [ -t 1 ]; then WINDOW=10; else WINDOW=0; fi
 
-echo -n "🧪 Running Unit Tests: cargo test (pre-commit check)..."
-test_log=$(mktemp)
-if ! cargo test >"$test_log" 2>&1; then
-    echo -e "${RED}failed${NC}"
-    echo "⚠️  cargo test failed:" >&2
-    echo "----------------------------------------" >&2
-    tail -n 40 "$test_log" >&2
-    echo "----------------------------------------" >&2
-    test_failed=1
-else 
-    printf "${GRE}ok${NC}\n"
-fi
-rm -f "$test_log"
+# stream_window STEP START_SECS
+#
+# Reads lines on stdin and shows only the last $WINDOW of them, redrawing
+# in place so older lines scroll off the top. The sentinel line
+# "__step_exit=N" (emitted by run_step) is recorded to $status_file
+# instead of shown; when N is 0 the window is erased on exit so a
+# successful step collapses to its header + DONE line.
+stream_window() {
+    local n=$1 start_s=$2
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+    cols=$(( cols - 1 ))
+    local count=0 line status
+    local buf=()
 
-js_fmt_failed=""
-js_lint_failed=""
+    while IFS= read -r line; do
+        case "$line" in
+            __step_exit=*) echo "$line" > "$status_file"; continue ;;
+        esac
+        line="${line//$'\t'/    }"
+        line="$n $(( SECONDS - start_s ))s $line"
+        line="${line:0:$cols}"
+
+        if [ "$WINDOW" -eq 0 ]; then
+            printf "${DIM}%s${NC}\n" "$line"
+            continue
+        fi
+
+        [ "$count" -gt 0 ] && printf "\033[%dA\033[J" "$count"
+        if [ "${#buf[@]}" -ge "$WINDOW" ]; then
+            buf=("${buf[@]:1}" "$line")
+        else
+            buf=("${buf[@]}" "$line")
+        fi
+        count=${#buf[@]}
+        printf "${DIM}%s${NC}\n" "${buf[@]}"
+    done
+
+    status=$(sed -n 's/^__step_exit=//p' "$status_file")
+    if [ "$WINDOW" -gt 0 ] && [ "$count" -gt 0 ] && [ "${status:-1}" = 0 ]; then
+        printf "\033[%dA\033[J" "$count"
+    fi
+}
+
+# run_step LABEL CMD...
+#
+# Runs CMD with combined stdout/stderr through stream_window, docker-build
+# style:
+#
+#   #3 [cargo build] env RUSTFLAGS=-D warnings cargo build --release
+#   #3 12s    Compiling foo v0.1.0        <- last $WINDOW lines, live
+#   #3 DONE 12.3s
+#
+# On failure the last $WINDOW lines stay on screen above an "#3 ERROR"
+# line and LABEL is appended to $failed_steps.
+run_step() {
+    local label=$1; shift
+    step_no=$(( step_no + 1 ))
+    local n="#$step_no"
+    local start start_s=$SECONDS
+    start=$(now_ms)
+
+    printf "\n${DIM}%s${NC} [%s] %s\n" "$n" "$label" "$*"
+
+    : > "$status_file"
+    (
+        "$@" 2>&1
+        echo "__step_exit=$?"
+    ) | stream_window "$n" "$start_s"
+
+    local status
+    status=$(sed -n 's/^__step_exit=//p' "$status_file")
+    local total=$(( $(now_ms) - start ))
+    if [ "${status:-1}" = 0 ]; then
+        printf "${DIM}%s${NC} ${GRE}DONE${NC} %s\n" "$n" "$(fmt_secs "$total")"
+    else
+        printf "${DIM}%s${NC} ${RED}ERROR${NC}: [%s] exited with code %s after %s\n" \
+            "$n" "$label" "${status:-?}" "$(fmt_secs "$total")"
+        failed_steps="$failed_steps $label"
+    fi
+}
+
+status_file=$(mktemp)
+trap 'rm -f "$status_file"' EXIT
+
+run_step "cargo fmt"    cargo fmt --check
+run_step "cargo clippy" cargo clippy --workspace --all-features --tests -- -D warnings
+run_step "cargo build"  env RUSTFLAGS="-D warnings" cargo build --release
+run_step "cargo test"   cargo test
 
 # JavaScript/TypeScript workspace (packages/): prettier + eslint, via the
 # root package.json scripts. Skipped when npm or node_modules is missing.
 if command -v npm >/dev/null 2>&1 && [ -f "package.json" ] && [ -d "node_modules" ]; then
-    echo -n "🎀 Running Format Check: prettier (pre-commit check)..."
-    js_fmt_log=$(mktemp)
-    if ! npm run -s fmt:check >"$js_fmt_log" 2>&1; then
-        echo -e "${RED}failed${NC}"
-        echo "⚠️  prettier failed (run 'npm run fmt'):" >&2
-        echo "----------------------------------------" >&2
-        tail -n 40 "$js_fmt_log" >&2
-        echo "----------------------------------------" >&2
-        js_fmt_failed=1
-    else
-        printf "${GRE}ok${NC}\n"
-    fi
-    rm -f "$js_fmt_log"
-
-    echo -n "🔍 Running Static Code Check: eslint (pre-commit check)..."
-    js_lint_log=$(mktemp)
-    if ! npm run -s lint >"$js_lint_log" 2>&1; then
-        echo -e "${RED}failed${NC}"
-        echo "⚠️  eslint failed:" >&2
-        echo "----------------------------------------" >&2
-        tail -n 40 "$js_lint_log" >&2
-        echo "----------------------------------------" >&2
-        js_lint_failed=1
-    else
-        printf "${GRE}ok${NC}\n"
-    fi
-    rm -f "$js_lint_log"
+    run_step "prettier" npm run -s fmt:check
+    run_step "eslint"   npm run -s lint
 else
     echo "⚠️  npm or node_modules not found — skipping prettier/eslint checks." >&2
 fi
 
-if [ -n "$build_failed" ] || [ -n "$test_failed" ]  || [ -n "$clippy_failed" ]  || [ -n "$lint_failed" ] || [ -n "$js_fmt_failed" ] || [ -n "$js_lint_failed" ]; then
-    echo "" >&2
-    echo "⚠️  Build and/or tests failed. This commit won't pass CI/PR checks as-is." >&2
-
-    # Prompt on the controlling terminal (not stdin) — git commit may
-    # not have a normal stdin attached, e.g. when run from a GUI client.
-    if [ -r /dev/tty ]; then
-        exec < /dev/tty
-        read -r -p "Commit anyway? [y/N] " reply
-        case "$reply" in
-            [yY][eE][sS]|[yY]) exit 0 ;;
-            *) echo "Commit aborted. (Re-run with SKIP_BUILD_CHECK=1 to bypass this check entirely.)" >&2; exit 1 ;;
-        esac
-    else
-        # No interactive terminal available — can't prompt, so just warn
-        echo "(No interactive terminal detected — proceeding with commit. Fix before opening the PR!)" >&2
-        exit 0
-    fi
+echo ""
+if [ -z "$failed_steps" ]; then
+    printf "${GRE}All pre-commit checks passed.${NC}\n"
+    exit 0
 fi
 
-exit 0
+printf "${RED}Failed checks:${NC}%s\n" "$failed_steps" >&2
+echo "⚠️  Build and/or tests failed. This commit won't pass CI/PR checks as-is." >&2
+
+# Prompt on the controlling terminal (not stdin) — git commit may
+# not have a normal stdin attached, e.g. when run from a GUI client.
+if [ -r /dev/tty ]; then
+    exec < /dev/tty
+    read -r -p "Commit anyway? [y/N] " reply
+    case "$reply" in
+        [yY][eE][sS]|[yY]) exit 0 ;;
+        *) echo "Commit aborted. (Re-run with SKIP_BUILD_CHECK=1 to bypass this check entirely.)" >&2; exit 1 ;;
+    esac
+else
+    # No interactive terminal available — can't prompt, so just warn
+    echo "(No interactive terminal detected — proceeding with commit. Fix before opening the PR!)" >&2
+    exit 0
+fi

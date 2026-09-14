@@ -640,7 +640,7 @@ fn flush_due_reloads<L: TopLayer>(state: &GlobalState<L>, out: &mut Vec<Message>
 }
 
 /// [`flush_due_reloads`] with an override: `force` applies every pending
-/// reload now, deadline or not. For use with an embedding transport with 
+/// reload now, deadline or not. For use with an embedding transport with
 /// no idle poll
 pub fn flush_reloads<L: TopLayer>(state: &GlobalState<L>, out: &mut Vec<Message>, force: bool) {
     let now = sigmakee_rs_sdk::Instant::now();
