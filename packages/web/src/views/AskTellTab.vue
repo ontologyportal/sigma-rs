@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import { formatTest } from "sigmakee/sdk";
 import { useTabQuery } from "../composables/useTabQuery";
 import { useStatus } from "../composables/useStatus";
@@ -182,7 +189,9 @@ function downloadVampireTptp() {
 /** Load an imported test into the panes in its own dialect: a `.kif.tq`
  *  fills assertions + query with the parsed KIF, a `.p`/`.tptp` puts the
  *  whole problem text into TPTP mode's single pane. */
+let loadedTestText: string | null = null;
 function openTest(t: TestEntry) {
+  loadedTestText = t.text;
   if (tests.dialect(t.name) === "kif") {
     prover.proofLang = "kif";
     assertions.value = t.parsed.axiomKif || "";
@@ -195,15 +204,22 @@ function openTest(t: TestEntry) {
   tests.setOpen({ name: t.name, origin: t.origin });
 }
 
+onActivated(() => {
+  const t = tests.openTest && tests.find(tests.openTest.name);
+  if (t && t.text !== loadedTestText) openTest(t);
+});
+
 const { onQuery, str } = useTabQuery(["prover"]);
 
-// `?test=<name>` opens an imported test (the Problems tab's name link).
+// `?test=<name>` opens an imported test (the Inference Tests tab's name link).
 onQuery((q) => {
   const name = str(q.test);
-  if (!name || name === tests.openTest?.name) return;
+  if (!name) return;
   const t = tests.find(name);
-  if (t) openTest(t);
-  else cfgNote.value = `${name} is not imported (see the Problems tab)`;
+  if (t && (name !== tests.openTest?.name || t.text !== loadedTestText))
+    openTest(t);
+  else if (t) return;
+  else cfgNote.value = `${name} is not imported (see the Inference Tests tab)`;
 });
 
 async function saveTest() {
@@ -231,6 +247,7 @@ async function saveTest() {
   try {
     const r = await tests.saveCurrent(text, tptpMode.value ? "tptp" : "kif");
     if (!r.saved) return; // cancelled the save-as prompt
+    loadedTestText = text;
     testLog.set(
       r.overwritten
         ? `Saved changes to ${r.name}.`
@@ -305,7 +322,15 @@ async function saveTest() {
         title="Import, run, and open test files"
         @click="navigate('problems')"
       >
-        Problems
+        Inference Tests
+      </button>
+      <button
+        v-if="tests.openTest"
+        class="btn ghost"
+        type="button"
+        @click="navigate('edit', { file: tests.openTest.name })"
+      >
+        Edit raw test
       </button>
       <button
         class="btn ghost"

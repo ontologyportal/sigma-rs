@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** The Problems tab's file table: imported tests (with their last result)
+/** The Inference Tests tab's file table: imported tests (with their last result)
  *  and every test file the library offers but has not imported. "Save
  *  changes" imports the ticked available rows and removes the ticked
  *  imported ones; "Run selected" proves the ticked imported tests in order.

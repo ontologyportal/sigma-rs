@@ -2,7 +2,7 @@
 /** "Import into the library": add local files (singly or a folder), a
  *  single-file URL, or a whole GitHub repo+branch. `accept` picks which
  *  local/URL files count: `.kif` constituents (the Knowledge base tab) or
- *  test files (the Problems tab); a repo is listed whole either way.
+ *  test files (the Inference Tests tab); a repo is listed whole either way.
  *  Nothing here loads into the KB -- imported files show up as `available`
  *  rows in the table. Emits `imported` with a one-line summary the tab logs. */
 import { computed, ref, watch } from "vue";

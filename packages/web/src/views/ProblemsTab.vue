@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** Problems tab: the test-file table (imported `.kif.tq` / `.p` / `.tptp`
+/** Inference Tests tab: the test-file table (imported `.kif.tq` / `.p` / `.tptp`
  *  tests and every one the library offers) with the Import dialog in its
  *  header. Tests run against the loaded KB instead of joining it. */
 import { computed, onActivated, onMounted, ref } from "vue";
@@ -32,7 +32,7 @@ const summary = computed(() => {
 </script>
 
 <template>
-  <Card title="Problems" :description="summary">
+  <Card title="Inference Tests" :description="summary">
     <template #header>
       <button class="btn ghost" type="button" @click="importOpen = true">
         Import…

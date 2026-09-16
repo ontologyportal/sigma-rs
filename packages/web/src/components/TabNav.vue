@@ -34,7 +34,7 @@ const TAB_GROUPS: { label: string; tabs: [TabName, string][] }[] = [
     label: "Manage",
     tabs: [
       ["kb", "Knowledge base"],
-      ["problems", "Problems"],
+      ["problems", "Inference Tests"],
       ["history", "History"],
     ],
   },

@@ -6,7 +6,7 @@
  * uploads, URLs) but are a separate collection: a test's (query ...) must
  * never be ingested as an axiom. Running one reuses the prove pipeline with
  * the test's own axioms, query, and (time N) budget. This store owns the
- * imported-tests collection and its localStorage persistence; the Problems
+ * imported-tests collection and its localStorage persistence; the Inference Tests
  * tab imports/removes/runs, the Ask/Tell tab opens a test into its panes.
  */
 
@@ -181,17 +181,19 @@ export const useTestsStore = defineStore("tests", {
      *  otherwise -- nothing open, a different dialect, or a read-only origin
      *  (`sumo`/`url`) that can't be written back -- prompts for a new file
      *  name and saves as a new local test. `saved: false` means the user
-     *  cancelled the name prompt. */
+     *  cancelled the name prompt. `target` lets the raw editor save a file
+     *  independently of the test currently open in Ask/Tell. */
     async saveCurrent(
       text: string,
       dialect: TestDialect,
+      target: SavedTest | null = this.openTest,
     ): Promise<{
       saved: boolean;
       name?: string;
       overwritten?: boolean;
       notices?: string[];
     }> {
-      const open = this.openTest;
+      const open = target;
       const canOverwrite =
         !!open &&
         open.origin.kind === "file" &&
@@ -212,12 +214,16 @@ export const useTestsStore = defineStore("tests", {
         name = matches(chosen) ? chosen : `${chosen}${ext}`;
       }
       const origin = new LocalOrigin();
+      if (this.tests.some((t) => t.name === name && t.origin.kind !== "file"))
+        throw new Error(
+          `${name}: already imported from another source; choose a different filename`,
+        );
+      const { test } = await call(testParseRpc(name), { name, text });
       await useLibraryStore().writeLocal(name, text);
       const existing = this.tests.find(
         (t) => t.name === name && t.origin.kind === "file",
       );
       if (existing) {
-        const { test } = await call(testParseRpc(name), { name, text });
         existing.text = text;
         existing.parsed = test;
         existing.outcome = null;
