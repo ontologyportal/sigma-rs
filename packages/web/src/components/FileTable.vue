@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** The library file table shared by the Knowledge base and Problems tabs:
+/** The library file table shared by the Knowledge base and Inference Tests tabs:
  *  search/filter/sort over `rows`, a checkbox multi-select (v-model
  *  `selected`, the row keys) whose ticked rows are pending changes -- an
  *  unloaded row "will {load}", a loaded one "will {unload}" -- and an action
@@ -24,12 +24,12 @@ export interface FileRow {
   locked?: boolean;
   /** A local/URL library entry that is not loaded: can be deleted. */
   deletable?: boolean;
-  /** Small tag before the name (Problems: "KIF" / "TPTP"). */
+  /** Small tag before the name (Inference Tests: "KIF" / "TPTP"). */
   badge?: string;
   /** Status column text when the row has no pending change. */
   status: string;
   statusKind: "in" | "out" | "locked";
-  /** Optional trailing column text (Problems: the last result). */
+  /** Optional trailing column text (Inference Tests: the last result). */
   extra?: string;
   extraKind?: "ok" | "bad" | "mut" | "";
 }

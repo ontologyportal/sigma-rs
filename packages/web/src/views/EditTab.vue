@@ -27,7 +27,7 @@ import TptpPane from "../components/edit/TptpPane.vue";
 import { useStatus } from "../composables/useStatus";
 import { useTabQuery } from "../composables/useTabQuery";
 import type { Constituent } from "../models/Constituent";
-import { LocalOrigin, type Origin } from "../models/Origin";
+import { LocalOrigin, serializeOrigin, type Origin } from "../models/Origin";
 import { navigate, updateParams } from "../router";
 import { lspRequest, lspSyncDocument } from "../services/lsp";
 import type { MonacoNs } from "../services/monaco";
@@ -35,6 +35,7 @@ import { call } from "../services/sigma";
 import { useAuthStore } from "../stores/auth";
 import { useChangesStore, type ChangeRow } from "../stores/changes";
 import { useKBStore } from "../stores/kb";
+import { isTestFile, testDialect, useTestsStore } from "../stores/tests";
 import { downloadText, errMsg } from "../utils/format";
 
 const NEW_FILE_TEXT = "; New KIF file\n";
@@ -49,6 +50,7 @@ const FULLSCREEN_EXIT_PATH =
   "M5.5 14v-2.75a.75.75 0 0 0-.75-.75H2M10.5 14v-2.75c0-.414.336-.75.75-.75H14";
 
 const kb = useKBStore();
+const tests = useTestsStore();
 const changes = useChangesStore();
 const auth = useAuthStore();
 
@@ -59,6 +61,13 @@ const splitBtn = ref<HTMLElement | null>(null);
 
 const current = ref<{ name: string; origin: Origin } | null>(null);
 const text = ref(NEW_FILE_TEXT);
+let loadedText = NEW_FILE_TEXT;
+const editingTest = computed(
+  () => !!current.value && isTestFile(current.value.name),
+);
+const language = computed(() =>
+  editingTest.value ? testDialect(current.value!.name) : "kif",
+);
 const diags = shallowRef<any[]>([]);
 const cursor = ref<{ lineNumber: number; column: number } | null>(null);
 /** Toolbar status; when `statusLink` is set it renders as a link into the
@@ -182,10 +191,20 @@ async function validateNow() {
   logValidateLane(known ? `lsp (${known.name})` : "scratch (parse-only)");
   let result: any[];
   try {
-    result = known
-      ? await lspSyncDocument(known.name, buffer)
-      : (await call("validateFormula", { kif: buffer })).diagnostics;
+    if (file && isTestFile(file.name)) {
+      await call(
+        testDialect(file.name) === "kif" ? "parseTest" : "parseTptpTest",
+        { name: file.name, text: buffer },
+      );
+      result = [];
+    } else
+      result = known
+        ? await lspSyncDocument(known.name, buffer)
+        : (await call("validateFormula", { kif: buffer })).diagnostics;
   } catch (e) {
+    if (text.value !== buffer || current.value !== file) return;
+    diags.value = [];
+    ed.value?.setMarkers([]);
     status.value = "validate failed: " + errMsg(e);
     statusLink.value = null;
     return;
@@ -220,7 +239,9 @@ watch(text, scheduleValidate);
 const dirty = computed(() => {
   const f = current.value;
   if (!f) return false;
-  const c = kb.find(f.name, f.origin.kind);
+  const c = editingTest.value
+    ? tests.find(f.name)
+    : kb.find(f.name, f.origin.kind);
   return !!c && c.text !== text.value;
 });
 
@@ -232,7 +253,9 @@ const fileLabel = computed(() => {
 /** Save persists wherever the buffer came from and is offered for both
  *  writable origins -- a `file` upload to OPFS, a `sumo` file to the edit
  *  store. A `url` buffer has nowhere to be saved. */
-const saveHidden = computed(() => current.value?.origin.kind === "url");
+const saveHidden = computed(
+  () => !editingTest.value && current.value?.origin.kind === "url",
+);
 
 const rowKey = (r: { name: string; origin: string }) => `${r.origin}:${r.name}`;
 
@@ -266,16 +289,26 @@ function checkStaleOnOpen() {
 function openFile(c: Constituent | null) {
   current.value = c ? { name: c.name, origin: c.origin } : null;
   text.value = c ? c.text : NEW_FILE_TEXT;
+  loadedText = text.value;
   saveStatus.clear();
+  diags.value = [];
+  ed.value?.setMarkers([]);
+  if (editingTest.value) tptpOpen.value = false;
   const kind = c ? c.origin.kind : "file"; // an unsaved new file is local
   log.set(
-    kind === "url"
+    kind === "url" && !editingTest.value
       ? "Loaded from a URL — it can be edited and downloaded here, but not saved or submitted."
       : "",
   );
   scheduleValidate();
   checkStaleOnOpen();
 }
+
+onActivated(() => {
+  const t =
+    editingTest.value && current.value && tests.find(current.value.name);
+  if (t && text.value === loadedText && t.text !== loadedText) openFile(t);
+});
 
 function onPick(c: Constituent) {
   openFile(c);
@@ -295,9 +328,9 @@ onQuery(async (q) => {
   const file = str(q.file);
   if (file && file !== current.value?.name) {
     // Match on name alone -- a deep link shouldn't have to know the origin.
-    const c = kb.find(file);
+    const c = tests.find(file) ?? kb.find(file);
     if (c) openFile(c);
-    else log.set(`${file} is not among the loaded constituents.`, true);
+    else log.set(`${file} is not among the loaded files.`, true);
   }
   const line = num(q.l);
   if (line) {
@@ -331,6 +364,23 @@ async function onSave() {
 
   saving.value = true; // icon-only button: disable, don't swap the label
   try {
+    if (isTestFile(name)) {
+      const r = await tests.saveCurrent(text.value, testDialect(name), {
+        name,
+        origin: serializeOrigin(origin),
+      });
+      if (!r.saved) {
+        if (r.notices?.length) saveStatus.set(r.notices.join(" | "), true);
+        return;
+      }
+      const saved = tests.find(r.name!);
+      if (saved) current.value = { name: saved.name, origin: saved.origin };
+      loadedText = text.value;
+      updateParams({ file: r.name! });
+      saveStatus.set(`Saved ${r.name}.`);
+      scheduleValidate();
+      return;
+    }
     const r = await kb.updateConstituentText(name, text.value, origin);
     current.value = { name, origin };
     log.clear();
@@ -516,8 +566,16 @@ function onJump({ line, col }: { line: number; col: number }) {
           <button
             v-show="!saveHidden"
             type="button"
-            title="Save to the in-browser knowledge base"
-            aria-label="Save to the in-browser knowledge base"
+            :title="
+              editingTest
+                ? 'Save inference test'
+                : 'Save to the in-browser knowledge base'
+            "
+            :aria-label="
+              editingTest
+                ? 'Save inference test'
+                : 'Save to the in-browser knowledge base'
+            "
             :disabled="saving"
             @click="onSave"
           >
@@ -626,6 +684,7 @@ function onJump({ line, col }: { line: number; col: number }) {
             </svg>
           </button>
           <button
+            v-show="!editingTest"
             ref="splitBtn"
             type="button"
             :aria-pressed="tptpOpen"
@@ -707,7 +766,8 @@ function onJump({ line, col }: { line: number; col: number }) {
         <MonacoEditor
           ref="ed"
           v-model="text"
-          lsp
+          :language="language"
+          :lsp="!editingTest"
           placeholder="Loading editor…"
           @cursor="onCursor"
           @ready="onReady"
@@ -732,7 +792,7 @@ function onJump({ line, col }: { line: number; col: number }) {
        break); DropMenu fixes them under their anchor button. -->
     <DropMenu v-model="downloadMenuOpen" :anchor="downloadBtn">
       <button type="button" role="menuitem" @click="onDownloadKif">
-        This file (KIF)
+        This file ({{ language === "tptp" ? "TPTP" : "KIF" }})
       </button>
       <button type="button" role="menuitem" @click="onDownloadTptp">
         Whole knowledge base (TPTP)

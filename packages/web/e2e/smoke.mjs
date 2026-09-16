@@ -274,7 +274,7 @@ await step("13-kb-local-library", async () => {
 });
 
 await step("15-problems", async () => {
-  await tab("Problems").click();
+  await tab("Inference Tests").click();
   await page.waitForSelector("table tbody tr", { timeout: 60_000 });
   // The upstream catalog is a GitHub API read; wait for it (or its error).
   await page.waitForFunction(
@@ -308,8 +308,31 @@ await step("15-problems", async () => {
     null,
     { timeout: 30_000 },
   );
-  // Back to Problems (the tab returns to its last query) and remove it.
-  await tab("Problems").click();
+  await page
+    .getByRole("button", { name: "Edit raw test", exact: true })
+    .click();
+  await page.waitForURL(/\/edit\?file=/, { timeout: 10_000 });
+  await page
+    .getByRole("button", { name: "Save inference test", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector(".edit-tab .view-lines")
+        ?.textContent?.includes("(query"),
+    null,
+    { timeout: 30_000 },
+  );
+  await page
+    .getByRole("button", {
+      name: "Open a file, or create a new one",
+      exact: true,
+    })
+    .click();
+  await page.locator(".open-list .open-file", { hasText: name }).waitFor();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  // Back to Inference Tests (the tab returns to its last query) and remove it.
+  await tab("Inference Tests").click();
   await row.waitFor({ timeout: 5000 });
   await row.locator('input[type="checkbox"]').check();
   await row.locator("text=will remove").waitFor({ timeout: 3000 });

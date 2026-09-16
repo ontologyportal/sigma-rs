@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useTestsStore } from "../../stores/tests";
 import BaseDialog from "../BaseDialog.vue";
 import { useKBStore } from "../../stores/kb";
 import type { Constituent } from "../../models/Constituent";
@@ -17,6 +18,7 @@ const emit = defineEmits<{
 }>();
 
 const kb = useKBStore();
+const tests = useTestsStore();
 
 function close() {
   emit("update:modelValue", false);
@@ -41,12 +43,16 @@ function create() {
     @update:model-value="emit('update:modelValue', $event)"
   >
     <ul class="results open-list">
-      <li v-if="!kb.constituents.length" class="hint">
+      <li v-if="!kb.constituents.length && !tests.tests.length" class="hint">
         no files loaded yet — create one below
       </li>
       <li v-for="c in kb.constituents" :key="c.origin.kind + ':' + c.name">
         <a class="open-file" @click="pick(c)">{{ c.name }}</a>
         <span class="hint origin">{{ c.origin.kind }}</span>
+      </li>
+      <li v-for="t in tests.tests" :key="t.name">
+        <a class="open-file" @click="pick(t)">{{ t.name }}</a>
+        <span class="hint origin">Inference test</span>
       </li>
     </ul>
     <template #actions>
