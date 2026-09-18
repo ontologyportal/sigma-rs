@@ -10,6 +10,7 @@ import { useKBStore } from "./kb";
 import { useWordNetStore } from "./wordnet";
 import { useTestsStore } from "./tests";
 import { useChangesStore } from "./changes";
+import { useLibraryStore } from "./library";
 
 export const useBootStore = defineStore("boot", {
   state: () => ({
@@ -66,6 +67,11 @@ export const useBootStore = defineStore("boot", {
         this.msg = "Starting the engine...";
         await this.bootWorker();
         this.opfsRoot = await navigator.storage.getDirectory();
+        await useLibraryStore()
+          .adoptLegacy()
+          .catch(() => {
+            /* an unsupported browser: nothing to adopt */
+          });
 
         // A cache hit is a short, fixed sequence (restore, WordNet fetch +
         // install, cache restored); a miss is one step per saved constituent

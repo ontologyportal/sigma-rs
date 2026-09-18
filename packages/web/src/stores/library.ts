@@ -9,7 +9,13 @@
 
 import { defineStore } from "pinia";
 import { LIBRARY_KEY, SUMO } from "../constants";
-import { GitOrigin, type OriginKind } from "../models/Origin";
+import {
+  GitOrigin,
+  LocalOrigin,
+  type Origin,
+  type OriginKind,
+  type RemoteOrigin,
+} from "../models/Origin";
 import { fetchRepoTree } from "../api/github";
 import { fetchText } from "../services/sources";
 import { errMsg } from "../utils/format";
@@ -113,6 +119,17 @@ async function readOpfsText(
   } catch {
     return null;
   }
+}
+
+async function writeOpfsText(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  text: string,
+): Promise<void> {
+  const handle = await dir.getFileHandle(name, { create: true });
+  const w = await handle.createWritable();
+  await w.write(text);
+  await w.close();
 }
 
 /** A URL's file name, or the whole URL when it has no usable last segment. */
@@ -245,13 +262,7 @@ export const useLibraryStore = defineStore("library", {
     /** Store `text` as local entry `name` (created or replaced) -- shared by
      *  upload and the editor's save of a `file`-origin constituent. */
     async writeLocal(name: string, text: string): Promise<LocalEntry> {
-      const dir = await libraryDir();
-      const handle = await dir.getFileHandle(opfsSafeName(name), {
-        create: true,
-      });
-      const w = await handle.createWritable();
-      await w.write(text);
-      await w.close();
+      await writeOpfsText(await libraryDir(), opfsSafeName(name), text);
       const entry: LocalEntry = {
         kind: "file",
         name,
@@ -265,6 +276,65 @@ export const useLibraryStore = defineStore("library", {
       else this.entries[idx] = entry;
       this.persist();
       return entry;
+    },
+
+    /** Make sure a loaded `file`/`url` constituent is listed, so unloading
+     *  it later leaves it in the library rather than dropping it. Covers
+     *  constituents saved before the library existed (a `url` whose name
+     *  is the URL, a `file` restored from OPFS) and is a no-op for `sumo`
+     *  origin and for anything already listed. Never touches OPFS: a
+     *  `file` constituent's text is already there, or it could not have
+     *  been loaded. */
+    ensureEntry(name: string, origin: Origin, size: number): void {
+      if (origin.kind === "sumo") return;
+      if (this.entries.some((e) => e.kind === origin.kind && e.name === name))
+        return;
+      const added = Date.now();
+      this.entries.push(
+        origin.kind === "file"
+          ? { kind: "file", name, size, added }
+          : {
+              kind: "url",
+              name,
+              url: (origin as RemoteOrigin).url || name,
+              size,
+              added,
+            },
+      );
+      this.persist();
+    },
+
+    /** Move uploads from before the library existed -- loose files at the
+     *  OPFS root under their bare name -- into the library directory and
+     *  list them, whether or not they are currently loaded. Runs once per
+     *  boot, before anything reads the library; a file that fails to move
+     *  is left in place for the next boot. */
+    async adoptLegacy(): Promise<string[]> {
+      const root = await opfsRoot();
+      const dir = await libraryDir();
+      // Collected first: removing entries while iterating a directory is
+      // not guaranteed to visit the rest.
+      const loose: string[] = [];
+      for await (const [name, handle] of root.entries())
+        if (handle.kind === "file" && isLibraryFile(name)) loose.push(name);
+      const adopted: string[] = [];
+      for (const name of loose) {
+        try {
+          // A library copy already there was written by this version and is
+          // the newer one; the root copy is just a leftover.
+          const kept = await readOpfsText(dir, opfsSafeName(name));
+          if (kept === null) {
+            const text = await readOpfsText(root, name);
+            if (text === null) continue;
+            await this.writeLocal(name, text);
+          } else this.ensureEntry(name, new LocalOrigin(), kept.length);
+          await root.removeEntry(name);
+          adopted.push(name);
+        } catch {
+          /* leave it for the next boot */
+        }
+      }
+      return adopted;
     },
 
     /** Import picked files of the `accept`ed kind (`.kif`, or the test
@@ -326,28 +396,18 @@ export const useLibraryStore = defineStore("library", {
       );
       this.persist();
       if (kind !== "file") return;
-      for (const [dir, entryName] of [
-        [await libraryDir(), opfsSafeName(name)],
-        [await opfsRoot(), name],
-      ] as const) {
-        try {
-          await dir.removeEntry(entryName);
-        } catch {
-          /* already gone */
-        }
+      try {
+        await (await libraryDir()).removeEntry(opfsSafeName(name));
+      } catch {
+        /* already gone */
       }
     },
 
-    /** A local entry's text. Uploads from before the library existed live
-     *  at the OPFS root under their bare name; the first read of one moves
-     *  it into the library so it shows up as an entry from then on. */
+    /** A local entry's text. */
     async readLocal(name: string): Promise<string> {
       const text = await readOpfsText(await libraryDir(), opfsSafeName(name));
-      if (text !== null) return text;
-      const legacy = await readOpfsText(await opfsRoot(), name);
-      if (legacy === null) throw new Error(`${name}: not in the library`);
-      await this.writeLocal(name, legacy);
-      return legacy;
+      if (text === null) throw new Error(`${name}: not in the library`);
+      return text;
     },
   },
 });

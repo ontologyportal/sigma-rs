@@ -135,6 +135,7 @@ export const useTestsStore = defineStore("tests", {
       }
       const { test } = await call(testParseRpc(name), { name, text });
       this.tests.push({ name, origin, text, parsed: test, outcome: null });
+      useLibraryStore().ensureEntry(name, origin, text.length);
       const id = originId(origin);
       if (
         !this.saved.some((t) => t.name === name && originId(t.origin) === id)

@@ -48,6 +48,7 @@ function fixture() {
         async writeLocal(name, text) {
           files.set(name, text);
         },
+        ensureEntry() {},
       }),
     },
   };

@@ -127,6 +127,7 @@ export const useKBStore = defineStore("kb", {
         text,
       });
       this.constituents.push(new Constituent(name, origin, text));
+      useLibraryStore().ensureEntry(name, origin, text.length);
       if (
         !this.saved.some(
           (c) => c.name === name && c.origin.kind === origin.kind,

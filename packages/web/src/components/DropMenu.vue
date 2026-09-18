@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useOutsideClick } from "../composables/useOutsideClick";
 
 const props = defineProps<{
@@ -18,15 +18,28 @@ function close() {
   emit("update:modelValue", false);
 }
 
+const EDGE = 8;
+
 watch(
   () => props.modelValue,
-  (open) => {
+  async (open) => {
     if (!open || !props.anchor) return;
     const r = props.anchor.getBoundingClientRect();
     pos.value = {
       left: `${Math.round(r.left)}px`,
       top: `${Math.round(r.bottom + 4)}px`,
     };
+    // An anchor near the right edge would hang the menu off-screen, so the
+    // menu is pulled back once its own width is known.
+    await nextTick();
+    const width = menu.value?.offsetWidth;
+    if (!width) return;
+    const max = window.innerWidth - width - EDGE;
+    if (r.left > max)
+      pos.value = {
+        ...pos.value,
+        left: `${Math.round(Math.max(EDGE, max))}px`,
+      };
   },
   { immediate: true },
 );

@@ -453,6 +453,34 @@ await step("90-mobile-nav", async () => {
   await page.setViewportSize({ width: 1200, height: 900 });
 });
 
+await step("91-rail-nav", async () => {
+  // Between the strip and the select the nav collapses to one button per
+  // group; each opens a menu of its tabs.
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.waitForTimeout(300);
+  if (await page.locator("nav.tabs").isVisible())
+    throw new Error("tab strip still visible at a width it does not fit");
+  if (!(await page.locator("nav.tab-rail").isVisible()))
+    throw new Error("group rail not shown between strip and select widths");
+  const overflow = await page.evaluate(
+    () =>
+      document.documentElement.scrollWidth >
+      document.documentElement.clientWidth,
+  );
+  if (overflow) throw new Error("page scrolls horizontally on the group rail");
+  await page.locator("nav.tab-rail button", { hasText: "Manage" }).click();
+  await page.locator(".dl-menu button", { hasText: "History" }).click();
+  await page.waitForTimeout(300);
+  if (!page.url().includes("/history"))
+    throw new Error("group menu did not navigate: " + page.url());
+  if (await page.locator(".dl-menu").count())
+    throw new Error("group menu stayed open after navigating");
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.waitForTimeout(300);
+  if (!(await page.locator("nav.tabs").isVisible()))
+    throw new Error("tab strip did not return at full width");
+});
+
 await browser.close();
 await server?.close();
 
