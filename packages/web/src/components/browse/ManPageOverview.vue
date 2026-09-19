@@ -4,10 +4,11 @@ import { useKBStore } from "../../stores/kb";
 import { entriesForLanguage, linkifyDoc } from "../../utils/doc";
 import TaxonomyGraph from "./TaxonomyGraph.vue";
 import TaxonomyList from "./TaxonomyList.vue";
+import { DocBlock, ManPage } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The worker's `manpage` payload. */
-  page: any;
+  page: ManPage;
 }>();
 
 const kb = useKBStore();
@@ -38,7 +39,7 @@ watch(taxonomyView, (v) => {
 
 // -- Documentation -------------------------------------------------------------
 
-const docs = (entries: any[]) =>
+const docs = (entries: DocBlock[]) =>
   entriesForLanguage(entries, kb.uiLanguage).map((d) => ({
     html: linkifyDoc(d.text),
     language: d.language,

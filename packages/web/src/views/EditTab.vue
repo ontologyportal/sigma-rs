@@ -37,6 +37,7 @@ import { useChangesStore, type ChangeRow } from "../stores/changes";
 import { useKBStore } from "../stores/kb";
 import { isTestFile, testDialect, useTestsStore } from "../stores/tests";
 import { downloadText, errMsg } from "../utils/format";
+import type { Diagnostic } from "../stores/kb";
 
 const NEW_FILE_TEXT = "; New KIF file\n";
 
@@ -68,7 +69,7 @@ const editingTest = computed(
 const language = computed(() =>
   editingTest.value ? testDialect(current.value!.name) : "kif",
 );
-const diags = shallowRef<any[]>([]);
+const diags = shallowRef<Diagnostic[]>([]);
 const cursor = ref<{ lineNumber: number; column: number } | null>(null);
 /** Toolbar status; when `statusLink` is set it renders as a link into the
  *  Diagnostics tab, filtered to this file. */
@@ -189,7 +190,7 @@ async function validateNow() {
   // no backing file, so it falls back to parse-only checking in a throwaway KB.
   const known = file ? kb.find(file.name, file.origin.kind) : undefined;
   logValidateLane(known ? `lsp (${known.name})` : "scratch (parse-only)");
-  let result: any[];
+  let result: Diagnostic[];
   try {
     if (file && isTestFile(file.name)) {
       await call(

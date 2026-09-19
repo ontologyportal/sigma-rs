@@ -4,10 +4,11 @@ import { navigate } from "../../router";
 import { esc } from "../../utils/format";
 import Card from "../Card.vue";
 import WordNetEntry from "./WordNetEntry.vue";
+import { SearchHit, WordNetMapping } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The worker's `search` hits, newest query only. */
-  hits: any[];
+  hits: SearchHit[];
   /** The query the hits answer, for the count line and the WordNet narrowing. */
   query: string;
   /** Index of the keyboard-highlighted row, -1 for none. */
@@ -30,15 +31,15 @@ watch(
 /** Plain-text breakdown of a search hit's rank score, one labeled
  *  contribution per line plus the total -- rendered as a native `title`
  *  tooltip on hover. */
-function rankTooltip(hit: any): string {
+function rankTooltip(hit: SearchHit): string {
   const lines = hit.rank_breakdown.map(
-    (c: any) => `${c.label}: ${c.value >= 0 ? "+" : ""}${c.value.toFixed(1)}`,
+    (c) => `${c.label}: ${c.value >= 0 ? "+" : ""}${c.value.toFixed(1)}`,
   );
   lines.push(`= ${hit.rank.toFixed(1)}`);
   return lines.join("\n");
 }
 
-function kindsText(hit: any): string {
+function kindsText(hit: SearchHit): string {
   const kinds = hit.kinds.join(" · ") || hit.source;
   return hit.sense ? `${kinds} · ${hit.sense}` : kinds;
 }
@@ -53,7 +54,10 @@ function kindsText(hit: any): string {
  *  surfaced via its documentation or name instead) yields no inline mappings
  *  here -- the full list is still one click away on the man page's WordNet
  *  tab. */
-function relevantWordnet(mappings: any[] | undefined, query: string): any[] {
+function relevantWordnet(
+  mappings: WordNetMapping[] | undefined,
+  query: string,
+): WordNetMapping[] {
   const q = query.trim().toLowerCase();
   if (!q || !mappings) return [];
   return mappings.filter((m) =>

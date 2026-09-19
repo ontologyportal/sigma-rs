@@ -14,11 +14,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "strict": false,
-    "noImplicitAny": false
+    "strict": true
   },
   "include": [
     "src/worker/sigma.worker.ts",
+    "src/worker/handlers.ts",
     "src/worker/vampire-bridge.ts",
     "src/worker/vampire.worker.ts"
   ]

@@ -2,9 +2,11 @@
  * SDK-shaped facade over the raw wasm bindings — mirrors `sigmakee-rs-sdk`'s
  * `Session` / `Source` / `Backend` / `Config` for the browser.
  */
-import { Config } from "./sumo_parser_wasm";
+import { Config, Session as WasmSession } from "./sumo_parser_wasm";
 
 export { Config };
+/** The raw wasm binding behind {@link Session.kb}. */
+export type { WasmSession };
 
 /** Outcome of loading a {@link Source}. */
 export interface LoadReport {
@@ -34,6 +36,13 @@ export interface AskResult {
   prose: string;
   /** Symbols the prose showed by bare name (no `format`/`termFormat` in the language). */
   prose_missing: string[];
+  /** Whole-proof TPTP material belonging to no single step (e.g. TFF's
+   *  type-declaration preamble), to show once ahead of the per-step `tptp`.
+   *  Empty for untyped dialects and when `proof` is empty. */
+  proof_tptp_prologue: string;
+  /** The exact problem text handed to the external prover on the last run --
+   *  Vampire backend with `Config.keepTptp` only, absent otherwise. */
+  input_tptp?: string;
 }
 
 /** One step of a cited contradiction derivation (see {@link AuditResult}). */
@@ -42,6 +51,9 @@ export interface AuditStep {
   rule: string;
   premises: number[];
   kif: string;
+  /** This step reconstructed as TPTP (framed `cnf`/`fof`/`tff`/... text), or
+   *  an inline `;` comment explaining why it couldn't be represented. */
+  tptp: string | null;
   /** `null` for derived/anonymous steps that don't trace to an input axiom. */
   file: string | null;
   line: number | null;
@@ -61,6 +73,8 @@ export interface AuditResult {
     prose: string;
     /** Symbols the prose showed by bare name (no `format`/`termFormat`). */
     prose_missing: string[];
+    /** See {@link AskResult.proof_tptp_prologue}. */
+    proof_tptp_prologue: string;
   }>;
 }
 
@@ -176,7 +190,7 @@ export interface TellResult {
 }
 
 export interface Diagnostic {
-  severity: "Error" | "Warning" | "Info" | "Hint";
+  severity: "error" | "warning" | "info" | "hint";
   kind: string; // coarse category, e.g. "semantic"
   code: string; // leaf id, e.g. "free-var-in-consequent"
   message: string;
@@ -311,19 +325,39 @@ export interface ManPage {
   references: ManPageRef[];
 }
 
+/** Summary counts describing the loaded KB, as `Session.kb.stats()` returns
+ *  them (the raw binding is wasm-bindgen generated, so it is typed `any`
+ *  there). `documented`/`labeled` divide by `symbols` for a coverage
+ *  percentage. */
+export interface KbStats {
+  files: number;
+  symbols: number;
+  axioms: number;
+  rules: number;
+  classes: number;
+  instances: number;
+  relations: number;
+  predicates: number;
+  functions: number;
+  documented: number;
+  labeled: number;
+  doc_languages: Array<{ language: string; documented: number }>;
+  term_languages: Array<{ language: string; documented: number }>;
+}
+
 /** Browser analogue of the SDK's `Session`. */
 export class Session {
   constructor(opts?: { backend?: Backend; config?: Config });
   readonly backend: Backend;
   /** The underlying raw wasm Session binding. */
-  readonly kb: unknown;
+  readonly kb: WasmSession;
   configure(config: Config): this;
   /** `{ promote: false }` ingests only (search/man pages work); call `promote` later. */
   ingest(source: Source, opts?: { promote?: boolean }): Promise<LoadReport>;
   /** Promote an ingested source (by tag) into the axiom base. Native backend only. */
   promote(tag: string): string[];
   /** Freeze the whole KB (promoted axioms included) to a portable byte buffer. Native backend only. */
-  snapshot(): Uint8Array;
+  snapshot(): Uint8Array<ArrayBuffer>;
   /** Thaw a KB frozen by {@link Session.snapshot}, replacing this session in place. Native backend only. */
   restore(bytes: Uint8Array): void;
   /** `tptp` parses `text` as TPTP instead of SUO-KIF. */
@@ -360,7 +394,9 @@ export class Session {
   };
   /** `NaturalLanguage` instances as `{symbol, label}`, for the UI selector. */
   naturalLanguages(): Array<{ symbol: string; label: string }>;
-  /** Natural-language paraphrase of a single KIF formula in `language`. */
-  renderNl(kif: string, language: string): string;
+  /** Natural-language paraphrase of a single KIF formula in `language`.
+   *  `genericVars` renders variables as generic noun phrases ("an entity")
+   *  instead of `?Var`. */
+  renderNl(kif: string, language: string, genericVars?: boolean): string;
   flushSession(session: string): void;
 }

@@ -24,8 +24,8 @@ import Card from "../components/Card.vue";
 import Disclosure from "../components/Disclosure.vue";
 import HomeStats from "../components/browse/HomeStats.vue";
 import ManPage from "../components/browse/ManPage.vue";
-import ManPageClassic from "../components/browse/ManPageClassic.vue";
 import SearchResults from "../components/browse/SearchResults.vue";
+import { ManPage as ManPageType, SearchHit } from "sigmakee/sdk";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -38,12 +38,12 @@ const view = computed(() => str(query.value.view));
 const inputEl = ref<HTMLInputElement | null>(null);
 const input = ref("");
 const wordnetOnly = ref(false);
-const hits = shallowRef<any[] | null>(null);
+const hits = shallowRef<SearchHit[] | null>(null);
 /** Keyboard-highlighted result row, -1 for none. */
 const selected = ref(-1);
 const langNote = ref("");
 const searchError = ref("");
-const page = shallowRef<any | null>(null);
+const page = shallowRef<ManPageType | null>(null);
 const pageMissing = ref("");
 const active = ref(false);
 
@@ -353,16 +353,10 @@ onActivated(() => {
     </Disclosure>
   </Card>
 
-  <ManPageClassic
-    v-if="(page || pageMissing) && shell.layout === 'classic'"
-    :page="page"
-    :symbol="pageMissing || page.name"
-    @back="backToResults"
-  />
   <ManPage
-    v-else-if="page || pageMissing"
+    v-if="page || pageMissing"
     :page="page"
-    :symbol="pageMissing || page.name"
+    :symbol="pageMissing || page?.name || ''"
     :view="view"
     @back="backToResults"
     @update:view="(v) => updateParams({ q, sym, view: v })"

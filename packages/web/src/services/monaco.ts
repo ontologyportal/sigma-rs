@@ -7,7 +7,15 @@
 
 import { formatKif } from "sigmakee/sdk";
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api.js";
+import type {
+  CompletionItem,
+  CompletionList,
+  Hover,
+  SemanticTokens,
+  TextEdit,
+} from "vscode-languageserver-protocol";
 import { lspOpenTag, lspRequest, lspSyncDocument, tagToUri } from "./lsp";
+import type { Diagnostic } from "../stores/kb";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker.js?worker";
 
 /** The Monaco namespace, as returned by `loadMonaco`. */
@@ -105,7 +113,7 @@ const KIF_MONARCH: Monaco.languages.IMonarchLanguage = {
  *  anything else falls back to Text. */
 function lspKindToMonaco(
   m: MonacoNs,
-  kind: number,
+  kind: number | undefined,
 ): Monaco.languages.CompletionItemKind {
   const K = m.languages.CompletionItemKind;
   const table: Record<number, Monaco.languages.CompletionItemKind> = {
@@ -119,7 +127,16 @@ function lspKindToMonaco(
     14: K.Keyword,
     21: K.Constant,
   };
-  return table[kind] ?? K.Text;
+  return (kind !== undefined ? table[kind] : undefined) ?? K.Text;
+}
+
+/** The text of an LSP documentation/hover payload, which each protocol
+ *  version allows to be a bare string, a `{ value }` markup object, or a
+ *  list of either. Empty when there is nothing to show. */
+function markupValue(c: Hover["contents"] | CompletionItem["documentation"]) {
+  const one = Array.isArray(c) ? c[0] : c;
+  if (!one) return "";
+  return typeof one === "string" ? one : one.value;
 }
 
 /**
@@ -189,13 +206,16 @@ function lspCompletionProvider(
         // reads) without touching the KB. `reconcile: false`: never force
         // the KB reload on a keystroke; the validate debounce does that.
         await lspSyncDocument(tag, model.getValue(), { reconcile: false });
-        const resp = await lspRequest<any>("textDocument/completion", {
-          textDocument: { uri: tagToUri(tag) },
-          position: {
-            line: position.lineNumber - 1,
-            character: position.column - 1,
+        const resp = await lspRequest<CompletionList | CompletionItem[]>(
+          "textDocument/completion",
+          {
+            textDocument: { uri: tagToUri(tag) },
+            position: {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+            },
           },
-        });
+        );
         // Stale guard: Monaco cancels superseded invocations (new keystroke,
         // dismissed widget) -- a result that arrives after cancellation is
         // computed against text that no longer exists, so drop it.
@@ -203,7 +223,8 @@ function lspCompletionProvider(
         // The server prefix-filters at the cursor and caps the list
         // (CompletionList with isIncomplete); older Array-shaped responses
         // are tolerated for completeness.
-        const items: any[] = (Array.isArray(resp) ? resp : resp?.items) ?? [];
+        const items: CompletionItem[] =
+          (Array.isArray(resp) ? resp : resp?.items) ?? [];
         const serverIncomplete = !Array.isArray(resp) && !!resp?.isIncomplete;
         console.debug(
           "[lsp] completion:",
@@ -218,8 +239,8 @@ function lspCompletionProvider(
             label: i.label,
             kind: lspKindToMonaco(m, i.kind),
             detail: i.detail,
-            documentation: i.documentation?.value
-              ? { value: i.documentation.value }
+            documentation: markupValue(i.documentation)
+              ? { value: markupValue(i.documentation) as string }
               : undefined,
             insertText: i.insertText ?? i.label,
             // Server-side relevance rank (the KB search index's ordering);
@@ -301,9 +322,10 @@ function lspSemanticTokensProvider(
       const tag = lspOpenTag();
       if (!tag || lspEditor()?.getModel() !== model) return null;
       try {
-        const resp = await lspRequest<any>("textDocument/semanticTokens/full", {
-          textDocument: { uri: tagToUri(tag) },
-        });
+        const resp = await lspRequest<SemanticTokens>(
+          "textDocument/semanticTokens/full",
+          { textDocument: { uri: tagToUri(tag) } },
+        );
         if (token?.isCancellationRequested || !resp?.data) return null;
         return { data: new Uint32Array(resp.data), resultId: resp.resultId };
       } catch (e) {
@@ -345,7 +367,7 @@ function defineKifLanguage(m: MonacoNs): void {
       const tag = lspOpenTag();
       if (!tag || lspEditor()?.getModel() !== model) return local();
       try {
-        const edits = await lspRequest<any[]>("textDocument/formatting", {
+        const edits = await lspRequest<TextEdit[]>("textDocument/formatting", {
           textDocument: { uri: tagToUri(tag) },
           options: { tabSize: 2, insertSpaces: true },
         });
@@ -380,14 +402,14 @@ function defineKifLanguage(m: MonacoNs): void {
       const tag = lspOpenTag();
       if (!tag || lspEditor()?.getModel() !== model) return null;
       try {
-        const h = await lspRequest<any>("textDocument/hover", {
+        const h = await lspRequest<Hover>("textDocument/hover", {
           textDocument: { uri: tagToUri(tag) },
           position: {
             line: position.lineNumber - 1,
             character: position.column - 1,
           },
         });
-        const value = h?.contents?.value;
+        const value = markupValue(h?.contents);
         return value ? { contents: [{ value }] } : null;
       } catch (e) {
         console.warn("[lsp] hover unavailable:", e);
@@ -488,7 +510,7 @@ const SEVERITY_TO_MONACO: Record<
 /** Diagnostics (from `validateFormula`, buffer-relative line/col) -> Monaco markers. */
 export function diagsToMarkers(
   m: MonacoNs,
-  diags: any[],
+  diags: Diagnostic[],
 ): Monaco.editor.IMarkerData[] {
   return diags.map((d) => ({
     startLineNumber: Math.max(1, d.line || 1),

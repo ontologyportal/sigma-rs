@@ -12,6 +12,7 @@ import {
   GitOrigin,
   OriginKind,
   OriginJson,
+  isPersistedRow,
   parseOrigin,
   serializeOrigin,
 } from "../models/Origin";
@@ -23,19 +24,17 @@ import { errMsg } from "../utils/format";
 import { useWordNetStore } from "./wordnet";
 import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
+import { KbStats } from "sigmakee/sdk";
+import type { Diagnostic as EngineDiagnostic } from "sigmakee/sdk";
 
-/** One validation finding, as the worker's `validate` reports it. */
-export interface Diagnostic {
-  file?: string;
-  line?: number;
-  col?: number;
-  end_line?: number;
-  end_col?: number;
-  severity: "error" | "warning" | "info" | "hint";
-  kind: string;
-  code: string;
-  message: string;
-}
+/** One validation finding. The engine's own `validate` always reports a
+ *  source location; the LSP lane (`lspSyncDocument`) reports buffer-relative
+ *  findings for a document that may not be a loaded constituent, so the
+ *  location fields are optional here. Everything else is the engine's shape,
+ *  derived from it so the two cannot drift. */
+type Located = "file" | "line" | "col" | "end_line" | "end_col";
+export type Diagnostic = Omit<EngineDiagnostic, Located> &
+  Partial<Pick<EngineDiagnostic, Located>>;
 
 /** What's mirrored to localStorage -- just enough to reconstruct an `Origin`
  *  and refetch its text on the next boot. */
@@ -50,15 +49,15 @@ const MIN_PROMOTING_MS = 650;
 
 function loadSavedConstituents(): SavedConstituent[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(SUMO_FILE_SETTING) || "null");
+    const raw: unknown = JSON.parse(
+      localStorage.getItem(SUMO_FILE_SETTING) || "null",
+    );
     if (Array.isArray(raw) && raw.length) {
       // Entries saved before the library carried a bare kind string.
-      return raw
-        .filter((c: any) => c && typeof c.name === "string")
-        .map((c: any) => ({
-          name: c.name,
-          origin: serializeOrigin(parseOrigin(c.origin, c.name)),
-        }));
+      return raw.filter(isPersistedRow).map((c) => ({
+        name: c.name,
+        origin: serializeOrigin(parseOrigin(c.origin, c.name)),
+      }));
     }
   } catch {
     /* corrupt value */
@@ -90,7 +89,7 @@ export const useKBStore = defineStore("kb", {
     /** The KB's `NaturalLanguage` instances, refreshed after each promote. */
     languages: [] as { symbol: string; label: string }[],
     /** The last `stats` payload, for the Browse home tiles. */
-    stats: null as any,
+    stats: null as KbStats | null,
     /** Counts change only when the KB does; `refreshStats` re-asks only when set. */
     statsStale: true,
   }),
@@ -122,7 +121,7 @@ export const useKBStore = defineStore("kb", {
     ): Promise<{ added: boolean; notices: string[] }> {
       if (this.isLoaded(name))
         return { added: false, notices: [`${name}: already loaded`] };
-      const { notices } = await call<{ notices: string[] }>("ingest", {
+      const { notices } = await call("ingest", {
         name,
         text,
       });
@@ -309,9 +308,7 @@ export const useKBStore = defineStore("kb", {
 
     /** Re-run validation only (the Diagnostics tab's button). */
     async validate() {
-      this.diagnostics = (
-        await call<{ diagnostics: Diagnostic[] }>("validate")
-      ).diagnostics;
+      this.diagnostics = (await call("validate")).diagnostics;
       this.statsStale = true;
     },
 
@@ -329,9 +326,7 @@ export const useKBStore = defineStore("kb", {
     // KB-size-bound steps, validation runs exactly once here.
     async promoteAndValidate() {
       await call("promoteAll", { names: this.constituents.map((c) => c.name) });
-      this.diagnostics = (
-        await call<{ diagnostics: Diagnostic[] }>("validate")
-      ).diagnostics;
+      this.diagnostics = (await call("validate")).diagnostics;
       this.statsStale = true;
       await this.refreshLangSelect();
       // Queued, not awaited: every mutation path funnels through here, so

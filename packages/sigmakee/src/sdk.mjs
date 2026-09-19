@@ -453,9 +453,11 @@ export class Session {
     return this.#kb.naturalLanguages();
   }
 
-  /** Natural-language paraphrase of a single KIF formula in `language`. */
-  renderNl(kif, language) {
-    return this.#kb.renderNl(kif, language);
+  /** Natural-language paraphrase of a single KIF formula in `language`.
+   *  `genericVars` renders variables as generic noun phrases ("an entity")
+   *  instead of `?Var`. */
+  renderNl(kif, language, genericVars = false) {
+    return this.#kb.renderNl(kif, language, !!genericVars);
   }
 
   /** Drop a session's assertions. */

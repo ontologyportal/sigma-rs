@@ -7,10 +7,11 @@ import {
 } from "../../services/taxonomy";
 import TaxonomyBranch, { type TaxNode } from "./TaxonomyBranch.vue";
 import TaxRel from "./TaxRel.vue";
+import { ManPage } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The man page whose ancestor chain and direct children to list. */
-  page: any;
+  page: ManPage;
 }>();
 
 /** How many direct children the listing shows before eliding the rest. */

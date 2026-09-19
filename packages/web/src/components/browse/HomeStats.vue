@@ -13,7 +13,8 @@ const commitTooltip = ref("");
 
 /** A count from the stats payload; a stale engine (older wasm) omits newer
  *  fields, which should show as a dash rather than NaN. */
-const num = (v: unknown) => (Number.isFinite(v as number) ? fmtNum(v) : "—");
+const num = (v: number | undefined) =>
+  v !== undefined && Number.isFinite(v) ? fmtNum(v) : "—";
 
 const files = computed(() => num(kb.stats?.files));
 const symbols = computed(() => num(kb.stats?.symbols));
@@ -109,10 +110,10 @@ const docRows = computed<PopRow[]>(() => {
   const s = kb.stats;
   if (!s) return [];
   const docs = new Map<string, number>(
-    (s.doc_languages ?? []).map((l: any) => [l.language, l.documented]),
+    (s.doc_languages ?? []).map((l) => [l.language, l.documented]),
   );
   const terms = new Map<string, number>(
-    (s.term_languages ?? []).map((l: any) => [l.language, l.documented]),
+    (s.term_languages ?? []).map((l) => [l.language, l.documented]),
   );
   const langs = [...new Set([...docs.keys(), ...terms.keys()])].sort(
     (a, b) =>

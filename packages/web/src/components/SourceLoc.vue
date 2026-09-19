@@ -6,10 +6,11 @@ import { useKBStore } from "../stores/kb";
 
 const props = withDefaults(
   defineProps<{
-    /** The cited constituent's name; nothing renders without one. */
-    file?: string;
+    /** The cited constituent's name; nothing renders without one. `null` for
+     *  a synthetic/CNF sentence with no source origin. */
+    file?: string | null;
     /** 1-based line inside `file`. */
-    line?: number;
+    line?: number | null;
     /** `ref` (man-page / proof citations) or `loc` (diagnostics rows). */
     variant?: "ref" | "loc";
     /** Also render the GitHub blame link for a `sumo`-origin file. */
@@ -47,7 +48,10 @@ const blameUrl = computed(() => {
  *  the URL so the jump is a real history entry and the view is shareable. */
 function open(e: Event) {
   e.preventDefault();
-  navigate("edit", { file: props.file, l: props.line > 0 ? props.line : null });
+  navigate("edit", {
+    file: props.file,
+    l: props.line && props.line > 0 ? props.line : null,
+  });
 }
 </script>
 

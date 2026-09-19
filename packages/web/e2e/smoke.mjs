@@ -177,34 +177,6 @@ await step("05-browse-home", async () => {
     throw new Error("brand link kept a query: " + page.url());
 });
 
-/** Pick the man-page layout through the Settings dialog. */
-async function setLayout(value) {
-  await page.locator("button.settings-btn").click();
-  await page.waitForSelector("dialog[open]", { timeout: 5000 });
-  await page.locator("dialog[open] #layoutSelect").selectOption(value);
-  await page.keyboard.press("Escape");
-  await page.waitForFunction(
-    () => !document.querySelector("dialog[open]"),
-    null,
-    { timeout: 5000 },
-  );
-}
-
-await step("06-browse-classic", async () => {
-  await setLayout("classic");
-  await page.goto(base + "?sym=Human", { waitUntil: "domcontentloaded" });
-  await page.waitForSelector("text=appearance as argument number 1", {
-    timeout: BOOT_TIMEOUT,
-  });
-  const box = await page.locator(".classic-root").boundingBox();
-  if (!box || box.width <= 900)
-    throw new Error(`classic page not full width: ${box?.width}`);
-  await page.waitForSelector("table.classic tr .jump-src", {
-    timeout: 60_000,
-  });
-  await setLayout("comfortable");
-});
-
 await step("10-kb", async () => {
   await tab("Knowledge base").click();
   await page.waitForSelector("table tbody tr", { timeout: 60_000 });

@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import type { Diagnostic } from "../../stores/kb";
 import { computed } from "vue";
 
 const props = defineProps<{
   /** Every diagnostic for the buffer; only errors and warnings are listed
    *  here (Monaco still gets all severities as inline markers). */
-  diags: any[];
+  diags: Diagnostic[];
   /** The buffer's file name, for the `file:line:col` locations. */
   file?: string;
 }>();
@@ -27,9 +28,10 @@ const summary = computed(() => {
   return parts.length ? parts.join(", ") : "No errors or warnings";
 });
 
-const line = (d: any) => Math.max(1, d.line || 1);
-const col = (d: any) => Math.max(1, d.col || 1);
-const loc = (d: any) => `${props.file || "untitled"}:${line(d)}:${col(d)}`;
+const line = (d: Diagnostic) => Math.max(1, d.line || 1);
+const col = (d: Diagnostic) => Math.max(1, d.col || 1);
+const loc = (d: Diagnostic) =>
+  `${props.file || "untitled"}:${line(d)}:${col(d)}`;
 </script>
 
 <template>

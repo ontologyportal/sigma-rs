@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import CiteRow from "../CiteRow.vue";
+import { ManPage, ManPageRef } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The worker's `manpage` payload; `references` lists every formula the symbol occurs in. */
-  page: any;
+  page: ManPage;
 }>();
 
 const filter = ref("");
@@ -15,7 +16,7 @@ watch(
   },
 );
 
-const refs = computed<any[]>(() => props.page.references ?? []);
+const refs = computed<ManPageRef[]>(() => props.page.references ?? []);
 
 const note = computed(() => {
   const n = refs.value.length;
@@ -43,7 +44,7 @@ interface FilterGroup {
  *  `Rules` and `Plain facts` are `<optgroup>`s. */
 const filterGroups = computed<(FilterOption | FilterGroup)[]>(() => {
   const all = refs.value;
-  const count = (pred: (r: any) => boolean) => all.filter(pred).length;
+  const count = (pred: (r: ManPageRef) => boolean) => all.filter(pred).length;
   const facts = all.filter((r) => r.kind === "fact");
   const positions = [
     ...new Set<number>(facts.map((r) => r.arg_pos).filter((n) => n != null)),
@@ -91,7 +92,7 @@ const isGroup = (o: FilterOption | FilterGroup): o is FilterGroup =>
   "options" in o;
 
 /** Subset of `refs` matching an encoded filter value (see `filterGroups`). */
-function filterRefs(list: any[], f: string): any[] {
+function filterRefs(list: ManPageRef[], f: string): ManPageRef[] {
   if (!f) return list;
   if (f === "fact") return list.filter((r) => r.kind === "fact");
   if (f.startsWith("fact:")) {
@@ -105,16 +106,16 @@ function filterRefs(list: any[], f: string): any[] {
 // else in its existing relative order.
 const FILE_SORT_PRIORITY = ["Merge.kif", "Mid-level-ontology.kif"];
 
-function fileSortRank(file: string): number {
-  const i = FILE_SORT_PRIORITY.indexOf(file);
+function fileSortRank(file: string | null): number {
+  const i = file === null ? -1 : FILE_SORT_PRIORITY.indexOf(file);
   return i === -1 ? FILE_SORT_PRIORITY.length : i;
 }
 
 /** Stable sort of refs by source-file priority: Merge.kif, then MILO, then
  *  everything else. */
-function sortRefsByFile(list: any[]): any[] {
+function sortRefsByFile(list: ManPageRef[]): ManPageRef[] {
   return list
-    .map((r, i) => [r, i] as [any, number])
+    .map((r, i) => [r, i] as [ManPageRef, number])
     .sort(
       ([a, ai], [b, bi]) =>
         fileSortRank(a.file) - fileSortRank(b.file) || ai - bi,

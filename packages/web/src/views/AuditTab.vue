@@ -8,6 +8,7 @@ import Card from "../components/Card.vue";
 import Disclosure from "../components/Disclosure.vue";
 import ProofView from "../components/ProofView.vue";
 import ProverSettings from "../components/ProverSettings.vue";
+import { AuditResult } from "sigmakee/sdk";
 
 const prover = useProverStore();
 
@@ -17,7 +18,7 @@ const error = ref("");
 
 // The raw result + backend label, kept so the proof-language/plain-proof
 // toggles re-render in place without re-running the audit.
-const result = shallowRef<any | null>(null);
+const result = shallowRef<AuditResult | null>(null);
 const backendLabel = ref("");
 
 const badgeClass = computed(() => `audit-status ${result.value?.status || ""}`);
@@ -44,11 +45,11 @@ const verdict = computed(() => {
   return "No contradiction found within budget — inconclusive (raise the time limit and try again).";
 });
 const rawOutput = computed(() => result.value?.raw_output || "(none)");
-const contradictions = computed<any[]>(
+const contradictions = computed<AuditResult["contradictions"]>(
   () => result.value?.contradictions || [],
 );
 
-const heading = (c: any, i: number) =>
+const heading = (c: AuditResult["contradictions"][0], i: number) =>
   `Contradiction #${i + 1} — ${c.steps.length} step${c.steps.length === 1 ? "" : "s"}`;
 
 async function runAudit() {

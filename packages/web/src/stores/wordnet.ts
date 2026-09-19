@@ -8,6 +8,7 @@ import { toRaw } from "vue";
 import { call } from "../services/sigma";
 import { fetchText } from "../services/sources";
 import { rawUrl, WORDNET_DIR, WORDNET_ENABLED_KEY } from "../constants";
+import type { WordNetFiles } from "sigmakee/sdk";
 
 /** The four required mapping files, in `(file name, pos)` order -- mirrors
  *  `MAPPING_FILES` in crates/sdk/src/lexicon.rs. */
@@ -32,14 +33,10 @@ export interface WordNetFile {
   size: number;
 }
 
-interface WordNetPayload {
-  noun: string;
-  verb: string;
-  adj: string;
-  adv: string;
-  indexSense: string | null;
-  exceptions: string;
-}
+/** The mapping-file texts the `loadWordNet` RPC installs -- the SDK's own
+ *  shape, so the payload this store assembles is the payload the worker
+ *  takes. */
+type WordNetPayload = WordNetFiles;
 
 export const useWordNetStore = defineStore("wordnet", {
   state: () => ({
@@ -112,7 +109,7 @@ export const useWordNetStore = defineStore("wordnet", {
         verb: byPos.verb,
         adj: byPos.adj,
         adv: byPos.adv,
-        indexSense: indexSenseText,
+        indexSense: indexSenseText ?? undefined,
         exceptions,
       };
       this.files = [...mappingFiles, ...indexSenseFile, ...excFiles];

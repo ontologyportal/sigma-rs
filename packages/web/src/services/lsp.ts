@@ -18,7 +18,37 @@
  * double-loads a constituent the page already ingested.
  */
 
+import type {
+  Diagnostic as LspDiagnostic,
+  PublishDiagnosticsParams,
+} from "vscode-languageserver-protocol";
+
 import { call } from "./sigma";
+import type { Diagnostic } from "../stores/kb";
+
+/** A client->server JSON-RPC body: a request when it carries an `id`, a
+ *  notification otherwise. */
+interface ClientMessage {
+  jsonrpc: "2.0";
+  id?: number;
+  method: string;
+  params?: unknown;
+}
+
+/** One server->client message from a batch: the response to a request we
+ *  sent, or a notification the handling of it emitted. */
+type ServerMessage =
+  | {
+      jsonrpc: "2.0";
+      id: number;
+      result?: unknown;
+      error?: { code: number; message: string };
+    }
+  | { jsonrpc: "2.0"; method: string; params?: unknown };
+
+const isResponse = (
+  m: ServerMessage,
+): m is Extract<ServerMessage, { id: number }> => "id" in m;
 
 let nextId = 1;
 let initPromise: Promise<void> | null = null;
@@ -32,7 +62,7 @@ let openVersion = 0;
 // validate debounce re-syncs the same buffer) can skip the didOpen/didChange
 // round-trip -- and the parse/tokenize it triggers server-side -- entirely.
 let lastSyncedText: string | null = null;
-let lastSyncedDiags: any[] = [];
+let lastSyncedDiags: Diagnostic[] = [];
 // Whether the last sync forced the server's reconcile of that text (a
 // completion-triggered sync leaves it pending -- see `lspSyncDocument`).
 let lastSyncReconciled = false;
@@ -42,19 +72,19 @@ export function tagToUri(tag: string): string {
   return "kif:/" + tag.split("/").map(encodeURIComponent).join("/");
 }
 
-async function send(msg: object): Promise<any[]> {
+async function send(msg: ClientMessage): Promise<ServerMessage[]> {
   try {
-    const { out } = await call<{ out: string[] }>("lsp", {
+    const { out } = await call("lsp", {
       json: JSON.stringify(msg),
     });
-    return out.map((s) => JSON.parse(s));
+    return out.map((s): ServerMessage => JSON.parse(s));
   } catch (e) {
     // Every consumer of the LSP lane degrades quietly (empty suggestions,
     // formatKif fallback, no semantic markers) -- so a transport-level
     // failure must be loud, or the lane just looks "disconnected". The
     // classic cause is a stale served bundle (worker without the `lsp`
     // command, or an old sigmakee dist without `WasmLsp`).
-    console.error("[lsp] request failed:", (msg as any).method, e);
+    console.error("[lsp] request failed:", msg.method, e);
     throw e;
   }
 }
@@ -100,29 +130,30 @@ export function lspReset(): void {
  * Send one request; resolve with its result. Notifications that ride in the
  * same batch are handed to `onNotification` when given.
  */
-export async function lspRequest<T = any>(
+export async function lspRequest<T = unknown>(
   method: string,
   params: unknown,
-  onNotification?: (method: string, params: any) => void,
+  onNotification?: (method: string, params: unknown) => void,
 ): Promise<T | null> {
   await ensureInitialized();
   const id = nextId++;
   const msgs = await send({ jsonrpc: "2.0", id, method, params });
   let result: T | null = null;
   for (const m of msgs) {
-    if (m.id === id) {
+    if (isResponse(m)) {
+      if (m.id !== id) continue;
       if (m.error) throw new Error(`${method}: ${m.error.message}`);
-      result = m.result ?? null;
-    } else if (m.method && onNotification) {
+      result = (m.result as T | undefined) ?? null;
+    } else if (onNotification) {
       onNotification(m.method, m.params);
     }
   }
   return result;
 }
 
-async function flush(force: boolean): Promise<any[]> {
-  const { out } = await call<{ out: string[] }>("lspFlush", { force });
-  return out.map((s) => JSON.parse(s));
+async function flush(force: boolean): Promise<ServerMessage[]> {
+  const { out } = await call("lspFlush", { force });
+  return out.map((s): ServerMessage => JSON.parse(s));
 }
 
 /**
@@ -147,7 +178,7 @@ export async function lspSyncDocument(
   tag: string,
   text: string,
   opts: { reconcile?: boolean } = {},
-): Promise<any[]> {
+): Promise<Diagnostic[]> {
   const reconcile = opts.reconcile !== false;
   await ensureInitialized();
   // Same doc, same text as last sync (e.g. a completion-triggered sync
@@ -162,7 +193,7 @@ export async function lspSyncDocument(
     return lastSyncedDiags;
   }
   const uri = tagToUri(tag);
-  let msgs: any[];
+  let msgs: ServerMessage[];
   if (openTag !== tag) {
     // One live document: close the previous one so the server's doc table
     // doesn't accumulate buffers the page stopped tracking.
@@ -196,14 +227,20 @@ export async function lspSyncDocument(
     msgs = [];
   }
   if (reconcile) msgs = msgs.concat(await flush(true));
-  const diags = msgs.find(
-    (m) =>
-      m.method === "textDocument/publishDiagnostics" && m.params?.uri === uri,
-  );
+  const published = msgs
+    .filter(
+      (m): m is Extract<ServerMessage, { method: string }> => !isResponse(m),
+    )
+    .find(
+      (m) =>
+        m.method === "textDocument/publishDiagnostics" &&
+        (m.params as PublishDiagnosticsParams | undefined)?.uri === uri,
+    );
   lastSyncedText = text;
   lastSyncReconciled = reconcile;
-  if (diags) {
-    lastSyncedDiags = (diags.params.diagnostics ?? []).map(lspDiagToLegacy);
+  if (published) {
+    const params = published.params as PublishDiagnosticsParams;
+    lastSyncedDiags = (params.diagnostics ?? []).map(lspDiagToLegacy);
   }
   return lastSyncedDiags;
 }
@@ -213,7 +250,7 @@ export function lspOpenTag(): string | null {
   return openTag;
 }
 
-const LSP_SEVERITY: Record<number, string> = {
+const LSP_SEVERITY: Record<number, Diagnostic["severity"]> = {
   1: "error",
   2: "warning",
   3: "info",
@@ -222,18 +259,19 @@ const LSP_SEVERITY: Record<number, string> = {
 
 /** LSP `Diagnostic` -> the legacy diagnostic shape (1-based lines/cols;
  *  `code` arrives as the server's "kind/code" string, split back apart). */
-function lspDiagToLegacy(d: any) {
+function lspDiagToLegacy(d: LspDiagnostic): Diagnostic {
   const codeStr = typeof d.code === "string" ? d.code : String(d.code ?? "");
   const slash = codeStr.indexOf("/");
   return {
-    line: (d.range?.start?.line ?? 0) + 1,
-    col: (d.range?.start?.character ?? 0) + 1,
-    end_line: (d.range?.end?.line ?? 0) + 1,
+    line: d.range.start.line + 1,
+    col: d.range.start.character + 1,
+    end_line: d.range.end.line + 1,
     // Both are exclusive end columns; LSP's is 0-based, legacy is 1-based.
-    end_col: (d.range?.end?.character ?? 0) + 1,
-    severity: LSP_SEVERITY[d.severity] ?? "info",
+    end_col: d.range.end.character + 1,
+    severity: (d.severity && LSP_SEVERITY[d.severity]) ?? "info",
     kind: slash > 0 ? codeStr.slice(0, slash) : codeStr,
     code: slash > 0 ? codeStr.slice(slash + 1) : "",
-    message: d.message ?? "",
+    // LSP 3.18 allows a MarkupContent message; the server sends plain text.
+    message: typeof d.message === "string" ? d.message : d.message.value,
   };
 }

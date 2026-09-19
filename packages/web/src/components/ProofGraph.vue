@@ -5,10 +5,11 @@ import { PROOF_GRAPH_LEGEND, renderProofGraph } from "../services/proof-graph";
 import { useShellStore } from "../stores/shell";
 import { errMsg } from "../utils/format";
 import Disclosure from "./Disclosure.vue";
+import { AuditStep } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The `{index, rule, premises, kif}[]` transcript to draw. */
-  steps: any[];
+  steps: AuditStep[];
   /** The engine's graphviz source for the same proof, shown under a toggle. */
   dot?: string;
 }>();
@@ -28,6 +29,7 @@ function destroy() {
 
 async function render() {
   destroy();
+  if (!mount.value) return;
   status.value = "Loading graph…";
   try {
     cy = await renderProofGraph(mount.value, props.steps, shell.isDark);

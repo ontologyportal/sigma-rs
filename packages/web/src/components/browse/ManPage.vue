@@ -5,12 +5,13 @@ import Card from "../Card.vue";
 import ManPageFormulas from "./ManPageFormulas.vue";
 import ManPageOverview from "./ManPageOverview.vue";
 import WordNetEntry from "./WordNetEntry.vue";
+import { ManPage } from "sigmakee/sdk";
 
 type View = "overview" | "formulas" | "wordnet";
 
 const props = defineProps<{
   /** The worker's `manpage` payload, or null when the symbol has none. */
-  page: any | null;
+  page: ManPage | null;
   /** The symbol asked for, named in the missing-page card. */
   symbol: string;
   /** The requested sub-tab (`?view=`); unknown or inapplicable values show

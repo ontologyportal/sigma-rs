@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import BaseDialog from "./BaseDialog.vue";
 import { clearCache } from "../services/kb-cache";
 import { useKBStore } from "../stores/kb";
-import { useShellStore, type Layout } from "../stores/shell";
+import { useShellStore } from "../stores/shell";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -43,19 +43,6 @@ async function onClearCache() {
       >
         ◐ Toggle
       </button>
-    </div>
-    <div class="settings-row">
-      <label for="layoutSelect">Layout</label>
-      <select
-        id="layoutSelect"
-        :value="shell.layout"
-        @change="
-          shell.setLayout(($event.target as HTMLSelectElement).value as Layout)
-        "
-      >
-        <option value="comfortable">Comfortable</option>
-        <option value="classic">Classic</option>
-      </select>
     </div>
     <div class="settings-row">
       <label for="genericVarsToggle">Generic paraphrase variables</label>

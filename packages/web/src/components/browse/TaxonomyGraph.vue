@@ -8,10 +8,11 @@ import { cytoscapeStyle, loadCytoscape } from "../../services/proof-graph";
 import { useShellStore } from "../../stores/shell";
 import { errMsg } from "../../utils/format";
 import TaxRel from "./TaxRel.vue";
+import { ManPage } from "sigmakee/sdk";
 
 const props = defineProps<{
   /** The man page whose ancestor chain and direct children to draw. */
-  page: any;
+  page: ManPage;
 }>();
 
 /** The edge kinds the tree walks, in legend order. */
@@ -56,7 +57,7 @@ async function render() {
   status.value = "tracing taxonomy…";
   tip.value = DEFAULT_TIP;
   rels.value = legendOrder(
-    new Set([...p.parents, ...p.children].map((e: any) => e.relation)),
+    new Set([...p.parents, ...p.children].map((e) => e.relation)),
   );
 
   const parentEdges = await walkAncestors(p, {

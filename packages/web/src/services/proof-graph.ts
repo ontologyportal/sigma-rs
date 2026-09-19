@@ -8,10 +8,20 @@
 
 import type cytoscape from "cytoscape";
 import type cytoscapeDagre from "cytoscape-dagre";
-import { formatKif } from "sigmakee/sdk";
+import { formatKif, type AuditStep } from "sigmakee/sdk";
 import { highlightKif } from "../utils/highlight-kif";
 
 let cytoscapeLoadPromise: Promise<typeof cytoscape> | null = null;
+
+/** The `data` payload `stepsToElements` gives each proof node. */
+interface ProofNodeData {
+  id: string;
+  index: number;
+  kif: string;
+  kind: StepKind;
+  w: number;
+  h: number;
+}
 
 /** `cy.nodeHtmlLabel(...)`, registered onto `cytoscape.Core` at runtime by
  *  the `cytoscape-node-html-label` extension (see `loadCytoscape`) -- it ships
@@ -24,7 +34,9 @@ type CyWithHtmlLabel = cytoscape.Core & {
       valign?: string;
       halignBox?: string;
       valignBox?: string;
-      tpl: (data: any) => string;
+      /** Called with the node's own `data` object -- here, what
+       *  `stepsToElements` puts there. */
+      tpl: (data: ProofNodeData) => string;
     }[],
   ): void;
 };
@@ -109,7 +121,7 @@ function measureLabel(html: string): { w: number; h: number } {
 }
 
 /** Proof/contradiction steps -> Cytoscape elements: one node per step, one edge per premise. */
-function stepsToElements(steps: any[]): cytoscape.ElementDefinition[] {
+function stepsToElements(steps: AuditStep[]): cytoscape.ElementDefinition[] {
   const nodes = steps.map((s) => {
     const kif = formatKif(s.kif);
     const { w, h } = measureLabel(nodeLabelHtml({ kif }));
@@ -227,7 +239,7 @@ function proofNodeOverrides(): cytoscape.StylesheetJson {
  *  top-down (dagre) layout, colored for the `dark` theme. */
 export async function renderProofGraph(
   container: HTMLElement,
-  steps: any[],
+  steps: AuditStep[],
   dark: boolean,
 ): Promise<cytoscape.Core> {
   const cytoscape = await loadCytoscape();

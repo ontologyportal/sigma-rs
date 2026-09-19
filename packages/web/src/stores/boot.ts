@@ -42,7 +42,7 @@ export const useBootStore = defineStore("boot", {
      *  cannot derive the base themselves. */
     async bootWorker() {
       const baseUrl = new URL(BASE, location.href).href;
-      await call("boot", { baseUrl });
+      await call("boot");
       connectVampire(baseUrl);
     },
 

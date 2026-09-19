@@ -10,7 +10,7 @@
 import { computed, ref, watch } from "vue";
 import Card from "../components/Card.vue";
 import { SUMO } from "../constants";
-import { githubApi } from "../api/github";
+import { fetchFileCommits, type RepoCommit } from "../api/github";
 import { updateParams } from "../router";
 import { useKBStore } from "../stores/kb";
 import { useTabQuery } from "../composables/useTabQuery";
@@ -29,18 +29,16 @@ const file = computed(() => {
 });
 
 const status = ref("");
-const commits = ref<any[]>([]);
+const commits = ref<RepoCommit[]>([]);
 const error = ref("");
 
-const cache = new Map<string, any[]>(); // file -> commits[]
+const cache = new Map<string, RepoCommit[]>(); // file -> commits[]
 let shown: string | null = null; // file currently rendered, so re-entry is free
 
-async function fetchCommits(name: string): Promise<any[]> {
+async function fetchCommits(name: string): Promise<RepoCommit[]> {
   const hit = cache.get(name);
   if (hit) return hit;
-  const result = await githubApi(
-    `/repos/${SUMO.owner}/${SUMO.repo}/commits?path=${encodeURIComponent(name)}&per_page=30`,
-  );
+  const result = await fetchFileCommits(name);
   cache.set(name, result);
   return result;
 }
@@ -89,17 +87,17 @@ const allCommitsUrl = computed(() =>
     : "",
 );
 
-function commitMsg(c: any): string {
+function commitMsg(c: RepoCommit): string {
   return (c.commit?.message || "(no message)").split("\n")[0];
 }
-function commitWho(c: any): string {
+function commitWho(c: RepoCommit): string {
   return c.commit?.author?.name || c.author?.login || "unknown";
 }
-function commitWhen(c: any): string {
+function commitWhen(c: RepoCommit): string {
   const iso = c.commit?.author?.date;
   return iso ? fmtDate(new Date(iso)) : "";
 }
-function commitSha(c: any): string {
+function commitSha(c: RepoCommit): string {
   return (c.sha || "").slice(0, 7);
 }
 </script>

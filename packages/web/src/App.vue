@@ -96,7 +96,7 @@ onBeforeUnmount(() => {
         <div class="head-meta">
           <div class="head-controls">
             <a
-              v-if="!auth.signedIn"
+              v-if="!auth.user"
               class="head-btn"
               href="/api/github-auth"
               title="Log in with GitHub"

@@ -75,17 +75,28 @@ export const isDefaultRepo = (r: RepoRef) => sameRepo(r, DEFAULT_REPO);
 export const originForRepo = (r: RepoRef) =>
   new GitOrigin("github", r.owner, r.repo, r.branch);
 
+/** localStorage holds whatever an older build wrote; these two guards are
+ *  the only gate between that and the store's state. */
+function isRepoRef(v: unknown): v is RepoRef {
+  const r = v as RepoRef | null;
+  return !!r && !!r.owner && !!r.repo && !!r.branch;
+}
+
+function isLibraryEntry(v: unknown): v is LibraryEntry {
+  const e = v as LibraryEntry | null;
+  return !!e && (e.kind === "file" || e.kind === "url") && !!e.name;
+}
+
 function loadPersisted(): { repos: RepoRef[]; entries: LibraryEntry[] } {
   let repos: RepoRef[] = [];
   let entries: LibraryEntry[] = [];
   try {
-    const raw = JSON.parse(localStorage.getItem(LIBRARY_KEY) || "null");
-    if (Array.isArray(raw?.repos))
-      repos = raw.repos.filter((r: any) => r && r.owner && r.repo && r.branch);
+    const raw: { repos?: unknown; entries?: unknown } | null = JSON.parse(
+      localStorage.getItem(LIBRARY_KEY) || "null",
+    );
+    if (Array.isArray(raw?.repos)) repos = raw.repos.filter(isRepoRef);
     if (Array.isArray(raw?.entries))
-      entries = raw.entries.filter(
-        (e: any) => e && (e.kind === "file" || e.kind === "url") && e.name,
-      );
+      entries = raw.entries.filter(isLibraryEntry);
   } catch {
     /* corrupt value */
   }
@@ -203,8 +214,8 @@ export const useLibraryStore = defineStore("library", {
           { force },
         );
         this.catalogs[id] = tree
-          .filter((e: any) => e.type === "blob" && isLibraryFile(e.path))
-          .map((e: any) => ({
+          .filter((e) => e.type === "blob" && isLibraryFile(e.path))
+          .map((e) => ({
             path: e.path as string,
             size: Number(e.size) || 0,
           }))

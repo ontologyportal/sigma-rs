@@ -10,14 +10,16 @@ import SourceLoc from "./SourceLoc.vue";
 const props = defineProps<{
   /** The formula; the paraphrase is always derived from this, whatever is displayed. */
   kif: string;
-  /** The step's TPTP rendering, displayed when `lang` is `tptp`. */
-  tptp?: string;
+  /** The step's TPTP rendering, displayed when `lang` is `tptp`. `null` when
+   *  the step had no TPTP representation. */
+  tptp?: string | null;
   /** Displayed dialect: `tptp` shows `tptp` (falling back to `kif` when absent), anything else `kif`. */
   lang?: "kif" | "tptp";
-  /** Source constituent of the formula, for the `file:line` + blame footer. */
-  file?: string;
+  /** Source constituent of the formula, for the `file:line` + blame footer.
+   *  `null` for a step with no source origin (a synthetic/CNF sentence). */
+  file?: string | null;
   /** 1-based source line inside `file`. */
-  line?: number;
+  line?: number | null;
   /** The viewed symbol: highlighted rather than linked inside the formula. */
   focusSymbol?: string;
 }>();
