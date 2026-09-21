@@ -95,10 +95,11 @@ onBeforeUnmount(() => {
         </router-link>
         <div class="head-meta">
           <div class="head-controls">
-            <a
+            <button
               v-if="!auth.signedIn"
               class="head-btn"
-              href="/api/github-auth"
+              type="button"
+              @click="auth.openLoginDialog()"
               title="Log in with GitHub"
               aria-label="Log in with GitHub"
             >
@@ -114,7 +115,7 @@ onBeforeUnmount(() => {
                 />
               </svg>
               <span>Log in</span>
-            </a>
+            </button>
             <button
               v-else
               class="head-btn user-menu"
