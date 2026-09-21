@@ -74,6 +74,14 @@ SUMO_SUBCLASS_RELATION    = "subclass"
 SUMO_SUBRELATION_RELATION = "subrelation"
 SUMO_SUBATTRIBUTE_RELATION = "subAttribute"
 
+# ----------------------------------------------------------------------------
+# SUMO natural-language symbols: the class whose instances are the languages
+# documentation / format / termFormat entries are written in, and the one
+# assumed when a caller names none.
+# ----------------------------------------------------------------------------
+SUMO_NATURAL_LANGUAGE_CLASS = "WrittenLanguage"
+SUMO_DEFAULT_LANGUAGE       = "EnglishWrittenLanguage"
+
 
 # ---------------------------------------------------------------------------
 # WordNet configuration

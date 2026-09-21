@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { navigate } from "../../router";
+import { useShellStore } from "../../stores/shell.ts";
 import { esc } from "../../utils/format";
 import Card from "../Card.vue";
 import WordNetEntry from "./WordNetEntry.vue";
 import { SearchHit, WordNetMapping } from "sigmakee/sdk";
+import Row from "../Row.vue";
+import Col from "../Col.vue";
 
 const props = defineProps<{
   /** The worker's `search` hits, newest query only. */
@@ -18,6 +21,18 @@ const props = defineProps<{
 }>();
 
 const listEl = ref<HTMLUListElement | null>(null);
+const shell = useShellStore();
+
+const relHits = computed(() =>
+  props.hits.filter(
+    (h) => !!h.kinds.find((k) => k == "predicate" || k == "function"),
+  ),
+);
+const symHits = computed(() =>
+  props.hits.filter(
+    (h) => !h.kinds.includes("predicate") && !h.kinds.includes("function"),
+  ),
+);
 
 watch(
   () => props.selected,
@@ -82,7 +97,7 @@ function boldifyDoc(text: unknown): string {
 </script>
 
 <template>
-  <Card>
+  <Card v-if="shell.layout == 'comfortable'">
     <div class="hint count">
       {{ hits.length }} result{{ hits.length === 1 ? "" : "s" }} for
       <code>{{ query }}</code
@@ -110,9 +125,95 @@ function boldifyDoc(text: unknown): string {
       </li>
     </ul>
   </Card>
+
+  <Row v-else-if="shell.layout == 'classic'">
+    <Col :span="6">
+      <Card style="margin-right: 5px">
+        <div class="hint count">
+          {{ symHits.length }} symbol{{ symHits.length === 1 ? "" : "s" }} for
+          <code>{{ query }}</code
+          >{{ langNote }}
+        </div>
+        <ul ref="listEl" class="results">
+          <li
+            v-for="(h, i) in symHits"
+            :key="i"
+            :class="{ selected: i === selected }"
+          >
+            <a
+              class="sym open"
+              @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
+              >{{ h.symbol }}</a
+            >
+            <span class="kinds"
+              >{{ kindsText(h) }} ·
+              <span class="rank" :title="rankTooltip(h)"
+                >rank {{ h.rank.toFixed(0) }}</span
+              ></span
+            >
+            <div
+              v-if="h.text"
+              class="snippet"
+              v-html="boldifyDoc(h.text)"
+            ></div>
+            <WordNetEntry
+              v-for="(m, j) in relevantWordnet(h.wordnet, query)"
+              :key="j"
+              :entry="m"
+            />
+          </li>
+        </ul>
+      </Card>
+    </Col>
+    <Col :span="6">
+      <Card style="margin-left: 5px">
+        <div class="hint count">
+          {{ relHits.length }} relation{{ relHits.length === 1 ? "" : "s" }} for
+          <code>{{ query }}</code
+          >{{ langNote }}
+        </div>
+        <ul ref="listEl" class="results">
+          <li
+            v-for="(h, i) in relHits"
+            :key="i"
+            :class="{ selected: i === selected }"
+          >
+            <a
+              class="sym open"
+              @click.prevent="navigate('browse', { q: query, sym: h.symbol })"
+              >{{ h.symbol }}</a
+            >
+            <span class="kinds"
+              >{{ kindsText(h) }} ·
+              <span class="rank" :title="rankTooltip(h)"
+                >rank {{ h.rank.toFixed(0) }}</span
+              ></span
+            >
+            <div
+              v-if="h.text"
+              class="snippet"
+              v-html="boldifyDoc(h.text)"
+            ></div>
+            <WordNetEntry
+              v-for="(m, j) in relevantWordnet(h.wordnet, query)"
+              :key="j"
+              :entry="m"
+            />
+          </li>
+        </ul>
+      </Card>
+    </Col>
+  </Row>
 </template>
 
 <style scoped>
+.col {
+  display: flex;
+  flex-direction: row;
+}
+.col .kinds {
+  margin-left: 15px;
+}
 .kinds .rank {
   cursor: help;
   border-bottom: 1px dotted currentColor;

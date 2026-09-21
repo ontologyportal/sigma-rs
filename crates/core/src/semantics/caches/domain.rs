@@ -6,6 +6,7 @@ use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EagerBehavior, EagerMapBehavior, EntryCache};
 use crate::semantics::consts::{CLASS_SYMBOL, DOMAIN_SUBCLASS_RELATION};
 use crate::semantics::errors::BoxedError;
+use crate::semantics::taxonomy::TaxRelation;
 use crate::semantics::types::{RelationDomain, Scope, Scoped};
 use crate::semantics::validate::validators::arity::ArityMismatch;
 use crate::semantics::validate::validators::domain::DomainMismatch;
@@ -15,7 +16,13 @@ use crate::{Element, Literal, Sentence, SentenceId, SymbolId, ToDiagnostic};
 
 /// Behavior for the `semantic::domain` cache: the argument-position sorts
 /// declared for a relation via `domain` / `domainSubclass` axioms, ordered by
-/// position (gaps filled with `RelationDomain::Unknown`).
+/// position (gaps filled with `RelationDomain::Unknown`), then any position
+/// still open filled from the relation's `subrelation` parents.
+///
+/// `generate` walks `tax_edges` for the parents, but that cache is not in
+/// `reads`: it consumes the `DomainRangeChanged` this one produces, so a data
+/// edge here would close a reactor cycle. Invalidation instead keys off the
+/// raw `subrelation` roots, which arrive on the same events as `domain` roots.
 #[derive(Debug, Default)]
 pub(crate) struct Domain;
 
@@ -36,53 +43,38 @@ impl CacheBehavior for Domain {
         parent: &SemanticLayer,
         &Scoped { scope, key: rel }: &Scoped<SymbolId>,
     ) -> Arc<Vec<RelationDomain>> {
-        // `generate` can't emit diagnostics, so a malformed axiom is skipped
-        // (`react` surfaces it).
-        //
-        // Conflict rule: Base claims its positions first; a session may only
-        // fill positions Base left open.
-        let mut entries: Vec<(usize, RelationDomain, bool)> = Vec::new();
-        // `domain` head id may be shape-recognized (renamed dialect);
-        // `domainSubclass` stays on its global name.
-        let domain_id = parent.domain_role();
-        for head_id in [domain_id, DOMAIN_SUBCLASS_RELATION.id()] {
-            for sid in parent.subject_sids_scoped(head_id, rel, scope) {
-                let Some(sentence) = parent.syntactic.sentence(sid) else {
-                    continue;
-                };
-                if let Ok((r, pos, rd)) =
-                    try_extract_domain_from(parent, head_id, domain_id, sid, &sentence)
-                {
-                    if r == rel {
-                        let is_base = parent.syntactic.is_axiom(sid);
-                        entries.push((pos, rd, is_base));
-                    }
-                }
+        let mut result = declared_domain(parent, rel, scope);
+        // A subrelation inherits every position it doesn't declare itself
+        // (`(subrelation ?R1 ?R2) ^ (domain ?R2 ?N ?C) => (domain ?R1 ?N ?C)`);
+        // an own declaration keeps precedence so a subrelation may narrow a slot.
+        for (sup, tax) in parent.parents_of_scoped(rel, scope) {
+            if tax != TaxRelation::Subrelation {
+                continue;
             }
-        }
-        let max = entries
-            .iter()
-            .map(|&(p, ..)| p)
-            .max()
-            .map(|p| p + 1)
-            .unwrap_or(0);
-        let mut result = vec![RelationDomain::Unknown; max];
-        let mut base_claimed = vec![false; max];
-        // Base axioms (e.2 == is_base) claim positions and overrule the session.
-        for (pos, rd, _) in entries.iter().filter(|e| e.2) {
-            result[*pos] = rd.clone();
-            base_claimed[*pos] = true;
-        }
-        // Session assertions fill only the positions Base left open.
-        for (pos, rd, _) in entries.iter().filter(|e| !e.2) {
-            if !base_claimed[*pos] {
-                result[*pos] = rd.clone();
+            let inherited = parent.domain_scoped(sup, scope);
+            if inherited.len() > result.len() {
+                result.resize(inherited.len(), RelationDomain::Unknown);
+            }
+            for (slot, rd) in result.iter_mut().zip(inherited.iter()) {
+                if matches!(slot, RelationDomain::Unknown) {
+                    *slot = rd.clone();
+                }
             }
         }
         while matches!(result.last(), Some(RelationDomain::Unknown)) {
             result.pop();
         }
         Arc::new(result)
+    }
+
+    /// A `subrelation` cycle re-enters this cache on the same key; there is no
+    /// inherited signature to report for it.
+    fn on_cycle(
+        &self,
+        _parent: &SemanticLayer,
+        _key: &Scoped<SymbolId>,
+    ) -> Arc<Vec<RelationDomain>> {
+        Arc::new(Vec::new())
     }
 
     fn consumes(&self) -> &'static [EventKind] {
@@ -123,20 +115,26 @@ impl CacheBehavior for Domain {
         for event in events {
             if let Event::AxiomsPromoted { sids } = event {
                 for sid in sids {
-                    if let Some(rel) = domain_edge_relation(parent, *sid) {
+                    if let Some(rel) = domain_edge_relation(parent, *sid)
+                        .or_else(|| parent.subrelation_child(*sid))
+                    {
                         dirty = true;
                         out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
                 continue;
             }
-            // A session newly references a `domain` edge → drop only that
-            // session's entry for the edge's relation.
+            // A session newly references a `domain` or `subrelation` edge →
+            // drop that session's entries. The edge's relation is affected and
+            // so is everything below it in the subrelation lattice, which only
+            // `tax_edges` knows, hence the whole scope rather than one key.
             if let Event::SessionReferenced { session, sids } = event {
                 let s = Scope::Session(session_id(session));
                 for sid in sids {
-                    if let Some(rel) = domain_edge_relation(parent, *sid) {
-                        store.evict_keys(&[Scoped { scope: s, key: rel }]);
+                    if let Some(rel) = domain_edge_relation(parent, *sid)
+                        .or_else(|| parent.subrelation_child(*sid))
+                    {
+                        store.retain(|scoped, _| scoped.scope != s);
                         out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
@@ -148,12 +146,17 @@ impl CacheBehavior for Domain {
                 store.retain(|scoped, _| scoped.scope != s);
                 continue;
             }
-            // O(1) head filter: only `domain` / `domainSubclass` roots are edges.
+            // O(1) head filter: only `domain` / `domainSubclass` roots are
+            // edges, plus `subrelation` roots, which move inherited positions.
             let domain_id = parent.domain_role();
             let extracted = match event {
                 Event::RelationAdded { sid, head_id } => {
                     let h = *head_id;
                     if h != domain_id && h != DOMAIN_SUBCLASS_RELATION.id() {
+                        if let Some(child) = parent.subrelation_child(*sid) {
+                            dirty = true;
+                            out.push(Event::DomainRangeChanged { syms: vec![child] });
+                        }
                         continue;
                     }
                     parent.try_extract_domain(*sid)
@@ -164,6 +167,10 @@ impl CacheBehavior for Domain {
                     };
                     let h = head_sym.id();
                     if h != domain_id && h != DOMAIN_SUBCLASS_RELATION.id() {
+                        if let Some(child) = parent.subrelation_child_of(sentence) {
+                            dirty = true;
+                            out.push(Event::DomainRangeChanged { syms: vec![child] });
+                        }
                         continue;
                     }
                     // On remove the body rides on the event (the store copy is gone).
@@ -195,6 +202,59 @@ impl CacheBehavior for Domain {
     }
 }
 
+/// The positions `rel` declares for itself in `scope` via `domain` /
+/// `domainSubclass` axioms -- no subrelation inheritance. Trailing gaps are
+/// kept so the caller can overlay inherited positions by index.
+pub(crate) fn declared_domain(
+    parent: &SemanticLayer,
+    rel: SymbolId,
+    scope: Scope,
+) -> Vec<RelationDomain> {
+    // A malformed axiom is skipped here; `react` surfaces it.
+    //
+    // Conflict rule: Base claims its positions first; a session may only
+    // fill positions Base left open.
+    let mut entries: Vec<(usize, RelationDomain, bool)> = Vec::new();
+    // `domain` head id may be shape-recognized (renamed dialect);
+    // `domainSubclass` stays on its global name.
+    let domain_id = parent.domain_role();
+    for head_id in [domain_id, DOMAIN_SUBCLASS_RELATION.id()] {
+        for sid in parent.subject_sids_scoped(head_id, rel, scope) {
+            let Some(sentence) = parent.syntactic.sentence(sid) else {
+                continue;
+            };
+            if let Ok((r, pos, rd)) =
+                try_extract_domain_from(parent, head_id, domain_id, sid, &sentence)
+            {
+                if r == rel {
+                    let is_base = parent.syntactic.is_axiom(sid);
+                    entries.push((pos, rd, is_base));
+                }
+            }
+        }
+    }
+    let max = entries
+        .iter()
+        .map(|&(p, ..)| p)
+        .max()
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let mut result = vec![RelationDomain::Unknown; max];
+    let mut base_claimed = vec![false; max];
+    // Base axioms (e.2 == is_base) claim positions and overrule the session.
+    for (pos, rd, _) in entries.iter().filter(|e| e.2) {
+        result[*pos] = rd.clone();
+        base_claimed[*pos] = true;
+    }
+    // Session assertions fill only the positions Base left open.
+    for (pos, rd, _) in entries.iter().filter(|e| !e.2) {
+        if !base_claimed[*pos] {
+            result[*pos] = rd.clone();
+        }
+    }
+    result
+}
+
 /// The relation a sentence declares a domain for, iff `sid` is a well-formed
 /// `(domain | domainSubclass rel POS Class)` edge — used to target session-scope
 /// invalidation at just the affected relation's entry.
@@ -222,6 +282,12 @@ impl SemanticLayer {
     /// a global rule always overrules a session assertion).
     pub(crate) fn domain_scoped(&self, rel: SymbolId, scope: Scope) -> Arc<Vec<RelationDomain>> {
         self.domain.get(self, Scoped { scope, key: rel })
+    }
+
+    /// [`Self::domain`] without subrelation inheritance: only what `rel`
+    /// declares for itself. Uncached; a direct axiom lookup.
+    pub(crate) fn domain_declared(&self, rel: SymbolId) -> Vec<RelationDomain> {
+        declared_domain(self, rel, Scope::Base)
     }
 
     /// Try to extract a single `(domain | domainSubclass rel POS Class)` edge
@@ -406,71 +472,125 @@ mod tests {
 }
 
 #[cfg(test)]
-mod class_term_tests {
+mod inheritance_tests {
     use super::super::test_support::kif_layer;
-    use crate::semantics::types::{RelationDomain, Scope};
+    use crate::semantics::types::RelationDomain;
+    use crate::semantics::SemanticLayer;
 
-    const FIXTURE: &str = "
-        (subclass Abstract Entity)
-        (subclass Relation Abstract)
-        (subclass Function Relation)
-        (subclass BinaryFunction Function)
-        (subclass Object Entity)
-        (subclass Bar Object)
-        (subclass Something Bar)
-        (instance FooFn BinaryFunction)
-        (rangeSubclass FooFn Bar)
-        (instance BazFn BinaryFunction)
-        (domain BazFn 1 (FooFn Something))
-        (instance QuxFn BinaryFunction)
-        (domainSubclass QuxFn 1 (FooFn Something))
-    ";
-
-    #[test]
-    fn domain_class_slot_resolves_a_range_subclass_function_term() {
-        let layer = kif_layer(FIXTURE);
-        let baz = layer.syntactic.sym_id("BazFn").unwrap();
-        let bar = layer.syntactic.sym_id("Bar").unwrap();
-        let dom = layer.domain_scoped(baz, Scope::Base);
-        assert!(
-            matches!(dom.first(), Some(RelationDomain::Domain(id)) if *id == bar),
-            "`(domain BazFn 1 (FooFn Something))` with `(rangeSubclass FooFn Bar)` \
-             should type argument 1 as Bar; got {dom:?}"
-        );
+    fn ids(layer: &SemanticLayer, names: &[&str]) -> Vec<crate::SymbolId> {
+        names
+            .iter()
+            .map(|n| layer.syntactic.sym_id(n).unwrap())
+            .collect()
     }
 
     #[test]
-    fn domain_subclass_slot_resolves_a_range_subclass_function_term() {
-        let layer = kif_layer(FIXTURE);
-        let qux = layer.syntactic.sym_id("QuxFn").unwrap();
-        let bar = layer.syntactic.sym_id("Bar").unwrap();
-        let dom = layer.domain_scoped(qux, Scope::Base);
-        assert!(
-            matches!(dom.first(), Some(RelationDomain::DomainSubclass(id)) if *id == bar),
-            "got {dom:?}"
-        );
-    }
-
-    #[test]
-    fn domain_class_slot_rejects_a_plain_range_function_term() {
+    fn subrelation_inherits_undeclared_positions() {
         let layer = kif_layer(
             "
-            (subclass Abstract Entity)
-            (subclass Relation Abstract)
-            (subclass Function Relation)
-            (subclass Object Entity)
-            (subclass Bar Object)
-            (instance FooFn Function)
-            (range FooFn Bar)
-            (instance BazFn Function)
-            (domain BazFn 1 (FooFn Something))
+            (domain parent 1 Human)
+            (domain parent 2 Human)
+            (subrelation mother parent)
         ",
         );
-        let baz = layer.syntactic.sym_id("BazFn").unwrap();
-        assert!(
-            layer.domain_scoped(baz, Scope::Base).is_empty(),
-            "a `range` function denotes an individual, not a class, so it \
-             cannot stand in a domain class slot"
+        let [mother, human] = ids(&layer, &["mother", "Human"])[..] else {
+            unreachable!()
+        };
+        let d = layer.domain(mother);
+        assert_eq!(d.len(), 2, "got {d:?}");
+        assert!(matches!(&d[0], RelationDomain::Domain(id) if *id == human));
+        assert!(matches!(&d[1], RelationDomain::Domain(id) if *id == human));
+    }
+
+    #[test]
+    fn own_declaration_narrows_a_slot_and_inherits_the_rest() {
+        let layer = kif_layer(
+            "
+            (domain parent 1 Human)
+            (domain parent 2 Human)
+            (subrelation mother parent)
+            (domain mother 1 Woman)
+        ",
         );
+        let [mother, human, woman] = ids(&layer, &["mother", "Human", "Woman"])[..] else {
+            unreachable!()
+        };
+        let d = layer.domain(mother);
+        assert_eq!(d.len(), 2, "got {d:?}");
+        assert!(
+            matches!(&d[0], RelationDomain::Domain(id) if *id == woman),
+            "own `Woman` must win over inherited `Human` at position 1; got {d:?}"
+        );
+        assert!(matches!(&d[1], RelationDomain::Domain(id) if *id == human));
+    }
+
+    #[test]
+    fn inheritance_follows_a_multi_level_chain() {
+        let layer = kif_layer(
+            "
+            (domain related 1 Entity)
+            (domain related 2 Entity)
+            (subrelation parent related)
+            (domain parent 2 Human)
+            (subrelation mother parent)
+        ",
+        );
+        let [mother, entity, human] = ids(&layer, &["mother", "Entity", "Human"])[..] else {
+            unreachable!()
+        };
+        let d = layer.domain(mother);
+        assert_eq!(d.len(), 2, "got {d:?}");
+        assert!(matches!(&d[0], RelationDomain::Domain(id) if *id == entity));
+        assert!(matches!(&d[1], RelationDomain::Domain(id) if *id == human));
+    }
+
+    #[test]
+    fn domain_subclass_positions_are_inherited_as_declared() {
+        let layer = kif_layer(
+            "
+            (domainSubclass typedBy 1 Class)
+            (subrelation strictlyTypedBy typedBy)
+        ",
+        );
+        let [sub, class] = ids(&layer, &["strictlyTypedBy", "Class"])[..] else {
+            unreachable!()
+        };
+        let d = layer.domain(sub);
+        assert!(
+            matches!(d.first(), Some(RelationDomain::DomainSubclass(id)) if *id == class),
+            "got {d:?}"
+        );
+    }
+
+    #[test]
+    fn subrelation_cycle_yields_no_signature_without_panicking() {
+        let layer = kif_layer(
+            "
+            (subrelation a b)
+            (subrelation b a)
+        ",
+        );
+        let [a, b] = ids(&layer, &["a", "b"])[..] else {
+            unreachable!()
+        };
+        assert!(layer.domain(a).is_empty());
+        assert!(layer.domain(b).is_empty());
+    }
+
+    #[test]
+    fn unrelated_taxonomy_edges_do_not_inherit() {
+        // `subclass`/`instance` parents are not subrelation parents.
+        let layer = kif_layer(
+            "
+            (domain parent 1 Human)
+            (instance mother parent)
+            (subclass father parent)
+        ",
+        );
+        let [mother, father] = ids(&layer, &["mother", "father"])[..] else {
+            unreachable!()
+        };
+        assert!(layer.domain(mother).is_empty());
+        assert!(layer.domain(father).is_empty());
     }
 }

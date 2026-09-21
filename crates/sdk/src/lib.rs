@@ -118,7 +118,7 @@ pub use source::Source;
 
 pub use sigmakee_rs_core::{
     Diagnostic, Instant, KnowledgeBase, ManKind, ManPage, ParentEdge, SemanticError, SentenceId,
-    SortSig, TptpLang, TptpOptions,
+    SortSig, TptpLang, TptpOptions, DEFAULT_LANGUAGE, NATURAL_LANGUAGE_CLASS,
 };
 
 // Layer stack: the concrete top layers plus the traits downstream backend

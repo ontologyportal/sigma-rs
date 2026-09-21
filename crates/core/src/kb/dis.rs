@@ -32,6 +32,12 @@ impl<L: crate::layer::TopLayer> crate::diagnostic::DiagnosticSource for Knowledg
         self.layer.semantic().syntactic.source_span(sid)
     }
 
+    fn sentence_locations(
+        &self,
+    ) -> std::collections::HashMap<crate::types::SentenceId, crate::parse::Span> {
+        self.layer.semantic().syntactic.source_span_index()
+    }
+
     /// Column span (0-based start, length) of element `arg` within the *flat*
     /// one-line rendering `(e0 e1 e2 …)` of sentence `sid` — used to draw a
     /// caret underline (`^^^`) beneath the offending argument.  `arg` indexes

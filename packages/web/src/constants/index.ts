@@ -33,6 +33,7 @@ export const TQ_SETTING = "sumoTests";
 export const LIBRARY_KEY = "sumoLibrary";
 export const EDITS_KEY = "sumoBrowserEdits";
 export const THEME_KEY = "sumoBrowserTheme";
+export const LAYOUT_KEY = "sumoBrowserLayout";
 export const SEEN_VERSION_KEY = "sumoBrowserSeenVersion";
 /** Persisted on/off for the WordNet synonym-search lexicon -- absent or
  *  anything but the literal string `'false'` means enabled (see state.ts). */
@@ -45,6 +46,8 @@ export const PROMOTE_TABS: readonly TabName[] = [
   "problems",
   "audit",
 ];
+
+export const AVAILABLE_LAYOUTS = <const>["comfortable", "classic"];
 
 export const BASE = import.meta.env.BASE_URL;
 

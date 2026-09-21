@@ -303,7 +303,7 @@ nav.tabs {
   gap: 2px;
   position: relative;
   padding-top: 14px;
-  flex: 1 0 auto;
+  flex: 0 0 auto;
 }
 .tab-group::before {
   content: attr(data-label);

@@ -5,6 +5,7 @@ import { entriesForLanguage, linkifyDoc } from "../../utils/doc";
 import TaxonomyGraph from "./TaxonomyGraph.vue";
 import TaxonomyList from "./TaxonomyList.vue";
 import { DocBlock, ManPage } from "sigmakee/sdk";
+import RelationSignature from "./RelationSignature.vue";
 
 const props = defineProps<{
   /** The worker's `manpage` payload. */
@@ -40,10 +41,12 @@ watch(taxonomyView, (v) => {
 // -- Documentation -------------------------------------------------------------
 
 const docs = (entries: DocBlock[]) =>
-  entriesForLanguage(entries, kb.uiLanguage).map((d) => ({
-    html: linkifyDoc(d.text),
-    language: d.language,
-  }));
+  entriesForLanguage(entries, kb.uiLanguage, kb.symbols.defaultLanguage).map(
+    (d) => ({
+      html: linkifyDoc(d.text),
+      language: d.language,
+    }),
+  );
 
 // -- Signature -----------------------------------------------------------------
 
@@ -52,28 +55,14 @@ const hasSignature = computed(() => {
   return p.arity != null || p.domains.length > 0 || !!p.range;
 });
 
-/** The Signature block, one line per entry; `sym` is a class name rendered
- *  as the same man-page link `linkifyDoc` produces. */
-const sigParts = computed<{ label: string; sym?: string; suffix?: string }[]>(
-  () => {
-    const p = props.page;
-    const parts: { label: string; sym?: string; suffix?: string }[] = [];
-    if (p.arity != null)
-      parts.push({ label: `arity ${p.arity < 0 ? "variable" : p.arity}` });
-    for (const d of p.domains) {
-      parts.push({
-        label: `arg ${d.position}: `,
-        sym: d.sort.class,
-        suffix: d.sort.subclass ? " (class)" : "",
-      });
-    }
-    if (p.range)
-      parts.push({
-        label: `${p.range.subclass ? "rangeSubclass" : "range"}: `,
-        sym: p.range.class,
-      });
-    return parts;
-  },
+/** The `format` string in the UI language, for the signature's example line. */
+const formatString = computed(
+  () =>
+    entriesForLanguage(
+      props.page.format,
+      kb.uiLanguage,
+      kb.symbols.defaultLanguage,
+    )[0]?.text,
 );
 </script>
 
@@ -122,17 +111,14 @@ const sigParts = computed<{ label: string; sym?: string; suffix?: string }[]>(
     <div v-if="hasSignature" class="field">
       <h3>Signature</h3>
       <div class="val">
-        <template v-if="sigParts.length">
-          <template v-for="(part, i) in sigParts" :key="i">
-            <br v-if="i" />
-            {{ part.label
-            }}<a v-if="part.sym" class="open xref" :data-sym="part.sym">{{
-              part.sym
-            }}</a
-            >{{ part.suffix }}
-          </template>
-        </template>
-        <span v-else class="hint">none declared</span>
+        <RelationSignature
+          :name="page.name"
+          :kinds="page.kinds"
+          :args="page.domains"
+          :range="page.range ?? undefined"
+          :variable-arity="page.arity != null && page.arity < 0"
+          :format="formatString"
+        />
       </div>
     </div>
     <div v-if="page.term_format.length" class="field">

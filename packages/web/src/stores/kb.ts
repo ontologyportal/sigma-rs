@@ -25,7 +25,7 @@ import { useWordNetStore } from "./wordnet";
 import { useChangesStore } from "./changes";
 import { useLibraryStore } from "./library";
 import { KbStats } from "sigmakee/sdk";
-import type { Diagnostic as EngineDiagnostic } from "sigmakee/sdk";
+import type { Diagnostic as EngineDiagnostic, SumoSymbols } from "sigmakee/sdk";
 
 /** One validation finding. The engine's own `validate` always reports a
  *  source location; the LSP lane (`lspSyncDocument`) reports buffer-relative
@@ -82,6 +82,12 @@ export const useKBStore = defineStore("kb", {
     diagnostics: [] as Diagnostic[],
     /** True while promote + validate is in flight (the post-processing window). */
     promoting: false,
+    /** The engine's compiled-in SUMO symbol names, set at boot. Until then
+     *  the SDK's own default stands in so nothing reads an empty symbol. */
+    symbols: {
+      defaultLanguage: "EnglishLanguage",
+      naturalLanguageClass: "NaturalLanguage",
+    } as SumoSymbols,
     /** Settings: the language for term/format rendering and NL paraphrases. */
     uiLanguage: "EnglishLanguage",
     /** Render NL paraphrase variables as generic noun phrases instead of `?VarName`. */
@@ -299,11 +305,16 @@ export const useKBStore = defineStore("kb", {
       if (!languages?.length) return;
       this.languages = languages;
       const has = (v: string) => languages!.some((l) => l.symbol === v);
+      // Upstream SUMO's language symbol is `EnglishWrittenLanguage`; older
+      // constituents say `EnglishLanguage`. Prefer whichever English the KB
+      // actually documents before settling for the first listed language.
+      const { defaultLanguage } = this.symbols;
+      const english = languages.find((l) => /^English/.test(l.symbol));
       this.uiLanguage = has(this.uiLanguage)
         ? this.uiLanguage
-        : has("EnglishLanguage")
-          ? "EnglishLanguage"
-          : languages[0].symbol;
+        : has(defaultLanguage)
+          ? defaultLanguage
+          : (english?.symbol ?? languages[0].symbol);
     },
 
     /** Re-run validation only (the Diagnostics tab's button). */

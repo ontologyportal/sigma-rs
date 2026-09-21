@@ -15,16 +15,18 @@ export function linkifyDoc(text: unknown): string {
     .join("");
 }
 
-/** Entries in `language`, falling back to English then to all, so a symbol
- *  never renders blank just because it lacks the chosen language. */
+/** Entries in `language`, falling back to the engine's default language then
+ *  to all, so a symbol never renders blank just because it lacks the chosen
+ *  language. */
 export function entriesForLanguage<T extends { language: string }>(
   entries: T[],
   language: string,
+  defaultLanguage: string,
 ): T[] {
   const pick = (lang: string) => entries.filter((d) => d.language === lang);
   return pick(language).length
     ? pick(language)
-    : pick("EnglishLanguage").length
-      ? pick("EnglishLanguage")
+    : pick(defaultLanguage).length
+      ? pick(defaultLanguage)
       : entries;
 }

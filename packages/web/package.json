@@ -16,6 +16,8 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p . && tsc --noEmit -p tsconfig.worker.json",
     "fmt": "prettier --write .",
+    "fmt:check": "prettier .",
+    "lint:fix": "eslint . --fix",
     "lint": "eslint .",
     "test:e2e": "node e2e/smoke.mjs",
     "test:e2e:vampire": "node e2e/vampire.mjs"

@@ -153,6 +153,18 @@ export interface ParsedTest {
   extraFiles: string[];
 }
 
+/** The SUMO symbol constants the engine was compiled with (its
+ *  `.cargo/config.toml` `[env]` table). */
+export interface SumoSymbols {
+  /** The language assumed for rendering / documentation lookups when none is named. */
+  defaultLanguage: string;
+  /** The class whose instances are the documentation languages. */
+  naturalLanguageClass: string;
+}
+
+/** The build's {@link SumoSymbols} (requires {@link init}). */
+export function sumoSymbols(): SumoSymbols;
+
 /** Parse a `.kif.tq` test file (requires {@link init}); throws on malformed input. */
 export function parseTest(name: string, text: string): ParsedTest;
 /** TPTP-dialect counterpart to {@link parseTest}: parses a `.p`/`.tptp` problem.
@@ -228,7 +240,7 @@ export interface WordNetMapping {
 }
 export interface SearchHit {
   symbol: string;
-  kinds: string[];
+  kinds: ManKind[];
   source: string;
   language: string;
   text: string;
@@ -285,9 +297,21 @@ export interface DocBlock {
   language: string;
   text: string;
 }
+/** Where a signature slot's declaration comes from: on the symbol itself,
+ * inherited from a `subrelation` ancestor, or nowhere. */
+export type SortStatus = "declared" | "inherited" | "undeclared";
+/** One domain/range slot of a relation's signature. `type` is the class
+ * name (`null` only for an `undeclared` argument position within the
+ * arity); `subclass` marks `domainSubclass` / `rangeSubclass` slots;
+ * `inherited_from` names the `subrelation` ancestor whose own declaration
+ * supplies the slot when `status` is `"inherited"`. */
 export interface SortSig {
-  class: string;
+  /** Absent (or `null`) only when `status` is `"undeclared"`. */
+  type?: string | null;
   subclass: boolean;
+  status: SortStatus;
+  /** Present only when `status` is `"inherited"`. */
+  inherited_from?: string | null;
 }
 /** One formula referencing the man-paged symbol. `position` is the symbol's
  * 0-based root-level position in the sentence, or `null` when it only occurs
@@ -305,9 +329,11 @@ export interface ManPageRef {
   kind: string;
   arg_pos: number | null;
 }
+export type ManKind =
+  "class" | "relation" | "function" | "predicate" | "instance" | "individual";
 export interface ManPage {
   name: string;
-  kinds: string[];
+  kinds: ManKind[];
   documentation: DocBlock[];
   /** Every WordNet synset anchored to this symbol — see
    * {@link SearchHit.wordnet}'s doc comment for the shape. Populated
@@ -318,7 +344,9 @@ export interface ManPage {
   parents: Array<{ relation: string; parent: string }>;
   children: Array<{ relation: string; parent: string }>;
   arity: number | null;
-  domains: Array<{ position: number; sort: SortSig }>;
+  /** One entry per argument position, 1-based, up to the declared arity
+   * (or the last declared position when the arity is unknown). */
+  domains: Array<SortSig & { position: number }>;
   range: SortSig | null;
   appears_in_count: number;
   consequent_count: number;

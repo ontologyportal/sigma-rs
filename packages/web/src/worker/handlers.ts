@@ -14,6 +14,7 @@ import {
   Backend,
   parseTest,
   parseTptpTest,
+  sumoSymbols,
 } from "sigmakee/sdk";
 import type {
   AskResult,
@@ -24,6 +25,7 @@ import type {
   ParsedTest,
   SearchHit,
   TaxConstraint,
+  SumoSymbols,
   WordNetFiles,
 } from "sigmakee/sdk";
 import { WasmLsp } from "sigmakee";
@@ -92,10 +94,10 @@ function makeConfig(o: ProverConfig = {}): Config {
 }
 
 export const handlers = {
-  async boot(): Promise<{ ok: true }> {
+  async boot(): Promise<{ symbols: SumoSymbols }> {
     await init();
     session = newSession();
-    return { ok: true };
+    return { symbols: sumoSymbols() };
   },
   // Drop the session and start fresh (the page re-ingests every constituent).
   newSession(): { ok: true } {

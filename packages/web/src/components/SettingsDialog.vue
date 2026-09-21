@@ -4,6 +4,7 @@ import BaseDialog from "./BaseDialog.vue";
 import { clearCache } from "../services/kb-cache";
 import { useKBStore } from "../stores/kb";
 import { useShellStore } from "../stores/shell";
+import { AVAILABLE_LAYOUTS } from "../constants/index.ts";
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -11,7 +12,12 @@ const shell = useShellStore();
 const languageOptions = computed(() =>
   kb.languages.length
     ? kb.languages
-    : [{ symbol: "EnglishLanguage", label: "English" }],
+    : [
+        {
+          symbol: kb.symbols.defaultLanguage,
+          label: kb.symbols.defaultLanguage,
+        },
+      ],
 );
 
 const versionText = computed(() => {
@@ -33,8 +39,9 @@ async function onClearCache() {
 <template>
   <BaseDialog v-model="shell.settingsOpen" title="Settings">
     <div class="settings-row">
-      <span>Theme</span>
+      <label for="appTheme">App Theme</label>
       <button
+        id="appTheme"
         class="btn ghost"
         type="button"
         title="Toggle light/dark theme"
@@ -43,6 +50,18 @@ async function onClearCache() {
       >
         ◐ Toggle
       </button>
+    </div>
+    <div class="settings-row">
+      <label for="appLayout">App Layout</label>
+      <select
+        id="appLayout"
+        @change="shell.changeLayout(shell.layout)"
+        v-model="shell.layout"
+      >
+        <option v-for="l in AVAILABLE_LAYOUTS" :key="l" :value="l">
+          {{ String(l[0]).toUpperCase() + String(l).slice(1) }}
+        </option>
+      </select>
     </div>
     <div class="settings-row">
       <label for="genericVarsToggle">Generic paraphrase variables</label>

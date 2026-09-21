@@ -5,7 +5,10 @@ import Card from "../Card.vue";
 import ManPageFormulas from "./ManPageFormulas.vue";
 import ManPageOverview from "./ManPageOverview.vue";
 import WordNetEntry from "./WordNetEntry.vue";
+import Row from "../Row.vue";
+import Col from "../Col.vue";
 import { ManPage } from "sigmakee/sdk";
+import { useShellStore } from "../../stores/shell.ts";
 
 type View = "overview" | "formulas" | "wordnet";
 
@@ -20,6 +23,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ back: []; "update:view": [view: View] }>();
+
+const shell = useShellStore();
+const isCompact = computed(() => shell.layout == "comfortable");
 
 const root = ref<HTMLElement | null>(null);
 useSymbolLinks(root);
@@ -54,6 +60,7 @@ const subtab = computed<View>(() => {
             Overview
           </button>
           <button
+            v-if="isCompact"
             type="button"
             role="tab"
             :aria-selected="subtab === 'formulas'"
@@ -73,10 +80,34 @@ const subtab = computed<View>(() => {
           </button>
         </div>
       </div>
-      <ManPageOverview v-show="subtab === 'overview'" :page="page" />
-      <ManPageFormulas v-show="subtab === 'formulas'" :page="page" />
-      <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
-        <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
+      <div v-if="isCompact">
+        <ManPageOverview v-show="subtab === 'overview'" :page="page" />
+        <ManPageFormulas v-show="subtab === 'formulas'" :page="page" />
+        <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
+          <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
+        </div>
+      </div>
+      <div v-else>
+        <Row v-show="subtab == 'overview'">
+          <Col :span="8">
+            <ManPageFormulas :page="page" />
+          </Col>
+          <Col :span="4">
+            <ManPageOverview
+              :page="page"
+              style="
+                position: sticky;
+                top: 150px;
+                margin-left: 20px;
+                max-height: calc(100dvh - 150px);
+                overflow-y: auto;
+              "
+            />
+          </Col>
+        </Row>
+        <div v-if="hasWordnet" v-show="subtab === 'wordnet'">
+          <WordNetEntry v-for="(m, i) in page.wordnet" :key="i" :entry="m" />
+        </div>
       </div>
     </Card>
   </div>
@@ -99,6 +130,18 @@ const subtab = computed<View>(() => {
   padding: 12px 14px 0;
   border-bottom: 1px solid var(--line);
   border-radius: 10px 10px 0 0;
+}
+
+/* Sticky header: the symbol name, kinds and sub-tabs stay pinned while long
+   formula lists scroll underneath. */
+.man-head-card {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.man-head-card .kinds {
+  margin-left: 25px;
 }
 /* Man page sub-tabs (Overview / Formulas / WordNet) -- a lighter-weight
    local echo of nav.tabs, scoped inside the sticky man-head. */

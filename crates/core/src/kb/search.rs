@@ -1103,13 +1103,7 @@ mod tests {
         );
         kb.flush_session("__scratch__");
 
-        let opts = SearchOpts {
-            kind: None,
-            language: None,
-            limit: None,
-            taxonomy: Vec::new(),
-            ..SearchOpts::default()
-        };
+        let opts = SearchOpts::default();
         let hits = kb.search("half typed", &opts);
         assert!(
             hits.is_empty(),

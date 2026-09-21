@@ -13,7 +13,10 @@
 // Field names are part of the wire contract consumed by the web front end --
 // do not rename or add `rename_all` attributes.
 
-use sigmakee_rs_core::{Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer};
+use sigmakee_rs_core::{
+    Diagnostic, KnowledgeBase, ManKind, ManPage, SearchHit, TopLayer, DEFAULT_LANGUAGE,
+    NATURAL_LANGUAGE_CLASS,
+};
 
 #[cfg(any(feature = "external-prover", feature = "native-prover"))]
 use sigmakee_rs_core::{
@@ -240,19 +243,50 @@ pub struct EdgeView {
     pub parent: String,
 }
 
-/// A domain/range sort: the class, and whether the argument is the class
-/// itself vs. a subclass position (`domainSubclass` / `rangeSubclass`).
+/// A domain/range slot: the class (`None` for an undeclared argument
+/// position within the arity), whether the argument is the class itself vs.
+/// a subclass position (`domainSubclass` / `rangeSubclass`), and where the
+/// declaration comes from -- `"declared"` on the symbol, `"inherited"` from
+/// the named `subrelation` ancestor, or `"undeclared"`.
 #[derive(serde::Serialize)]
 pub struct SortView {
-    pub class: String,
+    #[serde(rename = "type")]
+    pub class: Option<String>,
     pub subclass: bool,
+    pub status: &'static str,
+    pub inherited_from: Option<String>,
 }
 
-/// One argument-position sort signature entry.
+/// One argument-position sort signature entry: a [`SortView`] plus its
+/// 1-based `position`. The slot fields are repeated rather than nested or
+/// `#[serde(flatten)]`ed: flatten serializes as a map, which
+/// `serde_wasm_bindgen` turns into a JS `Map` instead of a plain object.
 #[derive(serde::Serialize)]
 pub struct DomainView {
     pub position: usize,
-    pub sort: SortView,
+    #[serde(rename = "type")]
+    pub class: Option<String>,
+    pub subclass: bool,
+    pub status: &'static str,
+    pub inherited_from: Option<String>,
+}
+
+impl DomainView {
+    fn new(position: usize, sort: Option<SortView>) -> Self {
+        let sort = sort.unwrap_or(SortView {
+            class: None,
+            subclass: false,
+            status: "undeclared",
+            inherited_from: None,
+        });
+        DomainView {
+            position,
+            class: sort.class,
+            subclass: sort.subclass,
+            status: sort.status,
+            inherited_from: sort.inherited_from,
+        }
+    }
 }
 
 /// One formula that references the man-paged symbol: its rendered KIF text
@@ -440,8 +474,14 @@ impl ManPageDetail {
                 .collect()
         };
         let sort = |s: &sigmakee_rs_core::SortSig| SortView {
-            class: s.class.clone(),
+            class: Some(s.class.clone()),
             subclass: s.subclass,
+            status: if s.inherited_from.is_some() {
+                "inherited"
+            } else {
+                "declared"
+            },
+            inherited_from: s.inherited_from.clone(),
         };
         let target = kb.symbol_id(&p.name);
         let head_of = |sid: sigmakee_rs_core::SentenceId| -> Option<String> {
@@ -449,9 +489,20 @@ impl ManPageDetail {
                 .head_symbol()
                 .and_then(|id| kb.sym_name(id))
         };
+        // A per-sid location is a scan of the whole source map; past a few
+        // dozen references the one-off bulk index is cheaper than the scans.
+        let ref_count = p.ref_args.len() + p.ref_nested.len() + p.ref_meta.len();
+        let spans = if ref_count > 64 {
+            Some(sigmakee_rs_core::DiagnosticSource::sentence_locations(kb))
+        } else {
+            None
+        };
         let reference =
             |sid: sigmakee_rs_core::SentenceId, position: Option<usize>| -> ManPageRefView {
-                let span = sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid);
+                let span = match &spans {
+                    Some(index) => index.get(&sid).cloned(),
+                    None => sigmakee_rs_core::DiagnosticSource::sentence_location(kb, sid),
+                };
                 let head = head_of(sid);
                 let (kind, arg_pos) = match target {
                     Some(t) => classify_reference(kb, sid, t),
@@ -502,14 +553,23 @@ impl ManPageDetail {
             parents: edges(&p.parents),
             children: edges(&p.children),
             arity: p.arity,
-            domains: p
-                .domains
-                .iter()
-                .map(|(pos, s)| DomainView {
-                    position: *pos,
-                    sort: sort(s),
-                })
-                .collect(),
+            // One row per argument position up to the declared arity, so an
+            // undeclared slot shows as such rather than vanishing.
+            domains: {
+                let declared_len = p.domains.last().map_or(0, |(pos, _)| *pos);
+                let arity = usize::try_from(p.arity.unwrap_or(0)).unwrap_or(0);
+                (1..=declared_len.max(arity))
+                    .map(|position| {
+                        DomainView::new(
+                            position,
+                            p.domains
+                                .iter()
+                                .find(|(pos, _)| *pos == position)
+                                .map(|(_, s)| sort(s)),
+                        )
+                    })
+                    .collect()
+            },
             range: p.range.as_ref().map(sort),
             appears_in_count: p.appears_in_count,
             consequent_count: p.consequent_count,
@@ -708,7 +768,7 @@ impl AskResultView {
             );
             let goal_ast = goal_doc.ast.iter().find_map(|d| d.as_stmt());
             let report =
-                kb.render_proof_prose_with(goal_ast, proof_kif, "EnglishLanguage", &src_idx);
+                kb.render_proof_prose_with(goal_ast, proof_kif, DEFAULT_LANGUAGE, &src_idx);
             (proof, report.rendered, report.missing)
         };
         Self {
@@ -777,7 +837,7 @@ impl AuditResultView {
                 // the KB itself -- so the prose opens straight into the
                 // derivation.
                 let prose_report =
-                    kb.render_proof_prose_with(None, steps, "EnglishLanguage", src_idx);
+                    kb.render_proof_prose_with(None, steps, DEFAULT_LANGUAGE, src_idx);
                 let tptp = Emitter::Tptp(TptpLang::Auto)
                     .emit(&steps.iter().map(|s| s.formula.clone()).collect::<Vec<_>>());
                 let proof_tptp_prologue = tptp.preamble.join("\n");
@@ -937,29 +997,33 @@ impl<L: TopLayer> Session<L> {
     /// The `(instance ? NaturalLanguage)` symbols -- including instances of
     /// `NaturalLanguage` subclasses -- restricted to those with at least one
     /// `format`/`termFormat` entry of their own (a declared language with no
-    /// renderable content isn't a usable UI choice), each with the English
-    /// label from its `termFormat` (falling back to the bare symbol name).
-    /// Sorted by label, with `EnglishLanguage` guaranteed present.  Powers a
+    /// renderable content isn't a usable UI choice), each labeled by its own
+    /// `termFormat` (then the [`DEFAULT_LANGUAGE`] one, then the bare
+    /// symbol).  Sorted by label.  A KB with no renderable language at all
+    /// yields a lone [`DEFAULT_LANGUAGE`] placeholder so a selector is never
+    /// empty; a KB that has one never gets a placeholder that could shadow it
+    /// (upstream SUMO names its language `EnglishWrittenLanguage`).  Powers a
     /// UI language selector.
     pub fn natural_languages_view(&self) -> Vec<LangView> {
         let documented = self.kb.documented_languages();
         let mut langs: Vec<LangView> = Vec::new();
-        for symbol in self.kb.instances_of("NaturalLanguage") {
+        for symbol in self.kb.instances_of(NATURAL_LANGUAGE_CLASS) {
             if !documented.iter().any(|l| l == &symbol) {
                 continue;
             }
-            let label = self
-                .kb
-                .term_format(&symbol, Some("EnglishLanguage"))
-                .first()
+            let labels = self.kb.term_format(&symbol, None);
+            let label = labels
+                .iter()
+                .find(|d| d.language == symbol)
+                .or_else(|| labels.iter().find(|d| d.language == DEFAULT_LANGUAGE))
                 .map(|d| d.text.clone())
                 .unwrap_or_else(|| symbol.clone());
             langs.push(LangView { symbol, label });
         }
-        if !langs.iter().any(|l| l.symbol == "EnglishLanguage") {
+        if langs.is_empty() {
             langs.push(LangView {
-                symbol: "EnglishLanguage".into(),
-                label: "English".into(),
+                symbol: DEFAULT_LANGUAGE.into(),
+                label: DEFAULT_LANGUAGE.into(),
             });
         }
         langs.sort_by_key(|a| a.label.to_lowercase());
@@ -1433,19 +1497,35 @@ fof(f2,axiom,(
     }
 
     #[test]
-    fn natural_languages_view_always_includes_english() {
+    fn natural_languages_view_falls_back_to_english_when_nothing_is_documented() {
         let s = session_with("(subclass Dog Mammal)\n");
         let langs = s.natural_languages_view();
-        assert!(langs.iter().any(|l| l.symbol == "EnglishLanguage"));
+        let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
+        assert_eq!(symbols, [DEFAULT_LANGUAGE]);
+    }
+
+    #[test]
+    fn natural_languages_view_never_shadows_a_documented_language_with_the_placeholder() {
+        let s = session_with(&format!(
+            "(instance OtherLanguage {cls})\n\
+             (format OtherLanguage subclass \"%1 is %n a subclass of %2\")\n\
+             (termFormat OtherLanguage OtherLanguage \"other language\")\n",
+            cls = NATURAL_LANGUAGE_CLASS
+        ));
+        let langs = s.natural_languages_view();
+        let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
+        assert_eq!(symbols, ["OtherLanguage"]);
+        assert_eq!(langs[0].label, "other language");
     }
 
     #[test]
     fn natural_languages_view_excludes_languages_without_format_or_term_format() {
-        let s = session_with(
-            "(instance FooLanguage NaturalLanguage)\n\
-             (instance BarLanguage NaturalLanguage)\n\
+        let s = session_with(&format!(
+            "(instance FooLanguage {cls})\n\
+             (instance BarLanguage {cls})\n\
              (format BarLanguage subclass \"%1 is %n a subclass of %2\")\n",
-        );
+            cls = NATURAL_LANGUAGE_CLASS
+        ));
         let langs = s.natural_languages_view();
         let symbols: Vec<&str> = langs.iter().map(|l| l.symbol.as_str()).collect();
         assert!(
@@ -1468,5 +1548,41 @@ fof(f2,axiom,(
             assert_eq!(v.line, d.range.line);
             assert_eq!(v.message, d.message);
         }
+    }
+
+    #[test]
+    fn manpage_domains_serialize_as_flat_rows_with_arity_gaps() {
+        let s = session_with(
+            "(instance MeasureFn BinaryFunction)
+             (domain MeasureFn 1 RealNumber)
+             (domain MeasureFn 2 UnitOfMeasure)
+             (range MeasureFn PhysicalQuantity)
+             (instance sparse BinaryPredicate)
+             (domain sparse 2 Entity)
+             (subrelation narrow sparse)",
+        );
+        let json = |name: &str| {
+            let detail = s.manpage_detail(name).expect(name);
+            serde_json::to_value(&detail).expect("serializable")
+        };
+        let measure = json("MeasureFn");
+        let rows = measure["domains"].as_array().expect("array");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["position"], 1);
+        assert_eq!(rows[0]["type"], "RealNumber");
+        assert_eq!(rows[0]["status"], "declared");
+        assert_eq!(rows[0]["inherited_from"], serde_json::Value::Null);
+        assert_eq!(measure["range"]["type"], "PhysicalQuantity");
+
+        let sparse = json("sparse");
+        let rows = sparse["domains"].as_array().expect("array");
+        assert_eq!(rows[0]["status"], "undeclared", "arity gap is a row");
+        assert_eq!(rows[0]["type"], serde_json::Value::Null);
+        assert_eq!(rows[1]["type"], "Entity");
+
+        let narrow = json("narrow");
+        let rows = narrow["domains"].as_array().expect("array");
+        assert_eq!(rows[1]["status"], "inherited");
+        assert_eq!(rows[1]["inherited_from"], "sparse");
     }
 }

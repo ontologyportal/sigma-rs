@@ -5,7 +5,7 @@ use crate::cli::util::read_stdin;
 use crate::style::*;
 use sigmakee_rs_sdk::manager::{KBManager, ProverOptsFor};
 use sigmakee_rs_sdk::Session;
-use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer};
+use sigmakee_rs_sdk::{szs_status, AstKif, ProverStatus, ProvingLayer, DEFAULT_LANGUAGE};
 
 pub fn run_ask<L>(
     mut session: Session<L>,
@@ -150,11 +150,11 @@ where
 
     // --prose: ADDITIVE paragraph rendering (the step view above is the
     // transformation source, not replaced).  Language follows --proof when it
-    // names a SUMO language; EnglishLanguage otherwise.  Suppressed under
+    // names a SUMO language; DEFAULT_LANGUAGE otherwise.  Suppressed under
     // `casc`/`graphviz` along with everything else non-machine-readable.
     if manager.prose && !is_quiet_proof_format(format) && !result.proof_kif.is_empty() {
         let lang = match format {
-            "kif" | "tptp" | "none" => "EnglishLanguage",
+            "kif" | "tptp" | "none" => DEFAULT_LANGUAGE,
             other => other,
         };
         let goal_doc = sigmakee_rs_sdk::parse_document(

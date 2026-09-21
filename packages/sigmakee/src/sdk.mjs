@@ -22,9 +22,20 @@ import initWasm, {
   Config,
   parseTest as wasmParseTest,
   parseTptpTest as wasmParseTptpTest,
+  sumoSymbols as wasmSumoSymbols,
 } from "./sumo_parser_wasm.js";
 
 export { Config };
+
+/**
+ * The SUMO symbol constants this build was compiled with (the engine's
+ * `.cargo/config.toml` `[env]` table), so JS never hardcodes a symbol the
+ * engine may name differently (requires {@link init}).
+ * @returns {{ defaultLanguage: string, naturalLanguageClass: string }}
+ */
+export function sumoSymbols() {
+  return wasmSumoSymbols();
+}
 
 /**
  * Parse a `.kif.tq` test file (requires {@link init}).  Returns

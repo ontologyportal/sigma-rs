@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EagerMapBehavior, WholeCacheBehavior};
 use crate::semantics::caches::domain::Domain;
+use crate::semantics::caches::subrel_lattice::SubrelLattice;
 use crate::semantics::consts::DOMAIN_RELATION;
+use crate::semantics::types::Scope;
 use crate::syntactic::caches::sentences::SentenceCache;
 use crate::trans::caches::numeric_ancestor_set::NumericAncestorSet;
 use crate::trans::caches::numeric_sorts::NumericSorts;
@@ -35,6 +37,8 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         // the `semantic::domain` cache (which already folds in `domainSubclass`,
         // position ordering, scope, and base/session conflict rules) rather than
         // re-parsing `(domain Relation Position Class)` out of the raw sentence.
+        // A declared relation's subrelations inherit its domain, so they are
+        // candidates too even without a `domain` root of their own.
         for sid in parent
             .semantic
             .syntactic
@@ -49,11 +53,13 @@ impl WholeCacheBehavior for PolyVariantSymbols {
                 Some(Element::Symbol(sym)) => sym.id(),
                 _ => continue,
             };
-            if !seen.insert(rel_id) {
-                continue; // already evaluated this relation's full domain
-            }
-            if relation_is_poly(parent, rel_id) {
-                result.insert(rel_id);
+            for r in with_subrelations(parent, rel_id) {
+                if !seen.insert(r) {
+                    continue; // already evaluated this relation's full domain
+                }
+                if relation_is_poly(parent, r) {
+                    result.insert(r);
+                }
             }
         }
         result
@@ -68,6 +74,7 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         &[
             SentenceCache::NAME,
             Domain::NAME,
+            SubrelLattice::NAME,
             NumericAncestorSet::NAME,
             NumericSorts::NAME,
         ]
@@ -110,11 +117,14 @@ impl WholeCacheBehavior for PolyVariantSymbols {
             return Vec::new();
         }
 
-        // Otherwise only domain axioms moved: recompute just the affected rels.
+        // Otherwise only domain axioms moved: recompute just the affected rels
+        // and their subrelations, whose inherited domain moved with them.
         let mut affected: HashSet<SymbolId> = HashSet::new();
         for ev in events {
             if let Event::DomainRangeChanged { syms } = ev {
-                affected.extend(syms.iter().copied());
+                for sym in syms {
+                    affected.extend(with_subrelations(parent, *sym));
+                }
             }
         }
         if affected.is_empty() {
@@ -134,6 +144,17 @@ impl WholeCacheBehavior for PolyVariantSymbols {
         store.install(set);
         Vec::new()
     }
+}
+
+/// `rel` plus every relation below it in the `Base` subrelation lattice: the
+/// set whose effective domain depends on `rel`'s declarations.
+fn with_subrelations(parent: &TranslationLayer, rel: SymbolId) -> Vec<SymbolId> {
+    parent
+        .semantic
+        .subrel_below(rel, Scope::Base)
+        .keys()
+        .copied()
+        .collect()
 }
 
 /// `true` iff some argument position of `rel`'s declared domain is a numeric

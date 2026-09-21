@@ -386,8 +386,9 @@ onActivated(() => {
     <Card>
       <h2 class="welcome-h">SUMO in your browser</h2>
       <p class="hint welcome-p">
-        The <code>sigmakee-rs</code> native prover compiled to WebAssembly.
-        Search above to explore the ontology — try
+        The <code>Sigma Knowledge Engineering Environment (SigmaKEE)</code>
+        for the Suggested Upper Merged Ontology (SUMO). Search above to explore
+        the ontology — try
         <a class="try-q" @click.prevent="tryQuery('Human')">Human</a>,
         <a class="try-q" @click.prevent="tryQuery('Process')">Process</a> or
         <a class="try-q" @click.prevent="tryQuery('part')">part</a> — manage

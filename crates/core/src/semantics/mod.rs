@@ -19,7 +19,7 @@ use crate::cache::{Cache, CacheBehavior, CacheConfig, EagerMap};
 use crate::layer::Layer;
 use crate::semantics::taxonomy::TaxRelation;
 use crate::syntactic::SyntacticLayer;
-use crate::types::SymbolId;
+use crate::types::{Element, Sentence, SentenceId, SymbolId};
 
 use caches::arity::Arity;
 use caches::documentation::Documentation;
@@ -147,6 +147,28 @@ impl SemanticLayer {
             }
         }
         TaxRelation::from_id(head_id)
+    }
+
+    /// The child relation of a `(subrelation child parent)` root, or `None`
+    /// for any other sentence. Head-based, so it holds before `tax_edges` has
+    /// recorded the edge (the domain/range caches react ahead of it in the
+    /// cascade).
+    pub(crate) fn subrelation_child_of(&self, sentence: &Sentence) -> Option<SymbolId> {
+        let head = sentence.head_symbol()?;
+        if self.tax_role_of(head) != Some(TaxRelation::Subrelation) {
+            return None;
+        }
+        match sentence.elements.get(1) {
+            Some(Element::Symbol(child)) => Some(child.id()),
+            _ => None,
+        }
+    }
+
+    /// [`Self::subrelation_child_of`] for a stored root.
+    pub(crate) fn subrelation_child(&self, sid: SentenceId) -> Option<SymbolId> {
+        self.syntactic
+            .sentence(sid)
+            .and_then(|s| self.subrelation_child_of(&s))
     }
 
     /// Recognize and install the taxonomy roles once (if not already

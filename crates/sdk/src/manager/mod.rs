@@ -21,6 +21,7 @@ use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "native-prover")]
 use sigmakee_rs_core::Strategy;
+use sigmakee_rs_core::DEFAULT_LANGUAGE;
 use sigmakee_rs_core::{SineParams, TptpLang, TptpOptions};
 
 use crate::{SdkError, SdkResult, Source};
@@ -148,7 +149,7 @@ impl Default for KBManager {
             holds_prefix: false,
             inference_test_dir: PathBuf::new(),
             kb_dir: PathBuf::new(),
-            language: "EnglishLanguage".into(),
+            language: DEFAULT_LANGUAGE.into(),
             leo_executable: PathBuf::new(),
             limit: 64,
             log_dir: PathBuf::new(),

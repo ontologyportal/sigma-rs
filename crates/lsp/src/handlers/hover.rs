@@ -7,7 +7,7 @@
 
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
-use sigmakee_rs_sdk::{DocBlock, DocSpan, ManPageView, TopLayer};
+use sigmakee_rs_sdk::{DocBlock, DocSpan, ManPageView, SortSig, TopLayer};
 
 use crate::conv::{position_to_offset, span_to_range, uri_to_tag};
 use crate::state::GlobalState;
@@ -87,12 +87,10 @@ fn render_manpage_markdown(view: &ManPageView) -> String {
             out.push_str(&format!("- arity: {}\n", rendered));
         }
         for (pos, s) in &sig.domains {
-            let suffix = if s.subclass { " *(subclass-of)*" } else { "" };
-            out.push_str(&format!("- arg {}: `{}`{}\n", pos, s.class, suffix));
+            out.push_str(&format!("- arg {}: `{}`{}\n", pos, s.class, sort_suffix(s)));
         }
         if let Some(s) = &sig.range {
-            let suffix = if s.subclass { " *(subclass-of)*" } else { "" };
-            out.push_str(&format!("- range: `{}`{}\n", s.class, suffix));
+            out.push_str(&format!("- range: `{}`{}\n", s.class, sort_suffix(s)));
         }
         out.push('\n');
     }
@@ -148,6 +146,18 @@ fn render_spans(block: &DocBlock) -> String {
 }
 
 // -- Tests --------------------------------------------------------------------
+
+/// `*(subclass-of)*` / `*(inherited from X)*` markers for a signature slot.
+fn sort_suffix(s: &SortSig) -> String {
+    let mut out = String::new();
+    if s.subclass {
+        out.push_str(" *(subclass-of)*");
+    }
+    if let Some(from) = &s.inherited_from {
+        out.push_str(&format!(" *(inherited from {from})*"));
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -239,6 +249,7 @@ mod tests {
                     SortSig {
                         class: "Class".into(),
                         subclass: true,
+                        inherited_from: None,
                     },
                 ),
                 (
@@ -246,6 +257,7 @@ mod tests {
                     SortSig {
                         class: "Class".into(),
                         subclass: true,
+                        inherited_from: None,
                     },
                 ),
             ],

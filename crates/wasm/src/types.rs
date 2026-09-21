@@ -12,6 +12,23 @@ pub(crate) fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> 
     serde_wasm_bindgen::to_value(value).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+/// The build's SUMO symbol constants (`.cargo/config.toml` `[env]`) that JS
+/// callers need to agree on: `{ defaultLanguage, naturalLanguageClass }`.
+/// Pure: no KB, no state.
+#[wasm_bindgen(js_name = sumoSymbols)]
+pub fn sumo_symbols() -> Result<JsValue, JsValue> {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SumoSymbols {
+        default_language: &'static str,
+        natural_language_class: &'static str,
+    }
+    to_js(&SumoSymbols {
+        default_language: sigmakee_rs_core::DEFAULT_LANGUAGE,
+        natural_language_class: sigmakee_rs_core::NATURAL_LANGUAGE_CLASS,
+    })
+}
+
 /// Parse a `.kif.tq` test file. Pure: no KB, no state. Throws with the
 /// parse diagnostic's message on malformed input.
 #[wasm_bindgen(js_name = parseTest)]

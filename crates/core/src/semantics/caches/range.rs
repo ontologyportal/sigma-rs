@@ -8,6 +8,7 @@ use crate::cache::events::{Event, EventKind};
 use crate::cache::{CacheBehavior, EntryCache};
 use crate::semantics::consts::RANGE_SUB_REL_CLASS;
 use crate::semantics::errors::semantic_error;
+use crate::semantics::taxonomy::TaxRelation;
 use crate::semantics::types::{Scope, Scoped};
 use crate::semantics::SemanticLayer;
 use crate::syntactic::caches::session::session_id;
@@ -24,7 +25,11 @@ pub struct DoubleRange {
 semantic_error!(DoubleRange, "E007", "double-range", Error);
 
 /// Behavior for the `semantic::range` cache: the range sort(s) declared for a
-/// relation via `range` / `rangeSubclass` axioms.
+/// relation via `range` / `rangeSubclass` axioms, falling back to a
+/// `subrelation` parent's range when the relation declares none.
+///
+/// `tax_edges` is deliberately absent from `reads` (it consumes this cache's
+/// `DomainRangeChanged`); see [`super::domain::Domain`].
 #[derive(Debug, Default)]
 pub(crate) struct Range;
 
@@ -43,53 +48,18 @@ impl CacheBehavior for Range {
         parent: &SemanticLayer,
         &Scoped { scope, key: rel }: &Scoped<SymbolId>,
     ) -> RelationRange {
-        // A global (axiom) rule overrules a session assertion: resolve Base
-        // first, fall to the session only when Base declares no range.
-        let resolve = |only_base: bool| -> Option<RelationRange> {
-            let pick =
-                |head: SymbolId, make: fn(SymbolId) -> RelationRange| -> Option<RelationRange> {
-                    for sid in parent.subject_sids_scoped(head, rel, scope) {
-                        if only_base && !parent.syntactic.is_axiom(sid) {
-                            continue;
-                        }
-                        if !only_base && parent.syntactic.is_axiom(sid) {
-                            continue;
-                        }
-                        let Some(sentence) = parent.syntactic.sentence(sid) else {
-                            continue;
-                        };
-                        let class_id = match sentence.elements.get(2) {
-                            Some(Element::Symbol(sym)) => sym.id(),
-                            other => match parent.class_denoted_by(other, scope) {
-                                Some(id) => id,
-                                None => continue,
-                            },
-                        };
-                        return Some(make(class_id));
-                    }
-                    None
-                };
-            // `range` head id may be shape-recognized (renamed dialect);
-            // `rangeSubclass` stays on its global name.
-            let range = pick(parent.range_role(), RelationRange::Range);
-            let range_subclass = pick(RANGE_SUB_REL_CLASS.id(), RelationRange::RangeSubclass);
-            match (range, range_subclass) {
-                (None, None) => None,
-                (None, Some(rs)) => Some(rs),
-                (Some(r), None) => Some(r),
-                (Some(_), Some(_)) => Some(RelationRange::Unknown), // conflict
-            }
-        };
-
-        if let Some(base) = resolve(true) {
-            return base;
+        if let Some(own) = declared_range(parent, rel, scope) {
+            return own;
         }
-        if matches!(scope, Scope::Session(_)) {
-            if let Some(session) = resolve(false) {
-                return session;
-            }
-        }
-        RelationRange::Unknown
+        // Undeclared: inherit from a `subrelation` parent
+        // (`(subrelation ?R1 ?R2) ^ (range ?R2 ?C) => (range ?R1 ?C)`).
+        parent
+            .parents_of_scoped(rel, scope)
+            .into_iter()
+            .filter(|(_, tax)| *tax == TaxRelation::Subrelation)
+            .map(|(sup, _)| parent.range_scoped(sup, scope))
+            .find(|r| !matches!(r, RelationRange::Unknown))
+            .unwrap_or(RelationRange::Unknown)
     }
 
     /// A self-referential declaration such as `(range FooFn (FooFn X))` would
@@ -136,18 +106,24 @@ impl CacheBehavior for Range {
         for event in events {
             if let Event::AxiomsPromoted { sids } = event {
                 for sid in sids {
-                    if let Some(rel) = range_edge_relation(parent, *sid) {
+                    if let Some(rel) =
+                        range_edge_relation(parent, *sid).or_else(|| parent.subrelation_child(*sid))
+                    {
                         dirty = true;
                         out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
                 continue;
             }
+            // Whole session scope: the edge's relation and everything below it
+            // in the subrelation lattice are affected (see `Domain`).
             if let Event::SessionReferenced { session, sids } = event {
                 let s = Scope::Session(session_id(session));
                 for sid in sids {
-                    if let Some(rel) = range_edge_relation(parent, *sid) {
-                        store.evict_keys(&[Scoped { scope: s, key: rel }]);
+                    if let Some(rel) =
+                        range_edge_relation(parent, *sid).or_else(|| parent.subrelation_child(*sid))
+                    {
+                        store.retain(|scoped, _| scoped.scope != s);
                         out.push(Event::DomainRangeChanged { syms: vec![rel] });
                     }
                 }
@@ -158,12 +134,17 @@ impl CacheBehavior for Range {
                 store.retain(|scoped, _| scoped.scope != s);
                 continue;
             }
-            // Only `range` / `rangeSubclass` roots are edges.
+            // Only `range` / `rangeSubclass` roots are edges, plus
+            // `subrelation` roots, which move the inherited range.
             let range_id = parent.range_role();
             let (f, _c) = match event {
                 Event::RelationAdded { sid, head_id } => {
                     let h = *head_id;
                     if h != range_id && h != RANGE_SUB_REL_CLASS.id() {
+                        if let Some(child) = parent.subrelation_child(*sid) {
+                            dirty = true;
+                            out.push(Event::DomainRangeChanged { syms: vec![child] });
+                        }
                         continue;
                     }
                     match parent.try_extract_range(*sid) {
@@ -181,6 +162,10 @@ impl CacheBehavior for Range {
                     };
                     let h = head_sym.id();
                     if h != range_id && h != RANGE_SUB_REL_CLASS.id() {
+                        if let Some(child) = parent.subrelation_child_of(sentence) {
+                            dirty = true;
+                            out.push(Event::DomainRangeChanged { syms: vec![child] });
+                        }
                         continue;
                     }
                     match try_extract_range_from(parent, h, range_id, *sid, sentence) {
@@ -221,6 +206,60 @@ impl CacheBehavior for Range {
     }
 }
 
+/// The range `rel` declares for itself in `scope` via `range` /
+/// `rangeSubclass` axioms -- no subrelation inheritance. `None` when it
+/// declares nothing; `Some(Unknown)` for a conflicting pair.
+pub(crate) fn declared_range(
+    parent: &SemanticLayer,
+    rel: SymbolId,
+    scope: Scope,
+) -> Option<RelationRange> {
+    // A global (axiom) rule overrules a session assertion: resolve Base
+    // first, fall to the session only when Base declares no range.
+    let resolve = |only_base: bool| -> Option<RelationRange> {
+        let pick = |head: SymbolId, make: fn(SymbolId) -> RelationRange| -> Option<RelationRange> {
+            for sid in parent.subject_sids_scoped(head, rel, scope) {
+                if only_base && !parent.syntactic.is_axiom(sid) {
+                    continue;
+                }
+                if !only_base && parent.syntactic.is_axiom(sid) {
+                    continue;
+                }
+                let Some(sentence) = parent.syntactic.sentence(sid) else {
+                    continue;
+                };
+                let class_id = match sentence.elements.get(2) {
+                    Some(Element::Symbol(sym)) => sym.id(),
+                    other => match parent.class_denoted_by(other, scope) {
+                        Some(id) => id,
+                        None => continue,
+                    },
+                };
+                return Some(make(class_id));
+            }
+            None
+        };
+        // `range` head id may be shape-recognized (renamed dialect);
+        // `rangeSubclass` stays on its global name.
+        let range = pick(parent.range_role(), RelationRange::Range);
+        let range_subclass = pick(RANGE_SUB_REL_CLASS.id(), RelationRange::RangeSubclass);
+        match (range, range_subclass) {
+            (None, None) => None,
+            (None, Some(rs)) => Some(rs),
+            (Some(r), None) => Some(r),
+            (Some(_), Some(_)) => Some(RelationRange::Unknown), // conflict
+        }
+    };
+
+    if let Some(base) = resolve(true) {
+        return Some(base);
+    }
+    if matches!(scope, Scope::Session(_)) {
+        return resolve(false);
+    }
+    None
+}
+
 /// The relation named by a `range` / `rangeSubclass` root, including one whose
 /// class term cannot yet be resolved - used to target session-scope
 /// invalidation at just the affected relation's entry.
@@ -247,6 +286,12 @@ impl SemanticLayer {
     /// `range` rule only when `Base` declares none (a global rule overrules).
     pub(crate) fn range_scoped(&self, rel: SymbolId, scope: Scope) -> RelationRange {
         self.range.get(self, Scoped { scope, key: rel })
+    }
+
+    /// [`Self::range`] without subrelation inheritance: only what `rel`
+    /// declares for itself (`Unknown` when nothing). Uncached.
+    pub(crate) fn range_declared(&self, rel: SymbolId) -> RelationRange {
+        declared_range(self, rel, Scope::Base).unwrap_or(RelationRange::Unknown)
     }
 
     // -- Taxonomy management ---------------------------------------------------
@@ -430,5 +475,68 @@ mod class_term_tests {
             matches!(layer.range_scoped(foo, Scope::Base), RelationRange::Unknown),
             "the cycle sentinel should stand in rather than recursing"
         );
+    }
+}
+
+#[cfg(test)]
+mod inheritance_tests {
+    use crate::semantics::caches::test_support::kif_layer;
+    use crate::semantics::types::RelationRange;
+
+    #[test]
+    fn subfunction_inherits_an_undeclared_range() {
+        let layer = kif_layer(
+            "
+            (range AgeFn Quantity)
+            (subrelation YearsOldFn AgeFn)
+        ",
+        );
+        let sub = layer.syntactic.sym_id("YearsOldFn").unwrap();
+        let quantity = layer.syntactic.sym_id("Quantity").unwrap();
+        assert!(
+            matches!(layer.range(sub), RelationRange::Range(id) if id == quantity),
+            "got {:?}",
+            layer.range(sub)
+        );
+    }
+
+    #[test]
+    fn own_range_wins_over_the_inherited_one() {
+        let layer = kif_layer(
+            "
+            (range AgeFn Quantity)
+            (subrelation YearsOldFn AgeFn)
+            (range YearsOldFn Integer)
+        ",
+        );
+        let sub = layer.syntactic.sym_id("YearsOldFn").unwrap();
+        let integer = layer.syntactic.sym_id("Integer").unwrap();
+        assert!(matches!(layer.range(sub), RelationRange::Range(id) if id == integer));
+    }
+
+    #[test]
+    fn range_subclass_is_inherited_as_declared_through_a_chain() {
+        let layer = kif_layer(
+            "
+            (rangeSubclass KindFn Class)
+            (subrelation MidFn KindFn)
+            (subrelation LeafFn MidFn)
+        ",
+        );
+        let leaf = layer.syntactic.sym_id("LeafFn").unwrap();
+        let class = layer.syntactic.sym_id("Class").unwrap();
+        assert!(matches!(layer.range(leaf), RelationRange::RangeSubclass(id) if id == class));
+    }
+
+    #[test]
+    fn subrelation_cycle_is_unknown_without_panicking() {
+        let layer = kif_layer(
+            "
+            (subrelation a b)
+            (subrelation b a)
+        ",
+        );
+        let a = layer.syntactic.sym_id("a").unwrap();
+        assert!(matches!(layer.range(a), RelationRange::Unknown));
     }
 }

@@ -87,10 +87,10 @@ impl Session {
         to_js(&session_guard.taxonomy_view(symbol))
     }
 
-    /// The `(instance ? NaturalLanguage)` symbols, each with the English label
-    /// from its `termFormat` (falling back to the bare symbol name). Sorted by
-    /// label, with `EnglishLanguage` guaranteed present. Powers the UI language
-    /// selector.
+    /// The `(instance ? NaturalLanguage)` symbols with renderable content,
+    /// each labeled from its `termFormat` (falling back to the bare symbol
+    /// name). Sorted by label; a lone `EnglishLanguage` placeholder when the
+    /// KB documents nothing. Powers the UI language selector.
     #[wasm_bindgen(js_name = naturalLanguages)]
     pub fn natural_languages(&self) -> Result<JsValue, JsValue> {
         let session_guard = self.session.read().expect("kb lock not poisoned");

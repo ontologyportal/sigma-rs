@@ -4,7 +4,13 @@
  */
 
 import { defineStore } from "pinia";
-import { APP_REPO, SEEN_VERSION_KEY, THEME_KEY } from "../constants";
+import {
+  APP_REPO,
+  SEEN_VERSION_KEY,
+  THEME_KEY,
+  LAYOUT_KEY,
+  AVAILABLE_LAYOUTS,
+} from "../constants";
 
 /** The deployed build's identity, from `version.json`. */
 export interface AppVersion {
@@ -14,12 +20,17 @@ export interface AppVersion {
 }
 
 export type Theme = "light" | "dark";
+export type Layout = (typeof AVAILABLE_LAYOUTS)[number];
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 function applyTheme(theme: Theme | null) {
   if (theme) document.documentElement.dataset.theme = theme;
   else delete document.documentElement.dataset.theme;
+}
+
+function applyLayout(layout: Layout) {
+  document.documentElement.dataset.layout = layout;
 }
 
 export const useShellStore = defineStore("shell", {
@@ -34,6 +45,8 @@ export const useShellStore = defineStore("shell", {
     versionDialog: { open: false, title: "", body: "" },
     /** Bumped by `requestSearchFocus`; the Browse view watches it. */
     searchFocusRequest: 0,
+    /** The app layout, affects how the app is rendered */
+    layout: "comfortable" as Layout,
   }),
   getters: {
     /** Whether the page currently renders dark: the explicit choice wins,
@@ -44,14 +57,21 @@ export const useShellStore = defineStore("shell", {
   actions: {
     /** Read the persisted theme, apply it, and follow the OS preference. */
     init() {
-      let saved: string | null = null;
+      let savedTheme: string | null = null;
+      let savedLayout: string | null = null;
       try {
-        saved = localStorage.getItem(THEME_KEY);
+        savedTheme = localStorage.getItem(THEME_KEY);
+        savedLayout = localStorage.getItem(LAYOUT_KEY);
       } catch {
         /* private mode */
       }
-      this.theme = saved === "dark" || saved === "light" ? saved : null;
+      this.theme =
+        savedTheme === "dark" || savedTheme === "light" ? savedTheme : null;
+      this.layout = AVAILABLE_LAYOUTS.includes(savedLayout as Layout)
+        ? (savedLayout as Layout)
+        : "comfortable";
       applyTheme(this.theme);
+      this.changeLayout(this.layout);
       const mq = window.matchMedia?.(DARK_QUERY);
       if (!mq) return;
       this.systemDark = mq.matches;
@@ -69,6 +89,20 @@ export const useShellStore = defineStore("shell", {
         /* private mode */
       }
       applyTheme(next);
+    },
+
+    changeLayout(layout: string | null) {
+      const newLayout =
+        layout && AVAILABLE_LAYOUTS.includes(layout as Layout)
+          ? (layout as Layout)
+          : "comfortable";
+      this.layout = newLayout;
+      try {
+        localStorage.setItem(LAYOUT_KEY, this.layout);
+      } catch {
+        /* private mode */
+      }
+      applyLayout(this.layout);
     },
 
     /** Fetch `version.json` (absent in local dev) and, when the version

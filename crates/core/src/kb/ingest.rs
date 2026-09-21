@@ -1340,6 +1340,110 @@ mod tests {
     }
 
     #[test]
+    fn subrelation_edge_added_later_refreshes_inherited_domain() {
+        use crate::semantics::types::RelationDomain;
+
+        let mut kb = KnowledgeBase::new();
+        load_file(
+            &mut kb,
+            "parent.kif",
+            "(domain parent 1 Human)(domain parent 2 Human)(instance mother BinaryPredicate)",
+        );
+        let mother = kb.symbol_id("mother").unwrap();
+        let human = kb.symbol_id("Human").unwrap();
+        assert!(
+            kb.layer.semantic.domain(mother).is_empty(),
+            "memo primed empty before the edge exists"
+        );
+
+        load_file(&mut kb, "mother.kif", "(subrelation mother parent)");
+        let d = kb.layer.semantic.domain(mother);
+        assert_eq!(d.len(), 2, "mother inherits parent's slots; got {d:?}");
+        assert!(matches!(&d[0], RelationDomain::Domain(c) if *c == human));
+    }
+
+    #[test]
+    fn parent_domain_change_refreshes_the_subrelation() {
+        use crate::semantics::types::RelationDomain;
+
+        let mut kb = KnowledgeBase::new();
+        load_file(&mut kb, "parent.kif", "(domain parent 1 Human)");
+        load_file(&mut kb, "mother.kif", "(subrelation mother parent)");
+        let mother = kb.symbol_id("mother").unwrap();
+        assert_eq!(kb.layer.semantic.domain(mother).len(), 1);
+
+        let f = PathBuf::from("parent.kif");
+        kb.reload_kif(
+            "(domain parent 1 Human)(domain parent 2 Woman)",
+            &f,
+            "parent.kif",
+        );
+        kb.commit("parent.kif");
+        kb.make_session_axiomatic("parent.kif").expect("promote");
+        let woman = kb.symbol_id("Woman").unwrap();
+        let d = kb.layer.semantic.domain(mother);
+        assert_eq!(
+            d.len(),
+            2,
+            "child sees the parent's new position; got {d:?}"
+        );
+        assert!(matches!(&d[1], RelationDomain::Domain(c) if *c == woman));
+    }
+
+    #[test]
+    fn session_subrelation_edge_inherits_only_in_that_session() {
+        use crate::semantics::types::Scope;
+        use crate::syntactic::caches::session::session_id;
+
+        let mut kb = KnowledgeBase::new();
+        load_file(
+            &mut kb,
+            "parent.kif",
+            "(domain parent 1 Human)(instance mother BinaryPredicate)",
+        );
+        let mother = kb.symbol_id("mother").unwrap();
+        let sa = Scope::Session(session_id("session_a"));
+        let sb = Scope::Session(session_id("session_b"));
+        assert!(kb.layer.semantic.domain_scoped(mother, sa).is_empty());
+
+        kb.tell("(subrelation mother parent)", "session_a");
+        assert_eq!(
+            kb.layer.semantic.domain_scoped(mother, sa).len(),
+            1,
+            "the asserting session inherits through its transient edge"
+        );
+        assert!(
+            kb.layer.semantic.domain(mother).is_empty(),
+            "Base unaffected"
+        );
+        assert!(
+            kb.layer.semantic.domain_scoped(mother, sb).is_empty(),
+            "a concurrent session unaffected"
+        );
+    }
+
+    #[test]
+    fn subrelation_inherits_range_end_to_end() {
+        use crate::types::RelationRange;
+
+        let mut kb = KnowledgeBase::new();
+        load_file(
+            &mut kb,
+            "fns.kif",
+            "(range AgeFn Quantity)(instance YearsFn UnaryFunction)",
+        );
+        let years = kb.symbol_id("YearsFn").unwrap();
+        assert!(matches!(
+            kb.layer.semantic.range(years),
+            RelationRange::Unknown
+        ));
+
+        load_file(&mut kb, "sub.kif", "(subrelation YearsFn AgeFn)");
+        let quantity = kb.symbol_id("Quantity").unwrap();
+        assert!(matches!(kb.layer.semantic.range(years), RelationRange::Range(c) if c == quantity));
+    }
+
+    #[test]
     fn scoped_base_domain_overrules_session() {
         // A global (axiom) domain rule always overrules a session assertion at
         // the same position — the session cannot redefine a Base-claimed slot.
@@ -2046,13 +2150,7 @@ mod tests {
             before,
             "file restored exactly"
         );
-        let opts = crate::kb::search::SearchOpts {
-            kind: None,
-            language: None,
-            limit: None,
-            taxonomy: Vec::new(),
-            ..crate::kb::search::SearchOpts::default()
-        };
+        let opts = crate::kb::search::SearchOpts::default();
         assert!(
             kb.search("half typed", &opts).is_empty(),
             "no searchable ghost remains"

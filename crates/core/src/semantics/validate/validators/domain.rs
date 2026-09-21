@@ -171,6 +171,31 @@ mod tests {
     }
 
     #[test]
+    fn domain_check_applies_the_inherited_domain_of_a_subrelation() {
+        let layer = kif_layer(
+            r#"
+            (subclass Human Entity)
+            (subclass Rock Entity)
+            (instance parent BinaryPredicate)
+            (domain parent 1 Human)
+            (domain parent 2 Human)
+            (instance mother BinaryPredicate)
+            (subrelation mother parent)
+            (instance Alice Human)
+            (instance Pebble Rock)
+            (mother Pebble Alice)
+        "#,
+        );
+        let sid = root_by_head(&layer, "mother");
+        let codes = codes_in(&layer, sid);
+        assert!(
+            codes.contains(&"E006"),
+            "`mother` inherits `(domain parent 1 Human)`, so a Rock in slot 1 \
+             must be flagged; got {codes:?}"
+        );
+    }
+
+    #[test]
     fn domain_check_does_not_flag_variable_arguments() {
         // A variable argument carries no statically-knowable type and is
         // constrained by the domain it sits in, so it can never violate one.

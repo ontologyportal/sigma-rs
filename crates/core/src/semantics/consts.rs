@@ -66,6 +66,14 @@ symbol_set!(
     SUBINSTANCE_RELATIONS => SUBATTRIBUTE_RELATION, SUBRELATION_RELATION
 );
 
+/// The class whose instances are the languages `documentation` / `format` /
+/// `termFormat` entries are written in.
+pub const NATURAL_LANGUAGE_CLASS: &str = env!("SUMO_NATURAL_LANGUAGE_CLASS");
+
+/// The language assumed for rendering and documentation lookups when a caller
+/// names none.
+pub const DEFAULT_LANGUAGE: &str = env!("SUMO_DEFAULT_LANGUAGE");
+
 /// Maps SUMO arity-constant symbol names to their integer arity (`-1` = variable).
 pub(crate) const ARITY: &[(&str, i32)] = &[
     (env!("SUMO_ARITY_TWO"), 2),
