@@ -5,6 +5,24 @@ import vm from "node:vm";
 import { parse } from "@vue/compiler-sfc";
 import ts from "typescript";
 
+const taxonomyExports = {};
+vm.runInNewContext(
+  ts.transpileModule(
+    readFileSync(
+      new URL("../../services/taxonomy-3d.ts", import.meta.url),
+      "utf8",
+    ),
+    {
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText,
+  { exports: taxonomyExports },
+);
+const { RELATION_COLORS } = taxonomyExports;
+
 const { descriptor } = parse(
   readFileSync(new URL("./TaxonomyUniverse.vue", import.meta.url), "utf8"),
 );
@@ -25,21 +43,33 @@ exports.controls = {
   },
 ).outputText;
 
-function fixture() {
+function fixture(edges = []) {
   const exports = {};
   const watchers = [];
   const nodes = [
     { name: "Entity", position: [0, 0, 0], depth: 0, weight: 2 },
     { name: "Human", position: [100, 80, 60], depth: 1, weight: 1 },
   ];
+  const strokes = [];
   const context = new Proxy(
     {},
     {
-      get: (_target, key) =>
-        key === "createRadialGradient"
-          ? () => ({ addColorStop() {} })
-          : () => {},
-      set: () => true,
+      get: (target, key) => {
+        if (key === "createRadialGradient")
+          return () => ({ addColorStop() {} });
+        if (key === "stroke")
+          return () =>
+            strokes.push({
+              color: target.strokeStyle,
+              alpha: target.globalAlpha,
+              width: target.lineWidth,
+            });
+        return target[key] ?? (() => {});
+      },
+      set: (target, key, value) => {
+        target[key] = value;
+        return true;
+      },
     },
   );
   const element = {
@@ -70,8 +100,8 @@ function fixture() {
     "../../stores/kb": { useKBStore: () => ({ promoting: false }) },
     "../../utils/format": { errMsg: String },
     "../../services/taxonomy-3d": {
-      RELATION_COLORS: { subclass: "#79b5ff" },
-      layoutTaxonomy: () => ({ nodes, edges: [] }),
+      RELATION_COLORS,
+      layoutTaxonomy: () => ({ nodes, edges }),
     },
   };
   vm.runInNewContext(source, {
@@ -87,7 +117,7 @@ function fixture() {
     new Map(nodes.map((n) => [n.name, { parents: [], children: [] }])),
   );
   controls.draw();
-  return { ...controls, nodes, watchers };
+  return { ...controls, nodes, watchers, strokes };
 }
 function click(f, name) {
   const point = f.snapshot().projected.find((p) => p.node.name === name);
@@ -164,4 +194,42 @@ test("reset and filtering away the focus return the camera to Entity", () => {
   f.draw();
   assert.equal(f.snapshot().focused, "Entity");
   assertCentered(f, "Entity");
+});
+
+test("edges keep distinct relationship colors when selected and unselected", () => {
+  const relations = ["subclass", "instance", "subrelation", "subAttribute"];
+  assert.equal(
+    new Set(relations.map((r) => RELATION_COLORS[r])).size,
+    relations.length,
+  );
+  const f = fixture(
+    relations.map((relation) => ({
+      child: "Human",
+      parent: "Entity",
+      relation,
+    })),
+  );
+  for (const relation of relations) {
+    const strokes = f.strokes.filter(
+      (s) => s.color === RELATION_COLORS[relation],
+    );
+    assert.equal(
+      strokes.length,
+      2,
+      "selected edge and arrow use the relationship color",
+    );
+    assert.ok(strokes.every((s) => s.alpha === 1));
+  }
+  f.nodes.push({ name: "Other", position: [-100, 0, 0], depth: 1, weight: 1 });
+  f.choose("Other");
+  f.strokes.length = 0;
+  f.draw();
+  for (const relation of relations) {
+    const strokes = f.strokes.filter(
+      (s) => s.color === RELATION_COLORS[relation],
+    );
+    assert.equal(strokes.length, 1);
+    assert.ok(strokes[0].alpha >= 0.5, "unselected colors remain visible");
+    assert.ok(strokes[0].width >= 1);
+  }
 });

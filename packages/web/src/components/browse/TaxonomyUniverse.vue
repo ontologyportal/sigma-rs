@@ -194,9 +194,9 @@ function draw() {
     if (!a || !b) continue;
     const highlight =
       edge.child === selected.value || edge.parent === selected.value;
-    context.globalAlpha = highlight ? 0.9 : 0.19;
+    context.globalAlpha = highlight ? 1 : 0.55;
     context.strokeStyle = RELATION_COLORS[edge.relation] ?? "#94a3b8";
-    context.lineWidth = highlight ? 1.8 : 0.7;
+    context.lineWidth = highlight ? 2.2 : 1.2;
     context.beginPath();
     context.moveTo(a.x, a.y);
     context.lineTo(b.x, b.y);
@@ -382,15 +382,19 @@ onBeforeUnmount(() => {
         <button type="button" @click="reset">Reset view</button>
       </div>
     </header>
-    <div class="universe-filters">
+    <div
+      class="universe-filters"
+      role="group"
+      aria-label="Edge colors and relationship filters"
+    >
+      <span class="eyebrow">EDGE COLORS</span>
       <label
         v-for="(color, relation) in RELATION_COLORS"
         :key="relation"
         :style="{ color }"
       >
-        <input v-model="enabled" type="checkbox" :value="relation" />{{
-          relation
-        }}
+        <input v-model="enabled" type="checkbox" :value="relation" />
+        <span class="edge-swatch" aria-hidden="true"></span>{{ relation }}
       </label>
       <label><input v-model="labels" type="checkbox" /> Labels</label>
     </div>
@@ -496,7 +500,8 @@ onBeforeUnmount(() => {
       <span v-else
         >Showing the reachable hierarchy in the loaded knowledge base.</span
       >
-      Branch space follows visible subtree size. Arrows point to parents.
+      Edge colors identify the defining relationship. Branch space follows
+      visible subtree size. Arrows point to parents.
     </footer>
   </section>
 </template>
@@ -573,6 +578,10 @@ h2 {
   padding: 12px 24px;
   border-top: 1px solid #233148;
   border-bottom: 1px solid #233148;
+}
+.edge-swatch {
+  width: 22px;
+  border-top: 3px solid currentColor;
 }
 .universe-body {
   display: grid;
