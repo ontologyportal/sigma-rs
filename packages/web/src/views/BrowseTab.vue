@@ -6,6 +6,7 @@
 
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onActivated,
   onBeforeUnmount,
@@ -25,6 +26,16 @@ import Disclosure from "../components/Disclosure.vue";
 import HomeStats from "../components/browse/HomeStats.vue";
 import ManPage from "../components/browse/ManPage.vue";
 import SearchResults from "../components/browse/SearchResults.vue";
+
+const TaxonomyUniverse = defineAsyncComponent(
+  () => import("../components/browse/TaxonomyUniverse.vue"),
+);
+const universeOpen = ref(false);
+
+function openUniverseTerm(symbol: string) {
+  universeOpen.value = false;
+  navigate("browse", { sym: symbol });
+}
 
 const kb = useKBStore();
 const shell = useShellStore();
@@ -307,6 +318,17 @@ onActivated(() => {
 
 <template>
   <Card>
+    <button
+      type="button"
+      class="hierarchy-toggle"
+      :aria-expanded="universeOpen"
+      @click="universeOpen = !universeOpen"
+    >
+      {{ universeOpen ? "Close 3D hierarchy" : "Explore 3D hierarchy" }}
+    </button>
+  </Card>
+  <TaxonomyUniverse v-if="universeOpen && active" @open="openUniverseTerm" />
+  <Card>
     <form @submit.prevent="onSubmit">
       <label for="q"
         >Search symbols &amp; documentation
@@ -401,6 +423,14 @@ onActivated(() => {
 </template>
 
 <style scoped>
+.hierarchy-toggle {
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
 .search-box {
   position: relative;
 }
