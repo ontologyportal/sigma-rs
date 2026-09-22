@@ -1,6 +1,6 @@
 {
   "name": "@sigma/web",
-  "version": "2.2.0",
+  "version": "2.2.4",
   "private": true,
   "description": "SUMO browser -- the demo site over the sigmakee wasm engine.",
   "type": "module",

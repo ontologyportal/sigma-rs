@@ -2,7 +2,7 @@
   "name": "sigmakee-vscode",
   "displayName": "SigmaKEE",
   "description": "Full implementation of SigmaKEE, built into VSCode. Provides language support for SUO-KIF, TPTP, and the SUMO ontology",
-  "version": "2.2.0",
+  "version": "2.2.4",
   "publisher": "ontologyportal",
   "license": "GPL-3.0",
   "icon": "./images/extension-icon.png",

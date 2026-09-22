@@ -510,12 +510,13 @@ export class Session {
 // buffer with unbalanced parens (depth just clamps at 0) since it never
 // requires the input to parse.
 
-/** Two open parens are never allowed on the same output line, with two
- *  named exceptions: `not`'s sole argument, and a quantifier's
- *  (`exists`/`forall`) variable list — both conventionally sit on the same
- *  line as the symbol that introduces them. Every other case of a second
- *  open before the first has closed gets a line break inserted before it. */
-const INLINE_HEAD_EXCEPTIONS = new Set(["not", "exists", "forall"]);
+/** Two open parens are never allowed on the same output line, with one
+ *  named exception: a quantifier's (`exists`/`forall`) variable list, which
+ *  conventionally sits on the same line as the symbol that introduces it.
+ *  Every other case of a second open before the first has closed gets a
+ *  line break inserted before it -- including `not`'s argument, which is
+ *  an ordinary compound like any other and always breaks. */
+const INLINE_HEAD_EXCEPTIONS = new Set(["exists", "forall"]);
 
 /** Tokenizer for the reflow pass: comments/strings/parens as before (see
  *  the two-alternative closed-vs-unterminated-string split below), plus a
@@ -532,15 +533,17 @@ const KIF_REFLOW_SCAN_RE =
  * Reformat `text` (raw KIF source, need not even be syntactically valid):
  * rewrite leading whitespace to match paren-nesting depth, and insert a line
  * break wherever a second open paren would otherwise land on a line that
- * already has one open (except `not`'s argument and a quantifier's variable
- * list — see {@link INLINE_HEAD_EXCEPTIONS}). Never REMOVES an existing line
+ * already has one open (except a quantifier's variable list — see
+ * {@link INLINE_HEAD_EXCEPTIONS}). Never REMOVES an existing line
  * break for anything with content, so a file that's already broken up more
  * than the rule requires is left alone; it only closes gaps where the rule
  * is violated. Two exceptions to that, both matching SUMO's own Merge.kif
  * convention: a head symbol (e.g. `exists`) gets a space inserted before an
  * immediately-adjacent `(`, and a line consisting solely of closing parens
  * is folded onto the end of the previous non-blank line rather than left to
- * trail on its own. `indentUnit` defaults to 3 spaces. Comments, strings
+ * trail on its own. `indentUnit` defaults to 2 spaces, matching the core
+ * Rust formatter (`crates/core/src/parse/kif/dis.rs`) so this JS fallback
+ * and the LSP's canonical layout never visibly disagree. Comments, strings
  * (including one that happens to span a newline, however unusual), blank
  * lines, and inter-token spacing are otherwise preserved byte-for-byte.
  *
@@ -548,7 +551,7 @@ const KIF_REFLOW_SCAN_RE =
  * @param {{indentUnit?: string}} [opts]
  * @returns {string}
  */
-export function formatKif(text, { indentUnit = "   " } = {}) {
+export function formatKif(text, { indentUnit = "  " } = {}) {
   const srcLines = text.split("\n");
   const out = [];
 

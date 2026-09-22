@@ -1,6 +1,6 @@
 {
   "name": "sigmakee",
-  "version": "2.2.0",
+  "version": "2.2.4",
   "description": "Load SUO-KIF, translate to TPTP, and prove theorems in-browser with the pure-Rust native saturation prover (sigmakee-rs).",
   "license": "GPL-3.0",
   "type": "module",

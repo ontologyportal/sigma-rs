@@ -98,20 +98,22 @@ fn styled_c(
         return out;
     }
 
-    // The one argument slot allowed to sit inline with the head, if any.
-    // `query` gets `not`'s exemption: a `.tq` `(query <formula>)` directive
-    // conventionally holds its formula on the same line.
+    // The one argument slot allowed to sit inline with the head, if any --
+    // a quantifier's variable list (never `not`: its argument is an
+    // ordinary compound and always breaks like any other), and a `.tq`
+    // `(query <formula>)` directive, which conventionally holds its
+    // formula on the same line.
     let inline_idx = if (is_quantifier_head(&elements[0]) && elements.len() >= 3)
-        || ((is_not_head(&elements[0]) || is_query_head(&elements[0])) && elements.len() == 2)
+        || (is_query_head(&elements[0]) && elements.len() == 2)
     {
-        Some(1) // the sole argument
+        Some(1) // the variable list, or query's sole argument
     } else {
         None
     };
 
-    // Render the inline slot eagerly — if it itself needs to break (e.g. `not`
-    // wrapping a compound `and`), that cascades: the parent can no longer stay
-    // on one line either, even though the inline exemption still holds.
+    // Render the inline slot eagerly — if it itself needs to break, that
+    // cascades: the parent can no longer stay on one line either, even
+    // though the inline exemption still holds.
     // (Safe with the comment cursor: when interior comments exist the broken
     // path below is forced, so nothing the recursion drains is discarded.)
     let inline_rendered = inline_idx.map(|idx| styled_c(&elements[idx], indent, color, src, rem));
@@ -137,25 +139,34 @@ fn styled_c(
         _ => (format!("({}", head), 1),
     };
 
-    let mut body: Vec<String> = Vec::new();
+    // A new line starts only right before a compound (paren-opening)
+    // element -- an atom always glues onto whatever line precedes it, even
+    // one left trailing after an earlier compound sibling's close.
+    let mut lines: Vec<String> = vec![prefix];
     let mut prev_elem_end: Option<usize> = None;
     for e in &elements[body_start..] {
+        // A `;` comment runs to end of line, so an element that follows one
+        // (whether it opened its own comment line or trails the previous
+        // element's) must start fresh -- gluing it on would fold it into
+        // the comment text.
+        let mut after_comment = false;
         for c in drain_before(rem, e.span().offset) {
-            emit_interior_comment(&mut body, &pad, src, prev_elem_end, &c);
+            emit_interior_comment(&mut lines, &pad, src, prev_elem_end, &c);
+            after_comment = true;
         }
-        body.push(format!(
-            "{}{}",
-            pad,
-            styled_c(e, indent + 2, color, src, rem)
-        ));
+        let rendered = styled_c(e, indent + 2, color, src, rem);
+        if is_compound(e) || after_comment {
+            lines.push(format!("{pad}{rendered}"));
+        } else {
+            let cur = lines.last_mut().expect("prefix seeds the vec");
+            cur.push(' ');
+            cur.push_str(&rendered);
+        }
         prev_elem_end = Some(e.span().end_offset);
     }
 
-    let mut out = if body.is_empty() {
-        format!("{prefix})")
-    } else {
-        format!("{prefix}\n{})", body.join("\n"))
-    };
+    lines.last_mut().expect("prefix seeds the vec").push(')');
+    let mut out = lines.join("\n");
     // Comments between the last element and the closing paren re-emit after
     // the close: gluing `)` onto a comment line would swallow it.
     append_trailing_comments(&mut out, indent, drain_before(rem, end_off));
@@ -403,11 +414,6 @@ pub fn format_forms(text: &str, items: &[&DocItem], comments: &[CommentBlock]) -
 /// `true` iff `head` is an `Operator` quantifier (`forall` / `exists`).
 fn is_quantifier_head(head: &AstNode) -> bool {
     matches!(head, AstNode::Operator { op, .. } if op.is_quantifier())
-}
-
-/// `true` iff `head` is the `not` operator.
-fn is_not_head(head: &AstNode) -> bool {
-    matches!(head, AstNode::Operator { op, .. } if op.name() == "not")
 }
 
 /// `true` iff `head` is the `.tq` `query` directive symbol.
@@ -659,8 +665,11 @@ mod format_document_tests {
     fn interior_comment_forces_a_break_on_a_short_form() {
         // Without the comment this fits on one line; with it, the layout must
         // break so the comment has a place to live -- and stay re-parseable.
+        // `Dog` is an atom so it still glues onto the head's line; `Mammal`
+        // is forced onto its own line only because gluing it after the
+        // trailing `;` comment would fold it into the comment text.
         let out = assert_roundtrip("(subclass Dog ; the class\n Mammal)");
-        assert_eq!(out, "(subclass\n  Dog ; the class\n  Mammal)");
+        assert_eq!(out, "(subclass Dog ; the class\n  Mammal)");
     }
 
     #[test]
@@ -796,24 +805,22 @@ mod tests {
     }
 
     /// Count consecutive `((` runs on one line — i.e. two opens landing back
-    /// to back with nothing but whitespace between them. The `not`/quantifier
-    /// exemptions produce exactly one `(head (arg` pattern each, which this
-    /// same check would also flag if it looked at *all* adjacent opens rather
+    /// to back with nothing but whitespace between them. The quantifier
+    /// exemption produces exactly one `(head (arg` pattern, which this same
+    /// check would also flag if it looked at *all* adjacent opens rather
     /// than back-to-back ones — so instead we assert the general rule
-    /// directly: strip every allowed inline pair first, then no `(` may be
-    /// immediately followed (modulo whitespace) by another `(` on the same
-    /// line.
+    /// directly: strip that one allowed inline pair first, then no `(` may
+    /// be immediately followed (modulo whitespace) by another `(` on the
+    /// same line.
     fn assert_no_stacked_opens(text: &str) {
         for line in text.lines() {
             let trimmed = line.trim_start();
-            // Skip the one inline pair a quantifier var-list or `not` may
-            // introduce right after the head symbol.
+            // Skip the one inline pair a quantifier var-list may introduce
+            // right after the head symbol.
             let rest = if let Some(after) = trimmed
                 .strip_prefix("(forall (")
                 .or_else(|| trimmed.strip_prefix("(exists ("))
             {
-                after
-            } else if let Some(after) = trimmed.strip_prefix("(not (") {
                 after
             } else if let Some(after) = trimmed.strip_prefix('(') {
                 after
@@ -828,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn no_two_opens_share_a_line_outside_quantifier_and_not() {
+    fn no_two_opens_share_a_line_outside_quantifier() {
         let cases = [
             "(forall (?X ?Y) (=> (instance ?X Human) (instance ?Y Human)))",
             "(not (instance ?A Human))",
@@ -855,9 +862,9 @@ mod tests {
     }
 
     #[test]
-    fn not_keeps_compound_argument_inline() {
+    fn not_argument_always_breaks_even_when_short() {
         let n = parse_one("(not (instance ?A Human))");
-        assert_eq!(n.format_plain(0), "(not (instance ?A Human))");
+        assert_eq!(n.format_plain(0), "(not\n  (instance ?A Human))");
     }
 
     #[test]
@@ -866,6 +873,20 @@ mod tests {
         assert_eq!(
             n.format_plain(0),
             "(and\n  (instance Foo Bar)\n  (instance Foo Baz))"
+        );
+    }
+
+    #[test]
+    fn atomic_leading_argument_stays_on_the_heads_line() {
+        // A new line starts only right before a compound (paren-opening)
+        // argument -- `?B`, an atom, stays glued to `hasPurpose`.
+        let n = parse_one(
+            "(hasPurpose ?B (exists (?TP ?C) (and (instance ?TP TherapeuticProcess) \
+             (instance ?C Covering))))",
+        );
+        assert_eq!(
+            n.format_plain(0),
+            "(hasPurpose ?B\n  (exists (?TP ?C)\n    (and\n      (instance ?TP TherapeuticProcess)\n      (instance ?C Covering))))"
         );
     }
 }

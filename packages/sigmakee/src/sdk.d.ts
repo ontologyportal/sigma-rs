@@ -131,7 +131,9 @@ export function init(input?: unknown): Promise<unknown>;
  * match its paren-nesting depth. Pure JS, no WASM/KB involved — comments,
  * strings (including one spanning a newline), and blank lines are preserved
  * byte-for-byte; only leading indentation is rewritten. `indentUnit`
- * defaults to `"   "` (3 spaces), matching SUMO's own Merge.kif convention.
+ * defaults to `"  "` (2 spaces), matching the core Rust formatter
+ * (`crates/core/src/parse/kif/dis.rs`) so this fallback never visibly
+ * disagrees with the LSP's canonical layout.
  */
 export function formatKif(text: string, opts?: { indentUnit?: string }): string;
 
