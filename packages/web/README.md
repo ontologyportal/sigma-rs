@@ -4,7 +4,7 @@
 
 ## 3D hierarchy
 
-In Browse, choose **Explore 3D hierarchy**. Entity starts at the center;
+Under Explore, choose the **Visualize** tab. Entity starts at the center;
 terms are shaded spheres connected by subclass, instance, subrelation, and
 subAttribute assertions. Larger visible subtrees receive proportionally more
 angular space, and successive branches continue outward. Multiple parents
