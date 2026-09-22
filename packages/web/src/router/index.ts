@@ -29,6 +29,11 @@ export const router = createRouter({
       component: () => import("../views/BrowseTab.vue"),
     },
     {
+      name: "visualize",
+      path: "/visualize",
+      component: () => import("../views/VisualizeTab.vue"),
+    },
+    {
       name: "prover",
       path: "/prover",
       component: () => import("../views/AskTellTab.vue"),

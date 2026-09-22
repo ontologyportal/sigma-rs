@@ -19,7 +19,13 @@ type TabGroup = { label: string; tabs: [TabName, string][] };
 
 /** The nav, grouped by activity: `[routeName, label]` pairs. */
 const TAB_GROUPS: TabGroup[] = [
-  { label: "Explore", tabs: [["browse", "Browse"]] },
+  {
+    label: "Explore",
+    tabs: [
+      ["browse", "Browse"],
+      ["visualize", "Visualize"],
+    ],
+  },
   {
     label: "Reason",
     tabs: [
