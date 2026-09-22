@@ -19,6 +19,13 @@ interface Props {
 
   /** If true, sets flex-shrink to 0 (prevents shrinking) */
   shrink?: boolean;
+
+  /** How to align the contents (horizontal) in the column */
+  alignItems?: "stretch" | "center" | "start" | "end";
+
+  /** How to justify the contents (vertical) of the column */
+  justifyContent?:
+    "start" | "center" | "space-between" | "space-around" | "space-evenly";
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -26,6 +33,8 @@ const props = withDefaults(defineProps<Props>(), {
   width: "auto",
   grow: false,
   shrink: false,
+  alignItems: "stretch",
+  justifyContent: "start",
 });
 
 /**
@@ -69,5 +78,11 @@ const flexShrink = computed(() => (props.shrink ? 0 : 1));
 
   /* Ensure the column doesn't allow content to overflow its basis */
   min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  align-items: v-bind("alignItems");
+  justify-content: v-bind("justifyContent");
 }
 </style>

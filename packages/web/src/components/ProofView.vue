@@ -107,8 +107,6 @@ ol.refs {
   list-style: none;
   margin: 4px 0 0;
   padding: 0;
-  max-height: 420px;
-  overflow-y: auto;
 }
 ol.refs li {
   padding: 8px 2px;

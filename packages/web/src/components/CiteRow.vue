@@ -123,14 +123,14 @@ watch(
     </div>
     <div v-else>
       <Row class="split-cite">
-        <Col :span="7">
+        <Col :span="7" justify-content="center">
           <div v-if="$slots.header" class="hint"><slot name="header" /></div>
           <pre class="ref-kif" v-html="highlighted"></pre>
           <div v-if="file" class="ref-meta">
             <SourceLoc :file="file" :line="line" />
           </div>
         </Col>
-        <Col :span="5" class="cite">
+        <Col :span="5" class="cite" justify-content="center">
           {{ nlText }}
         </Col>
       </Row>
