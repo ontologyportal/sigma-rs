@@ -12,8 +12,7 @@
  * shapes come from `@octokit/types` (the generated OpenAPI types -- a
  * devDependency with no runtime, so nothing here reaches the bundle).
  *
- * The token comes from the signed-in GitHub session (the functions/api/
- * github-auth* OAuth flow); this module just spends it against
+ * The token comes from OAuth or a personal access token and is sent to
  * `api.github.com` over `Authorization: Bearer`.
  *
  * INVARIANT: this module never pushes to a default branch. Every change lands
@@ -150,8 +149,8 @@ export function assertFeatureBranch(branch: string, base: string): void {
 }
 
 /** Validate a token and return the authenticated user. */
-export const whoami = (token: string | null) =>
-  api<Res<"GET /user">>(token, "/user");
+export const whoami = (token: string | null, signal?: AbortSignal) =>
+  api(token, "/user", { signal });
 
 export interface ContributeFilesOpts {
   token: string;

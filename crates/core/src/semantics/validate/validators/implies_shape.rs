@@ -1,4 +1,4 @@
-//! W022 existential-in-antecedent: an `exists` under an implication antecedent
+//! E022 existential-in-antecedent: an `exists` under an implication antecedent
 //! traps its witness, which the consequent then cannot reference.
 
 use thiserror::Error;
@@ -17,9 +17,9 @@ pub struct ExistentialInAntecedent {
 }
 semantic_error!(
     ExistentialInAntecedent,
-    "W022",
+    "E022",
     "existential-in-antecedent",
-    Warning,
+    Error,
     fn anchors(&self) -> (Vec<SentenceId>, i32) {
         (vec![self.sid], 0)
     },
@@ -49,10 +49,11 @@ impl OperatorValidator for ImpliesShape {
 
 #[cfg(test)]
 mod tests {
+    use crate::semantics::types::Scope;
     use crate::semantics::validate::test_support::{codes_in, kif_layer, root_by_op};
 
     #[test]
-    fn w022_existential_in_antecedent() {
+    fn e022_existential_in_antecedent() {
         let layer = kif_layer(
             r#"
             (instance Human Class)
@@ -60,15 +61,15 @@ mod tests {
         "#,
         );
         let sid = root_by_op(&layer, crate::OpKind::Implies);
-        let codes = codes_in(&layer, sid);
-        assert!(
-            codes.contains(&"W022"),
-            "expected W022 existential-in-antecedent; got {codes:?}"
-        );
+        let errors = layer
+            .validator_scoped(Scope::Base)
+            .validate_sentence_collect(sid);
+        let error = errors.iter().find(|e| e.code() == "E022").unwrap();
+        assert_eq!(error.severity(), crate::Severity::Error);
     }
 
     #[test]
-    fn w022_not_flagged_for_existential_in_consequent() {
+    fn e022_not_flagged_for_existential_in_consequent() {
         // A witness introduced in the consequent is perfectly usable there.
         let layer = kif_layer(
             r#"
@@ -77,6 +78,6 @@ mod tests {
         "#,
         );
         let sid = root_by_op(&layer, crate::OpKind::Implies);
-        assert!(!codes_in(&layer, sid).contains(&"W022"));
+        assert!(!codes_in(&layer, sid).contains(&"E022"));
     }
 }
